@@ -1,0 +1,40 @@
+{
+  "providers": [
+    {
+      "id": "local-demo",
+      "name": "Local Demo",
+      "kind": "custom",
+      "protocol": "open_ai",
+      "base_url": "http://127.0.0.1:19001",
+      "api_key_ref": null,
+      "models": ["demo-model"],
+      "timeout_ms": 120000,
+      "healthcheck_path": "/health"
+    }
+  ],
+  "routes": [
+    {
+      "id": "demo-route",
+      "name": "Demo Route",
+      "input_protocol": "open_ai",
+      "instance_id": "demo-instance",
+      "target_provider_id": "local-demo",
+      "fallback_provider_id": null,
+      "chain_mode": "direct",
+      "compression_policy": "balanced",
+      "bind_host": "127.0.0.1",
+      "local_port": 18001
+    }
+  ],
+  "instances": [
+    {
+      "id": "demo-instance",
+      "name": "Demo Instance",
+      "agent": "manual",
+      "route_id": "demo-route",
+      "local_port": 18001,
+      "process_status": "stopped",
+      "log_path": "./logs/demo-instance.jsonl"
+    }
+  ]
+}
