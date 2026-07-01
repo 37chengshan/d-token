@@ -3,6 +3,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 
 REQUIRED = [
+    'README.md',
     'AGENTS.md',
     'CLAUDE.md',
     'docs/PRD.md',
@@ -26,7 +27,6 @@ REQUIRED = [
 ]
 
 FORBIDDEN = [
-    'README.md',
     'docs/prd/d-token-prd-v0.1.md',
     'docs/prd/d-token-prd-v0.2.md',
     'apps/desktop/README.md',
