@@ -1,0 +1,7 @@
+RTK Discover Fixture
+
+Missed opportunities:
+- cargo test --workspace: high output volume, recommend rtk cargo test --workspace
+- git log --oneline -100: medium output volume, recommend rtk git log --oneline -100
+
+source=fixture
