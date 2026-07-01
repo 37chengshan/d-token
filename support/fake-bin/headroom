@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+
+case "$*" in
+  "--version")
+    cat "$ROOT/fixtures/headroom/version.txt"
+    ;;
+  "doctor")
+    cat "$ROOT/fixtures/headroom/doctor.txt"
+    ;;
+  *)
+    echo "fake headroom: unsupported command: $*" >&2
+    exit 2
+    ;;
+esac
