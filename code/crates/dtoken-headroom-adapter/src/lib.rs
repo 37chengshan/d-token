@@ -1,4 +1,5 @@
 use dtoken_types::{CcrCacheSummary, HeadroomStats, HeadroomStatus, ToolStatus};
+use std::{env, fs, path::PathBuf};
 use tokio::process::Command;
 
 #[derive(Debug, Clone, Default)]
@@ -13,6 +14,10 @@ impl HeadroomAdapter {
     }
 
     pub async fn detect() -> HeadroomStatus {
+        if is_fixture_profile() {
+            return fixture_status();
+        }
+
         let adapter = Self::default();
         match adapter.run_version().await {
             Some(version) => HeadroomStatus {
@@ -37,6 +42,10 @@ impl HeadroomAdapter {
     }
 
     pub async fn stats_mock(&self) -> HeadroomStats {
+        if is_fixture_profile() {
+            return fixture_stats();
+        }
+
         let available = self.run_version().await.is_some();
         HeadroomStats {
             available,
@@ -53,6 +62,16 @@ impl HeadroomAdapter {
     }
 
     pub fn cache_summary_mock() -> CcrCacheSummary {
+        if is_fixture_profile() {
+            return CcrCacheSummary {
+                available: true,
+                entries: 24,
+                bytes: 1048576,
+                retrievals: 3,
+                note: "fixture mode: summary only; raw CCR cache was not read".to_string(),
+            };
+        }
+
         CcrCacheSummary {
             available: false,
             entries: 0,
@@ -90,4 +109,51 @@ pub async fn headroom_stats_mock() -> HeadroomStats {
 
 pub fn headroom_cache_summary_mock() -> CcrCacheSummary {
     HeadroomAdapter::cache_summary_mock()
+}
+
+fn is_fixture_profile() -> bool {
+    matches!(env::var("DTOKEN_PROFILE").ok().as_deref(), Some("fixture"))
+}
+
+fn fixture_status() -> HeadroomStatus {
+    let version = read_fixture_text("headroom/version.txt").unwrap_or_else(|| "headroom 0.0.0-fixture".to_string());
+    HeadroomStatus {
+        status: ToolStatus::Found,
+        binary_path: Some("support/fake-bin/headroom".to_string()),
+        version: Some(version.trim().to_string()),
+        python_runtime: Some("fixture-python".to_string()),
+        proxy_running: true,
+        mcp_configured: true,
+        warnings: vec!["fixture mode: real Headroom was not called".to_string()],
+    }
+}
+
+fn fixture_stats() -> HeadroomStats {
+    read_fixture_text("headroom/stats.json")
+        .and_then(|raw| serde_json::from_str::<HeadroomStats>(&raw).ok())
+        .unwrap_or(HeadroomStats {
+            available: true,
+            compressions: 0,
+            retrievals: 0,
+            tokens_saved: 0,
+            savings_percent: 0.0,
+            source: "fixture_fallback".to_string(),
+        })
+}
+
+fn read_fixture_text(relative: &str) -> Option<String> {
+    fixture_candidates(relative)
+        .into_iter()
+        .find_map(|path| fs::read_to_string(path).ok())
+}
+
+fn fixture_candidates(relative: &str) -> Vec<PathBuf> {
+    let root = env::var("DTOKEN_FIXTURE_ROOT").ok();
+    let mut candidates = Vec::new();
+    if let Some(root) = root {
+        candidates.push(PathBuf::from(root).join(relative));
+    }
+    candidates.push(PathBuf::from("../support/fixtures").join(relative));
+    candidates.push(PathBuf::from("support/fixtures").join(relative));
+    candidates
 }
