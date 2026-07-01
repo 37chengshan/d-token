@@ -3,7 +3,6 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 
 REQUIRED = [
-    'README.md',
     'AGENTS.md',
     'CLAUDE.md',
     'docs/PRD.md',
@@ -12,6 +11,8 @@ REQUIRED = [
     'docs/SECURITY_BOUNDARIES.md',
     'docs/FINAL_REVIEW.md',
     'docs/M1_STATUS.md',
+    'docs/M1_REVIEW.md',
+    'docs/M1_FINAL_REVIEW.md',
     'code/README.md',
     'code/Cargo.toml',
     'code/crates/dtoken-types/src/lib.rs',
@@ -20,6 +21,11 @@ REQUIRED = [
     'code/crates/dtoken-compress/src/lib.rs',
     'code/crates/dtoken-process/src/lib.rs',
     'code/crates/dtoken-doctor/src/lib.rs',
+    'code/crates/dtoken-event-ledger/src/lib.rs',
+    'code/crates/dtoken-preprocessor/src/lib.rs',
+    'code/crates/dtoken-headroom-adapter/src/lib.rs',
+    'code/crates/dtoken-project-policy/src/lib.rs',
+    'code/crates/dtoken-config-patcher/src/lib.rs',
     'code/crates/dtoken-core-api/src/lib.rs',
     'code/crates/dtoken-proxy/src/main.rs',
     'code/configs/config.example.json',
@@ -27,6 +33,7 @@ REQUIRED = [
 ]
 
 FORBIDDEN = [
+    'README.md',
     'docs/prd/d-token-prd-v0.1.md',
     'docs/prd/d-token-prd-v0.2.md',
     'apps/desktop/README.md',
