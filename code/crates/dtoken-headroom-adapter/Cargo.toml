@@ -7,4 +7,5 @@ repository.workspace = true
 
 [dependencies]
 dtoken-types = { path = "../dtoken-types" }
+serde_json.workspace = true
 tokio.workspace = true
