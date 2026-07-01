@@ -1,0 +1,7 @@
+Headroom Doctor Fixture
+
+status: ok
+proxy: fixture-not-running
+mcp: fixture-configured
+ccr: summary-only
+source: fixture
