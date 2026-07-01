@@ -20,6 +20,8 @@ M1 目标是建立可继续开发的 Rust core skeleton，而不是直接完成�
 9. Proxy/core API binary entrypoint：`dtoken-proxy`。
 10. Safe local config example：`code/configs/config.example.json`。
 11. Updated repository structure checker：`support/scripts/check_structure.py`。
+12. Router decision smoke test：`code/crates/dtoken-router/tests/route_decision.rs`。
+13. Doctor smoke test：`code/crates/dtoken-doctor/tests/basic.rs`。
 
 ## 2. 当前模块职责
 
@@ -58,6 +60,7 @@ M1 目标是建立可继续开发的 Rust core skeleton，而不是直接完成�
 - 按 instance id 和 input protocol 匹配 route。
 - 查找 target provider。
 - 生成 RouteDecision。
+- 基础 route decision 测试。
 
 后续可扩展：
 
@@ -103,6 +106,7 @@ M1 目标是建立可继续开发的 Rust core skeleton，而不是直接完成�
 
 - local-only bind check。
 - port availability check。
+- 基础 doctor smoke test。
 
 后续可扩展：
 
@@ -153,7 +157,18 @@ curl http://127.0.0.1:18001/providers
 curl -X POST http://127.0.0.1:18001/doctor/run
 ```
 
-## 4. 未完成内容
+## 4. 本地验证方式
+
+```bash
+cd code
+cargo check --workspace
+cargo test --workspace
+python ../support/scripts/check_structure.py
+```
+
+说明：当前我已完成文件落库，但没有在远端仓库运行 `cargo check`。下一轮应在本地或 CI 环境执行上述命令并修正编译问题。
+
+## 5. 未完成内容
 
 M1 当前未做：
 
@@ -168,12 +183,12 @@ M1 当前未做：
 
 这些属于 M2/M3/M4。
 
-## 5. 下一步建议
+## 6. 下一步建议
 
 优先顺序：
 
-1. 本地跑 `cargo check` 修正编译问题。
+1. 本地跑 `cargo check --workspace` 修正编译问题。
 2. 为 `dtoken-core-api` 增加最小集成测试。
-3. 给 `dtoken-router` 增加 route decision 单元测试。
+3. 给 `dtoken-router` 增加更多 route decision 单元测试。
 4. 给 `dtoken-doctor` 增加端口占用测试。
 5. 开始 M2：Dashboard skeleton。
