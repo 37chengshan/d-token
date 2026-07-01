@@ -9,3 +9,10 @@ Start here:
 5. `FINAL_REVIEW.md` — final multidimensional review.
 6. `M1_STATUS.md` — M1 implementation status.
 7. `M1_REVIEW.md` — M1 implementation review.
+
+Research and reviews:
+
+8. `reviews/PRD_MULTIDIMENSIONAL_GAP_REVIEW_2026-07-01.md` — latest PRD gap review.
+9. `research/REPORT_01_RTK_HEADROOM_INTERNALS.md` — RTK and Headroom internals.
+10. `research/REPORT_02_DESKTOP_INTEGRATION_ONE_CLICK_APP.md` — desktop integration and one-click installer.
+11. `research/REPORT_03_FEATURES_AND_FIXES_IMPLEMENTATION.md` — features and fixes implementation plan.
