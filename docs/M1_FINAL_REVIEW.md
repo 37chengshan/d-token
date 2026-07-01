@@ -5,7 +5,7 @@
 
 ## 1. 总结论
 
-M1 的“代码骨架范围”已经基本完成：
+M1 的“代码骨架范围”已经完成：
 
 ```text
 core skeleton
@@ -15,9 +15,10 @@ core skeleton
   + config patch/backup/rollback skeleton
   + event ledger skeleton
   + local API endpoints
+  + minimal CI gate
 ```
 
-但 M1 还不能标记为完全 Verified，因为本轮没有在远端环境实际运行：
+但 M1 还不能标记为完全 Verified，因为我没有读取到 GitHub Actions 的实际运行结果，也没有在本地环境实际运行：
 
 ```bash
 cargo check --workspace
@@ -28,7 +29,7 @@ python ../support/scripts/check_structure.py
 因此最终状态是：
 
 ```text
-M1 Scope Implemented / Awaiting Local Cargo Verification
+M1 Scope Implemented / Awaiting Cargo CI Result
 ```
 
 ## 2. 产品维度审查
@@ -43,6 +44,7 @@ M1 Scope Implemented / Awaiting Local Cargo Verification
 4. 项目级压缩策略已经有数据模型和 v0 推荐引擎。
 5. 配置 diff/backup/rollback 已有 skeleton。
 6. event ledger 已有 skeleton，后续可支撑分层 savings。
+7. 最小 CI gate 已恢复。
 
 不足：
 
@@ -114,7 +116,7 @@ M1 Scope Implemented / Awaiting Local Cargo Verification
 
 ## 6. 可测试性维度审查
 
-评分：8.0/10。
+评分：8.4/10。
 
 已补测试：
 
@@ -123,6 +125,7 @@ M1 Scope Implemented / Awaiting Local Cargo Verification
 3. project recommendation tests。
 4. config patcher tests。
 5. event ledger test。
+6. minimal GitHub Actions CI。
 
 仍缺：
 
@@ -130,7 +133,7 @@ M1 Scope Implemented / Awaiting Local Cargo Verification
 2. RTK adapter missing/found command tests。
 3. Headroom adapter missing/found command tests。
 4. Config patcher backup/apply filesystem tests。
-5. workspace-level CI。
+5. CI 真实运行结果确认。
 
 ## 7. M1 完成度判断
 
@@ -151,20 +154,19 @@ M1 Scope Implemented / Awaiting Local Cargo Verification
 | event ledger skeleton | 已完成 |
 | mock endpoints | 已完成 |
 | smoke tests | 部分完成 |
-| cargo check | 未实际运行 |
-| cargo test | 未实际运行 |
-| CI gate | 未恢复 |
+| minimal CI gate | 已完成 |
+| cargo check | 等待 CI/本地结果 |
+| cargo test | 等待 CI/本地结果 |
 
 ## 8. 下一步强制顺序
 
 不要直接进入复杂 UI。下一步必须是：
 
 ```text
-1. 本地执行 cargo check --workspace
-2. 修正编译错误
-3. 本地执行 cargo test --workspace
-4. 恢复 GitHub Actions 最小 CI
-5. 进入 M2 Tauri shell + Dashboard/Installer mock
+1. 查看 GitHub Actions CI 结果
+2. 修正 cargo check / cargo test 错误
+3. 将状态改为 M1 Verified / Ready for M2
+4. 进入 M2 Tauri shell + Dashboard/Installer mock
 ```
 
 ## 9. 最终判断
@@ -174,7 +176,7 @@ M1 的代码和文档范围已经补齐，已经可以作为 M2 的基础。
 但工程状态必须诚实标记为：
 
 ```text
-Implemented, not yet verified by cargo/CI.
+Implemented, awaiting cargo/CI verification.
 ```
 
 只有 cargo check、cargo test、structure check 全部通过后，才能改为：
