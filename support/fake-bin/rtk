@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+
+case "$*" in
+  "--version")
+    cat "$ROOT/fixtures/rtk/version.txt"
+    ;;
+  "gain --all --format json")
+    cat "$ROOT/fixtures/rtk/gain-all.json"
+    ;;
+  "discover --all")
+    cat "$ROOT/fixtures/rtk/discover.txt"
+    ;;
+  "session")
+    cat "$ROOT/fixtures/rtk/session.txt"
+    ;;
+  *)
+    echo "fake rtk: unsupported command: $*" >&2
+    exit 2
+    ;;
+esac
