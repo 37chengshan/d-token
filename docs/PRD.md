@@ -5,7 +5,7 @@
 
 ## 1. 项目一句话
 
-d-token 是一个面向 AI Coding 的本地分层压缩、路由与桌面观测系统：上游集成 `rtk-ai/rtk` 作为 CLI 命令输出预处理层，下游保留 Headroom-compatible API 接入层压缩能力，并通过 Windows/macOS 桌面 App 统一管理一键安装、provider、route、instance、project compression policy、chain bridge、Dashboard、Doctor 与端到端 token savings。
+`d-token` 是一个面向 AI Coding 的本地分层压缩、路由与桌面观测系统：上游集成 `rtk-ai/rtk` 作为命令输出预处理层，下游保留 Headroom-compatible API 接入层压缩能力，并通过 Windows/macOS 桌面 App 统一管理一键安装、provider、route、instance、project compression policy、chain bridge、Dashboard、Doctor、rollback 与端到端 token savings attribution。
 
 ## 2. 产品定位
 
@@ -16,11 +16,12 @@ RTK 与 Headroom-compatible core 工作在不同链路层级：
 ```text
 RTK:      Command Execution Layer / Shell Output Layer
 Headroom: API Gateway Layer / LLM Context Layer
+d-token:  Desktop Control Plane / Local Orchestration Layer
 ```
 
 二者不是竞争关系，而是上下游互补关系。
 
-RTK 负责在命令输出进入 Agent 上下文前做第一层清洗；Headroom-compatible core 负责在完整上下文发往 LLM 前做第二层压缩。d-token 负责把两者统一安装、编排、配置、观测、统计、诊断和桌面化。
+RTK 负责在命令输出进入 Agent 上下文前做第一层清洗；Headroom-compatible core 负责在完整上下文发往 LLM 前做第二层压缩；d-token 负责把两者统一安装、编排、配置、观测、统计、诊断、回滚和桌面化。
 
 ### 2.2 最终产品形态
 
@@ -49,9 +50,9 @@ Provider
 1. 保留 Headroom 的完整能力，不做删减版。
 2. 完整迁移 Headroom Dashboard 到 Windows/macOS 桌面 App。
 3. 将 `rtk-ai/rtk` 作为一等集成对象，而不是泛泛的“CLI 清洗脚本”。
-4. 提供一键安装向导：用户可勾选安装 RTK、Headroom-compatible runtime、d-token core、Desktop App、agent hooks、provider configs。
+4. 提供一键安装向导：用户可勾选安装 d-token core、RTK、Headroom-compatible runtime、Desktop App、agent hooks、MCP、provider configs。
 5. 支持 RTK 外部二进制探测、版本探测、安装状态探测、agent hook 状态探测、analytics 数据导入。
-6. 支持 Headroom 每项目压缩等级、推荐等级、输出 token shaping、memory/learn/MCP/CCR 开关。
+6. 支持 Headroom 每项目压缩等级、推荐等级、输出 token shaping、memory、learn、MCP、CCR 开关。
 7. 支持 Claude Code、Codex、Cline、OpenCode、Cursor、Windsurf、Gemini CLI、GitHub Copilot、Kilo Code、Antigravity 等 AI Coding 工具接入。
 8. 支持官方 provider、第三方 compatible provider、chain bridge 三类路径。
 9. 支持多个本地实例并行运行，并在 Dashboard 中按实例拆分数据。
@@ -63,11 +64,7 @@ Provider
 
 ### 3.1 RTK 是什么
 
-`rtk-ai/rtk` 是一个高性能 CLI proxy，用于在命令输出进入 LLM 上下文前过滤和压缩命令输出。其 README 定位为：减少常见开发命令的 LLM token 消耗，单 Rust binary，面向 AI Coding 场景。
-
-### 3.2 RTK 的关键能力
-
-d-token 必须理解并适配 RTK 的以下能力：
+`rtk-ai/rtk` 是一个高性能 CLI proxy，用于在命令输出进入 LLM 上下文前过滤和压缩命令输出。d-token 必须理解并适配它的关键能力：
 
 1. Single Rust binary。
 2. CLI proxy pattern。
@@ -82,12 +79,15 @@ d-token 必须理解并适配 RTK 的以下能力：
 11. local tracking database。
 12. telemetry opt-in state。
 13. Windows WSL full support / native Windows limited hook support。
+14. hook integrity verification。
+15. project-local filter trust。
+16. permission precedence：Deny > Ask > Allow > Default。
 
-### 3.3 RTK 的过滤策略
+### 3.2 RTK 的过滤策略
 
 d-token Dashboard 和 metrics schema 必须能表达 RTK 的过滤策略：Smart Filtering、Grouping、Truncation、Deduplication、Stats extraction、Error-only filtering、Structure-only filtering、Code filtering levels、Failure focus、Progress filtering、JSON/text dual mode、State-machine parsing、NDJSON streaming parsing。
 
-### 3.4 RTK 的设计原则
+### 3.3 RTK 的设计原则
 
 d-token 适配 RTK 时必须保留以下工程原则：
 
@@ -97,14 +97,29 @@ d-token 适配 RTK 时必须保留以下工程原则：
 4. Fail-safe：过滤失败时必须回退到原始输出或明确提示，而不是吞掉内容。
 5. Transparent：用户必须能通过 verbose/raw-output/tee 机制看到原始输出。
 6. Local-first：本地命令输出、本地统计、本地恢复文件优先。
+7. Integrity-aware：hook 被篡改、hash 不匹配、baseline 缺失时必须在 UI 和 Doctor 中显示。
+8. Permission-respecting：d-token 不得绕过 host agent 权限模型。
 
-### 3.5 Headroom 是什么
+### 3.4 Headroom 是什么
 
 Headroom 是 context compression layer for AI agents，目标是在内容到达 LLM 前压缩 tool outputs、logs、RAG chunks、files、conversation history，并提供 library、proxy、agent wrap、MCP server、CCR、cross-agent memory、learn、output token reduction、dashboard、doctor、perf、metrics 等能力。
 
-### 3.6 Headroom 的关键能力
+### 3.5 Headroom 的关键能力
 
 d-token 必须保留：Library / SDK、Local proxy、Agent wrap / unwrap、MCP server、Content-aware compression pipeline、ContentRouter、CacheAligner、SmartCrusher、CodeCompressor、Kompress/text compressor、CCR reversible compression、local retrieval、Cross-agent memory、Per-project memory、SharedContext、headroom learn、output shaper、verbosity steering、effort routing、durable savings ledger、metrics endpoints、Historical stats、JSON/CSV export、Cost tracking、Per-model/per-agent/per-project breakdown、Doctor/perf/benchmark/troubleshooting。
+
+### 3.6 Headroom 安全机制
+
+d-token 不得破坏 Headroom 的安全设计：
+
+1. live-zone-only compression：不能粗暴压缩全部历史上下文。
+2. never remove human content。
+3. parse failure no-op。
+4. error preservation。
+5. CCR reversible retrieval。
+6. cache hot zone stability。
+7. local-first store。
+8. MCP compress / retrieve / stats 三类路径清晰可观测。
 
 ## 4. 明确边界
 
@@ -125,15 +140,18 @@ d-token 必须保留：Library / SDK、Local proxy、Agent wrap / unwrap、MCP s
 13. InstanceProfile。
 14. PreprocessorProfile。
 15. LayeredCompressionStage。
-16. Chain bridge。
-17. Local process manager。
-18. Local logs and metrics。
-19. Config diff / backup / rollback。
-20. Local config and secret handling。
-21. Windows/macOS installer。
-22. Doctor 页面。
-23. JSON/CSV export。
-24. Clean-room reimplementation first；若复用 Apache 2.0 代码，必须保留 license notice。
+16. DtokenEvent / event ledger。
+17. InstallationTransaction。
+18. CompatibilityMatrix。
+19. Chain bridge。
+20. Local process manager。
+21. Local logs and metrics。
+22. Config diff / backup / rollback。
+23. Local config and secret handling。
+24. Windows/macOS installer。
+25. Doctor 页面。
+26. JSON/CSV export。
+27. Clean-room reimplementation first；若复用 Apache 2.0 代码，必须保留 license notice。
 
 ### 4.2 不做
 
@@ -151,6 +169,8 @@ d-token 必须保留：Library / SDK、Local proxy、Agent wrap / unwrap、MCP s
 12. 不强制打开 RTK telemetry；d-token 必须尊重 RTK telemetry disabled-by-default 与 opt-in 状态。
 13. 不把 RTK 与 Headroom-compatible core 强耦合；两者必须可单独启用、单独关闭、单独观测。
 14. 不在默认日志中保存完整命令输出、完整文件内容、完整 prompt 或完整 API response。
+15. 不默认读取 RTK tracking DB、tee 文件或 Headroom CCR 原文。
+16. 不在未形成统一 baseline 前把 RTK savings 与 Headroom savings 直接相加。
 
 ## 5. 一键安装与配置向导
 
@@ -169,7 +189,56 @@ d-token 必须保留：Library / SDK、Local proxy、Agent wrap / unwrap、MCP s
 9. 生成回滚点。
 10. 进入 Dashboard。
 
-### 5.2 工具选择矩阵
+### 5.2 InstallationTransaction
+
+安装必须是可审计、可回滚的事务：
+
+```text
+Plan
+  ↓
+Preview Diff
+  ↓
+Backup
+  ↓
+Apply
+  ↓
+Validate
+  ↓
+Doctor
+  ↓
+Commit Rollback Point
+```
+
+失败路径：
+
+```text
+Apply failed / Validate failed / Doctor failed
+  ↓
+Stop new processes
+  ↓
+Restore backups
+  ↓
+Remove partial files
+  ↓
+Report exact failure
+```
+
+```ts
+interface InstallationTransaction {
+  id: string;
+  created_at: string;
+  mode: 'external' | 'managed' | 'mixed';
+  selected_tools: ToolKind[];
+  selected_agents: AgentKind[];
+  steps: InstallStep[];
+  patch_plans: ConfigPatchPlan[];
+  backups: BackupRecord[];
+  status: 'planned' | 'awaiting_confirm' | 'applying' | 'validating' | 'done' | 'failed' | 'rolled_back';
+  rollback_point_id?: string;
+}
+```
+
+### 5.3 工具选择矩阵
 
 ```text
 Only d-token core:        route/provider/instance + dashboard skeleton
@@ -180,7 +249,7 @@ All managed:              d-token controls install/update/uninstall with confirm
 External tools:           d-token only detects/imports metrics, does not mutate config silently
 ```
 
-### 5.3 安装安全要求
+### 5.4 安装安全要求
 
 1. 任何 hook/config 修改前必须显示 diff。
 2. 任何 hook/config 修改前必须创建 backup。
@@ -190,6 +259,8 @@ External tools:           d-token only detects/imports metrics, does not mutate 
 6. 不覆盖用户已有配置；必须 merge 或提示冲突。
 7. 安装完成后必须运行 Doctor。
 8. 安装失败必须能恢复到安装前状态。
+9. managed binary 必须记录 provenance、version、checksum、source、installed path。
+10. 升级前必须生成 rollback point。
 
 ## 6. Headroom 项目级压缩策略
 
@@ -235,22 +306,9 @@ interface ProjectCompressionPolicy {
 }
 ```
 
-### 6.3 推荐等级引擎
+### 6.3 CompressionRecommendationEngine
 
-CompressionRecommendationEngine 必须基于以下信号给出推荐等级：
-
-1. 项目语言栈：Rust/TS/Python/Go/Java 等。
-2. 最近请求 token 规模。
-3. 命令输出噪音比例。
-4. Headroom 历史 savings。
-5. RTK 历史 savings。
-6. LLM 回答质量反馈。
-7. retrieve 调用频率。
-8. 失败率与回退率。
-9. 用户手动覆盖偏好。
-10. 项目是否为高风险任务，例如生产部署、数据库迁移、法务/合规文档。
-
-推荐原则：
+推荐等级必须基于：项目语言栈、最近请求 token 规模、命令输出噪音比例、Headroom 历史 savings、RTK 历史 savings、LLM 回答质量反馈、retrieve 调用频率、失败率与回退率、用户手动覆盖偏好、高风险任务标记。
 
 ```text
 safe:       默认推荐，适合新项目和高风险任务
@@ -261,26 +319,11 @@ max:        只对低风险探索/批量日志/RAG chunks 推荐，必须提示�
 
 ### 6.4 UI 要求
 
-每个项目页面必须展示：
-
-1. 当前压缩等级。
-2. 推荐压缩等级。
-3. 推荐理由。
-4. 预计 savings。
-5. 质量风险提示。
-6. 可一键应用推荐。
-7. 可手动覆盖。
-8. 可回滚上一版策略。
-9. RTK 与 Headroom 的分层贡献。
-10. 当前 agent/route/provider 绑定关系。
+每个项目页面必须展示：当前压缩等级、推荐压缩等级、推荐理由、预计 savings、质量风险提示、一键应用推荐、手动覆盖、上一版策略回滚、RTK 与 Headroom 的分层贡献、当前 agent/route/provider 绑定关系。
 
 ## 7. RTK 集成设计
 
-### 7.1 RTK 在 d-token 中的定位
-
-RTK 是 d-token 的 Command Execution Layer 优先集成对象。
-
-d-token 不直接替代 RTK 的 command filters，而是优先把 RTK 当作外部能力接入：
+### 7.1 d-token 与 RTK 的职责边界
 
 ```text
 RTK owns:
@@ -289,6 +332,8 @@ RTK owns:
   command-specific filtering
   raw-output tee
   local RTK analytics
+  hook integrity verification
+  project-local filter trust
 
 d-token owns:
   desktop orchestration
@@ -297,25 +342,16 @@ d-token owns:
   layered savings attribution
   cross-layer dashboard
   route/provider/instance/project management
+  diff/backup/rollback UX
 ```
 
 ### 7.2 RTK 集成模式
 
 d-token 必须支持三种模式：
 
-#### Mode A：External RTK
-
-用户自己安装 RTK，d-token 只检测和读取：`rtk --version`、`rtk init --show`、`rtk gain --all --format json`、`rtk discover --all`、`rtk session`、RTK config path、RTK tracking database path、RTK tee output path。
-
-这是优先模式。
-
-#### Mode B：Managed RTK Sidecar
-
-d-token 下载或打包 RTK binary，并通过 Desktop 管理安装、升级、卸载、agent hook setup、hook audit、local analytics import。该模式必须保留用户确认，不得静默改写 agent 配置。
-
-#### Mode C：Built-in Preprocessor
-
-在 RTK 不可用或用户不想安装 RTK 时，d-token 提供基础内置预处理器：ANSI 清理、空行压缩、重复行折叠、超长输出截断、error-only mode、raw output local recovery。该模式只能作为 fallback，不应声称等价于完整 RTK。
+1. External RTK：用户自己安装 RTK，d-token 只检测、展示、导入公开 analytics。这是优先模式。
+2. Managed RTK Sidecar：d-token 下载或打包 RTK binary，并通过 Desktop 管理安装、升级、卸载、hook audit、analytics import。必须用户确认。
+3. Built-in Preprocessor：RTK 不可用时提供基础 fallback，不声称等价于完整 RTK。
 
 ### 7.3 Agent Hook 适配要求
 
@@ -332,12 +368,13 @@ d-token 下载或打包 RTK binary，并通过 Desktop 管理安装、升级、�
 3. Native Windows 下 hook 自动改写能力有限，用户可能需要显式调用 `rtk ...`。
 4. RTK 过滤失败或用户需要完整上下文时，应通过 verbose/raw-output/tee 查看原始输出。
 5. RTK telemetry 默认关闭，且必须用户显式同意才可启用。
+6. hook integrity 为 `tampered`、`no_baseline`、`orphaned_hash` 时必须提示。
 
 ## 8. 分层压缩指标模型
 
 ### 8.1 三类 savings
 
-Dashboard 必须区分三类 savings：
+Dashboard 必须区分：
 
 ```text
 rtk_savings
@@ -357,16 +394,50 @@ RTK 已经减少过的 CLI 输出进入 Headroom 后，Headroom 的 savings 只�
 ```text
 raw_cli_tokens
   → rtk_cleaned_tokens
+  → headroom_input_tokens
   → headroom_final_tokens
 
 rtk_savings = raw_cli_tokens - rtk_cleaned_tokens
 headroom_savings = headroom_input_tokens - headroom_final_tokens
-end_to_end_savings = raw_cli_tokens + non_cli_raw_context_tokens - final_llm_input_tokens
+end_to_end_savings = raw_total_context_tokens - final_llm_input_tokens
 ```
 
 禁止把 `rtk_savings + headroom_savings` 直接相加当作总 savings，除非 denominator 和 baseline 已经统一。
 
-### 8.3 LayeredCompressionStage
+### 8.3 DtokenEvent / Event Ledger
+
+必须通过统一 event ledger 关联 RTK、Headroom 与 d-token 自身事件：
+
+```ts
+interface DtokenEvent {
+  event_id: string;
+  timestamp_ms: number;
+  project_id?: string;
+  agent_id?: string;
+  instance_id?: string;
+  command_id?: string;
+  request_id?: string;
+  stage:
+    | 'rtk_rewrite'
+    | 'rtk_filter'
+    | 'headroom_route'
+    | 'headroom_compress'
+    | 'headroom_retrieve'
+    | 'provider_forward'
+    | 'install_step'
+    | 'config_patch';
+  source: 'rtk' | 'headroom' | 'dtoken';
+  status: 'ok' | 'passthrough' | 'failed' | 'disabled' | 'skipped';
+  input_tokens?: number;
+  output_tokens?: number;
+  saved_tokens?: number;
+  baseline_kind?: 'raw_cli' | 'rtk_cleaned' | 'headroom_input' | 'final_llm_input';
+  error_code?: string;
+  metadata?: Record<string, unknown>;
+}
+```
+
+### 8.4 LayeredCompressionStage
 
 ```ts
 interface LayeredCompressionStage {
@@ -385,7 +456,7 @@ interface LayeredCompressionStage {
 }
 ```
 
-### 8.4 PreprocessorProfile
+### 8.5 PreprocessorProfile
 
 ```ts
 interface PreprocessorProfile {
@@ -396,6 +467,7 @@ interface PreprocessorProfile {
   version?: string;
   agent_hook_status: 'installed' | 'missing' | 'partial' | 'unsupported' | 'unknown';
   telemetry_status: 'disabled' | 'enabled' | 'unknown';
+  integrity_state?: 'verified' | 'tampered' | 'no_baseline' | 'not_installed' | 'orphaned_hash' | 'unknown';
   config_path?: string;
   tracking_db_path?: string;
   tee_dir?: string;
@@ -417,27 +489,20 @@ interface PreprocessorProfile {
 4. Recommended compression level。
 5. Recommendation reason。
 6. Policy diff / rollback。
-7. RTK Status。
-8. RTK Version。
-9. RTK Hook Status。
-10. RTK Supported Agent Mode。
-11. RTK Telemetry Status。
-12. RTK Gain Summary。
-13. RTK Daily Savings。
-14. RTK Recent Commands。
-15. RTK Missed Opportunities。
-16. RTK Session Adoption。
-17. RTK Passthrough Commands。
-18. RTK Low-savings Commands。
-19. RTK Tee Recovery Files。
-20. RTK Windows Compatibility Notice。
-21. Layered Contribution：RTK vs Headroom。
-22. Headroom-after-RTK savings。
-23. Per-agent layered savings。
-24. Per-instance layered savings。
-25. Per-command layered savings。
+7. RTK Status / Version / Hook Status / Integrity / Supported Agent Mode / Telemetry Status。
+8. RTK Gain / Discover / Session / Recent Commands / Missed Opportunities。
+9. RTK Tee Recovery summary。
+10. RTK Windows Compatibility Notice。
+11. Headroom proxy / MCP / CCR / stats / runtime 状态。
+12. Layered Contribution：RTK vs Headroom。
+13. Headroom-after-RTK savings。
+14. Per-agent / per-project / per-instance / per-command layered savings。
+15. InstallationTransaction 状态。
+16. Config patch history / rollback points。
+17. Compatibility warnings。
+18. Feature flags。
 
-新增 d-token 维度：ProviderProfile、RouteProfile、InstanceProfile、ProjectProfile、ProjectCompressionPolicy、CompressionRecommendation、Chain mode、OS process status、Config source、PreprocessorProfile、LayeredCompressionStage、RTKCommandCategory、RTKHookMode。
+新增 d-token 维度：ProviderProfile、RouteProfile、InstanceProfile、ProjectProfile、ProjectCompressionPolicy、CompressionRecommendation、Chain mode、OS process status、Config source、PreprocessorProfile、LayeredCompressionStage、DtokenEvent、InstallationTransaction、CompatibilityCase、RTKCommandCategory、RTKHookMode。
 
 ## 10. 技术选型
 
@@ -463,7 +528,7 @@ Rust core + Python sidecar transitional architecture + RTK external binary integ
 
 短期：
 
-- Rust 负责 process manager、local API、proxy/router skeleton、logs、config、port manager、doctor、installer orchestrator、RTK adapter interface、project policy manager。
+- Rust 负责 process manager、local API、proxy/router skeleton、logs、config、port manager、doctor、installer orchestrator、RTK adapter interface、project policy manager、event ledger、config patcher。
 - Python sidecar 保留 Headroom-compatible compression、CCR、memory、learn、MCP 等能力。
 - RTK 优先以外部 binary 接入，不在 M1/M2 复制其 filters。
 
@@ -477,15 +542,15 @@ Rust core + Python sidecar transitional architecture + RTK external binary integ
 
 ### 11.1 d-token Core
 
-Doctor 页面必须检查：Local proxy 是否运行、端口是否占用、route 是否匹配、provider 是否健康、chain bridge 是否健康、Headroom-compatible runtime 是否可用、project policy 是否有效、config backup/rollback 是否可用。
+Doctor 页面必须检查：Local proxy 是否运行、端口是否占用、route 是否匹配、provider 是否健康、chain bridge 是否健康、Headroom-compatible runtime 是否可用、project policy 是否有效、config backup/rollback 是否可用、event ledger 是否可写、installation transaction 是否存在半完成状态。
 
 ### 11.2 RTK
 
-Doctor 页面必须检查：RTK binary 是否存在、RTK version、是否存在同名错误包或错误 binary、RTK hook 是否安装、当前 agent 是否支持 auto-rewrite、当前平台是否支持完整 hook、Windows 是否处于 WSL 环境、Native Windows 是否需要显式 `rtk ...` 调用、RTK config 是否存在、RTK tracking database 是否存在、RTK tee directory 是否存在、RTK telemetry 状态、`rtk gain --all --format json` 是否可执行。
+Doctor 页面必须检查：RTK binary 是否存在、RTK version、是否存在同名错误包或错误 binary、RTK hook 是否安装、hook integrity、当前 agent 是否支持 auto-rewrite、当前平台是否支持完整 hook、Windows 是否处于 WSL 环境、Native Windows 是否需要显式 `rtk ...` 调用、RTK config 是否存在、RTK tracking database 是否存在、RTK tee directory 是否存在、RTK telemetry 状态、`rtk gain --all --format json` 是否可执行。
 
 ### 11.3 Headroom
 
-Doctor 页面必须检查：Headroom CLI 是否存在、Python runtime 是否满足、proxy 是否运行、wrap 状态、MCP server 状态、dashboard 数据端点、metrics/savings ledger、CCR retrieve 是否可用、project compression policy 是否生效、output shaper 是否生效、memory/learn 是否生效。
+Doctor 页面必须检查：Headroom CLI 是否存在、Python runtime 是否满足、proxy 是否运行、wrap 状态、MCP server 状态、dashboard 数据端点、metrics/savings ledger、CCR retrieve 是否可用、CCR cache summary 是否可展示、project compression policy 是否生效、output shaper 是否生效、memory/learn 是否生效。
 
 ## 12. Windows/macOS 重点要求
 
@@ -504,7 +569,7 @@ Doctor 页面必须检查：Headroom CLI 是否存在、Python runtime 是否满
 11. WSL 检测。
 12. RTK hook limitation 明示。
 13. PowerShell / cmd / Windows Terminal 指引。
-14. Python/Headroom runtime 检测。
+14. Python/Headroom runtime 检测与隔离。
 15. 配置 backup/rollback 检测。
 
 ### 12.2 macOS
@@ -518,7 +583,7 @@ Doctor 页面必须检查：Headroom CLI 是否存在、Python runtime 是否满
 7. notarization 预留。
 8. RTK Homebrew 安装状态检测。
 9. RTK hook / plugin 状态检测。
-10. Python/Headroom runtime 检测。
+10. Python/Headroom runtime 检测与隔离。
 11. 配置 backup/rollback 检测。
 
 ## 13. 安全与隐私原则
@@ -539,31 +604,58 @@ Doctor 页面必须检查：Headroom CLI 是否存在、Python runtime 是否满
 14. d-token 读取 RTK telemetry 状态时只能展示状态，不替用户同意。
 15. d-token 导入 RTK analytics 时默认只读取聚合统计，不读取源码、文件内容、完整命令参数或敏感环境变量。
 16. d-token 不上传 RTK tracking database、tee files、prompt、代码、命令输出到远端。
-17. d-token 修改 agent/RTK/Headroom 配置前必须显示 diff、创建 backup、支持 rollback。
+17. d-token 修改 agent/RTK/Headroom/shell 配置前必须显示 diff、创建 backup、支持 rollback。
 18. d-token 不默认读取 Headroom CCR 原文缓存；仅显示摘要、大小、数量和检索状态。
+19. d-token 的 event ledger 默认不保存 full prompt、full response、full file content、full command output。
+20. 所有 managed binary 必须记录来源与校验信息。
 
-## 14. 目录结构
+## 14. CompatibilityMatrix
 
-仓库根目录只保留：
+必须维护 OS / arch / shell / agent / RTK mode / Headroom mode 的兼容矩阵：
+
+```ts
+interface CompatibilityCase {
+  id: string;
+  os: 'macos' | 'windows' | 'linux';
+  arch: 'x64' | 'arm64';
+  shell: 'bash' | 'zsh' | 'powershell' | 'cmd' | 'wsl-bash';
+  agent: string;
+  rtk_mode: 'external' | 'managed' | 'builtin' | 'disabled';
+  headroom_mode: 'external' | 'managed' | 'disabled';
+  expected_hook_support: 'full' | 'partial' | 'none';
+  expected_proxy_support: 'full' | 'partial' | 'none';
+  status: 'untested' | 'pass' | 'fail' | 'blocked';
+  notes?: string;
+}
+```
+
+Dashboard 与 Doctor 必须把 compatibility warning 显示给用户，而不是只在日志里写。
+
+## 15. 目录结构
+
+仓库根目录允许：
 
 ```text
+README.md
 AGENTS.md
 CLAUDE.md
 docs/
 code/
 support/
+.github/workflows/   平台必要例外，仅用于 CI
 .gitignore
 ```
 
 目录含义：
 
 ```text
+README.md  面向 GitHub 访问者的项目入口介绍
 docs/      所有正式文档，包含唯一 PRD、架构、技术决策、安全边界、审查报告、研究报告
 code/      所有应用代码、crate、package、sidecar、runtime、配置样例
 support/   测试、脚本、开发辅助、CI 模板、临时杂项
 ```
 
-## 15. 里程碑
+## 16. 里程碑
 
 ### M0：文档与仓库结构收敛
 
@@ -572,7 +664,7 @@ support/   测试、脚本、开发辅助、CI 模板、临时杂项
 3. 架构文档。
 4. 安全边界文档。
 5. 最终多维审查报告。
-6. 仓库目录重构为 `docs/`、`code/`、`support/`。
+6. 仓库目录重构为 `README.md`、`docs/`、`code/`、`support/`。
 
 ### M1：Core Skeleton + RTK/Headroom Adapter Skeleton
 
@@ -583,15 +675,20 @@ support/   测试、脚本、开发辅助、CI 模板、临时杂项
 5. process manager skeleton。
 6. doctor skeleton。
 7. `dtoken-preprocessor` crate。
-8. `dtoken-project-policy` crate。
-9. RTK binary/version detection。
-10. Headroom runtime/proxy detection。
-11. PreprocessorProfile。
-12. ProjectProfile。
-13. ProjectCompressionPolicy。
-14. LayeredCompressionStage。
-15. M1 mock RTK/Headroom metrics schema。
-16. config diff/backup/rollback skeleton。
+8. `dtoken-headroom-adapter` crate。
+9. `dtoken-project-policy` crate。
+10. `dtoken-config-patcher` crate。
+11. `dtoken-event-ledger` crate。
+12. `dtoken-compatibility` crate。
+13. RTK binary/version detection。
+14. Headroom runtime/proxy detection。
+15. PreprocessorProfile。
+16. ProjectProfile。
+17. ProjectCompressionPolicy。
+18. LayeredCompressionStage。
+19. DtokenEvent。
+20. M1 mock RTK/Headroom metrics schema。
+21. config diff/backup/rollback skeleton。
 
 ### M2：Dashboard Skeleton + Installer Wizard
 
@@ -603,10 +700,12 @@ support/   测试、脚本、开发辅助、CI 模板、临时杂项
 6. RTK Dashboard cards 占位。
 7. Project compression policy cards 占位。
 8. Layered compression cards 占位。
-9. mock `/stats` / `/stats-history`。
-10. mock `/preprocessors` / `/rtk/status` / `/rtk/gain`。
-11. mock `/headroom/status` / `/headroom/policies` / `/projects`。
-12. export 占位。
+9. InstallationTransaction cards 占位。
+10. Compatibility warning cards 占位。
+11. mock `/stats` / `/stats-history`。
+12. mock `/preprocessors` / `/rtk/status` / `/rtk/gain`。
+13. mock `/headroom/status` / `/headroom/policies` / `/projects`。
+14. export 占位。
 
 ### M3：Provider / Route / Instance / RTK / Headroom Integration
 
@@ -620,13 +719,15 @@ support/   测试、脚本、开发辅助、CI 模板、临时杂项
 8. CompressionRecommendationEngine。
 9. LayeredCompressionStage。
 10. request log schema。
-11. RTK status detection。
-12. RTK analytics import。
-13. RTK hook status detection。
-14. Headroom proxy status detection。
-15. Headroom project policy application。
-16. Windows WSL/native mode detection。
-17. config backup/rollback。
+11. event ledger schema。
+12. RTK status detection。
+13. RTK analytics import。
+14. RTK hook status detection。
+15. Headroom proxy status detection。
+16. Headroom project policy application。
+17. Windows WSL/native mode detection。
+18. config backup/rollback。
+19. compatibility matrix first pass。
 
 ### M4：Headroom-compatible Parity + Layered Compression
 
@@ -642,6 +743,7 @@ support/   测试、脚本、开发辅助、CI 模板、临时杂项
 10. raw-output recovery reference model。
 11. project-level compression recommendation。
 12. quality holdout / measured vs estimated output savings。
+13. attribution confidence：exact / estimated / low。
 
 ### M5：Production Hardening
 
@@ -655,15 +757,17 @@ support/   测试、脚本、开发辅助、CI 模板、临时杂项
 8. RTK install/uninstall rollback。
 9. Headroom install/uninstall rollback。
 10. privacy/export/redaction audit。
-11. CI gate：cargo check、cargo test、structure check。
+11. CI gate：structure check、cargo check、cargo test。
+12. managed binary provenance audit。
+13. compatibility test suite。
 
-## 16. 验收标准
+## 17. 验收标准
 
 1. 仓库只有一个 PRD：`docs/PRD.md`。
-2. 所有正式文档都在 `docs/`。
-3. 所有代码都在 `code/`。
-4. 所有测试、脚本、杂项都在 `support/`。
-5. 根目录只保留 AI 入口说明文件和必要目录。
+2. 根目录必须有 `README.md` 作为项目介绍入口。
+3. 所有正式文档都在 `docs/`。
+4. 所有代码都在 `code/`。
+5. 所有测试、脚本、杂项都在 `support/`。
 6. Headroom 功能迁移不能删项。
 7. Dashboard 迁移不能缩水。
 8. Windows/macOS App 技术路线明确。
@@ -676,8 +780,12 @@ support/   测试、脚本、开发辅助、CI 模板、临时杂项
 15. Native Windows RTK hook limitation 必须在 UI 和 Doctor 中明确提示。
 16. Claude Code 内置工具绕过 Bash hook 的限制必须在 UI 和 Doctor 中明确提示。
 17. RTK raw-output tee 默认只展示摘要和路径，不默认读取完整内容。
-18. 真实 provider 转发、RTK 导入、Headroom 压缩三条链路必须有独立错误边界。
-19. 用户必须能按项目自定义 Headroom 压缩等级，并查看推荐等级与推荐理由。
-20. 用户必须能通过安装向导自定义安装 d-token / RTK / Headroom / MCP / hooks 的任意组合。
-21. 所有 agent/RTK/Headroom 配置修改必须支持 diff、backup、rollback。
-22. CI 必须至少覆盖 structure check、cargo check、cargo test。
+18. Headroom CCR 默认只展示摘要、大小、数量和检索状态，不默认读取原文。
+19. 真实 provider 转发、RTK 导入、Headroom 压缩三条链路必须有独立错误边界。
+20. 用户必须能按项目自定义 Headroom 压缩等级，并查看推荐等级与推荐理由。
+21. 用户必须能通过安装向导自定义安装 d-token / RTK / Headroom / MCP / hooks 的任意组合。
+22. 所有 agent/RTK/Headroom/shell 配置修改必须支持 diff、backup、rollback。
+23. InstallationTransaction 必须覆盖 plan、diff、backup、apply、validate、doctor、rollback。
+24. DtokenEvent/event ledger 必须支持分层 attribution、audit 和 debug。
+25. CompatibilityMatrix 必须覆盖 OS、shell、agent、RTK mode、Headroom mode。
+26. CI 必须至少覆盖 structure check、cargo check、cargo test。
