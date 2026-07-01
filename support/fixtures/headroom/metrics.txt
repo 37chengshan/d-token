@@ -1,0 +1,5 @@
+# headroom fixture metrics
+headroom_compressions_total 18
+headroom_retrievals_total 3
+headroom_tokens_saved_total 56000
+headroom_savings_percent 52.5
