@@ -1,6 +1,6 @@
 # M1 Status
 
-状态：M1 Scope Implemented / Awaiting Local Cargo Verification  
+状态：M1 Scope Implemented / Awaiting Cargo CI Result  
 日期：2026-07-01
 
 ## 1. M1 完成范围
@@ -30,6 +30,7 @@ M1 目标是建立可继续开发的本地 Rust core skeleton，并补齐最新 
 19. Project recommendation smoke tests。
 20. Config patcher smoke tests。
 21. Event ledger smoke test。
+22. Minimal CI gate：`.github/workflows/ci.yml`。
 
 ## 2. 当前 crate 职责
 
@@ -165,7 +166,9 @@ curl -X POST http://127.0.0.1:18001/projects/recommend-compression
 curl -X POST http://127.0.0.1:18001/config/patches/plan
 ```
 
-## 4. 本地验证方式
+## 4. 验证方式
+
+本地：
 
 ```bash
 cd code
@@ -174,7 +177,16 @@ cargo test --workspace
 python ../support/scripts/check_structure.py
 ```
 
-说明：本轮已完成文件落库和静态一致性审查，但我没有在远端仓库实际执行 `cargo check` / `cargo test`。M1 仍需在本地或 CI 运行上述命令，全部通过后才能标记为 `M1 Verified`。
+CI：
+
+```text
+.github/workflows/ci.yml
+  - structure check
+  - cargo check --workspace
+  - cargo test --workspace
+```
+
+说明：本轮已完成文件落库、静态一致性审查和 CI gate 创建，但我没有读取到 CI 运行结果。M1 仍需以 CI 或本地命令全部通过作为 `M1 Verified` 条件。
 
 ## 5. M1 不做内容
 
@@ -197,8 +209,7 @@ M1 当前不做：
 
 优先顺序：
 
-1. 本地跑 `cargo check --workspace`。
-2. 修正编译问题。
-3. 本地跑 `cargo test --workspace`。
-4. 恢复最小 CI gate。
-5. 进入 M2：Tauri shell + installer/dashboard mock UI。
+1. 查看 GitHub Actions CI 结果。
+2. 修正 cargo check / cargo test 错误。
+3. 通过后将状态改为 `M1 Verified / Ready for M2`。
+4. 进入 M2：Tauri shell + installer/dashboard mock UI。
