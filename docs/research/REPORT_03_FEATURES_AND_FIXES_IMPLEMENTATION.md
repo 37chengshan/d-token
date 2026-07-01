@@ -1,7 +1,8 @@
-# 深度研究报告 03：新增功能与问题修复实现方案扩展版
+# 深度研究报告 03：新增功能与问题修复实现方案二次优化版
 
 日期：2026-07-01  
 适用项目：d-token  
+状态：Second-pass optimized  
 目标：将 PRD 新增能力、研究报告缺口、M1 遗留问题转成可执行工程蓝图。
 
 ## 1. 执行摘要
@@ -10,12 +11,13 @@
 
 1. 单一 PRD。
 2. docs/code/support 目录收敛。
-3. Rust workspace 初始 skeleton。
-4. local API skeleton。
-5. proxy skeleton。
-6. router/config/compress/process/doctor skeleton。
+3. 根目录 README 项目入口。
+4. Rust workspace 初始 skeleton。
+5. local API skeleton。
+6. proxy skeleton。
+7. router/config/compress/process/doctor skeleton。
 
-但还缺：
+仍需补齐：
 
 1. `cargo check --workspace` 与 `cargo test --workspace` 验证。
 2. `dtoken-preprocessor`。
@@ -23,12 +25,13 @@
 4. `dtoken-project-policy`。
 5. `dtoken-config-patcher`。
 6. `dtoken-event-ledger`。
-7. RTK/Headroom detection endpoints。
-8. config diff/backup/rollback。
-9. installation transaction。
-10. layered savings attribution。
-11. compatibility matrix。
-12. CI gate。
+7. `dtoken-compatibility`。
+8. RTK/Headroom detection endpoints。
+9. config diff/backup/rollback。
+10. installation transaction。
+11. layered savings attribution。
+12. compatibility matrix。
+13. CI gate。
 
 实施原则：
 
@@ -37,7 +40,8 @@
 先只读 detection，再允许 patch；
 先 diff/backup/rollback，再安装 hook；
 先 event ledger，再做 dashboard；
-先本地 Doctor，再做自动修复。
+先本地 Doctor，再做自动修复；
+先 compatibility warning，再做 managed install。
 ```
 
 ## 2. 新 crate 规划
@@ -55,10 +59,12 @@ code/crates/dtoken-preprocessor/
   src/model.rs
   src/rtk.rs
   src/rtk_status.rs
+  src/rtk_integrity.rs
   src/rtk_analytics.rs
   src/builtin.rs
   tests/rtk_missing.rs
   tests/rtk_parse_gain.rs
+  tests/rtk_integrity.rs
 ```
 
 核心 API：
@@ -72,6 +78,7 @@ impl RtkAdapter {
     pub async fn detect() -> RtkStatus;
     pub async fn version(&self) -> anyhow::Result<Option<String>>;
     pub async fn hook_status(&self) -> anyhow::Result<RtkHookStatus>;
+    pub async fn hook_integrity(&self) -> anyhow::Result<RtkHookIntegrity>;
     pub async fn telemetry_status(&self) -> anyhow::Result<TelemetryStatus>;
     pub async fn gain_json(&self) -> anyhow::Result<RtkGainReport>;
     pub async fn discover(&self) -> anyhow::Result<RtkDiscoverReport>;
@@ -95,6 +102,8 @@ interface RtkStatus {
 }
 ```
 
+M1 范围：只读 detection + mock analytics，不做 hook mutation。
+
 ### 2.2 dtoken-headroom-adapter
 
 职责：Headroom CLI/proxy/MCP/status/stats adapter。
@@ -112,6 +121,7 @@ code/crates/dtoken-headroom-adapter/
   src/cache_summary.rs
   tests/missing.rs
   tests/status_parse.rs
+  tests/cache_summary.rs
 ```
 
 核心 API：
@@ -135,10 +145,11 @@ impl HeadroomAdapter {
 
 关键边界：
 
-1. npm `headroom-ai` 只是 TS SDK，不等价于 CLI。
+1. npm `headroom-ai` 只是 SDK，不等价于 CLI/runtime。
 2. 默认不读取 CCR 原文。
 3. 默认不读取 request/response full logs。
 4. proxy 和 MCP 可独立存在。
+5. runtime isolation 由 installer/doctor 检查。
 
 ### 2.3 dtoken-project-policy
 
@@ -155,6 +166,7 @@ code/crates/dtoken-project-policy/
   src/recommend.rs
   src/history.rs
   tests/recommendation.rs
+  tests/manual_override.rs
 ```
 
 推荐 API：
@@ -192,8 +204,11 @@ code/crates/dtoken-config-patcher/
   src/rollback.rs
   src/patch.rs
   src/audit.rs
+  src/redact.rs
   tests/patch_json.rs
+  tests/patch_toml.rs
   tests/rollback.rs
+  tests/redact_secrets.rs
 ```
 
 核心 contract：
@@ -204,6 +219,7 @@ No apply without backup.
 No silent mutation.
 No overwrite on hash mismatch.
 No raw secret in diff.
+No telemetry enable without explicit confirmation.
 ```
 
 ### 2.5 dtoken-event-ledger
@@ -219,7 +235,9 @@ code/crates/dtoken-event-ledger/
   src/event.rs
   src/store.rs
   src/query.rs
+  src/attribution.rs
   tests/ledger.rs
+  tests/attribution.rs
 ```
 
 事件模型：
@@ -258,6 +276,43 @@ interface DtokenEvent {
 1. M1/M2：JSONL。
 2. M3：SQLite index + JSONL audit log。
 3. M4：aggregation tables。
+4. M5：export redaction audit。
+
+### 2.6 dtoken-compatibility
+
+职责：维护 OS / arch / shell / agent / RTK mode / Headroom mode 的兼容矩阵。
+
+目录：
+
+```text
+code/crates/dtoken-compatibility/
+  Cargo.toml
+  src/lib.rs
+  src/matrix.rs
+  src/evaluate.rs
+  src/warnings.rs
+  tests/windows_native.rs
+  tests/macos_zsh.rs
+  tests/wsl.rs
+```
+
+模型：
+
+```ts
+interface CompatibilityCase {
+  id: string;
+  os: 'macos' | 'windows' | 'linux';
+  arch: 'x64' | 'arm64';
+  shell: 'bash' | 'zsh' | 'powershell' | 'cmd' | 'wsl-bash';
+  agent: string;
+  rtk_mode: 'external' | 'managed' | 'builtin' | 'disabled';
+  headroom_mode: 'external' | 'managed' | 'disabled';
+  expected_hook_support: 'full' | 'partial' | 'none';
+  expected_proxy_support: 'full' | 'partial' | 'none';
+  status: 'untested' | 'pass' | 'fail' | 'blocked';
+  notes?: string;
+}
+```
 
 ## 3. Endpoint contract
 
@@ -268,22 +323,7 @@ GET /rtk/status
 GET /rtk/gain
 GET /rtk/discover
 GET /rtk/session
-```
-
-统一 response：
-
-```ts
-interface ApiResponse<T> {
-  ok: boolean;
-  data?: T;
-  error?: {
-    code: string;
-    message: string;
-    recoverable: boolean;
-    suggested_action?: string;
-  };
-  warnings: string[];
-}
+GET /rtk/hook-integrity
 ```
 
 ### 3.2 Headroom endpoints
@@ -316,6 +356,7 @@ POST /install/plan
 POST /install/apply
 POST /install/rollback
 GET  /install/transactions
+GET  /install/transactions/:id
 ```
 
 ### 3.5 Config endpoints
@@ -325,6 +366,32 @@ POST /config/patches/plan
 POST /config/patches/apply
 GET  /config/rollback-points
 POST /config/rollback
+```
+
+### 3.6 Event and compatibility endpoints
+
+```text
+GET /events
+GET /events/:id
+GET /layered-savings
+GET /compatibility
+GET /feature-flags
+```
+
+### 3.7 统一 response
+
+```ts
+interface ApiResponse<T> {
+  ok: boolean;
+  data?: T;
+  error?: {
+    code: string;
+    message: string;
+    recoverable: boolean;
+    suggested_action?: string;
+  };
+  warnings: string[];
+}
 ```
 
 ## 4. Failure taxonomy
@@ -350,7 +417,9 @@ type DtokenErrorCode =
   | 'provider_unhealthy'
   | 'route_not_found'
   | 'compression_failed'
-  | 'ledger_write_failed';
+  | 'ledger_write_failed'
+  | 'compatibility_blocked'
+  | 'managed_binary_unverified';
 ```
 
 每个错误必须有：
@@ -360,6 +429,7 @@ type DtokenErrorCode =
 3. suggested action。
 4. log correlation id。
 5. 是否阻塞继续安装。
+6. 对应 Dashboard 状态。
 
 ## 5. Installation transaction implementation
 
@@ -380,7 +450,7 @@ idle
   → rolled_back
 ```
 
-数据库/文件记录：
+记录模型：
 
 ```ts
 interface InstallTransactionRecord {
@@ -395,6 +465,15 @@ interface InstallTransactionRecord {
   error_code?: string;
 }
 ```
+
+实现要求：
+
+1. `plan` 不写文件。
+2. `apply` 前必须检查 hash。
+3. backup 必须包含原文件路径、hash、backup path、timestamp。
+4. rollback 不依赖文件可解析性。
+5. managed install 要记录 provenance。
+6. Doctor failed 时 transaction 可以进入 `failed` 或 `committed_with_warnings`，具体取决于 blocker。
 
 ## 6. 双层 savings attribution
 
@@ -447,7 +526,7 @@ interface SavingsAttribution {
 
 ## 7. Feature flags
 
-为了降低风险，新增功能必须用 feature flag：
+新增功能必须用 feature flag：
 
 ```text
 feature.rtk_adapter
@@ -456,6 +535,7 @@ feature.project_policy
 feature.config_patcher
 feature.install_wizard
 feature.event_ledger
+feature.compatibility_matrix
 feature.managed_rtk
 feature.managed_headroom
 feature.savings_attribution
@@ -468,6 +548,8 @@ rtk_adapter = on
 headroom_adapter = on
 project_policy = on
 config_patcher = on
+event_ledger = on
+compatibility_matrix = on
 install_wizard = off until M2
 managed_rtk = off until hardening
 managed_headroom = off until hardening
@@ -506,32 +588,16 @@ jobs:
 3. cargo test must pass。
 4. no real secrets in config examples。
 5. docs index must include new reports。
+6. root README must exist。
+7. no duplicate PRD versions。
 
-## 9. Compatibility matrix schema
-
-```ts
-interface CompatibilityCase {
-  id: string;
-  os: 'macos' | 'windows' | 'linux';
-  arch: 'x64' | 'arm64';
-  shell: 'bash' | 'zsh' | 'powershell' | 'cmd' | 'wsl-bash';
-  agent: string;
-  rtk_mode: 'external' | 'managed' | 'builtin' | 'disabled';
-  headroom_mode: 'external' | 'managed' | 'disabled';
-  expected_hook_support: 'full' | 'partial' | 'none';
-  expected_proxy_support: 'full' | 'partial' | 'none';
-  status: 'untested' | 'pass' | 'fail' | 'blocked';
-  notes?: string;
-}
-```
-
-## 10. 分阶段实施路线
+## 9. 分阶段实施路线
 
 ### M1A：验证当前 workspace
 
-1. 跑 `cargo check --workspace`。
-2. 跑 `cargo test --workspace`。
-3. 跑 `python support/scripts/check_structure.py`。
+1. 跑 `python support/scripts/check_structure.py`。
+2. 跑 `cargo check --workspace`。
+3. 跑 `cargo test --workspace`。
 4. 修复所有错误。
 
 ### M1B：RTK adapter
@@ -539,8 +605,10 @@ interface CompatibilityCase {
 1. 新增 `dtoken-preprocessor`。
 2. 实现 `rtk --version` detection。
 3. 实现 missing/wrong-package 状态。
-4. mock `rtk gain` parser。
-5. 增加 `/rtk/status`。
+4. 实现 hook integrity mock。
+5. mock `rtk gain` parser。
+6. 增加 `/rtk/status`。
+7. 增加 `/rtk/hook-integrity`。
 
 ### M1C：Headroom adapter
 
@@ -548,6 +616,7 @@ interface CompatibilityCase {
 2. 实现 `headroom --version` detection。
 3. 检测 npm SDK vs CLI。
 4. mock `/headroom/status`。
+5. mock `/headroom/cache-summary`。
 
 ### M1D：Project policy
 
@@ -555,6 +624,7 @@ interface CompatibilityCase {
 2. ProjectProfile model。
 3. ProjectCompressionPolicy model。
 4. recommendation v0。
+5. manual override no-auto-change rule。
 
 ### M1E：Config patcher + event ledger
 
@@ -562,6 +632,14 @@ interface CompatibilityCase {
 2. 新增 `dtoken-event-ledger`。
 3. patch plan/diff/backup/rollback skeleton。
 4. event JSONL。
+5. secret redaction tests。
+
+### M1F：Compatibility matrix
+
+1. 新增 `dtoken-compatibility`。
+2. 建立 OS / shell / agent / mode matrix。
+3. 输出 compatibility warnings。
+4. Doctor 接入 blocked/partial/full 状态。
 
 ### M2：Desktop skeleton
 
@@ -570,6 +648,8 @@ interface CompatibilityCase {
 3. Dashboard cards mock。
 4. Project policy UI mock。
 5. Doctor UI mock。
+6. Compatibility UI mock。
+7. Event ledger health card。
 
 ### M3：真实集成
 
@@ -578,6 +658,7 @@ interface CompatibilityCase {
 3. Read-only DB summary。
 4. config patch real implementation。
 5. real Doctor。
+6. compatibility matrix first pass validation。
 
 ### M4：策略与归因
 
@@ -585,6 +666,7 @@ interface CompatibilityCase {
 2. recommendation engine improvement。
 3. quality feedback loop。
 4. measured/estimated labels。
+5. attribution confidence。
 
 ### M5：生产硬化
 
@@ -593,24 +675,42 @@ interface CompatibilityCase {
 3. updater。
 4. rollback hardening。
 5. compatibility test suite。
+6. managed binary provenance audit。
+7. privacy/export/redaction audit。
 
-## 11. 验收总表
+## 10. 验收总表
 
 | 阶段 | Done 标准 |
 |---|---|
-| M1A | cargo check/test/structure check 全过 |
-| M1B | RTK missing/found/wrong-package/status endpoints 可用 |
-| M1C | Headroom missing/found/proxy/mcp status 可用 |
+| M1A | structure check / cargo check / cargo test 全过 |
+| M1B | RTK missing/found/wrong-package/status/integrity endpoints 可用 |
+| M1C | Headroom missing/found/proxy/mcp/cache summary 可用 |
 | M1D | 项目策略 CRUD + 推荐 v0 |
 | M1E | config diff/backup/rollback skeleton + event ledger |
+| M1F | compatibility matrix + Doctor warnings |
 | M2 | 桌面 UI 可跑，所有核心卡片有 mock 数据 |
 | M3 | 真实 RTK/Headroom 数据导入，不修改外部 DB |
 | M4 | 分层 savings 不重复统计，推荐等级可解释 |
-| M5 | 安装器、CI、兼容矩阵、回滚全部可用 |
+| M5 | 安装器、CI、兼容矩阵、回滚、审计全部可用 |
+
+## 11. PRD 二次审查结论
+
+本报告反推 PRD 需要补齐：
+
+1. `dtoken-event-ledger` crate。
+2. `dtoken-compatibility` crate。
+3. InstallationTransaction 模型。
+4. CompatibilityCase 模型。
+5. Hook integrity endpoint。
+6. Headroom cache summary endpoint。
+7. root README 与 structure check 的一致性。
+8. CI gate 中 root README 与 duplicate PRD 检查。
+
+上述内容已同步进入 `docs/PRD.md` 与 `support/scripts/check_structure.py`。
 
 ## 12. 结论
 
-下一步不应该直接做复杂 UI 或真实压缩，而是先把 M1A-M1E 补齐。
+下一步不应该直接做复杂 UI 或真实压缩，而是先把 M1A-M1F 补齐。
 
 正确顺序：
 
@@ -620,6 +720,7 @@ interface CompatibilityCase {
   → Headroom adapter
   → Project policy
   → Config patcher + event ledger
+  → Compatibility matrix
   → Desktop installer wizard
 ```
 
