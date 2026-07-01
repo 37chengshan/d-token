@@ -1,263 +1,150 @@
-# 深度研究报告 03：新增功能与问题修复如何实现
+# 深度研究报告 03：新增功能与问题修复实现方案扩展版
 
 日期：2026-07-01  
 适用项目：d-token  
-目标：把 PRD 中新增功能、此前发现的问题、M1 遗留问题转成可执行工程方案。
+目标：将 PRD 新增能力、研究报告缺口、M1 遗留问题转成可执行工程蓝图。
 
 ## 1. 执行摘要
 
-当前 d-token 已经完成了文档收敛和 M1 Rust skeleton，但距离“用户可用产品”还有几个关键工程缺口：
+当前 d-token 已完成：
 
-1. M1 workspace 还未经过本地 `cargo check --workspace` 与 `cargo test --workspace` 验证。
-2. PRD 已要求 `dtoken-preprocessor`，但代码中尚未创建。
-3. PRD 已要求 `dtoken-project-policy`，但代码中尚未创建。
-4. 还没有 RTK/Headroom detection endpoints。
-5. 还没有 config diff / backup / rollback。
-6. 还没有一键安装向导。
-7. 还没有 project-level Headroom compression policy。
-8. 还没有防重复 savings attribution。
-9. 旧 GitHub Actions workflow 曾有结构检查失败问题，CI 需要重新按新目录规范设计。
+1. 单一 PRD。
+2. docs/code/support 目录收敛。
+3. Rust workspace 初始 skeleton。
+4. local API skeleton。
+5. proxy skeleton。
+6. router/config/compress/process/doctor skeleton。
 
-本报告把这些问题拆成 M1A-M5 的可执行实现路线。
+但还缺：
 
-## 2. 问题汇总
+1. `cargo check --workspace` 与 `cargo test --workspace` 验证。
+2. `dtoken-preprocessor`。
+3. `dtoken-headroom-adapter`。
+4. `dtoken-project-policy`。
+5. `dtoken-config-patcher`。
+6. `dtoken-event-ledger`。
+7. RTK/Headroom detection endpoints。
+8. config diff/backup/rollback。
+9. installation transaction。
+10. layered savings attribution。
+11. compatibility matrix。
+12. CI gate。
 
-### 2.1 仓库结构类问题
-
-已解决：
-
-1. 只保留一个 PRD：`docs/PRD.md`。
-2. 文档进入 `docs/`。
-3. 代码进入 `code/`。
-4. 测试、脚本、CI 模板和杂项进入 `support/`。
-5. 根目录 AI 入口文件已更新。
-
-仍需处理：
-
-1. `.github/workflows` 与根目录极简规则存在现实冲突：GitHub Actions 真正启用时必须放回 `.github/workflows`。
-2. `support/scripts/check_structure.py` 需要随 M1 新 crate 更新。
-3. CI gate 需要恢复，但不能破坏根目录规则。
-
-建议：
+实施原则：
 
 ```text
-support/ci/            存模板和说明
-.github/workflows/     只放真正启用的 GitHub Actions workflow
+先 mock schema，再接外部工具；
+先只读 detection，再允许 patch；
+先 diff/backup/rollback，再安装 hook；
+先 event ledger，再做 dashboard；
+先本地 Doctor，再做自动修复。
 ```
 
-PRD 可接受 `.github/workflows` 作为平台必要目录例外，但必须保持内容极小。
+## 2. 新 crate 规划
 
-### 2.2 M1 编译验证问题
+### 2.1 dtoken-preprocessor
 
-当前问题：
+职责：RTK adapter 与 built-in fallback preprocessor。
 
-1. 已创建 Rust workspace。
-2. 已创建多个 crate。
-3. 但未实际运行 `cargo check --workspace`。
-4. 未实际运行 `cargo test --workspace`。
-
-解决方案：
-
-1. 在本地执行：
-
-```bash
-cd code
-cargo check --workspace
-cargo test --workspace
-```
-
-2. 修正所有编译错误。
-3. 添加 CI：
-
-```bash
-python support/scripts/check_structure.py
-cd code && cargo check --workspace
-cd code && cargo test --workspace
-```
-
-4. M1 只有在上述三项通过后才能标记为 Done。
-
-### 2.3 RTK 集成缺口
-
-PRD 已要求：
-
-1. RTK binary detection。
-2. RTK version detection。
-3. RTK hook status detection。
-4. RTK analytics import。
-5. RTK telemetry status detection。
-6. RTK tee visibility。
-
-当前代码缺口：
-
-1. 没有 `dtoken-preprocessor` crate。
-2. 没有 `/rtk/status` endpoint。
-3. 没有 `/rtk/gain` endpoint。
-4. 没有 RTK command runner。
-5. 没有 RTK JSON output parser。
-
-### 2.4 Headroom 集成缺口
-
-PRD 已要求：
-
-1. Headroom runtime/proxy detection。
-2. Headroom per-project compression policy。
-3. Headroom Dashboard full migration。
-4. CCR / memory / learn / MCP / output shaper 状态展示。
-
-当前代码缺口：
-
-1. 没有 `dtoken-headroom-adapter` crate。
-2. 没有 `/headroom/status` endpoint。
-3. 没有 `/headroom/policies` endpoint。
-4. 没有 project policy manager。
-5. 没有 compression recommendation engine。
-
-### 2.5 配置安全问题
-
-PRD 已要求所有配置修改支持：
-
-1. diff。
-2. backup。
-3. rollback。
-4. no silent mutation。
-5. conflict detection。
-
-当前代码缺口：
-
-1. 没有 `dtoken-config-patcher` crate。
-2. 没有 patch plan 数据模型。
-3. 没有 backup directory 设计。
-4. 没有 rollback endpoint。
-
-## 3. M1A：修复与验证当前 Rust skeleton
-
-### 3.1 目标
-
-让当前 M1 skeleton 从“文件已落库”变成“可编译、可测试”。
-
-### 3.2 任务
-
-1. 本地运行 `cargo check --workspace`。
-2. 修复 compile errors。
-3. 本地运行 `cargo test --workspace`。
-4. 修复 test errors。
-5. 运行 `python support/scripts/check_structure.py`。
-6. 更新 `docs/M1_STATUS.md`，从 `Started / Core Skeleton Created` 改成 `M1A Verified`。
-
-### 3.3 可能错误点
-
-1. `tracing` dependency 缺失。
-2. axum 0.8 API 细节。
-3. tokio process feature。
-4. serde enum rename 与 JSON 示例不匹配。
-5. integration test 缺依赖。
-6. workspace path 错误。
-
-### 3.4 验收标准
-
-```bash
-cd code
-cargo check --workspace
-cargo test --workspace
-python ../support/scripts/check_structure.py
-```
-
-三者全部通过。
-
-## 4. M1B：实现 dtoken-preprocessor crate
-
-### 4.1 crate 职责
-
-`dtoken-preprocessor` 不复制 RTK filters，而是做适配层。
-
-职责：
-
-1. 检测 RTK binary。
-2. 检测 RTK version。
-3. 检测错误同名包。
-4. 检测 RTK hook 状态。
-5. 读取 RTK telemetry status。
-6. 调用 `rtk gain --all --format json`。
-7. 调用 `rtk discover --all`。
-8. 调用 `rtk session`。
-9. 解析 RTK analytics。
-10. 暴露 PreprocessorProfile。
-
-### 4.2 模块设计
+目录：
 
 ```text
 code/crates/dtoken-preprocessor/
   Cargo.toml
   src/lib.rs
-  src/rtk.rs
-  src/status.rs
-  src/analytics.rs
   src/model.rs
-  tests/rtk_status.rs
+  src/rtk.rs
+  src/rtk_status.rs
+  src/rtk_analytics.rs
+  src/builtin.rs
+  tests/rtk_missing.rs
+  tests/rtk_parse_gain.rs
 ```
 
-### 4.3 Rust API
+核心 API：
 
 ```rust
 pub struct RtkAdapter {
-    binary_path: Option<PathBuf>,
+    pub binary_path: Option<PathBuf>,
 }
 
 impl RtkAdapter {
     pub async fn detect() -> RtkStatus;
-    pub async fn version(&self) -> Result<Option<String>>;
-    pub async fn hook_status(&self) -> Result<HookStatus>;
-    pub async fn telemetry_status(&self) -> Result<TelemetryStatus>;
-    pub async fn gain_json(&self) -> Result<RtkGainReport>;
-    pub async fn discover(&self) -> Result<RtkDiscoverReport>;
-    pub async fn session(&self) -> Result<RtkSessionReport>;
+    pub async fn version(&self) -> anyhow::Result<Option<String>>;
+    pub async fn hook_status(&self) -> anyhow::Result<RtkHookStatus>;
+    pub async fn telemetry_status(&self) -> anyhow::Result<TelemetryStatus>;
+    pub async fn gain_json(&self) -> anyhow::Result<RtkGainReport>;
+    pub async fn discover(&self) -> anyhow::Result<RtkDiscoverReport>;
+    pub async fn session(&self) -> anyhow::Result<RtkSessionReport>;
 }
 ```
 
-### 4.4 Endpoint
+状态模型：
 
-新增：
-
-```text
-GET /preprocessors
-GET /rtk/status
-GET /rtk/gain
-GET /rtk/discover
-GET /rtk/session
+```ts
+interface RtkStatus {
+  found: boolean;
+  binary_path?: string;
+  version?: string;
+  install_method?: 'homebrew' | 'cargo_git' | 'release_zip' | 'managed' | 'unknown';
+  package_identity: 'rtk_ai' | 'wrong_package' | 'unknown';
+  hook_status: 'installed' | 'missing' | 'partial' | 'unsupported' | 'unknown';
+  integrity_state?: 'verified' | 'tampered' | 'no_baseline' | 'not_installed' | 'orphaned_hash' | 'unknown';
+  telemetry_status: 'disabled' | 'enabled' | 'unknown';
+  warnings: string[];
+}
 ```
 
-### 4.5 风险
+### 2.2 dtoken-headroom-adapter
 
-1. RTK JSON output schema 可能变化。
-2. `rtk init --show` 输出可能不是稳定机器格式。
-3. Windows native 与 WSL 行为不同。
-4. 错误包检测需要谨慎，不能误报。
+职责：Headroom CLI/proxy/MCP/status/stats adapter。
 
-### 4.6 验收标准
+目录：
 
-1. 没装 RTK 时返回 `missing`。
-2. 装错 RTK 时返回 `wrong_package`。
-3. 装对 RTK 时返回 version。
-4. `rtk gain --all --format json` 可解析。
-5. Native Windows 提示 hook limitation。
+```text
+code/crates/dtoken-headroom-adapter/
+  Cargo.toml
+  src/lib.rs
+  src/status.rs
+  src/proxy.rs
+  src/mcp.rs
+  src/stats.rs
+  src/cache_summary.rs
+  tests/missing.rs
+  tests/status_parse.rs
+```
 
-## 5. M1C：实现 dtoken-project-policy crate
+核心 API：
 
-### 5.1 crate 职责
+```rust
+pub struct HeadroomAdapter {
+    pub binary_path: Option<PathBuf>,
+    pub proxy_url: Option<String>,
+}
 
-管理项目级 Headroom 压缩策略和推荐等级。
+impl HeadroomAdapter {
+    pub async fn detect() -> HeadroomStatus;
+    pub async fn cli_version(&self) -> anyhow::Result<Option<String>>;
+    pub async fn doctor(&self) -> anyhow::Result<DoctorSummary>;
+    pub async fn proxy_status(&self) -> anyhow::Result<ProxyStatus>;
+    pub async fn mcp_status(&self) -> anyhow::Result<McpStatus>;
+    pub async fn stats(&self) -> anyhow::Result<HeadroomStats>;
+    pub async fn cache_summary(&self) -> anyhow::Result<CcrCacheSummary>;
+}
+```
 
-职责：
+关键边界：
 
-1. ProjectProfile CRUD。
-2. ProjectCompressionPolicy CRUD。
-3. 推荐等级计算。
-4. 策略 diff。
-5. 策略 rollback。
-6. 与 RouteProfile / InstanceProfile 绑定。
+1. npm `headroom-ai` 只是 TS SDK，不等价于 CLI。
+2. 默认不读取 CCR 原文。
+3. 默认不读取 request/response full logs。
+4. proxy 和 MCP 可独立存在。
 
-### 5.2 模块设计
+### 2.3 dtoken-project-policy
+
+职责：项目级 Headroom 压缩策略。
+
+目录：
 
 ```text
 code/crates/dtoken-project-policy/
@@ -270,255 +157,266 @@ code/crates/dtoken-project-policy/
   tests/recommendation.rs
 ```
 
-### 5.3 推荐算法 v0
+推荐 API：
 
-先做规则引擎，不做 ML。
+```rust
+pub trait RecommendationEngine {
+    fn recommend(&self, input: RecommendationInput) -> CompressionRecommendation;
+}
+```
 
-输入：
-
-1. language_stack。
-2. avg_request_tokens_7d。
-3. avg_cli_noise_ratio_7d。
-4. rtk_savings_7d。
-5. headroom_savings_7d。
-6. retrieve_rate_7d。
-7. failure_rate_7d。
-8. user_overrides。
-9. risk_level。
-
-规则：
+v0 规则：
 
 ```text
-risk_level = high → safe
-retrieve_rate > 15% → lower one level
-failure_rate > 5% → lower one level
-avg_request_tokens > 50k and failure_rate low → aggressive
-large log/test project and RTK savings high → balanced/aggressive
-new project with no data → safe
+new project → safe
+high risk task → safe
+retrieve_rate high → lower level
+failure_rate high → lower level
+large logs/tests and low failure → aggressive
 normal code project → balanced
+manual override → do not auto-change
 ```
 
-### 5.4 Endpoint
+### 2.4 dtoken-config-patcher
 
-新增：
+职责：所有配置修改唯一入口。
 
-```text
-GET  /projects
-POST /projects
-GET  /projects/:id
-PUT  /projects/:id
-GET  /projects/:id/policy
-PUT  /projects/:id/policy
-POST /projects/:id/recommend-compression
-GET  /projects/:id/policy-history
-POST /projects/:id/policy-rollback
-```
-
-### 5.5 验收标准
-
-1. 新项目默认 safe。
-2. 常规项目推荐 balanced。
-3. 大日志/大测试项目推荐 aggressive。
-4. 高风险项目永远不自动推荐 max。
-5. 用户手动 override 不被自动覆盖。
-6. 每次 policy 变更都写 history。
-
-## 6. M1D：实现 Headroom adapter skeleton
-
-### 6.1 crate 职责
-
-`dtoken-headroom-adapter` 负责检测和读取 Headroom 状态，不复制 Headroom core。
-
-职责：
-
-1. `headroom --version`。
-2. `headroom doctor`。
-3. `headroom perf`。
-4. proxy status。
-5. wrap status。
-6. MCP status。
-7. dashboard/stats endpoint。
-8. savings ledger path。
-9. CCR cache summary。
-10. output shaper status。
-
-### 6.2 模块设计
+目录：
 
 ```text
-code/crates/dtoken-headroom-adapter/
+code/crates/dtoken-config-patcher/
   Cargo.toml
   src/lib.rs
-  src/status.rs
-  src/proxy.rs
-  src/policies.rs
-  src/metrics.rs
-  tests/status.rs
+  src/diff.rs
+  src/backup.rs
+  src/rollback.rs
+  src/patch.rs
+  src/audit.rs
+  tests/patch_json.rs
+  tests/rollback.rs
 ```
 
-### 6.3 Endpoint
+核心 contract：
 
-新增：
+```text
+No patch without diff.
+No apply without backup.
+No silent mutation.
+No overwrite on hash mismatch.
+No raw secret in diff.
+```
+
+### 2.5 dtoken-event-ledger
+
+职责：统一记录 RTK、Headroom、d-token 事件，用于分层 savings、Dashboard、审计和 debug。
+
+目录：
+
+```text
+code/crates/dtoken-event-ledger/
+  Cargo.toml
+  src/lib.rs
+  src/event.rs
+  src/store.rs
+  src/query.rs
+  tests/ledger.rs
+```
+
+事件模型：
+
+```ts
+interface DtokenEvent {
+  event_id: string;
+  timestamp_ms: number;
+  project_id?: string;
+  agent_id?: string;
+  instance_id?: string;
+  command_id?: string;
+  request_id?: string;
+  stage:
+    | 'rtk_rewrite'
+    | 'rtk_filter'
+    | 'headroom_route'
+    | 'headroom_compress'
+    | 'headroom_retrieve'
+    | 'provider_forward'
+    | 'install_step'
+    | 'config_patch';
+  source: 'rtk' | 'headroom' | 'dtoken';
+  status: 'ok' | 'passthrough' | 'failed' | 'disabled' | 'skipped';
+  input_tokens?: number;
+  output_tokens?: number;
+  saved_tokens?: number;
+  baseline_kind?: 'raw_cli' | 'rtk_cleaned' | 'headroom_input' | 'final_llm_input';
+  error_code?: string;
+  metadata?: Record<string, unknown>;
+}
+```
+
+存储策略：
+
+1. M1/M2：JSONL。
+2. M3：SQLite index + JSONL audit log。
+3. M4：aggregation tables。
+
+## 3. Endpoint contract
+
+### 3.1 RTK endpoints
+
+```text
+GET /rtk/status
+GET /rtk/gain
+GET /rtk/discover
+GET /rtk/session
+```
+
+统一 response：
+
+```ts
+interface ApiResponse<T> {
+  ok: boolean;
+  data?: T;
+  error?: {
+    code: string;
+    message: string;
+    recoverable: boolean;
+    suggested_action?: string;
+  };
+  warnings: string[];
+}
+```
+
+### 3.2 Headroom endpoints
 
 ```text
 GET /headroom/status
 GET /headroom/proxy
 GET /headroom/mcp
 GET /headroom/stats
-GET /headroom/policies
 GET /headroom/cache-summary
-GET /headroom/output-shaper
+GET /headroom/policies
 ```
 
-### 6.4 验收标准
-
-1. 没装 Headroom 返回 `missing`。
-2. 只装 npm SDK 不误判为 CLI 可用。
-3. Python 版本不足时给出明确错误。
-4. proxy 未启动时给出启动建议。
-5. CCR cache 只展示 summary，不读取原文。
-
-## 7. M1E：实现 config diff / backup / rollback skeleton
-
-### 7.1 crate 职责
-
-`dtoken-config-patcher` 是安全修改配置的唯一入口。
-
-它必须覆盖：
-
-1. agent config。
-2. RTK config。
-3. Headroom config。
-4. d-token config。
-5. shell profile / PATH 修改。
-
-### 7.2 数据模型
-
-```rust
-pub struct ConfigPatchPlan {
-    pub id: String,
-    pub target_file: PathBuf,
-    pub tool: ToolKind,
-    pub agent: Option<String>,
-    pub before_hash: String,
-    pub after_hash: String,
-    pub diff: String,
-    pub risk_level: RiskLevel,
-    pub requires_restart: bool,
-}
-
-pub struct RollbackPoint {
-    pub id: String,
-    pub created_at: String,
-    pub backup_dir: PathBuf,
-    pub target_files: Vec<PathBuf>,
-    pub patch_ids: Vec<String>,
-}
-```
-
-### 7.3 Endpoint
+### 3.3 Project endpoints
 
 ```text
-POST /config/patches/plan
-POST /config/patches/apply
-GET  /config/patches
-GET  /config/rollback-points
-POST /config/rollback
+GET  /projects
+POST /projects
+GET  /projects/:id/policy
+PUT  /projects/:id/policy
+POST /projects/:id/recommend-compression
+POST /projects/:id/policy-rollback
 ```
 
-### 7.4 验收标准
-
-1. 每次修改前生成 diff。
-2. 每次修改前创建 backup。
-3. 修改失败自动 rollback。
-4. 用户可手动 rollback。
-5. 不支持解析的文件只读，不强行修改。
-6. 所有敏感字段脱敏。
-
-## 8. M2：一键安装向导实现
-
-### 8.1 UI 页面
-
-1. Welcome。
-2. System Scan。
-3. Tool Selection。
-4. Agent Selection。
-5. Provider Setup。
-6. Project Setup。
-7. Diff Review。
-8. Apply Install。
-9. Doctor Result。
-10. Dashboard。
-
-### 8.2 API
+### 3.4 Install endpoints
 
 ```text
 GET  /install/scan
 POST /install/plan
 POST /install/apply
 POST /install/rollback
+GET  /install/transactions
 ```
 
-### 8.3 状态机
+### 3.5 Config endpoints
+
+```text
+POST /config/patches/plan
+POST /config/patches/apply
+GET  /config/rollback-points
+POST /config/rollback
+```
+
+## 4. Failure taxonomy
+
+```ts
+type DtokenErrorCode =
+  | 'tool_missing'
+  | 'wrong_tool_package'
+  | 'unsupported_platform'
+  | 'native_windows_hook_limited'
+  | 'wsl_missing'
+  | 'python_missing'
+  | 'python_version_too_low'
+  | 'headroom_cli_missing'
+  | 'headroom_proxy_down'
+  | 'rtk_gain_failed'
+  | 'rtk_hook_tampered'
+  | 'config_parse_failed'
+  | 'config_hash_mismatch'
+  | 'backup_failed'
+  | 'rollback_failed'
+  | 'port_in_use'
+  | 'provider_unhealthy'
+  | 'route_not_found'
+  | 'compression_failed'
+  | 'ledger_write_failed';
+```
+
+每个错误必须有：
+
+1. 用户可读 message。
+2. recoverable 标记。
+3. suggested action。
+4. log correlation id。
+5. 是否阻塞继续安装。
+
+## 5. Installation transaction implementation
+
+状态机：
 
 ```text
 idle
   → scanning
   → planning
-  → waiting_user_confirm
+  → awaiting_confirmation
   → backing_up
   → applying
   → validating
   → doctor_running
-  → done
+  → committed
   → failed
   → rolling_back
+  → rolled_back
 ```
 
-### 8.4 验收标准
+数据库/文件记录：
 
-1. 用户能只安装 RTK。
-2. 用户能只安装 Headroom。
-3. 用户能同时安装两者。
-4. 用户能只接入已有 external tool。
-5. 每次配置修改都有 diff。
-6. 安装失败可 rollback。
-7. Doctor 失败时不进入“已完成”状态。
+```ts
+interface InstallTransactionRecord {
+  id: string;
+  status: string;
+  selected_tools: string[];
+  selected_agents: string[];
+  patch_plan_ids: string[];
+  rollback_point_id?: string;
+  started_at: string;
+  finished_at?: string;
+  error_code?: string;
+}
+```
 
-## 9. M3：真实数据导入与分层归因
+## 6. 双层 savings attribution
 
-### 9.1 RTK 数据导入
+### 6.1 问题
 
-1. 读取 `rtk gain --all --format json`。
-2. 读取 `rtk discover --all`。
-3. 读取 `rtk session`。
-4. 可选只读 RTK tracking DB。
-5. 不读取完整 tee 内容。
+如果直接将 RTK savings 和 Headroom savings 相加，会重复计算，因为 Headroom 输入可能已经是 RTK 清洗后的内容。
 
-### 9.2 Headroom 数据导入
+### 6.2 解决方案
 
-1. `/stats`。
-2. `/stats-history`。
-3. `/metrics`。
-4. savings ledger。
-5. per-agent/per-project breakdown。
-6. output savings measured/estimated。
-
-### 9.3 防重复统计
-
-关键：不能把两层 savings 机械相加。
-
-必须以 baseline graph 记录：
+必须记录 baseline graph：
 
 ```text
 raw_cli_tokens
+  ↓
 rtk_cleaned_tokens
+  ↓
 headroom_input_tokens
+  ↓
 headroom_final_tokens
-non_cli_context_tokens
-final_llm_input_tokens
 ```
 
-最终计算：
+公式：
 
 ```text
 rtk_savings = raw_cli_tokens - rtk_cleaned_tokens
@@ -526,123 +424,203 @@ headroom_savings = headroom_input_tokens - headroom_final_tokens
 end_to_end_savings = raw_total_context_tokens - final_llm_input_tokens
 ```
 
-## 10. M4：质量与高级功能
+### 6.3 工程实现
 
-### 10.1 压缩质量控制
+1. RTK events 用 `command_id`。
+2. Headroom events 用 `request_id`。
+3. d-token 通过 `project_id + agent_id + time_window + command hash` 做弱关联。
+4. 未来如果 agent 能传递 correlation id，则使用强关联。
+5. UI 必须标记 attribution confidence。
 
-1. Holdout：部分请求不压缩，用作对照组。
-2. Retrieve rate：CCR retrieve 频率太高说明压缩太狠。
-3. Failure rate：压缩后任务失败率。
-4. User rollback：用户回滚策略说明推荐有问题。
-5. Agent feedback：用户手动标记回答质量。
+```ts
+interface SavingsAttribution {
+  project_id?: string;
+  window_start_ms: number;
+  window_end_ms: number;
+  rtk_savings_tokens: number;
+  headroom_savings_tokens: number;
+  end_to_end_savings_tokens: number;
+  attribution_confidence: 'exact' | 'estimated' | 'low';
+  notes: string[];
+}
+```
 
-### 10.2 推荐等级优化
+## 7. Feature flags
 
-推荐等级从 v0 规则引擎升级为：
+为了降低风险，新增功能必须用 feature flag：
 
-1. Heuristic baseline。
-2. Project-specific calibration。
-3. User preference memory。
-4. Risk-aware recommendation。
-5. Confidence scoring。
+```text
+feature.rtk_adapter
+feature.headroom_adapter
+feature.project_policy
+feature.config_patcher
+feature.install_wizard
+feature.event_ledger
+feature.managed_rtk
+feature.managed_headroom
+feature.savings_attribution
+```
 
-### 10.3 Headroom 高级开关
+默认：
 
-项目级支持：
+```text
+rtk_adapter = on
+headroom_adapter = on
+project_policy = on
+config_patcher = on
+install_wizard = off until M2
+managed_rtk = off until hardening
+managed_headroom = off until hardening
+```
 
-1. CCR。
-2. memory。
-3. learn。
-4. MCP。
-5. output shaper。
-6. CacheAligner。
-7. CodeCompressor。
-8. SmartCrusher。
-9. Kompress/text。
-10. verbosity setting。
-11. holdout ratio。
+## 8. CI gate
 
-## 11. M5：生产硬化
+### 8.1 `.github/workflows` 例外
 
-### 11.1 Installer hardening
+虽然根目录保持极简，但 GitHub Actions 必须放 `.github/workflows`。该目录作为平台必要例外。
 
-1. macOS signing / notarization。
-2. Windows code signing。
-3. updater。
-4. uninstall cleanup。
-5. rollback after crash。
-6. path/shim compatibility。
-
-### 11.2 CI hardening
-
-需要 GitHub Actions：
+### 8.2 最小 CI
 
 ```yaml
-steps:
-  - python support/scripts/check_structure.py
-  - cd code && cargo check --workspace
-  - cd code && cargo test --workspace
+name: ci
+on: [push, pull_request]
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+      - run: python support/scripts/check_structure.py
+      - run: cargo check --workspace
+        working-directory: code
+      - run: cargo test --workspace
+        working-directory: code
 ```
 
-说明：虽然根目录极简，但 `.github/workflows` 是 GitHub Actions 的平台必要路径，可作为例外保留。
+### 8.3 Gate 标准
 
-### 11.3 Compatibility matrix
+1. structure check must pass。
+2. cargo check must pass。
+3. cargo test must pass。
+4. no real secrets in config examples。
+5. docs index must include new reports。
 
-必须覆盖：
+## 9. Compatibility matrix schema
 
-1. macOS Intel。
-2. macOS Apple Silicon。
-3. Windows native。
-4. Windows WSL。
-5. Claude Code。
-6. Codex。
-7. Cline。
-8. OpenCode。
-9. Cursor。
-10. Gemini CLI。
-11. RTK external / managed / builtin。
-12. Headroom external / managed / disabled。
+```ts
+interface CompatibilityCase {
+  id: string;
+  os: 'macos' | 'windows' | 'linux';
+  arch: 'x64' | 'arm64';
+  shell: 'bash' | 'zsh' | 'powershell' | 'cmd' | 'wsl-bash';
+  agent: string;
+  rtk_mode: 'external' | 'managed' | 'builtin' | 'disabled';
+  headroom_mode: 'external' | 'managed' | 'disabled';
+  expected_hook_support: 'full' | 'partial' | 'none';
+  expected_proxy_support: 'full' | 'partial' | 'none';
+  status: 'untested' | 'pass' | 'fail' | 'blocked';
+  notes?: string;
+}
+```
 
-## 12. 对之前问题的逐项修复映射
+## 10. 分阶段实施路线
 
-| 问题 | 修复方案 | 阶段 |
-|---|---|---|
-| 多版本 PRD 混乱 | 只保留 `docs/PRD.md` | 已完成 |
-| 文档/代码/杂项混放 | `docs/` / `code/` / `support/` | 已完成 |
-| PRD 未写一键安装 | 新增 installer wizard | 已补 PRD，M2 实现 |
-| 未写 Headroom 项目级压缩 | 新增 ProjectCompressionPolicy | 已补 PRD，M1C/M3 实现 |
-| 未写推荐等级 | 新增 CompressionRecommendationEngine | 已补 PRD，M1C/M4 实现 |
-| RTK 只是抽象层 | 明确 `rtk-ai/rtk` 一等集成 | 已补 PRD，M1B/M3 实现 |
-| 双层 savings 可能重复统计 | 新增 baseline graph 和计算公式 | 已补 PRD，M3 实现 |
-| 配置修改不安全 | 新增 diff/backup/rollback | 已补 PRD，M1E/M2 实现 |
-| M1 未验证编译 | cargo check/test gate | M1A |
-| CI 结构失败历史 | 新 CI gate + `.github/workflows` 例外 | M5 |
-| Windows/macOS 差异 | WSL/native/macOS CLT/Keychain 等检测 | M2/M5 |
+### M1A：验证当前 workspace
 
-## 13. 最终路线图
+1. 跑 `cargo check --workspace`。
+2. 跑 `cargo test --workspace`。
+3. 跑 `python support/scripts/check_structure.py`。
+4. 修复所有错误。
+
+### M1B：RTK adapter
+
+1. 新增 `dtoken-preprocessor`。
+2. 实现 `rtk --version` detection。
+3. 实现 missing/wrong-package 状态。
+4. mock `rtk gain` parser。
+5. 增加 `/rtk/status`。
+
+### M1C：Headroom adapter
+
+1. 新增 `dtoken-headroom-adapter`。
+2. 实现 `headroom --version` detection。
+3. 检测 npm SDK vs CLI。
+4. mock `/headroom/status`。
+
+### M1D：Project policy
+
+1. 新增 `dtoken-project-policy`。
+2. ProjectProfile model。
+3. ProjectCompressionPolicy model。
+4. recommendation v0。
+
+### M1E：Config patcher + event ledger
+
+1. 新增 `dtoken-config-patcher`。
+2. 新增 `dtoken-event-ledger`。
+3. patch plan/diff/backup/rollback skeleton。
+4. event JSONL。
+
+### M2：Desktop skeleton
+
+1. Tauri shell。
+2. Installer wizard mock。
+3. Dashboard cards mock。
+4. Project policy UI mock。
+5. Doctor UI mock。
+
+### M3：真实集成
+
+1. RTK gain/discover/session import。
+2. Headroom stats/proxy/MCP import。
+3. Read-only DB summary。
+4. config patch real implementation。
+5. real Doctor。
+
+### M4：策略与归因
+
+1. layered attribution。
+2. recommendation engine improvement。
+3. quality feedback loop。
+4. measured/estimated labels。
+
+### M5：生产硬化
+
+1. installers。
+2. signing/notarization。
+3. updater。
+4. rollback hardening。
+5. compatibility test suite。
+
+## 11. 验收总表
+
+| 阶段 | Done 标准 |
+|---|---|
+| M1A | cargo check/test/structure check 全过 |
+| M1B | RTK missing/found/wrong-package/status endpoints 可用 |
+| M1C | Headroom missing/found/proxy/mcp status 可用 |
+| M1D | 项目策略 CRUD + 推荐 v0 |
+| M1E | config diff/backup/rollback skeleton + event ledger |
+| M2 | 桌面 UI 可跑，所有核心卡片有 mock 数据 |
+| M3 | 真实 RTK/Headroom 数据导入，不修改外部 DB |
+| M4 | 分层 savings 不重复统计，推荐等级可解释 |
+| M5 | 安装器、CI、兼容矩阵、回滚全部可用 |
+
+## 12. 结论
+
+下一步不应该直接做复杂 UI 或真实压缩，而是先把 M1A-M1E 补齐。
+
+正确顺序：
 
 ```text
-M1A  Verify current workspace
-M1B  Add dtoken-preprocessor
-M1C  Add dtoken-project-policy
-M1D  Add dtoken-headroom-adapter
-M1E  Add dtoken-config-patcher
-M2   Desktop installer wizard + dashboard skeleton
-M3   Real RTK/Headroom integration + project policy
-M4   Quality metrics + recommendation engine + double-count prevention
-M5   Production installer + CI + compatibility matrix
+验证现有 Rust workspace
+  → RTK adapter
+  → Headroom adapter
+  → Project policy
+  → Config patcher + event ledger
+  → Desktop installer wizard
 ```
 
-## 14. 结论
-
-下一步不应该直接冲 M2 UI，而应该先补完 M1B-M1E。
-
-正确顺序是：
-
-```text
-先让 core 能检测 RTK / Headroom / project policy / config rollback
-再做 Desktop UI
-最后做真实压缩和复杂推荐
-```
-
-这能避免做出一个漂亮但不可用的图形壳。
+这样能保证后续 UI 和真实集成都有可靠底座。
