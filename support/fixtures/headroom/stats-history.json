@@ -1,0 +1,14 @@
+{
+  "status": "fixture",
+  "history": [
+    { "timestamp_ms": 1800000000000, "compressions": 4, "tokens_saved": 12000 },
+    { "timestamp_ms": 1800003600000, "compressions": 7, "tokens_saved": 21000 },
+    { "timestamp_ms": 1800007200000, "compressions": 7, "tokens_saved": 23000 }
+  ],
+  "series": {
+    "hourly": [12000, 21000, 23000],
+    "daily": [56000],
+    "weekly": [56000],
+    "monthly": [56000]
+  }
+}
