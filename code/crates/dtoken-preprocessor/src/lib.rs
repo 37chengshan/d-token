@@ -2,6 +2,7 @@ use dtoken_types::{
     HookStatus, IntegrityState, PreprocessorImplementation, PreprocessorProfile, RtkGainReport,
     RtkStatus, TelemetryStatus, ToolStatus,
 };
+use std::{env, fs, path::PathBuf};
 use tokio::process::Command;
 
 #[derive(Debug, Clone, Default)]
@@ -15,6 +16,10 @@ impl RtkAdapter {
     }
 
     pub async fn detect() -> RtkStatus {
+        if is_fixture_profile() {
+            return fixture_status();
+        }
+
         let adapter = Self::default();
         match adapter.run_version().await {
             Some(version) => RtkStatus {
@@ -41,6 +46,10 @@ impl RtkAdapter {
     }
 
     pub async fn gain_report(&self) -> RtkGainReport {
+        if is_fixture_profile() {
+            return fixture_gain_report();
+        }
+
         let available = self.run_version().await.is_some();
         RtkGainReport {
             available,
@@ -108,4 +117,53 @@ pub async fn rtk_gain_mock() -> RtkGainReport {
 pub async fn list_preprocessors() -> Vec<PreprocessorProfile> {
     let status = detect_rtk_status().await;
     vec![RtkAdapter::profile_from_status(&status)]
+}
+
+fn is_fixture_profile() -> bool {
+    matches!(env::var("DTOKEN_PROFILE").ok().as_deref(), Some("fixture"))
+}
+
+fn fixture_status() -> RtkStatus {
+    let version = read_fixture_text("rtk/version.txt").unwrap_or_else(|| "rtk 0.0.0-fixture".to_string());
+    RtkStatus {
+        status: ToolStatus::Found,
+        binary_path: Some("support/fake-bin/rtk".to_string()),
+        version: Some(version.trim().to_string()),
+        install_method: Some("fixture".to_string()),
+        hook_status: HookStatus::Installed,
+        integrity_state: IntegrityState::Verified,
+        telemetry_status: TelemetryStatus::Disabled,
+        warnings: vec!["fixture mode: real RTK was not called".to_string()],
+    }
+}
+
+fn fixture_gain_report() -> RtkGainReport {
+    read_fixture_text("rtk/gain-all.json")
+        .and_then(|raw| serde_json::from_str::<RtkGainReport>(&raw).ok())
+        .unwrap_or(RtkGainReport {
+            available: true,
+            total_commands: 0,
+            input_tokens: 0,
+            output_tokens: 0,
+            saved_tokens: 0,
+            savings_percent: 0.0,
+            source: "fixture_fallback".to_string(),
+        })
+}
+
+fn read_fixture_text(relative: &str) -> Option<String> {
+    fixture_candidates(relative)
+        .into_iter()
+        .find_map(|path| fs::read_to_string(path).ok())
+}
+
+fn fixture_candidates(relative: &str) -> Vec<PathBuf> {
+    let root = env::var("DTOKEN_FIXTURE_ROOT").ok();
+    let mut candidates = Vec::new();
+    if let Some(root) = root {
+        candidates.push(PathBuf::from(root).join(relative));
+    }
+    candidates.push(PathBuf::from("../support/fixtures").join(relative));
+    candidates.push(PathBuf::from("support/fixtures").join(relative));
+    candidates
 }
