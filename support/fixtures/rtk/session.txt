@@ -1,0 +1,7 @@
+RTK Session Fixture
+
+sessions:
+- agent=fixture-agent commands=12 adoption=100%
+- agent=fixture-cli commands=30 adoption=80%
+
+source=fixture
