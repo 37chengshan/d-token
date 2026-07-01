@@ -1,11 +1,11 @@
 # M1 Status
 
-状态：Started / Core Skeleton Created  
+状态：M1 Scope Implemented / Awaiting Local Cargo Verification  
 日期：2026-07-01
 
-## 1. 本轮完成内容
+## 1. M1 完成范围
 
-M1 目标是建立可继续开发的 Rust core skeleton，而不是直接完成真实压缩和完整代理转发。
+M1 目标是建立可继续开发的本地 Rust core skeleton，并补齐最新 PRD 要求的 RTK/Headroom adapter、项目级策略、配置安全和事件账本底座。
 
 已完成：
 
@@ -16,105 +16,97 @@ M1 目标是建立可继续开发的 Rust core skeleton，而不是直接完成�
 5. Compression interface skeleton：`dtoken-compress`。
 6. Process manager skeleton：`dtoken-process`。
 7. Doctor skeleton：`dtoken-doctor`。
-8. Local API skeleton：`dtoken-core-api`。
-9. Proxy/core API binary entrypoint：`dtoken-proxy`。
-10. Safe local config example：`code/configs/config.example.json`。
-11. Updated repository structure checker：`support/scripts/check_structure.py`。
-12. Router decision smoke test：`code/crates/dtoken-router/tests/route_decision.rs`。
-13. Doctor smoke test：`code/crates/dtoken-doctor/tests/basic.rs`。
+8. Event ledger skeleton：`dtoken-event-ledger`。
+9. RTK adapter skeleton：`dtoken-preprocessor`。
+10. Headroom adapter skeleton：`dtoken-headroom-adapter`。
+11. Project policy skeleton：`dtoken-project-policy`。
+12. Config diff / backup / rollback skeleton：`dtoken-config-patcher`。
+13. Local API skeleton：`dtoken-core-api`。
+14. Proxy/core API binary entrypoint：`dtoken-proxy`。
+15. Safe local config example：`code/configs/config.example.json`。
+16. Updated repository structure checker：`support/scripts/check_structure.py`。
+17. Router decision smoke test。
+18. Doctor smoke test。
+19. Project recommendation smoke tests。
+20. Config patcher smoke tests。
+21. Event ledger smoke test。
 
-## 2. 当前模块职责
+## 2. 当前 crate 职责
 
 ### dtoken-types
 
-统一定义：
-
-- ProviderProfile。
-- RouteProfile。
-- InstanceProfile。
-- RouteDecision。
-- CompressionResult。
-- RequestLog。
-- DoctorReport。
-- HealthResponse。
+统一定义：ProviderProfile、RouteProfile、InstanceProfile、ProjectProfile、ProjectCompressionPolicy、CompressionRecommendation、PreprocessorProfile、RtkStatus、RtkGainReport、HeadroomStatus、HeadroomStats、CcrCacheSummary、LayeredCompressionStage、DtokenEvent、ConfigPatchPlan、RollbackPoint、DoctorReport 等。
 
 ### dtoken-config
 
-当前支持：
-
-- 读取 JSON 配置。
-- 查找 provider。
-- 查找 route。
-- 查找 instance。
-
-后续可扩展：
-
-- YAML。
-- OS keychain ref。
-- config source tracking。
+当前支持：读取 JSON 配置，查找 provider、route、instance。
 
 ### dtoken-router
 
-当前支持：
-
-- 按 instance id 和 input protocol 匹配 route。
-- 查找 target provider。
-- 生成 RouteDecision。
-- 基础 route decision 测试。
-
-后续可扩展：
-
-- model-aware routing。
-- fallback visibility。
-- chain bridge status。
-- route decision ledger。
+当前支持：按 instance id 和 input protocol 匹配 route，查找 target provider，生成 RouteDecision。
 
 ### dtoken-compress
 
-当前支持：
-
-- compression policy 接口。
-- tokens before/after 占位估算。
-- transforms_applied 占位。
-
-后续可扩展：
-
-- Headroom-compatible compression runtime。
-- CCR。
-- SmartCrusher。
-- CodeCompressor。
-- output shaping。
+当前支持：compression policy 接口、tokens before/after 占位估算、transforms_applied 占位。
 
 ### dtoken-process
 
-当前支持：
-
-- ProcessManager 类型。
-- instance status skeleton。
-- start/stop placeholder。
-
-后续可扩展：
-
-- real sidecar spawn。
-- stdout/stderr capture。
-- Windows/macOS process cleanup。
-- port conflict handling。
+当前支持：ProcessManager 类型、instance status skeleton、start/stop placeholder。
 
 ### dtoken-doctor
 
+当前支持：local-only bind check、port availability check。
+
+### dtoken-event-ledger
+
+当前支持：内存事件账本、M1 mock event、recent query。M2/M3 可迁移到 JSONL/SQLite。
+
+### dtoken-preprocessor
+
 当前支持：
 
-- local-only bind check。
-- port availability check。
-- 基础 doctor smoke test。
+1. RTK binary/version detection：`rtk --version`。
+2. RTK missing 状态。
+3. RtkStatus 结构。
+4. RtkGainReport M1 mock。
+5. PreprocessorProfile from status。
 
-后续可扩展：
+当前不做：真实 `rtk gain/discover/session` parser、hook integrity parser、RTK DB 读取。
 
-- WebView2 check。
-- Xcode Command Line Tools check。
-- Python runtime check。
-- sidecar healthcheck。
-- route/provider diagnosis。
+### dtoken-headroom-adapter
+
+当前支持：
+
+1. Headroom CLI/version detection：`headroom --version`。
+2. Headroom missing 状态。
+3. HeadroomStats M1 mock。
+4. CCR cache summary mock，不读取原文。
+
+当前不做：真实 proxy/MCP/status parser、stats endpoint import、CCR 原文读取。
+
+### dtoken-project-policy
+
+当前支持：
+
+1. ProjectProfile default。
+2. ProjectCompressionPolicy default safe policy。
+3. RuleBasedRecommendationEngine v0。
+4. high-risk → safe。
+5. large/noisy context → aggressive。
+6. normal coding → balanced。
+
+### dtoken-config-patcher
+
+当前支持：
+
+1. patch plan。
+2. simple diff。
+3. stable hash。
+4. backup directory creation。
+5. stale hash mismatch protection。
+6. mock patch plan。
+
+当前不做：复杂 JSON/YAML/TOML merge、shell profile AST patch、真实 rollback UI。
 
 ### dtoken-core-api
 
@@ -131,15 +123,28 @@ M1 目标是建立可继续开发的 Rust core skeleton，而不是直接完成�
 - `GET /route-decisions/recent`
 - `GET /logs/recent`
 - `POST /doctor/run`
+- `GET /preprocessors`
+- `GET /rtk/status`
+- `GET /rtk/gain`
+- `GET /rtk/discover`
+- `GET /rtk/session`
+- `GET /headroom/status`
+- `GET /headroom/proxy`
+- `GET /headroom/mcp`
+- `GET /headroom/stats`
+- `GET /headroom/cache-summary`
+- `GET /projects`
+- `GET /projects/default-policy`
+- `POST /projects/recommend-compression`
+- `POST /config/patches/plan`
+- `GET /config/rollback-points`
+- `GET /events`
+- `GET /install/scan`
+- `POST /install/plan`
 
 ### dtoken-proxy
 
-当前支持：
-
-- CLI 参数：host、port、config。
-- 默认监听 `127.0.0.1:18001`。
-- 载入 JSON config。
-- 启动 local API router。
+当前支持：CLI 参数 host、port、config；默认监听 `127.0.0.1:18001`；载入 JSON config；启动 local API router。
 
 ## 3. 本地运行方式
 
@@ -153,8 +158,11 @@ cargo run -p dtoken-proxy -- --config configs/config.example.json
 ```bash
 curl http://127.0.0.1:18001/health
 curl http://127.0.0.1:18001/stats
-curl http://127.0.0.1:18001/providers
-curl -X POST http://127.0.0.1:18001/doctor/run
+curl http://127.0.0.1:18001/rtk/status
+curl http://127.0.0.1:18001/headroom/status
+curl http://127.0.0.1:18001/projects/default-policy
+curl -X POST http://127.0.0.1:18001/projects/recommend-compression
+curl -X POST http://127.0.0.1:18001/config/patches/plan
 ```
 
 ## 4. 本地验证方式
@@ -166,29 +174,31 @@ cargo test --workspace
 python ../support/scripts/check_structure.py
 ```
 
-说明：当前我已完成文件落库，但没有在远端仓库运行 `cargo check`。下一轮应在本地或 CI 环境执行上述命令并修正编译问题。
+说明：本轮已完成文件落库和静态一致性审查，但我没有在远端仓库实际执行 `cargo check` / `cargo test`。M1 仍需在本地或 CI 运行上述命令，全部通过后才能标记为 `M1 Verified`。
 
-## 5. 未完成内容
+## 5. M1 不做内容
 
-M1 当前未做：
+M1 当前不做：
 
 1. 真实 provider 转发。
 2. 真实 streaming proxy。
 3. 真实 token compression。
-4. Headroom-compatible runtime 调用。
-5. SQLite ledger。
-6. Tauri desktop UI。
-7. Dashboard cards。
-8. sidecar spawn。
+4. 真实 `rtk gain/discover/session` parser。
+5. 真实 Headroom proxy/MCP/stats import。
+6. SQLite event ledger。
+7. Tauri desktop UI。
+8. Dashboard cards。
+9. sidecar spawn。
+10. 配置文件真实修改 UI。
 
-这些属于 M2/M3/M4。
+这些属于 M2/M3/M4/M5。
 
 ## 6. 下一步建议
 
 优先顺序：
 
-1. 本地跑 `cargo check --workspace` 修正编译问题。
-2. 为 `dtoken-core-api` 增加最小集成测试。
-3. 给 `dtoken-router` 增加更多 route decision 单元测试。
-4. 给 `dtoken-doctor` 增加端口占用测试。
-5. 开始 M2：Dashboard skeleton。
+1. 本地跑 `cargo check --workspace`。
+2. 修正编译问题。
+3. 本地跑 `cargo test --workspace`。
+4. 恢复最小 CI gate。
+5. 进入 M2：Tauri shell + installer/dashboard mock UI。
