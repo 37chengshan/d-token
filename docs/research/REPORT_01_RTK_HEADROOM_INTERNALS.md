@@ -1,4 +1,4 @@
-# 深度研究报告 01：RTK 与 Headroom 是什么、内部如何工作、用了哪些技术
+# 深度研究报告 01：RTK 与 Headroom 内部机制扩展版
 
 日期：2026-07-01  
 适用项目：d-token  
@@ -6,413 +6,511 @@
 
 ## 1. 执行摘要
 
-RTK 和 Headroom 都是为 AI Coding 场景降低 token 消耗的工具，但它们工作在完全不同的层级。
+RTK 与 Headroom 都服务于 AI Coding 场景的 token 优化，但它们不在同一层工作。
 
 ```text
 RTK
-  位置：Command Execution Layer / Shell Output Layer
-  目标：让命令输出在进入 Agent 上下文之前变短
-  典型对象：git status、cargo test、pytest、docker logs、grep、tree、ls
+  层级：Command Execution Layer / Shell Output Layer
+  目标：命令输出进入 Agent 上下文前先降噪
+  技术：Rust CLI proxy、hook/plugin rewrite、command filters、SQLite tracking、tee recovery
 
 Headroom
-  位置：API Gateway Layer / LLM Context Layer
-  目标：让完整上下文在发往 LLM 之前变短
-  典型对象：tool outputs、logs、files、RAG chunks、conversation history、code blocks
+  层级：API Gateway Layer / LLM Context Layer
+  目标：完整上下文发往 LLM 前统一压缩
+  技术：proxy/library/MCP/wrap、ContentRouter、CacheAligner、SmartCrusher、CodeAwareCompressor、CCR、memory、metrics
+
+d-token
+  层级：Desktop Control Plane / Local Orchestration Layer
+  目标：统一安装、配置、观测、策略、回滚和端到端 savings attribution
 ```
 
-最准确的组合关系是：
-
-```text
-RTK 是上游前置降噪器；Headroom 是下游上下文压缩器；d-token 是两者的桌面化编排层。
-```
+结论：RTK 不是 Headroom 的替代品，Headroom 也不是 RTK 的替代品。它们分别优化“命令输出进入上下文前”和“完整上下文发往模型前”两个不同阶段。
 
 ## 2. RTK 是什么
 
-RTK，全称 Rust Token Killer，是一个高性能 CLI proxy。它的目标是在 AI agent 看到命令输出之前，把原始 CLI 输出压缩成更适合 LLM 消化的摘要。
+RTK，全称 Rust Token Killer，是一个高性能 CLI proxy。它通过把原命令改写为 `rtk ...`，在命令执行后对 stdout/stderr 进行命令特定过滤，把冗长输出变成 LLM 更容易处理的 compact output。
 
-RTK 的核心特征：
+核心特征：
 
 1. 单 Rust binary。
-2. CLI proxy 模式。
-3. 通过 hook/plugin 自动把命令改写成 `rtk ...`。
-4. 对不同命令使用不同 filter。
-5. 保留原命令 exit code。
-6. 失败时 fail-safe 回退。
-7. 本地 SQLite tracking database 统计 token savings。
-8. raw-output tee recovery 让用户可找回完整输出。
-9. Telemetry 默认关闭，需要显式 opt-in。
-10. Native Windows hook 能力有限，WSL 是完整体验路径。
+2. 使用 Clap CLI parser。
+3. 使用 command registry 判断能否 rewrite。
+4. 通过 hook/plugin 把 `git status`、`cargo test` 等命令改成 `rtk git status`、`rtk cargo test`。
+5. 使用 Rust filters 与 TOML DSL filters 两套过滤系统。
+6. 保留原命令 exit code。
+7. filter 失败时 fail-safe passthrough。
+8. 本地 SQLite tracking database 记录 token savings。
+9. `rtk gain`、`rtk discover`、`rtk session` 提供 analytics。
+10. raw-output tee recovery 用于恢复完整输出。
+11. telemetry disabled-by-default，必须用户 opt-in。
+12. Native Windows 支持 filters，但完整 auto-rewrite 更适合 WSL。
 
-## 3. RTK 内部工作机制
+## 3. RTK 内部架构
 
 ### 3.1 总体链路
 
 ```text
 AI Agent
   ↓
-Agent Hook / Plugin
+Agent hook / plugin / instruction
   ↓
-Command rewrite: git status → rtk git status
+rtk rewrite
+  ↓
+Command registry classification
+  ↓
+Rewritten command: rtk <original command>
   ↓
 RTK CLI parser
   ↓
 Command router
   ↓
-Command-specific filter
+Rust filter or TOML DSL filter
   ↓
-Filtered output
+Filtered output printed to agent
   ↓
-Token tracking
-  ↓
-Agent context
+Token tracking written locally
 ```
 
-### 3.2 Hook / Plugin 层
+### 3.2 Hook lifecycle management
 
-RTK 的最佳体验来自自动 rewrite：
+RTK 的 hook system 不是简单 shell alias，而是生命周期管理层。
+
+它负责：
+
+1. `rtk init` 安装流程。
+2. agent-specific hook 文件生成。
+3. agent settings patch。
+4. SHA-256 integrity baseline。
+5. hook version checking。
+6. hook audit。
+7. `rtk rewrite` CLI bridge。
+8. project-local TOML filter trust。
+
+关键边界：
 
 ```text
-用户/Agent 想执行：git status
-RTK hook 改写为：rtk git status
-Agent 实际收到：过滤后的 compact output
+hooks owns: install / verify / audit / trust
+rewrite registry owns: command classification and rewrite
+cmds owns: command-specific filtering
+core owns: tracking, config, tee, utilities
+analytics owns: read-only dashboards
 ```
 
-RTK 支持多种 agent 接入方式：
+对 d-token 的意义：d-token 不应该自己伪造 RTK hook 逻辑，而应优先调用 RTK 官方安装/验证能力，并在 UI 中展示 hook 状态、hash 状态、agent support、fallback mode。
 
-1. Hook-based agents：通过 hook 读取 agent 的 tool call JSON，然后返回改写后的命令。
-2. Plugin-based agents：通过插件 API 改写命令。
-3. Instruction-based agents：无法自动 rewrite 时，通过规则文件提示 agent 显式调用 RTK。
+### 3.3 Integrity verification
 
-关键限制：
+RTK hook integrity 的关键机制：
 
-1. hook 主要作用于 Bash/tool command calls。
-2. Claude Code 内置 `Read`、`Grep`、`Glob` 不经过 Bash hook。
-3. Native Windows 下自动 rewrite 能力有限，WSL 才是完整 hook 体验。
+1. 安装时计算 hook 文件 SHA-256。
+2. 将 hash baseline 存到本地。
+3. 运行时重新计算 hash 并比较。
+4. `rtk verify` 可输出状态。
 
-### 3.3 Rewrite pipeline
+状态模型应映射到 d-token：
 
-RTK 的 rewrite pipeline 可以抽象为：
+```ts
+interface RtkHookIntegrity {
+  state: 'verified' | 'tampered' | 'no_baseline' | 'not_installed' | 'orphaned_hash' | 'unknown';
+  hook_path?: string;
+  hash_path?: string;
+  message: string;
+  blocking: boolean;
+}
+```
+
+UI 要求：
+
+1. `tampered` 必须红色高危提示。
+2. `no_baseline` 应提示用户重新 verify 或 reinstall。
+3. `orphaned_hash` 应提示清理或修复。
+4. 不得自动覆盖用户 hook，除非用户确认。
+
+### 3.4 Permission model
+
+RTK 对 Claude/Copilot 等工具的权限决策遵守：
+
+```text
+Deny > Ask > Allow > Default
+```
+
+这意味着 d-token 必须尊重 host agent 的安全模型：
+
+1. 不把 Deny 改成 Allow。
+2. 不绕过 Ask。
+3. 不自动扩大 Bash 权限。
+4. 不静默修改 permissions。
+5. 如果 agent 不支持 Ask，应在 UI 中标明限制。
+
+对 d-token 的要求：Agent 配置页需要展示“RTK rewrite 权限如何生效”，而不是只显示“Hook installed”。
+
+### 3.5 Rewrite pipeline
+
+RTK rewrite 的关键流程：
 
 ```text
 hook shell
   ↓
-rewrite_cmd
+rewrite_cmd.rs
   ↓
-rewrite_command
+rewrite_command()
   ↓
-rewrite_compound
+rewrite_compound()
   ↓
-rewrite_segment
+rewrite_segment()
   ↓
-classify_command
+classify_command()
   ↓
-rtk command
+rule rewrite
 ```
 
-它支持 compound command，例如：
+它能处理 compound commands：
 
 ```bash
 cargo fmt --all && cargo test 2>&1 | tail -20
 ```
 
-会变成：
+目标改写为：
 
 ```bash
 rtk cargo fmt --all && rtk cargo test 2>&1 | tail -20
 ```
 
-关键技术点：
+关键技术：
 
-1. lexer-based tokenization：识别 quotes、escapes、redirects、operators、pipes。
-2. segment-level rewriting：按 `&&`、`||`、`;`、`|` 切分。
-3. pipe semantics：通常只改写 pipe 左侧，右侧保持原样。
-4. env prefix handling：支持 `ENV=xxx git status` 这类命令。
-5. guard rules：避免 heredoc、arithmetic expansion、写重定向等危险误改写。
-6. registry matching：通过 command registry 判断是否有 RTK equivalent。
+1. lexer-based tokenization。
+2. shell operators 拆分。
+3. pipe 左侧优先 rewrite。
+4. trailing redirects 保留。
+5. env prefix 双阶段处理。
+6. `RTK_DISABLED=1` guard。
+7. unsupported shellism passthrough。
 
-### 3.4 CLI parsing and routing
+### 3.6 Core infrastructure
 
-RTK 进入 Rust binary 后：
+RTK core 是 domain-agnostic leaf layer，负责：
 
-1. Clap parser 解析命令。
-2. Commands enum 匹配具体命令类型。
-3. 路由到 `src/cmds` 下的具体 filter module。
-4. 若没有命中 Rust filter，则进入 fallback path。
-5. fallback path 尝试 TOML DSL filter。
-6. 仍然没有 filter 时 passthrough。
+1. config loading。
+2. token tracking persistence。
+3. TOML filter engine。
+4. tee output recovery。
+5. display formatting。
+6. telemetry。
+7. shared utilities。
 
-### 3.5 Filter systems
+它不应该知道 `git`、`cargo`、`claude` 等具体工具。
 
-RTK 有两类 filter：
+### 3.7 TOML DSL filter pipeline
 
-#### Rust filters
+RTK 的 TOML DSL filter pipeline 有 8 个阶段：
 
-适合复杂命令：
+1. strip_ansi。
+2. replace。
+3. match_output。
+4. strip / keep_lines。
+5. truncate_lines_at。
+6. head / tail_lines。
+7. max_lines。
+8. on_empty。
 
-1. git。
-2. cargo。
-3. pytest。
-4. go test。
-5. docker logs。
-6. kubectl logs。
-7. tsc。
-8. ruff。
-9. eslint。
+filter lookup 顺序：
 
-这些 filter 可以使用 regex、JSON parsing、state machine、NDJSON streaming parser、结构化聚合等技术。
+```text
+project-local .rtk/filters.toml   需要 trust
+user-global ~/.config/rtk/filters.toml
+built-in filters                  build-time embedded
+```
 
-#### TOML DSL filters
+对 d-token 的意义：如果 Desktop 支持编辑 RTK filters，必须区分 project-local、user-global、built-in，并尊重 `rtk trust`。不应把 project-local filter 自动启用。
 
-适合通用命令或用户自定义过滤：
+### 3.8 Tracking database and analytics
 
-1. 正则行过滤。
-2. section extraction。
-3. truncation。
-4. simple rule-based compression。
+RTK tracking DB 记录命令级数据：
 
-### 3.6 Filtering strategy taxonomy
+1. original_cmd。
+2. rtk_cmd。
+3. project_path。
+4. input_tokens。
+5. output_tokens。
+6. saved_tokens。
+7. savings_pct。
+8. exec_time_ms。
+9. parse_failures。
 
-RTK 常见压缩策略：
+Analytics 层只读 tracking DB，负责 `rtk gain`、`rtk session`、cost/economics/adoption view。
 
-| Strategy | 技术 | 典型命令 | 价值 |
-|---|---|---|---|
-| Stats extraction | 统计聚合 | git status / git log | 从大量行变成摘要 |
-| Error only | 只保留错误 | test / build | 隐藏成功项 |
-| Grouping | 按 rule/file/type 聚合 | eslint / tsc / grep | 减少重复错误 |
-| Deduplication | 重复行折叠 | logs | 消除刷屏日志 |
-| Structure only | 只保留结构 | json | 去掉大值保留 schema |
-| Code filtering | 代码级精简 | read | 去注释/去函数体 |
-| Failure focus | 只看失败 | pytest / go test | 测试输出极大压缩 |
-| Progress filtering | 去进度条 | wget / pnpm | 去 ANSI 和进度噪声 |
-| State machine | 状态机解析 | pytest | 抽取测试状态 |
-| NDJSON streaming | 流式事件聚合 | go test | 汇总事件流 |
+对 d-token 的要求：
 
-### 3.7 Token tracking
+1. 只读导入 RTK tracking DB。
+2. 优先使用 `rtk gain --all --format json` 这类公开命令。
+3. 不直接修改 RTK DB。
+4. 不上传 RTK DB。
+5. 不默认展示完整命令参数。
 
-RTK 每次命令执行后写入本地 SQLite tracking database。
+### 3.9 Tee recovery
 
-记录字段包括：
+Tee recovery 是 RTK 的安全阀：输出被截断或失败时，保存原始输出路径，Agent 可按需读取。
 
-1. raw input token estimate。
-2. filtered output token estimate。
-3. savings percent。
-4. execution time。
-5. project path。
-6. timestamp。
-7. command category。
+d-token Dashboard 只应默认展示：
 
-`rtk gain`、`rtk discover`、`rtk session` 都基于这些本地数据生成统计。
+1. path。
+2. size。
+3. command category。
+4. timestamp。
+5. failure/success truncation reason。
 
-### 3.8 Tee recovery
-
-对于失败命令或需要完整上下文的场景，RTK 可以保留 raw output tee file。
-
-d-token 适配时必须只默认展示：
-
-1. tee 文件路径。
-2. 文件大小。
-3. 摘要。
-4. 创建时间。
-
-不应默认读取完整内容。
-
-### 3.9 RTK telemetry
-
-RTK telemetry 默认关闭，需要用户显式 opt-in。
-
-d-token 必须做到：
-
-1. 只展示 telemetry 状态。
-2. 不替用户开启 telemetry。
-3. 不把 RTK tracking database 上传到任何远端。
-4. 不读取源码、文件内容、完整命令参数、secrets、环境变量值。
+不默认打开完整内容。
 
 ## 4. Headroom 是什么
 
-Headroom 是 AI agents 的 context compression layer。它不是命令输出前置过滤器，而是 LLM API 接入层压缩系统。
+Headroom 是 AI agents 的 context compression layer。它压缩 tool outputs、logs、DB reads、RAG results、file reads、API responses、conversation history 等，工作方式包括：
 
-它压缩的对象包括：
+1. transparent proxy。
+2. Python SDK。
+3. TypeScript SDK。
+4. agent wrap。
+5. MCP server。
+6. framework integrations。
 
-1. tool outputs。
-2. logs。
-3. files。
-4. RAG chunks。
-5. conversation history。
-6. code blocks。
-7. structured JSON。
-
-Headroom 的目标是：在不改变答案质量的前提下，用更少 tokens 发送给 LLM。
-
-## 5. Headroom 内部工作机制
+## 5. Headroom 内部架构
 
 ### 5.1 总体链路
 
 ```text
 Agent / App
   ↓
-Headroom proxy / library / wrap / MCP
+Headroom proxy / SDK / wrap / MCP
   ↓
 CacheAligner
   ↓
 ContentRouter
   ↓
-Specialized compressors
+SmartCrusher / CodeAwareCompressor / SearchCompressor / LogCompressor / Kompress
   ↓
-CCR local cache
+CCR local store
   ↓
-Compressed prompt + retrieve ability
+compressed content + retrieval reference
   ↓
 LLM provider
 ```
 
-### 5.2 接入模式
+### 5.2 Live-zone-only compression
 
-Headroom 提供多种接入方式：
+Headroom 的现代策略不是“随便压整个历史上下文”，而是 live-zone-only compression：
 
-1. Library：应用内直接 `compress(messages)`。
-2. Proxy：本地代理，OpenAI/Anthropic-compatible 流量经过代理。
-3. Agent wrap：一条命令包装 Claude、Codex、Cline、OpenCode 等 agent。
-4. MCP server：提供 `headroom_compress`、`headroom_retrieve`、`headroom_stats` 等工具。
-5. Dashboard：观测 savings、latency、providers、per-agent/per-project 指标。
+1. 不删除 conversation history。
+2. 不做旧式 position-based context dropping。
+3. 不做任意 score-based context management。
+4. 只压最新 user message / latest tool result 等 live zone。
+5. 保持 system prompt、tools、older turns 的 cache hot zone 稳定。
+6. 通过 CCR 保持可逆 retrieval。
 
-### 5.3 CacheAligner
+对 d-token 的意义：项目级压缩策略不应简单实现“压缩所有历史消息”。必须保持 Headroom 的 cache/hot-zone 设计，否则会破坏 provider prompt caching 和答案稳定性。
 
-CacheAligner 的目的：稳定 prompt prefix，让 provider 的 KV cache 更容易命中。
+### 5.3 Transform safety guarantees
 
-价值：
+Headroom transforms 的安全原则：
 
-1. 减少重复上下文变动。
-2. 提高 cache hit rate。
-3. 降低 latency 和 cost。
-4. 避免压缩层破坏 provider cache。
+1. Never remove human content。
+2. Never break tool ordering。
+3. Parse failures are no-ops。
+4. Preserve recency。
+5. Preserve errors。
+
+对 d-token 的要求：
+
+1. Dashboard 必须展示 transform failure/pass-through。
+2. compression policy 不能覆盖 error preservation。
+3. aggressive/max 也不能移除用户内容。
+4. parse failure 应显示为 no-op，而不是 error panic。
 
 ### 5.4 ContentRouter
 
-ContentRouter 判断输入内容类型，并选择压缩器。
+ContentRouter 负责检测内容类型和选择压缩器。
 
-典型类型：
+检测信号：
 
-1. JSON。
-2. code。
-3. prose/text。
-4. logs。
-5. diff。
-6. RAG chunks。
-7. conversation history。
+1. JSON structure。
+2. source code patterns。
+3. search result `file:line:` patterns。
+4. log timestamp / log level。
+5. file paths / tool names。
+6. fallback plain text。
 
-### 5.5 Specialized compressors
+路由目标：
 
-Headroom 中的压缩器包括：
+1. CodeAwareCompressor。
+2. SmartCrusher。
+3. SearchCompressor。
+4. LogCompressor。
+5. TextCompressor。
+6. Passthrough。
 
-1. SmartCrusher：面向 JSON / structured content。
-2. CodeCompressor：面向代码，AST-aware。
-3. Kompress / text compressor：面向 prose / text。
-4. log/diff compressors：面向日志与变更。
-5. optional ML compressor：复杂文本压缩。
+对 d-token 的意义：项目级压缩策略不能只是 `safe/aggressive` 一个枚举，还要映射到 ContentRouter config：启用哪些 compressor、阈值多少、最小 token 数、fallback 行为如何。
 
-### 5.6 CCR reversible compression
+### 5.5 SmartCrusher
 
-CCR 是 Headroom 的关键差异化能力。
+SmartCrusher 用于 JSON/structured output，保留：
 
-基本思想：
+1. errors。
+2. first/last items。
+3. anomalies。
+4. relevant items。
+5. change points。
+6. sampled representation。
 
-```text
-原始内容本地缓存
-  ↓
-发送给 LLM 的是压缩摘要 + retrieve reference
-  ↓
-LLM 需要细节时调用 retrieve
-```
+对 d-token 的 UI 要求：用户应能看到“保留依据”，例如 error preservation、anomaly preservation、query relevance。
 
-这能解决“压缩太狠导致细节丢失”的问题，但对 d-token 提出了隐私要求：
+### 5.6 CodeAwareCompressor
 
-1. 默认不展示原文缓存内容。
-2. Dashboard 只展示数量、大小、命中率、retrieve 次数。
-3. 导出时必须脱敏。
-4. 用户可清理项目缓存。
+CodeAwareCompressor 使用 AST/tree-sitter 思路，目标是保持代码结构有效。
 
-### 5.7 Memory / learn / output shaper
+保留重点：
 
-Headroom 不只压输入，也关注输出和行为学习：
+1. imports。
+2. signatures。
+3. type annotations。
+4. error handlers。
+5. decorators。
+6. docstring policy。
 
-1. Cross-agent memory：不同 agent 共享记忆。
-2. Per-project memory：项目级记忆。
-3. `headroom learn`：从失败会话中提炼修正规则。
-4. Verbosity steering：让模型少写废话。
-5. Effort routing：对简单工具结果降低推理强度。
-6. Output savings：估计或测量输出 token savings。
-
-### 5.8 Metrics and dashboard
-
-Headroom Dashboard 需要迁移的指标包括：
-
-1. input compression savings。
-2. output tokens saved。
-3. overhead。
-4. throughput。
-5. provider breakdown。
-6. per-model savings。
-7. per-agent savings。
-8. per-project savings。
-9. recent requests。
-10. historical stats。
-11. export。
-
-## 6. RTK 与 Headroom 的本质差异
-
-| 维度 | RTK | Headroom |
-|---|---|---|
-| 所在层级 | 命令执行层 | LLM API 接入层 |
-| 输入对象 | CLI stdout/stderr | 全部 prompt/context |
-| 核心机制 | command rewrite + filter | content routing + compression + CCR |
-| 运行形态 | Rust binary | Python CLI/proxy/library/MCP + TS SDK |
-| 数据库 | 本地 tracking SQLite | savings ledger / cache / memory |
-| 风险 | hook 覆盖不全、误过滤 | 过度压缩、retrieve 依赖 |
-| 最强场景 | 测试、日志、git、构建输出 | 文件、RAG、对话历史、复杂上下文 |
-| d-token 角色 | 适配、检测、导入 analytics | 管理、配置、迁移 dashboard、压缩策略 |
-
-## 7. d-token 的集成原则
-
-1. RTK 优先 external integration，不复制 filters。
-2. Headroom 优先 full parity，不做删减版。
-3. 两者都可独立启停。
-4. 两者都必须可观测。
-5. 两者 savings 必须分层统计。
-6. 不能把两层 savings 直接相加。
-7. Desktop 必须展示每层输入、输出、节省、状态、错误。
-8. 配置修改必须 diff、backup、rollback。
-9. 默认不读取原始命令输出和 CCR 原文缓存。
-10. 默认不上传任何用户数据。
-
-## 8. 对 d-token 的工程启示
-
-d-token 不应该变成“再造 RTK + 再造 Headroom”的大杂烩，而应该是：
+项目级策略应允许：
 
 ```text
-1. Desktop shell
-2. local orchestration core
-3. external binary/runtime manager
-4. metrics ingestion layer
-5. project policy manager
-6. layered compression attribution engine
-7. safety-first config patcher
-8. full dashboard migration
+safe: preserve signatures + imports + error handlers + more body lines
+balanced: preserve structure + short bodies
+aggressive: signatures/docstrings only
+max: only for exploration, must warn
 ```
 
-最小正确实现顺序：
+### 5.7 CacheAligner
+
+CacheAligner 目标是稳定 prompt prefix，提升 provider cache hit rate。
+
+对 d-token 的要求：Dashboard 必须把“token savings”和“cache hit improvement”分开显示。CacheAligner 可能不直接减少 tokens，但能降低成本/延迟。
+
+### 5.8 CCR reversible compression
+
+CCR 通过本地保存原始内容，并给 LLM 一个 retrieval reference，使压缩可逆。
+
+关键 UI 边界：
+
+1. 显示 cache size。
+2. 显示 entries count。
+3. 显示 retrieval count。
+4. 显示 TTL / project scope。
+5. 不默认读取原文。
+6. 支持清理项目缓存。
+
+### 5.9 MCP server
+
+Headroom MCP 提供三类工具：
+
+1. `headroom_compress`：按需压缩内容。
+2. `headroom_retrieve`：按 hash 恢复原文或搜索原文。
+3. `headroom_stats`：查看 session/sub-agent/proxy stats。
+
+MCP-only 模式不要求 proxy；MCP + proxy 模式中 retrieve 可以查 local store 和 proxy store。
+
+对 d-token 的意义：安装向导不能把 MCP 当作“可有可无的 checkbox”，而应区分：
 
 ```text
-M1: types + detection + mock metrics
-M2: desktop installer + dashboard cards
-M3: real RTK analytics import + Headroom status import
-M4: Headroom compression parity + savings attribution
-M5: installer hardening + rollback + compatibility matrix
+MCP only: on-demand compression/retrieve/stats
+Proxy only: automatic HTTP-level compression
+MCP + Proxy: 自动压缩 + 按需 retrieve + stats aggregation
 ```
 
-## 9. 研究结论
+### 5.10 Proxy production features
 
-RTK 与 Headroom 都很强，但它们强在不同地方。
+Headroom proxy 不只是压缩器，还包含：
 
-RTK 的价值是：用极低成本提前清掉 CLI 噪音。  
-Headroom 的价值是：对最终发往 LLM 的完整上下文做统一压缩、可逆缓存和长期观测。  
-d-token 的价值是：让这两层能力一键安装、统一配置、按项目调优、可观测、可回滚、可解释。
+1. FastAPI/uvicorn server。
+2. context optimization。
+3. semantic caching。
+4. rate limiting。
+5. retry with exponential backoff。
+6. cost tracking and budgets。
+7. provider fallback。
+8. Prometheus metrics。
+9. request/response logging。
+10. provider route registration。
+11. project context classification。
+
+对 d-token 的要求：如果 d-token 自己也做 provider routing，要明确边界，避免和 Headroom provider fallback 重叠导致不可解释。
+
+## 6. RTK 与 Headroom 的组合数据模型
+
+### 6.1 Event correlation
+
+必须有统一 event ledger：
+
+```ts
+interface CompressionEvent {
+  event_id: string;
+  project_id?: string;
+  agent_id?: string;
+  instance_id?: string;
+  command_id?: string;
+  request_id?: string;
+  stage: 'rtk_rewrite' | 'rtk_filter' | 'headroom_route' | 'headroom_compress' | 'provider_forward';
+  source: 'rtk' | 'headroom' | 'dtoken';
+  input_tokens?: number;
+  output_tokens?: number;
+  saved_tokens?: number;
+  baseline_kind: 'raw_cli' | 'rtk_cleaned' | 'headroom_input' | 'final_llm_input';
+  status: 'ok' | 'passthrough' | 'failed' | 'disabled';
+  error_code?: string;
+  timestamp_ms: number;
+}
+```
+
+### 6.2 防重复统计
+
+不能直接把 RTK savings 与 Headroom savings 相加。
+
+正确方法：
+
+```text
+raw_cli_tokens
+  → rtk_cleaned_tokens
+  → headroom_input_tokens
+  → headroom_final_tokens
+
+rtk_savings = raw_cli_tokens - rtk_cleaned_tokens
+headroom_savings = headroom_input_tokens - headroom_final_tokens
+end_to_end_savings = raw_total_context_tokens - final_llm_input_tokens
+```
+
+## 7. d-token 采纳策略
+
+### 7.1 对 RTK
+
+1. External-first。
+2. Managed mode 可选。
+3. 不复制 RTK filters。
+4. 不修改 RTK DB。
+5. 不自动开启 telemetry。
+6. 不绕过 permission model。
+7. 不静默安装 hook。
+8. 只读 analytics。
+
+### 7.2 对 Headroom
+
+1. Full parity first。
+2. Proxy/MCP/wrap/status 全部可观测。
+3. 不读取 CCR 原文。
+4. 不破坏 live-zone-only compression。
+5. 不与 Headroom provider fallback 产生不可解释重叠。
+6. 项目级策略映射到真实 Headroom knobs，而不是虚假的 UI 枚举。
+
+## 8. 结论
+
+报告 01 扩展后的核心判断：
+
+d-token 要成为控制面，而不是重新发明 RTK 和 Headroom。
+
+```text
+RTK owns command output filtering.
+Headroom owns context compression.
+d-token owns installation, orchestration, policy, observability, attribution, rollback.
+```
