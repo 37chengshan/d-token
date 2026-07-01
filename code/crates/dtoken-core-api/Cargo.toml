@@ -8,6 +8,11 @@ repository.workspace = true
 [dependencies]
 axum.workspace = true
 dtoken-config = { path = "../dtoken-config" }
+dtoken-config-patcher = { path = "../dtoken-config-patcher" }
 dtoken-doctor = { path = "../dtoken-doctor" }
+dtoken-event-ledger = { path = "../dtoken-event-ledger" }
+dtoken-headroom-adapter = { path = "../dtoken-headroom-adapter" }
+dtoken-preprocessor = { path = "../dtoken-preprocessor" }
+dtoken-project-policy = { path = "../dtoken-project-policy" }
 dtoken-types = { path = "../dtoken-types" }
 serde_json.workspace = true
