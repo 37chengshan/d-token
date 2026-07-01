@@ -1,0 +1,40 @@
+# dependencies
+node_modules/
+.pnpm-store/
+
+# builds
+dist/
+build/
+target/
+coverage/
+
+# local env / secrets
+.env
+.env.*
+!.env.example
+*.local.yaml
+*.local.yml
+*.local.json
+providers.local.yaml
+
+# AI auth / tokens / sessions
+auth.json
+*auth*.json
+*tokens*.json
+*.secret
+*.key
+*.pem
+
+# logs
+logs/
+*.log
+*.jsonl
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/settings.json
+.idea/
+
+# Tauri generated
+src-tauri/target/
