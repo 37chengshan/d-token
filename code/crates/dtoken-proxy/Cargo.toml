@@ -1,0 +1,18 @@
+[package]
+name = "dtoken-proxy"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+axum.workspace = true
+clap.workspace = true
+dtoken-config = { path = "../dtoken-config" }
+dtoken-core-api = { path = "../dtoken-core-api" }
+dtoken-types = { path = "../dtoken-types" }
+serde_json.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
