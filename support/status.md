@@ -1,0 +1,3 @@
+# status
+
+Support area exists.
