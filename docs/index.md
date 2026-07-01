@@ -17,9 +17,10 @@ Research and reviews:
 
 11. `reviews/PRD_MULTIDIMENSIONAL_GAP_REVIEW_2026-07-01.md` — PRD gap review.
 12. `reviews/RESEARCH_REPORTS_MULTIDIMENSIONAL_REVIEW_2026-07-01.md` — research reports review and expansion plan.
-13. `research/REPORT_01_RTK_HEADROOM_INTERNALS.md` — RTK and Headroom internals, safety boundaries, event attribution.
-14. `research/REPORT_02_DESKTOP_INTEGRATION_ONE_CLICK_APP.md` — desktop integration, installation transaction, UX states, compatibility matrix.
-15. `research/REPORT_03_FEATURES_AND_FIXES_IMPLEMENTATION.md` — implementation blueprint, crates, APIs, CI gates, phased roadmap.
+13. `reviews/NO_TOUCH_TESTING_REVIEW_2026-07-01.md` — no-touch testing defects, omissions, and priorities.
+14. `research/REPORT_01_RTK_HEADROOM_INTERNALS.md` — RTK and Headroom internals, safety boundaries, event attribution.
+15. `research/REPORT_02_DESKTOP_INTEGRATION_ONE_CLICK_APP.md` — desktop integration, installation transaction, UX states, compatibility matrix.
+16. `research/REPORT_03_FEATURES_AND_FIXES_IMPLEMENTATION.md` — implementation blueprint, crates, APIs, CI gates, phased roadmap.
 
 No-touch testing assets:
 
