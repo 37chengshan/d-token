@@ -1,11 +1,11 @@
 # M1 Status
 
-状态：M1 Scope Implemented / Awaiting Cargo CI Result  
+状态：M1 No-touch Test Framework Implemented / Awaiting Cargo CI Result  
 日期：2026-07-01
 
 ## 1. M1 完成范围
 
-M1 目标是建立可继续开发的本地 Rust core skeleton，并补齐最新 PRD 要求的 RTK/Headroom adapter、项目级策略、配置安全和事件账本底座。
+M1 目标是建立可继续开发的本地 Rust core skeleton，并补齐最新 PRD 要求的 RTK/Headroom adapter、项目级策略、配置安全、事件账本和 no-touch 测试底座。
 
 已完成：
 
@@ -31,6 +31,15 @@ M1 目标是建立可继续开发的本地 Rust core skeleton，并补齐最新 
 20. Config patcher smoke tests。
 21. Event ledger smoke test。
 22. Minimal CI gate：`.github/workflows/ci.yml`。
+23. No-touch testing guide：`docs/TESTING_NO_TOUCH.md`。
+24. RTK fixtures。
+25. Headroom fixtures。
+26. Fake RTK binary。
+27. Fake Headroom binary。
+28. Fixture mode smoke script。
+29. Fake-binary mode smoke script。
+30. RTK adapter supports `DTOKEN_PROFILE=fixture`。
+31. Headroom adapter supports `DTOKEN_PROFILE=fixture`。
 
 ## 2. 当前 crate 职责
 
@@ -71,6 +80,7 @@ M1 目标是建立可继续开发的本地 Rust core skeleton，并补齐最新 
 3. RtkStatus 结构。
 4. RtkGainReport M1 mock。
 5. PreprocessorProfile from status。
+6. Fixture mode：`DTOKEN_PROFILE=fixture` 时只读 `support/fixtures/rtk/*`，不调用真实 RTK。
 
 当前不做：真实 `rtk gain/discover/session` parser、hook integrity parser、RTK DB 读取。
 
@@ -82,30 +92,17 @@ M1 目标是建立可继续开发的本地 Rust core skeleton，并补齐最新 
 2. Headroom missing 状态。
 3. HeadroomStats M1 mock。
 4. CCR cache summary mock，不读取原文。
+5. Fixture mode：`DTOKEN_PROFILE=fixture` 时只读 `support/fixtures/headroom/*`，不调用真实 Headroom。
 
 当前不做：真实 proxy/MCP/status parser、stats endpoint import、CCR 原文读取。
 
 ### dtoken-project-policy
 
-当前支持：
-
-1. ProjectProfile default。
-2. ProjectCompressionPolicy default safe policy。
-3. RuleBasedRecommendationEngine v0。
-4. high-risk → safe。
-5. large/noisy context → aggressive。
-6. normal coding → balanced。
+当前支持：ProjectProfile default、ProjectCompressionPolicy default safe policy、RuleBasedRecommendationEngine v0。
 
 ### dtoken-config-patcher
 
-当前支持：
-
-1. patch plan。
-2. simple diff。
-3. stable hash。
-4. backup directory creation。
-5. stale hash mismatch protection。
-6. mock patch plan。
+当前支持：patch plan、simple diff、stable hash、backup directory creation、stale hash mismatch protection、mock patch plan。
 
 当前不做：复杂 JSON/YAML/TOML merge、shell profile AST patch、真实 rollback UI。
 
@@ -143,39 +140,46 @@ M1 目标是建立可继续开发的本地 Rust core skeleton，并补齐最新 
 - `GET /install/scan`
 - `POST /install/plan`
 
-### dtoken-proxy
+## 3. No-touch 验证方式
 
-当前支持：CLI 参数 host、port、config；默认监听 `127.0.0.1:18001`；载入 JSON config；启动 local API router。
+推荐先运行 fixture mode：
 
-## 3. 本地运行方式
+```bash
+bash support/scripts/run_fixture_tests.sh
+```
+
+它会设置：
+
+```bash
+DTOKEN_PROFILE=fixture
+DTOKEN_FIXTURE_ROOT=support/fixtures
+```
+
+并且只读取 fixture 文件，不调用真实 `rtk` 或 `headroom`。
+
+也可以运行 fake-binary mode：
+
+```bash
+bash support/scripts/run_fake_binary_tests.sh
+```
+
+它会把 `support/fake-bin` 放在 PATH 最前面，并使用临时 `HOME`，因此不会碰真实 agent/RTK/Headroom 配置。
+
+## 4. 普通本地运行方式
 
 ```bash
 cd code
 cargo run -p dtoken-proxy -- --config configs/config.example.json
 ```
 
-然后访问：
-
-```bash
-curl http://127.0.0.1:18001/health
-curl http://127.0.0.1:18001/stats
-curl http://127.0.0.1:18001/rtk/status
-curl http://127.0.0.1:18001/headroom/status
-curl http://127.0.0.1:18001/projects/default-policy
-curl -X POST http://127.0.0.1:18001/projects/recommend-compression
-curl -X POST http://127.0.0.1:18001/config/patches/plan
-```
-
-## 4. 验证方式
-
-本地：
+如需完全 no-touch：
 
 ```bash
 cd code
-cargo check --workspace
-cargo test --workspace
-python ../support/scripts/check_structure.py
+DTOKEN_PROFILE=fixture DTOKEN_FIXTURE_ROOT=../support/fixtures cargo run -p dtoken-proxy -- --port 38101 --config configs/config.example.json
 ```
+
+## 5. CI 验证方式
 
 CI：
 
@@ -186,9 +190,9 @@ CI：
   - cargo test --workspace
 ```
 
-说明：本轮已完成文件落库、静态一致性审查和 CI gate 创建，但我没有读取到 CI 运行结果。M1 仍需以 CI 或本地命令全部通过作为 `M1 Verified` 条件。
+说明：本轮已完成文件落库、静态一致性审查、no-touch 测试资产和 CI gate 创建，但我没有读取到 CI 运行结果。M1 仍需以 CI 或本地命令全部通过作为 `M1 Verified` 条件。
 
-## 5. M1 不做内容
+## 6. M1 不做内容
 
 M1 当前不做：
 
@@ -202,14 +206,16 @@ M1 当前不做：
 8. Dashboard cards。
 9. sidecar spawn。
 10. 配置文件真实修改 UI。
+11. 任何对用户真实 agent/RTK/Headroom 环境的默认触碰。
 
-这些属于 M2/M3/M4/M5。
+这些属于 M2/M3/M4/M5，并且必须由用户主动选择。
 
-## 6. 下一步建议
+## 7. 下一步建议
 
 优先顺序：
 
-1. 查看 GitHub Actions CI 结果。
+1. 运行 `bash support/scripts/run_fixture_tests.sh`。
 2. 修正 cargo check / cargo test 错误。
-3. 通过后将状态改为 `M1 Verified / Ready for M2`。
-4. 进入 M2：Tauri shell + installer/dashboard mock UI。
+3. 运行 `bash support/scripts/run_fake_binary_tests.sh`。
+4. 通过后将状态改为 `M1 No-touch Verified`。
+5. 进入 M2：真实 external read-only integration，但仍必须由用户主动开启。
