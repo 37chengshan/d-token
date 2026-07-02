@@ -10,7 +10,9 @@ chmod +x "$ROOT/support/fake-bin/rtk" "$ROOT/support/fake-bin/headroom"
 
 export PATH="$ROOT/support/fake-bin:$PATH"
 export HOME="$TEST_HOME"
-unset DTOKEN_PROFILE || true
+export DTOKEN_TEST_HOME="$TEST_HOME"
+export DTOKEN_FAKE_BIN="$ROOT/support/fake-bin"
+export DTOKEN_PROFILE=fake-binary
 export DTOKEN_FIXTURE_ROOT="$ROOT/support/fixtures"
 
 cd "$ROOT/code"
@@ -27,5 +29,6 @@ sleep 2
 curl -fsS "http://127.0.0.1:${PORT}/health" >/dev/null
 curl -fsS "http://127.0.0.1:${PORT}/rtk/status" | grep -q "0.0.0-fixture"
 curl -fsS "http://127.0.0.1:${PORT}/headroom/status" | grep -q "0.0.0-fixture"
+curl -fsS -X POST "http://127.0.0.1:${PORT}/doctor/run" | grep -q "temporary-home-for-command-tests"
 
 echo "fake binary smoke tests passed on port ${PORT}"

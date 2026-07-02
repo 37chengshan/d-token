@@ -1,6 +1,6 @@
 use dtoken_types::{
-    CompressionPolicy, CompressionRecommendation, ProjectCompressionPolicy, ProjectProfile,
-    RecommendationConfidence, OutputVerbosity,
+    CompressionPolicy, CompressionRecommendation, OutputVerbosity, ProjectCompressionPolicy,
+    ProjectProfile, RecommendationConfidence,
 };
 use uuid::Uuid;
 
@@ -27,7 +27,9 @@ impl RuleBasedRecommendationEngine {
                 recommended_level: CompressionPolicy::Safe,
                 confidence: RecommendationConfidence::High,
                 reasons: vec!["High-risk task or manual override detected".to_string()],
-                risks: vec!["Compression should be conservative for this project/session".to_string()],
+                risks: vec![
+                    "Compression should be conservative for this project/session".to_string(),
+                ],
                 expected_savings_min: 0.10,
                 expected_savings_max: 0.35,
             };

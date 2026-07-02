@@ -19,4 +19,4 @@ jobs:
           python-version: '3.x'
 
       - name: Check repository structure
-        run: python scripts/check_structure.py
+        run: python support/scripts/check_structure.py

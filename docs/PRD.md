@@ -239,6 +239,63 @@ d-token 必须适配 RTK：
 开发期适配原则：不读真实 CCR 原文、不改真实 Headroom config、不占真实端口。  
 成品适配原则：可安装、启动、配置、更新和卸载，但必须可回滚。
 
+## 8.1 Agent 覆盖要求
+
+d-token 必须覆盖 RTK 与 Headroom 两个上游当前支持或明确列出的 agent 并集：
+
+```text
+Claude Code
+VS Code Copilot Chat
+GitHub Copilot CLI
+Cursor
+Gemini CLI
+OpenCode
+OpenClaw
+Pi
+Hermes
+Cline / Roo Code
+Windsurf
+Codex CLI
+Kilo Code
+Google Antigravity
+Mistral Vibe
+Aider
+Continue
+Goose
+OpenHands
+Cortex Code
+```
+
+每个 agent 在 GUI、Doctor 与 CompatibilityMatrix 中至少展示：
+
+1. RTK 是否支持。
+2. RTK 集成方式：hook、plugin、rules、instructions、planned。
+3. Headroom 是否支持。
+4. Headroom 集成方式：wrap、manual proxy、library only、memory/learn only。
+5. macOS 支持等级。
+6. Windows native 支持等级。
+7. Windows WSL 支持等级。
+8. 限制说明。
+
+## 8.2 OpenAI / Anthropic 协议自动注入要求
+
+Headroom 能通过 proxy / SDK / middleware 接入 OpenAI-compatible 与 Anthropic-compatible 流量，d-token 必须把这类“协议级接入”作为一等能力，而不是只按具体 agent 列表处理。
+
+开发期：
+
+1. 默认只用 fixture 表达 OpenAI / Anthropic injection plan。
+2. 不探测真实 Headroom 端口。
+3. 不修改真实 provider/base URL 配置。
+4. 不发送真实请求。
+
+成品：
+
+1. OpenAI-compatible client 可通过 base URL / proxy route / SDK wrapper 接入。
+2. Anthropic-compatible client 可通过 messages proxy / route adapter 接入。
+3. 所有注入必须经过 diff、backup、confirm、doctor、rollback point。
+4. route decision 和 header stripping 必须可审计。
+5. CCR 原文默认不读，只展示摘要。
+
 ## 9. Headroom 项目级压缩策略
 
 ### 9.1 ProjectProfile
@@ -407,6 +464,8 @@ interface CompatibilityCase {
   notes?: string;
 }
 ```
+
+Mac 与 Windows 都是首要目标平台。Windows 必须区分 native 与 WSL：native 模式通常只能获得部分 hook/规则能力，WSL 才能获得完整 shell hook 体验。
 
 ## 16. 目录结构
 

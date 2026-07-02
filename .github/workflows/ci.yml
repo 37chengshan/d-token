@@ -14,6 +14,13 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Install Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: code/apps/desktop/package-lock.json
+
       - name: Structure check
         run: python support/scripts/check_structure.py
 
@@ -24,3 +31,12 @@ jobs:
       - name: Cargo test
         working-directory: code
         run: cargo test --workspace
+
+      - name: No-touch fixture smoke
+        run: bash support/scripts/run_fixture_tests.sh
+
+      - name: Desktop build
+        working-directory: code/apps/desktop
+        run: |
+          npm ci
+          npm run build
