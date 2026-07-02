@@ -24,12 +24,13 @@ Start here:
 
 Research and reviews:
 
-20. `reviews/PRD_MULTIDIMENSIONAL_GAP_REVIEW_2026-07-01.md` — PRD gap review.
-21. `reviews/RESEARCH_REPORTS_MULTIDIMENSIONAL_REVIEW_2026-07-01.md` — research reports review and expansion plan.
-22. `reviews/NO_TOUCH_TESTING_REVIEW_2026-07-01.md` — no-touch testing defects, omissions, and priorities.
-23. `research/REPORT_01_RTK_HEADROOM_INTERNALS.md` — RTK and Headroom internals, safety boundaries, event attribution.
-24. `research/REPORT_02_DESKTOP_INTEGRATION_ONE_CLICK_APP.md` — desktop integration, installation transaction, UX states, compatibility matrix.
-25. `research/REPORT_03_FEATURES_AND_FIXES_IMPLEMENTATION.md` — implementation blueprint, crates, APIs, CI gates, phased roadmap.
+20. `reviews/APP_PAGE_UX_SPEC_MULTIDIMENSIONAL_REVIEW_2026-07-02.md` — APP_PAGE_UX_SPEC multidimensional UX review, with AiMaMi reference.
+21. `reviews/PRD_MULTIDIMENSIONAL_GAP_REVIEW_2026-07-01.md` — PRD gap review.
+22. `reviews/RESEARCH_REPORTS_MULTIDIMENSIONAL_REVIEW_2026-07-01.md` — research reports review and expansion plan.
+23. `reviews/NO_TOUCH_TESTING_REVIEW_2026-07-01.md` — no-touch testing defects, omissions, and priorities.
+24. `research/REPORT_01_RTK_HEADROOM_INTERNALS.md` — RTK and Headroom internals, safety boundaries, event attribution.
+25. `research/REPORT_02_DESKTOP_INTEGRATION_ONE_CLICK_APP.md` — desktop integration, installation transaction, UX states, compatibility matrix.
+26. `research/REPORT_03_FEATURES_AND_FIXES_IMPLEMENTATION.md` — implementation blueprint, crates, APIs, CI gates, phased roadmap.
 
 No-touch testing assets:
 
