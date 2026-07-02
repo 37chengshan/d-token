@@ -31,10 +31,7 @@ async fn main() -> Result<()> {
         None => DtokenConfig::empty(),
     };
 
-    let host: IpAddr = cli
-        .host
-        .parse()
-        .unwrap_or(IpAddr::V4(Ipv4Addr::LOCALHOST));
+    let host: IpAddr = cli.host.parse().unwrap_or(IpAddr::V4(Ipv4Addr::LOCALHOST));
 
     if host != IpAddr::V4(Ipv4Addr::LOCALHOST) {
         tracing::warn!(%host, "M1 only supports local-first binding by default");

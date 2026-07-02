@@ -14,6 +14,10 @@ REQUIRED = [
     'docs/M1_REVIEW.md',
     'docs/M1_FINAL_REVIEW.md',
     'docs/TESTING_NO_TOUCH.md',
+    'docs/M1_NO_TOUCH_DEV_FOUNDATION_REPORT.md',
+    'docs/M2_EXTERNAL_READ_ONLY_INTEGRATION_REPORT.md',
+    'docs/M3_GUI_CONTROL_PLANE_MVP_REPORT.md',
+    'docs/M1_M3_DELIVERY_AUDIT.md',
     'code/README.md',
     'code/Cargo.toml',
     'code/crates/dtoken-types/src/lib.rs',
@@ -43,7 +47,10 @@ REQUIRED = [
     'support/fixtures/headroom/doctor.txt',
     'support/fake-bin/rtk',
     'support/fake-bin/headroom',
+    'support/fake-bin/rtk.cmd',
+    'support/fake-bin/headroom.cmd',
     'support/scripts/run_fixture_tests.sh',
+    'support/scripts/run_fixture_tests.ps1',
     'support/scripts/run_fake_binary_tests.sh',
 ]
 

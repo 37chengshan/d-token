@@ -166,6 +166,34 @@ pub enum RiskLevel {
     High,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeMode {
+    Fixture,
+    FakeBinary,
+    Shadow,
+    External,
+    Managed,
+    BuiltinFallback,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CompatibilityStatus {
+    Untested,
+    Pass,
+    Fail,
+    Blocked,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SupportLevel {
+    Full,
+    Partial,
+    None,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProviderProfile {
     pub id: String,
@@ -290,6 +318,22 @@ pub struct RtkGainReport {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RtkDiscoverReport {
+    pub available: bool,
+    pub source: String,
+    pub missed_opportunities: Vec<String>,
+    pub raw_summary: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RtkSessionReport {
+    pub available: bool,
+    pub source: String,
+    pub sessions: Vec<String>,
+    pub raw_summary: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HeadroomStatus {
     pub status: ToolStatus,
     pub binary_path: Option<String>,
@@ -317,6 +361,61 @@ pub struct CcrCacheSummary {
     pub bytes: u64,
     pub retrievals: u64,
     pub note: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HeadroomMetricsReport {
+    pub available: bool,
+    pub source: String,
+    pub prometheus_text: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LayeredSavingsReport {
+    pub rtk_savings: u64,
+    pub headroom_savings: u64,
+    pub end_to_end_savings: u64,
+    pub attribution_confidence: String,
+    pub note: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CompatibilityCase {
+    pub id: String,
+    pub os: String,
+    pub arch: String,
+    pub shell: String,
+    pub agent: String,
+    pub rtk_mode: RuntimeMode,
+    pub headroom_mode: RuntimeMode,
+    pub expected_hook_support: SupportLevel,
+    pub expected_proxy_support: SupportLevel,
+    pub status: CompatibilityStatus,
+    pub notes: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentSupportProfile {
+    pub agent: String,
+    pub rtk_supported: bool,
+    pub rtk_method: String,
+    pub rtk_transparent_rewrite: SupportLevel,
+    pub headroom_supported: bool,
+    pub headroom_method: String,
+    pub macos_support: SupportLevel,
+    pub windows_native_support: SupportLevel,
+    pub windows_wsl_support: SupportLevel,
+    pub notes: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProtocolInjectionProfile {
+    pub protocol: Protocol,
+    pub compatible_clients: Vec<String>,
+    pub injection_method: String,
+    pub development_default: String,
+    pub managed_mode_action: String,
+    pub safety_notes: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

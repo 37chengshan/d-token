@@ -1,6 +1,11 @@
 use anyhow::{Context, Result};
 use dtoken_types::{ConfigPatchPlan, ConfigToolKind, RiskLevel, RollbackPoint};
-use std::{collections::hash_map::DefaultHasher, fs, hash::{Hash, Hasher}, path::{Path, PathBuf}};
+use std::{
+    collections::hash_map::DefaultHasher,
+    fs,
+    hash::{Hash, Hasher},
+    path::{Path, PathBuf},
+};
 use uuid::Uuid;
 
 #[derive(Debug, Clone)]
@@ -10,7 +15,9 @@ pub struct ConfigPatcher {
 
 impl ConfigPatcher {
     pub fn new(backup_root: impl Into<PathBuf>) -> Self {
-        Self { backup_root: backup_root.into() }
+        Self {
+            backup_root: backup_root.into(),
+        }
     }
 
     pub fn plan_replace(
@@ -42,12 +49,16 @@ impl ConfigPatcher {
     pub fn backup(&self, plan: &ConfigPatchPlan) -> Result<RollbackPoint> {
         let rollback_id = Uuid::new_v4().to_string();
         let backup_dir = self.backup_root.join(&rollback_id);
-        fs::create_dir_all(&backup_dir)
-            .with_context(|| format!("failed to create backup directory {}", backup_dir.display()))?;
+        fs::create_dir_all(&backup_dir).with_context(|| {
+            format!("failed to create backup directory {}", backup_dir.display())
+        })?;
 
         let target = PathBuf::from(&plan.target_file);
         if target.exists() {
-            let file_name = target.file_name().and_then(|name| name.to_str()).unwrap_or("config.backup");
+            let file_name = target
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("config.backup");
             fs::copy(&target, backup_dir.join(file_name))
                 .with_context(|| format!("failed to backup {}", target.display()))?;
         }
@@ -61,7 +72,11 @@ impl ConfigPatcher {
         })
     }
 
-    pub fn apply_replace(&self, plan: &ConfigPatchPlan, next_content: &str) -> Result<RollbackPoint> {
+    pub fn apply_replace(
+        &self,
+        plan: &ConfigPatchPlan,
+        next_content: &str,
+    ) -> Result<RollbackPoint> {
         let target = PathBuf::from(&plan.target_file);
         let before = fs::read_to_string(&target).unwrap_or_default();
         let before_hash = stable_hash(&before);
