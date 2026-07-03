@@ -1,0 +1,1836 @@
+@custom-variant dark (&:is(.dark *));
+
+/* ============================================================
+   d-token Design System — CSS Variables
+   ============================================================ */
+
+:root {
+  --font-size: 13px;
+  --background: #ffffff;
+  --foreground: oklch(0.145 0 0);
+  --card: #ffffff;
+  --card-foreground: oklch(0.145 0 0);
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.145 0 0);
+  --primary: #030213;
+  --primary-foreground: oklch(1 0 0);
+  --secondary: oklch(0.95 0.0058 264.53);
+  --secondary-foreground: #030213;
+  --muted: #ececf0;
+  --muted-foreground: #717182;
+  --accent: #e9ebef;
+  --accent-foreground: #030213;
+  --destructive: #d4183d;
+  --destructive-foreground: #ffffff;
+  --border: rgba(0, 0, 0, 0.1);
+  --input: transparent;
+  --input-background: #f3f3f5;
+  --switch-background: #cbced4;
+  --font-weight-medium: 500;
+  --font-weight-normal: 400;
+  --ring: oklch(0.708 0 0);
+  --chart-1: oklch(0.646 0.222 41.116);
+  --chart-2: oklch(0.6 0.118 184.704);
+  --chart-3: oklch(0.398 0.07 227.392);
+  --chart-4: oklch(0.828 0.189 84.429);
+  --chart-5: oklch(0.769 0.188 70.08);
+  --radius: 0.625rem;
+  --sidebar: oklch(0.985 0 0);
+  --sidebar-foreground: oklch(0.145 0 0);
+  --sidebar-primary: #030213;
+  --sidebar-primary-foreground: oklch(0.985 0 0);
+  --sidebar-accent: oklch(0.97 0 0);
+  --sidebar-accent-foreground: oklch(0.205 0 0);
+  --sidebar-border: oklch(0.922 0 0);
+  --sidebar-ring: oklch(0.708 0 0);
+}
+
+/* d-token UI pass: stronger but restrained Liquid Glass, activity calendar,
+   sidebar selection fixes, log filters, and install status strip. */
+:root {
+  --glass-bg: rgba(255, 255, 255, 0.38);
+  --glass-strong-bg: rgba(255, 255, 255, 0.46);
+  --glass-light-bg: rgba(255, 255, 255, 0.24);
+  --glass-border: rgba(255, 255, 255, 0.68);
+  --glass-highlight: rgba(255, 255, 255, 0.72);
+  --glass-blur: 26px;
+  --glass-strong-blur: 30px;
+  --glass-saturate: 178%;
+  --glass-strong-saturate: 188%;
+  --glass-sheen-opacity: 0.16;
+}
+
+.dark {
+  --glass-bg: oklch(0.24 0.02 250 / 0.40);
+  --glass-strong-bg: oklch(0.25 0.02 250 / 0.52);
+  --glass-light-bg: oklch(0.24 0.02 250 / 0.28);
+  --glass-border: rgba(255, 255, 255, 0.12);
+  --glass-highlight: rgba(255, 255, 255, 0.14);
+  --glass-sheen-opacity: 0.08;
+}
+
+.glass-stage {
+  background:
+    radial-gradient(circle at 14% 8%, color-mix(in srgb, var(--accent-500, #f97316) 10%, transparent), transparent 28%),
+    radial-gradient(circle at 90% 18%, color-mix(in srgb, var(--chart-accent, #f97316) 8%, transparent), transparent 24%),
+    linear-gradient(to bottom, rgba(255, 255, 255, 0.16), rgba(255, 255, 255, 0.04));
+}
+
+.dark .glass-stage {
+  background:
+    radial-gradient(circle at 14% 8%, color-mix(in srgb, var(--accent-500, #f97316) 10%, transparent), transparent 30%),
+    radial-gradient(circle at 90% 18%, color-mix(in srgb, var(--chart-accent, #f97316) 8%, transparent), transparent 26%),
+    linear-gradient(to bottom, rgba(255, 255, 255, 0.03), rgba(255, 255, 255, 0.01));
+}
+
+.sidebar-active-indicator {
+  background: color-mix(in srgb, var(--accent-500, #f97316) 13%, transparent);
+  border-color: color-mix(in srgb, var(--accent-500, #f97316) 38%, transparent);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.40),
+    0 8px 24px color-mix(in srgb, var(--accent-500, #f97316) 10%, transparent);
+}
+
+.nav-motion-item:hover svg {
+  filter: drop-shadow(0 4px 10px color-mix(in srgb, var(--accent-500, #f97316) 26%, transparent));
+}
+
+.segmented-control,
+.log-filter-bar {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px;
+  border: 1px solid var(--glass-border);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.28);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.34);
+  -webkit-backdrop-filter: blur(18px) saturate(150%);
+  backdrop-filter: blur(18px) saturate(150%);
+}
+
+.dark .segmented-control,
+.dark .log-filter-bar {
+  background: rgba(255, 255, 255, 0.045);
+}
+
+.segmented-control-item,
+.log-filter-item {
+  display: inline-flex;
+  min-height: 30px;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  padding: 0 11px;
+  color: var(--muted-foreground);
+  font-size: 12px;
+  line-height: 1;
+  transition: background 160ms ease, border-color 160ms ease, color 160ms ease, box-shadow 160ms ease;
+}
+
+.segmented-control-item:hover,
+.log-filter-item:hover {
+  color: var(--foreground);
+  background: var(--chip-hover-bg);
+}
+
+.segmented-control-item.active,
+.log-filter-item.active {
+  color: var(--accent-500, #f97316);
+  background: var(--chip-active-bg);
+  border-color: var(--chip-active-border);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.38),
+    0 6px 18px color-mix(in srgb, var(--accent-500, #f97316) 10%, transparent);
+}
+
+.log-filter-count {
+  display: inline-flex;
+  min-width: 18px;
+  height: 18px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.35);
+  color: inherit;
+  font-size: 11px;
+}
+
+.activity-scroll {
+  max-width: 100%;
+  overflow-x: auto;
+  padding-bottom: 2px;
+}
+
+.activity-grid {
+  display: grid;
+  grid-template-rows: repeat(7, 12px);
+  grid-auto-flow: column;
+  gap: 4px 3px;
+}
+
+.activity-cell {
+  width: 12px;
+  height: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.45);
+  border-radius: 3px;
+  background: var(--activity-empty, rgba(0, 0, 0, 0.055));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.35);
+}
+
+.dark .activity-cell {
+  border-color: rgba(255, 255, 255, 0.08);
+  --activity-empty: rgba(255, 255, 255, 0.075);
+}
+
+.activity-cell[data-level="0"] {
+  background: var(--activity-empty, rgba(0, 0, 0, 0.055));
+}
+
+.activity-cell[data-level="1"],
+.activity-cell[data-level="2"],
+.activity-cell[data-level="3"],
+.activity-cell[data-level="4"] {
+  background: color-mix(in srgb, var(--chart-accent, #f97316) 82%, white);
+}
+
+.activity-cell.legend {
+  display: inline-block;
+  flex: 0 0 auto;
+}
+
+.install-status-strip {
+  display: grid;
+  gap: 4px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 12px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.08), rgba(255, 255, 255, 0.02)),
+    #11131a;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.10);
+  color: rgba(255, 255, 255, 0.84);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  font-size: 12px;
+  line-height: 1.55;
+  padding: 10px 12px;
+}
+
+/* ============================================================
+   Dark Mode — Cool Slate Palette (深青灰基调)
+   Replace pure-black gray with cool cyan-slate tones.
+   ============================================================ */
+.dark {
+  --background: oklch(0.21 0.02 250);
+  --foreground: oklch(0.92 0.01 250);
+  --card: oklch(0.23 0.02 250);
+  --card-foreground: oklch(0.92 0.01 250);
+  --popover: oklch(0.23 0.02 250);
+  --popover-foreground: oklch(0.92 0.01 250);
+  --primary: var(--accent-500);
+  --primary-foreground: #ffffff;
+  --secondary: oklch(0.27 0.02 250);
+  --secondary-foreground: oklch(0.92 0.01 250);
+  --muted: oklch(0.27 0.02 250);
+  --muted-foreground: oklch(0.60 0.02 250);
+  --accent: oklch(0.27 0.02 250);
+  --accent-foreground: oklch(0.92 0.01 250);
+  --destructive: oklch(0.40 0.14 25);
+  --destructive-foreground: oklch(0.65 0.23 25);
+  --border: oklch(0.30 0.02 250);
+  --input: oklch(0.27 0.02 250);
+  --input-background: oklch(0.25 0.02 250);
+  --switch-background: oklch(0.35 0.02 250);
+  --ring: var(--accent-600);
+  --font-weight-medium: 500;
+  --font-weight-normal: 400;
+  --chart-1: oklch(0.55 0.22 264);
+  --chart-2: oklch(0.65 0.16 162);
+  --chart-3: oklch(0.72 0.18 70);
+  --chart-4: oklch(0.60 0.24 303);
+  --chart-5: oklch(0.62 0.22 16);
+  --sidebar: oklch(0.19 0.02 250);
+  --sidebar-foreground: oklch(0.92 0.01 250);
+  --sidebar-primary: var(--accent-500);
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-accent: oklch(0.24 0.02 250);
+  --sidebar-accent-foreground: oklch(0.92 0.01 250);
+  --sidebar-border: oklch(0.28 0.02 250);
+  --sidebar-ring: var(--accent-600);
+}
+
+/* ============================================================
+   Accent Theme Colors (data-accent on <html>)
+   ============================================================ */
+:root[data-accent="blue"]   { --accent-500: #2563eb; --accent-600: #1d4ed8; --accent-soft: rgba(37,99,235,0.14); }
+:root[data-accent="green"]  { --accent-500: #16a34a; --accent-600: #15803d; --accent-soft: rgba(22,163,74,0.14); }
+:root[data-accent="orange"] { --accent-500: #ea580c; --accent-600: #c2410c; --accent-soft: rgba(234,88,12,0.14); }
+:root[data-accent="purple"] { --accent-500: #7c3aed; --accent-600: #6d28d9; --accent-soft: rgba(124,58,237,0.14); }
+:root[data-accent="slate"]  { --accent-500: #475569; --accent-600: #334155; --accent-soft: rgba(71,85,105,0.14); }
+
+:root[data-accent] {
+  --primary: var(--accent-500);
+  --primary-foreground: #ffffff;
+  --ring: var(--accent-500);
+  --sidebar-primary: var(--accent-500);
+  --sidebar-primary-foreground: #ffffff;
+}
+.dark[data-accent] {
+  --primary: var(--accent-500);
+  --primary-foreground: #ffffff;
+  --ring: var(--accent-600);
+  --sidebar-primary: var(--accent-500);
+}
+
+/* Analytics panel primary color */
+:root[data-chart-accent="green"]  { --chart-accent: #10b981; }
+:root[data-chart-accent="blue"]   { --chart-accent: #38bdf8; }
+:root[data-chart-accent="amber"]  { --chart-accent: #f59e0b; }
+:root[data-chart-accent="rose"]   { --chart-accent: #fb7185; }
+:root[data-chart-accent="violet"] { --chart-accent: #a78bfa; }
+:root[data-chart-accent="orange"] { --chart-accent: #f97316; }
+:root { --chart-accent: #f97316; }
+
+/* ============================================================
+   Liquid Glass Token Matrix
+   Six surface tiers × light/dark. Based on Josh Comeau's
+   extended backdrop + mask technique, MDN backdrop-filter spec,
+   and Apple HIG material hierarchy.
+   ============================================================ */
+
+/* --- Light Mode Glass --- */
+:root {
+  /* Glass — standard card/panel (克制专业：通透利落，不奶白) */
+  --glass-bg: rgba(255, 255, 255, 0.48);
+  --glass-border: rgba(255, 255, 255, 0.60);
+  --glass-highlight: rgba(255, 255, 255, 0.55);
+  --glass-shadow: 0 4px 24px rgba(0, 0, 0, 0.08), 0 1px 3px rgba(0, 0, 0, 0.04);
+  --glass-blur: 20px;
+  --glass-saturate: 160%;
+  --glass-brightness: 100%;
+
+  /* Glass Strong — sidebar / sheet / popover */
+  --glass-strong-bg: rgba(255, 255, 255, 0.56);
+  --glass-strong-blur: 26px;
+  --glass-strong-saturate: 170%;
+
+  /* Glass Light — topbar / statusbar */
+  --glass-light-bg: rgba(255, 255, 255, 0.30);
+  --glass-light-blur: 14px;
+  --glass-light-saturate: 140%;
+
+  /* Glass Inset — inner containers within cards (NO blur) */
+  --glass-inset-bg: rgba(0, 0, 0, 0.025);
+  --glass-inset-border: rgba(0, 0, 0, 0.06);
+
+  /* Chip — unified toggle/segment/pill */
+  --chip-bg: transparent;
+  --chip-hover-bg: rgba(255, 255, 255, 0.32);
+  --chip-active-bg: color-mix(in srgb, var(--accent-500, #2563eb) 12%, transparent);
+  --chip-active-border: color-mix(in srgb, var(--accent-500, #2563eb) 30%, transparent);
+  --chip-blur: 9px;
+  --chip-saturate: 125%;
+
+  /* 3D Glass Edge */
+  --glass-edge-blur: 8px;
+  --glass-edge-brightness: 112%;
+  --glass-edge-thickness: 4px;
+
+  /* Sheen (diagonal specular highlight) — subdued for professional look */
+  --glass-sheen-opacity: 0.10;
+  --glass-sheen-speed: 14s;
+
+  /* Background flow — near-neutral, barely perceptible */
+  --bg-flow-accent-1-pct: 5%;
+  --bg-flow-accent-2-pct: 5%;
+  --bg-flow-speed: 30s;
+}
+
+/* --- Dark Mode Glass — Slate base, clean & crisp --- */
+.dark {
+  --glass-bg: oklch(0.24 0.02 250 / 0.45);
+  --glass-border: rgba(255, 255, 255, 0.08);
+  --glass-highlight: rgba(255, 255, 255, 0.08);
+  --glass-shadow: 0 4px 24px rgba(0, 0, 0, 0.45), 0 1px 3px rgba(0, 0, 0, 0.20);
+  --glass-blur: 20px;
+  --glass-saturate: 140%;
+  --glass-brightness: 95%;
+
+  --glass-strong-bg: oklch(0.24 0.02 250 / 0.58);
+  --glass-strong-blur: 28px;
+  --glass-strong-saturate: 145%;
+
+  --glass-light-bg: oklch(0.23 0.02 250 / 0.32);
+  --glass-light-blur: 14px;
+  --glass-light-saturate: 125%;
+
+  --glass-inset-bg: rgba(255, 255, 255, 0.035);
+  --glass-inset-border: rgba(255, 255, 255, 0.06);
+
+  --chip-hover-bg: rgba(255, 255, 255, 0.07);
+  --chip-active-bg: color-mix(in srgb, var(--accent-500, #2563eb) 16%, transparent);
+  --chip-active-border: color-mix(in srgb, var(--accent-500, #2563eb) 28%, transparent);
+
+  --glass-edge-blur: 8px;
+  --glass-edge-brightness: 108%;
+
+  --glass-sheen-opacity: 0.05;
+
+  --bg-flow-accent-1-pct: 4%;
+  --bg-flow-accent-2-pct: 4%;
+}
+
+/* ============================================================
+   Core Glass Classes — Extended Backdrop + Mask Technique
+
+   Key insight (Josh Comeau): backdrop-filter: blur() only sees
+   pixels DIRECTLY behind the element. Nearby content (even 1px
+   away) does NOT contribute to the blur.
+
+   Fix: use a child .glass-backdrop with height: 200% so the blur
+   algorithm can "see" nearby elements, then use mask-image to
+   trim the excess back to the visual size.
+   ============================================================ */
+
+/* --- Glass Container (outer shell) --- */
+.glass {
+  position: relative;
+  background: var(--glass-bg);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius);
+  box-shadow:
+    inset 0 1px 0 var(--glass-highlight),
+    var(--glass-shadow);
+  overflow: hidden;
+  isolation: isolate;
+}
+
+/* --- Extended Backdrop Child --- */
+.glass .glass-backdrop {
+  position: absolute;
+  inset: 0;
+  height: 200%;
+  border-radius: inherit;
+  pointer-events: none;
+  z-index: 0;
+
+  -webkit-backdrop-filter:
+    blur(var(--glass-blur))
+    saturate(var(--glass-saturate))
+    brightness(var(--glass-brightness));
+  backdrop-filter:
+    blur(var(--glass-blur))
+    saturate(var(--glass-saturate))
+    brightness(var(--glass-brightness));
+
+  /* Top gradient: prevents flicker when content scrolls out of viewport */
+  background: linear-gradient(
+    to bottom,
+    var(--background) 0%,
+    transparent 15%
+  );
+
+  /* Mask: opaque for original size (0%–50% of 2x height), transparent beyond */
+  -webkit-mask-image: linear-gradient(
+    to bottom,
+    black 0% 50%,
+    transparent 50% 100%
+  );
+  mask-image: linear-gradient(
+    to bottom,
+    black 0% 50%,
+    transparent 50% 100%
+  );
+}
+
+/* --- Glass Strong (sidebar, sheets, popovers) --- */
+.glass-strong {
+  position: relative;
+  background: var(--glass-strong-bg);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius);
+  box-shadow:
+    inset 0 1px 0 var(--glass-highlight),
+    var(--glass-shadow);
+  overflow: hidden;
+  isolation: isolate;
+}
+
+.glass-strong .glass-backdrop {
+  position: absolute;
+  inset: 0;
+  height: 200%;
+  border-radius: inherit;
+  pointer-events: none;
+  z-index: 0;
+
+  -webkit-backdrop-filter:
+    blur(var(--glass-strong-blur))
+    saturate(var(--glass-strong-saturate))
+    brightness(var(--glass-brightness));
+  backdrop-filter:
+    blur(var(--glass-strong-blur))
+    saturate(var(--glass-strong-saturate))
+    brightness(var(--glass-brightness));
+
+  background: linear-gradient(
+    to bottom,
+    var(--background) 0%,
+    transparent 12%
+  );
+
+  -webkit-mask-image: linear-gradient(
+    to bottom,
+    black 0% 50%,
+    transparent 50% 100%
+  );
+  mask-image: linear-gradient(
+    to bottom,
+    black 0% 50%,
+    transparent 50% 100%
+  );
+}
+
+/* --- Glass Light (topbar, statusbar) --- */
+.glass-light {
+  position: relative;
+  background: var(--glass-light-bg);
+  border-bottom: 1px solid var(--glass-border);
+  overflow: hidden;
+  isolation: isolate;
+}
+
+.glass-light .glass-backdrop {
+  position: absolute;
+  inset: 0;
+  height: 200%;
+  pointer-events: none;
+  z-index: 0;
+
+  -webkit-backdrop-filter:
+    blur(var(--glass-light-blur))
+    saturate(var(--glass-light-saturate))
+    brightness(var(--glass-brightness));
+  backdrop-filter:
+    blur(var(--glass-light-blur))
+    saturate(var(--glass-light-saturate))
+    brightness(var(--glass-brightness));
+
+  background: linear-gradient(
+    to bottom,
+    var(--background) 0%,
+    transparent 20%
+  );
+
+  -webkit-mask-image: linear-gradient(
+    to bottom,
+    black 0% 50%,
+    transparent 50% 100%
+  );
+  mask-image: linear-gradient(
+    to bottom,
+    black 0% 50%,
+    transparent 50% 100%
+  );
+}
+
+/* --- Diagonal Sheen Animation --- */
+.glass .glass-backdrop::after,
+.glass-strong .glass-backdrop::after,
+.glass-light .glass-backdrop::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  z-index: 1;
+  background: linear-gradient(
+    115deg,
+    transparent 35%,
+    rgba(255, 255, 255, var(--glass-sheen-opacity)) 48%,
+    transparent 61%
+  );
+  background-size: 280% 280%;
+  animation: glass-sheen var(--glass-sheen-speed) ease-in-out infinite;
+}
+
+@keyframes glass-sheen {
+  0%   { background-position: 140% 0%; }
+  100% { background-position: -60% 0%; }
+}
+
+/* --- Content Layer (above backdrop) --- */
+.glass > *:not(.glass-backdrop):not(.glass-edge),
+.glass-strong > *:not(.glass-backdrop):not(.glass-edge),
+.glass-light > *:not(.glass-backdrop):not(.glass-edge) {
+  position: relative;
+  z-index: 1;
+}
+
+/* ============================================================
+   3D Glass Edge
+   A secondary blurred element at the bottom that simulates
+   light refracting through the thickness of real glass.
+   Technique from Josh Comeau / Artur Bien.
+   ============================================================ */
+.glass .glass-edge {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: var(--glass-edge-thickness);
+  border-radius: 0 0 inherit inherit;
+  pointer-events: none;
+  z-index: 2;
+
+  background: rgba(255, 255, 255, 0.06);
+  -webkit-backdrop-filter:
+    blur(var(--glass-edge-blur))
+    brightness(var(--glass-edge-brightness));
+  backdrop-filter:
+    blur(var(--glass-edge-blur))
+    brightness(var(--glass-edge-brightness));
+
+  -webkit-mask-image: linear-gradient(
+    to bottom,
+    transparent 0%,
+    black 100%
+  );
+  mask-image: linear-gradient(
+    to bottom,
+    transparent 0%,
+    black 100%
+  );
+}
+
+/* ============================================================
+   GlassEffectContainer
+   Establishes a shared glass context within a page section.
+   Does NOT set backdrop-filter itself (would become a backdrop
+   root and cut off children's blur).
+   ============================================================ */
+.glass-stage {
+  position: relative;
+  background: var(--background);
+}
+
+/* ============================================================
+   Chip — Unified Toggle / Segmented Control / Filter Pill
+   ============================================================ */
+.chip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.375rem;
+  background: var(--chip-bg);
+  border: 1px solid transparent;
+  border-radius: 999px;
+  color: var(--muted-foreground);
+  font-size: var(--text-sm);
+  transition: all 0.2s ease;
+  cursor: pointer;
+  user-select: none;
+}
+
+.chip:hover {
+  background: var(--chip-hover-bg);
+  border-color: var(--glass-border);
+  backdrop-filter: blur(var(--chip-blur)) saturate(var(--chip-saturate));
+}
+
+/* --- Chip Active — Glass frame with accent tint --- */
+.chip-active {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.375rem;
+  background: var(--chip-active-bg);
+  border: 1px solid var(--chip-active-border);
+  border-radius: 999px;
+  color: var(--accent-500);
+  font-size: var(--text-sm);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.30);
+  backdrop-filter: blur(var(--chip-blur)) saturate(var(--chip-saturate));
+  cursor: default;
+  user-select: none;
+}
+
+/* ============================================================
+   Glass Inset — Inner container within a glass card
+   No backdrop-filter (doubled blur inside already-blurred card
+   looks muddy). Just a subtle tint + border to group content.
+   ============================================================ */
+.glass-inset {
+  background: var(--glass-inset-bg);
+  border: 1px solid var(--glass-inset-border);
+  border-radius: calc(var(--radius) - 2px);
+}
+
+/* ============================================================
+   Radix/Shadcn Bridge — map data-state="active" to chip-active
+   ============================================================ */
+[data-slot="tabs-trigger"][data-state="active"] {
+  background: var(--chip-active-bg) !important;
+  border-color: var(--chip-active-border) !important;
+  color: var(--accent-500) !important;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.30) !important;
+  backdrop-filter: blur(var(--chip-blur)) saturate(var(--chip-saturate)) !important;
+  -webkit-backdrop-filter: blur(var(--chip-blur)) saturate(var(--chip-saturate)) !important;
+}
+
+/* ============================================================
+   Glass Off — Solid Fallback (accessibility / performance)
+   ============================================================ */
+:root[data-glass="off"] .glass,
+:root[data-glass="off"] .glass-strong,
+:root[data-glass="off"] .glass-light {
+  background: var(--card);
+  border: 1px solid var(--border);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+}
+
+:root[data-glass="off"] .glass-backdrop,
+:root[data-glass="off"] .glass-edge {
+  display: none;
+}
+
+:root[data-glass="off"] .glass .glass-backdrop::after,
+:root[data-glass="off"] .glass-strong .glass-backdrop::after,
+:root[data-glass="off"] .glass-light .glass-backdrop::after {
+  display: none;
+}
+
+:root[data-glass="off"] .chip:hover,
+:root[data-glass="off"] .chip-active {
+  backdrop-filter: none;
+}
+
+/* ============================================================
+   App Background — Subtle flowing accent gradient
+   Kept intentionally soft so glass surfaces read clearly.
+   ============================================================ */
+.app-bg {
+  background:
+    linear-gradient(
+      120deg,
+      var(--background) 0%,
+      color-mix(in srgb, var(--accent-500, #f97316) var(--bg-flow-accent-1-pct), var(--background)) 25%,
+      var(--background) 50%,
+      color-mix(in srgb, var(--accent-600, #7c3aed) var(--bg-flow-accent-2-pct), var(--background)) 75%,
+      var(--background) 100%
+    );
+  background-size: 300% 300%;
+  animation: bg-flow var(--bg-flow-speed) ease-in-out infinite;
+}
+
+@keyframes bg-flow {
+  0%   { background-position: 0% 50%; }
+  50%  { background-position: 100% 50%; }
+  100% { background-position: 0% 50%; }
+}
+
+/* ============================================================
+   Tailwind v4 @theme — CSS variable → Tailwind token bridge
+   ============================================================ */
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-input-background: var(--input-background);
+  --color-switch-background: var(--switch-background);
+  --color-ring: var(--ring);
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-ring: var(--sidebar-ring);
+}
+
+/* ============================================================
+   Base Layer — Typography defaults
+   ============================================================ */
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+
+  body {
+    @apply bg-background text-foreground;
+  }
+
+  html {
+    font-size: var(--font-size);
+  }
+
+  h1 {
+    font-size: var(--text-2xl);
+    font-weight: var(--font-weight-medium);
+    line-height: 1.5;
+  }
+
+  h2 {
+    font-size: var(--text-xl);
+    font-weight: var(--font-weight-medium);
+    line-height: 1.5;
+  }
+
+  h3 {
+    font-size: var(--text-lg);
+    font-weight: var(--font-weight-medium);
+    line-height: 1.5;
+  }
+
+  h4 {
+    font-size: var(--text-base);
+    font-weight: var(--font-weight-medium);
+    line-height: 1.5;
+  }
+
+  label {
+    font-size: var(--text-base);
+    font-weight: var(--font-weight-medium);
+    line-height: 1.5;
+  }
+
+  button {
+    font-size: var(--text-base);
+    font-weight: var(--font-weight-medium);
+    line-height: 1.5;
+  }
+
+  input {
+    font-size: var(--text-base);
+    font-weight: var(--font-weight-normal);
+    line-height: 1.5;
+  }
+}
+
+/* ============================================================
+   Final UI polish overrides
+   These rules intentionally live at the end so older design-system
+   defaults cannot cover the glass and navigation states.
+   ============================================================ */
+:root {
+  --glass-bg: rgba(255, 255, 255, 0.34);
+  --glass-strong-bg: rgba(255, 255, 255, 0.44);
+  --glass-light-bg: rgba(255, 255, 255, 0.22);
+  --glass-border: rgba(255, 255, 255, 0.72);
+  --glass-highlight: rgba(255, 255, 255, 0.74);
+  --glass-inset-bg: rgba(255, 255, 255, 0.24);
+  --glass-inset-border: rgba(255, 255, 255, 0.42);
+  --glass-blur: 28px;
+  --glass-strong-blur: 34px;
+  --glass-saturate: 185%;
+  --glass-strong-saturate: 205%;
+  --chip-hover-bg: rgba(255, 255, 255, 0.28);
+  --chip-active-bg: color-mix(in srgb, var(--accent-500, #f97316) 14%, rgba(255, 255, 255, 0.44));
+  --chip-active-border: color-mix(in srgb, var(--accent-500, #f97316) 42%, rgba(255, 255, 255, 0.70));
+  --activity-empty: rgba(15, 23, 42, 0.065);
+  --activity-l1: color-mix(in srgb, var(--chart-accent, #f97316) 28%, rgba(255, 255, 255, 0.74));
+  --activity-l2: color-mix(in srgb, var(--chart-accent, #f97316) 48%, rgba(255, 255, 255, 0.54));
+  --activity-l3: color-mix(in srgb, var(--chart-accent, #f97316) 70%, rgba(255, 255, 255, 0.28));
+  --activity-l4: color-mix(in srgb, var(--chart-accent, #f97316) 92%, #b45309);
+}
+
+.dark {
+  --glass-bg: rgba(24, 28, 38, 0.36);
+  --glass-strong-bg: rgba(26, 30, 40, 0.52);
+  --glass-light-bg: rgba(26, 30, 40, 0.30);
+  --glass-border: rgba(255, 255, 255, 0.14);
+  --glass-highlight: rgba(255, 255, 255, 0.18);
+  --glass-inset-bg: rgba(255, 255, 255, 0.055);
+  --glass-inset-border: rgba(255, 255, 255, 0.095);
+  --chip-hover-bg: rgba(255, 255, 255, 0.075);
+  --chip-active-bg: color-mix(in srgb, var(--accent-500, #f97316) 20%, rgba(255, 255, 255, 0.08));
+  --chip-active-border: color-mix(in srgb, var(--accent-500, #f97316) 46%, rgba(255, 255, 255, 0.13));
+  --activity-empty: rgba(255, 255, 255, 0.07);
+  --activity-l1: color-mix(in srgb, var(--chart-accent, #f97316) 32%, rgba(255, 255, 255, 0.09));
+  --activity-l2: color-mix(in srgb, var(--chart-accent, #f97316) 52%, rgba(255, 255, 255, 0.08));
+  --activity-l3: color-mix(in srgb, var(--chart-accent, #f97316) 74%, rgba(255, 255, 255, 0.06));
+  --activity-l4: color-mix(in srgb, var(--chart-accent, #f97316) 92%, #f59e0b);
+}
+
+.app-bg {
+  position: relative;
+  overflow: hidden;
+  background:
+    radial-gradient(circle at 15% 8%, color-mix(in srgb, var(--accent-500, #f97316) 18%, transparent) 0 18%, transparent 34%),
+    radial-gradient(circle at 88% 14%, color-mix(in srgb, var(--chart-accent, #38bdf8) 16%, transparent) 0 20%, transparent 38%),
+    radial-gradient(circle at 78% 90%, color-mix(in srgb, var(--accent-600, #7c3aed) 14%, transparent) 0 22%, transparent 44%),
+    linear-gradient(135deg, color-mix(in srgb, var(--background) 92%, white), var(--background));
+}
+
+.dark .app-bg {
+  background:
+    radial-gradient(circle at 15% 8%, color-mix(in srgb, var(--accent-500, #f97316) 22%, transparent) 0 18%, transparent 34%),
+    radial-gradient(circle at 88% 14%, color-mix(in srgb, var(--chart-accent, #38bdf8) 18%, transparent) 0 20%, transparent 38%),
+    radial-gradient(circle at 78% 90%, color-mix(in srgb, var(--accent-600, #7c3aed) 18%, transparent) 0 22%, transparent 44%),
+    linear-gradient(135deg, #10141f, var(--background));
+}
+
+.glass-stage {
+  background: rgba(255, 255, 255, 0.045) !important;
+}
+
+.dark .glass-stage {
+  background: rgba(255, 255, 255, 0.025) !important;
+}
+
+.glass,
+.glass-strong,
+.glass-light {
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+  border: 1px solid var(--glass-border) !important;
+  background: var(--glass-bg) !important;
+  box-shadow:
+    inset 0 1px 0 var(--glass-highlight),
+    inset 0 -1px 0 rgba(255, 255, 255, 0.08),
+    0 18px 44px rgba(15, 23, 42, 0.12) !important;
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+  backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+}
+
+.glass-strong {
+  background: var(--glass-strong-bg) !important;
+  -webkit-backdrop-filter: blur(var(--glass-strong-blur)) saturate(var(--glass-strong-saturate));
+  backdrop-filter: blur(var(--glass-strong-blur)) saturate(var(--glass-strong-saturate));
+}
+
+.glass-light {
+  background: var(--glass-light-bg) !important;
+}
+
+.glass::before,
+.glass-strong::before,
+.glass-light::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.36), transparent 34%),
+    radial-gradient(circle at 18% 0%, rgba(255, 255, 255, 0.28), transparent 28%);
+  opacity: 0.72;
+}
+
+.dark .glass::before,
+.dark .glass-strong::before,
+.dark .glass-light::before {
+  opacity: 0.26;
+}
+
+.glass-inset {
+  background: var(--glass-inset-bg) !important;
+  border: 1px solid var(--glass-inset-border) !important;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.20);
+}
+
+.sidebar-item-selected {
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.30), rgba(255, 255, 255, 0.12)),
+    color-mix(in srgb, var(--accent-500, #f97316) 13%, transparent) !important;
+  border: 1px solid var(--chip-active-border);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.42),
+    0 7px 18px color-mix(in srgb, var(--accent-500, #f97316) 16%, transparent);
+  -webkit-backdrop-filter: blur(18px) saturate(160%);
+  backdrop-filter: blur(18px) saturate(160%);
+}
+
+.nav-motion-item:hover svg {
+  filter: drop-shadow(0 4px 10px color-mix(in srgb, var(--accent-500, #f97316) 28%, transparent));
+}
+
+.segmented-control,
+.log-filter-bar {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px;
+  border: 1px solid var(--glass-border);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.26);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.34);
+  -webkit-backdrop-filter: blur(18px) saturate(150%);
+  backdrop-filter: blur(18px) saturate(150%);
+}
+
+.dark .segmented-control,
+.dark .log-filter-bar {
+  background: rgba(255, 255, 255, 0.055);
+}
+
+.segmented-control-item,
+.log-filter-item {
+  display: inline-flex;
+  min-height: 30px;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  padding: 0 11px;
+  color: var(--muted-foreground);
+  font-size: 12px;
+  line-height: 1;
+  white-space: nowrap;
+  transition: background 160ms ease, border-color 160ms ease, color 160ms ease, box-shadow 160ms ease;
+}
+
+.segmented-control-item:hover,
+.log-filter-item:hover {
+  color: var(--foreground);
+  background: var(--chip-hover-bg);
+}
+
+.segmented-control-item.active,
+.log-filter-item.active {
+  color: var(--accent-500, #f97316);
+  background: var(--chip-active-bg);
+  border-color: var(--chip-active-border);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.38),
+    0 6px 18px color-mix(in srgb, var(--accent-500, #f97316) 10%, transparent);
+}
+
+.log-filter-count {
+  display: inline-flex;
+  min-width: 18px;
+  height: 18px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.35);
+  padding: 0 5px;
+  font-size: 11px;
+}
+
+.dark .log-filter-count {
+  background: rgba(255, 255, 255, 0.09);
+}
+
+.activity-calendar {
+  min-width: 0;
+}
+
+.activity-calendar-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 18px;
+}
+
+.activity-controls {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.activity-metric-tabs .segmented-control-item {
+  min-width: 58px;
+}
+
+.activity-calendar-frame {
+  position: relative;
+  border-radius: 14px;
+  border: 1px solid var(--glass-inset-border);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.18), rgba(255, 255, 255, 0.04)),
+    rgba(255, 255, 255, 0.08);
+  padding: 14px 14px 12px;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.18);
+}
+
+.dark .activity-calendar-frame {
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.055), rgba(255, 255, 255, 0.018)),
+    rgba(255, 255, 255, 0.025);
+}
+
+.activity-scroll {
+  max-width: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding-bottom: 2px;
+}
+
+.activity-svg {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  height: auto;
+}
+
+.activity-month-label {
+  fill: var(--muted-foreground);
+  font-size: 11px;
+}
+
+.activity-cell-svg {
+  fill: var(--activity-empty);
+  stroke: rgba(255, 255, 255, 0.38);
+  stroke-width: 1;
+  transition: fill 160ms ease, opacity 160ms ease, transform 160ms ease;
+  transform-box: fill-box;
+  transform-origin: center;
+}
+
+.activity-cell-svg:hover {
+  transform: translateY(-1px) scale(1.14);
+  stroke: color-mix(in srgb, var(--accent-500, #f97316) 54%, rgba(255, 255, 255, 0.60));
+}
+
+.activity-cell-svg[data-level="1"],
+.activity-legend-cell[data-level="1"] {
+  fill: var(--activity-l1);
+  background: var(--activity-l1);
+}
+
+.activity-cell-svg[data-level="2"],
+.activity-legend-cell[data-level="2"] {
+  fill: var(--activity-l2);
+  background: var(--activity-l2);
+}
+
+.activity-cell-svg[data-level="3"],
+.activity-legend-cell[data-level="3"] {
+  fill: var(--activity-l3);
+  background: var(--activity-l3);
+}
+
+.activity-cell-svg[data-level="4"],
+.activity-legend-cell[data-level="4"] {
+  fill: var(--activity-l4);
+  background: var(--activity-l4);
+}
+
+.activity-tooltip {
+  position: fixed;
+  z-index: 80;
+  max-width: 260px;
+  border: 1px solid var(--glass-border);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.82);
+  box-shadow: 0 14px 34px rgba(15, 23, 42, 0.16);
+  color: var(--foreground);
+  padding: 8px 10px;
+  font-size: 12px;
+  pointer-events: none;
+  -webkit-backdrop-filter: blur(18px) saturate(160%);
+  backdrop-filter: blur(18px) saturate(160%);
+}
+
+.dark .activity-tooltip {
+  background: rgba(21, 25, 34, 0.86);
+}
+
+.activity-legend {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 6px;
+  margin-top: 12px;
+  color: var(--muted-foreground);
+  font-size: 11px;
+}
+
+.activity-legend-cell {
+  display: inline-block;
+  width: 11px;
+  height: 11px;
+  border-radius: 3px;
+  background: var(--activity-empty);
+  border: 1px solid rgba(255, 255, 255, 0.35);
+}
+
+.activity-summary {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  margin-top: 16px;
+  border-top: 1px solid var(--glass-inset-border);
+  padding-top: 14px;
+}
+
+.activity-summary-item {
+  padding: 0 18px;
+}
+
+.activity-summary-item + .activity-summary-item {
+  border-left: 1px solid var(--glass-inset-border);
+}
+
+.install-status-strip {
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 12px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.09), rgba(255, 255, 255, 0.03)),
+    rgba(10, 13, 20, 0.84);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.11),
+    0 10px 24px rgba(15, 23, 42, 0.12);
+  color: rgba(255, 255, 255, 0.86);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  font-size: 12px;
+  line-height: 1.55;
+  padding: 10px 12px;
+}
+
+.install-status-strip > div + div {
+  color: rgba(148, 163, 184, 0.95);
+}
+
+:root[data-glass="off"] .glass,
+:root[data-glass="off"] .glass-strong,
+:root[data-glass="off"] .glass-light,
+:root[data-glass="off"] .segmented-control,
+:root[data-glass="off"] .log-filter-bar,
+:root[data-glass="off"] .activity-calendar-frame,
+:root[data-glass="off"] .activity-tooltip {
+  background: var(--card) !important;
+  -webkit-backdrop-filter: none !important;
+  backdrop-filter: none !important;
+}
+
+@media (max-width: 760px) {
+  .activity-summary {
+    grid-template-columns: 1fr;
+    gap: 12px;
+  }
+
+  .activity-summary-item {
+    border-left: 0 !important;
+    padding: 0;
+  }
+}
+
+/* Simplified translucent glass and AiMaMi-style activity panel */
+:root {
+  --glass-bg: rgba(255, 255, 255, 0.68);
+  --glass-strong-bg: rgba(255, 255, 255, 0.72);
+  --glass-light-bg: rgba(255, 255, 255, 0.54);
+  --glass-border: rgba(255, 255, 255, 0.82);
+  --glass-highlight: rgba(255, 255, 255, 0.70);
+  --glass-inset-bg: rgba(255, 255, 255, 0.46);
+  --glass-inset-border: rgba(15, 23, 42, 0.08);
+  --glass-blur: 22px;
+  --glass-strong-blur: 24px;
+  --glass-saturate: 130%;
+  --glass-strong-saturate: 135%;
+  --activity-empty: #eeeeef;
+  --activity-l1: #ffd9bf;
+  --activity-l2: #ffbc87;
+  --activity-l3: #ff9a46;
+  --activity-l4: #ff7418;
+}
+
+.dark {
+  --glass-bg: rgba(23, 27, 35, 0.62);
+  --glass-strong-bg: rgba(23, 27, 35, 0.70);
+  --glass-light-bg: rgba(23, 27, 35, 0.50);
+  --glass-border: rgba(255, 255, 255, 0.13);
+  --glass-highlight: rgba(255, 255, 255, 0.13);
+  --glass-inset-bg: rgba(255, 255, 255, 0.055);
+  --glass-inset-border: rgba(255, 255, 255, 0.10);
+  --activity-empty: rgba(255, 255, 255, 0.08);
+}
+
+.app-bg {
+  background:
+    radial-gradient(circle at 82% 16%, rgba(249, 115, 22, 0.11), transparent 34%),
+    radial-gradient(circle at 8% 12%, rgba(59, 130, 246, 0.08), transparent 28%),
+    linear-gradient(135deg, #f8fafc, #fff7ed 44%, #ffffff) !important;
+}
+
+.dark .app-bg {
+  background:
+    radial-gradient(circle at 82% 16%, rgba(249, 115, 22, 0.13), transparent 34%),
+    radial-gradient(circle at 8% 12%, rgba(59, 130, 246, 0.10), transparent 28%),
+    linear-gradient(135deg, #10141f, #151923) !important;
+}
+
+.glass-stage {
+  background: rgba(255, 255, 255, 0.08) !important;
+}
+
+.glass,
+.glass-strong,
+.glass-light {
+  background: var(--glass-bg) !important;
+  border-color: var(--glass-border) !important;
+  box-shadow:
+    inset 0 1px 0 var(--glass-highlight),
+    0 14px 30px rgba(15, 23, 42, 0.08) !important;
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+  backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+}
+
+.glass-strong {
+  background: var(--glass-strong-bg) !important;
+  -webkit-backdrop-filter: blur(var(--glass-strong-blur)) saturate(var(--glass-strong-saturate));
+  backdrop-filter: blur(var(--glass-strong-blur)) saturate(var(--glass-strong-saturate));
+}
+
+.glass-light {
+  background: var(--glass-light-bg) !important;
+}
+
+.glass::before,
+.glass-strong::before,
+.glass-light::before {
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.26), transparent 44%) !important;
+  opacity: 0.45 !important;
+}
+
+.activity-panel {
+  min-width: 0;
+}
+
+.activity-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 18px;
+}
+
+.activity-tabs,
+.activity-range-tabs {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  min-height: 30px;
+  border-radius: 999px;
+  background: rgba(15, 23, 42, 0.055);
+  padding: 3px;
+}
+
+.activity-tab-label,
+.activity-tab,
+.activity-range {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 24px;
+  border-radius: 999px;
+  padding: 0 12px;
+  color: var(--muted-foreground);
+  font-size: 12px;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.activity-tab,
+.activity-range {
+  transition: background 150ms ease, color 150ms ease, box-shadow 150ms ease;
+}
+
+.activity-tab:hover,
+.activity-range:hover {
+  color: var(--foreground);
+}
+
+.activity-tab.active,
+.activity-range.active {
+  background: rgba(255, 255, 255, 0.92);
+  color: var(--foreground);
+  box-shadow: 0 1px 5px rgba(15, 23, 42, 0.12);
+}
+
+.dark .activity-tabs,
+.dark .activity-range-tabs {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.dark .activity-tab.active,
+.dark .activity-range.active {
+  background: rgba(255, 255, 255, 0.14);
+  color: var(--foreground);
+}
+
+.activity-section-title {
+  margin: 4px 0 14px;
+  color: var(--foreground);
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.activity-calendar-frame {
+  border: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  padding: 0 20px 8px !important;
+}
+
+.activity-svg {
+  width: 100%;
+  min-width: 0;
+  height: auto;
+}
+
+.activity-month-label {
+  fill: var(--muted-foreground);
+  font-size: 10px;
+}
+
+.activity-cell-svg {
+  fill: var(--activity-empty);
+  stroke: transparent;
+  transition: fill 150ms ease, opacity 150ms ease, transform 150ms ease;
+  transform-box: fill-box;
+  transform-origin: center;
+}
+
+.activity-cell-svg[data-dimmed="true"] {
+  opacity: 0.34;
+}
+
+.activity-cell-svg[data-level="1"],
+.activity-legend-cell[data-level="1"] {
+  fill: var(--activity-l1);
+  background: var(--activity-l1);
+}
+
+.activity-cell-svg[data-level="2"],
+.activity-legend-cell[data-level="2"] {
+  fill: var(--activity-l2);
+  background: var(--activity-l2);
+}
+
+.activity-cell-svg[data-level="3"],
+.activity-legend-cell[data-level="3"] {
+  fill: var(--activity-l3);
+  background: var(--activity-l3);
+}
+
+.activity-cell-svg[data-level="4"],
+.activity-legend-cell[data-level="4"] {
+  fill: var(--activity-l4);
+  background: var(--activity-l4);
+}
+
+.activity-cell-svg:hover {
+  opacity: 1;
+  transform: scale(1.13);
+}
+
+.activity-legend {
+  justify-content: center;
+  margin-top: 10px;
+}
+
+.activity-legend-cell {
+  display: inline-block;
+  width: 11px;
+  height: 11px;
+  border: 0;
+  border-radius: 3px;
+  background: var(--activity-empty);
+}
+
+.activity-tools-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 190px;
+  gap: 28px;
+  align-items: center;
+  padding: 0 20px 6px;
+}
+
+.activity-tools-list {
+  min-width: 0;
+}
+
+.activity-tool-row {
+  display: grid;
+  grid-template-columns: 126px minmax(0, 1fr) 48px;
+  align-items: center;
+  gap: 10px;
+  margin: 8px 0;
+}
+
+.activity-tool-name {
+  overflow: hidden;
+  color: var(--muted-foreground);
+  font-size: 12px;
+  text-align: right;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.activity-tool-track {
+  height: 19px;
+  overflow: hidden;
+  border-radius: 4px;
+  background: rgba(15, 23, 42, 0.055);
+}
+
+.activity-tool-bar {
+  height: 100%;
+  border-radius: inherit;
+}
+
+.activity-tool-value {
+  color: var(--muted-foreground);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.activity-donut {
+  display: grid;
+  justify-items: center;
+  gap: 12px;
+}
+
+.activity-donut-ring {
+  width: 128px;
+  height: 128px;
+  border-radius: 999px;
+  background: conic-gradient(var(--chart-accent, #ff8a2a) 0 84%, #68c7ee 84% 100%);
+  position: relative;
+}
+
+.activity-donut-ring::after {
+  content: "";
+  position: absolute;
+  inset: 26px;
+  border-radius: inherit;
+  background: var(--glass-bg);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.55);
+}
+
+.activity-donut-center {
+  position: absolute;
+  display: grid;
+  margin-top: 39px;
+  justify-items: center;
+  font-size: 11px;
+}
+
+.activity-donut-center strong {
+  font-size: 17px;
+}
+
+.activity-donut-legend {
+  display: grid;
+  gap: 6px;
+  color: var(--muted-foreground);
+  font-size: 12px;
+}
+
+.activity-donut-legend span {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.activity-donut-legend i {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+}
+
+.activity-donut-legend .orange {
+  background: var(--chart-accent, #ff8a2a);
+}
+
+.activity-donut-legend .blue {
+  background: #68c7ee;
+}
+
+.activity-summary {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  margin-top: 18px;
+  border-top-color: rgba(15, 23, 42, 0.07);
+}
+
+@media (max-width: 880px) {
+  .activity-toolbar {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .activity-tools-layout {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* Final requested polish: animated flowing background, square shell bars, token chart */
+:root {
+  --flow-a: rgba(249, 115, 22, 0.18);
+  --flow-b: rgba(251, 113, 133, 0.14);
+  --flow-c: rgba(56, 189, 248, 0.12);
+  --flow-speed: 32s;
+}
+
+:root[data-flow-palette="aurora"] {
+  --flow-a: rgba(16, 185, 129, 0.18);
+  --flow-b: rgba(56, 189, 248, 0.14);
+  --flow-c: rgba(167, 139, 250, 0.14);
+}
+
+:root[data-flow-palette="ocean"] {
+  --flow-a: rgba(14, 165, 233, 0.16);
+  --flow-b: rgba(20, 184, 166, 0.14);
+  --flow-c: rgba(99, 102, 241, 0.12);
+}
+
+:root[data-flow-palette="mono"] {
+  --flow-a: rgba(148, 163, 184, 0.14);
+  --flow-b: rgba(203, 213, 225, 0.18);
+  --flow-c: rgba(100, 116, 139, 0.10);
+}
+
+:root[data-flow-speed="normal"] {
+  --flow-speed: 20s;
+}
+
+:root[data-flow-speed="fast"] {
+  --flow-speed: 11s;
+}
+
+.app-bg {
+  background:
+    radial-gradient(circle at 18% 14%, var(--flow-a), transparent 32%),
+    radial-gradient(circle at 82% 18%, var(--flow-b), transparent 34%),
+    radial-gradient(circle at 72% 88%, var(--flow-c), transparent 38%),
+    linear-gradient(135deg, #f8fafc, #fff7ed 44%, #ffffff) !important;
+  background-size: 180% 180%, 170% 170%, 190% 190%, 100% 100% !important;
+  animation: dtoken-bg-flow var(--flow-speed) ease-in-out infinite alternate !important;
+}
+
+.dark .app-bg {
+  background:
+    radial-gradient(circle at 18% 14%, color-mix(in srgb, var(--flow-a), transparent 12%), transparent 32%),
+    radial-gradient(circle at 82% 18%, color-mix(in srgb, var(--flow-b), transparent 10%), transparent 34%),
+    radial-gradient(circle at 72% 88%, color-mix(in srgb, var(--flow-c), transparent 8%), transparent 38%),
+    linear-gradient(135deg, #10141f, #151923) !important;
+}
+
+@keyframes dtoken-bg-flow {
+  0% {
+    background-position: 0% 18%, 100% 8%, 74% 100%, 0 0;
+  }
+  50% {
+    background-position: 38% 42%, 64% 46%, 34% 58%, 0 0;
+  }
+  100% {
+    background-position: 82% 20%, 14% 72%, 92% 24%, 0 0;
+  }
+}
+
+aside.glass-strong,
+header.glass-light {
+  border-radius: 0 !important;
+}
+
+header.glass-light::before,
+aside.glass-strong::before {
+  border-radius: 0 !important;
+}
+
+.activity-tab,
+.activity-range {
+  position: relative;
+  overflow: hidden;
+}
+
+.activity-tab-indicator {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.94);
+  box-shadow: 0 1px 5px rgba(15, 23, 42, 0.12);
+}
+
+.dark .activity-tab-indicator {
+  background: rgba(255, 255, 255, 0.14);
+}
+
+.token-trend-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 170px;
+  gap: 28px;
+  align-items: center;
+  padding: 0 20px 6px;
+}
+
+.token-chart {
+  min-width: 0;
+}
+
+.token-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  margin: -4px 0 10px;
+  color: var(--muted-foreground);
+  font-size: 12px;
+}
+
+.token-legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.token-legend i {
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+}
+
+.token-legend .bar {
+  background: #ff9a46;
+}
+
+.token-legend .line {
+  background: #ffd166;
+}
+
+.token-svg {
+  width: 100%;
+  height: auto;
+  min-height: 230px;
+}
+
+.token-grid-line {
+  stroke: rgba(15, 23, 42, 0.10);
+  stroke-dasharray: 7 7;
+}
+
+.dark .token-grid-line {
+  stroke: rgba(255, 255, 255, 0.12);
+}
+
+.token-bar {
+  fill: #ff9a46;
+  opacity: 0.9;
+}
+
+.token-line {
+  fill: none;
+  stroke: #ffd166;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 4;
+}
+
+.token-point {
+  fill: #ffd166;
+  stroke: rgba(255, 255, 255, 0.82);
+  stroke-width: 2;
+}
+
+.token-axis-label {
+  fill: var(--muted-foreground);
+  font-size: 12px;
+}
+
+.token-donut {
+  position: relative;
+  display: grid;
+  justify-items: center;
+  gap: 12px;
+}
+
+.token-donut-ring {
+  width: 126px;
+  height: 126px;
+  border-radius: 999px;
+  background: conic-gradient(#68c7ee 0 99%, #10b981 99% 100%);
+  position: relative;
+}
+
+.token-donut-ring::after {
+  content: "";
+  position: absolute;
+  inset: 28px;
+  border-radius: inherit;
+  background: var(--glass-bg);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.55);
+}
+
+.token-donut-center {
+  position: absolute;
+  top: 39px;
+  display: grid;
+  justify-items: center;
+  font-size: 11px;
+}
+
+.token-donut-center strong {
+  font-size: 17px;
+}
+
+.activity-donut-legend .green {
+  background: #10b981;
+}
+
+.activity-donut-legend .yellow {
+  background: #ffd166;
+}
+
+.activity-donut-legend b {
+  margin-left: auto;
+  color: var(--foreground);
+}
+
+@media (max-width: 880px) {
+  .token-trend-layout {
+    grid-template-columns: 1fr;
+  }
+}
+
+.activity-toolbar {
+  align-items: center !important;
+  flex-direction: row !important;
+  flex-wrap: wrap;
+}
+
+.activity-range-tabs {
+  margin-left: auto;
+}
+
+.token-trend-layout {
+  grid-template-columns: minmax(0, 1fr) 160px !important;
+  gap: 18px !important;
+}
+
+.activity-tools-layout {
+  grid-template-columns: minmax(0, 1fr) 170px !important;
+  gap: 20px !important;
+}

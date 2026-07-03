@@ -1,0 +1,82 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200" width="200" height="200">
+  <!-- 圆角方框背景 -->
+  <rect x="10" y="10" width="180" height="180" rx="28" ry="28" fill="#ffffff" stroke="#e6e6e6" stroke-width="1.5"/>
+
+  <!-- 尾巴 -->
+  <path d="M 150 145 Q 175 135 168 105 Q 162 80 145 88 Q 152 110 150 145 Z"
+        fill="#f29a4a" stroke="#1f1f1f" stroke-width="3" stroke-linejoin="round"/>
+  <!-- 尾巴白色纹路 -->
+  <path d="M 158 95 Q 162 100 160 108" fill="none" stroke="#ffffff" stroke-width="5" stroke-linecap="round"/>
+
+  <!-- 身体 -->
+  <path d="M 55 150 Q 50 110 75 95 L 130 95 Q 155 105 152 150 Z"
+        fill="#f29a4a" stroke="#1f1f1f" stroke-width="3" stroke-linejoin="round"/>
+
+  <!-- 左腿（前方抱硬币的爪子） -->
+  <path d="M 60 140 Q 50 145 52 158 Q 55 165 65 162 Q 70 155 70 145 Z"
+        fill="#ffffff" stroke="#1f1f1f" stroke-width="3" stroke-linejoin="round"/>
+
+  <!-- 右腿 -->
+  <path d="M 115 150 Q 110 162 120 165 Q 132 165 132 152 Z"
+        fill="#ffffff" stroke="#1f1f1f" stroke-width="3" stroke-linejoin="round"/>
+
+  <!-- 头 -->
+  <ellipse cx="95" cy="78" rx="48" ry="45" fill="#f29a4a" stroke="#1f1f1f" stroke-width="3"/>
+
+  <!-- 脸部白色 -->
+  <path d="M 75 78 Q 78 95 95 100 Q 112 95 115 78 Q 112 70 95 68 Q 78 70 75 78 Z"
+        fill="#ffffff" stroke="#1f1f1f" stroke-width="2.5" stroke-linejoin="round"/>
+
+  <!-- 左耳 -->
+  <path d="M 60 50 L 70 18 L 88 42 Z" fill="#f29a4a" stroke="#1f1f1f" stroke-width="3" stroke-linejoin="round"/>
+  <!-- 左耳内 -->
+  <path d="M 70 38 L 75 25 L 82 38 Z" fill="#ffc6b3"/>
+
+  <!-- 右耳 -->
+  <path d="M 130 50 L 120 18 L 102 42 Z" fill="#f29a4a" stroke="#1f1f1f" stroke-width="3" stroke-linejoin="round"/>
+  <!-- 右耳内 -->
+  <path d="M 120 38 L 115 25 L 108 38 Z" fill="#ffc6b3"/>
+
+  <!-- 头顶M型纹路 -->
+  <path d="M 78 38 L 88 50 L 95 42 L 102 50 L 112 38"
+        fill="none" stroke="#1f1f1f" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+
+  <!-- 左眼 -->
+  <ellipse cx="82" cy="80" rx="5" ry="6.5" fill="#1f1f1f"/>
+  <circle cx="83.5" cy="78" r="1.6" fill="#ffffff"/>
+
+  <!-- 右眼 -->
+  <ellipse cx="108" cy="80" rx="5" ry="6.5" fill="#1f1f1f"/>
+  <circle cx="109.5" cy="78" r="1.6" fill="#ffffff"/>
+
+  <!-- 鼻子 -->
+  <path d="M 93 90 L 97 90 L 95 93 Z" fill="#1f1f1f"/>
+
+  <!-- 嘴 -->
+  <path d="M 95 93 Q 92 96 90 94.5" fill="none" stroke="#1f1f1f" stroke-width="1.8" stroke-linecap="round"/>
+  <path d="M 95 93 Q 98 96 100 94.5" fill="none" stroke="#1f1f1f" stroke-width="1.8" stroke-linecap="round"/>
+
+  <!-- 腮红 -->
+  <ellipse cx="73" cy="92" rx="5" ry="2.5" fill="#ffb59a" opacity="0.7"/>
+  <ellipse cx="117" cy="92" rx="5" ry="2.5" fill="#ffb59a" opacity="0.7"/>
+
+  <!-- 表情线（兴奋） -->
+  <path d="M 78 100 Q 95 110 112 100" fill="none" stroke="#1f1f1f" stroke-width="2" stroke-linecap="round"/>
+
+  <!-- 橙色硬币 -->
+  <circle cx="70" cy="135" r="28" fill="#f29a4a" stroke="#1f1f1f" stroke-width="3"/>
+  <circle cx="70" cy="135" r="22" fill="none" stroke="#ffffff" stroke-width="2.5"/>
+
+  <!-- 硬币上的BSC标志（菱形） -->
+  <path d="M 70 124 L 80 135 L 70 146 L 60 135 Z" fill="#ffffff" stroke="#1f1f1f" stroke-width="2" stroke-linejoin="round"/>
+  <path d="M 70 129 L 76 135 L 70 141 L 64 135 Z" fill="#f29a4a"/>
+
+  <!-- 右手（抱着硬币） -->
+  <path d="M 95 122 Q 102 118 100 130 Q 96 138 88 134 Q 86 126 95 122 Z"
+        fill="#ffffff" stroke="#1f1f1f" stroke-width="3" stroke-linejoin="round"/>
+
+  <!-- 兴奋小线 -->
+  <line x1="42" y1="55" x2="48" y2="50" stroke="#f29a4a" stroke-width="3" stroke-linecap="round"/>
+  <line x1="38" y1="68" x2="44" y2="66" stroke="#f29a4a" stroke-width="3" stroke-linecap="round"/>
+  <line x1="42" y1="80" x2="48" y2="80" stroke="#f29a4a" stroke-width="3" stroke-linecap="round"/>
+</svg>
