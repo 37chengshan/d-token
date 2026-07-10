@@ -21,7 +21,7 @@ export function deriveTokenMetrics(beforeValue: number, afterValue: number): Tok
   };
 }
 
-export function aggregateTokenMetrics(rows: TokenMetricInput[]) {
+export function aggregateTokenMetrics(rows: readonly TokenMetricInput[]) {
   const totals = rows.reduce(
     (sum, row) => ({ before: sum.before + row.before, after: sum.after + row.after }),
     { before: 0, after: 0 },
@@ -35,4 +35,22 @@ export function deriveLatencyTotal(parts: Record<string, number>) {
       .reduce((total, part) => total + finiteNonNegative(part), 0)
       .toFixed(1),
   );
+}
+
+export function allocateIntegerTotal(totalValue: number, weightValues: number[]) {
+  const total = Math.round(finiteNonNegative(totalValue));
+  const weights = weightValues.map(finiteNonNegative);
+  const weightTotal = weights.reduce((sum, weight) => sum + weight, 0);
+  if (weightTotal === 0) return weights.map(() => 0);
+
+  const raw = weights.map((weight) => (total * weight) / weightTotal);
+  const allocated = raw.map(Math.floor);
+  let remainder = total - allocated.reduce((sum, value) => sum + value, 0);
+  const byLargestFraction = raw
+    .map((value, index) => ({ index, fraction: value - Math.floor(value) }))
+    .sort((a, b) => b.fraction - a.fraction || a.index - b.index);
+  for (let index = 0; index < remainder; index += 1) {
+    allocated[byLargestFraction[index].index] += 1;
+  }
+  return allocated;
 }
