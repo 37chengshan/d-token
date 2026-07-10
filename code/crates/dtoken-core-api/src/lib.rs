@@ -882,13 +882,71 @@ fn classify_upstream_status(status: StatusCode) -> &'static str {
     }
 }
 
+fn upstream_response_status(upstream: &UpstreamResult) -> StatusCode {
+    if upstream.error_category.as_deref() == Some("provider_timeout") {
+        return StatusCode::GATEWAY_TIMEOUT;
+    }
+    if upstream.error_category.is_some() {
+        return upstream
+            .status
+            .and_then(|status| StatusCode::from_u16(status).ok())
+            .filter(|status| status.is_client_error() || status.is_server_error())
+            .unwrap_or(StatusCode::BAD_GATEWAY);
+    }
+    upstream
+        .status
+        .and_then(|status| StatusCode::from_u16(status).ok())
+        .unwrap_or(StatusCode::OK)
+}
+
+fn mark_upstream_outcome(
+    upstream: &UpstreamResult,
+    request_log: &mut RequestLog,
+    event: &mut DtokenEvent,
+) {
+    if let Some(category) = upstream.error_category.as_ref() {
+        request_log.error = Some(category.clone());
+        request_log.output_tokens = Some(0);
+        event.status = EventStatus::Failed;
+        event.error_code = Some(category.clone());
+    }
+}
+
+fn require_openai_message(upstream: UpstreamResult, adapter: &str) -> UpstreamResult {
+    if upstream.error_category.is_some()
+        || upstream
+            .response
+            .pointer("/choices/0/message/content")
+            .and_then(Value::as_str)
+            .is_some()
+    {
+        return upstream;
+    }
+    UpstreamResult {
+        response: json!({
+            "error": {
+                "type": "provider_invalid_response",
+                "message": format!(
+                    "configured upstream returned success without choices[0].message.content required by the {adapter} adapter"
+                ),
+                "upstream_status": upstream.status
+            }
+        }),
+        status: upstream.status,
+        error_category: Some("provider_invalid_response".to_string()),
+    }
+}
+
 async fn forward_openai_chat(
     client: &reqwest::Client,
     provider: &dtoken_types::ProviderProfile,
     original_body: Value,
 ) -> UpstreamResult {
     let url = upstream_chat_url(&provider.base_url);
-    let mut request = client.post(url).json(&original_body);
+    let mut request = client
+        .post(url)
+        .timeout(std::time::Duration::from_millis(provider.timeout_ms.max(1)))
+        .json(&original_body);
     if provider.api_key_ref.is_some() {
         // api_key_ref is intentionally not dereferenced in this build; secrets stay outside logs.
         request = request.header("x-dtoken-api-key-ref", "[redacted]");
@@ -928,16 +986,23 @@ async fn forward_openai_chat(
                 },
             }
         }
-        Err(err) => UpstreamResult {
-            response: json!({
-                "error": {
-                    "type": "provider_network",
-                    "message": err.to_string()
-                }
-            }),
-            status: None,
-            error_category: Some("provider_network".to_string()),
-        },
+        Err(err) => {
+            let (category, message) = if err.is_timeout() {
+                ("provider_timeout", "configured upstream request timed out")
+            } else {
+                ("provider_network", "configured upstream request failed")
+            };
+            UpstreamResult {
+                response: json!({
+                    "error": {
+                        "type": category,
+                        "message": message
+                    }
+                }),
+                status: None,
+                error_category: Some(category.to_string()),
+            }
+        }
     }
 }
 
@@ -947,7 +1012,10 @@ async fn forward_openai_chat_stream(
     original_body: Value,
 ) -> Result<(u16, axum::http::HeaderMap, Body), UpstreamResult> {
     let url = upstream_chat_url(&provider.base_url);
-    let mut request = client.post(url).json(&original_body);
+    let mut request = client
+        .post(url)
+        .timeout(std::time::Duration::from_millis(provider.timeout_ms.max(1)))
+        .json(&original_body);
     if provider.api_key_ref.is_some() {
         // api_key_ref is intentionally not dereferenced in this build; secrets stay outside logs.
         request = request.header("x-dtoken-api-key-ref", "[redacted]");
@@ -995,16 +1063,23 @@ async fn forward_openai_chat_stream(
             headers.insert(CACHE_CONTROL, axum::http::HeaderValue::from_static("no-cache"));
             Ok((status_code, headers, Body::from_stream(stream)))
         }
-        Err(err) => Err(UpstreamResult {
-            response: json!({
-                "error": {
-                    "type": "provider_network",
-                    "message": err.to_string()
-                }
-            }),
-            status: None,
-            error_category: Some("provider_network".to_string()),
-        }),
+        Err(err) => {
+            let (category, message) = if err.is_timeout() {
+                ("provider_timeout", "configured upstream streaming request timed out")
+            } else {
+                ("provider_network", "configured upstream streaming request failed")
+            };
+            Err(UpstreamResult {
+                response: json!({
+                    "error": {
+                        "type": category,
+                        "message": message
+                    }
+                }),
+                status: None,
+                error_category: Some(category.to_string()),
+            })
+        }
     }
 }
 
@@ -1908,9 +1983,8 @@ async fn openai_chat_completions(
                         .into_response();
                 }
                 Err(upstream) => {
-                    request_log.error = upstream.error_category.clone();
-                    event.status = EventStatus::Failed;
-                    event.error_code = upstream.error_category.clone();
+                    mark_upstream_outcome(&upstream, &mut request_log, &mut event);
+                    let response_status = upstream_response_status(&upstream);
                     let response = json!({
                         "error": upstream.response["error"],
                         "dtoken": {
@@ -1946,11 +2020,13 @@ async fn openai_chat_completions(
                         }),
                         upstream.error_category.as_deref(),
                     );
-                    return Json(response).into_response();
+                    return (response_status, Json(response)).into_response();
                 }
             }
         }
         let upstream = forward_openai_chat(&state.http_client, provider, compression.body.clone()).await;
+        mark_upstream_outcome(&upstream, &mut request_log, &mut event);
+        let response_status = upstream_response_status(&upstream);
         let provider_status = if upstream.error_category.is_some() {
             EventStatus::Failed
         } else {
@@ -1996,7 +2072,7 @@ async fn openai_chat_completions(
             }),
             provider_error.as_deref(),
         );
-        return Json(response).into_response();
+        return (response_status, Json(response)).into_response();
     }
 
     let request_id = Uuid::new_v4();
@@ -2046,21 +2122,26 @@ async fn openai_responses(
             "stream": false
         });
         let compression = compress_for_route(decision.compression_policy.clone(), original_body);
-        let request_log = build_request_log(
+        let mut request_log = build_request_log(
             request_id,
             &decision,
             request.model.clone(),
             Protocol::OpenAi,
             &compression,
         );
-        let event = build_ledger_event(
+        let mut event = build_ledger_event(
             request_id,
             &decision,
             Protocol::OpenAi,
             Protocol::OpenAi,
             &compression,
         );
-        let upstream = forward_openai_chat(&state.http_client, provider, compression.body.clone()).await;
+        let upstream = require_openai_message(
+            forward_openai_chat(&state.http_client, provider, compression.body.clone()).await,
+            "OpenAI Responses",
+        );
+        mark_upstream_outcome(&upstream, &mut request_log, &mut event);
+        let response_status = upstream_response_status(&upstream);
         let provider_status = if upstream.error_category.is_some() {
             EventStatus::Failed
         } else {
@@ -2097,7 +2178,7 @@ async fn openai_responses(
             let text = upstream.response
                 .pointer("/choices/0/message/content")
                 .and_then(Value::as_str)
-                .unwrap_or("d-token-ok");
+                .expect("validated OpenAI message content");
             json!({
                 "id": format!("resp-{request_id}"),
                 "object": "response",
@@ -2141,7 +2222,7 @@ async fn openai_responses(
             }),
             provider_error.as_deref(),
         );
-        return Json(response).into_response();
+        return (response_status, Json(response)).into_response();
     }
 
     let request_id = Uuid::new_v4();
@@ -2161,7 +2242,7 @@ async fn anthropic_messages(
     State(state): State<AppState>,
     Json(body): Json<Value>,
 ) -> impl IntoResponse {
-    let Some(payload) = anthropic_route_payload(&state, body.clone()) else {
+    let Some(mut payload) = anthropic_route_payload(&state, body.clone()) else {
         let request_id = Uuid::new_v4();
         record_route_not_configured(&state, request_id, "anthropic");
         return (
@@ -2193,7 +2274,17 @@ async fn anthropic_messages(
             .into_response();
     }
 
-    let upstream = forward_openai_chat(&state.http_client, &payload.provider, payload.upstream_body.clone()).await;
+    let upstream = require_openai_message(
+        forward_openai_chat(
+            &state.http_client,
+            &payload.provider,
+            payload.upstream_body.clone(),
+        )
+        .await,
+        "Anthropic bridge",
+    );
+    mark_upstream_outcome(&upstream, &mut payload.request_log, &mut payload.event);
+    let response_status = upstream_response_status(&upstream);
     let provider_status = if upstream.error_category.is_some() {
         EventStatus::Failed
     } else {
@@ -2249,7 +2340,7 @@ async fn anthropic_messages(
         }),
         provider_error.as_deref(),
     );
-    Json(response).into_response()
+    (response_status, Json(response)).into_response()
 }
 
 async fn stats(State(state): State<AppState>) -> Json<Value> {
