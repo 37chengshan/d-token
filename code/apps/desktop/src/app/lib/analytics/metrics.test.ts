@@ -23,7 +23,13 @@ describe("analytics metric conservation", () => {
     const pipelineSaved = hr.pipeline.reduce((sum, row) => sum + row.tokens, 0);
     const historySaved = hr.history.reduce((sum, row) => sum + row.saved, 0);
 
-    expect(agentTotals).toEqual(hr.agentTotals);
+    expect(agentTotals).toEqual({
+      before: hr.agentTotals.before,
+      after: hr.agentTotals.after,
+      saved: hr.agentTotals.saved,
+      savingsPercent: hr.agentTotals.savingsPercent,
+    });
+    expect(hr.agents.reduce((sum, row) => sum + row.requests, 0)).toBe(hr.agentTotals.requests);
     expect(hr.tokens.saved).toBe(agentTotals.saved);
     expect(hr.tokens.savedPercent).toBe(agentTotals.savingsPercent);
     expect(hr.tokens.proxySaved + hr.tokens.cliSaved).toBe(hr.tokens.saved);
