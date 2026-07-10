@@ -8,17 +8,17 @@
 | 维度 | 现状 |
 |------|------|
 | PRD | 单一 living PRD，§18 已去计划化，指向本文件 |
-| 代码 | Rust workspace 13 crate + Tauri/React/Vite 桌面 App |
-| 已交付里程碑 | M1（no-touch 基基础）、M2（Headroom 只读集成）、M3（GUI MVP） |
-| 交付证据 | `M1_NO_TOUCH_DEV_FOUNDATION_REPORT.md`、`M2_EXTERNAL_READ_ONLY_INTEGRATION_REPORT.md`、`M3_GUI_CONTROL_PLANE_MVP_REPORT.md`、`M1_M3_DELIVERY_AUDIT.md` |
-| 当前 Node | M3 已完成，M4 未启动 |
+| 代码 | 13 个 Rust 业务 crate + 1 个 Tauri app crate + React 18/TypeScript/Vite 桌面 UI |
+| 已交付里程碑 | M1（no-touch 基础）、M2（Headroom 只读集成）、M3（GUI MVP） |
+| 交付证据 | `docs/history/M1_NO_TOUCH_DEV_FOUNDATION_REPORT.md`、`docs/history/M2_EXTERNAL_READ_ONLY_INTEGRATION_REPORT.md`、`docs/history/M3_GUI_CONTROL_PLANE_MVP_REPORT.md`、`docs/history/M1_M3_DELIVERY_AUDIT.md` |
+| 当前 Node | M4 实施中：真实 Rust route/runtime、桌面控制面和 macOS 打包已推进；安装事务、数据持久化和平台发布门禁未闭环 |
 | 历史路线图 | `docs/archive/ROADMAP_M0_M6_HISTORICAL.md`（M0–M6 原文快照） |
 
-当前 M4 细化计划：
+当前 M4 历史设计输入：
 
-- `docs/M4_REAL_CAPABILITY_OPENCODE_PLAN.md` — 真实能力接入计划，已完成多维度审查；当前执行线改为 OpenCode 原配置真实 routed test，证明 `OpenCode -> d-token -> upstream`。用户已授权 OpenCode 真实测试直接使用原本配置，不做隔离 HOME / fake config；OpenCode-only / fake-bin / direct command 只保留为诊断辅助；no-touch 约束继续保护外部 Headroom / RTK / cc-switch 和其它 agent 配置。
+- `docs/history/M4_REAL_CAPABILITY_OPENCODE_PLAN.md` — 当时的真实能力接入计划，作为历史设计和既有测试证据；当前执行状态与剩余工作以本文件、PRD 和 2026-07-10 前后端审查为准。
 
-代码现状盘点（M3 收尾时的骨架）：
+代码现状盘点（2026-07-11）：
 
 ```text
 code/crates/
@@ -26,34 +26,43 @@ code/crates/
   dtoken-process, dtoken-doctor, dtoken-event-ledger,
   dtoken-preprocessor, dtoken-headroom-adapter, dtoken-project-policy,
   dtoken-config-patcher, dtoken-core-api, dtoken-proxy
-code/apps/desktop/   Tauri 2 + React + Vite，UI 已覆盖 Dashboard/RTK/Headroom/Doctor/策略/回滚矩阵/i18n
-code/runtimes/headroom/   Headroom-derived runtime 落位占位
+code/apps/desktop/   Tauri 2 + React 18 + Vite，共享 Windows/macOS UI 与 native commands
+code/runtimes/headroom/   Headroom-derived runtime provenance/兼容边界（非 Python sidecar）
 support/fixtures/ support/fake-bin/   no-touch 测试资产
 .github/workflows/ci.yml   structure / cargo test / no-touch smoke / desktop build
+.github/workflows/macos-release.yml   macOS app/DMG、可选签名与 notarization workflow
 ```
 
-已知缺口（来自 M3 报告与交付审计）：
+当前已交付基础：
 
-1. Dashboard 前端仍使用静态 fixture 数据，**未接本地 API**。
-2. Headroom HTTP reader 已实现但 gated by `DTOKEN_HEADROOM_BASE_URL`，未在 GUI 暴露。
-3. 生产 Tauri 打包（bundling/installer）尚未启用，留给 M4。
-4. layered savings attribution 仍是 v0，统一 denominator 未落地。
-5. Windows GNU 工具链需 MSYS2 MinGW（`C:\msys64\mingw64\bin`），CI 用 Linux gate 保证跨平台。
+1. d-token-owned Rust local service 已提供 OpenAI Chat/Responses、Anthropic Messages、Dashboard、stats/history/metrics、Provider/Route/Instance、Doctor、Event/Logs/Export 与 Optical shadow APIs。
+2. Dashboard 主运行数据可以经 Tauri command 从 d-token local service 读取；浏览器预览仍使用示例数据并明确不代表真实运行时。
+3. 已有真实 OpenCode routed test 证据，证明过一次 `OpenCode -> d-token -> upstream`；本轮仍需在同一候选 commit 上复验。
+4. Tauri bundling 已启用：Windows NSIS，macOS `.app`/DMG；macOS workflow 已提供可选签名/notarization步骤。
+5. OS credential store 写入、引用和出站短生命周期读取已有 Rust 实现；仍需认证 Provider 的候选版实机证据。
+
+当前发布阻断：
+
+1. 安装/Agent 配置/回退尚未形成覆盖原子写入、语义验证、并发修改与故障注入的完整事务。
+2. `get_desktop_data` 等桌面聚合面仍有硬编码/多事实源，必须统一 runtime evidence、freshness 与 action result。
+3. JSONL 的坏行隔离、轮转、锁、损坏诊断与 SQLite 查询索引未完成。
+4. Provider 并发/背压/熔断、流式桥接完整性和 Doctor 全矩阵仍未达到稳定 Beta 门禁。
+5. macOS 需要把同一候选 commit 的窗口 UX、安装后 runtime、真实 OpenCode、artifact hash 与签名状态绑定；Windows 仍需安装包/凭据/路径/回退/视觉一致性实机验收。
 
 ## 1. 计划原则
 
 1. **PRD 主产品契约，PLAN 主执行节奏**：边界/验收改 PRD，任务拆解/排期改 PLAN。
-2. **No-touch 优先**：M4/M5 成品写操作也必须先在 fixture/fake-binary 下可跑、可测、可回滚，再开 Managed 真实路径。
+2. **事务优先**：任何真实写操作必须先有 fixture/fake-binary 故障验证、diff、backup、verify、rollback；真实路径仅在用户明确操作和受控边界内开启。
 3. **每个任务带 DoD**：Definition of Done = 可验证项 + 涉及文件 + 测试 + 回滚证据。
 4. **不破坏已交付里程碑**：M1–M3 验收项保持绿，新工作不得回退 no-touch 安全边界。
 5. **Windows/macOS 一等公民**：任何 install/patch/rollback 任务必须显式覆盖 UTF-8、盘符路径、项目名连字符、`.cmd` shim、xattr/quarantine。
 6. **无静默 fallback**：route/provider/安装失败必须可见、可解释、可审计。
 
-## 2. M4：Production Managed Installer
+## 2. M4：Production Managed Installer（实施中）
 
 目标：成品支持一键安装、图形化配置、可回滚。用户只需下载 d-token App，不用先装 Headroom/RTK。
 
-M4 的实际落地先走 `OpenCode Real Route Track`：使用用户原本 OpenCode 配置，不做隔离 HOME / fake config，把 OpenCode provider/baseURL 指向 d-token 自有端口，再由 d-token 完成压缩、路由、Event Ledger 和 upstream 转发。细化计划和多维度审查结论见 `docs/M4_REAL_CAPABILITY_OPENCODE_PLAN.md`。
+M4 的实际落地先走 `OpenCode Real Route Track`：使用用户原本 OpenCode 配置，不做隔离 HOME / fake config，把 OpenCode provider/baseURL 指向 d-token 自有端口，再由 d-token 完成压缩、路由、Event Ledger 和 upstream 转发。该链路已有一次历史真实证据，但必须在当前候选 commit 上重跑并与 App/runtime/ledger 证据关联。历史设计见 `docs/history/M4_REAL_CAPABILITY_OPENCODE_PLAN.md`。
 
 ### M4.S1 安装事务引擎（InstallationTransaction）
 
@@ -100,10 +109,10 @@ M4 的实际落地先走 `OpenCode Real Route Track`：使用用户原本 OpenCo
 
 ### M4.S6 前端接通本地 API
 
-- [ ] Dashboard 从 fixture 静态数据切到 `dtoken-core-api` 真实数据；保留 Fixture Demo Mode 作为默认安全入口。
+- [x] Tauri Dashboard 主路径从 `dtoken-core-api` 读取 d-token-owned runtime；浏览器模式保留为明确标识的 UI 预览。
 - [ ] InstallationTransaction / route decision / Doctor 状态在 GUI 实时可见。
-- [ ] Shadow Detect 仍默认禁用，避免误碰真实环境。
-- DoD：开发期默认 fixture，切换到 managed 后链路条 probe 完整可见。
+- [x] Optical shadow 默认关闭 active transform，仅提供 preview/metadata observability。
+- DoD：Tauri 窗口不以 fixture/硬编码冒充本机事实，managed 链路的 source/freshness/action result 完整可见。
 - 涉及：`code/apps/desktop/src/*`、`dtoken-core-api`。
 
 ### M4 验收（对齐 PRD §18 M4 与 §19）
@@ -117,10 +126,11 @@ M4 的实际落地先走 `OpenCode Real Route Track`：使用用户原本 OpenCo
 
 目标：可以放心让外部用户下载、覆盖安装、回滚、升级、排障。
 
-### M5.S1 打包与签名
+### M5.S1 打包与签名（构建配置已启用，发布证据未闭环）
 
-- [ ] Windows installer（Tauri MSI/NSIS，UTF-8、`.cmd` shim）。
-- [ ] macOS bundle + notarization + xattr quarantine 处理。
+- [x] Windows NSIS 与 macOS `.app`/DMG 的 Tauri bundle 配置。
+- [ ] Windows 安装后 UTF-8、路径、credential、`.cmd` shim 与回退实机验收。
+- [ ] macOS 签名/notarization、xattr/quarantine、安装后 runtime 与 artifact hash 绑定验收。
 - [ ] updater 通道与版本 provenance。
 - DoD：干净机器上下载即装、覆盖安装、回滚、升级四场景通过。
 
@@ -161,18 +171,50 @@ M4 的实际落地先走 `OpenCode Real Route Track`：使用用户原本 OpenCo
 - [ ] 保留必要 Headroom-compatible 迁移层，可逐模块灰度替换并回退。
 - DoD：每个模块替换前有对比基准 + 回退路径；用户仍只下载 d-token App。
 
+## 4A. Experimental Track：Hybrid Context Optimization / Optical
+
+定位：Optical 是混合上下文优化引擎中的一种有损 codec，当前只允许 shadow preview 和 metadata-only observability，不进入生产请求改写。
+
+截至 2026-07-11 已完成：
+
+- [x] 安全默认关闭的全局/路由策略与版本化 Capability Snapshot。
+- [x] Capability 生命周期：schema v1、active/revoked/superseded、撤销 revision 屏障、重复 snapshot ID 阻断。
+- [x] Request-local TextArena、真实文本风险分类、Capability-driven geometry、selected-only economics。
+- [x] Anthropic 工具依赖图、并行 tool use/result、orphan/duplicate/recent-tail fail-closed。
+- [x] OpenAI Chat `tool_calls` / `tool` 的独立 inventory 与状态机 lowering；尚未接入 active 决策。
+- [x] Raw request bytes SHA-256 与 Canonical JSON SHA-256 v1 计划证据。
+- [x] Preview、Status、Capabilities、Capability Lifecycle、Recent Events API。
+- [x] metadata-only 事件：状态、模式、候选计数、图计数、经济摘要和 Capability 规则计数。
+- [x] `support/pending-commits.json` schema v2：阶段、时间、文件、验证、共享文件暂存方式、是否提交、提交哈希。
+
+下一实施顺序：
+
+1. Snapshot authority/signature/trust source 与只读 revocation audit。
+2. 在 HTTP ingress 保留真正的原始请求 bytes，并将 raw-byte fingerprint 接入 Preview Plan。
+3. OpenAI Provider-specific planner 保持 shadow-only，增加 malformed/parallel/adversarial fixture。
+4. Economics 从单点估算升级为 P10 / Expected / P90 区间。
+5. 在现有上下文优化信息架构中展示 public summary、lifecycle 和 recent events，不新增面向用户的实验室顶级导航。
+6. Fidelity corpus、renderer feature flag、Anthropic patcher、post-execution validator、rollback。
+
+发布禁令：在 renderer、patcher、post-validator、rollback 和真实模型 fidelity gate 完成前，禁止开启 production active transform。
+
+事实源：
+
+- `docs/experiments/OPTICAL_HYBRID_CONTEXT_OPTIMIZATION_PLAN_V7.md`
+- `docs/optical/implementation-status.md`
+- `docs/optical/review-round-5.md`
+- `support/pending-commits.json`
+
 ## 5. CI Gate（贯穿 M4–M6）
 
-当前 `.github/workflows/ci.yml` 已含 structure / cargo test / no-touch smoke / desktop build。计划延续并加强：
+当前 `.github/workflows/ci.yml` 已含 structure、前端 test/typecheck/build、Rust fmt/clippy/test 和 no-touch fixture smoke；`macos-release.yml` 增加 macOS bundle 与可选签名/notarization。计划延续并加强：
 
 1. `python support/scripts/check_structure.py` —— 目录边界。
 2. `cargo fmt --all -- --check` / `cargo check --workspace --tests` / `cargo test --workspace`。
 3. no-touch fixture smoke（`support/scripts/run_fixture_tests.*`）。
 4. `npm run build`（`code/apps/desktop`）。
 5. M4 起：InstallationTransaction 回滚单测、Install Doctor 静态检查。
-6. M5 起：E2E 兼容套件子集、Windows/macOS 打包构建（条件 gate）。
-
-本地 Windows GNU 工具链约定：`C:\msys64\mingw64\bin` 在 PATH（`dlltool.exe` / `gcc.exe`），交叉平台一致性靠 Linux CI gate。
+6. M5：E2E 兼容套件、Windows installer 与 macOS 签名产物成为候选版硬门禁。
 
 ## 6. 风险与对策
 
@@ -183,11 +225,11 @@ M4 的实际落地先走 `OpenCode Real Route Track`：使用用户原本 OpenCo
 | Windows 路径/编码 | 覆盖安装回滚失败、项目名连字符误反推 | UTF-8 强制 + session `cwd`/显式 project root 优先 + `.cmd` shim fallback + CI 加 Windows 兼容用例 |
 | no-touch 边界被 Managed 写穿 | 开发期破坏本机环境 | InstallationTransaction 不在开发默认路径生效；fixture/fake-binary 为 gate |
 | savings 双计 | Dashboard 误导、对外不可解释 | M6 native ledger 统一 denominator，禁止 rtk+runtime 直接相加（PRD §10） |
-| 打包/签名复杂度 | M5 延期 | M4 先打通事务与回滚，打包单独切片；Tauri bundling 在 M4 末再启 |
+| 打包/签名复杂度 | 构建配置存在但被误判为可发布 | 同一候选 commit 绑定签名、notarization、artifact hash、安装后运行与实机验收 |
 
 ## 7. 文档维护约定
 
-- 新里程碑交付后写交付报告 `docs/M{n}_*.md` 并更新本文件 §0 当前坐标。
+- 新里程碑交付后写交付报告 `docs/history/M{n}_*.md` 并更新本文件 §0 当前坐标。
 - `docs/index.md` 同步增删条目。
 - 旧计划只进 `docs/archive/`，不就地改写历史。
 - PRD 边界变更先于 PLAN：先改 PRD，再在 PLAN 引用新契约，避免计划与产品真理源漂移。

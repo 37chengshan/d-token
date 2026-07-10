@@ -20,12 +20,13 @@ import {
 import { useI18n, useT } from "../../lib/i18n";
 import { changes, backups, ownership } from "../../lib/fixtures";
 import { invokeNative, type NativeActionResult } from "../../lib/native";
+import { classifyEvidence } from "../../lib/state/evidence";
 
 export function Changes() {
   const t = useT();
   const { lang } = useI18n();
   const [desktopData, setDesktopData] = useState<Record<string, any> | null>(null);
-  const [source, setSource] = useState<"loading" | "desktop" | "browser-preview" | "unavailable">("loading");
+  const [source, setSource] = useState<ChangeSource>("loading");
   const [notice, setNotice] = useState("");
   const [hiddenChanges, setHiddenChanges] = useState<Set<string>>(new Set());
   const [pendingAction, setPendingAction] = useState<PendingAction | null>(null);
@@ -35,7 +36,7 @@ export function Changes() {
     try {
       const next = await invokeNative<Record<string, any>>("get_desktop_data");
       setDesktopData(next);
-      setSource("desktop");
+      setSource(sourceFromDesktopPayload(next));
     } catch (error) {
       setSource(error instanceof Error && error.message === "native_unavailable" ? "browser-preview" : "unavailable");
     }
@@ -48,7 +49,7 @@ export function Changes() {
         const next = await invokeNative<Record<string, any>>("get_desktop_data");
         if (!cancelled) {
           setDesktopData(next);
-          setSource("desktop");
+          setSource(sourceFromDesktopPayload(next));
         }
       } catch (error) {
         if (!cancelled) {
@@ -82,10 +83,14 @@ export function Changes() {
     source === "desktop"
       ? `d-token 桌面端 · ${pendingChanges.length} 项待处理 · ${backupRows.length} 个回滚点`
       : source === "browser-preview"
-        ? "浏览器预览 · 示例数据"
+        ? "浏览器预览 · 不可执行"
         : source === "loading"
           ? "正在读取 d-token 桌面数据"
-          : "桌面数据不可用";
+          : source === "stale"
+            ? "桌面数据已过期 · 动作已锁定"
+            : source === "partial"
+              ? "桌面数据不完整 · 动作已锁定"
+              : "桌面数据不可用";
 
   const approve = async (change: UiChange) => {
     try {
@@ -126,6 +131,10 @@ export function Changes() {
   const rollback = async (id: string) => {
     try {
       const result = await invokeNative<NativeActionResult>("manage_backup", { action: "restore", id });
+      if (!result.ok) {
+        setNotice(result.summary || "回退失败，当前配置保持不变。");
+        return;
+      }
       setNotice(result.summary);
       await refreshDesktopData();
     } catch (error) {
@@ -163,7 +172,10 @@ export function Changes() {
     <div className="space-y-6">
       <div className="flex flex-wrap items-center gap-3">
         <h1>{t("ch.title")}</h1>
-        <DataSourceBadge />
+        <DataSourceBadge
+          mode={source === "desktop" ? "native" : source === "unavailable" || source === "stale" || source === "partial" ? "unavailable" : "preview"}
+          label={source === "desktop" ? "真实桌面数据" : sourceLabel}
+        />
         <Badge variant={source === "desktop" ? "default" : "secondary"}>{sourceLabel}</Badge>
       </div>
       {notice && <div className="glass-inset p-3 text-sm text-muted-foreground">{notice}</div>}
@@ -175,6 +187,16 @@ export function Changes() {
       {source === "unavailable" && (
         <div className="rounded-md border border-rose-500/25 bg-rose-500/[0.06] px-4 py-3 text-sm text-rose-700 dark:text-rose-200">
           无法读取桌面端真实变更数据。为保护本地配置，所有动作已锁定。
+        </div>
+      )}
+      {source === "stale" && (
+        <div className="rounded-md border border-amber-500/25 bg-amber-500/[0.06] px-4 py-3 text-sm text-amber-800 dark:text-amber-200">
+          桌面数据已过期，不能作为当前配置证据。批准、拒绝和回退均已锁定。
+        </div>
+      )}
+      {source === "partial" && (
+        <div className="rounded-md border border-amber-500/25 bg-amber-500/[0.06] px-4 py-3 text-sm text-amber-800 dark:text-amber-200">
+          桌面数据不完整，无法确认影响范围与恢复保障。批准、拒绝和回退均已锁定。
         </div>
       )}
 
@@ -189,7 +211,7 @@ export function Changes() {
         <TabsContent value="pending" className="mt-4 space-y-3">
           {pendingChanges.map((c) => {
             const approvalGate = getApprovalGate(source, c, verifiedBackups);
-            const rejectAllowed = source === "desktop" && c.id.length > 0;
+            const rejectGate = getRejectGate(source, c);
             return (
               <GlassCard key={c.id} className="p-4">
                 <div className="flex flex-wrap items-center justify-between gap-2">
@@ -199,8 +221,8 @@ export function Changes() {
                     <Button
                       size="sm"
                       variant="outline"
-                      disabled={!rejectAllowed}
-                      title={rejectAllowed ? "先查看影响，再确认拒绝" : sourceActionBlockedReason(source)}
+                      disabled={!rejectGate.allowed}
+                      title={rejectGate.allowed ? "先查看影响，再确认拒绝" : rejectGate.reason}
                       onClick={() => setPendingAction({ kind: "reject", change: c })}
                     >
                       <X className="size-3.5" />{t("ch.reject")}
@@ -351,7 +373,7 @@ function ConfirmationRow({ label, value }: { label: string; value: string }) {
   );
 }
 
-type ChangeSource = "loading" | "desktop" | "browser-preview" | "unavailable";
+type ChangeSource = "loading" | "desktop" | "browser-preview" | "unavailable" | "stale" | "partial";
 
 type PendingAction =
   | { kind: "approve"; change: UiChange }
@@ -400,7 +422,21 @@ function sourceActionBlockedReason(source: ChangeSource): string {
   if (source === "browser-preview") return "浏览器预览只展示示例，不能执行真实动作。";
   if (source === "loading") return "正在读取桌面端真实数据，请稍候。";
   if (source === "unavailable") return "桌面端真实数据不可用，动作已锁定。";
+  if (source === "stale") return "桌面端数据已过期，不能作为当前状态证据。";
+  if (source === "partial") return "桌面端数据不完整，无法确认动作影响。";
   return "";
+}
+
+function sourceFromDesktopPayload(payload: Record<string, any> | null): ChangeSource {
+  const evidence = classifyEvidence({
+    payload,
+    status: "native",
+    requireRuntimeIdentity: true,
+    requireTransactionProvenance: true,
+  });
+  if (evidence === "verified") return "desktop";
+  if (evidence === "preview") return "browser-preview";
+  return evidence;
 }
 
 function getApprovalGate(source: ChangeSource, change: UiChange, verifiedBackups: UiBackup[]): ActionGate {
@@ -409,6 +445,12 @@ function getApprovalGate(source: ChangeSource, change: UiChange, verifiedBackups
   if (verifiedBackups.length === 0) {
     return { allowed: false, reason: "需要已验证的回滚点后才能批准此变更。" };
   }
+  return { allowed: true, reason: "" };
+}
+
+function getRejectGate(source: ChangeSource, change: UiChange): ActionGate {
+  if (source !== "desktop") return { allowed: false, reason: sourceActionBlockedReason(source) };
+  if (!change.id || !change.safetyComplete) return { allowed: false, reason: "变更详情不完整，已阻止拒绝。" };
   return { allowed: true, reason: "" };
 }
 
@@ -458,8 +500,9 @@ function buildConfirmation(
   }
 
   if (action.kind === "reject") {
-    const allowed = source === "desktop" && action.change.id.length > 0;
-    const blockedReason = allowed ? "" : sourceActionBlockedReason(source) || "变更标识不完整，已阻止拒绝动作。";
+    const gate = getRejectGate(source, action.change);
+    const allowed = gate.allowed;
+    const blockedReason = gate.reason;
     return lang === "zh"
       ? {
           allowed,
@@ -509,7 +552,8 @@ function buildConfirmation(
 
 function buildChanges(data: Record<string, any> | null, source: string): UiChange[] {
   const drafts = Array.isArray(data?.routeDrafts) ? data.routeDrafts : [];
-  if (source === "desktop" && drafts.length > 0) {
+  const hasNativePayload = source === "desktop" || source === "stale" || source === "partial";
+  if (hasNativePayload && drafts.length > 0) {
     return drafts.map((draft: any) => {
       const config = draft.config ?? {};
       const route = Array.isArray(config.routes) ? config.routes[0] : {};
@@ -541,7 +585,7 @@ function buildChanges(data: Record<string, any> | null, source: string): UiChang
   }
 
   const rows = Array.isArray(data?.changes) ? data.changes : [];
-  if (source === "desktop" && rows.length > 0) {
+  if (hasNativePayload && rows.length > 0) {
     return rows.map((row: any) => {
       const diff = Array.isArray(row.diff) ? row.diff : [];
       const before = diff.filter((item: any) => item.type === "ctx" || item.type === "remove").map((item: any) => safeText(item.text, "")).join("\n") || "[d-token route plan]";
@@ -571,9 +615,10 @@ function buildChanges(data: Record<string, any> | null, source: string): UiChang
 
 function buildBackups(data: Record<string, any> | null, source: string): UiBackup[] {
   const rows = Array.isArray(data?.backupPoints) ? data.backupPoints : [];
-  if (source === "desktop" && rows.length > 0) {
+  const hasNativePayload = source === "desktop" || source === "stale" || source === "partial";
+  if (hasNativePayload && rows.length > 0) {
     return rows.map((row: any) => {
-      const verified = row.verified === true;
+      const verified = source === "desktop" && row.verified === true;
       return {
         id: safeText(row.id, "local-plan"),
         time: safeText(row.when, "local"),
@@ -581,12 +626,14 @@ function buildBackups(data: Record<string, any> | null, source: string): UiBacku
         ports: [18001],
         procs: 0,
         before: verified ? "healthy" : "warning",
-        after: "healthy",
+        after: verified ? "healthy" : "warning",
         verified,
       };
     });
   }
-  return source === "browser-preview" ? backups.map((backup) => ({ ...backup, verified: false })) : [];
+  return source === "browser-preview"
+    ? backups.map((backup) => ({ ...backup, before: "warning", after: "warning", verified: false }))
+    : [];
 }
 
 function normalizeRisk(value: unknown): "low" | "medium" | "high" {

@@ -21,8 +21,11 @@ use dtoken_project_policy::{
 };
 use dtoken_types::{
     AgentSupportProfile, BaselineKind, ChainMode, CompressionPolicy, DtokenEvent, EventSource,
-    EventStatus, HealthResponse, LayeredSavingsReport, LayeredStage, Protocol,
-    ProtocolInjectionProfile, RequestLog, RouteDecision, SupportLevel,
+    EventStatus, HealthResponse, LayeredSavingsReport, LayeredStage, OpticalApplicabilityInput,
+    OpticalCapabilitiesPublicSummary, OpticalCapabilityLifecyclePublicSummary, OpticalEndpoint,
+    OpticalEventMetadataPublicSummary, OpticalEventPublicSummary, OpticalMode,
+    OpticalPlanPublicSummary, OpticalPlanStatus, OpticalPreviewRequest, OpticalStatusPublicSummary,
+    Protocol, ProtocolInjectionProfile, RequestLog, RouteDecision, SupportLevel,
 };
 use futures_util::TryStreamExt;
 use reqwest::StatusCode;
@@ -495,6 +498,20 @@ pub fn build_router(state: AppState) -> Router {
         .route("/headroom/mcp", get(headroom_mcp))
         .route("/headroom/stats", get(headroom_stats))
         .route("/headroom/cache-summary", get(headroom_cache_summary))
+        .route("/compression/optical/preview", post(optical_preview))
+        .route("/compression/optical/status", get(optical_status))
+        .route(
+            "/compression/optical/capabilities",
+            get(optical_capabilities),
+        )
+        .route(
+            "/compression/optical/capabilities/lifecycle",
+            get(optical_capability_lifecycle),
+        )
+        .route(
+            "/compression/optical/events/recent",
+            get(optical_recent_events),
+        )
         .route("/projects", get(projects))
         .route("/projects/default-policy", get(project_default_policy))
         .route(
@@ -513,6 +530,227 @@ pub fn build_router(state: AppState) -> Router {
         .route("/protocol-injection", get(protocol_injection))
         .layer(middleware::from_fn(loopback_request_guard))
         .with_state(state)
+}
+
+async fn optical_preview(
+    State(state): State<AppState>,
+    Json(request): Json<OpticalPreviewRequest>,
+) -> Json<OpticalPlanPublicSummary> {
+    let global_policy = state.config.optical.global_policy.clone();
+    let route_policy = request
+        .route_id
+        .as_deref()
+        .and_then(|route_id| state.config.find_optical_route_policy(route_id))
+        .cloned()
+        .unwrap_or_default();
+    let route_policy_found = request
+        .route_id
+        .as_deref()
+        .and_then(|route_id| state.config.find_optical_route_policy(route_id))
+        .is_some();
+    let registry = dtoken_compress::optical::OpticalCapabilityRegistry::from_snapshots(
+        state.config.optical.capability_snapshots.clone(),
+    );
+    let body_bytes = serde_json::to_vec(&request.body)
+        .map(|body| body.len())
+        .unwrap_or_default();
+    let applicability_input = OpticalApplicabilityInput {
+        method: Some("POST".to_string()),
+        endpoint_path: Some(request.endpoint_path.clone()),
+        body_bytes: Some(body_bytes),
+        protocol: request.protocol.clone(),
+        provider_id: request.provider_id.clone(),
+        route_id: request.route_id.clone(),
+        model: request.model.clone(),
+        global_enabled: global_policy.enabled,
+        route_enabled: route_policy.enabled,
+    };
+    let request_id = Uuid::new_v4();
+    let plan_id = request_id.to_string();
+    let build = dtoken_compress::optical::build_shadow_plan_detailed_with_registry(
+        &plan_id,
+        &request.body,
+        &global_policy,
+        &route_policy,
+        &applicability_input,
+        &registry,
+    );
+
+    record_optical_preview_event(&state, request_id, &build, &registry, route_policy_found);
+    Json(build.summary)
+}
+
+async fn optical_status(State(state): State<AppState>) -> Json<OpticalStatusPublicSummary> {
+    let policy = state.config.optical.global_policy.clone();
+
+    Json(OpticalStatusPublicSummary {
+        enabled: policy.enabled,
+        // The current runtime implements a shadow planner, not an active request transform.
+        // Configuration intent must not be surfaced as implemented capability.
+        default_mode: OpticalMode::ShadowPreview,
+        allow_active: false,
+        public_summary_only: true,
+        fail_closed: true,
+    })
+}
+
+async fn optical_capabilities(
+    State(_state): State<AppState>,
+) -> Json<OpticalCapabilitiesPublicSummary> {
+    Json(OpticalCapabilitiesPublicSummary {
+        shadow_preview_supported: true,
+        // Verified snapshots improve shadow estimation only. They do not install a renderer,
+        // request patcher, post-validator, or rollback path.
+        active_transform_enabled: false,
+        max_mode: OpticalMode::ShadowPreview,
+        supported_endpoints: vec![
+            OpticalEndpoint::AnthropicMessages,
+            OpticalEndpoint::OpenAiChatCompletions,
+            OpticalEndpoint::OpenAiResponses,
+        ],
+        unknown_model_status: dtoken_types::CapabilityStatus::ShadowOnly,
+        unsupported_path_status: dtoken_types::CapabilityStatus::Blocked,
+        public_summary_only: true,
+        fail_closed: true,
+    })
+}
+
+async fn optical_capability_lifecycle(
+    State(state): State<AppState>,
+) -> Json<OpticalCapabilityLifecyclePublicSummary> {
+    let snapshots = &state.config.optical.capability_snapshots;
+    let registry =
+        dtoken_compress::optical::OpticalCapabilityRegistry::from_snapshots(snapshots.clone());
+    Json(OpticalCapabilityLifecyclePublicSummary {
+        schema_version: 1,
+        configured_snapshots: snapshots.len(),
+        // "Active" means accepted by the registry, not merely labelled active in JSON.
+        active_snapshots: registry.verified_rule_count(),
+        revoked_snapshots: registry.revoked_rule_count(),
+        superseded_snapshots: registry.superseded_rule_count(),
+        verified_rules: registry.verified_rule_count(),
+        rejected_rules: registry.rejected_rule_count(),
+    })
+}
+
+fn record_optical_preview_event(
+    state: &AppState,
+    request_id: Uuid,
+    build: &dtoken_compress::optical::ShadowPlanBuild,
+    registry: &dtoken_compress::optical::OpticalCapabilityRegistry,
+    route_policy_found: bool,
+) {
+    let event_status = match &build.summary.final_status {
+        dtoken_types::OpticalPlanStatus::ValidatedShadowPlan
+        | dtoken_types::OpticalPlanStatus::ValidatedActivePlan => EventStatus::Ok,
+        dtoken_types::OpticalPlanStatus::Ineligible => EventStatus::Skipped,
+        dtoken_types::OpticalPlanStatus::FailedClosed => EventStatus::Failed,
+        dtoken_types::OpticalPlanStatus::Disabled => EventStatus::Disabled,
+    };
+    let graph = build.plan.graph_summary();
+    append_stage_event(
+        state,
+        request_id,
+        LayeredStage::OpticalPreview,
+        event_status,
+        json!({
+            "kind": "optical_preview",
+            "final_status": build.summary.final_status.clone(),
+            "mode": build.summary.mode.clone(),
+            "candidate_blocks": build.summary.counters.candidate_blocks,
+            "preserved_blocks": build.summary.counters.preserved_blocks,
+            "skipped_blocks": build.summary.counters.skipped_blocks,
+            "estimated_images": build.summary.counters.estimated_images,
+            "economics": build.summary.economics.clone(),
+            "graph_nodes": graph.nodes,
+            "graph_edges": graph.edges,
+            "tool_dependency_edges": graph.tool_dependency_edges,
+            "closed_tool_results": graph.closed_tool_results,
+            "orphan_tool_results": graph.orphan_tool_results,
+            "open_tool_uses": graph.open_tool_uses,
+            "route_policy_found": route_policy_found,
+            "configured_rules": registry.configured_rule_count(),
+            "verified_rules": registry.verified_rule_count(),
+            "rejected_rules": registry.rejected_rule_count(),
+            "snapshot_revision_present": build.plan.capability_revision().is_some()
+        }),
+        None,
+    );
+}
+async fn optical_recent_events(
+    State(state): State<AppState>,
+) -> Json<Vec<OpticalEventPublicSummary>> {
+    Json(
+        state
+            .recent_events(200)
+            .into_iter()
+            .filter(|event| event.stage == LayeredStage::OpticalPreview)
+            .map(optical_event_public_summary)
+            .collect(),
+    )
+}
+
+fn optical_event_public_summary(event: DtokenEvent) -> OpticalEventPublicSummary {
+    let metadata = &event.metadata;
+    let final_status = metadata
+        .get("final_status")
+        .cloned()
+        .and_then(|value| serde_json::from_value::<OpticalPlanStatus>(value).ok())
+        .map(|status| match status {
+            OpticalPlanStatus::ValidatedActivePlan => OpticalPlanStatus::FailedClosed,
+            other => other,
+        })
+        .unwrap_or(OpticalPlanStatus::Disabled);
+    let mut public_metadata = OpticalEventMetadataPublicSummary {
+        kind: "optical_preview".to_string(),
+        final_status,
+        mode: OpticalMode::ShadowPreview,
+        raw_available: false,
+        ..Default::default()
+    };
+    public_metadata.candidate_blocks = metadata_usize(metadata, "candidate_blocks");
+    public_metadata.preserved_blocks = metadata_usize(metadata, "preserved_blocks");
+    public_metadata.skipped_blocks = metadata_usize(metadata, "skipped_blocks");
+    public_metadata.estimated_images = metadata_usize(metadata, "estimated_images");
+    public_metadata.net_saved_tokens = metadata
+        .get("economics")
+        .and_then(|economics| economics.get("net_saved_tokens"))
+        .and_then(Value::as_i64)
+        .and_then(|value| isize::try_from(value).ok())
+        .unwrap_or_default();
+    public_metadata.graph_nodes = metadata_usize(metadata, "graph_nodes");
+    public_metadata.graph_edges = metadata_usize(metadata, "graph_edges");
+    public_metadata.tool_dependency_edges = metadata_usize(metadata, "tool_dependency_edges");
+    public_metadata.closed_tool_results = metadata_usize(metadata, "closed_tool_results");
+    public_metadata.orphan_tool_results = metadata_usize(metadata, "orphan_tool_results");
+    public_metadata.open_tool_uses = metadata_usize(metadata, "open_tool_uses");
+    public_metadata.route_policy_found = metadata
+        .get("route_policy_found")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    public_metadata.configured_rules = metadata_usize(metadata, "configured_rules");
+    public_metadata.verified_rules = metadata_usize(metadata, "verified_rules");
+    public_metadata.rejected_rules = metadata_usize(metadata, "rejected_rules");
+    public_metadata.snapshot_revision_present = metadata
+        .get("snapshot_revision_present")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+
+    OpticalEventPublicSummary {
+        event_id: event.event_id,
+        timestamp_ms: event.timestamp_ms,
+        stage: event.stage,
+        status: event.status,
+        metadata: public_metadata,
+    }
+}
+
+fn metadata_usize(metadata: &Value, key: &str) -> usize {
+    metadata
+        .get(key)
+        .and_then(Value::as_u64)
+        .and_then(|value| usize::try_from(value).ok())
+        .unwrap_or_default()
 }
 
 async fn loopback_request_guard(
@@ -3442,6 +3680,7 @@ mod tests {
                 local_port: 18001,
             }],
             instances: vec![],
+            optical: Default::default(),
         })
     }
 
@@ -3780,6 +4019,7 @@ mod tests {
                 local_port: 18001,
             }],
             instances: vec![],
+            optical: Default::default(),
         };
         let status = RuntimeConfigStatus::from_config(
             "desktop_active_config",
@@ -3833,6 +4073,7 @@ mod tests {
                 local_port: 18001,
             }],
             instances: vec![],
+            optical: Default::default(),
         };
         let status = RuntimeConfigStatus::from_config(
             "desktop_active_config",
@@ -3945,6 +4186,7 @@ mod tests {
             }],
             routes: vec![],
             instances: vec![],
+            optical: Default::default(),
         };
         let state = AppState::new(config);
 
@@ -4545,6 +4787,7 @@ mod tests {
                 local_port: 18001,
             }],
             instances: vec![],
+            optical: Default::default(),
         };
         let state = AppState::new(config);
         let body = json!({

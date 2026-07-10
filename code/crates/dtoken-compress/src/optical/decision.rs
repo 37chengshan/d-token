@@ -1,29 +1,44 @@
-// OpticalTransformPlan builder：组装 shadow-only plan，产出 public summary。
-// 关联计划：OPTICAL_COMPRESSION_EXPERIMENT_PLAN.md §20-21。
+// OpticalTransformPlan builder：组装 shadow-only plan，产出 metadata-only public summary。
+// 关联计划：OPTICAL_COMPRESSION_EXPERIMENT_PLAN.md §20-22。
 
-use crate::optical::applicability::evaluate_applicability;
-use crate::optical::capability::resolve_model_capability;
-use crate::optical::economics::BlockEconomicsPlan;
-use crate::optical::inventory::{
-    build_anthropic_inventory, BlockKind, BlockRef, InitialProtection,
+use std::collections::HashMap;
+
+use crate::optical::applicability::evaluate_applicability_with_policies_and_registry;
+use crate::optical::capability::{
+    resolve_model_capability_record_with_registry, OpticalCapabilityRegistry,
 };
-use crate::optical::render_geometry::{anthropic_dense_v1, geometry_for_capability};
+use crate::optical::context_graph::{build_context_graph, ContextGraph};
+use crate::optical::economics::{evaluate_block_economics, BlockEconomicsPlan};
+use crate::optical::inventory::{
+    build_anthropic_inventory_with_arena, BlockKind, BlockRef, InitialProtection,
+};
+use crate::optical::plan_ir::{ContextOptimizationPlan, PlanCandidateEvidence};
+use crate::optical::render_geometry::{
+    anthropic_dense_v1, geometry_for_capability, images_required,
+};
 use crate::optical::risk::{classify_block, RiskPartitionPlan, RiskTier};
 use crate::optical::semantic_priority::plan_semantic_priority;
-use crate::optical::validate::{decide_final_status, validate_shadow_plan};
+use crate::optical::text_arena::TextArena;
+use crate::optical::validate::{
+    decide_final_status, validate_shadow_plan_input, CandidateValidationEvidence,
+    ShadowPlanValidationInput,
+};
 use dtoken_types::{
-    CachePublicSummary, OpticalApplicabilityInput, OpticalBucket, OpticalEconomicsPublicSummary,
-    OpticalGateDecision, OpticalGlobalPolicy, OpticalMode, OpticalPlanCounters,
-    OpticalPlanPublicSummary, OpticalPlanStatus, RouteOpticalPolicy,
+    CachePublicSummary, CapabilityStatus, OpticalApplicabilityInput, OpticalBucket,
+    OpticalBucketSummary, OpticalEconomicsPublicSummary, OpticalGateDecision, OpticalGlobalPolicy,
+    OpticalMode, OpticalPlanCounters, OpticalPlanPublicSummary, OpticalPlanStatus,
+    RouteOpticalPolicy,
 };
 
 #[derive(Debug, Clone)]
 pub struct CandidateDecision {
     pub block_id: String,
+    pub source_path: String,
     pub bucket: OpticalBucket,
     pub action: CandidateAction,
     pub reason: String,
     pub chars: usize,
+    pub estimated_images: usize,
     pub economics: Option<BlockEconomicsPlan>,
 }
 
@@ -37,6 +52,41 @@ pub enum CandidateAction {
     SkipSecretRisk,
     SkipStructuralRisk,
     SkipCacheUnstable,
+    SkipUnsupportedModel,
+    SkipOverBudget,
+}
+
+impl CandidateAction {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::PreserveText => "preserve_text",
+            Self::ShadowEstimateOnly => "shadow_estimate_only",
+            Self::SkipTooSmall => "skip_too_small",
+            Self::SkipUnprofitable => "skip_unprofitable",
+            Self::SkipExactnessRisk => "skip_exactness_risk",
+            Self::SkipSecretRisk => "skip_secret_risk",
+            Self::SkipStructuralRisk => "skip_structural_risk",
+            Self::SkipCacheUnstable => "skip_cache_unstable",
+            Self::SkipUnsupportedModel => "skip_unsupported_model",
+            Self::SkipOverBudget => "skip_over_budget",
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ShadowPlanBuild {
+    pub summary: OpticalPlanPublicSummary,
+    pub candidates: Vec<CandidateDecision>,
+    pub plan: ContextOptimizationPlan,
+}
+
+#[derive(Default)]
+struct EconomicsAccumulator {
+    text_tokens_before: f64,
+    image_tokens_after: f64,
+    sidecar_tokens: f64,
+    cache_burn_tokens: f64,
+    net_saved_tokens: f64,
 }
 
 pub fn build_shadow_plan(
@@ -46,113 +96,428 @@ pub fn build_shadow_plan(
     route_policy: &RouteOpticalPolicy,
     applicability_input: &OpticalApplicabilityInput,
 ) -> OpticalPlanPublicSummary {
-    let applicability = evaluate_applicability(applicability_input);
+    build_shadow_plan_detailed(
+        request_id,
+        body,
+        global_policy,
+        route_policy,
+        applicability_input,
+    )
+    .summary
+}
+
+pub fn build_shadow_plan_detailed(
+    request_id: &str,
+    body: &serde_json::Value,
+    global_policy: &OpticalGlobalPolicy,
+    route_policy: &RouteOpticalPolicy,
+    applicability_input: &OpticalApplicabilityInput,
+) -> ShadowPlanBuild {
+    let registry = OpticalCapabilityRegistry::default();
+    build_shadow_plan_detailed_with_registry(
+        request_id,
+        body,
+        global_policy,
+        route_policy,
+        applicability_input,
+        &registry,
+    )
+}
+
+pub fn build_shadow_plan_detailed_with_registry(
+    request_id: &str,
+    body: &serde_json::Value,
+    global_policy: &OpticalGlobalPolicy,
+    route_policy: &RouteOpticalPolicy,
+    applicability_input: &OpticalApplicabilityInput,
+    registry: &OpticalCapabilityRegistry,
+) -> ShadowPlanBuild {
+    let applicability = evaluate_applicability_with_policies_and_registry(
+        applicability_input,
+        global_policy,
+        route_policy,
+        registry,
+    );
     let mut gates = vec![OpticalGateDecision {
         name: "applicability".into(),
         passed: applicability.eligible_for_shadow,
         reason: format!("{:?}", applicability.reason),
     }];
     if !applicability.eligible_for_shadow {
-        return shadow_summary(
+        let summary = shadow_summary(
             request_id,
             OpticalPlanStatus::Ineligible,
             gates,
             Default::default(),
             Vec::new(),
+            Default::default(),
+            Vec::new(),
         );
+        let plan = ContextOptimizationPlan::new(
+            request_id,
+            body,
+            body,
+            None,
+            None,
+            Default::default(),
+            Vec::new(),
+            summary.clone(),
+        );
+        return ShadowPlanBuild {
+            summary,
+            candidates: Vec::new(),
+            plan,
+        };
     }
+
     let endpoint = applicability.endpoint.clone().unwrap_or_default();
-    let capability = resolve_model_capability(
+    let resolved_capability = resolve_model_capability_record_with_registry(
         applicability_input.protocol.as_ref(),
         applicability_input.provider_id.as_deref(),
         applicability_input.model.as_deref(),
         endpoint,
+        registry,
     );
+    let capability = resolved_capability.capability.clone();
     gates.push(OpticalGateDecision {
         name: "capability".into(),
-        passed: !matches!(capability.status, dtoken_types::CapabilityStatus::Blocked),
-        reason: format!("{:?}", capability.status),
+        passed: capability.status != CapabilityStatus::Blocked,
+        reason: match (
+            &resolved_capability.snapshot_id,
+            resolved_capability.revision,
+        ) {
+            (Some(snapshot_id), Some(revision)) => {
+                format!("{:?}:{snapshot_id}@{revision}", capability.status)
+            }
+            _ => format!("{:?}:unverified", capability.status),
+        },
     });
-    let inventory = build_anthropic_inventory(body);
+
+    let mut warnings = Vec::new();
+    let geometry = geometry_for_capability(&capability).or_else(|| {
+        if capability.supports_anthropic_image_block {
+            warnings.push("geometry_fallback_profile".to_string());
+            Some(anthropic_dense_v1())
+        } else {
+            None
+        }
+    });
+    let mut arena = TextArena::new(request_id);
+    let inventory = build_anthropic_inventory_with_arena(body, &mut arena);
+    let graph = build_context_graph(&inventory);
     let semantic = plan_semantic_priority(&inventory);
-    let _profile = geometry_for_capability(&capability).unwrap_or_else(anthropic_dense_v1);
+
     let mut counters = OpticalPlanCounters::default();
-    let mut bucket_chars: std::collections::HashMap<OpticalBucket, (usize, usize)> =
-        std::collections::HashMap::new();
+    let mut bucket_totals: HashMap<OpticalBucket, (usize, usize, isize)> = HashMap::new();
+    let mut economics_totals = EconomicsAccumulator::default();
+    let mut candidates = Vec::new();
+
     for block in &inventory.blocks {
         if block.protection != InitialProtection::Candidate {
             continue;
         }
         counters.candidate_blocks += 1;
-        let bucket = bucket_for_block(block);
-        let risk = classify_block(&format!("block-{}-chars-{}", block.block_id, block.chars));
-        let (action, _reason) = decide_candidate(
+
+        let raw_text = block
+            .text_ref
+            .as_ref()
+            .and_then(|text_ref| arena.get(text_ref));
+        let bucket = bucket_for_block(block, raw_text);
+        let risk = raw_text.map(classify_block);
+        let estimated_images = geometry
+            .as_ref()
+            .and_then(|profile| images_required(profile, block.chars))
+            .unwrap_or(0);
+        let economics = geometry.as_ref().and_then(|profile| {
+            (estimated_images > 0).then(|| {
+                evaluate_block_economics(
+                    bucket.clone(),
+                    block.chars,
+                    estimated_images,
+                    profile,
+                    0.0,
+                    1.25,
+                    0.1,
+                )
+            })
+        });
+
+        let (action, reason) = decide_candidate(
             block,
-            &risk,
+            raw_text,
+            risk.as_ref(),
+            economics.as_ref(),
+            estimated_images,
             &capability,
+            &graph,
             global_policy,
             route_policy,
             inventory.current_user_turn,
             inventory.recent_tail_start,
         );
-        if action == CandidateAction::ShadowEstimateOnly {
-            counters.preserved_blocks += 1;
+
+        let selected_for_shadow = action == CandidateAction::ShadowEstimateOnly;
+        match action {
+            CandidateAction::PreserveText | CandidateAction::ShadowEstimateOnly => {
+                counters.preserved_blocks += 1;
+            }
+            _ => counters.skipped_blocks += 1,
+        }
+        if let Some(risk) = &risk {
+            if matches!(risk.tier, RiskTier::ExactTextRequired) {
+                counters.exact_spans += 1;
+            }
+            if matches!(risk.tier, RiskTier::SecretNoDuplicate) {
+                counters.secret_spans += 1;
+            }
+        }
+        if selected_for_shadow {
+            counters.estimated_images = counters.estimated_images.saturating_add(estimated_images);
+        }
+
+        let net_saved = if selected_for_shadow {
+            economics
+                .as_ref()
+                .map(|plan| f64_to_isize(plan.net_saved_tokens))
+                .unwrap_or(0)
         } else {
-            counters.skipped_blocks += 1;
+            0
+        };
+        let entry = bucket_totals.entry(bucket.clone()).or_insert((0, 0, 0));
+        entry.0 += 1;
+        entry.1 = entry.1.saturating_add(block.chars);
+        entry.2 = entry.2.saturating_add(net_saved);
+
+        if selected_for_shadow {
+            if let Some(plan) = &economics {
+                economics_totals.text_tokens_before += plan.text_tokens_before;
+                economics_totals.image_tokens_after += plan.image_tokens_after;
+                economics_totals.sidecar_tokens += plan.sidecar_tokens;
+                economics_totals.cache_burn_tokens += plan.cache_burn_image_side;
+                economics_totals.net_saved_tokens += plan.net_saved_tokens;
+            }
         }
-        if matches!(risk.tier, RiskTier::ExactTextRequired) {
-            counters.exact_spans += 1;
-        }
-        if matches!(risk.tier, RiskTier::SecretNoDuplicate) {
-            counters.secret_spans += 1;
-        }
-        let e = bucket_chars.entry(bucket).or_insert((0, 0));
-        e.0 += 1;
-        e.1 += block.chars;
+
+        candidates.push(CandidateDecision {
+            block_id: block.block_id.clone(),
+            source_path: block.source_path.clone(),
+            bucket,
+            action,
+            reason,
+            chars: block.chars,
+            estimated_images,
+            economics,
+        });
     }
-    let validation = validate_shadow_plan(
-        true,
-        false,
-        true,
-        semantic.current_user_always_text,
-        true,
-        true,
-    );
-    let final_status = decide_final_status(validation.valid, false);
-    let buckets = bucket_chars
+
+    let buckets = bucket_totals
         .into_iter()
-        .map(|(b, (n, c))| dtoken_types::OpticalBucketSummary {
-            bucket: b,
-            blocks: n,
-            chars: c,
-            estimated_net_saved_tokens: 0,
+        .map(
+            |(bucket, (blocks, chars, estimated_net_saved_tokens))| OpticalBucketSummary {
+                bucket,
+                blocks,
+                chars,
+                estimated_net_saved_tokens,
+            },
+        )
+        .collect::<Vec<_>>();
+    let economics_summary = OpticalEconomicsPublicSummary {
+        text_tokens_before: f64_to_usize(economics_totals.text_tokens_before),
+        image_tokens_after: f64_to_usize(economics_totals.image_tokens_after),
+        sidecar_tokens: f64_to_usize(economics_totals.sidecar_tokens),
+        cache_burn_tokens: f64_to_usize(economics_totals.cache_burn_tokens),
+        net_saved_tokens: f64_to_isize(economics_totals.net_saved_tokens),
+    };
+    let geometry_is_sufficient = geometry.is_some()
+        || candidates.iter().all(|candidate| {
+            candidate.action != CandidateAction::ShadowEstimateOnly
+                && candidate.estimated_images == 0
+        });
+    gates.push(OpticalGateDecision {
+        name: "geometry".to_string(),
+        passed: geometry_is_sufficient,
+        reason: geometry
+            .as_ref()
+            .map(|profile| profile.profile_id.clone())
+            .unwrap_or_else(|| {
+                if geometry_is_sufficient {
+                    "not_required_for_selected_actions".to_string()
+                } else {
+                    "geometry_unavailable".to_string()
+                }
+            }),
+    });
+
+    let mut summary = shadow_summary(
+        request_id,
+        OpticalPlanStatus::Disabled,
+        gates,
+        counters,
+        buckets,
+        economics_summary,
+        warnings,
+    );
+    let recent_tail_always_text = inventory
+        .blocks
+        .iter()
+        .filter(|block| {
+            block
+                .turn_index
+                .map(|turn| turn >= inventory.recent_tail_start)
+                .unwrap_or(false)
+                && block.protection == InitialProtection::Candidate
+        })
+        .all(|block| {
+            candidates
+                .iter()
+                .find(|candidate| candidate.block_id == block.block_id)
+                .map(|candidate| candidate.action == CandidateAction::PreserveText)
+                .unwrap_or(false)
+        });
+    let evidence = candidates
+        .iter()
+        .map(|candidate| CandidateValidationEvidence {
+            action: candidate.action.as_str(),
+            reason: candidate.reason.as_str(),
+        })
+        .collect::<Vec<_>>();
+    let validation = validate_shadow_plan_input(&ShadowPlanValidationInput {
+        original_body: body,
+        planned_body: body,
+        public_summary: &summary,
+        candidates: &evidence,
+        current_user_always_text: semantic.current_user_always_text,
+        recent_tail_always_text,
+        geometry_exists: geometry_is_sufficient,
+    });
+    summary.final_status = decide_final_status(validation.valid, false);
+    summary.gates.push(OpticalGateDecision {
+        name: "shadow_validation".to_string(),
+        passed: validation.valid,
+        reason: if validation.valid {
+            "validated_shadow_plan".to_string()
+        } else {
+            validation.failures.join(",")
+        },
+    });
+
+    let plan_candidates = candidates
+        .iter()
+        .map(|candidate| PlanCandidateEvidence {
+            block_id: candidate.block_id.clone(),
+            source_path: candidate.source_path.clone(),
+            action: candidate.action.as_str().to_string(),
+            reason: candidate.reason.clone(),
+            chars: candidate.chars,
+            estimated_images: candidate.estimated_images,
         })
         .collect();
-    shadow_summary(request_id, final_status, gates, counters, buckets)
-}
+    let plan = ContextOptimizationPlan::new(
+        request_id,
+        body,
+        body,
+        resolved_capability.snapshot_id,
+        resolved_capability.revision,
+        graph.summary(),
+        plan_candidates,
+        summary.clone(),
+    );
 
-fn bucket_for_block(block: &BlockRef) -> OpticalBucket {
-    match block.kind {
-        BlockKind::ToolResult => OpticalBucket::ToolResultLog,
-        BlockKind::Text => OpticalBucket::ToolResultProse,
-        BlockKind::SystemPrompt => OpticalBucket::StaticSlab,
-        BlockKind::ToolDefinition => OpticalBucket::SchemaAnnotation,
-        _ => OpticalBucket::ToolResultProse,
+    ShadowPlanBuild {
+        summary,
+        candidates,
+        plan,
     }
 }
 
+fn bucket_for_block(block: &BlockRef, raw_text: Option<&str>) -> OpticalBucket {
+    if block.kind != BlockKind::ToolResult {
+        return OpticalBucket::ToolResultProse;
+    }
+    let Some(text) = raw_text else {
+        return OpticalBucket::ToolResultProse;
+    };
+    if serde_json::from_str::<serde_json::Value>(text).is_ok() {
+        return OpticalBucket::ToolResultJson;
+    }
+    let line_count = text.lines().count();
+    let table_lines = text
+        .lines()
+        .filter(|line| line.matches('|').count() >= 2)
+        .count();
+    if table_lines >= 3 {
+        return OpticalBucket::ToolResultTable;
+    }
+    if line_count >= 8
+        || text.contains("INFO ")
+        || text.contains("WARN ")
+        || text.contains("ERROR ")
+    {
+        return OpticalBucket::ToolResultLog;
+    }
+    OpticalBucket::ToolResultProse
+}
+
+#[allow(clippy::too_many_arguments)]
 fn decide_candidate(
     block: &BlockRef,
-    risk: &RiskPartitionPlan,
+    raw_text: Option<&str>,
+    risk: Option<&RiskPartitionPlan>,
+    economics: Option<&BlockEconomicsPlan>,
+    estimated_images: usize,
     capability: &dtoken_types::OpticalModelCapability,
+    graph: &ContextGraph,
     global: &OpticalGlobalPolicy,
     route: &RouteOpticalPolicy,
     current_user_turn: Option<usize>,
     recent_tail_start: usize,
 ) -> (CandidateAction, String) {
-    if block.chars < 2000 {
+    if block.kind != BlockKind::ToolResult {
+        return (
+            CandidateAction::PreserveText,
+            "phase_a_tool_result_only".to_string(),
+        );
+    }
+    if !graph.is_closed_tool_result(&block.block_id) {
+        return (
+            CandidateAction::SkipStructuralRisk,
+            if graph.is_orphan_tool_result(&block.block_id) {
+                "orphan_tool_result".to_string()
+            } else {
+                "tool_dependency_not_closed".to_string()
+            },
+        );
+    }
+    if !graph.is_closed_historical_tool_result(&block.block_id, recent_tail_start) {
+        return (
+            CandidateAction::PreserveText,
+            "tool_result_not_historical".to_string(),
+        );
+    }
+    if let Some(turn_idx) = block.turn_index {
+        if Some(turn_idx) == current_user_turn {
+            return (
+                CandidateAction::PreserveText,
+                "current_user_always_text".to_string(),
+            );
+        }
+        if turn_idx >= recent_tail_start {
+            return (
+                CandidateAction::PreserveText,
+                "recent_tail_always_text".to_string(),
+            );
+        }
+    }
+    if raw_text.is_none() || risk.is_none() {
+        return (
+            CandidateAction::SkipStructuralRisk,
+            "missing_request_local_text".to_string(),
+        );
+    }
+    if block.chars < 2_000 {
         return (CandidateAction::SkipTooSmall, "block_too_small".into());
     }
+    let risk = risk.expect("checked above");
     if matches!(risk.tier, RiskTier::SecretNoDuplicate) {
         return (
             CandidateAction::SkipSecretRisk,
@@ -165,7 +530,9 @@ fn decide_candidate(
     ) {
         return (
             CandidateAction::SkipStructuralRisk,
-            risk.skip_reason.clone().unwrap_or_default(),
+            risk.skip_reason
+                .clone()
+                .unwrap_or_else(|| "structural_unsafe".to_string()),
         );
     }
     if matches!(risk.tier, RiskTier::ExactTextRequired) {
@@ -174,38 +541,63 @@ fn decide_candidate(
             "exact_text_required".into(),
         );
     }
-    if !global.enabled || !route.enabled {
-        return (CandidateAction::PreserveText, "optical_disabled".into());
-    }
-    if let Some(turn_idx) = block.turn_index {
-        if Some(turn_idx) == current_user_turn {
-            return (
-                CandidateAction::PreserveText,
-                "current_user_always_text".into(),
-            );
-        }
-        if turn_idx >= recent_tail_start {
-            return (
-                CandidateAction::PreserveText,
-                "recent_tail_always_text".into(),
-            );
-        }
-    }
     if matches!(
         capability.status,
-        dtoken_types::CapabilityStatus::Unknown
-            | dtoken_types::CapabilityStatus::Blocked
-            | dtoken_types::CapabilityStatus::ShadowOnly
+        CapabilityStatus::Unknown | CapabilityStatus::Blocked | CapabilityStatus::ShadowOnly
     ) {
         return (
-            CandidateAction::ShadowEstimateOnly,
-            "shadow_estimate_only".into(),
+            CandidateAction::SkipUnsupportedModel,
+            "capability_not_verified_for_optical_estimation".into(),
+        );
+    }
+    let capability_image_limit = if capability.max_images_per_request == 0 {
+        usize::MAX
+    } else {
+        capability.max_images_per_request
+    };
+    let image_limit = global.max_images_per_request.min(capability_image_limit);
+    if estimated_images == 0 || estimated_images > image_limit {
+        return (
+            CandidateAction::SkipOverBudget,
+            "image_budget_exceeded".into(),
+        );
+    }
+    let Some(economics) = economics else {
+        return (
+            CandidateAction::SkipUnprofitable,
+            "economics_unavailable".into(),
+        );
+    };
+    if !economics.profitable || economics.net_saved_tokens < route.min_net_saved_tokens as f64 {
+        return (
+            CandidateAction::SkipUnprofitable,
+            format!("{:?}", economics.reason),
         );
     }
     (
         CandidateAction::ShadowEstimateOnly,
-        "eligible_shadow".into(),
+        if capability.status == CapabilityStatus::Supported {
+            "eligible_shadow_supported_model".into()
+        } else {
+            "eligible_shadow_non_active_model".into()
+        },
     )
+}
+
+fn f64_to_usize(value: f64) -> usize {
+    if !value.is_finite() || value <= 0.0 {
+        0
+    } else {
+        value.round().min(usize::MAX as f64) as usize
+    }
+}
+
+fn f64_to_isize(value: f64) -> isize {
+    if !value.is_finite() {
+        0
+    } else {
+        value.round().clamp(isize::MIN as f64, isize::MAX as f64) as isize
+    }
 }
 
 fn shadow_summary(
@@ -213,7 +605,9 @@ fn shadow_summary(
     status: OpticalPlanStatus,
     gates: Vec<OpticalGateDecision>,
     counters: OpticalPlanCounters,
-    buckets: Vec<dtoken_types::OpticalBucketSummary>,
+    buckets: Vec<OpticalBucketSummary>,
+    economics: OpticalEconomicsPublicSummary,
+    warnings: Vec<String>,
 ) -> OpticalPlanPublicSummary {
     OpticalPlanPublicSummary {
         plan_id: plan_id.into(),
@@ -223,8 +617,8 @@ fn shadow_summary(
         counters,
         buckets,
         cache: CachePublicSummary::default(),
-        economics: OpticalEconomicsPublicSummary::default(),
-        warnings: Vec::new(),
+        economics,
+        warnings,
     }
 }
 
@@ -233,11 +627,12 @@ mod tests {
     use super::*;
     use dtoken_types::Protocol;
     use serde_json::json;
-    fn make_input() -> OpticalApplicabilityInput {
+
+    fn make_input(body: &serde_json::Value) -> OpticalApplicabilityInput {
         OpticalApplicabilityInput {
             method: Some("POST".into()),
             endpoint_path: Some("/v1/messages".into()),
-            body_bytes: Some(256),
+            body_bytes: Some(serde_json::to_vec(body).unwrap().len()),
             protocol: Some(Protocol::Anthropic),
             provider_id: Some("anthropic-main".into()),
             route_id: Some("route-main".into()),
@@ -246,27 +641,92 @@ mod tests {
             route_enabled: true,
         }
     }
+
+    fn shadow_policies() -> (OpticalGlobalPolicy, RouteOpticalPolicy) {
+        (
+            OpticalGlobalPolicy {
+                enabled: true,
+                ..Default::default()
+            },
+            RouteOpticalPolicy {
+                enabled: true,
+                mode: OpticalMode::ShadowPreview,
+                allow_tool_result: true,
+                min_net_saved_tokens: 64,
+                ..Default::default()
+            },
+        )
+    }
+
     #[test]
     fn shadow_plan_body_unchanged_and_redacted() {
-        let body = json!({"messages":[{"role":"user","content":"hello world this is a test message that is long enough"}]});
-        let global = OpticalGlobalPolicy::default();
-        let route = RouteOpticalPolicy {
-            enabled: true,
-            mode: OpticalMode::ShadowPreview,
-            ..Default::default()
-        };
-        let summary = build_shadow_plan("plan-1", &body, &global, &route, &make_input());
+        let body = json!({"messages":[{"role":"user","content":"hello world"}]});
+        let (global, route) = shadow_policies();
+        let summary = build_shadow_plan("plan-1", &body, &global, &route, &make_input(&body));
         let encoded = serde_json::to_string(&summary).unwrap();
         assert!(!encoded.contains("raw_prompt"));
         assert!(!encoded.contains("request_body"));
         assert!(!encoded.contains("base64"));
+        assert_eq!(summary.final_status, OpticalPlanStatus::ValidatedShadowPlan);
     }
+
+    #[test]
+    fn real_secret_tool_result_is_skipped() {
+        let secret = format!("Bearer {}", "credential-material ".repeat(180));
+        let body = json!({"messages":[
+            {"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"read","input":{}}]},
+            {"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":secret}]},
+            {"role":"assistant","content":"done"},
+            {"role":"user","content":"next task"},
+            {"role":"assistant","content":"working"}
+        ]});
+        let (global, route) = shadow_policies();
+        let build =
+            build_shadow_plan_detailed("plan-secret", &body, &global, &route, &make_input(&body));
+        assert!(build.candidates.iter().any(|candidate| {
+            candidate.action == CandidateAction::SkipSecretRisk
+                && candidate.reason == "secret_no_duplicate"
+        }));
+        assert_eq!(build.summary.economics.text_tokens_before, 0);
+        assert_eq!(build.summary.economics.image_tokens_after, 0);
+        assert_eq!(build.summary.economics.net_saved_tokens, 0);
+        assert_eq!(build.summary.counters.estimated_images, 0);
+        let encoded = serde_json::to_string(&build.summary).unwrap();
+        assert!(!encoded.contains("credential-material"));
+    }
+
+    #[test]
+    fn dense_log_populates_economics_summary() {
+        let log = "INFO operation completed successfully\n".repeat(1_000);
+        let body = json!({"messages":[
+            {"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"read","input":{}}]},
+            {"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":log}]},
+            {"role":"assistant","content":"done"},
+            {"role":"user","content":"next task"},
+            {"role":"assistant","content":"working"}
+        ]});
+        let (global, route) = shadow_policies();
+        let build = build_shadow_plan_detailed(
+            "plan-economics",
+            &body,
+            &global,
+            &route,
+            &make_input(&body),
+        );
+        assert!(build.summary.economics.text_tokens_before > 0);
+        assert!(build.summary.economics.image_tokens_after > 0);
+        assert!(build.summary.economics.net_saved_tokens > 0);
+        assert!(build
+            .candidates
+            .iter()
+            .any(|candidate| candidate.action == CandidateAction::ShadowEstimateOnly));
+    }
+
     #[test]
     fn ineligible_request_returns_ineligible_status() {
         let body = json!({});
-        let global = OpticalGlobalPolicy::default();
-        let route = RouteOpticalPolicy::default();
-        let mut input = make_input();
+        let (global, route) = shadow_policies();
+        let mut input = make_input(&body);
         input.body_bytes = Some(0);
         let summary = build_shadow_plan("plan-2", &body, &global, &route, &input);
         assert_eq!(summary.final_status, OpticalPlanStatus::Ineligible);

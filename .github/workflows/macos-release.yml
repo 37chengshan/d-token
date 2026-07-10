@@ -64,6 +64,9 @@ jobs:
         working-directory: code
         run: cargo fmt --all -- --check
 
+      - name: Prepare macOS d-token runtime sidecar for checks
+        run: bash support/scripts/prepare_desktop_sidecars_macos.sh --debug
+
       - name: Rust Clippy
         working-directory: code
         run: cargo clippy --workspace --all-targets -- -D warnings
@@ -72,7 +75,7 @@ jobs:
         working-directory: code
         run: cargo test --workspace
 
-      - name: Prepare macOS d-token runtime sidecar
+      - name: Prepare release macOS d-token runtime sidecar
         run: bash support/scripts/prepare_desktop_sidecars_macos.sh --release
 
       - name: Record release candidate provenance
@@ -80,10 +83,6 @@ jobs:
         run: |
           . ./support/scripts/release_candidate_provenance.ps1
           Write-ReleaseCandidateStamp -Root . -Path code/target/release/d-token-release-candidate.json | Out-Null
-
-      - name: Build macOS Tauri bundle
-        working-directory: code/apps/desktop
-        run: npx tauri build --bundles app,dmg
 
       - name: Import Apple signing certificate
         if: ${{ inputs.notarize == 'true' }}
@@ -101,8 +100,17 @@ jobs:
           security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
           security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
           security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
-          security import "$CERTIFICATE_PATH" -P "$APPLE_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
-          security list-keychain -d user -s "$KEYCHAIN_PATH"
+          security import "$CERTIFICATE_PATH" -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security list-keychains -d user -s "$KEYCHAIN_PATH"
+          security default-keychain -d user -s "$KEYCHAIN_PATH"
+          SIGNING_IDENTITY="$(security find-identity -v -p codesigning "$KEYCHAIN_PATH" | awk -F'"' 'NF >= 3 { print $2; exit }')"
+          test -n "$SIGNING_IDENTITY"
+          printf 'APPLE_SIGNING_IDENTITY=%s\n' "$SIGNING_IDENTITY" >> "$GITHUB_ENV"
+
+      - name: Build macOS Tauri bundle
+        working-directory: code/apps/desktop
+        run: npx tauri build --bundles app,dmg
 
       - name: Notarize macOS DMG
         if: ${{ inputs.notarize == 'true' }}

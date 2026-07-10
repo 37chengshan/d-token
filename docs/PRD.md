@@ -1279,7 +1279,7 @@ d-token 的阶段执行计划、任务拆解、风险与 CI gate 不再写入 PR
 
 - 当前活跃计划：`docs/PLAN.md`
 - 历史路线图快照（M0–M6 原文）：`docs/archive/ROADMAP_M0_M6_HISTORICAL.md`
-- 已交付里程碑证据：`docs/M1_NO_TOUCH_DEV_FOUNDATION_REPORT.md`、`docs/M2_EXTERNAL_READ_ONLY_INTEGRATION_REPORT.md`、`docs/M3_GUI_CONTROL_PLANE_MVP_REPORT.md`、`docs/M1_M3_DELIVERY_AUDIT.md`
+- 已交付里程碑证据：`docs/history/M1_NO_TOUCH_DEV_FOUNDATION_REPORT.md`、`docs/history/M2_EXTERNAL_READ_ONLY_INTEGRATION_REPORT.md`、`docs/history/M3_GUI_CONTROL_PLANE_MVP_REPORT.md`、`docs/history/M1_M3_DELIVERY_AUDIT.md`
 
 PRD 只保留产品真理源：目标、边界、技术契约与验收标准。计划文档不得与 PRD 验收标准冲突；若产品边界变化，先改 PRD，再同步 PLAN。
 

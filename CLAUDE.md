@@ -50,7 +50,7 @@ d-token Event Ledger / Dashboard / Doctor / Logs / App
 2. `docs/TECH_STACK.md` — 桌面 App 与 runtime 技术选型。
 3. `docs/ARCHITECTURE.md` — 总体架构。
 4. `docs/SECURITY_BOUNDARIES.md` — 本地优先安全边界。
-5. `docs/FINAL_REVIEW.md` — 最新多维审查。
+5. `docs/history/BACKEND_AUDIT_AND_ITERATION_2026-07-10.md` 与 `docs/history/FRONTEND_UI_AUDIT_AND_ITERATION_2026-07-10.md` — 当前工作树最新前后端审查；`docs/history/FINAL_REVIEW.md` 仅是历史快照。
 
 ## 工作原则
 
@@ -63,6 +63,9 @@ d-token Event Ledger / Dashboard / Doctor / Logs / App
 - Windows/macOS 兼容优先：UTF-8、路径、端口、`.cmd` shim、WebView2、Xcode Command Line Tools。
 - Dashboard 不做简化版，Headroom 功能迁移不缩水。
 - 正式 UI 只展示产品状态和用户操作，不展示开发测试语义。
+- 当前接受的技术栈是 Rust 核心业务 + Tauri 2 + React/TypeScript；macOS 仅在 Rust/Tauri 无法可靠覆盖时使用极少量 Swift/系统桥接，不使用 Python sidecar 作为当前运行架构。
+- Windows 与 macOS 共享同一套 React UI、信息架构与功能语义；平台差异限制在系统适配和打包层，当前先完成 macOS 窗口与真实功能验收。
+- Git commit、branch create/switch/delete/rename、merge、rebase、push 前，必须先用 `support/scripts/git_operation_audit.py record` 写入 `support/git-operations.json`，记录时间、分支与一句话简介；禁止删除或改写既有记录。
 
 ## 提交前检查
 

@@ -1,0 +1,50 @@
+{
+  "schema_version": 1,
+  "operations": [
+    {
+      "id": "initial-optical-branch-baseline",
+      "timestamp": "2026-07-10T14:48:25Z",
+      "operation": "branch-use",
+      "branch": "optical",
+      "summary": "继续在既有 optical 分支整合项目审查、Optical Phase B、macOS 与 UI 真实性改进。",
+      "head_before": "cf65cc4",
+      "remote": "origin"
+    },
+    {
+      "id": "45fb14b7-9ace-427b-9f38-db3c2fdc55f9",
+      "timestamp": "2026-07-10T23:50:25+08:00",
+      "operation": "branch-create",
+      "branch": "codex/prd-macos-polish",
+      "summary": "从 optical 当前工作树创建 PRD 对齐与 macOS UI 功能完善分支。",
+      "head_before": "cf65cc434b0e",
+      "remote": null
+    },
+    {
+      "id": "7f8e002f-e529-49a1-a97b-bcc705f9c172",
+      "timestamp": "2026-07-10T23:50:25+08:00",
+      "operation": "branch-switch",
+      "branch": "codex/prd-macos-polish",
+      "summary": "切换到新分支继续 Rust、Tauri、UI、OpenCode 与真实窗口验收。",
+      "head_before": "cf65cc434b0e",
+      "remote": null
+    },
+    {
+      "id": "566c6bc2-5e6e-414f-b433-679e12e61a5f",
+      "timestamp": "2026-07-11T04:57:25+08:00",
+      "operation": "commit",
+      "branch": "codex/prd-macos-polish",
+      "summary": "聚合既有文档整理、macOS Tauri 基线、前端真实性防线、Optical shadow planner 与验证工具。",
+      "head_before": "cf65cc434b0e",
+      "remote": null
+    },
+    {
+      "id": "4f362115-5af2-4268-aaaa-770264bb4e6c",
+      "timestamp": "2026-07-11T04:57:25+08:00",
+      "operation": "push",
+      "branch": "codex/prd-macos-polish",
+      "summary": "推送 codex/prd-macos-polish 的首次聚合基线到 origin。",
+      "head_before": "cf65cc434b0e",
+      "remote": "origin"
+    }
+  ]
+}

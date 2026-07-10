@@ -46,6 +46,24 @@ d-token 默认只读读取 cc-switch 配置：检测当前 profile、读取当�
 - 不上传任何数据到远端，不自动开启遥测。
 - 所有真实写入都有 diff、备份、验证和回退。
 
+## Experimental：Hybrid Context Optimization / Optical Preview
+
+仓库正在开发一个默认关闭、只做预览的混合上下文优化控制面。Optical 只是其中一种有损 codec，不等同于整个压缩系统。
+
+当前已完成：
+
+- 版本化 Capability Snapshot、撤销与 supersede 生命周期。
+- Anthropic/OpenAI 工具调用依赖图和 fail-closed 边界。
+- Raw-byte / Canonical JSON SHA-256 计划证据。
+- metadata-only Preview、Capability Lifecycle 和 Recent Events API。
+
+当前明确未完成且禁止宣称可用：
+
+- 图片 renderer、真实请求 patch、active provider routing。
+- post-execution validator、rollback executor、history collapse。
+
+当前实现状态和审查证据见 `docs/optical/README.md`；分阶段规划与验证历史见 `support/pending-commits.json`。
+
 ## 安装步骤
 
 1. 下载 d-token 安装包（Windows .exe / macOS .dmg）。

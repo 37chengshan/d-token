@@ -40,6 +40,7 @@ fn decides_route_by_instance_and_protocol() {
             process_status: ProcessStatus::Stopped,
             log_path: "./logs/demo-instance.jsonl".to_string(),
         }],
+        optical: Default::default(),
     };
 
     let decision = Router::new(config)

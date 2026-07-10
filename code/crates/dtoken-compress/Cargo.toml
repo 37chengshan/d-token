@@ -9,3 +9,4 @@ repository.workspace = true
 anyhow.workspace = true
 dtoken-types = { path = "../dtoken-types" }
 serde_json.workspace = true
+sha2 = "0.10"

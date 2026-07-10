@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { motion } from "motion/react";
 import { RefreshCw, Wrench, RotateCcw, ShieldCheck, PackageOpen, ChevronRight } from "lucide-react";
 import { GlassCard } from "../common/GlassCard";
@@ -11,6 +11,7 @@ import { useI18n, useT } from "../../lib/i18n";
 import { type DoctorCheck } from "../../lib/fixtures";
 import type { PageId } from "../../lib/nav";
 import { invokeNative, type NativeActionResult } from "../../lib/native";
+import { classifyEvidence } from "../../lib/state/evidence";
 
 const LAYERS: DoctorCheck["layer"][] = ["runtime", "port", "route", "provider", "security"];
 
@@ -49,6 +50,13 @@ type ProductReadinessResult = {
 
 export const DOCTOR_READINESS_TITLE = "产品就绪检查";
 
+type DoctorSource = "preview" | "native" | "unavailable" | "stale" | "partial";
+
+type ActiveConfigEvidence = {
+  ok: boolean;
+  summary: string;
+};
+
 export function resolveDoctorDestination(target?: string): PageId {
   if (target === "advanced" || target === "install") return "install";
   return "changes";
@@ -59,6 +67,68 @@ export function doctorFailureSummary(error: unknown): string {
     return "当前是浏览器预览，请在 d-token 桌面窗口中运行完整诊断。";
   }
   return `诊断失败：${error instanceof Error ? error.message : String(error)}`;
+}
+
+export function doctorSourceFromPayload(payload: Record<string, any> | null): DoctorSource {
+  const evidence = classifyEvidence({ payload, status: "runtime", requireRuntimeIdentity: true });
+  if (evidence === "verified") return "native";
+  if (evidence === "preview") return "preview";
+  if (evidence === "stale" || evidence === "partial") return evidence;
+  return "unavailable";
+}
+
+export function hasCompressionEvidence(payload: Record<string, any> | null): boolean {
+  if (!Array.isArray(payload?.request_logs)) return false;
+
+  return payload.request_logs.some((entry: any) => {
+    const explicitElapsed = entry?.compression_elapsed_us ?? entry?.compression?.elapsed_us;
+    if (isNonNegativeFiniteNumber(explicitElapsed)) return true;
+
+    const before = entry?.input_tokens_before;
+    const after = entry?.input_tokens_after;
+    const transforms = Array.isArray(entry?.transforms_applied)
+      ? entry.transforms_applied.filter((item: unknown) => typeof item === "string" && item.trim().length > 0)
+      : [];
+    return isNonNegativeFiniteNumber(before)
+      && isNonNegativeFiniteNumber(after)
+      && transforms.some((item: string) => item !== "compression_error_fallback");
+  });
+}
+
+export function resolveActiveConfigEvidence(
+  payload: Record<string, any> | null,
+  desktopStatus: Record<string, any> | null,
+): ActiveConfigEvidence {
+  const runtimeEnvelope = payload?.runtime_active_config ?? payload?.active_config;
+  const runtimeConfig = runtimeEnvelope?.config;
+  const hasRuntimeContract = runtimeConfig && typeof runtimeConfig === "object";
+
+  if (hasRuntimeContract) {
+    const ownedRuntime = runtimeEnvelope?.source === "dtoken-owned-runtime";
+    const loaded = runtimeConfig.loaded === true;
+    const routeCount = finiteCount(runtimeConfig.route_count);
+    const providerCount = finiteCount(runtimeConfig.provider_count);
+    const fallbackDisabled = runtimeConfig.fallback_disabled === true;
+    const configSource = safeStatusText(runtimeConfig.source, "来源未知");
+    return {
+      ok: ownedRuntime && loaded && routeCount > 0 && providerCount > 0 && fallbackDisabled,
+      summary: `source=${configSource} · routes=${routeCount} · providers=${providerCount} · fallback=${fallbackDisabled ? "disabled" : "not proven disabled"}`,
+    };
+  }
+
+  const state = safeStatusText(desktopStatus?.state, "unknown");
+  const source = safeStatusText(desktopStatus?.source, "unknown");
+  const routeCount = finiteCount(desktopStatus?.route_count);
+  const providerCount = finiteCount(desktopStatus?.provider_count);
+  const fallbackDisabled = desktopStatus?.fallback_disabled === true;
+  return {
+    ok: source === "d-token-desktop"
+      && state === "loaded"
+      && routeCount > 0
+      && providerCount > 0
+      && fallbackDisabled,
+    summary: `source=${source} · state=${state} · routes=${routeCount} · providers=${providerCount} · fallback=${fallbackDisabled ? "disabled" : "not proven disabled"}`,
+  };
 }
 
 export function Doctor({ setPage }: { setPage: (p: PageId) => void }) {
@@ -76,7 +146,8 @@ export function Doctor({ setPage }: { setPage: (p: PageId) => void }) {
   const [verificationOk, setVerificationOk] = useState<boolean | null>(null);
   const [verificationResult, setVerificationResult] = useState<VerificationResult | null>(null);
   const [doctorResult, setDoctorResult] = useState<NativeActionResult | null>(null);
-  const [doctorSource, setDoctorSource] = useState<"preview" | "native" | "unavailable">("preview");
+  const doctorResultRef = useRef<NativeActionResult | null>(null);
+  const [doctorSource, setDoctorSource] = useState<DoctorSource>("preview");
   const [runtimePayload, setRuntimePayload] = useState<Record<string, any> | null>(null);
   const [runtimePayloadStatus, setRuntimePayloadStatus] = useState("browser-preview");
   const [readinessResult, setReadinessResult] = useState<ProductReadinessResult | null>(null);
@@ -90,9 +161,32 @@ export function Doctor({ setPage }: { setPage: (p: PageId) => void }) {
         invokeNative<Record<string, any>>("get_active_route_config_status"),
         invokeNative<VerificationResult>("verify_agent_route_config"),
       ]);
-      if (doctor) setDoctorResult(doctor);
+      const nextDoctorSource = doctorSourceFromPayload(payload);
+      if (nextDoctorSource !== "native") {
+        doctorResultRef.current = null;
+        setDoctorResult(null);
+        setDoctorSource(nextDoctorSource);
+        setRuntimePayload(payload);
+        setRuntimePayloadStatus(nextDoctorSource);
+        setReadinessResult(null);
+        setAgentOk(null);
+        setAgentSummary("缺少可验证的实时本地状态，未判断 Agent 连接是否正常。");
+        setRuntimeOk(false);
+        setRuntimeSummary(nextDoctorSource === "stale" ? "d-token runtime 数据已过期。" : "d-token runtime 数据不完整。");
+        setActiveConfigOk(false);
+        setActiveConfigSummary("缺少当前活动路由配置的完整证据。");
+        setVerificationOk(false);
+        setVerificationResult(null);
+        setVerificationSummary("缺少实时路由验证证据。");
+        return;
+      }
+
+      if (doctor) {
+        doctorResultRef.current = doctor;
+        setDoctorResult(doctor);
+      }
       setDoctorSource("native");
-      const toolSource = doctor ?? doctorResult;
+      const toolSource = doctor ?? doctorResultRef.current;
       const supportedAgent = toolSource?.tools.find((tool) => ["opencode", "claude", "codex", "cline", "cursor"].includes(tool.id));
       const routeCount = Array.isArray(payload.route_decisions) ? payload.route_decisions.length : 0;
       const requestCount = Number(payload?.stats?.requests?.total ?? 0);
@@ -100,23 +194,22 @@ export function Doctor({ setPage }: { setPage: (p: PageId) => void }) {
       const desktopSource = String(payload?.desktop_data_source ?? "");
       const isRuntimePayload = source === "dtoken-owned-runtime" && desktopSource === "dtoken-local-service";
       setRuntimePayload(payload);
-      setRuntimePayloadStatus(isRuntimePayload ? "runtime" : "unavailable");
-      if (!supportedAgent?.installed) {
+      setRuntimePayloadStatus("runtime");
+      if (!toolSource) {
+        setAgentOk(null);
+        setAgentSummary("尚未运行完整诊断，暂不判断 Agent 连接状态。");
+      } else if (!supportedAgent?.installed) {
         setAgentOk(false);
         setAgentSummary("未检测到已支持的 Agent，请先在安装页连接或检查 PATH。");
       } else {
         setAgentOk(true);
         setAgentSummary(`${supportedAgent.label ?? "Agent"} 已检测到：${supportedAgent.version ?? supportedAgent.path ?? "installed"} · 可继续验证 d-token 路由配置`);
       }
-      setRuntimeOk(source === "dtoken-owned-runtime");
+      setRuntimeOk(isRuntimePayload);
       setRuntimeSummary(`source=${source} · requests=${requestCount} · route_decisions=${routeCount} · service=127.0.0.1:18001`);
-      const runtimeActive = payload?.runtime_active_config?.config ?? payload?.active_config?.config ?? null;
-      const activeState = String(runtimeActive?.loaded === true ? runtimeActive?.source ?? "runtime_loaded" : activeConfig?.state ?? "unknown");
-      const activeRoute = String(runtimeActive?.route_count ? `${runtimeActive.route_count} runtime route(s)` : activeConfig?.route?.id ?? activeConfig?.route?.name ?? "no route");
-      const activeProvider = String(runtimeActive?.provider_count ? `${runtimeActive.provider_count} runtime provider(s)` : activeConfig?.provider?.id ?? activeConfig?.provider?.name ?? "no provider");
-      const fallbackDisabled = runtimeActive?.fallback_disabled === true || activeConfig?.fallback_disabled === true;
-      setActiveConfigOk(activeState === "loaded" && fallbackDisabled);
-      setActiveConfigSummary(`state=${activeState} · route=${activeRoute} · provider=${activeProvider} · fallback=${fallbackDisabled ? "disabled" : "not proven disabled"}`);
+      const activeEvidence = resolveActiveConfigEvidence(payload, activeConfig);
+      setActiveConfigOk(activeEvidence.ok);
+      setActiveConfigSummary(activeEvidence.summary);
       setVerificationResult(verification);
       setVerificationOk(Boolean(verification.ok));
       setVerificationSummary(`${verification.passed ?? 0}/${verification.total ?? 0} checks · ${verification.summary ?? "route verification unavailable"}`);
@@ -136,6 +229,7 @@ export function Doctor({ setPage }: { setPage: (p: PageId) => void }) {
       setDoctorSource(error instanceof Error && error.message === "native_unavailable" ? "preview" : "unavailable");
       setRuntimePayload(null);
       setRuntimePayloadStatus(error instanceof Error && error.message === "native_unavailable" ? "browser-preview" : "unavailable");
+      if (withDoctor) doctorResultRef.current = null;
     } finally {
       setRunning(false);
     }
@@ -194,11 +288,18 @@ export function Doctor({ setPage }: { setPage: (p: PageId) => void }) {
       verificationResult,
     ],
   );
+  const compressionEvidence = doctorSource === "native" && hasCompressionEvidence(runtimePayload);
 
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
-        <div className="flex items-center gap-3"><h1>{t("dr.title")}</h1><DataSourceBadge mode={doctorSource === "native" ? "native" : "preview"} /></div>
+        <div className="flex items-center gap-3">
+          <h1>{t("dr.title")}</h1>
+          <DataSourceBadge
+            mode={doctorSource === "native" ? "native" : doctorSource === "preview" ? "preview" : "unavailable"}
+            label={doctorSource === "native" ? "实时本地诊断" : doctorSource === "preview" ? "浏览器预览" : doctorSource === "stale" ? "诊断数据已过期" : doctorSource === "partial" ? "诊断数据不完整" : "诊断数据不可用"}
+          />
+        </div>
         <Button variant="outline" onClick={runAgentDoctor} disabled={running}>
           <RefreshCw className={`size-4 ${running ? "animate-spin" : ""}`} />{t("dr.runAll")}
         </Button>
@@ -276,7 +377,7 @@ export function Doctor({ setPage }: { setPage: (p: PageId) => void }) {
               label={activeConfigOk === null ? "pending" : activeConfigOk ? t("common.healthy") : t("common.error")}
             />
           </GlassCard>
-          {readinessResult && (
+          {readinessResult && doctorSource === "native" && (
             <GlassCard className="p-4">
               <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
                 <div>
@@ -334,7 +435,7 @@ export function Doctor({ setPage }: { setPage: (p: PageId) => void }) {
           {[
             { n: "d-token runtime", s: runtimeOk ? "healthy" as const : "warning" as const, d: runtimeSummary },
             { n: "d-token active config", s: activeConfigOk ? "healthy" as const : "warning" as const, d: activeConfigSummary },
-            { n: "压缩层", s: "healthy" as const, d: "d-token compress engine · request logs record elapsed_us" },
+            { n: "压缩层", s: compressionEvidence ? "healthy" as const : "warning" as const, d: compressionEvidence ? "最近请求包含压缩耗时证据" : "尚无最近请求证明压缩层已实际运行" },
             { n: "d-token 本地服务", s: runtimeOk ? "healthy" as const : "warning" as const, d: "127.0.0.1:18001 · d-token-owned runtime path" },
             { n: "Provider 连接", s: "warning" as const, d: "以最新 route decision / provider result 为准，禁止静默 fallback" },
           ].map((r) => (
@@ -380,9 +481,25 @@ function formatReadinessSummary(value: unknown) {
   }
 }
 
-function buildDoctorChecks(
+function isNonNegativeFiniteNumber(value: unknown): boolean {
+  if (typeof value !== "number" && typeof value !== "string") return false;
+  if (typeof value === "string" && value.trim().length === 0) return false;
+  const number = Number(value);
+  return Number.isFinite(number) && number >= 0;
+}
+
+function finiteCount(value: unknown): number {
+  if (!isNonNegativeFiniteNumber(value)) return 0;
+  return Math.floor(Number(value));
+}
+
+function safeStatusText(value: unknown, fallback: string): string {
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : fallback;
+}
+
+export function buildDoctorChecks(
   result: NativeActionResult | null,
-  source: "preview" | "native" | "unavailable",
+  source: DoctorSource,
   state: {
     agentOk: boolean | null;
     agentSummary: string;
@@ -395,7 +512,7 @@ function buildDoctorChecks(
     verificationResult: VerificationResult | null;
   },
 ): DoctorCheck[] {
-  if (source !== "native") return previewDoctorChecks;
+  if (source !== "native") return nonNativeDoctorChecks(source);
 
   const statusFor = (ok: boolean | null): DoctorCheck["status"] => (ok === null ? "warning" : ok ? "healthy" : "error");
   const liveChecks: DoctorCheck[] = [
@@ -503,7 +620,7 @@ const previewDoctorChecks: DoctorCheck[] = [
     layer: "security",
     name: "本地回环边界",
     nameEn: "Loopback boundary",
-    status: "healthy",
+    status: "warning",
     detail: "产品默认使用 127.0.0.1，本页预览不会连接外部服务。",
     detailEn: "The product defaults to 127.0.0.1 and this preview does not connect external services.",
   },
@@ -512,11 +629,37 @@ const previewDoctorChecks: DoctorCheck[] = [
     layer: "security",
     name: "凭据脱敏",
     nameEn: "Credential redaction",
-    status: "healthy",
+    status: "warning",
     detail: "Doctor 不显示 API key、Authorization、Cookie 或会话令牌。",
     detailEn: "Doctor does not display API keys, Authorization headers, cookies, or session tokens.",
   },
 ];
+
+function nonNativeDoctorChecks(source: Exclude<DoctorSource, "native">): DoctorCheck[] {
+  if (source === "preview") return previewDoctorChecks;
+  const detail = source === "stale"
+    ? "诊断数据已过期，不能作为当前健康状态。"
+    : source === "partial"
+      ? "诊断数据不完整，不能确认当前健康状态。"
+      : "无法读取真实诊断数据，当前健康状态未知。";
+  return LAYERS.map((layer) => ({
+    id: `${source}-${layer}`,
+    layer,
+    name: `${titledLayer(layer)}状态未知`,
+    nameEn: `${layer} status unknown`,
+    status: "warning",
+    detail,
+    detailEn: detail,
+  }));
+}
+
+function titledLayer(layer: DoctorCheck["layer"]): string {
+  if (layer === "runtime") return "运行时";
+  if (layer === "port") return "本地端口";
+  if (layer === "route") return "路由";
+  if (layer === "provider") return "Provider";
+  return "安全边界";
+}
 
 function layerForTool(id: string): DoctorCheck["layer"] {
   if (id.includes("rtk") || id.includes("headroom") || id.includes("dtoken")) return "runtime";

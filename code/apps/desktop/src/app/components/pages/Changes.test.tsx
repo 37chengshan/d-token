@@ -12,6 +12,16 @@ vi.mock("../../lib/native", () => ({
 import { Changes } from "./Changes";
 
 const desktopPayload = (verified = true) => ({
+  source: "dtoken-owned-runtime",
+  desktop_data_source: "dtoken-local-service",
+  freshness: "fresh",
+  complete: true,
+  transaction_provenance: {
+    source: "dtoken-owned-runtime",
+    command: "get_desktop_data",
+    schema_version: 1,
+    generated_at: "2026-07-10T12:00:00Z",
+  },
   routeDrafts: [
     {
       path: "D:/d-token/routing/route-a.json",
@@ -68,6 +78,60 @@ describe("Changes action safety", () => {
     for (const button of await screen.findAllByRole("button", { name: "回滚到此处" })) {
       expect(button).toBeDisabled();
     }
+  });
+
+  it.each([
+    ["stale", { data_status: "stale" }, "桌面数据已过期，不能作为当前配置证据。批准、拒绝和回退均已锁定。"],
+    ["partial", { partial: true }, "桌面数据不完整，无法确认影响范围与恢复保障。批准、拒绝和回退均已锁定。"],
+  ])("keeps dangerous actions disabled for %s native payloads", async (_state, marker, message) => {
+    const user = userEvent.setup();
+    const payload = { ...desktopPayload(true), ...marker };
+    native.invokeNative.mockImplementation(async (command: string) => {
+      if (command === "get_desktop_data") return payload;
+      return { ok: true, summary: `${command} complete`, logs: [], tools: [] };
+    });
+    render(<Changes />);
+
+    expect(await screen.findByText(message)).toBeVisible();
+    expect(screen.getByRole("button", { name: "批准" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "拒绝" })).toBeDisabled();
+
+    await user.click(screen.getByRole("tab", { name: "备份与回滚" }));
+    expect(await screen.findByRole("button", { name: "回滚到此处" })).toBeDisabled();
+  });
+
+  it.each([
+    ["arbitrary payload", { routeDrafts: desktopPayload(true).routeDrafts, backupPoints: desktopPayload(true).backupPoints }],
+    ["missing runtime identity", { ...desktopPayload(true), source: "desktop-fixture" }],
+    ["missing freshness", { ...desktopPayload(true), freshness: undefined }],
+    ["missing completeness", { ...desktopPayload(true), complete: undefined }],
+    ["missing transaction provenance", { ...desktopPayload(true), transaction_provenance: undefined }],
+    [
+      "foreign transaction provenance",
+      {
+        ...desktopPayload(true),
+        transaction_provenance: {
+          source: "external-service",
+          command: "get_desktop_data",
+          schema_version: 1,
+          generated_at: "2026-07-10T12:00:00Z",
+        },
+      },
+    ],
+  ])("fails closed for %s", async (_case, payload) => {
+    const user = userEvent.setup();
+    native.invokeNative.mockImplementation(async (command: string) => {
+      if (command === "get_desktop_data") return payload;
+      return { ok: true, summary: `${command} complete`, logs: [], tools: [] };
+    });
+    render(<Changes />);
+
+    expect(await screen.findByText("桌面数据不完整，无法确认影响范围与恢复保障。批准、拒绝和回退均已锁定。")).toBeVisible();
+    expect(screen.getByRole("button", { name: "批准" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "拒绝" })).toBeDisabled();
+
+    await user.click(screen.getByRole("tab", { name: "备份与回滚" }));
+    expect(screen.getByRole("button", { name: "回滚到此处" })).toBeDisabled();
   });
 
   it("shows impact, backup and recovery information before approving a real change", async () => {

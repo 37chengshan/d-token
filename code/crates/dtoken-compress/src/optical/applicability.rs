@@ -1,9 +1,12 @@
 use dtoken_types::{
     CapabilityStatus, OpticalApplicabilityDecision, OpticalApplicabilityInput,
-    OpticalApplicabilityReason, OpticalEndpoint,
+    OpticalApplicabilityReason, OpticalEndpoint, OpticalGlobalPolicy, OpticalMode, Protocol,
+    RouteOpticalPolicy,
 };
 
-use super::capability::{normalize_model_base, resolve_model_capability};
+use super::capability::{
+    normalize_model_base, resolve_model_capability_with_registry, OpticalCapabilityRegistry,
+};
 
 pub fn resolve_endpoint(path: Option<&str>) -> OpticalEndpoint {
     match path.map(str::trim) {
@@ -17,6 +20,13 @@ pub fn resolve_endpoint(path: Option<&str>) -> OpticalEndpoint {
 }
 
 pub fn evaluate_applicability(input: &OpticalApplicabilityInput) -> OpticalApplicabilityDecision {
+    evaluate_applicability_with_registry(input, &OpticalCapabilityRegistry::default())
+}
+
+pub fn evaluate_applicability_with_registry(
+    input: &OpticalApplicabilityInput,
+    registry: &OpticalCapabilityRegistry,
+) -> OpticalApplicabilityDecision {
     let endpoint = resolve_endpoint(input.endpoint_path.as_deref());
     let normalized_model_base = input.model.as_deref().map(normalize_model_base);
 
@@ -50,6 +60,16 @@ pub fn evaluate_applicability(input: &OpticalApplicabilityInput) -> OpticalAppli
         );
     }
 
+    if !protocol_matches_endpoint(input.protocol.as_ref(), &endpoint) {
+        return decision(
+            false,
+            false,
+            OpticalApplicabilityReason::ProtocolEndpointMismatch,
+            normalized_model_base,
+            endpoint,
+        );
+    }
+
     if !input.global_enabled {
         return decision(
             true,
@@ -70,11 +90,12 @@ pub fn evaluate_applicability(input: &OpticalApplicabilityInput) -> OpticalAppli
         );
     }
 
-    let capability = resolve_model_capability(
+    let capability = resolve_model_capability_with_registry(
         input.protocol.as_ref(),
         input.provider_id.as_deref(),
         input.model.as_deref(),
         endpoint.clone(),
+        registry,
     );
 
     match capability.status {
@@ -107,6 +128,86 @@ pub fn evaluate_applicability(input: &OpticalApplicabilityInput) -> OpticalAppli
             endpoint,
         ),
     }
+}
+
+pub fn evaluate_applicability_with_policies(
+    input: &OpticalApplicabilityInput,
+    global_policy: &OpticalGlobalPolicy,
+    route_policy: &RouteOpticalPolicy,
+) -> OpticalApplicabilityDecision {
+    evaluate_applicability_with_policies_and_registry(
+        input,
+        global_policy,
+        route_policy,
+        &OpticalCapabilityRegistry::default(),
+    )
+}
+
+pub fn evaluate_applicability_with_policies_and_registry(
+    input: &OpticalApplicabilityInput,
+    global_policy: &OpticalGlobalPolicy,
+    route_policy: &RouteOpticalPolicy,
+    registry: &OpticalCapabilityRegistry,
+) -> OpticalApplicabilityDecision {
+    let mut result = evaluate_applicability_with_registry(input, registry);
+    if !result.eligible_for_shadow {
+        return result;
+    }
+    if matches!(
+        result.reason,
+        OpticalApplicabilityReason::GlobalDisabled | OpticalApplicabilityReason::RouteDisabled
+    ) {
+        return result;
+    }
+    if !global_policy.enabled {
+        result.eligible_for_active = false;
+        result.reason = OpticalApplicabilityReason::GlobalDisabled;
+        return result;
+    }
+    if !route_policy.enabled {
+        result.eligible_for_active = false;
+        result.reason = OpticalApplicabilityReason::RouteDisabled;
+        return result;
+    }
+
+    // body_bytes is a conservative upper bound until the inventory provides exact candidate chars.
+    if input.body_bytes.unwrap_or_default() > global_policy.max_candidate_chars_per_request {
+        result.eligible_for_active = false;
+        result.reason = OpticalApplicabilityReason::OverBudget;
+        return result;
+    }
+
+    if !global_policy.allow_active {
+        result.eligible_for_active = false;
+        result.reason = OpticalApplicabilityReason::ActiveDisabled;
+        return result;
+    }
+
+    if !route_policy.confirmed_experimental_lossy {
+        result.eligible_for_active = false;
+        result.reason = OpticalApplicabilityReason::ExperimentalConfirmationRequired;
+        return result;
+    }
+
+    if route_policy.mode == OpticalMode::Off || !route_policy.allow_tool_result {
+        result.eligible_for_active = false;
+        result.reason = OpticalApplicabilityReason::RouteModeDisabled;
+    }
+
+    result
+}
+
+fn protocol_matches_endpoint(protocol: Option<&Protocol>, endpoint: &OpticalEndpoint) -> bool {
+    matches!(
+        (protocol, endpoint),
+        (
+            Some(Protocol::Anthropic),
+            OpticalEndpoint::AnthropicMessages
+        ) | (
+            Some(Protocol::OpenAi),
+            OpticalEndpoint::OpenAiChatCompletions
+        ) | (Some(Protocol::OpenAi), OpticalEndpoint::OpenAiResponses)
+    )
 }
 
 fn decision(
@@ -144,9 +245,30 @@ mod tests {
         }
     }
 
+    fn active_registry() -> OpticalCapabilityRegistry {
+        let mut registry = OpticalCapabilityRegistry::new();
+        registry.register_verified(
+            crate::optical::capability::experimental_anthropic_active_capability("claude-fable-5"),
+        );
+        registry
+    }
+
     #[test]
-    fn post_anthropic_messages_can_be_active_when_supported() {
+    fn default_registry_is_shadow_only() {
         let decision = evaluate_applicability(&base_input());
+
+        assert!(decision.eligible_for_shadow);
+        assert!(!decision.eligible_for_active);
+        assert_eq!(
+            decision.reason,
+            OpticalApplicabilityReason::UnknownModelShadowOnly
+        );
+    }
+
+    #[test]
+    fn verified_registry_can_make_supported_model_active_eligible() {
+        let registry = active_registry();
+        let decision = evaluate_applicability_with_registry(&base_input(), &registry);
 
         assert!(decision.eligible_for_shadow);
         assert!(decision.eligible_for_active);
@@ -202,5 +324,73 @@ mod tests {
         assert!(!decision.eligible_for_shadow);
         assert!(!decision.eligible_for_active);
         assert_eq!(decision.reason, OpticalApplicabilityReason::UnsupportedPath);
+    }
+
+    #[test]
+    fn protocol_endpoint_mismatch_is_ineligible() {
+        let mut input = base_input();
+        input.protocol = Some(Protocol::OpenAi);
+        let decision = evaluate_applicability(&input);
+
+        assert!(!decision.eligible_for_shadow);
+        assert!(!decision.eligible_for_active);
+        assert_eq!(
+            decision.reason,
+            OpticalApplicabilityReason::ProtocolEndpointMismatch
+        );
+    }
+
+    #[test]
+    fn active_requires_explicit_experimental_confirmation() {
+        let input = base_input();
+        let global = OpticalGlobalPolicy {
+            enabled: true,
+            allow_active: true,
+            ..Default::default()
+        };
+        let mut route = RouteOpticalPolicy {
+            enabled: true,
+            mode: OpticalMode::ToolResultsOnly,
+            allow_tool_result: true,
+            ..Default::default()
+        };
+        let registry = active_registry();
+
+        let unconfirmed =
+            evaluate_applicability_with_policies_and_registry(&input, &global, &route, &registry);
+        assert!(unconfirmed.eligible_for_shadow);
+        assert!(!unconfirmed.eligible_for_active);
+        assert_eq!(
+            unconfirmed.reason,
+            OpticalApplicabilityReason::ExperimentalConfirmationRequired
+        );
+
+        route.confirmed_experimental_lossy = true;
+        let confirmed =
+            evaluate_applicability_with_policies_and_registry(&input, &global, &route, &registry);
+        assert!(confirmed.eligible_for_active);
+    }
+
+    #[test]
+    fn over_budget_request_is_never_active() {
+        let mut input = base_input();
+        input.body_bytes = Some(600_000);
+        let global = OpticalGlobalPolicy {
+            enabled: true,
+            allow_active: true,
+            ..Default::default()
+        };
+        let route = RouteOpticalPolicy {
+            enabled: true,
+            mode: OpticalMode::ToolResultsOnly,
+            allow_tool_result: true,
+            confirmed_experimental_lossy: true,
+            ..Default::default()
+        };
+
+        let decision = evaluate_applicability_with_policies(&input, &global, &route);
+        assert!(decision.eligible_for_shadow);
+        assert!(!decision.eligible_for_active);
+        assert_eq!(decision.reason, OpticalApplicabilityReason::OverBudget);
     }
 }

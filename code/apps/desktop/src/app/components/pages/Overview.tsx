@@ -17,11 +17,12 @@ import { GlassCard } from "../common/GlassCard";
 import { DataSourceBadge } from "../common/DataSourceBadge";
 import { Heatmap } from "../common/Heatmap";
 import { useI18n, useT, type Lang } from "../../lib/i18n";
-import { activityCalendar, overviewStats, toolUsage, trend14, type ActivityDay } from "../../lib/fixtures";
+import { type ActivityDay } from "../../lib/fixtures";
 import type { PageId } from "../../lib/nav";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { useRuntimeDashboard } from "../../lib/useRuntimeDashboard";
+import { classifyEvidence, type EvidenceState } from "../../lib/state/evidence";
 
 function fmt(n: number) {
   if (n >= 1_000_000) return (n / 1_000_000).toFixed(2) + "M";
@@ -33,11 +34,16 @@ export function Overview({ setPage }: { setPage: (p: PageId) => void }) {
   const t = useT();
   const { lang } = useI18n();
   const { payload, status: payloadStatus, updatedAt } = useRuntimeDashboard();
+  const evidenceState = useMemo(
+    () => classifyEvidence({ payload, status: payloadStatus, requireRuntimeIdentity: true }),
+    [payload, payloadStatus],
+  );
+  const effectiveStatus = evidenceState === "verified" ? "runtime" : evidenceState === "preview" ? "browser-preview" : evidenceState;
 
-  const runtime = useMemo(() => overviewFromPayload(payload, payloadStatus), [payload, payloadStatus]);
+  const runtime = useMemo(() => overviewFromPayload(payload, effectiveStatus), [effectiveStatus, payload]);
   const operational = useMemo(
-    () => deriveOverviewOperationalSummary(payload, payloadStatus, lang),
-    [lang, payload, payloadStatus],
+    () => deriveOverviewOperationalSummary(payload, effectiveStatus, lang),
+    [effectiveStatus, lang, payload],
   );
   const s = runtime.stats;
 
@@ -45,9 +51,12 @@ export function Overview({ setPage }: { setPage: (p: PageId) => void }) {
     <div className="space-y-6">
       <div className="flex flex-wrap items-center gap-3">
         <h1>{t("ov.title")}</h1>
-        <DataSourceBadge mode={payloadStatus === "runtime" ? "runtime" : payloadStatus === "unavailable" ? "unavailable" : "preview"} />
-        <Badge variant={payloadStatus === "runtime" ? "default" : "secondary"}>
-          {runtime.sourceLabel}{updatedAt ? ` · ${updatedAt.toLocaleTimeString()}` : ""}
+        <DataSourceBadge
+          mode={evidenceState === "verified" ? "runtime" : evidenceState === "preview" || evidenceState === "loading" ? "preview" : "unavailable"}
+          label={overviewEvidenceLabel(evidenceState)}
+        />
+        <Badge variant={evidenceState === "verified" ? "default" : "secondary"}>
+          {runtime.sourceLabel}{evidenceState === "verified" && updatedAt ? ` · ${updatedAt.toLocaleTimeString()}` : ""}
         </Badge>
       </div>
 
@@ -59,8 +68,8 @@ export function Overview({ setPage }: { setPage: (p: PageId) => void }) {
                 <h2 className="text-base font-semibold">{t("ov.operational")}</h2>
                 <p className="mt-1 text-sm text-muted-foreground">{t("ov.operationalDesc")}</p>
               </div>
-              <Badge variant={payloadStatus === "runtime" ? "default" : "outline"}>
-                {payloadStatus === "runtime" ? t("ov.localConnected") : t("ov.waitingConnection")}
+              <Badge variant={evidenceState === "verified" ? "default" : "outline"}>
+                {evidenceState === "verified" ? t("ov.localConnected") : t("ov.waitingConnection")}
               </Badge>
             </div>
             <div className="grid sm:grid-cols-2">
@@ -216,6 +225,7 @@ export function deriveOverviewOperationalSummary(
   lang: Lang = "zh",
 ): OverviewOperationalSummary {
   const zh = lang === "zh";
+  const evidenceState = classifyEvidence({ payload, status, requireRuntimeIdentity: true });
   const requestLogs = arrayValue(payload?.request_logs);
   const runtimeConfig = objectValue(payload?.runtime_active_config);
   const desktopConfig = objectValue(payload?.desktop_active_config);
@@ -240,7 +250,7 @@ export function deriveOverviewOperationalSummary(
   const configState = safeText(desktopConfig.state, "");
   const configProblem = configState === "invalid_json" || configState === "unreadable";
   const issueCount = errorCount + (status === "runtime" && !routeConfigured ? 1 : 0) + (configProblem ? 1 : 0);
-  const isRuntime = status === "runtime";
+  const isRuntime = evidenceState === "verified";
 
   const service: OperationalStatus = isRuntime
     ? {
@@ -248,25 +258,43 @@ export function deriveOverviewOperationalSummary(
         detail: safeText(payload?.desktop_service_url, "http://127.0.0.1:18001"),
         tone: "positive",
       }
-    : status === "loading"
+    : evidenceState === "loading"
       ? {
           label: zh ? "正在检查" : "Checking",
           detail: zh ? "正在连接 d-token 本地服务" : "Connecting to the d-token local service",
           tone: "neutral",
         }
-      : status === "browser-preview"
+      : evidenceState === "preview"
         ? {
             label: zh ? "浏览器预览" : "Browser preview",
             detail: zh ? "未连接真实本地服务" : "No real local service is connected",
             tone: "neutral",
           }
-        : {
+        : evidenceState === "stale"
+          ? {
+              label: zh ? "状态已过期" : "Status is stale",
+              detail: zh ? "旧数据不作为当前服务状态" : "Old data is not treated as current service status",
+              tone: "warning",
+            }
+          : evidenceState === "partial"
+            ? {
+                label: zh ? "状态不完整" : "Status is incomplete",
+                detail: zh ? "缺少完整的本地服务证据" : "Complete local service evidence is missing",
+                tone: "warning",
+              }
+            : {
             label: zh ? "未连接" : "Not connected",
             detail: zh ? "本地服务未启动或暂时无法访问" : "The local service is stopped or unavailable",
             tone: "negative",
           };
 
-  const agents: OperationalStatus = trafficAgents.length > 0
+  const agents: OperationalStatus = !isRuntime
+    ? {
+        label: zh ? "尚无已验证连接" : "No verified connection",
+        detail: zh ? "只有实时本地请求才能证明 Agent 已连接" : "Only live local requests can prove an agent connection",
+        tone: "neutral",
+      }
+    : trafficAgents.length > 0
     ? {
         label: trafficAgents.join("、"),
         detail: zh
@@ -306,8 +334,8 @@ export function deriveOverviewOperationalSummary(
 
   const issues: OperationalStatus = !isRuntime
     ? {
-        label: zh ? "服务未启动" : "Service is not running",
-        detail: zh ? "启动后才能检查请求与连接问题" : "Start the service to inspect request and connection issues",
+        label: zh ? "尚无当前问题证据" : "No current issue evidence",
+        detail: zh ? "连接实时本地服务后才能判断最近问题" : "Connect the live local service to inspect recent issues",
         tone: "warning",
       }
     : issueCount > 0
@@ -324,7 +352,13 @@ export function deriveOverviewOperationalSummary(
           tone: "positive",
         };
 
-  const ccSwitch = deriveCcSwitchStatus(payload, providers, lang);
+  const ccSwitch = isRuntime
+    ? deriveCcSwitchStatus(payload, providers, lang)
+    : {
+        state: "unknown" as const,
+        label: zh ? "尚未获得实时验证" : "No live verification yet",
+        detail: zh ? "非实时数据不会显示同步成功" : "Non-live data is never shown as successfully synced",
+      };
   const nextStep = !isRuntime
     ? {
         label: zh ? "启动并连接 d-token" : "Start and connect d-token",
@@ -422,33 +456,43 @@ function uniqueText(values: unknown[]): string[] {
   return Array.from(new Set(values.map((value) => safeText(value, "")).filter(Boolean)));
 }
 
+function overviewEvidenceLabel(state: EvidenceState): string {
+  if (state === "verified") return "实时本地数据";
+  if (state === "preview") return "浏览器预览";
+  if (state === "loading") return "正在检查本地服务";
+  if (state === "stale") return "数据已过期";
+  if (state === "partial") return "数据不完整";
+  return "本地数据不可用";
+}
+
 function overviewFromPayload(payload: Record<string, any> | null, status: string) {
+  const evidenceState = classifyEvidence({ payload, status, requireRuntimeIdentity: true });
   const stats = payload?.stats ?? {};
   const requestLogs = Array.isArray(payload?.request_logs) ? payload.request_logs : [];
   const history = Array.isArray(payload?.history?.history) ? payload.history.history : [];
-  const hasRuntimeData = status === "runtime" && (requestLogs.length > 0 || typeof stats.tokens_saved === "number" || history.length > 0);
+  const hasRuntimeData = evidenceState === "verified" && (requestLogs.length > 0 || typeof stats.tokens_saved === "number" || history.length > 0);
 
   if (!hasRuntimeData) {
-    const isPreview = status === "browser-preview";
     return {
-      source: isPreview ? "browser-preview" : status === "runtime" ? "runtime-empty" : status,
+      source: evidenceState === "verified" ? "runtime-empty" : evidenceState,
       sourceLabel:
-        isPreview
-          ? "浏览器预览 · 示例数据"
-          : status === "runtime"
+        evidenceState === "verified"
             ? "本地服务在线 · 暂无请求"
-            : "d-token 本地服务暂不可用",
-      stats: isPreview
-        ? {
-            ...overviewStats,
-            requestCount: activityCalendar.reduce((total, day) => total + day.sessions, 0),
-          }
-        : emptyOverviewStats,
-      trend: isPreview ? trend14 : [],
-      activityDays: isPreview ? activityCalendar : [],
-      tools: isPreview ? toolUsage : [],
-      activitySource: isPreview ? "浏览器预览" : "等待本地请求记录",
-      errorLabel: isPreview ? "示例错误" : "等待本地请求记录",
+            : evidenceState === "preview"
+              ? "浏览器预览 · 未连接真实数据"
+              : evidenceState === "stale"
+                ? "本地数据已过期 · 不作为当前状态"
+                : evidenceState === "partial"
+                  ? "本地数据不完整 · 未确认当前状态"
+                  : evidenceState === "loading"
+                    ? "正在连接 d-token 本地服务"
+                    : "d-token 本地服务暂不可用",
+      stats: emptyOverviewStats,
+      trend: [],
+      activityDays: [],
+      tools: [],
+      activitySource: "等待真实本地请求记录",
+      errorLabel: "尚无当前错误证据",
     };
   }
 

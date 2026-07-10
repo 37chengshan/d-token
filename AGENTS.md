@@ -50,7 +50,7 @@ d-token Event Ledger / Dashboard / Doctor / Logs / App
 2. `docs/TECH_STACK.md` — Windows/macOS App 技术选型。
 3. `docs/ARCHITECTURE.md` — 总体架构。
 4. `docs/SECURITY_BOUNDARIES.md` — 本地优先安全边界。
-5. `docs/FINAL_REVIEW.md` — 最新多维审查结论。
+5. `docs/history/BACKEND_AUDIT_AND_ITERATION_2026-07-10.md` 与 `docs/history/FRONTEND_UI_AUDIT_AND_ITERATION_2026-07-10.md` — 当前工作树最新前后端审查；`docs/history/FINAL_REVIEW.md` 仅是历史快照。
 
 ## 目录边界
 
@@ -75,3 +75,6 @@ support/    测试、脚本、CI 模板、开发辅助和杂项
 9. Windows/macOS 是第一优先级。
 10. Dashboard 不做简化版，Headroom 功能迁移不缩水。
 11. 正式 UI 只展示产品状态和用户操作，不展示开发测试语义。
+12. 所有 Git commit、branch create/switch/delete/rename、merge、rebase 与 push 操作，必须在执行前使用 support/scripts/git_operation_audit.py record 写入 support/git-operations.json；每条记录必须包含操作时间、分支和一句话简介。commit 记录使用操作前 HEAD，避免在同一提交中制造自引用哈希；禁止手工删除或改写既有记录。
+13. 当前接受的桌面技术栈固定为 Rust 核心业务 + Tauri 2 桌面控制面 + React/TypeScript UI；macOS 原生能力只允许使用极少量、边界清晰的 Swift/系统桥接。不得把 Python sidecar 或不存在的 `code/sidecars/*` 写成当前运行架构。
+14. Windows 与 macOS 必须共享同一套 React UI、信息架构和功能语义；平台差异只落在打包、凭据、进程与系统集成适配层。当前先在 macOS 做窗口与真实功能验收，不得据此削弱 Windows 支持。

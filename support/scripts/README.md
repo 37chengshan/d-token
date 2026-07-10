@@ -4,6 +4,87 @@
 
 正式产品代码不要放在这里；正式代码统一放入 `code/`。
 
+## Git 操作审计
+
+执行 commit、分支操作、merge、rebase 或 push 前先记录：
+
+    python3 support/scripts/git_operation_audit.py record \
+      --operation commit \
+      --summary "完成 Optical Phase B 与 macOS 基线验证"
+
+随时查询最近记录：
+
+    python3 support/scripts/git_operation_audit.py query --limit 20
+    python3 support/scripts/git_operation_audit.py query --branch optical --json
+    python3 support/scripts/git_operation_audit.py validate --json
+
+审计文件为 support/git-operations.json。commit 记录保存操作前 HEAD 和一句话简介；结果 commit 可通过相邻 Git 历史确定，避免让被提交文件引用自身尚未生成的哈希。
+
+### 分阶段待提交计划（schema v2）
+
+尚未执行的提交不得伪装成真实 Git 操作。`support/pending-commits.json` 只记录阶段计划和提交状态；`support/git-operations.json` 只记录真实发生的 branch/commit/merge/rebase/push 操作。
+
+每个阶段必须写清楚：
+
+```text
+phase / title / summary
+created_at / updated_at
+记录时所在 branch（仅观察信息，不是目标分支约束）
+精确 files 列表
+staging_mode：whole-file / hunk-level / mixed
+shared_files：必须按 hunk 暂存的共享文件
+verification.status 与实际 checks
+blockers
+submitted / submitted_at / commit_hash
+```
+
+新增计划示例：
+
+```bash
+python3 support/scripts/git_operation_audit.py plan \
+  --id optical-n8-stable-fingerprint \
+  --phase N8 \
+  --title "稳定请求指纹" \
+  --summary "增加 raw-byte 与 canonical JSON SHA-256 证据" \
+  --commit-message "feat(optical): add stable request fingerprints" \
+  --file-path code/crates/dtoken-compress/src/optical/plan_ir.rs \
+  --test "cargo test -p dtoken-compress" \
+  --verification-status passed \
+  --status ready
+```
+
+查询、验证和更新状态：
+
+```bash
+python3 support/scripts/git_operation_audit.py query-plans --json
+python3 support/scripts/git_operation_audit.py validate-plans --json
+python3 support/scripts/git_operation_audit.py mark-plan \
+  --id optical-n8-stable-fingerprint \
+  --status ready \
+  --verification-status passed
+```
+
+状态语义：
+
+```text
+pending     仍在实现或验证
+ready       已实现并验证，但 submitted=false
+blocked     存在明确阻塞，必须写 blockers
+committed   已完成真实 commit，submitted=true，且填写 submitted_at/commit_hash
+superseded  已被新的阶段计划替代
+```
+
+记录规则：
+
+1. 不设置“目标分支”；branch 只表示记录时工作区实际所在分支。
+2. 一个文件被多个阶段共享时，必须列入 `shared_files`，并使用 `hunk-level` 或 `mixed`。
+3. 只有命令真实 exit 0 才能把 verification 标为 passed。
+4. 未执行 commit 时 `submitted=false`、`submitted_at=null`、`commit_hash=null`。
+5. 执行真实 commit 前，仍必须先用 `record --operation commit` 写入 `support/git-operations.json`。
+6. commit 完成后再用 `mark-plan --status committed --commit-hash ...` 回填阶段账本。
+
+两个 JSON 文件不可互相替代。
+
 ## 发布门禁
 
 `run_release_verification.ps1` 默认执行 **no-touch** 发布验证，不调用任何真实 Agent，也不会启动、停止或修改外部 Headroom、RTK、cc-switch：

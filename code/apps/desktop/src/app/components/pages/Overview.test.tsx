@@ -78,6 +78,35 @@ describe("Overview information hierarchy and truthfulness", () => {
     expect(summary.ccSwitch.label).not.toContain("正常");
   });
 
+  it.each([
+    ["stale", { ...runtimePayload, data_status: "stale" }, "状态已过期"],
+    ["partial", { ...runtimePayload, partial: true }, "状态不完整"],
+  ])("does not present %s runtime payloads as healthy", (_state, payload, serviceLabel) => {
+    const summary = deriveOverviewOperationalSummary(payload, "runtime");
+
+    expect(summary.service.label).toBe(serviceLabel);
+    expect(summary.service.tone).not.toBe("positive");
+    expect(summary.agents.label).toBe("尚无已验证连接");
+    expect(summary.route.tone).not.toBe("positive");
+    expect(summary.issues.label).toBe("尚无当前问题证据");
+    expect(summary.ccSwitch.state).toBe("unknown");
+    expect(summary.nextStep.page).toBe("install");
+  });
+
+  it("shows empty metrics instead of preview success data", () => {
+    dashboard.state = {
+      payload: null,
+      status: "browser-preview",
+      updatedAt: null,
+      error: "",
+      refresh: vi.fn(),
+    };
+    render(<Overview setPage={vi.fn()} />);
+
+    expect(screen.getAllByText("浏览器预览 · 未连接真实数据")).not.toHaveLength(0);
+    expect(screen.queryByText("浏览器预览 · 示例数据")).not.toBeInTheDocument();
+  });
+
   it("puts operational truth and one next step before savings and activity", () => {
     const { container } = render(<Overview setPage={vi.fn()} />);
     const sections = Array.from(container.querySelectorAll("[data-overview-section]"))

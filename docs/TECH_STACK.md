@@ -1,173 +1,115 @@
 # Desktop 技术选型决策
 
-状态：Accepted  
+状态：Accepted
+最后校准：2026-07-11
 关联：`docs/PRD.md`
 
-## 1. 最终决策
-
-采用：
+## 1. 接受的主路线
 
 ```text
-Tauri 2 + React + TypeScript + Vite
-Rust core + Python sidecar transitional architecture
-SQLite + local JSON/YAML config
+Rust 核心业务与本地服务
++ Tauri 2 桌面控制面
++ React 18 / TypeScript / Vite UI
++ 极少量 Swift / macOS 系统桥接（仅在 Rust/Tauri 无可靠能力时）
++ 本地 JSON/JSONL 与 OS 凭据存储
 ```
 
-Electron 仅作为备选，不作为主路线。
+Windows 与 macOS 使用同一套 React UI、信息架构、数据契约和用户任务语义。平台差异只能存在于凭据、进程、路径、签名、安装器等系统适配层。当前先在 macOS 完成真实窗口和功能验收，但 Windows 始终是一等支持平台。
 
-## 2. 为什么选 Tauri 2
+Electron 仅是重大技术阻断时的备选，不是并行主路线。Python 可以用于 `support/` 下的开发或审计脚本，但不作为成品运行时、压缩引擎或桌面依赖。
 
-Tauri 适合 d-token 的原因：
+## 2. 为什么选择 Tauri 2
 
-1. d-token 需要 Windows/macOS 原生 App，而不是纯网页。
-2. d-token 需要管理本地 proxy、router、compress、doctor 等 sidecar。
-3. d-token 需要轻量、低资源占用、本地优先。
-4. d-token 的核心能力不在 UI，而在本地进程编排与可观测性。
-5. Tauri 2 支持 external binaries / sidecar，适合把不同本地服务打包进 App。
-6. Tauri updater 支持 Windows/macOS 更新包与签名信息，适合后续自动更新。
+1. d-token 需要 Windows/macOS 原生桌面控制面和受控本地权限。
+2. 核心工作发生在本地代理、压缩、路由、配置事务、Doctor 和 Event Ledger，而非浏览器运行时。
+3. Tauri 2 能以轻量 WebView 承载共享 React UI，并通过 Rust command 暴露窄而可审计的系统能力。
+4. `dtoken-proxy` 可以作为按 target triple 打包的 Rust external binary，仍属于 d-token-owned Rust runtime。
+5. Tauri bundle、签名和 updater 能覆盖 Windows/macOS 的发布工程需求。
 
-## 3. 为什么不是 Electron 主路线
+## 3. 代码职责
 
-Electron 的优点：
+### 3.1 Rust 核心
 
-1. 前端生态成熟。
-2. 开发速度快。
-3. 很多成熟桌面应用验证过。
+正式代码位于 `code/crates/*` 与 `code/apps/desktop/src-tauri`，负责：
 
-但 d-token 不首选 Electron：
+1. OpenAI/Anthropic 本地协议入口与流式转发。
+2. Headroom-derived compression、CCR、memory、output shaping 和 Optical shadow planner。
+3. Provider/Route/Instance 决策、凭据短生命周期解引用和 upstream 转发。
+4. Event Ledger、metrics、stats、history、export 和 Doctor。
+5. 配置计划、备份、应用、验证、回退与进程生命周期。
+6. Tauri commands、平台路径、OS credential store 和桌面打包。
 
-1. Electron 基于 Chromium 多进程模型，整体更重。
-2. Electron 主进程、渲染进程、preload、IPC 安全面更复杂。
-3. d-token 的重点是本地代理和进程编排，不需要完整 Chromium 运行时。
-4. 长期产品化需要更轻的桌面壳和更强的本地权限边界。
+`code/runtimes/headroom/` 是 Headroom-derived 能力迁移的 provenance/兼容边界，不是外部服务依赖，也不是 Python sidecar 入口。仓库中不存在 `code/sidecars/*`，架构不得引用这些路径。
 
-结论：Electron 可作为 fallback，但不是主线。
+### 3.2 React/TypeScript UI
 
-## 4. Rust 与 Python 的职责划分
+当前依赖事实是 React 18.3、TypeScript 5.7、Vite 6、Vitest 3。UI 负责：
 
-### 4.1 Rust 负责
+1. 总览、安装与连接、Agents、上下文优化、分析、Doctor、日志、变更与回退、设置。
+2. 统一 runtime evidence 状态，清楚区分真实、不可用、过期和浏览器预览。
+3. 把 native/API 能力翻译为用户任务；正式 UI 不暴露 fixture、benchmark、smoke 等开发术语。
+4. Windows/macOS 1:1 的视觉系统、布局、文案与交互语义。
 
-1. Desktop shell backend。
-2. Local API server。
-3. Process manager。
-4. Port manager。
-5. ProviderProfile / RouteProfile loader。
-6. Request log writer。
-7. Healthcheck / doctor。
-8. Proxy/router skeleton。
-9. Chain bridge。
-10. Windows/macOS OS integration。
+浏览器模式只用于 UI 预览，不能证明真实能力；桌面窗口必须由 Tauri command 与 d-token-owned local service 提供运行事实。
 
-### 4.2 Python sidecar 负责
+### 3.3 Swift/macOS 桥接
 
-1. Headroom-compatible compression pipeline。
-2. ContentRouter。
-3. SmartCrusher。
-4. CodeCompressor。
-5. CCR。
-6. Memory。
-7. Learn。
-8. Output shaper。
-9. Evals / benchmark。
-10. MCP compatibility。
+默认优先 Rust crate、Tauri plugin 或系统命令。仅当这些路径无法可靠实现且有明确测试边界时，才允许引入少量 Swift，例如特定 AppKit 生命周期或系统 UI 桥接。Swift 不承载业务规则、路由、压缩、配置事务或数据模型。
 
-### 4.3 长期迁移方向
+## 4. 数据与凭据
 
-稳定且平台相关的模块逐步 Rust 化：
+当前实现：
 
-1. Proxy。
-2. Router。
-3. Metrics ledger。
-4. Config。
-5. Logs。
-6. Process manager。
+- JSON/JSONL：配置、RequestLog、RouteDecision、Event Ledger、CCR metadata 与回退证据。
+- macOS Keychain / Windows Credential Manager：由 Rust `keyring` 适配写入和读取 Provider 凭据；配置与 API 只保存/返回不透明引用或 `credential_configured`。
+- 完整 prompt/response、密钥、Authorization、cookie 不进入日志、Ledger 或导出。
 
-复杂压缩和 ML 相关模块可继续保留 Python sidecar，直到 Rust parity 充分验证。
+目标但尚未完成：SQLite 查询索引、JSONL 坏行隔离/轮转/锁/损坏诊断。文档和 UI 在这些门禁完成前不得宣称长期持久化已达到发布级。
 
-## 5. 前端技术
+## 5. 平台要求
 
-采用：
+### Windows
 
-```text
-React + TypeScript + Vite
-```
+1. WebView2、MSVC toolchain、UTF-8、盘符/UNC 路径与 `.exe/.cmd/.bat` shim。
+2. Windows Credential Manager、端口/进程身份检查、NSIS/MSI 与代码签名。
+3. 共享 React UI；Windows 专属逻辑只位于 Rust/Tauri 平台适配和构建配置。
 
-理由：
+### macOS
 
-1. 适合迁移 Headroom Dashboard 的复杂卡片、表格、历史视图和实时 feed。
-2. TypeScript 更适合维护 ProviderProfile、RouteProfile、Instance、RequestLog 等复杂类型。
-3. Vite 与 Tauri 集成成熟。
-4. 后续可用 shadcn/ui、Tailwind 或自研组件库。
+1. Xcode Command Line Tools，Apple Silicon/Intel/universal 构建策略。
+2. Keychain、quarantine/xattr、受管进程、`.app`/DMG、签名与 notarization。
+3. 当前 macOS 平台覆盖文件启用 `.app` 与 DMG；CI 可选签名/notarization，但完成发布仍需把同一候选 commit、artifact hash 与安装后实机证据绑定。
 
-## 6. 数据存储
+## 6. Rust external binary 管理
 
-采用：
+`dtoken-proxy` 是 d-token 自有 Rust runtime，不是外部 Headroom/RTK 服务：
 
-```text
-SQLite + append-only JSONL ledger + local config files
-```
+1. 按 target triple 生成并由 Tauri `externalBin` 打包。
+2. 必须有受管 identity、固定 loopback bind、healthcheck、日志和生命周期证据。
+3. 启停失败必须显式，禁止留下无法安全识别的孤儿进程。
+4. 开发期不得启动、停止或占用外部 Headroom/RTK/cc-switch 服务。
 
-用途：
+## 7. 当前风险与发布门禁
 
-1. SQLite：Dashboard 查询、历史统计、request index。
-2. JSONL ledger：durable savings events、request events、debug events。
-3. YAML/JSON config：provider、route、instance、developer config。
-4. OS keychain：正式保存敏感凭据。
-
-## 7. Windows/macOS 技术要求
-
-### 7.1 Windows
-
-1. WebView2 runtime 检测。
-2. Microsoft C++ Build Tools / MSVC 检测。
-3. `x86_64-pc-windows-msvc` toolchain。
-4. `.exe` / `.cmd` / `.bat` shim 兼容。
-5. UTF-8 日志。
-6. 盘符路径兼容。
-7. 端口占用检测。
-8. 旧进程残留清理。
-9. installer 签名预留。
-
-### 7.2 macOS
-
-1. Xcode Command Line Tools 检测。
-2. Intel / Apple Silicon universal 或双包策略。
-3. Keychain 预留。
-4. LaunchAgent 预留。
-5. quarantine / xattr 提示。
-6. code signing / notarization 预留。
-7. menu bar / tray 预留。
-
-## 8. Sidecar 管理原则
-
-1. 每个 sidecar 必须有 instance id。
-2. 每个 sidecar 必须有 healthcheck。
-3. 每个 sidecar 必须有 log path。
-4. 每个 sidecar 必须可启动、停止、重启。
-5. 每个 sidecar 必须可在 Dashboard 中观察。
-6. 不允许用户看不到的后台进程长期残留。
-
-## 9. 技术风险
-
-| 风险 | 判断 | 缓解 |
+| 风险 | 当前事实 | 门禁 |
 |---|---|---|
-| Headroom 功能太多 | 高 | Python sidecar 先保留 parity |
-| Rust 全量重写周期过长 | 高 | 不一开始全 Rust 重写 |
-| Dashboard 全量迁移工作量大 | 高 | M2 先做全卡片 mock，占位不删项 |
-| Windows 端口/路径/编码问题 | 高 | Doctor 页面优先做 |
-| macOS 签名与权限 | 中 | M5 再做签名/notarization |
-| sidecar 打包复杂 | 中 | 严格按 target triple 管理 |
+| 安装/配置事务 | 有计划、draft、backup/rollback 基础，尚未覆盖全部原子写入和故障恢复 | 权限、磁盘满、并发修改、验证失败等故障注入全部可恢复 |
+| Runtime truth | Dashboard/Tauri 已能读取 d-token local service，但部分桌面聚合数据仍需去硬编码 | 单一 evidence contract，UI 不再把偏好或预览显示成运行事实 |
+| 持久化 | JSONL 可用，SQLite/轮转/坏行隔离未闭环 | 长期运行、损坏恢复、并发和导出门禁通过 |
+| macOS 发布 | bundle workflow、可选签名/notarization 已配置 | 同一 commit 的签名产物、hash、安装后运行和真实 OpenCode 证据 |
+| Windows 发布 | UI 和 Rust 代码共享，安装包实机证据不足 | Windows CI/安装包、凭据、路径、回退与视觉一致性验收 |
+| Optical | 当前仅 shadow preview/metadata | renderer、patcher、post-validator、rollback、fidelity gate 完成前禁止 active transform |
 
-## 10. 决策结论
+## 8. 结论
 
-主路线固定为：
+唯一接受的产品架构是：
 
 ```text
 Tauri 2 Desktop
-+ React/TypeScript Dashboard
-+ Rust orchestration core
-+ Python Headroom-compatible sidecar
-+ Local-first security boundary
++ shared React/TypeScript UI
++ d-token-owned Rust core/runtime
++ minimal platform adapters (Swift only when unavoidable on macOS)
++ local-first security boundary
 ```
 
-后续除非出现重大技术阻断，不再切换到 Electron 主路线。
+不得再把 Python sidecar、外部 Headroom 8787 或不存在的 `code/sidecars/*` 写成当前产品运行架构。

@@ -117,6 +117,7 @@ pub enum LayeredStage {
     HeadroomRetrieve,
     RouteForward,
     ProviderForward,
+    OpticalPreview,
     InstallStep,
     ConfigPatch,
 }
@@ -608,10 +609,14 @@ pub enum OpticalApplicabilityReason {
     Eligible,
     GlobalDisabled,
     RouteDisabled,
+    ActiveDisabled,
+    ExperimentalConfirmationRequired,
+    RouteModeDisabled,
     UnsupportedMethod,
     UnsupportedPath,
     EmptyBody,
     UnsupportedProtocol,
+    ProtocolEndpointMismatch,
     UnsupportedModel,
     UnknownModelShadowOnly,
     OverBudget,
@@ -708,6 +713,7 @@ pub struct OpticalApplicabilityDecision {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct OpticalGlobalPolicy {
     pub enabled: bool,
     pub default_mode: OpticalMode,
@@ -735,6 +741,7 @@ impl Default for OpticalGlobalPolicy {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct RouteOpticalPolicy {
     pub enabled: bool,
     pub mode: OpticalMode,
@@ -759,6 +766,58 @@ impl Default for RouteOpticalPolicy {
             confirmed_experimental_lossy: false,
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum OpticalCapabilityLifecycle {
+    #[default]
+    Active,
+    Revoked,
+    Superseded,
+}
+
+fn default_optical_snapshot_schema_version() -> u32 {
+    1
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OpticalCapabilitySnapshot {
+    #[serde(default = "default_optical_snapshot_schema_version")]
+    pub schema_version: u32,
+    pub snapshot_id: String,
+    pub revision: u64,
+    pub enabled: bool,
+    #[serde(default)]
+    pub lifecycle: OpticalCapabilityLifecycle,
+    #[serde(default)]
+    pub revoked_at_ms: Option<u64>,
+    #[serde(default)]
+    pub revocation_reason: Option<String>,
+    #[serde(default)]
+    pub supersedes_snapshot_id: Option<String>,
+    pub provider_family: ProviderFamily,
+    pub provider_id: Option<String>,
+    pub model_base: String,
+    pub endpoint: OpticalEndpoint,
+    pub capability: OpticalModelCapability,
+    pub verified_at_ms: u64,
+    pub source: String,
+    pub notes: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RouteOpticalPolicyEntry {
+    pub route_id: String,
+    pub policy: RouteOpticalPolicy,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct OpticalRuntimeConfig {
+    pub global_policy: OpticalGlobalPolicy,
+    pub route_policies: Vec<RouteOpticalPolicyEntry>,
+    pub capability_snapshots: Vec<OpticalCapabilitySnapshot>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -813,4 +872,107 @@ pub struct OpticalPlanPublicSummary {
     pub cache: CachePublicSummary,
     pub economics: OpticalEconomicsPublicSummary,
     pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OpticalPreviewRequest {
+    pub endpoint_path: String,
+    pub protocol: Option<Protocol>,
+    pub provider_id: Option<String>,
+    pub route_id: Option<String>,
+    pub model: Option<String>,
+    pub body: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OpticalStatusPublicSummary {
+    pub enabled: bool,
+    pub default_mode: OpticalMode,
+    pub allow_active: bool,
+    pub public_summary_only: bool,
+    pub fail_closed: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OpticalCapabilitiesPublicSummary {
+    pub shadow_preview_supported: bool,
+    pub active_transform_enabled: bool,
+    pub max_mode: OpticalMode,
+    pub supported_endpoints: Vec<OpticalEndpoint>,
+    pub unknown_model_status: CapabilityStatus,
+    pub unsupported_path_status: CapabilityStatus,
+    pub public_summary_only: bool,
+    pub fail_closed: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct OpticalCapabilityLifecyclePublicSummary {
+    pub schema_version: u32,
+    pub configured_snapshots: usize,
+    pub active_snapshots: usize,
+    pub revoked_snapshots: usize,
+    pub superseded_snapshots: usize,
+    pub verified_rules: usize,
+    pub rejected_rules: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct OpticalEventMetadataPublicSummary {
+    pub kind: String,
+    pub final_status: OpticalPlanStatus,
+    pub mode: OpticalMode,
+    pub candidate_blocks: usize,
+    pub preserved_blocks: usize,
+    pub skipped_blocks: usize,
+    pub estimated_images: usize,
+    pub net_saved_tokens: isize,
+    pub graph_nodes: usize,
+    pub graph_edges: usize,
+    pub tool_dependency_edges: usize,
+    pub closed_tool_results: usize,
+    pub orphan_tool_results: usize,
+    pub open_tool_uses: usize,
+    pub route_policy_found: bool,
+    pub configured_rules: usize,
+    pub verified_rules: usize,
+    pub rejected_rules: usize,
+    pub snapshot_revision_present: bool,
+    pub raw_available: bool,
+}
+
+impl Default for OpticalEventMetadataPublicSummary {
+    fn default() -> Self {
+        Self {
+            kind: String::new(),
+            final_status: OpticalPlanStatus::Disabled,
+            mode: OpticalMode::Off,
+            candidate_blocks: 0,
+            preserved_blocks: 0,
+            skipped_blocks: 0,
+            estimated_images: 0,
+            net_saved_tokens: 0,
+            graph_nodes: 0,
+            graph_edges: 0,
+            tool_dependency_edges: 0,
+            closed_tool_results: 0,
+            orphan_tool_results: 0,
+            open_tool_uses: 0,
+            route_policy_found: false,
+            configured_rules: 0,
+            verified_rules: 0,
+            rejected_rules: 0,
+            snapshot_revision_present: false,
+            raw_available: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OpticalEventPublicSummary {
+    pub event_id: Uuid,
+    pub timestamp_ms: u64,
+    pub stage: LayeredStage,
+    pub status: EventStatus,
+    pub metadata: OpticalEventMetadataPublicSummary,
 }

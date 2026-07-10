@@ -36,5 +36,19 @@
       "process_status": "stopped",
       "log_path": "./logs/demo-instance.jsonl"
     }
-  ]
+  ],
+  "optical": {
+    "global_policy": {
+      "enabled": false,
+      "default_mode": "shadow_preview",
+      "allow_active": false,
+      "max_images_per_request": 10,
+      "max_candidate_chars_per_request": 512000,
+      "max_plan_time_ms": 50,
+      "max_render_time_ms": 1500,
+      "public_summary_only": true
+    },
+    "route_policies": [],
+    "capability_snapshots": []
+  }
 }

@@ -1,6 +1,8 @@
 # dependencies
 node_modules/
 .pnpm-store/
+__pycache__/
+*.py[cod]
 
 # builds
 dist/
@@ -50,3 +52,12 @@ Thumbs.db
 
 # Tauri generated
 src-tauri/target/
+/code/apps/desktop/src-tauri/binaries/dtoken-proxy-*-apple-darwin
+/code/apps/desktop/src-tauri/gen/schemas/desktop-schema 2.json
+/code/apps/desktop/src-tauri/gen/schemas/macOS-schema.json
+/code/apps/desktop/src-tauri/icons/android/
+/code/apps/desktop/src-tauri/icons/ios/
+/code/apps/desktop/src-tauri/icons/[0-9]*x[0-9]*.png
+/code/apps/desktop/src-tauri/icons/[0-9]*x[0-9]*@2x.png
+/code/apps/desktop/src-tauri/icons/Square*.png
+/code/apps/desktop/src-tauri/icons/StoreLogo.png

@@ -1,0 +1,596 @@
+{
+  "schema_version": 2,
+  "recording_rules": {
+    "branch_semantics": "branch records the actual workspace branch observed when the stage was written; it is not a target-branch requirement",
+    "file_scope": "each stage must list exact files; shared files require hunk-level or mixed staging",
+    "verification_truth": "verification may be passed only when the recorded command completed successfully",
+    "submission_truth": "uncommitted stages must keep submitted=false, submitted_at=null and commit_hash=null",
+    "real_git_operations": "real branch, commit, merge, rebase and push operations are recorded separately in support/git-operations.json"
+  },
+  "pending_commits": [
+    {
+      "id": "optical-n0-safety-foundation",
+      "created_at": "2026-07-11T00:58:27+09:00",
+      "updated_at": "2026-07-11T04:48:04+08:00",
+      "branch": "optical",
+      "phase": "N0",
+      "status": "superseded",
+      "title": "Optical shadow safety foundation",
+      "summary": "Harden applicability, real-text risk classification, geometry, selected-only economics and structured validation.",
+      "commit_message": "feat(optical): harden shadow planning safety gates",
+      "head_before": "cf65cc4",
+      "files": [
+        "code/crates/dtoken-compress/src/optical/applicability.rs",
+        "code/crates/dtoken-compress/src/optical/render_geometry.rs",
+        "code/crates/dtoken-compress/src/optical/risk.rs",
+        "code/crates/dtoken-compress/src/optical/text_arena.rs",
+        "code/crates/dtoken-compress/src/optical/validate.rs",
+        "code/crates/dtoken-compress/tests/optical_phase_a.rs"
+      ],
+      "tests": [
+        "cargo test -p dtoken-compress: 76 unit + 4 integration passed",
+        "cargo test --workspace: passed"
+      ],
+      "dependencies": [],
+      "notes": [
+        "Does not include renderer or request mutation.",
+        "Rolled into the user-requested aggregate baseline on codex/prd-macos-polish; the real commit is recorded separately in git-operations.json."
+      ],
+      "staging_mode": "whole-file",
+      "shared_files": [],
+      "verification": {
+        "status": "passed",
+        "checks": [
+          "cargo test -p dtoken-compress: 76 unit + 4 integration passed",
+          "cargo test --workspace: passed"
+        ]
+      },
+      "blockers": [],
+      "submitted": false,
+      "submitted_at": null,
+      "commit_hash": null
+    },
+    {
+      "id": "optical-n1-pending-ledger",
+      "created_at": "2026-07-11T00:58:27+09:00",
+      "updated_at": "2026-07-11T04:36:26+08:00",
+      "branch": "optical",
+      "phase": "N1",
+      "status": "superseded",
+      "title": "First pending commit ledger",
+      "summary": "Initial pending commit ledger implementation, replaced by schema v2 in N6.",
+      "commit_message": "chore(support): add staged pending commit ledger",
+      "head_before": "cf65cc4",
+      "files": [
+        "support/git-operations.json",
+        "support/pending-commits.json",
+        "support/scripts/README.md",
+        "support/scripts/git_operation_audit.py",
+        "support/scripts/test_git_operation_audit.py"
+      ],
+      "tests": [
+        "Superseded before schema v2 verification"
+      ],
+      "dependencies": [],
+      "notes": [
+        "Superseded by optical-n6-commit-ledger-v2."
+      ],
+      "staging_mode": "mixed",
+      "shared_files": [
+        "support/pending-commits.json",
+        "support/scripts/README.md",
+        "support/scripts/git_operation_audit.py",
+        "support/scripts/test_git_operation_audit.py"
+      ],
+      "verification": {
+        "status": "not-run",
+        "checks": [
+          "Superseded before schema v2 verification"
+        ]
+      },
+      "blockers": [],
+      "submitted": false,
+      "submitted_at": null,
+      "commit_hash": null
+    },
+    {
+      "id": "optical-n2-capability-snapshots",
+      "created_at": "2026-07-11T00:58:27+09:00",
+      "updated_at": "2026-07-11T04:48:04+08:00",
+      "branch": "optical",
+      "phase": "N2",
+      "status": "superseded",
+      "title": "Versioned capability snapshots and runtime config",
+      "summary": "Add safe Optical runtime configuration, exact capability identities and highest-revision resolution.",
+      "commit_message": "feat(optical): add versioned capability snapshots",
+      "head_before": "cf65cc4",
+      "files": [
+        "code/configs/config.example.json",
+        "code/crates/dtoken-compress/src/optical/capability.rs",
+        "code/crates/dtoken-compress/src/optical/mod.rs",
+        "code/crates/dtoken-config/src/lib.rs",
+        "code/crates/dtoken-types/src/lib.rs"
+      ],
+      "tests": [
+        "cargo test -p dtoken-config: 4 passed",
+        "cargo test -p dtoken-compress: 76 unit + 4 integration passed",
+        "cargo test -p dtoken-types: 3 passed",
+        "cargo test --workspace: passed"
+      ],
+      "dependencies": [
+        "optical-n0-safety-foundation"
+      ],
+      "notes": [
+        "Default capability registry remains empty and fail closed.",
+        "Rolled into the user-requested aggregate baseline on codex/prd-macos-polish; the real commit is recorded separately in git-operations.json."
+      ],
+      "staging_mode": "mixed",
+      "shared_files": [
+        "code/crates/dtoken-compress/src/optical/capability.rs",
+        "code/crates/dtoken-compress/src/optical/mod.rs",
+        "code/crates/dtoken-types/src/lib.rs"
+      ],
+      "verification": {
+        "status": "passed",
+        "checks": [
+          "cargo test -p dtoken-config: 4 passed",
+          "cargo test -p dtoken-compress: 76 unit + 4 integration passed",
+          "cargo test -p dtoken-types: 3 passed",
+          "cargo test --workspace: passed"
+        ]
+      },
+      "blockers": [],
+      "submitted": false,
+      "submitted_at": null,
+      "commit_hash": null
+    },
+    {
+      "id": "optical-n3-context-graph-plan-ir",
+      "created_at": "2026-07-11T00:58:27+09:00",
+      "updated_at": "2026-07-11T04:48:04+08:00",
+      "branch": "optical",
+      "phase": "N3",
+      "status": "superseded",
+      "title": "ContextGraph and immutable Plan IR",
+      "summary": "Add tool dependency graph, fail-closed historical boundaries and request evidence.",
+      "commit_message": "feat(optical): add context graph and immutable plan IR",
+      "head_before": "cf65cc4",
+      "files": [
+        "code/Cargo.lock",
+        "code/crates/dtoken-compress/Cargo.toml",
+        "code/crates/dtoken-compress/src/optical/context_graph.rs",
+        "code/crates/dtoken-compress/src/optical/decision.rs",
+        "code/crates/dtoken-compress/src/optical/inventory.rs",
+        "code/crates/dtoken-compress/src/optical/mod.rs",
+        "code/crates/dtoken-compress/src/optical/plan_ir.rs"
+      ],
+      "tests": [
+        "cargo test -p dtoken-compress: 76 unit + 4 integration passed",
+        "cargo test --workspace: passed"
+      ],
+      "dependencies": [
+        "optical-n2-capability-snapshots"
+      ],
+      "notes": [
+        "Orphan, recent and ambiguous tool results cannot become Optical candidates.",
+        "Rolled into the user-requested aggregate baseline on codex/prd-macos-polish; the real commit is recorded separately in git-operations.json."
+      ],
+      "staging_mode": "mixed",
+      "shared_files": [
+        "code/crates/dtoken-compress/src/optical/context_graph.rs",
+        "code/crates/dtoken-compress/src/optical/inventory.rs",
+        "code/crates/dtoken-compress/src/optical/mod.rs",
+        "code/crates/dtoken-compress/src/optical/plan_ir.rs"
+      ],
+      "verification": {
+        "status": "passed",
+        "checks": [
+          "cargo test -p dtoken-compress: 76 unit + 4 integration passed",
+          "cargo test --workspace: passed"
+        ]
+      },
+      "blockers": [],
+      "submitted": false,
+      "submitted_at": null,
+      "commit_hash": null
+    },
+    {
+      "id": "optical-n4-preview-events",
+      "created_at": "2026-07-11T00:58:27+09:00",
+      "updated_at": "2026-07-11T04:48:04+08:00",
+      "branch": "optical",
+      "phase": "N4",
+      "status": "superseded",
+      "title": "Configured preview API and metadata-only events",
+      "summary": "Use configured Optical policies and record redacted preview events.",
+      "commit_message": "feat(api): record metadata-only optical preview events",
+      "head_before": "cf65cc4",
+      "files": [
+        "code/crates/dtoken-core-api/src/lib.rs",
+        "code/crates/dtoken-core-api/tests/optical_phase_b.rs",
+        "code/crates/dtoken-types/src/lib.rs"
+      ],
+      "tests": [
+        "cargo test -p dtoken-core-api: 35 unit + 6 integration passed",
+        "cargo test --workspace: passed"
+      ],
+      "dependencies": [
+        "optical-n2-capability-snapshots",
+        "optical-n3-context-graph-plan-ir"
+      ],
+      "notes": [
+        "Events do not contain request body or provider, route and model values.",
+        "Rolled into the user-requested aggregate baseline on codex/prd-macos-polish; the real commit is recorded separately in git-operations.json."
+      ],
+      "staging_mode": "hunk-level",
+      "shared_files": [
+        "code/crates/dtoken-core-api/src/lib.rs",
+        "code/crates/dtoken-core-api/tests/optical_phase_b.rs",
+        "code/crates/dtoken-types/src/lib.rs"
+      ],
+      "verification": {
+        "status": "passed",
+        "checks": [
+          "cargo test -p dtoken-core-api: 35 unit + 6 integration passed",
+          "cargo test --workspace: passed"
+        ]
+      },
+      "blockers": [],
+      "submitted": false,
+      "submitted_at": null,
+      "commit_hash": null
+    },
+    {
+      "id": "optical-n5-docs-deep-review",
+      "created_at": "2026-07-11T00:58:27+09:00",
+      "updated_at": "2026-07-11T04:48:04+08:00",
+      "branch": "optical",
+      "phase": "N5",
+      "status": "superseded",
+      "title": "Round-four documentation and deep review",
+      "summary": "Document capability graph and metadata-only event iteration.",
+      "commit_message": "docs(optical): document capability graph and event iteration",
+      "head_before": "cf65cc4",
+      "files": [
+        "docs/experiments/OPTICAL_HYBRID_CONTEXT_OPTIMIZATION_PLAN_V7.md",
+        "docs/optical/README.md",
+        "docs/optical/implementation-status.md",
+        "docs/optical/review-round-4.md",
+        "docs/optical/test-matrix.md",
+        "support/pending-commits.json"
+      ],
+      "tests": [
+        "Documentation paths and round-four evidence reviewed"
+      ],
+      "dependencies": [
+        "optical-n0-safety-foundation",
+        "optical-n2-capability-snapshots",
+        "optical-n3-context-graph-plan-ir",
+        "optical-n4-preview-events"
+      ],
+      "notes": [
+        "Later documentation is recorded separately in N11.",
+        "Rolled into the user-requested aggregate baseline on codex/prd-macos-polish; the real commit is recorded separately in git-operations.json."
+      ],
+      "staging_mode": "mixed",
+      "shared_files": [
+        "docs/experiments/OPTICAL_HYBRID_CONTEXT_OPTIMIZATION_PLAN_V7.md",
+        "docs/optical/README.md",
+        "docs/optical/implementation-status.md",
+        "docs/optical/test-matrix.md",
+        "support/pending-commits.json"
+      ],
+      "verification": {
+        "status": "passed",
+        "checks": [
+          "Documentation paths and round-four evidence reviewed"
+        ]
+      },
+      "blockers": [],
+      "submitted": false,
+      "submitted_at": null,
+      "commit_hash": null
+    },
+    {
+      "id": "optical-n6-commit-ledger-v2",
+      "created_at": "2026-07-11T01:24:00+09:00",
+      "updated_at": "2026-07-11T04:48:05+08:00",
+      "branch": "codex/prd-macos-polish",
+      "phase": "N6",
+      "status": "superseded",
+      "title": "Pending commit ledger schema v2",
+      "summary": "Add machine validation, exact staging rules, verification evidence and truthful submission fields without target-branch semantics.",
+      "commit_message": "chore(support): validate staged commit records",
+      "head_before": "cf65cc4",
+      "files": [
+        "support/pending-commits.json",
+        "support/scripts/README.md",
+        "support/scripts/git_operation_audit.py",
+        "support/scripts/test_git_operation_audit.py"
+      ],
+      "tests": [
+        "python3 -m pytest support/scripts/test_git_operation_audit.py -q: 9 passed"
+      ],
+      "dependencies": [],
+      "notes": [
+        "Implementation uses only the Python standard library.",
+        "No real Git operation was executed.",
+        "Rolled into the user-requested aggregate baseline on codex/prd-macos-polish; the real commit is recorded separately in git-operations.json."
+      ],
+      "staging_mode": "mixed",
+      "shared_files": [
+        "support/pending-commits.json",
+        "support/scripts/README.md"
+      ],
+      "verification": {
+        "status": "passed",
+        "checks": [
+          "python3 -m pytest support/scripts/test_git_operation_audit.py -q: 9 passed"
+        ]
+      },
+      "blockers": [],
+      "submitted": false,
+      "submitted_at": null,
+      "commit_hash": null
+    },
+    {
+      "id": "optical-n7-capability-lifecycle",
+      "created_at": "2026-07-11T01:30:00+09:00",
+      "updated_at": "2026-07-11T04:48:05+08:00",
+      "branch": "codex/prd-macos-polish",
+      "phase": "N7",
+      "status": "superseded",
+      "title": "Capability lifecycle and revocation barriers",
+      "summary": "Add schema v1 lifecycle records, duplicate-ID rejection and revision barriers that prevent old active rules from returning after revocation.",
+      "commit_message": "feat(optical): add capability lifecycle controls",
+      "head_before": "cf65cc4",
+      "files": [
+        "code/crates/dtoken-compress/src/optical/capability.rs",
+        "code/crates/dtoken-core-api/src/lib.rs",
+        "code/crates/dtoken-core-api/tests/optical_phase_b.rs",
+        "code/crates/dtoken-types/src/lib.rs"
+      ],
+      "tests": [
+        "cargo test -p dtoken-compress: 76 unit + 4 integration passed",
+        "cargo test -p dtoken-core-api: 35 unit + 6 integration passed",
+        "cargo test -p dtoken-types: 3 passed",
+        "cargo test --workspace: passed",
+        "cargo clippy --workspace --all-targets -- -D warnings: passed"
+      ],
+      "dependencies": [
+        "optical-n2-capability-snapshots"
+      ],
+      "notes": [
+        "Authority, signature and lifecycle write APIs remain out of scope.",
+        "Rolled into the user-requested aggregate baseline on codex/prd-macos-polish; the real commit is recorded separately in git-operations.json."
+      ],
+      "staging_mode": "hunk-level",
+      "shared_files": [
+        "code/crates/dtoken-compress/src/optical/capability.rs",
+        "code/crates/dtoken-core-api/src/lib.rs",
+        "code/crates/dtoken-core-api/tests/optical_phase_b.rs",
+        "code/crates/dtoken-types/src/lib.rs"
+      ],
+      "verification": {
+        "status": "passed",
+        "checks": [
+          "cargo test -p dtoken-compress: 76 unit + 4 integration passed",
+          "cargo test -p dtoken-core-api: 35 unit + 6 integration passed",
+          "cargo test -p dtoken-types: 3 passed",
+          "cargo test --workspace: passed",
+          "cargo clippy --workspace --all-targets -- -D warnings: passed"
+        ]
+      },
+      "blockers": [],
+      "submitted": false,
+      "submitted_at": null,
+      "commit_hash": null
+    },
+    {
+      "id": "optical-n8-stable-fingerprints",
+      "created_at": "2026-07-11T01:35:00+09:00",
+      "updated_at": "2026-07-11T04:48:05+08:00",
+      "branch": "codex/prd-macos-polish",
+      "phase": "N8",
+      "status": "superseded",
+      "title": "Stable raw-byte and canonical JSON fingerprints",
+      "summary": "Add explicit SHA-256 evidence kinds and deterministic canonical JSON v1 while preserving a raw-byte path for ingress integration.",
+      "commit_message": "feat(optical): add stable request fingerprints",
+      "head_before": "cf65cc4",
+      "files": [
+        "code/crates/dtoken-compress/src/optical/mod.rs",
+        "code/crates/dtoken-compress/src/optical/plan_ir.rs"
+      ],
+      "tests": [
+        "cargo test -p dtoken-compress: 76 unit + 4 integration passed",
+        "cargo test --workspace: passed",
+        "cargo clippy --workspace --all-targets -- -D warnings: passed"
+      ],
+      "dependencies": [
+        "optical-n3-context-graph-plan-ir"
+      ],
+      "notes": [
+        "HTTP Preview still uses canonical fallback; raw request bytes are not wired at ingress.",
+        "Canonical JSON v1 is not claimed to implement RFC 8785/JCS.",
+        "Rolled into the user-requested aggregate baseline on codex/prd-macos-polish; the real commit is recorded separately in git-operations.json."
+      ],
+      "staging_mode": "hunk-level",
+      "shared_files": [
+        "code/crates/dtoken-compress/src/optical/mod.rs",
+        "code/crates/dtoken-compress/src/optical/plan_ir.rs"
+      ],
+      "verification": {
+        "status": "passed",
+        "checks": [
+          "cargo test -p dtoken-compress: 76 unit + 4 integration passed",
+          "cargo test --workspace: passed",
+          "cargo clippy --workspace --all-targets -- -D warnings: passed"
+        ]
+      },
+      "blockers": [],
+      "submitted": false,
+      "submitted_at": null,
+      "commit_hash": null
+    },
+    {
+      "id": "optical-n9-provider-state-machines",
+      "created_at": "2026-07-11T01:40:00+09:00",
+      "updated_at": "2026-07-11T04:48:05+08:00",
+      "branch": "codex/prd-macos-polish",
+      "phase": "N9",
+      "status": "superseded",
+      "title": "Provider-specific tool state machines",
+      "summary": "Add versioned Anthropic and OpenAI Chat state-machine metadata, parallel tool fixtures and fail-closed OpenAI inventory lowering.",
+      "commit_message": "feat(optical): add provider tool state machines",
+      "head_before": "cf65cc4",
+      "files": [
+        "code/crates/dtoken-compress/src/optical/context_graph.rs",
+        "code/crates/dtoken-compress/src/optical/inventory.rs",
+        "code/crates/dtoken-compress/src/optical/mod.rs"
+      ],
+      "tests": [
+        "cargo test -p dtoken-compress: 76 unit + 4 integration passed",
+        "cargo test --workspace: passed",
+        "cargo clippy --workspace --all-targets -- -D warnings: passed"
+      ],
+      "dependencies": [
+        "optical-n3-context-graph-plan-ir"
+      ],
+      "notes": [
+        "OpenAI lowering is shadow-only and is not connected to active transform.",
+        "Rolled into the user-requested aggregate baseline on codex/prd-macos-polish; the real commit is recorded separately in git-operations.json."
+      ],
+      "staging_mode": "hunk-level",
+      "shared_files": [
+        "code/crates/dtoken-compress/src/optical/context_graph.rs",
+        "code/crates/dtoken-compress/src/optical/inventory.rs",
+        "code/crates/dtoken-compress/src/optical/mod.rs"
+      ],
+      "verification": {
+        "status": "passed",
+        "checks": [
+          "cargo test -p dtoken-compress: 76 unit + 4 integration passed",
+          "cargo test --workspace: passed",
+          "cargo clippy --workspace --all-targets -- -D warnings: passed"
+        ]
+      },
+      "blockers": [],
+      "submitted": false,
+      "submitted_at": null,
+      "commit_hash": null
+    },
+    {
+      "id": "optical-n10-lifecycle-events-api",
+      "created_at": "2026-07-11T01:46:00+09:00",
+      "updated_at": "2026-07-11T04:48:05+08:00",
+      "branch": "codex/prd-macos-polish",
+      "phase": "N10",
+      "status": "superseded",
+      "title": "Capability lifecycle API and expanded preview events",
+      "summary": "Expose lifecycle counts and add metadata-only status, graph, economics and capability aggregates to OpticalPreview events.",
+      "commit_message": "feat(api): expose optical lifecycle and event aggregates",
+      "head_before": "cf65cc4",
+      "files": [
+        "code/crates/dtoken-core-api/src/lib.rs",
+        "code/crates/dtoken-core-api/tests/optical_phase_b.rs",
+        "code/crates/dtoken-types/src/lib.rs"
+      ],
+      "tests": [
+        "cargo test -p dtoken-core-api: 35 unit + 6 integration passed",
+        "cargo test -p dtoken-types: 3 passed",
+        "cargo test --workspace: passed",
+        "cargo clippy --workspace --all-targets -- -D warnings: passed"
+      ],
+      "dependencies": [
+        "optical-n7-capability-lifecycle",
+        "optical-n9-provider-state-machines"
+      ],
+      "notes": [
+        "Events contain aggregate metadata only and exclude provider, route, model and request content.",
+        "Rolled into the user-requested aggregate baseline on codex/prd-macos-polish; the real commit is recorded separately in git-operations.json."
+      ],
+      "staging_mode": "hunk-level",
+      "shared_files": [
+        "code/crates/dtoken-core-api/src/lib.rs",
+        "code/crates/dtoken-core-api/tests/optical_phase_b.rs",
+        "code/crates/dtoken-types/src/lib.rs"
+      ],
+      "verification": {
+        "status": "passed",
+        "checks": [
+          "cargo test -p dtoken-core-api: 35 unit + 6 integration passed",
+          "cargo test -p dtoken-types: 3 passed",
+          "cargo test --workspace: passed",
+          "cargo clippy --workspace --all-targets -- -D warnings: passed"
+        ]
+      },
+      "blockers": [],
+      "submitted": false,
+      "submitted_at": null,
+      "commit_hash": null
+    },
+    {
+      "id": "optical-n11-docs-review",
+      "created_at": "2026-07-11T01:49:00+09:00",
+      "updated_at": "2026-07-11T04:48:05+08:00",
+      "branch": "codex/prd-macos-polish",
+      "phase": "N11",
+      "status": "superseded",
+      "title": "Top-level documentation and round-five review",
+      "summary": "Update project entry points, V7 plan, Optical status, gates, tests and the fifth multidimensional review.",
+      "commit_message": "docs(optical): document lifecycle fingerprint and audit iteration",
+      "head_before": "cf65cc4",
+      "files": [
+        "README.md",
+        "docs/PLAN.md",
+        "docs/experiments/OPTICAL_HYBRID_CONTEXT_OPTIMIZATION_PLAN_V7.md",
+        "docs/index.md",
+        "docs/optical/README.md",
+        "docs/optical/implementation-status.md",
+        "docs/optical/release-gates.md",
+        "docs/optical/review-round-5.md",
+        "docs/optical/test-matrix.md",
+        "support/pending-commits.json",
+        "support/scripts/README.md"
+      ],
+      "tests": [
+        "cargo test --workspace: passed",
+        "cargo clippy --workspace --all-targets -- -D warnings: passed",
+        "Top-level and Optical documentation truth sources updated"
+      ],
+      "dependencies": [
+        "optical-n6-commit-ledger-v2",
+        "optical-n7-capability-lifecycle",
+        "optical-n8-stable-fingerprints",
+        "optical-n9-provider-state-machines",
+        "optical-n10-lifecycle-events-api"
+      ],
+      "notes": [
+        "Git audit and pending-plan tests now pass in the current Python environment.",
+        "No Git commit was executed.",
+        "Rolled into the user-requested aggregate baseline on codex/prd-macos-polish; the real commit is recorded separately in git-operations.json."
+      ],
+      "staging_mode": "mixed",
+      "shared_files": [
+        "docs/experiments/OPTICAL_HYBRID_CONTEXT_OPTIMIZATION_PLAN_V7.md",
+        "docs/optical/README.md",
+        "docs/optical/implementation-status.md",
+        "docs/optical/test-matrix.md",
+        "support/pending-commits.json",
+        "support/scripts/README.md"
+      ],
+      "verification": {
+        "status": "passed",
+        "checks": [
+          "cargo test --workspace: passed",
+          "cargo clippy --workspace --all-targets -- -D warnings: passed",
+          "Top-level and Optical documentation truth sources updated"
+        ]
+      },
+      "blockers": [],
+      "submitted": false,
+      "submitted_at": null,
+      "commit_hash": null
+    }
+  ]
+}

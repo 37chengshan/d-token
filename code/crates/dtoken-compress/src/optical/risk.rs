@@ -42,34 +42,89 @@ pub struct RiskPartitionPlan {
     pub skip_reason: Option<String>,
 }
 
-fn is_uuid_like(text: &str) -> bool {
-    let t = text.trim();
-    t.len() == 36 && t.chars().filter(|c| *c == '-').count() == 4
-}
-fn is_hash_like(text: &str) -> bool {
-    let t = text.trim();
-    t.len() >= 7 && t.chars().all(|c| c.is_ascii_hexdigit())
-}
-fn is_path_like(text: &str) -> bool {
-    let t = text.trim();
-    t.contains('/') || t.contains('\\') || t.starts_with("./") || t.starts_with("../")
-}
-fn is_bearer_token(text: &str) -> bool {
-    text.trim().to_ascii_lowercase().starts_with("bearer ")
-}
-fn is_api_key_like(text: &str) -> bool {
-    let t = text.trim();
-    t.starts_with("sk-") || t.starts_with("sk-ant-") || t.contains("api_key")
-}
-fn is_cookie(text: &str) -> bool {
-    text.trim().to_ascii_lowercase().starts_with("cookie:")
-}
-fn is_diff_patch(text: &str) -> bool {
-    let t = text.trim();
-    t.starts_with("---") || t.starts_with("+++") || t.starts_with("@@") || t.starts_with("diff ")
+fn clean_token(token: &str) -> &str {
+    token.trim_matches(|character: char| {
+        matches!(
+            character,
+            ',' | ';' | ':' | '(' | ')' | '[' | ']' | '{' | '}' | '<' | '>' | '"' | '\''
+        )
+    })
 }
 
-/// 对单个 block 文本做 risk 分类。
+fn is_uuid_like(text: &str) -> bool {
+    let token = clean_token(text);
+    if token.len() != 36 {
+        return false;
+    }
+    for (index, character) in token.chars().enumerate() {
+        if matches!(index, 8 | 13 | 18 | 23) {
+            if character != '-' {
+                return false;
+            }
+        } else if !character.is_ascii_hexdigit() {
+            return false;
+        }
+    }
+    true
+}
+
+fn is_hash_like(text: &str) -> bool {
+    let token = clean_token(text);
+    (7..=128).contains(&token.len()) && token.chars().all(|character| character.is_ascii_hexdigit())
+}
+
+fn is_path_like(text: &str) -> bool {
+    let token = clean_token(text);
+    token.starts_with('/')
+        || token.starts_with("./")
+        || token.starts_with("../")
+        || token.starts_with("~/")
+        || token.contains('\\')
+        || (token.len() >= 3
+            && token.as_bytes()[1] == b':'
+            && matches!(token.as_bytes()[2], b'\\' | b'/'))
+}
+
+fn contains_secret_like(text: &str) -> bool {
+    let lower = text.to_ascii_lowercase();
+    let markers = [
+        "authorization: bearer ",
+        "authorization=bearer ",
+        "bearer ",
+        "cookie:",
+        "set-cookie:",
+        "x-api-key",
+        "api_key",
+        "api-key",
+        "apikey",
+        "sk-ant-",
+    ];
+    if markers.iter().any(|marker| lower.contains(marker)) {
+        return true;
+    }
+
+    text.split_whitespace().any(|token| {
+        let token = clean_token(token);
+        token.starts_with("sk-") && token.len() >= 12
+    })
+}
+
+fn contains_diff_patch(text: &str) -> bool {
+    let mut has_old_header = false;
+    let mut has_new_header = false;
+    for line in text.lines() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("diff --git ") || trimmed.starts_with("@@ ") {
+            return true;
+        }
+        has_old_header |= trimmed.starts_with("--- ");
+        has_new_header |= trimmed.starts_with("+++ ");
+    }
+    has_old_header && has_new_header
+}
+
+/// 对单个 block 文本做保守风险分类。
+/// Secret 和结构风险优先于 exact anchor；任何 secret-like 内容都会整块跳过。
 pub fn classify_block(text: &str) -> RiskPartitionPlan {
     let total_chars = text.chars().count();
     if total_chars == 0 {
@@ -79,47 +134,36 @@ pub fn classify_block(text: &str) -> RiskPartitionPlan {
             skip_reason: Some("empty".to_string()),
         };
     }
-    if is_bearer_token(text) || is_api_key_like(text) || is_cookie(text) {
+    if contains_secret_like(text) {
         return RiskPartitionPlan {
             tier: RiskTier::SecretNoDuplicate,
             anchors: None,
             skip_reason: Some("secret_no_duplicate".to_string()),
         };
     }
-    if is_diff_patch(text) {
+    if contains_diff_patch(text) {
         return RiskPartitionPlan {
             tier: RiskTier::StructuralUnsafe,
             anchors: None,
             skip_reason: Some("diff_patch_structural".to_string()),
         };
     }
+
     let mut anchors = Vec::new();
-    for (idx, word) in text.split_whitespace().enumerate() {
-        if is_uuid_like(word) || is_hash_like(word) || is_path_like(word) {
+    for (index, token) in text.split_whitespace().enumerate() {
+        let cleaned = clean_token(token);
+        if is_uuid_like(cleaned) || is_hash_like(cleaned) || is_path_like(cleaned) {
             anchors.push(ExactAnchor {
-                anchor_id: format!("anchor-{}", idx),
+                anchor_id: format!("anchor-{index}"),
                 risk_kind: RiskTier::ExactTextRequired,
-                placeholder: format!("«§{}»", idx),
-                span_chars: word.chars().count(),
+                placeholder: format!("«§{index}»"),
+                span_chars: cleaned.chars().count(),
             });
         }
     }
-    let exact_chars: usize = anchors.iter().map(|a| a.span_chars).sum();
+    let exact_chars: usize = anchors.iter().map(|anchor| anchor.span_chars).sum();
     let anchor_count = anchors.len();
-    // dense exact spans only when multiple anchors dominate the text
-    if anchor_count > 1 && total_chars > 0 && exact_chars as f64 / total_chars as f64 > 0.15 {
-        return RiskPartitionPlan {
-            tier: RiskTier::BlockUnsafe,
-            anchors: Some(AnchorMap {
-                anchors,
-                sidecar_policy: SidecarPolicy::SkipBlock,
-                anchor_count,
-                exact_chars,
-                total_chars,
-            }),
-            skip_reason: Some("dense_exact_spans".to_string()),
-        };
-    }
+
     if anchor_count > 100 {
         return RiskPartitionPlan {
             tier: RiskTier::BlockUnsafe,
@@ -131,6 +175,19 @@ pub fn classify_block(text: &str) -> RiskPartitionPlan {
                 total_chars,
             }),
             skip_reason: Some("anchor_count_over_budget".to_string()),
+        };
+    }
+    if anchor_count > 1 && exact_chars as f64 / total_chars as f64 > 0.15 {
+        return RiskPartitionPlan {
+            tier: RiskTier::BlockUnsafe,
+            anchors: Some(AnchorMap {
+                anchors,
+                sidecar_policy: SidecarPolicy::SkipBlock,
+                anchor_count,
+                exact_chars,
+                total_chars,
+            }),
+            skip_reason: Some("dense_exact_spans".to_string()),
         };
     }
     if !anchors.is_empty() {
@@ -146,6 +203,7 @@ pub fn classify_block(text: &str) -> RiskPartitionPlan {
             skip_reason: None,
         };
     }
+
     RiskPartitionPlan {
         tier: RiskTier::RenderSafe,
         anchors: None,
@@ -168,33 +226,29 @@ mod tests {
             RiskTier::ExactTextRequired
         );
         assert_eq!(
-            classify_block("/usr/local/bin/node").tier,
+            classify_block("(/usr/local/bin/node),").tier,
             RiskTier::ExactTextRequired
         );
     }
 
     #[test]
-    fn bearer_cookie_api_key_become_secret_no_duplicate() {
+    fn embedded_secret_markers_skip_the_whole_block() {
+        let text = "INFO request started\nAuthorization: Bearer credential-material\nINFO done";
+        assert_eq!(classify_block(text).tier, RiskTier::SecretNoDuplicate);
         assert_eq!(
-            classify_block("Bearer abc123token").tier,
+            classify_block("prefix Cookie: session=value suffix").tier,
             RiskTier::SecretNoDuplicate
         );
         assert_eq!(
-            classify_block("sk-ant-test-key").tier,
-            RiskTier::SecretNoDuplicate
-        );
-        assert_eq!(
-            classify_block("Cookie: session=abc").tier,
+            classify_block("config x-api-key=credential-material").tier,
             RiskTier::SecretNoDuplicate
         );
     }
 
     #[test]
-    fn diff_becomes_structural_unsafe() {
-        assert_eq!(
-            classify_block("--- a/file.rs\n+++ b/file.rs\n@@ -1,3 +1,3 @@").tier,
-            RiskTier::StructuralUnsafe
-        );
+    fn embedded_diff_becomes_structural_unsafe() {
+        let text = "command output\n--- a/file.rs\n+++ b/file.rs\n@@ -1,3 +1,3 @@";
+        assert_eq!(classify_block(text).tier, RiskTier::StructuralUnsafe);
     }
 
     #[test]
@@ -203,5 +257,11 @@ mod tests {
         let plan = classify_block(dense);
         assert_eq!(plan.tier, RiskTier::BlockUnsafe);
         assert_eq!(plan.skip_reason.as_deref(), Some("dense_exact_spans"));
+    }
+
+    #[test]
+    fn ordinary_log_remains_render_safe() {
+        let text = "INFO operation completed\nWARN retry scheduled\nINFO finished";
+        assert_eq!(classify_block(text).tier, RiskTier::RenderSafe);
     }
 }

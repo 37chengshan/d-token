@@ -10,8 +10,9 @@
     "test:run": "vitest run",
     "preview": "vite preview",
     "tauri": "tauri",
-    "tauri:dev": "tauri dev",
-    "tauri:build": "powershell -NoProfile -ExecutionPolicy Bypass -File ..\\..\\..\\support\\scripts\\prepare_desktop_sidecars.ps1 -Release && tauri build"
+    "tauri:with-sidecar": "node --input-type=module -e \"import { spawnSync } from 'node:child_process'; import { resolve } from 'node:path'; const [mode, ...tauriArgs] = process.argv.slice(1); if (mode !== 'dev' && mode !== 'build') throw new Error('expected Tauri mode: dev or build'); const targetFlagIndex = tauriArgs.indexOf('--target'); const targetFlag = tauriArgs.find((arg) => arg.startsWith('--target=')); const target = targetFlagIndex >= 0 ? tauriArgs[targetFlagIndex + 1] : targetFlag?.slice('--target='.length); if ((targetFlagIndex >= 0 || targetFlag) && !target) throw new Error('--target requires a value'); const root = resolve(process.cwd(), '../../..'); let prepareCommand; let prepareArgs; if (process.platform === 'win32') { prepareCommand = 'powershell'; prepareArgs = ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', resolve(root, 'support/scripts/prepare_desktop_sidecars.ps1'), ...(mode === 'build' ? ['-Release'] : [])]; } else if (process.platform === 'darwin') { prepareCommand = 'bash'; prepareArgs = [resolve(root, 'support/scripts/prepare_desktop_sidecars_macos.sh'), ...(mode === 'build' ? ['--release'] : []), ...(target ? ['--target', target] : [])]; } else { throw new Error('desktop Tauri sidecar preparation currently supports Windows and macOS only'); } const prepared = spawnSync(prepareCommand, prepareArgs, { stdio: 'inherit' }); if (prepared.error) throw prepared.error; if (prepared.status !== 0) process.exit(prepared.status ?? 1); const tauriCommand = process.platform === 'win32' ? 'tauri.cmd' : 'tauri'; const result = spawnSync(tauriCommand, [mode, ...tauriArgs], { stdio: 'inherit' }); if (result.error) throw result.error; process.exit(result.status ?? 1);\" --",
+    "tauri:dev": "npm run tauri:with-sidecar -- dev",
+    "tauri:build": "npm run tauri:with-sidecar -- build"
   },
   "dependencies": {
     "@popperjs/core": "2.11.8",

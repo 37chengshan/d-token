@@ -1,266 +1,169 @@
 # d-token 总体架构
 
-状态：Accepted  
+状态：Accepted
+最后校准：2026-07-11
 关联：`docs/PRD.md`、`docs/TECH_STACK.md`
 
 ## 1. 架构目标
 
-d-token 的架构目标是：
-
-1. 保留 Headroom-compatible core。
-2. 完整承接 Headroom Dashboard。
-3. 新增 provider、route、instance、chain bridge。
-4. 支持 Windows/macOS 原生 App。
-5. 所有请求链路可观测。
-6. 默认本地优先、默认安全。
+1. 由 d-token 自己拥有 Headroom-compatible/derived compression、CCR、memory、output shaping、metrics、history 和 dashboard primitives。
+2. 以 Rust 实现本地协议入口、路由、配置、事件账本、Doctor 和业务规则。
+3. 以 Tauri 2 + React/TypeScript 提供 Windows/macOS 共享桌面控制面。
+4. Provider、Route、Instance、配置变更和请求结果全部可解释、可审计、可回退。
+5. 默认仅绑定 loopback，敏感凭据只存在于 OS credential store 和最短出站生命周期。
+6. 外部 Headroom/RTK/cc-switch 只能作为只读迁移参考或上游接口，不能成为 App 的 Dashboard/runtime 依赖。
 
 ## 2. 总体分层
 
 ```text
-┌──────────────────────────────────────────────┐
-│ d-token Desktop                              │
-│ - Tauri 2                                    │
-│ - React / TypeScript Dashboard               │
-│ - Provider / Route / Instance UI             │
-│ - Doctor / Logs / Export                     │
-└──────────────────────────────────────────────┘
-                    │
-┌──────────────────────────────────────────────┐
-│ Rust Orchestration Core                      │
-│ - local API server                            │
-│ - process manager                             │
-│ - port manager                                │
-│ - config loader                               │
-│ - healthcheck                                 │
-│ - request log writer                          │
-└──────────────────────────────────────────────┘
-                    │
-┌──────────────────────────────────────────────┐
-│ Headroom-compatible Core                     │
-│ - compression pipeline                        │
-│ - ContentRouter                               │
-│ - SmartCrusher                                │
-│ - CodeCompressor                              │
-│ - CCR                                         │
-│ - memory / learn / output shaper              │
-└──────────────────────────────────────────────┘
-                    │
-┌──────────────────────────────────────────────┐
-│ Routing Layer                                │
-│ - ProviderProfile                             │
-│ - RouteProfile                                │
-│ - Instance                                    │
-│ - Chain bridge                                │
-└──────────────────────────────────────────────┘
-                    │
-       Official Provider / Custom Provider / Local Chain
+OpenCode / Claude Code / Codex / Cursor / Cline / other agents
+                              │
+                              ▼
+                 d-token loopback protocol entry
+              OpenAI Chat / Responses / Anthropic Messages
+                              │
+                              ▼
+┌──────────────────────────────────────────────────────────────┐
+│ d-token-owned Rust runtime                                   │
+│ protocol guard → compression/CCR/memory → route decision     │
+│ → OS credential resolve → upstream streaming/response        │
+│ → RequestLog + Event Ledger + metrics/history/export         │
+└──────────────────────────────────────────────────────────────┘
+               │                              │
+               ▼                              ▼
+ official/custom/cc-switch/local       local API / Tauri commands
+ upstream interfaces                            │
+                                                ▼
+┌──────────────────────────────────────────────────────────────┐
+│ Tauri 2 desktop control plane                                │
+│ shared React/TypeScript UI                                   │
+│ Overview / Connect / Context / Analytics / Doctor / Changes  │
+└──────────────────────────────────────────────────────────────┘
 ```
 
-## 3. 请求链路
+macOS 与 Windows 共享 React UI 和领域契约。Keychain/Credential Manager、进程、路径、签名和安装器差异位于 Rust/Tauri 平台适配层；只有 Rust/Tauri 无可靠替代时，macOS 才允许极少量 Swift 系统桥接。
+
+## 3. 请求链路与失败语义
 
 ```text
-AI Coding Tool
-  ↓
-d-token Local Proxy
-  ↓
-Protocol Detector
-  ↓
-Compression Policy Executor
-  ↓
-Route Decision
-  ↓
-Provider / Chain Bridge
-  ↓
-Response Stream
-  ↓
-Metrics + Logs + Dashboard
+Agent request
+  → loopback/Host/Origin/body guard
+  → protocol parse (preserve unsupported fields)
+  → configured Route + Provider selection
+  → compression policy executor
+  → upstream request (optional OS credential resolution)
+  → streaming or non-streaming response
+  → correlated RequestLog / RouteDecision / Event Ledger
+  → Dashboard and export projections
 ```
 
-每条请求必须记录：
+未配置 Route/Provider、凭据不可用、timeout、401/403/429/5xx、协议不兼容和流中断必须返回类型化失败，并在脱敏事件中保持同一 request id。正式路径禁止合成成功、静默 provider fallback 或把失败记为 savings 成功。
 
-1. request id。
-2. timestamp。
-3. agent。
-4. instance id。
-5. input protocol。
-6. provider id。
-7. route id。
-8. chain mode。
-9. model。
-10. input tokens before。
-11. input tokens after。
-12. output tokens。
-13. tokens saved。
-14. transforms applied。
-15. latency。
-16. error if any。
-17. config source。
+每条请求的可观测字段至少包括：request id、timestamp、agent/instance、input protocol、provider/route、model、tokens before/after/output/saved、transforms、latency、outcome/error type 和 config source。完整 prompt/response、密钥、Authorization 与 cookie 不入账。
 
-## 4. 核心模块
+## 4. 模块边界
 
-### 4.1 Desktop
+### 4.1 Desktop：`code/apps/desktop`
 
-位置：`code/apps/desktop`
+- React/TypeScript：页面、设计系统、状态解释、可访问交互和用户任务流程。
+- Tauri Rust：native commands、服务生命周期、Provider/Route draft、OS credential store、配置与回退适配。
+- `dtoken-proxy` external binary：按 target triple 打包的 d-token 自有 Rust runtime，不是第三方 sidecar。
+- 浏览器预览：只验证 UI；不可作为本机状态、路由或运行时功能证据。
 
-职责：
+### 4.2 Rust workspace：`code/crates/*`
 
-1. Dashboard。
-2. Provider 管理。
-3. Route 管理。
-4. Instance 管理。
-5. Doctor。
-6. Logs。
-7. Export。
-8. Settings。
-9. Sidecar lifecycle UI。
+| Crate | 当前职责 |
+|---|---|
+| `dtoken-proxy` | loopback HTTP 进程入口与 d-token-owned service |
+| `dtoken-core-api` | 协议/API router、请求处理、upstream 转发、Dashboard projection |
+| `dtoken-router` | Provider/Route/Instance 决策模型与规则测试；生产路径仍需继续收敛为单一决策权威 |
+| `dtoken-compress` | compression pipeline 与 Optical shadow planner |
+| `dtoken-event-ledger` | append-only 脱敏事件账本 |
+| `dtoken-config` / `dtoken-config-patcher` | 配置模型、计划、patch 和 rollback primitives |
+| `dtoken-process` / `dtoken-doctor` | 受管进程与诊断 primitives |
+| `dtoken-headroom-adapter` | Headroom-derived compatibility boundary，不调用外部 Headroom dashboard |
+| `dtoken-preprocessor` / `dtoken-project-policy` | 预处理与项目级策略 |
+| `dtoken-types` | 共享领域类型 |
 
-### 4.2 Rust core
+`code/runtimes/headroom/` 记录 Headroom-derived runtime 的迁移/provenance 边界。目前没有 Python sidecar，也没有 `code/sidecars/headroom-compatible` 或 `code/sidecars/chain-bridge`；不得把不存在的目录写入当前架构。
 
-位置：`code/crates/*`
+### 4.3 Route adapter
 
-职责：
+Route adapter 属于 Rust runtime：读取 active ProviderProfile/RouteProfile/InstanceProfile，校验协议与模型，按显式 route 转发 official/custom/cc-switch/local upstream。cc-switch 是可读取和同步的上游接口，不是 d-token 的运行时事实源；禁止静默 fallback。
 
-1. `dtoken-proxy`：本地 HTTP proxy。
-2. `dtoken-router`：provider/route/chain decision。
-3. `dtoken-compress`：compression 接口与策略层。
-4. `dtoken-core-api`：Desktop 调用的 local API。
-5. `dtoken-process`：sidecar 和实例进程管理。
+## 5. Runtime API 与 Tauri bridge
 
-### 4.3 Python sidecar
-
-位置：`code/sidecars/headroom-compatible`
-
-职责：
-
-1. Headroom-compatible compression。
-2. CCR。
-3. memory。
-4. learn。
-5. output shaper。
-6. MCP compatibility。
-7. evals/benchmarks。
-
-### 4.4 Chain bridge
-
-位置：`code/sidecars/chain-bridge`
-
-职责：
-
-1. 负责多段本地链路观测。
-2. 记录 chain mode。
-3. 做 healthcheck。
-4. 不隐藏上游错误。
-5. 不做静默 fallback。
-
-## 5. Local API
-
-Desktop 调用 Rust core 的本地 API：
+当前 Rust local service 的主要接口：
 
 ```text
-GET /health
-GET /stats
-GET /stats-history
-GET /metrics
-GET /providers
-GET /routes
-GET /instances
-GET /chain/status
-GET /route-decisions/recent
-GET /logs/recent
-POST /instances/start
-POST /instances/stop
-POST /instances/restart
+GET  /health
+POST /v1/chat/completions
+POST /v1/responses
+POST /v1/messages
+GET  /dashboard/payload
+GET  /stats | /stats-history | /metrics
+GET  /providers | /routes | /instances | /config/active
+GET  /route-decisions/recent | /logs/recent | /events
 POST /doctor/run
-GET /export/json
-GET /export/csv
+GET  /export/json | /export/csv
+GET  /rtk/* | /headroom/* | /ccr/* | /memory/*
+POST /compression/optical/preview
+GET  /compression/optical/status
+GET  /compression/optical/capabilities
+GET  /compression/optical/capabilities/lifecycle
+GET  /compression/optical/events/recent
 ```
 
-## 6. 数据存储
+Tauri commands 管理 desktop-only 权限：服务启停、OS credential 写删、配置 draft/apply/rollback、设置与本机检测。UI 不应跨过这些窄接口直接读写系统文件。
+
+## 6. 配置与凭据
 
 ```text
-SQLite
-  request index
-  dashboard query cache
-  provider status
-  route status
-  instance status
+ProviderProfile
+  id / protocol / base_url / timeout / models / opaque credential ref
 
-JSONL ledger
-  savings events
-  request events
-  debug events
+RouteProfile
+  id / input protocol / provider / instance / policy / loopback port
 
-YAML / JSON config
-  provider profiles
-  route profiles
-  instance profiles
-
-OS keychain
-  sensitive credentials
+InstanceProfile
+  id / agent / route / managed identity / status / log path
 ```
 
-## 7. 配置模型
+配置事务目标状态机：
 
-### 7.1 ProviderProfile
-
-```ts
-interface ProviderProfile {
-  id: string;
-  name: string;
-  kind: 'official' | 'custom' | 'local_chain';
-  protocol: 'openai' | 'anthropic';
-  baseUrl: string;
-  apiKeyRef?: string;
-  models?: string[];
-  timeoutMs: number;
-  healthcheck?: string;
-}
+```text
+scan → plan → diff → durable backup → explicit confirm
+→ atomic apply → parse/semantic verify → health verify
+→ commit rollback point
 ```
 
-### 7.2 RouteProfile
+当前已有 draft、preview、OS credential、backup/rollback primitives，但真实 Agent 配置、原子写入、并发修改与故障恢复尚未全部达到发布门禁。UI 只能依据真实事务结果显示成功。
 
-```ts
-interface RouteProfile {
-  id: string;
-  name: string;
-  inputProtocol: 'openai' | 'anthropic';
-  instanceId: string;
-  targetProviderId: string;
-  fallbackProviderId?: string;
-  chainMode: 'direct' | 'chain_bridge';
-  compressionPolicy: 'off' | 'safe' | 'balanced' | 'aggressive';
-  bindHost: '127.0.0.1';
-  localPort: number;
-}
+## 7. 数据与观测
+
+当前事实：JSON/JSONL 保存配置、RequestLog、RouteDecision、Event Ledger、CCR metadata 与回退证据；Dashboard 通过 local service/Tauri 聚合读取。部分桌面聚合状态仍需消除硬编码并统一 freshness/source contract。
+
+目标状态：JSONL 作为审计原始账本，SQLite 作为可重建查询索引；坏行隔离、轮转、文件锁、损坏诊断、保留期和导出白名单全部可验证。SQLite 未实现前不能宣称该目标已交付。
+
+所有 Dashboard/API projection 应逐步统一：
+
+```text
+source + generated_at + freshness + partial + warnings + schema_version
 ```
 
-### 7.3 InstanceProfile
+## 8. Desktop 与 Dashboard 原则
 
-```ts
-interface InstanceProfile {
-  id: string;
-  name: string;
-  agent: string;
-  routeId: string;
-  localPort: number;
-  processStatus: 'stopped' | 'starting' | 'running' | 'error';
-  logPath: string;
-}
-```
+1. 承接 Headroom Dashboard 的产品能力，但不依赖外部 `127.0.0.1:8787`。
+2. 正式 UI 不用 fixture 填充“健康/已连接/已配置”；不可用就显示不可用与下一步。
+3. 浏览器预览和 Tauri runtime 必须有显式证据状态，不得互相冒充。
+4. 多 Agent 控制面是产品 IA；OpenCode 是当前真实验收入口，不是导航中心。
+5. Windows/macOS UI 1:1，共享组件、token、文案与交互；平台说明仅在确有差异的操作处出现。
+6. Optical 当前仅 shadow preview/metadata。renderer、patcher、post-validator、rollback 和 fidelity gate 完成前禁止 active transform。
 
-## 8. Dashboard 原则
+## 9. 生命周期与发布边界
 
-1. 不做简化版。
-2. 所有 Headroom Dashboard 区块必须有位置。
-3. 未接入真实数据时显示占位，不删除卡片。
-4. 每个卡片都应尽量支持 instance/provider/route 过滤。
-5. 所有错误都应该能从 request log 追溯到 route decision。
-
-## 9. 运行原则
-
-1. Desktop 可以关闭，proxy 可选择继续运行。
-2. 每个实例独立端口、独立日志、独立 route。
-3. sidecar 必须可观察、可停止、可重启。
-4. 所有敏感字段默认脱敏。
-5. 不做静默 provider fallback。
-6. 默认只绑定 `127.0.0.1`。
+1. 所有监听默认且强制 loopback。
+2. 受管 runtime 的启动 commit 条件必须包含 identity manifest、health 和可安全停止证据。
+3. Desktop 关闭后 runtime 是否继续运行必须是明确设置，并保持可观察、可停止、可恢复。
+4. macOS 已配置 `.app`/DMG 构建和可选签名/notarization workflow；这不等于候选版已经完成安装后实机验收。
+5. Windows 共享产品 UI 与 Rust 核心，但仍需安装包、凭据、路径、回退和视觉一致性的独立实机证据。
