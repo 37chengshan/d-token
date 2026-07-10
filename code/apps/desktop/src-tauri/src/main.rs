@@ -1,4 +1,6 @@
-use dtoken_process::{opencode_command_plan, run_opencode_model_test, sanitize_command_output};
+use dtoken_process::sanitize_command_output;
+#[cfg(debug_assertions)]
+use dtoken_process::{opencode_command_plan, run_opencode_model_test};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{
@@ -104,7 +106,7 @@ struct DeleteProviderCredentialRequest {
     provider_id: String,
 }
 
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 struct ManagedServiceManifest {
     managed_by: String,
     identity: String,
@@ -129,6 +131,13 @@ fn now_label() -> String {
     )
 }
 
+fn now_timestamp() -> String {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| format!("unix:{}", duration.as_secs()))
+        .unwrap_or_else(|_| "unix:0".to_string())
+}
+
 fn log(level: &str, message: impl Into<String>) -> ActionLog {
     ActionLog {
         time: now_label(),
@@ -138,29 +147,163 @@ fn log(level: &str, message: impl Into<String>) -> ActionLog {
 }
 
 fn app_state_dir() -> PathBuf {
-    env::var("LOCALAPPDATA")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| env::temp_dir())
-        .join("d-token")
+    if let Some(path) = env::var_os("DTOKEN_TEST_STATE_DIR") {
+        return PathBuf::from(path);
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        env::var_os("LOCALAPPDATA")
+            .map(PathBuf::from)
+            .expect("LOCALAPPDATA is required for persistent d-token state")
+            .join("d-token")
+    }
+    #[cfg(target_os = "macos")]
+    {
+        env::var_os("HOME")
+            .map(PathBuf::from)
+            .expect("HOME is required for persistent d-token state")
+            .join("Library")
+            .join("Application Support")
+            .join("d-token")
+    }
+    #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
+    {
+        if let Some(path) = env::var_os("XDG_DATA_HOME") {
+            return PathBuf::from(path).join("d-token");
+        }
+        env::var_os("HOME")
+            .map(PathBuf::from)
+            .expect("HOME or XDG_DATA_HOME is required for persistent d-token state")
+            .join(".local")
+            .join("share")
+            .join("d-token")
+    }
 }
 
-fn write_app_state(relative: &[&str], content: &str) -> Result<PathBuf, String> {
+fn app_state_path(relative: &[&str]) -> PathBuf {
     let mut path = app_state_dir();
     for part in relative {
         path.push(part);
     }
+    path
+}
+
+fn sync_parent_directory(path: &Path) -> Result<(), String> {
+    #[cfg(unix)]
+    {
+        let parent = path
+            .parent()
+            .ok_or_else(|| "state file has no parent directory".to_string())?;
+        fs::File::open(parent)
+            .and_then(|directory| directory.sync_all())
+            .map_err(|err| format!("sync {}: {err}", parent.display()))?;
+    }
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn atomic_replace_file(source: &Path, destination: &Path) -> Result<(), String> {
+    fs::rename(source, destination).map_err(|err| {
+        format!(
+            "replace {} with {}: {err}",
+            destination.display(),
+            source.display()
+        )
+    })
+}
+
+#[cfg(windows)]
+fn atomic_replace_file(source: &Path, destination: &Path) -> Result<(), String> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::{
+        MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
+    };
+
+    let source = source
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    let destination = destination
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    let moved = unsafe {
+        MoveFileExW(
+            source.as_ptr(),
+            destination.as_ptr(),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+        )
+    };
+    if moved == 0 {
+        Err(format!(
+            "atomic state replace failed: {}",
+            std::io::Error::last_os_error()
+        ))
+    } else {
+        Ok(())
+    }
+}
+
+fn durable_atomic_write(path: &Path, content: &[u8]) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|err| err.to_string())?;
     }
-    fs::write(&path, content).map_err(|err| err.to_string())?;
+
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| "state path has no valid file name".to_string())?;
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or_default();
+    let temporary =
+        path.with_file_name(format!(".{file_name}.{}.{}.tmp", std::process::id(), nonce));
+    let result = (|| {
+        let mut file = fs::OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&temporary)
+            .map_err(|err| format!("create {}: {err}", temporary.display()))?;
+        file.write_all(content)
+            .map_err(|err| format!("write {}: {err}", temporary.display()))?;
+        file.sync_all()
+            .map_err(|err| format!("sync {}: {err}", temporary.display()))?;
+        atomic_replace_file(&temporary, path)?;
+        sync_parent_directory(path)
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&temporary);
+    }
+    result
+}
+
+fn durable_remove_file(path: &Path) -> Result<(), String> {
+    match fs::remove_file(path) {
+        Ok(()) => sync_parent_directory(path),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(err) => Err(format!("remove {}: {err}", path.display())),
+    }
+}
+
+fn write_app_state(relative: &[&str], content: &str) -> Result<PathBuf, String> {
+    let path = app_state_path(relative);
+    durable_atomic_write(&path, content.as_bytes())?;
+    Ok(path)
+}
+
+fn write_json_app_state(relative: &[&str], value: &Value) -> Result<PathBuf, String> {
+    let content = serde_json::to_vec_pretty(value).map_err(|err| err.to_string())?;
+    let path = app_state_path(relative);
+    durable_atomic_write(&path, &content)?;
     Ok(path)
 }
 
 fn read_app_state(relative: &[&str]) -> Result<Value, String> {
-    let mut path = app_state_dir();
-    for part in relative {
-        path.push(part);
-    }
+    let path = app_state_path(relative);
     let content = fs::read_to_string(&path).map_err(|err| err.to_string())?;
     serde_json::from_str(&content).map_err(|err| err.to_string())
 }
@@ -301,23 +444,27 @@ fn active_route_config_status() -> Value {
     status
 }
 
-fn rollback_points_json() -> Vec<Value> {
+fn rollback_points_result() -> Result<Vec<Value>, String> {
     let dir = app_state_dir().join("rollback-points");
     let mut points = Vec::new();
-    if let Ok(entries) = fs::read_dir(&dir) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
-                continue;
-            }
-            let id = path
-                .file_stem()
-                .and_then(|stem| stem.to_str())
-                .unwrap_or("rollback")
-                .to_string();
-            let content = fs::read_to_string(&path).unwrap_or_default();
-            let parsed: Value = serde_json::from_str(&content).unwrap_or_else(|_| json!({}));
-            points.push(json!({
+    match fs::read_dir(&dir) {
+        Ok(entries) => {
+            for entry in entries {
+                let entry = entry.map_err(|err| err.to_string())?;
+                let path = entry.path();
+                if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
+                    continue;
+                }
+                let id = path
+                    .file_stem()
+                    .and_then(|stem| stem.to_str())
+                    .unwrap_or("rollback")
+                    .to_string();
+                let content = fs::read_to_string(&path)
+                    .map_err(|err| format!("read {}: {err}", path.display()))?;
+                let parsed: Value = serde_json::from_str(&content)
+                    .map_err(|err| format!("parse {}: {err}", path.display()))?;
+                points.push(json!({
                 "id": id,
                 "label": format!("Rollback point {}", parsed.get("target").and_then(Value::as_str).unwrap_or("install")),
                 "when": parsed.get("createdAt").and_then(Value::as_str).unwrap_or("local"),
@@ -325,41 +472,43 @@ fn rollback_points_json() -> Vec<Value> {
                 "tools": parsed.get("target").and_then(Value::as_str).map(|target| vec![target]).unwrap_or_else(|| vec!["d-token"]),
                 "verified": parsed.get("ok").and_then(Value::as_bool).unwrap_or(false)
             }));
+            }
         }
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+        Err(err) => return Err(format!("read {}: {err}", dir.display())),
     }
-    if points.is_empty() {
-        points.push(json!({
-            "id": "local-plan",
-            "label": "Before local route apply",
-            "when": now_label(),
-            "files": 0,
-            "tools": ["headroom", "rtk"],
-            "verified": false
-        }));
-    }
-    points
+    points.sort_by(|a, b| {
+        b.get("when")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .cmp(a.get("when").and_then(Value::as_str).unwrap_or_default())
+    });
+    Ok(points)
 }
 
-fn route_profile_drafts_json() -> Vec<Value> {
+fn route_profile_drafts_result() -> Result<Vec<Value>, String> {
     let dir = app_state_dir().join("routing");
     let mut drafts = Vec::new();
-    if let Ok(entries) = fs::read_dir(&dir) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
-                continue;
+    match fs::read_dir(&dir) {
+        Ok(entries) => {
+            for entry in entries {
+                let entry = entry.map_err(|err| err.to_string())?;
+                let path = entry.path();
+                if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
+                    continue;
+                }
+                let content = fs::read_to_string(&path)
+                    .map_err(|err| format!("read {}: {err}", path.display()))?;
+                let mut value = serde_json::from_str::<Value>(&content)
+                    .map_err(|err| format!("parse {}: {err}", path.display()))?;
+                if let Some(object) = value.as_object_mut() {
+                    object.insert("path".to_string(), json!(path.display().to_string()));
+                }
+                drafts.push(value);
             }
-            let Ok(content) = fs::read_to_string(&path) else {
-                continue;
-            };
-            let Ok(mut value) = serde_json::from_str::<Value>(&content) else {
-                continue;
-            };
-            if let Some(object) = value.as_object_mut() {
-                object.insert("path".to_string(), json!(path.display().to_string()));
-            }
-            drafts.push(value);
         }
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+        Err(err) => return Err(format!("read {}: {err}", dir.display())),
     }
     drafts.sort_by(|a, b| {
         b.get("savedAt")
@@ -367,7 +516,11 @@ fn route_profile_drafts_json() -> Vec<Value> {
             .unwrap_or_default()
             .cmp(a.get("savedAt").and_then(Value::as_str).unwrap_or_default())
     });
-    drafts
+    Ok(drafts)
+}
+
+fn route_profile_drafts_json() -> Vec<Value> {
+    route_profile_drafts_result().unwrap_or_default()
 }
 
 fn install_targets(target: &str) -> Vec<&'static str> {
@@ -492,14 +645,6 @@ fn check_tool(id: &str, label: &str) -> ToolCheck {
     }
 }
 
-fn user_desktop_path(file_name: &str) -> Option<PathBuf> {
-    env::var("USERPROFILE")
-        .ok()
-        .map(PathBuf::from)
-        .map(|home| home.join("Desktop").join(file_name))
-        .filter(|path| path.exists())
-}
-
 fn simple_http_get(host: &str, port: u16, path: &str) -> Result<String, String> {
     let mut stream = TcpStream::connect((host, port)).map_err(|err| err.to_string())?;
     stream
@@ -559,9 +704,8 @@ fn write_service_manifest(manifest: &ManagedServiceManifest) -> Result<PathBuf, 
     write_app_state(&["service", "managed-service.json"], &content)
 }
 
-fn remove_service_manifest() {
-    let path = service_manifest_path();
-    let _ = fs::remove_file(path);
+fn remove_service_manifest() -> Result<(), String> {
+    durable_remove_file(&service_manifest_path())
 }
 
 fn is_process_running(pid: u32) -> bool {
@@ -591,6 +735,93 @@ fn is_process_running(pid: u32) -> bool {
             .map(|status| status.success())
             .unwrap_or(false)
     }
+}
+
+#[cfg(target_os = "windows")]
+fn process_executable_path(pid: u32) -> Option<PathBuf> {
+    let command =
+        format!("(Get-CimInstance Win32_Process -Filter \"ProcessId = {pid}\").ExecutablePath");
+    let output = Command::new("powershell.exe")
+        .args(["-NoProfile", "-NonInteractive", "-Command", &command])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .map(PathBuf::from)
+}
+
+#[cfg(target_os = "macos")]
+fn process_executable_path(pid: u32) -> Option<PathBuf> {
+    let output = Command::new("ps")
+        .args(["-p", &pid.to_string(), "-o", "comm="])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .map(PathBuf::from)
+}
+
+#[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
+fn process_executable_path(pid: u32) -> Option<PathBuf> {
+    fs::read_link(format!("/proc/{pid}/exe")).ok()
+}
+
+fn executable_identity_matches(pid: u32, expected: &Path) -> bool {
+    let Some(actual) = process_executable_path(pid) else {
+        return false;
+    };
+    let expected = fs::canonicalize(expected).ok();
+    let actual = fs::canonicalize(actual).ok();
+    expected.is_some() && expected == actual
+}
+
+fn listener_output_contains_pid(output: &str, pid: u32) -> bool {
+    let expected = pid.to_string();
+    output.lines().any(|line| {
+        line.split(|character: char| !character.is_ascii_digit())
+            .any(|token| token == expected)
+    })
+}
+
+#[cfg(not(windows))]
+fn listener_owned_by_pid(pid: u32, port: u16) -> bool {
+    let pid_arg = pid.to_string();
+    let port_arg = format!("-iTCP:{port}");
+    let output = Command::new("lsof")
+        .args(["-nP", "-a", "-p", &pid_arg, &port_arg, "-sTCP:LISTEN", "-t"])
+        .output();
+    let Ok(output) = output else {
+        return false;
+    };
+    output.status.success()
+        && listener_output_contains_pid(&String::from_utf8_lossy(&output.stdout), pid)
+}
+
+#[cfg(windows)]
+fn listener_owned_by_pid(pid: u32, port: u16) -> bool {
+    let output = Command::new("netstat").args(["-ano", "-p", "tcp"]).output();
+    let Ok(output) = output else {
+        return false;
+    };
+    if !output.status.success() {
+        return false;
+    }
+    let port_marker = format!(":{port}");
+    String::from_utf8_lossy(&output.stdout).lines().any(|line| {
+        line.contains(&port_marker)
+            && line.to_ascii_uppercase().contains("LISTENING")
+            && listener_output_contains_pid(line, pid)
+    })
 }
 
 fn terminate_process(pid: u32) -> Result<(), String> {
@@ -768,11 +999,34 @@ fn dtoken_service_status_value() -> Value {
         .as_ref()
         .map(|item| is_process_running(item.pid))
         .unwrap_or(false);
+    let manifest_identity_ok = manifest
+        .as_ref()
+        .map(|item| {
+            item.managed_by == "d-token-desktop"
+                && item.identity == "dtoken-core-api"
+                && item.port == DTOKEN_SERVICE_PORT
+        })
+        .unwrap_or(false);
+    let executable_owned = manifest
+        .as_ref()
+        .filter(|_| pid_running)
+        .map(|item| executable_identity_matches(item.pid, Path::new(&item.exe_path)))
+        .unwrap_or(false);
+    let port_owned = manifest
+        .as_ref()
+        .filter(|_| pid_running)
+        .map(|item| listener_owned_by_pid(item.pid, item.port))
+        .unwrap_or(false);
     if manifest.is_some() && !pid_running && !healthy {
-        remove_service_manifest();
+        let _ = remove_service_manifest();
     }
-    let managed_running = healthy && component_ok && pid_running;
-    let external_or_unmanaged = healthy && component_ok && !pid_running;
+    let managed_running = healthy
+        && component_ok
+        && pid_running
+        && manifest_identity_ok
+        && executable_owned
+        && port_owned;
+    let external_or_unmanaged = healthy && component_ok && !managed_running;
 
     json!({
         "ok": managed_running || external_or_unmanaged,
@@ -787,6 +1041,9 @@ fn dtoken_service_status_value() -> Value {
         "managed": managed_running,
         "pid": manifest.as_ref().map(|item| item.pid),
         "pid_running": pid_running,
+        "manifest_identity_ok": manifest_identity_ok,
+        "executable_owned": executable_owned,
+        "port_owned": port_owned,
         "service_url": format!("http://127.0.0.1:{DTOKEN_SERVICE_PORT}"),
         "manifest_path": service_manifest_path().display().to_string(),
         "log_path": service_log_path().display().to_string(),
@@ -802,53 +1059,44 @@ fn dtoken_service_status_value() -> Value {
     })
 }
 
-fn create_default_active_config_if_missing() -> Result<(), String> {
-    let path = active_config_path();
-    if path.exists() {
-        return Ok(());
+fn validate_active_config_for_start() -> Result<Value, String> {
+    let config = read_app_state(&["active-config", "dtoken-config.json"])
+        .map_err(|err| format!("No applied d-token route configuration is available: {err}"))?;
+    let providers = config
+        .get("providers")
+        .and_then(Value::as_array)
+        .ok_or_else(|| "Active config providers must be an array".to_string())?;
+    let routes = config
+        .get("routes")
+        .and_then(Value::as_array)
+        .ok_or_else(|| "Active config routes must be an array".to_string())?;
+    let instances = config
+        .get("instances")
+        .and_then(Value::as_array)
+        .ok_or_else(|| "Active config instances must be an array".to_string())?;
+    if providers.is_empty() || routes.is_empty() || instances.is_empty() {
+        return Err(
+            "Active config is empty; apply a real provider, route, and instance before starting"
+                .to_string(),
+        );
     }
-    let config = json!({
-        "providers": [{
-            "id": "local-proof-upstream",
-            "name": "Local proof upstream placeholder",
-            "kind": "custom",
-            "protocol": "open_ai",
-            "base_url": "http://127.0.0.1:19001",
-            "api_key_ref": null,
-            "models": ["dtoken/local-proof"],
-            "timeout_ms": 30000,
-            "healthcheck_path": null
-        }],
-        "routes": [{
-            "id": "dtoken-local-default",
-            "name": "d-token local default route",
-            "input_protocol": "open_ai",
-            "instance_id": "dtoken-runtime",
-            "target_provider_id": "local-proof-upstream",
-            "fallback_provider_id": null,
-            "chain_mode": "direct",
-            "compression_policy": "balanced",
-            "bind_host": "127.0.0.1",
-            "local_port": DTOKEN_SERVICE_PORT
-        }],
-        "instances": [{
-            "id": "dtoken-runtime",
-            "name": "d-token local runtime",
-            "agent": "multi-agent",
-            "route_id": "dtoken-local-default",
-            "local_port": DTOKEN_SERVICE_PORT,
-            "process_status": "stopped",
-            "log_path": service_log_path().display().to_string()
-        }]
-    });
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|err| err.to_string())?;
+    if !routes.iter().any(|route| {
+        route.get("local_port").and_then(Value::as_u64) == Some(u64::from(DTOKEN_SERVICE_PORT))
+            && route.get("bind_host").and_then(Value::as_str) == Some("127.0.0.1")
+    }) {
+        return Err(format!(
+            "Active config has no d-token-owned 127.0.0.1:{DTOKEN_SERVICE_PORT} route"
+        ));
     }
-    fs::write(
-        &path,
-        serde_json::to_string_pretty(&config).map_err(|err| err.to_string())?,
-    )
-    .map_err(|err| err.to_string())
+    for provider in providers {
+        let Some(base_url) = provider.get("base_url").and_then(Value::as_str) else {
+            return Err("Active config provider is missing base_url".to_string());
+        };
+        if provider_targets_local_listener(base_url, DTOKEN_SERVICE_PORT) {
+            return Err("Active config contains a provider self-loop into d-token".to_string());
+        }
+    }
+    Ok(config)
 }
 
 fn open_log_file(path: &Path) -> Result<fs::File, String> {
@@ -905,14 +1153,6 @@ fn headroom_endpoints() -> Vec<HeadroomEndpoint> {
         ),
         check_headroom_endpoint(LEGACY_OPENCODE_REFERENCE_PORT, "Legacy OpenCode reference"),
     ]
-}
-
-fn state(ok: bool) -> &'static str {
-    if ok {
-        "ok"
-    } else {
-        "warn"
-    }
 }
 
 fn all_checks() -> Vec<ToolCheck> {
@@ -1006,12 +1246,12 @@ fn save_app_settings(section: String, payload: Value) -> ActionResult {
         "payload": merged_payload,
         "privacy": "d-token local state only; no API keys or raw CCR content should be stored here"
     });
-    match write_app_state(
+    match write_json_app_state(
         &[
             "settings",
             &format!("{}.json", content["section"].as_str().unwrap_or("app")),
         ],
-        &serde_json::to_string_pretty(&content).unwrap_or_else(|_| "{}".to_string()),
+        &content,
     ) {
         Ok(path) => {
             logs.push(log("info", format!("Settings saved to {}", path.display())));
@@ -1372,10 +1612,7 @@ fn save_route_profile_draft(request: RouteProfileDraftRequest) -> ActionResult {
             { "type": "add", "text": "+ fallback = \"disabled\"" }
         ]
     });
-    match write_app_state(
-        &["routing", &format!("{route_id}.json")],
-        &serde_json::to_string_pretty(&content).unwrap_or_else(|_| "{}".to_string()),
-    ) {
+    match write_json_app_state(&["routing", &format!("{route_id}.json")], &content) {
         Ok(path) => {
             logs.push(log(
                 "info",
@@ -1484,11 +1721,35 @@ fn apply_route_profile_draft(request: ApplyRouteDraftRequest) -> ActionResult {
         "privacy": "d-token local rollback manifest only; external agent configs are not captured."
     });
 
-    if let Some(parent) = active_path.parent() {
-        if let Err(err) = fs::create_dir_all(parent) {
+    let rollback_path = match write_json_app_state(
+        &["rollback-points", &format!("{rollback_id}.json")],
+        &rollback,
+    ) {
+        Ok(path) => path,
+        Err(err) => {
             logs.push(log(
                 "error",
-                format!("Active config directory create failed: {err}"),
+                format!("Rollback point write failed before apply: {err}"),
+            ));
+            return ActionResult {
+                ok: false,
+                summary: "Active config apply aborted because recovery could not be persisted"
+                    .to_string(),
+                logs,
+                tools: all_checks(),
+            };
+        }
+    };
+    logs.push(log(
+        "info",
+        format!("Rollback point written to {}", rollback_path.display()),
+    ));
+    let serialized_config = match serde_json::to_vec_pretty(&config) {
+        Ok(content) => content,
+        Err(err) => {
+            logs.push(log(
+                "error",
+                format!("Active config serialize failed: {err}"),
             ));
             return ActionResult {
                 ok: false,
@@ -1497,28 +1758,18 @@ fn apply_route_profile_draft(request: ApplyRouteDraftRequest) -> ActionResult {
                 tools: all_checks(),
             };
         }
-    }
-    if let Err(err) = fs::write(
-        &active_path,
-        serde_json::to_string_pretty(&config).unwrap_or_else(|_| "{}".to_string()),
-    ) {
-        logs.push(log("error", format!("Active config write failed: {err}")));
+    };
+    if let Err(err) = durable_atomic_write(&active_path, &serialized_config) {
+        logs.push(log(
+            "error",
+            format!("Active config durable write failed: {err}"),
+        ));
         return ActionResult {
             ok: false,
             summary: "Active config apply failed".to_string(),
             logs,
             tools: all_checks(),
         };
-    }
-    match write_app_state(
-        &["rollback-points", &format!("{rollback_id}.json")],
-        &serde_json::to_string_pretty(&rollback).unwrap_or_else(|_| "{}".to_string()),
-    ) {
-        Ok(path) => logs.push(log(
-            "info",
-            format!("Rollback point written to {}", path.display()),
-        )),
-        Err(err) => logs.push(log("warn", format!("Rollback point write failed: {err}"))),
     }
     logs.push(log(
         "info",
@@ -1612,21 +1863,21 @@ fn manage_backup(action: String, id: String) -> ActionResult {
                 if is_dtoken_active_config {
                     match parsed.get("previous_config") {
                         Some(Value::String(previous)) => {
-                            if let Some(parent) = active_path.parent() {
-                                if let Err(err) = fs::create_dir_all(parent) {
-                                    logs.push(log(
-                                        "error",
-                                        format!("Active config directory create failed: {err}"),
-                                    ));
-                                    return ActionResult {
-                                        ok: false,
-                                        summary: "Rollback restore failed".to_string(),
-                                        logs,
-                                        tools: all_checks(),
-                                    };
-                                }
+                            if let Err(err) = serde_json::from_str::<Value>(previous) {
+                                logs.push(log(
+                                    "error",
+                                    format!("Previous active config is not valid JSON: {err}"),
+                                ));
+                                return ActionResult {
+                                    ok: false,
+                                    summary: "Rollback manifest invalid".to_string(),
+                                    logs,
+                                    tools: all_checks(),
+                                };
                             }
-                            if let Err(err) = fs::write(&active_path, previous) {
+                            if let Err(err) =
+                                durable_atomic_write(&active_path, previous.as_bytes())
+                            {
                                 logs.push(log(
                                     "error",
                                     format!("Active config restore failed: {err}"),
@@ -1655,7 +1906,7 @@ fn manage_backup(action: String, id: String) -> ActionResult {
                         }
                         Some(Value::Null) | None => {
                             if active_path.exists() {
-                                if let Err(err) = fs::remove_file(&active_path) {
+                                if let Err(err) = durable_remove_file(&active_path) {
                                     logs.push(log(
                                         "error",
                                         format!("Active config remove failed: {err}"),
@@ -1858,11 +2109,15 @@ fn start_dtoken_service() -> ActionResult {
         };
     }
 
-    if let Err(err) = create_default_active_config_if_missing() {
-        logs.push(log("error", format!("Active config prepare failed: {err}")));
+    if let Err(err) = validate_active_config_for_start() {
+        logs.push(log(
+            "error",
+            format!("Active config validation failed: {err}"),
+        ));
         return ActionResult {
             ok: false,
-            summary: "d-token service start failed before launch".to_string(),
+            summary: "Configure and apply a real d-token route before starting the service"
+                .to_string(),
             logs,
             tools: all_checks(),
         };
@@ -1976,10 +2231,25 @@ fn start_dtoken_service() -> ActionResult {
             "verify: d-token service did not become healthy on 127.0.0.1:18001",
         ));
         let _ = terminate_process(pid);
-        remove_service_manifest();
+        let _ = remove_service_manifest();
         return ActionResult {
             ok: false,
             summary: "d-token service did not become healthy".to_string(),
+            logs,
+            tools: all_checks(),
+        };
+    }
+
+    if !executable_identity_matches(pid, &exe) || !listener_owned_by_pid(pid, DTOKEN_SERVICE_PORT) {
+        let _ = terminate_process(pid);
+        let _ = remove_service_manifest();
+        logs.push(log(
+            "error",
+            "verify: spawned PID, executable, and listening port ownership could not be proven",
+        ));
+        return ActionResult {
+            ok: false,
+            summary: "d-token service ownership verification failed".to_string(),
             logs,
             tools: all_checks(),
         };
@@ -1995,16 +2265,48 @@ fn start_dtoken_service() -> ActionResult {
         data_dir: data_dir.display().to_string(),
         started_at: now_label(),
     };
-    match write_service_manifest(&manifest) {
-        Ok(path) => logs.push(log(
-            "info",
-            format!(
-                "manifest: d-token service manifest written to {}",
-                path.display()
-            ),
-        )),
-        Err(err) => logs.push(log("warn", format!("manifest write failed: {err}"))),
+    let manifest_path = match write_service_manifest(&manifest) {
+        Ok(path) => path,
+        Err(err) => {
+            let _ = terminate_process(pid);
+            let _ = remove_service_manifest();
+            logs.push(log(
+                "error",
+                format!("Durable service manifest write failed; process was stopped: {err}"),
+            ));
+            return ActionResult {
+                ok: false,
+                summary:
+                    "d-token service start rolled back because lifecycle state was not durable"
+                        .to_string(),
+                logs,
+                tools: all_checks(),
+            };
+        }
+    };
+    if read_service_manifest().as_ref() != Some(&manifest) {
+        let _ = terminate_process(pid);
+        let _ = remove_service_manifest();
+        logs.push(log(
+            "error",
+            "Service manifest verification failed; process was stopped",
+        ));
+        return ActionResult {
+            ok: false,
+            summary:
+                "d-token service start rolled back because lifecycle state verification failed"
+                    .to_string(),
+            logs,
+            tools: all_checks(),
+        };
     }
+    logs.push(log(
+        "info",
+        format!(
+            "manifest: d-token service manifest durably written to {}",
+            manifest_path.display()
+        ),
+    ));
     logs.push(log(
         "info",
         "verify: d-token local service is healthy and managed by this app",
@@ -2058,10 +2360,34 @@ fn stop_dtoken_service() -> ActionResult {
                 manifest.pid
             ),
         ));
-        remove_service_manifest();
+        let _ = remove_service_manifest();
         return ActionResult {
             ok: true,
             summary: "Stale d-token service manifest cleared".to_string(),
+            logs,
+            tools: all_checks(),
+        };
+    }
+    if !executable_identity_matches(manifest.pid, Path::new(&manifest.exe_path)) {
+        logs.push(log(
+            "error",
+            "Manifest PID is running but its executable does not match the managed d-token runtime; refusing to stop it",
+        ));
+        return ActionResult {
+            ok: false,
+            summary: "Service executable identity check failed".to_string(),
+            logs,
+            tools: all_checks(),
+        };
+    }
+    if !listener_owned_by_pid(manifest.pid, manifest.port) {
+        logs.push(log(
+            "error",
+            "Manifest PID does not own the d-token listening port; refusing to stop it",
+        ));
+        return ActionResult {
+            ok: false,
+            summary: "Service port ownership check failed".to_string(),
             logs,
             tools: all_checks(),
         };
@@ -2086,7 +2412,19 @@ fn stop_dtoken_service() -> ActionResult {
     }
     match terminate_process(manifest.pid) {
         Ok(()) => {
-            remove_service_manifest();
+            if let Err(err) = remove_service_manifest() {
+                logs.push(log(
+                    "error",
+                    format!("Managed service stopped but manifest cleanup failed: {err}"),
+                ));
+                return ActionResult {
+                    ok: false,
+                    summary: "d-token service stopped but lifecycle state cleanup failed"
+                        .to_string(),
+                    logs,
+                    tools: all_checks(),
+                };
+            }
             logs.push(log(
                 "info",
                 format!("Stopped managed d-token service pid {}", manifest.pid),
@@ -2155,33 +2493,37 @@ fn run_install_transaction(request: InstallPlanRequest) -> ActionResult {
         "diff: generated config diff for user confirmation",
     ));
 
-    if request.auto_backup {
+    let backup_persisted = if request.auto_backup {
         let stamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|duration| duration.as_secs().to_string())
             .unwrap_or_else(|_| "unknown".to_string());
-        match write_app_state(
-            &["backups", &stamp, "install-plan.json"],
-            &serde_json::to_string_pretty(&plan).unwrap_or_else(|_| "{}".to_string()),
-        ) {
-            Ok(path) => logs.push(log(
-                "info",
-                format!(
-                    "backup: wrote d-token rollback manifest to {}",
-                    path.display()
-                ),
-            )),
-            Err(err) => logs.push(log(
-                "error",
-                format!("backup: failed to write manifest: {err}"),
-            )),
+        match write_json_app_state(&["backups", &stamp, "install-plan.json"], &plan) {
+            Ok(path) => {
+                logs.push(log(
+                    "info",
+                    format!(
+                        "backup: wrote d-token rollback manifest to {}",
+                        path.display()
+                    ),
+                ));
+                true
+            }
+            Err(err) => {
+                logs.push(log(
+                    "error",
+                    format!("backup: failed to write manifest: {err}"),
+                ));
+                false
+            }
         }
     } else {
         logs.push(log(
             "warn",
             "backup: automatic backup is disabled; external writes remain blocked in connect/manual mode",
         ));
-    }
+        true
+    };
 
     let writes_enabled = request.mode == "install" || request.mode == "repair";
     if !writes_enabled {
@@ -2191,7 +2533,19 @@ fn run_install_transaction(request: InstallPlanRequest) -> ActionResult {
         ));
     }
 
-    let mut ok = true;
+    let mut ok = backup_persisted;
+    if !backup_persisted && writes_enabled {
+        logs.push(log(
+            "error",
+            "apply: aborted because the requested recovery manifest was not durable",
+        ));
+        return ActionResult {
+            ok: false,
+            summary: "Installation transaction aborted before apply".to_string(),
+            logs,
+            tools: all_checks(),
+        };
+    }
     for target in &targets {
         match *target {
             "rtk" => {
@@ -2330,10 +2684,7 @@ fn run_install_transaction(request: InstallPlanRequest) -> ActionResult {
             "tools": tools,
             "note": "d-token-owned rollback point; external restore remains gated behind explicit restore action"
         });
-        match write_app_state(
-            &["rollback-points", &format!("{stamp}.json")],
-            &serde_json::to_string_pretty(&rollback).unwrap_or_else(|_| "{}".to_string()),
-        ) {
+        match write_json_app_state(&["rollback-points", &format!("{stamp}.json")], &rollback) {
             Ok(path) => logs.push(log(
                 "info",
                 format!("rollback: committed rollback point {}", path.display()),
@@ -2474,6 +2825,7 @@ fn manage_headroom(action: String, port: u16) -> ActionResult {
     }
 }
 
+#[cfg(debug_assertions)]
 #[tauri::command]
 fn test_opencode(model: String) -> ActionResult {
     let plan = opencode_command_plan(&model);
@@ -2548,6 +2900,7 @@ fn test_opencode(model: String) -> ActionResult {
     }
 }
 
+#[cfg(debug_assertions)]
 #[tauri::command]
 fn test_opencode_models(models: Vec<String>) -> Value {
     let mut results = Vec::new();
@@ -2569,6 +2922,7 @@ fn test_opencode_models(models: Vec<String>) -> Value {
     })
 }
 
+#[cfg(debug_assertions)]
 fn workspace_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .ancestors()
@@ -2577,6 +2931,7 @@ fn workspace_root() -> PathBuf {
         .unwrap_or_else(|| env::current_dir().unwrap_or_else(|_| PathBuf::from(".")))
 }
 
+#[cfg(debug_assertions)]
 #[tauri::command]
 fn run_opencode_workload_benchmark() -> Result<Value, String> {
     let root = workspace_root();
@@ -2645,6 +3000,7 @@ fn run_opencode_workload_benchmark() -> Result<Value, String> {
     Ok(parsed)
 }
 
+#[cfg(debug_assertions)]
 #[tauri::command]
 fn run_headroom_capability_smoke() -> Value {
     let install = run_install_transaction(InstallPlanRequest {
@@ -3176,23 +3532,23 @@ async fn get_dtoken_dashboard_payload() -> Value {
             payload
         }
         Err(err) => {
-            let mut payload = dtoken_core_api::dashboard_payload_default();
-            if let Some(object) = payload.as_object_mut() {
-                object.insert(
-                    "desktop_data_source".to_string(),
-                    json!("local-empty-fallback"),
-                );
-                object.insert("desktop_service_error".to_string(), json!(err));
-                object.insert(
-                    "desktop_service_url".to_string(),
-                    json!(format!("http://127.0.0.1:{DTOKEN_SERVICE_PORT}")),
-                );
-                object.insert(
-                    "desktop_active_config".to_string(),
-                    active_route_config_status(),
-                );
-            }
-            payload
+            json!({
+                "source": "unavailable",
+                "desktop_data_source": "unavailable",
+                "evidence_state": "unavailable",
+                "freshness": "unavailable",
+                "complete": false,
+                "partial": true,
+                "desktop_service_error": err,
+                "desktop_service_url": format!("http://127.0.0.1:{DTOKEN_SERVICE_PORT}"),
+                "desktop_active_config": active_route_config_status(),
+                "providers": [],
+                "routes": [],
+                "instances": [],
+                "request_logs": [],
+                "logs": [],
+                "recentEvents": []
+            })
         }
     }
 }
@@ -3231,151 +3587,206 @@ async fn export_dtoken_runtime(format: String) -> Result<Value, String> {
     }
 }
 
-#[tauri::command]
-fn get_desktop_data() -> Value {
-    let tools = all_checks();
-    let headroom = headroom_endpoints();
-    let runtime_compatibility = service_json(DTOKEN_SERVICE_PORT, "/compatibility/agents").ok();
-    let protocol_injection = service_json(DTOKEN_SERVICE_PORT, "/protocol-injection").ok();
-    let chain_status = service_json(DTOKEN_SERVICE_PORT, "/chain/status").ok();
-    let rtk_installed = tools.iter().any(|tool| tool.id == "rtk" && tool.installed);
-    let headroom_installed = tools
-        .iter()
-        .any(|tool| tool.id == "headroom" && tool.installed);
-    let opencode_installed = tools
-        .iter()
-        .any(|tool| tool.id == "opencode" && tool.installed);
-    let external_headroom_reference_healthy = headroom
-        .iter()
-        .any(|endpoint| endpoint.port == EXTERNAL_HEADROOM_REFERENCE_PORT && endpoint.healthy);
-    let legacy_opencode_reference_healthy = headroom
-        .iter()
-        .any(|endpoint| endpoint.port == LEGACY_OPENCODE_REFERENCE_PORT && endpoint.healthy);
-    let headroom_example_script =
-        user_desktop_path("Headroom-Check.ps1").map(|path| path.display().to_string());
-    let project_root = env::current_dir()
-        .map(|path| path.display().to_string())
-        .unwrap_or_else(|_| "D:\\D-TOKEN\\d-token".to_string());
-
+fn unavailable_desktop_data(
+    reason: &str,
+    route_drafts: Vec<Value>,
+    backup_points: Vec<Value>,
+) -> Value {
     json!({
-        "tools": tools,
-        "headroomEndpoints": headroom,
-        "headroomExampleScript": headroom_example_script,
+        "source": "unavailable",
+        "desktop_data_source": "unavailable",
+        "evidence_state": "unavailable",
+        "freshness": "unavailable",
+        "complete": false,
+        "partial": true,
+        "error": reason,
+        "health": [],
+        "doctorChecks": [],
+        "agents": [],
+        "projects": [],
+        "savings": [],
+        "rtkTrend": [],
+        "headroomTrend": [],
+        "commandFamilies": [],
+        "recentDecisions": [],
+        "recentEvents": [],
+        "routes": [],
+        "providers": [],
+        "instances": [],
+        "request_logs": [],
+        "logs": [],
+        "changes": [],
+        "routeDrafts": route_drafts,
+        "backupPoints": backup_points,
         "runtimeCompatibility": {
-            "source": if runtime_compatibility.is_some() { "dtoken-local-service" } else { "unavailable" },
-            "agents": runtime_compatibility.clone().unwrap_or_else(|| json!([])),
-            "protocolInjection": protocol_injection.clone().unwrap_or_else(|| json!([])),
-            "chainStatus": chain_status.clone().unwrap_or_else(|| json!({
-                "source": "unavailable",
-                "status": "d-token local service unavailable"
-            })),
-            "privacy": "Compatibility data is read from d-token-owned runtime when available; no external Headroom/RTK/cc-switch service is mutated."
-        },
-        "health": [
-            { "key": "proxy", "label": "d-token Service", "state": "ok" },
-            { "key": "rtk", "label": "RTK", "state": if rtk_installed { "ok" } else { "err" } },
-            { "key": "headroom", "label": "Headroom Source", "state": if headroom_installed { "ok" } else { "warn" } },
-            { "key": "agents", "label": "Agents", "state": "ok" },
-            { "key": "routes", "label": "Routes", "state": "ok" },
-            { "key": "providers", "label": "Providers", "state": "ok" }
-        ],
-        "doctorChecks": [
-            { "check": "Runtime action boundary", "state": "ok", "detail": "Only user-triggered buttons call local commands; page load performs read-only detection." },
-            { "check": "RTK availability", "state": if rtk_installed { "ok" } else { "err" }, "detail": if rtk_installed { "RTK binary is available on PATH." } else { "RTK was not found on PATH." } },
-            { "check": "Headroom source availability", "state": if headroom_installed { "ok" } else { "warn" }, "detail": if headroom_installed { "Headroom binary is available as migration/source reference." } else { "Headroom binary was not found; d-token runtime must not depend on external Headroom." } },
-            { "check": "External Headroom reference 8787", "state": state(external_headroom_reference_healthy), "detail": if external_headroom_reference_healthy { "127.0.0.1:8787 responded; reference only, not product data source." } else { "127.0.0.1:8787 is unavailable or unhealthy; this must not block d-token." } },
-            { "check": "Legacy OpenCode reference 8788", "state": state(legacy_opencode_reference_healthy), "detail": if legacy_opencode_reference_healthy { "127.0.0.1:8788 responded; reference only." } else { "127.0.0.1:8788 is unavailable or unhealthy; route verification should use d-token service." } },
-            { "check": "OpenCode availability", "state": if opencode_installed { "ok" } else { "warn" }, "detail": if opencode_installed { "OpenCode command is available for connection verification." } else { "OpenCode was not found; connection verification waits until it is installed." } },
-            { "check": "OpenCode route boundary", "state": "ok", "detail": "OpenCode verification must use dtoken/<model> through d-token 18001; direct OpenCode model checks are diagnostic only." },
-            { "check": "d-token service binding", "state": "ok", "detail": format!("Managed d-token runtime is expected to bind to 127.0.0.1:{DTOKEN_SERVICE_PORT}.") },
-            { "check": "Config write safety", "state": "ok", "detail": "Config changes are represented as a diff plan before any write action is enabled." },
-            { "check": "Backup readiness", "state": "ok", "detail": "d-token rollback points are written to local app state; restore/cleanup actions are explicit and logged." },
-            { "check": "Desktop runtime", "state": "ok", "detail": "Tauri backend commands are available to the desktop UI." }
-        ],
-        "agents": [
-            { "name": "Claude Code", "rtk": if rtk_installed { "ok" } else { "planned" }, "rtkMethod": "integrated RTK via d-token runtime", "headroom": if headroom_installed { "partial" } else { "planned" }, "headroomMethod": "d-token-owned Headroom-derived runtime", "macos": "ok", "win": "partial", "wsl": "ok", "note": "external Headroom is reference only" },
-            { "name": "Codex CLI", "rtk": if rtk_installed { "ok" } else { "planned" }, "rtkMethod": "rtk command filter", "headroom": "planned", "headroomMethod": "production route pending; excluded from the OpenCode-scoped connection route", "macos": "ok", "win": "ok", "wsl": "ok", "note": "not attached to the OpenCode connection route" },
-            { "name": "OpenCode", "rtk": if rtk_installed { "ok" } else { "partial" }, "rtkMethod": "integrated RTK via d-token runtime", "headroom": "partial", "headroomMethod": "OpenAI-compatible d-token route adapter", "macos": "ok", "win": if opencode_installed { "ok" } else { "partial" }, "wsl": "ok", "note": if opencode_installed { "use dtoken/<model> through 127.0.0.1:18001 for route verification" } else { "install OpenCode before route verification" } },
-            { "name": "Cursor / VS Code", "rtk": if rtk_installed { "partial" } else { "planned" }, "rtkMethod": "rules / terminal wrapper", "headroom": "planned", "headroomMethod": "d-token route adapter", "macos": "ok", "win": "ok", "wsl": "ok", "note": "requires per-tool proxy configuration" },
-            { "name": "Cline / Roo Code", "rtk": if rtk_installed { "partial" } else { "planned" }, "rtkMethod": "rules / terminal wrapper", "headroom": "planned", "headroomMethod": "d-token route adapter", "macos": "ok", "win": "ok", "wsl": "ok", "note": "configure provider base URL in the tool" },
-            { "name": "Aider", "rtk": if rtk_installed { "ok" } else { "planned" }, "rtkMethod": "rtk shell wrapper", "headroom": "planned", "headroomMethod": "d-token route adapter", "macos": "ok", "win": "partial", "wsl": "ok", "note": "best through terminal workflow" }
-        ],
-        "projects": [
-            {
-                "root": project_root,
-                "stack": "Rust · TypeScript · Tauri",
-                "agents": ["Codex CLI", "OpenCode"],
-                "route": "d-token local service 18001",
-                "rtkProfile": if rtk_installed { "balanced" } else { "not installed" },
-                "policy": if headroom_installed { "adaptive" } else { "connect-only" },
-                "level": if rtk_installed && headroom_installed { "L2 · Balanced" } else { "L1 · Connect" },
-                "reason": "Current desktop workspace detected by the Tauri backend; policy is derived from d-token-owned runtime readiness.",
-                "features": ["Doctor", "config diff", "backup plan", "agent route verification"]
-            }
-        ],
-        "savings": {
-            "totalTokens": 4820000,
-            "rtkTokens": if rtk_installed { 2910000 } else { 0 },
-            "headroomTokens": if headroom_installed { 1910000 } else { 0 },
-            "costUsd": 186.4,
-            "deltaTotal": 12.4,
-            "deltaRtk": 9.8,
-            "deltaHeadroom": 15.2,
-            "deltaCost": 11.1
-        },
-        "rtkTrend": [42, 55, 48, 63, 70, 66, 78],
-        "headroomTrend": [30, 38, 52, 49, 61, 68, 74],
-        "commandFamilies": [
-            { "name": "verification", "pct": 68 },
-            { "name": "build", "pct": 54 },
-            { "name": "git", "pct": 41 },
-            { "name": "search", "pct": 72 },
-            { "name": "package manager", "pct": 38 },
-            { "name": "logs", "pct": 61 }
-        ],
-        "recentDecisions": [
-            { "id": "req_dtoken_preview", "agent": "OpenCode", "route": "dtoken-opencode-local", "provider": "d-token route adapter", "model": "opencode/free-model", "saved": "pending-route-verification", "when": "now" },
-            { "id": "req_external_reference", "agent": "Migration", "route": "external-reference-only", "provider": "Headroom 8787", "model": "read-only comparison", "saved": if external_headroom_reference_healthy { "reference-up" } else { "reference-down" }, "when": "now" }
-        ],
-        "recentEvents": [
-            { "level": "info", "time": now_label(), "msg": "d-token dashboard data source is d-token-owned runtime payload" },
-            { "level": if external_headroom_reference_healthy { "info" } else { "warn" }, "time": now_label(), "msg": if external_headroom_reference_healthy { "External Headroom reference is available for migration comparison" } else { "External Headroom reference unavailable; d-token should continue independently" } },
-            { "level": if rtk_installed { "info" } else { "err" }, "time": now_label(), "msg": if rtk_installed { "RTK binary detected on PATH" } else { "RTK binary missing from PATH" } }
-        ],
-        "routes": [
-            { "id": "r1", "name": "dtoken-opencode-local", "protocol": "OpenAI-compatible", "host": format!("127.0.0.1:{DTOKEN_SERVICE_PORT}"), "instance": "dtoken-runtime", "provider": "d-token route adapter", "chain": "compress_then_provider", "policy": "balanced", "fallback": "disabled", "errors": 0 },
-            { "id": "r2", "name": "dtoken-cc-switch", "protocol": "Anthropic/OpenAI bridge", "host": format!("127.0.0.1:{DTOKEN_SERVICE_PORT}"), "instance": "dtoken-runtime", "provider": "cc-switch route interface", "chain": "compress_then_cc_switch", "policy": "balanced", "fallback": "disabled", "errors": 0 }
-        ],
-        "providers": [
-            { "name": "d-token local route adapter", "kind": "local", "protocol": "OpenAI/Anthropic", "baseUrl": format!("http://127.0.0.1:{DTOKEN_SERVICE_PORT}"), "models": "official/custom/cc-switch routes", "timeout": "60s", "health": "ok", "cred": "local-env" },
-            { "name": "External Headroom reference", "kind": "reference-only", "protocol": "dashboard migration", "baseUrl": format!("http://127.0.0.1:{EXTERNAL_HEADROOM_REFERENCE_PORT}"), "models": "not a product route", "timeout": "2s", "health": if external_headroom_reference_healthy { "ok" } else { "warn" }, "cred": "none" }
-        ],
-        "logs": [
-            { "time": now_label(), "level": "info", "kind": "runtime", "msg": "d-token-owned runtime is the dashboard source of truth" },
-            { "time": now_label(), "level": if external_headroom_reference_healthy { "info" } else { "warn" }, "kind": "headroom-reference", "msg": if external_headroom_reference_healthy { "external reference responded" } else { "external reference unavailable or unhealthy" } },
-            { "time": now_label(), "level": if rtk_installed { "info" } else { "err" }, "kind": "rtk", "msg": if rtk_installed { "rtk.version detected" } else { "rtk.version missing" } }
-        ],
-        "changes": [
-            {
-                "id": "c-dtoken-runtime",
-                "summary": "Use d-token-owned local service routes",
-                "target": "d-token managed route plan",
-                "risk": "low",
-                "backup": "created during managed apply",
-                "diff": [
-                    { "type": "ctx", "text": "[route.dtoken-opencode-local]" },
-                    { "type": "add", "text": "+ route_scope = \"agent-routed-connection\"" },
-                    { "type": "add", "text": format!("+ base_url = \"http://127.0.0.1:{DTOKEN_SERVICE_PORT}\"") },
-                    { "type": "add", "text": "+ fallback = \"disabled\"" }
-                ],
-                "postChecks": ["d-token service health", "Agent route verification", "Doctor"]
-            }
-        ],
-        "routeDrafts": route_profile_drafts_json(),
-        "backupPoints": rollback_points_json()
+            "source": "unavailable",
+            "agents": [],
+            "protocolInjection": [],
+            "chainStatus": null
+        }
     })
 }
 
+fn changes_from_route_drafts(route_drafts: &[Value]) -> Vec<Value> {
+    route_drafts
+        .iter()
+        .filter_map(|draft| {
+            let route = draft
+                .get("config")?
+                .get("routes")?
+                .as_array()?
+                .first()?;
+            let route_id = route.get("id")?.as_str()?;
+            Some(json!({
+                "id": format!("draft-{route_id}"),
+                "summary": format!("Apply d-token route draft {route_id}"),
+                "target": draft.get("path").cloned().unwrap_or(Value::Null),
+                "risk": "medium",
+                "backup": "created durably before active config replacement",
+                "diff": draft.get("diff").cloned().unwrap_or_else(|| json!([])),
+                "postChecks": ["d-token active config", "local service health", "agent route verification"]
+            }))
+        })
+        .collect()
+}
+
+fn complete_desktop_data(
+    mut runtime: Value,
+    route_drafts: Vec<Value>,
+    backup_points: Vec<Value>,
+    compatibility: Option<Value>,
+    protocol_injection: Option<Value>,
+    chain_status: Option<Value>,
+) -> Value {
+    let changes = changes_from_route_drafts(&route_drafts);
+    let object = runtime.as_object_mut().expect("validated runtime object");
+    object.insert("source".to_string(), json!("dtoken-owned-runtime"));
+    object.insert(
+        "desktop_data_source".to_string(),
+        json!("dtoken-local-service"),
+    );
+    object.insert("evidence_state".to_string(), json!("verified"));
+    object.insert("freshness".to_string(), json!("fresh"));
+    object.insert("complete".to_string(), json!(true));
+    object.insert("partial".to_string(), json!(false));
+    object.insert(
+        "transaction_provenance".to_string(),
+        json!({
+            "source": "dtoken-owned-runtime",
+            "command": "get_desktop_data",
+            "schema_version": 1,
+            "generated_at": now_timestamp(),
+            "service_url": format!("http://127.0.0.1:{DTOKEN_SERVICE_PORT}"),
+            "state_root": app_state_dir().display().to_string()
+        }),
+    );
+    object.insert("routeDrafts".to_string(), json!(route_drafts));
+    object.insert("backupPoints".to_string(), json!(backup_points));
+    object.insert("changes".to_string(), json!(changes));
+    object.insert(
+        "runtimeCompatibility".to_string(),
+        json!({
+            "source": if compatibility.is_some() || protocol_injection.is_some() || chain_status.is_some() {
+                "dtoken-local-service"
+            } else {
+                "unavailable"
+            },
+            "agents": compatibility.unwrap_or_else(|| json!([])),
+            "protocolInjection": protocol_injection.unwrap_or_else(|| json!([])),
+            "chainStatus": chain_status.unwrap_or(Value::Null),
+            "privacy": "Compatibility evidence is read only from the d-token-owned local service."
+        }),
+    );
+    runtime
+}
+
+#[tauri::command]
+fn get_desktop_data() -> Value {
+    let route_drafts = match route_profile_drafts_result() {
+        Ok(drafts) => drafts,
+        Err(err) => {
+            return unavailable_desktop_data(
+                &format!("Routing state is unreadable: {err}"),
+                vec![],
+                vec![],
+            )
+        }
+    };
+    let backup_points = match rollback_points_result() {
+        Ok(points) => points,
+        Err(err) => {
+            return unavailable_desktop_data(
+                &format!("Rollback state is unreadable: {err}"),
+                route_drafts,
+                vec![],
+            )
+        }
+    };
+    let health = match service_health_payload() {
+        Some(health)
+            if health.get("component").and_then(Value::as_str) == Some("dtoken-core-api")
+                && matches!(
+                    health.get("status").and_then(Value::as_str),
+                    Some("healthy" | "ready")
+                ) =>
+        {
+            health
+        }
+        Some(_) => {
+            return unavailable_desktop_data(
+                "The local listener did not prove dtoken-core-api health",
+                route_drafts,
+                backup_points,
+            )
+        }
+        None => {
+            return unavailable_desktop_data(
+                "d-token local service is unavailable",
+                route_drafts,
+                backup_points,
+            )
+        }
+    };
+    let runtime = match service_json(DTOKEN_SERVICE_PORT, "/dashboard/payload") {
+        Ok(payload)
+            if payload.is_object()
+                && payload.get("source").and_then(Value::as_str)
+                    == Some("dtoken-owned-runtime") =>
+        {
+            payload
+        }
+        Ok(_) => {
+            return unavailable_desktop_data(
+                "Dashboard payload did not prove d-token runtime provenance",
+                route_drafts,
+                backup_points,
+            )
+        }
+        Err(err) => {
+            return unavailable_desktop_data(
+                &format!("Dashboard payload is unavailable: {err}"),
+                route_drafts,
+                backup_points,
+            )
+        }
+    };
+    let mut payload = complete_desktop_data(
+        runtime,
+        route_drafts,
+        backup_points,
+        service_json(DTOKEN_SERVICE_PORT, "/compatibility/agents").ok(),
+        service_json(DTOKEN_SERVICE_PORT, "/protocol-injection").ok(),
+        service_json(DTOKEN_SERVICE_PORT, "/chain/status").ok(),
+    );
+    if let Some(object) = payload.as_object_mut() {
+        object.insert("runtime_health".to_string(), health);
+        object.insert("tools".to_string(), json!(all_checks()));
+        object.insert("active_config".to_string(), active_route_config_status());
+    }
+    payload
+}
+
+#[cfg(debug_assertions)]
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
@@ -3413,6 +3824,40 @@ fn main() {
         .expect("error while running d-token desktop");
 }
 
+#[cfg(not(debug_assertions))]
+fn main() {
+    tauri::Builder::default()
+        .plugin(tauri_plugin_opener::init())
+        .invoke_handler(tauri::generate_handler![
+            get_desktop_data,
+            get_app_settings,
+            save_app_settings,
+            save_route_profile_draft,
+            store_provider_credential,
+            delete_provider_credential,
+            list_route_profile_drafts,
+            apply_route_profile_draft,
+            get_active_route_config_status,
+            verify_agent_route_config,
+            recommend_project_policy,
+            manage_backup,
+            detect_tools,
+            install_tool,
+            preview_install_plan,
+            get_dtoken_service_status,
+            start_dtoken_service,
+            stop_dtoken_service,
+            run_install_transaction,
+            run_doctor,
+            manage_headroom,
+            run_product_readiness_check,
+            get_dtoken_dashboard_payload,
+            export_dtoken_runtime
+        ])
+        .run(tauri::generate_context!())
+        .expect("error while running d-token desktop");
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3432,7 +3877,7 @@ mod tests {
         let _guard = test_state_lock()
             .lock()
             .expect("test app state lock poisoned");
-        let previous = env::var("LOCALAPPDATA").ok();
+        let previous = env::var("DTOKEN_TEST_STATE_DIR").ok();
         let root = env::temp_dir().join(format!(
             "dtoken-desktop-test-{name}-{}",
             SystemTime::now()
@@ -3441,14 +3886,125 @@ mod tests {
                 .unwrap_or_default()
         ));
         fs::create_dir_all(&root).expect("create isolated app state");
-        env::set_var("LOCALAPPDATA", &root);
+        env::set_var("DTOKEN_TEST_STATE_DIR", &root);
         let result = run();
         match previous {
-            Some(value) => env::set_var("LOCALAPPDATA", value),
-            None => env::remove_var("LOCALAPPDATA"),
+            Some(value) => env::set_var("DTOKEN_TEST_STATE_DIR", value),
+            None => env::remove_var("DTOKEN_TEST_STATE_DIR"),
         }
         let _ = fs::remove_dir_all(root);
         result
+    }
+
+    #[test]
+    fn app_state_uses_only_the_explicit_test_override_for_temporary_storage() {
+        with_isolated_app_state("state-location", || {
+            let root = PathBuf::from(env::var("DTOKEN_TEST_STATE_DIR").expect("test override"));
+            assert_eq!(app_state_dir(), root);
+            assert!(!app_state_dir().starts_with(env::temp_dir().join("d-token")));
+        });
+    }
+
+    #[test]
+    fn durable_json_write_replaces_content_without_leaving_a_partial_file() {
+        with_isolated_app_state("atomic-json", || {
+            write_json_app_state(&["settings", "app.json"], &json!({"version": 1}))
+                .expect("write first version");
+            write_json_app_state(&["settings", "app.json"], &json!({"version": 2}))
+                .expect("replace second version");
+
+            let saved = read_app_state(&["settings", "app.json"]).expect("read saved JSON");
+            assert_eq!(saved["version"], 2);
+            let entries = fs::read_dir(app_state_dir().join("settings"))
+                .expect("read settings directory")
+                .flatten()
+                .collect::<Vec<_>>();
+            assert_eq!(
+                entries.len(),
+                1,
+                "temporary transaction files must be removed"
+            );
+        });
+    }
+
+    #[test]
+    fn missing_active_config_is_empty_and_never_materializes_a_placeholder_route() {
+        with_isolated_app_state("empty-active-config", || {
+            assert!(!active_config_path().exists());
+            let result = validate_active_config_for_start();
+            assert!(result.is_err());
+            assert!(!active_config_path().exists());
+            assert_eq!(active_route_config_status()["provider_count"], 0);
+            assert_eq!(active_route_config_status()["route_count"], 0);
+        });
+    }
+
+    #[test]
+    fn unavailable_desktop_data_has_no_verified_provenance_or_fabricated_operations() {
+        with_isolated_app_state("desktop-unavailable", || {
+            let payload = unavailable_desktop_data("runtime unavailable", vec![], vec![]);
+            assert_eq!(payload["complete"], false);
+            assert_eq!(payload["freshness"], "unavailable");
+            assert!(payload.get("transaction_provenance").is_none());
+            for field in [
+                "health",
+                "savings",
+                "routes",
+                "providers",
+                "logs",
+                "recentEvents",
+            ] {
+                assert!(
+                    payload
+                        .get(field)
+                        .and_then(Value::as_array)
+                        .is_some_and(Vec::is_empty),
+                    "{field} must be explicitly empty"
+                );
+            }
+        });
+    }
+
+    #[test]
+    fn complete_desktop_data_has_the_required_transaction_provenance() {
+        let runtime = json!({
+            "source": "dtoken-owned-runtime",
+            "providers": [],
+            "routes": [],
+            "instances": [],
+            "request_logs": []
+        });
+        let payload = complete_desktop_data(runtime, vec![], vec![], None, None, None);
+        assert_eq!(payload["source"], "dtoken-owned-runtime");
+        assert_eq!(payload["desktop_data_source"], "dtoken-local-service");
+        assert_eq!(payload["freshness"], "fresh");
+        assert_eq!(payload["complete"], true);
+        assert_eq!(
+            payload["transaction_provenance"]["source"],
+            "dtoken-owned-runtime"
+        );
+        assert_eq!(
+            payload["transaction_provenance"]["command"],
+            "get_desktop_data"
+        );
+        assert_eq!(payload["transaction_provenance"]["schema_version"], 1);
+        assert!(payload["transaction_provenance"]["generated_at"]
+            .as_str()
+            .is_some_and(|value| !value.is_empty()));
+    }
+
+    #[test]
+    fn listener_pid_parser_requires_the_manifest_pid() {
+        assert!(listener_output_contains_pid("723\n", 723));
+        assert!(listener_output_contains_pid(
+            "TCP    127.0.0.1:18001    0.0.0.0:0    LISTENING    723\n",
+            723
+        ));
+        assert!(!listener_output_contains_pid("1723\n", 723));
+        assert!(!listener_output_contains_pid(
+            "TCP    127.0.0.1:18001    0.0.0.0:0    LISTENING    999\n",
+            723
+        ));
     }
 
     #[test]
@@ -3617,6 +4173,41 @@ mod tests {
                 service_health_payload().is_none(),
                 "127.0.0.1:{DTOKEN_SERVICE_PORT} is already occupied; lifecycle test refuses to touch unmanaged services"
             );
+            write_json_app_state(
+                &["active-config", "dtoken-config.json"],
+                &json!({
+                    "providers": [{
+                        "id": "lifecycle-provider",
+                        "name": "Lifecycle test provider",
+                        "kind": "custom",
+                        "protocol": "open_ai",
+                        "base_url": "http://127.0.0.1:39199",
+                        "api_key_ref": null,
+                        "models": ["lifecycle/test"]
+                    }],
+                    "routes": [{
+                        "id": "lifecycle-route",
+                        "name": "Lifecycle test route",
+                        "input_protocol": "open_ai",
+                        "instance_id": "lifecycle-instance",
+                        "target_provider_id": "lifecycle-provider",
+                        "fallback_provider_id": null,
+                        "chain_mode": "direct",
+                        "compression_policy": "off",
+                        "bind_host": "127.0.0.1",
+                        "local_port": DTOKEN_SERVICE_PORT
+                    }],
+                    "instances": [{
+                        "id": "lifecycle-instance",
+                        "name": "Lifecycle test instance",
+                        "agent": "OpenCode",
+                        "route_id": "lifecycle-route",
+                        "local_port": DTOKEN_SERVICE_PORT,
+                        "process_status": "stopped"
+                    }]
+                }),
+            )
+            .expect("write explicit lifecycle config");
 
             let start = start_dtoken_service();
             assert!(
@@ -3965,7 +4556,7 @@ mod tests {
             );
             assert_eq!(active_route_config_status()["route"]["id"], "second-route");
 
-            let points = rollback_points_json();
+            let points = rollback_points_result().expect("read rollback points");
             let rollback_id = points
                 .iter()
                 .filter_map(|point| point.get("id").and_then(Value::as_str))
