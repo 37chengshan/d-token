@@ -1453,11 +1453,17 @@ fn runtime_metrics_payload(logs: &[RequestLog]) -> Value {
         } else {
             log.transforms_applied.clone()
         };
-        for transform in transforms {
+        let transform_count = transforms.len() as u64;
+        for (index, transform) in transforms.into_iter().enumerate() {
+            let index = index as u64;
+            let attributed_saved = tokens_saved / transform_count
+                + u64::from(index < tokens_saved % transform_count);
+            let attributed_before = tokens_before / transform_count
+                + u64::from(index < tokens_before % transform_count);
             let entry = by_transform.entry(transform).or_insert((0, 0, 0, 0));
             entry.0 += 1;
-            entry.1 += tokens_saved;
-            entry.2 += tokens_before;
+            entry.1 += attributed_saved;
+            entry.2 += attributed_before;
             entry.3 += latency_ms;
         }
 
