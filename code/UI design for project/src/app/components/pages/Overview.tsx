@@ -3,6 +3,7 @@ import { AreaChart, Area, ResponsiveContainer, Tooltip, XAxis } from "recharts";
 import { Coins, TrendingUp, DollarSign, Gauge, Bot, AlertTriangle, Download, Stethoscope, BarChart3, ArrowRight } from "lucide-react";
 import { StatCard } from "../common/StatCard";
 import { GlassCard } from "../common/GlassCard";
+import { CompressionFlow } from "../common/CompressionFlow";
 import { DataSourceBadge } from "../common/DataSourceBadge";
 import { useT } from "../../lib/i18n";
 import { overviewStats, trend14 } from "../../lib/fixtures";
@@ -44,6 +45,8 @@ export function Overview({ setPage }: { setPage: (p: PageId) => void }) {
         <StatCard index={2} label={t("ov.costSaved")} value={`$${s.costSaved.toFixed(1)}`} icon={<DollarSign className="size-4" />} accentBar="var(--chart-4)" />
         <StatCard index={3} label={t("ov.compressionRate")} value={`${Math.round(s.compressionRate * 100)}%`} icon={<Gauge className="size-4" />} accentBar="var(--chart-3)" />
       </div>
+
+      <CompressionFlow savedToday={s.savedToday} compressionRate={s.compressionRate} />
 
       <div className="grid gap-4 lg:grid-cols-3">
         <GlassCard className="p-5 lg:col-span-2">

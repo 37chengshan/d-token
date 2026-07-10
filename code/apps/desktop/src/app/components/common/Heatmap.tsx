@@ -1,6 +1,6 @@
 import { AnimatePresence, motion } from "motion/react";
 import { useMemo, useState } from "react";
-import { activityCalendar, activitySummary, toolUsage, type ActivityDay } from "../../lib/fixtures";
+import { activityCalendar, toolUsage, type ActivityDay } from "../../lib/fixtures";
 import { useI18n } from "../../lib/i18n";
 
 const CELL = 13;
@@ -8,11 +8,12 @@ const GAP = 3;
 const ROWS = 7;
 const LEVELS = [0, 1, 2, 3, 4] as const;
 
-type Range = "today" | "week" | "month";
+type Range = "week" | "month" | "year";
 type View = "activity" | "tokens" | "tools";
 type CalendarCell = ActivityDay | null;
+type ToolUsageRow = { name: string; calls: number };
 
-const rangeDays: Record<Range, number> = { today: 1, week: 7, month: 31 };
+const rangeDays: Record<Range, number> = { week: 7, month: 31, year: 365 };
 
 const tokenSeries = [
   { date: "6/27", input: 0, total: 0 },
@@ -25,8 +26,8 @@ const tokenSeries = [
 ];
 
 function rangeLabel(range: Range, lang: string) {
-  if (lang === "zh") return range === "today" ? "今日" : range === "week" ? "本周" : "本月";
-  return range === "today" ? "Today" : range === "week" ? "Week" : "Month";
+  if (lang === "zh") return range === "week" ? "本周" : range === "month" ? "本月" : "年";
+  return range === "week" ? "Week" : range === "month" ? "Month" : "Year";
 }
 
 function viewLabel(view: View, lang: string) {
@@ -70,13 +71,21 @@ function pathFromPoints(points: { x: number; y: number }[]) {
   return points.map((point, index) => `${index === 0 ? "M" : "L"} ${point.x} ${point.y}`).join(" ");
 }
 
-export function Heatmap() {
+export function Heatmap({
+  activityDays = activityCalendar,
+  tools = toolUsage,
+  source = "浏览器预览",
+}: {
+  activityDays?: ActivityDay[];
+  tools?: ToolUsageRow[];
+  source?: string;
+}) {
   const { lang } = useI18n();
   const [range, setRange] = useState<Range>("week");
   const [view, setView] = useState<View>("activity");
   const [tooltip, setTooltip] = useState<{ x: number; y: number; day: ActivityDay } | null>(null);
 
-  const visibleDays = useMemo(() => activityCalendar.slice(-rangeDays[range]), [range]);
+  const visibleDays = useMemo(() => activityDays.slice(-rangeDays[range]), [activityDays, range]);
   const selectedDates = useMemo(() => new Set(visibleDays.map((day) => day.date)), [visibleDays]);
   const activeDays = visibleDays.filter((day) => day.sessions > 0).length;
   const totalSessions = visibleDays.reduce((sum, day) => sum + day.sessions, 0);
@@ -84,7 +93,7 @@ export function Heatmap() {
   const totalTools = visibleDays.reduce((sum, day) => sum + day.tools, 0);
 
   const { columns, months } = useMemo(() => {
-    const sorted = [...activityCalendar].sort((a, b) => a.date.localeCompare(b.date));
+    const sorted = [...activityDays].sort((a, b) => a.date.localeCompare(b.date));
     const first = sorted[0] ? new Date(`${sorted[0].date}T00:00:00`) : new Date();
     const padded: CalendarCell[] = [];
     for (let i = 0; i < first.getDay(); i += 1) padded.push(null);
@@ -107,7 +116,7 @@ export function Heatmap() {
     });
 
     return { columns: nextColumns, months: nextMonths };
-  }, [lang]);
+  }, [activityDays, lang]);
 
   return (
     <div className="activity-panel">
@@ -117,6 +126,8 @@ export function Heatmap() {
             <button
               key={item}
               type="button"
+              aria-label={`${lang === "zh" ? "切换统计视图" : "Switch metric view"}: ${viewLabel(item, lang)}`}
+              aria-pressed={view === item}
               className={view === item ? "activity-tab active" : "activity-tab"}
               onClick={() => setView(item)}
             >
@@ -127,10 +138,12 @@ export function Heatmap() {
         </div>
 
         <div className="activity-range-tabs">
-          {(["today", "week", "month"] as const).map((item) => (
+          {(["week", "month", "year"] as const).map((item) => (
             <button
               key={item}
               type="button"
+              aria-label={`${lang === "zh" ? "切换时间范围" : "Switch time range"}: ${rangeLabel(item, lang)}`}
+              aria-pressed={range === item}
               className={range === item ? "activity-range active" : "activity-range"}
               onClick={() => setRange(item)}
             >
@@ -139,6 +152,8 @@ export function Heatmap() {
             </button>
           ))}
         </div>
+
+        <span className="rounded-full border border-border/60 px-2 py-1 text-xs text-muted-foreground">{source}</span>
       </div>
 
       <AnimatePresence mode="wait">
@@ -159,8 +174,8 @@ export function Heatmap() {
               lang={lang}
             />
           )}
-          {view === "tokens" && <TokenTrend range={range} lang={lang} />}
-          {view === "tools" && <ToolRanking range={range} lang={lang} />}
+          {view === "tokens" && <TokenTrend range={range} lang={lang} activityDays={activityDays} />}
+          {view === "tools" && <ToolRanking range={range} lang={lang} tools={tools} />}
         </motion.div>
       </AnimatePresence>
 
@@ -180,7 +195,7 @@ export function Heatmap() {
         <div className="activity-summary-item">
           <div className="text-xs text-muted-foreground">{lang === "zh" ? "活跃天数" : "Active days"}</div>
           <div className="mt-1 text-lg font-semibold">
-            {view === "activity" ? activeDays : activitySummary.weekActiveDays}
+            {activeDays}
             {lang === "zh" ? " 天" : " days"}
           </div>
         </div>
@@ -285,9 +300,15 @@ function ActivityCalendar({
   );
 }
 
-function TokenTrend({ range, lang }: { range: Range; lang: string }) {
-  const data = tokenSeries.slice(-rangeDays[range]);
-  const max = Math.max(...data.map((item) => Math.max(item.input, item.total)), 1);
+function TokenTrend({ range, lang, activityDays }: { range: Range; lang: string; activityDays: ActivityDay[] }) {
+  const data = activityDays.slice(-rangeDays[range]).map((day) => ({
+    date: day.date.slice(5).replace("-", "/"),
+    input: Math.max(0, day.tokens / 1000),
+    total: Math.max(0, (day.tokens + day.tools * 120) / 1000),
+  }));
+  const fallback = tokenSeries.slice(-rangeDays[range]);
+  const series = data.length > 0 ? data : fallback;
+  const max = Math.max(...series.map((item) => Math.max(item.input, item.total)), 1);
   const chartWidth = 760;
   const chartHeight = 250;
   const left = 48;
@@ -296,13 +317,13 @@ function TokenTrend({ range, lang }: { range: Range; lang: string }) {
   const top = 20;
   const plotWidth = chartWidth - left - right;
   const plotHeight = chartHeight - top - bottom;
-  const step = data.length > 1 ? plotWidth / (data.length - 1) : plotWidth;
-  const points = data.map((item, index) => ({
+  const step = series.length > 1 ? plotWidth / (series.length - 1) : plotWidth;
+  const points = series.map((item, index) => ({
     x: left + index * step,
     y: top + plotHeight - (item.total / max) * plotHeight,
   }));
-  const total = data.reduce((sum, item) => sum + item.total, 0);
-  const input = data.reduce((sum, item) => sum + item.input, 0);
+  const total = series.reduce((sum, item) => sum + item.total, 0);
+  const input = series.reduce((sum, item) => sum + item.input, 0);
 
   return (
     <div className="token-trend-layout">
@@ -323,7 +344,7 @@ function TokenTrend({ range, lang }: { range: Range; lang: string }) {
               className="token-grid-line"
             />
           ))}
-          {data.map((item, index) => {
+          {series.map((item, index) => {
             const barHeight = Math.max(5, (item.input / max) * plotHeight);
             const x = left + index * step - 24;
             const y = top + plotHeight - barHeight;
@@ -338,8 +359,8 @@ function TokenTrend({ range, lang }: { range: Range; lang: string }) {
           })}
           <path d={pathFromPoints(points)} className="token-line" />
           {points.map((point, index) => (
-            <circle key={data[index].date} cx={point.x} cy={point.y} r={5} className="token-point">
-              <title>{`${data[index].date} · ${data[index].total.toFixed(1)}M`}</title>
+            <circle key={series[index].date} cx={point.x} cy={point.y} r={5} className="token-point">
+              <title>{`${series[index].date} · ${series[index].total.toFixed(1)}k`}</title>
             </circle>
           ))}
         </svg>
@@ -361,9 +382,10 @@ function TokenTrend({ range, lang }: { range: Range; lang: string }) {
   );
 }
 
-function ToolRanking({ range, lang }: { range: Range; lang: string }) {
-  const multiplier = range === "today" ? 0.08 : range === "week" ? 0.32 : 1;
-  const rankedTools = toolUsage.map((item, index) => ({
+function ToolRanking({ range, lang, tools }: { range: Range; lang: string; tools: ToolUsageRow[] }) {
+  const multiplier = range === "week" ? 0.32 : range === "month" ? 1 : 3.2;
+  const sourceTools = tools.length > 0 ? tools : toolUsage;
+  const rankedTools = sourceTools.map((item, index) => ({
     ...item,
     calls: Math.max(1, Math.round(item.calls * multiplier)),
     color: index % 2 === 0 ? "var(--chart-accent, #f97316)" : "#68c7ee",

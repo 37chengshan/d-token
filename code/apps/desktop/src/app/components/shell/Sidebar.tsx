@@ -50,7 +50,7 @@ export function Sidebar({
         className={cn(
           "nav-motion-item group relative z-10 flex items-center text-[13px] transition-colors duration-150",
           collapsed
-            ? "mx-auto size-10 justify-center rounded-xl p-0"
+            ? "mx-auto h-[40px] w-[40px] justify-center rounded-lg p-0"
             : "h-[34px] w-full gap-2 rounded-md px-2",
           active
             ? "sidebar-item-selected text-[color:var(--accent-500)]"
@@ -78,14 +78,15 @@ export function Sidebar({
   return (
     <aside
       className={cn(
-        "glass-strong relative z-20 flex h-full flex-col border-r border-sidebar-border/60 transition-all duration-300",
-        collapsed ? "w-[56px]" : "w-[124px]",
+        "glass-strong relative z-20 flex h-full shrink-0 flex-col border-r border-sidebar-border/60 transition-all duration-300",
+        collapsed ? "w-[60px]" : "w-[148px]",
       )}
     >
       <div className={cn("relative z-10 flex items-center gap-2 px-2 py-3", collapsed && "justify-center")}>
         <motion.button
           type="button"
           onClick={() => collapsed && setCollapsed(false)}
+          aria-label={collapsed ? t("app.name") : "d-token"}
           className="flex size-9 shrink-0 items-center justify-center overflow-hidden rounded-xl bg-white shadow-sm ring-1 ring-black/10"
           title={collapsed ? t("app.name") : undefined}
           whileHover={{ rotate: -10, scale: 1.06 }}
@@ -114,9 +115,10 @@ export function Sidebar({
           <motion.button
             type="button"
             onClick={() => setTheme(isDark ? "light" : "dark")}
+            aria-label={isDark ? t("set.themeLight") : t("set.themeDark")}
             className={cn(
               "flex items-center justify-center gap-1.5 rounded-lg text-[13px] text-muted-foreground hover:bg-[var(--chip-hover-bg)]",
-              collapsed ? "size-10" : "flex-1 py-1",
+              collapsed ? "h-[40px] w-[40px]" : "flex-1 py-1",
             )}
             title={isDark ? t("set.themeLight") : t("set.themeDark")}
             whileHover={{ y: -1, scale: 1.035 }}
@@ -131,9 +133,10 @@ export function Sidebar({
           <motion.button
             type="button"
             onClick={() => setCollapsed(!collapsed)}
+            aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
             className={cn(
               "flex items-center justify-center rounded-md text-muted-foreground hover:bg-[var(--chip-hover-bg)]",
-              collapsed ? "size-10" : "size-7",
+              collapsed ? "h-[40px] w-[40px]" : "size-7",
             )}
             title={collapsed ? "Expand" : "Collapse"}
             whileHover={{ y: -1, scale: 1.04 }}

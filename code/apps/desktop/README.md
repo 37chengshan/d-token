@@ -2,9 +2,9 @@
 
 Tauri 2 + React 19 + TypeScript 桌面 App（Windows / macOS）。
 
-M3 阶段目标：fixture-first 的可导航控制台外壳，UI 参考 AiMaMi 的桌面控制台风格，
-支持深/浅色主题切换、中/英文切换与动态效果。所有数据均为演示 fixture，
-**绝不触碰**真实的 RTK / Headroom / Agent 配置或运行中的服务（No-Touch）。
+当前目标：d-token-owned runtime 的桌面控制面。浏览器预览使用示例数据；Tauri 桌面窗口通过
+Tauri commands / d-token local service 读取真实运行时数据。正式 UI 展示安装、连接、配置、
+状态、诊断、日志和回滚，不展示 workload/benchmark/smoke 等开发测试入口。
 
 ## 功能
 
@@ -20,14 +20,19 @@ M3 阶段目标：fixture-first 的可导航控制台外壳，UI 参考 AiMaMi �
 
 ```
 src/
-  main.tsx      入口，挂载 Providers + App
-  App.tsx       应用外壳（侧栏 + 顶栏 + 页面路由）
-  context.tsx   主题 + i18n 的 React Context（localStorage 记忆）
-  i18n.ts       中英文文案词典
-  pages.tsx     全部页面组件
-  ui.tsx        复用 UI 组件（Card/StatCard/Badge/Progress/Sparkline...）
-  fixtures.ts   演示数据（fixture-first）
-  styles.css    设计系统（CSS 变量驱动的亮/暗色主题 + 动效）
+  main.tsx      当前入口，挂载 src/app/App
+  app/
+    App.tsx
+    components/
+      shell/    Sidebar / Topbar / StatusBar / AppShell
+      pages/    Overview / Install / Advanced / Analytics / Doctor / Changes / Logs / Settings
+      common/   DataSourceBadge / Heatmap / cards / terminal 等
+      ui/       复用 UI primitives
+    lib/        i18n、theme、runtime dashboard hook、native invoke、preview data
+  App.tsx       兼容转发到 src/app/App，避免旧入口复活
+  pages.tsx     兼容转发到 src/app/components/pages
+  fixtures.ts   兼容转发到 src/app/lib/fixtures
+  styles/       设计系统（CSS 变量驱动的亮/暗色主题 + 动效）
 src-tauri/      Tauri 外壳配置（M4 再开启生产打包）
 ```
 
@@ -35,7 +40,7 @@ src-tauri/      Tauri 外壳配置（M4 再开启生产打包）
 
 ```bash
 npm install        # 安装依赖
-npm run dev        # 启动 Vite 开发服务器 (http://127.0.0.1:5173)
+npm run dev        # 启动 Vite 开发服务器 (http://127.0.0.1:5180)
 npm run build      # 类型检查 + 生产构建 (tsc --noEmit && vite build)
 npm run preview    # 预览生产构建
 ```

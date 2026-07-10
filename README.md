@@ -2,197 +2,122 @@
 
 > Local-first token compression, routing, and observability control plane for AI coding workflows.
 
-`d-token` is a desktop-oriented local control plane for AI coding tools. It combines command-output preprocessing, Headroom-compatible context compression, provider routing, project-level compression policy, and end-to-end token savings observability in one Windows/macOS app.
+`d-token` 是一个面向 Windows/macOS 的本地桌面控制面，把 AI 编码工具的上下文压缩、上游路由、连接配置、智能学习、问题诊断和变更回退整合到一个 App 中。用户只需下载安装 d-token，不需要先安装 Headroom 或 RTK。
 
-The project is currently in early M1 development. The repository already contains the living PRD, architecture documents, research reports, Rust workspace skeleton, and local API/proxy skeleton. Production installers and full RTK/Headroom integrations are planned but not complete yet.
+## 第一版能做什么
 
-## Why this exists
+1. **总体概览**：一眼看到本地服务是否运行、已连接哪些 Agent、cc-switch 是否同步、今日估算节省了多少 token、最近是否有问题。
+2. **安装与连接**：4 个上栏——一键安装（服务/端口/Agent/cc-switch 检测与配置计划）、智能学习（全面扫描+排序+受控写入）、高级安装（自定义上游/端口/协议）、日志（安装过程记录）。
+3. **分析**：估算节省、请求趋势、Agent/上游/错误分布；明确标注"估算"，不伪装真实账单。
+4. **Doctor**：检测已知问题，低风险自动修复，高风险必须确认并预览 diff。
+5. **变更与回退**：所有写入（配置、文档、Doctor 修复）都有备份和回退点，可一键恢复。
+6. **设置**：主题、语言、端口、脱敏级别、扫描策略、数据保留。
 
-AI coding agents waste a large amount of context on noisy command output, long logs, repeated tool results, oversized file reads, and unstructured provider routing. Existing tools solve parts of the problem at different layers:
+## 当前重点支持 Agent
 
-- `rtk-ai/rtk` works at the command execution layer: it rewrites shell commands and filters command output before it enters the agent context.
-- `headroomlabs-ai/headroom` works at the LLM context layer: it compresses tool outputs, logs, files, RAG chunks, and conversation context before the request reaches the model.
-- `d-token` is the local desktop control plane around those layers: installation, configuration, policy, routing, process control, diagnostics, metrics, rollback, and cross-layer attribution.
+| Agent | 能力状态 |
+|---|---|
+| OpenCode | 已可一键配置 |
+| Claude Code | 可检测，需用户确认配置 |
+| Codex | 可检测，需用户确认配置 |
+| Cursor | 可生成配置建议，能写则受控写入 |
+| Cline | 可生成配置建议，能写则受控写入 |
+| CommandCode | 仅支持高级手动配置（资料待补） |
 
-## Core idea
+d-token 只检测和配置这些第三方工具，**不会自动安装它们**。
 
-```text
-AI Coding Tool
-  ↓
-Shell Command Execution
-  ↓
-RTK CLI Proxy / Hook / Plugin
-  ↓
-Cleaned command output enters agent context
-  ↓
-d-token Local Proxy
-  ↓
-Headroom-compatible Compression Core
-  ↓
-Route Decision
-  ↓
-Official Provider / Custom Provider / Chain Bridge
-  ↓
-Provider
-```
+## cc-switch 只读同步
 
-`d-token` treats RTK and Headroom as complementary layers rather than substitutes:
+d-token 默认只读读取 cc-switch 配置：检测当前 profile、读取当前上游，并在用户切换 cc-switch 后同步 d-token 上游或明确提示"不一致"。常规一键安装不会静默改写 cc-switch 配置。
 
-```text
-RTK       = Command Execution Layer / Shell Output Layer
-Headroom  = API Gateway Layer / LLM Context Layer
-d-token   = Desktop Orchestration / Routing / Policy / Observability Layer
-```
+## 智能学习如何扫描和写入
 
-## Planned capabilities
+- 全面扫描本机项目目录和 Agent 会话路径，用轻量索引快速排序（不读取完整源代码）。
+- 按学习价值评分排序，显示可解释的排序原因。
+- 对高价值目录做深度扫描，生成面向 Agent 的项目上下文。
+- 直接写入时**只新增或更新 d-token 管理块**，不会改动你的其他内容；写入前自动备份并生成回退点。
+- 敏感文件（.env、密钥、认证文件）永远被排除。
 
-### 1. Desktop control plane
+## 安全与隐私边界
 
-- Windows/macOS desktop app based on Tauri 2 + React + TypeScript.
-- One-click setup wizard for d-token core, RTK, Headroom-compatible runtime, MCP, hooks, and provider configs.
-- Local process manager for proxy/runtime/sidecar instances.
-- Doctor page for environment, process, route, provider, RTK, Headroom, config, and rollback checks.
+- 默认只监听 `127.0.0.1`，所有数据在本地处理。
+- API key、token、cookie、认证头永不明文展示，日志和导出默认脱敏。
+- 完整 prompt、完整 response、完整源代码不落盘、不导出。
+- 不上传任何数据到远端，不自动开启遥测。
+- 所有真实写入都有 diff、备份、验证和回退。
 
-### 2. Layered token compression
+## 安装步骤
 
-- RTK command-output savings.
-- Headroom-compatible context compression savings.
-- End-to-end savings attribution without double-counting.
-- Per-agent, per-project, per-route, per-provider, and per-instance breakdowns.
+1. 下载 d-token 安装包（Windows .exe / macOS .dmg）。
+2. 运行安装程序。
+3. 打开 d-token App。
 
-### 3. Provider routing
+## 第一次连接步骤
 
-- Official providers.
-- Custom OpenAI-compatible providers.
-- Custom Anthropic-compatible providers.
-- Local chain bridge mode.
-- Explicit, auditable route decisions.
-- No silent provider fallback by default.
+1. 打开"安装与连接"页。
+2. 在"一键安装"上栏点击"启动本地服务"。
+3. 等待端口检测、Agent 检测、cc-switch 检测完成。
+4. 选择一个 Agent，查看配置计划和 diff。
+5. 确认应用（已自动备份）。
+6. 验证连接是否通过。
+7. 如果结果不符合预期，在"变更与回退"中一键恢复。
 
-### 4. Project-level compression policy
+## 常见问题
 
-- `ProjectProfile`.
-- `ProjectCompressionPolicy`.
-- Recommended compression level.
-- Manual override.
-- Policy diff and rollback.
-- Quality-risk warnings for aggressive/max compression.
+- **服务无法启动**：检查端口是否被占用，打开 Doctor 查看。
+- **Agent 请求没经过 d-token**：确认 Agent 上游已指向 `127.0.0.1:18001`，在 Doctor 运行连接检查。
+- **cc-switch 切换后 d-token 没跟上**：首页会提示"不一致"，点击"同步上游"。
+- **智能学习写入失败**：说明检测到非管理块内容可能变化，已中止并保留备份，原文档未改动。
 
-### 5. Safe configuration patching
+## 如何回退
 
-- Preview diff before any config or hook mutation.
-- Backup before apply.
-- Atomic install transaction where possible.
-- Rollback points.
-- Hash mismatch and conflict handling.
-- No silent telemetry enablement.
+1. 打开"变更与回退"页。
+2. 找到对应的回退点（按时间线排列）。
+3. 点击"恢复"。
+4. 恢复后自动验证。
 
-### 6. Local-first security model
+## 已知限制
 
-- Default bind address: `127.0.0.1`.
-- API keys stay local.
-- Prefer OS keychain for secrets.
-- Logs are redacted by default.
-- No upload of user code, prompts, RTK DB, tee files, command output, or Headroom CCR originals.
-- CCR and raw-output recovery are summarized by default; full content requires explicit user action.
+- Windows native 模式通常只能获得部分 hook 能力，WSL 才能获得完整 shell hook 体验。
+- CommandCode 的具体命令名、配置路径、hook 能力仍在补齐，暂按高级手动配置处理。
+- 公开发布版需要签名/notarization；当前开发构建未签名。
+- macOS 签名与 quarantine 提示需要在真实机器上验收。
 
-## Repository layout
-
-```text
-README.md                         Project overview
-AGENTS.md                         Agent-facing project instructions
-CLAUDE.md                         Claude-facing project instructions
-docs/                             Formal docs, PRD, architecture, reviews, research reports
-code/                             Application code, Rust crates, desktop app skeleton, runtime placeholders
-support/                          Scripts, tests, CI helpers, repository checks
-```
-
-Key documents:
-
-```text
-docs/PRD.md                                           Single living PRD
-docs/ARCHITECTURE.md                                  Runtime architecture
-docs/TECH_STACK.md                                    Technology decisions
-docs/SECURITY_BOUNDARIES.md                           Safety and privacy boundaries
-docs/research/REPORT_01_RTK_HEADROOM_INTERNALS.md     RTK + Headroom internals
-docs/research/REPORT_02_DESKTOP_INTEGRATION_ONE_CLICK_APP.md
-docs/research/REPORT_03_FEATURES_AND_FIXES_IMPLEMENTATION.md
-docs/reviews/PRD_MULTIDIMENSIONAL_GAP_REVIEW_2026-07-01.md
-docs/reviews/RESEARCH_REPORTS_MULTIDIMENSIONAL_REVIEW_2026-07-01.md
-```
-
-## Current implementation status
-
-Current M1 skeleton includes:
-
-```text
-code/Cargo.toml                         Rust workspace
-code/apps/desktop                       Tauri 2 + React/TypeScript desktop placeholder
-code/crates/dtoken-types                Shared domain models
-code/crates/dtoken-config               Local config loader
-code/crates/dtoken-router               Provider and route decision layer
-code/crates/dtoken-compress             Compression interface
-code/crates/dtoken-core-api             Local API used by the desktop app
-code/crates/dtoken-process              Local process manager
-code/crates/dtoken-doctor               Doctor checks
-code/crates/dtoken-proxy                Local proxy / core API entrypoint
-code/packages/sdk                       TypeScript SDK / shared types placeholder
-code/runtimes/headroom                  Headroom-compatible runtime placeholder
-code/configs/config.example.json        Safe example config without real secrets
-```
-
-Planned near-term crates:
-
-```text
-dtoken-preprocessor          RTK adapter + built-in fallback preprocessor
-dtoken-headroom-adapter      Headroom CLI/proxy/MCP/status adapter
-dtoken-project-policy        Project-level compression policy and recommendation
-dtoken-config-patcher        Diff / backup / rollback for config changes
-dtoken-event-ledger          Unified event ledger for attribution and audit
-dtoken-compatibility         Compatibility matrix for OS / shell / agent / mode combinations
-```
-
-## Development checks
-
-From the repository root:
+## 开发
 
 ```bash
-python support/scripts/check_structure.py
-```
+# 前端开发
+cd code/apps/desktop
+npm install
+npm run dev
 
-From the code workspace:
+# 前端构建（CI gate）
+npm run build
 
-```bash
+# Rust 检查
 cd code
 cargo check --workspace
 cargo test --workspace
 ```
 
-These checks are part of the minimum CI gate planned in the PRD.
-
-## Roadmap
+## 目录结构
 
 ```text
-M0  Documentation and repository structure convergence
-M1  Core skeleton + RTK/Headroom adapter skeleton
-M2  Desktop dashboard skeleton + installer wizard
-M3  Provider / route / instance / RTK / Headroom integration
-M4  Headroom-compatible parity + layered compression attribution
-M5  Production hardening: installers, signing, updater, CI, compatibility tests
+docs/       所有正式文档（唯一 PRD、架构、安全边界、发布计划）
+code/       所有正式代码（Rust workspace + Tauri/React 桌面 App）
+support/    测试、脚本、CI 模板、开发辅助
 ```
 
-## Design rules
+## 设计原则
 
-1. `docs/PRD.md` is the only PRD.
-2. Do not create parallel PRD versions.
-3. Do not silently modify agent, RTK, Headroom, or shell configs.
-4. Do not silently enable telemetry.
-5. Do not claim RTK-only, Headroom-only, or built-in preprocessing are equivalent.
-6. Do not directly add RTK savings and Headroom savings without a unified baseline.
-7. Do not store full command output, full prompt, full source files, or full API responses in default logs.
-8. Prefer read-only detection before mutation.
-9. Prefer external RTK/Headroom integration first; managed mode must be explicit and reversible.
-10. Every user-visible route/fallback/compression decision must be explainable.
+1. `docs/PRD.md` 是唯一 PRD。
+2. 不创建并行 PRD 版本。
+3. 不静默修改 agent、RTK、Headroom 或 shell 配置。
+4. 不静默开启遥测。
+5. 不把 RTK 节省和 Headroom 节省直接相加（需要统一基线）。
+6. 不在默认日志中存储完整命令输出、完整 prompt、完整源文件或完整 API 响应。
+7. 先只读检测，再受控写入。
+8. 每个用户可见的路由/fallback/压缩决策都必须可解释。
 
 ## License
 

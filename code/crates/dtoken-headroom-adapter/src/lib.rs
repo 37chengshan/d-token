@@ -249,32 +249,6 @@ fn fixture_status() -> HeadroomStatus {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn unknown_profile_defaults_to_fixture_for_no_touch_development() {
-        env::remove_var("DTOKEN_PROFILE");
-        assert_eq!(runtime_mode_from_env(), RuntimeMode::Fixture);
-    }
-
-    #[test]
-    fn fixture_history_has_required_top_level_shape() {
-        let value = HeadroomAdapter::stats_history_json();
-        assert!(value.get("history").is_some());
-        assert!(value.get("series").is_some());
-    }
-
-    #[test]
-    fn http_url_parser_accepts_localhost_base_url_without_touching_service() {
-        let parsed = parse_http_url("http://127.0.0.1:8787", "/stats").expect("valid url");
-        assert_eq!(parsed.host, "127.0.0.1");
-        assert_eq!(parsed.port, 8787);
-        assert_eq!(parsed.path, "/stats");
-    }
-}
-
 fn fixture_stats() -> HeadroomStats {
     read_fixture_text("headroom/stats.json")
         .and_then(|raw| serde_json::from_str::<HeadroomStats>(&raw).ok())
@@ -303,4 +277,30 @@ fn fixture_candidates(relative: &str) -> Vec<PathBuf> {
     candidates.push(PathBuf::from("../support/fixtures").join(relative));
     candidates.push(PathBuf::from("support/fixtures").join(relative));
     candidates
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unknown_profile_defaults_to_fixture_for_no_touch_development() {
+        env::remove_var("DTOKEN_PROFILE");
+        assert_eq!(runtime_mode_from_env(), RuntimeMode::Fixture);
+    }
+
+    #[test]
+    fn fixture_history_has_required_top_level_shape() {
+        let value = HeadroomAdapter::stats_history_json();
+        assert!(value.get("history").is_some());
+        assert!(value.get("series").is_some());
+    }
+
+    #[test]
+    fn http_url_parser_accepts_localhost_base_url_without_touching_service() {
+        let parsed = parse_http_url("http://127.0.0.1:8787", "/stats").expect("valid url");
+        assert_eq!(parsed.host, "127.0.0.1");
+        assert_eq!(parsed.port, 8787);
+        assert_eq!(parsed.path, "/stats");
+    }
 }

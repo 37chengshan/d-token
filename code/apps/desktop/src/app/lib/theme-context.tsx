@@ -1,6 +1,7 @@
 import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
 import { ThemeProvider as NextThemeProvider, useTheme } from "next-themes";
 import { I18nContext, type Lang } from "./i18n";
+import { invokeNative } from "./native";
 
 export type Accent = "blue" | "green" | "orange" | "purple" | "slate";
 export type ChartAccent = "green" | "blue" | "amber" | "rose" | "violet" | "orange";
@@ -58,12 +59,35 @@ export function useAppearance() {
 export { useTheme };
 
 function AppearanceProvider({ children }: { children: ReactNode }) {
+  const { setTheme } = useTheme();
   const [accent, setAccent] = useState<Accent>("orange");
   const [chartAccent, setChartAccent] = useState<ChartAccent>("orange");
   const [flowPalette, setFlowPalette] = useState<FlowPalette>("ocean");
   const [flowSpeed, setFlowSpeed] = useState<FlowSpeed>("slow");
   const [glass, setGlass] = useState(true);
   const [lang, setLang] = useState<Lang>("zh");
+
+  useEffect(() => {
+    let cancelled = false;
+    invokeNative<{ payload?: { appearance?: Record<string, unknown> } }>("get_app_settings", { section: "app" })
+      .then((saved) => {
+        if (cancelled) return;
+        const appearance = saved.payload?.appearance ?? {};
+        if (isAccent(appearance.accent)) setAccent(appearance.accent);
+        if (isChartAccent(appearance.chartAccent)) setChartAccent(appearance.chartAccent);
+        if (isFlowPalette(appearance.flowPalette)) setFlowPalette(appearance.flowPalette);
+        if (isFlowSpeed(appearance.flowSpeed)) setFlowSpeed(appearance.flowSpeed);
+        if (typeof appearance.glass === "boolean") setGlass(appearance.glass);
+        if (isThemeMode(appearance.theme)) setTheme(appearance.theme);
+        if (appearance.lang === "zh" || appearance.lang === "en") setLang(appearance.lang);
+      })
+      .catch(() => {
+        // Browser preview keeps the default theme context.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [setTheme]);
 
   useEffect(() => {
     const root = document.documentElement;
@@ -95,6 +119,26 @@ function AppearanceProvider({ children }: { children: ReactNode }) {
       </AppearanceContext.Provider>
     </I18nContext.Provider>
   );
+}
+
+function isAccent(value: unknown): value is Accent {
+  return value === "blue" || value === "green" || value === "orange" || value === "purple" || value === "slate";
+}
+
+function isChartAccent(value: unknown): value is ChartAccent {
+  return value === "green" || value === "blue" || value === "amber" || value === "rose" || value === "violet" || value === "orange";
+}
+
+function isFlowPalette(value: unknown): value is FlowPalette {
+  return value === "sunrise" || value === "aurora" || value === "ocean" || value === "mono";
+}
+
+function isFlowSpeed(value: unknown): value is FlowSpeed {
+  return value === "slow" || value === "normal" || value === "fast";
+}
+
+function isThemeMode(value: unknown): value is "light" | "dark" | "system" {
+  return value === "light" || value === "dark" || value === "system";
 }
 
 export function AppProviders({ children }: { children: ReactNode }) {

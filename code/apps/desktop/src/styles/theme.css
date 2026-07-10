@@ -679,6 +679,63 @@
   -webkit-backdrop-filter: blur(var(--chip-blur)) saturate(var(--chip-saturate)) !important;
 }
 
+/* Install workbench uses a full-width task navigation instead of compact chip tabs. */
+.install-workbench-nav [data-slot="tabs-trigger"] {
+  position: relative;
+  background: transparent !important;
+  border-top-color: transparent !important;
+  border-bottom-color: transparent !important;
+  box-shadow: none !important;
+  color: var(--foreground) !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+  transition: background-color 160ms ease, color 160ms ease;
+}
+
+.install-workbench-nav [data-slot="tabs-trigger"]:hover {
+  background: color-mix(in srgb, var(--accent-500, #ea580c) 6%, transparent) !important;
+}
+
+.install-workbench-nav [data-slot="tabs-trigger"][data-state="active"] {
+  background: color-mix(in srgb, var(--accent-500, #ea580c) 10%, var(--glass-inset-bg)) !important;
+  border-left-color: transparent !important;
+  border-right-color: var(--glass-inset-border) !important;
+  color: var(--foreground) !important;
+  box-shadow: inset 0 1px 0 var(--glass-highlight) !important;
+}
+
+.install-workbench-nav [data-slot="tabs-trigger"][data-state="active"]::after {
+  position: absolute;
+  right: 14px;
+  bottom: 0;
+  left: 14px;
+  height: 3px;
+  border-radius: 3px 3px 0 0;
+  background: var(--accent-500, #ea580c);
+  content: "";
+}
+
+.install-workbench-nav-icon {
+  background: var(--glass-inset-bg);
+  color: var(--muted-foreground);
+  transition: background-color 160ms ease, color 160ms ease;
+}
+
+.install-workbench-nav [data-slot="tabs-trigger"][data-state="active"] .install-workbench-nav-icon {
+  background: color-mix(in srgb, var(--accent-500, #ea580c) 16%, transparent);
+  color: var(--accent-500, #ea580c);
+}
+
+.install-workbench-nav-description {
+  display: -webkit-box;
+  min-height: 2rem;
+  overflow: hidden;
+  line-height: 1rem;
+  white-space: normal;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
 /* ============================================================
    Glass Off — Solid Fallback (accessibility / performance)
    ============================================================ */

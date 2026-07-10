@@ -1,18 +1,17 @@
-import { useState } from "react";
+import { lazy, Suspense, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import { Sidebar } from "./Sidebar";
 import { Topbar } from "./Topbar";
 import { StatusBar } from "./StatusBar";
 import { BackgroundBlobs } from "./BackgroundBlobs";
 import type { PageId } from "../../lib/nav";
-import { Overview } from "../pages/Overview";
-import { Install } from "../pages/Install";
-import { Advanced } from "../pages/Advanced";
-import { Analytics } from "../pages/Analytics";
-import { Doctor } from "../pages/Doctor";
-import { Changes } from "../pages/Changes";
-import { LogsSecurity } from "../pages/LogsSecurity";
-import { Settings } from "../pages/Settings";
+
+const OverviewPage = lazy(() => import("../pages/Overview").then((module) => ({ default: module.Overview })));
+const InstallWorkbenchPage = lazy(() => import("../pages/InstallWorkbench").then((module) => ({ default: module.InstallWorkbench })));
+const AnalyticsPage = lazy(() => import("../pages/Analytics").then((module) => ({ default: module.Analytics })));
+const DoctorPage = lazy(() => import("../pages/Doctor").then((module) => ({ default: module.Doctor })));
+const ChangesPage = lazy(() => import("../pages/Changes").then((module) => ({ default: module.Changes })));
+const SettingsPage = lazy(() => import("../pages/Settings").then((module) => ({ default: module.Settings })));
 
 export function AppShell() {
   const [page, setPage] = useState<PageId>("overview");
@@ -20,14 +19,12 @@ export function AppShell() {
 
   const render = () => {
     switch (page) {
-      case "overview": return <Overview setPage={setPage} />;
-      case "install": return <Install />;
-      case "advanced": return <Advanced />;
-      case "analytics": return <Analytics />;
-      case "doctor": return <Doctor setPage={setPage} />;
-      case "changes": return <Changes />;
-      case "logs": return <LogsSecurity />;
-      case "settings": return <Settings />;
+      case "overview": return <OverviewPage setPage={setPage} />;
+      case "install": return <InstallWorkbenchPage />;
+      case "analytics": return <AnalyticsPage />;
+      case "doctor": return <DoctorPage setPage={setPage} />;
+      case "changes": return <ChangesPage />;
+      case "settings": return <SettingsPage />;
     }
   };
 
@@ -49,12 +46,22 @@ export function AppShell() {
               transition={{ duration: 0.2 }}
               className="mx-auto max-w-[1200px] p-6"
             >
-              {render()}
+              <Suspense fallback={<PageFallback />}>
+                {render()}
+              </Suspense>
             </motion.div>
           </AnimatePresence>
         </main>
         <StatusBar />
       </div>
+    </div>
+  );
+}
+
+function PageFallback() {
+  return (
+    <div className="glass-light flex min-h-[280px] items-center justify-center rounded-lg border border-border/40 text-sm text-muted-foreground">
+      Loading d-token view...
     </div>
   );
 }

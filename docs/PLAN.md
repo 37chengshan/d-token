@@ -14,6 +14,10 @@
 | 当前 Node | M3 已完成，M4 未启动 |
 | 历史路线图 | `docs/archive/ROADMAP_M0_M6_HISTORICAL.md`（M0–M6 原文快照） |
 
+当前 M4 细化计划：
+
+- `docs/M4_REAL_CAPABILITY_OPENCODE_PLAN.md` — 真实能力接入计划，已完成多维度审查；当前执行线改为 OpenCode 原配置真实 routed test，证明 `OpenCode -> d-token -> upstream`。用户已授权 OpenCode 真实测试直接使用原本配置，不做隔离 HOME / fake config；OpenCode-only / fake-bin / direct command 只保留为诊断辅助；no-touch 约束继续保护外部 Headroom / RTK / cc-switch 和其它 agent 配置。
+
 代码现状盘点（M3 收尾时的骨架）：
 
 ```text
@@ -49,6 +53,8 @@ support/fixtures/ support/fake-bin/   no-touch 测试资产
 
 目标：成品支持一键安装、图形化配置、可回滚。用户只需下载 d-token App，不用先装 Headroom/RTK。
 
+M4 的实际落地先走 `OpenCode Real Route Track`：使用用户原本 OpenCode 配置，不做隔离 HOME / fake config，把 OpenCode provider/baseURL 指向 d-token 自有端口，再由 d-token 完成压缩、路由、Event Ledger 和 upstream 转发。细化计划和多维度审查结论见 `docs/M4_REAL_CAPABILITY_OPENCODE_PLAN.md`。
+
 ### M4.S1 安装事务引擎（InstallationTransaction）
 
 落位：`code/crates/dtoken-config-patcher`（扩展）或新建 `dtoken-install-transaction`。
@@ -72,6 +78,7 @@ support/fixtures/ support/fake-bin/   no-touch 测试资产
 - [ ] ProviderProfile / RouteProfile / ChainBridgeProfile 的 patch 走 transaction。
 - [ ] route decision 进 Event Ledger（input/output protocol、target provider、cc-switch endpoint）。
 - [ ] 401/403/429/5xx 显式归类为 route/provider mismatch，禁止静默 fallback 到官方。
+- [ ] OpenCode 真实 route 使用用户原本 OpenCode 配置；如需加入 d-token provider，先备份原配置，只写最小 provider/model/baseURL 变更，并在报告记录 backup 与 diff 摘要。
 - DoD：fixture 下覆盖 official / custom_openai / custom_anthropic / cc_switch / chain_bridge 五条路径，Event Ledger 可重建请求走向。
 - 涉及：`dtoken-router`、`dtoken-config-patcher`、`dtoken-proxy`、`dtoken-event-ledger`。
 

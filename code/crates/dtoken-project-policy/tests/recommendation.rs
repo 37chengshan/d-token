@@ -3,7 +3,7 @@ use dtoken_types::CompressionPolicy;
 
 #[test]
 fn recommends_safe_for_high_risk_task() {
-    let engine = RuleBasedRecommendationEngine::default();
+    let engine = RuleBasedRecommendationEngine;
     let result = engine.recommend(RecommendationInput {
         project_id: "p1".to_string(),
         language_stack: vec!["rust".to_string()],
@@ -19,7 +19,7 @@ fn recommends_safe_for_high_risk_task() {
 
 #[test]
 fn recommends_aggressive_for_large_noisy_context() {
-    let engine = RuleBasedRecommendationEngine::default();
+    let engine = RuleBasedRecommendationEngine;
     let result = engine.recommend(RecommendationInput {
         project_id: "p2".to_string(),
         language_stack: vec!["typescript".to_string()],

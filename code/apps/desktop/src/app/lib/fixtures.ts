@@ -281,7 +281,7 @@ export const hr = {
   throughput: {
     inputWall: 1200, inputP50: 1050,
     compP50: 450, compP95: 850,
-    routeP50: 1.2,
+    routeP50: 1.2, routeP95: 2.4,
     fwdP50: 2100, fwdP95: 3200,
     genP50: 1500, genP95: 2800,
   },

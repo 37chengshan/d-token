@@ -281,6 +281,17 @@ fn read_fixture_text(relative: &str) -> Option<String> {
         .find_map(|path| fs::read_to_string(path).ok())
 }
 
+fn fixture_candidates(relative: &str) -> Vec<PathBuf> {
+    let root = env::var("DTOKEN_FIXTURE_ROOT").ok();
+    let mut candidates = Vec::new();
+    if let Some(root) = root {
+        candidates.push(PathBuf::from(root).join(relative));
+    }
+    candidates.push(PathBuf::from("../support/fixtures").join(relative));
+    candidates.push(PathBuf::from("support/fixtures").join(relative));
+    candidates
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -297,15 +308,4 @@ mod tests {
         env::remove_var("DTOKEN_PROFILE");
         assert_eq!(runtime_mode_from_env(), RuntimeMode::Fixture);
     }
-}
-
-fn fixture_candidates(relative: &str) -> Vec<PathBuf> {
-    let root = env::var("DTOKEN_FIXTURE_ROOT").ok();
-    let mut candidates = Vec::new();
-    if let Some(root) = root {
-        candidates.push(PathBuf::from(root).join(relative));
-    }
-    candidates.push(PathBuf::from("../support/fixtures").join(relative));
-    candidates.push(PathBuf::from("support/fixtures").join(relative));
-    candidates
 }

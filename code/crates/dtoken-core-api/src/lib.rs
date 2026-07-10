@@ -2,6 +2,7 @@ use axum::{
     body::Body,
     extract::{Path as AxumPath, State},
     http::header::{CACHE_CONTROL, CONTENT_TYPE},
+    middleware::{self, Next},
     response::IntoResponse,
     routing::{get, post},
     Json, Router,
@@ -54,7 +55,10 @@ impl AppState {
         Self::new_with_config_status(config, RuntimeConfigStatus::empty())
     }
 
-    pub fn new_with_config_status(config: DtokenConfig, config_status: RuntimeConfigStatus) -> Self {
+    pub fn new_with_config_status(
+        config: DtokenConfig,
+        config_status: RuntimeConfigStatus,
+    ) -> Self {
         Self {
             config: Arc::new(config),
             config_status: Arc::new(config_status),
@@ -260,7 +264,11 @@ impl RuntimeConfigStatus {
         }
     }
 
-    pub fn from_config(source: impl Into<String>, path: Option<String>, config: &DtokenConfig) -> Self {
+    pub fn from_config(
+        source: impl Into<String>,
+        path: Option<String>,
+        config: &DtokenConfig,
+    ) -> Self {
         Self {
             source: source.into(),
             path,
@@ -269,7 +277,10 @@ impl RuntimeConfigStatus {
             provider_count: config.providers.len(),
             route_count: config.routes.len(),
             instance_count: config.instances.len(),
-            fallback_disabled: config.routes.iter().all(|route| route.fallback_provider_id.is_none()),
+            fallback_disabled: config
+                .routes
+                .iter()
+                .all(|route| route.fallback_provider_id.is_none()),
             error: None,
         }
     }
@@ -288,7 +299,11 @@ impl RuntimeConfigStatus {
         }
     }
 
-    pub fn failed(source: impl Into<String>, path: Option<String>, error: impl Into<String>) -> Self {
+    pub fn failed(
+        source: impl Into<String>,
+        path: Option<String>,
+        error: impl Into<String>,
+    ) -> Self {
         let exists = path.is_some();
         Self {
             source: source.into(),
@@ -496,7 +511,70 @@ pub fn build_router(state: AppState) -> Router {
         .route("/output-shape", get(output_shape))
         .route("/compatibility/agents", get(agent_compatibility))
         .route("/protocol-injection", get(protocol_injection))
+        .layer(middleware::from_fn(loopback_request_guard))
         .with_state(state)
+}
+
+async fn loopback_request_guard(
+    request: axum::extract::Request,
+    next: Next,
+) -> axum::response::Response {
+    let allowed_host = request
+        .headers()
+        .get(axum::http::header::HOST)
+        .and_then(|value| value.to_str().ok())
+        .map(is_allowed_loopback_authority)
+        .unwrap_or(true);
+    let allowed_origin = request
+        .headers()
+        .get(axum::http::header::ORIGIN)
+        .and_then(|value| value.to_str().ok())
+        .map(is_allowed_local_origin)
+        .unwrap_or(true);
+    if !allowed_host || !allowed_origin {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({
+                "error": {
+                    "type": "local_request_boundary_rejected",
+                    "message": "d-token only accepts local loopback Host and Origin headers"
+                }
+            })),
+        )
+            .into_response();
+    }
+    next.run(request).await
+}
+
+fn is_allowed_loopback_authority(value: &str) -> bool {
+    let Ok(authority) = value.parse::<axum::http::uri::Authority>() else {
+        return false;
+    };
+    let host = authority
+        .host()
+        .trim_start_matches('[')
+        .trim_end_matches(']');
+    host.eq_ignore_ascii_case("localhost")
+        || host
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|address| address.is_loopback())
+}
+
+fn is_allowed_local_origin(value: &str) -> bool {
+    let Ok(origin) = url::Url::parse(value) else {
+        return false;
+    };
+    let Some(host) = origin.host_str() else {
+        return false;
+    };
+    if host.eq_ignore_ascii_case("tauri.localhost") {
+        return matches!(origin.scheme(), "http" | "https");
+    }
+    matches!(origin.scheme(), "http" | "https" | "tauri")
+        && (host.eq_ignore_ascii_case("localhost")
+            || host
+                .parse::<std::net::IpAddr>()
+                .is_ok_and(|address| address.is_loopback()))
 }
 
 async fn health() -> Json<HealthResponse> {
@@ -517,11 +595,32 @@ fn active_config_payload(state: &AppState) -> Value {
         "runtime_kind": "headroom-derived",
         "external_headroom_dependency": false,
         "config": &*state.config_status,
-        "providers": state.config.providers,
+        "providers": provider_metadata_payload(&state.config.providers),
         "routes": state.config.routes,
         "instances": state.config.instances,
         "privacy": "Runtime active config metadata only; API keys, auth headers, prompts, responses, and external agent configs are not returned."
     })
+}
+
+fn provider_metadata_payload(providers: &[dtoken_types::ProviderProfile]) -> Value {
+    Value::Array(
+        providers
+            .iter()
+            .map(|provider| {
+                json!({
+                    "id": provider.id,
+                    "name": provider.name,
+                    "kind": provider.kind,
+                    "protocol": provider.protocol,
+                    "base_url": provider.base_url,
+                    "models": provider.models,
+                    "timeout_ms": provider.timeout_ms,
+                    "healthcheck_path": provider.healthcheck_path,
+                    "credential_configured": provider.api_key_ref.as_deref().is_some_and(|value| !value.trim().is_empty())
+                })
+            })
+            .collect(),
+    )
 }
 
 pub struct DashboardPayloadInput {
@@ -539,8 +638,30 @@ pub struct DashboardPayloadInput {
 }
 
 pub fn build_dashboard_payload(input: DashboardPayloadInput) -> Value {
-    let (stats, history, metrics, cache_summary, providers, routes, instances, events, route_decisions, request_logs, memory) = (
-        input.stats, input.history, input.metrics, input.cache_summary, input.providers, input.routes, input.instances, input.events, input.route_decisions, input.request_logs, input.memory
+    let (
+        stats,
+        history,
+        metrics,
+        cache_summary,
+        providers,
+        routes,
+        instances,
+        events,
+        route_decisions,
+        request_logs,
+        memory,
+    ) = (
+        input.stats,
+        input.history,
+        input.metrics,
+        input.cache_summary,
+        input.providers,
+        input.routes,
+        input.instances,
+        input.events,
+        input.route_decisions,
+        input.request_logs,
+        input.memory,
     );
     json!({
         "source": "dtoken-owned-runtime",
@@ -616,6 +737,13 @@ struct OpenAiChatRequest {
     model: Option<String>,
     messages: Option<Vec<Value>>,
     stream: Option<bool>,
+}
+
+fn parse_openai_request_body(
+    original_body: Value,
+) -> Result<(OpenAiChatRequest, Value), serde_json::Error> {
+    let request = serde_json::from_value(original_body.clone())?;
+    Ok((request, original_body))
 }
 
 #[derive(Debug, Clone)]
@@ -872,6 +1000,89 @@ fn upstream_chat_url(base_url: &str) -> String {
     }
 }
 
+fn credential_target_from_reference(reference: &str) -> Result<(String, String), String> {
+    let parsed = url::Url::parse(reference)
+        .map_err(|_| "credential reference is not a valid opaque URL".to_string())?;
+    if !matches!(parsed.scheme(), "os-credential" | "wincred" | "keychain")
+        || !parsed.username().is_empty()
+        || parsed.password().is_some()
+        || parsed.query().is_some()
+        || parsed.fragment().is_some()
+    {
+        return Err("credential reference violates the OS-store reference format".to_string());
+    }
+    let service = parsed
+        .host_str()
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| "credential reference has no service".to_string())?;
+    let account = parsed.path().trim_matches('/');
+    if account.is_empty() {
+        return Err("credential reference has no account".to_string());
+    }
+    Ok((service.to_string(), account.to_string()))
+}
+
+#[cfg(any(target_os = "windows", target_os = "macos"))]
+fn read_platform_credential(service: &str, account: &str) -> Result<String, ()> {
+    let entry = keyring::Entry::new(service, account).map_err(|_| ())?;
+    let credential = entry.get_password().map_err(|_| ())?;
+    if credential.trim().is_empty() {
+        return Err(());
+    }
+    Ok(credential)
+}
+
+#[cfg(not(any(target_os = "windows", target_os = "macos")))]
+fn read_platform_credential(_service: &str, _account: &str) -> Result<String, ()> {
+    Err(())
+}
+
+fn credential_error_result(error_type: &str, message: &str) -> UpstreamResult {
+    UpstreamResult {
+        response: json!({
+            "error": {
+                "type": error_type,
+                "message": message
+            }
+        }),
+        status: None,
+        error_category: Some(error_type.to_string()),
+    }
+}
+
+async fn resolve_provider_credential(
+    provider: &dtoken_types::ProviderProfile,
+) -> Result<Option<String>, UpstreamResult> {
+    let Some(reference) = provider.api_key_ref.as_deref() else {
+        return Ok(None);
+    };
+    let (service, account) = credential_target_from_reference(reference).map_err(|_| {
+        credential_error_result(
+            "provider_credential_reference_invalid",
+            "configured provider credential reference is invalid",
+        )
+    })?;
+    tokio::task::spawn_blocking(move || read_platform_credential(&service, &account))
+        .await
+        .map_err(|_| {
+            credential_error_result(
+                "provider_credential_unavailable",
+                "configured provider credential could not be read from the OS credential store",
+            )
+        })?
+        .map(Some)
+        .map_err(|_| {
+            credential_error_result(
+                "provider_credential_unavailable",
+                "configured provider credential could not be read from the OS credential store",
+            )
+        })
+}
+
+fn provider_authorization_header(credential: &str) -> Result<reqwest::header::HeaderValue, ()> {
+    reqwest::header::HeaderValue::from_str(&format!("Bearer {credential}")).map_err(|_| ())
+}
+
 fn classify_upstream_status(status: StatusCode) -> &'static str {
     match status.as_u16() {
         401 | 403 => "provider_auth",
@@ -885,6 +1096,16 @@ fn classify_upstream_status(status: StatusCode) -> &'static str {
 fn upstream_response_status(upstream: &UpstreamResult) -> StatusCode {
     if upstream.error_category.as_deref() == Some("provider_timeout") {
         return StatusCode::GATEWAY_TIMEOUT;
+    }
+    if matches!(
+        upstream.error_category.as_deref(),
+        Some(
+            "provider_credential_reference_invalid"
+                | "provider_credential_unavailable"
+                | "provider_credential_invalid"
+        )
+    ) {
+        return StatusCode::SERVICE_UNAVAILABLE;
     }
     if upstream.error_category.is_some() {
         return upstream
@@ -913,13 +1134,15 @@ fn mark_upstream_outcome(
 }
 
 fn require_openai_message(upstream: UpstreamResult, adapter: &str) -> UpstreamResult {
-    if upstream.error_category.is_some()
-        || upstream
-            .response
-            .pointer("/choices/0/message/content")
-            .and_then(Value::as_str)
-            .is_some()
-    {
+    let message = upstream.response.pointer("/choices/0/message");
+    let has_content = message
+        .and_then(|message| message.get("content"))
+        .is_some_and(|content| !content.is_null());
+    let has_tool_calls = message
+        .and_then(|message| message.get("tool_calls"))
+        .and_then(Value::as_array)
+        .is_some_and(|calls| !calls.is_empty());
+    if upstream.error_category.is_some() || has_content || has_tool_calls {
         return upstream;
     }
     UpstreamResult {
@@ -942,14 +1165,26 @@ async fn forward_openai_chat(
     provider: &dtoken_types::ProviderProfile,
     original_body: Value,
 ) -> UpstreamResult {
+    let credential = match resolve_provider_credential(provider).await {
+        Ok(credential) => credential,
+        Err(error) => return error,
+    };
     let url = upstream_chat_url(&provider.base_url);
     let mut request = client
         .post(url)
         .timeout(std::time::Duration::from_millis(provider.timeout_ms.max(1)))
         .json(&original_body);
-    if provider.api_key_ref.is_some() {
-        // api_key_ref is intentionally not dereferenced in this build; secrets stay outside logs.
-        request = request.header("x-dtoken-api-key-ref", "[redacted]");
+    if let Some(credential) = credential.as_deref() {
+        let header = match provider_authorization_header(credential) {
+            Ok(header) => header,
+            Err(()) => {
+                return credential_error_result(
+                    "provider_credential_invalid",
+                    "configured provider credential cannot be used as an authorization header",
+                )
+            }
+        };
+        request = request.header(reqwest::header::AUTHORIZATION, header);
     }
     match request.send().await {
         Ok(response) => {
@@ -1011,14 +1246,20 @@ async fn forward_openai_chat_stream(
     provider: &dtoken_types::ProviderProfile,
     original_body: Value,
 ) -> Result<(u16, axum::http::HeaderMap, Body), UpstreamResult> {
+    let credential = resolve_provider_credential(provider).await?;
     let url = upstream_chat_url(&provider.base_url);
     let mut request = client
         .post(url)
         .timeout(std::time::Duration::from_millis(provider.timeout_ms.max(1)))
         .json(&original_body);
-    if provider.api_key_ref.is_some() {
-        // api_key_ref is intentionally not dereferenced in this build; secrets stay outside logs.
-        request = request.header("x-dtoken-api-key-ref", "[redacted]");
+    if let Some(credential) = credential.as_deref() {
+        let header = provider_authorization_header(credential).map_err(|()| {
+            credential_error_result(
+                "provider_credential_invalid",
+                "configured provider credential cannot be used as an authorization header",
+            )
+        })?;
+        request = request.header(reqwest::header::AUTHORIZATION, header);
     }
     match request.send().await {
         Ok(response) => {
@@ -1060,14 +1301,23 @@ async fn forward_openai_chat_stream(
                 axum::http::HeaderValue::from_str(&content_type)
                     .unwrap_or_else(|_| axum::http::HeaderValue::from_static("text/event-stream")),
             );
-            headers.insert(CACHE_CONTROL, axum::http::HeaderValue::from_static("no-cache"));
+            headers.insert(
+                CACHE_CONTROL,
+                axum::http::HeaderValue::from_static("no-cache"),
+            );
             Ok((status_code, headers, Body::from_stream(stream)))
         }
         Err(err) => {
             let (category, message) = if err.is_timeout() {
-                ("provider_timeout", "configured upstream streaming request timed out")
+                (
+                    "provider_timeout",
+                    "configured upstream streaming request timed out",
+                )
             } else {
-                ("provider_network", "configured upstream streaming request failed")
+                (
+                    "provider_network",
+                    "configured upstream streaming request failed",
+                )
             };
             Err(UpstreamResult {
                 response: json!({
@@ -1102,21 +1352,18 @@ fn anthropic_content_to_text(value: &Value) -> String {
 }
 
 fn anthropic_to_openai_body(body: &Value, provider: &dtoken_types::ProviderProfile) -> Value {
-    let messages = body
-        .get("messages")
-        .and_then(Value::as_array)
-        .map(|items| {
-            items
-                .iter()
-                .map(|message| {
-                    json!({
-                        "role": message.get("role").and_then(Value::as_str).unwrap_or("user"),
-                        "content": anthropic_content_to_text(message.get("content").unwrap_or(&Value::Null))
-                    })
-                })
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
+    let mut messages = Vec::new();
+    if let Some(system) = body.get("system") {
+        let text = anthropic_content_to_text(system);
+        if !text.is_empty() {
+            messages.push(json!({"role": "system", "content": text}));
+        }
+    }
+    if let Some(items) = body.get("messages").and_then(Value::as_array) {
+        for message in items {
+            messages.extend(anthropic_message_to_openai(message));
+        }
+    }
     let model = provider
         .models
         .first()
@@ -1127,32 +1374,187 @@ fn anthropic_to_openai_body(body: &Value, provider: &dtoken_types::ProviderProfi
                 .map(ToString::to_string)
         })
         .unwrap_or_else(|| "dtoken-bridge-model".to_string());
-    json!({
-        "model": model,
-        "messages": messages,
-        "stream": false
-    })
+    let mut converted = serde_json::Map::new();
+    converted.insert("model".to_string(), json!(model));
+    converted.insert("messages".to_string(), json!(messages));
+    converted.insert("stream".to_string(), json!(false));
+
+    for key in ["max_tokens", "temperature", "top_p"] {
+        if let Some(value) = body.get(key) {
+            converted.insert(key.to_string(), value.clone());
+        }
+    }
+    if let Some(stop) = body.get("stop_sequences") {
+        converted.insert("stop".to_string(), stop.clone());
+    }
+    if let Some(tools) = body.get("tools").and_then(Value::as_array) {
+        let tools = tools
+            .iter()
+            .map(|tool| {
+                json!({
+                    "type": "function",
+                    "function": {
+                        "name": tool.get("name").and_then(Value::as_str).unwrap_or_default(),
+                        "description": tool.get("description").and_then(Value::as_str).unwrap_or_default(),
+                        "parameters": tool.get("input_schema").cloned().unwrap_or_else(|| json!({"type": "object"}))
+                    }
+                })
+            })
+            .collect::<Vec<_>>();
+        converted.insert("tools".to_string(), json!(tools));
+    }
+    if let Some(choice) = anthropic_tool_choice_to_openai(body.get("tool_choice")) {
+        converted.insert("tool_choice".to_string(), choice);
+    }
+    Value::Object(converted)
+}
+
+fn anthropic_message_to_openai(message: &Value) -> Vec<Value> {
+    let role = message
+        .get("role")
+        .and_then(Value::as_str)
+        .unwrap_or("user");
+    let content = message.get("content").unwrap_or(&Value::Null);
+    let Some(parts) = content.as_array() else {
+        return vec![json!({
+            "role": role,
+            "content": anthropic_content_to_text(content)
+        })];
+    };
+
+    if role == "assistant" {
+        let text = parts
+            .iter()
+            .filter(|part| part.get("type").and_then(Value::as_str) == Some("text"))
+            .filter_map(|part| part.get("text").and_then(Value::as_str))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let tool_calls = parts
+            .iter()
+            .filter(|part| part.get("type").and_then(Value::as_str) == Some("tool_use"))
+            .map(|part| {
+                let arguments = serde_json::to_string(
+                    part.get("input")
+                        .unwrap_or(&Value::Object(Default::default())),
+                )
+                .unwrap_or_else(|_| "{}".to_string());
+                json!({
+                    "id": part.get("id").and_then(Value::as_str).unwrap_or_default(),
+                    "type": "function",
+                    "function": {
+                        "name": part.get("name").and_then(Value::as_str).unwrap_or_default(),
+                        "arguments": arguments
+                    }
+                })
+            })
+            .collect::<Vec<_>>();
+        let mut converted = serde_json::Map::new();
+        converted.insert("role".to_string(), json!("assistant"));
+        converted.insert(
+            "content".to_string(),
+            if text.is_empty() {
+                Value::Null
+            } else {
+                json!(text)
+            },
+        );
+        if !tool_calls.is_empty() {
+            converted.insert("tool_calls".to_string(), json!(tool_calls));
+        }
+        return vec![Value::Object(converted)];
+    }
+
+    let mut converted = Vec::new();
+    let mut pending_text = Vec::new();
+    for part in parts {
+        if part.get("type").and_then(Value::as_str) == Some("tool_result") {
+            if !pending_text.is_empty() {
+                converted.push(json!({"role": role, "content": pending_text.join("\n")}));
+                pending_text.clear();
+            }
+            converted.push(json!({
+                "role": "tool",
+                "tool_call_id": part.get("tool_use_id").and_then(Value::as_str).unwrap_or_default(),
+                "content": anthropic_content_to_text(part.get("content").unwrap_or(&Value::Null))
+            }));
+        } else if let Some(text) = part.get("text").and_then(Value::as_str) {
+            pending_text.push(text.to_string());
+        }
+    }
+    if !pending_text.is_empty() {
+        converted.push(json!({"role": role, "content": pending_text.join("\n")}));
+    }
+    if converted.is_empty() {
+        converted.push(json!({"role": role, "content": anthropic_content_to_text(content)}));
+    }
+    converted
+}
+
+fn anthropic_tool_choice_to_openai(choice: Option<&Value>) -> Option<Value> {
+    let choice = choice?;
+    match choice.get("type").and_then(Value::as_str) {
+        Some("auto") => Some(json!("auto")),
+        Some("any") => Some(json!("required")),
+        Some("tool") => Some(json!({
+            "type": "function",
+            "function": {
+                "name": choice.get("name").and_then(Value::as_str).unwrap_or_default()
+            }
+        })),
+        Some("none") => Some(json!("none")),
+        _ => None,
+    }
 }
 
 fn openai_chat_to_anthropic_response(upstream: Value, model: Option<&str>) -> Value {
-    let text = upstream
+    let choice = upstream
         .get("choices")
         .and_then(Value::as_array)
-        .and_then(|choices| choices.first())
-        .and_then(|choice| choice.get("message"))
+        .and_then(|choices| choices.first());
+    let message = choice.and_then(|choice| choice.get("message"));
+    let text = message
         .and_then(|message| message.get("content"))
         .and_then(Value::as_str)
         .unwrap_or_default();
+    let mut content = Vec::new();
+    if !text.is_empty() {
+        content.push(json!({"type": "text", "text": text}));
+    }
+    if let Some(tool_calls) = message
+        .and_then(|message| message.get("tool_calls"))
+        .and_then(Value::as_array)
+    {
+        for call in tool_calls {
+            let arguments = call["function"]["arguments"].as_str().unwrap_or("{}");
+            let input = serde_json::from_str::<Value>(arguments)
+                .unwrap_or_else(|_| json!({"raw": arguments}));
+            content.push(json!({
+                "type": "tool_use",
+                "id": call.get("id").and_then(Value::as_str).unwrap_or_default(),
+                "name": call["function"]["name"].as_str().unwrap_or_default(),
+                "input": input
+            }));
+        }
+    }
+    if content.is_empty() {
+        content.push(json!({"type": "text", "text": ""}));
+    }
+    let stop_reason = match choice
+        .and_then(|choice| choice.get("finish_reason"))
+        .and_then(Value::as_str)
+    {
+        Some("tool_calls") | Some("function_call") => "tool_use",
+        Some("length") => "max_tokens",
+        Some("stop") => "end_turn",
+        _ => "end_turn",
+    };
     json!({
         "id": upstream.get("id").cloned().unwrap_or_else(|| json!(format!("msg-{}", Uuid::new_v4()))),
         "type": "message",
         "role": "assistant",
         "model": model.unwrap_or("dtoken-bridge-model"),
-        "content": [{
-            "type": "text",
-            "text": text
-        }],
-        "stop_reason": "end_turn",
+        "content": content,
+        "stop_reason": stop_reason,
         "usage": {
             "input_tokens": upstream["usage"]["prompt_tokens"].as_u64().unwrap_or_default(),
             "output_tokens": upstream["usage"]["completion_tokens"].as_u64().unwrap_or_default()
@@ -1456,8 +1858,8 @@ fn runtime_metrics_payload(logs: &[RequestLog]) -> Value {
         let transform_count = transforms.len() as u64;
         for (index, transform) in transforms.into_iter().enumerate() {
             let index = index as u64;
-            let attributed_saved = tokens_saved / transform_count
-                + u64::from(index < tokens_saved % transform_count);
+            let attributed_saved =
+                tokens_saved / transform_count + u64::from(index < tokens_saved % transform_count);
             let attributed_before = tokens_before / transform_count
                 + u64::from(index < tokens_before % transform_count);
             let entry = by_transform.entry(transform).or_insert((0, 0, 0, 0));
@@ -1471,7 +1873,14 @@ fn runtime_metrics_payload(logs: &[RequestLog]) -> Value {
             .route_id
             .clone()
             .unwrap_or_else(|| "route:none".to_string());
-        add_runtime_group(&mut by_route, route_key, tokens_saved, tokens_before, latency_ms, failed);
+        add_runtime_group(
+            &mut by_route,
+            route_key,
+            tokens_saved,
+            tokens_before,
+            latency_ms,
+            failed,
+        );
 
         let provider_key = log
             .provider_id
@@ -1490,30 +1899,39 @@ fn runtime_metrics_payload(logs: &[RequestLog]) -> Value {
             .config_source
             .clone()
             .unwrap_or_else(|| "dtoken-owned-runtime".to_string());
-        add_runtime_group(&mut by_policy, policy_key, tokens_saved, tokens_before, latency_ms, failed);
+        add_runtime_group(
+            &mut by_policy,
+            policy_key,
+            tokens_saved,
+            tokens_before,
+            latency_ms,
+            failed,
+        );
     }
     let transforms: Vec<Value> = by_transform
         .into_iter()
-        .map(|(name, (requests, tokens_saved, tokens_before, latency_ms))| {
-            let avg_latency_ms = if requests == 0 {
-                0.0
-            } else {
-                latency_ms as f64 / requests as f64
-            };
-            let savings_percent = if tokens_before == 0 {
-                0.0
-            } else {
-                (tokens_saved as f64 / tokens_before as f64) * 100.0
-            };
-            json!({
-                "name": name,
-                "requests": requests,
-                "tokens_saved": tokens_saved,
-                "tokens_before": tokens_before,
-                "avg_latency_ms": avg_latency_ms,
-                "savings_percent": savings_percent
-            })
-        })
+        .map(
+            |(name, (requests, tokens_saved, tokens_before, latency_ms))| {
+                let avg_latency_ms = if requests == 0 {
+                    0.0
+                } else {
+                    latency_ms as f64 / requests as f64
+                };
+                let savings_percent = if tokens_before == 0 {
+                    0.0
+                } else {
+                    (tokens_saved as f64 / tokens_before as f64) * 100.0
+                };
+                json!({
+                    "name": name,
+                    "requests": requests,
+                    "tokens_saved": tokens_saved,
+                    "tokens_before": tokens_before,
+                    "avg_latency_ms": avg_latency_ms,
+                    "savings_percent": savings_percent
+                })
+            },
+        )
         .collect();
 
     let routes = runtime_group_rows(by_route);
@@ -1568,11 +1986,19 @@ fn latency_breakdown_payload(logs: &[RequestLog]) -> Value {
         .iter()
         .map(|log| {
             let saved = log.tokens_saved.unwrap_or_default() as f64;
-            if saved > 0.0 { 1.0_f64.max(saved / 1_000.0) } else { 0.0 }
+            if saved > 0.0 {
+                1.0_f64.max(saved / 1_000.0)
+            } else {
+                0.0
+            }
         })
         .sum::<f64>()
         / total_requests;
-    let route_adapter_avg = if total_avg > 0.0 { 1.0_f64.min(total_avg * 0.18).max(0.4) } else { 0.0 };
+    let route_adapter_avg = if total_avg > 0.0 {
+        1.0_f64.min(total_avg * 0.18).max(0.4)
+    } else {
+        0.0
+    };
     let cc_switch_avg = if logs
         .iter()
         .any(|log| matches!(log.chain_mode, Some(ChainMode::ChainBridge)))
@@ -1653,8 +2079,22 @@ fn runtime_export_csv_payload(state: &AppState) -> String {
     ];
     rows.push(format!(
         "config_status,,0,d-token,{},{},,,0,0,0,0,source={};loaded={};fallback_disabled={};path={}",
-        csv_escape(state.config.routes.first().map(|route| route.id.clone()).unwrap_or_default()),
-        csv_escape(state.config.providers.first().map(|provider| provider.id.clone()).unwrap_or_default()),
+        csv_escape(
+            state
+                .config
+                .routes
+                .first()
+                .map(|route| route.id.clone())
+                .unwrap_or_default()
+        ),
+        csv_escape(
+            state
+                .config
+                .providers
+                .first()
+                .map(|provider| provider.id.clone())
+                .unwrap_or_default()
+        ),
         csv_escape(&state.config_status.source),
         state.config_status.loaded,
         state.config_status.fallback_disabled,
@@ -1669,7 +2109,11 @@ fn runtime_export_csv_payload(state: &AppState) -> String {
             csv_escape(log.route_id.unwrap_or_default()),
             csv_escape(log.provider_id.unwrap_or_default()),
             csv_escape(format!("{:?}", log.input_protocol)),
-            csv_escape(log.chain_mode.map(|value| format!("{:?}", value)).unwrap_or_default()),
+            csv_escape(
+                log.chain_mode
+                    .map(|value| format!("{:?}", value))
+                    .unwrap_or_default()
+            ),
             log.input_tokens_before.unwrap_or_default(),
             log.input_tokens_after.unwrap_or_default(),
             log.tokens_saved.unwrap_or_default(),
@@ -1701,27 +2145,29 @@ fn runtime_group_rows(
 ) -> Vec<Value> {
     groups
         .into_iter()
-        .map(|(name, (requests, tokens_saved, tokens_before, latency_ms, failed))| {
-            let avg_latency_ms = if requests == 0 {
-                0.0
-            } else {
-                latency_ms as f64 / requests as f64
-            };
-            let savings_percent = if tokens_before == 0 {
-                0.0
-            } else {
-                (tokens_saved as f64 / tokens_before as f64) * 100.0
-            };
-            json!({
-                "name": name,
-                "requests": requests,
-                "failed": failed,
-                "tokens_saved": tokens_saved,
-                "tokens_before": tokens_before,
-                "avg_latency_ms": avg_latency_ms,
-                "savings_percent": savings_percent
-            })
-        })
+        .map(
+            |(name, (requests, tokens_saved, tokens_before, latency_ms, failed))| {
+                let avg_latency_ms = if requests == 0 {
+                    0.0
+                } else {
+                    latency_ms as f64 / requests as f64
+                };
+                let savings_percent = if tokens_before == 0 {
+                    0.0
+                } else {
+                    (tokens_saved as f64 / tokens_before as f64) * 100.0
+                };
+                json!({
+                    "name": name,
+                    "requests": requests,
+                    "failed": failed,
+                    "tokens_saved": tokens_saved,
+                    "tokens_before": tokens_before,
+                    "avg_latency_ms": avg_latency_ms,
+                    "savings_percent": savings_percent
+                })
+            },
+        )
         .collect()
 }
 
@@ -1829,38 +2275,44 @@ fn output_shape_for_state(
 
 pub fn dashboard_payload_for_config(config: &DtokenConfig) -> Value {
     let state = AppState::new(config.clone());
-    with_active_config(build_dashboard_payload(DashboardPayloadInput {
-        stats: runtime_stats_payload(&[]),
-        history: runtime_stats_history_payload(&[]),
-        metrics: runtime_metrics_payload(&[]),
-        cache_summary: runtime_cache_summary_payload(),
-        providers: json!(config.providers),
-        routes: json!(config.routes),
-        instances: json!(config.instances),
-        events: json!([]),
-        route_decisions: json!([]),
-        request_logs: json!([]),
-        memory: memory_summary_for_state(&state),
-    }), active_config_payload(&state))
+    with_active_config(
+        build_dashboard_payload(DashboardPayloadInput {
+            stats: runtime_stats_payload(&[]),
+            history: runtime_stats_history_payload(&[]),
+            metrics: runtime_metrics_payload(&[]),
+            cache_summary: runtime_cache_summary_payload(),
+            providers: provider_metadata_payload(&config.providers),
+            routes: json!(config.routes),
+            instances: json!(config.instances),
+            events: json!([]),
+            route_decisions: json!([]),
+            request_logs: json!([]),
+            memory: memory_summary_for_state(&state),
+        }),
+        active_config_payload(&state),
+    )
 }
 
 pub fn dashboard_payload_for_state(state: &AppState) -> Value {
     let route_decisions = state.recent_route_decisions(20);
     let request_logs = state.recent_request_logs(20);
     let all_logs = state.recent_request_logs(10_000);
-    with_active_config(build_dashboard_payload(DashboardPayloadInput {
-        stats: runtime_stats_payload(&all_logs),
-        history: runtime_stats_history_payload(&all_logs),
-        metrics: runtime_metrics_payload(&all_logs),
-        cache_summary: runtime_cache_summary_for_state(state),
-        providers: json!(state.config.providers),
-        routes: json!(state.config.routes),
-        instances: json!(state.config.instances),
-        events: json!(state.recent_events(20)),
-        route_decisions: json!(route_decisions),
-        request_logs: json!(request_logs),
-        memory: memory_summary_for_state(state),
-    }), active_config_payload(state))
+    with_active_config(
+        build_dashboard_payload(DashboardPayloadInput {
+            stats: runtime_stats_payload(&all_logs),
+            history: runtime_stats_history_payload(&all_logs),
+            metrics: runtime_metrics_payload(&all_logs),
+            cache_summary: runtime_cache_summary_for_state(state),
+            providers: provider_metadata_payload(&state.config.providers),
+            routes: json!(state.config.routes),
+            instances: json!(state.config.instances),
+            events: json!(state.recent_events(20)),
+            route_decisions: json!(route_decisions),
+            request_logs: json!(request_logs),
+            memory: memory_summary_for_state(state),
+        }),
+        active_config_payload(state),
+    )
 }
 
 pub fn dashboard_payload_default() -> Value {
@@ -1921,16 +2373,26 @@ fn record_route_not_configured(state: &AppState, request_id: Uuid, input_protoco
 
 async fn openai_chat_completions(
     State(state): State<AppState>,
-    Json(request): Json<OpenAiChatRequest>,
+    Json(original_body): Json<Value>,
 ) -> impl IntoResponse {
+    let (request, original_body) = match parse_openai_request_body(original_body) {
+        Ok(parsed) => parsed,
+        Err(error) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({
+                    "error": {
+                        "type": "invalid_request",
+                        "message": format!("invalid OpenAI chat request: {error}")
+                    }
+                })),
+            )
+                .into_response();
+        }
+    };
     if let Some((route, provider)) = configured_openai_route(&state.config) {
         let request_id = Uuid::new_v4();
         let decision = build_configured_route_decision(request_id, route, provider);
-        let original_body = json!({
-            "model": request.model,
-            "messages": request.messages,
-            "stream": request.stream.unwrap_or(false)
-        });
         let compression = compress_for_route(decision.compression_policy.clone(), original_body);
         let mut request_log = build_request_log(
             request_id,
@@ -1955,7 +2417,9 @@ async fn openai_chat_completions(
             "transforms_applied": compression.transforms_applied,
         });
         if request.stream.unwrap_or(false) {
-            let upstream = forward_openai_chat_stream(&state.http_client, provider, compression.body.clone()).await;
+            let upstream =
+                forward_openai_chat_stream(&state.http_client, provider, compression.body.clone())
+                    .await;
             match upstream {
                 Ok((status_code, headers, body)) => {
                     if let Some(metadata) = event.metadata.as_object_mut() {
@@ -1985,7 +2449,11 @@ async fn openai_chat_completions(
                         }),
                         None,
                     );
-                    return (StatusCode::from_u16(status_code).unwrap_or(StatusCode::OK), headers, body)
+                    return (
+                        StatusCode::from_u16(status_code).unwrap_or(StatusCode::OK),
+                        headers,
+                        body,
+                    )
                         .into_response();
                 }
                 Err(upstream) => {
@@ -2030,7 +2498,8 @@ async fn openai_chat_completions(
                 }
             }
         }
-        let upstream = forward_openai_chat(&state.http_client, provider, compression.body.clone()).await;
+        let upstream =
+            forward_openai_chat(&state.http_client, provider, compression.body.clone()).await;
         mark_upstream_outcome(&upstream, &mut request_log, &mut event);
         let response_status = upstream_response_status(&upstream);
         let provider_status = if upstream.error_category.is_some() {
@@ -2181,7 +2650,8 @@ async fn openai_responses(
                 }
             })
         } else {
-            let text = upstream.response
+            let text = upstream
+                .response
                 .pointer("/choices/0/message/content")
                 .and_then(Value::as_str)
                 .expect("validated OpenAI message content");
@@ -2371,7 +2841,7 @@ async fn export_csv(State(state): State<AppState>) -> String {
 }
 
 async fn providers(State(state): State<AppState>) -> Json<Value> {
-    Json(json!(state.config.providers))
+    Json(provider_metadata_payload(&state.config.providers))
 }
 
 async fn routes(State(state): State<AppState>) -> Json<Value> {
@@ -2515,7 +2985,7 @@ async fn project_default_policy() -> Json<Value> {
 }
 
 async fn project_recommend_compression() -> Json<Value> {
-    let engine = RuleBasedRecommendationEngine::default();
+    let engine = RuleBasedRecommendationEngine;
     let input = RecommendationInput {
         project_id: "demo-project".to_string(),
         language_stack: vec!["rust".to_string(), "typescript".to_string()],
@@ -2864,6 +3334,8 @@ fn agent_support_profiles() -> Vec<AgentSupportProfile> {
     ]
 }
 
+// Compatibility rows are intentionally declared as compact table-like records.
+#[allow(clippy::too_many_arguments)]
 fn agent(
     agent: &str,
     rtk_supported: bool,
@@ -3008,11 +3480,11 @@ mod tests {
         let state = AppState::new(DtokenConfig::empty());
         let response = openai_chat_completions(
             State(state.clone()),
-            Json(OpenAiChatRequest {
-                model: Some("example/model".to_string()),
-                messages: Some(vec![json!({"role": "user", "content": "hello"})]),
-                stream: Some(false),
-            }),
+            Json(json!({
+                "model": "example/model",
+                "messages": [{"role": "user", "content": "hello"}],
+                "stream": false
+            })),
         )
         .await
         .into_response();
@@ -3100,11 +3572,11 @@ mod tests {
 
         let response = openai_chat_completions(
             State(state.clone()),
-            Json(OpenAiChatRequest {
-                model: Some("mock/model".to_string()),
-                messages: Some(vec![json!({"role": "user", "content": "hello"})]),
-                stream: Some(false),
-            }),
+            Json(json!({
+                "model": "mock/model",
+                "messages": [{"role": "user", "content": "hello"}],
+                "stream": false
+            })),
         )
         .await
         .into_response();
@@ -3136,11 +3608,11 @@ mod tests {
 
         let response = openai_chat_completions(
             State(state.clone()),
-            Json(OpenAiChatRequest {
-                model: Some("mock/model".to_string()),
-                messages: Some(vec![json!({"role": "user", "content": "hello"})]),
-                stream: Some(false),
-            }),
+            Json(json!({
+                "model": "mock/model",
+                "messages": [{"role": "user", "content": "hello"}],
+                "stream": false
+            })),
         )
         .await
         .into_response();
@@ -3311,18 +3783,27 @@ mod tests {
         };
         let status = RuntimeConfigStatus::from_config(
             "desktop_active_config",
-            Some("C:/Users/example/AppData/Local/d-token/active-config/dtoken-config.json".to_string()),
+            Some(
+                "C:/Users/example/AppData/Local/d-token/active-config/dtoken-config.json"
+                    .to_string(),
+            ),
             &config,
         );
         let state = AppState::new_with_config_status(config, status);
         let payload = dashboard_payload_for_state(&state);
         let active = active_config_payload(&state);
 
-        assert_eq!(payload["active_config"]["config"]["source"], "desktop_active_config");
+        assert_eq!(
+            payload["active_config"]["config"]["source"],
+            "desktop_active_config"
+        );
         assert_eq!(payload["active_config"]["config"]["route_count"], 1);
-        assert_eq!(payload["active_config"]["config"]["fallback_disabled"], true);
+        assert_eq!(
+            payload["active_config"]["config"]["fallback_disabled"],
+            true
+        );
         assert_eq!(active["providers"][0]["id"], "active-provider");
-        assert_eq!(active["privacy"].as_str().unwrap().contains("API keys"), true);
+        assert!(active["privacy"].as_str().unwrap().contains("API keys"));
     }
 
     #[test]
@@ -3355,7 +3836,10 @@ mod tests {
         };
         let status = RuntimeConfigStatus::from_config(
             "desktop_active_config",
-            Some("C:/Users/example/AppData/Local/d-token/active-config/dtoken-config.json".to_string()),
+            Some(
+                "C:/Users/example/AppData/Local/d-token/active-config/dtoken-config.json"
+                    .to_string(),
+            ),
             &config,
         );
         let state = AppState::new_with_config_status(config, status);
@@ -3363,9 +3847,18 @@ mod tests {
         let csv_export = runtime_export_csv_payload(&state);
 
         assert_eq!(json_export["redacted"], true);
-        assert_eq!(json_export["active_config"]["config"]["source"], "desktop_active_config");
-        assert_eq!(json_export["active_config"]["config"]["fallback_disabled"], true);
-        assert!(json_export["privacy"].as_str().unwrap().contains("No raw prompt"));
+        assert_eq!(
+            json_export["active_config"]["config"]["source"],
+            "desktop_active_config"
+        );
+        assert_eq!(
+            json_export["active_config"]["config"]["fallback_disabled"],
+            true
+        );
+        assert!(json_export["privacy"]
+            .as_str()
+            .unwrap()
+            .contains("No raw prompt"));
         assert!(csv_export.contains("config_status"));
         assert!(csv_export.contains("source=desktop_active_config"));
         assert!(!json_export.to_string().contains("sk-"));
@@ -3404,6 +3897,140 @@ mod tests {
         assert_eq!(event.source, EventSource::Dtoken);
         assert_eq!(event.status, EventStatus::Ok);
         assert!(event.metadata.get("full_prompt").is_none());
+    }
+
+    #[test]
+    fn openai_request_body_preserves_coding_agent_tool_semantics() {
+        let original = json!({
+            "model": "agent/model",
+            "messages": [{"role": "user", "content": "inspect the repository"}],
+            "stream": false,
+            "tools": [{
+                "type": "function",
+                "function": {
+                    "name": "read_file",
+                    "description": "Read a workspace file",
+                    "parameters": {"type": "object"}
+                }
+            }],
+            "tool_choice": "auto",
+            "temperature": 0.2,
+            "max_tokens": 4096,
+            "response_format": {"type": "json_object"}
+        });
+
+        let (request, body) = parse_openai_request_body(original).expect("parse OpenAI request");
+
+        assert_eq!(request.model.as_deref(), Some("agent/model"));
+        assert_eq!(body["tools"][0]["function"]["name"], "read_file");
+        assert_eq!(body["tool_choice"], "auto");
+        assert_eq!(body["temperature"], 0.2);
+        assert_eq!(body["max_tokens"], 4096);
+        assert_eq!(body["response_format"]["type"], "json_object");
+    }
+
+    #[test]
+    fn provider_credential_references_never_leave_runtime_metadata_apis() {
+        let config = DtokenConfig {
+            providers: vec![dtoken_types::ProviderProfile {
+                id: "secured-provider".to_string(),
+                name: "Secured provider".to_string(),
+                kind: dtoken_types::ProviderKind::Official,
+                protocol: Protocol::OpenAi,
+                base_url: "https://api.example.com/v1".to_string(),
+                api_key_ref: Some("os-credential://d-token/providers/secured".to_string()),
+                models: vec!["model".to_string()],
+                timeout_ms: 30_000,
+                healthcheck_path: None,
+            }],
+            routes: vec![],
+            instances: vec![],
+        };
+        let state = AppState::new(config);
+
+        for payload in [
+            active_config_payload(&state),
+            dashboard_payload_for_state(&state),
+        ] {
+            let serialized = payload.to_string();
+            assert!(!serialized.contains("os-credential://"));
+            assert!(payload["providers"][0].get("api_key_ref").is_none());
+            assert_eq!(payload["providers"][0]["credential_configured"], true);
+        }
+    }
+
+    #[test]
+    fn os_credential_reference_parses_without_exposing_a_secret() {
+        assert_eq!(
+            credential_target_from_reference("os-credential://d-token/providers/secured"),
+            Ok(("d-token".to_string(), "providers/secured".to_string()))
+        );
+        assert_eq!(
+            credential_target_from_reference("wincred://d-token/providers/secured"),
+            Ok(("d-token".to_string(), "providers/secured".to_string()))
+        );
+        assert!(credential_target_from_reference("https://example.com/secret").is_err());
+        assert!(
+            credential_target_from_reference("os-credential://user:pass@d-token/item").is_err()
+        );
+        assert!(
+            credential_target_from_reference("os-credential://d-token/item?secret=value").is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn runtime_rejects_non_loopback_host_and_origin_headers() {
+        let app = build_router(AppState::new(DtokenConfig::empty()));
+        let hostile_host = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/health")
+                    .header("host", "attacker.example")
+                    .body(Body::empty())
+                    .expect("hostile host request"),
+            )
+            .await
+            .expect("host guard response");
+        assert_eq!(hostile_host.status(), StatusCode::FORBIDDEN);
+
+        let hostile_origin = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/health")
+                    .header("host", "127.0.0.1:18001")
+                    .header("origin", "https://attacker.example")
+                    .body(Body::empty())
+                    .expect("hostile origin request"),
+            )
+            .await
+            .expect("origin guard response");
+        assert_eq!(hostile_origin.status(), StatusCode::FORBIDDEN);
+
+        let allowed = app
+            .oneshot(
+                Request::builder()
+                    .uri("/health")
+                    .header("host", "[::1]:18001")
+                    .header("origin", "http://localhost:5180")
+                    .body(Body::empty())
+                    .expect("loopback request"),
+            )
+            .await
+            .expect("allowed response");
+        assert_eq!(allowed.status(), StatusCode::OK);
+    }
+
+    #[test]
+    fn resolved_provider_credential_becomes_a_valid_bearer_header() {
+        let header = provider_authorization_header("unit-test-credential")
+            .expect("create authorization header");
+        assert_eq!(
+            header.to_str().expect("header text"),
+            "Bearer unit-test-credential"
+        );
+        assert!(provider_authorization_header("bad\ncredential").is_err());
     }
 
     #[test]
@@ -3452,7 +4079,10 @@ mod tests {
         state.record_routed_request(&decision, request_log, event);
 
         assert_eq!(error["error"]["type"], "streaming_not_supported_yet");
-        assert_eq!(state.recent_request_logs(1)[0].error.as_deref(), Some("streaming_not_supported_yet"));
+        assert_eq!(
+            state.recent_request_logs(1)[0].error.as_deref(),
+            Some("streaming_not_supported_yet")
+        );
         assert_eq!(state.recent_events(1)[0].status, EventStatus::Failed);
         assert_eq!(
             state.recent_events(1)[0].error_code.as_deref(),
@@ -3467,7 +4097,9 @@ mod tests {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         use tokio::net::TcpListener;
 
-        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind mock upstream");
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind mock upstream");
         let addr = listener.local_addr().expect("mock addr");
         let server = tokio::spawn(async move {
             let (mut socket, _) = listener.accept().await.expect("accept request");
@@ -3507,7 +4139,10 @@ mod tests {
 
         assert_eq!(result.0, 200);
         assert_eq!(
-            result.1.get(CONTENT_TYPE).and_then(|value| value.to_str().ok()),
+            result
+                .1
+                .get(CONTENT_TYPE)
+                .and_then(|value| value.to_str().ok()),
             Some("text/event-stream")
         );
         let body = to_bytes(result.2, usize::MAX).await.expect("body bytes");
@@ -3556,18 +4191,24 @@ mod tests {
             stats["latency_breakdown"]["model"],
             "derived_from_compression_elapsed_and_route_forward_latency"
         );
-        assert!(stats["latency_breakdown"]["compression_ms"]
-            .as_f64()
-            .unwrap_or_default()
-            >= 0.0);
-        assert!(stats["latency_breakdown"]["route_adapter_ms"]
-            .as_f64()
-            .unwrap_or_default()
-            >= 0.0);
-        assert!(stats["latency_breakdown"]["provider_ms"]
-            .as_f64()
-            .unwrap_or_default()
-            >= 0.0);
+        assert!(
+            stats["latency_breakdown"]["compression_ms"]
+                .as_f64()
+                .unwrap_or_default()
+                >= 0.0
+        );
+        assert!(
+            stats["latency_breakdown"]["route_adapter_ms"]
+                .as_f64()
+                .unwrap_or_default()
+                >= 0.0
+        );
+        assert!(
+            stats["latency_breakdown"]["provider_ms"]
+                .as_f64()
+                .unwrap_or_default()
+                >= 0.0
+        );
         assert_eq!(
             stats["route_overhead"]["fallback_policy"],
             "disabled_unless_route_explicitly_configures_fallback"
@@ -3575,7 +4216,8 @@ mod tests {
         assert!(stats["route_overhead"]["tokens"].as_i64().is_some());
         assert!(stats["route_overhead"]["percent"].as_f64().is_some());
         assert_eq!(
-            metrics_payload["compression_performance"]["total_requests"], 1
+            metrics_payload["compression_performance"]["total_requests"],
+            1
         );
         assert_eq!(
             metrics_payload["route_performance"]["latency_breakdown"]["model"],
@@ -3616,13 +4258,14 @@ mod tests {
         }));
     }
 
-
     #[test]
     fn responses_route_records_event_and_provider_forward_metadata() {
         let state = AppState::new(DtokenConfig::empty());
         let request = OpenAiChatRequest {
             model: Some("codex/responses-compatible".to_string()),
-            messages: Some(vec![json!({"role": "user", "content": "repeat\nrepeat\nresponses route"})]),
+            messages: Some(vec![
+                json!({"role": "user", "content": "repeat\nrepeat\nresponses route"}),
+            ]),
             stream: Some(false),
         };
         let (_response, decision, request_log, event) = routed_openai_payload(&request);
@@ -3643,7 +4286,9 @@ mod tests {
         );
 
         let events = state.recent_events(20);
-        assert!(events.iter().any(|event| event.stage == LayeredStage::RouteForward));
+        assert!(events
+            .iter()
+            .any(|event| event.stage == LayeredStage::RouteForward));
         assert!(events.iter().any(|event| {
             event.stage == LayeredStage::ProviderForward
                 && event.status == EventStatus::Skipped
@@ -3656,7 +4301,9 @@ mod tests {
     fn compression_performance_attribution_does_not_double_count_multi_transform_savings() {
         let request = OpenAiChatRequest {
             model: Some("mock/model".to_string()),
-            messages: Some(vec![json!({"role": "user", "content": "repeat\nrepeat\nlog"})]),
+            messages: Some(vec![
+                json!({"role": "user", "content": "repeat\nrepeat\nlog"}),
+            ]),
             stream: Some(false),
         };
         let (_response, _decision, mut request_log, _event) = routed_openai_payload(&request);
@@ -3863,10 +4510,12 @@ mod tests {
         assert_eq!(cache["external_headroom_dependency"], false);
         assert_eq!(cache["raw_available"], false);
         assert_eq!(memory["source"], "dtoken-owned-runtime");
-        assert!(metrics["compression_performance"]["total_requests"]
-            .as_u64()
-            .unwrap_or_default()
-            > 0);
+        assert!(
+            metrics["compression_performance"]["total_requests"]
+                .as_u64()
+                .unwrap_or_default()
+                > 0
+        );
     }
 
     #[test]
@@ -3925,5 +4574,137 @@ mod tests {
         assert_eq!(payload.event.metadata["input_protocol"], "anthropic");
         assert_eq!(payload.event.metadata["output_protocol"], "openai");
         assert!(payload.event.metadata.get("full_prompt").is_none());
+    }
+
+    #[test]
+    fn anthropic_bridge_preserves_system_tools_and_generation_controls() {
+        let provider = dtoken_types::ProviderProfile {
+            id: "openai-upstream".to_string(),
+            name: "OpenAI upstream".to_string(),
+            kind: dtoken_types::ProviderKind::Custom,
+            protocol: Protocol::OpenAi,
+            base_url: "http://127.0.0.1:39999/v1".to_string(),
+            api_key_ref: None,
+            models: vec!["mock/model".to_string()],
+            timeout_ms: 30_000,
+            healthcheck_path: None,
+        };
+        let body = json!({
+            "model": "claude-model",
+            "system": [{"type": "text", "text": "You are a coding agent."}],
+            "max_tokens": 2048,
+            "temperature": 0.1,
+            "top_p": 0.9,
+            "stop_sequences": ["DONE"],
+            "tools": [{
+                "name": "read_file",
+                "description": "Read a workspace file",
+                "input_schema": {"type": "object", "properties": {"path": {"type": "string"}}}
+            }],
+            "tool_choice": {"type": "tool", "name": "read_file"},
+            "messages": [
+                {
+                    "role": "assistant",
+                    "content": [{
+                        "type": "tool_use",
+                        "id": "toolu_1",
+                        "name": "read_file",
+                        "input": {"path": "README.md"}
+                    }]
+                },
+                {
+                    "role": "user",
+                    "content": [{
+                        "type": "tool_result",
+                        "tool_use_id": "toolu_1",
+                        "content": "file contents"
+                    }]
+                }
+            ]
+        });
+
+        let converted = anthropic_to_openai_body(&body, &provider);
+
+        assert_eq!(converted["messages"][0]["role"], "system");
+        assert_eq!(
+            converted["messages"][0]["content"],
+            "You are a coding agent."
+        );
+        assert_eq!(converted["messages"][1]["tool_calls"][0]["id"], "toolu_1");
+        assert_eq!(
+            converted["messages"][1]["tool_calls"][0]["function"]["name"],
+            "read_file"
+        );
+        assert_eq!(converted["messages"][2]["role"], "tool");
+        assert_eq!(converted["messages"][2]["tool_call_id"], "toolu_1");
+        assert_eq!(converted["tools"][0]["function"]["name"], "read_file");
+        assert_eq!(converted["tool_choice"]["function"]["name"], "read_file");
+        assert_eq!(converted["max_tokens"], 2048);
+        assert_eq!(converted["temperature"], 0.1);
+        assert_eq!(converted["top_p"], 0.9);
+        assert_eq!(converted["stop"][0], "DONE");
+    }
+
+    #[test]
+    fn openai_tool_calls_convert_back_to_anthropic_tool_use_blocks() {
+        let upstream = json!({
+            "id": "chatcmpl-1",
+            "model": "mock/model",
+            "choices": [{
+                "finish_reason": "tool_calls",
+                "message": {
+                    "role": "assistant",
+                    "content": null,
+                    "tool_calls": [{
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {
+                            "name": "read_file",
+                            "arguments": "{\"path\":\"README.md\"}"
+                        }
+                    }]
+                }
+            }],
+            "usage": {"prompt_tokens": 12, "completion_tokens": 7}
+        });
+
+        let converted = openai_chat_to_anthropic_response(upstream, Some("claude-model"));
+
+        assert_eq!(converted["content"][0]["type"], "tool_use");
+        assert_eq!(converted["content"][0]["id"], "call_1");
+        assert_eq!(converted["content"][0]["name"], "read_file");
+        assert_eq!(converted["content"][0]["input"]["path"], "README.md");
+        assert_eq!(converted["stop_reason"], "tool_use");
+        assert_eq!(converted["usage"]["input_tokens"], 12);
+        assert_eq!(converted["usage"]["output_tokens"], 7);
+    }
+
+    #[test]
+    fn successful_openai_tool_call_is_not_rejected_for_missing_text_content() {
+        let upstream = UpstreamResult {
+            response: json!({
+                "choices": [{
+                    "message": {
+                        "role": "assistant",
+                        "content": null,
+                        "tool_calls": [{
+                            "id": "call_1",
+                            "type": "function",
+                            "function": {"name": "read_file", "arguments": "{}"}
+                        }]
+                    }
+                }]
+            }),
+            status: Some(200),
+            error_category: None,
+        };
+
+        let validated = require_openai_message(upstream, "Anthropic bridge");
+
+        assert!(validated.error_category.is_none());
+        assert_eq!(
+            validated.response["choices"][0]["message"]["tool_calls"][0]["id"],
+            "call_1"
+        );
     }
 }

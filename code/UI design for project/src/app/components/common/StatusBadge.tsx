@@ -3,9 +3,9 @@ import type { Health } from "../../lib/fixtures";
 import { cn } from "../ui/utils";
 
 const MAP: Record<Health, { cls: string; Icon: typeof CheckCircle2 }> = {
-  healthy: { cls: "text-emerald-600 bg-emerald-500/10", Icon: CheckCircle2 },
-  warning: { cls: "text-amber-600 bg-amber-500/10", Icon: AlertTriangle },
-  error: { cls: "text-rose-600 bg-rose-500/10", Icon: XCircle },
+  healthy: { cls: "text-success bg-success/10", Icon: CheckCircle2 },
+  warning: { cls: "text-warning bg-warning/10", Icon: AlertTriangle },
+  error: { cls: "text-destructive bg-destructive/10", Icon: XCircle },
 };
 
 export function StatusBadge({ status, label, className }: { status: Health; label: string; className?: string }) {
@@ -19,7 +19,7 @@ export function StatusBadge({ status, label, className }: { status: Health; labe
 }
 
 export function StatusDot({ status }: { status: Health }) {
-  const color = status === "healthy" ? "bg-emerald-500" : status === "warning" ? "bg-amber-500" : "bg-rose-500";
+  const color = status === "healthy" ? "bg-success" : status === "warning" ? "bg-warning" : "bg-destructive";
   return (
     <span className="relative inline-flex size-2.5">
       <span className={cn("absolute inline-flex h-full w-full rounded-full opacity-60 animate-ping", color)} />

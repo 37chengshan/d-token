@@ -491,6 +491,8 @@ pub struct CompressionResult {
     pub original_tokens: usize,
     pub compressed_tokens: usize,
     pub tokens_saved: usize,
+    #[serde(default)]
+    pub elapsed_us: u128,
     pub transforms_applied: Vec<String>,
     pub body: serde_json::Value,
 }
@@ -534,4 +536,281 @@ pub struct DoctorCheck {
 pub struct DoctorReport {
     pub ok: bool,
     pub checks: Vec<DoctorCheck>,
+}
+
+// Optical Compression Types
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum OpticalMode {
+    Off,
+    #[default]
+    ShadowPreview,
+    ToolResultsOnly,
+    HistoryOnly,
+    FullExperimental,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderFamily {
+    Anthropic,
+    OpenAi,
+    #[default]
+    Other,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum OpticalEndpoint {
+    AnthropicMessages,
+    OpenAiChatCompletions,
+    OpenAiResponses,
+    #[default]
+    Unsupported,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum CapabilityStatus {
+    Supported,
+    Limited,
+    ShadowOnly,
+    Blocked,
+    #[default]
+    Unknown,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum VisionExactnessClass {
+    SummaryOnly,
+    TechnicalReadable,
+    ExactStringUnsafe,
+    #[default]
+    Unknown,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum VisionTokenFormula {
+    PixelAreaDivisor {
+        pixels_per_token: f64,
+        safety_margin_percent: f64,
+    },
+    #[default]
+    Unknown,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum OpticalApplicabilityReason {
+    Eligible,
+    GlobalDisabled,
+    RouteDisabled,
+    UnsupportedMethod,
+    UnsupportedPath,
+    EmptyBody,
+    UnsupportedProtocol,
+    UnsupportedModel,
+    UnknownModelShadowOnly,
+    OverBudget,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum OpticalPlanStatus {
+    #[default]
+    Disabled,
+    Ineligible,
+    ValidatedShadowPlan,
+    ValidatedActivePlan,
+    FailedClosed,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum OpticalBucket {
+    StaticSlab,
+    Reminder,
+    ToolResultJson,
+    ToolResultLog,
+    ToolResultProse,
+    ToolResultTable,
+    AnthropicHistory,
+    GptHistory,
+    SchemaAnnotation,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OpticalModelCapability {
+    pub provider_family: ProviderFamily,
+    pub provider_id: Option<String>,
+    pub model_base: Option<String>,
+    pub endpoint: OpticalEndpoint,
+    pub status: CapabilityStatus,
+    pub max_mode: OpticalMode,
+    pub supports_image_input: bool,
+    pub supports_anthropic_image_block: bool,
+    pub supports_openai_image_url: bool,
+    pub supports_openai_input_image: bool,
+    pub supports_data_url: bool,
+    pub max_images_per_request: usize,
+    pub max_image_width_px: usize,
+    pub max_image_height_px: usize,
+    pub vision_token_formula: VisionTokenFormula,
+    pub exactness_class: VisionExactnessClass,
+}
+
+impl Default for OpticalModelCapability {
+    fn default() -> Self {
+        Self {
+            provider_family: ProviderFamily::Other,
+            provider_id: None,
+            model_base: None,
+            endpoint: OpticalEndpoint::Unsupported,
+            status: CapabilityStatus::Unknown,
+            max_mode: OpticalMode::Off,
+            supports_image_input: false,
+            supports_anthropic_image_block: false,
+            supports_openai_image_url: false,
+            supports_openai_input_image: false,
+            supports_data_url: false,
+            max_images_per_request: 0,
+            max_image_width_px: 0,
+            max_image_height_px: 0,
+            vision_token_formula: VisionTokenFormula::Unknown,
+            exactness_class: VisionExactnessClass::Unknown,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OpticalApplicabilityInput {
+    pub method: Option<String>,
+    pub endpoint_path: Option<String>,
+    pub body_bytes: Option<usize>,
+    pub protocol: Option<Protocol>,
+    pub provider_id: Option<String>,
+    pub route_id: Option<String>,
+    pub model: Option<String>,
+    pub global_enabled: bool,
+    pub route_enabled: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OpticalApplicabilityDecision {
+    pub eligible_for_shadow: bool,
+    pub eligible_for_active: bool,
+    pub reason: OpticalApplicabilityReason,
+    pub normalized_model_base: Option<String>,
+    pub endpoint: Option<OpticalEndpoint>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OpticalGlobalPolicy {
+    pub enabled: bool,
+    pub default_mode: OpticalMode,
+    pub allow_active: bool,
+    pub max_images_per_request: usize,
+    pub max_candidate_chars_per_request: usize,
+    pub max_plan_time_ms: u64,
+    pub max_render_time_ms: u64,
+    pub public_summary_only: bool,
+}
+
+impl Default for OpticalGlobalPolicy {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            default_mode: OpticalMode::ShadowPreview,
+            allow_active: false,
+            max_images_per_request: 10,
+            max_candidate_chars_per_request: 512000,
+            max_plan_time_ms: 50,
+            max_render_time_ms: 1500,
+            public_summary_only: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RouteOpticalPolicy {
+    pub enabled: bool,
+    pub mode: OpticalMode,
+    pub allow_tool_result: bool,
+    pub allow_history: bool,
+    pub allow_schema_annotations: bool,
+    pub allow_system_static_slab: bool,
+    pub min_net_saved_tokens: isize,
+    pub confirmed_experimental_lossy: bool,
+}
+
+impl Default for RouteOpticalPolicy {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            mode: OpticalMode::Off,
+            allow_tool_result: false,
+            allow_history: false,
+            allow_schema_annotations: false,
+            allow_system_static_slab: false,
+            min_net_saved_tokens: 1024,
+            confirmed_experimental_lossy: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OpticalGateDecision {
+    pub name: String,
+    pub passed: bool,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct OpticalPlanCounters {
+    pub candidate_blocks: usize,
+    pub preserved_blocks: usize,
+    pub skipped_blocks: usize,
+    pub exact_spans: usize,
+    pub secret_spans: usize,
+    pub estimated_images: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OpticalBucketSummary {
+    pub bucket: OpticalBucket,
+    pub blocks: usize,
+    pub chars: usize,
+    pub estimated_net_saved_tokens: isize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct CachePublicSummary {
+    pub stable_prefix_digest_present: bool,
+    pub frozen_sections: usize,
+    pub cache_tokens_at_risk: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct OpticalEconomicsPublicSummary {
+    pub text_tokens_before: usize,
+    pub image_tokens_after: usize,
+    pub sidecar_tokens: usize,
+    pub cache_burn_tokens: usize,
+    pub net_saved_tokens: isize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OpticalPlanPublicSummary {
+    pub plan_id: String,
+    pub mode: OpticalMode,
+    pub final_status: OpticalPlanStatus,
+    pub gates: Vec<OpticalGateDecision>,
+    pub counters: OpticalPlanCounters,
+    pub buckets: Vec<OpticalBucketSummary>,
+    pub cache: CachePublicSummary,
+    pub economics: OpticalEconomicsPublicSummary,
+    pub warnings: Vec<String>,
 }

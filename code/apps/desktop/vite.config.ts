@@ -1,4 +1,4 @@
-import { defineConfig } from "vite";
+import { defineConfig } from "vitest/config";
 import path from "path";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
@@ -23,6 +23,11 @@ export default defineConfig({
     },
   },
   assetsInclude: ["**/*.svg", "**/*.csv"],
+  test: {
+    environment: "jsdom",
+    include: ["src/**/*.test.ts?(x)"],
+    restoreMocks: true,
+  },
   server: {
     host: "127.0.0.1",
     port: 5180,

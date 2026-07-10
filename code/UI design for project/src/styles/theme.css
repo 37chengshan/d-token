@@ -43,6 +43,14 @@
   --sidebar-accent-foreground: oklch(0.205 0 0);
   --sidebar-border: oklch(0.922 0 0);
   --sidebar-ring: oklch(0.708 0 0);
+
+  /* Semantic status colors - domain-specific for token compression */
+  --success: oklch(0.55 0.18 155);
+  --success-foreground: oklch(0.95 0.02 155);
+  --warning: oklch(0.65 0.18 75);
+  --warning-foreground: oklch(0.20 0.05 75);
+  --info: oklch(0.60 0.14 230);
+  --info-foreground: oklch(0.95 0.02 230);
 }
 
 /* ============================================================
@@ -86,6 +94,14 @@
   --sidebar-accent-foreground: oklch(0.92 0.01 250);
   --sidebar-border: oklch(0.28 0.02 250);
   --sidebar-ring: var(--accent-600);
+
+  /* Semantic status colors - dark mode */
+  --success: oklch(0.60 0.18 155);
+  --success-foreground: oklch(0.30 0.05 155);
+  --warning: oklch(0.70 0.18 75);
+  --warning-foreground: oklch(0.30 0.05 75);
+  --info: oklch(0.65 0.14 230);
+  --info-foreground: oklch(0.30 0.05 230);
 }
 
 /* ============================================================
@@ -193,8 +209,8 @@
   --glass-light-blur: 14px;
   --glass-light-saturate: 125%;
 
-  --glass-inset-bg: rgba(255, 255, 255, 0.035);
-  --glass-inset-border: rgba(255, 255, 255, 0.06);
+  --glass-inset-bg: rgba(255, 255, 255, 0.06);
+  --glass-inset-border: rgba(255, 255, 255, 0.08);
 
   --chip-hover-bg: rgba(255, 255, 255, 0.07);
   --chip-active-bg: color-mix(in srgb, var(--accent-500, #2563eb) 16%, transparent);
@@ -600,6 +616,14 @@
   --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
   --color-sidebar-border: var(--sidebar-border);
   --color-sidebar-ring: var(--sidebar-ring);
+
+  /* Semantic status colors for Tailwind */
+  --color-success: var(--success);
+  --color-success-foreground: var(--success-foreground);
+  --color-warning: var(--warning);
+  --color-warning-foreground: var(--warning-foreground);
+  --color-info: var(--info);
+  --color-info-foreground: var(--info-foreground);
 }
 
 /* ============================================================

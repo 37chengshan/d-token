@@ -1,0 +1,134 @@
+name: macos-release
+
+on:
+  workflow_dispatch:
+    inputs:
+      notarize:
+        description: "Run Apple notarization when signing secrets are configured"
+        required: true
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
+
+jobs:
+  build-macos:
+    runs-on: macos-14
+    permissions:
+      contents: read
+    env:
+      CARGO_TERM_COLOR: always
+      RUST_BACKTRACE: "1"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Install Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: code/apps/desktop/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: code/apps/desktop
+        run: npm ci
+
+      - name: Release gate contract
+        shell: pwsh
+        run: ./support/scripts/run_release_gate_contract_test.ps1
+
+      - name: Release candidate provenance
+        shell: pwsh
+        run: ./support/scripts/run_release_candidate_provenance_test.ps1
+
+      - name: Frontend Vitest
+        working-directory: code/apps/desktop
+        run: npm run test:run
+
+      - name: Frontend TypeScript
+        working-directory: code/apps/desktop
+        run: npx tsc --noEmit
+
+      - name: Build frontend
+        working-directory: code/apps/desktop
+        run: npm run build
+
+      - name: Rust formatting
+        working-directory: code
+        run: cargo fmt --all -- --check
+
+      - name: Rust Clippy
+        working-directory: code
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Rust workspace tests
+        working-directory: code
+        run: cargo test --workspace
+
+      - name: Prepare macOS d-token runtime sidecar
+        run: bash support/scripts/prepare_desktop_sidecars_macos.sh --release
+
+      - name: Record release candidate provenance
+        shell: pwsh
+        run: |
+          . ./support/scripts/release_candidate_provenance.ps1
+          Write-ReleaseCandidateStamp -Root . -Path code/target/release/d-token-release-candidate.json | Out-Null
+
+      - name: Build macOS Tauri bundle
+        working-directory: code/apps/desktop
+        run: npx tauri build --bundles app,dmg
+
+      - name: Import Apple signing certificate
+        if: ${{ inputs.notarize == 'true' }}
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+        run: |
+          test -n "$APPLE_CERTIFICATE"
+          test -n "$APPLE_CERTIFICATE_PASSWORD"
+          test -n "$KEYCHAIN_PASSWORD"
+          CERTIFICATE_PATH="$RUNNER_TEMP/d-token-apple-cert.p12"
+          KEYCHAIN_PATH="$RUNNER_TEMP/d-token-signing.keychain-db"
+          echo "$APPLE_CERTIFICATE" | base64 --decode > "$CERTIFICATE_PATH"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security import "$CERTIFICATE_PATH" -P "$APPLE_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
+          security list-keychain -d user -s "$KEYCHAIN_PATH"
+
+      - name: Notarize macOS DMG
+        if: ${{ inputs.notarize == 'true' }}
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+        run: |
+          test -n "$APPLE_ID"
+          test -n "$APPLE_TEAM_ID"
+          test -n "$APPLE_APP_SPECIFIC_PASSWORD"
+          DMG_PATH="$(find code/target/release/bundle/dmg -name '*.dmg' -print -quit)"
+          test -n "$DMG_PATH"
+          xcrun notarytool submit "$DMG_PATH" \
+            --apple-id "$APPLE_ID" \
+            --team-id "$APPLE_TEAM_ID" \
+            --password "$APPLE_APP_SPECIFIC_PASSWORD" \
+            --wait
+          xcrun stapler staple "$DMG_PATH"
+
+      - name: Upload macOS artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: d-token-macos
+          if-no-files-found: error
+          path: |
+            code/target/release/bundle/macos/*.app
+            code/target/release/bundle/dmg/*.dmg
+            code/target/release/d-token-release-candidate.json

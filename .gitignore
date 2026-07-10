@@ -30,6 +30,18 @@ logs/
 *.log
 *.jsonl
 
+# local agent / workspace state
+.ai-bridge/
+.codebase-memory/
+.commandcode/
+.planning/
+/findings.md
+/progress.md
+/task_plan.md
+
+# generated local verification artifacts
+support/artifacts/
+
 # OS / editor
 .DS_Store
 Thumbs.db

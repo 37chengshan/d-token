@@ -43,5 +43,11 @@ curl -fsS "http://127.0.0.1:${PORT}/stats-history" | grep -q "fixture"
 curl -fsS -X POST "http://127.0.0.1:${PORT}/doctor/run" | grep -q "no-real-binary-default"
 curl -fsS "http://127.0.0.1:${PORT}/projects/default-policy" | grep -q "safe"
 curl -fsS -X POST "http://127.0.0.1:${PORT}/config/patches/plan" | grep -q "m1-mock-patch"
+CHAT_PAYLOAD='{"model":"opencode/deepseek-v4-flash-free","messages":[{"role":"user","content":"repeat log line\nrepeat log line\ncompile warning warning"}]}'
+CHAT_RESPONSE="$(curl -fsS -X POST "http://127.0.0.1:${PORT}/v1/chat/completions" -H "content-type: application/json" --data "$CHAT_PAYLOAD")"
+echo "$CHAT_RESPONSE" | grep -q "d-token-ok"
+echo "$CHAT_RESPONSE" | grep -q "dtoken-opencode-local"
+echo "$CHAT_RESPONSE" | grep -q "saved_tokens"
+curl -fsS "http://127.0.0.1:${PORT}/dashboard/payload" | grep -q "dtoken-owned-runtime"
 
 echo "fixture mode smoke tests passed on port ${PORT}"
