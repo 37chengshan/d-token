@@ -3647,6 +3647,36 @@ mod tests {
     }
 
     #[test]
+    fn compression_performance_attribution_does_not_double_count_multi_transform_savings() {
+        let request = OpenAiChatRequest {
+            model: Some("mock/model".to_string()),
+            messages: Some(vec![json!({"role": "user", "content": "repeat\nrepeat\nlog"})]),
+            stream: Some(false),
+        };
+        let (_response, _decision, mut request_log, _event) = routed_openai_payload(&request);
+        request_log.input_tokens_before = Some(101);
+        request_log.input_tokens_after = Some(61);
+        request_log.tokens_saved = Some(40);
+        request_log.transforms_applied = vec!["repeat_fold".to_string(), "log_fold".to_string()];
+
+        let metrics = runtime_metrics_payload(&[request_log]);
+        let transforms = metrics["compression_performance"]["transforms"]
+            .as_array()
+            .expect("transform rows");
+        let attributed_saved: u64 = transforms
+            .iter()
+            .map(|row| row["tokens_saved"].as_u64().unwrap_or_default())
+            .sum();
+        let attributed_before: u64 = transforms
+            .iter()
+            .map(|row| row["tokens_before"].as_u64().unwrap_or_default())
+            .sum();
+
+        assert_eq!(attributed_saved, 40);
+        assert_eq!(attributed_before, 101);
+    }
+
+    #[test]
     fn config_patch_plan_records_ledger_event_without_raw_config() {
         let state = AppState::new(DtokenConfig::empty());
         append_stage_event(
