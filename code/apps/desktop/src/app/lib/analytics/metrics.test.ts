@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import { hr } from "../fixtures";
 import { buildAnalyticsSnapshot } from "./snapshot";
 import {
+  allocateIntegerTotal,
   aggregateTokenMetrics,
   deriveLatencyTotal,
   deriveTokenMetrics,
@@ -54,6 +55,14 @@ describe("analytics metric conservation", () => {
         ccSwitch: 0,
       }),
     ).toBe(hr.overheadMs);
+  });
+
+  it("attributes an integer saved-token total without double counting", () => {
+    const attributed = allocateIntegerTotal(10_500, [142_000, 98_400, 61_700, 24_800]);
+
+    expect(attributed.reduce((sum, value) => sum + value, 0)).toBe(10_500);
+    expect(attributed.every((value) => value >= 0)).toBe(true);
+    expect(attributed).toEqual([...attributed].sort((a, b) => b - a));
   });
 
   it("corrects inconsistent reported savings in request logs", () => {
