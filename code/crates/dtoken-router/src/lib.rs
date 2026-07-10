@@ -14,14 +14,23 @@ impl Router {
     }
 
     pub fn decide(&self, instance_id: &str, input_protocol: Protocol) -> Result<RouteDecision> {
-        let route = self
+        let matches = self
             .config
             .routes
             .iter()
-            .find(|route| {
+            .filter(|route| {
                 route.instance_id == instance_id && route.input_protocol == input_protocol
             })
-            .ok_or_else(|| anyhow!("no matching route for instance '{instance_id}'"))?;
+            .collect::<Vec<_>>();
+        let route = match matches.as_slice() {
+            [] => return Err(anyhow!("no matching route for instance '{instance_id}'")),
+            [route] => *route,
+            _ => {
+                return Err(anyhow!(
+                    "ambiguous routes for instance '{instance_id}'; an explicit route is required"
+                ))
+            }
+        };
 
         let provider = self
             .config

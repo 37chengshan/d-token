@@ -8,5 +8,6 @@ repository.workspace = true
 [dependencies]
 anyhow.workspace = true
 dtoken-types = { path = "../dtoken-types" }
+serde.workspace = true
 serde_json.workspace = true
 uuid.workspace = true

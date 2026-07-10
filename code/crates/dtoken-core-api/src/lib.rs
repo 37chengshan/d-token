@@ -1,7 +1,8 @@
 use axum::{
     body::Body,
-    extract::{Path as AxumPath, State},
+    extract::{DefaultBodyLimit, Path as AxumPath, State},
     http::header::{CACHE_CONTROL, CONTENT_TYPE},
+    http::HeaderMap,
     middleware::{self, Next},
     response::IntoResponse,
     routing::{get, post},
@@ -11,7 +12,7 @@ use dtoken_compress::CompressionEngine;
 use dtoken_config::DtokenConfig;
 use dtoken_config_patcher::mock_patch_plan;
 use dtoken_doctor::{run_basic_doctor, run_dev_no_touch_doctor};
-use dtoken_event_ledger::{EventLedger, JsonlEventLedger};
+use dtoken_event_ledger::{EventLedger, JsonlEventLedger, JsonlStore};
 use dtoken_headroom_adapter::detect_headroom_status;
 use dtoken_preprocessor::{
     detect_rtk_status, list_preprocessors, rtk_discover_report, rtk_gain_mock, rtk_session_report,
@@ -32,12 +33,13 @@ use reqwest::StatusCode;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::{
-    fs::OpenOptions,
-    io::{BufRead, BufReader, Write},
-    path::{Path as StdPath, PathBuf},
+    path::Path as StdPath,
     sync::{Arc, Mutex},
 };
 use uuid::Uuid;
+
+/// Bounds all JSON extraction before LLM or Optical request parsing/allocation.
+pub const MAX_REQUEST_BODY_BYTES: usize = 16 * 1024 * 1024;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -324,95 +326,63 @@ impl RuntimeConfigStatus {
 
 #[derive(Debug)]
 struct RuntimeStore {
-    events_path: PathBuf,
-    route_decisions_path: PathBuf,
-    request_logs_path: PathBuf,
-    ccr_metadata_path: PathBuf,
-    memory_records_path: PathBuf,
+    events: JsonlEventLedger,
+    route_decisions: JsonlStore,
+    request_logs: JsonlStore,
+    ccr_metadata: JsonlStore,
+    memory_records: JsonlStore,
 }
 
 impl RuntimeStore {
     fn new(dir: &StdPath) -> Self {
         Self {
-            events_path: dir.join("events.jsonl"),
-            route_decisions_path: dir.join("route-decisions.jsonl"),
-            request_logs_path: dir.join("request-logs.jsonl"),
-            ccr_metadata_path: dir.join("ccr-metadata.jsonl"),
-            memory_records_path: dir.join("memory-records.jsonl"),
+            events: JsonlEventLedger::new(dir.join("events.jsonl")),
+            route_decisions: JsonlStore::new(dir.join("route-decisions.jsonl")),
+            request_logs: JsonlStore::new(dir.join("request-logs.jsonl")),
+            ccr_metadata: JsonlStore::new(dir.join("ccr-metadata.jsonl")),
+            memory_records: JsonlStore::new(dir.join("memory-records.jsonl")),
         }
     }
 
     fn append_event(&self, event: &DtokenEvent) -> anyhow::Result<()> {
-        JsonlEventLedger::new(&self.events_path).append(event)
+        self.events.append(event)
     }
 
     fn recent_events(&self, limit: usize) -> anyhow::Result<Vec<DtokenEvent>> {
-        JsonlEventLedger::new(&self.events_path).recent(limit)
+        self.events.recent(limit)
     }
 
     fn append_route_decision(&self, decision: &Value) -> anyhow::Result<()> {
-        append_jsonl(&self.route_decisions_path, decision)
+        self.route_decisions.append(decision)
     }
 
     fn recent_route_decisions(&self, limit: usize) -> anyhow::Result<Vec<Value>> {
-        read_jsonl_recent(&self.route_decisions_path, limit)
+        self.route_decisions.recent(limit)
     }
 
     fn append_request_log(&self, log: &RequestLog) -> anyhow::Result<()> {
-        append_jsonl(&self.request_logs_path, log)
+        self.request_logs.append(log)
     }
 
     fn recent_request_logs(&self, limit: usize) -> anyhow::Result<Vec<RequestLog>> {
-        read_jsonl_recent(&self.request_logs_path, limit)
+        self.request_logs.recent(limit)
     }
 
     fn append_ccr_metadata(&self, metadata: &Value) -> anyhow::Result<()> {
-        append_jsonl(&self.ccr_metadata_path, metadata)
+        self.ccr_metadata.append(metadata)
     }
 
     fn recent_ccr_metadata(&self, limit: usize) -> anyhow::Result<Vec<Value>> {
-        read_jsonl_recent(&self.ccr_metadata_path, limit)
+        self.ccr_metadata.recent(limit)
     }
 
     fn append_memory_record(&self, record: &Value) -> anyhow::Result<()> {
-        append_jsonl(&self.memory_records_path, record)
+        self.memory_records.append(record)
     }
 
     fn recent_memory_records(&self, limit: usize) -> anyhow::Result<Vec<Value>> {
-        read_jsonl_recent(&self.memory_records_path, limit)
+        self.memory_records.recent(limit)
     }
-}
-
-fn append_jsonl<T: serde::Serialize>(path: &StdPath, value: &T) -> anyhow::Result<()> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let mut file = OpenOptions::new().create(true).append(true).open(path)?;
-    let line = serde_json::to_string(value)?;
-    writeln!(file, "{line}")?;
-    Ok(())
-}
-
-fn read_jsonl_recent<T: serde::de::DeserializeOwned>(
-    path: &StdPath,
-    limit: usize,
-) -> anyhow::Result<Vec<T>> {
-    if !path.exists() {
-        return Ok(vec![]);
-    }
-    let file = OpenOptions::new().read(true).open(path)?;
-    let reader = BufReader::new(file);
-    let mut items = Vec::new();
-    for line in reader.lines() {
-        let line = line?;
-        if line.trim().is_empty() {
-            continue;
-        }
-        items.push(serde_json::from_str::<T>(&line)?);
-    }
-    items.reverse();
-    items.truncate(limit);
-    Ok(items)
 }
 
 fn ccr_metadata_from_request(
@@ -528,6 +498,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/output-shape", get(output_shape))
         .route("/compatibility/agents", get(agent_compatibility))
         .route("/protocol-injection", get(protocol_injection))
+        .layer(DefaultBodyLimit::max(MAX_REQUEST_BODY_BYTES))
         .layer(middleware::from_fn(loopback_request_guard))
         .with_state(state)
 }
@@ -1057,26 +1028,90 @@ fn build_route_decision(request_id: Uuid, model: Option<&str>) -> RouteDecision 
     }
 }
 
-fn configured_openai_route(
-    config: &DtokenConfig,
-) -> Option<(&dtoken_types::RouteProfile, &dtoken_types::ProviderProfile)> {
-    let route = config
-        .routes
-        .iter()
-        .find(|route| route.input_protocol == Protocol::OpenAi)?;
-    let provider = config.find_provider(&route.target_provider_id)?;
-    Some((route, provider))
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RouteSelectionError {
+    NotConfigured,
+    Ambiguous,
+    EvidenceConflict,
 }
 
-fn configured_anthropic_route(
-    config: &DtokenConfig,
-) -> Option<(&dtoken_types::RouteProfile, &dtoken_types::ProviderProfile)> {
-    let route = config
+#[derive(Debug, Clone, Copy, Default)]
+struct RouteEvidence<'a> {
+    route_id: Option<&'a str>,
+    instance_id: Option<&'a str>,
+    model: Option<&'a str>,
+}
+
+fn header_evidence<'a>(headers: &'a HeaderMap, model: Option<&'a str>) -> RouteEvidence<'a> {
+    RouteEvidence {
+        route_id: headers
+            .get("x-dtoken-route-id")
+            .and_then(|value| value.to_str().ok())
+            .filter(|value| !value.trim().is_empty()),
+        instance_id: headers
+            .get("x-dtoken-instance-id")
+            .and_then(|value| value.to_str().ok())
+            .filter(|value| !value.trim().is_empty()),
+        model,
+    }
+}
+
+fn configured_route<'a>(
+    config: &'a DtokenConfig,
+    input_protocol: Protocol,
+    evidence: RouteEvidence<'_>,
+) -> Result<
+    (
+        &'a dtoken_types::RouteProfile,
+        &'a dtoken_types::ProviderProfile,
+    ),
+    RouteSelectionError,
+> {
+    let mut candidates = config
         .routes
         .iter()
-        .find(|route| route.input_protocol == Protocol::Anthropic)?;
-    let provider = config.find_provider(&route.target_provider_id)?;
-    Some((route, provider))
+        .filter(|route| route.input_protocol == input_protocol)
+        .filter_map(|route| {
+            config
+                .find_provider(&route.target_provider_id)
+                .map(|provider| (route, provider))
+        })
+        .collect::<Vec<_>>();
+
+    if candidates.is_empty() {
+        return Err(RouteSelectionError::NotConfigured);
+    }
+
+    if let Some(route_id) = evidence.route_id {
+        candidates.retain(|(route, _)| route.id == route_id);
+        if candidates.is_empty() {
+            return Err(RouteSelectionError::EvidenceConflict);
+        }
+    }
+    if let Some(instance_id) = evidence.instance_id {
+        candidates.retain(|(route, _)| route.instance_id == instance_id);
+        if candidates.is_empty() {
+            return Err(RouteSelectionError::EvidenceConflict);
+        }
+    }
+
+    if candidates.len() > 1 {
+        if let Some(model) = evidence.model {
+            let model_matches = candidates
+                .iter()
+                .copied()
+                .filter(|(_, provider)| provider.models.iter().any(|item| item == model))
+                .collect::<Vec<_>>();
+            match model_matches.as_slice() {
+                [selected] => return Ok(*selected),
+                [] => {}
+                _ => return Err(RouteSelectionError::Ambiguous),
+            }
+        }
+        return Err(RouteSelectionError::Ambiguous);
+    }
+
+    Ok(candidates[0])
 }
 
 fn build_configured_route_decision(
@@ -1090,7 +1125,7 @@ fn build_configured_route_decision(
         provider_id: provider.id.clone(),
         chain_mode: route.chain_mode.clone(),
         compression_policy: route.compression_policy.clone(),
-        reason: "matched configured OpenAI-compatible route; fallback disabled".to_string(),
+        reason: "matched one explicit configured route; fallback disabled".to_string(),
     }
 }
 
@@ -1800,8 +1835,12 @@ fn openai_chat_to_anthropic_response(upstream: Value, model: Option<&str>) -> Va
     })
 }
 
-fn anthropic_route_payload(state: &AppState, body: Value) -> Option<RoutedBridgePayload> {
-    let (route, provider) = configured_anthropic_route(&state.config)?;
+fn anthropic_route_payload(
+    state: &AppState,
+    body: Value,
+    evidence: RouteEvidence<'_>,
+) -> Result<RoutedBridgePayload, RouteSelectionError> {
+    let (route, provider) = configured_route(&state.config, Protocol::Anthropic, evidence)?;
     let request_id = Uuid::new_v4();
     let decision = build_configured_route_decision(request_id, route, provider);
     let openai_body = anthropic_to_openai_body(&body, provider);
@@ -1822,7 +1861,7 @@ fn anthropic_route_payload(state: &AppState, body: Value) -> Option<RoutedBridge
         provider.protocol.clone(),
         &compression,
     );
-    Some(RoutedBridgePayload {
+    Ok(RoutedBridgePayload {
         upstream_body: compression.body.clone(),
         decision,
         request_log,
@@ -2591,7 +2630,67 @@ fn route_not_configured_response(
     })
 }
 
-fn record_route_not_configured(state: &AppState, request_id: Uuid, input_protocol: &str) {
+fn route_selection_error_response(
+    request_id: Uuid,
+    input_protocol: &str,
+    error: RouteSelectionError,
+    config_status: &RuntimeConfigStatus,
+) -> (StatusCode, Value) {
+    if error == RouteSelectionError::NotConfigured {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            route_not_configured_response(request_id, input_protocol, config_status),
+        );
+    }
+    let (error_type, message) = match error {
+        RouteSelectionError::Ambiguous => (
+            "dtoken_route_ambiguous",
+            "multiple configured routes match this request; provide a unique model or x-dtoken-route-id/x-dtoken-instance-id",
+        ),
+        RouteSelectionError::EvidenceConflict => (
+            "dtoken_route_evidence_conflict",
+            "the supplied route or instance evidence does not match a configured route for this protocol",
+        ),
+        RouteSelectionError::NotConfigured => unreachable!(),
+    };
+    (
+        StatusCode::CONFLICT,
+        json!({
+            "error": {
+                "type": error_type,
+                "code": error_type,
+                "message": message
+            },
+            "dtoken": {
+                "source": "dtoken-owned-runtime",
+                "request_id": request_id,
+                "input_protocol": input_protocol,
+                "fallback": "disabled"
+            }
+        }),
+    )
+}
+
+fn record_route_selection_error(
+    state: &AppState,
+    request_id: Uuid,
+    input_protocol: &str,
+    error: RouteSelectionError,
+) {
+    let (reason, code) = match error {
+        RouteSelectionError::NotConfigured => (
+            "no explicit route and upstream provider configured",
+            "dtoken_route_not_configured",
+        ),
+        RouteSelectionError::Ambiguous => (
+            "multiple routes match without unique request evidence",
+            "dtoken_route_ambiguous",
+        ),
+        RouteSelectionError::EvidenceConflict => (
+            "route or instance evidence conflicts with configured routes",
+            "dtoken_route_evidence_conflict",
+        ),
+    };
     append_stage_event(
         state,
         request_id,
@@ -2599,18 +2698,19 @@ fn record_route_not_configured(state: &AppState, request_id: Uuid, input_protoco
         EventStatus::Failed,
         json!({
             "input_protocol": input_protocol,
-            "reason": "no explicit route and upstream provider configured",
+            "reason": reason,
             "provider_count": state.config_status.provider_count,
             "route_count": state.config_status.route_count,
             "fallback": "disabled",
             "raw_available": false
         }),
-        Some("dtoken_route_not_configured"),
+        Some(code),
     );
 }
 
 async fn openai_chat_completions(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Json(original_body): Json<Value>,
 ) -> impl IntoResponse {
     let (request, original_body) = match parse_openai_request_body(original_body) {
@@ -2628,7 +2728,12 @@ async fn openai_chat_completions(
                 .into_response();
         }
     };
-    if let Some((route, provider)) = configured_openai_route(&state.config) {
+    let route_selection = configured_route(
+        &state.config,
+        Protocol::OpenAi,
+        header_evidence(&headers, request.model.as_deref()),
+    );
+    if let Ok((route, provider)) = route_selection {
         let request_id = Uuid::new_v4();
         let decision = build_configured_route_decision(request_id, route, provider);
         let compression = compress_for_route(decision.compression_policy.clone(), original_body);
@@ -2789,20 +2894,16 @@ async fn openai_chat_completions(
     }
 
     let request_id = Uuid::new_v4();
-    record_route_not_configured(&state, request_id, "openai");
-    (
-        StatusCode::SERVICE_UNAVAILABLE,
-        Json(route_not_configured_response(
-            request_id,
-            "openai",
-            &state.config_status,
-        )),
-    )
-        .into_response()
+    let error = route_selection.expect_err("successful selection returned above");
+    record_route_selection_error(&state, request_id, "openai", error);
+    let (status, response) =
+        route_selection_error_response(request_id, "openai", error, &state.config_status);
+    (status, Json(response)).into_response()
 }
 
 async fn openai_responses(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Json(body): Json<Value>,
 ) -> impl IntoResponse {
     let messages = body
@@ -2826,7 +2927,12 @@ async fn openai_responses(
         stream: body.get("stream").and_then(Value::as_bool),
     };
 
-    if let Some((route, provider)) = configured_openai_route(&state.config) {
+    let route_selection = configured_route(
+        &state.config,
+        Protocol::OpenAi,
+        header_evidence(&headers, request.model.as_deref()),
+    );
+    if let Ok((route, provider)) = route_selection {
         let request_id = Uuid::new_v4();
         let decision = build_configured_route_decision(request_id, route, provider);
         let original_body = json!({
@@ -2940,34 +3046,32 @@ async fn openai_responses(
     }
 
     let request_id = Uuid::new_v4();
-    record_route_not_configured(&state, request_id, "openai_responses");
-    (
-        StatusCode::SERVICE_UNAVAILABLE,
-        Json(route_not_configured_response(
-            request_id,
-            "openai_responses",
-            &state.config_status,
-        )),
-    )
-        .into_response()
+    let error = route_selection.expect_err("successful selection returned above");
+    record_route_selection_error(&state, request_id, "openai_responses", error);
+    let (status, response) =
+        route_selection_error_response(request_id, "openai_responses", error, &state.config_status);
+    (status, Json(response)).into_response()
 }
 
 async fn anthropic_messages(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Json(body): Json<Value>,
 ) -> impl IntoResponse {
-    let Some(mut payload) = anthropic_route_payload(&state, body.clone()) else {
-        let request_id = Uuid::new_v4();
-        record_route_not_configured(&state, request_id, "anthropic");
-        return (
-            StatusCode::SERVICE_UNAVAILABLE,
-            Json(route_not_configured_response(
+    let evidence = header_evidence(&headers, body.get("model").and_then(Value::as_str));
+    let mut payload = match anthropic_route_payload(&state, body.clone(), evidence) {
+        Ok(payload) => payload,
+        Err(error) => {
+            let request_id = Uuid::new_v4();
+            record_route_selection_error(&state, request_id, "anthropic", error);
+            let (status, response) = route_selection_error_response(
                 request_id,
                 "anthropic",
+                error,
                 &state.config_status,
-            )),
-        )
-            .into_response();
+            );
+            return (status, Json(response)).into_response();
+        }
     };
 
     if payload.provider.protocol != Protocol::OpenAi {
@@ -3684,6 +3788,192 @@ mod tests {
         })
     }
 
+    fn route_test_config() -> DtokenConfig {
+        let provider = |id: &str, model: &str| dtoken_types::ProviderProfile {
+            id: id.to_string(),
+            name: id.to_string(),
+            kind: dtoken_types::ProviderKind::Custom,
+            protocol: Protocol::OpenAi,
+            base_url: "http://127.0.0.1:9/v1".to_string(),
+            api_key_ref: None,
+            models: vec![model.to_string()],
+            timeout_ms: 100,
+            healthcheck_path: None,
+        };
+        let route = |id: &str, instance_id: &str, provider_id: &str| dtoken_types::RouteProfile {
+            id: id.to_string(),
+            name: id.to_string(),
+            input_protocol: Protocol::OpenAi,
+            instance_id: instance_id.to_string(),
+            target_provider_id: provider_id.to_string(),
+            fallback_provider_id: None,
+            chain_mode: ChainMode::Direct,
+            compression_policy: CompressionPolicy::Balanced,
+            bind_host: "127.0.0.1".to_string(),
+            local_port: 18001,
+        };
+        DtokenConfig {
+            providers: vec![
+                provider("provider-a", "model-a"),
+                provider("provider-b", "model-b"),
+            ],
+            routes: vec![
+                route("route-a", "instance-a", "provider-a"),
+                route("route-b", "instance-b", "provider-b"),
+            ],
+            instances: vec![],
+            optical: Default::default(),
+        }
+    }
+
+    #[test]
+    fn ambiguous_routes_fail_closed_without_unique_evidence() {
+        let config = route_test_config();
+
+        assert_eq!(
+            configured_route(&config, Protocol::OpenAi, RouteEvidence::default())
+                .expect_err("multiple protocol matches must not select the first route"),
+            RouteSelectionError::Ambiguous
+        );
+        let (route, provider) = configured_route(
+            &config,
+            Protocol::OpenAi,
+            RouteEvidence {
+                model: Some("model-b"),
+                ..Default::default()
+            },
+        )
+        .expect("a unique provider model is explicit route evidence");
+        assert_eq!(route.id, "route-b");
+        assert_eq!(provider.id, "provider-b");
+    }
+
+    #[tokio::test]
+    async fn ambiguous_openai_request_returns_conflict_without_forwarding() {
+        let app = build_router(AppState::new(route_test_config()));
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/chat/completions")
+                    .header("host", "127.0.0.1:18001")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        json!({"messages": [{"role": "user", "content": "hello"}]}).to_string(),
+                    ))
+                    .expect("request"),
+            )
+            .await
+            .expect("router response");
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        let payload = response_json(response).await;
+        assert_eq!(payload["error"]["type"], "dtoken_route_ambiguous");
+        assert_eq!(payload["dtoken"]["fallback"], "disabled");
+    }
+
+    #[tokio::test]
+    async fn oversized_llm_body_is_rejected_before_json_extraction() {
+        let app = build_router(AppState::new(DtokenConfig::empty()));
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/chat/completions")
+                    .header("host", "127.0.0.1:18001")
+                    .header("content-type", "application/json")
+                    .body(Body::from(vec![b'x'; MAX_REQUEST_BODY_BYTES + 1]))
+                    .expect("request"),
+            )
+            .await
+            .expect("router response");
+        assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    }
+
+    #[tokio::test]
+    async fn oversized_optical_preview_body_is_rejected_before_json_extraction() {
+        let app = build_router(AppState::new(DtokenConfig::empty()));
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/compression/optical/preview")
+                    .header("host", "127.0.0.1:18001")
+                    .header("content-type", "application/json")
+                    .body(Body::from(vec![b'x'; MAX_REQUEST_BODY_BYTES + 1]))
+                    .expect("request"),
+            )
+            .await
+            .expect("router response");
+        assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    }
+
+    #[test]
+    fn runtime_metadata_streams_repair_corrupt_tails_consistently() {
+        use std::io::Write as _;
+
+        let dir = std::env::temp_dir().join(format!("dtoken-runtime-store-{}", Uuid::new_v4()));
+        let store = RuntimeStore::new(&dir);
+        let decision = RouteDecision {
+            request_id: Uuid::new_v4(),
+            route_id: "route-a".to_string(),
+            provider_id: "provider-a".to_string(),
+            chain_mode: ChainMode::Direct,
+            compression_policy: CompressionPolicy::Balanced,
+            reason: "test".to_string(),
+        };
+        let compression = CompressionSummary {
+            original_tokens: 10,
+            compressed_tokens: 8,
+            tokens_saved: 2,
+            savings_percent: 20.0,
+            elapsed_us: 1,
+            transforms_applied: vec![],
+            body: json!({}),
+        };
+        let log = build_request_log(
+            decision.request_id,
+            &decision,
+            Some("model-a".to_string()),
+            Protocol::OpenAi,
+            &compression,
+        );
+        let route_value = route_decision_to_value(&decision);
+        let metadata = json!({"recovery_ref": "ccr:route-a:test", "raw_available": false});
+        let memory = json!({"memory_id": "mem-test", "raw_available": false});
+
+        store
+            .append_route_decision(&route_value)
+            .expect("seed route");
+        store.append_request_log(&log).expect("seed request log");
+        store.append_ccr_metadata(&metadata).expect("seed CCR");
+        store.append_memory_record(&memory).expect("seed memory");
+        for name in [
+            "route-decisions.jsonl",
+            "request-logs.jsonl",
+            "ccr-metadata.jsonl",
+            "memory-records.jsonl",
+        ] {
+            let mut file = std::fs::OpenOptions::new()
+                .append(true)
+                .open(dir.join(name))
+                .expect("open runtime stream for fault injection");
+            file.write_all(b"truncated-tail")
+                .expect("inject corrupt tail");
+        }
+        store
+            .append_route_decision(&route_value)
+            .expect("repair route");
+        store.append_request_log(&log).expect("repair request log");
+        store.append_ccr_metadata(&metadata).expect("repair CCR");
+        store.append_memory_record(&memory).expect("repair memory");
+
+        assert_eq!(store.recent_route_decisions(10).unwrap().len(), 2);
+        assert_eq!(store.recent_request_logs(10).unwrap().len(), 2);
+        assert_eq!(store.recent_ccr_metadata(10).unwrap().len(), 2);
+        assert_eq!(store.recent_memory_records(10).unwrap().len(), 2);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
     async fn spawn_json_upstream(
         status_line: &str,
         body: &str,
@@ -3719,6 +4009,7 @@ mod tests {
         let state = AppState::new(DtokenConfig::empty());
         let response = openai_chat_completions(
             State(state.clone()),
+            HeaderMap::new(),
             Json(json!({
                 "model": "example/model",
                 "messages": [{"role": "user", "content": "hello"}],
@@ -3742,6 +4033,7 @@ mod tests {
         let state = AppState::new(DtokenConfig::empty());
         let response = openai_responses(
             State(state),
+            HeaderMap::new(),
             Json(json!({"model": "example/model", "input": "hello"})),
         )
         .await
@@ -3759,6 +4051,7 @@ mod tests {
         let state = AppState::new(DtokenConfig::empty());
         let response = anthropic_messages(
             State(state),
+            HeaderMap::new(),
             Json(json!({"model": "example/model", "messages": []})),
         )
         .await
@@ -3782,6 +4075,7 @@ mod tests {
 
         let response = openai_responses(
             State(state.clone()),
+            HeaderMap::new(),
             Json(json!({"model": "mock/model", "input": "hello"})),
         )
         .await
@@ -3811,6 +4105,7 @@ mod tests {
 
         let response = openai_chat_completions(
             State(state.clone()),
+            HeaderMap::new(),
             Json(json!({
                 "model": "mock/model",
                 "messages": [{"role": "user", "content": "hello"}],
@@ -3847,6 +4142,7 @@ mod tests {
 
         let response = openai_chat_completions(
             State(state.clone()),
+            HeaderMap::new(),
             Json(json!({
                 "model": "mock/model",
                 "messages": [{"role": "user", "content": "hello"}],
@@ -4799,7 +5095,8 @@ mod tests {
             }]
         });
 
-        let payload = anthropic_route_payload(&state, body).expect("anthropic route payload");
+        let payload = anthropic_route_payload(&state, body, RouteEvidence::default())
+            .expect("anthropic route payload");
 
         assert_eq!(payload.decision.route_id, "anthropic-to-cc-switch");
         assert_eq!(payload.decision.provider_id, "cc-switch-openai");

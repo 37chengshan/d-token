@@ -52,3 +52,41 @@ fn decides_route_by_instance_and_protocol() {
     assert_eq!(decision.chain_mode, ChainMode::Direct);
     assert_eq!(decision.compression_policy, CompressionPolicy::Balanced);
 }
+
+#[test]
+fn rejects_ambiguous_routes_instead_of_selecting_first() {
+    let provider = ProviderProfile {
+        id: "local-demo".to_string(),
+        name: "Local Demo".to_string(),
+        kind: ProviderKind::Custom,
+        protocol: Protocol::OpenAi,
+        base_url: "http://127.0.0.1:19001".to_string(),
+        api_key_ref: None,
+        models: vec!["demo-model".to_string()],
+        timeout_ms: 120_000,
+        healthcheck_path: None,
+    };
+    let route = |id: &str| RouteProfile {
+        id: id.to_string(),
+        name: id.to_string(),
+        input_protocol: Protocol::OpenAi,
+        instance_id: "demo-instance".to_string(),
+        target_provider_id: "local-demo".to_string(),
+        fallback_provider_id: None,
+        chain_mode: ChainMode::Direct,
+        compression_policy: CompressionPolicy::Balanced,
+        bind_host: "127.0.0.1".to_string(),
+        local_port: 18001,
+    };
+    let config = DtokenConfig {
+        providers: vec![provider],
+        routes: vec![route("route-a"), route("route-b")],
+        instances: vec![],
+        optical: Default::default(),
+    };
+
+    let error = Router::new(config)
+        .decide("demo-instance", Protocol::OpenAi)
+        .expect_err("ambiguous route must fail closed");
+    assert!(error.to_string().contains("ambiguous routes"));
+}

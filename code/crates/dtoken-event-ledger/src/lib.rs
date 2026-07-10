@@ -1,5 +1,6 @@
 use anyhow::{anyhow, Context, Result};
 use dtoken_types::{DtokenEvent, EventSource, EventStatus, LayeredStage};
+use serde::{de::DeserializeOwned, Serialize};
 use serde_json::json;
 use std::collections::{HashMap, VecDeque};
 use std::fs::{File, OpenOptions};
@@ -54,30 +55,55 @@ impl EventLedger {
 
 #[derive(Debug, Clone)]
 pub struct JsonlEventLedger {
+    store: JsonlStore,
+}
+
+impl JsonlEventLedger {
+    pub fn new(path: impl Into<PathBuf>) -> Self {
+        Self {
+            store: JsonlStore::new(path),
+        }
+    }
+
+    pub fn append(&self, event: &DtokenEvent) -> Result<()> {
+        self.store.append(event)
+    }
+
+    pub fn recent(&self, limit: usize) -> Result<Vec<DtokenEvent>> {
+        self.store.recent(limit)
+    }
+}
+
+/// A concurrency-safe JSONL primitive shared by every d-token runtime metadata log.
+///
+/// Records are committed as complete newline-terminated JSON values. Writers for the same path
+/// share an in-process lock, repair an invalid tail before appending, and sync committed bytes to
+/// disk.
+#[derive(Debug, Clone)]
+pub struct JsonlStore {
     path: PathBuf,
     io_lock: Arc<LedgerIoLock>,
 }
 
-impl JsonlEventLedger {
+impl JsonlStore {
     pub fn new(path: impl Into<PathBuf>) -> Self {
         let path = path.into();
         let io_lock = shared_path_lock(&path);
         Self { path, io_lock }
     }
 
-    pub fn append(&self, event: &DtokenEvent) -> Result<()> {
-        let mut record = serde_json::to_vec(event).context("serialize event ledger record")?;
+    pub fn append<T: Serialize + DeserializeOwned>(&self, value: &T) -> Result<()> {
+        let mut record = serde_json::to_vec(value).context("serialize JSONL record")?;
         record.push(b'\n');
 
         let mut io_state = self
             .io_lock
             .lock()
-            .map_err(|_| anyhow!("event ledger I/O lock is poisoned"))?;
+            .map_err(|_| anyhow!("JSONL I/O lock is poisoned"))?;
         if let Some(parent) = self.path.parent() {
             if !parent.as_os_str().is_empty() {
-                std::fs::create_dir_all(parent).with_context(|| {
-                    format!("create event ledger directory {}", parent.display())
-                })?;
+                std::fs::create_dir_all(parent)
+                    .with_context(|| format!("create JSONL directory {}", parent.display()))?;
             }
         }
         let mut file = OpenOptions::new()
@@ -86,28 +112,30 @@ impl JsonlEventLedger {
             .read(true)
             .write(true)
             .open(&self.path)
-            .with_context(|| format!("open event ledger {}", self.path.display()))?;
+            .with_context(|| format!("open JSONL store {}", self.path.display()))?;
 
         let observed_len = file
             .metadata()
-            .with_context(|| format!("inspect event ledger length in {}", self.path.display()))?
+            .with_context(|| format!("inspect JSONL length in {}", self.path.display()))?
             .len();
         if io_state.known_good_len != Some(observed_len) {
-            io_state.known_good_len = Some(repair_corrupt_tail(&mut file, &self.path)?);
+            io_state.known_good_len = Some(repair_corrupt_tail::<T>(&mut file, &self.path)?);
         }
         let append_offset = file
             .seek(SeekFrom::End(0))
-            .with_context(|| format!("seek to end of event ledger {}", self.path.display()))?;
+            .with_context(|| format!("seek to end of JSONL store {}", self.path.display()))?;
         io_state.known_good_len = None;
         file.write_all(&record)
-            .with_context(|| format!("append event ledger record to {}", self.path.display()))?;
+            .with_context(|| format!("append JSONL record to {}", self.path.display()))?;
         file.flush()
-            .with_context(|| format!("flush event ledger {}", self.path.display()))?;
+            .with_context(|| format!("flush JSONL store {}", self.path.display()))?;
+        file.sync_data()
+            .with_context(|| format!("sync JSONL store {}", self.path.display()))?;
         io_state.known_good_len = Some(append_offset + record.len() as u64);
         Ok(())
     }
 
-    pub fn recent(&self, limit: usize) -> Result<Vec<DtokenEvent>> {
+    pub fn recent<T: DeserializeOwned>(&self, limit: usize) -> Result<Vec<T>> {
         if limit == 0 {
             return Ok(Vec::new());
         }
@@ -115,30 +143,27 @@ impl JsonlEventLedger {
         let _guard = self
             .io_lock
             .lock()
-            .map_err(|_| anyhow!("event ledger I/O lock is poisoned"))?;
+            .map_err(|_| anyhow!("JSONL I/O lock is poisoned"))?;
         if !Path::new(&self.path).exists() {
             return Ok(vec![]);
         }
         let file = OpenOptions::new()
             .read(true)
             .open(&self.path)
-            .with_context(|| format!("open event ledger {}", self.path.display()))?;
+            .with_context(|| format!("open JSONL store {}", self.path.display()))?;
         let mut reader = BufReader::new(file);
-        let mut events = VecDeque::with_capacity(limit.min(1024));
+        let mut records = VecDeque::with_capacity(limit.min(1024));
         let mut line = Vec::new();
 
         loop {
             line.clear();
             let bytes_read = reader
                 .read_until(b'\n', &mut line)
-                .with_context(|| format!("read event ledger {}", self.path.display()))?;
+                .with_context(|| format!("read JSONL store {}", self.path.display()))?;
             if bytes_read == 0 {
                 break;
             }
-            let terminated = line.ends_with(b"\n");
-            if !terminated {
-                // A record is committed only after its newline delimiter is visible. An
-                // unterminated tail may be a crashed or still-in-progress append.
+            if !line.ends_with(b"\n") {
                 break;
             }
             let payload = &line[..line.len() - 1];
@@ -146,35 +171,29 @@ impl JsonlEventLedger {
                 continue;
             }
 
-            match serde_json::from_slice::<DtokenEvent>(payload) {
-                Ok(event) => {
-                    if events.len() == limit {
-                        events.pop_front();
+            match serde_json::from_slice::<T>(payload) {
+                Ok(record) => {
+                    if records.len() == limit {
+                        records.pop_front();
                     }
-                    events.push_back(event);
+                    records.push_back(record);
                 }
                 Err(error) => {
                     let is_tail = reader
                         .fill_buf()
-                        .with_context(|| {
-                            format!("inspect event ledger tail in {}", self.path.display())
-                        })?
+                        .with_context(|| format!("inspect JSONL tail in {}", self.path.display()))?
                         .is_empty();
                     if is_tail {
-                        // Preserve the valid prefix while isolating a malformed final record.
                         break;
                     }
                     return Err(error).with_context(|| {
-                        format!(
-                            "parse non-tail record in event ledger {}",
-                            self.path.display()
-                        )
+                        format!("parse non-tail JSONL record in {}", self.path.display())
                     });
                 }
             }
         }
 
-        Ok(events.into_iter().rev().collect())
+        Ok(records.into_iter().rev().collect())
     }
 }
 
@@ -202,7 +221,7 @@ fn shared_path_lock(path: &Path) -> Arc<LedgerIoLock> {
     lock
 }
 
-fn repair_corrupt_tail(file: &mut File, path: &Path) -> Result<u64> {
+fn repair_corrupt_tail<T: DeserializeOwned>(file: &mut File, path: &Path) -> Result<u64> {
     let reader_file = File::open(path)
         .with_context(|| format!("inspect event ledger tail in {}", path.display()))?;
     let mut reader = BufReader::new(reader_file);
@@ -224,7 +243,7 @@ fn repair_corrupt_tail(file: &mut File, path: &Path) -> Result<u64> {
         }
         let payload = &line[..line.len() - 1];
         if !payload.iter().all(u8::is_ascii_whitespace)
-            && serde_json::from_slice::<DtokenEvent>(payload).is_err()
+            && serde_json::from_slice::<T>(payload).is_err()
         {
             break;
         }
@@ -252,6 +271,7 @@ pub fn now_ms() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::Value;
     use std::collections::HashSet;
     use std::sync::{Arc, Barrier};
 
@@ -334,7 +354,8 @@ mod tests {
             .append(true)
             .open(&path)
             .expect("open ledger for fault injection");
-        file.write_all(b"not-json\n").expect("inject corrupt tail");
+        file.write_all(b"{}\n")
+            .expect("inject schema-invalid JSON tail");
         file.flush().expect("flush injected tail");
 
         ledger
@@ -402,6 +423,62 @@ mod tests {
             bytes.iter().filter(|byte| **byte == b'\n').count(),
             expected
         );
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn generic_jsonl_store_repairs_tail_and_serializes_concurrent_metadata_writers() {
+        const THREADS: usize = 6;
+        const RECORDS_PER_THREAD: usize = 24;
+        let path = test_path();
+        let store = JsonlStore::new(&path);
+        store.append(&json!({"sequence": 0})).expect("seed store");
+        let mut file = OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .expect("open store for fault injection");
+        file.write_all(b"truncated-tail")
+            .expect("inject truncated tail");
+        file.flush().expect("flush injected tail");
+
+        let store = Arc::new(store);
+        let barrier = Arc::new(Barrier::new(THREADS));
+        let handles = (0..THREADS)
+            .map(|thread_index| {
+                let store = Arc::clone(&store);
+                let barrier = Arc::clone(&barrier);
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    for record_index in 0..RECORDS_PER_THREAD {
+                        let sequence = 1 + thread_index * RECORDS_PER_THREAD + record_index;
+                        store
+                            .append(&json!({"sequence": sequence}))
+                            .expect("concurrent metadata append");
+                    }
+                })
+            })
+            .collect::<Vec<_>>();
+        for handle in handles {
+            handle.join().expect("writer thread must not panic");
+        }
+
+        let expected = 1 + THREADS * RECORDS_PER_THREAD;
+        let recent = store
+            .recent::<Value>(expected)
+            .expect("read generic metadata records");
+        assert_eq!(recent.len(), expected);
+        let sequences = recent
+            .iter()
+            .filter_map(|record| record["sequence"].as_u64())
+            .collect::<HashSet<_>>();
+        assert_eq!(sequences.len(), expected);
+        let bytes = std::fs::read(&path).expect("read generic JSONL");
+        assert!(bytes.ends_with(b"\n"));
+        assert!(bytes
+            .split(|byte| *byte == b'\n')
+            .filter(|line| !line.is_empty())
+            .all(|line| serde_json::from_slice::<Value>(line).is_ok()));
 
         let _ = std::fs::remove_file(path);
     }
