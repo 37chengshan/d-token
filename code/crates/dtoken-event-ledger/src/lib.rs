@@ -1,9 +1,11 @@
-use anyhow::Result;
+use anyhow::{anyhow, Context, Result};
 use dtoken_types::{DtokenEvent, EventSource, EventStatus, LayeredStage};
 use serde_json::json;
-use std::fs::OpenOptions;
-use std::io::{BufRead, BufReader, Write};
+use std::collections::{HashMap, VecDeque};
+use std::fs::{File, OpenOptions};
+use std::io::{BufRead, BufReader, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::time::{SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
 
@@ -53,44 +55,191 @@ impl EventLedger {
 #[derive(Debug, Clone)]
 pub struct JsonlEventLedger {
     path: PathBuf,
+    io_lock: Arc<LedgerIoLock>,
 }
 
 impl JsonlEventLedger {
     pub fn new(path: impl Into<PathBuf>) -> Self {
-        Self { path: path.into() }
+        let path = path.into();
+        let io_lock = shared_path_lock(&path);
+        Self { path, io_lock }
     }
 
     pub fn append(&self, event: &DtokenEvent) -> Result<()> {
+        let mut record = serde_json::to_vec(event).context("serialize event ledger record")?;
+        record.push(b'\n');
+
+        let mut io_state = self
+            .io_lock
+            .lock()
+            .map_err(|_| anyhow!("event ledger I/O lock is poisoned"))?;
         if let Some(parent) = self.path.parent() {
-            std::fs::create_dir_all(parent)?;
+            if !parent.as_os_str().is_empty() {
+                std::fs::create_dir_all(parent).with_context(|| {
+                    format!("create event ledger directory {}", parent.display())
+                })?;
+            }
         }
         let mut file = OpenOptions::new()
             .create(true)
-            .append(true)
-            .open(&self.path)?;
-        let line = serde_json::to_string(event)?;
-        writeln!(file, "{line}")?;
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(&self.path)
+            .with_context(|| format!("open event ledger {}", self.path.display()))?;
+
+        let observed_len = file
+            .metadata()
+            .with_context(|| format!("inspect event ledger length in {}", self.path.display()))?
+            .len();
+        if io_state.known_good_len != Some(observed_len) {
+            io_state.known_good_len = Some(repair_corrupt_tail(&mut file, &self.path)?);
+        }
+        let append_offset = file
+            .seek(SeekFrom::End(0))
+            .with_context(|| format!("seek to end of event ledger {}", self.path.display()))?;
+        io_state.known_good_len = None;
+        file.write_all(&record)
+            .with_context(|| format!("append event ledger record to {}", self.path.display()))?;
+        file.flush()
+            .with_context(|| format!("flush event ledger {}", self.path.display()))?;
+        io_state.known_good_len = Some(append_offset + record.len() as u64);
         Ok(())
     }
 
     pub fn recent(&self, limit: usize) -> Result<Vec<DtokenEvent>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+
+        let _guard = self
+            .io_lock
+            .lock()
+            .map_err(|_| anyhow!("event ledger I/O lock is poisoned"))?;
         if !Path::new(&self.path).exists() {
             return Ok(vec![]);
         }
-        let file = OpenOptions::new().read(true).open(&self.path)?;
-        let reader = BufReader::new(file);
-        let mut events = Vec::new();
-        for line in reader.lines() {
-            let line = line?;
-            if line.trim().is_empty() {
+        let file = OpenOptions::new()
+            .read(true)
+            .open(&self.path)
+            .with_context(|| format!("open event ledger {}", self.path.display()))?;
+        let mut reader = BufReader::new(file);
+        let mut events = VecDeque::with_capacity(limit.min(1024));
+        let mut line = Vec::new();
+
+        loop {
+            line.clear();
+            let bytes_read = reader
+                .read_until(b'\n', &mut line)
+                .with_context(|| format!("read event ledger {}", self.path.display()))?;
+            if bytes_read == 0 {
+                break;
+            }
+            let terminated = line.ends_with(b"\n");
+            if !terminated {
+                // A record is committed only after its newline delimiter is visible. An
+                // unterminated tail may be a crashed or still-in-progress append.
+                break;
+            }
+            let payload = &line[..line.len() - 1];
+            if payload.iter().all(u8::is_ascii_whitespace) {
                 continue;
             }
-            events.push(serde_json::from_str::<DtokenEvent>(&line)?);
+
+            match serde_json::from_slice::<DtokenEvent>(payload) {
+                Ok(event) => {
+                    if events.len() == limit {
+                        events.pop_front();
+                    }
+                    events.push_back(event);
+                }
+                Err(error) => {
+                    let is_tail = reader
+                        .fill_buf()
+                        .with_context(|| {
+                            format!("inspect event ledger tail in {}", self.path.display())
+                        })?
+                        .is_empty();
+                    if is_tail {
+                        // Preserve the valid prefix while isolating a malformed final record.
+                        break;
+                    }
+                    return Err(error).with_context(|| {
+                        format!(
+                            "parse non-tail record in event ledger {}",
+                            self.path.display()
+                        )
+                    });
+                }
+            }
         }
-        events.reverse();
-        events.truncate(limit);
-        Ok(events)
+
+        Ok(events.into_iter().rev().collect())
     }
+}
+
+#[derive(Debug, Default)]
+struct LedgerIoState {
+    known_good_len: Option<u64>,
+}
+
+type LedgerIoLock = Mutex<LedgerIoState>;
+type LedgerLockRegistry = Mutex<HashMap<PathBuf, Weak<LedgerIoLock>>>;
+
+fn shared_path_lock(path: &Path) -> Arc<LedgerIoLock> {
+    static LOCKS: OnceLock<LedgerLockRegistry> = OnceLock::new();
+    let registry = LOCKS.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut locks = registry
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    locks.retain(|_, lock| lock.strong_count() > 0);
+    if let Some(lock) = locks.get(path).and_then(Weak::upgrade) {
+        return lock;
+    }
+
+    let lock = Arc::new(Mutex::new(LedgerIoState::default()));
+    locks.insert(path.to_path_buf(), Arc::downgrade(&lock));
+    lock
+}
+
+fn repair_corrupt_tail(file: &mut File, path: &Path) -> Result<u64> {
+    let reader_file = File::open(path)
+        .with_context(|| format!("inspect event ledger tail in {}", path.display()))?;
+    let mut reader = BufReader::new(reader_file);
+    let mut line = Vec::new();
+    let mut valid_prefix_len = 0_u64;
+
+    loop {
+        line.clear();
+        let bytes_read = reader
+            .read_until(b'\n', &mut line)
+            .with_context(|| format!("inspect event ledger tail in {}", path.display()))?;
+        if bytes_read == 0 {
+            break;
+        }
+
+        let terminated = line.ends_with(b"\n");
+        if !terminated {
+            break;
+        }
+        let payload = &line[..line.len() - 1];
+        if !payload.iter().all(u8::is_ascii_whitespace)
+            && serde_json::from_slice::<DtokenEvent>(payload).is_err()
+        {
+            break;
+        }
+        valid_prefix_len += bytes_read as u64;
+    }
+
+    let current_len = file
+        .metadata()
+        .with_context(|| format!("inspect event ledger length in {}", path.display()))?
+        .len();
+    if valid_prefix_len < current_len {
+        file.set_len(valid_prefix_len)
+            .with_context(|| format!("isolate corrupt event ledger tail in {}", path.display()))?;
+    }
+    Ok(valid_prefix_len)
 }
 
 pub fn now_ms() -> u64 {
@@ -185,8 +334,7 @@ mod tests {
             .append(true)
             .open(&path)
             .expect("open ledger for fault injection");
-        file.write_all(b"not-json\n")
-            .expect("inject corrupt tail");
+        file.write_all(b"not-json\n").expect("inject corrupt tail");
         file.flush().expect("flush injected tail");
 
         ledger
@@ -250,7 +398,10 @@ mod tests {
 
         let bytes = std::fs::read(&path).expect("read concurrent JSONL");
         assert!(bytes.ends_with(b"\n"));
-        assert_eq!(bytes.iter().filter(|byte| **byte == b'\n').count(), expected);
+        assert_eq!(
+            bytes.iter().filter(|byte| **byte == b'\n').count(),
+            expected
+        );
 
         let _ = std::fs::remove_file(path);
     }
