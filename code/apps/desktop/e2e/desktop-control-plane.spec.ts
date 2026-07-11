@@ -44,11 +44,13 @@ test.describe("d-token desktop control plane", () => {
 
     await app.navigateTo(MAIN_PAGES[4]);
     await expect(app.main.getByText("浏览器预览仅供查看，批准、拒绝和回退均不可执行。", { exact: true })).toBeVisible();
-    await expectAllDisabled(app.main.getByRole("button", { name: "批准", exact: true }));
-    await expectAllDisabled(app.main.getByRole("button", { name: "拒绝", exact: true }));
+    await expect(app.main.getByText("当前没有待处理变更", { exact: true })).toBeVisible();
+    await expect(app.main.getByRole("button", { name: "批准", exact: true })).toHaveCount(0);
+    await expect(app.main.getByRole("button", { name: "拒绝", exact: true })).toHaveCount(0);
 
     await app.main.getByRole("tab", { name: "备份与回滚", exact: true }).click();
-    await expectAllDisabled(app.main.getByRole("button", { name: "回滚到此处", exact: true }));
+    await expect(app.main.getByText("当前没有可用回滚点", { exact: true })).toBeVisible();
+    await expect(app.main.getByRole("button", { name: "回滚到此处", exact: true })).toHaveCount(0);
     expect(unexpectedExternalRequests).toEqual([]);
   });
 
@@ -92,15 +94,76 @@ test.describe("d-token desktop control plane", () => {
       await expectProductCopy(app.main, `诊断 / ${tab}`);
     }
   });
-});
 
-async function expectAllDisabled(locator: Locator) {
-  const count = await locator.count();
-  expect(count).toBeGreaterThan(0);
-  for (let index = 0; index < count; index += 1) {
-    await expect(locator.nth(index)).toBeDisabled();
-  }
-}
+  test("compact desktop viewport keeps every primary page inside the document width", async ({ page }) => {
+    const app = new AppShellPage(page);
+    await app.useCompactViewport();
+    await app.open();
+
+    for (const target of MAIN_PAGES) {
+      await test.step(target.heading, async () => {
+        await app.navigateTo(target);
+        const width = await app.documentWidth();
+        expect(width.scrollWidth, `${target.heading} must not create horizontal document overflow`).toBeLessThanOrEqual(
+          width.clientWidth,
+        );
+      });
+    }
+  });
+
+  test("overview has one page title and no installation entry CTA", async ({ page }) => {
+    const app = new AppShellPage(page);
+    await app.open();
+
+    await expect(app.main.getByRole("heading", { level: 1 })).toHaveCount(1);
+    await expect(app.main.getByText("建议下一步", { exact: true })).toHaveCount(0);
+
+    const functionEntryName =
+      /^(?:前往安装与连接|安装\s*\/\s*配置 Agent|开始配置|启动并连接 d-token|打开 Doctor|查看分析)$/;
+    const functionEntry = app.main
+      .getByRole("button", { name: functionEntryName })
+      .or(app.main.getByRole("link", { name: functionEntryName }));
+    await expect(functionEntry).toHaveCount(0);
+  });
+
+  test("dark appearance stays selected in preview without a native persistence claim", async ({ page }) => {
+    const app = new AppShellPage(page);
+    await app.open();
+    await app.navigateTo(MAIN_PAGES[5]);
+    await expect(app.main.getByText("浏览器预览", { exact: true }).first()).toBeVisible();
+
+    const dark = await app.selectDarkAppearance();
+    await expect(dark).toHaveAttribute("aria-pressed", "true");
+    await expect(app.root).toHaveClass(/\bdark\b/);
+    await expect(
+      app.main.getByText("浏览器预览：外观只在当前会话生效，没有伪装成本地已保存。", { exact: true }),
+    ).toBeVisible();
+    await expect(app.main.getByText("本地设置已连接", { exact: true })).toHaveCount(0);
+    await expect(app.main.getByText("已保存", { exact: true })).toHaveCount(0);
+  });
+
+  test("reduced-motion preference leaves ambient and page motion idle", async ({ page }) => {
+    const app = new AppShellPage(page);
+    await page.emulateMedia({ reducedMotion: "reduce" });
+    await app.open();
+
+    const motion = await app.reducedMotionState();
+    expect(motion.preferenceMatches).toBe(true);
+    expect(motion.animationNames.length).toBeGreaterThan(0);
+    expect(motion.animationNames.every((animationName) => animationName === "none")).toBe(true);
+    expect(motion.runningCount).toBe(0);
+  });
+
+  test("keyboard Tab reaches a visibly focused primary navigation item", async ({ page, browserName }) => {
+    const app = new AppShellPage(page);
+    await app.open();
+
+    const isMacWebKit = browserName === "webkit" && await page.evaluate(() => /Mac/.test(navigator.platform));
+    const firstNavigation = await app.focusFirstPrimaryNavigation(isMacWebKit);
+    await expect(firstNavigation).toBeFocused();
+    expect(await app.hasVisibleFocus(firstNavigation)).toBe(true);
+  });
+});
 
 async function expectProductCopy(scope: Locator, context: string) {
   const text = await scope.innerText();

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { motion } from "motion/react";
-import { Check, X, RotateCcw, FileCode, Folder } from "lucide-react";
+import { Check, X, RotateCcw, FileCode, Folder, RefreshCw } from "lucide-react";
 import { GlassCard } from "../common/GlassCard";
 import { StatusBadge } from "../common/StatusBadge";
 import { DataSourceBadge } from "../common/DataSourceBadge";
@@ -18,9 +18,15 @@ import {
   AlertDialogTitle,
 } from "../ui/alert-dialog";
 import { useI18n, useT } from "../../lib/i18n";
-import { changes, backups, ownership } from "../../lib/fixtures";
 import { invokeNative, type NativeActionResult } from "../../lib/native";
 import { classifyEvidence } from "../../lib/state/evidence";
+import {
+  isUsableRouteReview,
+  routeApplyFailureMessage,
+  routeApplyRequest,
+  routeReviewFailureMessage,
+  type RouteDraftApplyReview,
+} from "../../lib/routes/review";
 
 export function Changes() {
   const t = useT();
@@ -31,6 +37,7 @@ export function Changes() {
   const [hiddenChanges, setHiddenChanges] = useState<Set<string>>(new Set());
   const [pendingAction, setPendingAction] = useState<PendingAction | null>(null);
   const [isExecuting, setIsExecuting] = useState(false);
+  const [reviewingChangeId, setReviewingChangeId] = useState("");
 
   const refreshDesktopData = async () => {
     try {
@@ -72,6 +79,7 @@ export function Changes() {
     [desktopData, hiddenChanges, source],
   );
   const backupRows = useMemo(() => buildBackups(desktopData, source), [desktopData, source]);
+  const ownershipRows = useMemo(() => buildOwnership(desktopData, source), [desktopData, source]);
   const verifiedBackups = useMemo(
     () => backupRows.filter((backup) => getRollbackGate(source, backup).allowed),
     [backupRows, source],
@@ -92,34 +100,83 @@ export function Changes() {
               ? "桌面数据不完整 · 动作已锁定"
               : "桌面数据不可用";
 
-  const approve = async (change: UiChange) => {
+  const startApproval = async (change: UiChange) => {
+    const gate = getApprovalGate(source, change, verifiedBackups);
+    if (!gate.allowed) {
+      setNotice(gate.reason);
+      return;
+    }
+    if (change.action !== "apply_route_draft") {
+      setPendingAction({ kind: "approve", change, review: null });
+      return;
+    }
+    if (!change.routeId) {
+      setNotice(lang === "zh" ? "无法审阅：变更没有可核验的路由标识。" : "Review unavailable: the change has no verifiable route identifier.");
+      return;
+    }
+
+    setReviewingChangeId(change.id);
+    setNotice("");
     try {
-      const result = change.action === "apply_route_draft" && change.routeId
-        ? await invokeNative<NativeActionResult>("apply_route_profile_draft", {
-            request: { route_id: change.routeId },
-          })
-        : await invokeNative<NativeActionResult>("save_app_settings", {
-            section: "app",
-            payload: {
-              change_id: change.id,
-              target: change.file,
-              reason: change.reasonEn,
-              diff: change.diff,
-              approval: "approved-draft",
-              scope: "d-token-owned-local-state",
-            },
-          });
-      if (!result.ok) {
-        setNotice(result.summary || "批准失败，变更仍保留在待处理列表中。");
+      const review = await invokeNative<RouteDraftApplyReview>("preview_route_profile_draft_apply", {
+        request: { route_id: change.routeId },
+      });
+      if (!isUsableRouteReview(review, change.routeId)) {
+        setNotice(routeReviewFailureMessage(review, lang));
         return;
       }
-      setNotice(result.summary);
+      setPendingAction({ kind: "approve", change, review });
+    } catch (error) {
+      setNotice(error instanceof Error && error.message === "native_unavailable"
+        ? (lang === "zh" ? "浏览器预览无法审阅真实路由草稿。" : "Browser preview cannot review a real route draft.")
+        : (lang === "zh" ? "桌面控制面未能生成路由审阅；未执行写入，请稍后重试。" : "The desktop control plane could not prepare the route review. Nothing was written; try again."));
+    } finally {
+      setReviewingChangeId("");
+    }
+  };
+
+  const approve = async (action: Extract<PendingAction, { kind: "approve" }>) => {
+    const { change, review } = action;
+    try {
+      let result: NativeActionResult;
+      if (change.action === "apply_route_draft") {
+        if (!change.routeId || !review || !isUsableRouteReview(review, change.routeId)) {
+          setNotice(lang === "zh" ? "应用已阻止：请先审阅当前路由差异。" : "Apply was blocked: review the current route diff first.");
+          return;
+        }
+        result = await invokeNative<NativeActionResult>("apply_route_profile_draft", {
+          request: routeApplyRequest(review),
+        });
+      } else {
+        result = await invokeNative<NativeActionResult>("save_app_settings", {
+          section: "app",
+          payload: {
+            change_id: change.id,
+            target: change.file,
+            reason: change.reasonEn,
+            diff: change.diff,
+            approval: "approved-draft",
+            scope: "d-token-owned-local-state",
+          },
+        });
+      }
+      if (!result.ok) {
+        setNotice(change.action === "apply_route_draft"
+          ? routeApplyFailureMessage(result.summary, lang)
+          : (result.summary || (lang === "zh" ? "批准失败，变更仍保留在待处理列表中。" : "Approval failed; the change remains pending.")));
+        return;
+      }
+      setNotice(change.action === "apply_route_draft"
+        ? (lang === "zh"
+            ? "路由草稿已应用并完成写后验证；事务已创建持久回滚点。"
+            : "The route draft was applied and verified; the transaction created a durable rollback point.")
+        : result.summary);
       setHiddenChanges((prev) => new Set(prev).add(change.id));
       await refreshDesktopData();
     } catch (error) {
       setNotice(error instanceof Error && error.message === "native_unavailable"
-        ? "当前是浏览器预览，无法批准真实变更草稿。"
-        : `批准失败：${String(error)}`);
+        ? (lang === "zh" ? "当前是浏览器预览，无法批准真实变更草稿。" : "Browser preview cannot approve a real change draft.")
+        : (lang === "zh" ? "桌面控制面调用失败，未确认写入结果；请重新审阅后再试。" : "The desktop control-plane call failed and the write result is unconfirmed. Review again before retrying."));
     }
   };
 
@@ -157,7 +214,11 @@ export function Changes() {
     setIsExecuting(true);
     try {
       if (action.kind === "approve") {
-        await approve(action.change);
+        if (action.change.action === "apply_route_draft" && (!action.review || !action.change.routeId || !isUsableRouteReview(action.review, action.change.routeId))) {
+          setNotice(lang === "zh" ? "应用已阻止：请先审阅当前路由差异。" : "Apply was blocked: review the current route diff first.");
+          return;
+        }
+        await approve(action);
       } else if (action.kind === "reject") {
         reject(action.change.id);
       } else {
@@ -209,6 +270,11 @@ export function Changes() {
         </TabsList>
 
         <TabsContent value="pending" className="mt-4 space-y-3">
+          {pendingChanges.length === 0 && (
+            <div className="glass-inset p-4 text-sm text-muted-foreground">
+              {lang === "zh" ? "当前没有待处理变更" : "There are no pending changes"}
+            </div>
+          )}
           {pendingChanges.map((c) => {
             const approvalGate = getApprovalGate(source, c, verifiedBackups);
             const rejectGate = getRejectGate(source, c);
@@ -229,11 +295,14 @@ export function Changes() {
                     </Button>
                     <Button
                       size="sm"
-                      disabled={!approvalGate.allowed}
+                      disabled={!approvalGate.allowed || Boolean(reviewingChangeId) || isExecuting}
                       title={approvalGate.allowed ? "先查看影响、备份与恢复方式" : approvalGate.reason}
-                      onClick={() => setPendingAction({ kind: "approve", change: c })}
+                      onClick={() => void startApproval(c)}
                     >
-                      <Check className="size-3.5" />{t("ch.approve")}
+                      {reviewingChangeId === c.id ? <RefreshCw className="size-3.5 animate-spin" /> : <Check className="size-3.5" />}
+                      {reviewingChangeId === c.id
+                        ? (lang === "zh" ? "正在生成审阅" : "Preparing review")
+                        : t("ch.approve")}
                     </Button>
                   </div>
                 </div>
@@ -247,6 +316,11 @@ export function Changes() {
         </TabsContent>
 
         <TabsContent value="diff" className="mt-4 space-y-4">
+          {pendingChanges.length === 0 && (
+            <div className="glass-inset p-4 text-sm text-muted-foreground">
+              {lang === "zh" ? "当前没有可审阅的配置差异" : "There are no configuration differences to review"}
+            </div>
+          )}
           {pendingChanges.map((c) => (
             <GlassCard key={c.id} className="overflow-hidden p-5">
               <div className="mb-3 flex items-center justify-between">
@@ -268,6 +342,11 @@ export function Changes() {
         </TabsContent>
 
         <TabsContent value="backup" className="mt-4">
+          {backupRows.length === 0 && (
+            <div className="glass-inset p-4 text-sm text-muted-foreground">
+              {lang === "zh" ? "当前没有可用回滚点" : "There are no rollback points available"}
+            </div>
+          )}
           <div className="relative space-y-4 pl-6">
             <div className="absolute left-[9px] top-2 bottom-2 w-px bg-border" />
             {backupRows.map((b, i) => {
@@ -280,7 +359,7 @@ export function Changes() {
                       <div>
                         <div>{b.time}</div>
                         <div className="text-xs text-muted-foreground">
-                          {t("ch.affected")}: {b.files} {t("ch.files")} · {t("status.ports")} {b.ports.join(",")} · {b.procs} proc
+                          {t("ch.affected")}: {b.files ?? "—"} {t("ch.files")} · {t("status.ports")} {b.ports.length > 0 ? b.ports.join(",") : "—"} · {b.procs ?? "—"} proc
                         </div>
                       </div>
                       <Button
@@ -310,7 +389,12 @@ export function Changes() {
         </TabsContent>
 
         <TabsContent value="ownership" className="mt-4 grid gap-4 sm:grid-cols-2">
-          {ownership.map((o) => (
+          {ownershipRows.length === 0 && (
+            <div className="glass-inset p-4 text-sm text-muted-foreground sm:col-span-2">
+              {lang === "zh" ? "尚未检测到可核验的配置归属路径" : "No verifiable configuration ownership paths were detected"}
+            </div>
+          )}
+          {ownershipRows.map((o) => (
             <GlassCard key={o.id} className="p-5">
               <h3 className="mb-3 flex items-center gap-2"><Folder className="size-4 text-primary" />{t(o.labelKey)}</h3>
               <div className="space-y-1.5">
@@ -339,6 +423,9 @@ export function Changes() {
                     <ConfirmationRow label="备份保障" value={pendingConfirmation.backup} />
                     <ConfirmationRow label="恢复方式" value={pendingConfirmation.recovery} />
                   </div>
+                  {pendingConfirmation.review && (
+                    <RouteReviewEvidence review={pendingConfirmation.review} lang={lang} />
+                  )}
                   {!pendingConfirmation.allowed && (
                     <p className="rounded-md border border-rose-500/25 bg-rose-500/[0.06] p-3 text-rose-700 dark:text-rose-200">
                       {pendingConfirmation.blockedReason}
@@ -373,10 +460,38 @@ function ConfirmationRow({ label, value }: { label: string; value: string }) {
   );
 }
 
+function RouteReviewEvidence({ review, lang }: { review: RouteDraftApplyReview; lang: "zh" | "en" }) {
+  return (
+    <div className="space-y-3 rounded-md border border-border/70 bg-muted/20 p-4 text-left">
+      <div className="grid gap-3 sm:grid-cols-2">
+        <ConfirmationRow label={lang === "zh" ? "目标文件" : "Target"} value={review.target} />
+        <ConfirmationRow label={lang === "zh" ? "风险等级" : "Risk"} value={review.risk_level} />
+      </div>
+      <div>
+        <div className="mb-1.5 text-xs font-medium text-foreground">{lang === "zh" ? "脱敏差异" : "Redacted diff"}</div>
+        <pre className="max-h-56 overflow-auto whitespace-pre-wrap break-words rounded-md border border-border/60 bg-background/70 p-3 text-xs leading-5 text-foreground">{review.diff}</pre>
+      </div>
+      <div className="grid gap-2 text-[11px] text-muted-foreground">
+        <ReviewHash label={lang === "zh" ? "应用前 SHA-256" : "Before SHA-256"} value={review.before_sha256} />
+        <ReviewHash label={lang === "zh" ? "应用后 SHA-256" : "After SHA-256"} value={review.after_sha256} />
+      </div>
+    </div>
+  );
+}
+
+function ReviewHash({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="grid gap-1 sm:grid-cols-[132px_minmax(0,1fr)]">
+      <span>{label}</span>
+      <code className="break-all font-mono text-foreground/80">{value}</code>
+    </div>
+  );
+}
+
 type ChangeSource = "loading" | "desktop" | "browser-preview" | "unavailable" | "stale" | "partial";
 
 type PendingAction =
-  | { kind: "approve"; change: UiChange }
+  | { kind: "approve"; change: UiChange; review: RouteDraftApplyReview | null }
   | { kind: "reject"; change: UiChange }
   | { kind: "rollback"; backup: UiBackup };
 
@@ -391,6 +506,7 @@ type ActionConfirmation = {
   impact: string;
   backup: string;
   recovery: string;
+  review?: RouteDraftApplyReview;
 };
 
 type UiChange = {
@@ -410,16 +526,22 @@ type UiChange = {
 type UiBackup = {
   id: string;
   time: string;
-  files: number;
+  files: number | null;
   ports: number[];
-  procs: number;
+  procs: number | null;
   before: "healthy" | "warning" | "error";
   after: "healthy" | "warning" | "error";
   verified: boolean;
 };
 
+type UiOwnership = {
+  id: string;
+  labelKey: string;
+  items: string[];
+};
+
 function sourceActionBlockedReason(source: ChangeSource): string {
-  if (source === "browser-preview") return "浏览器预览只展示示例，不能执行真实动作。";
+  if (source === "browser-preview") return "浏览器预览没有本机变更证据，不能执行真实动作。";
   if (source === "loading") return "正在读取桌面端真实数据，请稍候。";
   if (source === "unavailable") return "桌面端真实数据不可用，动作已锁定。";
   if (source === "stale") return "桌面端数据已过期，不能作为当前状态证据。";
@@ -457,7 +579,7 @@ function getRejectGate(source: ChangeSource, change: UiChange): ActionGate {
 function getRollbackGate(source: ChangeSource, backup: UiBackup): ActionGate {
   if (source !== "desktop") return { allowed: false, reason: sourceActionBlockedReason(source) };
   if (!backup.verified) return { allowed: false, reason: "该回滚点尚未验证，已阻止恢复。" };
-  if (!backup.id || !backup.time || !Number.isFinite(backup.files) || backup.files < 1) {
+  if (!backup.id || !backup.time || backup.files === null || !Number.isFinite(backup.files) || backup.files < 1) {
     return { allowed: false, reason: "回滚点影响信息不完整，已阻止恢复。" };
   }
   return { allowed: true, reason: "" };
@@ -476,26 +598,32 @@ function buildConfirmation(
       ? {
           ...gate,
           blockedReason: gate.reason,
-          title: "确认批准变更",
-          confirmLabel: "确认批准",
-          summary: "批准后将更新 d-token 当前活动路由；不会修改外部 Agent、Headroom、RTK 或 cc-switch 配置。",
-          impact: action.change.file,
+          title: action.review ? "审阅并批准路由" : "确认批准变更",
+          confirmLabel: action.review ? "确认应用" : "确认批准",
+          summary: action.review
+            ? "以下内容由桌面控制面只读生成。确认时会提交本次审阅的前后 SHA-256；如草稿或活动配置变化，应用会被拒绝。"
+            : "批准后将更新 d-token 本地状态；不会修改外部 Agent、Headroom、RTK 或 cc-switch 配置。",
+          impact: action.review?.target ?? action.change.file,
           backup: backup
-            ? `已验证恢复点 ${backup.id} · ${backup.time}；原生应用还会尝试记录本次回滚点。`
+            ? `当前有已验证恢复点 ${backup.id} · ${backup.time}。本次预览未写文件；确认后事务会在写入前创建新的持久回滚点，并执行写后验证。`
             : "没有可验证的恢复点。",
           recovery: "如配置异常，可在“备份与回滚”中回退，再运行 Doctor 复核路由与服务状态。",
+          review: action.review ?? undefined,
         }
       : {
           ...gate,
           blockedReason: gate.reason,
-          title: "Confirm change approval",
-          confirmLabel: "Confirm approval",
-          summary: "This updates the active d-token route without changing external Agent, Headroom, RTK, or cc-switch configuration.",
-          impact: action.change.file,
+          title: action.review ? "Review and approve route" : "Confirm change approval",
+          confirmLabel: action.review ? "Confirm apply" : "Confirm approval",
+          summary: action.review
+            ? "This review was prepared read-only by the desktop control plane. Confirmation submits its before/after SHA-256 pair; apply is rejected if the draft or active config changes."
+            : "This updates d-token local state without changing external Agent, Headroom, RTK, or cc-switch configuration.",
+          impact: action.review?.target ?? action.change.file,
           backup: backup
-            ? `Verified recovery point ${backup.id} · ${backup.time}; the native apply also attempts to record a rollback point for this change.`
+            ? `A verified recovery point exists: ${backup.id} · ${backup.time}. This preview writes nothing; confirmation creates a new durable rollback point before writing and verifies afterward.`
             : "No verifiable recovery point is available.",
           recovery: "If the route is unhealthy, restore it from Backup & Rollback, then run Doctor.",
+          review: action.review ?? undefined,
         };
   }
 
@@ -534,7 +662,7 @@ function buildConfirmation(
         title: "确认回退",
         confirmLabel: "确认回退",
         summary: "回退会恢复 d-token 当前活动路由配置，并可能短暂影响经由该路由的新请求。",
-        impact: `${action.backup.files} 个文件 · d-token 当前活动路由配置`,
+        impact: `${action.backup.files ?? "未知数量"} 个文件 · d-token 当前活动路由配置`,
         backup: `使用已验证恢复点 ${action.backup.id} · ${action.backup.time}。`,
         recovery: "完成后将重新读取本地数据；请运行 Doctor 确认路由与服务状态。",
       }
@@ -544,7 +672,7 @@ function buildConfirmation(
         title: "Confirm rollback",
         confirmLabel: "Confirm rollback",
         summary: "Rollback restores the active d-token route configuration and may briefly affect new requests using that route.",
-        impact: `${action.backup.files} file(s) · active d-token route configuration`,
+        impact: `${action.backup.files ?? "unknown"} file(s) · active d-token route configuration`,
         backup: `Using verified recovery point ${action.backup.id} · ${action.backup.time}.`,
         recovery: "Desktop data reloads afterward; run Doctor to verify route and service health.",
       };
@@ -559,9 +687,20 @@ function buildChanges(data: Record<string, any> | null, source: string): UiChang
       const route = Array.isArray(config.routes) ? config.routes[0] : {};
       const provider = Array.isArray(config.providers) ? config.providers[0] : {};
       const diff = Array.isArray(draft.diff) ? draft.diff : [];
-      const routeId = safeText(route?.id, safeText(provider?.id, "route"));
-      const baseUrl = safeText(provider?.base_url, "provider base URL");
-      const port = Number(route?.local_port ?? 18001);
+      const routeId = safeText(route?.id, safeText(provider?.id, "未提供 route"));
+      const baseUrl = safeText(provider?.base_url, "—");
+      const port = Number(route?.local_port);
+      const portLabel = Number.isInteger(port) && port > 0 && port <= 65535 ? String(port) : "—";
+      const before = diff
+        .filter((item: any) => item.type === "ctx" || item.type === "remove")
+        .map((item: any) => safeText(item.text, ""))
+        .filter(Boolean)
+        .join("\n");
+      const after = diff
+        .filter((item: any) => item.type === "ctx" || item.type === "add")
+        .map((item: any) => safeText(item.text, ""))
+        .filter(Boolean)
+        .join("\n");
       const safetyComplete =
         typeof draft.path === "string" && draft.path.trim().length > 0 &&
         typeof route?.id === "string" && route.id.trim().length > 0 &&
@@ -572,12 +711,12 @@ function buildChanges(data: Record<string, any> | null, source: string): UiChang
         id: `draft-${routeId}`,
         routeId,
         action: "apply_route_draft",
-        file: safeText(draft.path, "d-token route draft"),
-        reason: `应用 ${routeId}：${baseUrl} -> 127.0.0.1:${port}，fallback disabled`,
-        reasonEn: `Apply ${routeId}: ${baseUrl} -> 127.0.0.1:${port}, fallback disabled`,
-        risk: "low",
-        before: "[d-token active route config]\n# unchanged until you approve this draft",
-        after: diff.map((item: any) => safeText(item.text, "")).join("\n") || JSON.stringify(config, null, 2),
+        file: safeText(draft.path, "未提供草稿路径"),
+        reason: `审阅 ${routeId}：${baseUrl} -> 127.0.0.1:${portLabel}`,
+        reasonEn: `Review ${routeId}: ${baseUrl} -> 127.0.0.1:${portLabel}`,
+        risk: normalizeRisk(draft.risk),
+        before: before || "—",
+        after: after || "—",
         diff,
         safetyComplete,
       };
@@ -588,17 +727,17 @@ function buildChanges(data: Record<string, any> | null, source: string): UiChang
   if (hasNativePayload && rows.length > 0) {
     return rows.map((row: any) => {
       const diff = Array.isArray(row.diff) ? row.diff : [];
-      const before = diff.filter((item: any) => item.type === "ctx" || item.type === "remove").map((item: any) => safeText(item.text, "")).join("\n") || "[d-token route plan]";
-      const after = diff.map((item: any) => safeText(item.text, "")).join("\n") || safeText(row.summary, "d-token local draft");
+      const before = diff.filter((item: any) => item.type === "ctx" || item.type === "remove").map((item: any) => safeText(item.text, "")).filter(Boolean).join("\n");
+      const after = diff.filter((item: any) => item.type === "ctx" || item.type === "add").map((item: any) => safeText(item.text, "")).filter(Boolean).join("\n");
       return {
         id: safeText(row.id, safeText(row.target, "change")),
         action: "record_approval",
-        file: safeText(row.target, "d-token managed route plan"),
-        reason: safeText(row.summary, "更新 d-token 本地路由草稿"),
-        reasonEn: safeText(row.summary, "Update d-token local route draft"),
+        file: safeText(row.target, "未提供变更目标"),
+        reason: safeText(row.summary, "未提供变更摘要"),
+        reasonEn: safeText(row.summary, "Change summary unavailable"),
         risk: normalizeRisk(row.risk),
-        before,
-        after,
+        before: before || "—",
+        after: after || "—",
         diff,
         safetyComplete:
           typeof row.id === "string" && row.id.trim().length > 0 &&
@@ -608,9 +747,7 @@ function buildChanges(data: Record<string, any> | null, source: string): UiChang
       };
     });
   }
-  return source === "browser-preview"
-    ? changes.map((change) => ({ ...change, diff: [], safetyComplete: false }))
-    : [];
+  return [];
 }
 
 function buildBackups(data: Record<string, any> | null, source: string): UiBackup[] {
@@ -619,21 +756,47 @@ function buildBackups(data: Record<string, any> | null, source: string): UiBacku
   if (hasNativePayload && rows.length > 0) {
     return rows.map((row: any) => {
       const verified = source === "desktop" && row.verified === true;
+      const files = finiteNumber(row.files);
+      const procs = finiteNumber(row.procs);
+      const ports = Array.isArray(row.ports)
+        ? (row.ports as unknown[])
+            .map(finiteNumber)
+            .filter((port): port is number => port !== null && Number.isInteger(port) && port > 0 && port <= 65535)
+        : [];
       return {
-        id: safeText(row.id, "local-plan"),
-        time: safeText(row.when, "local"),
-        files: Number(row.files ?? 0),
-        ports: [18001],
-        procs: 0,
-        before: verified ? "healthy" : "warning",
-        after: verified ? "healthy" : "warning",
+        id: safeText(row.id, ""),
+        time: safeText(row.when, ""),
+        files,
+        ports,
+        procs,
+        before: normalizeHealth(row.before),
+        after: normalizeHealth(row.after),
         verified,
       };
     });
   }
-  return source === "browser-preview"
-    ? backups.map((backup) => ({ ...backup, before: "warning", after: "warning", verified: false }))
+  return [];
+}
+
+function buildOwnership(data: Record<string, any> | null, source: ChangeSource): UiOwnership[] {
+  if (source !== "desktop" && source !== "stale" && source !== "partial") return [];
+  const active = data?.active_config ?? data?.desktop_active_config;
+  const drafts = Array.isArray(data?.routeDrafts) ? data.routeDrafts : [];
+  const items = [active?.path, active?.config_path, ...drafts.map((draft: any) => draft?.path)]
+    .filter((value): value is string => typeof value === "string" && value.trim().length > 0);
+  const uniqueItems = [...new Set(items)];
+  return uniqueItems.length > 0
+    ? [{ id: "dtoken-owned-paths", labelKey: "ch.own.dtoken", items: uniqueItems }]
     : [];
+}
+
+function finiteNumber(value: unknown): number | null {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
+}
+
+function normalizeHealth(value: unknown): UiBackup["before"] {
+  return value === "healthy" || value === "warning" || value === "error" ? value : "warning";
 }
 
 function normalizeRisk(value: unknown): "low" | "medium" | "high" {

@@ -1,74 +1,128 @@
 # CLAUDE.md
 
-一句话项目介绍：d-token 是一个 Headroom-compatible 的本地 AI Coding 压缩路由桌面系统，目标是在 Windows/macOS 上完整保留并迁移 Headroom 能力，同时新增 provider、route、instance、Event Ledger、Doctor、Dashboard 等可观测管理能力。
+更新时间：2026-07-11 晚间
 
-本文件给 Claude Code 使用。产品真理源始终以 `docs/PRD.md` 为准。
+本文件是 Claude Code 在 d-token 仓库中的入口。通用规则以 `AGENTS.md` 为准；本文件保留 Claude Code 开工时最需要的上下文和检查顺序。
 
-## 当前最高优先级产品链路
+一句话项目介绍：d-token 是面向 AI Coding 的本地优先桌面控制面与 Rust runtime，在 Windows/macOS 上统一处理本地路由、上下文优化、Provider/Route、Doctor、Dashboard、Event Ledger、凭据引用、配置变更和回退。
 
-必须按以下链路理解和实现 d-token：
+## 1. 真理源
+
+按顺序读取：
+
+1. `docs/PRD.md` — 唯一产品契约。
+2. `docs/PLAN.md` — 当前唯一执行计划。
+3. `docs/product/IMPLEMENTATION_STATUS.md` — 按实际源码整理的能力和缺口。
+4. `docs/ARCHITECTURE.md`、`docs/TECH_STACK.md`、`docs/SECURITY_BOUNDARIES.md`。
+5. `docs/index.md` — 当前文档和归档入口。
+6. `AGENTS.md` — 完整工作、安全、OpenCode 和 Git 审计规则。
+
+`docs/history/` 与 `docs/archive/` 只用于追溯，不能覆盖当前源码、PRD、PLAN 和实现状态。
+
+## 2. 当前代码入口
 
 ```text
-OpenCode / Claude Code / Codex / Cursor / Cline / other AI coding agent
-↓
-d-token local entry / managed wrap
-↓
-d-token 本地服务
-= Headroom 能力移植、吸收、改造后的 d-token-owned runtime
-= compression / CCR / memory / learn / output shaping / metrics / stats / history / dashboard primitives
-= integrated RTK internal capability
-↓
-d-token route adapter
-↓
-官方上游 / 第三方中转上游 / cc-switch route interface / local provider
-↓
-d-token Event Ledger / Dashboard / Doctor / Logs / App
+code/apps/desktop/                 唯一正式 Tauri 2 + React 18 桌面 App
+code/apps/desktop/src/app/         当前 UI
+code/apps/desktop/src-tauri/       native commands、凭据、进程、配置、打包
+code/crates/                       13 个 Rust 业务 crate
+code/runtimes/headroom/            Headroom-derived provenance/迁移边界
+support/                           测试、脚本、fixture、CI 和审计账本
 ```
 
-## 不可违反的边界
+不要把以下路径当成生产入口：
 
-1. `D:\D-TOKEN\headroom` 是源码参考、能力迁移来源和兼容行为参考，不是 d-token App 的运行时数据源。
-2. 外部 Headroom 服务，例如 `http://127.0.0.1:8787/dashboard`，只能作为迁移对照和 no-touch 只读参考；不能作为成品 App Dashboard 的依赖。
-3. d-token 必须拥有自己的本地服务、端口、stats/history/metrics、Event Ledger、ProviderProfile、RouteProfile、InstanceProfile 和 Dashboard 数据模型。
-4. Headroom Dashboard 的页面与数据能力要迁移进 d-token App，但数据必须来自 d-token-owned runtime。
-5. OpenCode 是第一条真实测试入口；真实测试直接使用用户本机原本 OpenCode 配置中的 provider/model，不强制使用官方免费模型，也不做隔离配置。
-6. 正确测试链路是 `OpenCode -> d-token local service -> d-token Headroom-derived runtime -> d-token route adapter -> official/custom/cc-switch upstream`。
-7. 禁止把实现写成 `App -> external Headroom 8787 -> Dashboard data`。
-8. 开发期不得启动、停止、重启、改配置、占用或依赖外部 Headroom / RTK / cc-switch 服务。
-9. OpenCode 真实测试已获用户授权按原本 OpenCode 配置执行；默认不隔离 HOME、不替换 fake config、不另造临时 OpenCode 配置。执行 OpenCode real routed / streaming / workload test 时，默认直接调用本机 `opencode` 和原配置，目标是证明真实 OpenCode 流量经过 d-token。
-10. OpenCode 是本阶段唯一允许使用真实用户配置进行测试的 agent；不得因此扩展到 Claude Code、Codex、Cursor、Cline 或系统代理配置。
-11. 若测试需要修改 OpenCode 配置以加入 d-token provider/route，必须先备份、只写最小变更、记录到测试报告；不得读取、打印、持久化或提交 OpenCode 密钥、token、cookie、auth 文件、完整 prompt/response。
-12. 正式 App UI 不得产品化测试概念：workload benchmark、smoke test、fixture/mock/fake-bin、testing center 只能存在于 `support/`、CI、隐藏 dev mode 或报告中。
-13. OpenCode 只是第一条真实验收入口，不是最终产品信息架构中心；UI 必须保持多 agent 控制面结构。
-14. UI 动作必须先翻译成用户任务：安装、连接、配置、验证配置、诊断、查看状态、查看日志、导出。不得把开发脚本按钮原样搬进用户界面。
-15. 浏览器/桌面窗口验收只证明显示和交互；真实功能接入必须由 d-token-owned service/API/Tauri command、Event Ledger、metrics/export 和 routed agent flow 证明。
-16. 新增功能前必须先对照 `docs/PRD.md` 和成熟桌面控制面产品逻辑判断产品路径，再写代码。
+- `code/UI design for project/`：设计原型。
+- `code/apps/desktop/src-old/`：旧实现。
+- `code/packages/sdk/`：尚未实现的预留目录。
 
-## 必读顺序
+## 3. 当前产品链路
 
-1. `docs/PRD.md` — 唯一 PRD，也是产品真理源。
-2. `docs/TECH_STACK.md` — 桌面 App 与 runtime 技术选型。
-3. `docs/ARCHITECTURE.md` — 总体架构。
-4. `docs/SECURITY_BOUNDARIES.md` — 本地优先安全边界。
-5. `docs/history/BACKEND_AUDIT_AND_ITERATION_2026-07-10.md` 与 `docs/history/FRONTEND_UI_AUDIT_AND_ITERATION_2026-07-10.md` — 当前工作树最新前后端审查；`docs/history/FINAL_REVIEW.md` 仅是历史快照。
+```text
+AI coding agent
+→ 127.0.0.1 d-token listener
+→ d-token-owned Rust runtime
+→ compression / context optimization / explicit route decision
+→ configured upstream
+→ redacted Event Ledger / metrics / Dashboard / Doctor / App
+```
 
-## 工作原则
+禁止依赖外部 Headroom 8787 作为成品 Dashboard 数据源。`code/runtimes/headroom/` 不是 Python sidecar。
 
-- 修改前先读 `docs/PRD.md`。
-- 产品变更直接修改 `docs/PRD.md`，不新增多版本 PRD。
-- 正式代码放 `code/`，正式文档放 `docs/`，测试、脚本、CI、fixture 和 fake-bin 放 `support/`。
-- 不直接复制外部项目代码；如复用开源代码，必须遵守许可证、NOTICE 和变更记录要求。
-- 所有真实密钥、token、cookie、auth 文件都不得提交。
-- 所有本地服务默认绑定 `127.0.0.1`。
-- Windows/macOS 兼容优先：UTF-8、路径、端口、`.cmd` shim、WebView2、Xcode Command Line Tools。
-- Dashboard 不做简化版，Headroom 功能迁移不缩水。
-- 正式 UI 只展示产品状态和用户操作，不展示开发测试语义。
-- 当前接受的技术栈是 Rust 核心业务 + Tauri 2 + React/TypeScript；macOS 仅在 Rust/Tauri 无法可靠覆盖时使用极少量 Swift/系统桥接，不使用 Python sidecar 作为当前运行架构。
-- Windows 与 macOS 共享同一套 React UI、信息架构与功能语义；平台差异限制在系统适配和打包层，当前先完成 macOS 窗口与真实功能验收。
-- Git commit、branch create/switch/delete/rename、merge、rebase、push 前，必须先用 `support/scripts/git_operation_audit.py record` 写入 `support/git-operations.json`，记录时间、分支与一句话简介；禁止删除或改写既有记录。
+## 4. 当前实现边界
 
-## 提交前检查
+已存在：
+
+- OpenAI Chat/Responses、Anthropic Messages 本地入口。
+- Provider/Route/Instance、active config、Dashboard、Doctor、Event Ledger、logs、export。
+- d-token route 草稿、应用、rollback point 和 active config 恢复。
+- OS credential store 写入/删除，配置只保存引用。
+- App-managed d-token Rust runtime 的状态、启动、停止和身份检查。
+- Optical shadow preview、Capability lifecycle 和 metadata-only events。
+
+不得过度宣称：
+
+- 缺失的 RTK/Headroom 当前不会自动下载，只会检测并安全失败。
+- d-token route 草稿不会自动修改所有第三方 Agent 配置。
+- 外部 Agent 配置的完整 transaction/rollback 尚未闭环。
+- Optical 没有 renderer、patcher、active mutation、post-validator 或 rollback executor。
+- macOS/Windows 公开发布证据尚未完成。
+
+## 5. UI 规则
+
+正式一级页面固定为：总体概览、安装与连接、分析、Doctor、变更与回退、设置。
+
+`Advanced`、`LogsSecurity`、`Compatibility`、`SmartLearning` 只能作为工作台子流程或内部组件。正式 UI 不得出现 workload benchmark、smoke test、fixture、mock、fake-bin、testing center 等开发术语。
+
+真实状态必须带 source、freshness 和 action result。浏览器 preview、缺失数据和部分数据不能渲染成机器真实状态。
+
+## 6. 安全规则
+
+- 默认只绑定 loopback。
+- 禁止记录或提交密钥、token、cookie、Authorization、auth 文件、完整 prompt/response 和原始模型输出。
+- 凭据不得明文 fallback。
+- 真实写入必须具备摘要、diff、backup、confirm、verify、rollback。
+- 停止进程前验证 PID、可执行文件、端口所有权和 d-token identity。
+- Provider/Route 禁止静默猜测和静默 fallback。
+- Optical active transform 必须保持关闭。
+
+## 7. OpenCode 验收
+
+用户只授权 OpenCode 在当前阶段使用正常本机配置进行真实 routed test。默认不隔离 HOME、不覆盖正常配置、不读取 auth 文件。如需加入临时 d-token provider，必须权限受限备份、最小变更、精确恢复和脱敏报告。该授权不得扩展到 Claude Code、Codex、Cursor、Cline 或系统代理配置。
+
+## 8. 文档和临时文件
+
+- 产品边界改 `docs/PRD.md`。
+- 当前执行改 `docs/PLAN.md`。
+- 代码事实改 `docs/product/IMPLEMENTATION_STATUS.md` 和对应 README。
+- 阶段报告进 `docs/history/`，被替代内容进 `docs/archive/`。
+- 不在根目录创建或保留 `task_plan.md`、`findings.md`、`progress.md`；Agent 协作使用 `.ai-bridge/`。
+
+## 9. Git 操作
+
+commit、branch create/switch/delete/rename、merge、rebase、push 前，必须先用：
 
 ```bash
-python support/scripts/check_structure.py
+python3 support/scripts/git_operation_audit.py record ...
 ```
+
+写入 `support/git-operations.json`。禁止删除或改写已有记录。
+
+## 10. 基础验证
+
+```bash
+python3 support/scripts/check_structure.py
+
+cd code
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
+
+cd apps/desktop
+npm run test:run
+npx tsc --noEmit
+npm run build
+npm run test:e2e
+```
+
+Tauri 使用 `npm run tauri:dev` 或 `npm run tauri:build`，以保证对应平台的 `dtoken-proxy` external binary 先被准备。

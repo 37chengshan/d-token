@@ -2,7 +2,7 @@
 
 ## P0 发布版产品决策：从当前版本到稳定发布
 
-状态：2026-07-08 用户已确认的最新产品口径。本节优先级高于旧页面草案；旧技术链路、runtime 契约、测试契约继续作为实现约束保留。
+状态：2026-07-12 用户已确认的最新产品口径。本节优先级高于旧页面草案；旧技术链路、runtime 契约、测试契约继续作为实现约束保留。
 
 ### P0.1 产品形态
 
@@ -19,7 +19,7 @@
 1. 所有主页面有完整 UI、完整中文文案、清晰空状态、加载状态、错误状态和成功状态。
 2. 所有主流程功能可用，不允许只有静态展示或纯 mock 完成态。
 3. 本地服务安装、启动、停止、状态检测、端口检测、Agent 检测、cc-switch 检测、配置预览、备份、应用、验证、日志、诊断、回退必须形成闭环。
-4. 示例数据可以用于浏览器预览或开发预览，但必须明确标注“示例数据”；真实运行完成态必须来自 d-token 自有本地服务、Tauri command 或 d-token 自有本地记录。
+4. fixture/mock 只能存在于 `support/`、自动化测试、CI 或隐藏 dev harness；正式 App 与普通浏览器预览均使用诚实空态，真实运行完成态必须来自 d-token 自有本地服务、Tauri command 或 d-token 自有本地记录。
 5. UI 视觉目标是现代、干净、克制、可信、稳定，不能像开发调试面板，也不能像测试中心。
 6. d-token 第一版只安装和管理 d-token 自有本地服务；对 Claude Code、Codex、OpenCode、Cursor、Cline、CommandCode、cc-switch 等第三方工具只做检测、读取配置、生成配置计划和受控配置写入，不自动安装第三方工具。
 
@@ -66,7 +66,7 @@ OpenCode 仍然可以作为当前真实验收链路的优先入口，但 UI 信�
 
 ### P0.6 第一页：总体概览
 
-总体概览是用户打开 d-token 后看到的第一面。它不承担复杂配置，只回答：
+总体概览是用户打开 d-token 后看到的第一面。它是总体数据驾驶舱，不是功能入口页；不承担安装、配置、诊断或跨页面导航，只回答：
 
 1. d-token 本地服务是否正在运行。
 2. 已连接哪些 Agent。
@@ -74,19 +74,13 @@ OpenCode 仍然可以作为当前真实验收链路的优先入口，但 UI 信�
 4. cc-switch 或自定义上游是否被检测到。
 5. 今日/近 7 日估算节省了多少 token。
 6. 最近是否有错误、断连、端口冲突、配置异常。
-7. 用户下一步应该做什么。
+7. 当前状态对用户意味着什么。
 
 空白状态必须是“空白状态 + 友好提示”，而不是冷错误。例如：
 
 > d-token 还没有开始工作。启动本地服务后，你可以连接本机 AI 编码工具，并在这里看到连接状态、节省情况和最近问题。
 
-主按钮建议为：
-
-1. 启动本地服务。
-2. 前往安装与连接。
-3. 打开 Doctor。
-
-总体概览必须标注数据来源：真实数据来自 d-token 本地服务；示例数据只用于预览；暂无数据说明服务未启动或还没有请求记录。
+概览不得放置“启动服务”“前往安装”“打开 Doctor”等功能入口或跨页面 CTA。无数据时只解释事实、影响和数据出现条件；真实操作留在对应一级页面。总体概览必须标注数据来源：真实数据来自 d-token-owned runtime、Tauri control plane 或 Event Ledger；正式 App 和浏览器预览均不得以示例数字、mock 曲线或假排行补齐暂无数据。
 
 ### P0.7 第二页：安装与连接工作台
 
@@ -359,7 +353,7 @@ Doctor 还必须能生成“修复提示词”，让用户复制给 Claude/Codex
 推荐替换为：
 
 1. 本地服务暂时没有返回数据。
-2. 这是示例数据，启动服务后会显示真实记录。
+2. 还没有真实记录；连接本地服务并产生请求后，这里会显示数据。
 3. 连接检查未通过。
 4. 请求没有进入 d-token。
 5. 本地操作记录写入失败。
@@ -422,7 +416,7 @@ Doctor 还必须能生成“修复提示词”，让用户复制给 Claude/Codex
 2. 全部页面 loading / empty / error / success 状态补齐。
 3. 所有危险操作加确认、diff、backup、rollback。
 4. 所有真实数据标注来源。
-5. 所有示例数据明确标注。
+5. 正式 App 与普通浏览器预览不加载示例数据；fixture/mock 只留在测试与隐藏 dev harness。
 6. Windows/macOS 路径、端口、权限、编码、shell 差异测试。
 7. 前端 build、后端测试、手工桌面验收、真实链路验收全部通过。
 
@@ -483,8 +477,24 @@ d-token Event Ledger / Dashboard / Doctor / Logs / App
 11. 当前 d-token runtime 必须提供 d-token-owned memory/learn/output shaping 元数据层：`memory-records.jsonl`、`/memory/learn`、`/memory/summary`、`/output-shape`。只保存用户显式提交的摘要、项目、agent、verbosity 等元数据，必须剔除 raw prompt、raw response、messages、body、content。
 12. 当前 OpenCode 验证以真实 routed path 为主：`OpenCode 原配置 -> d-token provider/baseURL -> d-token :18001 -> configured upstream`。除非用户另行要求，OpenCode routed test 不使用隔离 HOME、临时 OpenCode 配置、临时 provider 或 fake provider。早期 direct command / fake-bin 测试只能作为诊断辅助，不能作为真实接入完成证据。
 13. 当前 UI 实现契约：安装页可以有 OpenCode 的正式安装/配置入口，但不得以“运行真实链路测试”“workload benchmark”“能力自检测试”作为面向最终用户的主操作。开发验收可以通过隐藏 dev mode、脚本、CI 或测试报告触发同一后端能力；正式 UI 文案必须转换为用户可理解的“连接 OpenCode”“配置路由”“验证配置”“查看诊断结果”。
-14. 当前前端所有真实运行数据来源必须指向 d-token 自己的服务或 Tauri command 汇总结果；Fixture、browser preview、mock、外部 Headroom 只可作为开发预览/对照，不能成为“已接入真实能力”的判定依据。
+14. 当前前端所有真实运行数据来源必须指向 d-token 自己的服务或 Tauri command 汇总结果；普通 browser preview 使用诚实空态，不加载 Fixture/mock。Fixture/mock 与外部 Headroom 对照只能存在于 `support/`、自动化测试、隐藏 dev harness 或报告，不能进入生产 UI，也不能成为“已接入真实能力”的判定依据。
 15. 当前 OpenCode 安装/配置验收必须模拟真实用户路径：选择 OpenCode agent，应用经过备份的最小配置 diff，验证请求进入 d-token Event Ledger，再回到 Dashboard/Logs/Doctor 展示脱敏状态。不得把该验收设计成面向最终用户的“OpenCode 测试页”。
+
+### 0.0.2 Hybrid Context Optimization Engine 后端合同
+
+Hybrid Context Optimization Engine 是 d-token-owned runtime 的协议安全优化层，在 passthrough、受保护的文本/语义压缩与 Optical PNG 压缩之间做可解释选择。本阶段只开发后端能力，不接入 React/Tauri 前端。
+
+1. 所有 codec 必须先经过协议 Context IR。IR 必须标记 system/developer、当前轮、近期历史、开放工具状态、tool schema/arguments、代码/diff、secret/exact、既有图片、未知 block 与候选内容；未知或无法证明安全的节点默认 `PreserveText`。禁止继续递归改写请求中的任意 JSON 字符串。
+2. route/provider/endpoint/model/API version/capability 必须来自已解析的真实 outbound RouteDecision，不能信任请求体或 preview API 自报字段作为 active 授权。
+3. 第一批 Optical active 只允许 exact Anthropic `/v1/messages` 同协议上游、已闭合且已成为历史的低风险 tool result。system/tool schema/current/recent/open tool state/code/diff/secret/exact/opaque 内容不得只存在于图像。OpenAI Chat/Responses 在各自 inventory、patcher、协议 fixture 与模型 eval 完成前只能 passthrough/shadow。
+4. active capability 默认空且关闭。启用记录必须绑定 exact provider/route/model revision、API contract、renderer/font/profile hash、版本化视觉 token 公式、eval artifact digest、签发/验证/过期时间与可信 authority；wildcard 和未知模型一律拒绝 active。
+5. 规划、渲染、patch 与 post-validation 必须是不可越级的类型化状态链。每个 patch 必须带稳定 node/path、node kind 与 precondition digest；post-validator 必须从真实 PNG、patch set、原/新 IR 与协议 envelope 推导证据，不能接受调用方自报的安全布尔值。
+6. renderer 必须确定性、跨 Windows/macOS 可复现，并在 patch 前自解码验证 PNG。首版执行器必须同时实现 deadline、取消、并发背压以及 node/anchor/page/像素/PNG bytes/base64 bytes/outbound bytes/峰值内存硬上限；超限或不确定时保留原文本，Optical 不与 truncation/summary 叠加。
+7. shadow 必须保留 raw ingress bytes。active 在上游 send commit 前的任何 plan/render/patch/validation/Ledger 失败，只能丢弃变换并发送一次未优化的正确 outbound baseline；请求可能已写入上游、收到响应或开始 streaming 后禁止自动原文重试。
+8. cache planner 必须显式建模 `tools -> system -> messages` 稳定前缀、automatic/explicit cache、最多四个 breakpoint、20-block lookback、TTL 和首次 text/image 切换 burn。冻结 section 的 PNG/base64/capsule bytes 必须 append-stable；profile/font/capability 变化使旧 cache evidence 失效。
+9. 计量必须区分 estimated/actual、text/vision/cache write/cache read/output/encoded bytes/latency，并支持 signed delta。shadow、fallback、provider failure 不得计入 actual savings；第三方 benchmark、base64 字符数或旧 `char/4` 估算不能标为真实账单节省。
+10. 同一 request id 必须关联 plan/render/patch/fallback/send-commit/provider outcome 的类型化 Event Ledger、最终 RequestLog、metrics 与 Doctor 状态。任何持久化、日志、错误、导出和调试元数据都不得包含 raw prompt/response、PNG、base64、secret、cookie 或 auth；active 审计无法持久化时在 send commit 前回退 passthrough。
+11. active send path 在确定性协议/资源/隐私/回退测试和目标 provider/model 的配对质量、成本、延迟 eval 全部通过前必须不可达；使用默认关闭 feature gate、空可信 registry 与 sealed `ReadyToSend`（或等价不可伪造状态）共同保证。
 
 状态：Living Document  
 唯一规则：本文件是 d-token 的唯一 PRD。后续任何产品目标、边界、技术路线、目录结构调整，都直接修改本文件，不再另起 v0.1/v0.2/v0.3 多版本 PRD。
@@ -1151,6 +1161,128 @@ GUI 必须覆盖并逐步取代普通用户对以下命令或页面的依赖：
 18. Logs 不展示完整测试 prompt/response，不保存或暴露密钥、token、cookie、auth 文件；只展示脱敏后的运行日志、路由日志、配置变更日志、错误日志和导出入口。
 19. Doctor 可以执行诊断动作，但文案必须面向修复和状态解释，例如“检查 OpenCode 配置”“检查 d-token 服务”“检查路由是否生效”“查看修复建议”，不得把开发 smoke test 原样暴露给普通用户。
 20. 每次新增 UI 功能前必须检查：它是否服务普通用户日常任务；是否复用多 agent 模型；是否读取 d-token-owned 数据；是否泄露开发测试概念；是否能通过脚本/CI 独立验证真实能力。
+
+### 12.5 桌面视觉、布局与交互产品契约
+
+本节是 Windows/macOS 共享 React UI 的唯一设计真理源。不得再建立独立的 Claude 风格设计文档、平行设计系统或多版本视觉规范。实现可以研究公开产品和开源项目，但 d-token 必须保留自己的品牌、文案、数据语义和许可证边界。
+
+#### 12.5.1 设计目标
+
+d-token 是本地 AI Coding 路由与上下文优化控制面，不是营销页、测试面板、聊天克隆或命令行外壳。视觉必须同时满足：
+
+1. 简洁科技感：结构清晰、数据和状态优先，避免装饰性面板堆叠。
+2. 亲和力：暖中性色、人文排版、自然语言和舒展留白，避免冷硬运维后台。
+3. 克制神话感：由浅层可变渐变与低对比 ASCII 呼吸场提供空间感，不使用星座、符文、神名或无关文案。
+4. 事实一致性：没有证据时显示 `—`、unknown、partial、unavailable 或真实空态；绿色只表示已验证成功。
+5. 跨平台一致：Windows/macOS 共享同一 React 组件、信息架构、字号、间距、状态和中英语义；平台差异只存在于窗口、凭据、进程、系统集成与打包适配层。
+
+#### 12.5.2 AiMaMi 参考边界与连续 App Shell
+
+布局结构和低幅度动画可以高相似度参考 `borawong/AiMaMi`，研究基线为 commit `297c7af56f10fb371b77bc9b6b65aa320afcbe7e`。该项目采用 Apache-2.0；d-token 默认只借鉴结构、尺寸关系和动效原则，独立实现现有组件，不复制 AiMaMi 名称、Logo、图标、截图、人物、二维码、品牌文案或商标资产。若未来逐行复用代码，必须保留许可证和相关版权/修改声明，并逐文件核验第三方来源。
+
+正式 Shell 必须是一个连续窗口结构，禁止“独立玻璃侧栏 + 独立玻璃顶栏”拼接：
+
+1. 左侧栏贯穿窗口上下，展开宽约 184px，折叠宽 64px；桌面过渡 180–220ms。
+2. 右侧只有一个 inset workspace slab；Topbar 是 workspace 的第一行，与内容区共享同一表面、圆角和边界，不是单独悬浮部件。
+3. 侧栏顶部、workspace Topbar 和 macOS 拖拽区共享 48px 水平基线。
+4. workspace 桌面外边距建议 18px，圆角 12px，1px 细边界与极轻单层阴影；920×640 时可收紧外边距并自动折叠侧栏，但不得改变信息架构。
+5. Topbar 只保留窗口拖拽、当前上下文和必要全局控制；不得重复页面 H1、品牌区或工程状态墙。
+6. 侧栏容器建议 8px 内距；导航按钮圆角 8px、图标约 16px、低对比 hover；选中态只使用一层暖色轻染和一个清晰指示。
+7. macOS drag region 只能覆盖空白区；按钮、导航和可编辑控件必须显式 no-drag。Windows 使用同一布局，窗口控制差异由 Tauri/平台适配层处理。
+8. 一级导航固定为：总体概览、安装与连接、分析、Doctor、变更与回退、设置；工作台子页面不得重新扩张为顶级工程导航。
+
+#### 12.5.3 内容栅格与四格概览
+
+用户已确认概览四格结构，必须保留为真实总体数据驾驶舱：
+
+1. 宽屏可用区 `>=1040px` 使用 4 列；`720–1039px` 使用 2 列；更窄使用 1 列。
+2. 四格间距 16px；KPI 卡建议最小高 98–112px、内距 16px、圆角 16px、细边界和极轻阴影。
+3. 标签 12–13px/500，数值 26–28px/600 并启用 tabular numerals，详情 12–13px。
+4. 四格只展示可追溯的请求、Token/压缩、路由/Agent、错误/健康等总体事实；不成为功能入口，不使用大面积彩色光晕。
+5. 页面横向内距：常规桌面 24px，较窄窗口 16px；主要纵向节奏 24px；主卡圆角 16px、inner panel 12px、按钮/导航 8px。
+
+#### 12.5.4 字体与双语排版
+
+字体采用“Claude 类编辑感标题 + 人文系统正文”，但不得使用 Anthropic 专有字体、名称或品牌资产：
+
+```css
+--font-display: ui-serif, "Iowan Old Style", "Palatino Linotype",
+  "Songti SC", STSong, SimSun, serif;
+--font-ui: ui-sans-serif, -apple-system, BlinkMacSystemFont,
+  "SF Pro Text", "Segoe UI Variable Text", "Segoe UI",
+  "PingFang SC", "Microsoft YaHei UI", "Noto Sans CJK SC", sans-serif;
+--font-mono: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+```
+
+1. 页面 H1 使用 display stack，24–28px、500、紧凑字距；每页只出现一个 H1。
+2. 区块标题 16–18px/600；正文 14–15px/400、行高 1.5–1.6；按钮和标签 13–14px/500。
+3. KPI 数字使用 UI stack/600；只有代码、真实路径和脱敏日志使用等宽字体。
+4. 禁止用全大写、超宽字距、粗黑字体或伪终端文字制造科技感。
+5. 所有正式页面、空态、按钮、错误和状态必须提供中文/English；翻译应表达同一产品任务，不允许一侧遗留测试文案或更详细的敏感信息。
+6. macOS/Windows 字形可由系统字体决定，但字号、权重、行高、布局语义和截断规则必须一致。
+
+#### 12.5.5 色彩、主题与表面
+
+1. 画布使用暖米白/暖灰黑；主文本为暖墨色/柔和米白。
+2. 珊瑚橙/琥珀是稀缺主强调，只用于主动作、焦点、选中和少量关键数据；成功绿、警告黄、错误红仅表达语义状态。
+3. 浅色、深色、跟随系统必须保留；现有背景渐变主题预设和自定义主题能力不得删除或被 ASCII 背景替代。
+4. 表面优先使用明度差和细边界；阴影仅用于 workspace、浮层和少量关键卡片，禁止玻璃卡片连续嵌套。
+5. 同一屏不得同时出现大面积渐变、厚阴影、彩色描边、发光和高对比背景动画。
+6. 所有交互状态必须区分 default、hover、focus-visible、pressed、disabled、selected；hover 不放大、不漂浮，pressed 位移最多 1px，focus-visible 在深浅色中清晰可见。
+
+#### 12.5.6 可变渐变与 ASCII 呼吸场
+
+背景由两层组成，顺序和职责不可颠倒：
+
+1. 底层是现有浅淡可变渐变，继续由主题预设和用户自定义参数控制。
+2. 上层是单一透明 Canvas ASCII 呼吸场，只提供微弱生命感；位于主 UI 下，不写背景色、不使用 WebGL、不跟踪鼠标，不抢占文案和主界面。
+3. ASCII 场采用 clean-room 独立实现。`op7418/guizang-ppt-skill` 仅作为视觉思想参考，研究基线 commit `82fe5ae129e8c2a12e1155fcabed6703342749d6`；其 AGPL-3.0 源码、字符表、参数组合和模板资产不得复制进 d-token，除非项目明确接受相应许可证义务或取得额外授权。
+4. 默认建议：cell 约 26px、25–35% 点位可见、聚焦约 10fps、主呼吸周期 48–72s、DPR 上限 1.25；字符只使用跨平台安全 ASCII 标点。
+5. 浅色有效 glyph alpha 约 1.2–3.5%，深色约 1.5–4.5%；主内容局部亮度变化应保持不可干扰阅读。
+6. 左侧导航与顶部控制区必须通过 mask 保持基本静默；主要呼吸场集中在 workspace 的开放空间，卡片表面进一步隔离背景。
+7. 窗口失焦冻结最后一帧，隐藏/最小化停止绘制；主题变化只触发必要重绘。
+8. `prefers-reduced-motion: reduce` 优先级高于 App 本地动画设置：只绘固定静态帧或完全关闭，零 RAF/零定时器；系统 Reduce Motion 不得被本地 false 覆盖。
+9. 连续慢帧应自动降到更低 fps/更疏网格，严重超时则冻结静态；Canvas effect 清理必须 cancel RAF、disconnect observer 并移除全部 listener。
+
+#### 12.5.7 动效
+
+```text
+instant    100–120ms  按下与图标反馈
+fast       140–180ms  hover、focus、短淡入
+standard   180–220ms  页签、折叠、对话框、侧栏
+ambient    48–72s     ASCII 呼吸主周期
+```
+
+1. 页面切换只使用低幅度淡入和最多 1–2px 位移；不使用 spring、弹跳、卡片上浮或图标旋转。
+2. 列表次级动作可在 hover/focus-within 出现，但键盘用户必须同样可达。
+3. Reduce Motion 下移除页面位移、背景呼吸和所有非必要循环动画。
+
+#### 12.5.8 真实性、空态与文案
+
+1. 无运行证据时不得显示默认端口、默认路径、假 Agent、假 provider、假 fallback、假曲线、假日志、假成本或绿色成功态。
+2. 缺失数值显示 `—`，不得显示 `0 Token`、`0%`、`$0.000` 或用 `Date.now()` 补造时间。
+3. 空态包含事实、影响和数据出现条件；正式 App 与浏览器预览均不得加载 fixture 作为内容。
+4. 概览展示总体事实；安装、配置、验证、诊断、日志、导出和回退只在对应任务页面出现。
+5. UI 动作必须使用用户语言：安装、连接、配置、预览变更、应用、验证、诊断、查看状态、查看日志、导出、回退；不得出现 benchmark、smoke、fixture、mock、fake-bin 或 testing center。
+
+#### 12.5.9 可访问性与跨平台窗口验收
+
+1. Tab/Shift+Tab、方向键、Home/End、Enter/Space、Esc 必须完成对应任务；焦点顺序与视觉顺序一致。
+2. 状态不能只靠颜色；图标和文字必须同时表达。
+3. 1180×780、920×640 和全屏下无横向滚动、内容遮挡、卡片残片或状态栏覆盖；920×640 必须实测展开/折叠侧栏。
+4. 浅色、深色、跟随系统、自定义主题、中英切换、Reduce Motion 必须在真实 macOS Tauri 窗口验收；Windows 使用同一 UI 自动化契约，并在可用 Windows CI/机器上补实包验证。
+5. 浏览器 E2E 只证明布局和交互；功能完成还必须由 Tauri command、d-token-owned runtime、Event Ledger、export 与真实 routed Agent flow 证明。
+6. 正式构建产物不得包含 mock、fixture、benchmark、smoke、fake-bin、testing center 等测试语义。
+
+#### 12.5.10 UI 完成证据
+
+UI 达到内测水准必须同时具备：
+
+1. React 单元测试、TypeScript、Vite production build、Chromium/WebKit E2E 全绿。
+2. macOS `.app` 真实窗口截图与可访问树证据，覆盖中英、深浅色、1180×780、920×640、键盘和 Reduce Motion。
+3. 最小流程：启动/连接 d-token → 选择 Agent → 配置 Provider/Route → 预览 diff/backup → 应用 → 验证 → 在概览/日志看到真实结果。
+4. 扩展流程：多 Agent、cc-switch/custom upstream、Doctor、日志导出、配置变更与 rollback。
+5. OpenCode 真实 routed test 使用用户正常配置，证明流量命中 d-token、route/provider/model/CCR 与 Event Ledger，并逐字节恢复临时配置；UI 只显示脱敏后的“配置已验证/路由已生效”等产品状态。
 
 ## 13. Doctor 要求
 

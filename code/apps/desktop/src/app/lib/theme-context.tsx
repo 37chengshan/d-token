@@ -9,11 +9,11 @@ export type FlowPalette = "sunrise" | "aurora" | "ocean" | "mono";
 export type FlowSpeed = "slow" | "normal" | "fast";
 
 export const ACCENTS: { key: Accent; color: string }[] = [
-  { key: "blue", color: "#2563eb" },
-  { key: "green", color: "#16a34a" },
-  { key: "orange", color: "#ea580c" },
-  { key: "purple", color: "#7c3aed" },
-  { key: "slate", color: "#475569" },
+  { key: "blue", color: "#4f6f9b" },
+  { key: "green", color: "#3b7a57" },
+  { key: "orange", color: "#c7652a" },
+  { key: "purple", color: "#80639b" },
+  { key: "slate", color: "#657078" },
 ];
 
 export const CHART_ACCENTS: { key: ChartAccent; color: string }[] = [
@@ -43,7 +43,7 @@ const AppearanceContext = createContext<AppearanceCtx>({
   setAccent: () => {},
   chartAccent: "orange",
   setChartAccent: () => {},
-  flowPalette: "ocean",
+  flowPalette: "sunrise",
   setFlowPalette: () => {},
   flowSpeed: "slow",
   setFlowSpeed: () => {},
@@ -62,7 +62,7 @@ function AppearanceProvider({ children }: { children: ReactNode }) {
   const { setTheme } = useTheme();
   const [accent, setAccent] = useState<Accent>("orange");
   const [chartAccent, setChartAccent] = useState<ChartAccent>("orange");
-  const [flowPalette, setFlowPalette] = useState<FlowPalette>("ocean");
+  const [flowPalette, setFlowPalette] = useState<FlowPalette>("sunrise");
   const [flowSpeed, setFlowSpeed] = useState<FlowSpeed>("slow");
   const [glass, setGlass] = useState(true);
   const [lang, setLang] = useState<Lang>("zh");

@@ -2,7 +2,6 @@ import { useMemo } from "react";
 import { AreaChart, Area, ResponsiveContainer, Tooltip, XAxis } from "recharts";
 import {
   Activity,
-  ArrowRight,
   Bot,
   CircleAlert,
   Coins,
@@ -13,9 +12,8 @@ import {
 } from "lucide-react";
 import { GlassCard } from "../common/GlassCard";
 import { DataSourceBadge } from "../common/DataSourceBadge";
-import { Heatmap } from "../common/Heatmap";
+import { Heatmap, type ActivityDay } from "../common/Heatmap";
 import { useI18n, useT, type Lang } from "../../lib/i18n";
-import { type ActivityDay } from "../../lib/fixtures";
 import type { PageId } from "../../lib/nav";
 import { Badge } from "../ui/badge";
 import { useRuntimeDashboard } from "../../lib/useRuntimeDashboard";
@@ -27,7 +25,7 @@ function fmt(n: number) {
   return String(n);
 }
 
-export function Overview({ setPage }: { setPage: (p: PageId) => void }) {
+export function Overview(_props: { setPage: (p: PageId) => void }) {
   const t = useT();
   const { lang } = useI18n();
   const { payload, status: payloadStatus, updatedAt } = useRuntimeDashboard();
@@ -44,6 +42,8 @@ export function Overview({ setPage }: { setPage: (p: PageId) => void }) {
   );
   const s = runtime.stats;
   const metricsAvailable = runtime.metricsAvailable;
+  const compressionAvailable = runtime.compressionAvailable;
+  const trafficAvailable = runtime.trafficAvailable;
   const unavailableDetail = runtime.sourceLabel;
 
   return (
@@ -64,8 +64,8 @@ export function Overview({ setPage }: { setPage: (p: PageId) => void }) {
       <section data-overview-section="kpis" data-testid="overview-kpis" className="grid grid-cols-2 gap-3 min-[880px]:grid-cols-4">
         <OverviewKpi
           label={t("ov.routedRequests")}
-          value={metricsAvailable ? fmt(s.requestCount) : "—"}
-          detail={metricsAvailable ? (lang === "zh" ? "来自 d-token 本地请求记录" : "From local d-token request records") : unavailableDetail}
+          value={trafficAvailable ? fmt(s.requestCount) : "—"}
+          detail={trafficAvailable ? (lang === "zh" ? "来自 d-token 本地请求记录" : "From local d-token request records") : unavailableDetail}
           icon={Activity}
         />
         <OverviewKpi
@@ -76,16 +76,16 @@ export function Overview({ setPage }: { setPage: (p: PageId) => void }) {
         />
         <OverviewKpi
           label={t("ov.compressionRate")}
-          value={metricsAvailable ? `${Math.round(s.compressionRate * 100)}%` : "—"}
-          detail={metricsAvailable ? (lang === "zh" ? "基于压缩前后 Token 估算" : "Estimated from before/after token counts") : unavailableDetail}
+          value={compressionAvailable ? `${Math.round(s.compressionRate * 100)}%` : "—"}
+          detail={compressionAvailable ? (lang === "zh" ? "基于压缩前后 Token 估算" : "Estimated from before/after token counts") : unavailableDetail}
           icon={Gauge}
         />
         <OverviewKpi
-          label={t("ov.errorsToday")}
-          value={metricsAvailable ? fmt(s.errorsToday) : "—"}
-          detail={metricsAvailable ? runtime.errorLabel : unavailableDetail}
+          label={lang === "zh" ? "请求错误" : "Request errors"}
+          value={trafficAvailable ? fmt(s.errorsToday) : "—"}
+          detail={trafficAvailable ? runtime.errorLabel : unavailableDetail}
           icon={CircleAlert}
-          tone={metricsAvailable && s.errorsToday > 0 ? "negative" : metricsAvailable ? "positive" : "neutral"}
+          tone={trafficAvailable && s.errorsToday > 0 ? "negative" : trafficAvailable ? "positive" : "neutral"}
         />
       </section>
 
@@ -100,14 +100,6 @@ export function Overview({ setPage }: { setPage: (p: PageId) => void }) {
               <Badge variant={evidenceState === "verified" ? "default" : "outline"}>
                 {evidenceState === "verified" ? t("ov.localConnected") : t("ov.waitingConnection")}
               </Badge>
-              <button
-                type="button"
-                onClick={() => setPage(operational.nextStep.page)}
-                className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-[var(--chip-hover-bg)] hover:text-foreground"
-              >
-                {operational.nextStep.action}
-                <ArrowRight className="size-3.5" />
-              </button>
             </div>
           </div>
           <div className="overview-status-grid grid grid-cols-1 gap-px bg-border/40 sm:grid-cols-2 min-[1080px]:grid-cols-4">
@@ -120,7 +112,7 @@ export function Overview({ setPage }: { setPage: (p: PageId) => void }) {
       </section>
 
       <section data-overview-section="issues">
-        <IssueSummary status={operational.issues} onOpenDoctor={() => setPage("doctor")} />
+        <IssueSummary status={operational.issues} />
       </section>
 
       <section data-overview-section="trend">
@@ -245,7 +237,7 @@ function CcSwitchOperationalItem({ summary }: { summary: CcSwitchStatus }) {
   );
 }
 
-function IssueSummary({ status, onOpenDoctor }: { status: OperationalStatus; onOpenDoctor: () => void }) {
+function IssueSummary({ status }: { status: OperationalStatus }) {
   const t = useT();
   const color = status.tone === "negative"
     ? "text-red-600 dark:text-red-400"
@@ -264,15 +256,6 @@ function IssueSummary({ status, onOpenDoctor }: { status: OperationalStatus; onO
           {status.label} <span className="font-normal text-muted-foreground">· {status.detail}</span>
         </div>
       </div>
-      {status.tone === "negative" && (
-        <button
-          type="button"
-          onClick={onOpenDoctor}
-          className="shrink-0 rounded-md px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-[var(--chip-hover-bg)] hover:text-foreground"
-        >
-          {t("ov.goDoctor")}
-        </button>
-      )}
     </GlassCard>
   );
 }
@@ -312,7 +295,7 @@ export function deriveOverviewOperationalSummary(
 ): OverviewOperationalSummary {
   const zh = lang === "zh";
   const evidenceState = classifyEvidence({ payload, status, requireRuntimeIdentity: true });
-  const requestLogs = arrayValue(payload?.request_logs);
+  const requestLogs = recordArray(payload?.request_logs);
   const runtimeConfig = objectValue(payload?.runtime_active_config);
   const desktopConfig = objectValue(payload?.desktop_active_config);
   const routes = firstPopulatedArray(runtimeConfig.routes, payload?.routes);
@@ -341,7 +324,10 @@ export function deriveOverviewOperationalSummary(
   const service: OperationalStatus = isRuntime
     ? {
         label: zh ? "正在运行" : "Running",
-        detail: safeText(payload?.desktop_service_url, "http://127.0.0.1:18001"),
+        detail: safeText(
+          payload?.desktop_service_url,
+          zh ? "本地服务已响应，未提供监听地址" : "Local service responded without a listening address",
+        ),
         tone: "positive",
       }
     : evidenceState === "loading"
@@ -432,6 +418,12 @@ export function deriveOverviewOperationalSummary(
             : (zh ? "连接配置尚未完整" : "Connection setup is incomplete"),
           tone: "negative",
         }
+      : requestLogs.length === 0
+        ? {
+            label: zh ? "尚无请求记录" : "No request records yet",
+            detail: zh ? "收到真实请求后才能判断请求错误" : "Request errors can be evaluated after real traffic arrives",
+            tone: "neutral",
+          }
       : {
           label: zh ? "没有发现问题" : "No issues found",
           detail: zh ? "以当前本地服务记录为准" : "Based on current local service records",
@@ -527,8 +519,35 @@ function arrayValue(value: unknown): any[] {
   return Array.isArray(value) ? value : [];
 }
 
+function recordArray(value: unknown): Record<string, any>[] {
+  return arrayValue(value).filter(
+    (item): item is Record<string, any> => Boolean(item) && typeof item === "object" && !Array.isArray(item),
+  );
+}
+
 function objectValue(value: unknown): Record<string, any> {
   return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, any> : {};
+}
+
+function numberEvidence(value: unknown): number | null {
+  if (typeof value !== "number" && typeof value !== "string") return null;
+  if (typeof value === "string" && value.trim().length === 0) return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function firstNumberEvidence(...values: unknown[]): number | null {
+  for (const value of values) {
+    const parsed = numberEvidence(value);
+    if (parsed !== null) return parsed;
+  }
+  return null;
+}
+
+function timestampEvidence(value: unknown): number | null {
+  const timestamp = numberEvidence(value);
+  if (timestamp === null) return null;
+  return Number.isFinite(new Date(timestamp).getTime()) ? timestamp : null;
 }
 
 function firstPopulatedArray(...values: unknown[]): any[] {
@@ -551,20 +570,52 @@ function overviewEvidenceLabel(state: EvidenceState): string {
   return "本地数据不可用";
 }
 
-function overviewFromPayload(payload: Record<string, any> | null, status: string) {
+export function overviewFromPayload(payload: Record<string, any> | null, status: string) {
   const evidenceState = classifyEvidence({ payload, status, requireRuntimeIdentity: true });
-  const stats = payload?.stats ?? {};
-  const requestLogs = Array.isArray(payload?.request_logs) ? payload.request_logs : [];
-  const history = Array.isArray(payload?.history?.history) ? payload.history.history : [];
-  const hasRuntimeData = evidenceState === "verified" && (requestLogs.length > 0 || typeof stats.tokens_saved === "number" || history.length > 0);
+  const stats = objectValue(payload?.stats);
+  const runtimeTokens = objectValue(stats.tokens);
+  const requestLogs = recordArray(payload?.request_logs);
+  const history = recordArray(objectValue(payload?.history).history);
+  const trafficAvailable = requestLogs.length > 0;
+
+  const logSavedValues = requestLogs
+    .map((log) => numberEvidence(log.tokens_saved))
+    .filter((value): value is number => value !== null);
+  const historySavedValues = history
+    .map((item) => timestampEvidence(item.bucket_ms ?? item.ts) === null ? null : numberEvidence(item.saved))
+    .filter((value): value is number => value !== null);
+  const totalSaved = firstNumberEvidence(runtimeTokens.saved, stats.tokens_saved)
+    ?? (historySavedValues.length > 0 ? historySavedValues.reduce((total, value) => total + value, 0) : null)
+    ?? (logSavedValues.length > 0 ? logSavedValues.reduce((total, value) => total + value, 0) : null);
+
+  const logInputValues = requestLogs
+    .map((log) => numberEvidence(log.input_tokens_before))
+    .filter((value): value is number => value !== null);
+  const totalBefore = firstNumberEvidence(runtimeTokens.input, stats.input_tokens)
+    ?? (logInputValues.length > 0 ? logInputValues.reduce((total, value) => total + value, 0) : null);
+  const explicitSavingsPercent = firstNumberEvidence(stats.savings_percent);
+  const savingsPercent = explicitSavingsPercent
+    ?? (totalSaved !== null && totalBefore !== null && totalBefore > 0 ? (totalSaved / totalBefore) * 100 : null);
+  const metricsAvailable = totalSaved !== null;
+  const compressionAvailable = savingsPercent !== null;
+
+  const historyTrend = history.flatMap((item) => {
+    const timestamp = timestampEvidence(item.bucket_ms ?? item.ts);
+    const saved = numberEvidence(item.saved);
+    return timestamp === null || saved === null ? [] : [{ timestamp, saved }];
+  });
+  const hasRuntimeData = evidenceState === "verified"
+    && (trafficAvailable || metricsAvailable || compressionAvailable || historyTrend.length > 0);
 
   if (!hasRuntimeData) {
     return {
       source: evidenceState === "verified" ? "runtime-empty" : evidenceState,
       metricsAvailable: false,
+      compressionAvailable: false,
+      trafficAvailable: false,
       sourceLabel:
         evidenceState === "verified"
-            ? "本地服务在线 · 暂无请求"
+            ? "本地服务在线 · 暂无请求记录"
             : evidenceState === "preview"
               ? "浏览器预览 · 未连接真实数据"
               : evidenceState === "stale"
@@ -583,93 +634,53 @@ function overviewFromPayload(payload: Record<string, any> | null, status: string
     };
   }
 
-  const runtimeTokens = stats.tokens ?? {};
-  const totalSaved = Number(runtimeTokens.saved ?? stats.tokens_saved ?? sum(requestLogs, "tokens_saved"));
-  const totalBefore = Number(runtimeTokens.input ?? sum(requestLogs, "input_tokens_before"));
-  const savingsPercent = Number(stats.savings_percent ?? (totalBefore > 0 ? (totalSaved / totalBefore) * 100 : 0));
-  const errorCount = requestLogs.filter((log: any) => log?.error).length;
-  const agents = new Set(requestLogs.map((log: any) => safeText(log?.agent, "")).filter(Boolean));
-  const activeAgents = agents.size > 0 ? agents.size : 1;
-  const runtimeTrend = history.length > 0
-    ? [...history]
-      .sort((a: any, b: any) => Number(a?.bucket_ms ?? a?.ts ?? 0) - Number(b?.bucket_ms ?? b?.ts ?? 0))
+  const errorCount = requestLogs.filter((log) => Boolean(log.error)).length;
+  const agents = new Set(requestLogs.map((log) => safeText(log.agent, "")).filter(Boolean));
+  const activeAgents = agents.size;
+  const runtimeTrend = historyTrend.length > 0
+    ? [...historyTrend]
+      .sort((a, b) => a.timestamp - b.timestamp)
       .slice(-14)
-      .map((item: any, index: number) => ({
-        day: formatTrendTime(item?.bucket_ms ?? item?.ts, `#${index + 1}`),
-        saved: Number(item.saved ?? 0),
+      .map((item) => ({
+        day: formatTrendTime(item.timestamp),
+        saved: item.saved,
       }))
     : buildTrendFromLogs(requestLogs);
 
   return {
-    source: "d-token-runtime",
-    metricsAvailable: true,
-    sourceLabel: `d-token 本地服务 · ${requestLogs.length} 条请求`,
+    source: trafficAvailable ? "d-token-runtime" : "d-token-runtime-metrics",
+    metricsAvailable,
+    compressionAvailable,
+    trafficAvailable,
+    sourceLabel: trafficAvailable
+      ? `d-token 本地服务 · ${requestLogs.length} 条请求`
+      : "本地服务在线 · 暂无请求记录",
     stats: {
-      savedTotal: totalSaved,
-      savedToday: savedFromHistoryOrLogs(history, requestLogs, startOfLocalDay(Date.now()), Date.now()),
-      savedWeek: savedFromHistoryOrLogs(history, requestLogs, Date.now() - 7 * 24 * 60 * 60 * 1000, Date.now()),
-      costSaved: totalSaved / 1_000_000 * 3,
-      compressionRate: Math.max(0, Math.min(1, savingsPercent / 100)),
+      savedTotal: totalSaved ?? 0,
+      compressionRate: savingsPercent === null ? 0 : Math.max(0, Math.min(1, savingsPercent / 100)),
       activeAgents,
       errorsToday: errorCount,
       requestCount: requestLogs.length,
-      layered: {
-        rtk: 0,
-        runtime: Math.max(0, Math.min(1, savingsPercent / 100)),
-        route: 0,
-      },
     },
     trend: runtimeTrend,
     activityDays: buildActivityDaysFromLogs(requestLogs),
     tools: buildToolsFromLogs(requestLogs),
-    activitySource: "d-token 本地请求记录",
-    errorLabel: errorCount > 0 ? "存在请求失败" : "没有请求失败",
+    activitySource: trafficAvailable ? "d-token 本地请求记录" : "等待真实本地请求记录",
+    errorLabel: trafficAvailable
+      ? (errorCount > 0 ? "存在请求失败" : "没有请求失败")
+      : "尚无真实请求记录",
   };
 }
 
 const emptyOverviewStats = {
   savedTotal: 0,
-  savedToday: 0,
-  savedWeek: 0,
-  costSaved: 0,
   compressionRate: 0,
   activeAgents: 0,
   errorsToday: 0,
   requestCount: 0,
-  layered: {
-    rtk: 0,
-    runtime: 0,
-    route: 0,
-  },
 };
 
-function startOfLocalDay(now: number) {
-  const date = new Date(now);
-  date.setHours(0, 0, 0, 0);
-  return date.getTime();
-}
-
-function savedInWindow(logs: any[], from: number, to: number) {
-  return logs.reduce((total, log) => {
-    const timestamp = Number(log?.timestamp_ms);
-    if (!Number.isFinite(timestamp) || timestamp < from || timestamp > to) return total;
-    return total + Number(log?.tokens_saved ?? 0);
-  }, 0);
-}
-
-function savedFromHistoryOrLogs(history: any[], logs: any[], from: number, to: number) {
-  const historyRows = history.filter((item) => Number.isFinite(Number(item?.bucket_ms ?? item?.ts)));
-  if (historyRows.length === 0) return savedInWindow(logs, from, to);
-  return historyRows.reduce((total, item) => {
-    const timestamp = Number(item?.bucket_ms ?? item?.ts);
-    if (timestamp < from || timestamp > to) return total;
-    return total + Number(item?.saved ?? 0);
-  }, 0);
-}
-
-function formatTrendTime(value: unknown, fallback: string) {
-  const timestamp = Number(value);
-  if (!Number.isFinite(timestamp)) return safeText(value, fallback);
+function formatTrendTime(timestamp: number) {
   return new Intl.DateTimeFormat("zh-CN", {
     month: "2-digit",
     day: "2-digit",
@@ -682,26 +693,24 @@ function buildActivityDaysFromLogs(logs: any[]): ActivityDay[] {
   if (logs.length === 0) return [];
   const byDay = new Map<string, ActivityDay>();
   for (const log of logs) {
-    const ms = Number(log?.timestamp_ms ?? Date.now());
-    const date = Number.isFinite(ms) ? new Date(ms).toISOString().slice(0, 10) : new Date().toISOString().slice(0, 10);
+    const timestamp = timestampEvidence(log?.timestamp_ms);
+    if (timestamp === null) continue;
+    const date = new Date(timestamp).toISOString().slice(0, 10);
     const current = byDay.get(date) ?? {
       date,
-      week: 0,
-      weekday: new Date(`${date}T00:00:00`).getDay(),
-      month: date.slice(5, 7),
-      level: 0,
       sessions: 0,
       minutes: 0,
       tokens: 0,
       tools: 0,
-      changes: 0,
     };
     current.sessions += 1;
-    current.minutes += Math.max(1, Math.round(Number(log?.latency_ms ?? 0) / 1000));
-    current.tokens += Number(log?.input_tokens_before ?? 0);
-    current.tools += Array.isArray(log?.transforms_applied) ? Math.max(1, log.transforms_applied.length) : 1;
-    current.changes += Number(log?.tokens_saved ?? 0) > 0 ? 1 : 0;
-    current.level = activityLevelFromSessions(current.sessions);
+    const latencyMs = numberEvidence(log?.latency_ms);
+    if (latencyMs !== null && latencyMs > 0) {
+      current.minutes += Math.round((latencyMs / 60_000) * 100) / 100;
+    }
+    const inputTokens = numberEvidence(log?.input_tokens_before);
+    if (inputTokens !== null && inputTokens > 0) current.tokens += inputTokens;
+    current.tools += transformNames(log).length;
     byDay.set(date, current);
   }
   return fillRecentActivity(Array.from(byDay.values()).sort((a, b) => a.date.localeCompare(b.date)));
@@ -710,24 +719,18 @@ function buildActivityDaysFromLogs(logs: any[]): ActivityDay[] {
 function fillRecentActivity(days: ActivityDay[]) {
   if (days.length === 0) return [];
   const byDate = new Map(days.map((day) => [day.date, day]));
-  const end = new Date(`${days[days.length - 1].date}T00:00:00`);
-  const start = new Date(end);
-  start.setDate(end.getDate() - 30);
+  const start = new Date(`${days[0].date}T00:00:00Z`);
+  const end = new Date(`${days[days.length - 1].date}T00:00:00Z`);
   const filled: ActivityDay[] = [];
-  for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
+  for (let d = new Date(start); d <= end; d.setUTCDate(d.getUTCDate() + 1)) {
     const date = d.toISOString().slice(0, 10);
     const existing = byDate.get(date);
     filled.push(existing ?? {
       date,
-      week: Math.floor(filled.length / 7),
-      weekday: d.getDay(),
-      month: date.slice(5, 7),
-      level: 0,
       sessions: 0,
       minutes: 0,
       tokens: 0,
       tools: 0,
-      changes: 0,
     });
   }
   return filled;
@@ -736,8 +739,8 @@ function fillRecentActivity(days: ActivityDay[]) {
 function buildToolsFromLogs(logs: any[]) {
   const counts = new Map<string, number>();
   for (const log of logs) {
-    const transforms = Array.isArray(log?.transforms_applied) && log.transforms_applied.length > 0 ? log.transforms_applied : ["runtime_route"];
-    for (const transform of transforms) {
+    if (timestampEvidence(log?.timestamp_ms) === null) continue;
+    for (const transform of transformNames(log)) {
       counts.set(transform, (counts.get(transform) ?? 0) + 1);
     }
   }
@@ -746,27 +749,26 @@ function buildToolsFromLogs(logs: any[]) {
     .map(([name, calls]) => ({ name, calls }));
 }
 
-function activityLevelFromSessions(sessions: number): 0 | 1 | 2 | 3 | 4 {
-  if (sessions <= 0) return 0;
-  if (sessions >= 5) return 4;
-  if (sessions >= 3) return 3;
-  if (sessions >= 2) return 2;
-  return 1;
-}
-
 function buildTrendFromLogs(logs: any[]) {
   if (logs.length === 0) return [];
   const byDay = new Map<string, number>();
   for (const log of logs) {
-    const ms = Number(log?.timestamp_ms ?? Date.now());
-    const day = Number.isFinite(ms) ? new Date(ms).toISOString().slice(5, 10) : "runtime";
-    byDay.set(day, (byDay.get(day) ?? 0) + Number(log?.tokens_saved ?? 0));
+    const timestamp = timestampEvidence(log?.timestamp_ms);
+    const saved = numberEvidence(log?.tokens_saved);
+    if (timestamp === null || saved === null) continue;
+    const day = new Date(timestamp).toISOString().slice(5, 10);
+    byDay.set(day, (byDay.get(day) ?? 0) + saved);
   }
-  return Array.from(byDay.entries()).slice(-14).map(([day, saved]) => ({ day, saved }));
+  return Array.from(byDay.entries())
+    .sort(([left], [right]) => left.localeCompare(right))
+    .slice(-14)
+    .map(([day, saved]) => ({ day, saved }));
 }
 
-function sum(rows: any[], key: string) {
-  return rows.reduce((total, row) => total + Number(row?.[key] ?? 0), 0);
+function transformNames(log: any): string[] {
+  return arrayValue(log?.transforms_applied)
+    .map((transform) => safeText(transform, "").trim())
+    .filter(Boolean);
 }
 
 function safeText(value: unknown, fallback: string) {

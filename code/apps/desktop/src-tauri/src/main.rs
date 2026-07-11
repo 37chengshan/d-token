@@ -1,6 +1,8 @@
+use dtoken_config_patcher::{ConfigPatcher, ExpectedFileState};
 use dtoken_process::sanitize_command_output;
 #[cfg(debug_assertions)]
 use dtoken_process::{opencode_command_plan, run_opencode_model_test};
+use dtoken_types::{ConfigToolKind, RiskLevel};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{
@@ -92,6 +94,13 @@ struct RouteProfileDraftRequest {
 
 #[derive(Deserialize)]
 struct ApplyRouteDraftRequest {
+    route_id: String,
+    reviewed_before_sha256: Option<String>,
+    reviewed_after_sha256: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct RouteDraftReviewRequest {
     route_id: String,
 }
 
@@ -334,6 +343,29 @@ fn active_config_path() -> PathBuf {
         .join("dtoken-config.json")
 }
 
+fn config_backup_root() -> PathBuf {
+    fs::canonicalize(app_state_dir())
+        .unwrap_or_else(|_| app_state_dir())
+        .join("config-backups")
+}
+
+fn config_patcher() -> ConfigPatcher {
+    ConfigPatcher::new(config_backup_root())
+}
+
+fn patchable_active_config_path() -> Result<PathBuf, String> {
+    let path = active_config_path();
+    let parent = path
+        .parent()
+        .ok_or_else(|| "Active config parent path is unavailable".to_string())?;
+    let canonical_parent = fs::canonicalize(parent)
+        .map_err(|err| format!("Active config parent normalization failed: {err}"))?;
+    let file_name = path
+        .file_name()
+        .ok_or_else(|| "Active config file name is unavailable".to_string())?;
+    Ok(canonical_parent.join(file_name))
+}
+
 fn active_route_config_status() -> Value {
     let path = active_config_path();
     let exists = path.exists();
@@ -477,6 +509,39 @@ fn rollback_points_result() -> Result<Vec<Value>, String> {
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
         Err(err) => return Err(format!("read {}: {err}", dir.display())),
     }
+
+    let patcher = config_patcher();
+    let backup_root = config_backup_root();
+    match fs::read_dir(&backup_root) {
+        Ok(entries) => {
+            for entry in entries {
+                let entry = entry.map_err(|err| err.to_string())?;
+                let file_type = entry.file_type().map_err(|err| err.to_string())?;
+                if !file_type.is_dir() {
+                    continue;
+                }
+                let Some(id) = entry.file_name().to_str().map(str::to_string) else {
+                    return Err("Config backup id is not valid UTF-8".to_string());
+                };
+                let backup = patcher
+                    .load_backup(&id)
+                    .map_err(|err| format!("verify config backup {id}: {err:#}"))?;
+                points.push(json!({
+                    "id": backup.rollback_id,
+                    "label": format!("Rollback point {}", backup.display_target),
+                    "when": backup.created_at,
+                    "files": 1,
+                    "tools": ["d-token"],
+                    "verified": true,
+                    "source": "dtoken-config-patcher",
+                    "target": backup.target_path.display().to_string(),
+                    "expectedCurrentSha256": backup.planned_after_sha256,
+                }));
+            }
+        }
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+        Err(err) => return Err(format!("read {}: {err}", backup_root.display())),
+    }
     points.sort_by(|a, b| {
         b.get("when")
             .and_then(Value::as_str)
@@ -535,7 +600,7 @@ fn install_targets(target: &str) -> Vec<&'static str> {
 
 fn install_plan_json(req: &InstallPlanRequest) -> Value {
     let targets = install_targets(&req.target);
-    let writes_enabled = req.mode == "install" || req.mode == "repair";
+    let writes_enabled = matches!(req.mode.as_str(), "install" | "repair" | "connect");
     json!({
         "target": req.target,
         "mode": req.mode,
@@ -1017,9 +1082,7 @@ fn dtoken_service_status_value() -> Value {
         .filter(|_| pid_running)
         .map(|item| listener_owned_by_pid(item.pid, item.port))
         .unwrap_or(false);
-    if manifest.is_some() && !pid_running && !healthy {
-        let _ = remove_service_manifest();
-    }
+    let manifest_stale = manifest.is_some() && !pid_running && !healthy;
     let managed_running = healthy
         && component_ok
         && pid_running
@@ -1044,6 +1107,7 @@ fn dtoken_service_status_value() -> Value {
         "manifest_identity_ok": manifest_identity_ok,
         "executable_owned": executable_owned,
         "port_owned": port_owned,
+        "manifest_stale": manifest_stale,
         "service_url": format!("http://127.0.0.1:{DTOKEN_SERVICE_PORT}"),
         "manifest_path": service_manifest_path().display().to_string(),
         "log_path": service_log_path().display().to_string(),
@@ -1612,6 +1676,27 @@ fn save_route_profile_draft(request: RouteProfileDraftRequest) -> ActionResult {
             { "type": "add", "text": "+ fallback = \"disabled\"" }
         ]
     });
+    let Some(active_parent) = active_config_path().parent().map(Path::to_path_buf) else {
+        logs.push(log("error", "Active config parent path is unavailable"));
+        return ActionResult {
+            ok: false,
+            summary: "Routing draft could not provision local control-plane state".to_string(),
+            logs,
+            tools: all_checks(),
+        };
+    };
+    if let Err(err) = fs::create_dir_all(&active_parent) {
+        logs.push(log(
+            "error",
+            format!("Active config directory create failed: {err}"),
+        ));
+        return ActionResult {
+            ok: false,
+            summary: "Routing draft could not provision local control-plane state".to_string(),
+            logs,
+            tools: all_checks(),
+        };
+    }
     match write_json_app_state(&["routing", &format!("{route_id}.json")], &content) {
         Ok(path) => {
             logs.push(log(
@@ -1649,131 +1734,156 @@ fn list_route_profile_drafts() -> Value {
     })
 }
 
-#[tauri::command]
-fn apply_route_profile_draft(request: ApplyRouteDraftRequest) -> ActionResult {
-    let route_id = safe_slug(&request.route_id, "route");
+fn prepare_route_profile_draft_apply(
+    requested_route_id: &str,
+) -> Result<(String, dtoken_config_patcher::PreparedChange), String> {
+    let requested_route_id = requested_route_id.trim();
+    let route_id = safe_slug(requested_route_id, "");
+    if route_id.is_empty() || route_id != requested_route_id {
+        return Err("Route draft id is invalid or not normalized".to_string());
+    }
     let draft_path = app_state_dir()
         .join("routing")
         .join(format!("{route_id}.json"));
-    let mut logs = vec![log(
-        "info",
-        format!("Applying d-token route draft: {route_id}"),
-    )];
     let draft_content = match fs::read_to_string(&draft_path) {
         Ok(content) => content,
-        Err(err) => {
-            logs.push(log("error", format!("Route draft not found: {err}")));
-            return ActionResult {
-                ok: false,
-                summary: "Route draft not found".to_string(),
-                logs,
-                tools: all_checks(),
-            };
-        }
+        Err(err) => return Err(format!("Route draft not found: {err}")),
     };
     let draft: Value = match serde_json::from_str(&draft_content) {
         Ok(value) => value,
-        Err(err) => {
-            logs.push(log("error", format!("Route draft parse failed: {err}")));
-            return ActionResult {
-                ok: false,
-                summary: "Route draft parse failed".to_string(),
-                logs,
-                tools: all_checks(),
-            };
-        }
+        Err(err) => return Err(format!("Route draft parse failed: {err}")),
     };
     let Some(config) = draft.get("config").cloned() else {
-        logs.push(log("error", "Route draft has no config section"));
-        return ActionResult {
-            ok: false,
-            summary: "Route draft is incomplete".to_string(),
-            logs,
-            tools: all_checks(),
-        };
+        return Err("Route draft has no config section".to_string());
     };
     if config.to_string().contains("sk-") {
+        return Err("Route draft contains a plaintext-looking secret".to_string());
+    }
+    let serialized_config = serde_json::to_string_pretty(&config)
+        .map_err(|err| format!("Active config serialize failed: {err}"))?;
+    let target_path = patchable_active_config_path()?;
+    let prepared = config_patcher()
+        .prepare_change(
+            target_path,
+            &serialized_config,
+            ConfigToolKind::Dtoken,
+            None,
+            RiskLevel::Medium,
+        )
+        .map_err(|err| format!("Active config plan failed: {err:#}"))?;
+    Ok((route_id, prepared))
+}
+
+#[tauri::command]
+fn preview_route_profile_draft_apply(request: RouteDraftReviewRequest) -> Value {
+    match prepare_route_profile_draft_apply(&request.route_id) {
+        Ok((route_id, prepared)) => json!({
+            "ok": true,
+            "source": "dtoken-desktop-control-plane",
+            "mode": "route-apply-review",
+            "route_id": route_id,
+            "target": prepared.plan.target_file,
+            "before_sha256": prepared.plan.before_hash,
+            "after_sha256": prepared.plan.after_hash,
+            "diff": prepared.plan.diff,
+            "risk_level": prepared.plan.risk_level,
+            "requires_explicit_confirmation": true,
+            "runtime_required": false,
+            "privacy": "Read-only review. No config, backup, runtime, external agent, or credential state was changed."
+        }),
+        Err(err) => json!({
+            "ok": false,
+            "source": "dtoken-desktop-control-plane",
+            "mode": "route-apply-review",
+            "error": sanitize_command_output(&err),
+            "requires_explicit_confirmation": true,
+            "runtime_required": false,
+        }),
+    }
+}
+
+#[tauri::command]
+fn apply_route_profile_draft(request: ApplyRouteDraftRequest) -> ActionResult {
+    let mut logs = vec![log(
+        "info",
+        format!(
+            "Applying reviewed d-token route draft: {}",
+            request.route_id
+        ),
+    )];
+    let (Some(reviewed_before), Some(reviewed_after)) = (
+        request.reviewed_before_sha256.as_deref(),
+        request.reviewed_after_sha256.as_deref(),
+    ) else {
         logs.push(log(
             "error",
-            "Route draft contains a plaintext-looking secret and was not applied",
+            "Apply rejected because no reviewed before/after hashes were supplied",
         ));
         return ActionResult {
             ok: false,
-            summary: "Route draft failed secret safety check".to_string(),
+            summary: "Review the route diff before applying it".to_string(),
             logs,
             tools: all_checks(),
         };
-    }
-
-    let active_path = active_config_path();
-    let previous = fs::read_to_string(&active_path).ok();
-    let rollback_id = format!("route-{route_id}-{}", now_label().replace(':', "-"));
-    let rollback = json!({
-        "id": rollback_id,
-        "createdAt": now_label(),
-        "action": "apply_route_profile_draft",
-        "route_id": route_id,
-        "draft_path": draft_path.display().to_string(),
-        "active_path": active_path.display().to_string(),
-        "previous_config": previous,
-        "target": "d-token active route config",
-        "ok": true,
-        "privacy": "d-token local rollback manifest only; external agent configs are not captured."
-    });
-
-    let rollback_path = match write_json_app_state(
-        &["rollback-points", &format!("{rollback_id}.json")],
-        &rollback,
-    ) {
-        Ok(path) => path,
+    };
+    let (route_id, prepared) = match prepare_route_profile_draft_apply(&request.route_id) {
+        Ok(prepared) => prepared,
         Err(err) => {
-            logs.push(log(
-                "error",
-                format!("Rollback point write failed before apply: {err}"),
-            ));
+            logs.push(log("error", sanitize_command_output(&err)));
             return ActionResult {
                 ok: false,
-                summary: "Active config apply aborted because recovery could not be persisted"
-                    .to_string(),
+                summary: "Route draft could not be prepared for apply".to_string(),
                 logs,
                 tools: all_checks(),
             };
         }
     };
-    logs.push(log(
-        "info",
-        format!("Rollback point written to {}", rollback_path.display()),
-    ));
-    let serialized_config = match serde_json::to_vec_pretty(&config) {
-        Ok(content) => content,
+    if prepared.plan.before_hash != reviewed_before || prepared.plan.after_hash != reviewed_after {
+        logs.push(log(
+            "error",
+            "Apply rejected because the active config or route draft changed after review",
+        ));
+        return ActionResult {
+            ok: false,
+            summary: "Route review is stale; review the current diff again".to_string(),
+            logs,
+            tools: all_checks(),
+        };
+    }
+
+    let transaction = match config_patcher().apply_transaction(&[prepared]) {
+        Ok(transaction) => transaction,
         Err(err) => {
             logs.push(log(
                 "error",
-                format!("Active config serialize failed: {err}"),
+                format!("Active config transaction failed: {err:#}"),
             ));
             return ActionResult {
                 ok: false,
-                summary: "Active config apply failed".to_string(),
+                summary: "Active config transaction failed and was not committed".to_string(),
                 logs,
                 tools: all_checks(),
             };
         }
     };
-    if let Err(err) = durable_atomic_write(&active_path, &serialized_config) {
+    let Some(receipt) = transaction.changes.first() else {
         logs.push(log(
             "error",
-            format!("Active config durable write failed: {err}"),
+            "Active config transaction returned no receipt",
         ));
         return ActionResult {
             ok: false,
-            summary: "Active config apply failed".to_string(),
+            summary: "Active config transaction did not return verification evidence".to_string(),
             logs,
             tools: all_checks(),
         };
-    }
+    };
     logs.push(log(
         "info",
-        format!("Active d-token config written to {}", active_path.display()),
+        format!(
+            "Verified active config transaction {} for route {route_id}; rollback point {}",
+            transaction.transaction_id, receipt.backup.rollback_id
+        ),
     ));
     logs.push(log(
         "info",
@@ -1781,7 +1891,8 @@ fn apply_route_profile_draft(request: ApplyRouteDraftRequest) -> ActionResult {
     ));
     ActionResult {
         ok: true,
-        summary: "Route draft applied to d-token active config".to_string(),
+        summary: "Reviewed route draft applied and verified with a durable rollback point"
+            .to_string(),
         logs,
         tools: all_checks(),
     }
@@ -1836,6 +1947,82 @@ fn manage_backup(action: String, id: String) -> ActionResult {
             summary: "Invalid rollback point id".to_string(),
             logs,
             tools: all_checks(),
+        };
+    }
+
+    let config_backup_path = config_backup_root().join(&safe_id);
+    if fs::symlink_metadata(&config_backup_path).is_ok() {
+        return match action.as_str() {
+            "restore" => {
+                let patcher = config_patcher();
+                let backup = match patcher.load_backup(&safe_id) {
+                    Ok(backup) => backup,
+                    Err(err) => {
+                        logs.push(log(
+                            "error",
+                            format!("Config backup verification failed: {err:#}"),
+                        ));
+                        return ActionResult {
+                            ok: false,
+                            summary: "Config rollback point failed integrity verification"
+                                .to_string(),
+                            logs,
+                            tools: all_checks(),
+                        };
+                    }
+                };
+                let expected = ExpectedFileState::Hash(backup.planned_after_sha256.clone());
+                match patcher.restore_backup(&backup, &expected) {
+                    Ok(receipt) => {
+                        logs.push(log(
+                            "info",
+                            format!(
+                                "Verified config rollback {} to {}",
+                                receipt.rollback_id,
+                                receipt.target_path.display()
+                            ),
+                        ));
+                        ActionResult {
+                            ok: true,
+                            summary: "d-token active config restored from verified backup"
+                                .to_string(),
+                            logs,
+                            tools: all_checks(),
+                        }
+                    }
+                    Err(err) => {
+                        logs.push(log("error", format!("Config rollback refused: {err:#}")));
+                        ActionResult {
+                            ok: false,
+                            summary: "Config rollback refused because current state or backup evidence changed"
+                                .to_string(),
+                            logs,
+                            tools: all_checks(),
+                        }
+                    }
+                }
+            }
+            "cleanup" => {
+                logs.push(log(
+                    "warn",
+                    "Verified config backups are retained; cleanup is not available until an audited retention API is implemented",
+                ));
+                ActionResult {
+                    ok: false,
+                    summary: "Verified config backup retention is enforced".to_string(),
+                    logs,
+                    tools: all_checks(),
+                }
+            }
+            _ => {
+                logs.push(log("error", format!("Unsupported backup action: {action}")));
+                ActionResult {
+                    ok: false,
+                    summary: "Unsupported backup action".to_string(),
+                    logs,
+                    tools: all_checks(),
+                }
+            }
         };
     }
 
@@ -2493,7 +2680,8 @@ fn run_install_transaction(request: InstallPlanRequest) -> ActionResult {
         "diff: generated config diff for user confirmation",
     ));
 
-    let backup_persisted = if request.auto_backup {
+    let writes_enabled = matches!(request.mode.as_str(), "install" | "repair" | "connect");
+    let backup_persisted = if writes_enabled && request.auto_backup {
         let stamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|duration| duration.as_secs().to_string())
@@ -2517,15 +2705,20 @@ fn run_install_transaction(request: InstallPlanRequest) -> ActionResult {
                 false
             }
         }
-    } else {
+    } else if writes_enabled {
         logs.push(log(
             "warn",
-            "backup: automatic backup is disabled; external writes remain blocked in connect/manual mode",
+            "backup: automatic backup is disabled for this explicit state-changing action",
+        ));
+        true
+    } else {
+        logs.push(log(
+            "info",
+            "backup: read-only mode does not persist a backup or rollback artifact",
         ));
         true
     };
 
-    let writes_enabled = request.mode == "install" || request.mode == "repair";
     if !writes_enabled {
         logs.push(log(
             "info",
@@ -2671,7 +2864,7 @@ fn run_install_transaction(request: InstallPlanRequest) -> ActionResult {
         logs.push(log("warn", "doctor: skipped by user option"));
     }
 
-    if request.rollback_point {
+    if request.rollback_point && writes_enabled {
         let stamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|duration| duration.as_secs().to_string())
@@ -2697,10 +2890,15 @@ fn run_install_transaction(request: InstallPlanRequest) -> ActionResult {
                 ));
             }
         }
-    } else {
+    } else if writes_enabled {
         logs.push(log(
             "warn",
             "rollback: rollback point disabled by user option",
+        ));
+    } else {
+        logs.push(log(
+            "info",
+            "rollback: read-only mode does not create a rollback point",
         ));
     }
 
@@ -3138,48 +3336,34 @@ fn run_headroom_capability_smoke() -> Value {
 
 #[tauri::command]
 fn run_product_readiness_check() -> Value {
-    let install = run_install_transaction(InstallPlanRequest {
+    let install = preview_install_plan(InstallPlanRequest {
         target: "dtoken".to_string(),
-        install_root: "%LOCALAPPDATA%\\d-token".to_string(),
+        install_root: app_state_dir().display().to_string(),
         proxy_port: DTOKEN_SERVICE_PORT,
-        auto_backup: true,
+        auto_backup: false,
         run_doctor_after: false,
-        rollback_point: true,
+        rollback_point: false,
         mode: "manual".to_string(),
     });
     let detect = detect_tools();
     let doctor = run_doctor();
     let route = verify_agent_route_config();
-    let policy = recommend_project_policy(ProjectPolicyRecommendRequest {
-        project_id: Some("desktop-auto-scan".to_string()),
-        language_stack: Some(vec!["rust".to_string(), "typescript".to_string()]),
-        avg_request_tokens_7d: Some(49_224),
-        avg_cli_noise_ratio_7d: Some(0.42),
-        retrieve_rate_7d: Some(0.02),
-        failure_rate_7d: Some(0.0),
-        high_risk_task: Some(false),
-        manual_override: Some(false),
-    });
-    let policy_level = policy
-        .pointer("/recommendation/recommended_level")
-        .cloned()
-        .unwrap_or_else(|| json!("balanced"));
-    let policy_settings = save_app_settings(
-        "project-policy".to_string(),
-        json!({
-            "source": "product-readiness-check",
-            "project_id": "desktop-auto-scan",
-            "recommended_level": policy_level,
-            "recommendation": policy.get("recommendation").cloned().unwrap_or(Value::Null),
-            "enable_ccr": true,
-            "enable_memory": true,
-            "enable_learn": true,
-            "enable_output_shaper": true,
-            "enable_integrated_rtk": true,
-            "holdout_ratio": 0.1,
-            "privacy": "Saved local d-token project policy only; no raw prompt, response, file content, or command output."
+    let local_state = match (route_profile_drafts_result(), rollback_points_result()) {
+        (Ok(drafts), Ok(points)) => json!({
+            "ok": true,
+            "source": "dtoken-desktop-control-plane",
+            "route_draft_count": drafts.len(),
+            "rollback_point_count": points.len(),
+            "runtime_required": false,
         }),
-    );
+        (drafts, points) => json!({
+            "ok": false,
+            "source": "dtoken-desktop-control-plane",
+            "route_state_error": drafts.err(),
+            "rollback_state_error": points.err(),
+            "runtime_required": false,
+        }),
+    };
     let active = active_route_config_status();
     let dashboard = runtime_probe("/dashboard/payload");
     let export = runtime_probe("/export/json");
@@ -3206,14 +3390,19 @@ fn run_product_readiness_check() -> Value {
     let active_ok = active.get("state").and_then(Value::as_str) == Some("loaded");
     let detected_tools = detect.tools.iter().filter(|tool| tool.installed).count();
     let doctor_ran = !doctor.logs.is_empty();
+    let install_ok = install
+        .get("targets")
+        .and_then(Value::as_array)
+        .is_some_and(|targets| !targets.is_empty())
+        && install.get("writesEnabled").and_then(Value::as_bool) == Some(false);
 
     let checks = vec![
         json!({
             "id": "install_connect",
-            "label": "Install / connect transaction",
-            "ok": install.ok,
-            "summary": install.summary,
-            "detail": { "logs": install.logs },
+            "label": "Install / connect plan",
+            "ok": install_ok,
+            "summary": if install_ok { "Read-only install/connect plan is available" } else { "Install/connect plan is invalid" },
+            "detail": install,
         }),
         json!({
             "id": "agent_detection",
@@ -3244,11 +3433,11 @@ fn run_product_readiness_check() -> Value {
             "detail": active,
         }),
         json!({
-            "id": "auto_policy_write",
-            "label": "Auto scan policy write",
-            "ok": policy_settings.ok,
-            "summary": policy_settings.summary,
-            "detail": { "policy": policy },
+            "id": "local_transaction_state",
+            "label": "Local transaction state",
+            "ok": local_state.get("ok").and_then(Value::as_bool).unwrap_or(false),
+            "summary": if local_state.get("ok").and_then(Value::as_bool).unwrap_or(false) { "Desktop-owned drafts and rollback state are readable" } else { "Desktop-owned transaction state is unreadable" },
+            "detail": local_state,
         }),
         json!({
             "id": "headroom_derived_capabilities",
@@ -3587,19 +3776,33 @@ async fn export_dtoken_runtime(format: String) -> Result<Value, String> {
     }
 }
 
-fn unavailable_desktop_data(
+fn offline_control_plane_data(
     reason: &str,
     route_drafts: Vec<Value>,
     backup_points: Vec<Value>,
 ) -> Value {
+    let changes = changes_from_route_drafts(&route_drafts);
     json!({
-        "source": "unavailable",
-        "desktop_data_source": "unavailable",
-        "evidence_state": "unavailable",
-        "freshness": "unavailable",
+        "source": "dtoken-desktop-control-plane",
+        "desktop_data_source": "dtoken-desktop-control-plane",
+        "evidence_state": "partial",
+        "freshness": "local",
         "complete": false,
         "partial": true,
+        "runtime_available": false,
+        "runtime_evidence_state": "unavailable",
         "error": reason,
+        "transaction_provenance": {
+            "source": "dtoken-desktop-control-plane",
+            "command": "get_desktop_data",
+            "schema_version": 1,
+            "generated_at": now_timestamp(),
+            "state_root": app_state_dir().display().to_string(),
+            "runtime_required": false
+        },
+        "active_config": active_route_config_status(),
+        "service": dtoken_service_status_value(),
+        "tools": all_checks(),
         "health": [],
         "doctorChecks": [],
         "agents": [],
@@ -3615,7 +3818,7 @@ fn unavailable_desktop_data(
         "instances": [],
         "request_logs": [],
         "logs": [],
-        "changes": [],
+        "changes": changes,
         "routeDrafts": route_drafts,
         "backupPoints": backup_points,
         "runtimeCompatibility": {
@@ -3669,6 +3872,8 @@ fn complete_desktop_data(
     object.insert("freshness".to_string(), json!("fresh"));
     object.insert("complete".to_string(), json!(true));
     object.insert("partial".to_string(), json!(false));
+    object.insert("runtime_available".to_string(), json!(true));
+    object.insert("runtime_evidence_state".to_string(), json!("verified"));
     object.insert(
         "transaction_provenance".to_string(),
         json!({
@@ -3705,7 +3910,7 @@ fn get_desktop_data() -> Value {
     let route_drafts = match route_profile_drafts_result() {
         Ok(drafts) => drafts,
         Err(err) => {
-            return unavailable_desktop_data(
+            return offline_control_plane_data(
                 &format!("Routing state is unreadable: {err}"),
                 vec![],
                 vec![],
@@ -3715,7 +3920,7 @@ fn get_desktop_data() -> Value {
     let backup_points = match rollback_points_result() {
         Ok(points) => points,
         Err(err) => {
-            return unavailable_desktop_data(
+            return offline_control_plane_data(
                 &format!("Rollback state is unreadable: {err}"),
                 route_drafts,
                 vec![],
@@ -3733,14 +3938,14 @@ fn get_desktop_data() -> Value {
             health
         }
         Some(_) => {
-            return unavailable_desktop_data(
+            return offline_control_plane_data(
                 "The local listener did not prove dtoken-core-api health",
                 route_drafts,
                 backup_points,
             )
         }
         None => {
-            return unavailable_desktop_data(
+            return offline_control_plane_data(
                 "d-token local service is unavailable",
                 route_drafts,
                 backup_points,
@@ -3756,14 +3961,14 @@ fn get_desktop_data() -> Value {
             payload
         }
         Ok(_) => {
-            return unavailable_desktop_data(
+            return offline_control_plane_data(
                 "Dashboard payload did not prove d-token runtime provenance",
                 route_drafts,
                 backup_points,
             )
         }
         Err(err) => {
-            return unavailable_desktop_data(
+            return offline_control_plane_data(
                 &format!("Dashboard payload is unavailable: {err}"),
                 route_drafts,
                 backup_points,
@@ -3798,6 +4003,7 @@ fn main() {
             store_provider_credential,
             delete_provider_credential,
             list_route_profile_drafts,
+            preview_route_profile_draft_apply,
             apply_route_profile_draft,
             get_active_route_config_status,
             verify_agent_route_config,
@@ -3836,6 +4042,7 @@ fn main() {
             store_provider_credential,
             delete_provider_credential,
             list_route_profile_drafts,
+            preview_route_profile_draft_apply,
             apply_route_profile_draft,
             get_active_route_config_status,
             verify_agent_route_config,
@@ -3896,6 +4103,36 @@ mod tests {
         result
     }
 
+    fn review_and_apply_route(route_id: &str) -> ActionResult {
+        let review = preview_route_profile_draft_apply(RouteDraftReviewRequest {
+            route_id: route_id.to_string(),
+        });
+        assert_eq!(review["ok"], true, "route review failed: {review}");
+        apply_route_profile_draft(ApplyRouteDraftRequest {
+            route_id: route_id.to_string(),
+            reviewed_before_sha256: review["before_sha256"].as_str().map(str::to_string),
+            reviewed_after_sha256: review["after_sha256"].as_str().map(str::to_string),
+        })
+    }
+
+    fn save_test_route(route_id: &str, base_url: &str) -> ActionResult {
+        save_route_profile_draft(RouteProfileDraftRequest {
+            route_id: route_id.to_string(),
+            route_name: format!("{route_id} route"),
+            provider_id: format!("{route_id}-provider"),
+            provider_name: format!("{route_id} provider"),
+            provider_kind: "custom".to_string(),
+            protocol: "openai".to_string(),
+            base_url: base_url.to_string(),
+            api_key_ref: None,
+            models: vec!["model/test".to_string()],
+            chain_mode: "direct".to_string(),
+            compression_policy: "balanced".to_string(),
+            local_port: DTOKEN_SERVICE_PORT,
+            agent: "OpenCode".to_string(),
+        })
+    }
+
     #[test]
     fn app_state_uses_only_the_explicit_test_override_for_temporary_storage() {
         with_isolated_app_state("state-location", || {
@@ -3940,12 +4177,23 @@ mod tests {
     }
 
     #[test]
-    fn unavailable_desktop_data_has_no_verified_provenance_or_fabricated_operations() {
+    fn offline_desktop_data_preserves_local_control_plane_without_runtime_claims() {
         with_isolated_app_state("desktop-unavailable", || {
-            let payload = unavailable_desktop_data("runtime unavailable", vec![], vec![]);
+            let drafts = vec![json!({
+                "path": "/local/draft.json",
+                "config": { "routes": [{ "id": "offline-route" }] },
+                "diff": [{ "type": "add", "text": "+ route" }]
+            })];
+            let points = vec![json!({ "id": "offline-backup", "verified": true })];
+            let payload = offline_control_plane_data("runtime unavailable", drafts, points);
             assert_eq!(payload["complete"], false);
-            assert_eq!(payload["freshness"], "unavailable");
-            assert!(payload.get("transaction_provenance").is_none());
+            assert_eq!(payload["source"], "dtoken-desktop-control-plane");
+            assert_eq!(payload["freshness"], "local");
+            assert_eq!(payload["runtime_available"], false);
+            assert_eq!(payload["transaction_provenance"]["runtime_required"], false);
+            assert_eq!(payload["routeDrafts"].as_array().map(Vec::len), Some(1));
+            assert_eq!(payload["backupPoints"].as_array().map(Vec::len), Some(1));
+            assert_eq!(payload["changes"].as_array().map(Vec::len), Some(1));
             for field in [
                 "health",
                 "savings",
@@ -4070,32 +4318,36 @@ mod tests {
 
     #[test]
     fn install_transaction_for_dtoken_returns_auditable_logs() {
-        let result = run_install_transaction(InstallPlanRequest {
-            target: "dtoken".to_string(),
-            install_root: "%LOCALAPPDATA%\\d-token".to_string(),
-            proxy_port: DTOKEN_SERVICE_PORT,
-            auto_backup: true,
-            run_doctor_after: false,
-            rollback_point: false,
-            mode: "manual".to_string(),
-        });
+        with_isolated_app_state("manual-install-read-only", || {
+            let result = run_install_transaction(InstallPlanRequest {
+                target: "dtoken".to_string(),
+                install_root: app_state_dir().display().to_string(),
+                proxy_port: DTOKEN_SERVICE_PORT,
+                auto_backup: true,
+                run_doctor_after: false,
+                rollback_point: true,
+                mode: "manual".to_string(),
+            });
 
-        assert!(result.summary.contains("dtoken installation transaction"));
-        assert!(result.logs.iter().any(|entry| entry
-            .message
-            .contains("scan: starting installation transaction")));
-        assert!(result
-            .logs
-            .iter()
-            .any(|entry| entry.message.contains("diff: generated config diff")));
-        assert!(result
-            .logs
-            .iter()
-            .any(|entry| entry.message.contains("verify: refreshed local tool scan")));
-        assert!(!result
-            .logs
-            .iter()
-            .any(|entry| entry.message.contains("test_port")));
+            assert!(result.summary.contains("dtoken installation transaction"));
+            assert!(result.logs.iter().any(|entry| entry
+                .message
+                .contains("scan: starting installation transaction")));
+            assert!(result
+                .logs
+                .iter()
+                .any(|entry| entry.message.contains("diff: generated config diff")));
+            assert!(result
+                .logs
+                .iter()
+                .any(|entry| entry.message.contains("verify: refreshed local tool scan")));
+            assert!(result
+                .logs
+                .iter()
+                .any(|entry| entry.message.contains("read-only mode does not persist")));
+            assert!(!app_state_dir().join("backups").exists());
+            assert!(!app_state_dir().join("rollback-points").exists());
+        });
     }
 
     #[test]
@@ -4269,6 +4521,10 @@ mod tests {
             let text = result.to_string();
             assert!(!text.contains("headroom-capability-smoke"));
             assert!(!text.contains("workload UI"));
+            assert!(!app_state_dir().join("settings").exists());
+            assert!(!app_state_dir().join("backups").exists());
+            assert!(!app_state_dir().join("rollback-points").exists());
+            assert!(!app_state_dir().join("config-backups").exists());
         });
     }
 
@@ -4331,7 +4587,7 @@ mod tests {
                 "route_config",
                 "compression_data",
                 "hook_or_config_effect",
-                "auto_policy_write",
+                "local_transaction_state",
                 "headroom_derived_capabilities",
                 "export_redaction",
                 "doctor",
@@ -4343,6 +4599,11 @@ mod tests {
                     "missing or failed readiness check: {expected}"
                 );
             }
+            assert!(!app_state_dir()
+                .join("settings")
+                .join("project-policy.json")
+                .exists());
+            assert!(!app_state_dir().join("backups").exists());
         });
     }
 
@@ -4467,7 +4728,7 @@ mod tests {
                 provider_kind: "custom".to_string(),
                 protocol: "openai".to_string(),
                 base_url: "https://opencode.ai/zen/v1".to_string(),
-                api_key_ref: Some("sk-should-not-be-stored".to_string()),
+                api_key_ref: Some("plaintext-secret-value".to_string()),
                 models: vec!["deepseek-v4-flash-free".to_string()],
                 chain_mode: "direct".to_string(),
                 compression_policy: "balanced".to_string(),
@@ -4507,6 +4768,47 @@ mod tests {
     }
 
     #[test]
+    fn route_apply_requires_a_current_explicit_review() {
+        with_isolated_app_state("route-review", || {
+            assert!(save_test_route("reviewed-route", "https://one.example.test/v1").ok);
+
+            let unreviewed = apply_route_profile_draft(ApplyRouteDraftRequest {
+                route_id: "reviewed-route".to_string(),
+                reviewed_before_sha256: None,
+                reviewed_after_sha256: None,
+            });
+            assert!(!unreviewed.ok);
+            assert!(!active_config_path().exists());
+            assert!(!config_backup_root().exists());
+
+            let stale_review = preview_route_profile_draft_apply(RouteDraftReviewRequest {
+                route_id: "reviewed-route".to_string(),
+            });
+            assert_eq!(stale_review["ok"], true);
+            assert!(!active_config_path().exists());
+            assert!(!config_backup_root().exists());
+
+            assert!(save_test_route("reviewed-route", "https://two.example.test/v1").ok);
+            let stale_apply = apply_route_profile_draft(ApplyRouteDraftRequest {
+                route_id: "reviewed-route".to_string(),
+                reviewed_before_sha256: stale_review["before_sha256"].as_str().map(str::to_string),
+                reviewed_after_sha256: stale_review["after_sha256"].as_str().map(str::to_string),
+            });
+            assert!(!stale_apply.ok);
+            assert!(stale_apply.summary.contains("stale"));
+            assert!(!active_config_path().exists());
+
+            let applied = review_and_apply_route("reviewed-route");
+            assert!(applied.ok);
+            assert_eq!(
+                active_route_config_status()["route"]["id"],
+                "reviewed-route"
+            );
+            assert_eq!(rollback_points_result().expect("rollback points").len(), 1);
+        });
+    }
+
+    #[test]
     fn rollback_restore_reinstates_previous_dtoken_active_config() {
         with_isolated_app_state("rollback", || {
             let first = save_route_profile_draft(RouteProfileDraftRequest {
@@ -4525,12 +4827,7 @@ mod tests {
                 agent: "OpenCode".to_string(),
             });
             assert!(first.ok);
-            assert!(
-                apply_route_profile_draft(ApplyRouteDraftRequest {
-                    route_id: "first-route".to_string(),
-                })
-                .ok
-            );
+            assert!(review_and_apply_route("first-route").ok);
 
             let second = save_route_profile_draft(RouteProfileDraftRequest {
                 route_id: "second-route".to_string(),
@@ -4548,9 +4845,21 @@ mod tests {
                 agent: "OpenCode".to_string(),
             });
             assert!(second.ok);
+            let second_review = preview_route_profile_draft_apply(RouteDraftReviewRequest {
+                route_id: "second-route".to_string(),
+            });
+            assert_eq!(second_review["ok"], true);
+            let second_after = second_review["after_sha256"]
+                .as_str()
+                .expect("second route after hash")
+                .to_string();
             assert!(
                 apply_route_profile_draft(ApplyRouteDraftRequest {
                     route_id: "second-route".to_string(),
+                    reviewed_before_sha256: second_review["before_sha256"]
+                        .as_str()
+                        .map(str::to_string),
+                    reviewed_after_sha256: Some(second_after.clone()),
                 })
                 .ok
             );
@@ -4559,8 +4868,11 @@ mod tests {
             let points = rollback_points_result().expect("read rollback points");
             let rollback_id = points
                 .iter()
-                .filter_map(|point| point.get("id").and_then(Value::as_str))
-                .find(|id| id.contains("second-route"))
+                .find(|point| {
+                    point.get("expectedCurrentSha256").and_then(Value::as_str)
+                        == Some(second_after.as_str())
+                })
+                .and_then(|point| point.get("id").and_then(Value::as_str))
                 .expect("second route rollback point should exist")
                 .to_string();
             let restored = manage_backup("restore".to_string(), rollback_id);

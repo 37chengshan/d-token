@@ -1,43 +1,55 @@
-// d-token 分析数据模型 AnalyticsSnapshot：所有统计来自 d-token 自有记录，估算节省明确标注"估算"。
-// 关联计划：release-plan-2026-07/phase-04 §2 分析数据模型、估算节省计算原则。
 import { redactString } from "../security/redaction";
 import { deriveTokenMetrics } from "./metrics";
 
-export type BreakdownItem = { label: string; count: number; tokensSaved: number };
+export type BreakdownItem = {
+  label: string;
+  count: number;
+  tokensSaved: number | null;
+};
 
-export type TrendPoint = { day: string; saved: number; requests: number };
+export type TrendPoint = {
+  day: string;
+  saved: number | null;
+  requests: number;
+};
 
-export type LearningCoverage = {
-  scannedFolders: number;
-  writtenDocs: number;
-  coverageRate: number;
+export type LatencySummary = {
+  sampleCount: number;
+  averageMs: number;
+  p50Ms: number;
+  p95Ms: number;
 };
 
 export type AnalyticsSnapshot = {
   generatedAt: string;
   source: "dtoken-local-service" | "tauri-command" | "empty" | "preview";
+  hasRequests: boolean;
   requestCount: number;
-  estimatedInputTokens: number;
-  estimatedOutputTokens: number;
-  estimatedSavedTokens: number;
-  estimatedSavingsRate: number;
-  compressionCount: number;
+  estimatedInputTokens: number | null;
+  estimatedOutputTokens: number | null;
+  estimatedSavedTokens: number | null;
+  estimatedSavingsRate: number | null;
+  compressionCount: number | null;
   routeDecisionCount: number;
   errorCount: number;
+  latency: LatencySummary | null;
   agentBreakdown: BreakdownItem[];
   upstreamBreakdown: BreakdownItem[];
-  ccSwitchBreakdown: BreakdownItem[];
-  projectBreakdown: BreakdownItem[];
+  routeBreakdown: BreakdownItem[];
+  strategyBreakdown: BreakdownItem[];
   trend7d: TrendPoint[];
   trend30d: TrendPoint[];
-  learningCoverage: LearningCoverage;
   warnings: string[];
 };
 
 export type RequestLogRow = {
   timestamp_ms?: number;
   agent?: string;
+  provider_id?: string;
+  route_id?: string;
+  /** 兼容旧版已持久化请求日志；新运行时使用 provider_id。 */
   provider?: string;
+  /** 兼容旧版已持久化请求日志；新运行时使用 route_id。 */
   route?: string;
   input_tokens_before?: number;
   input_tokens_after?: number;
@@ -48,103 +60,232 @@ export type RequestLogRow = {
   error?: string | null;
 };
 
-/** 由 d-token 自有请求日志聚合 AnalyticsSnapshot。 */
+type ProcessedLog = {
+  timestamp: number | null;
+  saved: number | null;
+};
+
+type MutableBreakdown = {
+  label: string;
+  count: number;
+  tokensSaved: number;
+  hasSavedEvidence: boolean;
+};
+
+/** 仅由 d-token 自有请求日志生成页面所需的一个分析快照。 */
 export function buildAnalyticsSnapshot(
   logs: RequestLogRow[],
-  opts: { source?: AnalyticsSnapshot["source"]; learning?: LearningCoverage } = {},
+  opts: { source?: AnalyticsSnapshot["source"] } = {},
 ): AnalyticsSnapshot {
   const source = opts.source ?? "dtoken-local-service";
-  const requestCount = logs.length;
+  const records = logs.filter(isRequestLogRecord);
   let estimatedInputTokens = 0;
   let estimatedOutputTokens = 0;
   let estimatedSavedTokens = 0;
+  let inputEvidenceCount = 0;
+  let outputEvidenceCount = 0;
+  let savedEvidenceCount = 0;
   let compressionCount = 0;
   let errorCount = 0;
+  let rateInputTokens = 0;
+  let rateSavedTokens = 0;
+  let rateEvidenceCount = 0;
   let inconsistentSavingsCount = 0;
-  const withTokenField = logs.filter((l) => typeof l.input_tokens_before === "number");
-  const agentMap = new Map<string, BreakdownItem>();
-  const upstreamMap = new Map<string, BreakdownItem>();
-  const projectMap = new Map<string, BreakdownItem>();
-  for (const log of logs) {
-    const before = Number(log.input_tokens_before ?? 0);
-    const after = Number(log.input_tokens_after ?? before);
-    const out = Number(log.output_tokens ?? 0);
-    const derived = deriveTokenMetrics(before, after);
-    const reportedSaved = typeof log.tokens_saved === "number" ? Number(log.tokens_saved) : derived.saved;
-    const saved = derived.saved;
-    if (reportedSaved !== saved) inconsistentSavingsCount += 1;
-    estimatedInputTokens += before;
-    estimatedOutputTokens += out;
-    estimatedSavedTokens += saved;
-    if (saved > 0) compressionCount += 1;
+  let missingTimestampCount = 0;
+  const latencySamples: number[] = [];
+  const processed: ProcessedLog[] = [];
+  const agentMap = new Map<string, MutableBreakdown>();
+  const upstreamMap = new Map<string, MutableBreakdown>();
+  const routeMap = new Map<string, MutableBreakdown>();
+  const strategyMap = new Map<string, MutableBreakdown>();
+
+  for (const log of records) {
+    const before = nonNegativeNumber(log.input_tokens_before);
+    const after = nonNegativeNumber(log.input_tokens_after);
+    const output = nonNegativeNumber(log.output_tokens);
+    const reportedSaved = nonNegativeNumber(log.tokens_saved);
+    let saved: number | null = reportedSaved;
+
+    if (before !== null) {
+      estimatedInputTokens += before;
+      inputEvidenceCount += 1;
+    }
+    if (output !== null) {
+      estimatedOutputTokens += output;
+      outputEvidenceCount += 1;
+    }
+    if (before !== null && after !== null) {
+      const derived = deriveTokenMetrics(before, after);
+      saved = derived.saved;
+      if (reportedSaved !== null && reportedSaved !== saved) inconsistentSavingsCount += 1;
+    }
+    if (saved !== null) {
+      estimatedSavedTokens += saved;
+      savedEvidenceCount += 1;
+      if (saved > 0) compressionCount += 1;
+    }
+    if (before !== null && saved !== null) {
+      rateInputTokens += before;
+      rateSavedTokens += saved;
+      rateEvidenceCount += 1;
+    }
     if (log.error) errorCount += 1;
-    if (log.agent) bump(agentMap, redactString(String(log.agent)), saved);
-    if (log.provider) bump(upstreamMap, redactString(String(log.provider)), saved);
-    if (log.route) bump(projectMap, redactString(String(log.route)), saved);
+
+    const timestamp = timestampNumber(log.timestamp_ms);
+    if (timestamp === null) missingTimestampCount += 1;
+    processed.push({ timestamp, saved });
+
+    const latency = nonNegativeNumber(log.latency_ms);
+    if (latency !== null) latencySamples.push(latency);
+
+    bump(agentMap, safeLabel(log.agent), saved);
+    bump(upstreamMap, safeLabel(log.provider_id) ?? safeLabel(log.provider), saved);
+    bump(routeMap, safeLabel(log.route_id) ?? safeLabel(log.route), saved);
+
+    const transforms = Array.isArray(log.transforms_applied)
+      ? Array.from(new Set(log.transforms_applied.map(safeLabel).filter((item): item is string => item !== null)))
+      : [];
+    for (const transform of transforms) bump(strategyMap, transform, null);
   }
-  const estimatedSavingsRate = estimatedInputTokens > 0 ? estimatedSavedTokens / estimatedInputTokens : 0;
+
   const warnings: string[] = [];
-  if (withTokenField.length < requestCount) {
-    warnings.push("部分请求缺少 token 字段，只参与请求数，不参与节省率。");
+  if (records.length > 0 && inputEvidenceCount < records.length) {
+    warnings.push("部分请求缺少输入 Token 字段，输入总量仅覆盖有记录的请求。");
   }
-  if (requestCount < 7) {
-    warnings.push("数据不足，暂不计算趋势。");
+  if (records.length > 0 && savedEvidenceCount < records.length) {
+    warnings.push("部分请求缺少节省 Token 证据，节省量与节省率仅覆盖有记录的请求。");
+  }
+  if (records.length > 0 && outputEvidenceCount < records.length) {
+    warnings.push("部分请求缺少输出 Token 字段，输出总量仅覆盖有记录的请求。");
+  }
+  if (missingTimestampCount > 0) {
+    warnings.push(`${missingTimestampCount} 条请求缺少有效时间戳，未计入趋势。`);
   }
   if (inconsistentSavingsCount > 0) {
     warnings.push(`${inconsistentSavingsCount} 条请求的节省量与输入前后值不一致，已按输入前后值重新计算。`);
   }
+
   return {
     generatedAt: new Date().toISOString(),
     source,
-    requestCount,
-    estimatedInputTokens,
-    estimatedOutputTokens,
-    estimatedSavedTokens,
-    estimatedSavingsRate,
-    compressionCount,
-    routeDecisionCount: logs.length,
+    hasRequests: records.length > 0,
+    requestCount: records.length,
+    estimatedInputTokens: inputEvidenceCount > 0 ? estimatedInputTokens : null,
+    estimatedOutputTokens: outputEvidenceCount > 0 ? estimatedOutputTokens : null,
+    estimatedSavedTokens: savedEvidenceCount > 0 ? estimatedSavedTokens : null,
+    estimatedSavingsRate: rateEvidenceCount > 0 && rateInputTokens > 0
+      ? rateSavedTokens / rateInputTokens
+      : null,
+    compressionCount: savedEvidenceCount > 0 ? compressionCount : null,
+    routeDecisionCount: records.filter((log) => safeLabel(log.route_id) ?? safeLabel(log.route)).length,
     errorCount,
+    latency: summarizeLatency(latencySamples),
     agentBreakdown: toArray(agentMap),
     upstreamBreakdown: toArray(upstreamMap),
-    ccSwitchBreakdown: [],
-    projectBreakdown: toArray(projectMap),
-    trend7d: buildTrend(logs, 7),
-    trend30d: buildTrend(logs, 30),
-    learningCoverage: opts.learning ?? { scannedFolders: 0, writtenDocs: 0, coverageRate: 0 },
+    routeBreakdown: toArray(routeMap),
+    strategyBreakdown: toArray(strategyMap),
+    trend7d: buildTrend(processed, 7),
+    trend30d: buildTrend(processed, 30),
     warnings,
   };
 }
 
-function bump(map: Map<string, BreakdownItem>, label: string, saved: number) {
-  const cur = map.get(label) ?? { label, count: 0, tokensSaved: 0 };
-  cur.count += 1;
-  cur.tokensSaved += saved;
-  map.set(label, cur);
+function isRequestLogRecord(log: RequestLogRow): boolean {
+  return Boolean(log) && typeof log === "object" && !Array.isArray(log);
 }
 
-function toArray(map: Map<string, BreakdownItem>): BreakdownItem[] {
-  return Array.from(map.values()).sort((a, b) => b.tokensSaved - a.tokensSaved);
+function nonNegativeNumber(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null;
 }
 
-function buildTrend(logs: RequestLogRow[], days: number): TrendPoint[] {
-  const byDay = new Map<string, TrendPoint>();
-  const now = Date.now();
-  const dayMs = 24 * 60 * 60 * 1000;
-  for (let d = days - 1; d >= 0; d--) {
-    const date = new Date(now - d * dayMs).toISOString().slice(0, 10);
-    byDay.set(date, { day: date.slice(5), saved: 0, requests: 0 });
+function timestampNumber(value: unknown): number | null {
+  const timestamp = nonNegativeNumber(value);
+  if (timestamp === null) return null;
+  return Number.isFinite(new Date(timestamp).getTime()) ? timestamp : null;
+}
+
+function safeLabel(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? redactString(trimmed) : null;
+}
+
+function bump(map: Map<string, MutableBreakdown>, label: string | null, saved: number | null) {
+  if (!label) return;
+  const current = map.get(label) ?? {
+    label,
+    count: 0,
+    tokensSaved: 0,
+    hasSavedEvidence: false,
+  };
+  current.count += 1;
+  if (saved !== null) {
+    current.tokensSaved += saved;
+    current.hasSavedEvidence = true;
   }
-  for (const log of logs) {
-    const ms = Number(log.timestamp_ms ?? now);
-    const date = new Date(ms).toISOString().slice(0, 10);
-    const point = byDay.get(date);
-    if (point) {
-      point.saved += deriveTokenMetrics(
-        Number(log.input_tokens_before ?? 0),
-        Number(log.input_tokens_after ?? log.input_tokens_before ?? 0),
-      ).saved;
-      point.requests += 1;
+  map.set(label, current);
+}
+
+function toArray(map: Map<string, MutableBreakdown>): BreakdownItem[] {
+  return Array.from(map.values())
+    .map((item) => ({
+      label: item.label,
+      count: item.count,
+      tokensSaved: item.hasSavedEvidence ? item.tokensSaved : null,
+    }))
+    .sort((left, right) => right.count - left.count || left.label.localeCompare(right.label));
+}
+
+function summarizeLatency(samples: number[]): LatencySummary | null {
+  if (samples.length === 0) return null;
+  const sorted = [...samples].sort((left, right) => left - right);
+  return {
+    sampleCount: sorted.length,
+    averageMs: roundOne(sorted.reduce((total, value) => total + value, 0) / sorted.length),
+    p50Ms: roundOne(quantile(sorted, 0.5)),
+    p95Ms: roundOne(quantile(sorted, 0.95)),
+  };
+}
+
+function quantile(sorted: number[], percentile: number): number {
+  if (sorted.length === 1) return sorted[0];
+  const position = (sorted.length - 1) * percentile;
+  const lower = Math.floor(position);
+  const upper = Math.ceil(position);
+  const weight = position - lower;
+  return sorted[lower] * (1 - weight) + sorted[upper] * weight;
+}
+
+function roundOne(value: number): number {
+  return Number(value.toFixed(1));
+}
+
+function buildTrend(logs: ProcessedLog[], days: number): TrendPoint[] {
+  const timestamped = logs.filter(
+    (log): log is ProcessedLog & { timestamp: number } => log.timestamp !== null,
+  );
+  if (timestamped.length === 0) return [];
+  const latest = Math.max(...timestamped.map((log) => log.timestamp));
+  const cutoff = latest - days * 24 * 60 * 60 * 1000;
+  const byDay = new Map<string, { day: string; requests: number; saved: number; hasSavedEvidence: boolean }>();
+
+  for (const log of timestamped) {
+    if (log.timestamp < cutoff) continue;
+    const day = new Date(log.timestamp).toISOString().slice(0, 10);
+    const current = byDay.get(day) ?? { day, requests: 0, saved: 0, hasSavedEvidence: false };
+    current.requests += 1;
+    if (log.saved !== null) {
+      current.saved += log.saved;
+      current.hasSavedEvidence = true;
     }
+    byDay.set(day, current);
   }
-  return Array.from(byDay.values());
+
+  return Array.from(byDay.values())
+    .sort((left, right) => left.day.localeCompare(right.day))
+    .map((point) => ({
+      day: point.day,
+      requests: point.requests,
+      saved: point.hasSavedEvidence ? point.saved : null,
+    }));
 }

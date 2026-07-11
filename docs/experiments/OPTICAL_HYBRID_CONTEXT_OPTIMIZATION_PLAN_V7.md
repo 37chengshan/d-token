@@ -576,7 +576,7 @@ support/git-operations.json
 ## 10. 参考文档
 
 ```text
-docs/experiments/OPTICAL_COMPRESSION_EXPERIMENT_PLAN.md       V6 基础规格
+docs/archive/optical/v6/OPTICAL_COMPRESSION_EXPERIMENT_PLAN.md  V6 历史基础规格（仅追溯）
 docs/optical/architecture-v2-iteration.md                     V7 架构说明
 docs/optical/review-round-5.md                                 最新深度审查
 docs/optical/implementation-status.md                          最新状态矩阵

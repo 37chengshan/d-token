@@ -9,7 +9,7 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from "../ui/tabs";
 import { Button } from "../ui/button";
 import { Badge } from "../ui/badge";
 import { useI18n, useT } from "../../lib/i18n";
-import { logs, type LogEntry } from "../../lib/fixtures";
+import type { RuntimeLogEntry as LogEntry } from "../../lib/runtime/types";
 import { invokeNative, isTauriRuntime } from "../../lib/native";
 import { useRuntimeDashboard } from "../../lib/useRuntimeDashboard";
 
@@ -27,9 +27,10 @@ const filterMeta: Record<
 export function LogsSecurity() {
   const t = useT();
   const { lang } = useI18n();
+  const nativeRuntime = isTauriRuntime();
   const [filter, setFilter] = useState<LogEntry["type"] | "all">("all");
   const { payload, status: payloadStatus, updatedAt } = useRuntimeDashboard();
-  const [exportState, setExportState] = useState<{ state: "idle" | "exporting" | "done" | "fallback" | "failed"; format?: "json" | "csv" }>({ state: "idle" });
+  const [exportState, setExportState] = useState<{ state: "idle" | "exporting" | "done" | "failed"; format?: "json" | "csv" }>({ state: "idle" });
   const [securityState, setSecurityState] = useState<"idle" | "checking" | "done" | "preview" | "failed">("idle");
   const [securityVerification, setSecurityVerification] = useState<AgentRouteVerification | null>(null);
   const types: (LogEntry["type"] | "all")[] = ["all", "route", "compression", "provider", "error"];
@@ -37,12 +38,13 @@ export function LogsSecurity() {
   const runtimeLogs = useMemo(() => runtimePayloadToLogs(payload), [payload]);
   const ledgerRows = useMemo(() => runtimePayloadToLedgerRows(payload, payloadStatus, lang), [payload, payloadStatus, lang]);
   const ledgerSummary = useMemo(() => summarizeLedgerRows(ledgerRows), [ledgerRows]);
-  const activeLogs = payloadStatus === "browser-preview" ? logs : runtimeLogs;
+  const activeLogs = runtimeLogs;
+  const canExport = nativeRuntime && payloadStatus === "runtime";
   const dataSourceLabel =
     payloadStatus === "runtime"
       ? `${payload?.desktop_data_source ?? payload?.source ?? "d-token-owned-runtime"} · ${activeLogs.length} logs${updatedAt ? ` · ${updatedAt.toLocaleTimeString()}` : ""}`
       : payloadStatus === "browser-preview"
-        ? lang === "zh" ? "浏览器预览 · 示例数据" : "Browser preview · sample data"
+        ? lang === "zh" ? "浏览器预览 · 无本机日志" : "Browser preview · no local logs"
         : payloadStatus === "loading"
           ? lang === "zh" ? "正在读取 d-token runtime" : "Loading d-token runtime"
           : lang === "zh" ? "runtime 暂不可用" : "Runtime unavailable";
@@ -62,27 +64,22 @@ export function LogsSecurity() {
   );
 
   const exportLogs = async (format: "json" | "csv") => {
-    setExportState({ state: "exporting", format });
-    if (isTauriRuntime()) {
-      try {
-        const exported = await invokeNative<RuntimeExport>("export_dtoken_runtime", { format });
-        downloadText(exported.content, exported.mime, exported.filename);
-        setExportState({ state: "done", format });
-        return;
-      } catch (_error) {
-        setExportState({ state: "fallback", format });
-      }
+    if (!canExport) {
+      setExportState({ state: "failed", format });
+      return;
     }
-
-    const fallback = buildVisibleLogExport(format, shown, payloadStatus);
-    downloadText(fallback.content, fallback.mime, fallback.filename);
-    if (!isTauriRuntime()) {
-      setExportState({ state: "fallback", format });
+    setExportState({ state: "exporting", format });
+    try {
+      const exported = await invokeNative<RuntimeExport>("export_dtoken_runtime", { format });
+      downloadText(exported.content, exported.mime, exported.filename);
+      setExportState({ state: "done", format });
+    } catch (_error) {
+      setExportState({ state: "failed", format });
     }
   };
 
   const verifySecurity = async () => {
-    if (!isTauriRuntime()) {
+    if (!nativeRuntime) {
       setSecurityState("preview");
       return;
     }
@@ -142,13 +139,13 @@ export function LogsSecurity() {
               </div>
 
               <div className="flex items-center gap-2">
-                <Button variant="outline" size="sm" onClick={() => exportLogs("json")} disabled={exportState.state === "exporting"}>
+                <Button variant="outline" size="sm" onClick={() => exportLogs("json")} disabled={!canExport || exportState.state === "exporting"}>
                   <Download className="size-4" />
                   {exportState.state === "exporting" && exportState.format === "json"
                     ? lang === "zh" ? "导出中" : "Exporting"
                     : "JSON"}
                 </Button>
-                <Button variant="outline" size="sm" onClick={() => exportLogs("csv")} disabled={exportState.state === "exporting"}>
+                <Button variant="outline" size="sm" onClick={() => exportLogs("csv")} disabled={!canExport || exportState.state === "exporting"}>
                   <Download className="size-4" />
                   {exportState.state === "exporting" && exportState.format === "csv"
                     ? lang === "zh" ? "导出中" : "Exporting"
@@ -164,13 +161,9 @@ export function LogsSecurity() {
                 ? lang === "zh"
                   ? `已从 d-token runtime 导出脱敏 ${exportState.format?.toUpperCase() ?? ""}。`
                   : `Exported redacted ${exportState.format?.toUpperCase() ?? ""} from d-token runtime.`
-                : exportState.state === "fallback"
-                  ? lang === "zh"
-                    ? `runtime 导出不可用，已导出当前页面可见的脱敏 ${exportState.format?.toUpperCase() ?? ""} 预览。`
-                    : `Runtime export was unavailable; exported the current redacted visible ${exportState.format?.toUpperCase() ?? ""} preview.`
-                  : lang === "zh"
-                    ? "导出失败，请确认 d-token runtime 是否运行。"
-                    : "Export failed. Check whether the d-token runtime is running."}
+                : lang === "zh"
+                  ? "导出失败，请确认 d-token runtime 是否运行。"
+                  : "Export failed. Check whether the d-token runtime is running."}
             </div>
           )}
 
@@ -420,19 +413,9 @@ function buildSecurityRows(
         detail: lang === "zh"
           ? "桌面运行时可用后，这里会显示 active config、凭据引用和导出脱敏状态。"
           : "When the desktop runtime is available, this shows active config, credential references, and export redaction state.",
-        meta: lang === "zh" ? "示例状态" : "Preview state",
+        meta: lang === "zh" ? "无本机证据" : "No local evidence",
         status: "warning",
         label: lang === "zh" ? "待连接" : "Pending",
-      },
-      {
-        id: "redaction-default",
-        title: lang === "zh" ? "默认脱敏策略" : "Default redaction policy",
-        detail: lang === "zh"
-          ? "报告与日志导出默认不包含明文密钥、认证头或完整模型输出。"
-          : "Reports and log exports default to excluding plaintext keys, auth headers, and full model output.",
-        meta: lang === "zh" ? "本地优先" : "Local-first",
-        status: "healthy",
-        label: lang === "zh" ? "已启用" : "Enabled",
       },
     ];
   }
@@ -463,8 +446,10 @@ function buildSecurityRows(
           ? "当前 provider 没有明文密钥引用，或还未配置凭据引用。"
           : "The current provider has no plaintext key reference, or no credential reference is configured yet.",
       meta: hasKeyRef ? "api_key_ref" : "no plaintext",
-      status: "healthy",
-      label: lang === "zh" ? "脱敏" : "Redacted",
+      status: hasKeyRef ? "healthy" : "warning",
+      label: hasKeyRef
+        ? (lang === "zh" ? "已引用" : "Referenced")
+        : (lang === "zh" ? "待配置" : "Pending"),
     },
     {
       id: "fallback-boundary",
@@ -506,39 +491,42 @@ function runtimePayloadToLogs(payload: Record<string, any> | null): LogEntry[] {
   const events = Array.isArray(payload.events) ? payload.events : [];
 
   for (const decision of routeDecisions) {
-    const route = safeText(decision.route_id, "unknown-route");
-    const provider = safeText(decision.provider_id, "unknown-provider");
-    const chain = safeText(decision.chain_mode, "unknown-chain");
-    const fallback = safeText(decision.fallback, "disabled");
+    const route = safeText(decision.route_id, "—");
+    const provider = safeText(decision.provider_id, "—");
+    const chain = safeText(decision.chain_mode, "—");
+    const fallback = fallbackLabel(decision.fallback);
     lines.push(sortableLine({
       id: `route-${safeText(decision.request_id, route)}-${lines.length}`,
       time: timeFromUnknown(decision.timestamp_ms),
       type: "route",
-      agent: "OpenCode",
+      agent: safeText(decision.agent, "未知 Agent"),
       msg: `路由 ${route} -> ${provider} · ${chain} · fallback=${fallback}`,
       msgEn: `Route ${route} -> ${provider} · ${chain} · fallback=${fallback}`,
     }, decision.timestamp_ms));
   }
 
   for (const log of requestLogs) {
-    const agent = safeText(log.agent, "OpenCode");
-    const before = Number(log.input_tokens_before ?? 0);
-    const after = Number(log.input_tokens_after ?? 0);
-    const saved = Number(log.tokens_saved ?? Math.max(0, before - after));
-    const route = safeText(log.route_id, "unknown-route");
-    const provider = safeText(log.provider_id, "unknown-provider");
-    const model = safeText(log.model, "unknown-model");
-    const latency = Number(log.latency_ms ?? 0);
-    const transforms = Array.isArray(log.transforms_applied) ? log.transforms_applied.join(",") : "runtime_route";
+    const agent = safeText(log.agent, "未知 Agent");
+    const before = finiteNumber(log.input_tokens_before);
+    const after = finiteNumber(log.input_tokens_after);
+    const explicitSaved = finiteNumber(log.tokens_saved);
+    const saved = explicitSaved ?? (before !== null && after !== null ? Math.max(0, before - after) : null);
+    const route = safeText(log.route_id, "—");
+    const provider = safeText(log.provider_id, "—");
+    const model = safeText(log.model, "—");
+    const latency = finiteNumber(log.latency_ms);
+    const transforms = Array.isArray(log.transforms_applied)
+      ? log.transforms_applied.filter((item: unknown): item is string => typeof item === "string" && item.trim().length > 0)
+      : [];
 
-    if (before > 0 || saved > 0) {
+    if ((before ?? 0) > 0 || (saved ?? 0) > 0) {
       lines.push(sortableLine({
         id: `compression-${safeText(log.request_id, route)}-${lines.length}`,
         time: timeFromUnknown(log.timestamp_ms),
         type: "compression",
         agent,
-        msg: `压缩 ${before.toLocaleString()} -> ${after.toLocaleString()} tokens，节省 ${saved.toLocaleString()} · ${transforms}`,
-        msgEn: `Compressed ${before.toLocaleString()} -> ${after.toLocaleString()} tokens, saved ${saved.toLocaleString()} · ${transforms}`,
+        msg: `压缩 ${formatNumber(before)} -> ${formatNumber(after)} tokens，节省 ${formatNumber(saved)}${transforms.length > 0 ? ` · ${transforms.join(",")}` : ""}`,
+        msgEn: `Compressed ${formatNumber(before)} -> ${formatNumber(after)} tokens, saved ${formatNumber(saved)}${transforms.length > 0 ? ` · ${transforms.join(",")}` : ""}`,
       }, log.timestamp_ms));
     }
 
@@ -548,24 +536,24 @@ function runtimePayloadToLogs(payload: Record<string, any> | null): LogEntry[] {
       type: log.error ? "error" : "provider",
       agent,
       msg: log.error
-        ? `Provider ${provider} 失败：${safeText(log.error, "unknown error")}，未静默回退`
-        : `Provider ${provider} · model=${model} · route=${route} · ${latency}ms`,
+        ? `Provider ${provider} 失败：${safeText(log.error, "未知错误")}`
+        : `Provider ${provider} · model=${model} · route=${route} · latency=${latency === null ? "—" : `${latency}ms`}`,
       msgEn: log.error
-        ? `Provider ${provider} failed: ${safeText(log.error, "unknown error")}, no silent fallback`
-        : `Provider ${provider} · model=${model} · route=${route} · ${latency}ms`,
+        ? `Provider ${provider} failed: ${safeText(log.error, "unknown error")}`
+        : `Provider ${provider} · model=${model} · route=${route} · latency=${latency === null ? "—" : `${latency}ms`}`,
     }, log.timestamp_ms));
   }
 
   for (const event of events) {
     const stage = safeText(event.stage, "event");
-    const status = safeText(event.status, "ok");
+    const status = safeText(event.status, "—");
     const source = safeText(event.source, "dtoken");
     const saved = Number(event.saved_tokens ?? 0);
     lines.push(sortableLine({
       id: `event-${safeText(event.event_id, stage)}-${lines.length}`,
       time: timeFromUnknown(event.timestamp_ms),
       type: status === "failed" || event.error_code ? "error" : saved > 0 || stage.includes("compress") ? "compression" : "route",
-      agent: safeText(event.agent_id, "d-token"),
+      agent: safeText(event.agent_id, "未知 Agent"),
       msg: `事件 ${stage} · ${source} · status=${status}${saved > 0 ? ` · saved=${saved}` : ""}`,
       msgEn: `Event ${stage} · ${source} · status=${status}${saved > 0 ? ` · saved=${saved}` : ""}`,
     }, event.timestamp_ms));
@@ -588,7 +576,7 @@ function runtimePayloadToLedgerRows(
 
   for (const event of events) {
     const stage = safeText(event.stage, "event");
-    const status = safeText(event.status, "ok");
+    const status = safeText(event.status, "—");
     const saved = Number(event.saved_tokens ?? 0);
     const inputTokens = Number(event.input_tokens ?? 0);
     const outputTokens = Number(event.output_tokens ?? 0);
@@ -600,38 +588,41 @@ function runtimePayloadToLedgerRows(
       sortTime: sortTimeFromUnknown(event.timestamp_ms),
       title: lang === "zh" ? `事件 ${stage}` : `Event ${stage}`,
       detail: [
-        `source=${safeText(event.source, "dtoken")}`,
-        `agent=${safeText(event.agent_id, "d-token")}`,
-        `route=${safeText(event.route_id, "n/a")}`,
-        `provider=${safeText(event.provider_id, "n/a")}`,
+        `source=${safeText(event.source, "—")}`,
+        `agent=${safeText(event.agent_id, "—")}`,
+        `route=${safeText(event.route_id, "—")}`,
+        `provider=${safeText(event.provider_id, "—")}`,
         error ? `error=${error}` : "",
       ].filter(Boolean).join(" · "),
-      status: status === "failed" || error ? "failed" : "ok",
+      status: status === "failed" || error ? "failed" : status === "ok" ? "ok" : "warning",
       tokens: tokenSummary(inputTokens, outputTokens, saved),
     });
   }
 
   for (const decision of routeDecisions) {
-    const route = safeText(decision.route_id, "unknown-route");
-    const provider = safeText(decision.provider_id, "unknown-provider");
-    const fallback = safeText(decision.fallback, "disabled");
-    const chain = safeText(decision.chain_mode, "unknown-chain");
+    const route = safeText(decision.route_id, "—");
+    const provider = safeText(decision.provider_id, "—");
+    const fallback = fallbackLabel(decision.fallback);
+    const chain = safeText(decision.chain_mode, "—");
     rows.push({
       id: `route-${safeText(decision.request_id, route)}-${rows.length}`,
       kind: "route",
       time: timeFromUnknown(decision.timestamp_ms),
       sortTime: sortTimeFromUnknown(decision.timestamp_ms),
       title: lang === "zh" ? `路由决策 ${route} -> ${provider}` : `Route decision ${route} -> ${provider}`,
-      detail: `chain=${chain} · fallback=${fallback} · input=${safeText(decision.input_protocol, "unknown")} · output=${safeText(decision.output_protocol, "unknown")}`,
+      detail: `chain=${chain} · fallback=${fallback} · input=${safeText(decision.input_protocol, "—")} · output=${safeText(decision.output_protocol, "—")}`,
       status: fallback === "disabled" ? "ok" : "warning",
       tokens: "route",
     });
   }
 
   for (const log of requestLogs) {
-    const before = Number(log.input_tokens_before ?? 0);
-    const after = Number(log.input_tokens_after ?? 0);
-    const saved = Number(log.tokens_saved ?? Math.max(0, before - after));
+    const beforeValue = finiteNumber(log.input_tokens_before);
+    const afterValue = finiteNumber(log.input_tokens_after);
+    const before = beforeValue ?? 0;
+    const after = afterValue ?? 0;
+    const saved = finiteNumber(log.tokens_saved)
+      ?? (beforeValue !== null && afterValue !== null ? Math.max(0, before - after) : 0);
     const error = safeText(log.error, "");
     rows.push({
       id: `request-${safeText(log.request_id, safeText(log.route_id, "request"))}-${rows.length}`,
@@ -642,9 +633,9 @@ function runtimePayloadToLedgerRows(
         ? `${safeText(log.agent, "Agent")} 请求 · ${safeText(log.model, "model")}`
         : `${safeText(log.agent, "Agent")} request · ${safeText(log.model, "model")}`,
       detail: [
-        `route=${safeText(log.route_id, "unknown-route")}`,
-        `provider=${safeText(log.provider_id, "unknown-provider")}`,
-        `latency=${Number(log.latency_ms ?? 0)}ms`,
+        `route=${safeText(log.route_id, "—")}`,
+        `provider=${safeText(log.provider_id, "—")}`,
+        `latency=${finiteNumber(log.latency_ms) === null ? "—" : `${finiteNumber(log.latency_ms)}ms`}`,
         error ? `error=${error}` : "redacted=true",
       ].join(" · "),
       status: error ? "failed" : "ok",
@@ -666,45 +657,6 @@ type RuntimeExport = {
   redacted: boolean;
 };
 
-function buildVisibleLogExport(format: "json" | "csv", rows: LogEntry[], source: string) {
-  const timestamp = Date.now();
-  if (format === "csv") {
-    const header = ["time", "type", "agent", "message"].join(",");
-    const body = rows.map((row) => [
-      csvCell(row.time),
-      csvCell(row.type),
-      csvCell(row.agent),
-      csvCell(row.msgEn || row.msg),
-    ].join(",")).join("\n");
-    return {
-      content: `${header}\n${body}`,
-      mime: "text/csv",
-      filename: `dtoken-redacted-logs-${timestamp}.csv`,
-    };
-  }
-
-  return {
-    content: JSON.stringify(
-      {
-        exported_at: new Date().toISOString(),
-        source,
-        export_source: "frontend-visible-lines-fallback",
-        redacted: true,
-        logs: rows,
-      },
-      null,
-      2,
-    ),
-    mime: "application/json",
-    filename: `dtoken-redacted-logs-${timestamp}.json`,
-  };
-}
-
-function csvCell(value: unknown) {
-  const text = String(value ?? "");
-  return `"${text.replace(/"/g, '""')}"`;
-}
-
 function downloadText(content: string, mime: string, filename: string) {
   const blob = new Blob([content], { type: mime });
   const url = URL.createObjectURL(blob);
@@ -717,7 +669,7 @@ function downloadText(content: string, mime: string, filename: string) {
 
 function timeFromUnknown(value: unknown) {
   const ms = Number(value);
-  if (!Number.isFinite(ms) || ms <= 0) return new Date().toLocaleTimeString("en-GB", { hour12: false });
+  if (!Number.isFinite(ms) || ms <= 0) return "—";
   return new Date(ms).toLocaleTimeString("en-GB", { hour12: false });
 }
 
@@ -727,7 +679,7 @@ function sortTimeFromUnknown(value: unknown) {
 }
 
 function tokenSummary(input: number, output: number, saved: number) {
-  if (input <= 0 && output <= 0 && saved <= 0) return "0 tok";
+  if (input <= 0 && output <= 0 && saved <= 0) return "—";
   if (saved > 0) return `${saved.toLocaleString("en-US")} saved`;
   return `${input.toLocaleString("en-US")} -> ${output.toLocaleString("en-US")}`;
 }
@@ -739,4 +691,19 @@ function sortableLine(line: LogEntry, value: unknown): SortableLogEntry {
 
 function safeText(value: unknown, fallback: string) {
   return typeof value === "string" && value.length > 0 ? value : fallback;
+}
+
+function finiteNumber(value: unknown): number | null {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
+}
+
+function formatNumber(value: number | null): string {
+  return value === null ? "—" : value.toLocaleString("en-US");
+}
+
+function fallbackLabel(value: unknown): string {
+  if (value === false || value === "disabled") return "disabled";
+  if (value === true || value === "enabled") return "enabled";
+  return safeText(value, "—");
 }

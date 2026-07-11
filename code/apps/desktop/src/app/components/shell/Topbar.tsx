@@ -1,44 +1,37 @@
-import { PanelLeft } from "lucide-react";
+import { PanelLeftClose, PanelLeftOpen } from "lucide-react";
 import { useT } from "../../lib/i18n";
-import { BrandMark } from "../brand/BrandMark";
-import { cn } from "../ui/utils";
+import { NAV, SETTINGS_NAV, type PageId } from "../../lib/nav";
 
-export function Topbar({ collapsed, setCollapsed }: { collapsed: boolean; setCollapsed: (c: boolean) => void }) {
+export function Topbar({
+  page = "overview",
+  collapsed,
+  setCollapsed,
+}: {
+  page?: PageId;
+  collapsed: boolean;
+  setCollapsed: (c: boolean) => void;
+}) {
   const t = useT();
+  const current = [...NAV, SETTINGS_NAV].find((item) => item.id === page) ?? NAV[0];
 
   return (
     <header
-      className="shell-topbar glass-light relative z-30 flex h-12 min-w-0 shrink-0 items-center"
+      className="shell-topbar relative z-30 flex h-12 min-w-0 shrink-0 items-center gap-2 px-4"
       data-tauri-drag-region
     >
-      <div className="glass-backdrop" />
-      <div
-        className={cn(
-          "shell-topbar-brand flex h-full shrink-0 items-center border-r border-sidebar-border/60 transition-[width,padding] duration-300",
-          collapsed ? "w-[60px] justify-center" : "w-[148px] gap-2.5 px-3",
-        )}
-        data-tauri-drag-region
+      <button
+        type="button"
+        onClick={() => setCollapsed(!collapsed)}
+        aria-label={collapsed ? t("app.expandSidebar") : t("app.collapseSidebar")}
+        title={collapsed ? t("app.expandSidebar") : t("app.collapseSidebar")}
+        className="shell-window-control flex size-8 shrink-0 items-center justify-center rounded-lg text-muted-foreground hover:bg-[var(--chip-hover-bg)] hover:text-foreground"
       >
-        <span className="flex size-7 shrink-0 items-center justify-center overflow-hidden rounded-[9px] bg-white/90 shadow-sm ring-1 ring-black/10">
-          <BrandMark className="size-full object-cover" />
-        </span>
-        {!collapsed && <span className="truncate text-[13px] font-semibold tracking-[-0.01em]">{t("app.name")}</span>}
-      </div>
-
-      <div className="flex h-full min-w-0 flex-1 items-center px-3" data-tauri-drag-region>
-        {collapsed && (
-          <button
-            type="button"
-            onClick={() => setCollapsed(false)}
-            aria-label="Expand sidebar"
-            title="Expand sidebar"
-            className="shell-window-control flex size-8 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-[var(--chip-hover-bg)] hover:text-foreground"
-          >
-            <PanelLeft className="size-4" />
-          </button>
-        )}
-        <span className="sr-only">{t("app.name")}</span>
-      </div>
+        {collapsed ? <PanelLeftOpen className="size-4" /> : <PanelLeftClose className="size-4" />}
+      </button>
+      <span className="shell-topbar-context truncate text-[12px] font-medium text-muted-foreground" data-tauri-drag-region>
+        {t(current.labelKey)}
+      </span>
+      <span className="sr-only">{t("app.name")}</span>
     </header>
   );
 }

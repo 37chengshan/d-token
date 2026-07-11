@@ -29,7 +29,7 @@ describe("Heatmap runtime evidence", () => {
     expect(container.querySelector(".token-svg")).toBeNull();
     expect(screen.queryByText("99%")).not.toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: "切换统计视图: 工具" }));
+    await user.click(screen.getByRole("button", { name: "切换统计视图: 处理步骤" }));
     expect(await screen.findByText("暂无真实请求记录")).toBeVisible();
     expect(container.querySelector(".activity-tool-row")).toBeNull();
     expect(container.querySelector(".activity-donut-ring")).toBeNull();
@@ -40,7 +40,7 @@ describe("Heatmap runtime evidence", () => {
     const user = userEvent.setup();
     const { container } = render(<Heatmap activityDays={[]} tools={[{ name: "真实工具", calls: 0 }]} />);
 
-    await user.click(screen.getByRole("button", { name: "切换统计视图: 工具" }));
+    await user.click(screen.getByRole("button", { name: "切换统计视图: 处理步骤" }));
 
     expect(await screen.findByText("真实工具")).toBeInTheDocument();
     expect(container.querySelector<HTMLElement>(".activity-tool-bar")?.style.width).toBe("0%");

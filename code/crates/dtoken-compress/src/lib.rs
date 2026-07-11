@@ -1,9 +1,16 @@
+pub mod hybrid;
 pub mod optical;
 
 use anyhow::Result;
 use dtoken_types::{CompressionPolicy, CompressionResult};
 use serde_json::Value;
 use std::time::Instant;
+
+pub use hybrid::{
+    lower_hybrid_context, ApprovedHybridTarget, ApprovedHybridTargetKind, HybridContentProvenance,
+    HybridContextIr, HybridContextNode, HybridNodeKind, HybridProtection, HybridProtectionReason,
+    HybridRole, ResolvedOptimizationContext,
+};
 
 #[derive(Debug, Clone, Default)]
 pub struct CompressionEngine;
@@ -13,26 +20,42 @@ impl CompressionEngine {
         Self
     }
 
-    pub fn compress(&self, policy: CompressionPolicy, body: Value) -> Result<CompressionResult> {
+    pub fn compress(&self, _policy: CompressionPolicy, body: Value) -> Result<CompressionResult> {
         let started = Instant::now();
         let original_tokens = estimate_tokens(&body);
-        if policy == CompressionPolicy::Off {
+        Ok(CompressionResult {
+            original_tokens,
+            compressed_tokens: original_tokens,
+            tokens_saved: 0,
+            elapsed_us: started.elapsed().as_micros().max(1),
+            transforms_applied: Vec::new(),
+            body,
+        })
+    }
+
+    pub fn compress_resolved(
+        &self,
+        context: &ResolvedOptimizationContext,
+        policy: CompressionPolicy,
+        body: Value,
+    ) -> Result<CompressionResult> {
+        let started = Instant::now();
+        let original_tokens = estimate_tokens(&body);
+        if policy == CompressionPolicy::Off || !context.supports_safe_text_codec() {
             return Ok(CompressionResult {
                 original_tokens,
                 compressed_tokens: original_tokens,
                 tokens_saved: 0,
                 elapsed_us: started.elapsed().as_micros().max(1),
-                transforms_applied: vec![],
+                transforms_applied: Vec::new(),
                 body,
             });
         }
 
         let mut transforms_applied = Vec::new();
-        let compressed_body = compress_value(policy, body, &mut transforms_applied);
-        if compact_json_saved_tokens(&compressed_body) > 0 {
-            transforms_applied.push("json_compact_measurement".to_string());
-        }
-        let compressed_tokens = estimate_tokens(&compressed_body).min(original_tokens);
+        let compressed_body =
+            hybrid::apply_safe_text_codec(context, policy, body, &mut transforms_applied);
+        let compressed_tokens = estimate_tokens(&compressed_body);
         let tokens_saved = original_tokens.saturating_sub(compressed_tokens);
 
         Ok(CompressionResult {
@@ -43,24 +66,6 @@ impl CompressionEngine {
             transforms_applied,
             body: compressed_body,
         })
-    }
-}
-
-fn compress_value(policy: CompressionPolicy, value: Value, transforms: &mut Vec<String>) -> Value {
-    match value {
-        Value::String(text) => Value::String(compress_text(policy, &text, transforms)),
-        Value::Array(items) => Value::Array(
-            items
-                .into_iter()
-                .map(|item| compress_value(policy.clone(), item, transforms))
-                .collect(),
-        ),
-        Value::Object(map) => Value::Object(
-            map.into_iter()
-                .map(|(key, value)| (key, compress_value(policy.clone(), value, transforms)))
-                .collect(),
-        ),
-        other => other,
     }
 }
 
@@ -180,12 +185,6 @@ fn push_transform(transforms: &mut Vec<String>, name: &str) {
     }
 }
 
-fn compact_json_saved_tokens(value: &Value) -> usize {
-    let pretty = serde_json::to_string_pretty(value).unwrap_or_default();
-    let compact = serde_json::to_string(value).unwrap_or_default();
-    estimate_text_tokens(&pretty).saturating_sub(estimate_text_tokens(&compact))
-}
-
 fn estimate_tokens(value: &Value) -> usize {
     estimate_text_tokens(&serde_json::to_string(value).unwrap_or_default())
 }
@@ -206,31 +205,41 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn max_policy_is_explicitly_supported() {
+    fn protocol_unknown_max_policy_fails_safe() {
+        let body = json!({ "large": "fixture payload" });
         let result = CompressionEngine::new()
-            .compress(
-                CompressionPolicy::Max,
-                json!({ "large": "fixture payload" }),
-            )
+            .compress(CompressionPolicy::Max, body.clone())
             .expect("max compression policy should be accepted");
 
-        assert!(result
-            .transforms_applied
-            .iter()
-            .any(|item| item == "json_compact_measurement"));
+        assert_eq!(result.body, body);
+        assert_eq!(result.tokens_saved, 0);
+        assert!(result.transforms_applied.is_empty());
     }
 
     #[test]
-    fn balanced_policy_reduces_repeated_logs_and_records_elapsed_time() {
+    fn resolved_anthropic_policy_reduces_only_historical_closed_logs() {
+        let repeated_log = ["INFO build started"; 12].join("\n");
         let body = json!({
-            "messages": [{
-                "role": "user",
-                "content": "2026-07-04T10:00:00Z INFO build started\n2026-07-04T10:00:00Z INFO build started\n\n2026-07-04T10:00:01Z WARN retrying route\n2026-07-04T10:00:01Z WARN retrying route\nfinal useful line"
-            }]
+            "messages": [
+                {"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"build","input":{}}]},
+                {"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":repeated_log}]},
+                {"role":"assistant","content":[{"type":"text","text":"old"}]},
+                {"role":"user","content":[{"type":"text","text":"recent"}]},
+                {"role":"assistant","content":[{"type":"text","text":"recent"}]},
+                {"role":"user","content":[{"type":"text","text":"current"}]}
+            ]
         });
+        let context = ResolvedOptimizationContext {
+            route_id: "r".into(),
+            provider_id: "p".into(),
+            model: "m".into(),
+            input_protocol: dtoken_types::Protocol::Anthropic,
+            output_protocol: dtoken_types::Protocol::Anthropic,
+            endpoint: dtoken_types::OpticalEndpoint::AnthropicMessages,
+        };
 
         let result = CompressionEngine::new()
-            .compress(CompressionPolicy::Balanced, body)
+            .compress_resolved(&context, CompressionPolicy::Balanced, body)
             .expect("balanced compression should succeed");
 
         assert!(result.tokens_saved > 0);
@@ -238,13 +247,9 @@ mod tests {
         assert!(result
             .transforms_applied
             .iter()
-            .any(|item| item == "blank_line_trim"));
-        assert!(result
-            .transforms_applied
-            .iter()
             .any(|item| item == "repeat_line_fold"));
         assert!(result.elapsed_us > 0);
-        assert!(result.body.to_string().contains("repeated x2"));
+        assert!(result.body.to_string().contains("repeated x12"));
     }
 
     #[test]

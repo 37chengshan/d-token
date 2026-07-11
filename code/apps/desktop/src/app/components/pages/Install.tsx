@@ -67,8 +67,8 @@ export function Install() {
   const primaryAgentName = primaryAgent?.name ?? "Agent";
   const runtimeSummary = useMemo(() => installRuntimeSummary(payload, payloadStatus, updatedAt, lang), [payload, payloadStatus, updatedAt, lang]);
   const ccSwitchEvidence = useMemo(() => deriveCcSwitchEvidence(payload, payloadStatus, lang), [payload, payloadStatus, lang]);
-  const serviceEndpoint = serviceStatus?.service_url || safeRuntimeText(payload?.desktop_service_url, "http://127.0.0.1:18001");
-  const serviceAddress = serviceEndpoint.replace(/^https?:\/\//, "");
+  const serviceEndpoint = serviceStatus?.service_url || safeRuntimeText(payload?.desktop_service_url, "");
+  const serviceAddress = serviceEndpoint ? serviceEndpoint.replace(/^https?:\/\//, "") : "—";
 
   const transactionLine = useMemo(() => {
     if (installing) {
@@ -430,7 +430,7 @@ export function Install() {
         </div>
 
         <div className="mt-4 flex justify-end">
-          <Button disabled={selected.length === 0} onClick={() => setShowDiff(true)}>
+          <Button disabled={selected.length === 0 || !serviceOnline || !serviceEndpoint} onClick={() => setShowDiff(true)}>
             <ShieldCheck className="size-4" />
             {lang === "zh" ? "查看连接步骤" : "View connection steps"} {selected.length > 0 && `(${selected.length})`}
           </Button>
@@ -468,7 +468,7 @@ export function Install() {
                   void runDetect();
                 }
               }}
-              disabled={detecting || verifying}
+              disabled={detecting || verifying || Boolean(primaryAgent?.installed && (!serviceOnline || !serviceEndpoint))}
             >
               {detecting || verifying ? <RefreshCw className="size-4 animate-spin" /> : <Settings2 className="size-4" />}
               {primaryAgent?.installed
@@ -706,7 +706,6 @@ function installRuntimeSummary(payload: Record<string, any> | null, status: stri
   const provider = activeProviders[0] ?? {};
   const routeName = safeRuntimeText(route.name, safeRuntimeText(route.id, zh ? "等待配置路由" : "waiting for route"));
   const providerName = safeRuntimeText(provider.name, safeRuntimeText(provider.id, zh ? "等待配置上游" : "upstream pending"));
-  const serviceUrl = safeRuntimeText(payload?.desktop_service_url, "http://127.0.0.1:18001");
   const source = safeRuntimeText(payload?.desktop_data_source, status);
 
   if (status === "runtime") {
@@ -722,7 +721,7 @@ function installRuntimeSummary(payload: Record<string, any> | null, status: stri
 
   return {
     runtimeLabel: status === "browser-preview" ? (zh ? "浏览器预览，不执行本机操作" : "browser preview; local actions disabled") : (zh ? "本地服务暂不可用" : status),
-    routeLabel: `${serviceUrl}/v1`,
+    routeLabel: "—",
     routePreview: zh ? "AI 编码工具 -> d-token 本地服务 -> 路由适配 -> 真实上游" : "agent -> d-token local service -> route adapter -> upstream",
     verificationLine: zh ? "连接后发送一次真实请求，再由概览、日志和 Doctor 核对" : "Send a real request, then confirm it in Overview, Logs, and Doctor",
   };

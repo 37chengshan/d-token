@@ -5,6 +5,22 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const native = vi.hoisted(() => ({ invokeNative: vi.fn() }));
 
+const beforeSha = "a".repeat(64);
+const afterSha = "b".repeat(64);
+const routeReview = {
+  ok: true,
+  source: "dtoken-desktop-control-plane",
+  mode: "route-apply-review",
+  route_id: "route-a",
+  target: "D:/d-token/active-config/dtoken-config.json",
+  before_sha256: beforeSha,
+  after_sha256: afterSha,
+  diff: "--- before\n+++ after\n@@ -1 +1 @@\n-old\n+new",
+  risk_level: "medium",
+  requires_explicit_confirmation: true,
+  runtime_required: false,
+};
+
 vi.mock("../../lib/native", () => ({
   invokeNative: native.invokeNative,
 }));
@@ -41,6 +57,10 @@ const desktopPayload = (verified = true) => ({
       id: verified ? "backup-verified" : "backup-unverified",
       when: "2026-07-10 12:00",
       files: 1,
+      ports: [18001],
+      procs: 1,
+      before: "warning",
+      after: "healthy",
       verified,
     },
   ],
@@ -50,6 +70,7 @@ function useDesktopPayload(verified = true) {
   const payload = desktopPayload(verified);
   native.invokeNative.mockImplementation(async (command: string) => {
     if (command === "get_desktop_data") return payload;
+    if (command === "preview_route_profile_draft_apply") return routeReview;
     return { ok: true, summary: `${command} complete`, logs: [], tools: [] };
   });
 }
@@ -61,23 +82,31 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe("Changes action safety", () => {
-  it("keeps approve, reject and rollback disabled in browser preview", async () => {
+  it("keeps browser preview empty instead of rendering fixture actions", async () => {
     const user = userEvent.setup();
     native.invokeNative.mockRejectedValue(new Error("native_unavailable"));
     render(<Changes />);
 
     expect(await screen.findByText("浏览器预览仅供查看，批准、拒绝和回退均不可执行。")).toBeVisible();
-    for (const button of screen.getAllByRole("button", { name: "批准" })) {
-      expect(button).toBeDisabled();
-    }
-    for (const button of screen.getAllByRole("button", { name: "拒绝" })) {
-      expect(button).toBeDisabled();
-    }
+    expect(screen.getByText("当前没有待处理变更")).toBeVisible();
+    expect(screen.queryByRole("button", { name: "批准" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "拒绝" })).not.toBeInTheDocument();
 
     await user.click(screen.getByRole("tab", { name: "备份与回滚" }));
-    for (const button of await screen.findAllByRole("button", { name: "回滚到此处" })) {
-      expect(button).toBeDisabled();
-    }
+    expect(await screen.findByText("当前没有可用回滚点")).toBeVisible();
+    expect(screen.queryByRole("button", { name: "回滚到此处" })).not.toBeInTheDocument();
+  });
+
+  it("shows only ownership paths supplied by desktop evidence", async () => {
+    const user = userEvent.setup();
+    useDesktopPayload(true);
+    render(<Changes />);
+    await screen.findByText("D:/d-token/routing/route-a.json");
+
+    await user.click(screen.getByRole("tab", { name: "配置归属" }));
+    expect(await screen.findByText("D:/d-token/routing/route-a.json")).toBeInTheDocument();
+    expect(screen.queryByText("~/.claude/settings.json")).not.toBeInTheDocument();
+    expect(screen.queryByText("~/.dtoken/events.db")).not.toBeInTheDocument();
   });
 
   it.each([
@@ -142,19 +171,29 @@ describe("Changes action safety", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "批准" }));
 
-    const dialog = await screen.findByRole("alertdialog", { name: "确认批准变更" });
+    const dialog = await screen.findByRole("alertdialog", { name: "审阅并批准路由" });
     expect(within(dialog).getByText("影响范围")).toBeVisible();
-    expect(within(dialog).getByText("D:/d-token/routing/route-a.json")).toBeVisible();
+    expect(within(dialog).getAllByText(routeReview.target).length).toBeGreaterThanOrEqual(1);
     expect(within(dialog).getByText("备份保障")).toBeVisible();
     expect(within(dialog).getByText(/backup-verified/)).toBeVisible();
     expect(within(dialog).getByText("恢复方式")).toBeVisible();
     expect(within(dialog).getByText(/回退/)).toBeVisible();
+    expect(within(dialog).getByText(/--- before/)).toBeVisible();
+    expect(within(dialog).getByText(beforeSha)).toBeVisible();
+    expect(within(dialog).getByText(afterSha)).toBeVisible();
+    expect(native.invokeNative).toHaveBeenCalledWith("preview_route_profile_draft_apply", {
+      request: { route_id: "route-a" },
+    });
     expect(native.invokeNative).not.toHaveBeenCalledWith("apply_route_profile_draft", expect.anything());
 
-    fireEvent.click(within(dialog).getByRole("button", { name: "确认批准" }));
+    fireEvent.click(within(dialog).getByRole("button", { name: "确认应用" }));
     await waitFor(() => {
       expect(native.invokeNative).toHaveBeenCalledWith("apply_route_profile_draft", {
-        request: { route_id: "route-a" },
+        request: {
+          route_id: "route-a",
+          reviewed_before_sha256: beforeSha,
+          reviewed_after_sha256: afterSha,
+        },
       });
     });
     expect(errorSpy.mock.calls.flat().join(" ")).not.toContain("Function components cannot be given refs");
@@ -214,6 +253,7 @@ describe("Changes action safety", () => {
     const payload = desktopPayload(true);
     native.invokeNative.mockImplementation(async (command: string) => {
       if (command === "get_desktop_data") return payload;
+      if (command === "preview_route_profile_draft_apply") return routeReview;
       if (command === "apply_route_profile_draft") {
         return { ok: false, summary: "回滚点写入失败", logs: [], tools: [] };
       }
@@ -223,10 +263,49 @@ describe("Changes action safety", () => {
     await screen.findByText("D:/d-token/routing/route-a.json");
 
     fireEvent.click(screen.getByRole("button", { name: "批准" }));
-    const dialog = await screen.findByRole("alertdialog", { name: "确认批准变更" });
-    fireEvent.click(within(dialog).getByRole("button", { name: "确认批准" }));
+    const dialog = await screen.findByRole("alertdialog", { name: "审阅并批准路由" });
+    fireEvent.click(within(dialog).getByRole("button", { name: "确认应用" }));
 
-    expect(await screen.findByText("回滚点写入失败")).toBeVisible();
+    expect(await screen.findByText("路由应用未完成：回滚点写入失败")).toBeVisible();
     expect(screen.getByText("D:/d-token/routing/route-a.json")).toBeVisible();
+  });
+
+  it("requires a new review after the route draft or active config becomes stale", async () => {
+    const payload = desktopPayload(true);
+    native.invokeNative.mockImplementation(async (command: string) => {
+      if (command === "get_desktop_data") return payload;
+      if (command === "preview_route_profile_draft_apply") return routeReview;
+      if (command === "apply_route_profile_draft") {
+        return { ok: false, summary: "Route review is stale; review the current diff again", logs: [], tools: [] };
+      }
+      return { ok: true, summary: `${command} complete`, logs: [], tools: [] };
+    });
+    render(<Changes />);
+    await screen.findByText("D:/d-token/routing/route-a.json");
+
+    fireEvent.click(screen.getByRole("button", { name: "批准" }));
+    const dialog = await screen.findByRole("alertdialog", { name: "审阅并批准路由" });
+    fireEvent.click(within(dialog).getByRole("button", { name: "确认应用" }));
+
+    expect(await screen.findByText("应用已阻止：草稿或活动配置在审阅后发生变化，请重新审阅当前差异。")).toBeVisible();
+    expect(screen.getByText("D:/d-token/routing/route-a.json")).toBeVisible();
+    expect(screen.getByRole("button", { name: "批准" })).toBeEnabled();
+  });
+
+  it("never opens confirmation or calls apply when the review lacks hash evidence", async () => {
+    const payload = desktopPayload(true);
+    native.invokeNative.mockImplementation(async (command: string) => {
+      if (command === "get_desktop_data") return payload;
+      if (command === "preview_route_profile_draft_apply") return { ...routeReview, after_sha256: "" };
+      return { ok: true, summary: `${command} complete`, logs: [], tools: [] };
+    });
+    render(<Changes />);
+    await screen.findByText("D:/d-token/routing/route-a.json");
+
+    fireEvent.click(screen.getByRole("button", { name: "批准" }));
+
+    expect(await screen.findByText("无法生成路由审阅：桌面控制面未返回完整差异与 SHA-256 证据。")).toBeVisible();
+    expect(screen.queryByRole("alertdialog", { name: "审阅并批准路由" })).not.toBeInTheDocument();
+    expect(native.invokeNative.mock.calls.some(([command]) => command === "apply_route_profile_draft")).toBe(false);
   });
 });

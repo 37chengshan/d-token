@@ -28,7 +28,7 @@ vi.mock("recharts", () => ({
   XAxis: () => null,
 }));
 
-import { Overview, deriveOverviewOperationalSummary } from "./Overview";
+import { Overview, deriveOverviewOperationalSummary, overviewFromPayload } from "./Overview";
 
 const runtimePayload = {
   source: "dtoken-owned-runtime",
@@ -110,6 +110,100 @@ describe("Overview information hierarchy and truthfulness", () => {
     expect(within(kpis).queryByText("0")).not.toBeInTheDocument();
   });
 
+  it("keeps request and error KPIs unavailable when runtime exposes stats but no request logs", () => {
+    dashboard.state = {
+      payload: {
+        source: "dtoken-owned-runtime",
+        desktop_data_source: "dtoken-local-service",
+        providers: [{ id: "provider-main", name: "本地主上游" }],
+        routes: [{ id: "route-main", name: "主连接", target_provider_id: "provider-main" }],
+        request_logs: [],
+        stats: { tokens: { saved: 120, input: 480 }, savings_percent: 25 },
+        history: { history: [] },
+      },
+      status: "runtime",
+      updatedAt: new Date("2026-07-10T12:00:00Z"),
+      error: "",
+      refresh: vi.fn(),
+    };
+
+    render(<Overview setPage={vi.fn()} />);
+
+    const kpis = screen.getByTestId("overview-kpis");
+    expect(within(kpis).getByText("120")).toBeVisible();
+    expect(within(kpis).getByText("25%")).toBeVisible();
+    expect(within(kpis).getAllByText("—")).toHaveLength(2);
+    expect(within(kpis).queryByText("0")).not.toBeInTheDocument();
+    expect(screen.getAllByText("本地服务在线 · 暂无请求记录")).not.toHaveLength(0);
+    expect(screen.getByText("尚无请求记录")).toBeVisible();
+  });
+
+  it("shows no numeric KPI when the verified runtime has neither traffic nor metric evidence", () => {
+    dashboard.state = {
+      payload: {
+        source: "dtoken-owned-runtime",
+        desktop_data_source: "dtoken-local-service",
+        request_logs: [],
+        stats: {},
+        history: { history: [] },
+      },
+      status: "runtime",
+      updatedAt: new Date("2026-07-10T12:00:00Z"),
+      error: "",
+      refresh: vi.fn(),
+    };
+
+    render(<Overview setPage={vi.fn()} />);
+
+    const kpis = screen.getByTestId("overview-kpis");
+    expect(within(kpis).getAllByText("—")).toHaveLength(4);
+    expect(within(kpis).queryByText("0")).not.toBeInTheDocument();
+  });
+
+  it("skips incomplete timestamps and fields without fabricating activity, tools, trends, or agents", () => {
+    const view = overviewFromPayload({
+      source: "dtoken-owned-runtime",
+      desktop_data_source: "dtoken-local-service",
+      request_logs: [
+        { transforms_applied: ["must_not_appear"] },
+        { timestamp_ms: "invalid", latency_ms: 120_000, transforms_applied: ["also_invalid"] },
+        { timestamp_ms: Date.UTC(2026, 6, 10), transforms_applied: [] },
+      ],
+      stats: {},
+      history: { history: [{ saved: 99 }, { bucket_ms: "invalid", saved: 30 }] },
+    }, "runtime");
+
+    expect(view.trafficAvailable).toBe(true);
+    expect(view.metricsAvailable).toBe(false);
+    expect(view.compressionAvailable).toBe(false);
+    expect(view.stats.requestCount).toBe(3);
+    expect(view.stats.activeAgents).toBe(0);
+    expect(view.stats.errorsToday).toBe(0);
+    expect(view.activityDays).toEqual([{
+      date: "2026-07-10",
+      sessions: 1,
+      minutes: 0,
+      tokens: 0,
+      tools: 0,
+    }]);
+    expect(view.tools).toEqual([]);
+    expect(view.trend).toEqual([]);
+  });
+
+  it("counts the distinct agents evidenced by request logs without forcing a minimum", () => {
+    const view = overviewFromPayload({
+      source: "dtoken-owned-runtime",
+      desktop_data_source: "dtoken-local-service",
+      request_logs: [
+        { agent: "OpenCode" },
+        { agent: "OpenCode" },
+        { agent: "Cline" },
+      ],
+    }, "runtime");
+
+    expect(view.stats.activeAgents).toBe(2);
+  });
+
   it("puts verified KPIs before operational status, trends, activity and anomalies", () => {
     const { container } = render(<Overview setPage={vi.fn()} />);
     const sections = Array.from(container.querySelectorAll("[data-overview-section]"))
@@ -129,9 +223,10 @@ describe("Overview information hierarchy and truthfulness", () => {
     expect(within(operational as HTMLElement).getByText("当前连接路径")).toBeVisible();
     expect(within(operational as HTMLElement).getByText("cc-switch 与自定义上游")).toBeVisible();
     expect(within(operational as HTMLElement).queryByText("建议下一步")).not.toBeInTheDocument();
-    expect(within(operational as HTMLElement).getAllByRole("button")).toHaveLength(1);
+    expect(within(operational as HTMLElement).queryAllByRole("button")).toHaveLength(0);
     const issues = container.querySelector('[data-overview-section="issues"]');
     expect(within(issues as HTMLElement).getByText("最近问题")).toBeVisible();
+    expect(screen.queryByRole("button")).not.toBeInTheDocument();
     expect(screen.getByTestId("activity-heatmap")).toBeVisible();
   });
 });

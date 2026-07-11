@@ -246,7 +246,7 @@ export function Settings() {
           desc={lang === "zh" ? "只监听本机，不接受局域网或公网连接。" : "Loopback-only; no LAN or public connections."}
         >
           <span className="break-all font-mono text-sm text-muted-foreground">
-            {serviceStatus?.service_url ?? "http://127.0.0.1:18001"}
+            {serviceStatus?.service_url || "—"}
           </span>
         </Row>
         <Row

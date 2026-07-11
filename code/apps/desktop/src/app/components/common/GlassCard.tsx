@@ -1,4 +1,3 @@
-import { motion } from "motion/react";
 import type { ReactNode } from "react";
 import { cn } from "../ui/utils";
 
@@ -20,13 +19,12 @@ export function GlassCard({
   const variant = strong ? "glass-strong" : "glass";
 
   return (
-    <motion.div
+    <div
       onClick={onClick}
-      whileHover={hover ? { y: -2 } : undefined}
-      transition={{ type: "spring", stiffness: 300, damping: 24 }}
       className={cn(
         variant,
         "rounded-xl text-card-foreground",
+        hover && "glass-card-hover",
         onClick && "cursor-pointer",
         className,
       )}
@@ -36,6 +34,6 @@ export function GlassCard({
       {/* 3D glass edge: simulates light refracting through glass thickness */}
       {edge && <div className="glass-edge" />}
       {children}
-    </motion.div>
+    </div>
   );
 }

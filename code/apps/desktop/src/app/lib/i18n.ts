@@ -8,6 +8,9 @@ type Dict = Record<string, { zh: string; en: string }>;
 export const DICT: Dict = {
   "app.name": { zh: "d-token 本地连接中心", en: "d-token Local Hub" },
   "app.tagline": { zh: "连接 AI Agent、同步上游、节省 token 并诊断问题", en: "Connect AI agents, sync upstreams, save tokens, and diagnose issues" },
+  "app.loading": { zh: "正在加载页面…", en: "Loading view…" },
+  "app.expandSidebar": { zh: "展开侧栏", en: "Expand sidebar" },
+  "app.collapseSidebar": { zh: "收起侧栏", en: "Collapse sidebar" },
 
   // nav
   "nav.overview": { zh: "总体概览", en: "Overview" },
@@ -29,6 +32,10 @@ export const DICT: Dict = {
   "status.running": { zh: "运行中", en: "Running" },
   "status.stopped": { zh: "已停止", en: "Stopped" },
   "status.details": { zh: "详情", en: "Details" },
+  "status.source": { zh: "数据来源", en: "Source" },
+  "status.requests": { zh: "请求数", en: "Requests" },
+  "status.routes": { zh: "路由数", en: "Routes" },
+  "status.updated": { zh: "更新时间", en: "Updated" },
   "common.previewData": { zh: "预览数据", en: "Preview Data" },
   "common.runtimeData": { zh: "真实本地数据", en: "Real Local Data" },
   "common.healthy": { zh: "正常", en: "Healthy" },
@@ -243,10 +250,6 @@ export const DICT: Dict = {
   "sl.search": { zh: "搜索目录 / Agent / 语言", en: "Search folder / agent / language" },
   "sl.nativeUnavailable": { zh: "本机扫描与受控写入尚未接通，当前不会扫描会话或修改文件。", en: "Native scanning and controlled writing are not connected yet; no sessions or files will be changed." },
   "sl.nativeUnavailableShort": { zh: "本机扫描尚未接通", en: "Native scan unavailable" },
-  "sl.previewNotice": { zh: "浏览器预览：候选目录是示例，不会扫描或写入本机。", en: "Browser preview: candidate folders are examples; nothing is scanned or written locally." },
-  "sl.previewScan": { zh: "查看预览样例", en: "View preview examples" },
-  "sl.previewReadOnly": { zh: "仅预览，不会写入", en: "Preview only, no write" },
-  "sl.previewEmpty": { zh: "还没有加载预览样例", en: "No preview examples loaded" },
 
   // overview cc-switch summary
   "ov.ccSwitch": { zh: "cc-switch 同步", en: "cc-switch Sync" },

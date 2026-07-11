@@ -1,5 +1,5 @@
 import { CheckCircle2, AlertTriangle, XCircle } from "lucide-react";
-import type { Health } from "../../lib/fixtures";
+import type { Health } from "../../lib/runtime/types";
 import { cn } from "../ui/utils";
 
 const MAP: Record<Health, { cls: string; Icon: typeof CheckCircle2 }> = {
@@ -21,8 +21,7 @@ export function StatusBadge({ status, label, className }: { status: Health; labe
 export function StatusDot({ status }: { status: Health }) {
   const color = status === "healthy" ? "bg-emerald-500" : status === "warning" ? "bg-amber-500" : "bg-rose-500";
   return (
-    <span className="relative inline-flex size-2.5">
-      <span className={cn("absolute inline-flex h-full w-full rounded-full opacity-60 animate-ping", color)} />
+    <span className="relative inline-flex size-2.5" aria-hidden="true">
       <span className={cn("relative inline-flex size-2.5 rounded-full", color)} />
     </span>
   );

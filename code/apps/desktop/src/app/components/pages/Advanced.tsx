@@ -10,9 +10,32 @@ import { Switch } from "../ui/switch";
 import { Button } from "../ui/button";
 import { Badge } from "../ui/badge";
 import { Input } from "../ui/input";
+import {
+  AlertDialog,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "../ui/alert-dialog";
 import { useI18n, useT } from "../../lib/i18n";
 import { invokeNative, isTauriRuntime, type NativeActionResult } from "../../lib/native";
 import { useRuntimeDashboard } from "../../lib/useRuntimeDashboard";
+import {
+  isUsableRouteReview,
+  routeApplyFailureMessage,
+  routeApplyRequest,
+  routeReviewFailureMessage,
+  type RouteDraftApplyReview,
+} from "../../lib/routes/review";
+
+export {
+  isUsableRouteReview,
+  routeApplyFailureMessage,
+  routeApplyRequest,
+  routeReviewFailureMessage,
+} from "../../lib/routes/review";
 
 type Health = "healthy" | "warning" | "error";
 
@@ -47,10 +70,12 @@ export function Advanced() {
     providerName: "",
     baseUrl: "",
     model: "",
-    localPort: "18001",
+    localPort: "",
   });
   const [routeSaving, setRouteSaving] = useState(false);
+  const [routeReviewing, setRouteReviewing] = useState("");
   const [routeApplying, setRouteApplying] = useState("");
+  const [routeReview, setRouteReview] = useState<RouteDraftApplyReview | null>(null);
   const [routeNotice, setRouteNotice] = useState("");
   const [providerCredential, setProviderCredential] = useState("");
   const [credentialSaving, setCredentialSaving] = useState(false);
@@ -150,6 +175,10 @@ export function Advanced() {
       setRouteNotice(lang === "zh" ? "上游地址不能指向 d-token 自己的本地端口，否则会形成请求循环。" : "The upstream URL cannot point back to d-token's own local port.");
       return;
     }
+    if (!validPort(routeDraft.localPort)) {
+      setRouteNotice(lang === "zh" ? "请输入 1–65535 之间的真实本地端口。" : "Enter the real local port between 1 and 65535.");
+      return;
+    }
     setRouteSaving(true);
     setRouteNotice("");
     try {
@@ -184,22 +213,58 @@ export function Advanced() {
     }
   };
 
-  const applyRouteDraft = async (routeId: string) => {
-    setRouteApplying(routeId);
+  const reviewRouteDraft = async (routeId: string) => {
+    if (!routeId) return;
+    setRouteReviewing(routeId);
+    setRouteNotice("");
+    try {
+      const result = await invokeNative<RouteDraftApplyReview>("preview_route_profile_draft_apply", {
+        request: { route_id: routeId },
+      });
+      if (!isUsableRouteReview(result, routeId)) {
+        setRouteReview(null);
+        setRouteNotice(routeReviewFailureMessage(result, lang));
+        return;
+      }
+      setRouteReview(result);
+    } catch (error) {
+      setRouteNotice(error instanceof Error && error.message === "native_unavailable"
+        ? (lang === "zh" ? "浏览器预览无法审阅或应用真实路由草稿，请在桌面窗口中操作。" : "Browser preview cannot review or apply a real route draft. Use the desktop window.")
+        : (lang === "zh" ? "桌面控制面未能生成路由审阅；未执行写入，请稍后重试。" : "The desktop control plane could not prepare the route review. Nothing was written; try again."));
+    } finally {
+      setRouteReviewing("");
+    }
+  };
+
+  const applyReviewedRouteDraft = async () => {
+    if (!routeReview || !isUsableRouteReview(routeReview, routeReview.route_id)) {
+      setRouteReview(null);
+      setRouteNotice(lang === "zh" ? "应用已阻止：请先审阅当前路由差异。" : "Apply was blocked: review the current route diff first.");
+      return;
+    }
+    const review = routeReview;
+    setRouteApplying(review.route_id);
     setRouteNotice("");
     try {
       const result = await invokeNative<NativeActionResult>("apply_route_profile_draft", {
-        request: { route_id: routeId },
+        request: routeApplyRequest(review),
       });
-      if (!result.ok) throw new Error(result.summary);
-      setRouteNotice(result.summary);
+      setRouteReview(null);
+      if (!result.ok) {
+        setRouteNotice(routeApplyFailureMessage(result.summary, lang));
+        return;
+      }
+      setRouteNotice(lang === "zh"
+        ? "路由草稿已应用并完成写后验证；事务已创建持久回滚点。"
+        : "The route draft was applied and verified; the transaction created a durable rollback point.");
       await refreshRouteDrafts();
       await refreshPayload();
       await refreshActiveConfig();
     } catch (error) {
+      setRouteReview(null);
       setRouteNotice(error instanceof Error && error.message === "native_unavailable"
-        ? "当前是浏览器预览，应用路由草稿需要在 Tauri 桌面窗口中运行。"
-        : `路由草稿应用失败：${String(error)}`);
+        ? (lang === "zh" ? "浏览器预览无法提交路由变更，请在桌面窗口中操作。" : "Browser preview cannot submit route changes. Use the desktop window.")
+        : (lang === "zh" ? "桌面控制面调用失败，未确认写入结果；请重新审阅当前差异后再试。" : "The desktop control-plane call failed and the write result is unconfirmed. Review the current diff before retrying."));
     } finally {
       setRouteApplying("");
     }
@@ -278,7 +343,7 @@ export function Advanced() {
                     : "Saved as a d-token local routing draft. OpenCode, Headroom, RTK, cc-switch, and system proxy config are not changed."}
                 </div>
               </div>
-              <Button size="sm" onClick={saveRouteDraft} disabled={routeSaving || !routeDraft.providerName.trim() || !routeDraft.baseUrl.trim() || !routeDraft.model.trim()}>
+              <Button size="sm" onClick={saveRouteDraft} disabled={routeSaving || !routeDraft.providerName.trim() || !routeDraft.baseUrl.trim() || !routeDraft.model.trim() || !validPort(routeDraft.localPort)}>
                 {routeSaving ? <RefreshCw className="size-3.5 animate-spin" /> : null}
                 {lang === "zh" ? "保存草稿" : "Save draft"}
               </Button>
@@ -347,19 +412,21 @@ export function Advanced() {
                   return (
                     <div key={`${route?.id ?? "route"}-${index}`} className="glass-inset flex flex-wrap items-center justify-between gap-3 p-3 text-xs">
                       <div>
-                        <div className="font-medium">{route?.name ?? route?.id ?? "d-token route draft"}</div>
-                        <div className="text-muted-foreground">{provider?.name ?? provider?.id ?? "provider"} · {provider?.base_url ?? "base URL"} · :{route?.local_port ?? "18001"}</div>
+                        <div className="font-medium">{route?.name ?? route?.id ?? (lang === "zh" ? "未命名路由草稿" : "Unnamed route draft")}</div>
+                        <div className="text-muted-foreground">{provider?.name ?? provider?.id ?? "—"} · {provider?.base_url ?? "—"} · {route?.local_port ? `:${route.local_port}` : "—"}</div>
                       </div>
                       <div className="flex items-center gap-2">
-                        <Badge variant="outline">{draft?.savedAt ?? "saved"}</Badge>
+                        <Badge variant="outline">{draft?.savedAt ?? "—"}</Badge>
                         <Button
                           size="sm"
                           variant="outline"
-                          onClick={() => void applyRouteDraft(route?.id ?? "")}
-                          disabled={!route?.id || routeApplying === route?.id}
+                          onClick={() => void reviewRouteDraft(route?.id ?? "")}
+                          disabled={!route?.id || Boolean(routeReviewing) || Boolean(routeApplying)}
                         >
-                          {routeApplying === route?.id ? <RefreshCw className="size-3.5 animate-spin" /> : null}
-                          {lang === "zh" ? "应用" : "Apply"}
+                          {routeReviewing === route?.id ? <RefreshCw className="size-3.5 animate-spin" /> : null}
+                          {routeReviewing === route?.id
+                            ? (lang === "zh" ? "正在生成预览" : "Preparing review")
+                            : (lang === "zh" ? "审阅并应用" : "Review & apply")}
                         </Button>
                       </div>
                     </div>
@@ -400,6 +467,7 @@ export function Advanced() {
                   </div>
                 </div>
               ))}
+              {runtimeRouting.providers.length === 0 && <RoutingEmptyState kind="provider" />}
             </div>
           </GlassCard>
 
@@ -419,10 +487,11 @@ export function Advanced() {
                         {i < arr.length - 1 && <span className="text-muted-foreground">→</span>}
                       </span>
                     ))}
-                    <span className="ml-auto text-xs text-muted-foreground">:{r.port} · {r.fallback}</span>
+                    <span className="ml-auto text-xs text-muted-foreground">{r.port ? `:${r.port}` : "—"} · {r.fallback}</span>
                   </div>
                 </div>
               ))}
+              {runtimeRouting.routes.length === 0 && <RoutingEmptyState kind="route" />}
             </div>
           </GlassCard>
 
@@ -438,10 +507,83 @@ export function Advanced() {
                   </div>
                 </div>
               ))}
+              {runtimeRouting.ports.length === 0 && <RoutingEmptyState kind="port" />}
             </div>
           </GlassCard>
         </TabsContent>
       </Tabs>
+
+      <AlertDialog
+        open={routeReview !== null}
+        onOpenChange={(open) => {
+          if (!open && !routeApplying) setRouteReview(null);
+        }}
+      >
+        <AlertDialogContent className="max-w-2xl">
+          <AlertDialogHeader>
+            <AlertDialogTitle>{lang === "zh" ? "审阅并应用路由" : "Review and apply route"}</AlertDialogTitle>
+            <AlertDialogDescription>
+              {lang === "zh"
+                ? "以下差异由桌面控制面只读生成。确认时会提交本次审阅的前后 SHA-256；如果草稿或活动配置发生变化，应用会被拒绝。"
+                : "This diff was prepared read-only by the desktop control plane. Confirmation submits the reviewed before/after SHA-256 pair; apply is rejected if the draft or active config changes."}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+
+          {routeReview && (
+            <div className="space-y-3 text-sm">
+              <div className="grid gap-3 sm:grid-cols-2">
+                <ReviewField label={lang === "zh" ? "目标文件" : "Target file"} value={routeReview.target} />
+                <ReviewField label={lang === "zh" ? "风险等级" : "Risk level"} value={routeReview.risk_level} />
+              </div>
+              <div className="glass-inset p-3 text-xs text-muted-foreground">
+                {lang === "zh"
+                  ? "确认后只更新 d-token 活动配置。事务会先创建持久回滚点，写入后验证；不会修改外部 Agent、Headroom、RTK、cc-switch、系统代理或凭据。"
+                  : "Confirmation updates only the active d-token config. The transaction creates a durable rollback point before writing and verifies afterward; external agents, Headroom, RTK, cc-switch, system proxy, and credentials are unchanged."}
+              </div>
+              <div>
+                <div className="mb-1.5 text-xs font-medium text-muted-foreground">{lang === "zh" ? "脱敏差异" : "Redacted diff"}</div>
+                <pre className="max-h-64 overflow-auto whitespace-pre-wrap break-words rounded-lg border border-border/60 bg-muted/35 p-3 text-xs leading-5">{routeReview.diff}</pre>
+              </div>
+              <div className="grid gap-2 text-[11px] text-muted-foreground">
+                <HashRow label={lang === "zh" ? "应用前 SHA-256" : "Before SHA-256"} value={routeReview.before_sha256} />
+                <HashRow label={lang === "zh" ? "应用后 SHA-256" : "After SHA-256"} value={routeReview.after_sha256} />
+              </div>
+            </div>
+          )}
+
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={Boolean(routeApplying)}>{lang === "zh" ? "取消" : "Cancel"}</AlertDialogCancel>
+            <Button onClick={() => void applyReviewedRouteDraft()} disabled={Boolean(routeApplying)}>
+              {routeApplying ? <RefreshCw className="size-4 animate-spin" /> : null}
+              {routeApplying ? (lang === "zh" ? "正在应用" : "Applying") : (lang === "zh" ? "确认应用" : "Confirm apply")}
+            </Button>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </div>
+  );
+}
+
+function validPort(value: string) {
+  if (!/^\d{1,5}$/.test(value.trim())) return false;
+  const port = Number(value);
+  return Number.isInteger(port) && port >= 1 && port <= 65_535;
+}
+
+function ReviewField({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="glass-inset min-w-0 p-3">
+      <div className="text-xs text-muted-foreground">{label}</div>
+      <div className="mt-1 break-all text-sm font-medium">{value}</div>
+    </div>
+  );
+}
+
+function HashRow({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="grid gap-1 sm:grid-cols-[132px_minmax(0,1fr)]">
+      <span>{label}</span>
+      <code className="break-all font-mono text-foreground/80">{value}</code>
     </div>
   );
 }
@@ -463,7 +605,7 @@ type UiRoute = {
   agent: string;
   mode: string;
   target: string;
-  port: number;
+  port: number | null;
   fallback: string;
   risk: "low" | "medium" | "high";
 };
@@ -490,11 +632,11 @@ function ActiveConfigCard({
   const provider = activeConfig?.provider ?? {};
   const route = activeConfig?.route ?? {};
   const runtimeStatus = runtimeActiveConfig?.config ?? runtimeActiveConfig;
-  const runtimeSource = safeText(runtimeStatus?.source, "runtime unknown");
+  const runtimeSource = safeText(runtimeStatus?.source, "—");
   const runtimeLoaded = runtimeStatus?.loaded === true;
   const providerName = safeText(provider.name, safeText(provider.id, "no provider"));
   const routeName = safeText(route.name, safeText(route.id, "no route"));
-  const path = safeText(activeConfig?.path, "%LOCALAPPDATA%\\d-token\\active-config\\dtoken-config.json");
+  const path = safeText(activeConfig?.path, "—");
   const fallbackDisabled = activeConfig?.fallback_disabled === true;
   return (
     <GlassCard className="p-4">
@@ -553,19 +695,19 @@ function ProjectPolicyRows({
       <div className="space-y-2">
         <div className="glass-inset flex flex-wrap items-center justify-between gap-3 p-3">
           <div>
-            <div>{safeText(policy.project_id, "desktop-project")}</div>
+            <div>{safeText(policy.project_id, "—")}</div>
             <div className="text-xs text-muted-foreground">
-              {safeText(policy.root_path, "project root")} · {(policy.language_stack ?? []).join(", ") || "stack pending"}
+              {safeText(policy.root_path, "—")} · {(policy.language_stack ?? []).join(", ") || "—"}
             </div>
             <div className="mt-1 text-xs text-muted-foreground">
               {lang === "zh" ? "运行输入" : "Runtime input"}:
-              {" "}avg {Number(runtimeInput?.avg_request_tokens_7d ?? 0).toLocaleString()} tokens · noise {Math.round(Number(runtimeInput?.avg_cli_noise_ratio_7d ?? 0) * 100)}%
+              {" "}avg {formatMetric(runtimeInput?.avg_request_tokens_7d)} tokens · noise {formatPercent(runtimeInput?.avg_cli_noise_ratio_7d)}
             </div>
           </div>
           <div className="flex flex-wrap items-center gap-1.5">
-            <Badge>{safeText(policy.level, safeText(policy.recommended_level, "balanced"))}</Badge>
-            <Badge variant="outline">{safeText(recommendation?.confidence ?? policy.recommendation_confidence, "confidence")}</Badge>
-            <Badge variant="secondary">holdout {Number(policy.holdout_ratio ?? 0.1)}</Badge>
+            <Badge>{safeText(policy.level, safeText(policy.recommended_level, "—"))}</Badge>
+            <Badge variant="outline">{safeText(recommendation?.confidence ?? policy.recommendation_confidence, "—")}</Badge>
+            {finiteRatio(policy.holdout_ratio) !== null && <Badge variant="secondary">holdout {policy.holdout_ratio}</Badge>}
           </div>
         </div>
         <div className="flex flex-wrap gap-1.5">
@@ -574,7 +716,7 @@ function ProjectPolicyRows({
           ))}
         </div>
         <div className="text-xs text-muted-foreground">
-          {saved?.privacy ?? "aggregate runtime metrics only; no raw prompts or responses are stored"}
+          {saved?.privacy ?? (lang === "zh" ? "未返回隐私边界说明" : "No privacy-boundary statement returned")}
         </div>
       </div>
     );
@@ -630,7 +772,7 @@ function buildRuntimeRouting(payload: Record<string, any> | null, status: string
     baseUrl: safeText(provider.base_url, safeText(provider.baseUrl, "not configured")),
     store: provider.api_key_ref ? "local-ref" : "none",
     keyMasked: provider.api_key_ref ? maskRef(provider.api_key_ref) : "no api key stored",
-    health: provider.base_url || provider.baseUrl ? "healthy" : "warning",
+    health: providerStatusToHealth(provider),
   }));
   const providerById = new Map(providerRows.map((provider) => [provider.id, provider]));
   const instanceById = new Map(payloadInstances.map((instance: any) => [safeText(instance.id, ""), instance]));
@@ -638,16 +780,20 @@ function buildRuntimeRouting(payload: Record<string, any> | null, status: string
   const routeRows: UiRoute[] = payloadRoutes.map((route: any) => {
     const provider = providerById.get(safeText(route.target_provider_id, ""));
     const instance = instanceById.get(safeText(route.instance_id, ""));
-    const fallback = route.fallback_provider_id ? `explicit fallback: ${route.fallback_provider_id}` : "fallback disabled";
+    const fallback = route.fallback_provider_id
+      ? `explicit fallback: ${route.fallback_provider_id}`
+      : route.fallback_disabled === true
+        ? "fallback disabled"
+        : "fallback unverified";
     return {
       id: safeText(route.id, safeText(route.name, "route")),
       name: safeText(route.name, safeText(route.id, "Route")),
       agent: safeText(instance?.agent, safeText(route.instance_id, "agent route")),
       mode: safeText(route.chain_mode, "compress_then_provider"),
       target: provider?.name ?? safeText(route.target_provider_id, "unknown provider"),
-      port: Number(route.local_port ?? instance?.local_port ?? 18001),
+      port: positivePort(route.local_port ?? instance?.local_port),
       fallback,
-      risk: route.fallback_provider_id ? "medium" : "low",
+      risk: route.fallback_provider_id || route.fallback_disabled !== true ? "medium" : "low",
     };
   });
 
@@ -659,12 +805,12 @@ function buildRuntimeRouting(payload: Record<string, any> | null, status: string
       kind: "dtoken_route",
       confidence: "confirmed" as const,
       owner: route.name,
-      health: "healthy" as Health,
+      health: "warning" as Health,
     })),
     ...payloadInstances.map((instance: any) => ({
       id: `instance-${safeText(instance.id, "runtime")}`,
       host: "127.0.0.1",
-      port: Number(instance.local_port ?? 18001),
+      port: positivePort(instance.local_port),
       kind: "dtoken_instance",
       confidence: "confirmed" as const,
       owner: safeText(instance.agent, safeText(instance.name, "d-token")),
@@ -680,14 +826,14 @@ function buildRuntimeRouting(payload: Record<string, any> | null, status: string
   };
 }
 
-function uniquePorts(rows: UiPort[]) {
+function uniquePorts(rows: Array<Omit<UiPort, "port"> & { port: number | null }>) {
   const seen = new Set<string>();
   return rows.filter((row) => {
     const key = `${row.host}:${row.port}:${row.kind}`;
     if (seen.has(key)) return false;
     seen.add(key);
-    return Number.isFinite(row.port) && row.port > 0;
-  });
+    return row.port !== null;
+  }) as UiPort[];
 }
 
 function safeText(value: unknown, fallback: string) {
@@ -711,12 +857,13 @@ export function isDtokenSelfLoop(baseUrl: string, localPort: string) {
 }
 
 function serviceBindingFromPayload(payload: Record<string, any> | null) {
-  const endpoint = safeText(payload?.desktop_service_url, "http://127.0.0.1:18001");
+  const endpoint = safeText(payload?.desktop_service_url, "");
+  if (!endpoint) return { host: "—", port: "—" };
   try {
     const url = new URL(endpoint);
-    return { host: url.hostname || "127.0.0.1", port: url.port || "18001" };
+    return { host: url.hostname || "—", port: url.port || (url.protocol === "https:" ? "443" : url.protocol === "http:" ? "80" : "—") };
   } catch {
-    return { host: "127.0.0.1", port: "18001" };
+    return { host: "—", port: "—" };
   }
 }
 
@@ -730,7 +877,29 @@ function processStatusToHealth(value: unknown): Health {
   const text = safeText(value, "").toLowerCase();
   if (text.includes("running") || text.includes("healthy")) return "healthy";
   if (text.includes("stopped") || text.includes("missing")) return "warning";
-  return "healthy";
+  return "warning";
+}
+
+function providerStatusToHealth(provider: Record<string, any>): Health {
+  const text = safeText(provider.health ?? provider.status, "").toLowerCase();
+  if (text === "healthy" || text === "ok" || text === "ready") return "healthy";
+  if (text === "error" || text === "failed" || text === "unreachable") return "error";
+  return "warning";
+}
+
+function positivePort(value: unknown) {
+  const port = typeof value === "number" ? value : Number(value);
+  return Number.isInteger(port) && port > 0 && port <= 65_535 ? port : null;
+}
+
+function RoutingEmptyState({ kind }: { kind: "provider" | "route" | "port" }) {
+  const { lang } = useI18n();
+  const label = kind === "provider"
+    ? (lang === "zh" ? "暂无已验证 Provider" : "No verified providers")
+    : kind === "route"
+      ? (lang === "zh" ? "暂无已验证路由" : "No verified routes")
+      : (lang === "zh" ? "暂无已验证监听端口" : "No verified listening ports");
+  return <div className="glass-inset p-3 text-sm text-muted-foreground">{label}</div>;
 }
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
@@ -743,14 +912,10 @@ type AdvancedSettingsPayload = {
   cc_switch_mode?: "auto" | "direct" | "proxy";
 };
 
-type PreferenceStatus = "loading" | "saved" | "saving" | "preview" | "error";
+type PreferenceStatus = "loading" | "missing" | "saved" | "saving" | "preview" | "error";
 
 function useAdvancedPreference() {
-  const [settings, setSettings] = useState<AdvancedSettingsPayload>({
-    autostart_preference: true,
-    cc_switch_auto: true,
-    cc_switch_mode: "auto",
-  });
+  const [settings, setSettings] = useState<AdvancedSettingsPayload>({});
   const [status, setStatus] = useState<PreferenceStatus>("loading");
 
   useEffect(() => {
@@ -760,7 +925,7 @@ function useAdvancedPreference() {
         if (cancelled) return;
         const payload = saved.payload?.advanced ?? saved.payload ?? {};
         setSettings((current) => ({ ...current, ...payload }));
-        setStatus(saved.state === "loaded" ? "saved" : "saved");
+        setStatus(saved.state === "loaded" ? "saved" : "missing");
       })
       .catch((error) => {
         if (cancelled) return;
@@ -792,16 +957,19 @@ function useAdvancedPreference() {
 
 function PreferenceBadge({ status }: { status: PreferenceStatus }) {
   const t = useT();
+  const { lang } = useI18n();
   const label =
     status === "saving"
       ? t("adv.preferenceSaving")
       : status === "preview"
         ? t("adv.preferencePreview")
-        : status === "error"
-          ? t("adv.preferenceError")
-          : status === "loading"
-            ? t("adv.preferenceLoading")
-            : t("adv.preferenceSaved");
+        : status === "missing"
+          ? (lang === "zh" ? "尚未设置" : "Not configured")
+          : status === "error"
+            ? t("adv.preferenceError")
+            : status === "loading"
+              ? t("adv.preferenceLoading")
+              : t("adv.preferenceSaved");
   return <Badge variant={status === "error" ? "destructive" : "outline"}>{label}</Badge>;
 }
 
@@ -823,7 +991,7 @@ function ServiceRow() {
       </div>
       <Switch
         aria-label={t("adv.autostart")}
-        checked={settings.autostart_preference ?? true}
+        checked={settings.autostart_preference ?? false}
         disabled={disabled}
         onCheckedChange={(checked) => void savePreference({ autostart_preference: checked })}
       />
@@ -835,7 +1003,7 @@ function CcSwitchPanel() {
   const t = useT();
   const { lang } = useI18n();
   const { settings, status, savePreference } = useAdvancedPreference();
-  const mode = settings.cc_switch_mode ?? "auto";
+  const mode = settings.cc_switch_mode ?? null;
   const disabled = status === "loading" || status === "saving";
   const modes = [
     { k: "auto" as const, label: t("adv.ccMode.auto") },
@@ -857,7 +1025,7 @@ function CcSwitchPanel() {
         </div>
         <Switch
           aria-label={t("adv.ccAuto")}
-          checked={settings.cc_switch_auto ?? true}
+          checked={settings.cc_switch_auto ?? false}
           disabled={disabled}
           onCheckedChange={(checked) => void savePreference({ cc_switch_auto: checked })}
         />
@@ -867,7 +1035,7 @@ function CcSwitchPanel() {
         <div className="mb-3 flex items-center justify-between">
           <span className="text-sm text-muted-foreground">{t("adv.ccMode")}</span>
           <div className="flex items-center gap-2 text-sm">
-            {t("adv.ccCurrent")}: <Badge>{modes.find((item) => item.k === mode)?.label ?? mode}</Badge>
+            {t("adv.ccCurrent")}: <Badge>{modes.find((item) => item.k === mode)?.label ?? "—"}</Badge>
           </div>
         </div>
         <div className="grid gap-2 sm:grid-cols-3">
@@ -901,7 +1069,7 @@ function HeadroomScan({
   const { lang } = useI18n();
   const [scanning, setScanning] = useState(false);
   const [saving, setSaving] = useState(false);
-  const [projectRoot, setProjectRoot] = useState("~/code/web-dashboard");
+  const [projectRoot, setProjectRoot] = useState("");
   const [result, setResult] = useState<any | null>(null);
   const [notice, setNotice] = useState("");
   const [savedSummary, setSavedSummary] = useState("");
@@ -909,10 +1077,15 @@ function HeadroomScan({
   const recommendation = result?.recommendation;
   const recommendedLevel = recommendation?.recommended_level ?? null;
   const confidence = recommendation?.confidence ?? null;
-  const confidencePct = confidence === "high" ? 92 : confidence === "medium" ? 76 : confidence === "low" ? 48 : 0;
   const runtimeInput = useMemo(() => projectPolicyInputFromPayload(payload, projectRoot), [payload, projectRoot]);
 
   const scan = async () => {
+    if (!runtimeInput) {
+      setNotice(lang === "zh"
+        ? "本地服务尚未返回完整、可核验的策略输入，暂不能生成项目策略建议。"
+        : "The local service has not returned complete, verifiable policy inputs yet.");
+      return;
+    }
     setScanning(true);
     setResult(null);
     setNotice("");
@@ -933,7 +1106,7 @@ function HeadroomScan({
   };
 
   const applyPolicy = async () => {
-    if (!result) return;
+    if (!result || !runtimeInput) return;
     setSaving(true);
     try {
       const saved = await invokeNative<NativeActionResult>("save_app_settings", {
@@ -950,14 +1123,14 @@ function HeadroomScan({
             enable_memory: Boolean(result.mapping?.enable_memory),
             enable_learn: Boolean(result.mapping?.enable_learn),
             enable_output_shaper: Boolean(result.mapping?.enable_output_shaper),
-            enable_mcp: true,
-            enable_cache_aligner: true,
-            enable_code_compressor: true,
-            enable_json_smartcrusher: true,
-            enable_text_kompress: true,
-            enable_integrated_rtk: true,
-            output_verbosity: "auto",
-            holdout_ratio: Number(result.mapping?.holdout_ratio ?? 0.1),
+            enable_mcp: Boolean(result.mapping?.enable_mcp),
+            enable_cache_aligner: Boolean(result.mapping?.enable_cache_aligner),
+            enable_code_compressor: Boolean(result.mapping?.enable_code_compressor),
+            enable_json_smartcrusher: Boolean(result.mapping?.enable_json_smartcrusher),
+            enable_text_kompress: Boolean(result.mapping?.enable_text_kompress),
+            enable_integrated_rtk: Boolean(result.mapping?.enable_integrated_rtk),
+            ...(typeof result.mapping?.output_verbosity === "string" ? { output_verbosity: result.mapping.output_verbosity } : {}),
+            ...(finiteMetric(result.mapping?.holdout_ratio) !== null ? { holdout_ratio: finiteMetric(result.mapping.holdout_ratio) } : {}),
             notes: recommendation?.reasons ?? [],
           },
           recommendation,
@@ -990,17 +1163,25 @@ function HeadroomScan({
         <div className="flex items-center gap-2">
           <ScanSearch className="size-5 text-primary" />
           <Input
-            placeholder="~/code/web-dashboard"
+            placeholder={lang === "zh" ? "输入真实项目目录" : "Enter the real project directory"}
             value={projectRoot}
             onChange={(event) => setProjectRoot(event.target.value)}
             className="w-64"
           />
         </div>
-        <Button variant="outline" onClick={scan} disabled={scanning}>
+        <Button variant="outline" onClick={scan} disabled={scanning || !projectRoot.trim() || !runtimeInput}>
           {scanning ? <RefreshCw className="size-4 animate-spin" /> : <ScanSearch className="size-4" />}
           {scanning ? t("adv.scanning") : t("adv.scanProject")}
         </Button>
       </div>
+
+      {!runtimeInput && (
+        <div className="glass-inset mb-3 p-3 text-xs text-muted-foreground">
+          {lang === "zh"
+            ? "需要 runtime 返回完整 project_policy_input（含来源、语言栈、请求规模、噪声、检索率、失败率和风险标记）后才能启用。"
+            : "Requires a complete runtime project_policy_input with provenance, stack, traffic, noise, retrieval, failure, and risk evidence."}
+        </div>
+      )}
 
       {notice && <div className="glass-inset mb-3 p-3 text-xs text-muted-foreground">{notice}</div>}
       {savedSummary && <div className="glass-inset mb-3 p-3 text-xs text-emerald-600 dark:text-emerald-300">{savedSummary}</div>}
@@ -1009,7 +1190,7 @@ function HeadroomScan({
         <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} className="glass-inset p-4">
           <div className="mb-3 flex items-center justify-between">
             <span className="text-sm text-muted-foreground">{t("adv.recommendLevel")}</span>
-            <span className="text-sm">{t("common.confidence")}: {confidencePct}% · {confidence}</span>
+            <span className="text-sm">{t("common.confidence")}: {confidence ?? "—"}</span>
           </div>
           <div className="mb-4 flex flex-wrap gap-2">
             {OUTPUT_LEVELS.map((l) => (
@@ -1019,11 +1200,11 @@ function HeadroomScan({
             ))}
           </div>
           <div className="mb-3 space-y-1 text-xs text-muted-foreground">
-            <div>Runtime input: {payloadStatus} · avg tokens {runtimeInput.avg_request_tokens_7d} · noise {Math.round((runtimeInput.avg_cli_noise_ratio_7d ?? 0) * 100)}%</div>
+            <div>Runtime input: {payloadStatus} · avg tokens {runtimeInput?.avg_request_tokens_7d ?? "—"} · noise {formatPercent(runtimeInput?.avg_cli_noise_ratio_7d)}</div>
             {(recommendation.reasons ?? []).map((reason: string) => <div key={reason}>Reason: {reason}</div>)}
             {(recommendation.risks ?? []).map((risk: string) => <div key={risk}>Risk: {risk}</div>)}
-            <div>Expected savings: {Math.round((recommendation.expected_savings_min ?? 0) * 100)}% - {Math.round((recommendation.expected_savings_max ?? 0) * 100)}%</div>
-            <div>映射: CCR=1 · memory=1 · learn=1 · output_shaper=1 · holdout=0.1</div>
+            <div>Expected savings: {formatRange(recommendation.expected_savings_min, recommendation.expected_savings_max)}</div>
+            <div>{lang === "zh" ? "策略映射" : "Policy mapping"}: {mappingSummary(result.mapping, lang)}</div>
           </div>
           <Button size="sm" onClick={applyPolicy} disabled={saving}>
             {saving ? <RefreshCw className="size-3.5 animate-spin" /> : null}
@@ -1036,50 +1217,85 @@ function HeadroomScan({
 }
 
 function projectPolicyInputFromPayload(payload: Record<string, any> | null, projectRoot: string) {
-  const stats = payload?.stats ?? {};
-  const requestLogs = Array.isArray(payload?.request_logs) ? payload.request_logs : [];
-  const tokens = stats?.tokens ?? {};
-  const before = Number(tokens.input ?? 0);
-  const totalRequests = Number(stats?.requests?.total ?? requestLogs.length);
-  const failed = Number(stats?.requests?.failed ?? requestLogs.filter((log: any) => log?.error).length);
-  const transforms = requestLogs.flatMap((log: any) => Array.isArray(log?.transforms_applied) ? log.transforms_applied : []);
-  const retrieveCount = transforms.filter((item: unknown) => String(item).toLowerCase().includes("retrieve")).length;
-  const noiseCandidates = transforms.filter((item: unknown) => {
-    const text = String(item).toLowerCase();
-    return text.includes("rtk") || text.includes("output") || text.includes("compress");
-  }).length;
-
+  const input = payload?.project_policy_input;
+  if (!input || typeof input !== "object" || Array.isArray(input)) return null;
+  const source = safeText(input.source, "");
+  const languageStack = Array.isArray(input.language_stack)
+    ? input.language_stack.filter((item: unknown): item is string => typeof item === "string" && item.trim().length > 0)
+    : [];
+  const avgRequestTokens = finiteMetric(input.avg_request_tokens_7d);
+  const noiseRatio = finiteRatio(input.avg_cli_noise_ratio_7d);
+  const retrieveRate = finiteRatio(input.retrieve_rate_7d);
+  const failureRate = finiteRatio(input.failure_rate_7d);
+  if (
+    !projectRoot.trim()
+    || !source
+    || languageStack.length === 0
+    || avgRequestTokens === null
+    || noiseRatio === null
+    || retrieveRate === null
+    || failureRate === null
+    || typeof input.high_risk_task !== "boolean"
+    || typeof input.manual_override !== "boolean"
+  ) return null;
   return {
     project_id: projectIdFromRoot(projectRoot),
-    language_stack: inferLanguageStack(projectRoot),
-    avg_request_tokens_7d: totalRequests > 0 ? Math.max(1, Math.round(before / totalRequests)) : 47_307,
-    avg_cli_noise_ratio_7d: totalRequests > 0 ? clamp(noiseCandidates / Math.max(1, transforms.length), 0.05, 0.75) : 0.42,
-    retrieve_rate_7d: totalRequests > 0 ? clamp(retrieveCount / totalRequests, 0, 1) : 0.02,
-    failure_rate_7d: totalRequests > 0 ? clamp(failed / totalRequests, 0, 1) : 0,
-    high_risk_task: false,
-    manual_override: false,
+    language_stack: languageStack,
+    avg_request_tokens_7d: Math.round(avgRequestTokens),
+    avg_cli_noise_ratio_7d: noiseRatio,
+    retrieve_rate_7d: retrieveRate,
+    failure_rate_7d: failureRate,
+    high_risk_task: input.high_risk_task,
+    manual_override: input.manual_override,
+    evidence_source: source,
   };
 }
 
 function projectIdFromRoot(root: string) {
   const cleaned = root.trim().replace(/[\\/]+$/g, "");
-  const name = cleaned.split(/[\\/]/).filter(Boolean).pop() ?? "desktop-project";
+  const name = cleaned.split(/[\\/]/).filter(Boolean).pop() ?? "";
   return name
     .toLowerCase()
     .replace(/[^a-z0-9_-]+/g, "-")
-    .replace(/^-+|-+$/g, "") || "desktop-project";
+    .replace(/^-+|-+$/g, "");
 }
 
-function inferLanguageStack(root: string) {
-  const text = root.toLowerCase();
-  const stack = ["typescript"];
-  if (text.includes("tauri") || text.includes("rust")) stack.push("rust");
-  if (text.includes("python") || text.includes("py")) stack.push("python");
-  if (text.includes("web") || text.includes("react")) stack.push("react");
-  return Array.from(new Set(stack));
+function finiteMetric(value: unknown) {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null;
 }
 
-function clamp(value: number, min: number, max: number) {
-  if (!Number.isFinite(value)) return min;
-  return Math.max(min, Math.min(max, value));
+function finiteRatio(value: unknown) {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 1 ? value : null;
+}
+
+function formatPercent(value: unknown) {
+  const ratio = finiteRatio(value);
+  return ratio === null ? "—" : `${Math.round(ratio * 100)}%`;
+}
+
+function formatMetric(value: unknown) {
+  const metric = finiteMetric(value);
+  return metric === null ? "—" : metric.toLocaleString("en-US");
+}
+
+function formatRange(min: unknown, max: unknown) {
+  const minRatio = finiteRatio(min);
+  const maxRatio = finiteRatio(max);
+  return minRatio === null || maxRatio === null ? "—" : `${Math.round(minRatio * 100)}% – ${Math.round(maxRatio * 100)}%`;
+}
+
+function mappingSummary(mapping: Record<string, unknown> | null | undefined, lang: "zh" | "en") {
+  if (!mapping) return "—";
+  const labels = [
+    ["CCR", mapping.enable_ccr],
+    ["memory", mapping.enable_memory],
+    ["learn", mapping.enable_learn],
+    ["output shaper", mapping.enable_output_shaper],
+    ["RTK", mapping.enable_integrated_rtk],
+    ["cache aligner", mapping.enable_cache_aligner],
+    ["code compressor", mapping.enable_code_compressor],
+    ["JSON SmartCrusher", mapping.enable_json_smartcrusher],
+    ["text compressor", mapping.enable_text_kompress],
+  ].filter(([, enabled]) => enabled === true).map(([label]) => label);
+  return labels.length > 0 ? labels.join(" · ") : (lang === "zh" ? "未返回启用项" : "No enabled capabilities returned");
 }

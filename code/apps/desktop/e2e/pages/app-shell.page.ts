@@ -14,10 +14,12 @@ export type MainPage = (typeof MAIN_PAGES)[number];
 export class AppShellPage {
   readonly page: Page;
   readonly main: Locator;
+  readonly root: Locator;
 
   constructor(page: Page) {
     this.page = page;
     this.main = page.locator("main");
+    this.root = page.locator("html");
   }
 
   async open() {
@@ -37,5 +39,59 @@ export class AppShellPage {
     const navItem = this.navItem(target.navLabel);
     await navItem.click();
     await this.heading(target.heading).waitFor();
+  }
+
+  async useCompactViewport() {
+    await this.page.setViewportSize({ width: 920, height: 640 });
+  }
+
+  async documentWidth() {
+    return this.page.evaluate(() => ({
+      clientWidth: document.documentElement.clientWidth,
+      scrollWidth: document.documentElement.scrollWidth,
+    }));
+  }
+
+  async selectDarkAppearance() {
+    const dark = this.main.getByRole("button", { name: "深色", exact: true });
+    await dark.click();
+    return dark;
+  }
+
+  async reducedMotionState() {
+    return this.page.evaluate(() => {
+      const relevantSelector = ".background-stars, .background-nebula, .shell-page";
+      const relevantElements = Array.from(document.querySelectorAll(relevantSelector));
+      const runningAnimations = document.getAnimations().filter((animation) => {
+        const target = (animation.effect as KeyframeEffect | null)?.target;
+        return (
+          target instanceof Element &&
+          target.matches(relevantSelector) &&
+          (animation.playState === "running" || animation.playState === "pending")
+        );
+      });
+
+      return {
+        preferenceMatches: window.matchMedia("(prefers-reduced-motion: reduce)").matches,
+        animationNames: relevantElements.map((element) => window.getComputedStyle(element).animationName),
+        runningCount: runningAnimations.length,
+      };
+    });
+  }
+
+  async focusFirstPrimaryNavigation(useMacFullKeyboardAccessChord = false) {
+    await this.page.keyboard.press(useMacFullKeyboardAccessChord ? "Alt+Tab" : "Tab");
+    return this.navItem(MAIN_PAGES[0].navLabel);
+  }
+
+  async hasVisibleFocus(locator: Locator) {
+    return locator.evaluate((element) => {
+      const style = window.getComputedStyle(element);
+      return (
+        document.activeElement === element &&
+        style.outlineStyle !== "none" &&
+        Number.parseFloat(style.outlineWidth) > 0
+      );
+    });
   }
 }

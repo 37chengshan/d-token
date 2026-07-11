@@ -1,13 +1,14 @@
 # d-token 执行计划（Living Plan）
 
 状态：Living Document
-维护规则：本文件是 d-token 的唯一执行计划，按代码现状滚动维护。产品边界改 PRD，阶段任务改本文件。PRD（`docs/PRD.md`）是产品真理源，本文件不得与其验收标准冲突。
+维护规则：本文件是 d-token 的唯一执行计划，按代码现状滚动维护。产品边界改 PRD，阶段任务改本文件；当前代码事实同步维护在 `docs/product/IMPLEMENTATION_STATUS.md`。PRD（`docs/PRD.md`）是产品真理源，本文件不得与其验收标准冲突。
 
 ## 0. 当前坐标
 
 | 维度 | 现状 |
 |------|------|
 | PRD | 单一 living PRD，§18 已去计划化，指向本文件 |
+| 文档 | 当前导航见 `docs/index.md`，代码事实见 `docs/product/IMPLEMENTATION_STATUS.md`；旧计划/矩阵/研究已归档 |
 | 代码 | 13 个 Rust 业务 crate + 1 个 Tauri app crate + React 18/TypeScript/Vite 桌面 UI |
 | 已交付里程碑 | M1（no-touch 基础）、M2（Headroom 只读集成）、M3（GUI MVP） |
 | 交付证据 | `docs/history/M1_NO_TOUCH_DEV_FOUNDATION_REPORT.md`、`docs/history/M2_EXTERNAL_READ_ONLY_INTEGRATION_REPORT.md`、`docs/history/M3_GUI_CONTROL_PLANE_MVP_REPORT.md`、`docs/history/M1_M3_DELIVERY_AUDIT.md` |
@@ -16,7 +17,7 @@
 
 当前 M4 历史设计输入：
 
-- `docs/history/M4_REAL_CAPABILITY_OPENCODE_PLAN.md` — 当时的真实能力接入计划，作为历史设计和既有测试证据；当前执行状态与剩余工作以本文件、PRD 和 2026-07-10 前后端审查为准。
+- `docs/history/M4_REAL_CAPABILITY_OPENCODE_PLAN.md` — 当时的真实能力接入计划，仅作为历史设计和既有测试证据；当前执行状态与剩余工作以本文件、PRD、`docs/product/IMPLEMENTATION_STATUS.md` 和当前源码/测试为准。
 
 代码现状盘点（2026-07-11）：
 
@@ -74,13 +75,13 @@ M4 的实际落地先走 `OpenCode Real Route Track`：使用用户原本 OpenCo
 - DoD：fixture 下跑通 apply→fail→rollback 全链路单测；真实写操作在 M4.S5 之前禁止。
 - 涉及：`dtoken-config-patcher`、`dtoken-event-ledger`、`dtoken-process`。
 
-### M4.S2 Managed runtime 安装/启用/升级/停止/卸载
+### M4.S2 Managed d-token runtime 安装/启用/升级/停止/卸载
 
-- [ ] runtime 打包策略：`code/runtimes/headroom/` 落 Headroom-derived runtime，记录 upstream base commit、license、NOTICE、修改边界（延续 M2 S1 的契约）。
-- [ ] install/update/uninstall 语句走 InstallationTransaction；保留 version provenance。
-- [ ] integrated RTK 通过 runtime 内部路径启用，不暴露 standalone 路径。
-- DoD：fake-binary 模式下完成 install/update/uninstall 全流程；version provenance 可查。
-- 涉及：`dtoken-headroom-adapter`、`dtoken-config-patcher`、`code/runtimes/headroom/`、`support/fake-bin/`。
+- [ ] runtime 打包策略：正式产物是本仓库 Rust workspace 的 `dtoken-proxy` external binary；`code/runtimes/headroom/` 仅保留 Headroom-derived provenance/迁移边界，不作为 Python 或外部服务运行目录。
+- [ ] install/update/uninstall 全部走 InstallationTransaction，并保留 binary hash、version、target triple 与候选 commit provenance。
+- [ ] integrated RTK 只能通过 d-token runtime 内部能力启用，不暴露 standalone RTK 为产品主路径。
+- DoD：fake-binary 模式下完成 install/update/uninstall 全流程；真实 bundle 能证明 binary identity、版本与候选来源。
+- 涉及：`dtoken-process`、`dtoken-config-patcher`、`dtoken-proxy`、Tauri sidecar 准备脚本、`support/fake-bin/`。
 
 ### M4.S3 Provider / Route / cc-switch 安装与配置
 

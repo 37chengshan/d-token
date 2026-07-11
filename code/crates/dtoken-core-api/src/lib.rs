@@ -8,7 +8,7 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
-use dtoken_compress::CompressionEngine;
+use dtoken_compress::{CompressionEngine, ResolvedOptimizationContext};
 use dtoken_config::DtokenConfig;
 use dtoken_config_patcher::mock_patch_plan;
 use dtoken_doctor::{run_basic_doctor, run_dev_no_touch_doctor};
@@ -973,6 +973,154 @@ struct CompressionSummary {
     body: Value,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RouteAdapterKind {
+    OpenAiChatPassthrough,
+    OpenAiResponsesToChat,
+    AnthropicMessagesToOpenAiChat,
+}
+
+impl RouteAdapterKind {
+    fn surfaces(self) -> (OptimizationSurface, OptimizationSurface) {
+        match self {
+            Self::OpenAiChatPassthrough => (
+                OptimizationSurface {
+                    protocol: Protocol::OpenAi,
+                    endpoint: OpticalEndpoint::OpenAiChatCompletions,
+                },
+                OptimizationSurface {
+                    protocol: Protocol::OpenAi,
+                    endpoint: OpticalEndpoint::OpenAiChatCompletions,
+                },
+            ),
+            Self::OpenAiResponsesToChat => (
+                OptimizationSurface {
+                    protocol: Protocol::OpenAi,
+                    endpoint: OpticalEndpoint::OpenAiResponses,
+                },
+                OptimizationSurface {
+                    protocol: Protocol::OpenAi,
+                    endpoint: OpticalEndpoint::OpenAiChatCompletions,
+                },
+            ),
+            Self::AnthropicMessagesToOpenAiChat => (
+                OptimizationSurface {
+                    protocol: Protocol::Anthropic,
+                    endpoint: OpticalEndpoint::AnthropicMessages,
+                },
+                OptimizationSurface {
+                    protocol: Protocol::OpenAi,
+                    endpoint: OpticalEndpoint::OpenAiChatCompletions,
+                },
+            ),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct OptimizationSurface {
+    protocol: Protocol,
+    endpoint: OpticalEndpoint,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OpticalExecutionDisposition {
+    Disabled,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ResolvedRouteOptimizationContext {
+    request_id: Uuid,
+    route_id: String,
+    provider_id: String,
+    requested_policy: CompressionPolicy,
+    adapter: RouteAdapterKind,
+    ingress: OptimizationSurface,
+    upstream: OptimizationSurface,
+    requested_model: String,
+    effective_model: String,
+    optical_disposition: OpticalExecutionDisposition,
+    compression_context: ResolvedOptimizationContext,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ContextResolutionError {
+    DecisionRouteMismatch,
+    DecisionProviderMismatch,
+    RouteProviderMismatch,
+    DecisionPolicyMismatch,
+    RouteIngressProtocolMismatch,
+    ProviderUpstreamProtocolMismatch,
+    MissingRequestedModel,
+    MissingEffectiveModel,
+}
+
+fn resolve_optimization_context(
+    decision: &RouteDecision,
+    route: &dtoken_types::RouteProfile,
+    provider: &dtoken_types::ProviderProfile,
+    adapter: RouteAdapterKind,
+    ingress_body: &Value,
+    upstream_body: &Value,
+) -> Result<ResolvedRouteOptimizationContext, ContextResolutionError> {
+    if decision.route_id != route.id {
+        return Err(ContextResolutionError::DecisionRouteMismatch);
+    }
+    if decision.provider_id != provider.id {
+        return Err(ContextResolutionError::DecisionProviderMismatch);
+    }
+    if route.target_provider_id != provider.id {
+        return Err(ContextResolutionError::RouteProviderMismatch);
+    }
+    if decision.compression_policy != route.compression_policy {
+        return Err(ContextResolutionError::DecisionPolicyMismatch);
+    }
+
+    let (ingress, upstream) = adapter.surfaces();
+    if route.input_protocol != ingress.protocol {
+        return Err(ContextResolutionError::RouteIngressProtocolMismatch);
+    }
+    if provider.protocol != upstream.protocol {
+        return Err(ContextResolutionError::ProviderUpstreamProtocolMismatch);
+    }
+
+    let requested_model = ingress_body
+        .get("model")
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .ok_or(ContextResolutionError::MissingRequestedModel)?
+        .to_string();
+    let effective_model = upstream_body
+        .get("model")
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .ok_or(ContextResolutionError::MissingEffectiveModel)?
+        .to_string();
+
+    let compression_context = ResolvedOptimizationContext {
+        route_id: decision.route_id.clone(),
+        provider_id: decision.provider_id.clone(),
+        model: effective_model.clone(),
+        input_protocol: ingress.protocol.clone(),
+        output_protocol: upstream.protocol.clone(),
+        endpoint: upstream.endpoint.clone(),
+    };
+
+    Ok(ResolvedRouteOptimizationContext {
+        request_id: decision.request_id,
+        route_id: decision.route_id.clone(),
+        provider_id: decision.provider_id.clone(),
+        requested_policy: decision.compression_policy.clone(),
+        adapter,
+        ingress,
+        upstream,
+        requested_model,
+        effective_model,
+        optical_disposition: OpticalExecutionDisposition::Disabled,
+        compression_context,
+    })
+}
+
 #[derive(Debug, Clone)]
 struct RoutedBridgePayload {
     upstream_body: Value,
@@ -983,9 +1131,20 @@ struct RoutedBridgePayload {
     provider: dtoken_types::ProviderProfile,
 }
 
-fn compress_for_route(policy: CompressionPolicy, body: Value) -> CompressionSummary {
-    let result = CompressionEngine::new()
-        .compress(policy, body.clone())
+fn compress_for_route(
+    context: Option<&ResolvedRouteOptimizationContext>,
+    policy: CompressionPolicy,
+    body: Value,
+) -> CompressionSummary {
+    let result = context
+        .map(|context| {
+            CompressionEngine::new().compress_resolved(
+                &context.compression_context,
+                policy.clone(),
+                body.clone(),
+            )
+        })
+        .unwrap_or_else(|| CompressionEngine::new().compress(policy, body.clone()))
         .unwrap_or_else(|_| dtoken_types::CompressionResult {
             original_tokens: 0,
             compressed_tokens: 0,
@@ -1844,7 +2003,20 @@ fn anthropic_route_payload(
     let request_id = Uuid::new_v4();
     let decision = build_configured_route_decision(request_id, route, provider);
     let openai_body = anthropic_to_openai_body(&body, provider);
-    let compression = compress_for_route(decision.compression_policy.clone(), openai_body);
+    let optimization_context = resolve_optimization_context(
+        &decision,
+        route,
+        provider,
+        RouteAdapterKind::AnthropicMessagesToOpenAiChat,
+        &body,
+        &openai_body,
+    )
+    .ok();
+    let compression = compress_for_route(
+        optimization_context.as_ref(),
+        decision.compression_policy.clone(),
+        openai_body,
+    );
     let request_log = build_request_log(
         request_id,
         &decision,
@@ -1882,7 +2054,7 @@ fn routed_openai_payload(
         "messages": request.messages,
         "stream": false
     });
-    let compression = compress_for_route(decision.compression_policy.clone(), request_body);
+    let compression = compress_for_route(None, decision.compression_policy.clone(), request_body);
     let log = build_request_log(
         request_id,
         &decision,
@@ -2736,7 +2908,20 @@ async fn openai_chat_completions(
     if let Ok((route, provider)) = route_selection {
         let request_id = Uuid::new_v4();
         let decision = build_configured_route_decision(request_id, route, provider);
-        let compression = compress_for_route(decision.compression_policy.clone(), original_body);
+        let optimization_context = resolve_optimization_context(
+            &decision,
+            route,
+            provider,
+            RouteAdapterKind::OpenAiChatPassthrough,
+            &original_body,
+            &original_body,
+        )
+        .ok();
+        let compression = compress_for_route(
+            optimization_context.as_ref(),
+            decision.compression_policy.clone(),
+            original_body,
+        );
         let mut request_log = build_request_log(
             request_id,
             &decision,
@@ -2940,7 +3125,20 @@ async fn openai_responses(
             "messages": request.messages,
             "stream": false
         });
-        let compression = compress_for_route(decision.compression_policy.clone(), original_body);
+        let optimization_context = resolve_optimization_context(
+            &decision,
+            route,
+            provider,
+            RouteAdapterKind::OpenAiResponsesToChat,
+            &body,
+            &original_body,
+        )
+        .ok();
+        let compression = compress_for_route(
+            optimization_context.as_ref(),
+            decision.compression_policy.clone(),
+            original_body,
+        );
         let mut request_log = build_request_log(
             request_id,
             &decision,
@@ -3848,6 +4046,129 @@ mod tests {
         assert_eq!(provider.id, "provider-b");
     }
 
+    #[test]
+    fn resolved_context_maps_all_three_adapters_without_conflating_surfaces() {
+        let config = route_test_config();
+        let base_route = config.routes[0].clone();
+        let provider = config.providers[0].clone();
+
+        let cases = [
+            (
+                RouteAdapterKind::OpenAiChatPassthrough,
+                Protocol::OpenAi,
+                OpticalEndpoint::OpenAiChatCompletions,
+                "model-a",
+                "model-a",
+            ),
+            (
+                RouteAdapterKind::OpenAiResponsesToChat,
+                Protocol::OpenAi,
+                OpticalEndpoint::OpenAiResponses,
+                "model-a",
+                "model-a",
+            ),
+            (
+                RouteAdapterKind::AnthropicMessagesToOpenAiChat,
+                Protocol::Anthropic,
+                OpticalEndpoint::AnthropicMessages,
+                "claude-requested-model",
+                "model-a",
+            ),
+        ];
+
+        for (adapter, ingress_protocol, ingress_endpoint, requested, effective) in cases {
+            let mut route = base_route.clone();
+            route.input_protocol = ingress_protocol.clone();
+            let decision = build_configured_route_decision(Uuid::new_v4(), &route, &provider);
+            let ingress = json!({"model": requested, "messages": []});
+            let upstream = json!({"model": effective, "messages": []});
+
+            let context = resolve_optimization_context(
+                &decision, &route, &provider, adapter, &ingress, &upstream,
+            )
+            .expect("valid route surfaces should resolve");
+
+            assert_eq!(context.ingress.protocol, ingress_protocol);
+            assert_eq!(context.ingress.endpoint, ingress_endpoint);
+            assert_eq!(context.upstream.protocol, Protocol::OpenAi);
+            assert_eq!(
+                context.upstream.endpoint,
+                OpticalEndpoint::OpenAiChatCompletions
+            );
+            assert_eq!(context.requested_model, requested);
+            assert_eq!(context.effective_model, effective);
+            assert_eq!(
+                context.optical_disposition,
+                OpticalExecutionDisposition::Disabled
+            );
+        }
+    }
+
+    #[test]
+    fn resolved_context_rejects_decision_provider_mismatch() {
+        let config = route_test_config();
+        let route = &config.routes[0];
+        let provider = &config.providers[0];
+        let mut decision = build_configured_route_decision(Uuid::new_v4(), route, provider);
+        decision.provider_id = "spoofed-provider".to_string();
+
+        assert_eq!(
+            resolve_optimization_context(
+                &decision,
+                route,
+                provider,
+                RouteAdapterKind::OpenAiChatPassthrough,
+                &json!({"model":"model-a"}),
+                &json!({"model":"model-a"}),
+            )
+            .expect_err("spoofed provider identity must fail closed"),
+            ContextResolutionError::DecisionProviderMismatch
+        );
+    }
+
+    #[test]
+    fn resolved_context_rejects_route_ingress_protocol_mismatch() {
+        let config = route_test_config();
+        let route = &config.routes[0];
+        let provider = &config.providers[0];
+        let decision = build_configured_route_decision(Uuid::new_v4(), route, provider);
+
+        assert_eq!(
+            resolve_optimization_context(
+                &decision,
+                route,
+                provider,
+                RouteAdapterKind::AnthropicMessagesToOpenAiChat,
+                &json!({"model":"claude-requested"}),
+                &json!({"model":"model-a"}),
+            )
+            .expect_err("adapter and route ingress protocol must agree"),
+            ContextResolutionError::RouteIngressProtocolMismatch
+        );
+    }
+
+    #[test]
+    fn resolved_context_uses_adapted_model_not_requested_model_for_bridge() {
+        let config = route_test_config();
+        let mut route = config.routes[0].clone();
+        route.input_protocol = Protocol::Anthropic;
+        let provider = &config.providers[0];
+        let decision = build_configured_route_decision(Uuid::new_v4(), &route, provider);
+        let context = resolve_optimization_context(
+            &decision,
+            &route,
+            provider,
+            RouteAdapterKind::AnthropicMessagesToOpenAiChat,
+            &json!({"model":"claude-fable-5"}),
+            &json!({"model":"model-a"}),
+        )
+        .expect("valid bridge context should resolve");
+
+        assert_eq!(context.requested_model, "claude-fable-5");
+        assert_eq!(context.effective_model, "model-a");
+        assert_ne!(context.requested_model, context.effective_model);
+    }
+
     #[tokio::test]
     async fn ambiguous_openai_request_returns_conflict_without_forwarding() {
         let app = build_router(AppState::new(route_test_config()));
@@ -4403,7 +4724,7 @@ mod tests {
     }
 
     #[test]
-    fn openai_route_adapter_records_compression_and_route_metadata() {
+    fn openai_route_adapter_records_safe_passthrough_and_route_metadata() {
         let request = OpenAiChatRequest {
             model: Some("opencode/deepseek-v4-flash-free".to_string()),
             messages: Some(vec![json!({
@@ -4425,12 +4746,9 @@ mod tests {
             request_log.provider_id.as_deref(),
             Some("opencode-official-free")
         );
-        assert!(request_log.tokens_saved.unwrap_or_default() > 0);
+        assert_eq!(request_log.tokens_saved, Some(0));
         assert!(request_log.latency_ms.unwrap_or_default() > 0);
-        assert!(request_log
-            .transforms_applied
-            .iter()
-            .any(|item| item == "repeat_line_fold"));
+        assert!(request_log.transforms_applied.is_empty());
         assert_eq!(event.source, EventSource::Dtoken);
         assert_eq!(event.status, EventStatus::Ok);
         assert!(event.metadata.get("full_prompt").is_none());
@@ -4701,7 +5019,16 @@ mod tests {
             })]),
             stream: Some(false),
         };
-        let (_response, decision, request_log, event) = routed_openai_payload(&request);
+        let (_response, decision, mut request_log, mut event) = routed_openai_payload(&request);
+        // Metrics attribution is tested with an explicit realized fixture. Production passthrough
+        // requests must not fabricate compression savings to make this aggregation test pass.
+        request_log.input_tokens_before = Some(100);
+        request_log.input_tokens_after = Some(80);
+        request_log.tokens_saved = Some(20);
+        request_log.transforms_applied = vec!["semantic_closed_tool_result".to_string()];
+        event.input_tokens = Some(100);
+        event.output_tokens = Some(80);
+        event.saved_tokens = Some(20);
         let saved = request_log.tokens_saved.unwrap_or_default() as u64;
         state.record_routed_request(&decision, request_log, event);
 
@@ -4769,7 +5096,7 @@ mod tests {
             .as_array()
             .expect("transform performance rows");
         assert!(transforms.iter().any(|row| {
-            row["name"] == "repeat_line_fold"
+            row["name"] == "semantic_closed_tool_result"
                 && row["tokens_saved"].as_u64().unwrap_or_default() > 0
                 && row["avg_latency_ms"].as_f64().unwrap_or_default() > 0.0
         }));
@@ -5094,6 +5421,7 @@ mod tests {
                 "content": "2026-07-04T10:00:00Z INFO bridge\n2026-07-04T10:00:00Z INFO bridge\n"
             }]
         });
+        let original_content = body["messages"][0]["content"].clone();
 
         let payload = anthropic_route_payload(&state, body, RouteEvidence::default())
             .expect("anthropic route payload");
@@ -5101,16 +5429,18 @@ mod tests {
         assert_eq!(payload.decision.route_id, "anthropic-to-cc-switch");
         assert_eq!(payload.decision.provider_id, "cc-switch-openai");
         assert_eq!(payload.upstream_body["messages"][0]["role"], "user");
-        assert!(payload.upstream_body["messages"][0]["content"]
-            .as_str()
-            .unwrap_or_default()
-            .contains("repeated x2"));
+        assert_eq!(
+            payload.upstream_body["messages"][0]["content"],
+            original_content
+        );
         assert_eq!(payload.request_log.input_protocol, Protocol::Anthropic);
         assert_eq!(
             payload.request_log.route_id.as_deref(),
             Some("anthropic-to-cc-switch")
         );
-        assert!(payload.request_log.tokens_saved.unwrap_or_default() > 0);
+        assert_eq!(payload.request_log.tokens_saved, Some(0));
+        assert!(payload.request_log.transforms_applied.is_empty());
+        assert!(!payload.upstream_body.to_string().contains("data:image"));
         assert_eq!(payload.event.metadata["input_protocol"], "anthropic");
         assert_eq!(payload.event.metadata["output_protocol"], "openai");
         assert!(payload.event.metadata.get("full_prompt").is_none());

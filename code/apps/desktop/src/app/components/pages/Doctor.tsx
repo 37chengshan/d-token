@@ -8,7 +8,7 @@ import { CapabilitySummary } from "../common/CapabilitySummary";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "../ui/tabs";
 import { Button } from "../ui/button";
 import { useI18n, useT } from "../../lib/i18n";
-import { type DoctorCheck } from "../../lib/fixtures";
+import type { DoctorCheck } from "../../lib/doctor/types";
 import type { PageId } from "../../lib/nav";
 import { invokeNative, type NativeActionResult } from "../../lib/native";
 import { classifyEvidence } from "../../lib/state/evidence";
@@ -206,7 +206,10 @@ export function Doctor({ setPage }: { setPage: (p: PageId) => void }) {
         setAgentSummary(`${supportedAgent.label ?? "Agent"} 已检测到：${supportedAgent.version ?? supportedAgent.path ?? "installed"} · 可继续验证 d-token 路由配置`);
       }
       setRuntimeOk(isRuntimePayload);
-      setRuntimeSummary(`source=${source} · requests=${requestCount} · route_decisions=${routeCount} · service=127.0.0.1:18001`);
+      const serviceUrl = typeof payload.desktop_service_url === "string" && payload.desktop_service_url.trim()
+        ? payload.desktop_service_url
+        : "—";
+      setRuntimeSummary(`source=${source} · requests=${requestCount} · route_decisions=${routeCount} · service=${serviceUrl}`);
       const activeEvidence = resolveActiveConfigEvidence(payload, activeConfig);
       setActiveConfigOk(activeEvidence.ok);
       setActiveConfigSummary(activeEvidence.summary);
@@ -289,6 +292,9 @@ export function Doctor({ setPage }: { setPage: (p: PageId) => void }) {
     ],
   );
   const compressionEvidence = doctorSource === "native" && hasCompressionEvidence(runtimePayload);
+  const runtimeServiceUrl = typeof runtimePayload?.desktop_service_url === "string" && runtimePayload.desktop_service_url.trim()
+    ? runtimePayload.desktop_service_url
+    : "—";
 
   return (
     <div className="space-y-6">
@@ -436,7 +442,7 @@ export function Doctor({ setPage }: { setPage: (p: PageId) => void }) {
             { n: "d-token runtime", s: runtimeOk ? "healthy" as const : "warning" as const, d: runtimeSummary },
             { n: "d-token active config", s: activeConfigOk ? "healthy" as const : "warning" as const, d: activeConfigSummary },
             { n: "压缩层", s: compressionEvidence ? "healthy" as const : "warning" as const, d: compressionEvidence ? "最近请求包含压缩耗时证据" : "尚无最近请求证明压缩层已实际运行" },
-            { n: "d-token 本地服务", s: runtimeOk ? "healthy" as const : "warning" as const, d: "127.0.0.1:18001 · d-token-owned runtime path" },
+            { n: "d-token 本地服务", s: runtimeOk ? "healthy" as const : "warning" as const, d: `${runtimeServiceUrl} · d-token-owned runtime path` },
             { n: "Provider 连接", s: "warning" as const, d: "以最新 route decision / provider result 为准，禁止静默 fallback" },
           ].map((r) => (
             <GlassCard key={r.n} className="flex items-center justify-between p-4">

@@ -1,10 +1,11 @@
-import { lazy, Suspense, useState } from "react";
+import { lazy, Suspense, useEffect, useState } from "react";
 import { AnimatePresence, MotionConfig, motion } from "motion/react";
 import { Sidebar } from "./Sidebar";
 import { Topbar } from "./Topbar";
 import { StatusBar } from "./StatusBar";
 import { BackgroundBlobs } from "./BackgroundBlobs";
 import type { PageId } from "../../lib/nav";
+import { useI18n } from "../../lib/i18n";
 
 const OverviewPage = lazy(() => import("../pages/Overview").then((module) => ({ default: module.Overview })));
 const InstallWorkbenchPage = lazy(() => import("../pages/InstallWorkbench").then((module) => ({ default: module.InstallWorkbench })));
@@ -15,7 +16,30 @@ const SettingsPage = lazy(() => import("../pages/Settings").then((module) => ({ 
 
 export function AppShell() {
   const [page, setPage] = useState<PageId>("overview");
-  const [collapsed, setCollapsed] = useState(false);
+  const [collapsed, setCollapsed] = useState(() => typeof window !== "undefined" && window.innerWidth <= 980);
+  const [reduceMotion, setReduceMotion] = useState(
+    () => typeof window !== "undefined" && typeof window.matchMedia === "function" && window.matchMedia("(prefers-reduced-motion: reduce)").matches,
+  );
+
+  useEffect(() => {
+    if (typeof window.matchMedia !== "function") return;
+    const narrowWindow = window.matchMedia("(max-width: 980px)");
+    const collapseForNarrowWindow = (event: MediaQueryListEvent | MediaQueryList) => {
+      if (event.matches) setCollapsed(true);
+    };
+    collapseForNarrowWindow(narrowWindow);
+    narrowWindow.addEventListener("change", collapseForNarrowWindow);
+    return () => narrowWindow.removeEventListener("change", collapseForNarrowWindow);
+  }, []);
+
+  useEffect(() => {
+    if (typeof window.matchMedia !== "function") return;
+    const preference = window.matchMedia("(prefers-reduced-motion: reduce)");
+    const updatePreference = (event: MediaQueryListEvent | MediaQueryList) => setReduceMotion(event.matches);
+    updatePreference(preference);
+    preference.addEventListener("change", updatePreference);
+    return () => preference.removeEventListener("change", updatePreference);
+  }, []);
 
   const render = () => {
     switch (page) {
@@ -30,42 +54,49 @@ export function AppShell() {
 
   return (
     <MotionConfig reducedMotion="user">
-      <div className="app-bg relative grid h-screen w-full grid-rows-[48px_minmax(0,1fr)] overflow-hidden text-foreground">
-        <BackgroundBlobs />
-        <Topbar collapsed={collapsed} setCollapsed={setCollapsed} />
-        <div className="relative z-10 flex min-h-0 min-w-0">
-          <Sidebar page={page} setPage={setPage} collapsed={collapsed} setCollapsed={setCollapsed} />
-          {/* GlassEffectContainer: shared backdrop context for all glass surfaces.
-               Does NOT set backdrop-filter itself (would become a backdrop root). */}
+      <div className={`app-shell app-bg ${collapsed ? "is-sidebar-collapsed" : ""}`}>
+        <Sidebar page={page} setPage={setPage} collapsed={collapsed} setCollapsed={setCollapsed} />
+        <section className="shell-workspace">
+          <BackgroundBlobs />
+          <Topbar page={page} collapsed={collapsed} setCollapsed={setCollapsed} />
           <div className="glass-stage relative flex min-w-0 flex-1 flex-col">
             <main className="shell-content-scroll min-h-0 flex-1 overflow-y-auto">
-              <AnimatePresence mode="wait">
-                <motion.div
-                  key={page}
-                  initial={{ opacity: 0, y: 12 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  exit={{ opacity: 0 }}
-                  transition={{ duration: 0.2 }}
-                  className="shell-page mx-auto max-w-[1200px] p-4 min-[1080px]:p-6"
-                >
+              {reduceMotion ? (
+                <div key={page} className="shell-page mx-auto max-w-[1200px] p-4 min-[1080px]:p-6">
                   <Suspense fallback={<PageFallback />}>
                     {render()}
                   </Suspense>
-                </motion.div>
-              </AnimatePresence>
+                </div>
+              ) : (
+                <AnimatePresence mode="wait">
+                  <motion.div
+                    key={page}
+                    initial={{ opacity: 0, y: 2 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, y: -1 }}
+                    transition={{ duration: 0.18, ease: [0.2, 0, 0, 1] }}
+                    className="shell-page mx-auto max-w-[1200px] p-4 min-[1080px]:p-6"
+                  >
+                    <Suspense fallback={<PageFallback />}>
+                      {render()}
+                    </Suspense>
+                  </motion.div>
+                </AnimatePresence>
+              )}
             </main>
             <StatusBar />
           </div>
-        </div>
+        </section>
       </div>
     </MotionConfig>
   );
 }
 
 function PageFallback() {
+  const { lang } = useI18n();
   return (
     <div className="glass-light flex min-h-[280px] items-center justify-center rounded-lg border border-border/40 text-sm text-muted-foreground">
-      Loading d-token view...
+      {lang === "zh" ? "正在加载页面…" : "Loading view…"}
     </div>
   );
 }

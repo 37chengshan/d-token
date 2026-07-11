@@ -9,7 +9,7 @@ const LEVELS = [0, 1, 2, 3, 4] as const;
 
 type Range = "week" | "month" | "year";
 type View = "activity" | "tokens" | "tools";
-type ActivityDay = {
+export type ActivityDay = {
   date: string;
   sessions: number;
   minutes: number;
@@ -32,7 +32,7 @@ function viewLabel(view: View, lang: string) {
   const labels: Record<View, { zh: string; en: string }> = {
     activity: { zh: "活跃趋势", en: "Activity" },
     tokens: { zh: "Token", en: "Token" },
-    tools: { zh: "工具", en: "Tools" },
+    tools: { zh: "处理步骤", en: "Processing Steps" },
   };
   return lang === "zh" ? labels[view].zh : labels[view].en;
 }
@@ -88,7 +88,7 @@ export function Heatmap({
   const activeDays = visibleDays.filter((day) => day.sessions > 0).length;
   const totalSessions = visibleDays.reduce((sum, day) => sum + day.sessions, 0);
   const totalTokens = visibleDays.reduce((sum, day) => sum + day.tokens, 0);
-  const totalTools = visibleDays.reduce((sum, day) => sum + day.tools, 0);
+  const totalSteps = visibleDays.reduce((sum, day) => sum + day.tools, 0);
 
   const { columns, months } = useMemo(() => {
     const sorted = [...activityDays].sort((a, b) => a.date.localeCompare(b.date));
@@ -193,8 +193,8 @@ export function Heatmap({
             <div className="mt-1 text-lg font-semibold">{formatNumber(totalTokens)}</div>
           </div>
           <div className="activity-summary-item">
-            <div className="text-xs text-muted-foreground">{lang === "zh" ? "工具调用" : "Tool calls"}</div>
-            <div className="mt-1 text-lg font-semibold">{totalTools}</div>
+            <div className="text-xs text-muted-foreground">{lang === "zh" ? "处理步骤" : "Processing steps"}</div>
+            <div className="mt-1 text-lg font-semibold">{totalSteps}</div>
           </div>
           <div className="activity-summary-item">
             <div className="text-xs text-muted-foreground">{lang === "zh" ? "活跃天数" : "Active days"}</div>
@@ -419,7 +419,7 @@ function ToolRanking({ lang, tools }: { lang: string; tools: ToolUsageRow[] }) {
   return (
     <div className="activity-tools-layout">
       <div className="activity-tools-list">
-        <div className="activity-section-title">{lang === "zh" ? "工具调用排行" : "Tool usage ranking"}</div>
+        <div className="activity-section-title">{lang === "zh" ? "处理步骤排行" : "Processing step ranking"}</div>
         {rankedTools.map((tool) => (
           <div key={tool.name} className="activity-tool-row">
             <div className="activity-tool-name">{tool.name}</div>
@@ -439,7 +439,7 @@ function ToolRanking({ lang, tools }: { lang: string; tools: ToolUsageRow[] }) {
 
       <div
         className="rounded-2xl border border-border/60 bg-background/25 px-4 py-6 text-center"
-        aria-label={lang === "zh" ? "工具调用总量" : "Total tool calls"}
+        aria-label={lang === "zh" ? "处理步骤总量" : "Total processing steps"}
       >
         <div className="text-xs text-muted-foreground">{lang === "zh" ? "记录总调用" : "Recorded calls"}</div>
         <strong className="mt-2 block text-xl">{totalToolCalls}</strong>

@@ -7,9 +7,11 @@ use dtoken_types::{OpticalEndpoint, Protocol};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RoleKind {
     System,
+    Developer,
     User,
     Assistant,
     Tool,
+    Unknown,
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BlockKind {
@@ -19,6 +21,7 @@ pub enum BlockKind {
     Image,
     SystemPrompt,
     ToolDefinition,
+    Unknown,
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InitialProtection {
@@ -171,7 +174,7 @@ fn build_anthropic_inventory_internal(
             let role = match msg.get("role").and_then(|r| r.as_str()) {
                 Some("user") => RoleKind::User,
                 Some("assistant") => RoleKind::Assistant,
-                _ => RoleKind::User,
+                _ => RoleKind::Unknown,
             };
             let mut turn_blocks = Vec::new();
             let mut opens_tool_ids = Vec::new();
@@ -181,11 +184,11 @@ fn build_anthropic_inventory_internal(
             if let Some(content) = msg.get("content").and_then(|c| c.as_array()) {
                 for (content_index, item) in content.iter().enumerate() {
                     let kind_str = item.get("type").and_then(|t| t.as_str()).unwrap_or("text");
-                    let (kind, protection) = match kind_str {
+                    let (kind, mut protection) = match kind_str {
                         "tool_use" => (BlockKind::ToolUse, InitialProtection::AlwaysText),
                         "tool_result" => (BlockKind::ToolResult, InitialProtection::Candidate),
                         "image" => (BlockKind::Image, InitialProtection::Opaque),
-                        _ => (
+                        "text" => (
                             BlockKind::Text,
                             if role == RoleKind::User {
                                 InitialProtection::Candidate
@@ -193,7 +196,11 @@ fn build_anthropic_inventory_internal(
                                 InitialProtection::AlwaysText
                             },
                         ),
+                        _ => (BlockKind::Unknown, InitialProtection::Opaque),
                     };
+                    if role == RoleKind::Unknown {
+                        protection = InitialProtection::Opaque;
+                    }
                     if kind == BlockKind::Image {
                         contains_image = true;
                     }
@@ -241,10 +248,10 @@ fn build_anthropic_inventory_internal(
                 }
             } else if let Some(text) = msg.get("content").and_then(|c| c.as_str()) {
                 let chars = text.chars().count();
-                let protection = if role == RoleKind::User {
-                    InitialProtection::Candidate
-                } else {
-                    InitialProtection::AlwaysText
+                let (kind, protection) = match role {
+                    RoleKind::User => (BlockKind::Text, InitialProtection::Candidate),
+                    RoleKind::Assistant => (BlockKind::Text, InitialProtection::AlwaysText),
+                    _ => (BlockKind::Unknown, InitialProtection::Opaque),
                 };
                 if role == RoleKind::User {
                     typed_user_text_chars += chars;
@@ -254,7 +261,7 @@ fn build_anthropic_inventory_internal(
                 blocks.push(BlockRef {
                     block_id: bid.clone(),
                     source_path: format!("/messages/{turn_idx}/content"),
-                    kind: BlockKind::Text,
+                    kind,
                     role: role.clone(),
                     turn_index: Some(turn_idx),
                     tool_id: None,
@@ -294,13 +301,31 @@ pub fn build_openai_chat_inventory(body: &serde_json::Value) -> ConversationInve
     let mut blocks = Vec::new();
     let mut turns = Vec::new();
     let mut block_seq = 0usize;
+    if let Some(tools) = body.get("tools").and_then(|value| value.as_array()) {
+        for (tool_index, tool) in tools.iter().enumerate() {
+            blocks.push(BlockRef {
+                block_id: format!("blk-{block_seq}"),
+                source_path: format!("/tools/{tool_index}"),
+                kind: BlockKind::ToolDefinition,
+                role: RoleKind::System,
+                turn_index: None,
+                tool_id: None,
+                chars: text_chars(tool),
+                protection: InitialProtection::AlwaysText,
+                text_ref: None,
+            });
+            block_seq += 1;
+        }
+    }
     if let Some(messages) = body.get("messages").and_then(|value| value.as_array()) {
         for (turn_idx, message) in messages.iter().enumerate() {
             let role = match message.get("role").and_then(|value| value.as_str()) {
-                Some("system") | Some("developer") => RoleKind::System,
+                Some("system") => RoleKind::System,
+                Some("developer") => RoleKind::Developer,
                 Some("assistant") => RoleKind::Assistant,
                 Some("tool") => RoleKind::Tool,
-                _ => RoleKind::User,
+                Some("user") => RoleKind::User,
+                _ => RoleKind::Unknown,
             };
             let mut turn_blocks = Vec::new();
             let mut opens_tool_ids = Vec::new();
@@ -359,19 +384,19 @@ pub fn build_openai_chat_inventory(body: &serde_json::Value) -> ConversationInve
             } else if let Some(content) = message.get("content") {
                 if !content.is_null() {
                     let block_id = format!("blk-{block_seq}");
-                    let protection = if role == RoleKind::User {
-                        InitialProtection::Candidate
-                    } else {
-                        InitialProtection::AlwaysText
+                    let (kind, protection) = match role {
+                        RoleKind::User => (BlockKind::Text, InitialProtection::Candidate),
+                        RoleKind::System | RoleKind::Developer => {
+                            (BlockKind::SystemPrompt, InitialProtection::AlwaysText)
+                        }
+                        RoleKind::Assistant => (BlockKind::Text, InitialProtection::AlwaysText),
+                        RoleKind::Unknown => (BlockKind::Unknown, InitialProtection::Opaque),
+                        RoleKind::Tool => unreachable!("tool messages handled above"),
                     };
                     blocks.push(BlockRef {
                         block_id: block_id.clone(),
                         source_path: format!("/messages/{turn_idx}/content"),
-                        kind: if role == RoleKind::System {
-                            BlockKind::SystemPrompt
-                        } else {
-                            BlockKind::Text
-                        },
+                        kind,
                         role: role.clone(),
                         turn_index: Some(turn_idx),
                         tool_id: None,

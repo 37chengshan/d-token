@@ -1,142 +1,146 @@
 # d-token
 
-> Local-first token compression, routing, and observability control plane for AI coding workflows.
+> 面向 AI Coding 的本地优先桌面控制面与 Rust runtime。
 
-`d-token` 是一个面向 Windows/macOS 的本地桌面控制面，把 AI 编码工具的上下文压缩、上游路由、连接配置、智能学习、问题诊断和变更回退整合到一个 App 中。用户只需下载安装 d-token，不需要先安装 Headroom 或 RTK。
+更新时间：2026-07-11 晚间
 
-## 第一版能做什么
+d-token 在 Windows/macOS 上把本地 AI 请求入口、上下文优化、Provider/Route、运行状态、Doctor、Event Ledger、配置变更与回退统一到一个 Tauri 桌面应用中。项目目标是让用户明确知道流量经过哪里、配置将改什么、数据是否真实、出现问题如何诊断和恢复。
 
-1. **总体概览**：一眼看到本地服务是否运行、已连接哪些 Agent、cc-switch 是否同步、今日估算节省了多少 token、最近是否有问题。
-2. **安装与连接**：4 个上栏——一键安装（服务/端口/Agent/cc-switch 检测与配置计划）、智能学习（全面扫描+排序+受控写入）、高级安装（自定义上游/端口/协议）、日志（安装过程记录）。
-3. **分析**：估算节省、请求趋势、Agent/上游/错误分布；明确标注"估算"，不伪装真实账单。
-4. **Doctor**：检测已知问题，低风险自动修复，高风险必须确认并预览 diff。
-5. **变更与回退**：所有写入（配置、文档、Doctor 修复）都有备份和回退点，可一键恢复。
-6. **设置**：主题、语言、端口、脱敏级别、扫描策略、数据保留。
+## 当前状态
 
-## 当前重点支持 Agent
+仓库已经包含可编译的 Rust workspace、Tauri 2 桌面壳和 React 18/TypeScript UI，不再是占位项目。当前已有：
 
-| Agent | 能力状态 |
-|---|---|
-| OpenCode | 已可一键配置 |
-| Claude Code | 可检测，需用户确认配置 |
-| Codex | 可检测，需用户确认配置 |
-| Cursor | 可生成配置建议，能写则受控写入 |
-| Cline | 可生成配置建议，能写则受控写入 |
-| CommandCode | 仅支持高级手动配置（资料待补） |
+- OpenAI Chat Completions、OpenAI Responses 和 Anthropic Messages 本地入口。
+- 显式 Provider/Route/Instance 配置和无静默 fallback 的路由基础。
+- d-token-owned Dashboard、stats/history/metrics、Doctor、logs、Event Ledger 和脱敏导出。
+- d-token route 草稿、active config、rollback point 和本地配置恢复。
+- 操作系统凭据库接入，配置只保存不透明 credential reference。
+- App-managed `dtoken-proxy` Rust runtime 的状态、启动、停止和身份验证。
+- macOS/Windows Tauri sidecar 准备与平台 bundle 配置。
+- Optical / Hybrid Context Optimization 的 shadow planner、Preview API 和 Capability 生命周期可观测面。
 
-d-token 只检测和配置这些第三方工具，**不会自动安装它们**。
+当前仍不是可无条件公开发布的稳定版本。以下能力尚未闭环：
 
-## cc-switch 只读同步
+- 第三方 Agent 配置的完整 plan → diff → backup → apply → verify → rollback 事务。
+- 缺失 RTK/Headroom 时的可信下载、签名校验和真实自动安装。
+- 多 Agent、真实认证 Provider、长期持久化和故障注入的完整矩阵。
+- macOS 签名/notarization、Windows 签名和同一候选 commit 的实机发布证据。
+- Optical PNG renderer、request patcher、active mutation、post-validator 和 rollback。
 
-d-token 默认只读读取 cc-switch 配置：检测当前 profile、读取当前上游，并在用户切换 cc-switch 后同步 d-token 上游或明确提示"不一致"。常规一键安装不会静默改写 cc-switch 配置。
+完整事实见 [`docs/product/IMPLEMENTATION_STATUS.md`](docs/product/IMPLEMENTATION_STATUS.md)。
 
-## 智能学习如何扫描和写入
+## 产品页面
 
-- 全面扫描本机项目目录和 Agent 会话路径，用轻量索引快速排序（不读取完整源代码）。
-- 按学习价值评分排序，显示可解释的排序原因。
-- 对高价值目录做深度扫描，生成面向 Agent 的项目上下文。
-- 直接写入时**只新增或更新 d-token 管理块**，不会改动你的其他内容；写入前自动备份并生成回退点。
-- 敏感文件（.env、密钥、认证文件）永远被排除。
+正式一级页面固定为：
 
-## 安全与隐私边界
+1. 总体概览。
+2. 安装与连接。
+3. 分析。
+4. Doctor。
+5. 变更与回退。
+6. 设置。
 
-- 默认只监听 `127.0.0.1`，所有数据在本地处理。
-- API key、token、cookie、认证头永不明文展示，日志和导出默认脱敏。
-- 完整 prompt、完整 response、完整源代码不落盘、不导出。
-- 不上传任何数据到远端，不自动开启遥测。
-- 所有真实写入都有 diff、备份、验证和回退。
+高级 Provider/Route、Smart Learning、日志安全和兼容性能力通过工作台子流程或内部页面承载，不作为工程化测试中心。
 
-## Experimental：Hybrid Context Optimization / Optical Preview
+## 架构
 
-仓库正在开发一个默认关闭、只做预览的混合上下文优化控制面。Optical 只是其中一种有损 codec，不等同于整个压缩系统。
+```text
+AI coding agent
+→ 127.0.0.1 d-token listener
+→ d-token-owned Rust runtime
+→ compression / context optimization / route decision
+→ configured upstream
+→ redacted Event Ledger / metrics / Dashboard / Doctor / App
+```
 
-当前已完成：
+技术主线：
 
-- 版本化 Capability Snapshot、撤销与 supersede 生命周期。
-- Anthropic/OpenAI 工具调用依赖图和 fail-closed 边界。
-- Raw-byte / Canonical JSON SHA-256 计划证据。
-- metadata-only Preview、Capability Lifecycle 和 Recent Events API。
+- Rust：核心业务、local API、proxy、路由、压缩、Doctor、事件和进程。
+- Tauri 2：桌面 native command、平台适配、凭据和打包。
+- React 18 + TypeScript + Vite：Windows/macOS 共用 UI。
+- Python：仅用于 `support/` 中的开发与审计脚本，不是成品 runtime。
 
-当前明确未完成且禁止宣称可用：
+外部 Headroom、standalone RTK 和 cc-switch 不是 d-token App 的隐式运行依赖。`code/runtimes/headroom/` 只保存 Headroom-derived 能力的 provenance/迁移边界。
 
-- 图片 renderer、真实请求 patch、active provider routing。
-- post-execution validator、rollback executor、history collapse。
+## 仓库结构
 
-当前实现状态和审查证据见 `docs/optical/README.md`；分阶段规划与验证历史见 `support/pending-commits.json`。
+```text
+AGENTS.md                       通用 AI coding agent 入口
+CLAUDE.md                       Claude Code 入口
+README.md                       项目概览
+docs/                           当前规范、历史与归档
+code/                           Rust workspace 与桌面 App
+support/                        测试、脚本、fixture、CI 和审计账本
+```
 
-## 安装步骤
+核心代码：
 
-1. 下载 d-token 安装包（Windows .exe / macOS .dmg）。
-2. 运行安装程序。
-3. 打开 d-token App。
+```text
+code/apps/desktop/              唯一正式桌面 App
+code/apps/desktop/src/app/      当前 React UI
+code/apps/desktop/src-tauri/    Tauri commands 与平台打包
+code/crates/                    13 个 Rust 业务 crate
+```
 
-## 第一次连接步骤
-
-1. 打开"安装与连接"页。
-2. 在"一键安装"上栏点击"启动本地服务"。
-3. 等待端口检测、Agent 检测、cc-switch 检测完成。
-4. 选择一个 Agent，查看配置计划和 diff。
-5. 确认应用（已自动备份）。
-6. 验证连接是否通过。
-7. 如果结果不符合预期，在"变更与回退"中一键恢复。
-
-## 常见问题
-
-- **服务无法启动**：检查端口是否被占用，打开 Doctor 查看。
-- **Agent 请求没经过 d-token**：确认 Agent 上游已指向 `127.0.0.1:18001`，在 Doctor 运行连接检查。
-- **cc-switch 切换后 d-token 没跟上**：首页会提示"不一致"，点击"同步上游"。
-- **智能学习写入失败**：说明检测到非管理块内容可能变化，已中止并保留备份，原文档未改动。
-
-## 如何回退
-
-1. 打开"变更与回退"页。
-2. 找到对应的回退点（按时间线排列）。
-3. 点击"恢复"。
-4. 恢复后自动验证。
-
-## 已知限制
-
-- Windows native 模式通常只能获得部分 hook 能力，WSL 才能获得完整 shell hook 体验。
-- CommandCode 的具体命令名、配置路径、hook 能力仍在补齐，暂按高级手动配置处理。
-- 公开发布版需要签名/notarization；当前开发构建未签名。
-- macOS 签名与 quarantine 提示需要在真实机器上验收。
+`code/UI design for project/` 是设计原型，`code/apps/desktop/src-old/` 是旧实现，均不是生产功能落点。
 
 ## 开发
 
+### 前端
+
 ```bash
-# 前端开发
 cd code/apps/desktop
 npm install
 npm run dev
-
-# 前端构建（CI gate）
+npm run test:run
+npx tsc --noEmit
 npm run build
+npm run test:e2e
+```
 
-# Rust 检查
+### Rust workspace
+
+```bash
 cd code
-cargo check --workspace
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 ```
 
-## 目录结构
+### Tauri 桌面
 
-```text
-docs/       所有正式文档（唯一 PRD、架构、安全边界、发布计划）
-code/       所有正式代码（Rust workspace + Tauri/React 桌面 App）
-support/    测试、脚本、CI 模板、开发辅助
+```bash
+cd code/apps/desktop
+npm run tauri:dev
+npm run tauri:build
 ```
 
-## 设计原则
+`tauri:dev` 和 `tauri:build` 会先准备当前平台的 `dtoken-proxy` external binary。不要绕过准备脚本直接构建不完整 bundle。
 
-1. `docs/PRD.md` 是唯一 PRD。
-2. 不创建并行 PRD 版本。
-3. 不静默修改 agent、RTK、Headroom 或 shell 配置。
-4. 不静默开启遥测。
-5. 不把 RTK 节省和 Headroom 节省直接相加（需要统一基线）。
-6. 不在默认日志中存储完整命令输出、完整 prompt、完整源文件或完整 API 响应。
-7. 先只读检测，再受控写入。
-8. 每个用户可见的路由/fallback/压缩决策都必须可解释。
+### 文档与结构检查
 
-## License
+```bash
+python3 support/scripts/check_structure.py
+```
 
-License status is not finalized in this repository. If Apache-2.0 upstream code is reused, license notices must be preserved. Until licensing is finalized, treat the repository as a planning and early implementation workspace.
+## 文档入口
+
+- [`docs/index.md`](docs/index.md) — 文档总导航。
+- [`docs/PRD.md`](docs/PRD.md) — 唯一产品真理源。
+- [`docs/PLAN.md`](docs/PLAN.md) — 当前执行计划。
+- [`docs/product/IMPLEMENTATION_STATUS.md`](docs/product/IMPLEMENTATION_STATUS.md) — 当前代码事实。
+- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — 架构。
+- [`docs/SECURITY_BOUNDARIES.md`](docs/SECURITY_BOUNDARIES.md) — 安全边界。
+- [`docs/archive/README.md`](docs/archive/README.md) — 归档说明。
+
+## 安全原则
+
+- 默认只绑定 loopback。
+- 禁止存储或提交真实密钥、token、cookie、Authorization、auth 文件和完整 prompt/response。
+- 凭据只进入操作系统凭据库，不允许明文 fallback。
+- 所有真实配置写入都必须有摘要、diff、备份、确认、验证和回退证据。
+- 没有当前 runtime evidence 时，UI 必须显示 unavailable、partial 或 preview，不能冒充真实机器状态。
+
+## 许可证
+
+Apache-2.0。复用外部开源实现时必须遵守对应许可证、NOTICE、来源和修改记录要求。

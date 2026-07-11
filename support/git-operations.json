@@ -117,6 +117,24 @@
       "summary": "推送通过 8 项真实浏览器验证的 Playwright E2E 基线到 origin。",
       "head_before": "92359dd71bc1a61208c9b662975202b5d16aecf1",
       "remote": "origin"
+    },
+    {
+      "id": "9020fb61-4f6c-420f-ae6d-f34c6e275397",
+      "timestamp": "2026-07-11T21:28:02+08:00",
+      "operation": "branch-switch",
+      "branch": "codex/prd-macos-polish",
+      "summary": "检测到共享工作树被外部切回 optical 后，恢复到用户指定的 PRD 与 macOS 完善分支继续验收。",
+      "head_before": "cf65cc434b0e626e87f6bd539ff37b4b70b64566",
+      "remote": null
+    },
+    {
+      "id": "d10314d2-2621-4842-b1a8-d2c0cf68489b",
+      "timestamp": "2026-07-12T01:02:08+08:00",
+      "operation": "commit",
+      "branch": "codex/prd-macos-polish",
+      "summary": "收敛产品文档、真实数据界面、AiMaMi连续桌面壳、配置事务与回归测试",
+      "head_before": "0eb1b23e8f0fe4dc55e4aa4e5cc01d1e2d801913",
+      "remote": null
     }
   ]
 }

@@ -7,6 +7,7 @@ import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { useI18n, useT } from "../../lib/i18n";
 import { invokeNative } from "../../lib/native";
+import { classifyEvidence, type EvidenceState } from "../../lib/state/evidence";
 
 type CompatibilityAgent = {
   name: string;
@@ -25,24 +26,20 @@ type ProjectPolicyRow = {
   stack?: string;
   agents?: string[];
   route?: string;
-  rtkProfile?: string;
   policy?: string;
   level?: string;
-  reason?: string;
   features?: string[];
 };
 
-type DesktopCompatibilityData = {
+type DesktopCompatibilityData = Record<string, any> & {
   agents?: CompatibilityAgent[];
   routes?: Array<Record<string, any>>;
-  providers?: Array<Record<string, any>>;
   projects?: ProjectPolicyRow[];
-  health?: Array<{ key: string; label: string; state: string }>;
   runtimeCompatibility?: {
     source?: string;
     agents?: RuntimeAgentProfile[];
     protocolInjection?: RuntimeProtocolProfile[];
-    chainStatus?: Record<string, any>;
+    chainStatus?: Record<string, any> | null;
     privacy?: string;
   };
 };
@@ -68,93 +65,66 @@ type RuntimeProtocolProfile = {
   safety_notes?: string[];
 };
 
-const previewAgents: CompatibilityAgent[] = [
-  {
-    name: "OpenCode",
-    rtk: "partial",
-    rtkMethod: "integrated runtime metrics",
-    headroom: "partial",
-    headroomMethod: "OpenAI-compatible d-token route adapter",
-    macos: "ok",
-    win: "partial",
-    wsl: "ok",
-    note: "First real validation entry; still one agent inside the shared model.",
-  },
-  {
-    name: "Claude Code",
-    rtk: "planned",
-    rtkMethod: "integrated RTK via d-token runtime",
-    headroom: "planned",
-    headroomMethod: "Anthropic-shaped bridge through d-token route adapter",
-    macos: "ok",
-    win: "partial",
-    wsl: "ok",
-    note: "Uses the same install/connect/configure/verify product flow.",
-  },
-  {
-    name: "Codex CLI",
-    rtk: "planned",
-    rtkMethod: "command filter + route adapter",
-    headroom: "planned",
-    headroomMethod: "OpenAI Responses / OpenAI-compatible route support",
-    macos: "ok",
-    win: "ok",
-    wsl: "ok",
-    note: "Compatibility model present; real validation is not expanded beyond OpenCode yet.",
-  },
-];
+export const compatibilityCatalogEvidence = {
+  source: "dtoken-capability-manifest",
+  evidence_kind: "implementation_catalog",
+  verified_on_this_machine: false,
+} as const;
+
+type LoadState = "loading" | "native" | "preview" | "error";
 
 export function Compatibility() {
   const t = useT();
   const { lang } = useI18n();
   const [data, setData] = useState<DesktopCompatibilityData | null>(null);
-  const [state, setState] = useState<"loading" | "native" | "preview" | "error">("loading");
+  const [loadState, setLoadState] = useState<LoadState>("loading");
   const [updatedAt, setUpdatedAt] = useState<Date | null>(null);
 
   const refresh = async () => {
     try {
       const next = await invokeNative<DesktopCompatibilityData>("get_desktop_data");
       setData(next);
-      setState("native");
+      setLoadState("native");
       setUpdatedAt(new Date());
     } catch (error) {
       setData(null);
-      setState(error instanceof Error && error.message === "native_unavailable" ? "preview" : "error");
+      setLoadState(error instanceof Error && error.message === "native_unavailable" ? "preview" : "error");
       setUpdatedAt(new Date());
     }
   };
 
   useEffect(() => {
     void refresh();
-    const timer = window.setInterval(() => void refresh(), 5000);
+    const timer = window.setInterval(() => void refresh(), 5_000);
     return () => window.clearInterval(timer);
   }, []);
 
-  const runtimeAgents =
-    state === "native" && Array.isArray(data?.runtimeCompatibility?.agents)
-      ? data.runtimeCompatibility.agents
+  const evidenceState = useMemo(
+    () => classifyEvidence({
+      payload: data,
+      status: loadState === "native" ? "native" : loadState,
+      requireRuntimeIdentity: true,
+      requireTransactionProvenance: true,
+    }),
+    [data, loadState],
+  );
+  const verifiedData = evidenceState === "verified" ? data : null;
+  const runtimeCompatibility = verifiedData?.runtimeCompatibility;
+  const hasRuntimeAgentCatalog = Array.isArray(runtimeCompatibility?.agents);
+  const agents = hasRuntimeAgentCatalog
+    ? (runtimeCompatibility?.agents ?? []).map(toCompatibilityAgent)
+    : Array.isArray(verifiedData?.agents)
+      ? verifiedData.agents
       : [];
-  const protocolProfiles =
-    state === "native" && Array.isArray(data?.runtimeCompatibility?.protocolInjection)
-      ? data.runtimeCompatibility.protocolInjection
-      : [];
-  const chainStatus = state === "native" ? data?.runtimeCompatibility?.chainStatus : null;
-  const agents = runtimeAgents.length > 0
-    ? runtimeAgents.map(toCompatibilityAgent)
-    : state === "native" && Array.isArray(data?.agents)
-      ? data.agents
-      : previewAgents;
-  const routes: Array<Record<string, any>> = state === "native" && Array.isArray(data?.routes) ? data.routes : [];
-  const projects = state === "native" && Array.isArray(data?.projects) ? data.projects : [];
+  const protocolProfiles = Array.isArray(runtimeCompatibility?.protocolInjection)
+    ? runtimeCompatibility.protocolInjection
+    : [];
+  const routes = Array.isArray(verifiedData?.routes) ? verifiedData.routes : [];
+  const projects = Array.isArray(verifiedData?.projects) ? verifiedData.projects : [];
+  const chainStatus = isRecord(runtimeCompatibility?.chainStatus) ? runtimeCompatibility.chainStatus : null;
   const summary = useMemo(() => summarizeAgents(agents), [agents]);
-  const sourceText =
-    state === "native"
-      ? t("cp.source.native")
-      : state === "preview"
-        ? t("cp.source.preview")
-        : state === "loading"
-          ? lang === "zh" ? "读取中" : "Loading"
-          : lang === "zh" ? "读取失败" : "Unavailable";
+  const sourceText = evidenceLabel(evidenceState, lang);
+  const hasVerifiedPayload = evidenceState === "verified";
 
   return (
     <div className="space-y-6">
@@ -162,12 +132,18 @@ export function Compatibility() {
         <div>
           <div className="flex flex-wrap items-center gap-3">
             <h1>{t("cp.title")}</h1>
-            <DataSourceBadge mode={state === "native" ? "native" : state === "preview" ? "preview" : "unavailable"} />
-            <Badge variant={state === "native" ? "default" : "secondary"}>
+            <DataSourceBadge
+              mode={hasVerifiedPayload ? "native" : evidenceState === "preview" || evidenceState === "loading" ? "preview" : "unavailable"}
+            />
+            <Badge variant={hasVerifiedPayload ? "default" : "secondary"}>
               {sourceText}{updatedAt ? ` · ${updatedAt.toLocaleTimeString()}` : ""}
             </Badge>
           </div>
-          <p className="mt-1 max-w-3xl text-sm text-muted-foreground">{t("cp.subtitle")}</p>
+          <p className="mt-1 max-w-3xl text-sm text-muted-foreground">
+            {lang === "zh"
+              ? "区分产品实现能力目录与当前机器的真实配置状态；目录能力不等于本机已验证。"
+              : "Separates the implementation catalog from configuration verified on this machine."}
+          </p>
         </div>
         <Button variant="outline" onClick={refresh}>
           <RefreshCw className="size-4" />
@@ -175,229 +151,317 @@ export function Compatibility() {
         </Button>
       </div>
 
-      <div className="grid gap-4 md:grid-cols-4">
-        <SummaryCard icon={<Monitor className="size-4" />} label="Agents" value={String(agents.length)} />
-        <SummaryCard icon={<ShieldCheck className="size-4" />} label="OK" value={String(summary.ok)} tone="ok" />
-        <SummaryCard icon={<TerminalSquare className="size-4" />} label="Partial" value={String(summary.partial)} tone="warn" />
-        <SummaryCard icon={<Route className="size-4" />} label="Routes" value={String(routes.length)} />
+      {!hasVerifiedPayload && (
+        <GlassCard className="p-4" hover={false}>
+          <EmptyState
+            title={emptyTitle(evidenceState, lang)}
+            detail={lang === "zh"
+              ? "未取得通过来源、完整性与事务证明校验的本机数据；不会使用预览内容补位。"
+              : "No local payload passed provenance, completeness, and transaction verification."}
+          />
+        </GlassCard>
+      )}
+
+      <div className="grid gap-4 md:grid-cols-4" data-testid="compatibility-summary">
+        <SummaryCard
+          icon={<Monitor className="size-4" />}
+          label={lang === "zh" ? "目录 Agent" : "Catalog agents"}
+          value={hasVerifiedPayload ? String(agents.length) : "—"}
+        />
+        <SummaryCard
+          icon={<ShieldCheck className="size-4" />}
+          label={lang === "zh" ? "完整支持项" : "Full support entries"}
+          value={hasVerifiedPayload ? String(summary.ok) : "—"}
+          tone="ok"
+        />
+        <SummaryCard
+          icon={<TerminalSquare className="size-4" />}
+          label={lang === "zh" ? "部分 / 计划项" : "Partial / planned entries"}
+          value={hasVerifiedPayload ? String(summary.partial) : "—"}
+          tone="warn"
+        />
+        <SummaryCard
+          icon={<Route className="size-4" />}
+          label={lang === "zh" ? "本机路由" : "Local routes"}
+          value={hasVerifiedPayload ? String(routes.length) : "—"}
+        />
       </div>
 
-      <GlassCard className="p-5">
-        <div className="mb-4 flex items-center justify-between gap-3">
-          <h3>{t("cp.summary")}</h3>
-          <Badge variant="outline">multi-agent control plane</Badge>
+      <GlassCard className="p-5" hover={false}>
+        <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+          <h3>{lang === "zh" ? "Agent 实现能力目录" : "Agent implementation catalog"}</h3>
+          <CatalogEvidenceBadge lang={lang} />
         </div>
-        <div className="overflow-x-auto">
-          <table className="w-full min-w-[860px] text-sm">
-            <thead>
-              <tr className="border-b border-[var(--glass-inset-border)] text-left text-xs text-muted-foreground">
-                <th className="pb-2 font-medium">{t("cp.agent")}</th>
-                <th className="pb-2 font-medium">{t("cp.rtk")}</th>
-                <th className="pb-2 font-medium">{t("cp.runtime")}</th>
-                <th className="pb-2 font-medium">{t("cp.macos")}</th>
-                <th className="pb-2 font-medium">{t("cp.windows")}</th>
-                <th className="pb-2 font-medium">{t("cp.wsl")}</th>
-                <th className="pb-2 font-medium">{t("cp.notes")}</th>
-              </tr>
-            </thead>
-            <tbody>
-              {agents.map((agent) => (
-                <tr key={agent.name} className="border-b border-border/30 last:border-0">
-                  <td className="py-3">
-                    <div className="font-medium">{agent.name}</div>
-                    <div className="text-xs text-muted-foreground">{agent.headroomMethod ?? "d-token-owned runtime"}</div>
-                  </td>
-                  <td className="py-3"><MatrixStatus value={agent.rtk} detail={agent.rtkMethod} /></td>
-                  <td className="py-3"><MatrixStatus value={agent.headroom} detail={agent.headroomMethod} /></td>
-                  <td className="py-3"><MatrixStatus value={agent.macos} /></td>
-                  <td className="py-3"><MatrixStatus value={agent.win} /></td>
-                  <td className="py-3"><MatrixStatus value={agent.wsl} /></td>
-                  <td className="py-3 text-xs text-muted-foreground">{agent.note ?? "—"}</td>
+        {agents.length > 0 ? (
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[860px] text-sm">
+              <thead>
+                <tr className="border-b border-[var(--glass-inset-border)] text-left text-xs text-muted-foreground">
+                  <th className="pb-2 font-medium">{t("cp.agent")}</th>
+                  <th className="pb-2 font-medium">{t("cp.rtk")}</th>
+                  <th className="pb-2 font-medium">{t("cp.runtime")}</th>
+                  <th className="pb-2 font-medium">{t("cp.macos")}</th>
+                  <th className="pb-2 font-medium">{t("cp.windows")}</th>
+                  <th className="pb-2 font-medium">{t("cp.wsl")}</th>
+                  <th className="pb-2 font-medium">{t("cp.notes")}</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+              </thead>
+              <tbody>
+                {agents.map((agent) => (
+                  <tr key={agent.name} className="border-b border-border/30 last:border-0">
+                    <td className="py-3">
+                      <div className="font-medium">{agent.name}</div>
+                      {agent.headroomMethod && <div className="text-xs text-muted-foreground">{agent.headroomMethod}</div>}
+                    </td>
+                    <td className="py-3"><MatrixStatus value={agent.rtk} detail={agent.rtkMethod} lang={lang} /></td>
+                    <td className="py-3"><MatrixStatus value={agent.headroom} detail={agent.headroomMethod} lang={lang} /></td>
+                    <td className="py-3"><MatrixStatus value={agent.macos} lang={lang} /></td>
+                    <td className="py-3"><MatrixStatus value={agent.win} lang={lang} /></td>
+                    <td className="py-3"><MatrixStatus value={agent.wsl} lang={lang} /></td>
+                    <td className="py-3 text-xs text-muted-foreground">{agent.note || "—"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <EmptyState
+            title={lang === "zh" ? "暂无 Agent 能力目录" : "No agent capability catalog"}
+            detail={lang === "zh" ? "本地服务没有返回静态 Agent 能力条目。" : "The local service returned no static agent capability rows."}
+          />
+        )}
       </GlassCard>
 
       <div className="grid gap-4 lg:grid-cols-2">
-        <GlassCard className="p-5">
+        <GlassCard className="p-5" hover={false}>
           <h3 className="mb-3 flex items-center gap-2">
             <Route className="size-4 text-primary" />
-            {t("cp.routeModes")}
+            {lang === "zh" ? "本机路由配置" : "Local route configuration"}
           </h3>
-          <div className="space-y-2">
-            {(routes.length > 0 ? routes : previewRouteRows() as Array<Record<string, any>>).map((route, index) => (
-              <div key={String(route.id ?? route.name ?? index)} className="glass-inset flex flex-wrap items-center justify-between gap-3 p-3 text-sm">
-                <div>
-                  <div>{String(route.name ?? route.id ?? "d-token route")}</div>
-                  <div className="text-xs text-muted-foreground">
-                    {String(route.protocol ?? "OpenAI/Anthropic")} · {String(route.chain ?? route.policy ?? "compress_then_provider")} · {String(route.fallback ?? "fallback visible")}
-                  </div>
-                </div>
-                <Badge variant={String(route.fallback ?? "").includes("disabled") ? "default" : "outline"}>
-                  {String(route.provider ?? route.host ?? "d-token")}
-                </Badge>
-              </div>
-            ))}
-          </div>
+          {routes.length > 0 ? (
+            <div className="space-y-2">
+              {routes.map((route, index) => <RouteRow key={safeText(route.id) ?? safeText(route.name) ?? String(index)} route={route} lang={lang} />)}
+            </div>
+          ) : (
+            <EmptyState
+              title={lang === "zh" ? "暂无本机路由" : "No local routes"}
+              detail={lang === "zh" ? "当前机器没有返回已配置路由。" : "No configured routes were returned for this machine."}
+            />
+          )}
         </GlassCard>
 
-        <GlassCard className="p-5">
+        <GlassCard className="p-5" hover={false}>
           <h3 className="mb-3 flex items-center gap-2">
             <Laptop className="size-4 text-primary" />
-            {t("cp.projects")}
+            {lang === "zh" ? "本机项目策略" : "Local project policies"}
           </h3>
-          <div className="space-y-2">
-            {(projects.length > 0 ? projects : previewProjectRows()).map((project, index) => (
-              <div key={`${project.root ?? "project"}-${index}`} className="glass-inset p-3 text-sm">
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <span className="font-medium">{project.root ?? "current workspace"}</span>
-                  <Badge variant="secondary">{project.level ?? project.policy ?? "policy pending"}</Badge>
-                </div>
-                <div className="mt-1 text-xs text-muted-foreground">
-                  {project.stack ?? "workspace"} · {(project.agents ?? []).join(", ") || "multi-agent"} · {project.route ?? "d-token local route"}
-                </div>
-                <div className="mt-2 flex flex-wrap gap-1.5">
-                  {(project.features ?? ["Doctor", "config diff", "backup", "route verification"]).map((feature) => (
-                    <Badge key={feature} variant="outline" className="text-xs">{feature}</Badge>
-                  ))}
-                </div>
-              </div>
-            ))}
-          </div>
+          {projects.length > 0 ? (
+            <div className="space-y-2">
+              {projects.map((project, index) => <ProjectRow key={`${project.root ?? "project"}-${index}`} project={project} lang={lang} />)}
+            </div>
+          ) : (
+            <EmptyState
+              title={lang === "zh" ? "暂无本机项目策略" : "No local project policies"}
+              detail={lang === "zh" ? "当前机器没有返回项目级策略。" : "No project-level policy was returned for this machine."}
+            />
+          )}
         </GlassCard>
       </div>
 
       <div className="grid gap-4 lg:grid-cols-2">
-        <GlassCard className="p-5">
-          <h3 className="mb-3 flex items-center gap-2">
-            <ShieldCheck className="size-4 text-primary" />
-            {lang === "zh" ? "协议接入" : "Protocol injection"}
-          </h3>
-          <div className="space-y-2">
-            {(protocolProfiles.length > 0 ? protocolProfiles : previewProtocolRows()).map((profile, index) => (
-              <div key={String(profile.protocol ?? index)} className="glass-inset p-3 text-sm">
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <span className="font-medium">{String(profile.protocol ?? "open_ai")}</span>
-                  <Badge variant="outline">{lang === "zh" ? "无静默回退" : "no silent fallback"}</Badge>
-                </div>
-                <div className="mt-1 text-xs text-muted-foreground">
-                  {String(profile.injection_method ?? "d-token route adapter")}
-                </div>
-                <div className="mt-2 flex flex-wrap gap-1.5">
-                  {(profile.compatible_clients ?? []).slice(0, 5).map((client) => (
-                    <Badge key={client} variant="secondary" className="text-xs">{client}</Badge>
-                  ))}
-                </div>
-              </div>
-            ))}
+        <GlassCard className="p-5" hover={false}>
+          <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+            <h3 className="flex items-center gap-2">
+              <ShieldCheck className="size-4 text-primary" />
+              {lang === "zh" ? "协议实现能力目录" : "Protocol implementation catalog"}
+            </h3>
+            <CatalogEvidenceBadge lang={lang} />
           </div>
+          {protocolProfiles.length > 0 ? (
+            <div className="space-y-2">
+              {protocolProfiles.map((profile, index) => <ProtocolRow key={safeText(profile.protocol) ?? String(index)} profile={profile} lang={lang} />)}
+            </div>
+          ) : (
+            <EmptyState
+              title={lang === "zh" ? "暂无协议能力目录" : "No protocol capability catalog"}
+              detail={lang === "zh" ? "本地服务没有返回静态协议能力条目。" : "The local service returned no static protocol capability rows."}
+            />
+          )}
         </GlassCard>
 
-        <GlassCard className="p-5">
+        <GlassCard className="p-5" hover={false}>
           <h3 className="mb-3 flex items-center gap-2">
             <Route className="size-4 text-primary" />
-            {lang === "zh" ? "链路 / cc-switch 状态" : "Chain / cc-switch status"}
+            {lang === "zh" ? "本机链路状态" : "Local chain status"}
           </h3>
-          <div className="glass-inset p-3 text-sm">
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <span className="font-medium">{String(chainStatus?.mode ?? "compress_then_chain_bridge")}</span>
-              <Badge variant={chainStatus?.status === "configured" ? "default" : "secondary"}>
-                {String(chainStatus?.status ?? (state === "preview" ? "preview" : "unavailable"))}
-              </Badge>
-            </div>
-            <div className="mt-1 text-xs text-muted-foreground">
-              {String(chainStatus?.privacy ?? "d-token reads local route state only; external cc-switch is not mutated.")}
-            </div>
-            <div className="mt-3 space-y-2">
-              {Array.isArray(chainStatus?.routes) && chainStatus.routes.length > 0 ? (
-                chainStatus.routes.map((route: Record<string, any>, index: number) => (
-                  <div key={String(route.route_id ?? index)} className="flex flex-wrap items-center justify-between gap-2 text-xs">
-                    <span>{String(route.name ?? route.route_id)}</span>
-                    <Badge variant="outline">{String(route.fallback ?? "disabled")}</Badge>
-                  </div>
-                ))
-              ) : (
-                <div className="text-xs text-muted-foreground">
-                  {lang === "zh" ? "等待 d-token runtime 暴露链路状态。" : "Waiting for d-token runtime chain status."}
-                </div>
-              )}
-            </div>
-          </div>
+          {chainStatus ? (
+            <ChainStatusCard status={chainStatus} lang={lang} />
+          ) : (
+            <EmptyState
+              title={lang === "zh" ? "暂无本机链路状态" : "No local chain status"}
+              detail={lang === "zh" ? "当前机器没有返回可核验的链路状态。" : "No verifiable chain status was returned for this machine."}
+            />
+          )}
         </GlassCard>
       </div>
     </div>
+  );
+}
+
+function CatalogEvidenceBadge({ lang }: { lang: "zh" | "en" }) {
+  return (
+    <Badge
+      variant="outline"
+      data-source={compatibilityCatalogEvidence.source}
+      data-evidence-kind={compatibilityCatalogEvidence.evidence_kind}
+      data-verified-on-this-machine={String(compatibilityCatalogEvidence.verified_on_this_machine)}
+    >
+      {lang === "zh" ? "实现能力目录 · 非本机验证" : "Implementation catalog · not verified locally"}
+    </Badge>
   );
 }
 
 function SummaryCard({ icon, label, value, tone }: { icon: React.ReactNode; label: string; value: string; tone?: "ok" | "warn" }) {
   const color = tone === "ok" ? "text-emerald-500" : tone === "warn" ? "text-amber-500" : "text-primary";
   return (
-    <GlassCard className="p-4">
+    <GlassCard className="p-4" hover={false}>
       <div className="flex items-center gap-2 text-xs text-muted-foreground">{icon}{label}</div>
       <div className={`mt-2 text-2xl font-semibold ${color}`}>{value}</div>
     </GlassCard>
   );
 }
 
-function MatrixStatus({ value, detail }: { value?: string; detail?: string }) {
-  const normalized = String(value ?? "planned").toLowerCase();
-  const status = normalized === "ok" ? "healthy" : normalized === "partial" || normalized === "planned" ? "warning" : "error";
+function MatrixStatus({ value, detail, lang }: { value?: string; detail?: string; lang: "zh" | "en" }) {
+  if (!value) {
+    return <span className="text-xs text-muted-foreground">{lang === "zh" ? "未说明" : "Not specified"}</span>;
+  }
+  const normalized = value.toLowerCase();
+  const status = normalized === "ok" || normalized === "full"
+    ? "healthy"
+    : normalized === "partial" || normalized === "planned"
+      ? "warning"
+      : "error";
   return (
     <div className="space-y-1">
-      <StatusBadge status={status} label={value ?? "planned"} />
+      <StatusBadge status={status} label={value} />
       {detail ? <div className="max-w-[180px] text-xs text-muted-foreground">{detail}</div> : null}
+    </div>
+  );
+}
+
+function RouteRow({ route, lang }: { route: Record<string, any>; lang: "zh" | "en" }) {
+  const title = safeText(route.name) ?? safeText(route.id) ?? (lang === "zh" ? "未命名路由" : "Unnamed route");
+  const details = [safeText(route.protocol), safeText(route.chain), safeText(route.policy)].filter(Boolean).join(" · ");
+  const provider = safeText(route.target_provider_id) ?? safeText(route.provider_id) ?? safeText(route.provider);
+  return (
+    <div className="glass-inset flex flex-wrap items-center justify-between gap-3 p-3 text-sm">
+      <div>
+        <div>{title}</div>
+        {details && <div className="text-xs text-muted-foreground">{details}</div>}
+      </div>
+      {provider && <Badge variant="outline">{provider}</Badge>}
+    </div>
+  );
+}
+
+function ProjectRow({ project, lang }: { project: ProjectPolicyRow; lang: "zh" | "en" }) {
+  const details = [project.stack, project.agents?.join(", "), project.route].filter(Boolean).join(" · ");
+  return (
+    <div className="glass-inset p-3 text-sm">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <span className="font-medium">{project.root || (lang === "zh" ? "未命名项目" : "Unnamed project")}</span>
+        {(project.level || project.policy) && <Badge variant="secondary">{project.level ?? project.policy}</Badge>}
+      </div>
+      {details && <div className="mt-1 text-xs text-muted-foreground">{details}</div>}
+      {Array.isArray(project.features) && project.features.length > 0 && (
+        <div className="mt-2 flex flex-wrap gap-1.5">
+          {project.features.map((feature) => <Badge key={feature} variant="outline" className="text-xs">{feature}</Badge>)}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ProtocolRow({ profile, lang }: { profile: RuntimeProtocolProfile; lang: "zh" | "en" }) {
+  return (
+    <div className="glass-inset p-3 text-sm">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <span className="font-medium">{safeText(profile.protocol) ?? (lang === "zh" ? "未命名协议" : "Unnamed protocol")}</span>
+        <Badge variant="outline">{lang === "zh" ? "目录声明" : "Catalog declaration"}</Badge>
+      </div>
+      {safeText(profile.injection_method) && <div className="mt-1 text-xs text-muted-foreground">{profile.injection_method}</div>}
+      {Array.isArray(profile.compatible_clients) && profile.compatible_clients.length > 0 && (
+        <div className="mt-2 flex flex-wrap gap-1.5">
+          {profile.compatible_clients.slice(0, 5).map((client) => <Badge key={client} variant="secondary" className="text-xs">{client}</Badge>)}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ChainStatusCard({ status, lang }: { status: Record<string, any>; lang: "zh" | "en" }) {
+  const mode = safeText(status.mode);
+  const state = safeText(status.status);
+  const privacy = safeText(status.privacy);
+  const routes = Array.isArray(status.routes) ? status.routes.filter(isRecord) : [];
+  return (
+    <div className="glass-inset p-3 text-sm">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <span className="font-medium">{mode ?? (lang === "zh" ? "未提供链路模式" : "Chain mode not provided")}</span>
+        {state && <Badge variant={state === "configured" ? "default" : "secondary"}>{state}</Badge>}
+      </div>
+      {privacy && <div className="mt-1 text-xs text-muted-foreground">{privacy}</div>}
+      {routes.length > 0 ? (
+        <div className="mt-3 space-y-2">
+          {routes.map((route, index) => (
+            <div key={safeText(route.route_id) ?? String(index)} className="flex flex-wrap items-center justify-between gap-2 text-xs">
+              <span>{safeText(route.name) ?? safeText(route.route_id) ?? (lang === "zh" ? "未命名路由" : "Unnamed route")}</span>
+              {safeText(route.fallback) && <Badge variant="outline">{route.fallback}</Badge>}
+            </div>
+          ))}
+        </div>
+      ) : (
+        <div className="mt-3 text-xs text-muted-foreground">{lang === "zh" ? "没有链路路由明细。" : "No chain route details."}</div>
+      )}
+    </div>
+  );
+}
+
+function EmptyState({ title, detail }: { title: string; detail: string }) {
+  return (
+    <div className="flex min-h-28 flex-col items-center justify-center rounded-xl border border-dashed border-border/60 bg-muted/15 px-4 text-center">
+      <div className="text-sm font-medium">{title}</div>
+      <div className="mt-1 text-xs text-muted-foreground">{detail}</div>
     </div>
   );
 }
 
 function summarizeAgents(agents: CompatibilityAgent[]) {
   return agents.reduce(
-    (acc, agent) => {
+    (summary, agent) => {
       for (const value of [agent.rtk, agent.headroom, agent.macos, agent.win, agent.wsl]) {
         const normalized = String(value ?? "").toLowerCase();
-        if (normalized === "ok") acc.ok += 1;
-        else if (normalized === "partial" || normalized === "planned") acc.partial += 1;
-        else if (normalized) acc.fail += 1;
+        if (normalized === "ok" || normalized === "full") summary.ok += 1;
+        else if (normalized === "partial" || normalized === "planned") summary.partial += 1;
+        else if (normalized) summary.fail += 1;
       }
-      return acc;
+      return summary;
     },
     { ok: 0, partial: 0, fail: 0 },
   );
 }
 
-function previewRouteRows() {
-  return [
-    { name: "agent -> d-token route adapter", protocol: "OpenAI/Anthropic", chain: "compress_then_provider", fallback: "fallback disabled", provider: "official/custom/local" },
-    { name: "agent -> d-token -> cc-switch", protocol: "bridge", chain: "compress_then_cc_switch", fallback: "visible only", provider: "cc-switch interface" },
-  ];
-}
-
-function previewProjectRows(): ProjectPolicyRow[] {
-  return [
-    {
-      root: "browser preview",
-      stack: "TypeScript / Rust / Tauri",
-      agents: ["OpenCode", "Claude Code", "Codex CLI"],
-      route: "d-token local service",
-      level: "balanced recommendation pending",
-      features: ["Doctor", "Project policy", "Event Ledger", "Backup"],
-    },
-  ];
-}
-
 function toCompatibilityAgent(profile: RuntimeAgentProfile): CompatibilityAgent {
   return {
-    name: profile.agent ?? "Agent",
+    name: safeText(profile.agent) ?? "Agent",
     rtk: supportToStatus(profile.rtk_supported, profile.rtk_transparent_rewrite),
-    rtkMethod: profile.rtk_method,
-    headroom: supportToStatus(profile.headroom_supported, undefined),
-    headroomMethod: profile.headroom_method,
+    rtkMethod: safeText(profile.rtk_method) ?? undefined,
+    headroom: supportToStatus(profile.headroom_supported),
+    headroomMethod: safeText(profile.headroom_method) ?? undefined,
     macos: supportToStatus(undefined, profile.macos_support),
     win: supportToStatus(undefined, profile.windows_native_support),
     wsl: supportToStatus(undefined, profile.windows_wsl_support),
-    note: profile.notes,
+    note: safeText(profile.notes) ?? undefined,
   };
 }
 
@@ -408,20 +472,32 @@ function supportToStatus(supported?: boolean, level?: string) {
   if (normalized === "none") return "none";
   if (supported === true) return "ok";
   if (supported === false) return "planned";
-  return "planned";
+  return undefined;
 }
 
-function previewProtocolRows(): RuntimeProtocolProfile[] {
-  return [
-    {
-      protocol: "open_ai",
-      compatible_clients: ["OpenAI SDK", "OpenAI-compatible clients", "Codex CLI"],
-      injection_method: "Proxy/base-url injection for chat or responses traffic",
-    },
-    {
-      protocol: "anthropic",
-      compatible_clients: ["Claude Code", "Cline", "Anthropic-compatible proxy clients"],
-      injection_method: "Anthropic messages bridge through d-token route adapter",
-    },
-  ];
+function evidenceLabel(state: EvidenceState, lang: "zh" | "en") {
+  if (state === "verified") return lang === "zh" ? "本机实时数据" : "Live local data";
+  if (state === "preview") return lang === "zh" ? "浏览器预览 · 无本机数据" : "Browser preview · no local data";
+  if (state === "loading") return lang === "zh" ? "正在读取本机数据" : "Loading local data";
+  if (state === "stale") return lang === "zh" ? "本机数据已过期" : "Local data is stale";
+  if (state === "partial") return lang === "zh" ? "本机数据不完整" : "Local data is incomplete";
+  return lang === "zh" ? "本机数据暂不可用" : "Local data unavailable";
+}
+
+function emptyTitle(state: EvidenceState, lang: "zh" | "en") {
+  if (state === "preview") return lang === "zh" ? "浏览器预览不提供本机兼容性证据" : "Browser preview has no local compatibility evidence";
+  if (state === "loading") return lang === "zh" ? "正在读取本机兼容性证据" : "Loading local compatibility evidence";
+  if (state === "stale") return lang === "zh" ? "本机兼容性证据已过期" : "Local compatibility evidence is stale";
+  if (state === "partial") return lang === "zh" ? "本机兼容性证据不完整" : "Local compatibility evidence is incomplete";
+  return lang === "zh" ? "本机兼容性证据暂不可用" : "Local compatibility evidence unavailable";
+}
+
+function safeText(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+function isRecord(value: unknown): value is Record<string, any> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
