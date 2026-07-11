@@ -99,6 +99,24 @@
       "summary": "推送前端运行时真实性与安装连接体验改进到 origin。",
       "head_before": "83a2b7983f974ee31005179792424e609c649555",
       "remote": "origin"
+    },
+    {
+      "id": "412e05b7-902b-41ac-ad58-592dff487551",
+      "timestamp": "2026-07-11T20:51:32+08:00",
+      "operation": "commit",
+      "branch": "codex/prd-macos-polish",
+      "summary": "新增 Chromium 与 macOS WebKit 桌面控制面 E2E，覆盖导航、预览安全和生产文案边界。",
+      "head_before": "92359dd71bc1a61208c9b662975202b5d16aecf1",
+      "remote": null
+    },
+    {
+      "id": "44312c00-9f5a-442c-940d-8a2b9fb2361f",
+      "timestamp": "2026-07-11T20:51:32+08:00",
+      "operation": "push",
+      "branch": "codex/prd-macos-polish",
+      "summary": "推送通过 8 项真实浏览器验证的 Playwright E2E 基线到 origin。",
+      "head_before": "92359dd71bc1a61208c9b662975202b5d16aecf1",
+      "remote": "origin"
     }
   ]
 }
