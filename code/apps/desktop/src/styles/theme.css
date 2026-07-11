@@ -1644,68 +1644,163 @@
   }
 }
 
-/* Final requested polish: animated flowing background, square shell bars, token chart */
+/* Shell atmosphere: low-contrast stellar mist on three depth planes.
+   The base never moves; each soft nebula drifts independently and very slowly. */
 :root {
-  --flow-a: rgba(249, 115, 22, 0.18);
-  --flow-b: rgba(251, 113, 133, 0.14);
-  --flow-c: rgba(56, 189, 248, 0.12);
-  --flow-speed: 32s;
+  --flow-a: rgba(124, 58, 237, 0.065);
+  --flow-b: rgba(14, 165, 233, 0.055);
+  --flow-c: rgba(217, 119, 6, 0.050);
+  --flow-far-speed: 132s;
+  --flow-mid-speed: 112s;
+  --flow-near-speed: 94s;
+  --flow-stars-speed: 180s;
+}
+
+:root[data-flow-palette="sunrise"] {
+  --flow-a: rgba(194, 65, 12, 0.060);
+  --flow-b: rgba(190, 24, 93, 0.045);
+  --flow-c: rgba(79, 70, 229, 0.048);
 }
 
 :root[data-flow-palette="aurora"] {
-  --flow-a: rgba(16, 185, 129, 0.18);
-  --flow-b: rgba(56, 189, 248, 0.14);
-  --flow-c: rgba(167, 139, 250, 0.14);
+  --flow-a: rgba(5, 150, 105, 0.058);
+  --flow-b: rgba(14, 165, 233, 0.052);
+  --flow-c: rgba(124, 58, 237, 0.050);
 }
 
 :root[data-flow-palette="ocean"] {
-  --flow-a: rgba(14, 165, 233, 0.16);
-  --flow-b: rgba(20, 184, 166, 0.14);
-  --flow-c: rgba(99, 102, 241, 0.12);
+  --flow-a: rgba(2, 132, 199, 0.058);
+  --flow-b: rgba(13, 148, 136, 0.048);
+  --flow-c: rgba(79, 70, 229, 0.045);
 }
 
 :root[data-flow-palette="mono"] {
-  --flow-a: rgba(148, 163, 184, 0.14);
-  --flow-b: rgba(203, 213, 225, 0.18);
-  --flow-c: rgba(100, 116, 139, 0.10);
+  --flow-a: rgba(100, 116, 139, 0.052);
+  --flow-b: rgba(148, 163, 184, 0.046);
+  --flow-c: rgba(71, 85, 105, 0.040);
 }
 
 :root[data-flow-speed="normal"] {
-  --flow-speed: 20s;
+  --flow-far-speed: 98s;
+  --flow-mid-speed: 84s;
+  --flow-near-speed: 72s;
+  --flow-stars-speed: 146s;
 }
 
 :root[data-flow-speed="fast"] {
-  --flow-speed: 11s;
+  --flow-far-speed: 72s;
+  --flow-mid-speed: 62s;
+  --flow-near-speed: 54s;
+  --flow-stars-speed: 112s;
 }
 
 .app-bg {
+  position: relative;
   background:
-    radial-gradient(circle at 18% 14%, var(--flow-a), transparent 32%),
-    radial-gradient(circle at 82% 18%, var(--flow-b), transparent 34%),
-    radial-gradient(circle at 72% 88%, var(--flow-c), transparent 38%),
-    linear-gradient(135deg, #f8fafc, #fff7ed 44%, #ffffff) !important;
-  background-size: 180% 180%, 170% 170%, 190% 190%, 100% 100% !important;
-  animation: dtoken-bg-flow var(--flow-speed) ease-in-out infinite alternate !important;
+    linear-gradient(154deg, color-mix(in srgb, var(--background) 96%, #eef4ff), var(--background) 48%, color-mix(in srgb, var(--background) 97%, #fff7ed)) !important;
+  animation: none !important;
 }
 
 .dark .app-bg {
   background:
-    radial-gradient(circle at 18% 14%, color-mix(in srgb, var(--flow-a), transparent 12%), transparent 32%),
-    radial-gradient(circle at 82% 18%, color-mix(in srgb, var(--flow-b), transparent 10%), transparent 34%),
-    radial-gradient(circle at 72% 88%, color-mix(in srgb, var(--flow-c), transparent 8%), transparent 38%),
-    linear-gradient(135deg, #10141f, #151923) !important;
+    linear-gradient(154deg, color-mix(in srgb, var(--background) 94%, #17233b), var(--background) 52%, color-mix(in srgb, var(--background) 96%, #2a211a)) !important;
 }
 
-@keyframes dtoken-bg-flow {
-  0% {
-    background-position: 0% 18%, 100% 8%, 74% 100%, 0 0;
-  }
-  50% {
-    background-position: 38% 42%, 64% 46%, 34% 58%, 0 0;
-  }
-  100% {
-    background-position: 82% 20%, 14% 72%, 92% 24%, 0 0;
-  }
+.background-atmosphere {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  overflow: hidden;
+  pointer-events: none;
+  contain: paint;
+}
+
+.background-stars {
+  position: absolute;
+  inset: -12%;
+  opacity: 0.16;
+  background-image:
+    radial-gradient(circle, rgba(71, 85, 105, 0.22) 0 0.55px, transparent 0.9px),
+    radial-gradient(circle, rgba(124, 58, 237, 0.16) 0 0.45px, transparent 0.8px);
+  background-position: 17px 23px, 79px 51px;
+  background-size: 127px 127px, 191px 191px;
+  -webkit-mask-image: radial-gradient(ellipse at 52% 34%, black 0%, rgba(0, 0, 0, 0.58) 44%, transparent 80%);
+  mask-image: radial-gradient(ellipse at 52% 34%, black 0%, rgba(0, 0, 0, 0.58) 44%, transparent 80%);
+  animation: dtoken-stars-drift var(--flow-stars-speed) linear infinite alternate;
+}
+
+.dark .background-stars {
+  opacity: 0.22;
+  background-image:
+    radial-gradient(circle, rgba(226, 232, 240, 0.25) 0 0.55px, transparent 0.9px),
+    radial-gradient(circle, rgba(165, 180, 252, 0.20) 0 0.45px, transparent 0.8px);
+}
+
+.background-nebula {
+  position: absolute;
+  border-radius: 999px;
+  pointer-events: none;
+  will-change: transform;
+}
+
+.background-nebula--far {
+  top: -38vh;
+  left: -18vw;
+  width: 78vw;
+  height: 76vh;
+  background:
+    radial-gradient(ellipse at 62% 68%, var(--flow-b), transparent 66%),
+    radial-gradient(ellipse at 34% 42%, var(--flow-a), transparent 62%);
+  filter: blur(86px);
+  animation: dtoken-nebula-far var(--flow-far-speed) cubic-bezier(0.45, 0, 0.55, 1) infinite alternate;
+}
+
+.background-nebula--mid {
+  top: -8vh;
+  right: -34vw;
+  width: 88vw;
+  height: 72vh;
+  background:
+    radial-gradient(ellipse at 38% 44%, var(--flow-a), transparent 64%),
+    radial-gradient(ellipse at 66% 70%, var(--flow-c), transparent 68%);
+  filter: blur(112px);
+  animation: dtoken-nebula-mid var(--flow-mid-speed) cubic-bezier(0.45, 0, 0.55, 1) infinite alternate;
+}
+
+.background-nebula--near {
+  right: 4vw;
+  bottom: -36vh;
+  width: 68vw;
+  height: 64vh;
+  background:
+    radial-gradient(ellipse at 52% 42%, var(--flow-c), transparent 64%),
+    radial-gradient(ellipse at 24% 64%, var(--flow-b), transparent 70%);
+  filter: blur(104px);
+  animation: dtoken-nebula-near var(--flow-near-speed) cubic-bezier(0.45, 0, 0.55, 1) infinite alternate;
+}
+
+.dark .background-nebula {
+  opacity: 1.18;
+}
+
+@keyframes dtoken-stars-drift {
+  from { transform: translate3d(0, 0, 0); }
+  to { transform: translate3d(-34px, 24px, 0); }
+}
+
+@keyframes dtoken-nebula-far {
+  from { transform: translate3d(-2vw, -1vh, 0) scale(1); }
+  to { transform: translate3d(10vw, 8vh, 0) scale(1.045); }
+}
+
+@keyframes dtoken-nebula-mid {
+  from { transform: translate3d(2vw, -2vh, 0) rotate(-3deg) scale(1.02); }
+  to { transform: translate3d(-11vw, 10vh, 0) rotate(3deg) scale(0.98); }
+}
+
+@keyframes dtoken-nebula-near {
+  from { transform: translate3d(3vw, 2vh, 0) scale(0.98); }
+  to { transform: translate3d(-8vw, -9vh, 0) scale(1.04); }
 }
 
 aside.glass-strong,
@@ -1890,4 +1985,276 @@ aside.glass-strong::before {
 .activity-tools-layout {
   grid-template-columns: minmax(0, 1fr) 170px !important;
   gap: 20px !important;
+}
+
+/* ============================================================
+   Cohesive shell, humanist typography and restrained interaction
+   ============================================================ */
+:root,
+:root[data-accent] {
+  --interaction-accent: #c7652a;
+  --interaction-accent-strong: #a94f1c;
+  --interaction-soft: rgba(199, 101, 42, 0.105);
+  --interaction-soft-hover: rgba(199, 101, 42, 0.075);
+  --interaction-border: rgba(199, 101, 42, 0.30);
+  --interaction-focus: rgba(194, 91, 31, 0.62);
+  --primary: var(--interaction-accent);
+  --primary-foreground: #ffffff;
+  --ring: var(--interaction-accent);
+  --sidebar-primary: var(--interaction-accent);
+}
+
+.dark {
+  --interaction-accent: #e19a5d;
+  --interaction-accent-strong: #f0ad72;
+  --interaction-soft: rgba(225, 154, 93, 0.13);
+  --interaction-soft-hover: rgba(225, 154, 93, 0.085);
+  --interaction-border: rgba(225, 154, 93, 0.30);
+  --interaction-focus: rgba(240, 173, 114, 0.72);
+}
+
+@layer base {
+  html,
+  body,
+  button,
+  input,
+  select,
+  textarea {
+    font-family:
+      ui-sans-serif,
+      -apple-system,
+      BlinkMacSystemFont,
+      "SF Pro Text",
+      "Segoe UI Variable Text",
+      "Segoe UI",
+      "PingFang SC",
+      "Microsoft YaHei UI",
+      "Noto Sans CJK SC",
+      sans-serif;
+  }
+
+  body {
+    line-height: 1.55;
+    letter-spacing: -0.003em;
+    font-kerning: normal;
+    text-rendering: optimizeLegibility;
+  }
+
+  h1,
+  h2,
+  h3,
+  h4 {
+    font-weight: 600;
+    letter-spacing: -0.018em;
+  }
+
+  p,
+  li {
+    line-height: 1.6;
+  }
+}
+
+:where(button, a, [role="button"], [role="tab"], input, select, textarea) {
+  transition-property: color, background-color, border-color, opacity, transform;
+  transition-duration: 180ms;
+  transition-timing-function: cubic-bezier(0.2, 0, 0, 1);
+}
+
+:where(button, a, [role="button"], [role="tab"], input, select, textarea):focus-visible {
+  outline: 2px solid var(--interaction-focus) !important;
+  outline-offset: 2px;
+}
+
+:where(button, a, [role="button"], [role="tab"]):active:not(:disabled) {
+  transform: translateY(1px);
+}
+
+:where(button, [role="button"], [role="tab"]):disabled {
+  cursor: not-allowed;
+  opacity: 0.52;
+  transform: none;
+}
+
+.shell-topbar {
+  border-width: 0 0 1px !important;
+  border-color: color-mix(in srgb, var(--sidebar-border) 70%, transparent) !important;
+  border-radius: 0 !important;
+  background: color-mix(in srgb, var(--glass-light-bg) 88%, var(--background)) !important;
+  box-shadow: inset 0 -1px 0 rgba(255, 255, 255, 0.24) !important;
+}
+
+.shell-topbar::before {
+  border-radius: 0 !important;
+  opacity: 0.30 !important;
+}
+
+.shell-topbar .glass-backdrop::after {
+  display: none;
+}
+
+.shell-topbar-brand {
+  background: color-mix(in srgb, var(--glass-strong-bg) 60%, transparent);
+}
+
+.shell-sidebar {
+  border-width: 0 1px 0 0 !important;
+  border-color: color-mix(in srgb, var(--sidebar-border) 72%, transparent) !important;
+  border-radius: 0 !important;
+  box-shadow: inset -1px 0 0 rgba(255, 255, 255, 0.16) !important;
+}
+
+.shell-content-scroll {
+  overscroll-behavior-y: contain;
+  scrollbar-gutter: stable;
+  scroll-padding-block: 1rem 2rem;
+}
+
+.shell-page {
+  padding-bottom: calc(1.5rem + env(safe-area-inset-bottom, 0px));
+}
+
+.shell-statusbar {
+  position: relative;
+  z-index: 25;
+  border-width: 1px 0 0 !important;
+  border-color: color-mix(in srgb, var(--sidebar-border) 72%, transparent) !important;
+  border-radius: 0 !important;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.20) !important;
+}
+
+.shell-statusbar [class*="overflow-x-auto"] {
+  scrollbar-width: none;
+}
+
+.shell-statusbar [class*="overflow-x-auto"]::-webkit-scrollbar {
+  display: none;
+}
+
+.sidebar-item-selected {
+  position: relative;
+  border-color: transparent !important;
+  background: var(--interaction-soft) !important;
+  box-shadow: none !important;
+  color: var(--interaction-accent-strong) !important;
+}
+
+.sidebar-item-selected::before {
+  position: absolute;
+  top: 50%;
+  left: 0;
+  width: 3px;
+  height: 18px;
+  border-radius: 0 999px 999px 0;
+  background: var(--interaction-accent);
+  content: "";
+  transform: translateY(-50%);
+}
+
+.nav-motion-item:hover {
+  background: var(--interaction-soft-hover);
+}
+
+.nav-motion-item:hover svg {
+  filter: none;
+}
+
+.chip-active,
+.segmented-control-item.active,
+.log-filter-item.active,
+[data-slot="tabs-trigger"][data-state="active"] {
+  border-color: var(--interaction-border) !important;
+  background: var(--interaction-soft) !important;
+  box-shadow: none !important;
+  color: var(--interaction-accent-strong) !important;
+}
+
+.install-workbench-nav [data-slot="tabs-trigger"] {
+  border-color: transparent var(--glass-inset-border) transparent transparent !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  color: var(--foreground) !important;
+  -webkit-backdrop-filter: none !important;
+  backdrop-filter: none !important;
+}
+
+.install-workbench-nav [data-slot="tabs-trigger"]:hover {
+  background: var(--interaction-soft-hover) !important;
+}
+
+.install-workbench-nav [data-slot="tabs-trigger"][data-state="active"] {
+  border-color: transparent var(--glass-inset-border) transparent transparent !important;
+  background: var(--interaction-soft) !important;
+  color: var(--foreground) !important;
+}
+
+.install-workbench-nav [data-slot="tabs-trigger"][data-state="active"]::after {
+  top: 0;
+  right: auto;
+  bottom: auto;
+  left: 50%;
+  width: 28px;
+  height: 2px;
+  border-radius: 0 0 999px 999px;
+  background: var(--interaction-accent);
+  transform: translateX(-50%);
+}
+
+.install-workbench-nav-icon {
+  background: transparent;
+}
+
+.install-workbench-nav [data-slot="tabs-trigger"][data-state="active"] .install-workbench-nav-icon {
+  background: color-mix(in srgb, var(--interaction-accent) 12%, transparent);
+  color: var(--interaction-accent-strong);
+}
+
+.overview-kpi {
+  min-height: 98px;
+}
+
+.overview-status-grid {
+  overflow: hidden;
+}
+
+@media (max-height: 680px) {
+  .overview-page > :not([hidden]) ~ :not([hidden]) {
+    margin-top: 0.75rem;
+  }
+
+  .overview-kpi {
+    min-height: 88px;
+    padding: 0.75rem !important;
+  }
+
+  .overview-status-item {
+    min-height: 82px;
+    padding: 0.75rem;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html:focus-within {
+    scroll-behavior: auto;
+  }
+
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+
+  .app-bg,
+  .background-stars,
+  .background-nebula,
+  .glass-backdrop::after {
+    animation: none !important;
+  }
+
+  .background-stars,
+  .background-nebula,
+  :where(button, a, [role="button"], [role="tab"]):active {
+    transform: none !important;
+  }
 }

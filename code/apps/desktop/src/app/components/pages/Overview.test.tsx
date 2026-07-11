@@ -105,22 +105,33 @@ describe("Overview information hierarchy and truthfulness", () => {
 
     expect(screen.getAllByText("浏览器预览 · 未连接真实数据")).not.toHaveLength(0);
     expect(screen.queryByText("浏览器预览 · 示例数据")).not.toBeInTheDocument();
+    const kpis = screen.getByTestId("overview-kpis");
+    expect(within(kpis).getAllByText("—")).toHaveLength(4);
+    expect(within(kpis).queryByText("0")).not.toBeInTheDocument();
   });
 
-  it("puts operational truth and one next step before savings and activity", () => {
+  it("puts verified KPIs before operational status, trends, activity and anomalies", () => {
     const { container } = render(<Overview setPage={vi.fn()} />);
     const sections = Array.from(container.querySelectorAll("[data-overview-section]"))
       .map((node) => node.getAttribute("data-overview-section"));
 
-    expect(sections).toEqual(["operational", "savings", "trend", "activity"]);
+    expect(sections).toEqual(["kpis", "operational", "issues", "trend", "activity"]);
+    const kpis = container.querySelector('[data-overview-section="kpis"]');
+    expect(kpis).not.toBeNull();
+    expect(within(kpis as HTMLElement).getByText("2")).toBeVisible();
+    expect(within(kpis as HTMLElement).getByText("48")).toBeVisible();
+    expect(within(kpis as HTMLElement).getByText("37%")).toBeVisible();
+    expect(within(kpis as HTMLElement).getByText("1")).toBeVisible();
     const operational = container.querySelector('[data-overview-section="operational"]');
     expect(operational).not.toBeNull();
     expect(within(operational as HTMLElement).getByText("本地服务")).toBeVisible();
     expect(within(operational as HTMLElement).getByText("已连接 Agent")).toBeVisible();
     expect(within(operational as HTMLElement).getByText("当前连接路径")).toBeVisible();
-    expect(within(operational as HTMLElement).getByText("最近问题")).toBeVisible();
-    expect(within(operational as HTMLElement).getByText("建议下一步")).toBeVisible();
+    expect(within(operational as HTMLElement).getByText("cc-switch 与自定义上游")).toBeVisible();
+    expect(within(operational as HTMLElement).queryByText("建议下一步")).not.toBeInTheDocument();
     expect(within(operational as HTMLElement).getAllByRole("button")).toHaveLength(1);
+    const issues = container.querySelector('[data-overview-section="issues"]');
+    expect(within(issues as HTMLElement).getByText("最近问题")).toBeVisible();
     expect(screen.getByTestId("activity-heatmap")).toBeVisible();
   });
 });

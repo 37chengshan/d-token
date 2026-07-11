@@ -10,7 +10,6 @@ import { NAV, SETTINGS_NAV, type PageId } from "../../lib/nav";
 import { useT } from "../../lib/i18n";
 import { useTheme } from "../../lib/theme-context";
 import { cn } from "../ui/utils";
-import { BrandMark } from "../brand/BrandMark";
 
 const ITEM_GAP = 6;
 
@@ -78,31 +77,11 @@ export function Sidebar({
   return (
     <aside
       className={cn(
-        "glass-strong relative z-20 flex h-full shrink-0 flex-col border-r border-sidebar-border/60 transition-all duration-300",
+        "shell-sidebar glass-strong relative z-20 flex h-full shrink-0 flex-col border-r border-sidebar-border/60 transition-all duration-300",
         collapsed ? "w-[60px]" : "w-[148px]",
       )}
     >
-      <div className={cn("relative z-10 flex items-center gap-2 px-2 py-3", collapsed && "justify-center")}>
-        <motion.button
-          type="button"
-          onClick={() => collapsed && setCollapsed(false)}
-          aria-label={collapsed ? t("app.name") : "d-token"}
-          className="flex size-9 shrink-0 items-center justify-center overflow-hidden rounded-xl bg-white shadow-sm ring-1 ring-black/10"
-          title={collapsed ? t("app.name") : undefined}
-          whileHover={{ rotate: -10, scale: 1.06 }}
-          whileTap={{ scale: 0.97 }}
-          transition={{ type: "spring", stiffness: 360, damping: 18 }}
-        >
-          <BrandMark className="size-full object-cover" />
-        </motion.button>
-        {!collapsed && (
-          <div className="min-w-0">
-            <div className="truncate text-[13px] font-semibold">{t("app.name")}</div>
-          </div>
-        )}
-      </div>
-
-      <nav className="relative z-10 flex flex-1 flex-col px-2" style={{ gap: ITEM_GAP }}>
+      <nav className="relative z-10 flex flex-1 flex-col px-2 pt-3" style={{ gap: ITEM_GAP }}>
         {NAV.map((item) => (
           <Item key={item.id} {...item} />
         ))}

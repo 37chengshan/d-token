@@ -13,7 +13,7 @@ export function StatusBar() {
   const summary = buildStatusSummary(payload, status, updatedAt, error);
 
   const Item = ({ label, value, health }: { label: string; value: string; health?: "healthy" | "warning" | "error" }) => (
-    <div className="flex items-center gap-2">
+    <div className="flex shrink-0 items-center gap-1.5 whitespace-nowrap">
       {health && <StatusDot status={health} />}
       <span className="text-muted-foreground">{label}:</span>
       <span>{value}</span>
@@ -21,9 +21,9 @@ export function StatusBar() {
   );
 
   return (
-    <div className="glass-light border-t border-border/40 px-4 py-2 text-sm">
+    <div className="shell-statusbar glass-light shrink-0 border-t border-border/40 px-3.5 py-2 text-[12px]">
       <div className="glass-backdrop" />
-      <div className="flex flex-wrap items-center gap-x-6 gap-y-1">
+      <div className="flex flex-nowrap items-center gap-x-4 overflow-x-auto">
         <Item label={t("status.runtime")} value={summary.runtimeLabel} health={summary.runtimeHealth} />
         <Item label={t("status.route")} value={summary.routeLabel} />
         <Item label={t("status.ports")} value={summary.portsLabel} />

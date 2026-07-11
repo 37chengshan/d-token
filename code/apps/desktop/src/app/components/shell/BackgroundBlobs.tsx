@@ -1,18 +1,12 @@
-import { motion } from "motion/react";
-
-// Single faint accent blob drifting slowly — barely perceptible,
-// provides depth for glass surfaces without drawing attention.
-// Main color motion comes from the flowing `.app-bg` gradient.
+// Three softly separated depth planes create a restrained stellar mist.
+// Motion lives in CSS so prefers-reduced-motion can make the scene fully static.
 export function BackgroundBlobs() {
   return (
-    <div className="pointer-events-none fixed inset-0 z-0 overflow-hidden">
-      <motion.div
-        className="absolute h-[480px] w-[480px] rounded-full blur-[120px]"
-        style={{ background: "var(--accent-500, #f97316)", opacity: 0.08 }}
-        initial={{ x: "10%", y: "-5%" }}
-        animate={{ x: ["10%", "30%", "15%", "10%"], y: ["-5%", "25%", "50%", "-5%"] }}
-        transition={{ duration: 50, repeat: Infinity, ease: "easeInOut" }}
-      />
+    <div className="background-atmosphere" aria-hidden="true">
+      <div className="background-stars" />
+      <div className="background-nebula background-nebula--far" />
+      <div className="background-nebula background-nebula--mid" />
+      <div className="background-nebula background-nebula--near" />
     </div>
   );
 }

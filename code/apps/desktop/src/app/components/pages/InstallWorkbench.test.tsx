@@ -18,7 +18,7 @@ describe("InstallWorkbench", () => {
     render(<InstallWorkbench />);
 
     const tablist = screen.getByRole("tablist");
-    expect(tablist).toHaveClass("install-workbench-nav", "grid", "w-full", "grid-cols-4");
+    expect(tablist).toHaveClass("install-workbench-nav", "grid", "h-20", "w-full", "grid-cols-4");
     expect(screen.getAllByRole("tab")).toHaveLength(4);
 
     const expectedTabs = [

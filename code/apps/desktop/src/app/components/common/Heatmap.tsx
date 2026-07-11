@@ -1,6 +1,5 @@
 import { AnimatePresence, motion } from "motion/react";
 import { useMemo, useState } from "react";
-import { activityCalendar, toolUsage, type ActivityDay } from "../../lib/fixtures";
 import { useI18n } from "../../lib/i18n";
 
 const CELL = 13;
@@ -10,20 +9,19 @@ const LEVELS = [0, 1, 2, 3, 4] as const;
 
 type Range = "week" | "month" | "year";
 type View = "activity" | "tokens" | "tools";
+type ActivityDay = {
+  date: string;
+  sessions: number;
+  minutes: number;
+  tokens: number;
+  tools: number;
+};
 type CalendarCell = ActivityDay | null;
 type ToolUsageRow = { name: string; calls: number };
 
 const rangeDays: Record<Range, number> = { week: 7, month: 31, year: 365 };
-
-const tokenSeries = [
-  { date: "6/27", input: 0, total: 0 },
-  { date: "6/28", input: 26, total: 18 },
-  { date: "6/29", input: 22, total: 27 },
-  { date: "6/30", input: 44, total: 42 },
-  { date: "7/1", input: 24, total: 58 },
-  { date: "7/2", input: 109, total: 142 },
-  { date: "7/3", input: 17, total: 148 },
-];
+const EMPTY_ACTIVITY_DAYS: ActivityDay[] = [];
+const EMPTY_TOOL_USAGE: ToolUsageRow[] = [];
 
 function rangeLabel(range: Range, lang: string) {
   if (lang === "zh") return range === "week" ? "本周" : range === "month" ? "本月" : "年";
@@ -72,9 +70,9 @@ function pathFromPoints(points: { x: number; y: number }[]) {
 }
 
 export function Heatmap({
-  activityDays = activityCalendar,
-  tools = toolUsage,
-  source = "浏览器预览",
+  activityDays = EMPTY_ACTIVITY_DAYS,
+  tools = EMPTY_TOOL_USAGE,
+  source = "等待真实本地请求记录",
 }: {
   activityDays?: ActivityDay[];
   tools?: ToolUsageRow[];
@@ -94,7 +92,8 @@ export function Heatmap({
 
   const { columns, months } = useMemo(() => {
     const sorted = [...activityDays].sort((a, b) => a.date.localeCompare(b.date));
-    const first = sorted[0] ? new Date(`${sorted[0].date}T00:00:00`) : new Date();
+    if (sorted.length === 0) return { columns: [], months: [] };
+    const first = new Date(`${sorted[0].date}T00:00:00`);
     const padded: CalendarCell[] = [];
     for (let i = 0; i < first.getDay(); i += 1) padded.push(null);
     padded.push(...sorted);
@@ -165,40 +164,62 @@ export function Heatmap({
           transition={{ duration: 0.18 }}
         >
           {view === "activity" && (
-            <ActivityCalendar
-              columns={columns}
-              months={months}
-              selectedDates={selectedDates}
-              tooltip={tooltip}
-              setTooltip={setTooltip}
-              lang={lang}
-            />
+            activityDays.length > 0 ? (
+              <ActivityCalendar
+                columns={columns}
+                months={months}
+                selectedDates={selectedDates}
+                tooltip={tooltip}
+                setTooltip={setTooltip}
+                lang={lang}
+              />
+            ) : (
+              <NoRequestEvidence lang={lang} />
+            )
           )}
           {view === "tokens" && <TokenTrend range={range} lang={lang} activityDays={activityDays} />}
-          {view === "tools" && <ToolRanking range={range} lang={lang} tools={tools} />}
+          {view === "tools" && <ToolRanking lang={lang} tools={tools} />}
         </motion.div>
       </AnimatePresence>
 
-      <div className="activity-summary">
-        <div className="activity-summary-item">
-          <div className="text-xs text-muted-foreground">{lang === "zh" ? "会话数" : "Sessions"}</div>
-          <div className="mt-1 text-lg font-semibold">{totalSessions}</div>
-        </div>
-        <div className="activity-summary-item">
-          <div className="text-xs text-muted-foreground">{lang === "zh" ? "Token 处理量" : "Tokens"}</div>
-          <div className="mt-1 text-lg font-semibold">{formatNumber(totalTokens)}</div>
-        </div>
-        <div className="activity-summary-item">
-          <div className="text-xs text-muted-foreground">{lang === "zh" ? "工具调用" : "Tool calls"}</div>
-          <div className="mt-1 text-lg font-semibold">{totalTools}</div>
-        </div>
-        <div className="activity-summary-item">
-          <div className="text-xs text-muted-foreground">{lang === "zh" ? "活跃天数" : "Active days"}</div>
-          <div className="mt-1 text-lg font-semibold">
-            {activeDays}
-            {lang === "zh" ? " 天" : " days"}
+      {activityDays.length > 0 && (
+        <div className="activity-summary">
+          <div className="activity-summary-item">
+            <div className="text-xs text-muted-foreground">{lang === "zh" ? "会话数" : "Sessions"}</div>
+            <div className="mt-1 text-lg font-semibold">{totalSessions}</div>
+          </div>
+          <div className="activity-summary-item">
+            <div className="text-xs text-muted-foreground">{lang === "zh" ? "Token 处理量" : "Tokens"}</div>
+            <div className="mt-1 text-lg font-semibold">{formatNumber(totalTokens)}</div>
+          </div>
+          <div className="activity-summary-item">
+            <div className="text-xs text-muted-foreground">{lang === "zh" ? "工具调用" : "Tool calls"}</div>
+            <div className="mt-1 text-lg font-semibold">{totalTools}</div>
+          </div>
+          <div className="activity-summary-item">
+            <div className="text-xs text-muted-foreground">{lang === "zh" ? "活跃天数" : "Active days"}</div>
+            <div className="mt-1 text-lg font-semibold">
+              {activeDays}
+              {lang === "zh" ? " 天" : " days"}
+            </div>
           </div>
         </div>
+      )}
+    </div>
+  );
+}
+
+function NoRequestEvidence({ lang }: { lang: string }) {
+  return (
+    <div
+      className="flex min-h-[250px] flex-col items-center justify-center rounded-2xl border border-border/50 bg-background/25 px-6 text-center"
+      role="status"
+    >
+      <div className="text-sm font-semibold text-foreground">
+        {lang === "zh" ? "暂无真实请求记录" : "No real request records yet"}
+      </div>
+      <div className="mt-2 text-xs text-muted-foreground">
+        {lang === "zh" ? "连接本地服务后显示" : "Connect the local service to view them"}
       </div>
     </div>
   );
@@ -301,14 +322,22 @@ function ActivityCalendar({
 }
 
 function TokenTrend({ range, lang, activityDays }: { range: Range; lang: string; activityDays: ActivityDay[] }) {
-  const data = activityDays.slice(-rangeDays[range]).map((day) => ({
-    date: day.date.slice(5).replace("-", "/"),
-    input: Math.max(0, day.tokens / 1000),
-    total: Math.max(0, (day.tokens + day.tools * 120) / 1000),
-  }));
-  const fallback = tokenSeries.slice(-rangeDays[range]);
-  const series = data.length > 0 ? data : fallback;
-  const max = Math.max(...series.map((item) => Math.max(item.input, item.total)), 1);
+  const series = activityDays.slice(-rangeDays[range]).reduce<Array<{ date: string; period: number; cumulative: number }>>(
+    (rows, day) => {
+      const period = Math.max(0, day.tokens / 1000);
+      rows.push({
+        date: day.date.slice(5).replace("-", "/"),
+        period,
+        cumulative: period + (rows.length > 0 ? rows[rows.length - 1].cumulative : 0),
+      });
+      return rows;
+    },
+    [],
+  );
+
+  if (series.length === 0) return <NoRequestEvidence lang={lang} />;
+
+  const max = Math.max(...series.map((item) => item.cumulative), 1);
   const chartWidth = 760;
   const chartHeight = 250;
   const left = 48;
@@ -320,10 +349,9 @@ function TokenTrend({ range, lang, activityDays }: { range: Range; lang: string;
   const step = series.length > 1 ? plotWidth / (series.length - 1) : plotWidth;
   const points = series.map((item, index) => ({
     x: left + index * step,
-    y: top + plotHeight - (item.total / max) * plotHeight,
+    y: top + plotHeight - (item.cumulative / max) * plotHeight,
   }));
-  const total = series.reduce((sum, item) => sum + item.total, 0);
-  const input = series.reduce((sum, item) => sum + item.input, 0);
+  const total = series.reduce((sum, item) => sum + item.period, 0);
 
   return (
     <div className="token-trend-layout">
@@ -345,7 +373,7 @@ function TokenTrend({ range, lang, activityDays }: { range: Range; lang: string;
             />
           ))}
           {series.map((item, index) => {
-            const barHeight = Math.max(5, (item.input / max) * plotHeight);
+            const barHeight = item.period > 0 ? Math.max(2, (item.period / max) * plotHeight) : 0;
             const x = left + index * step - 24;
             const y = top + plotHeight - barHeight;
             return (
@@ -360,37 +388,32 @@ function TokenTrend({ range, lang, activityDays }: { range: Range; lang: string;
           <path d={pathFromPoints(points)} className="token-line" />
           {points.map((point, index) => (
             <circle key={series[index].date} cx={point.x} cy={point.y} r={5} className="token-point">
-              <title>{`${series[index].date} · ${series[index].total.toFixed(1)}k`}</title>
+              <title>{`${series[index].date} · ${series[index].cumulative.toFixed(1)}k`}</title>
             </circle>
           ))}
         </svg>
       </div>
 
-      <div className="token-donut">
-        <div className="token-donut-ring" />
-        <div className="token-donut-center">
-          <strong>{formatNumber(Math.round(total * 1_000_000))}</strong>
-          <span>Total</span>
-        </div>
-        <div className="activity-donut-legend">
-          <span><i className="blue" />{lang === "zh" ? "输入" : "Input"} <b>99%</b></span>
-          <span><i className="green" />{lang === "zh" ? "输出" : "Output"} <b>1%</b></span>
-          <span><i className="yellow" />{lang === "zh" ? "推理" : "Reasoning"} <b>{input > total ? 1 : 0}%</b></span>
+      <div className="rounded-2xl border border-border/60 bg-background/25 px-4 py-6 text-center">
+        <div className="text-xs text-muted-foreground">{lang === "zh" ? "已记录 Token" : "Recorded tokens"}</div>
+        <strong className="mt-2 block text-xl">{formatNumber(Math.round(total * 1_000))}</strong>
+        <div className="mt-2 text-xs text-muted-foreground">
+          {lang === "zh" ? "来自本地请求记录" : "From local request records"}
         </div>
       </div>
     </div>
   );
 }
 
-function ToolRanking({ range, lang, tools }: { range: Range; lang: string; tools: ToolUsageRow[] }) {
-  const multiplier = range === "week" ? 0.32 : range === "month" ? 1 : 3.2;
-  const sourceTools = tools.length > 0 ? tools : toolUsage;
-  const rankedTools = sourceTools.map((item, index) => ({
+function ToolRanking({ lang, tools }: { lang: string; tools: ToolUsageRow[] }) {
+  if (tools.length === 0) return <NoRequestEvidence lang={lang} />;
+
+  const rankedTools = tools.map((item, index) => ({
     ...item,
-    calls: Math.max(1, Math.round(item.calls * multiplier)),
+    calls: Math.max(0, item.calls),
     color: index % 2 === 0 ? "var(--chart-accent, #f97316)" : "#68c7ee",
   }));
-  const maxTool = Math.max(...rankedTools.map((item) => item.calls));
+  const maxTool = Math.max(...rankedTools.map((item) => item.calls), 1);
   const totalToolCalls = rankedTools.reduce((sum, item) => sum + item.calls, 0);
 
   return (
@@ -404,7 +427,7 @@ function ToolRanking({ range, lang, tools }: { range: Range; lang: string; tools
               <div
                 className="activity-tool-bar"
                 style={{
-                  width: `${Math.max(3, (tool.calls / maxTool) * 100)}%`,
+                  width: `${(tool.calls / maxTool) * 100}%`,
                   background: tool.color,
                 }}
               />
@@ -414,15 +437,14 @@ function ToolRanking({ range, lang, tools }: { range: Range; lang: string; tools
         ))}
       </div>
 
-      <div className="activity-donut" aria-label={lang === "zh" ? "工具调用总量" : "Total tool calls"}>
-        <div className="activity-donut-ring" />
-        <div className="activity-donut-center">
-          <strong>{totalToolCalls}</strong>
-          <span>{lang === "zh" ? "总调用" : "calls"}</span>
-        </div>
-        <div className="activity-donut-legend">
-          <span><i className="orange" />{lang === "zh" ? "压缩/路由" : "Compress/route"}</span>
-          <span><i className="blue" />{lang === "zh" ? "检查/诊断" : "Inspect/doctor"}</span>
+      <div
+        className="rounded-2xl border border-border/60 bg-background/25 px-4 py-6 text-center"
+        aria-label={lang === "zh" ? "工具调用总量" : "Total tool calls"}
+      >
+        <div className="text-xs text-muted-foreground">{lang === "zh" ? "记录总调用" : "Recorded calls"}</div>
+        <strong className="mt-2 block text-xl">{totalToolCalls}</strong>
+        <div className="mt-2 text-xs text-muted-foreground">
+          {lang === "zh" ? "来自本地请求记录" : "From local request records"}
         </div>
       </div>
     </div>

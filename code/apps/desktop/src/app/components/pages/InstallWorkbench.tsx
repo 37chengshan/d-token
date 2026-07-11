@@ -40,20 +40,20 @@ export function InstallWorkbench() {
   return (
     <div>
       <Tabs defaultValue="one-click" className="gap-5">
-        <TabsList className="install-workbench-nav grid h-24 w-full grid-cols-4 overflow-hidden rounded-lg border border-[var(--glass-inset-border)] bg-[var(--glass-bg)] p-0 shadow-sm">
+        <TabsList className="install-workbench-nav grid h-20 w-full grid-cols-4 overflow-hidden rounded-lg border border-[var(--glass-inset-border)] bg-[var(--glass-bg)] p-0 shadow-sm">
           {workbenchTabs.map((item) => {
             const Icon = item.icon;
             return (
               <TabsTrigger
                 key={item.value}
                 value={item.value}
-                className="install-workbench-nav-item relative h-full min-w-0 flex-none flex-col items-stretch justify-center gap-1 rounded-none border-0 border-r border-[var(--glass-inset-border)] px-4 py-3 text-left whitespace-normal last:border-r-0"
+                className="install-workbench-nav-item relative h-full min-w-0 flex-none flex-col items-stretch justify-center gap-1 rounded-none border-0 border-r border-[var(--glass-inset-border)] px-3 py-2 text-left whitespace-normal last:border-r-0"
               >
                 <span className="flex min-w-0 items-center gap-2">
                   <span className="install-workbench-nav-icon flex size-7 shrink-0 items-center justify-center rounded-md">
                     <Icon aria-hidden="true" className="size-4" />
                   </span>
-                  <span className="truncate text-sm font-semibold text-foreground">{item.title}</span>
+                  <span className="truncate text-sm font-medium text-foreground">{item.title}</span>
                 </span>
                 <span className="install-workbench-nav-description pl-9 text-xs font-normal text-muted-foreground">
                   {item.description}

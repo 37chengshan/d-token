@@ -1,38 +1,43 @@
 import { PanelLeft } from "lucide-react";
 import { useT } from "../../lib/i18n";
-import type { PageId } from "../../lib/nav";
+import { BrandMark } from "../brand/BrandMark";
+import { cn } from "../ui/utils";
 
-const TITLE_KEY: Record<PageId, string> = {
-  overview: "ov.title",
-  install: "in.title",
-  advanced: "adv.title",
-  analytics: "an.title",
-  doctor: "dr.title",
-  changes: "ch.title",
-  logs: "ls.title",
-  compatibility: "cp.title",
-  settings: "set.title",
-};
-
-export function Topbar({ page, collapsed, setCollapsed }: { page: PageId; collapsed: boolean; setCollapsed: (c: boolean) => void }) {
+export function Topbar({ collapsed, setCollapsed }: { collapsed: boolean; setCollapsed: (c: boolean) => void }) {
   const t = useT();
+
   return (
-    <header className="glass-light sticky top-0 z-10 flex h-14 items-center border-b border-border/40 px-4">
+    <header
+      className="shell-topbar glass-light relative z-30 flex h-12 min-w-0 shrink-0 items-center"
+      data-tauri-drag-region
+    >
       <div className="glass-backdrop" />
-      <div className="flex items-center gap-3">
+      <div
+        className={cn(
+          "shell-topbar-brand flex h-full shrink-0 items-center border-r border-sidebar-border/60 transition-[width,padding] duration-300",
+          collapsed ? "w-[60px] justify-center" : "w-[148px] gap-2.5 px-3",
+        )}
+        data-tauri-drag-region
+      >
+        <span className="flex size-7 shrink-0 items-center justify-center overflow-hidden rounded-[9px] bg-white/90 shadow-sm ring-1 ring-black/10">
+          <BrandMark className="size-full object-cover" />
+        </span>
+        {!collapsed && <span className="truncate text-[13px] font-semibold tracking-[-0.01em]">{t("app.name")}</span>}
+      </div>
+
+      <div className="flex h-full min-w-0 flex-1 items-center px-3" data-tauri-drag-region>
         {collapsed && (
           <button
             type="button"
             onClick={() => setCollapsed(false)}
             aria-label="Expand sidebar"
             title="Expand sidebar"
-            className="rounded-lg p-2 text-muted-foreground hover:bg-accent"
+            className="shell-window-control flex size-8 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-[var(--chip-hover-bg)] hover:text-foreground"
           >
             <PanelLeft className="size-4" />
           </button>
         )}
-        <div className="h-4 w-px bg-border" />
-        <h2 className="text-base">{t(TITLE_KEY[page])}</h2>
+        <span className="sr-only">{t("app.name")}</span>
       </div>
     </header>
   );

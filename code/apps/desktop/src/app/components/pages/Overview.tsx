@@ -10,9 +10,7 @@ import {
   RefreshCw,
   Route,
   Server,
-  TrendingUp,
 } from "lucide-react";
-import { StatCard } from "../common/StatCard";
 import { GlassCard } from "../common/GlassCard";
 import { DataSourceBadge } from "../common/DataSourceBadge";
 import { Heatmap } from "../common/Heatmap";
@@ -20,7 +18,6 @@ import { useI18n, useT, type Lang } from "../../lib/i18n";
 import { type ActivityDay } from "../../lib/fixtures";
 import type { PageId } from "../../lib/nav";
 import { Badge } from "../ui/badge";
-import { Button } from "../ui/button";
 import { useRuntimeDashboard } from "../../lib/useRuntimeDashboard";
 import { classifyEvidence, type EvidenceState } from "../../lib/state/evidence";
 
@@ -46,96 +43,153 @@ export function Overview({ setPage }: { setPage: (p: PageId) => void }) {
     [effectiveStatus, lang, payload],
   );
   const s = runtime.stats;
+  const metricsAvailable = runtime.metricsAvailable;
+  const unavailableDetail = runtime.sourceLabel;
 
   return (
-    <div className="space-y-6">
-      <div className="flex flex-wrap items-center gap-3">
+    <div className="overview-page space-y-4">
+      <div className="flex flex-wrap items-center justify-between gap-2">
         <h1>{t("ov.title")}</h1>
-        <DataSourceBadge
-          mode={evidenceState === "verified" ? "runtime" : evidenceState === "preview" || evidenceState === "loading" ? "preview" : "unavailable"}
-          label={overviewEvidenceLabel(evidenceState)}
-        />
-        <Badge variant={evidenceState === "verified" ? "default" : "secondary"}>
-          {runtime.sourceLabel}{evidenceState === "verified" && updatedAt ? ` · ${updatedAt.toLocaleTimeString()}` : ""}
-        </Badge>
+        <div className="flex flex-wrap items-center justify-end gap-2">
+          <DataSourceBadge
+            mode={evidenceState === "verified" ? "runtime" : evidenceState === "preview" || evidenceState === "loading" ? "preview" : "unavailable"}
+            label={overviewEvidenceLabel(evidenceState)}
+          />
+          <Badge variant={evidenceState === "verified" ? "default" : "secondary"}>
+            {runtime.sourceLabel}{evidenceState === "verified" && updatedAt ? ` · ${updatedAt.toLocaleTimeString()}` : ""}
+          </Badge>
+        </div>
       </div>
 
-      <section data-overview-section="operational" className="space-y-4">
-        <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_19rem]">
-          <GlassCard className="overflow-hidden p-0" strong hover={false}>
-            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border/50 px-5 py-4">
-              <div>
-                <h2 className="text-base font-semibold">{t("ov.operational")}</h2>
-                <p className="mt-1 text-sm text-muted-foreground">{t("ov.operationalDesc")}</p>
-              </div>
+      <section data-overview-section="kpis" data-testid="overview-kpis" className="grid grid-cols-2 gap-3 min-[880px]:grid-cols-4">
+        <OverviewKpi
+          label={t("ov.routedRequests")}
+          value={metricsAvailable ? fmt(s.requestCount) : "—"}
+          detail={metricsAvailable ? (lang === "zh" ? "来自 d-token 本地请求记录" : "From local d-token request records") : unavailableDetail}
+          icon={Activity}
+        />
+        <OverviewKpi
+          label={lang === "zh" ? "估算节省 Token" : "Estimated Tokens Saved"}
+          value={metricsAvailable ? fmt(s.savedTotal) : "—"}
+          detail={metricsAvailable ? (lang === "zh" ? "按本地压缩记录累计" : "Accumulated from local compression records") : unavailableDetail}
+          icon={Coins}
+        />
+        <OverviewKpi
+          label={t("ov.compressionRate")}
+          value={metricsAvailable ? `${Math.round(s.compressionRate * 100)}%` : "—"}
+          detail={metricsAvailable ? (lang === "zh" ? "基于压缩前后 Token 估算" : "Estimated from before/after token counts") : unavailableDetail}
+          icon={Gauge}
+        />
+        <OverviewKpi
+          label={t("ov.errorsToday")}
+          value={metricsAvailable ? fmt(s.errorsToday) : "—"}
+          detail={metricsAvailable ? runtime.errorLabel : unavailableDetail}
+          icon={CircleAlert}
+          tone={metricsAvailable && s.errorsToday > 0 ? "negative" : metricsAvailable ? "positive" : "neutral"}
+        />
+      </section>
+
+      <section data-overview-section="operational">
+        <GlassCard className="overflow-hidden p-0" strong hover={false}>
+          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border/50 px-4 py-3">
+            <div>
+              <h2 className="text-base font-semibold">{t("ov.operational")}</h2>
+              <p className="mt-0.5 text-xs text-muted-foreground">{t("ov.operationalDesc")}</p>
+            </div>
+            <div className="flex items-center gap-2">
               <Badge variant={evidenceState === "verified" ? "default" : "outline"}>
                 {evidenceState === "verified" ? t("ov.localConnected") : t("ov.waitingConnection")}
               </Badge>
+              <button
+                type="button"
+                onClick={() => setPage(operational.nextStep.page)}
+                className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-[var(--chip-hover-bg)] hover:text-foreground"
+              >
+                {operational.nextStep.action}
+                <ArrowRight className="size-3.5" />
+              </button>
             </div>
-            <div className="grid sm:grid-cols-2">
-              <OperationalItem icon={Server} title={t("ov.localService")} {...operational.service} />
-              <OperationalItem icon={Bot} title={t("ov.connectedAgents")} {...operational.agents} />
-              <OperationalItem icon={Route} title={t("ov.currentPath")} {...operational.route} />
-              <OperationalItem icon={CircleAlert} title={t("ov.recentIssues")} {...operational.issues} />
-            </div>
-          </GlassCard>
-
-          <GlassCard className="flex min-h-52 flex-col justify-between border-primary/25 p-5" strong hover={false}>
-            <div>
-              <div className="mb-3 flex size-9 items-center justify-center rounded-md bg-primary/10 text-primary">
-                <ArrowRight className="size-5" />
-              </div>
-              <div className="text-sm text-muted-foreground">{t("ov.nextStep")}</div>
-              <h2 className="mt-1 text-lg font-semibold">{operational.nextStep.label}</h2>
-              <p className="mt-2 text-sm leading-6 text-muted-foreground">{operational.nextStep.detail}</p>
-            </div>
-            <Button className="mt-5 w-full" onClick={() => setPage(operational.nextStep.page)}>
-              {operational.nextStep.action}
-              <ArrowRight className="size-4" />
-            </Button>
-          </GlassCard>
-        </div>
-
-        <CcSwitchSummary summary={operational.ccSwitch} />
+          </div>
+          <div className="overview-status-grid grid grid-cols-1 gap-px bg-border/40 sm:grid-cols-2 min-[1080px]:grid-cols-4">
+            <OperationalItem icon={Server} title={t("ov.localService")} {...operational.service} />
+            <OperationalItem icon={Bot} title={t("ov.connectedAgents")} {...operational.agents} />
+            <OperationalItem icon={Route} title={t("ov.currentPath")} {...operational.route} />
+            <CcSwitchOperationalItem summary={operational.ccSwitch} />
+          </div>
+        </GlassCard>
       </section>
 
-      <section data-overview-section="savings" className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        <StatCard index={0} label={t("ov.savedToday")} value={fmt(s.savedToday)} sub="tokens" icon={<Coins className="size-4" />} accentBar="var(--chart-1)" />
-        <StatCard index={1} label={t("ov.savedWeek")} value={fmt(s.savedWeek)} sub="tokens" icon={<TrendingUp className="size-4" />} accentBar="var(--chart-2)" />
-        <StatCard index={2} label={t("ov.compressionRate")} value={`${Math.round(s.compressionRate * 100)}%`} icon={<Gauge className="size-4" />} accentBar="var(--chart-3)" />
-        <StatCard index={3} label={t("ov.routedRequests")} value={fmt(s.requestCount)} icon={<Activity className="size-4" />} accentBar="var(--chart-4)" />
+      <section data-overview-section="issues">
+        <IssueSummary status={operational.issues} onOpenDoctor={() => setPage("doctor")} />
       </section>
 
       <section data-overview-section="trend">
-        <GlassCard className="p-5" hover={false}>
+        <GlassCard className="p-4" hover={false}>
           <div className="mb-3 flex items-center justify-between">
             <h3>{t("ov.trend")}</h3>
             <span className="text-sm text-muted-foreground">{runtime.sourceLabel}</span>
           </div>
-          <div className="h-52">
-            <ResponsiveContainer width="100%" height="100%">
-              <AreaChart data={runtime.trend}>
-                <defs>
-                  <linearGradient id="ovGrad" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="5%" stopColor="var(--chart-accent)" stopOpacity={0.5} />
-                    <stop offset="95%" stopColor="var(--chart-accent)" stopOpacity={0} />
-                  </linearGradient>
-                </defs>
-                <XAxis dataKey="day" tick={{ fontSize: 11, fill: "var(--muted-foreground)" }} axisLine={false} tickLine={false} />
-                <Tooltip contentStyle={{ background: "var(--popover)", border: "1px solid var(--border)", borderRadius: 8, fontSize: 12 }} />
-                <Area type="monotone" dataKey="saved" stroke="var(--chart-accent)" strokeWidth={2} fill="url(#ovGrad)" />
-              </AreaChart>
-            </ResponsiveContainer>
-          </div>
+          {runtime.trend.length > 0 ? (
+            <div className="h-44">
+              <ResponsiveContainer width="100%" height="100%">
+                <AreaChart data={runtime.trend}>
+                  <defs>
+                    <linearGradient id="ovGrad" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="5%" stopColor="var(--chart-accent)" stopOpacity={0.5} />
+                      <stop offset="95%" stopColor="var(--chart-accent)" stopOpacity={0} />
+                    </linearGradient>
+                  </defs>
+                  <XAxis dataKey="day" tick={{ fontSize: 11, fill: "var(--muted-foreground)" }} axisLine={false} tickLine={false} />
+                  <Tooltip contentStyle={{ background: "var(--popover)", border: "1px solid var(--border)", borderRadius: 8, fontSize: 12 }} />
+                  <Area type="monotone" dataKey="saved" stroke="var(--chart-accent)" strokeWidth={2} fill="url(#ovGrad)" />
+                </AreaChart>
+              </ResponsiveContainer>
+            </div>
+          ) : (
+            <div className="flex h-28 items-center justify-center rounded-lg border border-dashed border-border/60 bg-muted/20 px-4 text-center text-sm text-muted-foreground">
+              {unavailableDetail}
+            </div>
+          )}
         </GlassCard>
       </section>
 
       <section data-overview-section="activity">
-        <GlassCard className="p-5" hover={false}>
+        <GlassCard className="p-4" hover={false}>
           <Heatmap activityDays={runtime.activityDays} tools={runtime.tools} source={runtime.activitySource} />
         </GlassCard>
       </section>
     </div>
+  );
+}
+
+function OverviewKpi({
+  label,
+  value,
+  detail,
+  icon: Icon,
+  tone = "neutral",
+}: {
+  label: string;
+  value: string;
+  detail: string;
+  icon: typeof Activity;
+  tone?: OperationalTone;
+}) {
+  const iconTone = tone === "negative"
+    ? "text-red-600 dark:text-red-400"
+    : tone === "positive"
+      ? "text-emerald-600 dark:text-emerald-400"
+      : "text-muted-foreground";
+
+  return (
+    <GlassCard className="overview-kpi min-w-0 p-4" hover={false}>
+      <div className="flex items-center justify-between gap-2 text-xs text-muted-foreground">
+        <span className="truncate">{label}</span>
+        <Icon className={`size-4 shrink-0 ${iconTone}`} />
+      </div>
+      <div className="mt-2 text-2xl font-semibold tracking-tight">{value}</div>
+      <div className="mt-1 truncate text-[11px] text-muted-foreground" title={detail}>{detail}</div>
+    </GlassCard>
   );
 }
 
@@ -160,7 +214,7 @@ function OperationalItem({
         ? "text-red-600 dark:text-red-400"
         : "text-muted-foreground";
   return (
-    <div className="flex min-h-32 gap-3 border-b border-border/40 p-5 last:border-b-0 sm:[&:nth-child(odd)]:border-r sm:[&:nth-last-child(-n+2)]:border-b-0">
+    <div className="overview-status-item flex min-h-[92px] gap-3 bg-[var(--glass-inset-bg)] p-4">
       <Icon className={`mt-0.5 size-5 shrink-0 ${color}`} />
       <div className="min-w-0">
         <div className="text-sm text-muted-foreground">{title}</div>
@@ -171,22 +225,54 @@ function OperationalItem({
   );
 }
 
-function CcSwitchSummary({ summary }: { summary: CcSwitchStatus }) {
+function CcSwitchOperationalItem({ summary }: { summary: CcSwitchStatus }) {
   const t = useT();
-  const tone = summary.state === "out_of_sync"
-    ? "border-amber-500/30 bg-amber-500/5 text-amber-700 dark:text-amber-300"
+  const color = summary.state === "out_of_sync"
+    ? "text-amber-600 dark:text-amber-400"
     : summary.state === "synced"
-      ? "border-emerald-500/30 bg-emerald-500/5 text-emerald-700 dark:text-emerald-300"
-      : "border-border/40 bg-muted/30 text-muted-foreground";
+      ? "text-emerald-600 dark:text-emerald-400"
+      : "text-muted-foreground";
+
   return (
-    <GlassCard className={`flex items-center gap-3 p-4 ${tone}`} hover={false}>
-      <div className="flex items-center gap-3">
-        <RefreshCw className={`size-5 ${summary.state === "out_of_sync" ? "text-amber-500" : summary.state === "synced" ? "text-emerald-500" : "text-muted-foreground"}`} />
-        <div className="text-sm">
-          <div className="font-medium">{t("ov.upstreamStatus")}</div>
-          <div className="text-muted-foreground">{summary.label} · {summary.detail}</div>
+    <div className="overview-status-item flex min-h-[92px] gap-3 bg-[var(--glass-inset-bg)] p-4">
+      <RefreshCw className={`mt-0.5 size-5 shrink-0 ${color}`} />
+      <div className="min-w-0">
+        <div className="text-sm text-muted-foreground">{t("ov.upstreamStatus")}</div>
+        <div className="mt-1 break-words font-medium">{summary.label}</div>
+        <div className="mt-1 text-sm leading-5 text-muted-foreground">{summary.detail}</div>
+      </div>
+    </div>
+  );
+}
+
+function IssueSummary({ status, onOpenDoctor }: { status: OperationalStatus; onOpenDoctor: () => void }) {
+  const t = useT();
+  const color = status.tone === "negative"
+    ? "text-red-600 dark:text-red-400"
+    : status.tone === "positive"
+      ? "text-emerald-600 dark:text-emerald-400"
+      : status.tone === "warning"
+        ? "text-amber-600 dark:text-amber-400"
+        : "text-muted-foreground";
+
+  return (
+    <GlassCard className="flex min-h-[58px] items-center gap-3 px-4 py-3" hover={false}>
+      <CircleAlert className={`size-5 shrink-0 ${color}`} />
+      <div className="min-w-0 flex-1">
+        <div className="text-xs text-muted-foreground">{t("ov.recentIssues")}</div>
+        <div className="mt-0.5 truncate text-sm font-medium" title={`${status.label} · ${status.detail}`}>
+          {status.label} <span className="font-normal text-muted-foreground">· {status.detail}</span>
         </div>
       </div>
+      {status.tone === "negative" && (
+        <button
+          type="button"
+          onClick={onOpenDoctor}
+          className="shrink-0 rounded-md px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-[var(--chip-hover-bg)] hover:text-foreground"
+        >
+          {t("ov.goDoctor")}
+        </button>
+      )}
     </GlassCard>
   );
 }
@@ -475,6 +561,7 @@ function overviewFromPayload(payload: Record<string, any> | null, status: string
   if (!hasRuntimeData) {
     return {
       source: evidenceState === "verified" ? "runtime-empty" : evidenceState,
+      metricsAvailable: false,
       sourceLabel:
         evidenceState === "verified"
             ? "本地服务在线 · 暂无请求"
@@ -515,8 +602,10 @@ function overviewFromPayload(payload: Record<string, any> | null, status: string
 
   return {
     source: "d-token-runtime",
+    metricsAvailable: true,
     sourceLabel: `d-token 本地服务 · ${requestLogs.length} 条请求`,
     stats: {
+      savedTotal: totalSaved,
       savedToday: savedFromHistoryOrLogs(history, requestLogs, startOfLocalDay(Date.now()), Date.now()),
       savedWeek: savedFromHistoryOrLogs(history, requestLogs, Date.now() - 7 * 24 * 60 * 60 * 1000, Date.now()),
       costSaved: totalSaved / 1_000_000 * 3,
@@ -539,6 +628,7 @@ function overviewFromPayload(payload: Record<string, any> | null, status: string
 }
 
 const emptyOverviewStats = {
+  savedTotal: 0,
   savedToday: 0,
   savedWeek: 0,
   costSaved: 0,
