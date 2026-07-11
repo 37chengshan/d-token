@@ -81,6 +81,24 @@
       "summary": "推送 Tauri 运行时真实性与生命周期加固提交到 origin。",
       "head_before": "ef9afb73634f54830cee1aa5b6906eff2d9292b7",
       "remote": "origin"
+    },
+    {
+      "id": "367587aa-0de2-4338-88a0-b8b7549ff209",
+      "timestamp": "2026-07-11T08:52:19+08:00",
+      "operation": "commit",
+      "branch": "codex/prd-macos-polish",
+      "summary": "移除安装页伪状态与自环配置，统一桌面运行证据并完善双语连接体验。",
+      "head_before": "83a2b7983f974ee31005179792424e609c649555",
+      "remote": null
+    },
+    {
+      "id": "30742e64-3cfd-4c2f-bf79-7a8583bd08bd",
+      "timestamp": "2026-07-11T08:52:19+08:00",
+      "operation": "push",
+      "branch": "codex/prd-macos-polish",
+      "summary": "推送前端运行时真实性与安装连接体验改进到 origin。",
+      "head_before": "83a2b7983f974ee31005179792424e609c649555",
+      "remote": "origin"
     }
   ]
 }

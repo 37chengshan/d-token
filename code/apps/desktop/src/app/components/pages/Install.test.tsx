@@ -7,19 +7,22 @@ afterEach(cleanup);
 
 vi.mock("../../lib/native", () => ({
   invokeNative: vi.fn().mockRejectedValue(new Error("native_unavailable")),
+  isTauriRuntime: vi.fn().mockReturnValue(false),
 }));
 
 vi.mock("../../lib/useRuntimeDashboard", () => ({
   useRuntimeDashboard: () => ({
     payload: null,
-    status: "preview",
+    status: "browser-preview",
     updatedAt: null,
+    error: "",
     refresh: vi.fn(),
   }),
 }));
 
 import {
   assertNativeActionSucceeded,
+  desktopInstallRoot,
   deriveServicePresentation,
   Install,
 } from "./Install";
@@ -54,6 +57,11 @@ describe("Install", () => {
     });
   });
 
+  it("uses the platform app-data location instead of a Windows path on macOS", () => {
+    expect(desktopInstallRoot("Mozilla/5.0 (Macintosh; Intel Mac OS X)")).toBe("~/Library/Application Support/d-token");
+    expect(desktopInstallRoot("Mozilla/5.0 (Windows NT 10.0; Win64; x64)")).toBe("%LOCALAPPDATA%\\d-token");
+  });
+
   it("presents one primary action when the local service is unavailable", async () => {
     render(<Install />);
 
@@ -62,5 +70,8 @@ describe("Install", () => {
     ).toBeEnabled();
     expect(screen.queryByRole("button", { name: "启动 d-token" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "一键启动并检查" })).not.toBeInTheDocument();
+    expect(screen.queryByText("/usr/local/bin/codex")).not.toBeInTheDocument();
+    expect(screen.getAllByText("未检测到").length).toBeGreaterThan(0);
+    expect(screen.getByText("预览中不执行检测")).toBeInTheDocument();
   });
 });

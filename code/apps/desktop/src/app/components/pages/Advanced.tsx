@@ -11,9 +11,18 @@ import { Button } from "../ui/button";
 import { Badge } from "../ui/badge";
 import { Input } from "../ui/input";
 import { useI18n, useT } from "../../lib/i18n";
-import { service, ccSwitch, projects, providers, routes, ports, outputLevels, type Health } from "../../lib/fixtures";
 import { invokeNative, isTauriRuntime, type NativeActionResult } from "../../lib/native";
 import { useRuntimeDashboard } from "../../lib/useRuntimeDashboard";
+
+type Health = "healthy" | "warning" | "error";
+
+const OUTPUT_LEVELS = [
+  { key: "off", zh: "关闭", en: "Off" },
+  { key: "safe", zh: "安全", en: "Safe" },
+  { key: "balanced", zh: "均衡", en: "Balanced" },
+  { key: "aggressive", zh: "激进", en: "Aggressive" },
+  { key: "max", zh: "最大", en: "Max" },
+] as const;
 
 export function credentialReferenceForProvider(providerId: string): string {
   const slug = providerId
@@ -35,9 +44,9 @@ export function Advanced() {
   const { payload, status: payloadStatus, updatedAt, refresh: refreshPayload } = useRuntimeDashboard();
   const [activeConfig, setActiveConfig] = useState<Record<string, any> | null>(null);
   const [routeDraft, setRouteDraft] = useState({
-    providerName: "OpenCode Zen",
-    baseUrl: "https://opencode.ai/zen/v1",
-    model: "deepseek-v4-flash-free",
+    providerName: "",
+    baseUrl: "",
+    model: "",
     localPort: "18001",
   });
   const [routeSaving, setRouteSaving] = useState(false);
@@ -94,16 +103,17 @@ export function Advanced() {
   }, []);
 
   const runtimeRouting = useMemo(() => buildRuntimeRouting(payload, payloadStatus), [payload, payloadStatus]);
+  const serviceBinding = useMemo(() => serviceBindingFromPayload(payload), [payload]);
   const dataSourceLabel =
     payloadStatus === "runtime"
       ? `${payload?.desktop_data_source ?? payload?.source ?? "d-token-owned-runtime"} · ${runtimeRouting.providers.length} providers · ${runtimeRouting.routes.length} routes${updatedAt ? ` · ${updatedAt.toLocaleTimeString()}` : ""}`
       : payloadStatus === "browser-preview"
-        ? lang === "zh" ? "浏览器预览 · 示例数据" : "Browser preview · sample data"
+        ? lang === "zh" ? "浏览器预览 · 不读取本机配置" : "Browser preview · local configuration is not read"
         : payloadStatus === "loading"
           ? lang === "zh" ? "正在读取 d-token runtime" : "Loading d-token runtime"
           : lang === "zh" ? "runtime 暂不可用" : "Runtime unavailable";
 
-  const providerId = "opencode-zen";
+  const providerId = "custom-upstream";
   const credentialConfigured = credentialStored || Boolean(activeConfig?.provider?.has_api_key_ref);
 
   const saveProviderCredential = async () => {
@@ -132,14 +142,22 @@ export function Advanced() {
   };
 
   const saveRouteDraft = async () => {
+    if (!routeDraft.providerName.trim() || !routeDraft.baseUrl.trim() || !routeDraft.model.trim()) {
+      setRouteNotice(lang === "zh" ? "请先填写真实上游名称、地址和模型。" : "Enter the real upstream name, URL, and model first.");
+      return;
+    }
+    if (isDtokenSelfLoop(routeDraft.baseUrl, routeDraft.localPort)) {
+      setRouteNotice(lang === "zh" ? "上游地址不能指向 d-token 自己的本地端口，否则会形成请求循环。" : "The upstream URL cannot point back to d-token's own local port.");
+      return;
+    }
     setRouteSaving(true);
     setRouteNotice("");
     try {
       const result = await invokeNative<NativeActionResult>("save_route_profile_draft", {
         request: {
-          route_id: "opencode-real-routed",
-          route_name: "Agent d-token routed",
-          provider_id: "opencode-zen",
+          route_id: "custom-upstream-routed",
+          route_name: "Agent -> d-token -> configured upstream",
+          provider_id: providerId,
           provider_name: routeDraft.providerName,
           provider_kind: "custom",
           protocol: "openai",
@@ -173,6 +191,7 @@ export function Advanced() {
       const result = await invokeNative<NativeActionResult>("apply_route_profile_draft", {
         request: { route_id: routeId },
       });
+      if (!result.ok) throw new Error(result.summary);
       setRouteNotice(result.summary);
       await refreshRouteDrafts();
       await refreshPayload();
@@ -190,7 +209,10 @@ export function Advanced() {
     <div className="space-y-6">
       <div className="flex flex-wrap items-center gap-3">
         <h1>{t("adv.title")}</h1>
-        <DataSourceBadge />
+        <DataSourceBadge
+          mode={payloadStatus === "runtime" ? "runtime" : payloadStatus === "browser-preview" ? "preview" : "unavailable"}
+          label={payloadStatus === "runtime" ? (lang === "zh" ? "本地运行数据" : "Local runtime data") : dataSourceLabel}
+        />
         <Badge variant={payloadStatus === "runtime" ? "default" : "secondary"}>{dataSourceLabel}</Badge>
       </div>
 
@@ -207,8 +229,8 @@ export function Advanced() {
           <ServiceRow />
           <GlassCard className="p-5">
             <div className="grid gap-4 sm:grid-cols-2">
-              <Field label={t("adv.bindHost")}><Input defaultValue={service.bindHost} /></Field>
-              <Field label={t("adv.localPort")}><Input defaultValue={String(service.port)} /></Field>
+              <Field label={t("adv.bindHost")}><Input value={serviceBinding.host} readOnly /></Field>
+              <Field label={t("adv.localPort")}><Input value={serviceBinding.port} readOnly /></Field>
             </div>
           </GlassCard>
         </TabsContent>
@@ -256,7 +278,7 @@ export function Advanced() {
                     : "Saved as a d-token local routing draft. OpenCode, Headroom, RTK, cc-switch, and system proxy config are not changed."}
                 </div>
               </div>
-              <Button size="sm" onClick={saveRouteDraft} disabled={routeSaving}>
+              <Button size="sm" onClick={saveRouteDraft} disabled={routeSaving || !routeDraft.providerName.trim() || !routeDraft.baseUrl.trim() || !routeDraft.model.trim()}>
                 {routeSaving ? <RefreshCw className="size-3.5 animate-spin" /> : null}
                 {lang === "zh" ? "保存草稿" : "Save draft"}
               </Button>
@@ -355,7 +377,7 @@ export function Advanced() {
                   {payloadStatus === "runtime"
                     ? "ProviderProfile / RouteProfile from d-token-owned runtime payload. Fallback is disabled unless explicitly configured."
                     : payloadStatus === "browser-preview"
-                      ? "Browser preview: showing sample route model."
+                      ? "浏览器预览不会读取或展示本机路由。"
                       : "Waiting for d-token runtime route model."}
                 </div>
               </div>
@@ -592,12 +614,11 @@ function buildRuntimeRouting(payload: Record<string, any> | null, status: string
   const hasRuntimeRouting = status === "runtime" && (payloadProviders.length > 0 || payloadRoutes.length > 0 || payloadInstances.length > 0);
 
   if (!hasRuntimeRouting) {
-    const isPreview = status === "browser-preview";
     return {
-      source: isPreview ? "browser-preview" : status === "runtime" ? "runtime-empty" : status,
-      providers: isPreview ? providers : [],
-      routes: isPreview ? routes : [],
-      ports: isPreview ? ports : [],
+      source: status === "browser-preview" ? "browser-preview" : status === "runtime" ? "runtime-empty" : status,
+      providers: [] as UiProvider[],
+      routes: [] as UiRoute[],
+      ports: [] as UiPort[],
     };
   }
 
@@ -653,9 +674,9 @@ function buildRuntimeRouting(payload: Record<string, any> | null, status: string
 
   return {
     source: "d-token-owned-runtime",
-    providers: providerRows.length > 0 ? providerRows : providers,
-    routes: routeRows.length > 0 ? routeRows : routes,
-    ports: portRows.length > 0 ? portRows : ports,
+    providers: providerRows,
+    routes: routeRows,
+    ports: portRows,
   };
 }
 
@@ -676,6 +697,27 @@ function safeText(value: unknown, fallback: string) {
 function normalizeProtocol(value: unknown) {
   const text = safeText(value, "auto");
   return text === "open_ai" ? "openai" : text;
+}
+
+export function isDtokenSelfLoop(baseUrl: string, localPort: string) {
+  try {
+    const url = new URL(baseUrl.trim());
+    const host = url.hostname.toLowerCase();
+    const port = url.port || (url.protocol === "https:" ? "443" : "80");
+    return (host === "127.0.0.1" || host === "localhost" || host === "::1") && port === localPort.trim();
+  } catch {
+    return false;
+  }
+}
+
+function serviceBindingFromPayload(payload: Record<string, any> | null) {
+  const endpoint = safeText(payload?.desktop_service_url, "http://127.0.0.1:18001");
+  try {
+    const url = new URL(endpoint);
+    return { host: url.hostname || "127.0.0.1", port: url.port || "18001" };
+  } catch {
+    return { host: "127.0.0.1", port: "18001" };
+  }
 }
 
 function maskRef(value: unknown) {
@@ -713,11 +755,12 @@ function useAdvancedPreference() {
 
   useEffect(() => {
     let cancelled = false;
-    invokeNative<{ state: string; payload?: AdvancedSettingsPayload }>("get_app_settings", { section: "advanced" })
+    invokeNative<{ state: string; payload?: { advanced?: AdvancedSettingsPayload } & AdvancedSettingsPayload }>("get_app_settings", { section: "app" })
       .then((saved) => {
         if (cancelled) return;
-        setSettings((current) => ({ ...current, ...(saved.payload ?? {}) }));
-        setStatus("saved");
+        const payload = saved.payload?.advanced ?? saved.payload ?? {};
+        setSettings((current) => ({ ...current, ...payload }));
+        setStatus(saved.state === "loaded" ? "saved" : "saved");
       })
       .catch((error) => {
         if (cancelled) return;
@@ -733,10 +776,11 @@ function useAdvancedPreference() {
     if (status === "preview") return;
     setStatus("saving");
     try {
-      await invokeNative<NativeActionResult>("save_app_settings", {
-        section: "advanced",
-        payload: patch,
+      const result = await invokeNative<NativeActionResult>("save_app_settings", {
+        section: "app",
+        payload: { advanced: patch },
       });
+      if (!result.ok) throw new Error(result.summary);
       setStatus("saved");
     } catch (error) {
       setStatus(error instanceof Error && error.message === "native_unavailable" ? "preview" : "error");
@@ -823,7 +867,7 @@ function CcSwitchPanel() {
         <div className="mb-3 flex items-center justify-between">
           <span className="text-sm text-muted-foreground">{t("adv.ccMode")}</span>
           <div className="flex items-center gap-2 text-sm">
-            {t("adv.ccCurrent")}: <Badge>{lang === "zh" ? ccSwitch.decision : ccSwitch.decisionEn}</Badge>
+            {t("adv.ccCurrent")}: <Badge>{modes.find((item) => item.k === mode)?.label ?? mode}</Badge>
           </div>
         </div>
         <div className="grid gap-2 sm:grid-cols-3">
@@ -922,6 +966,7 @@ function HeadroomScan({
           privacy: "aggregate runtime metrics only; no raw prompts, responses, CCR content, keys, or cookies",
         },
       });
+      if (!saved.ok) throw new Error(saved.summary);
       setNotice(saved.summary);
       setSavedSummary(
         lang === "zh"
@@ -967,7 +1012,7 @@ function HeadroomScan({
             <span className="text-sm">{t("common.confidence")}: {confidencePct}% · {confidence}</span>
           </div>
           <div className="mb-4 flex flex-wrap gap-2">
-            {outputLevels.map((l) => (
+            {OUTPUT_LEVELS.map((l) => (
               <Badge key={l.key} variant={l.key === recommendedLevel ? "default" : "outline"} className="gap-1">
                 {l[lang]}{l.key === recommendedLevel && ` · ${t("common.recommended")}`}
               </Badge>

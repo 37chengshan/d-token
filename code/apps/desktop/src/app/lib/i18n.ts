@@ -77,7 +77,7 @@ export const DICT: Dict = {
 
   // install
   "in.title": { zh: "安装与连接", en: "Install & Connect" },
-  "in.subtitle": { zh: "启动 d-token 本地服务，检测 cc-switch 与本机 AI Agent，并在写入前预览配置变更", en: "Start the d-token local service, detect cc-switch and local AI agents, and preview config changes before writing" },
+  "in.subtitle": { zh: "启动 d-token 本地服务，检测本机 AI 编码工具，查看连接字段并验证真实流量", en: "Start the local d-token service, detect coding agents, review connection fields, and verify real traffic" },
   "in.oneClick": { zh: "一键启动并检查", en: "Start & Check" },
   "in.installAndStart": { zh: "安装并启动 d-token", en: "Install and start d-token" },
   "in.installing": { zh: "正在安装…", en: "Installing…" },

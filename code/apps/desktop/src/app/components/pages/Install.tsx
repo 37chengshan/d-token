@@ -11,8 +11,8 @@ import { Checkbox } from "../ui/checkbox";
 import { Badge } from "../ui/badge";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "../ui/dialog";
 import { useI18n, useT } from "../../lib/i18n";
-import { service, agents as agentData, ccSwitch, type Agent } from "../../lib/fixtures";
-import { invokeNative, type NativeActionLog, type NativeActionResult, type NativeToolCheck } from "../../lib/native";
+import { AGENT_REGISTRY, type AgentDescriptor } from "../../lib/agents/registry";
+import { invokeNative, isTauriRuntime, type NativeActionLog, type NativeActionResult, type NativeToolCheck } from "../../lib/native";
 import { useRuntimeDashboard } from "../../lib/useRuntimeDashboard";
 
 export function assertNativeActionSucceeded(result: NativeActionResult): void {
@@ -45,10 +45,9 @@ export function Install() {
   const [installing, setInstalling] = useState(false);
   const [stepIdx, setStepIdx] = useState(-1);
   const [detecting, setDetecting] = useState(false);
-  const [agents, setAgents] = useState<Agent[]>(agentData);
+  const [agents, setAgents] = useState<InstallAgent[]>(() => AGENT_REGISTRY.map(toInstallAgent));
   const [selected, setSelected] = useState<string[]>([]);
   const [showDiff, setShowDiff] = useState(false);
-  const [configuring, setConfiguring] = useState(false);
   const [verifying, setVerifying] = useState(false);
   const [routeVerification, setRouteVerification] = useState<RouteVerification | null>(null);
   const [readinessResult, setReadinessResult] = useState<ProductReadinessResult | null>(null);
@@ -63,24 +62,33 @@ export function Install() {
   const serviceOnline = payloadStatus === "runtime" || serviceStatus?.state === "running" || serviceStatus?.state === "unmanaged_running";
   const serviceManaged = serviceStatus?.state === "running" && serviceStatus.managed;
   const servicePresentation = deriveServicePresentation(serviceOnline, installing);
-  const hasNativeData = nativeTools.length > 0 || transactionLogs.length > 0 || Boolean(nativeNotice) || Boolean(routeVerification) || payloadStatus === "runtime";
+  const hasNativeData = isTauriRuntime() && (nativeTools.length > 0 || transactionLogs.length > 0 || Boolean(routeVerification) || payloadStatus === "runtime");
   const primaryAgent = agents.find((agent) => agent.id === "opencode") ?? agents[0];
   const primaryAgentName = primaryAgent?.name ?? "Agent";
-  const runtimeSummary = useMemo(() => installRuntimeSummary(payload, payloadStatus, updatedAt), [payload, payloadStatus, updatedAt]);
+  const runtimeSummary = useMemo(() => installRuntimeSummary(payload, payloadStatus, updatedAt, lang), [payload, payloadStatus, updatedAt, lang]);
+  const ccSwitchEvidence = useMemo(() => deriveCcSwitchEvidence(payload, payloadStatus, lang), [payload, payloadStatus, lang]);
+  const serviceEndpoint = serviceStatus?.service_url || safeRuntimeText(payload?.desktop_service_url, "http://127.0.0.1:18001");
+  const serviceAddress = serviceEndpoint.replace(/^https?:\/\//, "");
 
   const transactionLine = useMemo(() => {
     if (installing) {
       const current = steps[Math.min(stepIdx, steps.length - 1)]?.key ?? "scan";
-      return `> transaction ${current} · scan -> plan -> apply -> verify -> doctor`;
+      return lang === "zh"
+        ? `> 正在执行安装事务 · 当前步骤 ${current}`
+        : `> installation transaction · current step ${current}`;
     }
-    if (done) return "> transaction complete · d-token rollback point recorded when enabled";
-    if (!serviceOnline) return "> transaction idle · waiting for d-token local service";
-    return "> transaction ready · d-token local service observable";
-  }, [done, installing, serviceOnline, stepIdx, steps]);
+    if (done) return lang === "zh" ? "> 安装事务已完成 · 已按设置保留回滚点" : "> installation complete · rollback point retained when enabled";
+    if (!serviceOnline) return lang === "zh" ? "> 等待启动 d-token 本地服务" : "> waiting for the local d-token service";
+    return lang === "zh" ? "> 本地服务已就绪，可以连接并验证工具" : "> local service ready; connect and verify an agent";
+  }, [done, installing, lang, serviceOnline, stepIdx, steps]);
 
   const runtimeLine = serviceOnline
-    ? `> runtime 127.0.0.1:18001 ${serviceManaged ? "managed" : "observable"} - agents connect through d-token route adapter`
-    : `> runtime 127.0.0.1:18001 unavailable - start/connect then verify configuration`;
+    ? lang === "zh"
+      ? `> d-token 本地服务 ${serviceAddress} · ${serviceManaged ? "由应用管理" : "已检测到运行实例"}`
+      : `> local d-token service ${serviceAddress} · ${serviceManaged ? "managed by the app" : "running instance detected"}`
+    : lang === "zh"
+      ? "> d-token 本地服务暂不可用 · 启动后再连接并验证工具"
+      : "> local d-token service unavailable · start it before connecting and verifying an agent";
 
   const refreshServiceStatus = async () => {
     try {
@@ -106,6 +114,7 @@ export function Install() {
     try {
       const result = await invokeNative<NativeActionResult>(action === "start" ? "start_dtoken_service" : "stop_dtoken_service");
       setTransactionLogs(result.logs);
+      assertNativeActionSucceeded(result);
       setNativeNotice(result.summary);
       applyToolChecks(result.tools);
       await refreshServiceStatus();
@@ -129,7 +138,7 @@ export function Install() {
       const result = await invokeNative<NativeActionResult>("run_install_transaction", {
         request: {
           target: "dtoken",
-          install_root: "%LOCALAPPDATA%\\d-token",
+          install_root: desktopInstallRoot(typeof navigator === "undefined" ? "" : navigator.userAgent),
           proxy_port: 18001,
           auto_backup: true,
           run_doctor_after: true,
@@ -177,7 +186,12 @@ export function Install() {
     try {
       const result = await invokeNative<NativeActionResult>("detect_tools");
       applyToolChecks(result.tools);
-      setNativeNotice(result.summary);
+      const detected = result.tools.filter((tool) => tool.installed).length;
+      setNativeNotice(
+        lang === "zh"
+          ? `检测完成：${detected}/${result.tools.length} 个可检测工具已找到。未找到的工具不会显示为已安装。`
+          : `Detection complete: ${detected}/${result.tools.length} detectable tools found. Missing tools remain unverified.`,
+      );
       await refreshRuntime();
     } catch (error) {
       const message = error instanceof Error && error.message === "native_unavailable"
@@ -195,70 +209,10 @@ export function Install() {
     );
   };
 
-  const confirmConfigure = async () => {
-    setConfiguring(true);
-    setNativeNotice("");
-    try {
-      const selectedAgents = agents.filter((agent) => selected.includes(agent.id));
-      const logs: NativeActionLog[] = [];
-      let tools: NativeToolCheck[] = [];
-      for (const agent of selectedAgents) {
-        const routeId = `${agent.id}-dtoken-local`;
-        const draft = await invokeNative<NativeActionResult>("save_route_profile_draft", {
-          request: {
-            route_id: routeId,
-            route_name: `${agent.name} d-token local route`,
-            provider_id: `${agent.id}-configured-upstream`,
-            provider_name: `${agent.name} configured upstream`,
-            provider_kind: "custom",
-            protocol: agent.id === "opencode" ? "openai" : "anthropic",
-            base_url: "http://127.0.0.1:18001/v1",
-            api_key_ref: null,
-            models: agent.id === "opencode" ? ["dtoken/deepseek-v4-flash-free"] : ["dtoken/default"],
-            chain_mode: "direct",
-            compression_policy: "balanced",
-            local_port: 18001,
-            agent: agent.name,
-          },
-        });
-        assertNativeActionSucceeded(draft);
-        logs.push(...draft.logs);
-        tools = draft.tools;
-        const applied = await invokeNative<NativeActionResult>("apply_route_profile_draft", {
-          request: { route_id: routeId },
-        });
-        assertNativeActionSucceeded(applied);
-        logs.push(...applied.logs);
-        tools = applied.tools;
-      }
-      if (tools.length > 0) {
-        applyToolChecks(tools);
-      }
-      setTransactionLogs(logs);
-      setNativeNotice(
-        lang === "zh"
-          ? `已保存并应用 ${selectedAgents.length} 个 d-token 路由配置，外部 agent 配置未被直接修改。`
-          : `Saved and applied ${selectedAgents.length} d-token route profile(s); external agent configs were not modified directly.`,
-      );
-      await refreshRuntime();
-      await runRouteVerification({ quiet: true });
-      const configuredIds = selectedAgents.map((agent) => agent.id);
-      setAgents((current) =>
-        current.map((agent) =>
-          configuredIds.includes(agent.id) ? { ...agent, configured: true } : agent,
-        ),
-      );
-      setSelected([]);
-      setShowDiff(false);
-    } catch (error) {
-      const summary = error instanceof Error && error.message === "native_unavailable"
-        ? "当前是浏览器预览，无法保存 agent 配置草案。"
-        : `配置保存失败：${String(error)}`;
-      setNativeNotice(summary);
-      setTransactionLogs([{ time: new Date().toLocaleTimeString(), level: "error", message: summary }]);
-    } finally {
-      setConfiguring(false);
-    }
+  const verifyAfterManualConnection = async () => {
+    setShowDiff(false);
+    setSelected([]);
+    await runRouteVerification();
   };
 
   const runRouteVerification = async ({ quiet = false }: { quiet?: boolean } = {}) => {
@@ -293,8 +247,14 @@ export function Install() {
       <div className="flex items-center gap-3">
         <h1>{t("in.title")}</h1>
         <DataSourceBadge
-          mode={hasNativeData ? "native" : "preview"}
-          label={hasNativeData ? (lang === "zh" ? "桌面运行时" : "Desktop native") : (lang === "zh" ? "浏览器预览" : "Browser preview")}
+          mode={hasNativeData ? "native" : isTauriRuntime() ? "unavailable" : "preview"}
+          label={
+            hasNativeData
+              ? (lang === "zh" ? "桌面运行时" : "Desktop runtime")
+              : isTauriRuntime()
+                ? (lang === "zh" ? "等待本地运行数据" : "Waiting for local runtime data")
+                : (lang === "zh" ? "浏览器预览" : "Browser preview")
+          }
         />
       </div>
       <p className="-mt-3 text-sm text-muted-foreground">{t("in.subtitle")}</p>
@@ -327,7 +287,7 @@ export function Install() {
                 />
               </div>
               <div className="mt-1 text-sm text-muted-foreground">
-                {t("in.version")} {service.version} · {t("in.port")} {service.port} · {service.bindHost}
+                {serviceStatus?.pid ? `PID ${serviceStatus.pid} · ` : ""}{serviceAddress}
               </div>
             </div>
           </div>
@@ -417,17 +377,15 @@ export function Install() {
             <Cpu className="size-5 text-primary" />
             <div>
               <div>{t("in.ccswitch")}</div>
-              <div className="text-sm text-muted-foreground">:{ccSwitch.port}</div>
+              <div className="text-sm text-muted-foreground">{ccSwitchEvidence.detail}</div>
             </div>
           </div>
           <div className="flex items-center gap-2">
             <StatusBadge
-              status={ccSwitch.detected ? "healthy" : "error"}
-              label={ccSwitch.detected ? t("in.installed") : t("in.notFound")}
+              status={ccSwitchEvidence.verified ? "healthy" : "warning"}
+              label={ccSwitchEvidence.label}
             />
-            <Badge variant={ccSwitch.proxyEnabled ? "default" : "secondary"}>
-              {ccSwitch.proxyEnabled ? t("in.ccProxyOn") : t("in.ccProxyOff")}
-            </Badge>
+            <Badge variant="secondary">{lang === "zh" ? "只读检测" : "Read-only detection"}</Badge>
           </div>
         </div>
 
@@ -474,7 +432,7 @@ export function Install() {
         <div className="mt-4 flex justify-end">
           <Button disabled={selected.length === 0} onClick={() => setShowDiff(true)}>
             <ShieldCheck className="size-4" />
-            {t("in.configure")} {selected.length > 0 && `(${selected.length})`}
+            {lang === "zh" ? "查看连接步骤" : "View connection steps"} {selected.length > 0 && `(${selected.length})`}
           </Button>
         </div>
       </GlassCard>
@@ -484,10 +442,12 @@ export function Install() {
           <div>
             <h3 className="flex items-center gap-2">
               <Route className="size-5" />
-              Agent connect
+              {lang === "zh" ? "连接 AI 编码工具" : "Connect coding agents"}
             </h3>
             <p className="mt-1 text-sm text-muted-foreground">
-              Connect any supported coding agent through the shared d-token service, route adapter, and dashboard model.
+              {lang === "zh"
+                ? "先在高级设置中配置真实上游，再把所选工具指向 d-token 本地服务；本页不会代替你修改第三方配置。"
+                : "Configure a real upstream first, then point the selected tool to the local d-token service. This page does not modify third-party settings for you."}
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
@@ -501,33 +461,35 @@ export function Install() {
             </Button>
             <Button
               onClick={() => {
-                if (primaryAgent?.installed && !primaryAgent.configured) {
+                if (primaryAgent?.installed) {
                   setSelected((current) => (current.includes(primaryAgent.id) ? current : [...current, primaryAgent.id]));
                   setShowDiff(true);
                 } else {
                   void runDetect();
                 }
               }}
-              disabled={detecting || configuring}
+              disabled={detecting || verifying}
             >
-              {detecting || configuring ? <RefreshCw className="size-4 animate-spin" /> : <Settings2 className="size-4" />}
-              {primaryAgent?.installed ? `Configure ${primaryAgentName}` : "Detect agents"}
+              {detecting || verifying ? <RefreshCw className="size-4 animate-spin" /> : <Settings2 className="size-4" />}
+              {primaryAgent?.installed
+                ? (lang === "zh" ? `连接 ${primaryAgentName}` : `Connect ${primaryAgentName}`)
+                : (lang === "zh" ? "检测工具" : "Detect agents")}
             </Button>
           </div>
         </div>
 
-        <div className="grid gap-3 md:grid-cols-3">
-          <Metric label="Primary agent" value={primaryAgent?.installed ? `${primaryAgentName} · ${primaryAgent.configured ? "connected" : "ready to configure"}` : "not detected"} />
-          <Metric label="Runtime" value={runtimeSummary.runtimeLabel} />
-          <Metric label="Service lifecycle" value={serviceStatus ? `${serviceStatus.state} · ${serviceStatus.managed ? "managed" : "not managed"}` : "desktop status pending"} />
-          <Metric label="Route data" value={runtimeSummary.routeLabel} />
+        <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+          <Metric label={lang === "zh" ? "主要工具" : "Primary agent"} value={primaryAgent?.installed ? `${primaryAgentName} · ${lang === "zh" ? "已检测" : "detected"}` : (lang === "zh" ? "尚未检测到" : "not detected")} />
+          <Metric label={lang === "zh" ? "本地服务" : "Runtime"} value={runtimeSummary.runtimeLabel} />
+          <Metric label={lang === "zh" ? "服务管理" : "Service lifecycle"} value={serviceStatus ? `${serviceStatus.state} · ${serviceStatus.managed ? (lang === "zh" ? "由应用管理" : "managed") : (lang === "zh" ? "仅检测" : "observed")}` : (lang === "zh" ? "等待桌面状态" : "desktop status pending")} />
+          <Metric label={lang === "zh" ? "当前路由" : "Route data"} value={runtimeSummary.routeLabel} />
         </div>
 
         <div className="mt-4 grid gap-3 lg:grid-cols-3">
           {[
-            { title: "1. Connect runtime", detail: "Use the d-token-owned runtime on 127.0.0.1 only, then verify it is observable." },
-            { title: "2. Connect agent", detail: "Preview the diff, back up the original config, and apply only the route fields d-token needs." },
-            { title: "3. Observe results", detail: "Requests, compression, route decisions, and errors flow into Dashboard, Logs, and Doctor." },
+            { title: lang === "zh" ? "1. 启动本地服务" : "1. Start local service", detail: lang === "zh" ? "确认 d-token 自有服务在 127.0.0.1 上可用。" : "Confirm the d-token-owned service is available on 127.0.0.1." },
+            { title: lang === "zh" ? "2. 手动连接工具" : "2. Connect the agent", detail: lang === "zh" ? "查看连接字段，在对应工具中手动填写；d-token 不会静默改写。" : "Review the fields and enter them in the selected tool; d-token never rewrites them silently." },
+            { title: lang === "zh" ? "3. 验证真实流量" : "3. Verify real traffic", detail: lang === "zh" ? "发送一次真实请求，再从概览、日志和 Doctor 核对路由证据。" : "Send one real request, then verify routing evidence in Overview, Logs, and Doctor." },
           ].map((item) => (
             <div key={item.title} className="glass-inset p-3">
               <div className="text-sm font-medium">{item.title}</div>
@@ -537,8 +499,8 @@ export function Install() {
         </div>
 
         <div className="install-status-strip mt-4">
-          <div>&gt; route preview - {runtimeSummary.routePreview}</div>
-          <div>&gt; verification - {routeVerification ? `${routeVerification.passed}/${routeVerification.total} checks · ${routeVerification.summary}` : runtimeSummary.verificationLine}</div>
+          <div>&gt; {lang === "zh" ? "连接路径" : "route"} · {runtimeSummary.routePreview}</div>
+          <div>&gt; {lang === "zh" ? "验证" : "verification"} · {routeVerification ? `${routeVerification.passed}/${routeVerification.total} · ${routeVerification.summary}` : runtimeSummary.verificationLine}</div>
         </div>
 
         {readinessResult && (
@@ -580,7 +542,7 @@ export function Install() {
           <div className="mt-4 flex flex-wrap gap-2">
             {nativeTools.map((tool) => (
               <Badge key={tool.id} variant={tool.installed ? "default" : "secondary"}>
-                {tool.label}: {tool.installed ? tool.version ?? tool.path ?? "installed" : "missing"}
+                {tool.label}: {tool.installed ? tool.version ?? tool.path ?? (lang === "zh" ? "已安装" : "installed") : (lang === "zh" ? "未找到" : "missing")}
               </Badge>
             ))}
           </div>
@@ -592,7 +554,7 @@ export function Install() {
       <Dialog open={showDiff} onOpenChange={setShowDiff}>
         <DialogContent className="max-w-lg">
           <DialogHeader>
-            <DialogTitle>{t("in.previewDiff")}</DialogTitle>
+            <DialogTitle>{lang === "zh" ? "连接字段（不会自动执行）" : "Connection fields (not executed automatically)"}</DialogTitle>
           </DialogHeader>
           <div className="space-y-3">
             {selected.map((id) => {
@@ -603,9 +565,13 @@ export function Install() {
                   <div className="text-muted-foreground">
                     {t("in.configMethod")}: {lang === "zh" ? agent.configMethod : agent.configMethodEn}
                   </div>
+                  <div className="mt-1 text-xs text-muted-foreground">
+                    {lang === "zh"
+                      ? "请在该工具自己的设置中手动填写。关闭窗口或点击验证都不会写入第三方配置。"
+                      : "Enter these values in the tool's own settings. Closing or verifying does not write third-party configuration."}
+                  </div>
                   <pre className="mt-2 overflow-x-auto rounded bg-muted/60 p-2 text-xs">
-{`+ ANTHROPIC_BASE_URL="http://127.0.0.1:${service.port}"
-+ NO_PROXY="localhost,127.0.0.1"`}
+{connectionInstructions(agent, serviceEndpoint, lang)}
                   </pre>
                 </div>
               );
@@ -613,9 +579,9 @@ export function Install() {
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setShowDiff(false)}>{t("common.cancel")}</Button>
-            <Button onClick={confirmConfigure} disabled={configuring}>
-              {configuring ? <RefreshCw className="size-4 animate-spin" /> : <CheckCircle2 className="size-4" />}
-              {configuring ? t("in.configuring") : t("common.confirm")}
+            <Button onClick={() => void verifyAfterManualConnection()} disabled={verifying || !serviceOnline}>
+              {verifying ? <RefreshCw className="size-4 animate-spin" /> : <CheckCircle2 className="size-4" />}
+              {lang === "zh" ? "完成后验证" : "Verify after setup"}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -633,6 +599,89 @@ function Metric({ label, value }: { label: string; value: string }) {
   );
 }
 
+export function desktopInstallRoot(userAgent: string) {
+  return /windows/i.test(userAgent)
+    ? "%LOCALAPPDATA%\\d-token"
+    : "~/Library/Application Support/d-token";
+}
+
+type InstallAgent = {
+  id: string;
+  name: string;
+  installed: boolean;
+  binaryPath: string | null;
+  version: string | null;
+  configMethod: string;
+  configMethodEn: string;
+  configured: false;
+  preferredProtocol: AgentDescriptor["preferredProtocol"];
+};
+
+function toInstallAgent(agent: AgentDescriptor): InstallAgent {
+  const methods = agent.supportedConfigMethods.map((method) => {
+    if (method === "config-file") return "配置文件";
+    if (method === "env-var") return "环境变量";
+    if (method === "local-proxy") return "本地服务地址";
+    if (method === "manual-prompt") return "手动设置";
+    return "工具集成";
+  });
+  return {
+    id: agent.id,
+    name: agent.displayName,
+    installed: false,
+    binaryPath: null,
+    version: null,
+    configMethod: Array.from(new Set(methods)).join(" / "),
+    configMethodEn: agent.supportedConfigMethods.join(" / "),
+    configured: false,
+    preferredProtocol: agent.preferredProtocol,
+  };
+}
+
+function connectionInstructions(agent: InstallAgent, serviceEndpoint: string, lang: "zh" | "en") {
+  const endpoint = serviceEndpoint.replace(/\/$/, "");
+  const openAiEndpoint = endpoint.endsWith("/v1") ? endpoint : `${endpoint}/v1`;
+  if (agent.preferredProtocol === "anthropic-compatible") {
+    return `ANTHROPIC_BASE_URL = "${endpoint}"\nNO_PROXY = "localhost,127.0.0.1"`;
+  }
+  if (agent.preferredProtocol === "openai-compatible") {
+    return `Base URL = "${openAiEndpoint}"\nNO_PROXY = "localhost,127.0.0.1"`;
+  }
+  return lang === "zh"
+    ? `d-token 本地服务 = "${endpoint}"\n协议 = "请按工具支持的协议手动选择"`
+    : `d-token local service = "${endpoint}"\nProtocol = "Select a protocol supported by the agent"`;
+}
+
+function deriveCcSwitchEvidence(payload: Record<string, any> | null, status: string, lang: "zh" | "en") {
+  const zh = lang === "zh";
+  const evidence = payload?.cc_switch_sync ?? payload?.ccSwitchSync;
+  const item = evidence && typeof evidence === "object" && !Array.isArray(evidence) ? evidence : {};
+  const state = safeRuntimeText(item.status ?? item.state, "").toLowerCase();
+  const verified = item.verified === true || item.evidence_verified === true;
+  const providers = Array.isArray(payload?.providers) ? payload.providers : [];
+  const detected = item.detected === true || providers.some((provider: any) => {
+    const kind = safeRuntimeText(provider?.kind, "").toLowerCase();
+    return kind === "cc_switch" || kind === "cc-switch" || kind === "ccswitch";
+  });
+  const detail = [item.profile, item.upstream, item.connection_path]
+    .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+    .join(" · ");
+
+  if (status === "runtime" && verified && (state === "synced" || state === "in_sync")) {
+    return { verified: true, label: zh ? "已验证同步" : "Sync verified", detail: detail || (zh ? "证据来自 d-token 本地检测" : "Evidence from local d-token detection") };
+  }
+  if (status === "runtime" && (detected || Object.keys(item).length > 0)) {
+    return { verified: false, label: zh ? "已检测，尚未验证" : "Detected, not verified", detail: detail || (zh ? "未确认当前上游是否一致" : "The active upstream has not been confirmed") };
+  }
+  return {
+    verified: false,
+    label: status === "browser-preview"
+      ? (zh ? "预览中不执行检测" : "Detection disabled in preview")
+      : (zh ? "尚无检测证据" : "No detection evidence yet"),
+    detail: zh ? "不会自动读取、启动或改写第三方服务" : "Third-party services are never read, started, or modified automatically",
+  };
+}
+
 
 function formatReadinessSummary(value: unknown) {
   if (typeof value === "string") return value;
@@ -645,7 +694,8 @@ function formatReadinessSummary(value: unknown) {
   }
 }
 
-function installRuntimeSummary(payload: Record<string, any> | null, status: string, updatedAt: Date | null) {
+function installRuntimeSummary(payload: Record<string, any> | null, status: string, updatedAt: Date | null, lang: "zh" | "en") {
+  const zh = lang === "zh";
   const routes = Array.isArray(payload?.routes) ? payload.routes : [];
   const providers = Array.isArray(payload?.providers) ? payload.providers : [];
   const requestLogs = Array.isArray(payload?.request_logs) ? payload.request_logs : [];
@@ -654,25 +704,27 @@ function installRuntimeSummary(payload: Record<string, any> | null, status: stri
   const activeProviders = Array.isArray(activeConfig?.providers) ? activeConfig.providers : providers;
   const route = activeRoutes[0] ?? {};
   const provider = activeProviders[0] ?? {};
-  const routeName = safeRuntimeText(route.name, safeRuntimeText(route.id, "waiting for route"));
-  const providerName = safeRuntimeText(provider.name, safeRuntimeText(provider.id, "upstream pending"));
+  const routeName = safeRuntimeText(route.name, safeRuntimeText(route.id, zh ? "等待配置路由" : "waiting for route"));
+  const providerName = safeRuntimeText(provider.name, safeRuntimeText(provider.id, zh ? "等待配置上游" : "upstream pending"));
   const serviceUrl = safeRuntimeText(payload?.desktop_service_url, "http://127.0.0.1:18001");
   const source = safeRuntimeText(payload?.desktop_data_source, status);
 
   if (status === "runtime") {
     return {
-      runtimeLabel: `${source} · ${requestLogs.length} requests`,
+      runtimeLabel: `${source} · ${requestLogs.length} ${zh ? "条请求" : "requests"}`,
       routeLabel: `${routeName} -> ${providerName}`,
-      routePreview: `agent -> d-token local service -> ${routeName} -> ${providerName}`,
-      verificationLine: `Dashboard payload refreshed${updatedAt ? ` at ${updatedAt.toLocaleTimeString()}` : ""}; ${requestLogs.length} request log(s) visible`,
+      routePreview: `${zh ? "AI 编码工具" : "agent"} -> d-token -> ${routeName} -> ${providerName}`,
+      verificationLine: zh
+        ? `运行数据${updatedAt ? `已于 ${updatedAt.toLocaleTimeString()} 更新` : "已更新"}；可见 ${requestLogs.length} 条请求记录`
+        : `Runtime data refreshed${updatedAt ? ` at ${updatedAt.toLocaleTimeString()}` : ""}; ${requestLogs.length} request record(s) visible`,
     };
   }
 
   return {
-    runtimeLabel: status === "browser-preview" ? "browser preview" : status,
+    runtimeLabel: status === "browser-preview" ? (zh ? "浏览器预览，不执行本机操作" : "browser preview; local actions disabled") : (zh ? "本地服务暂不可用" : status),
     routeLabel: `${serviceUrl}/v1`,
-    routePreview: "agent -> d-token local service -> route adapter -> upstream",
-    verificationLine: "Doctor and Dashboard confirm live traffic after configuration",
+    routePreview: zh ? "AI 编码工具 -> d-token 本地服务 -> 路由适配 -> 真实上游" : "agent -> d-token local service -> route adapter -> upstream",
+    verificationLine: zh ? "连接后发送一次真实请求，再由概览、日志和 Doctor 核对" : "Send a real request, then confirm it in Overview, Logs, and Doctor",
   };
 }
 
