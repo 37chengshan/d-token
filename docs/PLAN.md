@@ -222,7 +222,7 @@ M4 的实际落地先走 `OpenCode Real Route Track`：使用用户原本 OpenCo
 
 ## 5. CI Gate（贯穿 M4–M6）
 
-当前 `.github/workflows/ci.yml` 已含 structure、前端 test/typecheck/build、Rust fmt/clippy/test 和 no-touch fixture smoke；`macos-release.yml` 对公开产物强制 Developer ID、notarization、staple、Gatekeeper 和哈希，缺凭据即失败。2026-07-13 当前本地候选门禁为前端 125 项通过、Playwright E2E 20 项通过、`npm audit` 0 个漏洞；macOS 六页基线截图位于 `support/artifacts/macos-ui/final-candidate-2026-07-12T18-52-02-502Z/`，当前 autostart/窄窗口证据位于 `support/artifacts/macos-ui/final-candidate-2026-07-13/`。当前工作树 ad-hoc desktop binary SHA-256 为 `6a04409997ac2741b7a61e4e72ad7eac87649d56eaf8fc70918d8c336fbe3048`，正式发布仍须在候选 commit 上重新签名构建。计划延续并加强：
+当前 `.github/workflows/ci.yml` 已含 structure、前端 test/typecheck/build、Rust fmt/clippy/test 和 no-touch fixture smoke；`macos-release.yml` 对公开产物强制 Developer ID、notarization、staple、Gatekeeper 和哈希，缺凭据即失败。2026-07-13 当前本地候选门禁为前端 125 项通过、Playwright E2E 20 项通过、`npm audit` 0 个漏洞；macOS 六页基线截图位于 `support/artifacts/macos-ui/final-candidate-2026-07-12T18-52-02-502Z/`，当前 autostart/窄窗口证据位于 `support/artifacts/macos-ui/final-candidate-2026-07-13/`。本机 ad-hoc 产物哈希由候选专属 manifest 绑定 commit，源码文档不复用旧哈希；正式发布仍须在候选 commit 上重新签名构建。计划延续并加强：
 
 1. `python support/scripts/check_structure.py` —— 目录边界。
 2. `cargo fmt --all -- --check` / `cargo check --workspace --tests` / `cargo test --workspace`。

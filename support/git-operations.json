@@ -153,6 +153,15 @@
       "summary": "Make clean checkout workspace gates prepare platform runtime sidecars",
       "head_before": "e4eca905f3c1edabdd2a0238d891c56101fb3261",
       "remote": null
+    },
+    {
+      "id": "e0db0cf3-2fb2-4393-bddd-e02aaaec6961",
+      "timestamp": "2026-07-13T12:17:41+08:00",
+      "operation": "commit",
+      "branch": "codex/prd-macos-polish",
+      "summary": "Bind local release hashes through per-candidate manifests instead of stale docs",
+      "head_before": "c02251a8c50ac2aa10b407bf0b5b526765e144db",
+      "remote": null
     }
   ]
 }

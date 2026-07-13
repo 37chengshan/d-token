@@ -75,7 +75,7 @@ OpenCode 已完成真实配置事务与 routed compression 验收；该结论不
 - OpenCode 配置恢复 SHA-256：`47772c85307f02e1d910dc3cc93b85165a9fc37db5911b7d4201be766f85baab`。
 - active route 恢复 SHA-256：`37149d6c69561a4562a67d7d53bf03337e37e98104424c694aaa4a4038c45843`。
 - 截图目录：`support/artifacts/macos-ui/final-candidate-2026-07-12T18-52-02-502Z/`。
-- 当前工作树 ad-hoc `d-token-desktop` SHA-256：`6a04409997ac2741b7a61e4e72ad7eac87649d56eaf8fc70918d8c336fbe3048`；正式发布仍须在候选 commit 上用 Developer ID 重新构建、notarize 与 staple。
+- 本机 ad-hoc 产物的 SHA-256 不写死在源码文档中；每次候选构建都由 `support/artifacts/` 下的 commit-bound manifest 或平台 workflow manifest 记录 App、sidecar 与安装介质哈希。正式发布仍须在候选 commit 上用 Developer ID 重新构建、notarize 与 staple。
 
 仓库已配置 fail-closed 的 macOS Developer ID/notarization/Gatekeeper/hash workflow，以及 Windows Authenticode/NSIS 静默安装启动/hash workflow。平台 autostart 已接通 macOS LaunchAgent 与 Windows HKCU Run，并采用统一确认、写后校验和失败回滚。仍未完成：真实签名凭据执行、signed update feed、两端真实登录会话 autostart 验收、Windows 凭据/路径/视觉实机验收、其他 Agent 真实事务验收、认证 Provider Keychain/Credential Manager 实证。
 

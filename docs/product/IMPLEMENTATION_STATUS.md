@@ -118,7 +118,7 @@ Advanced、Logs/Security、Compatibility、Smart Learning 等仍作为工作台�
 - Doctor 在真实窗口运行全部检查为 9/9；Headroom 缺失是正常可选状态，OpenCode 和 RTK 检测通过。
 - Changes 显示 0 项待处理；已应用 route draft 保留 resolution/backup history，不再重新出现为待批变更。
 - Smart Learning 在临时目录完成 managed block apply 与 exact rollback，没有改写用户项目。
-- macOS 六页基线截图位于 `support/artifacts/macos-ui/final-candidate-2026-07-12T18-52-02-502Z/`；当前工作树新增 Overview、Settings autostart 与 920×640 实机证据位于 `support/artifacts/macos-ui/final-candidate-2026-07-13/`。当前 ad-hoc `d-token-desktop` SHA-256 为 `6a04409997ac2741b7a61e4e72ad7eac87649d56eaf8fc70918d8c336fbe3048`，不等同于正式签名发布产物。
+- macOS 六页基线截图位于 `support/artifacts/macos-ui/final-candidate-2026-07-12T18-52-02-502Z/`；当前工作树新增 Overview、Settings autostart 与 920×640 实机证据位于 `support/artifacts/macos-ui/final-candidate-2026-07-13/`。本机 ad-hoc 哈希由候选专属 manifest 记录，不写死在源码状态文档中，也不等同于正式签名发布产物。
 
 ## 8. Optical / Hybrid Context Optimization
 
