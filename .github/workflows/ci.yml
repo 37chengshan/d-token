@@ -67,6 +67,9 @@ jobs:
         working-directory: code
         run: cargo fmt --all -- --check
 
+      - name: Prepare Linux d-token runtime sidecar for workspace checks
+        run: bash support/scripts/prepare_desktop_sidecar_for_checks.sh
+
       - name: Rust Clippy
         working-directory: code
         run: cargo clippy --workspace --all-targets -- -D warnings

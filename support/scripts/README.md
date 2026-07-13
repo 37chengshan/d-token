@@ -118,6 +118,8 @@ Windows 公开发布由 `tauri-with-sidecar.mjs` 在 Tauri bundling 前调用 `s
 
 `run_release_candidate_provenance_test.ps1` 会在系统临时目录创建一次性 Git 仓库，动态证明“源码变化会让旧候选戳失效”和“早于候选戳的产物会被拒绝”；测试结束会删除它自己创建的临时目录。
 
+干净 checkout 在执行包含 Tauri crate 的 `cargo clippy/test --workspace` 前必须具备当前 host 的真实 `dtoken-proxy` externalBin。Linux CI 使用 `prepare_desktop_sidecar_for_checks.sh`，macOS 使用 `prepare_desktop_sidecars_macos.sh --debug`，Windows 使用 `prepare_desktop_sidecars.ps1`；生成物均被忽略，不作为源码提交。
+
 平台公开发布模板：
 
 - `.github/workflows/macos-release.yml` 只接受具备 Developer ID 与 Apple notarization 凭据的手动发布运行；签名、公证、staple、Gatekeeper 或 SHA-256 manifest 任一步失败都会阻止 artifact upload。

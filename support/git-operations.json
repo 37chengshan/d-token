@@ -144,6 +144,15 @@
       "summary": "Build PRD-aligned desktop release candidate with real runtime state, AiMaMi UI, autostart and fail-closed platform workflows",
       "head_before": "08f7f9f5526273f8ef6af57f0d80fac16d3fda61",
       "remote": null
+    },
+    {
+      "id": "d099c2df-b102-46fc-9c1e-9a29673cc272",
+      "timestamp": "2026-07-13T12:06:58+08:00",
+      "operation": "commit",
+      "branch": "codex/prd-macos-polish",
+      "summary": "Make clean checkout workspace gates prepare platform runtime sidecars",
+      "head_before": "e4eca905f3c1edabdd2a0238d891c56101fb3261",
+      "remote": null
     }
   ]
 }

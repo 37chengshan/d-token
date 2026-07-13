@@ -136,6 +136,7 @@ M4 的实际落地先走 `OpenCode Real Route Track`：使用用户原本 OpenCo
 - [x] Windows NSIS 与 macOS `.app`/DMG 的 Tauri bundle 配置。
 - [x] Windows 发布 workflow：Windows runner、Tauri bundling 阶段签名、AuthentiCode 验证、当前候选静默安装/启动/卸载、SHA-256 manifest 和 artifact upload；缺证书时 fail-closed。
 - [x] 平台自动启动控制面：macOS LaunchAgent 与 Windows HKCU Run 均使用精确启动参数、原值快照、写入后校验和失败回滚；设置页读取 native 状态并使用统一确认弹窗。
+- [x] 干净 checkout 在 workspace Clippy/test 前按 Linux/macOS/Windows host 构建并准备真实 `dtoken-proxy` externalBin，避免本地残留生成物掩盖 Tauri build-script 失败。
 - [ ] 同一候选在 macOS 与 Windows 真实登录会话验证自动启动、重复启用、禁用、损坏配置和 App 升级路径。
 - [x] macOS 发布 workflow：Developer ID 导入、严格 codesign、notarization/staple、Gatekeeper、SHA-256 manifest 和 artifact upload；缺证书/公证凭据时 fail-closed。
 - [ ] Windows 安装后 UTF-8、路径、credential、`.cmd` shim 与回退实机验收。

@@ -141,6 +141,7 @@ active 代码路径存在但生产默认仍关闭：必须同时满足全局/路
 
 1. macOS 发布 workflow 已强制 Developer ID、notarization、staple、Gatekeeper 与 SHA-256 manifest，但缺真实 Apple 凭据执行和 signed update feed；当前本机候选仍是 ad-hoc 签名产物。
 2. Windows 发布 workflow 已强制 Tauri bundling 阶段 Authenticode、NSIS 静默安装/启动/卸载、逐文件一致性与 SHA-256 manifest，但缺具备签名凭据的 Windows 实机/runner 结果，以及 UTF-8/路径、Credential Manager、回退和视觉一致性证据。
+   Linux CI、macOS release 与 Windows release 均会在 Rust workspace 门禁前从当前源码准备 host 对应的真实 `dtoken-proxy` externalBin，干净 checkout 不再依赖仓库内或开发机残留二进制。
 3. macOS LaunchAgent 与 Windows HKCU Run 已接通，但尚未绑定同一候选完成两端真实登录、禁用和覆盖升级验证，不能宣称平台 autostart 已通过发布验收。
 4. Claude Code、Codex、Cursor、Cline 等其他 Agent 缺 plan → diff → backup → confirm → apply → verify → rollback 与 routed request 的真实验收。
 5. 真实认证 Provider 的 Keychain/Credential Manager 引用、短生命周期出站读取和不泄露凭据的候选版实证仍缺失。
