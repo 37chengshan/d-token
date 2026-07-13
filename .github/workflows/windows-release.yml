@@ -1,0 +1,215 @@
+name: windows-release
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build-windows:
+    runs-on: windows-2022
+    permissions:
+      contents: read
+    env:
+      CARGO_TERM_COLOR: always
+      RUST_BACKTRACE: "1"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Install Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: code/apps/desktop/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: code/apps/desktop
+        run: npm ci
+
+      - name: Release gate contract
+        shell: pwsh
+        run: ./support/scripts/run_release_gate_contract_test.ps1
+
+      - name: Release candidate provenance
+        shell: pwsh
+        run: ./support/scripts/run_release_candidate_provenance_test.ps1
+
+      - name: Frontend Vitest
+        working-directory: code/apps/desktop
+        run: npm run test:run
+
+      - name: Frontend TypeScript
+        working-directory: code/apps/desktop
+        run: npx tsc --noEmit
+
+      - name: Build frontend
+        working-directory: code/apps/desktop
+        run: npm run build
+
+      - name: Rust formatting
+        working-directory: code
+        run: cargo fmt --all -- --check
+
+      - name: Rust Clippy
+        working-directory: code
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Rust workspace tests
+        working-directory: code
+        run: cargo test --workspace
+
+      - name: Import Windows signing certificate
+        id: signing
+        shell: pwsh
+        env:
+          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:WINDOWS_CERTIFICATE)) {
+            throw "WINDOWS_CERTIFICATE is required for the public Windows release workflow."
+          }
+          if ([string]::IsNullOrWhiteSpace($env:WINDOWS_CERTIFICATE_PASSWORD)) {
+            throw "WINDOWS_CERTIFICATE_PASSWORD is required for the public Windows release workflow."
+          }
+          $certificatePath = Join-Path $env:RUNNER_TEMP "d-token-windows-signing.pfx"
+          [System.IO.File]::WriteAllBytes($certificatePath, [Convert]::FromBase64String($env:WINDOWS_CERTIFICATE))
+          $securePassword = ConvertTo-SecureString $env:WINDOWS_CERTIFICATE_PASSWORD -AsPlainText -Force
+          $imported = @(Import-PfxCertificate -FilePath $certificatePath -CertStoreLocation Cert:\CurrentUser\My -Password $securePassword -Exportable:$false)
+          $certificate = $imported | Where-Object { $_.HasPrivateKey } | Select-Object -First 1
+          if ($null -eq $certificate -or [string]::IsNullOrWhiteSpace($certificate.Thumbprint)) {
+            throw "The Windows signing certificate could not be imported."
+          }
+          "certificate_path=$certificatePath" >> $env:GITHUB_OUTPUT
+          "certificate_thumbprint=$($certificate.Thumbprint)" >> $env:GITHUB_OUTPUT
+
+      - name: Write fail-closed Tauri signing overlay
+        shell: pwsh
+        env:
+          CERTIFICATE_THUMBPRINT: ${{ steps.signing.outputs.certificate_thumbprint }}
+        run: |
+          $configPath = Join-Path $env:RUNNER_TEMP "d-token-windows-signing.json"
+          @{
+            bundle = @{
+              windows = @{
+                certificateThumbprint = $env:CERTIFICATE_THUMBPRINT
+                digestAlgorithm = "sha256"
+                timestampUrl = "http://timestamp.digicert.com"
+                tsp = $true
+              }
+            }
+          } | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $configPath -Encoding utf8NoBOM
+          "TAURI_WINDOWS_SIGNING_CONFIG=$configPath" >> $env:GITHUB_ENV
+          "DTOKEN_WINDOWS_SIGNING_THUMBPRINT=$env:CERTIFICATE_THUMBPRINT" >> $env:GITHUB_ENV
+
+      - name: Build signed Windows NSIS bundle
+        working-directory: code/apps/desktop
+        shell: pwsh
+        run: npm run tauri:with-sidecar -- build --config $env:TAURI_WINDOWS_SIGNING_CONFIG
+
+      - name: Verify Authenticode signatures
+        shell: pwsh
+        run: |
+          $artifacts = @(
+            "code/target/release/d-token-desktop.exe",
+            "code/target/release/dtoken-proxy.exe",
+            (Get-ChildItem "code/target/release/bundle/nsis/d-token_*_x64-setup.exe" | Sort-Object LastWriteTime -Descending | Select-Object -First 1).FullName
+          )
+          foreach ($artifact in $artifacts) {
+            if ([string]::IsNullOrWhiteSpace($artifact) -or -not (Test-Path -LiteralPath $artifact)) {
+              throw "Required signed artifact is missing: $artifact"
+            }
+            $signature = Get-AuthenticodeSignature -LiteralPath $artifact
+            if ($signature.Status -ne "Valid") {
+              throw "Authenticode verification failed for $artifact: $($signature.Status)"
+            }
+          }
+
+      - name: Audit packaging and bundle provenance
+        shell: pwsh
+        run: |
+          ./support/scripts/run_desktop_packaging_audit.ps1
+          ./support/scripts/run_desktop_bundle_artifact_audit.ps1
+          ./support/scripts/run_release_distribution_audit.ps1
+          ./support/scripts/run_windows_signing_readiness_audit.ps1 -RequireCertificate -CertificatePath "${{ steps.signing.outputs.certificate_path }}"
+
+      - name: Install and launch current NSIS candidate
+        shell: pwsh
+        run: ./support/scripts/run_installed_desktop_startup_audit.ps1 -SilentInstallLatest
+
+      - name: Verify installed Authenticode signatures
+        shell: pwsh
+        run: |
+          $installedArtifacts = @(
+            (Join-Path $env:LOCALAPPDATA "d-token/d-token-desktop.exe"),
+            (Join-Path $env:LOCALAPPDATA "d-token/dtoken-proxy.exe")
+          )
+          foreach ($artifact in $installedArtifacts) {
+            if (-not (Test-Path -LiteralPath $artifact -PathType Leaf)) {
+              throw "Installed signed artifact is missing: $artifact"
+            }
+            $signature = Get-AuthenticodeSignature -LiteralPath $artifact
+            if ($signature.Status -ne "Valid") {
+              throw "Installed Authenticode verification failed for $artifact: $($signature.Status)"
+            }
+          }
+
+      - name: Write SHA-256 manifest
+        shell: pwsh
+        run: |
+          $installer = (Get-ChildItem "code/target/release/bundle/nsis/d-token_*_x64-setup.exe" | Sort-Object LastWriteTime -Descending | Select-Object -First 1).FullName
+          $artifacts = @(
+            "code/target/release/d-token-desktop.exe",
+            "code/target/release/dtoken-proxy.exe",
+            "code/target/release/WebView2Loader.dll",
+            $installer
+          )
+          $lines = foreach ($artifact in $artifacts) {
+            $hash = (Get-FileHash -LiteralPath $artifact -Algorithm SHA256).Hash.ToLowerInvariant()
+            "$hash  $([System.IO.Path]::GetFileName($artifact))"
+          }
+          $lines | Set-Content -LiteralPath "code/target/release/SHA256SUMS-windows.txt" -Encoding utf8NoBOM
+
+      - name: Uninstall test installation
+        if: always()
+        shell: pwsh
+        run: |
+          $uninstaller = Join-Path $env:LOCALAPPDATA "d-token/uninstall.exe"
+          if (Test-Path -LiteralPath $uninstaller) {
+            $process = Start-Process -FilePath $uninstaller -ArgumentList @("/S") -PassThru -Wait
+            if ($process.ExitCode -ne 0) {
+              throw "Silent uninstall failed with exit code $($process.ExitCode)."
+            }
+          }
+
+      - name: Upload Windows artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: d-token-windows
+          if-no-files-found: error
+          path: |
+            code/target/release/d-token-desktop.exe
+            code/target/release/dtoken-proxy.exe
+            code/target/release/WebView2Loader.dll
+            code/target/release/bundle/nsis/*.exe
+            code/target/release/d-token-release-candidate.json
+            code/target/release/SHA256SUMS-windows.txt
+            support/artifacts/*.json
+
+      - name: Remove temporary signing material
+        if: always()
+        shell: pwsh
+        env:
+          CERTIFICATE_THUMBPRINT: ${{ steps.signing.outputs.certificate_thumbprint }}
+          CERTIFICATE_PATH: ${{ steps.signing.outputs.certificate_path }}
+        run: |
+          if (-not [string]::IsNullOrWhiteSpace($env:CERTIFICATE_THUMBPRINT)) {
+            Remove-Item -LiteralPath "Cert:\CurrentUser\My\$($env:CERTIFICATE_THUMBPRINT)" -Force -ErrorAction SilentlyContinue
+          }
+          if (-not [string]::IsNullOrWhiteSpace($env:CERTIFICATE_PATH)) {
+            Remove-Item -LiteralPath $env:CERTIFICATE_PATH -Force -ErrorAction SilentlyContinue
+          }

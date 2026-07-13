@@ -1,15 +1,18 @@
-import { PanelLeftClose, PanelLeftOpen } from "lucide-react";
 import { useT } from "../../lib/i18n";
 import { NAV, SETTINGS_NAV, type PageId } from "../../lib/nav";
+import { AnimatedNavIcon } from "./AnimatedNavIcon";
+import { NotificationCenter } from "../common/NotificationCenter";
 
 export function Topbar({
   page = "overview",
   collapsed,
   setCollapsed,
+  reducedMotion = false,
 }: {
   page?: PageId;
   collapsed: boolean;
   setCollapsed: (c: boolean) => void;
+  reducedMotion?: boolean;
 }) {
   const t = useT();
   const current = [...NAV, SETTINGS_NAV].find((item) => item.id === page) ?? NAV[0];
@@ -26,12 +29,14 @@ export function Topbar({
         title={collapsed ? t("app.expandSidebar") : t("app.collapseSidebar")}
         className="shell-window-control flex size-8 shrink-0 items-center justify-center rounded-lg text-muted-foreground hover:bg-[var(--chip-hover-bg)] hover:text-foreground"
       >
-        {collapsed ? <PanelLeftOpen className="size-4" /> : <PanelLeftClose className="size-4" />}
+        <AnimatedNavIcon id="collapse" active={false} reducedMotion={reducedMotion} expanded={!collapsed} className="size-4" />
       </button>
+      <span className="shell-topbar-separator" aria-hidden="true" />
       <span className="shell-topbar-context truncate text-[12px] font-medium text-muted-foreground" data-tauri-drag-region>
         {t(current.labelKey)}
       </span>
       <span className="sr-only">{t("app.name")}</span>
+      <div className="ml-auto"><NotificationCenter /></div>
     </header>
   );
 }

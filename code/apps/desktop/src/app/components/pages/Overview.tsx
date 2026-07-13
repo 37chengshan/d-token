@@ -10,7 +10,7 @@ import {
   Route,
   Server,
 } from "lucide-react";
-import { GlassCard } from "../common/GlassCard";
+import { MetricStrip, Surface } from "../common/Surface";
 import { DataSourceBadge } from "../common/DataSourceBadge";
 import { Heatmap, type ActivityDay } from "../common/Heatmap";
 import { useI18n, useT, type Lang } from "../../lib/i18n";
@@ -35,7 +35,7 @@ export function Overview(_props: { setPage: (p: PageId) => void }) {
   );
   const effectiveStatus = evidenceState === "verified" ? "runtime" : evidenceState === "preview" ? "browser-preview" : evidenceState;
 
-  const runtime = useMemo(() => overviewFromPayload(payload, effectiveStatus), [effectiveStatus, payload]);
+  const runtime = useMemo(() => overviewFromPayload(payload, effectiveStatus, lang), [effectiveStatus, lang, payload]);
   const operational = useMemo(
     () => deriveOverviewOperationalSummary(payload, effectiveStatus, lang),
     [effectiveStatus, lang, payload],
@@ -53,7 +53,7 @@ export function Overview(_props: { setPage: (p: PageId) => void }) {
         <div className="flex flex-wrap items-center justify-end gap-2">
           <DataSourceBadge
             mode={evidenceState === "verified" ? "runtime" : evidenceState === "preview" || evidenceState === "loading" ? "preview" : "unavailable"}
-            label={overviewEvidenceLabel(evidenceState)}
+            label={overviewEvidenceLabel(evidenceState, lang)}
           />
           <Badge variant={evidenceState === "verified" ? "default" : "secondary"}>
             {runtime.sourceLabel}{evidenceState === "verified" && updatedAt ? ` · ${updatedAt.toLocaleTimeString()}` : ""}
@@ -61,7 +61,7 @@ export function Overview(_props: { setPage: (p: PageId) => void }) {
         </div>
       </div>
 
-      <section data-overview-section="kpis" data-testid="overview-kpis" className="grid grid-cols-2 gap-3 min-[880px]:grid-cols-4">
+      <MetricStrip data-overview-section="kpis" data-testid="overview-kpis">
         <OverviewKpi
           label={t("ov.routedRequests")}
           value={trafficAvailable ? fmt(s.requestCount) : "—"}
@@ -69,15 +69,15 @@ export function Overview(_props: { setPage: (p: PageId) => void }) {
           icon={Activity}
         />
         <OverviewKpi
-          label={lang === "zh" ? "估算节省 Token" : "Estimated Tokens Saved"}
+          label={lang === "zh" ? "物理减少 Token" : "Physical Token Reduction"}
           value={metricsAvailable ? fmt(s.savedTotal) : "—"}
-          detail={metricsAvailable ? (lang === "zh" ? "按本地压缩记录累计" : "Accumulated from local compression records") : unavailableDetail}
+          detail={metricsAvailable ? (lang === "zh" ? `按压缩前后值计算；可计入节省 ${fmt(s.claimableSaved)}（待上游归因）` : `Derived from before/after values; claimable ${fmt(s.claimableSaved)} (provider attribution pending)`) : unavailableDetail}
           icon={Coins}
         />
         <OverviewKpi
-          label={t("ov.compressionRate")}
-          value={compressionAvailable ? `${Math.round(s.compressionRate * 100)}%` : "—"}
-          detail={compressionAvailable ? (lang === "zh" ? "基于压缩前后 Token 估算" : "Estimated from before/after token counts") : unavailableDetail}
+          label={lang === "zh" ? "物理减少比例" : "Physical Reduction Rate"}
+          value={compressionAvailable ? `${(s.compressionRate * 100).toFixed(1)}%` : "—"}
+          detail={compressionAvailable ? (lang === "zh" ? "仅基于同时具备压缩前后值的请求" : "Only requests with both before and after values are included") : unavailableDetail}
           icon={Gauge}
         />
         <OverviewKpi
@@ -87,28 +87,12 @@ export function Overview(_props: { setPage: (p: PageId) => void }) {
           icon={CircleAlert}
           tone={trafficAvailable && s.errorsToday > 0 ? "negative" : trafficAvailable ? "positive" : "neutral"}
         />
-      </section>
+      </MetricStrip>
 
-      <section data-overview-section="operational">
-        <GlassCard className="overflow-hidden p-0" strong hover={false}>
-          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border/50 px-4 py-3">
-            <div>
-              <h2 className="text-base font-semibold">{t("ov.operational")}</h2>
-              <p className="mt-0.5 text-xs text-muted-foreground">{t("ov.operationalDesc")}</p>
-            </div>
-            <div className="flex items-center gap-2">
-              <Badge variant={evidenceState === "verified" ? "default" : "outline"}>
-                {evidenceState === "verified" ? t("ov.localConnected") : t("ov.waitingConnection")}
-              </Badge>
-            </div>
-          </div>
-          <div className="overview-status-grid grid grid-cols-1 gap-px bg-border/40 sm:grid-cols-2 min-[1080px]:grid-cols-4">
-            <OperationalItem icon={Server} title={t("ov.localService")} {...operational.service} />
-            <OperationalItem icon={Bot} title={t("ov.connectedAgents")} {...operational.agents} />
-            <OperationalItem icon={Route} title={t("ov.currentPath")} {...operational.route} />
-            <CcSwitchOperationalItem summary={operational.ccSwitch} />
-          </div>
-        </GlassCard>
+      <section data-overview-section="activity">
+        <Surface className="p-4" hover={false}>
+          <Heatmap activityDays={runtime.activityDays} tools={runtime.tools} source={runtime.activitySource} />
+        </Surface>
       </section>
 
       <section data-overview-section="issues">
@@ -116,7 +100,7 @@ export function Overview(_props: { setPage: (p: PageId) => void }) {
       </section>
 
       <section data-overview-section="trend">
-        <GlassCard className="p-4" hover={false}>
+        <Surface className="p-4" hover={false}>
           <div className="mb-3 flex items-center justify-between">
             <h3>{t("ov.trend")}</h3>
             <span className="text-sm text-muted-foreground">{runtime.sourceLabel}</span>
@@ -142,13 +126,29 @@ export function Overview(_props: { setPage: (p: PageId) => void }) {
               {unavailableDetail}
             </div>
           )}
-        </GlassCard>
+        </Surface>
       </section>
 
-      <section data-overview-section="activity">
-        <GlassCard className="p-4" hover={false}>
-          <Heatmap activityDays={runtime.activityDays} tools={runtime.tools} source={runtime.activitySource} />
-        </GlassCard>
+      <section data-overview-section="operational">
+        <Surface className="overflow-hidden p-0" strong hover={false}>
+          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border/50 px-4 py-3">
+            <div>
+              <h2 className="text-base font-semibold">{t("ov.operational")}</h2>
+              <p className="mt-0.5 text-xs text-muted-foreground">{t("ov.operationalDesc")}</p>
+            </div>
+            <div className="flex items-center gap-2">
+              <Badge variant={evidenceState === "verified" ? "default" : "outline"}>
+                {evidenceState === "verified" ? t("ov.localConnected") : t("ov.waitingConnection")}
+              </Badge>
+            </div>
+          </div>
+          <div className="overview-status-grid grid grid-cols-1 gap-px bg-border/40 sm:grid-cols-2 min-[1080px]:grid-cols-4">
+            <OperationalItem icon={Server} title={t("ov.localService")} {...operational.service} />
+            <OperationalItem icon={Bot} title={t("ov.connectedAgents")} {...operational.agents} />
+            <OperationalItem icon={Route} title={t("ov.currentPath")} {...operational.route} />
+            <CcSwitchOperationalItem summary={operational.ccSwitch} />
+          </div>
+        </Surface>
       </section>
     </div>
   );
@@ -174,14 +174,14 @@ function OverviewKpi({
       : "text-muted-foreground";
 
   return (
-    <GlassCard className="overview-kpi min-w-0 p-4" hover={false}>
+    <div className="overview-kpi min-w-0">
       <div className="flex items-center justify-between gap-2 text-xs text-muted-foreground">
         <span className="truncate">{label}</span>
         <Icon className={`size-4 shrink-0 ${iconTone}`} />
       </div>
       <div className="mt-2 text-2xl font-semibold tracking-tight">{value}</div>
       <div className="mt-1 truncate text-[11px] text-muted-foreground" title={detail}>{detail}</div>
-    </GlassCard>
+    </div>
   );
 }
 
@@ -206,7 +206,7 @@ function OperationalItem({
         ? "text-red-600 dark:text-red-400"
         : "text-muted-foreground";
   return (
-    <div className="overview-status-item flex min-h-[92px] gap-3 bg-[var(--glass-inset-bg)] p-4">
+    <div className="overview-status-item flat-status-cell flex min-h-[92px] gap-3 p-4">
       <Icon className={`mt-0.5 size-5 shrink-0 ${color}`} />
       <div className="min-w-0">
         <div className="text-sm text-muted-foreground">{title}</div>
@@ -226,7 +226,7 @@ function CcSwitchOperationalItem({ summary }: { summary: CcSwitchStatus }) {
       : "text-muted-foreground";
 
   return (
-    <div className="overview-status-item flex min-h-[92px] gap-3 bg-[var(--glass-inset-bg)] p-4">
+    <div className="overview-status-item flat-status-cell flex min-h-[92px] gap-3 p-4">
       <RefreshCw className={`mt-0.5 size-5 shrink-0 ${color}`} />
       <div className="min-w-0">
         <div className="text-sm text-muted-foreground">{t("ov.upstreamStatus")}</div>
@@ -248,7 +248,7 @@ function IssueSummary({ status }: { status: OperationalStatus }) {
         : "text-muted-foreground";
 
   return (
-    <GlassCard className="flex min-h-[58px] items-center gap-3 px-4 py-3" hover={false}>
+    <div className="flex min-h-[58px] items-center gap-3 border-y border-border/60 px-1 py-3">
       <CircleAlert className={`size-5 shrink-0 ${color}`} />
       <div className="min-w-0 flex-1">
         <div className="text-xs text-muted-foreground">{t("ov.recentIssues")}</div>
@@ -256,7 +256,7 @@ function IssueSummary({ status }: { status: OperationalStatus }) {
           {status.label} <span className="font-normal text-muted-foreground">· {status.detail}</span>
         </div>
       </div>
-    </GlassCard>
+    </div>
   );
 }
 
@@ -280,12 +280,6 @@ export type OverviewOperationalSummary = {
   route: OperationalStatus;
   issues: OperationalStatus;
   ccSwitch: CcSwitchStatus;
-  nextStep: {
-    label: string;
-    detail: string;
-    action: string;
-    page: PageId;
-  };
 };
 
 export function deriveOverviewOperationalSummary(
@@ -400,7 +394,7 @@ export function deriveOverviewOperationalSummary(
         label: isRuntime
           ? (zh ? "等待连接配置" : "Waiting for connection setup")
           : (zh ? "尚未连接真实路径" : "No real connection path"),
-        detail: zh ? "不会用示例连接冒充真实状态" : "Preview paths are never presented as real",
+        detail: zh ? "缺少实时配置证据时保持未连接状态" : "The connection remains unverified without live configuration evidence",
         tone: isRuntime ? "warning" : "neutral",
       };
 
@@ -437,35 +431,7 @@ export function deriveOverviewOperationalSummary(
         label: zh ? "尚未获得实时验证" : "No live verification yet",
         detail: zh ? "非实时数据不会显示同步成功" : "Non-live data is never shown as successfully synced",
       };
-  const nextStep = !isRuntime
-    ? {
-        label: zh ? "启动并连接 d-token" : "Start and connect d-token",
-        detail: zh ? "先启动本地服务，再检测和连接你的 AI 编码工具。" : "Start the local service, then detect and connect your AI coding tools.",
-        action: zh ? "前往安装与连接" : "Open Install & Connect",
-        page: "install" as PageId,
-      }
-    : !routeConfigured || trafficAgents.length === 0
-      ? {
-          label: zh ? "连接 Agent 并验证" : "Connect and verify an agent",
-          detail: zh ? "完成连接后发送一次真实请求，确认流量经过 d-token。" : "Send one real request after setup to verify traffic passes through d-token.",
-          action: zh ? "前往安装与连接" : "Open Install & Connect",
-          page: "install" as PageId,
-        }
-      : issueCount > 0
-        ? {
-            label: zh ? "检查并修复问题" : "Inspect and fix issues",
-            detail: zh ? "Doctor 会解释失败原因，并只对可安全处理的问题提供修复。" : "Doctor explains failures and only offers safe fixes.",
-            action: zh ? "打开 Doctor" : "Open Doctor",
-            page: "doctor" as PageId,
-          }
-        : {
-            label: zh ? "查看节省详情" : "Review savings details",
-            detail: zh ? "连接已经工作，可以查看请求、节省与耗时趋势。" : "The connection works; review request, savings, and latency trends.",
-            action: zh ? "查看分析" : "View analytics",
-            page: "analytics" as PageId,
-          };
-
-  return { service, agents, route: routeStatus, issues, ccSwitch, nextStep };
+  return { service, agents, route: routeStatus, issues, ccSwitch };
 }
 
 function deriveCcSwitchStatus(
@@ -561,51 +527,50 @@ function uniqueText(values: unknown[]): string[] {
   return Array.from(new Set(values.map((value) => safeText(value, "")).filter(Boolean)));
 }
 
-function overviewEvidenceLabel(state: EvidenceState): string {
-  if (state === "verified") return "实时本地数据";
-  if (state === "preview") return "浏览器预览";
-  if (state === "loading") return "正在检查本地服务";
-  if (state === "stale") return "数据已过期";
-  if (state === "partial") return "数据不完整";
-  return "本地数据不可用";
+function overviewEvidenceLabel(state: EvidenceState, lang: Lang): string {
+  const zh = lang === "zh";
+  if (state === "verified") return zh ? "实时本地数据" : "Live local data";
+  if (state === "preview") return zh ? "浏览器预览" : "Browser preview";
+  if (state === "loading") return zh ? "正在检查本地服务" : "Checking local service";
+  if (state === "stale") return zh ? "数据已过期" : "Data is stale";
+  if (state === "partial") return zh ? "数据不完整" : "Data is incomplete";
+  return zh ? "本地数据不可用" : "Local data unavailable";
 }
 
-export function overviewFromPayload(payload: Record<string, any> | null, status: string) {
+export function overviewFromPayload(payload: Record<string, any> | null, status: string, lang: Lang = "zh") {
+  const zh = lang === "zh";
   const evidenceState = classifyEvidence({ payload, status, requireRuntimeIdentity: true });
   const stats = objectValue(payload?.stats);
   const runtimeTokens = objectValue(stats.tokens);
   const requestLogs = recordArray(payload?.request_logs);
-  const history = recordArray(objectValue(payload?.history).history);
-  const trafficAvailable = requestLogs.length > 0;
+  // An owned, verified runtime may legitimately have zero requests. The
+  // presence of the typed collection is evidence; its length is the value.
+  const trafficAvailable = evidenceState === "verified" && Array.isArray(payload?.request_logs);
 
-  const logSavedValues = requestLogs
+  const physicalPairs = requestLogs.flatMap((log) => {
+    const before = numberEvidence(log.input_tokens_before);
+    const after = numberEvidence(log.input_tokens_after);
+    return before === null || after === null ? [] : [{ before, saved: Math.max(0, before - after) }];
+  });
+  const physicalSaved = physicalPairs.length > 0
+    ? physicalPairs.reduce((total, pair) => total + pair.saved, 0)
+    : null;
+  const physicalBefore = physicalPairs.length > 0
+    ? physicalPairs.reduce((total, pair) => total + pair.before, 0)
+    : null;
+  const claimableValues = requestLogs
     .map((log) => numberEvidence(log.tokens_saved))
     .filter((value): value is number => value !== null);
-  const historySavedValues = history
-    .map((item) => timestampEvidence(item.bucket_ms ?? item.ts) === null ? null : numberEvidence(item.saved))
-    .filter((value): value is number => value !== null);
-  const totalSaved = firstNumberEvidence(runtimeTokens.saved, stats.tokens_saved)
-    ?? (historySavedValues.length > 0 ? historySavedValues.reduce((total, value) => total + value, 0) : null)
-    ?? (logSavedValues.length > 0 ? logSavedValues.reduce((total, value) => total + value, 0) : null);
+  const claimableSaved = firstNumberEvidence(runtimeTokens.saved, stats.tokens_saved)
+    ?? (claimableValues.length > 0 ? claimableValues.reduce((total, value) => total + value, 0) : 0);
+  const savingsPercent = physicalSaved !== null && physicalBefore !== null && physicalBefore > 0
+    ? (physicalSaved / physicalBefore) * 100
+    : null;
+  const metricsAvailable = physicalSaved !== null || trafficAvailable;
+  const compressionAvailable = savingsPercent !== null || trafficAvailable;
 
-  const logInputValues = requestLogs
-    .map((log) => numberEvidence(log.input_tokens_before))
-    .filter((value): value is number => value !== null);
-  const totalBefore = firstNumberEvidence(runtimeTokens.input, stats.input_tokens)
-    ?? (logInputValues.length > 0 ? logInputValues.reduce((total, value) => total + value, 0) : null);
-  const explicitSavingsPercent = firstNumberEvidence(stats.savings_percent);
-  const savingsPercent = explicitSavingsPercent
-    ?? (totalSaved !== null && totalBefore !== null && totalBefore > 0 ? (totalSaved / totalBefore) * 100 : null);
-  const metricsAvailable = totalSaved !== null;
-  const compressionAvailable = savingsPercent !== null;
-
-  const historyTrend = history.flatMap((item) => {
-    const timestamp = timestampEvidence(item.bucket_ms ?? item.ts);
-    const saved = numberEvidence(item.saved);
-    return timestamp === null || saved === null ? [] : [{ timestamp, saved }];
-  });
   const hasRuntimeData = evidenceState === "verified"
-    && (trafficAvailable || metricsAvailable || compressionAvailable || historyTrend.length > 0);
+    && (trafficAvailable || metricsAvailable || compressionAvailable);
 
   if (!hasRuntimeData) {
     return {
@@ -615,37 +580,31 @@ export function overviewFromPayload(payload: Record<string, any> | null, status:
       trafficAvailable: false,
       sourceLabel:
         evidenceState === "verified"
-            ? "本地服务在线 · 暂无请求记录"
+            ? (zh ? "本地服务在线 · 暂无请求记录" : "Local service online · no request records")
             : evidenceState === "preview"
-              ? "浏览器预览 · 未连接真实数据"
+              ? (zh ? "浏览器预览 · 未连接实时数据" : "Browser preview · no live data")
               : evidenceState === "stale"
-                ? "本地数据已过期 · 不作为当前状态"
+                ? (zh ? "本地数据已过期 · 不作为当前状态" : "Local data is stale · not treated as current")
                 : evidenceState === "partial"
-                  ? "本地数据不完整 · 未确认当前状态"
+                  ? (zh ? "本地数据不完整 · 未确认当前状态" : "Local data is incomplete · current state unverified")
                   : evidenceState === "loading"
-                    ? "正在连接 d-token 本地服务"
-                    : "d-token 本地服务暂不可用",
+                    ? (zh ? "正在连接 d-token 本地服务" : "Connecting to the local d-token service")
+                    : (zh ? "d-token 本地服务暂不可用" : "Local d-token service unavailable"),
       stats: emptyOverviewStats,
       trend: [],
       activityDays: [],
       tools: [],
-      activitySource: "等待真实本地请求记录",
-      errorLabel: "尚无当前错误证据",
+      activitySource: zh ? "等待实时本地请求记录" : "Waiting for live local request records",
+      errorLabel: zh ? "尚无当前错误证据" : "No current error evidence",
     };
   }
 
-  const errorCount = requestLogs.filter((log) => Boolean(log.error)).length;
+  const requestCount = firstNumberEvidence(objectValue(stats.requests).total) ?? requestLogs.length;
+  const errorCount = firstNumberEvidence(objectValue(stats.requests).failed)
+    ?? requestLogs.filter((log) => Boolean(log.error)).length;
   const agents = new Set(requestLogs.map((log) => safeText(log.agent, "")).filter(Boolean));
   const activeAgents = agents.size;
-  const runtimeTrend = historyTrend.length > 0
-    ? [...historyTrend]
-      .sort((a, b) => a.timestamp - b.timestamp)
-      .slice(-14)
-      .map((item) => ({
-        day: formatTrendTime(item.timestamp),
-        saved: item.saved,
-      }))
-    : buildTrendFromLogs(requestLogs);
+  const runtimeTrend = buildTrendFromLogs(requestLogs);
 
   return {
     source: trafficAvailable ? "d-token-runtime" : "d-token-runtime-metrics",
@@ -653,41 +612,40 @@ export function overviewFromPayload(payload: Record<string, any> | null, status:
     compressionAvailable,
     trafficAvailable,
     sourceLabel: trafficAvailable
-      ? `d-token 本地服务 · ${requestLogs.length} 条请求`
-      : "本地服务在线 · 暂无请求记录",
+      ? requestCount === 0
+        ? (zh ? "本地服务在线 · 暂无请求记录" : "Local service online · no request records")
+        : (zh ? `d-token 本地服务 · ${requestCount} 条请求` : `Local d-token service · ${requestCount} request(s)`)
+      : (zh ? "本地服务在线 · 暂无请求记录" : "Local service online · no request records"),
     stats: {
-      savedTotal: totalSaved ?? 0,
+      savedTotal: physicalSaved ?? 0,
+      claimableSaved,
       compressionRate: savingsPercent === null ? 0 : Math.max(0, Math.min(1, savingsPercent / 100)),
       activeAgents,
       errorsToday: errorCount,
-      requestCount: requestLogs.length,
+      requestCount,
     },
     trend: runtimeTrend,
     activityDays: buildActivityDaysFromLogs(requestLogs),
     tools: buildToolsFromLogs(requestLogs),
-    activitySource: trafficAvailable ? "d-token 本地请求记录" : "等待真实本地请求记录",
+    activitySource: trafficAvailable
+      ? (zh ? "d-token 本地请求记录" : "Local d-token request records")
+      : (zh ? "等待实时本地请求记录" : "Waiting for live local request records"),
     errorLabel: trafficAvailable
-      ? (errorCount > 0 ? "存在请求失败" : "没有请求失败")
-      : "尚无真实请求记录",
+      ? (errorCount > 0
+          ? (zh ? "存在请求失败" : "Request failures recorded")
+          : (zh ? "没有请求失败" : "No request failures recorded"))
+      : (zh ? "尚无实时请求记录" : "No live request records"),
   };
 }
 
 const emptyOverviewStats = {
   savedTotal: 0,
+  claimableSaved: 0,
   compressionRate: 0,
   activeAgents: 0,
   errorsToday: 0,
   requestCount: 0,
 };
-
-function formatTrendTime(timestamp: number) {
-  return new Intl.DateTimeFormat("zh-CN", {
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    hour12: false,
-  }).format(new Date(timestamp));
-}
 
 function buildActivityDaysFromLogs(logs: any[]): ActivityDay[] {
   if (logs.length === 0) return [];
@@ -754,8 +712,10 @@ function buildTrendFromLogs(logs: any[]) {
   const byDay = new Map<string, number>();
   for (const log of logs) {
     const timestamp = timestampEvidence(log?.timestamp_ms);
-    const saved = numberEvidence(log?.tokens_saved);
-    if (timestamp === null || saved === null) continue;
+    const before = numberEvidence(log?.input_tokens_before);
+    const after = numberEvidence(log?.input_tokens_after);
+    if (timestamp === null || before === null || after === null) continue;
+    const saved = Math.max(0, before - after);
     const day = new Date(timestamp).toISOString().slice(5, 10);
     byDay.set(day, (byDay.get(day) ?? 0) + saved);
   }

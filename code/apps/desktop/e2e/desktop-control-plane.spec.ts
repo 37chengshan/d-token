@@ -14,11 +14,17 @@ test.describe("d-token desktop control plane", () => {
         await app.navigateTo(target);
         await expect(app.navItem(target.navLabel)).toHaveAttribute("aria-current", "page");
         await expect(app.heading(target.heading)).toBeVisible();
+        const surfaceStructure = await app.main.evaluate((main) => ({
+          nestedCount: main.querySelectorAll("[data-surface] [data-surface]").length,
+          primaryCount: main.querySelectorAll('[data-surface="primary"], [data-surface="metric-strip"]').length,
+        }));
+        expect(surfaceStructure.nestedCount, `${target.heading} must not nest product surfaces`).toBe(0);
+        expect(surfaceStructure.primaryCount, `${target.heading} must use at most two bounded primary surfaces`).toBeLessThanOrEqual(2);
       });
     }
   });
 
-  test("browser preview fails closed for native installation and change mutations", async ({ page }) => {
+  test("browser preview fails closed for native detection and change mutations", async ({ page }) => {
     const unexpectedExternalRequests: string[] = [];
     page.on("request", (request) => {
       const url = new URL(request.url());
@@ -35,9 +41,9 @@ test.describe("d-token desktop control plane", () => {
 
     await app.navigateTo(MAIN_PAGES[1]);
     await expect(app.main.getByText("浏览器预览", { exact: true }).first()).toBeVisible();
-    await app.main.getByRole("button", { name: "安装并启动 d-token", exact: true }).click();
+    await app.main.getByRole("button", { name: "检测本地环境", exact: true }).click();
     await expect(
-      app.main.getByText("当前是浏览器预览，真实安装事务需要在 Tauri 桌面窗口中运行。", {
+      app.main.getByText("当前是浏览器预览，本机检测需要在 Tauri 桌面窗口中运行。", {
         exact: true,
       }),
     ).toBeVisible();
@@ -61,16 +67,18 @@ test.describe("d-token desktop control plane", () => {
     await expect(app.main.getByText("浏览器预览", { exact: true }).first()).toBeVisible();
 
     await expect(app.main.getByRole("button", { name: /^(启动服务|停止服务)$/ })).toHaveCount(0);
-    for (const label of [
-      "自动启动 d-token 服务",
-      "诊断数据上传",
-      "智能学习全面扫描",
-      "自动检查更新",
-    ]) {
+    await expect(app.main.getByRole("switch", { name: "自动启动 d-token 服务", exact: true })).toBeDisabled();
+    await expect(app.main.getByText("浏览器预览", { exact: true })).toHaveCount(2);
+    await expect(app.main.getByRole("button", { name: "检查更新", exact: true })).toBeDisabled();
+    await expect(app.main.getByText("只接受经过签名验证的发布源；当前未配置发布源时会明确显示不可用。", { exact: true })).toBeVisible();
+    await expect(app.main.getByRole("switch", { name: "诊断数据上传", exact: true })).toHaveCount(0);
+    await expect(app.main.getByText("始终关闭", { exact: true })).toBeVisible();
+    for (const label of ["智能学习全面扫描", "自动检查更新"]) {
       await expect(app.main.getByRole("switch", { name: label, exact: true })).toBeDisabled();
     }
     await expect(app.main.getByRole("button", { name: "深度扫描", exact: true })).toBeDisabled();
-    await expect(app.main.getByRole("button", { name: "管理范围", exact: true })).toBeDisabled();
+    await expect(app.main.getByRole("button", { name: "管理范围", exact: true })).toHaveCount(0);
+    await expect(app.main.getByText("在“安装与连接 → 智能学习”中管理", { exact: true })).toBeVisible();
   });
 
   test("production-facing pages and workbench tabs exclude development test vocabulary", async ({ page }) => {
@@ -117,6 +125,8 @@ test.describe("d-token desktop control plane", () => {
 
     await expect(app.main.getByRole("heading", { level: 1 })).toHaveCount(1);
     await expect(app.main.getByText("建议下一步", { exact: true })).toHaveCount(0);
+    await expect(app.main.getByRole("button", { name: "切换时间范围: 年", exact: true })).toHaveAttribute("aria-pressed", "true");
+    await expect(app.main.locator('[data-testid="activity-year"]')).toBeVisible();
 
     const functionEntryName =
       /^(?:前往安装与连接|安装\s*\/\s*配置 Agent|开始配置|启动并连接 d-token|打开 Doctor|查看分析)$/;
@@ -128,7 +138,13 @@ test.describe("d-token desktop control plane", () => {
 
   test("dark appearance stays selected in preview without a native persistence claim", async ({ page }) => {
     const app = new AppShellPage(page);
+    await page.emulateMedia({ reducedMotion: "no-preference" });
     await app.open();
+    const surface = await app.surfaceState();
+    expect(surface.fieldCount).toBe(0);
+    expect(surface.legacyLayerCount).toBe(0);
+    expect(surface.backgroundImage).toBe("none");
+    expect(surface.backgroundColor).not.toBe("rgba(0, 0, 0, 0)");
     await app.navigateTo(MAIN_PAGES[5]);
     await expect(app.main.getByText("浏览器预览", { exact: true }).first()).toBeVisible();
 
@@ -142,7 +158,7 @@ test.describe("d-token desktop control plane", () => {
     await expect(app.main.getByText("已保存", { exact: true })).toHaveCount(0);
   });
 
-  test("reduced-motion preference leaves ambient and page motion idle", async ({ page }) => {
+  test("reduced-motion preference leaves page motion idle", async ({ page }) => {
     const app = new AppShellPage(page);
     await page.emulateMedia({ reducedMotion: "reduce" });
     await app.open();
@@ -152,6 +168,34 @@ test.describe("d-token desktop control plane", () => {
     expect(motion.animationNames.length).toBeGreaterThan(0);
     expect(motion.animationNames.every((animationName) => animationName === "none")).toBe(true);
     expect(motion.runningCount).toBe(0);
+  });
+
+  test("navigation icons and page stages expose repeatable visible motion", async ({ page }) => {
+    const app = new AppShellPage(page);
+    await page.emulateMedia({ reducedMotion: "no-preference" });
+    await app.open();
+
+    const analytics = app.navItem("分析");
+    const icon = analytics.locator('[data-motion-id="analytics"]');
+    const before = Number(await icon.getAttribute("data-motion-trigger"));
+    await analytics.hover();
+    const hoverMotion = await analytics.locator(".icon-bar-1").evaluate((element) => {
+      const style = window.getComputedStyle(element);
+      return { name: style.animationName, iterations: style.animationIterationCount };
+    });
+    expect(hoverMotion.name).toBe("dtoken-bar-grow");
+    expect(hoverMotion.iterations).toBe("1");
+    expect(Number(await icon.getAttribute("data-motion-trigger"))).toBe(before);
+
+    await analytics.click();
+    await app.heading("分析").waitFor();
+    const pageMotion = await app.main.locator(".shell-page-stage").evaluate((element) => {
+      const style = window.getComputedStyle(element);
+      return { name: style.animationName, duration: style.animationDuration, transform: style.transform };
+    });
+    expect(pageMotion.name).toBe("dtoken-page-enter");
+    expect(pageMotion.duration).toBe("0.22s");
+    expect(Number(await icon.getAttribute("data-motion-trigger"))).toBeGreaterThan(before);
   });
 
   test("keyboard Tab reaches a visibly focused primary navigation item", async ({ page, browserName }) => {

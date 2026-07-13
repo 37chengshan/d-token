@@ -58,9 +58,22 @@ export class AppShellPage {
     return dark;
   }
 
+  async surfaceState() {
+    return this.page.evaluate(() => {
+      const shell = document.querySelector(".app-shell");
+      const style = shell ? window.getComputedStyle(shell) : null;
+      return {
+        fieldCount: document.querySelectorAll(".background-flow-field, .background-atmosphere").length,
+        legacyLayerCount: document.querySelectorAll(".background-stars, .background-nebula").length,
+        backgroundImage: style?.backgroundImage ?? "missing",
+        backgroundColor: style?.backgroundColor ?? "missing",
+      };
+    });
+  }
+
   async reducedMotionState() {
     return this.page.evaluate(() => {
-      const relevantSelector = ".background-stars, .background-nebula, .shell-page";
+      const relevantSelector = ".shell-page, .shell-page-stage, .animated-nav-icon .icon-part";
       const relevantElements = Array.from(document.querySelectorAll(relevantSelector));
       const runningAnimations = document.getAnimations().filter((animation) => {
         const target = (animation.effect as KeyframeEffect | null)?.target;

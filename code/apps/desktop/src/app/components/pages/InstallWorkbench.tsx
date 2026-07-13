@@ -3,6 +3,7 @@
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "../ui/tabs";
 import { Rocket, ScanSearch, ScrollText, SlidersHorizontal } from "lucide-react";
 import { useT } from "../../lib/i18n";
+import { useState } from "react";
 import { Install } from "./Install";
 import { SmartLearning } from "./SmartLearning";
 import { Advanced } from "./Advanced";
@@ -10,6 +11,7 @@ import { LogsSecurity } from "./LogsSecurity";
 
 export function InstallWorkbench() {
   const t = useT();
+  const [activeTab, setActiveTab] = useState("one-click");
   const workbenchTabs = [
     {
       value: "one-click",
@@ -39,15 +41,15 @@ export function InstallWorkbench() {
 
   return (
     <div>
-      <Tabs defaultValue="one-click" className="gap-5">
-        <TabsList className="install-workbench-nav grid h-20 w-full grid-cols-4 overflow-hidden rounded-lg border border-[var(--glass-inset-border)] bg-[var(--glass-bg)] p-0 shadow-sm">
+      <Tabs value={activeTab} onValueChange={setActiveTab} className="gap-5">
+        <TabsList className="install-workbench-nav grid h-20 w-full grid-cols-4 overflow-hidden rounded-lg border border-border/70 bg-card/80 p-0 shadow-sm">
           {workbenchTabs.map((item) => {
             const Icon = item.icon;
             return (
               <TabsTrigger
                 key={item.value}
                 value={item.value}
-                className="install-workbench-nav-item relative h-full min-w-0 flex-none flex-col items-stretch justify-center gap-1 rounded-none border-0 border-r border-[var(--glass-inset-border)] px-3 py-2 text-left whitespace-normal last:border-r-0"
+                className="install-workbench-nav-item relative h-full min-w-0 flex-none flex-col items-stretch justify-center gap-1 rounded-none border-0 border-r border-border/60 px-3 py-2 text-left whitespace-normal last:border-r-0"
               >
                 <span className="flex min-w-0 items-center gap-2">
                   <span className="install-workbench-nav-icon flex size-7 shrink-0 items-center justify-center rounded-md">
@@ -63,7 +65,7 @@ export function InstallWorkbench() {
           })}
         </TabsList>
         <TabsContent value="one-click">
-          <Install />
+          <Install onOpenAdvanced={() => setActiveTab("advanced")} />
         </TabsContent>
         <TabsContent value="smart-learning">
           <SmartLearning />

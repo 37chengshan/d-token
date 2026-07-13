@@ -112,6 +112,14 @@ support\scripts\run_release_verification.ps1 -IncludeOpenCode
 
 每份发布验证报告会记录 Git HEAD、dirty 状态、候选指纹、操作系统/架构、PowerShell、Node、rustc 和 Cargo 版本。正式桌面打包时，`prepare_desktop_sidecars.ps1 -Release` 会写入 `code/target/release/d-token-release-candidate.json`；bundle audit 要求该指纹与当前工作树一致，并要求 App 与安装包生成时间晚于候选戳。源码变化后必须重新打包，旧安装包不能继续冒充当前候选。
 
+Windows 公开发布由 `tauri-with-sidecar.mjs` 在 Tauri bundling 前调用 `sign_windows_sidecars.ps1`：只对 Tauri 实际引用的 MSVC externalBin 签名一次，再逐字节复制为 release 证据副本，随后同时验证 prepared、release 与安装后 sidecar 的 Authenticode。缺证书、signtool、时间戳或有效签名时 workflow 必须失败。
+
 `run_release_gate_contract_test.ps1` 是轻量回归检查，可在不运行真实 Agent 或外部服务的情况下验证 CI、no-touch 门禁、候选溯源和旧产物拦截规则没有被删掉。
 
 `run_release_candidate_provenance_test.ps1` 会在系统临时目录创建一次性 Git 仓库，动态证明“源码变化会让旧候选戳失效”和“早于候选戳的产物会被拒绝”；测试结束会删除它自己创建的临时目录。
+
+平台公开发布模板：
+
+- `.github/workflows/macos-release.yml` 只接受具备 Developer ID 与 Apple notarization 凭据的手动发布运行；签名、公证、staple、Gatekeeper 或 SHA-256 manifest 任一步失败都会阻止 artifact upload。
+- `.github/workflows/windows-release.yml` 只接受具备 Authenticode PFX 凭据的手动发布运行；Tauri 在 bundling 阶段签名，随后必须通过签名校验、当前候选 NSIS 静默安装/启动/文件一致性检查、卸载与 SHA-256 manifest 才上传 artifact。
+- 两个 workflow 都只上传 Actions artifact，不推送代码、不创建 GitHub Release。远程发布仍需用户明确授权。

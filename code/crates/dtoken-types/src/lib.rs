@@ -118,6 +118,13 @@ pub enum LayeredStage {
     RouteForward,
     ProviderForward,
     OpticalPreview,
+    OpticalPlan,
+    OpticalRender,
+    OpticalPatch,
+    OpticalValidate,
+    OpticalFallback,
+    UpstreamSendCommitted,
+    OpticalComplete,
     InstallStep,
     ConfigPatch,
 }
@@ -453,6 +460,8 @@ pub struct DtokenEvent {
     pub baseline_kind: Option<BaselineKind>,
     pub error_code: Option<String>,
     pub metadata: serde_json::Value,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_accounting: Option<HybridContextAccounting>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -485,6 +494,10 @@ pub struct RouteDecision {
     pub chain_mode: ChainMode,
     pub compression_policy: CompressionPolicy,
     pub reason: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_protocol: Option<Protocol>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_protocol: Option<Protocol>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -496,6 +509,334 @@ pub struct CompressionResult {
     pub elapsed_us: u128,
     pub transforms_applied: Vec<String>,
     pub body: serde_json::Value,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_accounting: Option<HybridContextAccounting>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum UsageEvidenceKind {
+    LocalEstimate,
+    ProviderActual,
+    PairedActual,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct UsageEvidence {
+    pub kind: UsageEvidenceKind,
+    pub source_revision: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct ModalityTokens {
+    pub text: Option<u64>,
+    pub vision: Option<u64>,
+    pub other: Option<u64>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct CacheTokens {
+    pub uncached: Option<u64>,
+    pub read: Option<u64>,
+    pub creation: Option<u64>,
+    pub creation_5m: Option<u64>,
+    pub creation_1h: Option<u64>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct InputTokenUsage {
+    pub normalized_total: Option<u64>,
+    pub modality: ModalityTokens,
+    pub cache: CacheTokens,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct PayloadByteUsage {
+    pub request_json: Option<u64>,
+    pub png_binary: Option<u64>,
+    pub base64_encoded: Option<u64>,
+    pub wire_body: Option<u64>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct UsageVector {
+    pub input: InputTokenUsage,
+    pub output_tokens: Option<u64>,
+    pub bytes: PayloadByteUsage,
+    pub cost_microusd: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct UsageMeasurement {
+    pub evidence: UsageEvidence,
+    pub usage: UsageVector,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct SignedSavings {
+    pub input_tokens: Option<i64>,
+    pub output_tokens: Option<i64>,
+    pub total_tokens: Option<i64>,
+    pub request_bytes: Option<i64>,
+    pub png_bytes: Option<i64>,
+    pub base64_bytes: Option<i64>,
+    pub cost_microusd: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct UsageComparison {
+    pub baseline: UsageMeasurement,
+    pub candidate: UsageMeasurement,
+    pub signed_savings: SignedSavings,
+}
+
+impl UsageComparison {
+    pub fn from_measurements(baseline: UsageMeasurement, candidate: UsageMeasurement) -> Self {
+        let baseline_input = baseline.usage.input.normalized_total;
+        let candidate_input = candidate.usage.input.normalized_total;
+        let baseline_output = baseline.usage.output_tokens;
+        let candidate_output = candidate.usage.output_tokens;
+        let baseline_bytes = outbound_request_bytes(&baseline.usage.bytes);
+        let candidate_bytes = outbound_request_bytes(&candidate.usage.bytes);
+
+        Self {
+            signed_savings: SignedSavings {
+                input_tokens: signed_difference(baseline_input, candidate_input),
+                output_tokens: signed_difference(baseline_output, candidate_output),
+                total_tokens: signed_total_difference(
+                    baseline_input,
+                    baseline_output,
+                    candidate_input,
+                    candidate_output,
+                ),
+                request_bytes: signed_difference(baseline_bytes, candidate_bytes),
+                png_bytes: signed_difference(
+                    baseline.usage.bytes.png_binary,
+                    candidate.usage.bytes.png_binary,
+                ),
+                base64_bytes: signed_difference(
+                    baseline.usage.bytes.base64_encoded,
+                    candidate.usage.bytes.base64_encoded,
+                ),
+                cost_microusd: signed_difference(
+                    baseline.usage.cost_microusd,
+                    candidate.usage.cost_microusd,
+                ),
+            },
+            baseline,
+            candidate,
+        }
+    }
+}
+
+fn outbound_request_bytes(bytes: &PayloadByteUsage) -> Option<u64> {
+    bytes.wire_body.or(bytes.request_json)
+}
+
+fn signed_difference(baseline: Option<u64>, candidate: Option<u64>) -> Option<i64> {
+    Some(saturating_i64_difference(baseline?, candidate?))
+}
+
+fn signed_total_difference(
+    baseline_input: Option<u64>,
+    baseline_output: Option<u64>,
+    candidate_input: Option<u64>,
+    candidate_output: Option<u64>,
+) -> Option<i64> {
+    let baseline = u128::from(baseline_input?) + u128::from(baseline_output?);
+    let candidate = u128::from(candidate_input?) + u128::from(candidate_output?);
+    Some(saturating_i64_difference_u128(baseline, candidate))
+}
+
+fn saturating_i64_difference(baseline: u64, candidate: u64) -> i64 {
+    saturating_i64_difference_u128(u128::from(baseline), u128::from(candidate))
+}
+
+fn saturating_i64_difference_u128(baseline: u128, candidate: u128) -> i64 {
+    if baseline >= candidate {
+        i64::try_from(baseline - candidate).unwrap_or(i64::MAX)
+    } else {
+        i64::try_from(candidate - baseline)
+            .map(|value| -value)
+            .unwrap_or(i64::MIN)
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum OptimizationDisposition {
+    Passthrough,
+    Shadow,
+    Active,
+    SemanticActive,
+    FallbackPreSend,
+    FallbackOriginalSent,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SentPayloadVariant {
+    Original,
+    Optimized,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum UpstreamSendState {
+    NotAttempted,
+    SendCommitted,
+    ResponseStarted,
+    StreamStarted,
+    Completed,
+    FailedBeforeCommit,
+    FailedAfterCommit,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SavingsAttribution {
+    None,
+    EstimatedActive,
+    ProviderReconciledActual,
+    PairedActual,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProviderActualUsage {
+    pub measurement: Option<UsageMeasurement>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AccountingValidationError {
+    UnsupportedSchemaVersion,
+    PostCommitCannotBePreSendFallback,
+    NonActiveDispositionCannotClaimSavings,
+    ActiveDispositionMustSendOptimizedPayload,
+    NonActiveDispositionMustSendOriginalPayload,
+    SavingsClaimRequiresCompletedSend,
+    EstimatedAttributionRequiresEstimate,
+    ProviderAttributionRequiresCounterfactualAndActual,
+    PairedAttributionRequiresPairedActual,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct HybridContextAccounting {
+    pub schema_version: u32,
+    pub disposition: OptimizationDisposition,
+    pub sent_payload: SentPayloadVariant,
+    pub upstream_state: UpstreamSendState,
+    pub estimated: Option<UsageComparison>,
+    pub provider_counterfactual_baseline: Option<UsageMeasurement>,
+    pub provider_actual_sent: ProviderActualUsage,
+    pub provider_reconciled_input_savings: Option<i64>,
+    pub paired_actual: Option<UsageComparison>,
+    pub attribution_basis: SavingsAttribution,
+    pub fallback_reason_code: Option<String>,
+}
+
+impl HybridContextAccounting {
+    pub fn validate(&self) -> Result<(), AccountingValidationError> {
+        if self.schema_version != 1 {
+            return Err(AccountingValidationError::UnsupportedSchemaVersion);
+        }
+        if self.disposition == OptimizationDisposition::FallbackPreSend
+            && self.upstream_state == UpstreamSendState::FailedAfterCommit
+        {
+            return Err(AccountingValidationError::PostCommitCannotBePreSendFallback);
+        }
+        if matches!(
+            self.disposition,
+            OptimizationDisposition::Active | OptimizationDisposition::SemanticActive
+        ) {
+            if self.sent_payload != SentPayloadVariant::Optimized {
+                return Err(AccountingValidationError::ActiveDispositionMustSendOptimizedPayload);
+            }
+        } else {
+            if self.sent_payload != SentPayloadVariant::Original {
+                return Err(AccountingValidationError::NonActiveDispositionMustSendOriginalPayload);
+            }
+            if self.attribution_basis != SavingsAttribution::None {
+                return Err(AccountingValidationError::NonActiveDispositionCannotClaimSavings);
+            }
+        }
+
+        if self.attribution_basis != SavingsAttribution::None
+            && self.upstream_state != UpstreamSendState::Completed
+        {
+            return Err(AccountingValidationError::SavingsClaimRequiresCompletedSend);
+        }
+        match self.attribution_basis {
+            SavingsAttribution::None => Ok(()),
+            SavingsAttribution::EstimatedActive if self.estimated.is_some() => Ok(()),
+            SavingsAttribution::EstimatedActive => {
+                Err(AccountingValidationError::EstimatedAttributionRequiresEstimate)
+            }
+            SavingsAttribution::ProviderReconciledActual
+                if self.provider_counterfactual_baseline.is_some()
+                    && self.provider_actual_sent.measurement.is_some()
+                    && self.provider_reconciled_input_savings.is_some() =>
+            {
+                Ok(())
+            }
+            SavingsAttribution::ProviderReconciledActual => {
+                Err(AccountingValidationError::ProviderAttributionRequiresCounterfactualAndActual)
+            }
+            SavingsAttribution::PairedActual if self.paired_actual.is_some() => Ok(()),
+            SavingsAttribution::PairedActual => {
+                Err(AccountingValidationError::PairedAttributionRequiresPairedActual)
+            }
+        }
+    }
+
+    pub fn claimable_signed_savings(&self) -> Option<&SignedSavings> {
+        if self.validate().is_err()
+            || !matches!(
+                self.disposition,
+                OptimizationDisposition::Active | OptimizationDisposition::SemanticActive
+            )
+            || self.sent_payload != SentPayloadVariant::Optimized
+            || self.upstream_state != UpstreamSendState::Completed
+        {
+            return None;
+        }
+        match self.attribution_basis {
+            SavingsAttribution::EstimatedActive => self
+                .estimated
+                .as_ref()
+                .map(|comparison| &comparison.signed_savings),
+            SavingsAttribution::PairedActual => self
+                .paired_actual
+                .as_ref()
+                .map(|comparison| &comparison.signed_savings),
+            SavingsAttribution::None | SavingsAttribution::ProviderReconciledActual => None,
+        }
+    }
+
+    pub fn provider_reconciled_signed_savings(&self) -> Option<SignedSavings> {
+        if self.validate().is_err()
+            || self.attribution_basis != SavingsAttribution::ProviderReconciledActual
+        {
+            return None;
+        }
+        let baseline = self.provider_counterfactual_baseline.clone()?;
+        let actual = self.provider_actual_sent.measurement.clone()?;
+        Some(UsageComparison::from_measurements(baseline, actual).signed_savings)
+    }
+
+    pub fn legacy_positive_tokens_saved(&self) -> u64 {
+        self.claimable_signed_savings()
+            .and_then(|savings| savings.total_tokens.or(savings.input_tokens))
+            .filter(|tokens| *tokens > 0)
+            .and_then(|tokens| u64::try_from(tokens).ok())
+            .unwrap_or(0)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -517,6 +858,8 @@ pub struct RequestLog {
     pub latency_ms: Option<u64>,
     pub error: Option<String>,
     pub config_source: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_accounting: Option<HybridContextAccounting>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -597,6 +940,11 @@ pub enum VisionExactnessClass {
 pub enum VisionTokenFormula {
     PixelAreaDivisor {
         pixels_per_token: f64,
+        safety_margin_percent: f64,
+    },
+    PatchGrid {
+        patch_size_px: u32,
+        max_tokens: usize,
         safety_margin_percent: f64,
     },
     #[default]
@@ -722,6 +1070,13 @@ pub struct OpticalGlobalPolicy {
     pub max_candidate_chars_per_request: usize,
     pub max_plan_time_ms: u64,
     pub max_render_time_ms: u64,
+    pub max_total_pixels: u64,
+    pub max_png_bytes: u64,
+    pub max_base64_bytes: u64,
+    pub max_outbound_body_bytes: u64,
+    pub max_memory_bytes: u64,
+    pub max_concurrent_renders: usize,
+    pub render_queue_timeout_ms: u64,
     pub public_summary_only: bool,
 }
 
@@ -735,6 +1090,13 @@ impl Default for OpticalGlobalPolicy {
             max_candidate_chars_per_request: 512000,
             max_plan_time_ms: 50,
             max_render_time_ms: 1500,
+            max_total_pixels: 16_000_000,
+            max_png_bytes: 32 * 1024 * 1024,
+            max_base64_bytes: 48 * 1024 * 1024,
+            max_outbound_body_bytes: 64 * 1024 * 1024,
+            max_memory_bytes: 128 * 1024 * 1024,
+            max_concurrent_renders: 2,
+            render_queue_timeout_ms: 100,
             public_summary_only: true,
         }
     }
@@ -798,12 +1160,59 @@ pub struct OpticalCapabilitySnapshot {
     pub supersedes_snapshot_id: Option<String>,
     pub provider_family: ProviderFamily,
     pub provider_id: Option<String>,
+    #[serde(default)]
+    pub route_id: Option<String>,
     pub model_base: String,
     pub endpoint: OpticalEndpoint,
     pub capability: OpticalModelCapability,
     pub verified_at_ms: u64,
     pub source: String,
     pub notes: Option<String>,
+    #[serde(default)]
+    pub attestation: Option<OpticalCapabilityAttestation>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct OpticalCapabilityAttestation {
+    pub schema_version: u32,
+    pub algorithm: String,
+    pub authority_id: String,
+    pub key_id: String,
+    pub issued_at_ms: u64,
+    pub expires_at_ms: u64,
+    pub renderer_profile_digest: String,
+    pub font_digest: String,
+    pub eval_artifact_digest: String,
+    pub signature_base64: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct OpticalTrustedAuthority {
+    pub authority_id: String,
+    pub key_id: String,
+    pub public_key_base64: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct OpticalEvalArtifact {
+    pub schema_version: u32,
+    pub artifact_id: String,
+    pub model_base: String,
+    pub endpoint: OpticalEndpoint,
+    pub renderer_profile_digest: String,
+    pub font_digest: String,
+    pub corpus_digest: String,
+    pub evaluated_at_ms: u64,
+    pub sample_count: u64,
+    pub exact_failures: u64,
+    pub unsafe_failures: u64,
+    pub baseline_passes: u64,
+    pub candidate_passes: u64,
+    pub quality_delta: f64,
+    pub signed_input_token_delta: i64,
+    pub signed_cost_delta_microusd: i64,
+    pub latency_p95_delta_ms: i64,
+    pub passed: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -812,12 +1221,33 @@ pub struct RouteOpticalPolicyEntry {
     pub policy: RouteOpticalPolicy,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct OpticalRuntimeConfig {
+    #[serde(default = "default_optical_runtime_schema_version")]
+    pub schema_version: u32,
     pub global_policy: OpticalGlobalPolicy,
     pub route_policies: Vec<RouteOpticalPolicyEntry>,
     pub capability_snapshots: Vec<OpticalCapabilitySnapshot>,
+    pub trusted_authorities: Vec<OpticalTrustedAuthority>,
+    pub eval_artifacts: Vec<OpticalEvalArtifact>,
+}
+
+fn default_optical_runtime_schema_version() -> u32 {
+    1
+}
+
+impl Default for OpticalRuntimeConfig {
+    fn default() -> Self {
+        Self {
+            schema_version: default_optical_runtime_schema_version(),
+            global_policy: OpticalGlobalPolicy::default(),
+            route_policies: Vec::new(),
+            capability_snapshots: Vec::new(),
+            trusted_authorities: Vec::new(),
+            eval_artifacts: Vec::new(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -886,11 +1316,25 @@ pub struct OpticalPreviewRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OpticalStatusPublicSummary {
+    pub schema_version: u32,
     pub enabled: bool,
+    /// Configured operator intent. This does not by itself authorize active execution.
+    pub configured_mode: OpticalMode,
+    /// Effective mode after route, attestation, evaluation, and runtime gates.
+    pub effective_mode: OpticalMode,
+    /// Backward-compatible alias for `effective_mode`.
     pub default_mode: OpticalMode,
     pub allow_active: bool,
     pub public_summary_only: bool,
     pub fail_closed: bool,
+    pub renderer_ready: bool,
+    pub patcher_ready: bool,
+    pub post_validator_ready: bool,
+    pub signed_accounting_ready: bool,
+    pub active_direct_routes: usize,
+    pub verified_attested_capabilities: usize,
+    pub rejected_capabilities: usize,
+    pub config_issue_count: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -903,6 +1347,12 @@ pub struct OpticalCapabilitiesPublicSummary {
     pub unsupported_path_status: CapabilityStatus,
     pub public_summary_only: bool,
     pub fail_closed: bool,
+    pub direct_anthropic_upstream_supported: bool,
+    pub streaming_passthrough_supported: bool,
+    pub deterministic_png_renderer: bool,
+    pub artifact_post_validation: bool,
+    pub signed_multimodal_accounting: bool,
+    pub capability_attestation_required: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -914,19 +1364,30 @@ pub struct OpticalCapabilityLifecyclePublicSummary {
     pub superseded_snapshots: usize,
     pub verified_rules: usize,
     pub rejected_rules: usize,
+    pub trusted_authorities: usize,
+    pub eval_artifacts: usize,
+    pub passing_eval_artifacts: usize,
+    pub attestation_required: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct OpticalEventMetadataPublicSummary {
     pub kind: String,
+    pub reason_code: Option<String>,
     pub final_status: OpticalPlanStatus,
     pub mode: OpticalMode,
     pub candidate_blocks: usize,
     pub preserved_blocks: usize,
     pub skipped_blocks: usize,
     pub estimated_images: usize,
+    pub patched_blocks: usize,
+    pub png_bytes: u64,
+    pub encoded_image_bytes: u64,
     pub net_saved_tokens: isize,
+    pub artifact_validated: bool,
+    pub attribution_basis: Option<SavingsAttribution>,
+    pub upstream_state: Option<UpstreamSendState>,
     pub graph_nodes: usize,
     pub graph_edges: usize,
     pub tool_dependency_edges: usize,
@@ -945,13 +1406,20 @@ impl Default for OpticalEventMetadataPublicSummary {
     fn default() -> Self {
         Self {
             kind: String::new(),
+            reason_code: None,
             final_status: OpticalPlanStatus::Disabled,
             mode: OpticalMode::Off,
             candidate_blocks: 0,
             preserved_blocks: 0,
             skipped_blocks: 0,
             estimated_images: 0,
+            patched_blocks: 0,
+            png_bytes: 0,
+            encoded_image_bytes: 0,
             net_saved_tokens: 0,
+            artifact_validated: false,
+            attribution_basis: None,
+            upstream_state: None,
             graph_nodes: 0,
             graph_edges: 0,
             tool_dependency_edges: 0,

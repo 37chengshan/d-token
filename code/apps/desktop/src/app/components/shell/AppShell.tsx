@@ -1,11 +1,12 @@
 import { lazy, Suspense, useEffect, useState } from "react";
-import { AnimatePresence, MotionConfig, motion } from "motion/react";
+import { AnimatePresence, MotionConfig } from "motion/react";
 import { Sidebar } from "./Sidebar";
 import { Topbar } from "./Topbar";
 import { StatusBar } from "./StatusBar";
-import { BackgroundBlobs } from "./BackgroundBlobs";
 import type { PageId } from "../../lib/nav";
 import { useI18n } from "../../lib/i18n";
+import { PageStage } from "./PageStage";
+import { NotificationBanner, NotificationLiveRegion } from "../common/NotificationCenter";
 
 const OverviewPage = lazy(() => import("../pages/Overview").then((module) => ({ default: module.Overview })));
 const InstallWorkbenchPage = lazy(() => import("../pages/InstallWorkbench").then((module) => ({ default: module.InstallWorkbench })));
@@ -54,38 +55,22 @@ export function AppShell() {
 
   return (
     <MotionConfig reducedMotion="user">
-      <div className={`app-shell app-bg ${collapsed ? "is-sidebar-collapsed" : ""}`}>
-        <Sidebar page={page} setPage={setPage} collapsed={collapsed} setCollapsed={setCollapsed} />
+      <div className={`app-shell ${collapsed ? "is-sidebar-collapsed" : ""}`}>
+        <Sidebar page={page} setPage={setPage} collapsed={collapsed} setCollapsed={setCollapsed} reducedMotion={reduceMotion} />
         <section className="shell-workspace">
-          <BackgroundBlobs />
-          <Topbar page={page} collapsed={collapsed} setCollapsed={setCollapsed} />
-          <div className="glass-stage relative flex min-w-0 flex-1 flex-col">
+          <Topbar page={page} collapsed={collapsed} setCollapsed={setCollapsed} reducedMotion={reduceMotion} />
+          <div className="shell-notification-slot"><NotificationBanner /></div>
+          <div className="shell-page-content relative flex min-w-0 flex-1 flex-col">
             <main className="shell-content-scroll min-h-0 flex-1 overflow-y-auto">
-              {reduceMotion ? (
-                <div key={page} className="shell-page mx-auto max-w-[1200px] p-4 min-[1080px]:p-6">
-                  <Suspense fallback={<PageFallback />}>
-                    {render()}
-                  </Suspense>
-                </div>
-              ) : (
-                <AnimatePresence mode="wait">
-                  <motion.div
-                    key={page}
-                    initial={{ opacity: 0, y: 2 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    exit={{ opacity: 0, y: -1 }}
-                    transition={{ duration: 0.18, ease: [0.2, 0, 0, 1] }}
-                    className="shell-page mx-auto max-w-[1200px] p-4 min-[1080px]:p-6"
-                  >
-                    <Suspense fallback={<PageFallback />}>
-                      {render()}
-                    </Suspense>
-                  </motion.div>
-                </AnimatePresence>
-              )}
+              <AnimatePresence mode="wait" initial={false}>
+                <PageStage key={page} reducedMotion={reduceMotion}>
+                  <Suspense fallback={<PageFallback />}>{render()}</Suspense>
+                </PageStage>
+              </AnimatePresence>
             </main>
             <StatusBar />
           </div>
+          <NotificationLiveRegion />
         </section>
       </div>
     </MotionConfig>
@@ -95,7 +80,7 @@ export function AppShell() {
 function PageFallback() {
   const { lang } = useI18n();
   return (
-    <div className="glass-light flex min-h-[280px] items-center justify-center rounded-lg border border-border/40 text-sm text-muted-foreground">
+    <div className="shell-page-fallback flex min-h-[280px] items-center justify-center rounded-lg border border-border/40 text-sm text-muted-foreground">
       {lang === "zh" ? "正在加载页面…" : "Loading view…"}
     </div>
   );

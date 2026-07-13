@@ -48,6 +48,7 @@ impl EventLedger {
             baseline_kind: None,
             error_code: None,
             metadata: json!({ "message": "M1 event ledger is initialized" }),
+            context_accounting: None,
         });
         ledger
     }
@@ -297,6 +298,7 @@ mod tests {
             baseline_kind: None,
             error_code: None,
             metadata: json!({ "sequence": sequence, "summary": "aggregate only" }),
+            context_accounting: None,
         }
     }
 

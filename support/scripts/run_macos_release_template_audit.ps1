@@ -41,7 +41,7 @@ $Checks = @(
   New-Check "workflow_uses_macos_runner" ($WorkflowText -match "macos-") @{
     path = $WorkflowPath
   }
-  New-Check "workflow_builds_frontend_and_tauri" (($WorkflowText -match "npm ci") -and ($WorkflowText -match "npm run build") -and ($WorkflowText -match "tauri build")) @{
+  New-Check "workflow_builds_frontend_and_tauri" (($WorkflowText -match "npm ci") -and ($WorkflowText -match "npm run build") -and (($WorkflowText -match "tauri build") -or ($WorkflowText -match "tauri:with-sidecar -- build"))) @{
     path = $WorkflowPath
   }
   New-Check "workflow_runs_release_quality_gates" (($WorkflowText -match "npm run test:run") -and ($WorkflowText -match "tsc --noEmit") -and ($WorkflowText -match "cargo fmt --all -- --check") -and ($WorkflowText -match "cargo clippy --workspace --all-targets -- -D warnings") -and ($WorkflowText -match "cargo test --workspace")) @{

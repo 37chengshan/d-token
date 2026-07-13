@@ -57,7 +57,7 @@ describe("Analytics runtime data truthfulness", () => {
     expect(screen.getAllByText("暂无真实请求记录")).not.toHaveLength(0);
   });
 
-  it("ignores stats-only values when no real request snapshot exists", () => {
+  it("ignores stats-only values while showing verified zeroes for an empty request snapshot", () => {
     dashboard.state = {
       payload: {
         ...runtimeIdentity,
@@ -79,7 +79,8 @@ describe("Analytics runtime data truthfulness", () => {
 
     expect(screen.getAllByText("本地服务在线 · 暂无请求记录")).not.toHaveLength(0);
     const kpis = screen.getByTestId("analytics-kpis");
-    expect(within(kpis).getAllByText("—")).toHaveLength(6);
+    expect(within(kpis).getAllByText("0")).toHaveLength(5);
+    expect(within(kpis).getByText("0.0%")).toBeInTheDocument();
     expect(screen.queryByText("9,999")).not.toBeInTheDocument();
     expect(screen.queryByText("777.0ms")).not.toBeInTheDocument();
     expect(screen.queryByText("99")).not.toBeInTheDocument();
@@ -145,7 +146,7 @@ describe("Analytics runtime data truthfulness", () => {
 });
 
 function metric(label: string) {
-  const card = screen.getByText(label).closest(".glass");
-  expect(card).not.toBeNull();
-  return card as HTMLElement;
+  const cell = screen.getByText(label).closest("[data-analytics-metric]");
+  expect(cell).not.toBeNull();
+  return cell as HTMLElement;
 }

@@ -16,6 +16,7 @@ pub struct RenderGeometryProfile {
     pub readable_chars_per_image: usize,
     pub pixels_per_token: f64,
     pub safety_margin_percent: f64,
+    pub token_formula: VisionTokenFormula,
 }
 
 pub fn anthropic_dense_v1() -> RenderGeometryProfile {
@@ -29,8 +30,11 @@ pub fn anthropic_dense_v1() -> RenderGeometryProfile {
         5,
         8,
         0,
-        750.0,
-        120.0,
+        VisionTokenFormula::PatchGrid {
+            patch_size_px: 28,
+            max_tokens: 1_568,
+            safety_margin_percent: 105.0,
+        },
     )
 }
 
@@ -45,8 +49,7 @@ fn build_profile(
     cell_width_px: usize,
     cell_height_px: usize,
     header_rows: usize,
-    pixels_per_token: f64,
-    safety_margin_percent: f64,
+    token_formula: VisionTokenFormula,
 ) -> RenderGeometryProfile {
     let usable_width = width_px.saturating_sub(pad_x_px.saturating_mul(2));
     let usable_height = max_height_px.saturating_sub(pad_y_px.saturating_mul(2));
@@ -54,6 +57,17 @@ fn build_profile(
     let physical_rows = usable_height.checked_div(cell_height_px).unwrap_or(0);
     let readable_rows = physical_rows.saturating_sub(header_rows);
     let readable_chars_per_image = cols.saturating_mul(readable_rows);
+    let (pixels_per_token, safety_margin_percent) = match &token_formula {
+        VisionTokenFormula::PixelAreaDivisor {
+            pixels_per_token,
+            safety_margin_percent,
+        } => (*pixels_per_token, *safety_margin_percent),
+        VisionTokenFormula::PatchGrid {
+            safety_margin_percent,
+            ..
+        } => (0.0, *safety_margin_percent),
+        VisionTokenFormula::Unknown => (0.0, 100.0),
+    };
 
     RenderGeometryProfile {
         profile_id: profile_id.to_string(),
@@ -70,6 +84,7 @@ fn build_profile(
         readable_chars_per_image,
         pixels_per_token,
         safety_margin_percent,
+        token_formula,
     }
 }
 
@@ -77,21 +92,46 @@ pub fn estimate_image_tokens(profile: &RenderGeometryProfile, image_count: usize
     if image_count == 0 {
         return 0;
     }
-    if !profile.pixels_per_token.is_finite() || profile.pixels_per_token <= 0.0 {
-        return usize::MAX;
+    match profile.token_formula {
+        VisionTokenFormula::PixelAreaDivisor {
+            pixels_per_token,
+            safety_margin_percent,
+        } => {
+            if !pixels_per_token.is_finite() || pixels_per_token <= 0.0 {
+                return usize::MAX;
+            }
+            let pixels = profile
+                .width_px
+                .saturating_mul(profile.max_height_px)
+                .saturating_mul(image_count);
+            let margin = if safety_margin_percent.is_finite() {
+                safety_margin_percent.max(100.0) / 100.0
+            } else {
+                return usize::MAX;
+            };
+            ((pixels as f64 / pixels_per_token) * margin)
+                .ceil()
+                .min(usize::MAX as f64) as usize
+        }
+        VisionTokenFormula::PatchGrid {
+            patch_size_px,
+            max_tokens,
+            safety_margin_percent,
+        } => {
+            let patch = usize::try_from(patch_size_px).unwrap_or_default();
+            if patch == 0 || max_tokens == 0 || !safety_margin_percent.is_finite() {
+                return usize::MAX;
+            }
+            let per_image = profile
+                .width_px
+                .div_ceil(patch)
+                .saturating_mul(profile.max_height_px.div_ceil(patch));
+            let conservative =
+                ((per_image as f64) * (safety_margin_percent.max(100.0) / 100.0)).ceil() as usize;
+            conservative.min(max_tokens).saturating_mul(image_count)
+        }
+        VisionTokenFormula::Unknown => usize::MAX,
     }
-
-    let pixels = profile
-        .width_px
-        .saturating_mul(profile.max_height_px)
-        .saturating_mul(image_count);
-    let margin = if profile.safety_margin_percent.is_finite() {
-        profile.safety_margin_percent.max(100.0) / 100.0
-    } else {
-        return usize::MAX;
-    };
-    let estimated = (pixels as f64 / profile.pixels_per_token) * margin;
-    estimated.ceil().min(usize::MAX as f64) as usize
 }
 
 pub fn images_required(profile: &RenderGeometryProfile, candidate_chars: usize) -> Option<usize> {
@@ -125,13 +165,9 @@ pub fn geometry_for_capability(
     } else {
         base.max_height_px
     };
-    let (pixels_per_token, safety_margin_percent) = match capability.vision_token_formula {
-        VisionTokenFormula::PixelAreaDivisor {
-            pixels_per_token,
-            safety_margin_percent,
-        } => (pixels_per_token, safety_margin_percent),
-        VisionTokenFormula::Unknown => return None,
-    };
+    if capability.vision_token_formula == VisionTokenFormula::Unknown {
+        return None;
+    }
 
     let profile = build_profile(
         &base.profile_id,
@@ -143,8 +179,7 @@ pub fn geometry_for_capability(
         base.cell_width_px,
         base.cell_height_px,
         base.header_rows,
-        pixels_per_token,
-        safety_margin_percent,
+        capability.vision_token_formula.clone(),
     );
     (profile.readable_chars_per_image > 0).then_some(profile)
 }
@@ -168,10 +203,23 @@ mod tests {
     #[test]
     fn estimate_uses_formula_and_safety_margin() {
         let profile = anthropic_dense_v1();
-        let expected_one =
-            ((profile.width_px * profile.max_height_px) as f64 / 750.0 * 1.2).ceil() as usize;
-        let expected_two =
-            ((profile.width_px * profile.max_height_px * 2) as f64 / 750.0 * 1.2).ceil() as usize;
+        let VisionTokenFormula::PatchGrid {
+            patch_size_px,
+            max_tokens,
+            safety_margin_percent,
+        } = &profile.token_formula
+        else {
+            panic!("Anthropic dense profile must use the provider patch-grid formula");
+        };
+        let patch = usize::try_from(*patch_size_px).expect("patch size fits usize");
+        let per_image = profile
+            .width_px
+            .div_ceil(patch)
+            .saturating_mul(profile.max_height_px.div_ceil(patch));
+        let expected_one = ((per_image as f64) * (*safety_margin_percent / 100.0))
+            .ceil()
+            .min(*max_tokens as f64) as usize;
+        let expected_two = expected_one.saturating_mul(2);
         assert_eq!(estimate_image_tokens(&profile, 1), expected_one);
         assert_eq!(estimate_image_tokens(&profile, 2), expected_two);
     }

@@ -135,6 +135,15 @@
       "summary": "收敛产品文档、真实数据界面、AiMaMi连续桌面壳、配置事务与回归测试",
       "head_before": "0eb1b23e8f0fe4dc55e4aa4e5cc01d1e2d801913",
       "remote": null
+    },
+    {
+      "id": "d6e88188-b7cb-4d00-80b5-3a929e99faa9",
+      "timestamp": "2026-07-13T12:02:23+08:00",
+      "operation": "commit",
+      "branch": "codex/prd-macos-polish",
+      "summary": "Build PRD-aligned desktop release candidate with real runtime state, AiMaMi UI, autostart and fail-closed platform workflows",
+      "head_before": "08f7f9f5526273f8ef6af57f0d80fac16d3fda61",
+      "remote": null
     }
   ]
 }

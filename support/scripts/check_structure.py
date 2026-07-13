@@ -17,6 +17,8 @@ REQUIRED = [
     "docs/ARCHITECTURE.md",
     "docs/SECURITY_BOUNDARIES.md",
     "docs/APP_FUNCTIONS_AND_PAGES.md",
+    "docs/legal/THIRD_PARTY_NOTICES.md",
+    "docs/legal/AIMAMI_APACHE_2_0_LICENSE.txt",
     "docs/product/IMPLEMENTATION_STATUS.md",
     "docs/archive/README.md",
     "docs/testing/TESTING_NO_TOUCH.md",

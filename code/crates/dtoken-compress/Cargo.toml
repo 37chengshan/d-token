@@ -10,3 +10,7 @@ anyhow.workspace = true
 dtoken-types = { path = "../dtoken-types" }
 serde_json.workspace = true
 sha2 = "0.10"
+base64 = "0.22"
+ed25519-dalek = "2"
+font8x8 = "0.3"
+png = "0.17"

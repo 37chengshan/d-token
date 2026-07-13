@@ -2,9 +2,6 @@ import { AnimatePresence, motion } from "motion/react";
 import { useMemo, useState } from "react";
 import { useI18n } from "../../lib/i18n";
 
-const CELL = 13;
-const GAP = 3;
-const ROWS = 7;
 const LEVELS = [0, 1, 2, 3, 4] as const;
 
 type Range = "week" | "month" | "year";
@@ -16,7 +13,6 @@ export type ActivityDay = {
   tokens: number;
   tools: number;
 };
-type CalendarCell = ActivityDay | null;
 type ToolUsageRow = { name: string; calls: number };
 
 const rangeDays: Record<Range, number> = { week: 7, month: 31, year: 365 };
@@ -35,12 +31,6 @@ function viewLabel(view: View, lang: string) {
     tools: { zh: "处理步骤", en: "Processing Steps" },
   };
   return lang === "zh" ? labels[view].zh : labels[view].en;
-}
-
-function formatMonth(date: string, lang: string) {
-  const month = new Date(`${date}T00:00:00`).getMonth() + 1;
-  if (lang === "zh") return `${month}月`;
-  return new Intl.DateTimeFormat("en-US", { month: "short" }).format(new Date(`${date}T00:00:00`));
 }
 
 function formatNumber(value: number) {
@@ -73,49 +63,22 @@ export function Heatmap({
   activityDays = EMPTY_ACTIVITY_DAYS,
   tools = EMPTY_TOOL_USAGE,
   source = "等待真实本地请求记录",
+  now = new Date(),
 }: {
   activityDays?: ActivityDay[];
   tools?: ToolUsageRow[];
   source?: string;
+  now?: Date;
 }) {
   const { lang } = useI18n();
-  const [range, setRange] = useState<Range>("week");
+  const [range, setRange] = useState<Range>("year");
   const [view, setView] = useState<View>("activity");
-  const [tooltip, setTooltip] = useState<{ x: number; y: number; day: ActivityDay } | null>(null);
 
   const visibleDays = useMemo(() => activityDays.slice(-rangeDays[range]), [activityDays, range]);
-  const selectedDates = useMemo(() => new Set(visibleDays.map((day) => day.date)), [visibleDays]);
   const activeDays = visibleDays.filter((day) => day.sessions > 0).length;
   const totalSessions = visibleDays.reduce((sum, day) => sum + day.sessions, 0);
   const totalTokens = visibleDays.reduce((sum, day) => sum + day.tokens, 0);
   const totalSteps = visibleDays.reduce((sum, day) => sum + day.tools, 0);
-
-  const { columns, months } = useMemo(() => {
-    const sorted = [...activityDays].sort((a, b) => a.date.localeCompare(b.date));
-    if (sorted.length === 0) return { columns: [], months: [] };
-    const first = new Date(`${sorted[0].date}T00:00:00`);
-    const padded: CalendarCell[] = [];
-    for (let i = 0; i < first.getDay(); i += 1) padded.push(null);
-    padded.push(...sorted);
-    while (padded.length % ROWS !== 0) padded.push(null);
-
-    const nextColumns: CalendarCell[][] = [];
-    for (let i = 0; i < padded.length; i += ROWS) nextColumns.push(padded.slice(i, i + ROWS));
-
-    const nextMonths: { label: string; column: number }[] = [];
-    let lastMonth = "";
-    nextColumns.forEach((column, index) => {
-      const firstValid = column.find(Boolean);
-      if (!firstValid) return;
-      const label = formatMonth(firstValid.date, lang);
-      if (label !== lastMonth) {
-        lastMonth = label;
-        nextMonths.push({ label, column: index });
-      }
-    });
-
-    return { columns: nextColumns, months: nextMonths };
-  }, [activityDays, lang]);
 
   return (
     <div className="activity-panel">
@@ -164,26 +127,14 @@ export function Heatmap({
           transition={{ duration: 0.18 }}
         >
           {view === "activity" && (
-            activityDays.length > 0 ? (
-              <ActivityCalendar
-                columns={columns}
-                months={months}
-                selectedDates={selectedDates}
-                tooltip={tooltip}
-                setTooltip={setTooltip}
-                lang={lang}
-              />
-            ) : (
-              <NoRequestEvidence lang={lang} />
-            )
+            <ActivityDateSkeleton range={range} activityDays={activityDays} now={now} lang={lang} />
           )}
           {view === "tokens" && <TokenTrend range={range} lang={lang} activityDays={activityDays} />}
           {view === "tools" && <ToolRanking lang={lang} tools={tools} />}
         </motion.div>
       </AnimatePresence>
 
-      {activityDays.length > 0 && (
-        <div className="activity-summary">
+      <div className="activity-summary">
           <div className="activity-summary-item">
             <div className="text-xs text-muted-foreground">{lang === "zh" ? "会话数" : "Sessions"}</div>
             <div className="mt-1 text-lg font-semibold">{totalSessions}</div>
@@ -203,8 +154,7 @@ export function Heatmap({
               {lang === "zh" ? " 天" : " days"}
             </div>
           </div>
-        </div>
-      )}
+      </div>
     </div>
   );
 }
@@ -225,100 +175,158 @@ function NoRequestEvidence({ lang }: { lang: string }) {
   );
 }
 
-function ActivityCalendar({
-  columns,
-  months,
-  selectedDates,
-  tooltip,
-  setTooltip,
-  lang,
-}: {
-  columns: CalendarCell[][];
-  months: { label: string; column: number }[];
-  selectedDates: Set<string>;
-  tooltip: { x: number; y: number; day: ActivityDay } | null;
-  setTooltip: (tooltip: { x: number; y: number; day: ActivityDay } | null) => void;
-  lang: string;
-}) {
-  const width = columns.length * (CELL + GAP) + GAP;
-  const height = ROWS * (CELL + GAP) + GAP;
+type DateCell = { date: Date; key: string; inRange: boolean; activity: ActivityDay };
 
+const emptyDay = (key: string): ActivityDay => ({ date: key, sessions: 0, minutes: 0, tokens: 0, tools: 0 });
+
+export function localDateKey(date: Date): string {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function localDate(year: number, month: number, day: number): Date {
+  return new Date(year, month, day, 12, 0, 0, 0);
+}
+
+function addLocalDays(date: Date, amount: number): Date {
+  return localDate(date.getFullYear(), date.getMonth(), date.getDate() + amount);
+}
+
+function mondayIndex(date: Date): number {
+  return (date.getDay() + 6) % 7;
+}
+
+function activityMap(days: ActivityDay[]): Map<string, ActivityDay> {
+  return new Map(days.map((day) => [day.date, day]));
+}
+
+export function buildWeekDays(now: Date, days: ActivityDay[]): DateCell[] {
+  const map = activityMap(days);
+  const start = addLocalDays(now, -mondayIndex(now));
+  return Array.from({ length: 7 }, (_, index) => {
+    const date = addLocalDays(start, index);
+    const key = localDateKey(date);
+    return { date, key, inRange: true, activity: map.get(key) ?? emptyDay(key) };
+  });
+}
+
+export function buildMonthCells(now: Date, days: ActivityDay[]): DateCell[] {
+  const map = activityMap(days);
+  const first = localDate(now.getFullYear(), now.getMonth(), 1);
+  const last = localDate(now.getFullYear(), now.getMonth() + 1, 0);
+  const start = addLocalDays(first, -mondayIndex(first));
+  const occupied = mondayIndex(first) + last.getDate();
+  const cellCount = Math.max(35, Math.ceil(occupied / 7) * 7);
+  return Array.from({ length: cellCount }, (_, index) => {
+    const date = addLocalDays(start, index);
+    const key = localDateKey(date);
+    return { date, key, inRange: date.getMonth() === now.getMonth(), activity: map.get(key) ?? emptyDay(key) };
+  });
+}
+
+export function buildYearCells(now: Date, days: ActivityDay[]): DateCell[] {
+  const map = activityMap(days);
+  const first = localDate(now.getFullYear(), 0, 1);
+  const last = localDate(now.getFullYear(), 11, 31);
+  const start = addLocalDays(first, -mondayIndex(first));
+  const end = addLocalDays(last, 6 - mondayIndex(last));
+  const cellCount = Math.round((end.getTime() - start.getTime()) / 86_400_000) + 1;
+  return Array.from({ length: cellCount }, (_, index) => {
+    const date = addLocalDays(start, index);
+    const key = localDateKey(date);
+    return { date, key, inRange: date.getFullYear() === now.getFullYear(), activity: map.get(key) ?? emptyDay(key) };
+  });
+}
+
+export function buildYearMonthLabelColumns(cells: DateCell[], year: number): number[] {
+  return Array.from({ length: 12 }, (_, month) => {
+    const monthStart = `${year}-${String(month + 1).padStart(2, "0")}-01`;
+    const index = cells.findIndex((cell) => cell.key === monthStart);
+    return index < 0 ? 0 : Math.floor(index / 7);
+  });
+}
+
+function ActivityDateSkeleton({ range, activityDays, now, lang }: { range: Range; activityDays: ActivityDay[]; now: Date; lang: string }) {
+  const weekdays = localizedWeekdays(lang);
+  const today = localDateKey(now);
+  const empty = activityDays.every((day) => day.sessions === 0);
   return (
-    <>
-      <div className="activity-section-title">{lang === "zh" ? "活跃趋势" : "Activity trend"}</div>
-      <div className="activity-calendar-frame">
-        <div className="activity-scroll" onMouseLeave={() => setTooltip(null)}>
-          <svg
-            width={width}
-            height={height + 24}
-            viewBox={`0 0 ${width} ${height + 24}`}
-            className="activity-svg"
-            role="img"
-            aria-label={lang === "zh" ? "年度活跃日历" : "Yearly activity calendar"}
-          >
-            {months.map((month) => (
-              <text
-                key={`${month.label}-${month.column}`}
-                x={month.column * (CELL + GAP) + GAP}
-                y={12}
-                className="activity-month-label"
-              >
-                {month.label}
-              </text>
-            ))}
-
-            {columns.map((column, columnIndex) =>
-              column.map((day, rowIndex) => {
-                if (!day) return null;
-                const selected = selectedDates.has(day.date);
-                const level = selected ? activityLevel(day) : 0;
-                const x = columnIndex * (CELL + GAP) + GAP;
-                const y = rowIndex * (CELL + GAP) + GAP + 22;
-
-                return (
-                  <rect
-                    key={day.date}
-                    x={x}
-                    y={y}
-                    width={CELL}
-                    height={CELL}
-                    rx={3}
-                    className="activity-cell-svg"
-                    data-level={level}
-                    data-dimmed={selected ? "false" : "true"}
-                    onMouseEnter={(event) => setTooltip({ x: event.clientX, y: event.clientY, day })}
-                    onMouseMove={(event) => setTooltip({ x: event.clientX, y: event.clientY, day })}
-                  >
-                    <title>
-                      {lang === "zh"
-                        ? `${day.date} · ${day.sessions} 会话 · ${day.minutes} 分钟`
-                        : `${day.date} · ${day.sessions} sessions · ${day.minutes} min`}
-                    </title>
-                  </rect>
-                );
-              }),
-            )}
-          </svg>
-        </div>
-
-        {tooltip && (
-          <div className="activity-tooltip" style={{ left: tooltip.x + 12, top: tooltip.y - 42 }}>
-            {lang === "zh"
-              ? `${tooltip.day.date} · ${tooltip.day.sessions} 会话 · ${tooltip.day.minutes} 分钟`
-              : `${tooltip.day.date} · ${tooltip.day.sessions} sessions · ${tooltip.day.minutes} min`}
-          </div>
-        )}
-
-        <div className="activity-legend">
-          <span>Less</span>
-          {LEVELS.map((level) => (
-            <span key={level} className="activity-legend-cell" data-level={level} />
-          ))}
-          <span>More</span>
-        </div>
-      </div>
-    </>
+    <div className="activity-date-skeleton" data-activity-range={range}>
+      <div className="activity-section-title">{lang === "zh" ? "活动趋势" : "Activity trend"}</div>
+      {range === "week" && <WeekActivity cells={buildWeekDays(now, activityDays)} weekdays={weekdays} today={today} lang={lang} />}
+      {range === "month" && <MonthActivity cells={buildMonthCells(now, activityDays)} weekdays={weekdays} today={today} now={now} lang={lang} />}
+      {range === "year" && <YearActivity cells={buildYearCells(now, activityDays)} weekdays={weekdays} today={today} now={now} lang={lang} />}
+      {empty && <p className="activity-empty-note" role="status">{lang === "zh" ? "暂无活动" : "No activity yet"}</p>}
+      <ActivityLegend lang={lang} />
+    </div>
   );
+}
+
+function WeekActivity({ cells, weekdays, today, lang }: { cells: DateCell[]; weekdays: string[]; today: string; lang: string }) {
+  return <div className="activity-week-grid activity-week-strip" data-testid="activity-week">{cells.map((cell, index) => (
+    <div key={cell.key} className="activity-week-day" data-date={cell.key} data-today={cell.key === today ? "true" : "false"}>
+      <span className="activity-weekday">{weekdays[index]}</span>
+      <span className="activity-week-date">{cell.date.getMonth() + 1}/{cell.date.getDate()}</span>
+      <ActivityCell cell={cell} lang={lang} />
+      <span className="activity-week-count">{cell.activity.sessions}{lang === "zh" ? " 次" : ""}</span>
+    </div>
+  ))}</div>;
+}
+
+function MonthActivity({ cells, weekdays, today, now, lang }: { cells: DateCell[]; weekdays: string[]; today: string; now: Date; lang: string }) {
+  const title = new Intl.DateTimeFormat(lang === "zh" ? "zh-CN" : "en-US", { year: "numeric", month: "long" }).format(now);
+  return <div className="activity-month activity-compact-calendar" data-testid="activity-month">
+    <div className="activity-calendar-title">{title}</div>
+    <CompactGrid cells={cells} weekdays={weekdays} today={today} lang={lang} />
+  </div>;
+}
+
+function YearActivity({ cells, weekdays, today, now, lang }: { cells: DateCell[]; weekdays: string[]; today: string; now: Date; lang: string }) {
+  const monthColumns = buildYearMonthLabelColumns(cells, now.getFullYear());
+  return <div className="activity-year activity-compact-calendar" data-testid="activity-year">
+    <div className="activity-year-month-labels" aria-hidden="true">
+      {Array.from({ length: 12 }, (_, month) => (
+        <span
+          key={month}
+          className="activity-year-month-label"
+          data-column={monthColumns[month]}
+          style={{ gridColumn: `${monthColumns[month] + 1} / span 4`, gridRow: 1 }}
+        >
+          {new Intl.DateTimeFormat(lang === "zh" ? "zh-CN" : "en-US", { month: "short" }).format(localDate(now.getFullYear(), month, 1))}
+        </span>
+      ))}
+    </div>
+    <CompactGrid cells={cells} weekdays={weekdays} today={today} lang={lang} />
+  </div>;
+}
+
+function CompactGrid({ cells, weekdays, today, lang }: { cells: DateCell[]; weekdays: string[]; today: string; lang: string }) {
+  return <div className="activity-compact-layout">
+    <div className="activity-compact-weekdays" aria-hidden="true">
+      {weekdays.map((day, index) => <span key={day}>{index % 2 === 0 ? (lang === "zh" ? day.slice(-1) : day.slice(0, 1)) : ""}</span>)}
+    </div>
+    <div className="activity-compact-scroll">
+      <div className="activity-compact-grid" role="grid" aria-label={lang === "zh" ? "活动日期热力图" : "Activity date heatmap"}>
+        {cells.map((cell) => <ActivityCell key={cell.key} cell={cell} lang={lang} today={today} outside={!cell.inRange} />)}
+      </div>
+    </div>
+  </div>;
+}
+
+function ActivityCell({ cell, lang, today = "", outside = false }: { cell: DateCell; lang: string; today?: string; outside?: boolean }) {
+  const label = lang === "zh" ? `${cell.key} · ${cell.activity.sessions} 次活动` : `${cell.key} · ${cell.activity.sessions} activities`;
+  return <span role="gridcell" tabIndex={0} className="activity-date-cell" data-date={cell.key} data-level={activityLevel(cell.activity)} data-outside={outside ? "true" : "false"} data-today={cell.key === today ? "true" : "false"} aria-label={label} title={label} />;
+}
+
+function ActivityLegend({ lang }: { lang: string }) {
+  return <div className="activity-legend"><span>{lang === "zh" ? "少" : "Less"}</span>{LEVELS.map((level) => <span key={level} className="activity-legend-cell" data-level={level} />)}<span>{lang === "zh" ? "多" : "More"}</span></div>;
+}
+
+function localizedWeekdays(lang: string): string[] {
+  const monday = localDate(2024, 0, 1);
+  return Array.from({ length: 7 }, (_, index) => new Intl.DateTimeFormat(lang === "zh" ? "zh-CN" : "en-US", { weekday: "short" }).format(addLocalDays(monday, index)));
 }
 
 function TokenTrend({ range, lang, activityDays }: { range: Range; lang: string; activityDays: ActivityDay[] }) {

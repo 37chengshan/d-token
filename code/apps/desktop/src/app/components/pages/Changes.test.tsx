@@ -109,9 +109,32 @@ describe("Changes action safety", () => {
     expect(screen.queryByText("~/.dtoken/events.db")).not.toBeInTheDocument();
   });
 
+  it("does not render a route draft that native evidence marks as applied", async () => {
+    const payload: any = desktopPayload(true);
+    payload.routeDrafts[0] = {
+      ...payload.routeDrafts[0],
+      resolution: {
+        state: "applied",
+        after_sha256: afterSha,
+        evidence: "verified-config-backup-after-hash",
+      },
+    };
+    native.invokeNative.mockImplementation(async (command: string) => {
+      if (command === "get_desktop_data") return payload;
+      return { ok: true, summary: `${command} complete`, logs: [], tools: [] };
+    });
+
+    render(<Changes />);
+
+    expect(await screen.findByText("当前没有待处理变更")).toBeVisible();
+    expect(screen.getByText(/0 项待处理/)).toBeVisible();
+    expect(screen.queryByRole("button", { name: "批准" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "拒绝" })).not.toBeInTheDocument();
+  });
+
   it.each([
     ["stale", { data_status: "stale" }, "桌面数据已过期，不能作为当前配置证据。批准、拒绝和回退均已锁定。"],
-    ["partial", { partial: true }, "桌面数据不完整，无法确认影响范围与恢复保障。批准、拒绝和回退均已锁定。"],
+    ["partial", { partial: true }, "运行时数据不完整，批准和拒绝保持锁定；由桌面控制面验证过的本地回滚点仍可精确恢复。"],
   ])("keeps dangerous actions disabled for %s native payloads", async (_state, marker, message) => {
     const user = userEvent.setup();
     const payload = { ...desktopPayload(true), ...marker };
@@ -155,7 +178,7 @@ describe("Changes action safety", () => {
     });
     render(<Changes />);
 
-    expect(await screen.findByText("桌面数据不完整，无法确认影响范围与恢复保障。批准、拒绝和回退均已锁定。")).toBeVisible();
+    expect(await screen.findByText("运行时数据不完整，批准和拒绝保持锁定；由桌面控制面验证过的本地回滚点仍可精确恢复。")).toBeVisible();
     expect(screen.getByRole("button", { name: "批准" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "拒绝" })).toBeDisabled();
 

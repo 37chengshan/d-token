@@ -75,9 +75,10 @@ type MutableBreakdown = {
 /** 仅由 d-token 自有请求日志生成页面所需的一个分析快照。 */
 export function buildAnalyticsSnapshot(
   logs: RequestLogRow[],
-  opts: { source?: AnalyticsSnapshot["source"] } = {},
+  opts: { source?: AnalyticsSnapshot["source"]; lang?: "zh" | "en" } = {},
 ): AnalyticsSnapshot {
   const source = opts.source ?? "dtoken-local-service";
+  const zh = (opts.lang ?? "zh") === "zh";
   const records = logs.filter(isRequestLogRecord);
   let estimatedInputTokens = 0;
   let estimatedOutputTokens = 0;
@@ -150,19 +151,29 @@ export function buildAnalyticsSnapshot(
 
   const warnings: string[] = [];
   if (records.length > 0 && inputEvidenceCount < records.length) {
-    warnings.push("部分请求缺少输入 Token 字段，输入总量仅覆盖有记录的请求。");
+    warnings.push(zh
+      ? "部分请求缺少输入 Token 字段，输入总量仅覆盖有记录的请求。"
+      : "Some requests lack input-token fields; the input total covers recorded values only.");
   }
   if (records.length > 0 && savedEvidenceCount < records.length) {
-    warnings.push("部分请求缺少节省 Token 证据，节省量与节省率仅覆盖有记录的请求。");
+    warnings.push(zh
+      ? "部分请求缺少节省 Token 证据，节省量与节省率仅覆盖有记录的请求。"
+      : "Some requests lack token-savings evidence; savings totals and rates cover recorded values only.");
   }
   if (records.length > 0 && outputEvidenceCount < records.length) {
-    warnings.push("部分请求缺少输出 Token 字段，输出总量仅覆盖有记录的请求。");
+    warnings.push(zh
+      ? "部分请求缺少输出 Token 字段，输出总量仅覆盖有记录的请求。"
+      : "Some requests lack output-token fields; the output total covers recorded values only.");
   }
   if (missingTimestampCount > 0) {
-    warnings.push(`${missingTimestampCount} 条请求缺少有效时间戳，未计入趋势。`);
+    warnings.push(zh
+      ? `${missingTimestampCount} 条请求缺少有效时间戳，未计入趋势。`
+      : `${missingTimestampCount} request(s) lack valid timestamps and are excluded from trends.`);
   }
   if (inconsistentSavingsCount > 0) {
-    warnings.push(`${inconsistentSavingsCount} 条请求的节省量与输入前后值不一致，已按输入前后值重新计算。`);
+    warnings.push(zh
+      ? `${inconsistentSavingsCount} 条请求的节省量与输入前后值不一致，已按输入前后值重新计算。`
+      : `${inconsistentSavingsCount} request(s) report savings inconsistent with before/after values; savings were recalculated.`);
   }
 
   return {

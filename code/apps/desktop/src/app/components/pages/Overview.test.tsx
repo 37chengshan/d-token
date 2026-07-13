@@ -37,8 +37,8 @@ const runtimePayload = {
   routes: [{ id: "route-main", name: "主连接", target_provider_id: "provider-main" }],
   instances: [{ id: "instance-opencode", agent: "OpenCode", route_id: "route-main" }],
   request_logs: [
-    { agent: "OpenCode", route_id: "route-main", tokens_saved: 48, input_tokens_before: 100 },
-    { agent: "OpenCode", route_id: "route-main", error: "provider_timeout", tokens_saved: 0, input_tokens_before: 30 },
+    { agent: "OpenCode", route_id: "route-main", tokens_saved: 0, input_tokens_before: 100, input_tokens_after: 52 },
+    { agent: "OpenCode", route_id: "route-main", error: "provider_timeout", tokens_saved: 0, input_tokens_before: 30, input_tokens_after: 30 },
   ],
   stats: { tokens: { saved: 48, input: 130 }, savings_percent: 36.9 },
   history: { history: [] },
@@ -64,7 +64,6 @@ describe("Overview information hierarchy and truthfulness", () => {
     expect(summary.agents.label).toBe("OpenCode");
     expect(summary.route.label).toBe("主连接 → 本地主上游");
     expect(summary.issues.label).toBe("1 个问题");
-    expect(summary.nextStep.page).toBe("doctor");
   });
 
   it("never calls cc-switch synced without explicit verification evidence", () => {
@@ -90,7 +89,6 @@ describe("Overview information hierarchy and truthfulness", () => {
     expect(summary.route.tone).not.toBe("positive");
     expect(summary.issues.label).toBe("尚无当前问题证据");
     expect(summary.ccSwitch.state).toBe("unknown");
-    expect(summary.nextStep.page).toBe("install");
   });
 
   it("shows empty metrics instead of preview success data", () => {
@@ -103,14 +101,14 @@ describe("Overview information hierarchy and truthfulness", () => {
     };
     render(<Overview setPage={vi.fn()} />);
 
-    expect(screen.getAllByText("浏览器预览 · 未连接真实数据")).not.toHaveLength(0);
+    expect(screen.getAllByText("浏览器预览 · 未连接实时数据")).not.toHaveLength(0);
     expect(screen.queryByText("浏览器预览 · 示例数据")).not.toBeInTheDocument();
     const kpis = screen.getByTestId("overview-kpis");
     expect(within(kpis).getAllByText("—")).toHaveLength(4);
     expect(within(kpis).queryByText("0")).not.toBeInTheDocument();
   });
 
-  it("keeps request and error KPIs unavailable when runtime exposes stats but no request logs", () => {
+  it("shows verified zero request and error KPIs when runtime exposes an empty request collection", () => {
     dashboard.state = {
       payload: {
         source: "dtoken-owned-runtime",
@@ -130,15 +128,13 @@ describe("Overview information hierarchy and truthfulness", () => {
     render(<Overview setPage={vi.fn()} />);
 
     const kpis = screen.getByTestId("overview-kpis");
-    expect(within(kpis).getByText("120")).toBeVisible();
-    expect(within(kpis).getByText("25%")).toBeVisible();
-    expect(within(kpis).getAllByText("—")).toHaveLength(2);
-    expect(within(kpis).queryByText("0")).not.toBeInTheDocument();
+    expect(within(kpis).getAllByText("0")).toHaveLength(3);
+    expect(within(kpis).getByText("0.0%")).toBeVisible();
     expect(screen.getAllByText("本地服务在线 · 暂无请求记录")).not.toHaveLength(0);
     expect(screen.getByText("尚无请求记录")).toBeVisible();
   });
 
-  it("shows no numeric KPI when the verified runtime has neither traffic nor metric evidence", () => {
+  it("shows real zero KPIs when the verified runtime has a valid empty traffic collection", () => {
     dashboard.state = {
       payload: {
         source: "dtoken-owned-runtime",
@@ -156,8 +152,8 @@ describe("Overview information hierarchy and truthfulness", () => {
     render(<Overview setPage={vi.fn()} />);
 
     const kpis = screen.getByTestId("overview-kpis");
-    expect(within(kpis).getAllByText("—")).toHaveLength(4);
-    expect(within(kpis).queryByText("0")).not.toBeInTheDocument();
+    expect(within(kpis).getAllByText("0")).toHaveLength(3);
+    expect(within(kpis).getByText("0.0%")).toBeVisible();
   });
 
   it("skips incomplete timestamps and fields without fabricating activity, tools, trends, or agents", () => {
@@ -174,8 +170,8 @@ describe("Overview information hierarchy and truthfulness", () => {
     }, "runtime");
 
     expect(view.trafficAvailable).toBe(true);
-    expect(view.metricsAvailable).toBe(false);
-    expect(view.compressionAvailable).toBe(false);
+    expect(view.metricsAvailable).toBe(true);
+    expect(view.compressionAvailable).toBe(true);
     expect(view.stats.requestCount).toBe(3);
     expect(view.stats.activeAgents).toBe(0);
     expect(view.stats.errorsToday).toBe(0);
@@ -204,17 +200,44 @@ describe("Overview information hierarchy and truthfulness", () => {
     expect(view.stats.activeAgents).toBe(2);
   });
 
-  it("puts verified KPIs before operational status, trends, activity and anomalies", () => {
+  it("shows physical reduction separately from zero claimable attribution", () => {
+    dashboard.state = {
+      payload: {
+        source: "dtoken-owned-runtime",
+        desktop_data_source: "dtoken-local-service",
+        request_logs: [
+          { agent: "OpenCode", input_tokens_before: 3_500_000, input_tokens_after: 3_360_000, tokens_saved: 0 },
+          { agent: "OpenCode", input_tokens_before: 3_481_750, input_tokens_after: 3_342_480, tokens_saved: 0 },
+        ],
+        stats: { tokens: { saved: 0 } },
+      },
+      status: "runtime",
+      updatedAt: new Date("2026-07-10T12:00:00Z"),
+      error: "",
+      refresh: vi.fn(),
+    };
+
+    render(<Overview setPage={vi.fn()} />);
+    const kpis = screen.getByTestId("overview-kpis");
+    expect(within(kpis).getByText("279.3k")).toBeVisible();
+    expect(within(kpis).getByText("4.0%")).toBeVisible();
+    expect(within(kpis).getByText(/可计入节省 0（待上游归因）/)).toBeVisible();
+  });
+
+  it("puts activity directly after KPIs and keeps operational status at the bottom", () => {
     const { container } = render(<Overview setPage={vi.fn()} />);
     const sections = Array.from(container.querySelectorAll("[data-overview-section]"))
       .map((node) => node.getAttribute("data-overview-section"));
 
-    expect(sections).toEqual(["kpis", "operational", "issues", "trend", "activity"]);
+    expect(sections).toEqual(["kpis", "activity", "issues", "trend", "operational"]);
     const kpis = container.querySelector('[data-overview-section="kpis"]');
     expect(kpis).not.toBeNull();
+    expect(kpis).toHaveAttribute("data-surface", "metric-strip");
+    expect(kpis?.children).toHaveLength(4);
+    expect(kpis?.querySelector("[data-surface]")).toBeNull();
     expect(within(kpis as HTMLElement).getByText("2")).toBeVisible();
     expect(within(kpis as HTMLElement).getByText("48")).toBeVisible();
-    expect(within(kpis as HTMLElement).getByText("37%")).toBeVisible();
+    expect(within(kpis as HTMLElement).getByText("36.9%")).toBeVisible();
     expect(within(kpis as HTMLElement).getByText("1")).toBeVisible();
     const operational = container.querySelector('[data-overview-section="operational"]');
     expect(operational).not.toBeNull();

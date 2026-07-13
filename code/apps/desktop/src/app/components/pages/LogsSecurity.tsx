@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import { motion } from "motion/react";
 import { Download, KeyRound, RefreshCcw, ShieldCheck, Filter, Route, Gauge, Server, AlertTriangle, Layers, ListChecks } from "lucide-react";
-import { GlassCard } from "../common/GlassCard";
+import { Surface } from "../common/Surface";
 import { StatusBadge } from "../common/StatusBadge";
 import { DataSourceBadge } from "../common/DataSourceBadge";
 import { Terminal } from "../common/Terminal";
@@ -12,6 +12,7 @@ import { useI18n, useT } from "../../lib/i18n";
 import type { RuntimeLogEntry as LogEntry } from "../../lib/runtime/types";
 import { invokeNative, isTauriRuntime } from "../../lib/native";
 import { useRuntimeDashboard } from "../../lib/useRuntimeDashboard";
+import { useNotifications } from "../../lib/notifications";
 
 const filterMeta: Record<
   LogEntry["type"] | "all",
@@ -27,6 +28,7 @@ const filterMeta: Record<
 export function LogsSecurity() {
   const t = useT();
   const { lang } = useI18n();
+  const { addNotification } = useNotifications();
   const nativeRuntime = isTauriRuntime();
   const [filter, setFilter] = useState<LogEntry["type"] | "all">("all");
   const { payload, status: payloadStatus, updatedAt } = useRuntimeDashboard();
@@ -66,6 +68,7 @@ export function LogsSecurity() {
   const exportLogs = async (format: "json" | "csv") => {
     if (!canExport) {
       setExportState({ state: "failed", format });
+      addNotification({ dedupeKey: `export-${format}-unavailable`, level: "warning", title: lang === "zh" ? "无法导出" : "Export unavailable", message: lang === "zh" ? "需要实时本地数据后才能生成脱敏导出。" : "Live local data is required for a redacted export." });
       return;
     }
     setExportState({ state: "exporting", format });
@@ -73,8 +76,10 @@ export function LogsSecurity() {
       const exported = await invokeNative<RuntimeExport>("export_dtoken_runtime", { format });
       downloadText(exported.content, exported.mime, exported.filename);
       setExportState({ state: "done", format });
-    } catch (_error) {
+      addNotification({ dedupeKey: `export-${format}-${exported.filename}`, level: "success", title: lang === "zh" ? "脱敏导出已生成" : "Redacted export created", message: exported.filename, persistent: true, details: `format=${exported.format} · source=${exported.source} · redacted=${exported.redacted}` });
+    } catch (error) {
       setExportState({ state: "failed", format });
+      addNotification({ dedupeKey: `export-${format}-failed`, level: "error", title: lang === "zh" ? "导出失败" : "Export failed", message: lang === "zh" ? "未能生成脱敏导出。" : "The redacted export could not be created.", details: String(error) });
     }
   };
 
@@ -89,8 +94,10 @@ export function LogsSecurity() {
       const result = await invokeNative<AgentRouteVerification>("verify_agent_route_config");
       setSecurityVerification(result);
       setSecurityState("done");
-    } catch (_error) {
+      addNotification({ dedupeKey: "security-verification", level: result.ok ? "success" : "warning", title: result.ok ? (lang === "zh" ? "安全验证已通过" : "Security verification passed") : (lang === "zh" ? "安全验证需要处理" : "Security verification needs attention"), message: `${result.passed}/${result.total}`, persistent: !result.ok, details: `passed=${result.passed} · total=${result.total}` });
+    } catch (error) {
       setSecurityState("failed");
+      addNotification({ dedupeKey: "security-verification-failed", level: "error", title: lang === "zh" ? "安全验证失败" : "Security verification failed", message: lang === "zh" ? "无法读取当前路由与脱敏证据。" : "Current route and redaction evidence could not be read.", details: String(error) });
     }
   };
 
@@ -110,7 +117,7 @@ export function LogsSecurity() {
         </TabsList>
 
         <TabsContent value="logs" className="mt-4 space-y-4">
-          <GlassCard className="p-3" hover={false}>
+          <Surface className="p-3" hover={false}>
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div className="flex items-center gap-2 text-xs text-muted-foreground">
                 <Filter className="size-4" />
@@ -153,10 +160,10 @@ export function LogsSecurity() {
                 </Button>
               </div>
             </div>
-          </GlassCard>
+          </Surface>
 
           {exportState.state !== "idle" && exportState.state !== "exporting" && (
-            <div className="glass-inset p-3 text-sm text-muted-foreground">
+            <div className="flat-inset p-3 text-sm text-muted-foreground">
               {exportState.state === "done"
                 ? lang === "zh"
                   ? `已从 d-token runtime 导出脱敏 ${exportState.format?.toUpperCase() ?? ""}。`
@@ -168,7 +175,7 @@ export function LogsSecurity() {
           )}
 
           {payloadStatus === "runtime" && shown.length === 0 && (
-            <div className="glass-inset p-3 text-sm text-muted-foreground">
+            <div className="flat-inset p-3 text-sm text-muted-foreground">
               {lang === "zh"
                 ? "d-token runtime 当前没有可显示的 request log / route decision / event。完成 Agent 连接并验证路由后，这里会显示真实链路。"
                 : "d-token runtime has no request log / route decision / event yet. Connect an agent and verify the route to populate this view."}
@@ -185,7 +192,7 @@ export function LogsSecurity() {
             <LedgerSummaryCard label="Failed" value={ledgerSummary.failed} tone={ledgerSummary.failed > 0 ? "error" : "ok"} />
           </div>
 
-          <GlassCard className="p-4" hover={false}>
+          <Surface className="p-4" hover={false}>
             <div className="flex flex-wrap items-start justify-between gap-3">
               <div className="flex items-start gap-3">
                 <ListChecks className="mt-0.5 size-5 text-primary" />
@@ -210,10 +217,10 @@ export function LogsSecurity() {
               </div>
               <Badge variant={payloadStatus === "runtime" ? "default" : "secondary"}>{dataSourceLabel}</Badge>
             </div>
-          </GlassCard>
+          </Surface>
 
           {ledgerRows.length === 0 ? (
-            <div className="glass-inset p-3 text-sm text-muted-foreground">
+            <div className="flat-inset p-3 text-sm text-muted-foreground">
               {payloadStatus === "browser-preview"
                 ? lang === "zh"
                   ? "预览模式没有真实 ledger 行。完成 Agent 连接并让请求经过 d-token 后，事件、路由决策和请求日志会显示在这里。"
@@ -230,7 +237,7 @@ export function LogsSecurity() {
                   initial={{ opacity: 0, y: 6 }}
                   animate={{ opacity: 1, y: 0 }}
                   transition={{ delay: Math.min(index * 0.025, 0.2) }}
-                  className="glass-inset grid gap-3 p-3 text-sm md:grid-cols-[140px_1fr_auto]"
+                  className="flat-inset grid gap-3 p-3 text-sm md:grid-cols-[140px_1fr_auto]"
                 >
                   <div>
                     <Badge variant={row.status === "failed" ? "destructive" : row.kind === "request" ? "default" : "secondary"}>
@@ -256,7 +263,7 @@ export function LogsSecurity() {
         </TabsContent>
 
         <TabsContent value="secrets" className="mt-4 space-y-3">
-          <GlassCard className="p-4" hover={false}>
+          <Surface className="p-4" hover={false}>
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div className="flex items-start gap-3">
                 <ShieldCheck className="mt-0.5 size-5 text-emerald-500" />
@@ -278,10 +285,10 @@ export function LogsSecurity() {
                   : t("common.verify")}
               </Button>
             </div>
-          </GlassCard>
+          </Surface>
 
           {securityState !== "idle" && (
-            <div className="glass-inset p-3 text-sm text-muted-foreground">
+            <div className="flat-inset p-3 text-sm text-muted-foreground">
               {securityState === "done" && securityVerification
                 ? lang === "zh"
                   ? `配置验证 ${securityVerification.passed}/${securityVerification.total} 通过。`
@@ -307,7 +314,7 @@ export function LogsSecurity() {
               animate={{ opacity: 1, x: 0 }}
               transition={{ delay: i * 0.05 }}
             >
-              <GlassCard className="flex flex-wrap items-center justify-between gap-3 p-4">
+              <Surface className="flex flex-wrap items-center justify-between gap-3 p-4">
                 <div className="flex items-center gap-3">
                   <KeyRound className="size-5 text-primary" />
                   <div>
@@ -319,7 +326,7 @@ export function LogsSecurity() {
                   <Badge variant="secondary">{row.meta}</Badge>
                   <StatusBadge status={row.status} label={row.label} />
                 </div>
-              </GlassCard>
+              </Surface>
             </motion.div>
           ))}
         </TabsContent>
@@ -359,10 +366,10 @@ function LedgerSummaryCard({
 }) {
   const color = tone === "error" ? "text-rose-500" : tone === "ok" ? "text-emerald-500" : "text-foreground";
   return (
-    <GlassCard className="p-3" hover={false}>
+    <Surface className="p-3" hover={false}>
       <div className="text-xs text-muted-foreground">{label}</div>
       <div className={`mt-1 text-2xl font-semibold ${color}`}>{value.toLocaleString("en-US")}</div>
-    </GlassCard>
+    </Surface>
   );
 }
 
@@ -510,7 +517,9 @@ function runtimePayloadToLogs(payload: Record<string, any> | null): LogEntry[] {
     const before = finiteNumber(log.input_tokens_before);
     const after = finiteNumber(log.input_tokens_after);
     const explicitSaved = finiteNumber(log.tokens_saved);
-    const saved = explicitSaved ?? (before !== null && after !== null ? Math.max(0, before - after) : null);
+    const physicalSaved = before !== null && after !== null ? Math.max(0, before - after) : null;
+    const saved = explicitSaved ?? physicalSaved;
+    const pendingAttribution = (physicalSaved ?? 0) > 0 && explicitSaved === 0 && log.context_accounting != null;
     const route = safeText(log.route_id, "—");
     const provider = safeText(log.provider_id, "—");
     const model = safeText(log.model, "—");
@@ -525,8 +534,12 @@ function runtimePayloadToLogs(payload: Record<string, any> | null): LogEntry[] {
         time: timeFromUnknown(log.timestamp_ms),
         type: "compression",
         agent,
-        msg: `压缩 ${formatNumber(before)} -> ${formatNumber(after)} tokens，节省 ${formatNumber(saved)}${transforms.length > 0 ? ` · ${transforms.join(",")}` : ""}`,
-        msgEn: `Compressed ${formatNumber(before)} -> ${formatNumber(after)} tokens, saved ${formatNumber(saved)}${transforms.length > 0 ? ` · ${transforms.join(",")}` : ""}`,
+        msg: pendingAttribution
+          ? `压缩 ${formatNumber(before)} -> ${formatNumber(after)} tokens，物理减少 ${formatNumber(physicalSaved)}；可计入节省 0（待上游实测归因）${transforms.length > 0 ? ` · ${transforms.join(",")}` : ""}`
+          : `压缩 ${formatNumber(before)} -> ${formatNumber(after)} tokens，节省 ${formatNumber(saved)}${transforms.length > 0 ? ` · ${transforms.join(",")}` : ""}`,
+        msgEn: pendingAttribution
+          ? `Compressed ${formatNumber(before)} -> ${formatNumber(after)} tokens, physically reduced ${formatNumber(physicalSaved)}; claimable savings 0 (provider attribution pending)${transforms.length > 0 ? ` · ${transforms.join(",")}` : ""}`
+          : `Compressed ${formatNumber(before)} -> ${formatNumber(after)} tokens, saved ${formatNumber(saved)}${transforms.length > 0 ? ` · ${transforms.join(",")}` : ""}`,
       }, log.timestamp_ms));
     }
 
@@ -573,6 +586,21 @@ function runtimePayloadToLedgerRows(
   const requestLogs = Array.isArray(payload.request_logs) ? payload.request_logs : [];
   const routeDecisions = Array.isArray(payload.route_decisions) ? payload.route_decisions : [];
   const events = Array.isArray(payload.events) ? payload.events : [];
+  const backupPoints = Array.isArray(payload.backupPoints) ? payload.backupPoints : [];
+
+  for (const backup of backupPoints) {
+    if (backup.scope !== "learning-managed-block") continue;
+    rows.push({
+      id: `learning-${safeText(backup.id, "rollback")}-${rows.length}`,
+      kind: "event",
+      time: typeof backup.when === "string" ? backup.when : "—",
+      sortTime: Date.parse(String(backup.when ?? "")) || 0,
+      title: lang === "zh" ? "智能学习受控写入" : "Smart Learning managed write",
+      detail: `rollback_id=${safeText(backup.id, "—")} · target=${safeText(backup.target, "—")} · verified=${backup.verified === true}`,
+      status: backup.verified === true ? "ok" : "warning",
+      tokens: "managed-block",
+    });
+  }
 
   for (const event of events) {
     const stage = safeText(event.stage, "event");
@@ -621,8 +649,10 @@ function runtimePayloadToLedgerRows(
     const afterValue = finiteNumber(log.input_tokens_after);
     const before = beforeValue ?? 0;
     const after = afterValue ?? 0;
-    const saved = finiteNumber(log.tokens_saved)
-      ?? (beforeValue !== null && afterValue !== null ? Math.max(0, before - after) : 0);
+    const physicalSaved = beforeValue !== null && afterValue !== null ? Math.max(0, before - after) : 0;
+    const claimableSaved = finiteNumber(log.tokens_saved);
+    const saved = claimableSaved ?? physicalSaved;
+    const pendingAttribution = physicalSaved > 0 && claimableSaved === 0 && log.context_accounting != null;
     const error = safeText(log.error, "");
     rows.push({
       id: `request-${safeText(log.request_id, safeText(log.route_id, "request"))}-${rows.length}`,
@@ -639,7 +669,9 @@ function runtimePayloadToLedgerRows(
         error ? `error=${error}` : "redacted=true",
       ].join(" · "),
       status: error ? "failed" : "ok",
-      tokens: tokenSummary(before, after, saved),
+      tokens: pendingAttribution
+        ? `${physicalSaved.toLocaleString("en-US")} physical · 0 claimable`
+        : tokenSummary(before, after, saved),
     });
   }
 

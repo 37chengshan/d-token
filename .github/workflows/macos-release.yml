@@ -2,15 +2,6 @@ name: macos-release
 
 on:
   workflow_dispatch:
-    inputs:
-      notarize:
-        description: "Run Apple notarization when signing secrets are configured"
-        required: true
-        default: "false"
-        type: choice
-        options:
-          - "false"
-          - "true"
 
 jobs:
   build-macos:
@@ -85,7 +76,6 @@ jobs:
           Write-ReleaseCandidateStamp -Root . -Path code/target/release/d-token-release-candidate.json | Out-Null
 
       - name: Import Apple signing certificate
-        if: ${{ inputs.notarize == 'true' }}
         env:
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
@@ -110,10 +100,15 @@ jobs:
 
       - name: Build macOS Tauri bundle
         working-directory: code/apps/desktop
-        run: npx tauri build --bundles app,dmg
+        run: npm run tauri:with-sidecar -- build --bundles app,dmg
+
+      - name: Verify signed app bundle
+        run: |
+          APP_PATH="$(find code/target/release/bundle/macos -name '*.app' -print -quit)"
+          test -n "$APP_PATH"
+          codesign --verify --deep --strict --verbose=2 "$APP_PATH"
 
       - name: Notarize macOS DMG
-        if: ${{ inputs.notarize == 'true' }}
         env:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
@@ -131,12 +126,31 @@ jobs:
             --wait
           xcrun stapler staple "$DMG_PATH"
 
+      - name: Verify notarization and Gatekeeper
+        run: |
+          APP_PATH="$(find code/target/release/bundle/macos -name '*.app' -print -quit)"
+          DMG_PATH="$(find code/target/release/bundle/dmg -name '*.dmg' -print -quit)"
+          test -n "$APP_PATH"
+          test -n "$DMG_PATH"
+          xcrun stapler validate "$DMG_PATH"
+          spctl --assess --type execute --verbose=2 "$APP_PATH"
+
+      - name: Write SHA-256 manifest
+        run: |
+          APP_BINARY="$(find code/target/release/bundle/macos -path '*/Contents/MacOS/d-token-desktop' -print -quit)"
+          SIDECAR_BINARY="$(find code/target/release/bundle/macos -path '*/Contents/MacOS/dtoken-proxy' -print -quit)"
+          DMG_PATH="$(find code/target/release/bundle/dmg -name '*.dmg' -print -quit)"
+          test -n "$APP_BINARY"
+          test -n "$SIDECAR_BINARY"
+          test -n "$DMG_PATH"
+          shasum -a 256 "$APP_BINARY" "$SIDECAR_BINARY" "$DMG_PATH" > code/target/release/SHA256SUMS-macos.txt
+
       - name: Upload macOS artifacts
         uses: actions/upload-artifact@v4
         with:
           name: d-token-macos
           if-no-files-found: error
           path: |
-            code/target/release/bundle/macos/*.app
             code/target/release/bundle/dmg/*.dmg
             code/target/release/d-token-release-candidate.json
+            code/target/release/SHA256SUMS-macos.txt

@@ -77,7 +77,7 @@ Agent request
 | `dtoken-proxy` | loopback HTTP 进程入口与 d-token-owned service |
 | `dtoken-core-api` | 协议/API router、请求处理、upstream 转发、Dashboard projection |
 | `dtoken-router` | Provider/Route/Instance 决策模型与规则测试；生产路径仍需继续收敛为单一决策权威 |
-| `dtoken-compress` | compression pipeline 与 Optical shadow planner |
+| `dtoken-compress` | Protected Context IR、semantic/Optical hybrid planner、确定性 PNG renderer、sealed patcher 与 post-transform validator |
 | `dtoken-event-ledger` | append-only 脱敏事件账本 |
 | `dtoken-config` / `dtoken-config-patcher` | 配置模型、计划、patch 和 rollback primitives |
 | `dtoken-process` / `dtoken-doctor` | 受管进程与诊断 primitives |
@@ -158,7 +158,8 @@ source + generated_at + freshness + partial + warnings + schema_version
 3. 浏览器预览和 Tauri runtime 必须有显式证据状态，不得互相冒充。
 4. 多 Agent 控制面是产品 IA；OpenCode 是当前真实验收入口，不是导航中心。
 5. Windows/macOS UI 1:1，共享组件、token、文案与交互；平台说明仅在确有差异的操作处出现。
-6. Optical 当前仅 shadow preview/metadata。renderer、patcher、post-validator、rollback 和 fidelity gate 完成前禁止 active transform。
+6. Optical active 后端只允许同协议 Anthropic closed historical low-risk tool result，并受签名 Capability/eval、资源、经济、post-validation 和 durable pre-send Ledger 门控；默认关闭，跨协议及未知模型不可达。
+7. shadow/passthrough/pre-send fallback 转发 ingress 原始 bytes；active 只有在最终 patched body 验证通过后才重新编码。upstream send commit 后禁止自动原文重试。
 
 ## 9. 生命周期与发布边界
 

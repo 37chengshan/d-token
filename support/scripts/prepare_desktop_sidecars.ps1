@@ -6,8 +6,8 @@ $ErrorActionPreference = "Stop"
 $Root = Resolve-Path (Join-Path $PSScriptRoot "..\..")
 $CodeRoot = Join-Path $Root "code"
 $BinaryDir = Join-Path $Root "code\apps\desktop\src-tauri\binaries"
-$TargetTriples = @("x86_64-pc-windows-gnu", "x86_64-pc-windows-msvc")
-$SourceName = if ($IsWindows -or $env:OS -eq "Windows_NT") { "dtoken-proxy.exe" } else { "dtoken-proxy" }
+$TargetTriple = "x86_64-pc-windows-msvc"
+$SourceName = "dtoken-proxy.exe"
 $ProfileDir = if ($Release) { "release" } else { "debug" }
 $CandidateStampPath = Join-Path $CodeRoot "target\$ProfileDir\d-token-release-candidate.json"
 
@@ -16,47 +16,51 @@ $CandidateStampPath = Join-Path $CodeRoot "target\$ProfileDir\d-token-release-ca
 Push-Location $CodeRoot
 try {
   if ($Release) {
-    cargo build -p dtoken-proxy --release | Out-Null
+    cargo build -p dtoken-proxy --release --target $TargetTriple | Out-Null
   } else {
-    cargo build -p dtoken-proxy | Out-Null
+    cargo build -p dtoken-proxy --target $TargetTriple | Out-Null
   }
 } finally {
   Pop-Location
 }
 
-$Source = Join-Path $CodeRoot "target\$ProfileDir\$SourceName"
+$Source = Join-Path $CodeRoot "target\$TargetTriple\$ProfileDir\$SourceName"
 if (-not (Test-Path -LiteralPath $Source)) {
   throw "dtoken-proxy build artifact was not found at $Source"
 }
 
 New-Item -ItemType Directory -Force -Path $BinaryDir | Out-Null
+$SidecarName = "dtoken-proxy-$TargetTriple.exe"
+$Destination = Join-Path $BinaryDir $SidecarName
+$ReleaseArtifact = Join-Path $CodeRoot "target\$ProfileDir\$SourceName"
 $Destinations = @()
-foreach ($TargetTriple in $TargetTriples) {
-  $SidecarName = if ($IsWindows -or $env:OS -eq "Windows_NT") { "dtoken-proxy-$TargetTriple.exe" } else { "dtoken-proxy-$TargetTriple" }
-  $Destination = Join-Path $BinaryDir $SidecarName
-  $Copied = $false
-  $LastError = $null
-  for ($Attempt = 1; $Attempt -le 10; $Attempt++) {
-    try {
-      if (Test-Path -LiteralPath $Destination) {
-        Remove-Item -LiteralPath $Destination -Force
+foreach ($CopyDestination in @($Destination, $ReleaseArtifact)) {
+    $Copied = $false
+    $LastError = $null
+    for ($Attempt = 1; $Attempt -le 10; $Attempt++) {
+      try {
+        $Parent = Split-Path -Parent $CopyDestination
+        New-Item -ItemType Directory -Force -Path $Parent | Out-Null
+        if (Test-Path -LiteralPath $CopyDestination) {
+          Remove-Item -LiteralPath $CopyDestination -Force
+        }
+        Copy-Item -LiteralPath $Source -Destination $CopyDestination -Force
+        $Copied = $true
+        break
+      } catch {
+        $LastError = $_.Exception.Message
+        Start-Sleep -Milliseconds (250 * $Attempt)
       }
-      Copy-Item -LiteralPath $Source -Destination $Destination -Force
-      $Copied = $true
-      break
-    } catch {
-      $LastError = $_.Exception.Message
-      Start-Sleep -Milliseconds (250 * $Attempt)
     }
-  }
-  if (-not $Copied) {
-    throw "failed to copy sidecar to $Destination after retries: $LastError"
-  }
-  $Destinations += [pscustomobject]@{
-    path = (Resolve-Path $Destination).Path
-    bytes = (Get-Item -LiteralPath $Destination).Length
-    target_triple = $TargetTriple
-  }
+    if (-not $Copied) {
+      throw "failed to copy sidecar to $CopyDestination after retries: $LastError"
+    }
+}
+$Destinations += [pscustomobject]@{
+  path = (Resolve-Path $Destination).Path
+  release_artifact = (Resolve-Path $ReleaseArtifact).Path
+  bytes = (Get-Item -LiteralPath $Destination).Length
+  target_triple = $TargetTriple
 }
 
 $WebView2Loader = $null
@@ -77,11 +81,21 @@ if ($IsWindows -or $env:OS -eq "Windows_NT") {
   }
 
   $WebView2Destination = Join-Path $BinaryDir "WebView2Loader.dll"
-  Copy-Item -LiteralPath $WebView2Source.FullName -Destination $WebView2Destination -Force
-  (Get-Item -LiteralPath $WebView2Destination).LastWriteTime = Get-Date
+  $WebView2ReleaseArtifact = Join-Path $CodeRoot "target\$ProfileDir\WebView2Loader.dll"
+  foreach ($CopyDestination in @($WebView2Destination, $WebView2ReleaseArtifact)) {
+    $Parent = Split-Path -Parent $CopyDestination
+    New-Item -ItemType Directory -Force -Path $Parent | Out-Null
+    $SourceFullPath = [System.IO.Path]::GetFullPath($WebView2Source.FullName)
+    $DestinationFullPath = [System.IO.Path]::GetFullPath($CopyDestination)
+    if (-not $SourceFullPath.Equals($DestinationFullPath, [System.StringComparison]::OrdinalIgnoreCase)) {
+      Copy-Item -LiteralPath $WebView2Source.FullName -Destination $CopyDestination -Force
+      (Get-Item -LiteralPath $CopyDestination).LastWriteTime = Get-Date
+    }
+  }
   $WebView2Loader = [pscustomobject]@{
     source = $WebView2Source.FullName
     path = (Resolve-Path $WebView2Destination).Path
+    release_artifact = (Resolve-Path $WebView2ReleaseArtifact).Path
     bytes = (Get-Item -LiteralPath $WebView2Destination).Length
   }
 }

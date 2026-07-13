@@ -1,12 +1,31 @@
-import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import { ThemeProvider as NextThemeProvider, useTheme } from "next-themes";
 import { I18nContext, type Lang } from "./i18n";
-import { invokeNative } from "./native";
+import { invokeNative, type NativeActionResult } from "./native";
 
 export type Accent = "blue" | "green" | "orange" | "purple" | "slate";
 export type ChartAccent = "green" | "blue" | "amber" | "rose" | "violet" | "orange";
-export type FlowPalette = "sunrise" | "aurora" | "ocean" | "mono";
-export type FlowSpeed = "slow" | "normal" | "fast";
+export type ThemeMode = "light" | "dark" | "system";
+export type AppearanceLoadState = "loading" | "loaded" | "missing" | "preview" | "error";
+
+export type AppearanceState = {
+  theme: ThemeMode;
+  resolvedTheme: "light" | "dark";
+  accent: Accent;
+  chartAccent: ChartAccent;
+  glass: false;
+  lang: Lang;
+};
+
+export type AppearancePatch = Partial<Omit<AppearanceState, "resolvedTheme" | "glass">>;
 
 export const ACCENTS: { key: Accent; color: string }[] = [
   { key: "blue", color: "#4f6f9b" },
@@ -25,100 +44,234 @@ export const CHART_ACCENTS: { key: ChartAccent; color: string }[] = [
   { key: "orange", color: "#f97316" },
 ];
 
-type AppearanceCtx = {
-  accent: Accent;
-  setAccent: (a: Accent) => void;
-  chartAccent: ChartAccent;
-  setChartAccent: (c: ChartAccent) => void;
-  flowPalette: FlowPalette;
-  setFlowPalette: (p: FlowPalette) => void;
-  flowSpeed: FlowSpeed;
-  setFlowSpeed: (s: FlowSpeed) => void;
-  glass: boolean;
-  setGlass: (g: boolean) => void;
+const APPEARANCE_CACHE_KEY = "d-token.appearance.v2";
+const NEXT_THEME_STORAGE_KEY = "d-token.theme";
+
+const DEFAULT_APPEARANCE: Omit<AppearanceState, "resolvedTheme"> = {
+  theme: "light",
+  accent: "orange",
+  chartAccent: "orange",
+  glass: false,
+  lang: "zh",
 };
 
-const AppearanceContext = createContext<AppearanceCtx>({
-  accent: "orange",
+type AppearanceContextValue = AppearanceState & {
+  loadState: AppearanceLoadState;
+  saving: boolean;
+  persistenceNotice: string;
+  updateAppearance: (patch: AppearancePatch) => void;
+  setAccent: (accent: Accent) => void;
+  setChartAccent: (accent: ChartAccent) => void;
+  setTheme: (theme: ThemeMode) => void;
+};
+
+const fallbackContext: AppearanceContextValue = {
+  ...DEFAULT_APPEARANCE,
+  resolvedTheme: "light",
+  loadState: "loading",
+  saving: false,
+  persistenceNotice: "",
+  updateAppearance: () => {},
   setAccent: () => {},
-  chartAccent: "orange",
   setChartAccent: () => {},
-  flowPalette: "sunrise",
-  setFlowPalette: () => {},
-  flowSpeed: "slow",
-  setFlowSpeed: () => {},
-  glass: true,
-  setGlass: () => {},
-});
+  setTheme: () => {},
+};
+
+const AppearanceContext = createContext<AppearanceContextValue>(fallbackContext);
 
 export function useAppearance() {
   return useContext(AppearanceContext);
 }
 
-// Re-export next-themes hook for convenience.
+// Kept for components owned by next-themes (for example the toast renderer).
 export { useTheme };
 
-function AppearanceProvider({ children }: { children: ReactNode }) {
-  const { setTheme } = useTheme();
-  const [accent, setAccent] = useState<Accent>("orange");
-  const [chartAccent, setChartAccent] = useState<ChartAccent>("orange");
-  const [flowPalette, setFlowPalette] = useState<FlowPalette>("sunrise");
-  const [flowSpeed, setFlowSpeed] = useState<FlowSpeed>("slow");
-  const [glass, setGlass] = useState(true);
-  const [lang, setLang] = useState<Lang>("zh");
+function AppearanceProvider({ children, initial }: { children: ReactNode; initial: Omit<AppearanceState, "resolvedTheme"> }) {
+  const { setTheme: setNextTheme } = useTheme();
+  const [appearance, setAppearance] = useState(initial);
+  const [resolvedTheme, setResolvedTheme] = useState<"light" | "dark">(() => resolveTheme(initial.theme));
+  const [loadState, setLoadState] = useState<AppearanceLoadState>("loading");
+  const [saving, setSaving] = useState(false);
+  const [persistenceNotice, setPersistenceNotice] = useState("");
+  const appearanceRef = useRef(appearance);
+  const touchedKeysRef = useRef(new Set<keyof AppearancePatch>());
+  const loadPromiseRef = useRef<Promise<void> | null>(null);
+  const saveQueueRef = useRef(Promise.resolve());
+  const saveCountRef = useRef(0);
+  const updateRevisionRef = useRef(0);
+
+  const applyPatch = useCallback((patch: AppearancePatch, markTouched: boolean) => {
+    if (markTouched) {
+      Object.keys(patch).forEach((key) => touchedKeysRef.current.add(key as keyof AppearancePatch));
+    }
+
+    const next = normalizeAppearance({ ...appearanceRef.current, ...patch });
+    appearanceRef.current = next;
+    setAppearance(next);
+    cacheAppearance(next);
+    applyAppearanceToRoot(next);
+    setResolvedTheme(resolveTheme(next.theme));
+    setNextTheme(next.theme);
+  }, [setNextTheme]);
 
   useEffect(() => {
-    let cancelled = false;
-    invokeNative<{ payload?: { appearance?: Record<string, unknown> } }>("get_app_settings", { section: "app" })
-      .then((saved) => {
-        if (cancelled) return;
-        const appearance = saved.payload?.appearance ?? {};
-        if (isAccent(appearance.accent)) setAccent(appearance.accent);
-        if (isChartAccent(appearance.chartAccent)) setChartAccent(appearance.chartAccent);
-        if (isFlowPalette(appearance.flowPalette)) setFlowPalette(appearance.flowPalette);
-        if (isFlowSpeed(appearance.flowSpeed)) setFlowSpeed(appearance.flowSpeed);
-        if (typeof appearance.glass === "boolean") setGlass(appearance.glass);
-        if (isThemeMode(appearance.theme)) setTheme(appearance.theme);
-        if (appearance.lang === "zh" || appearance.lang === "en") setLang(appearance.lang);
-      })
-      .catch(() => {
-        // Browser preview keeps the default theme context.
-      });
-    return () => {
-      cancelled = true;
+    applyAppearanceToRoot(appearanceRef.current);
+    setNextTheme(appearanceRef.current.theme);
+
+    const media = window.matchMedia("(prefers-color-scheme: dark)");
+    const updateSystemTheme = () => {
+      if (appearanceRef.current.theme !== "system") return;
+      const resolved = media.matches ? "dark" : "light";
+      setResolvedTheme(resolved);
+      document.documentElement.classList.toggle("dark", resolved === "dark");
+      document.documentElement.style.colorScheme = resolved;
     };
-  }, [setTheme]);
+    media.addEventListener("change", updateSystemTheme);
+    return () => media.removeEventListener("change", updateSystemTheme);
+  }, [setNextTheme]);
 
   useEffect(() => {
-    const root = document.documentElement;
-    root.setAttribute("data-accent", accent);
-    root.setAttribute("data-chart-accent", chartAccent);
-    root.setAttribute("data-flow-palette", flowPalette);
-    root.setAttribute("data-flow-speed", flowSpeed);
-    root.setAttribute("data-glass", glass ? "on" : "off");
-    root.setAttribute("lang", lang === "zh" ? "zh-CN" : "en");
-  }, [accent, chartAccent, flowPalette, flowSpeed, glass, lang]);
+    if (loadPromiseRef.current) return;
+    loadPromiseRef.current = invokeNative<SavedSettings>("get_app_settings", { section: "app" })
+      .then((saved) => {
+        const nativePatch = parseAppearance(saved.payload?.appearance);
+        const untouchedPatch = Object.fromEntries(
+          Object.entries(nativePatch).filter(([key]) => !touchedKeysRef.current.has(key as keyof AppearancePatch)),
+        ) as AppearancePatch;
+        if (Object.keys(untouchedPatch).length > 0) applyPatch(untouchedPatch, false);
+        setLoadState(saved.state === "loaded" ? "loaded" : "missing");
+      })
+      .catch((error) => {
+        setLoadState(error instanceof Error && error.message === "native_unavailable" ? "preview" : "error");
+      });
+  }, [applyPatch]);
+
+  const persistCurrentAppearance = useCallback((revision: number) => {
+    saveCountRef.current += 1;
+    setSaving(true);
+    saveQueueRef.current = saveQueueRef.current
+      .catch(() => undefined)
+      .then(async () => {
+        await loadPromiseRef.current;
+        const current = appearanceRef.current;
+        const result = await invokeNative<NativeActionResult>("save_app_settings", {
+          section: "app",
+          payload: {
+            appearance: {
+              ...current,
+            },
+            scope: "d-token-local-settings",
+            no_external_agent_write: true,
+          },
+        });
+        if (!result.ok) throw new Error(result.summary || "save_failed");
+        if (revision === updateRevisionRef.current) {
+          setLoadState("loaded");
+          setPersistenceNotice(result.summary);
+        }
+      })
+      .catch((error) => {
+        const preview = error instanceof Error && error.message === "native_unavailable";
+        if (revision === updateRevisionRef.current) {
+          if (preview) setLoadState("preview");
+          setPersistenceNotice(preview ? "session_only" : `save_failed:${String(error)}`);
+        }
+      })
+      .finally(() => {
+        saveCountRef.current -= 1;
+        if (saveCountRef.current === 0) setSaving(false);
+      });
+  }, []);
+
+  const updateAppearance = useCallback((patch: AppearancePatch) => {
+    updateRevisionRef.current += 1;
+    applyPatch(patch, true);
+    persistCurrentAppearance(updateRevisionRef.current);
+  }, [applyPatch, persistCurrentAppearance]);
+
+  const value: AppearanceContextValue = {
+    ...appearance,
+    resolvedTheme,
+    loadState,
+    saving,
+    persistenceNotice,
+    updateAppearance,
+    setAccent: (accent) => updateAppearance({ accent }),
+    setChartAccent: (chartAccent) => updateAppearance({ chartAccent }),
+    setTheme: (theme) => updateAppearance({ theme }),
+  };
 
   return (
-    <I18nContext.Provider value={{ lang, setLang }}>
-      <AppearanceContext.Provider
-        value={{
-          accent,
-          setAccent,
-          chartAccent,
-          setChartAccent,
-          flowPalette,
-          setFlowPalette,
-          flowSpeed,
-          setFlowSpeed,
-          glass,
-          setGlass,
-        }}
-      >
-        {children}
-      </AppearanceContext.Provider>
+    <I18nContext.Provider value={{ lang: appearance.lang, setLang: (lang) => updateAppearance({ lang }) }}>
+      <AppearanceContext.Provider value={value}>{children}</AppearanceContext.Provider>
     </I18nContext.Provider>
   );
+}
+
+function resolveTheme(theme: ThemeMode): "light" | "dark" {
+  if (theme !== "system") return theme;
+  return typeof window !== "undefined" && window.matchMedia?.("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+}
+
+function applyAppearanceToRoot(appearance: Omit<AppearanceState, "resolvedTheme">) {
+  if (typeof document === "undefined") return;
+  const root = document.documentElement;
+  const resolved = resolveTheme(appearance.theme);
+  root.classList.toggle("dark", resolved === "dark");
+  root.style.colorScheme = resolved;
+  root.setAttribute("data-theme", appearance.theme);
+  root.setAttribute("data-accent", appearance.accent);
+  root.setAttribute("data-chart-accent", appearance.chartAccent);
+  root.setAttribute("data-glass", "off");
+  root.setAttribute("lang", appearance.lang === "zh" ? "zh-CN" : "en");
+  root.removeAttribute("data-flow-palette");
+  root.removeAttribute("data-flow-speed");
+  root.style.removeProperty("--flow-color-a");
+  root.style.removeProperty("--flow-color-b");
+  root.style.removeProperty("--flow-color-c");
+  root.style.removeProperty("--flow-gradient-duration");
+}
+
+function cacheAppearance(appearance: Omit<AppearanceState, "resolvedTheme">) {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(APPEARANCE_CACHE_KEY, JSON.stringify(appearance));
+    window.localStorage.setItem(NEXT_THEME_STORAGE_KEY, appearance.theme);
+  } catch {
+    // A denied localStorage write must not prevent current-session appearance updates.
+  }
+}
+
+function readCachedAppearance(): Omit<AppearanceState, "resolvedTheme"> {
+  if (typeof window === "undefined") return DEFAULT_APPEARANCE;
+  try {
+    const raw = window.localStorage.getItem(APPEARANCE_CACHE_KEY);
+    if (!raw) return DEFAULT_APPEARANCE;
+    return normalizeAppearance({ ...DEFAULT_APPEARANCE, ...parseAppearance(JSON.parse(raw)) });
+  } catch {
+    return DEFAULT_APPEARANCE;
+  }
+}
+
+function normalizeAppearance(value: Omit<AppearanceState, "resolvedTheme">): Omit<AppearanceState, "resolvedTheme"> {
+  return {
+    theme: isThemeMode(value.theme) ? value.theme : "light",
+    accent: isAccent(value.accent) ? value.accent : "orange",
+    chartAccent: isChartAccent(value.chartAccent) ? value.chartAccent : "orange",
+    glass: false,
+    lang: value.lang === "en" ? "en" : "zh",
+  };
+}
+
+function parseAppearance(value: unknown): AppearancePatch {
+  if (!value || typeof value !== "object") return {};
+  const source = value as Record<string, unknown>;
+  const patch: AppearancePatch = {};
+  if (isThemeMode(source.theme)) patch.theme = source.theme;
+  if (isAccent(source.accent)) patch.accent = source.accent;
+  if (isChartAccent(source.chartAccent)) patch.chartAccent = source.chartAccent;
+  if (source.lang === "zh" || source.lang === "en") patch.lang = source.lang;
+  return patch;
 }
 
 function isAccent(value: unknown): value is Accent {
@@ -129,22 +282,26 @@ function isChartAccent(value: unknown): value is ChartAccent {
   return value === "green" || value === "blue" || value === "amber" || value === "rose" || value === "violet" || value === "orange";
 }
 
-function isFlowPalette(value: unknown): value is FlowPalette {
-  return value === "sunrise" || value === "aurora" || value === "ocean" || value === "mono";
-}
-
-function isFlowSpeed(value: unknown): value is FlowSpeed {
-  return value === "slow" || value === "normal" || value === "fast";
-}
-
-function isThemeMode(value: unknown): value is "light" | "dark" | "system" {
+function isThemeMode(value: unknown): value is ThemeMode {
   return value === "light" || value === "dark" || value === "system";
 }
 
+type SavedSettings = {
+  state: "loaded" | "missing" | "unsupported_section" | string;
+  payload?: { appearance?: Record<string, unknown> };
+};
+
 export function AppProviders({ children }: { children: ReactNode }) {
+  const initial = readCachedAppearance();
   return (
-    <NextThemeProvider attribute="class" defaultTheme="light" enableSystem disableTransitionOnChange={false}>
-      <AppearanceProvider>{children}</AppearanceProvider>
+    <NextThemeProvider
+      attribute="class"
+      defaultTheme={initial.theme}
+      storageKey={NEXT_THEME_STORAGE_KEY}
+      enableSystem
+      disableTransitionOnChange={false}
+    >
+      <AppearanceProvider initial={initial}>{children}</AppearanceProvider>
     </NextThemeProvider>
   );
 }

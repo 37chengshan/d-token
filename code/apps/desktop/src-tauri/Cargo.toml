@@ -1,6 +1,6 @@
 [package]
 name = "d-token-desktop"
-version = "0.1.0"
+version = "0.2.0"
 description = "d-token desktop control plane"
 authors = ["d-token contributors"]
 edition = "2021"
@@ -12,6 +12,7 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 dtoken-core-api = { path = "../../../crates/dtoken-core-api" }
 dtoken-config-patcher = { path = "../../../crates/dtoken-config-patcher" }
+dtoken-event-ledger = { path = "../../../crates/dtoken-event-ledger" }
 dtoken-project-policy = { path = "../../../crates/dtoken-project-policy" }
 dtoken-process = { path = "../../../crates/dtoken-process" }
 dtoken-types = { path = "../../../crates/dtoken-types" }
@@ -20,10 +21,12 @@ serde_json = "1"
 tauri = { version = "2", features = [] }
 tauri-plugin-opener = "2"
 url = "2"
+uuid = { version = "1", features = ["v4"] }
+rusqlite = { version = "0.32", features = ["bundled"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 keyring = { version = "3", default-features = false, features = ["windows-native"] }
-windows-sys = { version = "0.59", features = ["Win32_Storage_FileSystem"] }
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_Registry"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 keyring = { version = "3", default-features = false, features = ["apple-native"] }
@@ -31,3 +34,6 @@ keyring = { version = "3", default-features = false, features = ["apple-native"]
 [features]
 default = ["custom-protocol"]
 custom-protocol = ["tauri/custom-protocol"]
+
+[dev-dependencies]
+tempfile = "3"

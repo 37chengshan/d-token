@@ -11,7 +11,7 @@ export function FlowDiagram({ nodes }: { nodes: { label: string; sub?: string; i
             initial={{ opacity: 0, scale: 0.9 }}
             animate={{ opacity: 1, scale: 1 }}
             transition={{ delay: i * 0.12 }}
-            className="glass rounded-lg px-3 py-2 text-center"
+            className="rounded-md bg-muted/45 px-3 py-2 text-center"
           >
             <div className="flex items-center justify-center gap-1.5 text-sm">{n.icon}{n.label}</div>
             {n.sub && <div className="text-xs text-muted-foreground">{n.sub}</div>}

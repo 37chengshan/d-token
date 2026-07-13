@@ -40,7 +40,7 @@ export function EmptyState({
   }[status];
 
   return (
-    <div className={cn("glass-light flex flex-col items-center gap-2 rounded-lg border border-border/40 p-8 text-center", className)}>
+    <div className={cn("flex flex-col items-center gap-2 border-y border-border/50 bg-muted/20 px-6 py-8 text-center", className)}>
       <div className={cn("flex items-center gap-2 text-sm font-medium", tone)}>
         {icon}
         <span>{title}</span>

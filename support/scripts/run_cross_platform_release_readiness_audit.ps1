@@ -37,10 +37,12 @@ function Get-LatestFile {
 }
 
 $TauriConfigPath = Join-Path $Root "code\apps\desktop\src-tauri\tauri.conf.json"
+$TauriMacConfigPath = Join-Path $Root "code\apps\desktop\src-tauri\tauri.macos.conf.json"
 $PackageJsonPath = Join-Path $Root "code\apps\desktop\package.json"
 $TechStackPath = Join-Path $Root "docs\TECH_STACK.md"
 $PrdPath = Join-Path $Root "docs\PRD.md"
 $TauriConfig = Get-JsonFile $TauriConfigPath
+$TauriMacConfig = Get-JsonFile $TauriMacConfigPath
 $PackageJson = Get-JsonFile $PackageJsonPath
 $TechStack = if (Test-Path -LiteralPath $TechStackPath) { Get-Content -LiteralPath $TechStackPath -Raw } else { "" }
 $Prd = if (Test-Path -LiteralPath $PrdPath) { Get-Content -LiteralPath $PrdPath -Raw } else { "" }
@@ -53,6 +55,10 @@ $MacTemplateReport = if ($LatestMacTemplate) { Get-JsonFile $LatestMacTemplate.F
 $BundleTargets = @()
 if ($TauriConfig -and $TauriConfig.bundle -and $TauriConfig.bundle.targets) {
   $BundleTargets = @($TauriConfig.bundle.targets)
+}
+$MacBundleTargets = @()
+if ($TauriMacConfig -and $TauriMacConfig.bundle -and $TauriMacConfig.bundle.targets) {
+  $MacBundleTargets = @($TauriMacConfig.bundle.targets)
 }
 
 $WindowsInstaller = Join-Path $Root "code\target\release\bundle\nsis\d-token_0.2.0_x64-setup.exe"
@@ -67,9 +73,9 @@ $IsMacHost = $IsMacOS -or ([System.Runtime.InteropServices.RuntimeInformation]::
 $WindowsArtifactExists = Test-Path -LiteralPath $WindowsInstaller
 $MacArtifactExists = (@($MacDmgCandidates | Where-Object { Test-Path -LiteralPath $_ }).Count -gt 0)
 $HasNsisTarget = @($BundleTargets | Where-Object { $_ -eq "nsis" }).Count -gt 0
-$HasMacBundleTarget = @($BundleTargets | Where-Object { $_ -eq "dmg" -or $_ -eq "app" -or $_ -eq "macos" }).Count -gt 0
+$HasMacBundleTarget = @($MacBundleTargets | Where-Object { $_ -eq "dmg" -or $_ -eq "app" -or $_ -eq "macos" }).Count -gt 0
 $PackageBuildScript = if ($PackageJson -and $PackageJson.scripts) { [string]$PackageJson.scripts.'tauri:build' } else { "" }
-$PreparesSidecars = $PackageBuildScript -like "*prepare_desktop_sidecars.ps1*"
+$PreparesSidecars = $PackageBuildScript -like "*tauri:with-sidecar*" -or $PackageBuildScript -like "*prepare_desktop_sidecars*"
 $PrdMentionsMac = $Prd -match "macOS"
 $TechStackMentionsMacSigning = ($TechStack -match "code signing") -and ($TechStack -match "notarization")
 
@@ -93,8 +99,8 @@ $Checks = @(
     path = if ($LatestHandoff) { $LatestHandoff.FullName } else { $null }
   }
   New-Check "macos_bundle_target_configured" $HasMacBundleTarget @{
-    targets = $BundleTargets
-    note = "This is expected to be false on the current Windows-only packaging checkpoint unless macOS packaging has been explicitly added."
+    targets = $MacBundleTargets
+    config_path = $TauriMacConfigPath
   }
   New-Check "macos_artifact_exists" $MacArtifactExists @{
     candidates = $MacDmgCandidates
@@ -128,6 +134,7 @@ $Report = [pscustomobject]@{
     release_template_ready = $MacTemplateReady
     release_template_report = if ($LatestMacTemplate) { $LatestMacTemplate.FullName } else { $null }
     bundle_target_configured = $HasMacBundleTarget
+    bundle_targets = $MacBundleTargets
     artifact_exists = $MacArtifactExists
     artifact_candidates = $MacDmgCandidates
     requires_macos_runner = -not $IsMacHost

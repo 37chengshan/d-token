@@ -5,7 +5,8 @@ use dtoken_types::{
 };
 
 use super::capability::{
-    normalize_model_base, resolve_model_capability_with_registry, OpticalCapabilityRegistry,
+    normalize_model_base, resolve_model_capability_record_for_route_with_registry,
+    OpticalCapabilityRegistry,
 };
 
 pub fn resolve_endpoint(path: Option<&str>) -> OpticalEndpoint {
@@ -90,13 +91,15 @@ pub fn evaluate_applicability_with_registry(
         );
     }
 
-    let capability = resolve_model_capability_with_registry(
+    let capability = resolve_model_capability_record_for_route_with_registry(
         input.protocol.as_ref(),
         input.provider_id.as_deref(),
+        input.route_id.as_deref(),
         input.model.as_deref(),
         endpoint.clone(),
         registry,
-    );
+    )
+    .capability;
 
     match capability.status {
         CapabilityStatus::Supported => decision(

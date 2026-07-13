@@ -22,6 +22,39 @@
 4. fixture/mock 只能存在于 `support/`、自动化测试、CI 或隐藏 dev harness；正式 App 与普通浏览器预览均使用诚实空态，真实运行完成态必须来自 d-token 自有本地服务、Tauri command 或 d-token 自有本地记录。
 5. UI 视觉目标是现代、干净、克制、可信、稳定，不能像开发调试面板，也不能像测试中心。
 6. d-token 第一版只安装和管理 d-token 自有本地服务；对 Claude Code、Codex、OpenCode、Cursor、Cline、CommandCode、cc-switch 等第三方工具只做检测、读取配置、生成配置计划和受控配置写入，不自动安装第三方工具。
+7. App 的运行状态必须跨页面、跨导航和跨 App 重启保持一致；不得因页面重新挂载、异步加载或局部请求失败把已运行服务闪回为“未启动”，也不得让“已连接”和概览无数据互相矛盾。
+8. 候选发布版必须同时提供可安装 macOS App/DMG、Windows 安装包、产物哈希、平台运行证据和明确的已知限制；macOS 先完成真实窗口与功能验收，Windows 复用同一 React UI，并补齐平台桥接、安装、升级与回退验证。
+9. 在任何真实 Agent / upstream 验收前，所有正式可见页面、二级页面、控件和状态必须先完成“真实数据源 → 统一状态 → 持久化 → refresh/invalidate → 切页保持 → App 重启恢复 → 错误/partial 语义”闭环。不得一边显示“未检测/未接入”，一边从另一组件展示已发现候选或已连接结果。
+10. 所有正式可见动作必须接通真实 Tauri command、d-token-owned runtime 或 Event Ledger，并返回可读 action receipt；未实现能力不得以可点击按钮、假成功、永远 unavailable 的装饰功能留在正式主流程。确实暂未支持的能力必须隐藏到后续版本，或以不干扰主流程的明确只读限制呈现。
+11. 真实测试开始前必须完成逐页功能—数据源—状态—持久化矩阵并通过真实 App 六页检查。只有当页面间状态一致、关键动作可用、顶部通知/弹窗接通且重启不丢状态后，才允许运行 OpenCode 官方免费模型 routed / compression workload。
+
+12. 公开发布 workflow 必须 fail-closed：macOS 缺 Developer ID、notarization、staple 或 Gatekeeper 证据时不得产出可发布 artifact；Windows 缺 Authenticode 有效签名、NSIS 安装启动证据或卸载恢复证据时不得产出可发布 artifact。开发期 ad-hoc/unsigned bundle 只能标记为本机候选。
+13. 每个平台的发布 artifact 必须携带 SHA-256 manifest、候选 provenance、版本、架构和已知限制，并与自动化门禁、真实安装启动及配置恢复绑定同一候选提交；源码或工作树变化后旧 artifact 自动失效。
+14. 自动更新必须使用签名更新 artifact、固定公钥验证和 HTTPS feed；没有可信 feed/密钥时不得下载或安装更新，自动更新控件不得表现成已可用。远程发布、推送或创建 Release 仍需用户明确授权。
+
+### P0.2.1 统一状态与持久化契约
+
+所有一级页、二级 UI、Topbar、StatusBar、操作弹窗和顶部通知必须消费统一的领域状态，不得各自在组件挂载时重复读取并形成互相覆盖的局部真相。每个数据切片至少包含：
+
+```ts
+type EvidenceSlice<T> = {
+  data: T | null;
+  source: "runtime" | "tauri" | "ledger" | "settings" | "derived";
+  state: "loading" | "ready" | "partial" | "stale" | "unavailable" | "error";
+  freshness: "live" | "recent" | "stale" | "unknown";
+  collectedAt: string | null;
+  revision?: string;
+  error: string | null;
+};
+```
+
+1. 统一状态至少覆盖 service、Agent detection、upstream discovery、connection plan/receipt、dashboard、traffic、routes、compression/accounting、Doctor、logs/events、transactions/rollback、appearance/settings 和 notifications。
+2. 首次加载可以显示 skeleton；后续刷新必须保留最后一份可验证证据并更新 freshness，不得闪回“未启动”、清空列表或重复播放整页动画。
+3. 服务、设置、配置事务、回退点和通知读取状态必须跨 App 重启恢复；请求、压缩、路由、Doctor 和日志状态从本地 runtime/Event Ledger 重建。不得只依赖 React 内存或当前页面生命周期。
+4. start/stop、apply/rollback、Doctor 修复、设置保存、Agent/cc-switch 刷新和真实请求完成后必须触发对应切片 invalidate/refresh；所有页面在同一轮刷新中看到同一 revision/request id。
+5. verified empty 与 unavailable 必须严格区分：真实 `[]` 可以显示 0；数据源未返回时显示 `—`/partial/unavailable。局部切片失败不得把在线服务降级为 stopped。
+6. 同一事实只允许一个所有者：外观由唯一 AppearanceProvider，运行证据由 App 级 operational store，通知由唯一 NotificationStore，配置变更由 transaction ledger；页面组件只渲染和发起领域动作。
+7. 所有持久化失败都必须产生顶部通知和可读错误状态；除非安全边界要求 fail closed，否则不得把用户当前会话中已生效的纯 UI 选择闪回旧值。
 
 ### P0.3 核心价值排序
 
@@ -82,6 +115,16 @@ OpenCode 仍然可以作为当前真实验收链路的优先入口，但 UI 信�
 
 概览不得放置“启动服务”“前往安装”“打开 Doctor”等功能入口或跨页面 CTA。无数据时只解释事实、影响和数据出现条件；真实操作留在对应一级页面。总体概览必须标注数据来源：真实数据来自 d-token-owned runtime、Tauri control plane 或 Event Ledger；正式 App 和浏览器预览均不得以示例数字、mock 曲线或假排行补齐暂无数据。
 
+概览采用固定的数据阅读顺序：四格 KPI → 活动趋势 → 当前问题/异常 → 趋势或证据详情 → 运行概况。运行概况必须位于页面最底部，不得变成功能入口。活动趋势直接采用 AiMaMi 参考图中的紧凑 GitHub-style heatmap 语言，不得实现成占据整屏的大日历。时间范围默认“本年”，与 AiMaMi 参考界面一致，并提供“本周 / 本月 / 本年”三种不同的数据窗口与紧凑排布：
+
+1. 本周：从周一开始的 7 个紧凑日格或短列，显示星期/日期标签，不扩张成七张大卡片。
+2. 本月：按真实 5 或 6 周 × 7 日展示小方格，并保留必要的星期/月标签；相邻月份数据可弱化或省略，但 tooltip/ARIA 必须可核验日期。
+3. 本年：按约 53 周 × 7 日展示连续小方格热力图，顶部标注月份，底部提供 Less/More 强度图例；不得拆成 12 张大月历卡。
+4. 没有请求时仍显示完整时间范围的零强度方格和“暂无活动”；所有日期按用户本地时区构造，避免 UTC 偏移。
+5. 每个数据格必须具备日期、活动等级、当天语义、tooltip 和可访问名称；状态不能只靠颜色表达，但不要求在每个小方格中永久印出日期数字。
+
+概览与分析、Doctor、日志、变更和状态栏必须消费同一份运行证据快照。已验证的空请求列表是“真实零数据”，可以显示 `0`；数据源未返回、过期或不可用时显示 `—`、partial、stale 或 unavailable，二者不得混淆。
+
 ### P0.7 第二页：安装与连接工作台
 
 安装与连接工作台是第一版最重要页面，承担“一键安装服务 + Agent 配置 + 智能学习 + 高级安装 + 日志”的核心任务。
@@ -136,6 +179,9 @@ cc-switch 检测要求：
 9. 如果某个 Agent 当前不是官方上游配置，而是通过 cc-switch 或用户自定义配置走第三方上游，d-token 必须读取 cc-switch 中对应用户配置文件，并据此配置 d-token 的上游与连接路径。
 10. 用户在 cc-switch 中切换配置/profile 时，d-token 必须能自动感知或在刷新后同步切换对应上游，避免 d-token 仍然指向旧上游。
 11. cc-switch 自动同步是关键功能：UI 必须明确显示“当前 cc-switch profile / 当前上游 / d-token 当前连接路径 / 是否已同步”。
+12. 上游选择默认来自自动发现：合并 Agent 自身配置、OpenCode provider/model catalog、cc-switch 只读配置和 d-token 已保存的非敏感连接资料；已有可发现候选时不得要求用户先手填 URL。
+13. OpenCode 可以同时存在多个 provider/upstream；发现多个有效候选时必须完整列出来源、协议、模型和脱敏地址，让用户显式选择，禁止静默猜测或静默覆盖。
+14. cc-switch 数据库与配置只读扫描必须版本化、字段白名单化并 fail closed；不得读取、返回或记录完整 profile blob、密钥、token、cookie 和私有 metadata。
 
 Agent 检测要求：
 
@@ -449,11 +495,11 @@ d-token Event Ledger / Dashboard / Doctor / Logs / App
 2. 已存在的外部 Headroom 服务，例如 `http://127.0.0.1:8787/dashboard`，只能作为迁移对照和 no-touch 只读参考；不能作为成品 App Dashboard 的依赖。
 3. d-token 必须拥有自己的本地服务、端口、stats/history/metrics、Event Ledger、ProviderProfile、RouteProfile、InstanceProfile 和 Dashboard 数据模型。
 4. Headroom Dashboard 的所有数据与页面能力要迁移到 d-token App，但数据应来自 d-token-owned runtime，而不是直接轮询外部 Headroom Dashboard。
-5. OpenCode 是第一条真实测试入口：测试请求必须从 OpenCode 打到 d-token，再由 d-token 完成压缩、路由和上游转发；OpenCode 测试已获授权直接使用用户本机原本配置中的真实 provider/model，不强制使用官方免费模型，也不做隔离配置。
+5. OpenCode 是第一条真实测试入口：测试请求必须从 OpenCode 打到 d-token，再由 d-token 完成压缩、路由和上游转发；发布验收优先使用 OpenCode 官方目录中当时可用的免费模型，并在执行前显式展示所选 provider/model，不消耗或静默切换用户的付费上游。
 6. 正确测试链路是 `OpenCode -> d-token local service -> d-token Headroom-derived runtime -> d-token route adapter -> official/custom/cc-switch upstream`。
 7. 任何实现如果把链路写成 `App -> external Headroom 8787 -> Dashboard data`，都是错误方向。
 8. 开发期可用 external Headroom 做只读对照，但不得启动、停止、重启、改配置、占端口或依赖其作为产品主路径。
-9. OpenCode 真实测试已获用户授权直接使用用户原本 OpenCode 配置和真实 provider/model；默认不隔离 HOME、不替换 fake config、不另造临时 OpenCode 配置。执行 OpenCode real routed / workload test 时，默认直接调用本机 `opencode` 和原配置，不需要再退回隔离测试。测试目标是证明真实 OpenCode 流量经过 d-token local service。
+9. OpenCode 真实测试使用本机正常 OpenCode 环境和真实配置文件位置，不用 fake HOME 或 fake config；测试候选由自动发现结果显式选取，发布验收默认选择 OpenCode 官方免费 provider/model。测试目标是证明真实 OpenCode 流量经过 d-token local service，而不是证明 OpenCode 可直连官方模型。
 10. OpenCode 是当前阶段唯一允许使用真实用户 agent 配置进行测试的入口；该例外不得扩展到 Claude Code、Codex、Cursor、Cline、Roo、Continue、Windsurf、系统代理或 shell profile。
 11. 若为了验证真实 routed path 需要给 OpenCode 配置增加 d-token provider/route，必须先备份原配置，只做最小变更，记录 backup 路径和 diff 摘要；禁止读取、打印、持久化或提交 OpenCode 密钥和会话凭据。
 12. 开发测试不能产品化成正式 UI：真实测试、workload benchmark、smoke test、fixture/mock/fake-bin 结果属于开发脚本、CI gate、测试报告和内部诊断证据，不能作为最终用户主界面里的“测试卡片”或“测试中心”长期保留。正式 App UI 只面向用户任务：安装/启用 d-token 服务、选择 agent、配置 provider/route/cc-switch、查看运行状态、Doctor 诊断修复、Dashboard/Logs/Export。
@@ -475,7 +521,7 @@ d-token Event Ledger / Dashboard / Doctor / Logs / App
 9. 当前 d-token runtime 必须支持 Anthropic-shaped `/v1/messages` 输入显式桥接到已配置的 OpenAI-compatible / cc-switch-style provider；禁止在 route 缺失时自动回退到官方 Anthropic。
 10. 当前 d-token runtime 必须提供 d-token-owned CCR metadata 层：`ccr-metadata.jsonl`、`/ccr/summary`、`/ccr/retrieve/{recovery_ref}`。默认只返回 recovery metadata，`raw_available=false`，不得保存或返回 raw prompt、raw response、CCR 原文。
 11. 当前 d-token runtime 必须提供 d-token-owned memory/learn/output shaping 元数据层：`memory-records.jsonl`、`/memory/learn`、`/memory/summary`、`/output-shape`。只保存用户显式提交的摘要、项目、agent、verbosity 等元数据，必须剔除 raw prompt、raw response、messages、body、content。
-12. 当前 OpenCode 验证以真实 routed path 为主：`OpenCode 原配置 -> d-token provider/baseURL -> d-token :18001 -> configured upstream`。除非用户另行要求，OpenCode routed test 不使用隔离 HOME、临时 OpenCode 配置、临时 provider 或 fake provider。早期 direct command / fake-bin 测试只能作为诊断辅助，不能作为真实接入完成证据。
+12. 当前 OpenCode 验证以真实 routed path 为主：`OpenCode 正常配置位置 -> 经用户确认的 d-token provider/baseURL 最小变更 -> d-token :18001 -> 用户显式选择的官方免费或已发现 upstream`。OpenCode routed test 不使用隔离 HOME、fake config 或 fake provider；任何临时路由都必须走产品的 preview/confirm/apply/verify/rollback 事务。早期 direct command / fake-bin 测试只能作为诊断辅助，不能作为真实接入完成证据。
 13. 当前 UI 实现契约：安装页可以有 OpenCode 的正式安装/配置入口，但不得以“运行真实链路测试”“workload benchmark”“能力自检测试”作为面向最终用户的主操作。开发验收可以通过隐藏 dev mode、脚本、CI 或测试报告触发同一后端能力；正式 UI 文案必须转换为用户可理解的“连接 OpenCode”“配置路由”“验证配置”“查看诊断结果”。
 14. 当前前端所有真实运行数据来源必须指向 d-token 自己的服务或 Tauri command 汇总结果；普通 browser preview 使用诚实空态，不加载 Fixture/mock。Fixture/mock 与外部 Headroom 对照只能存在于 `support/`、自动化测试、隐藏 dev harness 或报告，不能进入生产 UI，也不能成为“已接入真实能力”的判定依据。
 15. 当前 OpenCode 安装/配置验收必须模拟真实用户路径：选择 OpenCode agent，应用经过备份的最小配置 diff，验证请求进入 d-token Event Ledger，再回到 Dashboard/Logs/Doctor 展示脱敏状态。不得把该验收设计成面向最终用户的“OpenCode 测试页”。
@@ -626,9 +672,9 @@ d-token 自动安装或启用内置 runtime
 
 开发期默认必须通过 fixture、fake binary、临时 HOME、临时 PATH、临时端口、mock provider、sandbox config 来验证 d-token 自身逻辑。
 
-OpenCode Real Route Track 是当前用户明确授权的例外：为了验证真实链路，OpenCode 测试可以直接使用用户原本 OpenCode 配置、真实 provider/model 和真实 OpenCode 运行环境，不强制隔离 HOME，也不要求先造 fake config 或临时 OpenCode profile。该例外只适用于 OpenCode routed / streaming / workload test，不得扩展到 Claude Code、Codex、Cursor、Cline、外部 Headroom、RTK、cc-switch、系统代理或 shell profile。
+OpenCode Real Route Track 是当前用户明确授权的例外：为了验证真实链路，OpenCode 测试可以使用用户正常 OpenCode 环境和真实配置文件位置，不强制隔离 HOME，也不要求先造 fake config；provider/model 必须来自自动发现并由用户显式选择，发布验收默认使用 OpenCode 官方免费模型。该例外只适用于 OpenCode routed / streaming / workload test，不得扩展到 Claude Code、Codex、Cursor、Cline、外部 Headroom、RTK、cc-switch、系统代理或 shell profile。
 
-OpenCode 真实测试的默认动作是“用现有真实配置跑通 d-token 链路”。只有在需要把 OpenCode provider/baseURL 指向 d-token 时，才允许对 OpenCode 配置做最小变更；变更前必须备份，报告中只记录 backup 路径和 diff 摘要，禁止读取、打印、保存或提交密钥、token、cookie、auth 文件、完整 prompt/response。
+OpenCode 真实测试的默认动作是“在正常配置位置通过受控事务接入 d-token，再用显式选择的官方免费候选跑通链路”。只有在需要把 OpenCode provider/baseURL 指向 d-token 时，才允许对 OpenCode 配置做最小变更；变更前必须备份，报告中只记录 backup 路径和脱敏 diff 摘要，验证后必须逐字节恢复，禁止读取、打印、保存或提交密钥、token、cookie、auth 文件、完整 prompt/response。
 
 OpenCode 真实测试对应的产品动作不是“测试 OpenCode”，而是“在安装向导中接入 OpenCode”：启动/安装 d-token-owned 服务，选择 OpenCode agent，生成并预览配置 diff，备份 OpenCode 配置，应用最小配置变更，验证配置生效，回到 Dashboard 显示真实路由与压缩数据。测试脚本只负责在幕后证明该产品动作有效。
 
@@ -1172,7 +1218,7 @@ d-token 是本地 AI Coding 路由与上下文优化控制面，不是营销页�
 
 1. 简洁科技感：结构清晰、数据和状态优先，避免装饰性面板堆叠。
 2. 亲和力：暖中性色、人文排版、自然语言和舒展留白，避免冷硬运维后台。
-3. 克制神话感：由浅层可变渐变与低对比 ASCII 呼吸场提供空间感，不使用星座、符文、神名或无关文案。
+3. 克制空间感：浅色与深色都使用稳定纯色画布，由间距、细边界、轻阴影和排版建立层次；不使用渐变流场、星座、符文、字符场或无关装饰。
 4. 事实一致性：没有证据时显示 `—`、unknown、partial、unavailable 或真实空态；绿色只表示已验证成功。
 5. 跨平台一致：Windows/macOS 共享同一 React 组件、信息架构、字号、间距、状态和中英语义；平台差异只存在于窗口、凭据、进程、系统集成与打包适配层。
 
@@ -1200,6 +1246,9 @@ d-token 是本地 AI Coding 路由与上下文优化控制面，不是营销页�
 3. 标签 12–13px/500，数值 26–28px/600 并启用 tabular numerals，详情 12–13px。
 4. 四格只展示可追溯的请求、Token/压缩、路由/Agent、错误/健康等总体事实；不成为功能入口，不使用大面积彩色光晕。
 5. 页面横向内距：常规桌面 24px，较窄窗口 16px；主要纵向节奏 24px；主卡圆角 16px、inner panel 12px、按钮/导航 8px。
+6. 四格下方立即展示活动趋势；运行概况固定在页面最底部。概览首屏最多两个完整边界主表面，禁止 card-inside-card，内部优先使用分隔线、平铺行、日历和留白。
+7. 活动趋势默认“本年”，整体尺寸、密度、方格、月份标签和强度图例高相似度参考 `evidence/ui/01-dashboard-activity-year.png`：本周为 7 个紧凑日格/短列，本月为真实 5/6 周 × 7 日小方格，本年为约 53 周 × 7 日连续热力图。不得使用大日期格、独立日卡或 12 张迷你月历卡。
+8. 零活动也必须显示完整数据窗口；日期使用本地时区且从周一开始。1180×780 与 920×640 都必须保持趋势模块紧凑、可读、无横向滚动；窄窗口可缩小 gap/方格或使用受控内部滚动，但不能放大为日历。
 
 #### 12.5.4 字体与双语排版
 
@@ -1225,24 +1274,19 @@ d-token 是本地 AI Coding 路由与上下文优化控制面，不是营销页�
 
 1. 画布使用暖米白/暖灰黑；主文本为暖墨色/柔和米白。
 2. 珊瑚橙/琥珀是稀缺主强调，只用于主动作、焦点、选中和少量关键数据；成功绿、警告黄、错误红仅表达语义状态。
-3. 浅色、深色、跟随系统必须保留；现有背景渐变主题预设和自定义主题能力不得删除或被 ASCII 背景替代。
+3. 浅色、深色、跟随系统必须保留；背景使用各模式对应的固定纯色。用户可选择强调色和分析图表色，但不能把强调色扩张为大面积背景装饰。
 4. 表面优先使用明度差和细边界；阴影仅用于 workspace、浮层和少量关键卡片，禁止玻璃卡片连续嵌套。
-5. 同一屏不得同时出现大面积渐变、厚阴影、彩色描边、发光和高对比背景动画。
+5. 同一屏不得出现大面积渐变、厚阴影、彩色描边、发光或高对比背景动画。
 6. 所有交互状态必须区分 default、hover、focus-visible、pressed、disabled、selected；hover 不放大、不漂浮，pressed 位移最多 1px，focus-visible 在深浅色中清晰可见。
 
-#### 12.5.6 可变渐变与 ASCII 呼吸场
+#### 12.5.6 纯色画布与层次
 
-背景由两层组成，顺序和职责不可颠倒：
-
-1. 底层是现有浅淡可变渐变，继续由主题预设和用户自定义参数控制。
-2. 上层是单一透明 Canvas ASCII 呼吸场，只提供微弱生命感；位于主 UI 下，不写背景色、不使用 WebGL、不跟踪鼠标，不抢占文案和主界面。
-3. ASCII 场采用 clean-room 独立实现。`op7418/guizang-ppt-skill` 仅作为视觉思想参考，研究基线 commit `82fe5ae129e8c2a12e1155fcabed6703342749d6`；其 AGPL-3.0 源码、字符表、参数组合和模板资产不得复制进 d-token，除非项目明确接受相应许可证义务或取得额外授权。
-4. 默认建议：cell 约 26px、25–35% 点位可见、聚焦约 10fps、主呼吸周期 48–72s、DPR 上限 1.25；字符只使用跨平台安全 ASCII 标点。
-5. 浅色有效 glyph alpha 约 1.2–3.5%，深色约 1.5–4.5%；主内容局部亮度变化应保持不可干扰阅读。
-6. 左侧导航与顶部控制区必须通过 mask 保持基本静默；主要呼吸场集中在 workspace 的开放空间，卡片表面进一步隔离背景。
-7. 窗口失焦冻结最后一帧，隐藏/最小化停止绘制；主题变化只触发必要重绘。
-8. `prefers-reduced-motion: reduce` 优先级高于 App 本地动画设置：只绘固定静态帧或完全关闭，零 RAF/零定时器；系统 Reduce Motion 不得被本地 false 覆盖。
-9. 连续慢帧应自动降到更低 fps/更疏网格，严重超时则冻结静态；Canvas effect 清理必须 cancel RAF、disconnect observer 并移除全部 listener。
+1. App 根画布、侧栏和 workspace 只使用稳定纯色；浅色以暖白/浅暖灰为主，深色以暖黑/深灰为主，不使用流动渐变、渐变色团或纹理背景。
+2. Shell、Topbar 和内容区的层次通过 0.5–1px 边界、微小明度差、局部单层阴影和留白表达；不得依赖 backdrop blur、玻璃折射或持续动画。
+3. KPI 可以像 AiMaMi 参考图一样使用极浅的单向色调或顶部短色条，但面积与饱和度必须克制，不能演变为页面背景。
+4. 页面背景与语义色严格分离；success/warning/error 只用于状态、图标、短边线和标签，不铺满大区域。
+5. 主题切换必须立即更新根节点、系统 `color-scheme` 和所有浮层；持久化失败只提示，不把当前会话闪回旧主题。
+6. 移除渐变预设、自定义背景三色、流速设置及其生产代码、CSS、测试和用户文案；不得保留不可见的后台动画。
 
 #### 12.5.7 动效
 
@@ -1250,22 +1294,40 @@ d-token 是本地 AI Coding 路由与上下文优化控制面，不是营销页�
 instant    100–120ms  按下与图标反馈
 fast       140–180ms  hover、focus、短淡入
 standard   180–220ms  页签、折叠、对话框、侧栏
-ambient    48–72s     ASCII 呼吸主周期
 ```
 
-1. 页面切换只使用低幅度淡入和最多 1–2px 位移；不使用 spring、弹跳、卡片上浮或图标旋转。
+1. 页面切换只使用低幅度淡入和最多 1–4px 位移；不使用夸张 spring、持续弹跳或卡片悬浮。
 2. 列表次级动作可在 hover/focus-within 出现，但键盘用户必须同样可达。
-3. Reduce Motion 下移除页面位移、背景呼吸和所有非必要循环动画。
+3. 侧栏一级图标、主题和折叠图标使用各自独立的短动画配方，只在 hover、focus、pressed 或激活时执行一次；不能给所有图标套同一个旋转/缩放动画。
+4. 分段控件的指示器、开关、进度步骤、图表数据进入、tooltip、复制成功和状态刷新必须有清晰但克制的反馈；轮询刷新不得反复重播整页动画。
+5. Reduce Motion 下移除页面位移、图标 transform、图表绘制和所有非必要循环动画，只保留颜色、边界和文本状态变化。
+6. “动画代码存在”不构成完成证据：侧栏图标动画必须在真实 App 中可重复触发并肉眼可辨；页面切换必须实际触发 180–240ms 的淡入与最多 4px 位移，不能被路由挂载、Suspense 或复用节点吃掉。
+7. 动画验收必须保存真实窗口录像或至少两帧时间差证据，并同时证明 Reduce Motion 下 transform/位移动画被禁用。
 
-#### 12.5.8 真实性、空态与文案
+#### 12.5.8 二级 UI 与细节完成度
+
+1. Dialog、AlertDialog、Popover、Tooltip、Dropdown、Select、Tabs、Drawer、Toast、表格行操作和空态必须来自同一设计系统，统一字号、圆角、边界、阴影、焦点环和关闭行为。
+2. 二级页面沿用相同 Shell 和内容密度，不得退化成旧工程页、测试页或另一套视觉；返回、标题、面包屑或上栏标签必须稳定且可键盘操作。
+3. 设置页采用 grouped rows；Doctor/维护采用“检查项 → 说明/证据 → 状态 → 动作”的平铺分组；Changes/Logs 使用紧凑表格、时间线或列表；只在明确分组和危险确认时使用完整边界表面。
+4. 图表必须具备可读坐标、图例、tooltip、空态、真实来源与时间范围切换；周/月/年或不同指标如果语义不同，应使用不同布局而不是缩放同一张图。
+5. 所有 hover、focus-visible、pressed、selected、disabled、loading、success、warning、error 状态逐组件验收；图标按钮必须有 tooltip/accessible name，危险按钮不得只靠颜色表达。
+6. 文案、图标、数字、路径、表格列和按钮在中英、1180×780 与 920×640 下不得抖动、截断关键含义或产生孤立残片。
+7. 所有配置应用、回退、停止服务、Doctor 修复、导入、导出和其他有副作用动作必须使用统一的正式 `Dialog` / `AlertDialog`；弹窗至少展示动作标题、影响对象、真实摘要、风险/备份/恢复信息、取消和确认状态。禁止使用浏览器原生 `window.confirm` / `alert` / `prompt`，也禁止把裸 JSON、原始 command output 或单段无层次文本冒充操作界面。
+8. Topbar 提供通知入口、未读状态和可访问名称；重要状态在 Topbar 下方以有设计的顶部通知呈现，包括服务断连、配置已应用/已恢复、Doctor 完成/失败、操作失败和需要用户确认。普通成功可以短暂消失，危险或待处理状态必须保留到用户确认。
+9. 通知由 App 级统一状态管理，具备稳定 id、severity、timestamp、read/dismiss、details/action receipt 关联和去重策略；轮询刷新不得重复刷出相同通知，通知与导出不得包含密钥、原始 prompt/response、完整配置 blob 或未脱敏路径。
+10. 顶部通知、通知列表和操作弹窗必须支持键盘、焦点恢复、`aria-live`、中英和 Reduce Motion；Reduce Motion 下不使用滑入位移，只保留即时出现/淡入和状态颜色变化。
+
+#### 12.5.9 真实性、空态与文案
 
 1. 无运行证据时不得显示默认端口、默认路径、假 Agent、假 provider、假 fallback、假曲线、假日志、假成本或绿色成功态。
 2. 缺失数值显示 `—`，不得显示 `0 Token`、`0%`、`$0.000` 或用 `Date.now()` 补造时间。
 3. 空态包含事实、影响和数据出现条件；正式 App 与浏览器预览均不得加载 fixture 作为内容。
 4. 概览展示总体事实；安装、配置、验证、诊断、日志、导出和回退只在对应任务页面出现。
 5. UI 动作必须使用用户语言：安装、连接、配置、预览变更、应用、验证、诊断、查看状态、查看日志、导出、回退；不得出现 benchmark、smoke、fixture、mock、fake-bin 或 testing center。
+6. 所有一级页共享 App 级运行状态与 freshness 模型；首次加载可以显示 skeleton，后续刷新必须保留最后一份可验证证据，不得因为切页重新显示“未启动”或反复播放加载动画。
+7. 服务状态与数据状态必须分开表达：服务在线但尚无请求时显示“服务在线，暂无请求”和真实零值；服务在线但某数据切片失败时只将该切片标为 partial/unavailable，不得把整个 App 降级为 stopped。
 
-#### 12.5.9 可访问性与跨平台窗口验收
+#### 12.5.10 可访问性与跨平台窗口验收
 
 1. Tab/Shift+Tab、方向键、Home/End、Enter/Space、Esc 必须完成对应任务；焦点顺序与视觉顺序一致。
 2. 状态不能只靠颜色；图标和文字必须同时表达。
@@ -1274,7 +1336,7 @@ ambient    48–72s     ASCII 呼吸主周期
 5. 浏览器 E2E 只证明布局和交互；功能完成还必须由 Tauri command、d-token-owned runtime、Event Ledger、export 与真实 routed Agent flow 证明。
 6. 正式构建产物不得包含 mock、fixture、benchmark、smoke、fake-bin、testing center 等测试语义。
 
-#### 12.5.10 UI 完成证据
+#### 12.5.11 UI 完成证据
 
 UI 达到内测水准必须同时具备：
 
@@ -1282,7 +1344,9 @@ UI 达到内测水准必须同时具备：
 2. macOS `.app` 真实窗口截图与可访问树证据，覆盖中英、深浅色、1180×780、920×640、键盘和 Reduce Motion。
 3. 最小流程：启动/连接 d-token → 选择 Agent → 配置 Provider/Route → 预览 diff/backup → 应用 → 验证 → 在概览/日志看到真实结果。
 4. 扩展流程：多 Agent、cc-switch/custom upstream、Doctor、日志导出、配置变更与 rollback。
-5. OpenCode 真实 routed test 使用用户正常配置，证明流量命中 d-token、route/provider/model/CCR 与 Event Ledger，并逐字节恢复临时配置；UI 只显示脱敏后的“配置已验证/路由已生效”等产品状态。
+5. OpenCode 真实 routed test 使用正常配置位置与自动发现的官方免费候选，证明流量命中 d-token、route/provider/model/CCR 与 Event Ledger，并逐字节恢复临时配置；UI 只显示脱敏后的“配置已验证/路由已生效”等产品状态。
+6. OpenCode 长上下文验收必须使用非敏感合成输入并证明压缩真实触发，而不是只完成路由冒烟测试；同一 request id 的压缩决策、context accounting、signed savings、route decision、RequestLog、CCR metadata 与 provider outcome 必须可关联，且不得持久化原始 prompt/response 或测试 nonce。
+7. 同一条真实请求必须一致出现在概览 KPI/活动趋势、分析、日志/本地操作记录、Doctor 路由证据、变更历史和状态栏；重启 App 后最后可验证证据、服务 PID/端口和连接状态仍保持一致。
 
 ## 13. Doctor 要求
 
@@ -1445,3 +1509,10 @@ PRD 只保留产品真理源：目标、边界、技术契约与验收标准。�
 26. 每个真实能力接入完成时，必须同时提供 UI 证据和运行时证据：UI 证据来自浏览器/桌面窗口检查；运行时证据来自 d-token-owned API/Tauri command、Event Ledger、metrics/export、OpenCode routed flow 或对应 agent flow。
 27. 功能实现前必须先对照 PRD 和成熟应用逻辑完成产品判断；如果实现方案会把开发测试、fixture、mock、benchmark、smoke 直接暴露给用户，则验收不通过。
 28. d-token 最终 UI 必须保持多 agent 控制面结构；任何只适配 OpenCode、只展示 OpenCode 测试、或把 OpenCode 作为唯一产品中心的实现都不满足 PRD。
+29. 概览必须默认本年，并以 AiMaMi 式紧凑热力图展示本周、本月和本年不同数据窗口；零活动时对应时间格仍完整可核验，活动趋势紧随四格 KPI，运行概况位于页面最底部。任何整屏大月历或大日期卡实现均不通过。
+30. 页面切换和 App 重启不得丢失已验证运行状态；所有一级页必须基于同一份带 source、freshness、collectedAt 和 error 的运行证据，局部失败不得伪装成全局停止。
+31. 上游必须优先自动发现；OpenCode 多 provider 与 cc-switch 多候选必须由用户显式选择。发布验收默认使用 OpenCode 官方免费模型完成真实 routed 与长上下文压缩测试。
+32. 发布候选必须绑定同一 commit 的 macOS/Windows 安装产物、哈希、自动化门禁、真实安装启动、功能链路、配置精确恢复与已知限制；不能用旧截图、旧 DMG 或不同 commit 的测试结果拼接发布结论。
+33. 所有正式可见的有副作用操作必须通过统一产品弹窗完成，并产生可关联的动作结果；Topbar 必须提供重要状态通知与未读入口。浏览器原生确认框、无来源 toast、重复轮询通知或裸文本操作结果均不通过。
+34. 真实 Agent 测试前必须有逐页功能—数据源—持久化矩阵证据，证明所有正式可见功能已接通或按 PRD 明确隐藏；六个一级页、所有二级 UI、Topbar、StatusBar、弹窗和通知不得出现互相矛盾的检测、连接、运行或保存状态。
+35. 统一状态必须在真实 App 中证明三类更新：后台真实请求发生后无需切页即可实时刷新；切换页面后同一事实保持一致；退出并重开 App 后服务、设置、事务、回退点和最后可验证证据正确恢复。完成这三类证据前不得开始最终 OpenCode routed/compression 验收。

@@ -1,7 +1,22 @@
 use anyhow::{Context, Result};
 use dtoken_types::{InstanceProfile, OpticalRuntimeConfig, ProviderProfile, RouteProfile};
 use serde::{Deserialize, Serialize};
-use std::{fs, path::Path};
+use std::{collections::HashSet, fs, path::Path};
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum OpticalConfigIssue {
+    UnsupportedSchemaVersion,
+    InvalidResourceBudget,
+    DuplicateRoutePolicy,
+    UnknownRoutePolicy,
+    DuplicateSnapshotId,
+    DuplicateAuthority,
+    DuplicateEvalArtifact,
+    ActiveWithoutTrustedAuthority,
+    ActiveWithoutPassingEval,
+    ActiveWithoutAttestedCapability,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct DtokenConfig {
@@ -21,8 +36,9 @@ impl DtokenConfig {
         let path = path.as_ref();
         let raw = fs::read_to_string(path)
             .with_context(|| format!("failed to read config file: {}", path.display()))?;
-        let config = serde_json::from_str(&raw)
+        let mut config: Self = serde_json::from_str(&raw)
             .with_context(|| format!("failed to parse config file: {}", path.display()))?;
+        config.normalize_optical_fail_closed();
         Ok(config)
     }
 
@@ -47,6 +63,116 @@ impl DtokenConfig {
             .iter()
             .find(|entry| entry.route_id == route_id)
             .map(|entry| &entry.policy)
+    }
+
+    pub fn optical_config_issues(&self) -> Vec<OpticalConfigIssue> {
+        let mut issues = Vec::new();
+        let optical = &self.optical;
+        if optical.schema_version != 1 {
+            issues.push(OpticalConfigIssue::UnsupportedSchemaVersion);
+        }
+        let global = &optical.global_policy;
+        if global.max_images_per_request == 0
+            || global.max_candidate_chars_per_request == 0
+            || global.max_plan_time_ms == 0
+            || global.max_render_time_ms == 0
+            || global.max_total_pixels == 0
+            || global.max_png_bytes == 0
+            || global.max_base64_bytes < global.max_png_bytes
+            || global.max_outbound_body_bytes < global.max_base64_bytes
+            || global.max_memory_bytes < global.max_total_pixels
+            || global.max_concurrent_renders == 0
+            || global.render_queue_timeout_ms == 0
+        {
+            issues.push(OpticalConfigIssue::InvalidResourceBudget);
+        }
+
+        let route_ids = self
+            .routes
+            .iter()
+            .map(|route| route.id.as_str())
+            .collect::<HashSet<_>>();
+        let mut optical_route_ids = HashSet::new();
+        for entry in &optical.route_policies {
+            if !optical_route_ids.insert(entry.route_id.as_str()) {
+                issues.push(OpticalConfigIssue::DuplicateRoutePolicy);
+            }
+            if !route_ids.contains(entry.route_id.as_str()) {
+                issues.push(OpticalConfigIssue::UnknownRoutePolicy);
+            }
+        }
+
+        let mut snapshots = HashSet::new();
+        for snapshot in &optical.capability_snapshots {
+            if !snapshots.insert(snapshot.snapshot_id.as_str()) {
+                issues.push(OpticalConfigIssue::DuplicateSnapshotId);
+            }
+        }
+        let mut authorities = HashSet::new();
+        for authority in &optical.trusted_authorities {
+            if !authorities.insert((authority.authority_id.as_str(), authority.key_id.as_str())) {
+                issues.push(OpticalConfigIssue::DuplicateAuthority);
+            }
+        }
+        let mut artifacts = HashSet::new();
+        for artifact in &optical.eval_artifacts {
+            if !artifacts.insert(artifact.artifact_id.as_str()) {
+                issues.push(OpticalConfigIssue::DuplicateEvalArtifact);
+            }
+        }
+
+        if global.allow_active {
+            if optical.trusted_authorities.is_empty() {
+                issues.push(OpticalConfigIssue::ActiveWithoutTrustedAuthority);
+            }
+            if !optical
+                .eval_artifacts
+                .iter()
+                .any(|artifact| artifact.passed)
+            {
+                issues.push(OpticalConfigIssue::ActiveWithoutPassingEval);
+            }
+            if !optical
+                .capability_snapshots
+                .iter()
+                .any(|snapshot| snapshot.enabled && snapshot.attestation.is_some())
+            {
+                issues.push(OpticalConfigIssue::ActiveWithoutAttestedCapability);
+            }
+        }
+        issues
+    }
+
+    pub fn normalize_optical_fail_closed(&mut self) -> Vec<OpticalConfigIssue> {
+        let issues = self.optical_config_issues();
+        if issues.iter().any(|issue| {
+            matches!(
+                issue,
+                OpticalConfigIssue::UnsupportedSchemaVersion
+                    | OpticalConfigIssue::InvalidResourceBudget
+                    | OpticalConfigIssue::DuplicateRoutePolicy
+                    | OpticalConfigIssue::DuplicateSnapshotId
+                    | OpticalConfigIssue::DuplicateAuthority
+                    | OpticalConfigIssue::DuplicateEvalArtifact
+                    | OpticalConfigIssue::ActiveWithoutTrustedAuthority
+                    | OpticalConfigIssue::ActiveWithoutPassingEval
+                    | OpticalConfigIssue::ActiveWithoutAttestedCapability
+            )
+        }) {
+            self.optical.global_policy.allow_active = false;
+        }
+        let known_routes = self
+            .routes
+            .iter()
+            .map(|route| route.id.clone())
+            .collect::<HashSet<_>>();
+        for entry in &mut self.optical.route_policies {
+            if !known_routes.contains(&entry.route_id) {
+                entry.policy.enabled = false;
+                entry.policy.mode = dtoken_types::OpticalMode::Off;
+            }
+        }
+        issues
     }
 }
 

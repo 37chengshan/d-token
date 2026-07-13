@@ -49,6 +49,8 @@ impl Router {
             chain_mode: route.chain_mode.clone(),
             compression_policy: route.compression_policy.clone(),
             reason: "matched instance id and input protocol".to_string(),
+            input_protocol: Some(input_protocol),
+            output_protocol: Some(provider.protocol.clone()),
         })
     }
 }

@@ -1,12 +1,12 @@
 # Optical / Hybrid Context Optimization 文档入口
 
-更新时间：2026-07-11 晚间
+更新时间：2026-07-12
 
 Optical 是 Hybrid Context Optimization Engine 中的一种有损 codec，不是独立产品，也不是当前生产请求的默认压缩路径。
 
 ## 当前结论
 
-当前代码只允许：
+当前后端代码已经实现：
 
 ```text
 shadow planning
@@ -14,18 +14,22 @@ metadata-only preview
 capability lifecycle visibility
 provider-specific dependency analysis
 redacted recent events
+protected Context IR and safe semantic codec
+deterministic bounded PNG renderer
+sealed Anthropic patcher and artifact-derived validator
+direct Anthropic JSON/SSE forwarding and raw-byte fallback
+signed capability/eval gate and multimodal accounting
 ```
 
-当前明确禁止宣称可用：
+当前明确禁止宣称默认可用或已验证节省：
 
 ```text
-PNG renderer
-active request mutation
-protocol patcher
 history collapse
-post-execution validator
-rollback executor
-production active routing
+OpenAI Optical active patching
+unsigned or unbound model capability
+production active without real-provider signed eval
+post-commit automatic retry/rollback
+provider-actual savings without paired evidence
 ```
 
 ## 当前文档
@@ -58,7 +62,7 @@ GET  /compression/optical/capabilities/lifecycle
 GET  /compression/optical/events/recent
 ```
 
-这些端点只返回规划状态和脱敏元数据。它们不生成图片、不改写请求体，也不证明真实模型质量或成本收益。
+这些控制面端点只返回规划状态和脱敏元数据。真正的 Hybrid 执行位于 `/v1/messages` 同协议路由热路径；控制面本身不生成图片，也不证明真实模型质量或成本收益。
 
 ## 验证原则
 
@@ -75,4 +79,4 @@ cargo test -p dtoken-core-api
 cargo test --workspace
 ```
 
-在 renderer、patcher、post-validator、rollback 和真实模型 fidelity gate 全部通过前，`active transform` 必须保持关闭。
+在真实模型 fidelity/cost/latency eval、精确签名 Capability 和同候选版 routed evidence 全部通过前，`active transform` 必须保持默认关闭。

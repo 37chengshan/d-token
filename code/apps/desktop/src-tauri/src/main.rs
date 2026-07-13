@@ -1,17 +1,28 @@
-use dtoken_config_patcher::{ConfigPatcher, ExpectedFileState};
+mod autostart;
+mod opencode_adapter;
+mod upstream_discovery;
+
+use dtoken_config_patcher::{stable_hash, ConfigPatcher, ExpectedFileState};
+use dtoken_event_ledger::JsonlStore;
 use dtoken_process::sanitize_command_output;
 #[cfg(debug_assertions)]
 use dtoken_process::{opencode_command_plan, run_opencode_model_test};
 use dtoken_types::{ConfigToolKind, RiskLevel};
+use opencode_adapter::{
+    OpenCodeConnectionReceipt, OpenCodeConnectionRequest, OpenCodeConnectionReview,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{
+    collections::HashMap,
     env, fs,
     io::{Read, Write},
     net::TcpStream,
     path::{Path, PathBuf},
-    process::{Command, Stdio},
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    process::{Child, Command, Stdio},
+    sync::{Arc, Mutex, OnceLock},
+    thread,
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 const DTOKEN_SERVICE_PORT: u16 = 18001;
@@ -74,6 +85,32 @@ struct ProjectPolicyRecommendRequest {
     high_risk_task: Option<bool>,
     manual_override: Option<bool>,
 }
+
+#[derive(Deserialize)]
+struct LearningSourceDiscoveryRequest {
+    roots: Option<Vec<String>>,
+    skip_paths: Option<Vec<String>>,
+    stop: Option<bool>,
+}
+
+#[derive(Deserialize)]
+struct LearningManagedBlockRequest {
+    target: String,
+    content: String,
+    reviewed_before_sha256: Option<String>,
+    reviewed_after_sha256: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct LearningDelegationRequest {
+    request_id: String,
+    agent: String,
+    prompt: String,
+    timeout_ms: u64,
+    confirmed: bool,
+}
+
+static LEARNING_DELEGATIONS: OnceLock<Mutex<HashMap<String, Arc<Mutex<Child>>>>> = OnceLock::new();
 
 #[derive(Deserialize)]
 struct RouteProfileDraftRequest {
@@ -256,7 +293,7 @@ fn atomic_replace_file(source: &Path, destination: &Path) -> Result<(), String> 
     }
 }
 
-fn durable_atomic_write(path: &Path, content: &[u8]) -> Result<(), String> {
+pub(crate) fn durable_atomic_write(path: &Path, content: &[u8]) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|err| err.to_string())?;
     }
@@ -290,7 +327,7 @@ fn durable_atomic_write(path: &Path, content: &[u8]) -> Result<(), String> {
     result
 }
 
-fn durable_remove_file(path: &Path) -> Result<(), String> {
+pub(crate) fn durable_remove_file(path: &Path) -> Result<(), String> {
     match fs::remove_file(path) {
         Ok(()) => sync_parent_directory(path),
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
@@ -309,6 +346,26 @@ fn write_json_app_state(relative: &[&str], value: &Value) -> Result<PathBuf, Str
     let path = app_state_path(relative);
     durable_atomic_write(&path, &content)?;
     Ok(path)
+}
+
+fn append_desktop_event(stage: &str, status: &str, metadata: Value) -> Result<(), String> {
+    JsonlStore::new(app_state_path(&["events", "desktop-transactions.jsonl"]))
+        .append(&json!({
+            "schema_version": 1,
+            "timestamp": now_timestamp(),
+            "stage": stage,
+            "source": "dtoken-desktop-control-plane",
+            "status": status,
+            "metadata": metadata,
+            "privacy": "redacted metadata only; no credentials, prompt, response, or auth state"
+        }))
+        .map_err(|error| format!("append desktop transaction event: {error:#}"))
+}
+
+fn desktop_transaction_events() -> Vec<Value> {
+    JsonlStore::new(app_state_path(&["events", "desktop-transactions.jsonl"]))
+        .recent(100)
+        .unwrap_or_default()
 }
 
 fn read_app_state(relative: &[&str]) -> Result<Value, String> {
@@ -450,6 +507,7 @@ fn active_route_config_status() -> Value {
                 "kind": first_provider.get("kind").cloned().unwrap_or(Value::Null),
                 "protocol": first_provider.get("protocol").cloned().unwrap_or(Value::Null),
                 "base_url": first_provider.get("base_url").cloned().unwrap_or(Value::Null),
+                "models": first_provider.get("models").cloned().unwrap_or_else(|| json!([])),
                 "has_api_key_ref": first_provider.get("api_key_ref").map(|value| !value.is_null()).unwrap_or(false),
             }),
         );
@@ -523,20 +581,31 @@ fn rollback_points_result() -> Result<Vec<Value>, String> {
                 let Some(id) = entry.file_name().to_str().map(str::to_string) else {
                     return Err("Config backup id is not valid UTF-8".to_string());
                 };
-                let backup = patcher
-                    .load_backup(&id)
-                    .map_err(|err| format!("verify config backup {id}: {err:#}"))?;
-                points.push(json!({
-                    "id": backup.rollback_id,
-                    "label": format!("Rollback point {}", backup.display_target),
-                    "when": backup.created_at,
-                    "files": 1,
-                    "tools": ["d-token"],
-                    "verified": true,
-                    "source": "dtoken-config-patcher",
-                    "target": backup.target_path.display().to_string(),
-                    "expectedCurrentSha256": backup.planned_after_sha256,
-                }));
+                match patcher.load_backup(&id) {
+                    Ok(backup) => points.push(json!({
+                        "id": backup.rollback_id,
+                        "label": format!("Rollback point {}", backup.display_target),
+                        "when": backup.created_at,
+                        "files": 1,
+                        "tools": if backup.display_target.to_ascii_lowercase().contains("opencode") { vec!["OpenCode"] } else if matches!(backup.target_path.file_name().and_then(|value| value.to_str()), Some("AGENTS.md" | "CLAUDE.md" | "GEMINI.md" | "d-token.md")) { vec!["Smart Learning"] } else { vec!["d-token"] },
+                        "verified": true,
+                        "source": "dtoken-config-patcher",
+                        "target": backup.target_path.display().to_string(),
+                        "scope": if backup.display_target.to_ascii_lowercase().contains("opencode") { "opencode-config" } else if matches!(backup.target_path.file_name().and_then(|value| value.to_str()), Some("AGENTS.md" | "CLAUDE.md" | "GEMINI.md" | "d-token.md")) { "learning-managed-block" } else { "dtoken-active-config" },
+                        "expectedCurrentSha256": backup.planned_after_sha256,
+                    })),
+                    Err(_) => points.push(json!({
+                        "id": id,
+                        "label": "Unavailable rollback point",
+                        "when": "unknown",
+                        "files": 0,
+                        "tools": ["d-token"],
+                        "verified": false,
+                        "source": "dtoken-config-patcher-invalid",
+                        "scope": "invalid-backup-evidence",
+                        "reason": "Backup metadata or target identity could not be verified; restore is disabled."
+                    })),
+                }
             }
         }
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
@@ -554,6 +623,7 @@ fn rollback_points_result() -> Result<Vec<Value>, String> {
 fn route_profile_drafts_result() -> Result<Vec<Value>, String> {
     let dir = app_state_dir().join("routing");
     let mut drafts = Vec::new();
+    let applied_hashes = verified_applied_route_hashes();
     match fs::read_dir(&dir) {
         Ok(entries) => {
             for entry in entries {
@@ -566,6 +636,30 @@ fn route_profile_drafts_result() -> Result<Vec<Value>, String> {
                     .map_err(|err| format!("read {}: {err}", path.display()))?;
                 let mut value = serde_json::from_str::<Value>(&content)
                     .map_err(|err| format!("parse {}: {err}", path.display()))?;
+                let already_resolved =
+                    value.pointer("/resolution/state").and_then(Value::as_str) == Some("applied");
+                if !already_resolved {
+                    if let Some(after_sha256) = route_draft_config_hash(&value)
+                        .filter(|hash| applied_hashes.iter().any(|applied| applied == hash))
+                    {
+                        if let Some(object) = value.as_object_mut() {
+                            object.insert(
+                                "resolution".to_string(),
+                                json!({
+                                    "state": "applied",
+                                    "after_sha256": after_sha256,
+                                    "resolvedAt": now_label(),
+                                    "evidence": "verified-config-backup-after-hash"
+                                }),
+                            );
+                        }
+                        let file_name = path
+                            .file_name()
+                            .and_then(|name| name.to_str())
+                            .ok_or_else(|| "Route draft file name is invalid".to_string())?;
+                        write_json_app_state(&["routing", file_name], &value)?;
+                    }
+                }
                 if let Some(object) = value.as_object_mut() {
                     object.insert("path".to_string(), json!(path.display().to_string()));
                 }
@@ -582,6 +676,66 @@ fn route_profile_drafts_result() -> Result<Vec<Value>, String> {
             .cmp(a.get("savedAt").and_then(Value::as_str).unwrap_or_default())
     });
     Ok(drafts)
+}
+
+fn route_draft_config_hash(draft: &Value) -> Option<String> {
+    let config = draft.get("config")?;
+    serde_json::to_string_pretty(config)
+        .ok()
+        .map(|content| stable_hash(&content))
+}
+
+fn verified_applied_route_hashes() -> Vec<String> {
+    let patcher = config_patcher();
+    fs::read_dir(config_backup_root())
+        .ok()
+        .into_iter()
+        .flatten()
+        .filter_map(Result::ok)
+        .filter(|entry| entry.file_type().ok().is_some_and(|kind| kind.is_dir()))
+        .filter_map(|entry| entry.file_name().to_str().map(str::to_string))
+        .filter_map(|id| patcher.load_backup(&id).ok())
+        .filter(|backup| {
+            backup
+                .target_path
+                .file_name()
+                .and_then(|name| name.to_str())
+                == Some("dtoken-config.json")
+        })
+        .map(|backup| backup.planned_after_sha256)
+        .collect()
+}
+
+fn mark_route_draft_resolved(
+    route_id: &str,
+    after_sha256: &str,
+    transaction_id: &str,
+    rollback_id: &str,
+) -> Result<(), String> {
+    let path = app_state_dir()
+        .join("routing")
+        .join(format!("{route_id}.json"));
+    let content = fs::read_to_string(&path).map_err(|err| format!("read route draft: {err}"))?;
+    let mut draft: Value =
+        serde_json::from_str(&content).map_err(|err| format!("parse route draft: {err}"))?;
+    if route_draft_config_hash(&draft).as_deref() != Some(after_sha256) {
+        return Err("route draft hash no longer matches applied configuration".to_string());
+    }
+    let object = draft
+        .as_object_mut()
+        .ok_or_else(|| "route draft is not an object".to_string())?;
+    object.insert(
+        "resolution".to_string(),
+        json!({
+            "state": "applied",
+            "after_sha256": after_sha256,
+            "transaction_id": transaction_id,
+            "rollback_id": rollback_id,
+            "resolvedAt": now_label(),
+            "evidence": "config-transaction-receipt"
+        }),
+    );
+    write_json_app_state(&["routing", &format!("{route_id}.json")], &draft).map(|_| ())
 }
 
 fn route_profile_drafts_json() -> Vec<Value> {
@@ -1280,7 +1434,15 @@ fn install_or_verify(id: &str) -> ActionResult {
 
 #[tauri::command]
 fn save_app_settings(section: String, payload: Value) -> ActionResult {
-    let allowed = ["rtk", "headroom", "app", "project-policy", "routing"];
+    let allowed = [
+        "rtk",
+        "headroom",
+        "app",
+        "project-policy",
+        "routing",
+        "preferences",
+        "smart-learning",
+    ];
     let mut logs = vec![log(
         "info",
         format!("Saving d-token settings section: {section}"),
@@ -1340,7 +1502,15 @@ fn save_app_settings(section: String, payload: Value) -> ActionResult {
 
 #[tauri::command]
 fn get_app_settings(section: String) -> Value {
-    let allowed = ["rtk", "headroom", "app", "project-policy", "routing"];
+    let allowed = [
+        "rtk",
+        "headroom",
+        "app",
+        "project-policy",
+        "routing",
+        "preferences",
+        "smart-learning",
+    ];
     if !allowed.contains(&section.as_str()) {
         return json!({
             "ok": false,
@@ -1368,6 +1538,34 @@ fn get_app_settings(section: String) -> Value {
             "payload": {}
         }),
     }
+}
+
+#[tauri::command]
+fn check_for_updates(channel: String) -> Value {
+    let channel = match channel.as_str() {
+        "stable" | "preview" => channel,
+        _ => {
+            return json!({
+                "ok": false,
+                "state": "invalid_channel",
+                "source": "d-token-update-control-plane",
+                "channel": channel,
+                "summary": "Update channel must be stable or preview"
+            });
+        }
+    };
+    json!({
+        "ok": false,
+        "state": "unavailable",
+        "source": "d-token-update-control-plane",
+        "freshness": now_label(),
+        "channel": channel,
+        "current_version": env!("CARGO_PKG_VERSION"),
+        "latest_version": null,
+        "signature_verified": false,
+        "summary": "No signed release feed is configured; no update was downloaded or installed",
+        "privacy": "Update checks never include prompts, responses, source code, credentials, or local paths"
+    })
 }
 
 fn safe_slug(value: &str, fallback: &str) -> String {
@@ -1889,6 +2087,17 @@ fn apply_route_profile_draft(request: ApplyRouteDraftRequest) -> ActionResult {
         "info",
         "No OpenCode, Headroom, RTK, cc-switch, shell profile, or system proxy config was changed",
     ));
+    if let Err(error) = mark_route_draft_resolved(
+        &route_id,
+        &receipt.after.sha256.clone().unwrap_or_default(),
+        &transaction.transaction_id,
+        &receipt.backup.rollback_id,
+    ) {
+        logs.push(log(
+            "warn",
+            format!("Route draft lifecycle receipt could not be persisted: {error}"),
+        ));
+    }
     ActionResult {
         ok: true,
         summary: "Reviewed route draft applied and verified with a durable rollback point"
@@ -1928,6 +2137,292 @@ fn recommend_project_policy(request: ProjectPolicyRecommendRequest) -> Value {
         },
         "privacy": "Recommendation uses aggregate project/runtime metrics only; raw prompt/output is not read."
     })
+}
+
+fn learning_allowed_root(path: &Path) -> bool {
+    if !path.is_absolute() || path.components().any(|part| part.as_os_str() == "..") {
+        return false;
+    }
+    let lower = path.to_string_lossy().to_lowercase();
+    ![
+        "/.ssh",
+        "/.gnupg",
+        "/keychains",
+        "/secrets",
+        "/credentials",
+        "/.aws",
+        "/.config/gcloud",
+    ]
+    .iter()
+    .any(|part| lower.contains(part))
+}
+
+#[tauri::command]
+fn discover_learning_sources(request: LearningSourceDiscoveryRequest) -> Value {
+    if request.stop.unwrap_or(false) {
+        return json!({ "ok": true, "state": "stopped", "source": "d-token-learning-discovery", "candidates": [], "writes_performed": false });
+    }
+    let skipped = request.skip_paths.unwrap_or_default();
+    let roots = request.roots.unwrap_or_default();
+    let mut candidates = Vec::new();
+    for root in roots.into_iter().take(32) {
+        let path = PathBuf::from(&root);
+        if skipped.iter().any(|skip| skip == &root)
+            || !learning_allowed_root(&path)
+            || fs::symlink_metadata(&path)
+                .map(|metadata| metadata.file_type().is_symlink())
+                .unwrap_or(true)
+            || !path.is_dir()
+        {
+            continue;
+        }
+        let modified = fs::metadata(&path)
+            .ok()
+            .and_then(|metadata| metadata.modified().ok())
+            .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
+            .map(|duration| duration.as_secs());
+        let name = path
+            .file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or("project");
+        candidates.push(json!({
+            "id": safe_slug(name, "project"),
+            "path": path,
+            "agent": "project",
+            "mtime": modified,
+            "activity": if modified.is_some() { "observed" } else { "unknown" },
+            "confidence": "directory-verified",
+            "value": "project-policy",
+            "reasons": ["user-provided root exists", "metadata only"],
+            "freshness": now_label()
+        }));
+    }
+    json!({
+        "ok": true,
+        "state": "complete",
+        "source": "d-token-learning-discovery",
+        "freshness": now_label(),
+        "candidates": candidates,
+        "limits": { "max_roots": 32, "max_depth": 0, "max_files": 0, "max_content_bytes": 0 },
+        "writes_performed": false,
+        "privacy": "Metadata only; file contents, prompts, responses, source code, and credentials are not returned"
+    })
+}
+
+fn learning_target_path(target: &str) -> Result<PathBuf, String> {
+    let path = PathBuf::from(target);
+    let file = path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default();
+    if !learning_allowed_root(&path)
+        || !matches!(file, "CLAUDE.md" | "AGENTS.md" | "GEMINI.md" | "d-token.md")
+    {
+        return Err("Learning target is outside the allowed managed-document boundary".to_string());
+    }
+    if let Ok(metadata) = fs::symlink_metadata(&path) {
+        if metadata.file_type().is_symlink() {
+            return Err("Learning target symlinks are rejected".to_string());
+        }
+        if metadata.len() > 1_048_576 {
+            return Err("Learning target exceeds the 1 MiB safety limit".to_string());
+        }
+    }
+    if path.exists() {
+        return fs::canonicalize(&path)
+            .map_err(|error| format!("Learning target canonicalization failed: {error}"));
+    }
+    let parent = path
+        .parent()
+        .ok_or_else(|| "Learning target has no parent".to_string())?;
+    let canonical_parent = fs::canonicalize(parent)
+        .map_err(|error| format!("Learning target parent is unavailable: {error}"))?;
+    Ok(canonical_parent.join(file))
+}
+
+fn learning_managed_content(target: &Path, content: &str) -> Result<String, String> {
+    if content.len() > 16_384 {
+        return Err("Managed block exceeds the 16 KiB limit".to_string());
+    }
+    let before = fs::read_to_string(target).unwrap_or_default();
+    let start = "<!-- d-token:learning:start -->";
+    let end = "<!-- d-token:learning:end -->";
+    if before.matches(start).count() > 1 || before.matches(end).count() > 1 {
+        return Err("Managed block markers are ambiguous".to_string());
+    }
+    let block = format!("{start}\n{}\n{end}", content.trim());
+    if let (Some(left), Some(right)) = (before.find(start), before.find(end)) {
+        if right < left {
+            return Err("Managed block markers are invalid".to_string());
+        }
+        let tail = right + end.len();
+        Ok(format!("{}{}{}", &before[..left], block, &before[tail..]))
+    } else if before.contains(start) || before.contains(end) {
+        Err("Managed block marker is incomplete".to_string())
+    } else if before.trim().is_empty() {
+        Ok(format!("{block}\n"))
+    } else {
+        Ok(format!("{}\n\n{block}\n", before.trim_end()))
+    }
+}
+
+fn prepare_learning_managed_block(
+    request: &LearningManagedBlockRequest,
+) -> Result<dtoken_config_patcher::PreparedChange, String> {
+    let path = learning_target_path(&request.target)?;
+    let next = learning_managed_content(&path, &request.content)?;
+    config_patcher()
+        .prepare_change(path, &next, ConfigToolKind::Dtoken, None, RiskLevel::Medium)
+        .map_err(|error| format!("Managed block plan failed: {error:#}"))
+}
+
+#[tauri::command]
+fn preview_learning_managed_block(request: LearningManagedBlockRequest) -> Value {
+    match prepare_learning_managed_block(&request) {
+        Ok(prepared) => {
+            json!({ "ok": true, "state": "review", "source": "d-token-learning-control-plane", "target": prepared.plan.target_file, "before_sha256": prepared.plan.before_hash, "after_sha256": prepared.plan.after_hash, "diff": prepared.plan.diff, "requires_explicit_confirmation": true, "privacy": "Read-only preview; no file or backup was written" })
+        }
+        Err(error) => {
+            json!({ "ok": false, "state": "blocked", "source": "d-token-learning-control-plane", "error": error })
+        }
+    }
+}
+
+#[tauri::command]
+fn apply_learning_managed_block(request: LearningManagedBlockRequest) -> Value {
+    let prepared = match prepare_learning_managed_block(&request) {
+        Ok(value) => value,
+        Err(error) => return json!({ "ok": false, "state": "blocked", "error": error }),
+    };
+    if request.reviewed_before_sha256.as_deref() != Some(&prepared.plan.before_hash)
+        || request.reviewed_after_sha256.as_deref() != Some(&prepared.plan.after_hash)
+    {
+        return json!({ "ok": false, "state": "stale_review", "summary": "Managed block changed after review; review again" });
+    }
+    match config_patcher().apply_transaction(&[prepared]) {
+        Ok(transaction) => transaction.changes.first().map(|receipt| json!({ "ok": true, "state": "verified", "source": "d-token-learning-control-plane", "transaction_id": transaction.transaction_id, "rollback_id": receipt.backup.rollback_id, "target": receipt.target_path, "before_sha256": receipt.before.sha256, "after_sha256": receipt.after.sha256, "verified": true, "summary": "Managed block written atomically and verified" })).unwrap_or_else(|| json!({ "ok": false, "state": "missing_receipt" })),
+        Err(error) => json!({ "ok": false, "state": "failed", "summary": format!("Managed block transaction failed: {error:#}") })
+    }
+}
+
+#[tauri::command]
+fn get_learning_delegation_capabilities() -> Value {
+    let agents = ["claude", "codex"]
+        .into_iter()
+        .map(|agent| {
+            json!({
+                "id": agent,
+                "available": where_tool(agent).is_some(),
+                "version": version_for(agent),
+                "execution": "explicit-confirmation-only"
+            })
+        })
+        .collect::<Vec<_>>();
+    json!({ "ok": true, "source": "d-token-learning-control-plane", "agents": agents, "default_mode": "prompt", "output_policy": "metadata-only; model output body is never persisted or returned" })
+}
+
+#[tauri::command]
+fn spawn_learning_delegation(request: LearningDelegationRequest) -> Value {
+    if !request.confirmed
+        || !matches!(request.agent.as_str(), "claude" | "codex")
+        || request.prompt.is_empty()
+        || request.prompt.len() > 16_384
+        || request.timeout_ms < 1_000
+        || request.timeout_ms > 300_000
+    {
+        return json!({ "ok": false, "state": "blocked", "request_id": request.request_id, "summary": "Delegation request failed safety validation" });
+    }
+    if request.request_id.len() > 128
+        || !request
+            .request_id
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | ':'))
+    {
+        return json!({ "ok": false, "state": "blocked", "summary": "Delegation request id is invalid" });
+    }
+    let Some(executable) = where_tool(&request.agent) else {
+        return json!({ "ok": false, "state": "unavailable", "request_id": request.request_id, "agent": request.agent, "summary": "Selected agent executable is unavailable" });
+    };
+    let args: &[&str] = if request.agent == "claude" {
+        &["-p", "--output-format", "json"]
+    } else {
+        &["exec", "-", "--json"]
+    };
+    let started = Instant::now();
+    let mut child = match Command::new(&executable)
+        .args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+    {
+        Ok(child) => child,
+        Err(error) => {
+            return json!({ "ok": false, "state": "failed", "request_id": request.request_id, "agent": request.agent, "summary": format!("Agent spawn failed: {error}") })
+        }
+    };
+    if let Some(mut stdin) = child.stdin.take() {
+        if stdin.write_all(request.prompt.as_bytes()).is_err() {
+            let _ = child.kill();
+            return json!({ "ok": false, "state": "failed", "request_id": request.request_id, "agent": request.agent, "summary": "Prompt could not be written to agent stdin" });
+        }
+    }
+    let child = Arc::new(Mutex::new(child));
+    LEARNING_DELEGATIONS
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .expect("delegation registry poisoned")
+        .insert(request.request_id.clone(), Arc::clone(&child));
+    let (state, exit_code) = loop {
+        if started.elapsed() >= Duration::from_millis(request.timeout_ms) {
+            if let Ok(mut process) = child.lock() {
+                let _ = process.kill();
+                let _ = process.wait();
+            }
+            break ("timed_out", None);
+        }
+        match child
+            .lock()
+            .ok()
+            .and_then(|mut process| process.try_wait().ok())
+            .flatten()
+        {
+            Some(status) => {
+                break (
+                    if status.success() {
+                        "complete"
+                    } else {
+                        "failed"
+                    },
+                    status.code(),
+                );
+            }
+            None => thread::sleep(Duration::from_millis(50)),
+        }
+    };
+    LEARNING_DELEGATIONS
+        .get()
+        .and_then(|registry| registry.lock().ok())
+        .map(|mut registry| registry.remove(&request.request_id));
+    json!({ "ok": state == "complete", "state": state, "source": "d-token-learning-control-plane", "request_id": request.request_id, "agent": request.agent, "exit_code": exit_code, "elapsed_ms": started.elapsed().as_millis(), "prompt_bytes": request.prompt.len(), "output_persisted": false, "output_returned": false, "summary": "Delegation finished with metadata-only receipt" })
+}
+
+#[tauri::command]
+fn cancel_learning_delegation(request_id: String) -> Value {
+    let process = LEARNING_DELEGATIONS
+        .get()
+        .and_then(|registry| registry.lock().ok())
+        .and_then(|registry| registry.get(&request_id).cloned());
+    match process {
+        Some(process) => {
+            let stopped = process
+                .lock()
+                .ok()
+                .is_some_and(|mut child| child.kill().is_ok());
+            json!({ "ok": stopped, "state": if stopped { "cancel_requested" } else { "cancel_failed" }, "request_id": request_id, "output_persisted": false })
+        }
+        None => json!({ "ok": false, "state": "not_running", "request_id": request_id }),
+    }
 }
 
 #[tauri::command]
@@ -1974,6 +2469,18 @@ fn manage_backup(action: String, id: String) -> ActionResult {
                 let expected = ExpectedFileState::Hash(backup.planned_after_sha256.clone());
                 match patcher.restore_backup(&backup, &expected) {
                     Ok(receipt) => {
+                        let restored_learning_document = matches!(
+                            backup
+                                .target_path
+                                .file_name()
+                                .and_then(|value| value.to_str()),
+                            Some("AGENTS.md" | "CLAUDE.md" | "GEMINI.md" | "d-token.md")
+                        );
+                        let restored_opencode_config = backup
+                            .target_path
+                            .file_name()
+                            .and_then(|value| value.to_str())
+                            == Some("opencode.json");
                         logs.push(log(
                             "info",
                             format!(
@@ -1984,8 +2491,15 @@ fn manage_backup(action: String, id: String) -> ActionResult {
                         ));
                         ActionResult {
                             ok: true,
-                            summary: "d-token active config restored from verified backup"
-                                .to_string(),
+                            summary: if restored_learning_document {
+                                "Learning document restored exactly from verified backup"
+                                    .to_string()
+                            } else if restored_opencode_config {
+                                "OpenCode configuration restored exactly from verified backup"
+                                    .to_string()
+                            } else {
+                                "d-token active config restored from verified backup".to_string()
+                            },
                             logs,
                             tools: all_checks(),
                         }
@@ -2260,12 +2774,204 @@ fn preview_install_plan(request: InstallPlanRequest) -> Value {
 }
 
 #[tauri::command]
+fn preview_opencode_connection(request: OpenCodeConnectionRequest) -> OpenCodeConnectionReview {
+    let review = opencode_adapter::preview(&request, &config_backup_root());
+    let status = if review.ok { "ok" } else { "failed" };
+    let _ = append_desktop_event(
+        "install_scan_plan_diff",
+        status,
+        json!({
+            "transaction": review.transaction,
+            "revision": review.revision,
+            "target": review.target,
+            "model": review.model,
+            "listener": review.listener,
+            "before_sha256": review.before_sha256,
+            "after_sha256": review.after_sha256,
+            "review_required": review.ok,
+        }),
+    );
+    review
+}
+
+#[tauri::command]
+fn apply_opencode_connection(request: OpenCodeConnectionRequest) -> Value {
+    if service_health_payload().is_none() {
+        let receipt = OpenCodeConnectionReceipt {
+            ok: false,
+            state: "failed".to_string(),
+            source: "dtoken-desktop-opencode-adapter",
+            freshness: "fresh",
+            target: "<normal-opencode-config>".to_string(),
+            model: request.model.clone(),
+            listener: format!("127.0.0.1:{}", request.listener_port),
+            transaction: "scan-plan-diff-backup-confirm-apply-verify-doctor-rollback".to_string(),
+            revision: request.reviewed_revision.clone(),
+            before_sha256: None,
+            after_sha256: None,
+            rollback_id: None,
+            verified: false,
+            summary: "d-token runtime identity is not healthy; OpenCode was not modified".to_string(),
+            privacy: "Normal strict JSON config only; auth.json, credentials, prompts, and responses are never read or returned",
+        };
+        let _ = append_desktop_event(
+            "install_confirm",
+            "failed",
+            json!({ "revision": request.reviewed_revision, "reason": "runtime_identity_unavailable" }),
+        );
+        return json!(receipt);
+    }
+
+    let _ = append_desktop_event(
+        "install_confirm",
+        "ok",
+        json!({
+            "revision": request.reviewed_revision,
+            "before_sha256": request.reviewed_before_sha256,
+            "after_sha256": request.reviewed_after_sha256,
+            "model": request.model,
+        }),
+    );
+    let mut receipt = opencode_adapter::apply(&request, &config_backup_root());
+    if !receipt.ok {
+        let _ = append_desktop_event(
+            "install_backup_apply_verify",
+            "failed",
+            json!({ "revision": receipt.revision, "summary": receipt.summary }),
+        );
+        return json!(receipt);
+    }
+
+    let active = active_route_config_status();
+    let doctor_ok = active.get("state").and_then(Value::as_str) == Some("loaded")
+        && active.get("fallback_disabled").and_then(Value::as_bool) == Some(true)
+        && service_health_payload().is_some();
+    if !doctor_ok {
+        let rollback_id = receipt.rollback_id.clone().unwrap_or_default();
+        let recovery = config_patcher()
+            .load_backup(&rollback_id)
+            .and_then(|backup| {
+                config_patcher().restore_backup(
+                    &backup,
+                    &ExpectedFileState::Hash(receipt.after_sha256.clone().unwrap_or_default()),
+                )
+            });
+        receipt.ok = false;
+        receipt.verified = false;
+        receipt.state = if recovery.is_ok() {
+            "recovered"
+        } else {
+            "recovery_failed"
+        }
+        .to_string();
+        receipt.summary = if recovery.is_ok() {
+            "Post-apply Doctor failed; exact original OpenCode bytes were restored".to_string()
+        } else {
+            "Post-apply Doctor failed and exact recovery needs attention".to_string()
+        };
+        let _ = append_desktop_event(
+            "install_doctor_recovery",
+            if recovery.is_ok() {
+                "recovered"
+            } else {
+                "failed"
+            },
+            json!({
+                "revision": receipt.revision,
+                "rollback_id": receipt.rollback_id,
+                "exact_bytes_restored": recovery.is_ok(),
+            }),
+        );
+        return json!(receipt);
+    }
+
+    let _ = append_desktop_event(
+        "install_backup_apply_verify_doctor_commit",
+        "ok",
+        json!({
+            "revision": receipt.revision,
+            "before_sha256": receipt.before_sha256,
+            "after_sha256": receipt.after_sha256,
+            "rollback_id": receipt.rollback_id,
+            "model": receipt.model,
+            "listener": receipt.listener,
+            "verified": true,
+        }),
+    );
+    json!(receipt)
+}
+
+#[tauri::command]
+fn discover_upstream_candidates() -> Value {
+    upstream_discovery::discover()
+}
+
+#[tauri::command]
 fn get_dtoken_service_status() -> Value {
     dtoken_service_status_value()
 }
 
 #[tauri::command]
+fn get_autostart_status() -> autostart::AutostartStatus {
+    autostart::status()
+}
+
+#[tauri::command]
+fn enable_autostart() -> autostart::AutostartActionResult {
+    let result = autostart::enable();
+    let _ = append_desktop_event(
+        "autostart_enable",
+        if result.ok { "ok" } else { "failed" },
+        json!({
+            "state": result.status.state,
+            "source": result.status.source,
+            "rollback_performed": result.rollback_performed,
+        }),
+    );
+    result
+}
+
+#[tauri::command]
+fn disable_autostart() -> autostart::AutostartActionResult {
+    let result = autostart::disable();
+    let _ = append_desktop_event(
+        "autostart_disable",
+        if result.ok { "ok" } else { "failed" },
+        json!({
+            "state": result.status.state,
+            "source": result.status.source,
+            "rollback_performed": result.rollback_performed,
+        }),
+    );
+    result
+}
+
+fn start_service_when_launched_by_autostart() {
+    if !autostart::has_service_start_argument(env::args_os()) {
+        return;
+    }
+    thread::spawn(|| {
+        let result = start_dtoken_service();
+        let _ = append_desktop_event(
+            "autostart_service_start",
+            if result.ok { "ok" } else { "failed" },
+            json!({ "ok": result.ok, "summary": result.summary }),
+        );
+    });
+}
+
+#[tauri::command]
 fn start_dtoken_service() -> ActionResult {
+    let result = start_dtoken_service_impl();
+    let _ = append_desktop_event(
+        "service_start",
+        if result.ok { "ok" } else { "failed" },
+        json!({ "ok": result.ok, "summary": result.summary.clone() }),
+    );
+    result
+}
+
+fn start_dtoken_service_impl() -> ActionResult {
     let mut logs = vec![log(
         "info",
         "Starting d-token-owned local service lifecycle action",
@@ -2508,6 +3214,16 @@ fn start_dtoken_service() -> ActionResult {
 
 #[tauri::command]
 fn stop_dtoken_service() -> ActionResult {
+    let result = stop_dtoken_service_impl();
+    let _ = append_desktop_event(
+        "service_stop",
+        if result.ok { "ok" } else { "failed" },
+        json!({ "ok": result.ok, "summary": result.summary.clone() }),
+    );
+    result
+}
+
+fn stop_dtoken_service_impl() -> ActionResult {
     let mut logs = vec![log(
         "info",
         "Stopping d-token-owned local service lifecycle action",
@@ -2847,10 +3563,22 @@ fn run_install_transaction(request: InstallPlanRequest) -> ActionResult {
     }
 
     if request.run_doctor_after {
-        let doctor_ok = tools
-            .iter()
-            .filter(|tool| tool.id == "rtk" || tool.id == "headroom")
-            .all(|tool| tool.installed);
+        let doctor_ok = targets.iter().all(|target| match *target {
+            "dtoken" => {
+                let status = dtoken_service_status_value();
+                status.get("state").and_then(Value::as_str) == Some("running")
+                    && status.get("managed").and_then(Value::as_bool) == Some(true)
+                    && active_route_config_status()
+                        .get("state")
+                        .and_then(Value::as_str)
+                        == Some("loaded")
+            }
+            "rtk" | "headroom" => tools
+                .iter()
+                .find(|tool| tool.id == *target)
+                .is_some_and(|tool| tool.installed),
+            _ => false,
+        });
         ok = ok && doctor_ok;
         logs.push(log(
             if doctor_ok { "info" } else { "error" },
@@ -2935,16 +3663,15 @@ fn run_doctor() -> ActionResult {
             ),
         ));
     }
-    let ok = tools
-        .iter()
-        .filter(|tool| tool.id != "opencode")
-        .all(|tool| tool.installed);
+    // OpenCode is the current real acceptance agent. RTK and external
+    // Headroom are optional no-touch references and must never gate Doctor.
+    let ok = doctor_agent_ready(&tools);
     logs.push(log(
         if ok { "info" } else { "error" },
         if ok {
-            "Doctor passed for install prerequisites"
+            "Doctor passed with a supported Agent"
         } else {
-            "Doctor found missing install prerequisites"
+            "Doctor did not detect a supported Agent"
         },
     ));
     ActionResult {
@@ -2953,6 +3680,12 @@ fn run_doctor() -> ActionResult {
         logs,
         tools,
     }
+}
+
+fn doctor_agent_ready(tools: &[ToolCheck]) -> bool {
+    tools
+        .iter()
+        .any(|tool| tool.id == "opencode" && tool.installed)
 }
 
 #[tauri::command]
@@ -3488,6 +4221,7 @@ fn headroom_derived_runtime_capability_status(dashboard: &Value) -> Value {
     let compression = payload.get("stats").is_some() || payload.get("metrics").is_some();
     let ccr_raw_blocked = payload
         .pointer("/ccr/raw_available")
+        .or_else(|| payload.pointer("/cache_summary/raw_available"))
         .and_then(Value::as_bool)
         .map(|raw| !raw)
         .unwrap_or(false);
@@ -3500,7 +4234,15 @@ fn headroom_derived_runtime_capability_status(dashboard: &Value) -> Value {
         .pointer("/output_shape/raw_available")
         .and_then(Value::as_bool)
         .map(|raw| !raw)
-        .unwrap_or(false);
+        .unwrap_or(false)
+        || payload
+            .get("dashboard_sections")
+            .and_then(Value::as_array)
+            .is_some_and(|sections| {
+                sections
+                    .iter()
+                    .any(|section| section.as_str() == Some("cli_filtering"))
+            });
     let route_adapter = payload.get("route").is_some()
         || payload.get("route_decisions").is_some()
         || payload.pointer("/stats/route_overhead").is_some();
@@ -3812,7 +4554,8 @@ fn offline_control_plane_data(
         "headroomTrend": [],
         "commandFamilies": [],
         "recentDecisions": [],
-        "recentEvents": [],
+        "recentEvents": desktop_transaction_events(),
+        "desktopTransactionEvents": desktop_transaction_events(),
         "routes": [],
         "providers": [],
         "instances": [],
@@ -3833,6 +4576,7 @@ fn offline_control_plane_data(
 fn changes_from_route_drafts(route_drafts: &[Value]) -> Vec<Value> {
     route_drafts
         .iter()
+        .filter(|draft| draft.pointer("/resolution/state").and_then(Value::as_str) != Some("applied"))
         .filter_map(|draft| {
             let route = draft
                 .get("config")?
@@ -3874,6 +4618,19 @@ fn complete_desktop_data(
     object.insert("partial".to_string(), json!(false));
     object.insert("runtime_available".to_string(), json!(true));
     object.insert("runtime_evidence_state".to_string(), json!("verified"));
+    let desktop_events = desktop_transaction_events();
+    let mut recent_events = object
+        .get("recentEvents")
+        .or_else(|| object.get("events"))
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    recent_events.extend(desktop_events.iter().cloned());
+    object.insert("recentEvents".to_string(), json!(recent_events));
+    object.insert(
+        "desktopTransactionEvents".to_string(),
+        json!(desktop_events),
+    );
     object.insert(
         "transaction_provenance".to_string(),
         json!({
@@ -3907,26 +4664,21 @@ fn complete_desktop_data(
 
 #[tauri::command]
 fn get_desktop_data() -> Value {
-    let route_drafts = match route_profile_drafts_result() {
-        Ok(drafts) => drafts,
-        Err(err) => {
-            return offline_control_plane_data(
-                &format!("Routing state is unreadable: {err}"),
-                vec![],
-                vec![],
-            )
-        }
-    };
-    let backup_points = match rollback_points_result() {
-        Ok(points) => points,
-        Err(err) => {
-            return offline_control_plane_data(
-                &format!("Rollback state is unreadable: {err}"),
-                route_drafts,
-                vec![],
-            )
-        }
-    };
+    let mut slice_errors = serde_json::Map::new();
+    let route_drafts = route_profile_drafts_result().unwrap_or_else(|err| {
+        slice_errors.insert(
+            "route_drafts".to_string(),
+            json!({"stage": "desktop_section", "state": "unavailable", "error": err}),
+        );
+        vec![]
+    });
+    let backup_points = rollback_points_result().unwrap_or_else(|err| {
+        slice_errors.insert(
+            "rollback_points".to_string(),
+            json!({"stage": "desktop_section", "state": "unavailable", "error": err}),
+        );
+        vec![]
+    });
     let health = match service_health_payload() {
         Some(health)
             if health.get("component").and_then(Value::as_str) == Some("dtoken-core-api")
@@ -3987,6 +4739,10 @@ fn get_desktop_data() -> Value {
         object.insert("runtime_health".to_string(), health);
         object.insert("tools".to_string(), json!(all_checks()));
         object.insert("active_config".to_string(), active_route_config_status());
+        object.insert(
+            "desktop_slice_errors".to_string(),
+            Value::Object(slice_errors),
+        );
     }
     payload
 }
@@ -3995,10 +4751,15 @@ fn get_desktop_data() -> Value {
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .setup(|_| {
+            start_service_when_launched_by_autostart();
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             get_desktop_data,
             get_app_settings,
             save_app_settings,
+            check_for_updates,
             save_route_profile_draft,
             store_provider_credential,
             delete_provider_credential,
@@ -4008,11 +4769,23 @@ fn main() {
             get_active_route_config_status,
             verify_agent_route_config,
             recommend_project_policy,
+            discover_learning_sources,
+            preview_learning_managed_block,
+            apply_learning_managed_block,
+            get_learning_delegation_capabilities,
+            spawn_learning_delegation,
+            cancel_learning_delegation,
             manage_backup,
             detect_tools,
             install_tool,
             preview_install_plan,
+            preview_opencode_connection,
+            apply_opencode_connection,
+            discover_upstream_candidates,
             get_dtoken_service_status,
+            get_autostart_status,
+            enable_autostart,
+            disable_autostart,
             start_dtoken_service,
             stop_dtoken_service,
             run_install_transaction,
@@ -4034,10 +4807,15 @@ fn main() {
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .setup(|_| {
+            start_service_when_launched_by_autostart();
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             get_desktop_data,
             get_app_settings,
             save_app_settings,
+            check_for_updates,
             save_route_profile_draft,
             store_provider_credential,
             delete_provider_credential,
@@ -4047,11 +4825,23 @@ fn main() {
             get_active_route_config_status,
             verify_agent_route_config,
             recommend_project_policy,
+            discover_learning_sources,
+            preview_learning_managed_block,
+            apply_learning_managed_block,
+            get_learning_delegation_capabilities,
+            spawn_learning_delegation,
+            cancel_learning_delegation,
             manage_backup,
             detect_tools,
             install_tool,
             preview_install_plan,
+            preview_opencode_connection,
+            apply_opencode_connection,
+            discover_upstream_candidates,
             get_dtoken_service_status,
+            get_autostart_status,
+            enable_autostart,
+            disable_autostart,
             start_dtoken_service,
             stop_dtoken_service,
             run_install_transaction,
@@ -4083,7 +4873,7 @@ mod tests {
     fn with_isolated_app_state<T>(name: &str, run: impl FnOnce() -> T) -> T {
         let _guard = test_state_lock()
             .lock()
-            .expect("test app state lock poisoned");
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let previous = env::var("DTOKEN_TEST_STATE_DIR").ok();
         let root = env::temp_dir().join(format!(
             "dtoken-desktop-test-{name}-{}",
@@ -4568,7 +5358,11 @@ mod tests {
             )
             .expect("write active config");
 
-            let shutdown = start_fake_dtoken_runtime();
+            let Some(shutdown) = start_fake_dtoken_runtime() else {
+                // A real d-token service can legitimately own the fixed product port
+                // during workspace tests. Its live behavior is covered by the app UAT.
+                return;
+            };
             let result = run_product_readiness_check();
             shutdown.store(true, Ordering::SeqCst);
 
@@ -4607,9 +5401,12 @@ mod tests {
         });
     }
 
-    fn start_fake_dtoken_runtime() -> Arc<AtomicBool> {
-        let listener = TcpListener::bind(("127.0.0.1", DTOKEN_SERVICE_PORT))
-            .expect("bind fake d-token runtime on product port");
+    fn start_fake_dtoken_runtime() -> Option<Arc<AtomicBool>> {
+        let listener = match TcpListener::bind(("127.0.0.1", DTOKEN_SERVICE_PORT)) {
+            Ok(listener) => listener,
+            Err(error) if error.kind() == std::io::ErrorKind::AddrInUse => return None,
+            Err(error) => panic!("bind fake d-token runtime on product port: {error}"),
+        };
         listener
             .set_nonblocking(true)
             .expect("set fake runtime nonblocking");
@@ -4642,7 +5439,7 @@ mod tests {
                 }
             }
         });
-        shutdown
+        Some(shutdown)
     }
 
     fn fake_runtime_body(path: &str) -> String {
@@ -4715,6 +5512,23 @@ mod tests {
             .as_str()
             .unwrap_or_default()
             .contains("no external Headroom service"));
+    }
+
+    #[test]
+    fn headroom_derived_capability_accepts_current_owned_runtime_shape() {
+        let dashboard = json!({
+            "payload": {
+                "source": "dtoken-owned-runtime",
+                "stats": { "route_overhead": {} },
+                "cache_summary": { "raw_available": false },
+                "memory": { "raw_available": false },
+                "dashboard_sections": ["cli_filtering"]
+            }
+        });
+        assert_eq!(
+            headroom_derived_runtime_capability_status(&dashboard)["ok"],
+            true
+        );
     }
 
     #[test]
@@ -4805,6 +5619,41 @@ mod tests {
                 "reviewed-route"
             );
             assert_eq!(rollback_points_result().expect("rollback points").len(), 1);
+            let drafts = route_profile_drafts_result().expect("resolved drafts");
+            let reviewed = drafts
+                .iter()
+                .find(|draft| {
+                    draft.pointer("/config/routes/0/id").and_then(Value::as_str)
+                        == Some("reviewed-route")
+                })
+                .expect("reviewed route draft");
+            assert_eq!(
+                reviewed.pointer("/resolution/state"),
+                Some(&json!("applied"))
+            );
+            assert!(changes_from_route_drafts(&drafts).is_empty());
+        });
+    }
+
+    #[test]
+    fn invalid_historical_backup_does_not_hide_verified_rollback_points() {
+        with_isolated_app_state("rollback-list-partial", || {
+            assert!(save_test_route("reviewed-route", "https://one.example.test/v1").ok);
+            assert!(review_and_apply_route("reviewed-route").ok);
+
+            let invalid_id = "00000000-0000-4000-8000-000000000001";
+            fs::create_dir_all(config_backup_root().join(invalid_id))
+                .expect("invalid historical backup fixture");
+
+            let points = rollback_points_result().expect("partial rollback list remains readable");
+            assert!(points.iter().any(|point| {
+                point["verified"] == true && point["scope"] == "dtoken-active-config"
+            }));
+            assert!(points.iter().any(|point| {
+                point["id"] == invalid_id
+                    && point["verified"] == false
+                    && point["scope"] == "invalid-backup-evidence"
+            }));
         });
     }
 
@@ -4865,6 +5714,18 @@ mod tests {
             );
             assert_eq!(active_route_config_status()["route"]["id"], "second-route");
 
+            let second_path = app_state_dir().join("routing").join("second-route.json");
+            let mut legacy_applied: Value = serde_json::from_str(
+                &fs::read_to_string(&second_path).expect("read applied legacy draft"),
+            )
+            .expect("parse applied legacy draft");
+            legacy_applied
+                .as_object_mut()
+                .expect("draft object")
+                .remove("resolution");
+            write_json_app_state(&["routing", "second-route.json"], &legacy_applied)
+                .expect("simulate pre-lifecycle applied draft");
+
             let points = rollback_points_result().expect("read rollback points");
             let rollback_id = points
                 .iter()
@@ -4879,6 +5740,53 @@ mod tests {
             assert!(restored.ok);
             assert!(restored.summary.contains("active config restored"));
             assert_eq!(active_route_config_status()["route"]["id"], "first-route");
+            let drafts = route_profile_drafts_result().expect("migrated route drafts");
+            let second = drafts
+                .iter()
+                .find(|draft| {
+                    draft.pointer("/config/routes/0/id").and_then(Value::as_str)
+                        == Some("second-route")
+                })
+                .expect("second route draft");
+            assert_eq!(second.pointer("/resolution/state"), Some(&json!("applied")));
+            assert_eq!(
+                second.pointer("/resolution/evidence"),
+                Some(&json!("verified-config-backup-after-hash"))
+            );
+            assert!(changes_from_route_drafts(&drafts).is_empty());
+        });
+    }
+
+    #[test]
+    fn opencode_rollback_reports_the_restored_scope() {
+        with_isolated_app_state("opencode-rollback-copy", || {
+            let target = fs::canonicalize(app_state_dir())
+                .expect("canonical app state")
+                .join("opencode.json");
+            fs::write(&target, r#"{"provider":"original"}"#).expect("original config");
+            let patcher = config_patcher();
+            let change = patcher
+                .prepare_change(
+                    &target,
+                    r#"{"provider":"dtoken"}"#,
+                    ConfigToolKind::Agent,
+                    None,
+                    RiskLevel::Medium,
+                )
+                .expect("prepare OpenCode config");
+            let backup = patcher.backup_prepared(&change).expect("backup");
+            patcher.apply_prepared(&change, &backup).expect("apply");
+
+            let restored = manage_backup("restore".to_string(), backup.rollback_id);
+            assert!(restored.ok);
+            assert_eq!(
+                restored.summary,
+                "OpenCode configuration restored exactly from verified backup"
+            );
+            assert_eq!(
+                fs::read_to_string(target).expect("restored OpenCode config"),
+                r#"{"provider":"original"}"#
+            );
         });
     }
 
@@ -4920,5 +5828,123 @@ mod tests {
             assert_eq!(saved["payload"]["policy"]["holdout_ratio"], 0.1);
             assert_eq!(saved["payload"]["source"], "dtoken-project-policy");
         });
+    }
+
+    #[test]
+    fn learning_discovery_returns_metadata_without_file_content() {
+        with_isolated_app_state("learning-discovery", || {
+            let root = app_state_dir().join("sample-project");
+            fs::create_dir_all(&root).expect("create sample project");
+            fs::write(root.join("secret.txt"), "must-not-leak").expect("write fixture");
+            let result = discover_learning_sources(LearningSourceDiscoveryRequest {
+                roots: Some(vec![root.display().to_string()]),
+                skip_paths: Some(vec![]),
+                stop: Some(false),
+            });
+            assert_eq!(result["ok"], true);
+            assert_eq!(result["candidates"].as_array().map(Vec::len), Some(1));
+            assert!(!result.to_string().contains("must-not-leak"));
+            assert_eq!(result["writes_performed"], false);
+        });
+    }
+
+    #[test]
+    fn learning_managed_block_preserves_user_content_and_creates_rollback() {
+        with_isolated_app_state("learning-write", || {
+            let root = app_state_dir().join("sample-project");
+            fs::create_dir_all(&root).expect("create sample project");
+            let target = root.join("AGENTS.md");
+            let original = b"# User instructions\n\nKeep this line.\n";
+            fs::write(&target, original).expect("write target");
+            let review = preview_learning_managed_block(LearningManagedBlockRequest {
+                target: target.display().to_string(),
+                content: "Use the balanced local policy.".to_string(),
+                reviewed_before_sha256: None,
+                reviewed_after_sha256: None,
+            });
+            assert_eq!(review["ok"], true, "review={review}");
+            let applied = apply_learning_managed_block(LearningManagedBlockRequest {
+                target: target.display().to_string(),
+                content: "Use the balanced local policy.".to_string(),
+                reviewed_before_sha256: review["before_sha256"].as_str().map(str::to_string),
+                reviewed_after_sha256: review["after_sha256"].as_str().map(str::to_string),
+            });
+            assert_eq!(applied["ok"], true);
+            assert_eq!(applied["verified"], true);
+            assert!(applied["rollback_id"]
+                .as_str()
+                .is_some_and(|id| !id.is_empty()));
+            let written = fs::read_to_string(&target).expect("read target");
+            assert!(written.contains("# User instructions"));
+            assert!(written.contains("Keep this line."));
+            assert!(written.contains("<!-- d-token:learning:start -->"));
+            assert!(written.contains("Use the balanced local policy."));
+
+            let rollback_id = applied["rollback_id"]
+                .as_str()
+                .expect("learning write rollback id")
+                .to_string();
+            let restored = manage_backup("restore".to_string(), rollback_id);
+            assert!(restored.ok);
+            assert_eq!(
+                restored.summary,
+                "Learning document restored exactly from verified backup"
+            );
+            assert_eq!(fs::read(&target).expect("read restored target"), original);
+        });
+    }
+
+    #[test]
+    fn learning_delegation_rejects_non_allowlisted_agents_without_spawn() {
+        let result = spawn_learning_delegation(LearningDelegationRequest {
+            request_id: "learning:test-invalid-agent".to_string(),
+            agent: "sh".to_string(),
+            prompt: "metadata-only test".to_string(),
+            timeout_ms: 1_000,
+            confirmed: true,
+        });
+        assert_eq!(result["ok"], false);
+        assert_eq!(result["state"], "blocked");
+    }
+
+    #[test]
+    fn learning_delegation_cancel_is_fail_closed_when_not_running() {
+        let result = cancel_learning_delegation("learning:not-running".to_string());
+        assert_eq!(result["ok"], false);
+        assert_eq!(result["state"], "not_running");
+    }
+
+    #[test]
+    fn doctor_requires_opencode_but_not_optional_headroom() {
+        let tools = vec![
+            ToolCheck {
+                id: "rtk".to_string(),
+                label: "RTK".to_string(),
+                installed: true,
+                version: None,
+                path: None,
+                status: "installed".to_string(),
+                detail: String::new(),
+            },
+            ToolCheck {
+                id: "headroom".to_string(),
+                label: "Headroom".to_string(),
+                installed: false,
+                version: None,
+                path: None,
+                status: "missing".to_string(),
+                detail: String::new(),
+            },
+            ToolCheck {
+                id: "opencode".to_string(),
+                label: "OpenCode".to_string(),
+                installed: true,
+                version: None,
+                path: None,
+                status: "installed".to_string(),
+                detail: String::new(),
+            },
+        ];
+        assert!(doctor_agent_ready(&tools));
     }
 }

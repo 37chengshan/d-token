@@ -1,13 +1,13 @@
-import { useEffect, useMemo, useState } from "react";
+import { useMemo } from "react";
 import { Laptop, Monitor, RefreshCw, Route, ShieldCheck, TerminalSquare } from "lucide-react";
-import { GlassCard } from "../common/GlassCard";
+import { Surface } from "../common/Surface";
 import { DataSourceBadge } from "../common/DataSourceBadge";
 import { StatusBadge } from "../common/StatusBadge";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { useI18n, useT } from "../../lib/i18n";
-import { invokeNative } from "../../lib/native";
 import { classifyEvidence, type EvidenceState } from "../../lib/state/evidence";
+import { useRuntimeDashboard } from "../../lib/useRuntimeDashboard";
 
 type CompatibilityAgent = {
   name: string;
@@ -71,33 +71,12 @@ export const compatibilityCatalogEvidence = {
   verified_on_this_machine: false,
 } as const;
 
-type LoadState = "loading" | "native" | "preview" | "error";
-
 export function Compatibility() {
   const t = useT();
   const { lang } = useI18n();
-  const [data, setData] = useState<DesktopCompatibilityData | null>(null);
-  const [loadState, setLoadState] = useState<LoadState>("loading");
-  const [updatedAt, setUpdatedAt] = useState<Date | null>(null);
-
-  const refresh = async () => {
-    try {
-      const next = await invokeNative<DesktopCompatibilityData>("get_desktop_data");
-      setData(next);
-      setLoadState("native");
-      setUpdatedAt(new Date());
-    } catch (error) {
-      setData(null);
-      setLoadState(error instanceof Error && error.message === "native_unavailable" ? "preview" : "error");
-      setUpdatedAt(new Date());
-    }
-  };
-
-  useEffect(() => {
-    void refresh();
-    const timer = window.setInterval(() => void refresh(), 5_000);
-    return () => window.clearInterval(timer);
-  }, []);
+  const { payload, status, updatedAt, refresh } = useRuntimeDashboard();
+  const data = payload as DesktopCompatibilityData | null;
+  const loadState = status === "runtime" ? "native" : status === "browser-preview" ? "preview" : status === "loading" ? "loading" : "error";
 
   const evidenceState = useMemo(
     () => classifyEvidence({
@@ -145,21 +124,21 @@ export function Compatibility() {
               : "Separates the implementation catalog from configuration verified on this machine."}
           </p>
         </div>
-        <Button variant="outline" onClick={refresh}>
+        <Button variant="outline" onClick={() => void refresh()}>
           <RefreshCw className="size-4" />
           {lang === "zh" ? "刷新" : "Refresh"}
         </Button>
       </div>
 
       {!hasVerifiedPayload && (
-        <GlassCard className="p-4" hover={false}>
+        <Surface className="p-4" hover={false}>
           <EmptyState
             title={emptyTitle(evidenceState, lang)}
             detail={lang === "zh"
               ? "未取得通过来源、完整性与事务证明校验的本机数据；不会使用预览内容补位。"
               : "No local payload passed provenance, completeness, and transaction verification."}
           />
-        </GlassCard>
+        </Surface>
       )}
 
       <div className="grid gap-4 md:grid-cols-4" data-testid="compatibility-summary">
@@ -187,7 +166,7 @@ export function Compatibility() {
         />
       </div>
 
-      <GlassCard className="p-5" hover={false}>
+      <Surface className="p-5" hover={false}>
         <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
           <h3>{lang === "zh" ? "Agent 实现能力目录" : "Agent implementation catalog"}</h3>
           <CatalogEvidenceBadge lang={lang} />
@@ -196,7 +175,7 @@ export function Compatibility() {
           <div className="overflow-x-auto">
             <table className="w-full min-w-[860px] text-sm">
               <thead>
-                <tr className="border-b border-[var(--glass-inset-border)] text-left text-xs text-muted-foreground">
+                <tr className="border-b border-border/60 text-left text-xs text-muted-foreground">
                   <th className="pb-2 font-medium">{t("cp.agent")}</th>
                   <th className="pb-2 font-medium">{t("cp.rtk")}</th>
                   <th className="pb-2 font-medium">{t("cp.runtime")}</th>
@@ -230,10 +209,10 @@ export function Compatibility() {
             detail={lang === "zh" ? "本地服务没有返回静态 Agent 能力条目。" : "The local service returned no static agent capability rows."}
           />
         )}
-      </GlassCard>
+      </Surface>
 
       <div className="grid gap-4 lg:grid-cols-2">
-        <GlassCard className="p-5" hover={false}>
+        <Surface className="p-5" hover={false}>
           <h3 className="mb-3 flex items-center gap-2">
             <Route className="size-4 text-primary" />
             {lang === "zh" ? "本机路由配置" : "Local route configuration"}
@@ -248,9 +227,9 @@ export function Compatibility() {
               detail={lang === "zh" ? "当前机器没有返回已配置路由。" : "No configured routes were returned for this machine."}
             />
           )}
-        </GlassCard>
+        </Surface>
 
-        <GlassCard className="p-5" hover={false}>
+        <Surface className="p-5" hover={false}>
           <h3 className="mb-3 flex items-center gap-2">
             <Laptop className="size-4 text-primary" />
             {lang === "zh" ? "本机项目策略" : "Local project policies"}
@@ -265,11 +244,11 @@ export function Compatibility() {
               detail={lang === "zh" ? "当前机器没有返回项目级策略。" : "No project-level policy was returned for this machine."}
             />
           )}
-        </GlassCard>
+        </Surface>
       </div>
 
       <div className="grid gap-4 lg:grid-cols-2">
-        <GlassCard className="p-5" hover={false}>
+        <Surface className="p-5" hover={false}>
           <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
             <h3 className="flex items-center gap-2">
               <ShieldCheck className="size-4 text-primary" />
@@ -287,9 +266,9 @@ export function Compatibility() {
               detail={lang === "zh" ? "本地服务没有返回静态协议能力条目。" : "The local service returned no static protocol capability rows."}
             />
           )}
-        </GlassCard>
+        </Surface>
 
-        <GlassCard className="p-5" hover={false}>
+        <Surface className="p-5" hover={false}>
           <h3 className="mb-3 flex items-center gap-2">
             <Route className="size-4 text-primary" />
             {lang === "zh" ? "本机链路状态" : "Local chain status"}
@@ -302,7 +281,7 @@ export function Compatibility() {
               detail={lang === "zh" ? "当前机器没有返回可核验的链路状态。" : "No verifiable chain status was returned for this machine."}
             />
           )}
-        </GlassCard>
+        </Surface>
       </div>
     </div>
   );
@@ -324,10 +303,10 @@ function CatalogEvidenceBadge({ lang }: { lang: "zh" | "en" }) {
 function SummaryCard({ icon, label, value, tone }: { icon: React.ReactNode; label: string; value: string; tone?: "ok" | "warn" }) {
   const color = tone === "ok" ? "text-emerald-500" : tone === "warn" ? "text-amber-500" : "text-primary";
   return (
-    <GlassCard className="p-4" hover={false}>
+    <Surface className="p-4" hover={false}>
       <div className="flex items-center gap-2 text-xs text-muted-foreground">{icon}{label}</div>
       <div className={`mt-2 text-2xl font-semibold ${color}`}>{value}</div>
-    </GlassCard>
+    </Surface>
   );
 }
 
@@ -354,7 +333,7 @@ function RouteRow({ route, lang }: { route: Record<string, any>; lang: "zh" | "e
   const details = [safeText(route.protocol), safeText(route.chain), safeText(route.policy)].filter(Boolean).join(" · ");
   const provider = safeText(route.target_provider_id) ?? safeText(route.provider_id) ?? safeText(route.provider);
   return (
-    <div className="glass-inset flex flex-wrap items-center justify-between gap-3 p-3 text-sm">
+    <div className="flat-inset flex flex-wrap items-center justify-between gap-3 p-3 text-sm">
       <div>
         <div>{title}</div>
         {details && <div className="text-xs text-muted-foreground">{details}</div>}
@@ -367,7 +346,7 @@ function RouteRow({ route, lang }: { route: Record<string, any>; lang: "zh" | "e
 function ProjectRow({ project, lang }: { project: ProjectPolicyRow; lang: "zh" | "en" }) {
   const details = [project.stack, project.agents?.join(", "), project.route].filter(Boolean).join(" · ");
   return (
-    <div className="glass-inset p-3 text-sm">
+    <div className="flat-inset p-3 text-sm">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <span className="font-medium">{project.root || (lang === "zh" ? "未命名项目" : "Unnamed project")}</span>
         {(project.level || project.policy) && <Badge variant="secondary">{project.level ?? project.policy}</Badge>}
@@ -384,7 +363,7 @@ function ProjectRow({ project, lang }: { project: ProjectPolicyRow; lang: "zh" |
 
 function ProtocolRow({ profile, lang }: { profile: RuntimeProtocolProfile; lang: "zh" | "en" }) {
   return (
-    <div className="glass-inset p-3 text-sm">
+    <div className="flat-inset p-3 text-sm">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <span className="font-medium">{safeText(profile.protocol) ?? (lang === "zh" ? "未命名协议" : "Unnamed protocol")}</span>
         <Badge variant="outline">{lang === "zh" ? "目录声明" : "Catalog declaration"}</Badge>
@@ -405,7 +384,7 @@ function ChainStatusCard({ status, lang }: { status: Record<string, any>; lang: 
   const privacy = safeText(status.privacy);
   const routes = Array.isArray(status.routes) ? status.routes.filter(isRecord) : [];
   return (
-    <div className="glass-inset p-3 text-sm">
+    <div className="flat-inset p-3 text-sm">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <span className="font-medium">{mode ?? (lang === "zh" ? "未提供链路模式" : "Chain mode not provided")}</span>
         {state && <Badge variant={state === "configured" ? "default" : "secondary"}>{state}</Badge>}

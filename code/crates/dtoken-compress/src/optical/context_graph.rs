@@ -57,6 +57,7 @@ pub struct ContextGraph {
     closed_tool_results: HashSet<String>,
     orphan_tool_results: HashSet<String>,
     open_tool_uses: HashSet<String>,
+    turn_by_block_id: HashMap<String, Option<usize>>,
 }
 
 impl ContextGraph {
@@ -71,10 +72,10 @@ impl ContextGraph {
     ) -> bool {
         self.is_closed_tool_result(block_id)
             && self
-                .nodes
-                .iter()
-                .find(|node| node.block_id == block_id)
-                .and_then(|node| node.turn_index)
+                .turn_by_block_id
+                .get(block_id)
+                .copied()
+                .flatten()
                 .map(|turn| turn < recent_tail_start)
                 .unwrap_or(false)
     }
@@ -150,6 +151,7 @@ pub fn build_context_graph(inventory: &ConversationInventory) -> ContextGraph {
     let mut closed_tool_results = HashSet::new();
     let mut closed_result_by_tool_id = HashMap::<String, String>::new();
     let mut orphan_tool_results = HashSet::new();
+    let mut invalidated_dependency_results = HashSet::new();
     for node in &nodes {
         if node.kind != BlockKind::ToolResult {
             continue;
@@ -180,9 +182,8 @@ pub fn build_context_graph(inventory: &ConversationInventory) -> ContextGraph {
             closed_tool_results.remove(&previous_result);
             orphan_tool_results.insert(previous_result.clone());
             orphan_tool_results.insert(node.block_id.clone());
-            edges.retain(|edge| {
-                edge.kind != ContextEdgeKind::ToolUseToResult || edge.to_block_id != previous_result
-            });
+            invalidated_dependency_results.insert(previous_result);
+            invalidated_dependency_results.insert(node.block_id.clone());
             open_tool_uses.insert(tool_id.clone());
             continue;
         }
@@ -194,6 +195,16 @@ pub fn build_context_graph(inventory: &ConversationInventory) -> ContextGraph {
         closed_tool_results.insert(node.block_id.clone());
         open_tool_uses.remove(tool_id);
     }
+    if !invalidated_dependency_results.is_empty() {
+        edges.retain(|edge| {
+            edge.kind != ContextEdgeKind::ToolUseToResult
+                || !invalidated_dependency_results.contains(&edge.to_block_id)
+        });
+    }
+    let turn_by_block_id = nodes
+        .iter()
+        .map(|node| (node.block_id.clone(), node.turn_index))
+        .collect();
 
     ContextGraph {
         state_machine,
@@ -202,6 +213,7 @@ pub fn build_context_graph(inventory: &ConversationInventory) -> ContextGraph {
         closed_tool_results,
         orphan_tool_results,
         open_tool_uses,
+        turn_by_block_id,
     }
 }
 

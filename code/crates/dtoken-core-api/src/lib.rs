@@ -1,5 +1,5 @@
 use axum::{
-    body::Body,
+    body::{Body, Bytes},
     extract::{DefaultBodyLimit, Path as AxumPath, State},
     http::header::{CACHE_CONTROL, CONTENT_TYPE},
     http::HeaderMap,
@@ -7,6 +7,10 @@ use axum::{
     response::IntoResponse,
     routing::{get, post},
     Json, Router,
+};
+use dtoken_compress::optical::{
+    HybridContextEngine, HybridPreparationKind, OpticalCapabilityRegistry, PreparedHybridRequest,
+    RenderCancellation,
 };
 use dtoken_compress::{CompressionEngine, ResolvedOptimizationContext};
 use dtoken_config::DtokenConfig;
@@ -21,12 +25,14 @@ use dtoken_project_policy::{
     default_policy, demo_projects, RecommendationInput, RuleBasedRecommendationEngine,
 };
 use dtoken_types::{
-    AgentSupportProfile, BaselineKind, ChainMode, CompressionPolicy, DtokenEvent, EventSource,
-    EventStatus, HealthResponse, LayeredSavingsReport, LayeredStage, OpticalApplicabilityInput,
-    OpticalCapabilitiesPublicSummary, OpticalCapabilityLifecyclePublicSummary, OpticalEndpoint,
-    OpticalEventMetadataPublicSummary, OpticalEventPublicSummary, OpticalMode,
-    OpticalPlanPublicSummary, OpticalPlanStatus, OpticalPreviewRequest, OpticalStatusPublicSummary,
-    Protocol, ProtocolInjectionProfile, RequestLog, RouteDecision, SupportLevel,
+    AgentSupportProfile, BaselineKind, CacheTokens, ChainMode, CompressionPolicy, DtokenEvent,
+    EventSource, EventStatus, HealthResponse, InputTokenUsage, LayeredSavingsReport, LayeredStage,
+    ModalityTokens, OpticalApplicabilityInput, OpticalCapabilitiesPublicSummary,
+    OpticalCapabilityLifecyclePublicSummary, OpticalEndpoint, OpticalEventMetadataPublicSummary,
+    OpticalEventPublicSummary, OpticalMode, OpticalPlanPublicSummary, OpticalPlanStatus,
+    OpticalPreviewRequest, OpticalStatusPublicSummary, PayloadByteUsage, Protocol,
+    ProtocolInjectionProfile, RequestLog, RouteDecision, SupportLevel, UpstreamSendState,
+    UsageEvidence, UsageEvidenceKind, UsageMeasurement, UsageVector,
 };
 use futures_util::TryStreamExt;
 use reqwest::StatusCode;
@@ -53,6 +59,8 @@ pub struct AppState {
     memory_records: Arc<Mutex<Vec<Value>>>,
     runtime_store: Option<Arc<RuntimeStore>>,
     http_client: reqwest::Client,
+    hybrid_engine: Arc<HybridContextEngine>,
+    optical_config_issues: Arc<Vec<dtoken_config::OpticalConfigIssue>>,
 }
 
 impl AppState {
@@ -61,9 +69,11 @@ impl AppState {
     }
 
     pub fn new_with_config_status(
-        config: DtokenConfig,
+        mut config: DtokenConfig,
         config_status: RuntimeConfigStatus,
     ) -> Self {
+        let optical_config_issues = Arc::new(config.normalize_optical_fail_closed());
+        let hybrid_engine = Arc::new(HybridContextEngine::new(&config.optical.global_policy));
         Self {
             config: Arc::new(config),
             config_status: Arc::new(config_status),
@@ -75,6 +85,8 @@ impl AppState {
             memory_records: Arc::new(Mutex::new(vec![])),
             runtime_store: None,
             http_client: reqwest::Client::new(),
+            hybrid_engine,
+            optical_config_issues,
         }
     }
 
@@ -176,13 +188,15 @@ impl AppState {
         Ok(sanitized)
     }
 
-    fn append_event(&self, event: DtokenEvent) {
-        if let Ok(mut ledger) = self.ledger.lock() {
-            let _ = ledger.record(event.clone());
-        }
+    fn try_append_event(&self, event: DtokenEvent) -> anyhow::Result<()> {
+        self.ledger
+            .lock()
+            .map_err(|_| anyhow::anyhow!("event ledger lock poisoned"))?
+            .record(event.clone())?;
         if let Some(store) = &self.runtime_store {
-            let _ = store.append_event(&event);
+            store.append_event(&event)?;
         }
+        Ok(())
     }
 
     fn record_routed_request(
@@ -221,7 +235,18 @@ fn append_stage_event(
     metadata: Value,
     error_code: Option<&str>,
 ) {
-    state.append_event(DtokenEvent {
+    let _ = try_append_stage_event(state, request_id, stage, status, metadata, error_code);
+}
+
+fn try_append_stage_event(
+    state: &AppState,
+    request_id: Uuid,
+    stage: LayeredStage,
+    status: EventStatus,
+    metadata: Value,
+    error_code: Option<&str>,
+) -> anyhow::Result<()> {
+    state.try_append_event(DtokenEvent {
         event_id: Uuid::new_v4(),
         timestamp_ms: dtoken_event_ledger::now_ms(),
         project_id: Some("dtoken-runtime".to_string()),
@@ -238,7 +263,8 @@ fn append_stage_event(
         baseline_kind: Some(BaselineKind::HeadroomInput),
         error_code: error_code.map(ToString::to_string),
         metadata,
-    });
+        context_accounting: None,
+    })
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -519,8 +545,9 @@ async fn optical_preview(
         .as_deref()
         .and_then(|route_id| state.config.find_optical_route_policy(route_id))
         .is_some();
-    let registry = dtoken_compress::optical::OpticalCapabilityRegistry::from_snapshots(
-        state.config.optical.capability_snapshots.clone(),
+    let registry = dtoken_compress::optical::OpticalCapabilityRegistry::from_runtime_config(
+        &state.config.optical,
+        dtoken_event_ledger::now_ms(),
     );
     let body_bytes = serde_json::to_vec(&request.body)
         .map(|body| body.len())
@@ -553,27 +580,55 @@ async fn optical_preview(
 
 async fn optical_status(State(state): State<AppState>) -> Json<OpticalStatusPublicSummary> {
     let policy = state.config.optical.global_policy.clone();
+    let registry = OpticalCapabilityRegistry::from_runtime_config(
+        &state.config.optical,
+        dtoken_event_ledger::now_ms(),
+    );
+    let active_route_count = active_direct_anthropic_route_count(&state.config, &registry);
+    let active = policy.allow_active && active_route_count > 0;
+    let effective_mode = if active {
+        OpticalMode::ToolResultsOnly
+    } else {
+        OpticalMode::ShadowPreview
+    };
 
     Json(OpticalStatusPublicSummary {
+        schema_version: 1,
         enabled: policy.enabled,
-        // The current runtime implements a shadow planner, not an active request transform.
-        // Configuration intent must not be surfaced as implemented capability.
-        default_mode: OpticalMode::ShadowPreview,
-        allow_active: false,
-        public_summary_only: true,
+        configured_mode: policy.default_mode,
+        effective_mode: effective_mode.clone(),
+        default_mode: effective_mode,
+        allow_active: active,
+        public_summary_only: policy.public_summary_only || !active,
         fail_closed: true,
+        renderer_ready: true,
+        patcher_ready: true,
+        post_validator_ready: true,
+        signed_accounting_ready: true,
+        active_direct_routes: active_route_count,
+        verified_attested_capabilities: registry.verified_rule_count(),
+        rejected_capabilities: registry.rejected_rule_count(),
+        config_issue_count: state.optical_config_issues.len(),
     })
 }
 
 async fn optical_capabilities(
-    State(_state): State<AppState>,
+    State(state): State<AppState>,
 ) -> Json<OpticalCapabilitiesPublicSummary> {
+    let registry = OpticalCapabilityRegistry::from_runtime_config(
+        &state.config.optical,
+        dtoken_event_ledger::now_ms(),
+    );
+    let active = state.config.optical.global_policy.allow_active
+        && active_direct_anthropic_route_count(&state.config, &registry) > 0;
     Json(OpticalCapabilitiesPublicSummary {
         shadow_preview_supported: true,
-        // Verified snapshots improve shadow estimation only. They do not install a renderer,
-        // request patcher, post-validator, or rollback path.
-        active_transform_enabled: false,
-        max_mode: OpticalMode::ShadowPreview,
+        active_transform_enabled: active,
+        max_mode: if active {
+            OpticalMode::ToolResultsOnly
+        } else {
+            OpticalMode::ShadowPreview
+        },
         supported_endpoints: vec![
             OpticalEndpoint::AnthropicMessages,
             OpticalEndpoint::OpenAiChatCompletions,
@@ -581,17 +636,59 @@ async fn optical_capabilities(
         ],
         unknown_model_status: dtoken_types::CapabilityStatus::ShadowOnly,
         unsupported_path_status: dtoken_types::CapabilityStatus::Blocked,
-        public_summary_only: true,
+        public_summary_only: state.config.optical.global_policy.public_summary_only || !active,
         fail_closed: true,
+        direct_anthropic_upstream_supported: true,
+        streaming_passthrough_supported: true,
+        deterministic_png_renderer: true,
+        artifact_post_validation: true,
+        signed_multimodal_accounting: true,
+        capability_attestation_required: true,
     })
+}
+
+fn active_direct_anthropic_route_count(
+    config: &DtokenConfig,
+    registry: &OpticalCapabilityRegistry,
+) -> usize {
+    config.routes.iter().filter(|route| {
+        route.input_protocol == Protocol::Anthropic
+            && config
+                .find_provider(&route.target_provider_id)
+                .is_some_and(|provider| {
+                    provider.protocol == Protocol::Anthropic
+                        && provider.models.iter().any(|model| {
+                            dtoken_compress::optical::resolve_model_capability_record_for_route_with_registry(
+                                Some(&Protocol::Anthropic),
+                                Some(&provider.id),
+                                Some(&route.id),
+                                Some(model),
+                                OpticalEndpoint::AnthropicMessages,
+                                registry,
+                            )
+                            .revision
+                            .is_some()
+                        })
+                })
+            && config
+                .find_optical_route_policy(&route.id)
+                .is_some_and(|policy| {
+                    policy.enabled
+                        && policy.mode == OpticalMode::ToolResultsOnly
+                        && policy.allow_tool_result
+                        && policy.confirmed_experimental_lossy
+                })
+    }).count()
 }
 
 async fn optical_capability_lifecycle(
     State(state): State<AppState>,
 ) -> Json<OpticalCapabilityLifecyclePublicSummary> {
     let snapshots = &state.config.optical.capability_snapshots;
-    let registry =
-        dtoken_compress::optical::OpticalCapabilityRegistry::from_snapshots(snapshots.clone());
+    let registry = dtoken_compress::optical::OpticalCapabilityRegistry::from_runtime_config(
+        &state.config.optical,
+        dtoken_event_ledger::now_ms(),
+    );
     Json(OpticalCapabilityLifecyclePublicSummary {
         schema_version: 1,
         configured_snapshots: snapshots.len(),
@@ -601,6 +698,16 @@ async fn optical_capability_lifecycle(
         superseded_snapshots: registry.superseded_rule_count(),
         verified_rules: registry.verified_rule_count(),
         rejected_rules: registry.rejected_rule_count(),
+        trusted_authorities: state.config.optical.trusted_authorities.len(),
+        eval_artifacts: state.config.optical.eval_artifacts.len(),
+        passing_eval_artifacts: state
+            .config
+            .optical
+            .eval_artifacts
+            .iter()
+            .filter(|artifact| artifact.passed)
+            .count(),
+        attestation_required: true,
     })
 }
 
@@ -655,7 +762,18 @@ async fn optical_recent_events(
         state
             .recent_events(200)
             .into_iter()
-            .filter(|event| event.stage == LayeredStage::OpticalPreview)
+            .filter(|event| {
+                matches!(
+                    &event.stage,
+                    LayeredStage::OpticalPreview
+                        | LayeredStage::OpticalPlan
+                        | LayeredStage::OpticalRender
+                        | LayeredStage::OpticalPatch
+                        | LayeredStage::OpticalValidate
+                        | LayeredStage::OpticalFallback
+                        | LayeredStage::OpticalComplete
+                )
+            })
             .map(optical_event_public_summary)
             .collect(),
     )
@@ -663,32 +781,109 @@ async fn optical_recent_events(
 
 fn optical_event_public_summary(event: DtokenEvent) -> OpticalEventPublicSummary {
     let metadata = &event.metadata;
-    let final_status = metadata
+    let stored_kind = metadata
+        .get("kind")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let kind = match &event.stage {
+        LayeredStage::OpticalPreview => "optical_preview",
+        LayeredStage::OpticalPlan => "optical_plan",
+        LayeredStage::OpticalRender => "optical_render",
+        LayeredStage::OpticalPatch => "optical_patch",
+        LayeredStage::OpticalValidate => "optical_validate",
+        LayeredStage::OpticalFallback => "optical_fallback",
+        LayeredStage::OpticalComplete => "optical_complete",
+        _ => "optical_runtime",
+    }
+    .to_string();
+    let claimed_status = metadata
         .get("final_status")
         .cloned()
-        .and_then(|value| serde_json::from_value::<OpticalPlanStatus>(value).ok())
-        .map(|status| match status {
-            OpticalPlanStatus::ValidatedActivePlan => OpticalPlanStatus::FailedClosed,
-            other => other,
-        })
-        .unwrap_or(OpticalPlanStatus::Disabled);
+        .and_then(|value| serde_json::from_value::<OpticalPlanStatus>(value).ok());
+    let active_completion = stored_kind == "active"
+        && event.status == EventStatus::Ok
+        && matches!(
+            &event.stage,
+            LayeredStage::OpticalValidate | LayeredStage::OpticalComplete
+        );
+    let preview_claim_is_valid = !matches!(&event.stage, LayeredStage::OpticalPreview)
+        || (stored_kind == "optical_preview"
+            && !matches!(
+                claimed_status.as_ref(),
+                Some(OpticalPlanStatus::ValidatedActivePlan)
+            ));
+    let final_status = if !preview_claim_is_valid || event.status == EventStatus::Failed {
+        OpticalPlanStatus::FailedClosed
+    } else if active_completion {
+        OpticalPlanStatus::ValidatedActivePlan
+    } else if matches!(
+        claimed_status.as_ref(),
+        Some(OpticalPlanStatus::ValidatedShadowPlan)
+    ) || (stored_kind == "shadow" && event.status != EventStatus::Failed)
+    {
+        OpticalPlanStatus::ValidatedShadowPlan
+    } else {
+        match event.status {
+            EventStatus::Disabled => OpticalPlanStatus::Disabled,
+            EventStatus::Skipped => OpticalPlanStatus::Ineligible,
+            _ => OpticalPlanStatus::Disabled,
+        }
+    };
     let mut public_metadata = OpticalEventMetadataPublicSummary {
-        kind: "optical_preview".to_string(),
+        kind,
         final_status,
-        mode: OpticalMode::ShadowPreview,
+        mode: if active_completion {
+            OpticalMode::ToolResultsOnly
+        } else {
+            OpticalMode::ShadowPreview
+        },
         raw_available: false,
         ..Default::default()
     };
-    public_metadata.candidate_blocks = metadata_usize(metadata, "candidate_blocks");
+    public_metadata.candidate_blocks = metadata_usize(metadata, "candidate_blocks")
+        .max(metadata_usize(metadata, "candidate_count"));
     public_metadata.preserved_blocks = metadata_usize(metadata, "preserved_blocks");
     public_metadata.skipped_blocks = metadata_usize(metadata, "skipped_blocks");
-    public_metadata.estimated_images = metadata_usize(metadata, "estimated_images");
+    public_metadata.estimated_images =
+        metadata_usize(metadata, "estimated_images").max(metadata_usize(metadata, "image_count"));
+    public_metadata.patched_blocks = metadata_usize(metadata, "patched_count");
+    public_metadata.png_bytes = metadata
+        .get("png_bytes")
+        .and_then(Value::as_u64)
+        .unwrap_or_default();
+    public_metadata.encoded_image_bytes = metadata
+        .get("encoded_image_bytes")
+        .and_then(Value::as_u64)
+        .unwrap_or_default();
+    public_metadata.reason_code = metadata
+        .get("reason_code")
+        .and_then(Value::as_str)
+        .map(ToString::to_string);
+    public_metadata.artifact_validated = metadata
+        .get("artifact_validated")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    public_metadata.attribution_basis = event
+        .context_accounting
+        .as_ref()
+        .map(|accounting| accounting.attribution_basis);
+    public_metadata.upstream_state = event
+        .context_accounting
+        .as_ref()
+        .map(|accounting| accounting.upstream_state);
     public_metadata.net_saved_tokens = metadata
         .get("economics")
         .and_then(|economics| economics.get("net_saved_tokens"))
         .and_then(Value::as_i64)
         .and_then(|value| isize::try_from(value).ok())
         .unwrap_or_default();
+    if public_metadata.net_saved_tokens == 0 {
+        public_metadata.net_saved_tokens = metadata
+            .get("estimated_signed_input_savings")
+            .and_then(Value::as_i64)
+            .and_then(|value| isize::try_from(value).ok())
+            .unwrap_or_default();
+    }
     public_metadata.graph_nodes = metadata_usize(metadata, "graph_nodes");
     public_metadata.graph_edges = metadata_usize(metadata, "graph_edges");
     public_metadata.tool_dependency_edges = metadata_usize(metadata, "tool_dependency_edges");
@@ -960,6 +1155,7 @@ struct UpstreamResult {
     response: Value,
     status: Option<u16>,
     error_category: Option<String>,
+    send_state: UpstreamSendState,
 }
 
 #[derive(Debug, Clone)]
@@ -971,12 +1167,14 @@ struct CompressionSummary {
     elapsed_us: u128,
     transforms_applied: Vec<String>,
     body: Value,
+    context_accounting: Option<dtoken_types::HybridContextAccounting>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RouteAdapterKind {
     OpenAiChatPassthrough,
     OpenAiResponsesToChat,
+    AnthropicMessagesPassthrough,
     AnthropicMessagesToOpenAiChat,
 }
 
@@ -1013,6 +1211,16 @@ impl RouteAdapterKind {
                     endpoint: OpticalEndpoint::OpenAiChatCompletions,
                 },
             ),
+            Self::AnthropicMessagesPassthrough => (
+                OptimizationSurface {
+                    protocol: Protocol::Anthropic,
+                    endpoint: OpticalEndpoint::AnthropicMessages,
+                },
+                OptimizationSurface {
+                    protocol: Protocol::Anthropic,
+                    endpoint: OpticalEndpoint::AnthropicMessages,
+                },
+            ),
         }
     }
 }
@@ -1026,6 +1234,7 @@ struct OptimizationSurface {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum OpticalExecutionDisposition {
     Disabled,
+    RouteResolved,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1053,6 +1262,7 @@ enum ContextResolutionError {
     ProviderUpstreamProtocolMismatch,
     MissingRequestedModel,
     MissingEffectiveModel,
+    EffectiveModelNotAllowed,
 }
 
 fn resolve_optimization_context(
@@ -1096,6 +1306,14 @@ fn resolve_optimization_context(
         .filter(|value| !value.trim().is_empty())
         .ok_or(ContextResolutionError::MissingEffectiveModel)?
         .to_string();
+    if !provider.models.is_empty()
+        && !provider
+            .models
+            .iter()
+            .any(|configured| configured == &effective_model)
+    {
+        return Err(ContextResolutionError::EffectiveModelNotAllowed);
+    }
 
     let compression_context = ResolvedOptimizationContext {
         route_id: decision.route_id.clone(),
@@ -1116,7 +1334,11 @@ fn resolve_optimization_context(
         upstream,
         requested_model,
         effective_model,
-        optical_disposition: OpticalExecutionDisposition::Disabled,
+        optical_disposition: if adapter == RouteAdapterKind::AnthropicMessagesPassthrough {
+            OpticalExecutionDisposition::RouteResolved
+        } else {
+            OpticalExecutionDisposition::Disabled
+        },
         compression_context,
     })
 }
@@ -1129,6 +1351,7 @@ struct RoutedBridgePayload {
     event: DtokenEvent,
     compression: CompressionSummary,
     provider: dtoken_types::ProviderProfile,
+    optimization_context: Option<ResolvedRouteOptimizationContext>,
 }
 
 fn compress_for_route(
@@ -1152,6 +1375,7 @@ fn compress_for_route(
             elapsed_us: 1,
             transforms_applied: vec!["compression_error_fallback".to_string()],
             body,
+            context_accounting: None,
         });
     let savings_percent = if result.original_tokens == 0 {
         0.0
@@ -1167,6 +1391,96 @@ fn compress_for_route(
         elapsed_us: result.elapsed_us,
         transforms_applied: result.transforms_applied,
         body: result.body,
+        context_accounting: result.context_accounting,
+    }
+}
+
+fn compression_inventory_diagnostics(
+    context: &dtoken_compress::ResolvedOptimizationContext,
+    body: &Value,
+) -> Value {
+    let role_sequence = body
+        .get("messages")
+        .and_then(Value::as_array)
+        .map(|messages| {
+            messages
+                .iter()
+                .map(|message| {
+                    message
+                        .get("role")
+                        .and_then(Value::as_str)
+                        .unwrap_or("unknown")
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let content_kinds = body
+        .get("messages")
+        .and_then(Value::as_array)
+        .map(|messages| {
+            messages
+                .iter()
+                .map(|message| json_value_kind(message.get("content").unwrap_or(&Value::Null)))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+
+    let Some(inventory) = dtoken_compress::lower_hybrid_context(context, body) else {
+        return json!({
+            "state": "unsupported_context",
+            "role_sequence": role_sequence,
+            "content_kinds": content_kinds,
+            "raw_available": false
+        });
+    };
+    let tool_nodes = inventory
+        .nodes()
+        .iter()
+        .filter(|node| {
+            matches!(
+                node.kind(),
+                dtoken_compress::HybridNodeKind::ToolUse
+                    | dtoken_compress::HybridNodeKind::ToolResult
+            )
+        })
+        .map(|node| {
+            let digest = node
+                .tool_correlation_digest()
+                .map(|value| value.chars().take(12).collect::<String>());
+            json!({
+                "kind": format!("{:?}", node.kind()),
+                "role": format!("{:?}", node.role()),
+                "turn_index": node.turn_index(),
+                "recent": node
+                    .turn_index()
+                    .is_some_and(|turn| turn >= inventory.recent_tail_start()),
+                "correlation_digest": digest,
+                "protection": format!("{:?}", node.protection()),
+                "reason": format!("{:?}", node.reason())
+            })
+        })
+        .collect::<Vec<_>>();
+    json!({
+        "state": "resolved",
+        "message_count": role_sequence.len(),
+        "role_sequence": role_sequence,
+        "content_kinds": content_kinds,
+        "current_user_turn": inventory.current_user_turn(),
+        "recent_tail_start": inventory.recent_tail_start(),
+        "tool_nodes": tool_nodes,
+        "approved_target_count": inventory.approved_text_targets().len(),
+        "raw_available": false
+    })
+}
+
+fn json_value_kind(value: &Value) -> &'static str {
+    match value {
+        Value::Null => "null",
+        Value::Bool(_) => "boolean",
+        Value::Number(_) => "number",
+        Value::String(_) => "string",
+        Value::Array(_) => "array",
+        Value::Object(_) => "object",
     }
 }
 
@@ -1184,6 +1498,8 @@ fn build_route_decision(request_id: Uuid, model: Option<&str>) -> RouteDecision 
         compression_policy: CompressionPolicy::Balanced,
         reason: "OpenAI-compatible request entered d-token local service; fallback disabled"
             .to_string(),
+        input_protocol: Some(Protocol::OpenAi),
+        output_protocol: Some(Protocol::OpenAi),
     }
 }
 
@@ -1192,6 +1508,7 @@ enum RouteSelectionError {
     NotConfigured,
     Ambiguous,
     EvidenceConflict,
+    InvalidOptimizationContext,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -1285,6 +1602,8 @@ fn build_configured_route_decision(
         chain_mode: route.chain_mode.clone(),
         compression_policy: route.compression_policy.clone(),
         reason: "matched one explicit configured route; fallback disabled".to_string(),
+        input_protocol: Some(route.input_protocol.clone()),
+        output_protocol: Some(provider.protocol.clone()),
     }
 }
 
@@ -1296,8 +1615,8 @@ fn route_decision_to_value(decision: &RouteDecision) -> Value {
         "chain_mode": decision.chain_mode,
         "compression_policy": decision.compression_policy,
         "reason": decision.reason,
-        "input_protocol": "openai",
-        "output_protocol": "openai",
+        "input_protocol": decision.input_protocol.as_ref().map(protocol_label),
+        "output_protocol": decision.output_protocol.as_ref().map(protocol_label),
         "fallback": "disabled",
     })
 }
@@ -1321,12 +1640,17 @@ fn build_request_log(
         model,
         input_tokens_before: Some(compression.original_tokens as usize),
         input_tokens_after: Some(compression.compressed_tokens as usize),
-        output_tokens: Some(4),
-        tokens_saved: Some(compression.tokens_saved as usize),
+        output_tokens: None,
+        tokens_saved: Some(if compression.context_accounting.is_some() {
+            0
+        } else {
+            compression.tokens_saved as usize
+        }),
         transforms_applied: compression.transforms_applied.clone(),
         latency_ms: Some((compression.elapsed_us / 1000).max(1) as u64),
         error: None,
         config_source: Some("dtoken-owned-runtime".to_string()),
+        context_accounting: compression.context_accounting.clone(),
     }
 }
 
@@ -1347,10 +1671,14 @@ fn build_ledger_event(
         request_id: Some(request_id),
         stage: LayeredStage::RouteForward,
         source: EventSource::Dtoken,
-        status: EventStatus::Ok,
+        status: EventStatus::Passthrough,
         input_tokens: Some(compression.original_tokens),
-        output_tokens: Some(compression.compressed_tokens),
-        saved_tokens: Some(compression.tokens_saved),
+        output_tokens: None,
+        saved_tokens: Some(if compression.context_accounting.is_some() {
+            0
+        } else {
+            compression.tokens_saved
+        }),
         baseline_kind: Some(BaselineKind::HeadroomInput),
         error_code: None,
         metadata: json!({
@@ -1364,6 +1692,7 @@ fn build_ledger_event(
             "transforms_applied": compression.transforms_applied,
             "privacy": "aggregate only; prompt and response bodies are not stored"
         }),
+        context_accounting: compression.context_accounting.clone(),
     }
 }
 
@@ -1432,6 +1761,17 @@ fn upstream_chat_url(base_url: &str) -> String {
     }
 }
 
+fn upstream_anthropic_messages_url(base_url: &str) -> String {
+    let trimmed = base_url.trim_end_matches('/');
+    if trimmed.ends_with("/v1/messages") {
+        trimmed.to_string()
+    } else if trimmed.ends_with("/v1") {
+        format!("{trimmed}/messages")
+    } else {
+        format!("{trimmed}/v1/messages")
+    }
+}
+
 fn credential_target_from_reference(reference: &str) -> Result<(String, String), String> {
     let parsed = url::Url::parse(reference)
         .map_err(|_| "credential reference is not a valid opaque URL".to_string())?;
@@ -1479,6 +1819,7 @@ fn credential_error_result(error_type: &str, message: &str) -> UpstreamResult {
         }),
         status: None,
         error_category: Some(error_type.to_string()),
+        send_state: UpstreamSendState::NotAttempted,
     }
 }
 
@@ -1513,6 +1854,16 @@ async fn resolve_provider_credential(
 
 fn provider_authorization_header(credential: &str) -> Result<reqwest::header::HeaderValue, ()> {
     reqwest::header::HeaderValue::from_str(&format!("Bearer {credential}")).map_err(|_| ())
+}
+
+fn classify_send_failure(error: &reqwest::Error) -> UpstreamSendState {
+    if error.is_builder() || error.is_connect() {
+        UpstreamSendState::FailedBeforeCommit
+    } else {
+        // Once reqwest cannot prove the request failed before connection/write, d-token
+        // conservatively treats it as post-commit and never retries the baseline.
+        UpstreamSendState::FailedAfterCommit
+    }
 }
 
 fn classify_upstream_status(status: StatusCode) -> &'static str {
@@ -1557,12 +1908,142 @@ fn mark_upstream_outcome(
     request_log: &mut RequestLog,
     event: &mut DtokenEvent,
 ) {
+    let provider_usage = provider_usage_measurement(&upstream.response);
+    let output_tokens = provider_usage
+        .as_ref()
+        .and_then(|measurement| measurement.usage.output_tokens)
+        .and_then(|tokens| usize::try_from(tokens).ok());
+
+    if let Some(accounting) = request_log.context_accounting.as_mut() {
+        accounting.upstream_state = upstream.send_state;
+        if accounting.disposition == dtoken_types::OptimizationDisposition::FallbackPreSend
+            && matches!(
+                upstream.send_state,
+                UpstreamSendState::SendCommitted
+                    | UpstreamSendState::ResponseStarted
+                    | UpstreamSendState::StreamStarted
+                    | UpstreamSendState::Completed
+                    | UpstreamSendState::FailedAfterCommit
+            )
+        {
+            accounting.disposition = dtoken_types::OptimizationDisposition::FallbackOriginalSent;
+        }
+        accounting.provider_actual_sent.measurement = provider_usage.clone();
+        if upstream.error_category.is_none()
+            && upstream.send_state == UpstreamSendState::Completed
+            && matches!(
+                accounting.disposition,
+                dtoken_types::OptimizationDisposition::Active
+                    | dtoken_types::OptimizationDisposition::SemanticActive
+            )
+            && accounting.estimated.is_some()
+        {
+            accounting.attribution_basis = dtoken_types::SavingsAttribution::EstimatedActive;
+        } else {
+            accounting.attribution_basis = dtoken_types::SavingsAttribution::None;
+        }
+        request_log.tokens_saved =
+            Some(usize::try_from(accounting.legacy_positive_tokens_saved()).unwrap_or(usize::MAX));
+    }
+    event.context_accounting = request_log.context_accounting.clone();
+
     if let Some(category) = upstream.error_category.as_ref() {
         request_log.error = Some(category.clone());
         request_log.output_tokens = Some(0);
         event.status = EventStatus::Failed;
         event.error_code = Some(category.clone());
+        event.saved_tokens = Some(0);
+    } else {
+        request_log.output_tokens = output_tokens;
+        event.status = EventStatus::Ok;
+        event.output_tokens = output_tokens.and_then(|tokens| u64::try_from(tokens).ok());
+        if let Some(measurement) = provider_usage {
+            event.input_tokens = measurement.usage.input.normalized_total;
+        }
+        event.saved_tokens = request_log
+            .context_accounting
+            .as_ref()
+            .map(HybridContextAccountingExt::positive_saved_tokens)
+            .or_else(|| {
+                request_log
+                    .tokens_saved
+                    .and_then(|tokens| u64::try_from(tokens).ok())
+            });
     }
+}
+
+trait HybridContextAccountingExt {
+    fn positive_saved_tokens(&self) -> u64;
+}
+
+impl HybridContextAccountingExt for dtoken_types::HybridContextAccounting {
+    fn positive_saved_tokens(&self) -> u64 {
+        self.legacy_positive_tokens_saved()
+    }
+}
+
+fn provider_usage_measurement(response: &Value) -> Option<UsageMeasurement> {
+    let usage = response.get("usage")?;
+    let openai_input = usage.get("prompt_tokens").and_then(Value::as_u64);
+    let anthropic_uncached = usage.get("input_tokens").and_then(Value::as_u64);
+    let cache_read = usage
+        .get("cache_read_input_tokens")
+        .and_then(Value::as_u64)
+        .or_else(|| {
+            usage
+                .pointer("/prompt_tokens_details/cached_tokens")
+                .and_then(Value::as_u64)
+        });
+    let cache_creation = usage
+        .get("cache_creation_input_tokens")
+        .and_then(Value::as_u64);
+    let cache_creation_5m = usage
+        .pointer("/cache_creation/ephemeral_5m_input_tokens")
+        .and_then(Value::as_u64);
+    let cache_creation_1h = usage
+        .pointer("/cache_creation/ephemeral_1h_input_tokens")
+        .and_then(Value::as_u64);
+    let normalized_total = openai_input.or_else(|| {
+        anthropic_uncached.map(|uncached| {
+            uncached
+                .saturating_add(cache_read.unwrap_or_default())
+                .saturating_add(cache_creation.unwrap_or_default())
+        })
+    });
+    let output_tokens = usage
+        .get("completion_tokens")
+        .and_then(Value::as_u64)
+        .or_else(|| usage.get("output_tokens").and_then(Value::as_u64));
+    if normalized_total.is_none() && output_tokens.is_none() {
+        return None;
+    }
+    Some(UsageMeasurement {
+        evidence: UsageEvidence {
+            kind: UsageEvidenceKind::ProviderActual,
+            source_revision: "provider-response-usage-v1".to_string(),
+        },
+        usage: UsageVector {
+            input: InputTokenUsage {
+                normalized_total,
+                modality: ModalityTokens {
+                    text: openai_input.or(anthropic_uncached),
+                    vision: None,
+                    other: None,
+                },
+                cache: CacheTokens {
+                    uncached: anthropic_uncached.or(openai_input
+                        .map(|tokens| tokens.saturating_sub(cache_read.unwrap_or_default()))),
+                    read: cache_read,
+                    creation: cache_creation,
+                    creation_5m: cache_creation_5m,
+                    creation_1h: cache_creation_1h,
+                },
+            },
+            output_tokens,
+            bytes: PayloadByteUsage::default(),
+            cost_microusd: None,
+        },
+    })
 }
 
 fn require_openai_message(upstream: UpstreamResult, adapter: &str) -> UpstreamResult {
@@ -1589,6 +2070,31 @@ fn require_openai_message(upstream: UpstreamResult, adapter: &str) -> UpstreamRe
         }),
         status: upstream.status,
         error_category: Some("provider_invalid_response".to_string()),
+        send_state: upstream.send_state,
+    }
+}
+
+fn require_anthropic_message(upstream: UpstreamResult) -> UpstreamResult {
+    let valid = upstream.response.get("type").and_then(Value::as_str) == Some("message")
+        && upstream
+            .response
+            .get("content")
+            .and_then(Value::as_array)
+            .is_some();
+    if upstream.error_category.is_some() || valid {
+        return upstream;
+    }
+    UpstreamResult {
+        response: json!({
+            "error": {
+                "type": "provider_invalid_response",
+                "message": "configured Anthropic upstream returned success without a valid message content array",
+                "upstream_status": upstream.status
+            }
+        }),
+        status: upstream.status,
+        error_category: Some("provider_invalid_response".to_string()),
+        send_state: upstream.send_state,
     }
 }
 
@@ -1627,6 +2133,7 @@ async fn forward_openai_chat(
                     response: value,
                     status: Some(status_code),
                     error_category: None,
+                    send_state: UpstreamSendState::Completed,
                 },
                 Ok(value) => UpstreamResult {
                     response: json!({
@@ -1639,6 +2146,7 @@ async fn forward_openai_chat(
                     }),
                     status: Some(status_code),
                     error_category: Some(classify_upstream_status(status).to_string()),
+                    send_state: UpstreamSendState::Completed,
                 },
                 Err(err) => UpstreamResult {
                     response: json!({
@@ -1650,6 +2158,7 @@ async fn forward_openai_chat(
                     }),
                     status: Some(status_code),
                     error_category: Some("provider_invalid_json".to_string()),
+                    send_state: UpstreamSendState::Completed,
                 },
             }
         }
@@ -1668,6 +2177,7 @@ async fn forward_openai_chat(
                 }),
                 status: None,
                 error_category: Some(category.to_string()),
+                send_state: classify_send_failure(&err),
             }
         }
     }
@@ -1724,6 +2234,7 @@ async fn forward_openai_chat_stream(
                     }),
                     status: Some(status_code),
                     error_category: Some(classify_upstream_status(status).to_string()),
+                    send_state: UpstreamSendState::Completed,
                 });
             }
             let stream = response.bytes_stream().map_err(std::io::Error::other);
@@ -1760,6 +2271,214 @@ async fn forward_openai_chat_stream(
                 }),
                 status: None,
                 error_category: Some(category.to_string()),
+                send_state: classify_send_failure(&err),
+            })
+        }
+    }
+}
+
+fn anthropic_header_value(
+    inbound: &HeaderMap,
+    name: &'static str,
+    fallback: Option<&'static str>,
+) -> Option<reqwest::header::HeaderValue> {
+    inbound
+        .get(name)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| reqwest::header::HeaderValue::from_str(value).ok())
+        .or_else(|| fallback.map(reqwest::header::HeaderValue::from_static))
+}
+
+async fn forward_anthropic_messages(
+    client: &reqwest::Client,
+    provider: &dtoken_types::ProviderProfile,
+    body: Value,
+    raw_body: Option<&[u8]>,
+    inbound_headers: &HeaderMap,
+) -> UpstreamResult {
+    let credential = match resolve_provider_credential(provider).await {
+        Ok(credential) => credential,
+        Err(error) => return error,
+    };
+    let url = upstream_anthropic_messages_url(&provider.base_url);
+    let request = client
+        .post(url)
+        .timeout(std::time::Duration::from_millis(provider.timeout_ms.max(1)));
+    let mut request = if let Some(raw_body) = raw_body {
+        request
+            .header(reqwest::header::CONTENT_TYPE, "application/json")
+            .body(raw_body.to_vec())
+    } else {
+        request.json(&body)
+    };
+    if let Some(version) =
+        anthropic_header_value(inbound_headers, "anthropic-version", Some("2023-06-01"))
+    {
+        request = request.header("anthropic-version", version);
+    }
+    if let Some(beta) = anthropic_header_value(inbound_headers, "anthropic-beta", None) {
+        request = request.header("anthropic-beta", beta);
+    }
+    if let Some(credential) = credential.as_deref() {
+        let header = match reqwest::header::HeaderValue::from_str(credential) {
+            Ok(header) => header,
+            Err(_) => {
+                return credential_error_result(
+                    "provider_credential_invalid",
+                    "configured provider credential cannot be used as an Anthropic API key",
+                )
+            }
+        };
+        request = request.header("x-api-key", header);
+    }
+
+    match request.send().await {
+        Ok(response) => {
+            let status = response.status();
+            let status_code = status.as_u16();
+            match response.json::<Value>().await {
+                Ok(value) if status.is_success() => UpstreamResult {
+                    response: value,
+                    status: Some(status_code),
+                    error_category: None,
+                    send_state: UpstreamSendState::Completed,
+                },
+                Ok(value) => UpstreamResult {
+                    response: json!({
+                        "error": {
+                            "type": classify_upstream_status(status),
+                            "message": "configured Anthropic upstream returned an error",
+                            "upstream_status": status_code,
+                            "upstream_body": value
+                        }
+                    }),
+                    status: Some(status_code),
+                    error_category: Some(classify_upstream_status(status).to_string()),
+                    send_state: UpstreamSendState::Completed,
+                },
+                Err(_) => UpstreamResult {
+                    response: json!({
+                        "error": {
+                            "type": "provider_invalid_json",
+                            "message": "configured Anthropic upstream returned invalid JSON",
+                            "upstream_status": status_code
+                        }
+                    }),
+                    status: Some(status_code),
+                    error_category: Some("provider_invalid_json".to_string()),
+                    send_state: UpstreamSendState::Completed,
+                },
+            }
+        }
+        Err(error) => {
+            let category = if error.is_timeout() {
+                "provider_timeout"
+            } else {
+                "provider_network"
+            };
+            UpstreamResult {
+                response: json!({
+                    "error": {
+                        "type": category,
+                        "message": "configured Anthropic upstream request failed"
+                    }
+                }),
+                status: None,
+                error_category: Some(category.to_string()),
+                send_state: classify_send_failure(&error),
+            }
+        }
+    }
+}
+
+async fn forward_anthropic_messages_stream(
+    client: &reqwest::Client,
+    provider: &dtoken_types::ProviderProfile,
+    body: Value,
+    raw_body: Option<&[u8]>,
+    inbound_headers: &HeaderMap,
+) -> Result<(u16, axum::http::HeaderMap, Body), UpstreamResult> {
+    let credential = resolve_provider_credential(provider).await?;
+    let url = upstream_anthropic_messages_url(&provider.base_url);
+    let request = client
+        .post(url)
+        .timeout(std::time::Duration::from_millis(provider.timeout_ms.max(1)));
+    let mut request = if let Some(raw_body) = raw_body {
+        request
+            .header(reqwest::header::CONTENT_TYPE, "application/json")
+            .body(raw_body.to_vec())
+    } else {
+        request.json(&body)
+    };
+    if let Some(version) =
+        anthropic_header_value(inbound_headers, "anthropic-version", Some("2023-06-01"))
+    {
+        request = request.header("anthropic-version", version);
+    }
+    if let Some(beta) = anthropic_header_value(inbound_headers, "anthropic-beta", None) {
+        request = request.header("anthropic-beta", beta);
+    }
+    if let Some(credential) = credential.as_deref() {
+        let header = reqwest::header::HeaderValue::from_str(credential).map_err(|_| {
+            credential_error_result(
+                "provider_credential_invalid",
+                "configured provider credential cannot be used as an Anthropic API key",
+            )
+        })?;
+        request = request.header("x-api-key", header);
+    }
+    match request.send().await {
+        Ok(response) => {
+            let status = response.status();
+            let status_code = status.as_u16();
+            if !status.is_success() {
+                let value = response.json::<Value>().await.unwrap_or_else(|_| json!({}));
+                return Err(UpstreamResult {
+                    response: json!({
+                        "error": {
+                            "type": classify_upstream_status(status),
+                            "message": "configured Anthropic upstream returned an error",
+                            "upstream_status": status_code,
+                            "upstream_body": value
+                        }
+                    }),
+                    status: Some(status_code),
+                    error_category: Some(classify_upstream_status(status).to_string()),
+                    send_state: UpstreamSendState::Completed,
+                });
+            }
+            let content_type = response
+                .headers()
+                .get(reqwest::header::CONTENT_TYPE)
+                .and_then(|value| value.to_str().ok())
+                .unwrap_or("text/event-stream")
+                .to_string();
+            let stream = response.bytes_stream().map_err(std::io::Error::other);
+            let mut headers = axum::http::HeaderMap::new();
+            headers.insert(
+                CONTENT_TYPE,
+                axum::http::HeaderValue::from_str(&content_type)
+                    .unwrap_or_else(|_| axum::http::HeaderValue::from_static("text/event-stream")),
+            );
+            headers.insert(
+                CACHE_CONTROL,
+                axum::http::HeaderValue::from_static("no-cache"),
+            );
+            Ok((status_code, headers, Body::from_stream(stream)))
+        }
+        Err(error) => {
+            let category = if error.is_timeout() {
+                "provider_timeout"
+            } else {
+                "provider_network"
+            };
+            Err(UpstreamResult {
+                response: json!({
+                    "error": {"type": category, "message": "Anthropic streaming request failed"}
+                }),
+                status: None,
+                error_category: Some(category.to_string()),
+                send_state: classify_send_failure(&error),
             })
         }
     }
@@ -2002,21 +2721,27 @@ fn anthropic_route_payload(
     let (route, provider) = configured_route(&state.config, Protocol::Anthropic, evidence)?;
     let request_id = Uuid::new_v4();
     let decision = build_configured_route_decision(request_id, route, provider);
-    let openai_body = anthropic_to_openai_body(&body, provider);
-    let optimization_context = resolve_optimization_context(
-        &decision,
-        route,
-        provider,
-        RouteAdapterKind::AnthropicMessagesToOpenAiChat,
-        &body,
-        &openai_body,
-    )
-    .ok();
-    let compression = compress_for_route(
-        optimization_context.as_ref(),
-        decision.compression_policy.clone(),
-        openai_body,
-    );
+    let (upstream_body, adapter) = match provider.protocol {
+        Protocol::Anthropic => (body.clone(), RouteAdapterKind::AnthropicMessagesPassthrough),
+        Protocol::OpenAi => (
+            anthropic_to_openai_body(&body, provider),
+            RouteAdapterKind::AnthropicMessagesToOpenAiChat,
+        ),
+    };
+    let optimization_context =
+        resolve_optimization_context(&decision, route, provider, adapter, &body, &upstream_body)
+            .map_err(|_| RouteSelectionError::InvalidOptimizationContext)?;
+    let compression = if provider.protocol == Protocol::Anthropic {
+        // Direct Anthropic routes are planned by HybridContextEngine in the handler.
+        // Keeping this preliminary body untouched prevents semantic+optical stacking.
+        compress_for_route(None, CompressionPolicy::Off, upstream_body)
+    } else {
+        compress_for_route(
+            Some(&optimization_context),
+            decision.compression_policy.clone(),
+            upstream_body,
+        )
+    };
     let request_log = build_request_log(
         request_id,
         &decision,
@@ -2040,7 +2765,248 @@ fn anthropic_route_payload(
         event,
         compression,
         provider: provider.clone(),
+        optimization_context: Some(optimization_context),
     })
+}
+
+async fn prepare_direct_anthropic_hybrid(
+    state: &AppState,
+    payload: &RoutedBridgePayload,
+    raw_body: Vec<u8>,
+) -> Option<PreparedHybridRequest> {
+    if payload.provider.protocol != Protocol::Anthropic {
+        return None;
+    }
+    let context = payload
+        .optimization_context
+        .as_ref()?
+        .compression_context
+        .clone();
+    let global = state.config.optical.global_policy.clone();
+    let route = state
+        .config
+        .find_optical_route_policy(&payload.decision.route_id)
+        .cloned()
+        .unwrap_or_default();
+    let registry = OpticalCapabilityRegistry::from_runtime_config(
+        &state.config.optical,
+        dtoken_event_ledger::now_ms(),
+    );
+    let engine = state.hybrid_engine.clone();
+    let request_id = payload.decision.request_id.to_string();
+    let compression_policy = payload.decision.compression_policy.clone();
+    let body = payload.upstream_body.clone();
+    let cancellation = RenderCancellation::default();
+    let worker_cancellation = cancellation.clone();
+    let mut cancel_guard = RenderCancelGuard(Some(cancellation));
+    let result = tokio::task::spawn_blocking(move || {
+        engine.prepare(
+            &request_id,
+            &context,
+            compression_policy,
+            body,
+            Some(&raw_body),
+            &global,
+            &route,
+            &registry,
+            &worker_cancellation,
+        )
+    })
+    .await
+    .ok();
+    cancel_guard.0.take();
+    result
+}
+
+struct RenderCancelGuard(Option<RenderCancellation>);
+
+impl Drop for RenderCancelGuard {
+    fn drop(&mut self) {
+        if let Some(cancellation) = self.0.take() {
+            cancellation.cancel();
+        }
+    }
+}
+
+fn record_hybrid_pre_send_stages(
+    state: &AppState,
+    request_id: Uuid,
+    prepared: &PreparedHybridRequest,
+) -> anyhow::Result<()> {
+    let report = prepared.report();
+    let common = || {
+        json!({
+            "kind": hybrid_kind_label(report.kind),
+            "reason_code": report.reason_code,
+            "candidate_count": report.candidate_count,
+            "patched_count": report.patched_count,
+            "image_count": report.image_count,
+            "source_chars": report.source_chars,
+            "png_bytes": report.png_bytes,
+            "encoded_image_bytes": report.base64_bytes,
+            "estimated_text_tokens_before": report.estimated_text_tokens_before,
+            "estimated_input_tokens_after": report.estimated_input_tokens_after,
+            "estimated_signed_input_savings": report.estimated_signed_input_savings,
+            "capability_revision_present": report.capability_revision.is_some(),
+            "renderer_profile_bound": report.profile_digest.is_some(),
+            "font_profile_bound": report.font_digest.is_some(),
+            "frozen_capsules": report.capsule_digests.len(),
+            "artifact_validated": report.artifact_validated,
+            "raw_available": false,
+            "raw_ingress_observed": report.raw_available,
+            "privacy": "metadata only; prompt, rendered text, PNG and base64 are not persisted"
+        })
+    };
+    match prepared.kind() {
+        HybridPreparationKind::Active => {
+            try_append_stage_event(
+                state,
+                request_id,
+                LayeredStage::OpticalPlan,
+                EventStatus::Ok,
+                common(),
+                None,
+            )?;
+            try_append_stage_event(
+                state,
+                request_id,
+                LayeredStage::OpticalRender,
+                EventStatus::Ok,
+                common(),
+                None,
+            )?;
+            try_append_stage_event(
+                state,
+                request_id,
+                LayeredStage::OpticalPatch,
+                EventStatus::Ok,
+                common(),
+                None,
+            )?;
+            try_append_stage_event(
+                state,
+                request_id,
+                LayeredStage::OpticalValidate,
+                EventStatus::Ok,
+                common(),
+                None,
+            )?;
+        }
+        HybridPreparationKind::Shadow => try_append_stage_event(
+            state,
+            request_id,
+            LayeredStage::OpticalPlan,
+            EventStatus::Passthrough,
+            common(),
+            None,
+        )?,
+        HybridPreparationKind::Semantic => try_append_stage_event(
+            state,
+            request_id,
+            LayeredStage::HeadroomCompress,
+            EventStatus::Ok,
+            common(),
+            None,
+        )?,
+        HybridPreparationKind::FallbackPreSend => try_append_stage_event(
+            state,
+            request_id,
+            LayeredStage::OpticalFallback,
+            EventStatus::Failed,
+            common(),
+            Some(&report.reason_code),
+        )?,
+        HybridPreparationKind::Passthrough => {}
+    }
+    Ok(())
+}
+
+fn hybrid_kind_label(kind: HybridPreparationKind) -> &'static str {
+    match kind {
+        HybridPreparationKind::Passthrough => "passthrough",
+        HybridPreparationKind::Semantic => "semantic",
+        HybridPreparationKind::Shadow => "shadow",
+        HybridPreparationKind::Active => "active",
+        HybridPreparationKind::FallbackPreSend => "fallback_pre_send",
+    }
+}
+
+fn force_hybrid_pre_send_fallback(
+    prepared: PreparedHybridRequest,
+    original_body: Value,
+    reason: &str,
+) -> PreparedHybridRequest {
+    let mut accounting = prepared.accounting().clone();
+    accounting.disposition = dtoken_types::OptimizationDisposition::FallbackPreSend;
+    accounting.sent_payload = dtoken_types::SentPayloadVariant::Original;
+    accounting.upstream_state = UpstreamSendState::NotAttempted;
+    accounting.attribution_basis = dtoken_types::SavingsAttribution::None;
+    accounting.fallback_reason_code = Some(reason.to_string());
+    let mut report = prepared.report().clone();
+    report.kind = HybridPreparationKind::FallbackPreSend;
+    report.reason_code = reason.to_string();
+    report.patched_count = 0;
+    report.image_count = 0;
+    report.png_bytes = 0;
+    report.base64_bytes = 0;
+    report.artifact_validated = false;
+    PreparedHybridRequest::FallbackPreSend {
+        body: original_body,
+        report,
+        accounting,
+    }
+}
+
+fn apply_hybrid_preparation(payload: &mut RoutedBridgePayload, prepared: &PreparedHybridRequest) {
+    payload.upstream_body = prepared.body().clone();
+    let accounting = prepared.accounting().clone();
+    let baseline = accounting
+        .estimated
+        .as_ref()
+        .and_then(|comparison| comparison.baseline.usage.input.normalized_total)
+        .unwrap_or(payload.compression.original_tokens);
+    let candidate = accounting
+        .estimated
+        .as_ref()
+        .and_then(|comparison| comparison.candidate.usage.input.normalized_total)
+        .unwrap_or(baseline);
+    payload.compression.original_tokens = baseline;
+    payload.compression.compressed_tokens = candidate;
+    payload.compression.tokens_saved = 0;
+    payload.compression.savings_percent = 0.0;
+    payload.compression.transforms_applied = match prepared.kind() {
+        HybridPreparationKind::Active => vec![
+            "optical_closed_historical_tool_result".to_string(),
+            "deterministic_png_render".to_string(),
+            "artifact_post_validation".to_string(),
+        ],
+        HybridPreparationKind::Semantic => prepared.report().transforms_applied.clone(),
+        _ => Vec::new(),
+    };
+    payload.compression.context_accounting = Some(accounting.clone());
+    payload.request_log.input_tokens_before = usize::try_from(baseline).ok();
+    payload.request_log.input_tokens_after = usize::try_from(candidate).ok();
+    payload.request_log.tokens_saved = Some(0);
+    payload.request_log.transforms_applied = payload.compression.transforms_applied.clone();
+    payload.request_log.context_accounting = Some(accounting.clone());
+    payload.event.input_tokens = Some(baseline);
+    payload.event.output_tokens = None;
+    payload.event.saved_tokens = Some(0);
+    payload.event.context_accounting = Some(accounting);
+    if let Some(metadata) = payload.event.metadata.as_object_mut() {
+        metadata.insert(
+            "hybrid_kind".to_string(),
+            json!(hybrid_kind_label(prepared.kind())),
+        );
+        metadata.insert(
+            "hybrid_reason_code".to_string(),
+            json!(prepared.report().reason_code),
+        );
+        metadata.insert(
+            "hybrid_image_count".to_string(),
+            json!(prepared.report().image_count),
+        );
+    }
 }
 
 #[cfg(test)]
@@ -2083,7 +3049,8 @@ fn routed_openai_payload(
             "compression": {
                 "input_tokens_before": compression.original_tokens,
                 "input_tokens_after": compression.compressed_tokens,
-                "saved_tokens": compression.tokens_saved,
+                "saved_tokens": if compression.context_accounting.is_some() { 0 } else { compression.tokens_saved },
+                "estimated_saved_tokens": compression.tokens_saved,
                 "savings_percent": compression.savings_percent,
                 "elapsed_us": compression.elapsed_us,
                 "transforms_applied": compression.transforms_applied,
@@ -2134,6 +3101,22 @@ fn runtime_stats_payload(logs: &[RequestLog]) -> Value {
         .filter_map(|log| log.tokens_saved)
         .map(|value| value as u64)
         .sum();
+    let signed_net_tokens = logs
+        .iter()
+        .map(signed_context_savings)
+        .fold(0i64, i64::saturating_add);
+    let positive_saved_tokens = logs
+        .iter()
+        .map(signed_context_savings)
+        .filter(|value| *value > 0)
+        .map(|value| u64::try_from(value).unwrap_or(u64::MAX))
+        .fold(0u64, u64::saturating_add);
+    let penalty_tokens = logs
+        .iter()
+        .map(signed_context_savings)
+        .filter(|value| *value < 0)
+        .map(i64::unsigned_abs)
+        .fold(0u64, u64::saturating_add);
     let savings_percent = if input_before == 0 {
         0.0
     } else {
@@ -2166,6 +3149,9 @@ fn runtime_stats_payload(logs: &[RequestLog]) -> Value {
         "external_headroom_dependency": false,
         "compressions": total_requests,
         "tokens_saved": tokens_saved,
+        "signed_net_tokens": signed_net_tokens,
+        "positive_saved_tokens": positive_saved_tokens,
+        "penalty_tokens": penalty_tokens,
         "savings_percent": savings_percent,
         "avg_latency_ms": avg_latency_ms,
         "latency_breakdown": latency_breakdown,
@@ -2179,10 +3165,32 @@ fn runtime_stats_payload(logs: &[RequestLog]) -> Value {
             "input_after": input_after,
             "output": output_tokens,
             "saved": tokens_saved,
+            "signed_net": signed_net_tokens,
+            "positive_saved": positive_saved_tokens,
+            "penalty": penalty_tokens,
             "savings_percent": savings_percent
         },
         "layered": layered
     })
+}
+
+fn signed_context_savings(log: &RequestLog) -> i64 {
+    if let Some(accounting) = log.context_accounting.as_ref() {
+        if let Some(savings) = accounting.claimable_signed_savings() {
+            return savings
+                .total_tokens
+                .or(savings.input_tokens)
+                .unwrap_or_default();
+        }
+        if let Some(savings) = accounting.provider_reconciled_signed_savings() {
+            return savings
+                .total_tokens
+                .or(savings.input_tokens)
+                .unwrap_or_default();
+        }
+        return 0;
+    }
+    i64::try_from(log.tokens_saved.unwrap_or_default()).unwrap_or(i64::MAX)
 }
 
 fn runtime_stats_for_state(state: &AppState) -> Value {
@@ -2246,6 +3254,11 @@ fn runtime_metrics_text(logs: &[RequestLog]) -> String {
     let after = stats["tokens"]["input_after"].as_u64().unwrap_or_default();
     let output = stats["tokens"]["output"].as_u64().unwrap_or_default();
     let saved = stats["tokens"]["saved"].as_u64().unwrap_or_default();
+    let signed_net = stats["tokens"]["signed_net"].as_i64().unwrap_or_default();
+    let positive_saved = stats["tokens"]["positive_saved"]
+        .as_u64()
+        .unwrap_or_default();
+    let penalty = stats["tokens"]["penalty"].as_u64().unwrap_or_default();
     let savings_percent = stats["tokens"]["savings_percent"]
         .as_f64()
         .unwrap_or_default();
@@ -2275,6 +3288,9 @@ dtoken_input_tokens_before_total {before}\n\
 dtoken_input_tokens_after_total {after}\n\
 dtoken_output_tokens_total {output}\n\
 dtoken_tokens_saved_total {saved}\n\
+dtoken_context_positive_saved_tokens_total {positive_saved}\n\
+dtoken_context_penalty_tokens_total {penalty}\n\
+dtoken_context_signed_net_tokens {signed_net}\n\
 dtoken_savings_percent {savings_percent:.2}\n\
 dtoken_request_latency_ms_avg {avg_latency_ms:.2}\n\
 dtoken_compression_latency_ms_avg {compression_latency_ms:.2}\n\
@@ -2299,24 +3315,16 @@ fn runtime_metrics_payload(logs: &[RequestLog]) -> Value {
         let tokens_before = log.input_tokens_before.unwrap_or_default() as u64;
         let latency_ms = log.latency_ms.unwrap_or_default();
         let failed = u64::from(log.error.is_some());
-        let transforms = if log.transforms_applied.is_empty() {
-            vec!["runtime_route".to_string()]
+        let transform = if log.transforms_applied.is_empty() {
+            "runtime_route".to_string()
         } else {
-            log.transforms_applied.clone()
+            log.transforms_applied.join("+")
         };
-        let transform_count = transforms.len() as u64;
-        for (index, transform) in transforms.into_iter().enumerate() {
-            let index = index as u64;
-            let attributed_saved =
-                tokens_saved / transform_count + u64::from(index < tokens_saved % transform_count);
-            let attributed_before = tokens_before / transform_count
-                + u64::from(index < tokens_before % transform_count);
-            let entry = by_transform.entry(transform).or_insert((0, 0, 0, 0));
-            entry.0 += 1;
-            entry.1 += attributed_saved;
-            entry.2 += attributed_before;
-            entry.3 += latency_ms;
-        }
+        let entry = by_transform.entry(transform).or_insert((0, 0, 0, 0));
+        entry.0 += 1;
+        entry.1 += tokens_saved;
+        entry.2 += tokens_before;
+        entry.3 += latency_ms;
 
         let route_key = log
             .route_id
@@ -2397,7 +3405,10 @@ fn runtime_metrics_payload(logs: &[RequestLog]) -> Value {
         "compression_performance": {
             "source": "request_logs",
             "total_requests": logs.len(),
-            "transforms": transforms
+            "transforms": transforms,
+            "signed_net_tokens": logs.iter().map(signed_context_savings).fold(0i64, i64::saturating_add),
+            "positive_saved_tokens": logs.iter().map(signed_context_savings).filter(|value| *value > 0).map(|value| value as u64).fold(0u64, u64::saturating_add),
+            "penalty_tokens": logs.iter().map(signed_context_savings).filter(|value| *value < 0).map(i64::unsigned_abs).fold(0u64, u64::saturating_add)
         },
         "route_performance": {
             "source": "request_logs",
@@ -2823,6 +3834,10 @@ fn route_selection_error_response(
             "dtoken_route_evidence_conflict",
             "the supplied route or instance evidence does not match a configured route for this protocol",
         ),
+        RouteSelectionError::InvalidOptimizationContext => (
+            "dtoken_route_context_invalid",
+            "the resolved route, provider, protocol, adapter or model identity is inconsistent",
+        ),
         RouteSelectionError::NotConfigured => unreachable!(),
     };
     (
@@ -2861,6 +3876,10 @@ fn record_route_selection_error(
         RouteSelectionError::EvidenceConflict => (
             "route or instance evidence conflicts with configured routes",
             "dtoken_route_evidence_conflict",
+        ),
+        RouteSelectionError::InvalidOptimizationContext => (
+            "resolved route/provider/model context failed validation",
+            "dtoken_route_context_invalid",
         ),
     };
     append_stage_event(
@@ -2908,17 +3927,37 @@ async fn openai_chat_completions(
     if let Ok((route, provider)) = route_selection {
         let request_id = Uuid::new_v4();
         let decision = build_configured_route_decision(request_id, route, provider);
-        let optimization_context = resolve_optimization_context(
+        let optimization_context = match resolve_optimization_context(
             &decision,
             route,
             provider,
             RouteAdapterKind::OpenAiChatPassthrough,
             &original_body,
             &original_body,
-        )
-        .ok();
+        ) {
+            Ok(context) => context,
+            Err(_) => {
+                record_route_selection_error(
+                    &state,
+                    request_id,
+                    "openai",
+                    RouteSelectionError::InvalidOptimizationContext,
+                );
+                let (status, response) = route_selection_error_response(
+                    request_id,
+                    "openai",
+                    RouteSelectionError::InvalidOptimizationContext,
+                    &state.config_status,
+                );
+                return (status, Json(response)).into_response();
+            }
+        };
+        let inventory_diagnostics = compression_inventory_diagnostics(
+            &optimization_context.compression_context,
+            &original_body,
+        );
         let compression = compress_for_route(
-            optimization_context.as_ref(),
+            Some(&optimization_context),
             decision.compression_policy.clone(),
             original_body,
         );
@@ -2936,10 +3975,14 @@ async fn openai_chat_completions(
             Protocol::OpenAi,
             &compression,
         );
+        if let Some(metadata) = event.metadata.as_object_mut() {
+            metadata.insert("compression_inventory".to_string(), inventory_diagnostics);
+        }
         let compression_json = json!({
             "input_tokens_before": compression.original_tokens,
             "input_tokens_after": compression.compressed_tokens,
-            "saved_tokens": compression.tokens_saved,
+            "saved_tokens": if compression.context_accounting.is_some() { 0 } else { compression.tokens_saved },
+            "estimated_saved_tokens": compression.tokens_saved,
             "savings_percent": compression.savings_percent,
             "elapsed_us": compression.elapsed_us,
             "transforms_applied": compression.transforms_applied,
@@ -2950,6 +3993,13 @@ async fn openai_chat_completions(
                     .await;
             match upstream {
                 Ok((status_code, headers, body)) => {
+                    if let Some(accounting) = request_log.context_accounting.as_mut() {
+                        accounting.upstream_state = UpstreamSendState::StreamStarted;
+                        accounting.attribution_basis = dtoken_types::SavingsAttribution::None;
+                    }
+                    event.context_accounting = request_log.context_accounting.clone();
+                    event.status = EventStatus::Ok;
+                    event.saved_tokens = Some(0);
                     if let Some(metadata) = event.metadata.as_object_mut() {
                         metadata.insert("stream".to_string(), json!(true));
                         metadata.insert("stream_passthrough".to_string(), json!(true));
@@ -3125,17 +4175,33 @@ async fn openai_responses(
             "messages": request.messages,
             "stream": false
         });
-        let optimization_context = resolve_optimization_context(
+        let optimization_context = match resolve_optimization_context(
             &decision,
             route,
             provider,
             RouteAdapterKind::OpenAiResponsesToChat,
             &body,
             &original_body,
-        )
-        .ok();
+        ) {
+            Ok(context) => context,
+            Err(_) => {
+                record_route_selection_error(
+                    &state,
+                    request_id,
+                    "openai_responses",
+                    RouteSelectionError::InvalidOptimizationContext,
+                );
+                let (status, response) = route_selection_error_response(
+                    request_id,
+                    "openai_responses",
+                    RouteSelectionError::InvalidOptimizationContext,
+                    &state.config_status,
+                );
+                return (status, Json(response)).into_response();
+            }
+        };
         let compression = compress_for_route(
-            optimization_context.as_ref(),
+            Some(&optimization_context),
             decision.compression_policy.clone(),
             original_body,
         );
@@ -3169,7 +4235,8 @@ async fn openai_responses(
         let compression_json = json!({
             "input_tokens_before": compression.original_tokens,
             "input_tokens_after": compression.compressed_tokens,
-            "saved_tokens": compression.tokens_saved,
+            "saved_tokens": if compression.context_accounting.is_some() { 0 } else { compression.tokens_saved },
+            "estimated_saved_tokens": compression.tokens_saved,
             "savings_percent": compression.savings_percent,
             "elapsed_us": compression.elapsed_us,
             "transforms_applied": compression.transforms_applied,
@@ -3254,8 +4321,24 @@ async fn openai_responses(
 async fn anthropic_messages(
     State(state): State<AppState>,
     headers: HeaderMap,
-    Json(body): Json<Value>,
+    body_bytes: Bytes,
 ) -> impl IntoResponse {
+    let body: Value = match serde_json::from_slice(&body_bytes) {
+        Ok(body) => body,
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({
+                    "error": {
+                        "type": "invalid_request",
+                        "message": "invalid Anthropic Messages JSON body"
+                    }
+                })),
+            )
+                .into_response();
+        }
+    };
+    let raw_body = body_bytes.to_vec();
     let evidence = header_evidence(&headers, body.get("model").and_then(Value::as_str));
     let mut payload = match anthropic_route_payload(&state, body.clone(), evidence) {
         Ok(payload) => payload,
@@ -3272,22 +4355,222 @@ async fn anthropic_messages(
         }
     };
 
-    if payload.provider.protocol != Protocol::OpenAi {
-        return (
-            StatusCode::UNPROCESSABLE_ENTITY,
-            Json(json!({
-                "error": {
-                    "type": "dtoken_bridge_not_supported",
-                    "message": "this build supports Anthropic input to OpenAI-compatible configured providers"
-                },
+    if payload.provider.protocol == Protocol::Anthropic {
+        let original_body = body.clone();
+        let mut send_raw_body = true;
+        if let Some(mut prepared) =
+            prepare_direct_anthropic_hybrid(&state, &payload, raw_body.clone()).await
+        {
+            let stage_recording =
+                record_hybrid_pre_send_stages(&state, payload.decision.request_id, &prepared);
+            if stage_recording.is_err()
+                && matches!(
+                    prepared.kind(),
+                    HybridPreparationKind::Active | HybridPreparationKind::Semantic
+                )
+            {
+                prepared = force_hybrid_pre_send_fallback(
+                    prepared,
+                    original_body,
+                    "ledger_pre_send_unavailable",
+                );
+                append_stage_event(
+                    &state,
+                    payload.decision.request_id,
+                    LayeredStage::OpticalFallback,
+                    EventStatus::Failed,
+                    json!({
+                        "reason_code": "ledger_pre_send_unavailable",
+                        "raw_available": false,
+                        "privacy": "baseline selected before upstream send"
+                    }),
+                    Some("ledger_pre_send_unavailable"),
+                );
+            }
+            send_raw_body = matches!(
+                prepared.kind(),
+                HybridPreparationKind::Passthrough
+                    | HybridPreparationKind::Shadow
+                    | HybridPreparationKind::FallbackPreSend
+            );
+            apply_hybrid_preparation(&mut payload, &prepared);
+        } else {
+            append_stage_event(
+                &state,
+                payload.decision.request_id,
+                LayeredStage::OpticalFallback,
+                EventStatus::Failed,
+                json!({
+                    "reason_code": "hybrid_worker_unavailable",
+                    "raw_available": false,
+                    "baseline_selected": true,
+                    "automatic_retry": false
+                }),
+                Some("hybrid_worker_unavailable"),
+            );
+        }
+
+        let stream = payload
+            .upstream_body
+            .get("stream")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        if stream {
+            match forward_anthropic_messages_stream(
+                &state.http_client,
+                &payload.provider,
+                payload.upstream_body.clone(),
+                send_raw_body.then_some(raw_body.as_slice()),
+                &headers,
+            )
+            .await
+            {
+                Ok((status_code, response_headers, response_body)) => {
+                    if let Some(accounting) = payload.request_log.context_accounting.as_mut() {
+                        accounting.upstream_state = UpstreamSendState::StreamStarted;
+                        accounting.attribution_basis = dtoken_types::SavingsAttribution::None;
+                        if accounting.disposition
+                            == dtoken_types::OptimizationDisposition::FallbackPreSend
+                        {
+                            accounting.disposition =
+                                dtoken_types::OptimizationDisposition::FallbackOriginalSent;
+                        }
+                    }
+                    payload.event.context_accounting =
+                        payload.request_log.context_accounting.clone();
+                    payload.event.status = EventStatus::Ok;
+                    if let Some(metadata) = payload.event.metadata.as_object_mut() {
+                        metadata.insert("stream".to_string(), json!(true));
+                        metadata.insert("send_state".to_string(), json!("stream_started"));
+                    }
+                    state.record_routed_request(
+                        &payload.decision,
+                        payload.request_log,
+                        payload.event,
+                    );
+                    append_stage_event(
+                        &state,
+                        payload.decision.request_id,
+                        LayeredStage::UpstreamSendCommitted,
+                        EventStatus::Ok,
+                        json!({
+                            "provider_id": payload.decision.provider_id,
+                            "protocol": "anthropic",
+                            "stream": true,
+                            "upstream_status": status_code,
+                            "automatic_retry": false,
+                            "raw_available": false
+                        }),
+                        None,
+                    );
+                    return (
+                        StatusCode::from_u16(status_code).unwrap_or(StatusCode::OK),
+                        response_headers,
+                        response_body,
+                    )
+                        .into_response();
+                }
+                Err(upstream) => {
+                    mark_upstream_outcome(&upstream, &mut payload.request_log, &mut payload.event);
+                    let response_status = upstream_response_status(&upstream);
+                    let response = json!({
+                        "error": upstream.response["error"],
+                        "dtoken": {
+                            "source": "dtoken-owned-runtime",
+                            "request_id": payload.decision.request_id,
+                            "route_decision": route_decision_to_value(&payload.decision),
+                            "request_log": payload.request_log,
+                            "ledger_event": payload.event,
+                            "upstream_status": upstream.status,
+                            "upstream_error_category": upstream.error_category,
+                            "send_state": upstream.send_state,
+                            "automatic_retry": false
+                        }
+                    });
+                    state.record_routed_request(
+                        &payload.decision,
+                        payload.request_log,
+                        payload.event,
+                    );
+                    append_stage_event(
+                        &state,
+                        payload.decision.request_id,
+                        LayeredStage::ProviderForward,
+                        EventStatus::Failed,
+                        json!({
+                            "provider_id": payload.decision.provider_id,
+                            "protocol": "anthropic",
+                            "stream": true,
+                            "send_state": upstream.send_state,
+                            "automatic_retry": false,
+                            "raw_available": false
+                        }),
+                        upstream.error_category.as_deref(),
+                    );
+                    return (response_status, Json(response)).into_response();
+                }
+            }
+        }
+
+        let upstream = require_anthropic_message(
+            forward_anthropic_messages(
+                &state.http_client,
+                &payload.provider,
+                payload.upstream_body.clone(),
+                send_raw_body.then_some(raw_body.as_slice()),
+                &headers,
+            )
+            .await,
+        );
+        mark_upstream_outcome(&upstream, &mut payload.request_log, &mut payload.event);
+        let response_status = upstream_response_status(&upstream);
+        let provider_status = if upstream.error_category.is_some() {
+            EventStatus::Failed
+        } else {
+            EventStatus::Ok
+        };
+        let response = if upstream.error_category.is_some() {
+            json!({
+                "error": upstream.response["error"],
                 "dtoken": {
                     "source": "dtoken-owned-runtime",
+                    "request_id": payload.decision.request_id,
                     "route_decision": route_decision_to_value(&payload.decision),
-                    "fallback": "disabled"
+                    "request_log": payload.request_log,
+                    "ledger_event": payload.event,
+                    "upstream_status": upstream.status,
+                    "upstream_error_category": upstream.error_category,
+                    "send_state": upstream.send_state,
+                    "automatic_retry": false
                 }
-            })),
-        )
-            .into_response();
+            })
+        } else {
+            upstream.response.clone()
+        };
+        state.record_routed_request(&payload.decision, payload.request_log, payload.event);
+        append_stage_event(
+            &state,
+            payload.decision.request_id,
+            if upstream.send_state == UpstreamSendState::Completed {
+                LayeredStage::OpticalComplete
+            } else {
+                LayeredStage::ProviderForward
+            },
+            provider_status,
+            json!({
+                "route_id": payload.decision.route_id,
+                "provider_id": payload.decision.provider_id,
+                "input_protocol": "anthropic",
+                "output_protocol": "anthropic",
+                "upstream_status": upstream.status,
+                "send_state": upstream.send_state,
+                "automatic_retry": false,
+                "raw_available": false,
+                "privacy": "request and response bodies are never persisted"
+            }),
+            upstream.error_category.as_deref(),
+        );
+        return (response_status, Json(response)).into_response();
     }
 
     let upstream = require_openai_message(
@@ -3324,7 +4607,8 @@ async fn anthropic_messages(
                 "compression": {
                     "input_tokens_before": payload.compression.original_tokens,
                     "input_tokens_after": payload.compression.compressed_tokens,
-                    "saved_tokens": payload.compression.tokens_saved,
+                    "saved_tokens": if payload.compression.context_accounting.is_some() { 0 } else { payload.compression.tokens_saved },
+                    "estimated_saved_tokens": payload.compression.tokens_saved,
                     "savings_percent": payload.compression.savings_percent,
                     "elapsed_us": payload.compression.elapsed_us,
                     "transforms_applied": payload.compression.transforms_applied,
@@ -3431,6 +4715,58 @@ async fn doctor_run(State(state): State<AppState>) -> Json<Value> {
     let port_report = run_basic_doctor(state.default_doctor_port);
     report.ok = report.ok && port_report.ok;
     report.checks.extend(port_report.checks);
+    let issues = state.optical_config_issues.as_ref();
+    let registry = OpticalCapabilityRegistry::from_runtime_config(
+        &state.config.optical,
+        dtoken_event_ledger::now_ms(),
+    );
+    let active_direct_route = active_direct_anthropic_route_count(&state.config, &registry) > 0;
+    let active_requested = state.config.optical.global_policy.allow_active;
+    let config_ok = issues.is_empty();
+    let registry_ok = !active_requested || registry.verified_rule_count() > 0;
+    let route_ok = !active_requested || active_direct_route;
+    report.checks.push(dtoken_types::DoctorCheck {
+        name: "hybrid_context_config".to_string(),
+        ok: config_ok,
+        message: if config_ok {
+            "Hybrid context configuration schema and resource budgets are valid".to_string()
+        } else {
+            format!("Hybrid context configuration is fail-closed: {issues:?}")
+        },
+    });
+    report.checks.push(dtoken_types::DoctorCheck {
+        name: "hybrid_capability_eval_gate".to_string(),
+        ok: registry_ok,
+        message: format!(
+            "verified_attested_rules={} rejected_rules={} active_requested={active_requested}",
+            registry.verified_rule_count(),
+            registry.rejected_rule_count()
+        ),
+    });
+    report.checks.push(dtoken_types::DoctorCheck {
+        name: "hybrid_direct_anthropic_route".to_string(),
+        ok: route_ok,
+        message: if active_direct_route {
+            "An explicit same-protocol Anthropic route is active-capable".to_string()
+        } else {
+            "No active same-protocol Anthropic route; Optical remains shadow/passthrough"
+                .to_string()
+        },
+    });
+    report.checks.push(dtoken_types::DoctorCheck {
+        name: "hybrid_renderer_limits".to_string(),
+        ok: state.config.optical.global_policy.max_concurrent_renders > 0,
+        message: format!(
+            "pages={} pixels={} png_bytes={} encoded_image_bytes={} memory_bytes={} concurrency={}",
+            state.config.optical.global_policy.max_images_per_request,
+            state.config.optical.global_policy.max_total_pixels,
+            state.config.optical.global_policy.max_png_bytes,
+            state.config.optical.global_policy.max_base64_bytes,
+            state.config.optical.global_policy.max_memory_bytes,
+            state.config.optical.global_policy.max_concurrent_renders
+        ),
+    });
+    report.ok = report.ok && config_ok && registry_ok && route_ok;
     Json(json!(report))
 }
 
@@ -4025,6 +5361,79 @@ mod tests {
     }
 
     #[test]
+    fn compression_inventory_diagnostics_are_metadata_only_and_show_eligibility() {
+        let mut messages = Vec::new();
+        let log = "INFO build stable route healthy tests passed\n".repeat(420);
+        for index in 0..8 {
+            let call_id = format!("call-{index}");
+            messages.push(json!({
+                "role": "assistant",
+                "content": null,
+                "tool_calls": [{
+                    "id": call_id,
+                    "type": "function",
+                    "function": {"name": "bash", "arguments": "{}"}
+                }]
+            }));
+            messages.push(json!({
+                "role": "tool",
+                "tool_call_id": call_id,
+                "content": log
+            }));
+        }
+        messages.push(json!({"role": "user", "content": "Summarize the verified state."}));
+        let body = json!({"model": "mock/model", "messages": messages, "stream": true});
+        let context = dtoken_compress::ResolvedOptimizationContext {
+            route_id: "local-mock-route".to_string(),
+            provider_id: "local-mock-provider".to_string(),
+            model: "mock/model".to_string(),
+            input_protocol: Protocol::OpenAi,
+            output_protocol: Protocol::OpenAi,
+            endpoint: dtoken_types::OpticalEndpoint::OpenAiChatCompletions,
+        };
+
+        let diagnostics = compression_inventory_diagnostics(&context, &body);
+        assert_eq!(diagnostics["state"], "resolved");
+        assert!(diagnostics["approved_target_count"].as_u64().unwrap_or(0) > 0);
+        assert_eq!(diagnostics["raw_available"], false);
+        assert!(!diagnostics.to_string().contains("build stable"));
+        assert!(diagnostics["tool_nodes"]
+            .as_array()
+            .is_some_and(|nodes| nodes.iter().all(|node| node["correlation_digest"]
+                .as_str()
+                .is_none_or(|digest| digest.len() == 12))));
+
+        let compressed = compress_for_route(
+            Some(&ResolvedRouteOptimizationContext {
+                request_id: Uuid::new_v4(),
+                route_id: "local-mock-route".to_string(),
+                provider_id: "local-mock-provider".to_string(),
+                requested_policy: CompressionPolicy::Balanced,
+                adapter: RouteAdapterKind::OpenAiChatPassthrough,
+                ingress: OptimizationSurface {
+                    protocol: Protocol::OpenAi,
+                    endpoint: dtoken_types::OpticalEndpoint::OpenAiChatCompletions,
+                },
+                upstream: OptimizationSurface {
+                    protocol: Protocol::OpenAi,
+                    endpoint: dtoken_types::OpticalEndpoint::OpenAiChatCompletions,
+                },
+                requested_model: "mock/model".to_string(),
+                effective_model: "mock/model".to_string(),
+                optical_disposition: OpticalExecutionDisposition::Disabled,
+                compression_context: context,
+            }),
+            CompressionPolicy::Balanced,
+            body,
+        );
+        assert!(compressed.tokens_saved > 0);
+        assert!(compressed
+            .transforms_applied
+            .iter()
+            .any(|transform| transform == "semantic_closed_tool_result"));
+    }
+
+    #[test]
     fn ambiguous_routes_fail_closed_without_unique_evidence() {
         let config = route_test_config();
 
@@ -4241,6 +5650,8 @@ mod tests {
             chain_mode: ChainMode::Direct,
             compression_policy: CompressionPolicy::Balanced,
             reason: "test".to_string(),
+            input_protocol: Some(Protocol::OpenAi),
+            output_protocol: Some(Protocol::OpenAi),
         };
         let compression = CompressionSummary {
             original_tokens: 10,
@@ -4250,6 +5661,7 @@ mod tests {
             elapsed_us: 1,
             transforms_applied: vec![],
             body: json!({}),
+            context_accounting: None,
         };
         let log = build_request_log(
             decision.request_id,
@@ -4373,7 +5785,7 @@ mod tests {
         let response = anthropic_messages(
             State(state),
             HeaderMap::new(),
-            Json(json!({"model": "example/model", "messages": []})),
+            Bytes::from_static(br#"{"model":"example/model","messages":[]}"#),
         )
         .await
         .into_response();
@@ -4750,7 +6162,7 @@ mod tests {
         assert!(request_log.latency_ms.unwrap_or_default() > 0);
         assert!(request_log.transforms_applied.is_empty());
         assert_eq!(event.source, EventSource::Dtoken);
-        assert_eq!(event.status, EventStatus::Ok);
+        assert_eq!(event.status, EventStatus::Passthrough);
         assert!(event.metadata.get("full_prompt").is_none());
     }
 
@@ -4887,6 +6299,23 @@ mod tests {
             "Bearer unit-test-credential"
         );
         assert!(provider_authorization_header("bad\ncredential").is_err());
+    }
+
+    #[test]
+    fn upstream_statuses_have_stable_user_visible_categories() {
+        let cases = [
+            (StatusCode::UNAUTHORIZED, "provider_auth"),
+            (StatusCode::FORBIDDEN, "provider_auth"),
+            (StatusCode::NOT_FOUND, "provider_route_not_found"),
+            (StatusCode::REQUEST_TIMEOUT, "provider_rate_or_timeout"),
+            (StatusCode::TOO_MANY_REQUESTS, "provider_rate_or_timeout"),
+            (StatusCode::INTERNAL_SERVER_ERROR, "provider_server_error"),
+            (StatusCode::SERVICE_UNAVAILABLE, "provider_server_error"),
+        ];
+
+        for (status, expected) in cases {
+            assert_eq!(classify_upstream_status(status), expected, "{status}");
+        }
     }
 
     #[test]
@@ -5567,6 +6996,7 @@ mod tests {
             }),
             status: Some(200),
             error_category: None,
+            send_state: UpstreamSendState::Completed,
         };
 
         let validated = require_openai_message(upstream, "Anthropic bridge");
@@ -5576,5 +7006,94 @@ mod tests {
             validated.response["choices"][0]["message"]["tool_calls"][0]["id"],
             "call_1"
         );
+    }
+
+    #[tokio::test]
+    async fn direct_anthropic_stream_preserves_raw_request_bytes_and_sse_body() {
+        use axum::body::to_bytes;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+        use tokio::sync::oneshot;
+
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind direct Anthropic mock upstream");
+        let addr = listener.local_addr().expect("mock upstream address");
+        let (captured_tx, captured_rx) = oneshot::channel();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.expect("accept direct request");
+            let mut request = Vec::new();
+            let mut buffer = [0_u8; 4096];
+            let (header_end, content_length) = loop {
+                let read = socket.read(&mut buffer).await.expect("read direct request");
+                assert!(read > 0, "request closed before headers completed");
+                request.extend_from_slice(&buffer[..read]);
+                if let Some(index) = request.windows(4).position(|window| window == b"\r\n\r\n") {
+                    let header_end = index + 4;
+                    let headers = String::from_utf8_lossy(&request[..header_end]);
+                    let content_length = headers
+                        .lines()
+                        .find_map(|line| {
+                            let (name, value) = line.split_once(':')?;
+                            name.eq_ignore_ascii_case("content-length")
+                                .then(|| value.trim().parse::<usize>().ok())
+                                .flatten()
+                        })
+                        .expect("reqwest sends a content length for fixed raw bytes");
+                    break (header_end, content_length);
+                }
+            };
+            while request.len() < header_end + content_length {
+                let read = socket.read(&mut buffer).await.expect("read request body");
+                assert!(read > 0, "request closed before body completed");
+                request.extend_from_slice(&buffer[..read]);
+            }
+            captured_tx
+                .send(request[header_end..header_end + content_length].to_vec())
+                .expect("capture raw body");
+            socket
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\nconnection: close\r\n\r\nevent: message_start\ndata: {\"type\":\"message_start\"}\n\nevent: message_stop\ndata: {\"type\":\"message_stop\"}\n\n",
+                )
+                .await
+                .expect("write Anthropic SSE response");
+        });
+
+        let provider = dtoken_types::ProviderProfile {
+            id: "direct-anthropic".to_string(),
+            name: "Direct Anthropic".to_string(),
+            kind: dtoken_types::ProviderKind::Custom,
+            protocol: Protocol::Anthropic,
+            base_url: format!("http://{addr}"),
+            api_key_ref: None,
+            models: vec!["claude-fable-5".to_string()],
+            timeout_ms: 30_000,
+            healthcheck_path: None,
+        };
+        let raw = br#"{ "model" : "claude-fable-5", "stream" : true, "messages" : [] }"#;
+        let parsed: Value = serde_json::from_slice(raw).expect("fixture JSON");
+        let (status, headers, body) = forward_anthropic_messages_stream(
+            &reqwest::Client::new(),
+            &provider,
+            parsed,
+            Some(raw),
+            &HeaderMap::new(),
+        )
+        .await
+        .expect("direct Anthropic stream succeeds");
+
+        assert_eq!(status, 200);
+        assert_eq!(
+            headers
+                .get(CONTENT_TYPE)
+                .and_then(|value| value.to_str().ok()),
+            Some("text/event-stream")
+        );
+        assert_eq!(captured_rx.await.expect("captured request body"), raw);
+        let response = to_bytes(body, usize::MAX).await.expect("read SSE body");
+        let response = String::from_utf8_lossy(&response);
+        assert!(response.contains("event: message_start"));
+        assert!(response.contains("event: message_stop"));
+        server.await.expect("mock upstream task");
     }
 }

@@ -9,8 +9,8 @@ export function StatusBar() {
   const t = useT();
   const { lang } = useI18n();
   const [open, setOpen] = useState(false);
-  const { payload, status, updatedAt, error } = useRuntimeDashboard();
-  const summary = buildStatusSummary(payload, status, updatedAt, error, lang);
+  const { payload, status, operational, updatedAt, error } = useRuntimeDashboard();
+  const summary = buildStatusSummary(payload, status, updatedAt, error, lang, operational?.service?.data ?? null);
 
   const Item = ({ label, value, health }: { label: string; value: string; health?: "healthy" | "warning" | "error" }) => (
     <div className="flex shrink-0 items-center gap-1.5 whitespace-nowrap">
@@ -21,8 +21,7 @@ export function StatusBar() {
   );
 
   return (
-    <div className="shell-statusbar glass-light shrink-0 border-t border-border/40 px-3.5 py-2 text-[12px]">
-      <div className="glass-backdrop" />
+    <div className="shell-statusbar shrink-0 border-t border-border/40 px-3.5 py-2 text-[12px]">
       <div className="flex flex-nowrap items-center gap-x-4 overflow-x-auto">
         <Item label={t("status.runtime")} value={summary.runtimeLabel} health={summary.runtimeHealth} />
         <Item label={t("status.route")} value={summary.routeLabel} />
@@ -49,7 +48,7 @@ export function StatusBar() {
             exit={{ height: 0, opacity: 0 }}
             className="overflow-hidden"
           >
-            <div className="mt-2 grid grid-cols-2 gap-2 border-t border-[var(--glass-inset-border)] pt-2 text-muted-foreground md:grid-cols-4">
+            <div className="mt-2 grid grid-cols-2 gap-2 border-t border-sidebar-border/70 pt-2 text-muted-foreground md:grid-cols-4">
               <span>{t("status.source")}: {summary.sourceLabel}</span>
               <span>{t("status.requests")}: {summary.requestCount}</span>
               <span>{t("status.routes")}: {summary.routeCount}</span>
@@ -68,10 +67,14 @@ export function buildStatusSummary(
   updatedAt: Date | null,
   error: string,
   lang: "zh" | "en" = "zh",
+  serviceStatus: Record<string, any> | null = null,
 ) {
   const zh = lang === "zh";
   const isRuntime = status === "runtime";
   const isPreview = status === "browser-preview";
+  const isStale = status === "stale";
+  const isPartial = status === "partial";
+  const serviceRunning = serviceStatus?.state === "running" || serviceStatus?.state === "unmanaged_running";
   const stats = payload?.stats ?? {};
   const requests = finiteNumber(stats?.requests?.total);
   const failed = finiteNumber(stats?.requests?.failed);
@@ -90,7 +93,11 @@ export function buildStatusSummary(
   const doctorOk = doctorEvidence?.ok === true;
   const doctorFailed = doctorEvidence?.ok === false;
   const doctorLabel = !isRuntime
-    ? isPreview ? (zh ? "未运行诊断" : "Not run") : status === "loading" ? (zh ? "等待数据" : "Loading") : (zh ? "需检查" : "Needs review")
+    ? isPreview
+      ? (zh ? "未运行诊断" : "Not run")
+      : status === "loading"
+        ? (zh ? "等待数据" : "Loading")
+        : (zh ? "需检查" : "Needs review")
     : doctorOk
       ? (zh ? "正常" : "Healthy")
       : doctorFailed
@@ -109,14 +116,44 @@ export function buildStatusSummary(
   return {
     runtimeLabel: isRuntime
       ? requests !== null && requests > 0 ? (zh ? "运行中" : "Running") : (zh ? "已连接" : "Connected")
-      : isPreview ? (zh ? "浏览器预览" : "Browser preview") : status === "loading" ? (zh ? "读取中" : "Loading") : (zh ? "暂不可用" : "Unavailable"),
-    runtimeHealth: isRuntime ? "healthy" as const : isPreview || status === "loading" ? "warning" as const : "error" as const,
-    routeLabel: activeRoute || (isRuntime ? (zh ? "等待路由配置" : "Waiting for route") : isPreview ? (zh ? "尚未连接真实路由" : "No verified route") : (zh ? "路由不可用" : "Route unavailable")),
-    portsLabel: isRuntime ? (serviceUrl ? serviceUrl.replace(/^https?:\/\//, "") : "—") : isPreview ? (zh ? "未监听（预览）" : "Not listening (preview)") : (zh ? "未监听" : "Not listening"),
-    modeLabel: isRuntime ? (zh ? "运行时数据" : "Runtime data") : isPreview ? (zh ? "浏览器预览" : "Browser preview") : (zh ? "运行时不可用" : "Runtime unavailable"),
+      : serviceRunning
+        ? (zh ? "运行中（数据不完整）" : "Running (partial data)")
+      : isPreview
+        ? (zh ? "浏览器预览" : "Browser preview")
+        : isStale
+          ? (zh ? "数据已过期" : "Data stale")
+          : isPartial
+            ? (zh ? "数据不完整" : "Data incomplete")
+            : status === "loading" ? (zh ? "读取中" : "Loading") : (zh ? "暂不可用" : "Unavailable"),
+    runtimeHealth: isRuntime ? "healthy" as const : serviceRunning || isPreview || status === "loading" ? "warning" as const : "error" as const,
+    routeLabel: isRuntime
+      ? activeRoute || (zh ? "等待路由配置" : "Waiting for route")
+      : isPreview
+        ? (zh ? "尚未连接真实路由" : "No verified route")
+        : isStale
+          ? (zh ? "路由数据已过期" : "Route data stale")
+          : isPartial
+            ? (zh ? "路由数据不完整" : "Route data incomplete")
+            : (zh ? "路由不可用" : "Route unavailable"),
+    portsLabel: isRuntime || serviceRunning
+      ? (serviceUrl || serviceStatus?.service_url ? String(serviceUrl || serviceStatus?.service_url).replace(/^https?:\/\//, "") : "—")
+      : isPreview ? (zh ? "未监听（预览）" : "Not listening (preview)") : (zh ? "未监听" : "Not listening"),
+    modeLabel: isRuntime
+      ? (zh ? "运行时数据" : "Runtime data")
+      : isPreview
+        ? (zh ? "浏览器预览" : "Browser preview")
+        : isStale
+          ? (zh ? "过期数据" : "Stale data")
+          : isPartial
+            ? (zh ? "不完整数据" : "Partial data")
+            : (zh ? "运行时不可用" : "Runtime unavailable"),
     doctorLabel,
     doctorHealth,
-    sourceLabel: source === "browser-preview" ? (zh ? "浏览器预览" : "Browser preview") : source,
+    sourceLabel: isStale
+      ? (zh ? "本地数据已过期" : "Local data stale")
+      : isPartial
+        ? (zh ? "本地数据不完整" : "Local data incomplete")
+        : source === "browser-preview" ? (zh ? "浏览器预览" : "Browser preview") : source,
     requestCount: isRuntime && requests !== null ? requests : "—",
     routeCount: isRuntime && routes ? routes.length : "—",
     updatedLabel: updatedAt ? updatedAt.toLocaleTimeString() : "—",

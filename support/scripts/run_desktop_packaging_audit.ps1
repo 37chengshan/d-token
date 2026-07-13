@@ -14,7 +14,6 @@ $PackagePath = Join-Path $Root "code\apps\desktop\package.json"
 $TauriPath = Join-Path $Root "code\apps\desktop\src-tauri\tauri.conf.json"
 $IconPath = Join-Path $Root "code\apps\desktop\src-tauri\icons\icon.ico"
 $DistPath = Join-Path $Root "code\apps\desktop\dist\index.html"
-$SidecarPathGnu = Join-Path $Root "code\apps\desktop\src-tauri\binaries\dtoken-proxy-x86_64-pc-windows-gnu.exe"
 $SidecarPathMsvc = Join-Path $Root "code\apps\desktop\src-tauri\binaries\dtoken-proxy-x86_64-pc-windows-msvc.exe"
 $PreparedWebView2Loader = Join-Path $Root "code\apps\desktop\src-tauri\binaries\WebView2Loader.dll"
 
@@ -71,9 +70,7 @@ $Checks = @(
   New-Check "runtime_sidecar_configured" "dtoken-proxy sidecar is configured for bundling" ($ExternalBins -contains "binaries/dtoken-proxy") @{
     external_bin = $ExternalBins
   }
-  New-Check "runtime_sidecar_prepared" "dtoken-proxy Windows sidecars exist before packaging" ((Test-Path $SidecarPathGnu) -and (Test-Path $SidecarPathMsvc)) @{
-    gnu_path = $SidecarPathGnu
-    gnu_bytes = if (Test-Path $SidecarPathGnu) { (Get-Item $SidecarPathGnu).Length } else { 0 }
+  New-Check "runtime_sidecar_prepared" "canonical MSVC dtoken-proxy sidecar exists before packaging" (Test-Path $SidecarPathMsvc) @{
     msvc_path = $SidecarPathMsvc
     msvc_bytes = if (Test-Path $SidecarPathMsvc) { (Get-Item $SidecarPathMsvc).Length } else { 0 }
   }

@@ -19,7 +19,7 @@ import {
   Tooltip,
   XAxis,
 } from "recharts";
-import { GlassCard } from "../common/GlassCard";
+import { MetricStrip, Surface } from "../common/Surface";
 import { DataSourceBadge } from "../common/DataSourceBadge";
 import { Badge } from "../ui/badge";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../ui/tabs";
@@ -49,13 +49,15 @@ export function Analytics() {
       ? payload.request_logs as RequestLogRow[]
       : [];
     return buildAnalyticsSnapshot(logs, {
+      lang,
       source: evidenceState === "verified"
         ? "dtoken-local-service"
         : evidenceState === "preview"
           ? "preview"
           : "empty",
     });
-  }, [evidenceState, payload]);
+  }, [evidenceState, lang, payload]);
+  const trafficVerified = evidenceState === "verified" && Array.isArray(payload?.request_logs);
 
   const sourceLabel = analyticsSourceLabel(evidenceState, snapshot.hasRequests, lang);
   const dataSourceMode = evidenceState === "verified"
@@ -63,7 +65,7 @@ export function Analytics() {
     : evidenceState === "preview" || evidenceState === "loading"
       ? "preview"
       : "unavailable";
-  const requestEvidence = snapshot.hasRequests
+  const requestEvidence = trafficVerified
     ? lang === "zh" ? "来自 d-token 本地请求记录" : "From local d-token request records"
     : sourceLabel;
 
@@ -79,7 +81,7 @@ export function Analytics() {
         </div>
       </div>
 
-      <GlassCard className="p-3" hover={false}>
+      <Surface className="p-3" hover={false}>
         <div className="flex items-start gap-3">
           <Activity className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
           <div>
@@ -89,7 +91,7 @@ export function Analytics() {
             </div>
           </div>
         </div>
-      </GlassCard>
+      </Surface>
 
       <Tabs defaultValue="live">
         <TabsList>
@@ -99,15 +101,15 @@ export function Analytics() {
         </TabsList>
 
         <TabsContent value="live" className="mt-3 space-y-4">
-          <section
+          <MetricStrip
             data-testid="analytics-kpis"
-            className="grid grid-cols-2 gap-3 lg:grid-cols-3 xl:grid-cols-6"
+            className="metric-strip-6"
           >
             <Metric
               index={0}
               icon={<ArrowDownWideNarrow className="size-3.5" />}
               label={lang === "zh" ? "已处理请求" : "Routed requests"}
-              value={snapshot.hasRequests ? nf(snapshot.requestCount) : unavailableValue}
+              value={trafficVerified ? nf(snapshot.requestCount) : unavailableValue}
               detail={requestEvidence}
               color="var(--chart-2)"
             />
@@ -115,7 +117,7 @@ export function Analytics() {
               index={1}
               icon={<Gauge className="size-3.5" />}
               label={lang === "zh" ? "估算输入 Token" : "Estimated input tokens"}
-              value={optionalNumber(snapshot.estimatedInputTokens)}
+              value={trafficVerified ? optionalNumber(snapshot.estimatedInputTokens ?? 0) : unavailableValue}
               detail={metricDetail(snapshot.estimatedInputTokens, sourceLabel, lang)}
               color="var(--chart-3)"
             />
@@ -123,7 +125,7 @@ export function Analytics() {
               index={2}
               icon={<Coins className="size-3.5" />}
               label={lang === "zh" ? "估算节省 Token" : "Estimated tokens saved"}
-              value={optionalNumber(snapshot.estimatedSavedTokens)}
+              value={trafficVerified ? optionalNumber(snapshot.estimatedSavedTokens ?? 0) : unavailableValue}
               detail={metricDetail(snapshot.estimatedSavedTokens, sourceLabel, lang)}
               color="var(--chart-accent)"
             />
@@ -131,9 +133,9 @@ export function Analytics() {
               index={3}
               icon={<GitBranch className="size-3.5" />}
               label={lang === "zh" ? "估算节省率" : "Estimated savings rate"}
-              value={snapshot.estimatedSavingsRate === null
-                ? unavailableValue
-                : `${(snapshot.estimatedSavingsRate * 100).toFixed(1)}%`}
+              value={trafficVerified
+                ? `${((snapshot.estimatedSavingsRate ?? 0) * 100).toFixed(1)}%`
+                : unavailableValue}
               detail={metricDetail(snapshot.estimatedSavingsRate, sourceLabel, lang)}
               color="var(--chart-4)"
             />
@@ -141,7 +143,7 @@ export function Analytics() {
               index={4}
               icon={<Bot className="size-3.5" />}
               label={lang === "zh" ? "估算输出 Token" : "Estimated output tokens"}
-              value={optionalNumber(snapshot.estimatedOutputTokens)}
+              value={trafficVerified ? optionalNumber(snapshot.estimatedOutputTokens ?? 0) : unavailableValue}
               detail={metricDetail(snapshot.estimatedOutputTokens, sourceLabel, lang)}
               color="var(--chart-5)"
             />
@@ -149,25 +151,25 @@ export function Analytics() {
               index={5}
               icon={<AlertTriangle className="size-3.5" />}
               label={lang === "zh" ? "请求错误" : "Request errors"}
-              value={snapshot.hasRequests ? nf(snapshot.errorCount) : unavailableValue}
+              value={trafficVerified ? nf(snapshot.errorCount) : unavailableValue}
               detail={requestEvidence}
               color={snapshot.errorCount > 0 ? "var(--destructive)" : "var(--muted-foreground)"}
             />
-          </section>
+          </MetricStrip>
 
           {snapshot.warnings.length > 0 && (
-            <GlassCard className="p-3" hover={false}>
+            <Surface className="p-3" hover={false}>
               <div className="flex items-start gap-2 text-xs text-muted-foreground">
                 <AlertTriangle className="mt-0.5 size-4 shrink-0 text-amber-500" />
                 <div className="space-y-1">
                   {snapshot.warnings.map((warning) => <div key={warning}>{warning}</div>)}
                 </div>
               </div>
-            </GlassCard>
+            </Surface>
           )}
 
           <div className="grid gap-3 lg:grid-cols-2">
-            <GlassCard className="p-4" hover={false}>
+            <Surface className="p-4" hover={false}>
               <h3 className="mb-3 flex items-center gap-2 text-sm">
                 <Timer className="size-4" />
                 {lang === "zh" ? "请求耗时" : "Request latency"}
@@ -185,35 +187,35 @@ export function Analytics() {
                   detail={lang === "zh" ? "收到包含耗时字段的真实请求后显示" : "Shown after real requests include latency evidence"}
                 />
               )}
-            </GlassCard>
+            </Surface>
 
-            <GlassCard className="p-4" hover={false}>
+            <Surface className="p-4" hover={false}>
               <h3 className="mb-3 flex items-center gap-2 text-sm">
                 <Bot className="size-4" />
                 {lang === "zh" ? "Agent 分布" : "Agent distribution"}
               </h3>
               <BreakdownList rows={snapshot.agentBreakdown} lang={lang} />
-            </GlassCard>
+            </Surface>
           </div>
 
           <div className="grid gap-3 lg:grid-cols-2">
-            <GlassCard className="p-4" hover={false}>
+            <Surface className="p-4" hover={false}>
               <h3 className="mb-3 flex items-center gap-2 text-sm">
                 <Route className="size-4" />
                 {lang === "zh" ? "路由分布" : "Route distribution"}
               </h3>
               <BreakdownList rows={snapshot.routeBreakdown} lang={lang} />
-            </GlassCard>
-            <GlassCard className="p-4" hover={false}>
+            </Surface>
+            <Surface className="p-4" hover={false}>
               <h3 className="mb-3 flex items-center gap-2 text-sm">
                 <GitBranch className="size-4" />
                 {lang === "zh" ? "上游分布" : "Provider distribution"}
               </h3>
               <BreakdownList rows={snapshot.upstreamBreakdown} lang={lang} />
-            </GlassCard>
+            </Surface>
           </div>
 
-          <GlassCard className="p-4" hover={false}>
+          <Surface className="p-4" hover={false}>
             <div className="mb-3 flex items-center justify-between gap-2">
               <h3 className="flex items-center gap-2 text-sm">
                 <Boxes className="size-4" />
@@ -226,11 +228,11 @@ export function Analytics() {
               </Badge>
             </div>
             <BreakdownList rows={snapshot.strategyBreakdown} lang={lang} showSaved={false} />
-          </GlassCard>
+          </Surface>
         </TabsContent>
 
         <TabsContent value="history" className="mt-3 space-y-4">
-          <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+          <MetricStrip>
             <SummaryCard
               label={lang === "zh" ? "请求记录" : "Request records"}
               value={snapshot.hasRequests ? nf(snapshot.requestCount) : unavailableValue}
@@ -247,9 +249,9 @@ export function Analytics() {
               label={lang === "zh" ? "请求错误" : "Request errors"}
               value={snapshot.hasRequests ? nf(snapshot.errorCount) : unavailableValue}
             />
-          </div>
+          </MetricStrip>
 
-          <GlassCard className="p-4" hover={false}>
+          <Surface className="p-4" hover={false}>
             <h3 className="mb-3 text-sm">{lang === "zh" ? "近 30 日有记录日期" : "Recorded days in the latest 30-day window"}</h3>
             {snapshot.trend30d.length > 0 ? (
               <div className="h-56" data-testid="analytics-trend">
@@ -271,9 +273,9 @@ export function Analytics() {
                 detail={lang === "zh" ? "只有带有效时间戳的真实请求才会进入趋势" : "Only real requests with valid timestamps appear here"}
               />
             )}
-          </GlassCard>
+          </Surface>
 
-          <GlassCard className="p-4" hover={false}>
+          <Surface className="p-4" hover={false}>
             <h3 className="mb-3 text-sm">{lang === "zh" ? "日期汇总" : "Daily summary"}</h3>
             {snapshot.trend30d.length > 0 ? (
               <div className="overflow-x-auto">
@@ -302,11 +304,11 @@ export function Analytics() {
                 detail={lang === "zh" ? "连接本地服务并产生真实请求后显示" : "Connect the local service and send real requests"}
               />
             )}
-          </GlassCard>
+          </Surface>
         </TabsContent>
 
         <TabsContent value="parity" className="mt-3">
-          <GlassCard className="p-4" hover={false}>
+          <Surface className="p-4" hover={false}>
             <h3 className="mb-1 text-sm">{lang === "zh" ? "当前数据覆盖" : "Current data coverage"}</h3>
             <p className="mb-3 text-xs text-muted-foreground">
               {lang === "zh"
@@ -315,7 +317,7 @@ export function Analytics() {
             </p>
             <div className="grid gap-2 sm:grid-cols-2">
               {coverageRows(snapshot, lang).map((item) => (
-                <div key={item.label} className="glass-inset flex items-center justify-between gap-2 p-2 text-sm">
+                <div key={item.label} className="flat-inset flex items-center justify-between gap-2 p-2 text-sm">
                   <span>{item.label}</span>
                   <Badge variant={item.available ? "default" : "secondary"}>
                     {item.available
@@ -325,7 +327,7 @@ export function Analytics() {
                 </div>
               ))}
             </div>
-          </GlassCard>
+          </Surface>
         </TabsContent>
       </Tabs>
     </div>
@@ -348,19 +350,17 @@ function Metric({
   color: string;
 }) {
   return (
-    <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: index * 0.035 }}>
-      <GlassCard className="h-full min-w-0 p-3.5" hover={false}>
-        <div className="flex items-center gap-1.5 text-xs text-muted-foreground">{icon}{label}</div>
-        <div className="mt-1.5 text-xl font-semibold tracking-tight" style={{ color }}>{value}</div>
-        <div className="mt-0.5 truncate text-xs text-muted-foreground" title={detail}>{detail}</div>
-      </GlassCard>
+    <motion.div data-analytics-metric initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: index * 0.035 }}>
+      <div className="flex items-center gap-1.5 text-xs text-muted-foreground">{icon}{label}</div>
+      <div className="mt-1.5 text-xl font-semibold tracking-tight" style={{ color }}>{value}</div>
+      <div className="mt-0.5 truncate text-xs text-muted-foreground" title={detail}>{detail}</div>
     </motion.div>
   );
 }
 
 function Summary({ label, value }: { label: string; value: string }) {
   return (
-    <div className="glass-inset p-2.5">
+    <div className="flat-inset p-2.5">
       <div className="text-xs text-muted-foreground">{label}</div>
       <div className="mt-1 text-base font-semibold">{value}</div>
     </div>
@@ -369,10 +369,10 @@ function Summary({ label, value }: { label: string; value: string }) {
 
 function SummaryCard({ label, value }: { label: string; value: string }) {
   return (
-    <GlassCard className="p-3.5" hover={false}>
+    <div>
       <div className="text-xs text-muted-foreground">{label}</div>
       <div className="mt-1 text-lg font-semibold">{value}</div>
-    </GlassCard>
+    </div>
   );
 }
 
@@ -397,7 +397,7 @@ function BreakdownList({
   return (
     <div className="space-y-2.5">
       {rows.map((row) => (
-        <div key={row.label} className="glass-inset p-2.5">
+        <div key={row.label} className="flat-inset p-2.5">
           <div className="flex items-center justify-between gap-3 text-sm">
             <span className="min-w-0 truncate">{row.label}</span>
             <span className="shrink-0 text-xs text-muted-foreground">
@@ -456,7 +456,7 @@ function analyticsSourceLabel(state: string, hasRequests: boolean, lang: "zh" | 
 function analyticsStatusDetail(state: string, hasRequests: boolean, lang: "zh" | "en") {
   if (state === "verified" && hasRequests) {
     return lang === "zh"
-      ? "所有指标由同一份 d-token 本地请求快照生成，不混用示例或补零数据。"
+      ? "所有指标由同一份 d-token 本地请求快照生成，缺失字段保持为空。"
       : "Every metric is generated from one local d-token request snapshot.";
   }
   if (state === "verified") {

@@ -228,7 +228,7 @@ async fn optical_preview_records_metadata_only_event() {
 }
 
 #[tokio::test]
-async fn configured_active_intent_never_claims_an_implemented_active_transform() {
+async fn configured_active_intent_remains_gated_without_route_and_attestation() {
     let mut config = DtokenConfig::empty();
     config.optical.global_policy.enabled = true;
     config.optical.global_policy.allow_active = true;
@@ -266,16 +266,19 @@ async fn configured_active_intent_never_claims_an_implemented_active_transform()
         let payload = response_json(response).await;
         assert_eq!(payload[expected_field], false);
         if path.ends_with("/status") {
+            assert_eq!(payload["configured_mode"], "full_experimental");
+            assert_eq!(payload["effective_mode"], "shadow_preview");
             assert_eq!(payload["default_mode"], "shadow_preview");
             assert_eq!(payload["public_summary_only"], true);
         } else {
             assert_eq!(payload["max_mode"], "shadow_preview");
+            assert_eq!(payload["public_summary_only"], true);
         }
     }
 }
 
 #[tokio::test]
-async fn lifecycle_counts_only_registry_verified_snapshots_as_active() {
+async fn lifecycle_rejects_unsigned_runtime_snapshots() {
     let valid = dtoken_compress::optical::experimental_anthropic_active_snapshot(
         "valid-snapshot",
         1,
@@ -306,9 +309,9 @@ async fn lifecycle_counts_only_registry_verified_snapshots_as_active() {
     assert_eq!(response.status(), StatusCode::OK);
     let payload = response_json(response).await;
     assert_eq!(payload["configured_snapshots"], 2);
-    assert_eq!(payload["active_snapshots"], 1);
-    assert_eq!(payload["verified_rules"], 1);
-    assert_eq!(payload["rejected_rules"], 1);
+    assert_eq!(payload["active_snapshots"], 0);
+    assert_eq!(payload["verified_rules"], 0);
+    assert_eq!(payload["rejected_rules"], 2);
 }
 
 #[tokio::test]
@@ -346,6 +349,7 @@ async fn recent_optical_events_redact_legacy_or_corrupt_metadata_at_read_boundar
             "provider_id": "private-provider",
             "base64": secret
         }),
+        context_accounting: None,
     };
     let encoded = serde_json::to_string(&event).expect("event serializes");
     fs::write(temp_dir.join("events.jsonl"), format!("{encoded}\n"))

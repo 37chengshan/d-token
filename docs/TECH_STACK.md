@@ -33,7 +33,7 @@ Electron 仅是重大技术阻断时的备选，不是并行主路线。Python �
 正式代码位于 `code/crates/*` 与 `code/apps/desktop/src-tauri`，负责：
 
 1. OpenAI/Anthropic 本地协议入口与流式转发。
-2. Headroom-derived compression、CCR、memory、output shaping 和 Optical shadow planner。
+2. Headroom-derived compression、CCR、memory、output shaping，以及 Rust-native Protected Context IR、semantic/Optical hybrid engine、PNG renderer 和 validator。
 3. Provider/Route/Instance 决策、凭据短生命周期解引用和 upstream 转发。
 4. Event Ledger、metrics、stats、history、export 和 Doctor。
 5. 配置计划、备份、应用、验证、回退与进程生命周期。
@@ -78,7 +78,7 @@ Electron 仅是重大技术阻断时的备选，不是并行主路线。Python �
 
 1. Xcode Command Line Tools，Apple Silicon/Intel/universal 构建策略。
 2. Keychain、quarantine/xattr、受管进程、`.app`/DMG、签名与 notarization。
-3. 当前 macOS 平台覆盖文件启用 `.app` 与 DMG；CI 可选签名/notarization，但完成发布仍需把同一候选 commit、artifact hash 与安装后实机证据绑定。
+3. 当前 macOS 平台覆盖文件启用 `.app` 与 DMG；公开发布 workflow 强制签名、notarization、staple、Gatekeeper 与 SHA-256 manifest，但完成发布仍需真实 Apple 凭据和同一候选 commit 的执行证据。
 
 ## 6. Rust external binary 管理
 
@@ -96,9 +96,9 @@ Electron 仅是重大技术阻断时的备选，不是并行主路线。Python �
 | 安装/配置事务 | 有计划、draft、backup/rollback 基础，尚未覆盖全部原子写入和故障恢复 | 权限、磁盘满、并发修改、验证失败等故障注入全部可恢复 |
 | Runtime truth | Dashboard/Tauri 已能读取 d-token local service，但部分桌面聚合数据仍需去硬编码 | 单一 evidence contract，UI 不再把偏好或预览显示成运行事实 |
 | 持久化 | JSONL 可用，SQLite/轮转/坏行隔离未闭环 | 长期运行、损坏恢复、并发和导出门禁通过 |
-| macOS 发布 | bundle workflow、可选签名/notarization 已配置 | 同一 commit 的签名产物、hash、安装后运行和真实 OpenCode 证据 |
-| Windows 发布 | UI 和 Rust 代码共享，安装包实机证据不足 | Windows CI/安装包、凭据、路径、回退与视觉一致性验收 |
-| Optical | 当前仅 shadow preview/metadata | renderer、patcher、post-validator、rollback、fidelity gate 完成前禁止 active transform |
+| macOS 发布 | fail-closed bundle/sign/notarize/Gatekeeper/hash workflow 已配置 | 真实 Apple 凭据执行并绑定同一 commit 的安装后运行和 OpenCode 证据 |
+| Windows 发布 | fail-closed Authenticode/NSIS 安装启动/hash workflow 已配置，实机证据不足 | Windows runner 真实签名、凭据、路径、回退与视觉一致性验收 |
+| Optical | active 后端链已实现但默认关闭，仅限同协议 Anthropic closed historical tool result | 真实模型 signed eval、同候选版 routed evidence 和全部资源/安全门通过前禁止默认 active |
 
 ## 8. 结论
 

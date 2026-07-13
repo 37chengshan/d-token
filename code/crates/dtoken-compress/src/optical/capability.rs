@@ -1,10 +1,16 @@
 use std::collections::{HashMap, HashSet};
 
+use base64::Engine as _;
 use dtoken_types::{
     CapabilityStatus, OpticalCapabilityLifecycle, OpticalCapabilitySnapshot, OpticalEndpoint,
-    OpticalMode, OpticalModelCapability, Protocol, ProviderFamily, VisionExactnessClass,
-    VisionTokenFormula,
+    OpticalEvalArtifact, OpticalMode, OpticalModelCapability, OpticalRuntimeConfig,
+    OpticalTrustedAuthority, Protocol, ProviderFamily, VisionExactnessClass, VisionTokenFormula,
 };
+use ed25519_dalek::{Signature, Verifier, VerifyingKey};
+use sha2::{Digest, Sha256};
+
+use super::render_geometry::geometry_for_capability;
+use super::renderer::{font_digest, profile_digest};
 
 #[derive(Debug, Clone)]
 pub struct ResolvedOpticalCapability {
@@ -26,6 +32,17 @@ pub enum CapabilityRegistryError {
     CapabilityNotSupported,
     CapabilityIdentityMismatch,
     CapabilityPolicyMismatch,
+    MissingAttestation,
+    UnsupportedAttestationVersion,
+    UnknownAuthority,
+    InvalidAuthorityKey,
+    InvalidSignature,
+    AttestationExpired,
+    AttestationNotYetValid,
+    RendererProfileMismatch,
+    FontMismatch,
+    EvalArtifactMissing,
+    EvalArtifactRejected,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -68,6 +85,53 @@ impl OpticalCapabilityRegistry {
                 _ => {}
             }
             if registry.register_snapshot(snapshot).is_err() {
+                registry.rejected_rules = registry.rejected_rules.saturating_add(1);
+            }
+        }
+        registry
+    }
+
+    pub fn from_runtime_config(config: &OpticalRuntimeConfig, now_ms: u64) -> Self {
+        let mut registry = Self::new();
+        let authorities = config
+            .trusted_authorities
+            .iter()
+            .map(|authority| {
+                (
+                    format!("{}|{}", authority.authority_id, authority.key_id),
+                    authority,
+                )
+            })
+            .collect::<HashMap<_, _>>();
+        let evals = config
+            .eval_artifacts
+            .iter()
+            .map(|artifact| (eval_artifact_digest(artifact), artifact))
+            .collect::<HashMap<_, _>>();
+
+        for snapshot in config.capability_snapshots.iter().cloned() {
+            registry.configured_rules = registry.configured_rules.saturating_add(1);
+            if lifecycle_can_block(&snapshot) {
+                let key = snapshot_identity_key(&snapshot);
+                registry
+                    .blocked_through_revision
+                    .entry(key)
+                    .and_modify(|revision| *revision = (*revision).max(snapshot.revision))
+                    .or_insert(snapshot.revision);
+            }
+            match snapshot.lifecycle {
+                OpticalCapabilityLifecycle::Revoked => {
+                    registry.revoked_rules = registry.revoked_rules.saturating_add(1)
+                }
+                OpticalCapabilityLifecycle::Superseded => {
+                    registry.superseded_rules = registry.superseded_rules.saturating_add(1)
+                }
+                OpticalCapabilityLifecycle::Active => {}
+            }
+            if registry
+                .register_attested_snapshot(snapshot, &authorities, &evals, now_ms)
+                .is_err()
+            {
                 registry.rejected_rules = registry.rejected_rules.saturating_add(1);
             }
         }
@@ -169,6 +233,17 @@ impl OpticalCapabilityRegistry {
         Ok(())
     }
 
+    fn register_attested_snapshot(
+        &mut self,
+        snapshot: OpticalCapabilitySnapshot,
+        authorities: &HashMap<String, &OpticalTrustedAuthority>,
+        evals: &HashMap<String, &OpticalEvalArtifact>,
+        now_ms: u64,
+    ) -> Result<(), CapabilityRegistryError> {
+        verify_snapshot_attestation(&snapshot, authorities, evals, now_ms)?;
+        self.register_snapshot(snapshot)
+    }
+
     pub fn register_verified(&mut self, capability: OpticalModelCapability) {
         let model_base = capability.model_base.clone().unwrap_or_default();
         let snapshot = OpticalCapabilitySnapshot {
@@ -182,6 +257,7 @@ impl OpticalCapabilityRegistry {
             supersedes_snapshot_id: None,
             provider_family: capability.provider_family.clone(),
             provider_id: capability.provider_id.clone(),
+            route_id: None,
             model_base,
             endpoint: capability.endpoint.clone(),
             capability,
@@ -190,6 +266,7 @@ impl OpticalCapabilityRegistry {
             notes: Some(
                 "compatibility helper; production should load versioned snapshots".to_string(),
             ),
+            attestation: None,
         };
         let _ = self.register_snapshot(snapshot);
     }
@@ -198,24 +275,20 @@ impl OpticalCapabilityRegistry {
         &self,
         provider_family: &ProviderFamily,
         provider_id: Option<&str>,
+        route_id: Option<&str>,
         endpoint: &OpticalEndpoint,
         model_base: &str,
     ) -> Option<&OpticalCapabilitySnapshot> {
-        let exact_identity =
-            capability_identity_key(provider_family, provider_id, endpoint, model_base);
-        let wildcard_identity =
-            capability_identity_key(provider_family, None, endpoint, model_base);
-        let blocked_through = self
-            .blocked_through_revision
-            .get(&exact_identity)
-            .copied()
-            .unwrap_or_default()
-            .max(
-                self.blocked_through_revision
-                    .get(&wildcard_identity)
-                    .copied()
-                    .unwrap_or_default(),
-            );
+        let blocked_through = [
+            capability_identity_key(provider_family, provider_id, route_id, endpoint, model_base),
+            capability_identity_key(provider_family, None, route_id, endpoint, model_base),
+            capability_identity_key(provider_family, provider_id, None, endpoint, model_base),
+            capability_identity_key(provider_family, None, None, endpoint, model_base),
+        ]
+        .into_iter()
+        .filter_map(|identity| self.blocked_through_revision.get(&identity).copied())
+        .max()
+        .unwrap_or_default();
         self.verified_rules
             .iter()
             .filter(|snapshot| {
@@ -230,6 +303,11 @@ impl OpticalCapabilityRegistry {
                         .as_deref()
                         .map(|expected| Some(expected) == provider_id)
                         .unwrap_or(true)
+                    && snapshot
+                        .route_id
+                        .as_deref()
+                        .map(|expected| Some(expected) == route_id)
+                        .unwrap_or(true)
                     && snapshot.capability.status == CapabilityStatus::Supported
             })
             .max_by_key(|snapshot| snapshot.revision)
@@ -239,13 +317,15 @@ impl OpticalCapabilityRegistry {
 fn capability_identity_key(
     provider_family: &ProviderFamily,
     provider_id: Option<&str>,
+    route_id: Option<&str>,
     endpoint: &OpticalEndpoint,
     model_base: &str,
 ) -> String {
     format!(
-        "{:?}|{}|{:?}|{}",
+        "{:?}|{}|{}|{:?}|{}",
         provider_family,
         provider_id.unwrap_or("*"),
+        route_id.unwrap_or("*"),
         endpoint,
         normalize_model_base(model_base)
     )
@@ -255,6 +335,7 @@ fn snapshot_identity_key(snapshot: &OpticalCapabilitySnapshot) -> String {
     capability_identity_key(
         &snapshot.provider_family,
         snapshot.provider_id.as_deref(),
+        snapshot.route_id.as_deref(),
         &snapshot.endpoint,
         &snapshot.model_base,
     )
@@ -316,6 +397,16 @@ fn capability_policy_is_verified(capability: &OpticalModelCapability) -> bool {
             && pixels_per_token > 0.0
             && safety_margin_percent.is_finite()
             && safety_margin_percent >= 100.0
+    ) || matches!(
+        capability.vision_token_formula,
+        VisionTokenFormula::PatchGrid {
+            patch_size_px,
+            max_tokens,
+            safety_margin_percent,
+        } if patch_size_px > 0
+            && max_tokens > 0
+            && safety_margin_percent.is_finite()
+            && safety_margin_percent >= 100.0
     );
 
     capability.max_mode == OpticalMode::ToolResultsOnly
@@ -347,9 +438,10 @@ pub fn experimental_anthropic_active_capability(model_base: &str) -> OpticalMode
         max_images_per_request: 10,
         max_image_width_px: 1_568,
         max_image_height_px: 728,
-        vision_token_formula: VisionTokenFormula::PixelAreaDivisor {
-            pixels_per_token: 750.0,
-            safety_margin_percent: 120.0,
+        vision_token_formula: VisionTokenFormula::PatchGrid {
+            patch_size_px: 28,
+            max_tokens: 1_568,
+            safety_margin_percent: 105.0,
         },
         exactness_class: VisionExactnessClass::TechnicalReadable,
     }
@@ -374,13 +466,167 @@ pub fn experimental_anthropic_active_snapshot(
         supersedes_snapshot_id: None,
         provider_family: ProviderFamily::Anthropic,
         provider_id: None,
+        route_id: None,
         model_base: normalize_model_base(model_base),
         endpoint: OpticalEndpoint::AnthropicMessages,
         capability,
         verified_at_ms,
         source: source.to_string(),
         notes: Some("experimental; requires explicit route confirmation".to_string()),
+        attestation: None,
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn experimental_anthropic_active_snapshot_for_route(
+    snapshot_id: &str,
+    revision: u64,
+    provider_id: &str,
+    route_id: &str,
+    model_base: &str,
+    verified_at_ms: u64,
+    source: &str,
+) -> OpticalCapabilitySnapshot {
+    let mut snapshot = experimental_anthropic_active_snapshot(
+        snapshot_id,
+        revision,
+        model_base,
+        verified_at_ms,
+        source,
+    );
+    let provider_id = provider_id.trim().to_string();
+    snapshot.provider_id = Some(provider_id.clone());
+    snapshot.route_id = Some(route_id.trim().to_string());
+    snapshot.capability.provider_id = Some(provider_id);
+    snapshot
+}
+
+pub fn capability_attestation_payload(snapshot: &OpticalCapabilitySnapshot) -> Vec<u8> {
+    let Some(attestation) = snapshot.attestation.as_ref() else {
+        return Vec::new();
+    };
+    serde_json::to_vec(&serde_json::json!({
+        "schema_version": snapshot.schema_version,
+        "snapshot_id": snapshot.snapshot_id,
+        "revision": snapshot.revision,
+        "provider_family": snapshot.provider_family,
+        "provider_id": snapshot.provider_id,
+        "route_id": snapshot.route_id,
+        "model_base": snapshot.model_base,
+        "endpoint": snapshot.endpoint,
+        "capability": snapshot.capability,
+        "verified_at_ms": snapshot.verified_at_ms,
+        "source": snapshot.source,
+        "attestation": {
+            "schema_version": attestation.schema_version,
+            "algorithm": attestation.algorithm,
+            "authority_id": attestation.authority_id,
+            "key_id": attestation.key_id,
+            "issued_at_ms": attestation.issued_at_ms,
+            "expires_at_ms": attestation.expires_at_ms,
+            "renderer_profile_digest": attestation.renderer_profile_digest,
+            "font_digest": attestation.font_digest,
+            "eval_artifact_digest": attestation.eval_artifact_digest
+        }
+    }))
+    .unwrap_or_default()
+}
+
+pub fn eval_artifact_digest(artifact: &OpticalEvalArtifact) -> String {
+    format!(
+        "{:x}",
+        Sha256::digest(serde_json::to_vec(artifact).unwrap_or_default())
+    )
+}
+
+fn verify_snapshot_attestation(
+    snapshot: &OpticalCapabilitySnapshot,
+    authorities: &HashMap<String, &OpticalTrustedAuthority>,
+    evals: &HashMap<String, &OpticalEvalArtifact>,
+    now_ms: u64,
+) -> Result<(), CapabilityRegistryError> {
+    let attestation = snapshot
+        .attestation
+        .as_ref()
+        .ok_or(CapabilityRegistryError::MissingAttestation)?;
+    if snapshot
+        .provider_id
+        .as_deref()
+        .map(str::trim)
+        .is_none_or(str::is_empty)
+        || snapshot
+            .route_id
+            .as_deref()
+            .map(str::trim)
+            .is_none_or(str::is_empty)
+    {
+        return Err(CapabilityRegistryError::InvalidIdentity);
+    }
+    if attestation.schema_version != 1 {
+        return Err(CapabilityRegistryError::UnsupportedAttestationVersion);
+    }
+    if attestation.algorithm != "ed25519" {
+        return Err(CapabilityRegistryError::InvalidSignature);
+    }
+    if attestation.issued_at_ms > now_ms {
+        return Err(CapabilityRegistryError::AttestationNotYetValid);
+    }
+    if snapshot.verified_at_ms > attestation.issued_at_ms {
+        return Err(CapabilityRegistryError::AttestationNotYetValid);
+    }
+    if attestation.expires_at_ms <= now_ms || attestation.expires_at_ms <= attestation.issued_at_ms
+    {
+        return Err(CapabilityRegistryError::AttestationExpired);
+    }
+    let authority = authorities
+        .get(&format!(
+            "{}|{}",
+            attestation.authority_id, attestation.key_id
+        ))
+        .ok_or(CapabilityRegistryError::UnknownAuthority)?;
+    let key = base64::engine::general_purpose::STANDARD
+        .decode(&authority.public_key_base64)
+        .map_err(|_| CapabilityRegistryError::InvalidAuthorityKey)?;
+    let key: [u8; 32] = key
+        .try_into()
+        .map_err(|_| CapabilityRegistryError::InvalidAuthorityKey)?;
+    let verifying_key =
+        VerifyingKey::from_bytes(&key).map_err(|_| CapabilityRegistryError::InvalidAuthorityKey)?;
+    let signature = base64::engine::general_purpose::STANDARD
+        .decode(&attestation.signature_base64)
+        .map_err(|_| CapabilityRegistryError::InvalidSignature)?;
+    let signature =
+        Signature::from_slice(&signature).map_err(|_| CapabilityRegistryError::InvalidSignature)?;
+    verifying_key
+        .verify(&capability_attestation_payload(snapshot), &signature)
+        .map_err(|_| CapabilityRegistryError::InvalidSignature)?;
+
+    let geometry = geometry_for_capability(&snapshot.capability)
+        .ok_or(CapabilityRegistryError::RendererProfileMismatch)?;
+    if attestation.renderer_profile_digest != profile_digest(&geometry) {
+        return Err(CapabilityRegistryError::RendererProfileMismatch);
+    }
+    if attestation.font_digest != font_digest() {
+        return Err(CapabilityRegistryError::FontMismatch);
+    }
+    let eval = evals
+        .get(&attestation.eval_artifact_digest)
+        .ok_or(CapabilityRegistryError::EvalArtifactMissing)?;
+    if eval.schema_version != 1
+        || !eval.passed
+        || eval.evaluated_at_ms == 0
+        || eval.evaluated_at_ms > attestation.issued_at_ms
+        || eval.sample_count < 20
+        || eval.exact_failures != 0
+        || eval.unsafe_failures != 0
+        || normalize_model_base(&eval.model_base) != normalize_model_base(&snapshot.model_base)
+        || eval.endpoint != snapshot.endpoint
+        || eval.renderer_profile_digest != attestation.renderer_profile_digest
+        || eval.font_digest != attestation.font_digest
+    {
+        return Err(CapabilityRegistryError::EvalArtifactRejected);
+    }
+    Ok(())
 }
 
 pub fn normalize_model_base(model: &str) -> String {
@@ -436,6 +682,24 @@ pub fn resolve_model_capability_record_with_registry(
     endpoint: OpticalEndpoint,
     registry: &OpticalCapabilityRegistry,
 ) -> ResolvedOpticalCapability {
+    resolve_model_capability_record_for_route_with_registry(
+        protocol,
+        provider_id,
+        None,
+        model,
+        endpoint,
+        registry,
+    )
+}
+
+pub fn resolve_model_capability_record_for_route_with_registry(
+    protocol: Option<&Protocol>,
+    provider_id: Option<&str>,
+    route_id: Option<&str>,
+    model: Option<&str>,
+    endpoint: OpticalEndpoint,
+    registry: &OpticalCapabilityRegistry,
+) -> ResolvedOpticalCapability {
     let provider_family = provider_family_for_protocol(protocol);
     let Some(model) = model else {
         return ResolvedOpticalCapability {
@@ -451,8 +715,13 @@ pub fn resolve_model_capability_record_with_registry(
     };
 
     let model_base = normalize_model_base(model);
-    if let Some(snapshot) = registry.resolve(&provider_family, provider_id, &endpoint, &model_base)
-    {
+    if let Some(snapshot) = registry.resolve(
+        &provider_family,
+        provider_id,
+        route_id,
+        &endpoint,
+        &model_base,
+    ) {
         let mut capability = snapshot.capability.clone();
         capability.provider_id = provider_id.map(ToOwned::to_owned);
         capability.model_base = Some(model_base);
@@ -512,6 +781,73 @@ pub fn resolve_model_capability_record_with_registry(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ed25519_dalek::{Signer, SigningKey};
+
+    fn signed_runtime_config() -> OpticalRuntimeConfig {
+        let mut snapshot = experimental_anthropic_active_snapshot_for_route(
+            "signed-route-capability-v1",
+            1,
+            "anthropic-main",
+            "route-main",
+            "claude-fable-5",
+            100,
+            "fixture-eval",
+        );
+        let geometry = geometry_for_capability(&snapshot.capability)
+            .expect("experimental capability must have geometry");
+        let eval = OpticalEvalArtifact {
+            schema_version: 1,
+            artifact_id: "eval-v1".to_string(),
+            model_base: "claude-fable-5".to_string(),
+            endpoint: OpticalEndpoint::AnthropicMessages,
+            renderer_profile_digest: profile_digest(&geometry),
+            font_digest: font_digest(),
+            corpus_digest: "fixture-corpus-digest".to_string(),
+            evaluated_at_ms: 90,
+            sample_count: 20,
+            exact_failures: 0,
+            unsafe_failures: 0,
+            baseline_passes: 20,
+            candidate_passes: 20,
+            quality_delta: 0.0,
+            signed_input_token_delta: 10_000,
+            signed_cost_delta_microusd: 5_000,
+            latency_p95_delta_ms: 100,
+            passed: true,
+        };
+        snapshot.attestation = Some(dtoken_types::OpticalCapabilityAttestation {
+            schema_version: 1,
+            algorithm: "ed25519".to_string(),
+            authority_id: "fixture-authority".to_string(),
+            key_id: "fixture-key-v1".to_string(),
+            issued_at_ms: 150,
+            expires_at_ms: 1_000,
+            renderer_profile_digest: profile_digest(&geometry),
+            font_digest: font_digest(),
+            eval_artifact_digest: eval_artifact_digest(&eval),
+            signature_base64: String::new(),
+        });
+        let signing_key = SigningKey::from_bytes(&[7u8; 32]);
+        let signature = signing_key.sign(&capability_attestation_payload(&snapshot));
+        snapshot
+            .attestation
+            .as_mut()
+            .expect("attestation exists")
+            .signature_base64 =
+            base64::engine::general_purpose::STANDARD.encode(signature.to_bytes());
+
+        OpticalRuntimeConfig {
+            capability_snapshots: vec![snapshot],
+            trusted_authorities: vec![OpticalTrustedAuthority {
+                authority_id: "fixture-authority".to_string(),
+                key_id: "fixture-key-v1".to_string(),
+                public_key_base64: base64::engine::general_purpose::STANDARD
+                    .encode(signing_key.verifying_key().as_bytes()),
+            }],
+            eval_artifacts: vec![eval],
+            ..Default::default()
+        }
+    }
 
     #[test]
     fn normalize_model_base_strips_variant_tags() {
@@ -808,5 +1144,37 @@ mod tests {
 
         assert_eq!(capability.status, CapabilityStatus::Unknown);
         assert!(!capability.supports_image_input);
+    }
+
+    #[test]
+    fn production_registry_requires_valid_route_bound_attestation_and_eval() {
+        let valid_config = signed_runtime_config();
+        let registry = OpticalCapabilityRegistry::from_runtime_config(&valid_config, 200);
+        assert_eq!(registry.configured_rule_count(), 1);
+        assert_eq!(registry.verified_rule_count(), 1);
+        assert_eq!(registry.rejected_rule_count(), 0);
+
+        let resolved = resolve_model_capability_record_for_route_with_registry(
+            Some(&Protocol::Anthropic),
+            Some("anthropic-main"),
+            Some("route-main"),
+            Some("claude-fable-5"),
+            OpticalEndpoint::AnthropicMessages,
+            &registry,
+        );
+        assert_eq!(resolved.revision, Some(1));
+        assert_eq!(resolved.capability.status, CapabilityStatus::Supported);
+
+        let mut unsigned_config = valid_config.clone();
+        unsigned_config.capability_snapshots[0].attestation = None;
+        let unsigned = OpticalCapabilityRegistry::from_runtime_config(&unsigned_config, 200);
+        assert_eq!(unsigned.verified_rule_count(), 0);
+        assert_eq!(unsigned.rejected_rule_count(), 1);
+
+        let mut tampered_config = valid_config;
+        tampered_config.capability_snapshots[0].route_id = Some("route-other".to_string());
+        let tampered = OpticalCapabilityRegistry::from_runtime_config(&tampered_config, 200);
+        assert_eq!(tampered.verified_rule_count(), 0);
+        assert_eq!(tampered.rejected_rule_count(), 1);
     }
 }

@@ -1,5 +1,5 @@
 import { Activity, Brain, Database, FileText, Gauge, Route, ShieldCheck, Sparkles } from "lucide-react";
-import { GlassCard } from "./GlassCard";
+import { Surface } from "./Surface";
 import { StatusBadge } from "./StatusBadge";
 import { Badge } from "../ui/badge";
 import { useI18n } from "../../lib/i18n";
@@ -171,7 +171,7 @@ export function CapabilitySummary({ payload, status, compact = false }: Capabili
   ];
 
   return (
-    <GlassCard className={compact ? "p-4" : "p-5"} hover={false}>
+    <Surface className={compact ? "p-4" : "p-5"} hover={false}>
       <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
         <div>
           <h3 className="text-sm font-semibold">{lang === "zh" ? "本地能力状态" : "Local capability status"}</h3>
@@ -179,9 +179,9 @@ export function CapabilitySummary({ payload, status, compact = false }: Capabili
         </div>
         <Badge variant={verified ? "default" : "secondary"}>{capabilitySourceLabel(evidenceState, lang)}</Badge>
       </div>
-      <div className={`grid gap-2 ${compact ? "md:grid-cols-2" : "sm:grid-cols-2 xl:grid-cols-4"}`}>
+      <div className={`grid gap-x-5 ${compact ? "md:grid-cols-2" : "sm:grid-cols-2 xl:grid-cols-4"}`}>
         {rows.map((row) => (
-          <div key={row.key} className="glass-inset p-3">
+          <div key={row.key} data-flat-row className="border-t border-border/60 py-3">
             <div className="flex items-start justify-between gap-2">
               <div className="flex min-w-0 items-center gap-2">
                 <row.icon className="size-4 shrink-0 text-primary" />
@@ -196,7 +196,7 @@ export function CapabilitySummary({ payload, status, compact = false }: Capabili
           </div>
         ))}
       </div>
-    </GlassCard>
+    </Surface>
   );
 }
 

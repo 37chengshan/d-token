@@ -72,6 +72,11 @@ fn missing_target_can_be_planned_applied_and_removed_by_restore() {
     let backup = patcher.backup_prepared(&change).expect("missing backup");
     assert!(!backup.original.exists);
     assert!(backup.content_file.is_none());
+    assert!(!backup.backup_dir.join("original.bin").exists());
+    let loaded = patcher
+        .load_backup(&backup.rollback_id)
+        .expect("missing-file manifest without original.bin is valid");
+    assert!(!loaded.original.exists);
 
     let receipt = patcher
         .apply_prepared(&change, &backup)
@@ -80,13 +85,30 @@ fn missing_target_can_be_planned_applied_and_removed_by_restore() {
         fs::read_to_string(&target).expect("new target content"),
         r#"{"enabled":true}"#
     );
-    patcher
+    let restore = patcher
         .restore_backup(
             &receipt.backup,
             &ExpectedFileState::Hash(change.plan.after_hash.clone()),
         )
         .expect("remove new target during restore");
+    assert!(!restore.restored.exists);
     assert!(!target.exists());
+}
+
+#[test]
+fn existing_target_backup_without_original_bytes_fails_closed() {
+    let root = workspace_tempdir();
+    let target = root.path().join("config.json");
+    fs::write(&target, r#"{"enabled":false}"#).expect("fixture");
+    let patcher = ConfigPatcher::new(root.path().join("backups"));
+    let change = prepare_json(&patcher, &target, r#"{"enabled":true}"#);
+    let backup = patcher.backup_prepared(&change).expect("backup");
+    assert!(backup.original.exists);
+    fs::remove_file(backup.backup_dir.join("original.bin")).expect("remove backup bytes");
+
+    patcher
+        .load_backup(&backup.rollback_id)
+        .expect_err("existing-file manifest without original.bin must fail closed");
 }
 
 #[test]

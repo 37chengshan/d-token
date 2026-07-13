@@ -49,4 +49,29 @@ describe("StatusBar runtime truthfulness", () => {
     expect(summary.doctorLabel).toBe("Not run");
     expect(summary.sourceLabel).toBe("Browser preview");
   });
+
+  it.each([
+    ["stale", "数据已过期", "路由数据已过期", "过期数据"],
+    ["partial", "数据不完整", "路由数据不完整", "不完整数据"],
+  ])("never promotes %s runtime evidence to a connected or healthy state", (status, runtime, route, mode) => {
+    const summary = buildStatusSummary(
+      {
+        source: "dtoken-owned-runtime",
+        desktop_data_source: "dtoken-local-service",
+        routes: [{ id: "must-not-surface" }],
+        stats: { requests: { total: 12, failed: 0 } },
+      },
+      status,
+      new Date(),
+      "",
+    );
+
+    expect(summary.runtimeLabel).toBe(runtime);
+    expect(summary.runtimeHealth).not.toBe("healthy");
+    expect(summary.routeLabel).toBe(route);
+    expect(summary.modeLabel).toBe(mode);
+    expect(summary.requestCount).toBe("—");
+    expect(summary.routeCount).toBe("—");
+    expect(summary.doctorLabel).toBe("需检查");
+  });
 });

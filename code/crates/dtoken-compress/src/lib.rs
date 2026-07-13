@@ -30,6 +30,7 @@ impl CompressionEngine {
             elapsed_us: started.elapsed().as_micros().max(1),
             transforms_applied: Vec::new(),
             body,
+            context_accounting: None,
         })
     }
 
@@ -49,14 +50,24 @@ impl CompressionEngine {
                 elapsed_us: started.elapsed().as_micros().max(1),
                 transforms_applied: Vec::new(),
                 body,
+                context_accounting: None,
             });
         }
 
+        let original_body = body.clone();
         let mut transforms_applied = Vec::new();
         let compressed_body =
             hybrid::apply_safe_text_codec(context, policy, body, &mut transforms_applied);
         let compressed_tokens = estimate_tokens(&compressed_body);
         let tokens_saved = original_tokens.saturating_sub(compressed_tokens);
+        let context_accounting = (!transforms_applied.is_empty()).then(|| {
+            semantic_context_accounting(
+                original_tokens,
+                compressed_tokens,
+                &original_body,
+                &compressed_body,
+            )
+        });
 
         Ok(CompressionResult {
             original_tokens,
@@ -65,7 +76,65 @@ impl CompressionEngine {
             elapsed_us: started.elapsed().as_micros().max(1),
             transforms_applied,
             body: compressed_body,
+            context_accounting,
         })
+    }
+}
+
+fn semantic_context_accounting(
+    original_tokens: usize,
+    compressed_tokens: usize,
+    original_body: &Value,
+    compressed_body: &Value,
+) -> dtoken_types::HybridContextAccounting {
+    let measurement = |tokens: usize, body: &Value| dtoken_types::UsageMeasurement {
+        evidence: dtoken_types::UsageEvidence {
+            kind: dtoken_types::UsageEvidenceKind::LocalEstimate,
+            source_revision: "semantic-safe-codec-v1".to_string(),
+        },
+        usage: dtoken_types::UsageVector {
+            input: dtoken_types::InputTokenUsage {
+                normalized_total: Some(u64::try_from(tokens).unwrap_or(u64::MAX)),
+                modality: dtoken_types::ModalityTokens {
+                    text: Some(u64::try_from(tokens).unwrap_or(u64::MAX)),
+                    ..Default::default()
+                },
+                cache: dtoken_types::CacheTokens {
+                    uncached: Some(u64::try_from(tokens).unwrap_or(u64::MAX)),
+                    ..Default::default()
+                },
+            },
+            output_tokens: None,
+            bytes: dtoken_types::PayloadByteUsage {
+                request_json: Some(
+                    u64::try_from(serde_json::to_vec(body).unwrap_or_default().len())
+                        .unwrap_or(u64::MAX),
+                ),
+                wire_body: Some(
+                    u64::try_from(serde_json::to_vec(body).unwrap_or_default().len())
+                        .unwrap_or(u64::MAX),
+                ),
+                ..Default::default()
+            },
+            cost_microusd: None,
+        },
+    };
+    let estimated = dtoken_types::UsageComparison::from_measurements(
+        measurement(original_tokens, original_body),
+        measurement(compressed_tokens, compressed_body),
+    );
+    dtoken_types::HybridContextAccounting {
+        schema_version: 1,
+        disposition: dtoken_types::OptimizationDisposition::SemanticActive,
+        sent_payload: dtoken_types::SentPayloadVariant::Optimized,
+        upstream_state: dtoken_types::UpstreamSendState::NotAttempted,
+        estimated: Some(estimated),
+        provider_counterfactual_baseline: None,
+        provider_actual_sent: dtoken_types::ProviderActualUsage::default(),
+        provider_reconciled_input_savings: None,
+        paired_actual: None,
+        attribution_basis: dtoken_types::SavingsAttribution::None,
+        fallback_reason_code: None,
     }
 }
 

@@ -1,6 +1,6 @@
 # d-token 文档组织规范
 
-更新时间：2026-07-11 晚间
+更新时间：2026-07-12
 
 ## 1. 文档层级
 
@@ -40,6 +40,7 @@ docs/
 ├── experiments/      仍在执行的实验计划
 ├── optical/          Optical 当前架构、状态、测试和发布门槛
 ├── research/         仍有效的外部参考，不是产品事实源
+├── legal/            第三方版权、许可证、固定来源与修改声明
 ├── history/          里程碑、阶段交付和历史审查证据
 └── archive/          已退出执行线的旧计划、旧矩阵、旧研究和过程文件
 ```
@@ -69,6 +70,7 @@ docs/
 - `docs/optical/test-matrix.md`
 - `docs/optical/release-gates.md`
 - `docs/optical/review-round-5.md`
+- `docs/legal/THIRD_PARTY_NOTICES.md`
 
 ## 5. 历史与归档的区别
 

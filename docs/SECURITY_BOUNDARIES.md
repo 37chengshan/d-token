@@ -128,7 +128,17 @@ Dashboard 中永远不明文展示：
 5. sidecar 异常退出必须可见。
 6. sidecar 不允许长期无记录后台残留。
 
-## 8. 数据保留
+## 8. Hybrid Context Optimization 安全
+
+1. 当前轮、近期对话、system/developer、tool schema、tool id/arguments、开放工具状态、代码/diff、secret/exact 内容不得只存在于图像。
+2. Optical active 默认关闭，只允许同协议 Anthropic closed historical low-risk tool result；未知模型、跨协议或身份不匹配必须 fail closed。
+3. active authority 必须是 Ed25519 签名 Capability，精确绑定 provider、route、model、endpoint、renderer profile、font、eval artifact 和有效期。
+4. renderer 必须执行 deadline、取消、并发、候选字符、页数、像素、PNG、编码后图片、outbound body 与内存预算。
+5. patcher 只能消费 sealed approved target；post-transform validator 必须从实际图片 envelope/base64/PNG/digest 推导证据，并证明 approved path 外 JSON 完全不变。
+6. shadow、passthrough 与 pre-send fallback 使用原始请求 bytes；upstream send commit 后禁止自动原文重试，避免双计费和重复工具副作用。
+7. Ledger、日志、metrics、Doctor 与导出只记录脱敏元数据，不记录 prompt、tool result、PNG、编码图片或密钥材料。
+
+## 9. 数据保留
 
 默认保留：
 
@@ -151,7 +161,7 @@ Dashboard 中永远不明文展示：
 3. 可一键删除。
 4. 导出时脱敏。
 
-## 9. 合规实现原则
+## 10. 合规实现原则
 
 1. d-token 只做用户本地开发环境中的压缩、路由、观测和配置管理。
 2. d-token 不替用户规避第三方平台条款。

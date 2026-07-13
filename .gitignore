@@ -53,6 +53,7 @@ Thumbs.db
 # Tauri generated
 src-tauri/target/
 /code/apps/desktop/src-tauri/binaries/dtoken-proxy-*-apple-darwin
+/code/apps/desktop/src-tauri/binaries/dtoken-proxy-*-pc-windows-*.exe
 /code/apps/desktop/src-tauri/gen/schemas/desktop-schema 2.json
 /code/apps/desktop/src-tauri/gen/schemas/macOS-schema.json
 /code/apps/desktop/src-tauri/icons/android/

@@ -21,4 +21,18 @@ describe("runtime evidence classification", () => {
       error: "连接被拒绝",
     });
   });
+
+  it.each([
+    ["stale", { data_status: "stale" }],
+    ["partial", { partial: true }],
+  ] as const)("preserves %s freshness instead of promoting it to live runtime", (status, marker) => {
+    expect(classifyRuntimePayload({
+      source: "dtoken-owned-runtime",
+      desktop_data_source: "dtoken-local-service",
+      ...marker,
+    })).toEqual({
+      status,
+      error: "d-token 本地服务暂不可用",
+    });
+  });
 });

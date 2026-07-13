@@ -1,6 +1,6 @@
 # Optical / Hybrid Context Optimization 发布门槛
 
-更新日期：2026-07-11
+更新日期：2026-07-12
 
 ## 1. Shadow Release Gates
 
@@ -54,7 +54,7 @@ Duplicate snapshot IDs fail closed.
 Unknown schema versions fail closed.
 ```
 
-当前状态：基础生命周期 PASS；authority、signature、trust source、持久化撤销管理 API 尚未完成。
+当前状态：加载路径已实现 Ed25519 authority/signature、有效期、精确 provider/route/model/endpoint 绑定，以及 renderer/font/eval digest 校验；无签名、篡改或 eval 不合格均 fail closed。持久化 lifecycle 写 API 仍未实现。
 
 ## 3. Stable Evidence Gates
 
@@ -69,7 +69,7 @@ Before/after evidence uses the same fingerprint kind and version.
 Canonical JSON v1 is not presented as RFC 8785/JCS unless formally implemented.
 ```
 
-当前状态：RawRequestBytes 和 CanonicalJson SHA-256 v1 实现通过测试；HTTP Preview 目前仍使用 canonical fallback，原始 ingress bytes 尚未接入。
+当前状态：RawRequestBytes 和 CanonicalJson SHA-256 v1 已实现；生产 `/v1/messages` ingress 保留 raw bytes，shadow/passthrough/pre-send fallback 直接发送原始 bytes。Preview API 仍以 canonical fallback 为主。
 
 ## 4. Provider Tool-State Gates
 
@@ -109,7 +109,7 @@ Conservative net savings exceeds route threshold.
 Cache stability gate passes.
 ```
 
-当前状态：基础 validator 存在，但生产 active 仍 BLOCKED。
+当前状态：active executor 已实现并保持默认关闭。只有受信 runtime config 加载的签名 Capability、通过的绑定 eval 和全部运行时门同时满足时才可达；仓库没有默认可信模型，真实 Provider eval 未完成，因此 production default 仍 BLOCKED。
 
 ## 6. Metadata-only Event Gates
 
@@ -154,9 +154,11 @@ Renderer never receives SecretNoDuplicate content.
 Rendered bytes never enter logs, events or public summaries.
 Renderer timeout and failure return original body.
 Fidelity fixtures meet defined thresholds before active rollout.
+Renderer output is deterministic and self-decodes as grayscale PNG with exact geometry.
+Deadline, cancellation, queue, page, pixel, PNG, encoded-image, body and memory budgets fail closed.
 ```
 
-当前状态：NOT IMPLEMENTED。
+当前状态：renderer 与资源治理已实现，确定性/自解码/取消/预算回归通过；真实模型 fidelity gate 尚未完成。
 
 ## 8. Protocol Patcher Gates
 
@@ -187,9 +189,9 @@ Exact sidecar contains no secret-like values.
 Original body remains request-local for rollback.
 ```
 
-当前状态：NOT IMPLEMENTED。
+当前状态：Anthropic typed sealed patcher 已实现；只接受 Protected Context IR 生成的 approved target，并保留 tool_use_id、角色、顺序、system、tools、当前轮和近期尾部。OpenAI active patcher 未实现。
 
-## 9. Post-Execution and Rollback Gates
+## 9. Post-Transform Validation and Fallback Gates
 
 ```text
 Post validator re-parses the final body.
@@ -198,10 +200,11 @@ Before/after fingerprints match the approved operation.
 Provider request is sent only after all post checks pass.
 Any failure returns the untouched original body.
 Failure events are metadata-only.
-Rollback does not depend on persistent raw storage.
+Pre-send fallback does not depend on persistent raw storage.
+After upstream send commit, original-body automatic retry is forbidden.
 ```
 
-当前状态：NOT IMPLEMENTED。
+当前状态：artifact-derived validator 和 send-state/fallback 状态机已实现；validator 验证 image envelope、base64、PNG、digest，并证明 approved path 外 JSON 完全不变。pre-send 回退原文，post-commit 不自动重试。
 
 ## 10. Commit Record Gates
 
@@ -218,33 +221,49 @@ Committed records have submitted=true, submitted_at and commit_hash.
 Real Git operations remain in support/git-operations.json.
 ```
 
-当前状态：schema v2 代码完成。标准库 unittest 无第三方依赖，但当前 CodexPro safe allowlist 禁止执行 `python3 -m unittest`，本机也没有 pytest，因此执行验证仍 BLOCKED。
+当前状态：schema v2 代码存在；本轮结构检查已通过。该账本不替代 Hybrid runtime、模型质量或真实 routed evidence。
 
 ## 11. Current Verification
 
 ```text
-cargo test -p dtoken-compress                 76 unit + 4 integration PASS
-cargo test -p dtoken-config                   4 PASS
-cargo test -p dtoken-core-api                 35 unit + 6 integration PASS
-cargo test -p dtoken-types                    3 PASS
-cargo test --workspace                        PASS, exit 0
-cargo clippy --workspace --all-targets -- -D warnings  PASS
-cargo fmt --all -- --check                    NOT RUN: safe allowlist blocked
-Python ledger unittest                        NOT RUN: safe allowlist blocked
+python3 support/scripts/check_structure.py                 PASS
+cargo check --workspace --all-targets                      PASS
+cargo clippy --workspace --all-targets -- -D warnings     PASS
+cargo test --workspace                                     PASS, 236 tests / 36 suites
+cargo fmt --all                                            PASS
+real OpenCode -> d-token -> upstream                       BLOCKED: no OS credential reference or explicit auth-free upstream
 ```
 
 ## 12. 当前发布判断
 
+V2 Codex视觉评测的实验门独立于生产Capability门：
+
+```text
+Stage 0 provenance/license/font/golden/profile/secret/hybrid/path/budget/isolation PASS
+Stage 1 each model selects highest-density passing R/B/P; H is research-only
+Stage 2 six independent scenes satisfy LAB_PASS
+Stage 3 top two combinations satisfy sentinel pass^3
+Relay cost uses original/standard amount only; multiplier-adjusted amount excluded
+Private model slug identity and usage evidence complete
+```
+
+即使全部通过也只能标记 `LAB_CANDIDATE`；不得自动注册Capability或启用active。当前V2没有执行付费调用，因此该门仍为 `NOT RUN`。
+
 ```text
 Shadow planner                         PASS
 Capability lifecycle foundation        PASS
+Signed capability/eval load gate       PASS
 Stable fingerprint foundation          PASS
 Provider-specific state fixtures       PASS
 Metadata-only visibility APIs/events   PASS
-Commit ledger execution verification   BLOCKED BY TOOL ENVIRONMENT
+Protected Context IR / semantic codec  PASS
+Deterministic bounded PNG renderer     PASS
+Anthropic sealed patch/validator       PASS
+Send-state and pre-send fallback       PASS
+Signed multimodal accounting           PASS
 Desktop Optical Lab                    NOT IMPLEMENTED
-Renderer                               BLOCKED
-Protocol patcher                       BLOCKED
-History active transform               BLOCKED
-Production active transform            BLOCKED
+OpenAI Optical active patcher          NOT IMPLEMENTED
+History collapse/cache-zone            NOT IMPLEMENTED
+Real-provider signed fidelity eval     BLOCKED BY EXTERNAL CREDENTIAL/EVIDENCE
+Production active default              BLOCKED UNTIL REAL-PROVIDER GATE
 ```

@@ -59,6 +59,16 @@ function Get-SignatureInfo {
 }
 
 $Signtool = Get-Command signtool.exe -ErrorAction SilentlyContinue
+if ($null -eq $Signtool) {
+  $WindowsSdkRoot = Join-Path ${env:ProgramFiles(x86)} "Windows Kits\10\bin"
+  $SigntoolCandidate = @(Get-ChildItem -LiteralPath $WindowsSdkRoot -Recurse -Filter "signtool.exe" -File -ErrorAction SilentlyContinue |
+    Where-Object { $_.FullName -match '\\x64\\signtool\.exe$' } |
+    Sort-Object FullName -Descending |
+    Select-Object -First 1)[0]
+  if ($null -ne $SigntoolCandidate) {
+    $Signtool = [pscustomobject]@{ Source = $SigntoolCandidate.FullName }
+  }
+}
 $ArtifactInfo = @($Artifacts | ForEach-Object { Get-SignatureInfo $_ })
 $MissingArtifacts = @($ArtifactInfo | Where-Object { -not $_.exists })
 $UnsignedArtifacts = @($ArtifactInfo | Where-Object { $_.exists -and $_.status -ne "Valid" })
@@ -104,15 +114,17 @@ $CanSignNow = (
   ($MissingArtifacts.Count -eq 0) -and
   ((-not $RequireCertificate) -or $CertificateExists)
 )
+$ChecksPassed = @($Checks | Where-Object { -not $_.ok }).Count -eq 0
+$RequiredSignaturesValid = (-not $RequireCertificate) -or ($UnsignedArtifacts.Count -eq 0)
 
 $Report = [pscustomobject]@{
-  ok = ($MissingArtifacts.Count -eq 0)
+  ok = ($ChecksPassed -and $RequiredSignaturesValid)
   mode = "windows-signing-readiness-audit"
   generated_at = (Get-Date).ToString("o")
   candidate = $CurrentCandidate
   candidate_stamp = $CandidateStampStatus.stamp
   can_sign_now = $CanSignNow
-  distribution_ready_public = ($CandidateStampStatus.candidate_stamp_matches_worktree -and $CandidateStampStatus.artifact_built_after_candidate_stamp -and $UnsignedArtifacts.Count -eq 0 -and $MissingArtifacts.Count -eq 0)
+  distribution_ready_public = ($ChecksPassed -and $UnsignedArtifacts.Count -eq 0)
   signtool = if ($null -ne $Signtool) { $Signtool.Source } else { $null }
   unsigned_artifact_count = $UnsignedArtifacts.Count
   unsigned_artifacts = $UnsignedArtifacts

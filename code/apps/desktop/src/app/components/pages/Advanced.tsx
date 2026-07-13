@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { motion } from "motion/react";
-import { Power, Network, ScanSearch, RefreshCw, Server, Route as RouteIcon, KeyRound, Wifi } from "lucide-react";
-import { GlassCard } from "../common/GlassCard";
+import { Network, ScanSearch, RefreshCw, Server, Route as RouteIcon, KeyRound, Wifi } from "lucide-react";
+import { Surface } from "../common/Surface";
 import { StatusBadge } from "../common/StatusBadge";
 import { DataSourceBadge } from "../common/DataSourceBadge";
 import { CapabilitySummary } from "../common/CapabilitySummary";
@@ -10,15 +10,7 @@ import { Switch } from "../ui/switch";
 import { Button } from "../ui/button";
 import { Badge } from "../ui/badge";
 import { Input } from "../ui/input";
-import {
-  AlertDialog,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from "../ui/alert-dialog";
+import { OperationDialog } from "../common/OperationDialog";
 import { useI18n, useT } from "../../lib/i18n";
 import { invokeNative, isTauriRuntime, type NativeActionResult } from "../../lib/native";
 import { useRuntimeDashboard } from "../../lib/useRuntimeDashboard";
@@ -29,6 +21,7 @@ import {
   routeReviewFailureMessage,
   type RouteDraftApplyReview,
 } from "../../lib/routes/review";
+import { createOperationRequestId, useNotifications } from "../../lib/notifications";
 
 export {
   isUsableRouteReview,
@@ -64,6 +57,7 @@ export function validateCredentialInput(value: string): boolean {
 export function Advanced() {
   const t = useT();
   const { lang } = useI18n();
+  const { addNotification } = useNotifications();
   const { payload, status: payloadStatus, updatedAt, refresh: refreshPayload } = useRuntimeDashboard();
   const [activeConfig, setActiveConfig] = useState<Record<string, any> | null>(null);
   const [routeDraft, setRouteDraft] = useState({
@@ -147,6 +141,7 @@ export function Advanced() {
       return;
     }
     setCredentialSaving(true);
+    const requestId = createOperationRequestId("credential-store");
     setRouteNotice("");
     try {
       const result = await invokeNative<NativeActionResult>("store_provider_credential", {
@@ -155,12 +150,16 @@ export function Advanced() {
       if (!result.ok) throw new Error(result.summary);
       setProviderCredential("");
       setCredentialStored(true);
-      setRouteNotice(lang === "zh" ? "凭据已安全保存到系统凭据库；d-token 配置只保存引用。" : result.summary);
+      const success = lang === "zh" ? "凭据已安全保存到系统凭据库；d-token 配置只保存引用。" : result.summary;
+      setRouteNotice(success);
+      addNotification({ dedupeKey: `credential-${providerId}`, level: "success", title: lang === "zh" ? "凭据引用已保存" : "Credential reference saved", message: success, persistent: true, details: `provider_id=${providerId} · credential_ref=${credentialReferenceForProvider(providerId)}`, receipt: { requestId, targetId: providerId } });
     } catch (error) {
       setProviderCredential("");
-      setRouteNotice(error instanceof Error && error.message === "native_unavailable"
+      const failure = error instanceof Error && error.message === "native_unavailable"
         ? "浏览器预览不会读取或保存凭据，请在 d-token 桌面窗口中操作。"
-        : `凭据保存失败：${error instanceof Error ? error.message : "系统凭据库不可用"}`);
+        : `凭据保存失败：${error instanceof Error ? error.message : "系统凭据库不可用"}`;
+      setRouteNotice(failure);
+      addNotification({ dedupeKey: `credential-${providerId}-failed`, level: "error", title: lang === "zh" ? "凭据保存失败" : "Credential save failed", message: failure });
     } finally {
       setCredentialSaving(false);
     }
@@ -243,6 +242,7 @@ export function Advanced() {
       return;
     }
     const review = routeReview;
+    const requestId = createOperationRequestId("route-apply");
     setRouteApplying(review.route_id);
     setRouteNotice("");
     try {
@@ -251,20 +251,26 @@ export function Advanced() {
       });
       setRouteReview(null);
       if (!result.ok) {
-        setRouteNotice(routeApplyFailureMessage(result.summary, lang));
+        const failure = routeApplyFailureMessage(result.summary, lang);
+        setRouteNotice(failure);
+        addNotification({ dedupeKey: `route-apply-${review.route_id}-failed`, level: "error", title: lang === "zh" ? "路由未应用" : "Route not applied", message: failure, persistent: true, details: `route_id=${review.route_id} · before=${review.before_sha256.slice(0, 12)} · after=${review.after_sha256.slice(0, 12)}` });
         return;
       }
-      setRouteNotice(lang === "zh"
+      const success = lang === "zh"
         ? "路由草稿已应用并完成写后验证；事务已创建持久回滚点。"
-        : "The route draft was applied and verified; the transaction created a durable rollback point.");
+        : "The route draft was applied and verified; the transaction created a durable rollback point.";
+      setRouteNotice(success);
+      addNotification({ dedupeKey: `route-apply-${review.route_id}-${review.after_sha256}`, level: "success", title: lang === "zh" ? "路由已应用" : "Route applied", message: success, persistent: true, details: `route_id=${review.route_id} · before=${review.before_sha256.slice(0, 12)} · after=${review.after_sha256.slice(0, 12)}`, receipt: { requestId, targetId: review.route_id } });
       await refreshRouteDrafts();
       await refreshPayload();
       await refreshActiveConfig();
     } catch (error) {
       setRouteReview(null);
-      setRouteNotice(error instanceof Error && error.message === "native_unavailable"
+      const failure = error instanceof Error && error.message === "native_unavailable"
         ? (lang === "zh" ? "浏览器预览无法提交路由变更，请在桌面窗口中操作。" : "Browser preview cannot submit route changes. Use the desktop window.")
-        : (lang === "zh" ? "桌面控制面调用失败，未确认写入结果；请重新审阅当前差异后再试。" : "The desktop control-plane call failed and the write result is unconfirmed. Review the current diff before retrying."));
+        : (lang === "zh" ? "桌面控制面调用失败，未确认写入结果；请重新审阅当前差异后再试。" : "The desktop control-plane call failed and the write result is unconfirmed. Review the current diff before retrying.");
+      setRouteNotice(failure);
+      addNotification({ dedupeKey: `route-apply-${review.route_id}-error`, level: "error", title: lang === "zh" ? "路由应用结果未确认" : "Route apply result unconfirmed", message: failure, persistent: true, details: `route_id=${review.route_id} · before=${review.before_sha256.slice(0, 12)} · after=${review.after_sha256.slice(0, 12)}` });
     } finally {
       setRouteApplying("");
     }
@@ -289,15 +295,14 @@ export function Advanced() {
           <TabsTrigger value="routing">{t("adv.tab.routing")}</TabsTrigger>
         </TabsList>
 
-        {/* Service & autostart */}
+        {/* Service listener details; autostart is managed only in Settings. */}
         <TabsContent value="service" className="mt-4 space-y-4">
-          <ServiceRow />
-          <GlassCard className="p-5">
+          <Surface className="p-5">
             <div className="grid gap-4 sm:grid-cols-2">
               <Field label={t("adv.bindHost")}><Input value={serviceBinding.host} readOnly /></Field>
               <Field label={t("adv.localPort")}><Input value={serviceBinding.port} readOnly /></Field>
             </div>
-          </GlassCard>
+          </Surface>
         </TabsContent>
 
         {/* cc-switch */}
@@ -309,7 +314,7 @@ export function Advanced() {
         <TabsContent value="headroom" className="mt-4 space-y-4">
           <CapabilitySummary payload={payload} status={payloadStatus} />
           <HeadroomScan payload={payload} payloadStatus={payloadStatus} refreshPayload={refreshPayload} refreshProjectPolicy={refreshProjectPolicy} />
-          <GlassCard className="p-5">
+          <Surface className="p-5">
             <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
               <h3>{t("adv.projectPolicies")}</h3>
               <Badge variant={projectPolicyState === "loaded" ? "default" : "secondary"}>
@@ -323,7 +328,7 @@ export function Advanced() {
               </Badge>
             </div>
             <ProjectPolicyRows saved={savedProjectPolicy} state={projectPolicyState} lang={lang} />
-          </GlassCard>
+          </Surface>
         </TabsContent>
 
         {/* Providers & routes */}
@@ -331,12 +336,13 @@ export function Advanced() {
           <ActiveConfigCard
             activeConfig={activeConfig ?? payload?.desktop_active_config ?? null}
             runtimeActiveConfig={payload?.runtime_active_config ?? payload?.active_config ?? null}
+            lang={lang}
           />
 
-          <GlassCard className="p-5">
+          <Surface className="p-5">
             <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
               <div>
-                <h3 className="flex items-center gap-2"><RouteIcon className="size-4" />Agent d-token route draft</h3>
+                <h3 className="flex items-center gap-2"><RouteIcon className="size-4" />{lang === "zh" ? "Agent 路由草稿" : "Agent route draft"}</h3>
                 <div className="text-xs text-muted-foreground">
                   {lang === "zh"
                     ? "保存到 d-token 本地 routing 草稿，不修改 OpenCode、Headroom、RTK、cc-switch 或系统代理。"
@@ -374,7 +380,7 @@ export function Advanced() {
                 />
               </Field>
             </div>
-            <div className="glass-inset mt-3 grid gap-3 p-3 md:grid-cols-[minmax(0,1fr)_auto] md:items-end">
+            <div className="flat-inset mt-3 grid gap-3 p-3 md:grid-cols-[minmax(0,1fr)_auto] md:items-end">
               <Field label={lang === "zh" ? "模型服务凭据" : "Provider credential"}>
                 <Input
                   type="password"
@@ -403,14 +409,14 @@ export function Advanced() {
                 ? "明文只在本次操作内短暂存在；路由草稿、日志、Dashboard 和导出只保留不透明引用。"
                 : "Plaintext exists only for this operation; config, logs, Dashboard, and exports keep only an opaque reference."}
             </p>
-            {routeNotice && <div className="glass-inset mt-3 p-3 text-xs text-muted-foreground">{routeNotice}</div>}
+            {routeNotice && <div className="flat-inset mt-3 p-3 text-xs text-muted-foreground">{routeNotice}</div>}
             {savedDrafts.length > 0 && (
               <div className="mt-4 space-y-2">
                 {savedDrafts.slice(0, 3).map((draft, index) => {
                   const provider = draft?.config?.providers?.[0];
                   const route = draft?.config?.routes?.[0];
                   return (
-                    <div key={`${route?.id ?? "route"}-${index}`} className="glass-inset flex flex-wrap items-center justify-between gap-3 p-3 text-xs">
+                    <div key={`${route?.id ?? "route"}-${index}`} className="flat-inset flex flex-wrap items-center justify-between gap-3 p-3 text-xs">
                       <div>
                         <div className="font-medium">{route?.name ?? route?.id ?? (lang === "zh" ? "未命名路由草稿" : "Unnamed route draft")}</div>
                         <div className="text-muted-foreground">{provider?.name ?? provider?.id ?? "—"} · {provider?.base_url ?? "—"} · {route?.local_port ? `:${route.local_port}` : "—"}</div>
@@ -434,29 +440,31 @@ export function Advanced() {
                 })}
               </div>
             )}
-          </GlassCard>
+          </Surface>
 
-          <GlassCard className="p-4">
+          <Surface className="p-4">
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div>
-                <div className="text-sm font-semibold">d-token Route Model</div>
+                <div className="text-sm font-semibold">{lang === "zh" ? "d-token 路由模型" : "d-token route model"}</div>
                 <div className="text-xs text-muted-foreground">
                   {payloadStatus === "runtime"
-                    ? "ProviderProfile / RouteProfile from d-token-owned runtime payload. Fallback is disabled unless explicitly configured."
+                    ? (lang === "zh"
+                        ? "来自 d-token 自有运行时的上游与路由信息；未明确配置时不启用回退。"
+                        : "Provider and route data from the d-token-owned runtime; fallback stays disabled unless explicitly configured.")
                     : payloadStatus === "browser-preview"
-                      ? "浏览器预览不会读取或展示本机路由。"
-                      : "Waiting for d-token runtime route model."}
+                      ? (lang === "zh" ? "浏览器预览不会读取或展示本机路由。" : "Browser preview does not read or display local routes.")
+                      : (lang === "zh" ? "正在等待 d-token 运行时路由信息。" : "Waiting for d-token runtime route data.")}
                 </div>
               </div>
               <Badge variant="outline">{runtimeRouting.source}</Badge>
             </div>
-          </GlassCard>
+          </Surface>
 
-          <GlassCard className="p-5">
+          <Surface className="p-5">
             <h3 className="mb-3 flex items-center gap-2"><Server className="size-4" />{t("adv.providers")}</h3>
             <div className="space-y-2">
               {runtimeRouting.providers.map((p) => (
-                <div key={p.id} className="glass-inset flex flex-wrap items-center justify-between gap-3 p-3">
+                <div key={p.id} className="flat-inset flex flex-wrap items-center justify-between gap-3 p-3">
                   <div className="flex items-center gap-3">
                     <div><div>{p.name}</div><div className="text-xs text-muted-foreground">{p.protocol} · {p.baseUrl}</div></div>
                     <Badge variant={p.kind === "official" ? "default" : "outline"}>{p.kind}</Badge>
@@ -469,13 +477,13 @@ export function Advanced() {
               ))}
               {runtimeRouting.providers.length === 0 && <RoutingEmptyState kind="provider" />}
             </div>
-          </GlassCard>
+          </Surface>
 
-          <GlassCard className="p-5">
+          <Surface className="p-5">
             <h3 className="mb-3 flex items-center gap-2"><RouteIcon className="size-4" />{t("adv.routes")}</h3>
             <div className="space-y-3">
               {runtimeRouting.routes.map((r) => (
-                <div key={r.id} className="glass-inset p-3">
+                <div key={r.id} className="flat-inset p-3">
                   <div className="mb-2 flex items-center justify-between">
                     <span>{r.name}</span>
                     <Badge variant={r.risk === "low" ? "secondary" : "destructive"}>{r.risk}</Badge>
@@ -493,13 +501,13 @@ export function Advanced() {
               ))}
               {runtimeRouting.routes.length === 0 && <RoutingEmptyState kind="route" />}
             </div>
-          </GlassCard>
+          </Surface>
 
-          <GlassCard className="p-5">
+          <Surface className="p-5">
             <h3 className="mb-3 flex items-center gap-2"><Wifi className="size-4" />{t("adv.ports")}</h3>
             <div className="space-y-2">
               {runtimeRouting.ports.map((p) => (
-                <div key={p.id} className="glass-inset flex items-center justify-between p-3 text-sm">
+                <div key={p.id} className="flat-inset flex items-center justify-between p-3 text-sm">
                   <span>{p.host}:{p.port} <span className="text-muted-foreground">· {p.kind}</span></span>
                   <div className="flex items-center gap-2">
                     <Badge variant={p.confidence === "confirmed" ? "default" : "outline"}>{p.confidence}</Badge>
@@ -509,33 +517,30 @@ export function Advanced() {
               ))}
               {runtimeRouting.ports.length === 0 && <RoutingEmptyState kind="port" />}
             </div>
-          </GlassCard>
+          </Surface>
         </TabsContent>
       </Tabs>
 
-      <AlertDialog
+      <OperationDialog
         open={routeReview !== null}
         onOpenChange={(open) => {
           if (!open && !routeApplying) setRouteReview(null);
         }}
-      >
-        <AlertDialogContent className="max-w-2xl">
-          <AlertDialogHeader>
-            <AlertDialogTitle>{lang === "zh" ? "审阅并应用路由" : "Review and apply route"}</AlertDialogTitle>
-            <AlertDialogDescription>
-              {lang === "zh"
-                ? "以下差异由桌面控制面只读生成。确认时会提交本次审阅的前后 SHA-256；如果草稿或活动配置发生变化，应用会被拒绝。"
-                : "This diff was prepared read-only by the desktop control plane. Confirmation submits the reviewed before/after SHA-256 pair; apply is rejected if the draft or active config changes."}
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-
-          {routeReview && (
+        title={lang === "zh" ? "审阅并应用路由" : "Review and apply route"}
+        summary={lang === "zh" ? "以下差异由桌面控制面只读生成。确认时会提交前后 SHA-256；如果配置变化，应用会被拒绝。" : "This diff was prepared read-only. Confirmation submits both SHA-256 values and is rejected if the config changed."}
+        confirmLabel={lang === "zh" ? "确认应用" : "Confirm apply"}
+        cancelLabel={t("common.cancel")}
+        risk="warning"
+        pending={Boolean(routeApplying)}
+        confirmDisabled={!routeReview}
+        onConfirm={applyReviewedRouteDraft}
+        details={routeReview ? (
             <div className="space-y-3 text-sm">
               <div className="grid gap-3 sm:grid-cols-2">
                 <ReviewField label={lang === "zh" ? "目标文件" : "Target file"} value={routeReview.target} />
                 <ReviewField label={lang === "zh" ? "风险等级" : "Risk level"} value={routeReview.risk_level} />
               </div>
-              <div className="glass-inset p-3 text-xs text-muted-foreground">
+              <div className="flat-inset p-3 text-xs text-muted-foreground">
                 {lang === "zh"
                   ? "确认后只更新 d-token 活动配置。事务会先创建持久回滚点，写入后验证；不会修改外部 Agent、Headroom、RTK、cc-switch、系统代理或凭据。"
                   : "Confirmation updates only the active d-token config. The transaction creates a durable rollback point before writing and verifies afterward; external agents, Headroom, RTK, cc-switch, system proxy, and credentials are unchanged."}
@@ -549,17 +554,8 @@ export function Advanced() {
                 <HashRow label={lang === "zh" ? "应用后 SHA-256" : "After SHA-256"} value={routeReview.after_sha256} />
               </div>
             </div>
-          )}
-
-          <AlertDialogFooter>
-            <AlertDialogCancel disabled={Boolean(routeApplying)}>{lang === "zh" ? "取消" : "Cancel"}</AlertDialogCancel>
-            <Button onClick={() => void applyReviewedRouteDraft()} disabled={Boolean(routeApplying)}>
-              {routeApplying ? <RefreshCw className="size-4 animate-spin" /> : null}
-              {routeApplying ? (lang === "zh" ? "正在应用" : "Applying") : (lang === "zh" ? "确认应用" : "Confirm apply")}
-            </Button>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+          ) : null}
+      />
     </div>
   );
 }
@@ -572,7 +568,7 @@ function validPort(value: string) {
 
 function ReviewField({ label, value }: { label: string; value: string }) {
   return (
-    <div className="glass-inset min-w-0 p-3">
+    <div className="flat-inset min-w-0 p-3">
       <div className="text-xs text-muted-foreground">{label}</div>
       <div className="mt-1 break-all text-sm font-medium">{value}</div>
     </div>
@@ -623,10 +619,13 @@ type UiPort = {
 function ActiveConfigCard({
   activeConfig,
   runtimeActiveConfig,
+  lang,
 }: {
   activeConfig: Record<string, any> | null;
   runtimeActiveConfig: Record<string, any> | null;
+  lang: "zh" | "en";
 }) {
+  const zh = lang === "zh";
   const state = safeText(activeConfig?.state, "unknown");
   const loaded = state === "loaded";
   const provider = activeConfig?.provider ?? {};
@@ -634,37 +633,48 @@ function ActiveConfigCard({
   const runtimeStatus = runtimeActiveConfig?.config ?? runtimeActiveConfig;
   const runtimeSource = safeText(runtimeStatus?.source, "—");
   const runtimeLoaded = runtimeStatus?.loaded === true;
-  const providerName = safeText(provider.name, safeText(provider.id, "no provider"));
-  const routeName = safeText(route.name, safeText(route.id, "no route"));
+  const providerName = safeText(provider.name, safeText(provider.id, zh ? "未配置上游" : "No provider"));
+  const routeName = safeText(route.name, safeText(route.id, zh ? "未配置路由" : "No route"));
   const path = safeText(activeConfig?.path, "—");
   const fallbackDisabled = activeConfig?.fallback_disabled === true;
+  const runtimeRouteCount = finiteNonNegativeInteger(runtimeStatus?.route_count);
+  const providerCount = finiteNonNegativeInteger(activeConfig?.provider_count);
+  const routeCount = finiteNonNegativeInteger(activeConfig?.route_count);
   return (
-    <GlassCard className="p-4">
+    <Surface className="p-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <div className="text-sm font-semibold">Active d-token config</div>
+          <div className="text-sm font-semibold">{zh ? "当前 d-token 配置" : "Active d-token configuration"}</div>
           <div className="text-xs text-muted-foreground">
             {loaded
-              ? `${routeName} -> ${providerName} -> ${safeText(provider.base_url, "base URL missing")}`
-              : "No applied d-token active config yet. Save and apply a route draft to make runtime routing explicit."}
+              ? `${routeName} → ${providerName} → ${safeText(provider.base_url, zh ? "缺少上游地址" : "Provider URL unavailable")}`
+              : zh
+                ? "尚未应用 d-token 活动配置。保存并审阅路由草稿后再明确应用。"
+                : "No active d-token configuration is applied. Save and review a route draft before applying it."}
           </div>
           <div className="mt-1 text-[11px] text-muted-foreground">{path}</div>
           <div className="mt-1 text-[11px] text-muted-foreground">
-            Runtime: {runtimeSource} / {runtimeLoaded ? "loaded" : "not loaded"} / {Number(runtimeStatus?.route_count ?? 0)} routes
+            {zh ? "运行时" : "Runtime"}: {runtimeSource} / {runtimeLoaded ? (zh ? "已加载" : "loaded") : (zh ? "未加载" : "not loaded")} / {runtimeRouteCount ?? "—"} {zh ? "条路由" : "routes"}
           </div>
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <Badge variant={loaded ? "default" : "secondary"}>{state}</Badge>
           <Badge variant={fallbackDisabled ? "outline" : "destructive"}>
-            {fallbackDisabled ? "fallback disabled" : "fallback not proven disabled"}
+            {fallbackDisabled ? (zh ? "已禁用回退" : "Fallback disabled") : (zh ? "未证明已禁用回退" : "Fallback disablement unverified")}
           </Badge>
           <Badge variant="outline">
-            {Number(activeConfig?.provider_count ?? 0)} providers / {Number(activeConfig?.route_count ?? 0)} routes
+            {providerCount ?? "—"} {zh ? "个上游" : "providers"} / {routeCount ?? "—"} {zh ? "条路由" : "routes"}
           </Badge>
         </div>
       </div>
-    </GlassCard>
+    </Surface>
   );
+}
+
+function finiteNonNegativeInteger(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0
+    ? Math.floor(value)
+    : null;
 }
 
 function ProjectPolicyRows({
@@ -693,7 +703,7 @@ function ProjectPolicyRows({
     ].filter(([, enabled]) => Boolean(enabled));
     return (
       <div className="space-y-2">
-        <div className="glass-inset flex flex-wrap items-center justify-between gap-3 p-3">
+        <div className="flat-inset flex flex-wrap items-center justify-between gap-3 p-3">
           <div>
             <div>{safeText(policy.project_id, "—")}</div>
             <div className="text-xs text-muted-foreground">
@@ -724,7 +734,7 @@ function ProjectPolicyRows({
 
   if (state === "preview") {
     return (
-      <div className="glass-inset p-3 text-sm text-muted-foreground">
+      <div className="flat-inset p-3 text-sm text-muted-foreground">
         {lang === "zh"
           ? "浏览器预览不能读取本地项目策略。桌面窗口中扫描并应用后，这里会显示真实保存的策略。"
           : "Browser preview cannot read local project policy. After scanning and applying in the desktop app, the saved policy appears here."}
@@ -734,14 +744,14 @@ function ProjectPolicyRows({
 
   if (state === "loading") {
     return (
-      <div className="glass-inset p-3 text-sm text-muted-foreground">
+      <div className="flat-inset p-3 text-sm text-muted-foreground">
         {lang === "zh" ? "正在读取 d-token 本地项目策略。" : "Loading d-token local project policy."}
       </div>
     );
   }
 
   return (
-    <div className="glass-inset p-3 text-sm text-muted-foreground">
+    <div className="flat-inset p-3 text-sm text-muted-foreground">
       {lang === "zh"
         ? "还没有写入项目策略。点击上方扫描项目并应用推荐后，这里会显示真实配置。"
         : "No project policy has been saved yet. Scan a project and apply the recommendation to show real configuration here."}
@@ -899,7 +909,7 @@ function RoutingEmptyState({ kind }: { kind: "provider" | "route" | "port" }) {
     : kind === "route"
       ? (lang === "zh" ? "暂无已验证路由" : "No verified routes")
       : (lang === "zh" ? "暂无已验证监听端口" : "No verified listening ports");
-  return <div className="glass-inset p-3 text-sm text-muted-foreground">{label}</div>;
+  return <div className="flat-inset p-3 text-sm text-muted-foreground">{label}</div>;
 }
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
@@ -907,7 +917,6 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
 }
 
 type AdvancedSettingsPayload = {
-  autostart_preference?: boolean;
   cc_switch_auto?: boolean;
   cc_switch_mode?: "auto" | "direct" | "proxy";
 };
@@ -973,32 +982,6 @@ function PreferenceBadge({ status }: { status: PreferenceStatus }) {
   return <Badge variant={status === "error" ? "destructive" : "outline"}>{label}</Badge>;
 }
 
-function ServiceRow() {
-  const t = useT();
-  const { settings, status, savePreference } = useAdvancedPreference();
-  const disabled = status === "loading" || status === "saving";
-  return (
-    <GlassCard className="flex items-center justify-between p-5">
-      <div className="flex items-center gap-3">
-        <Power className="size-5 text-primary" />
-        <div>
-          <div className="flex items-center gap-2">
-            {t("adv.autostart")}
-            <PreferenceBadge status={status} />
-          </div>
-          <div className="max-w-md text-sm text-muted-foreground">{t("adv.autostartDesc")}</div>
-        </div>
-      </div>
-      <Switch
-        aria-label={t("adv.autostart")}
-        checked={settings.autostart_preference ?? false}
-        disabled={disabled}
-        onCheckedChange={(checked) => void savePreference({ autostart_preference: checked })}
-      />
-    </GlassCard>
-  );
-}
-
 function CcSwitchPanel() {
   const t = useT();
   const { lang } = useI18n();
@@ -1012,7 +995,7 @@ function CcSwitchPanel() {
   ];
   return (
     <>
-      <GlassCard className="flex items-center justify-between p-5">
+      <Surface className="flex items-center justify-between p-5">
         <div className="flex items-center gap-3">
           <Network className="size-5 text-primary" />
           <div>
@@ -1029,9 +1012,9 @@ function CcSwitchPanel() {
           disabled={disabled}
           onCheckedChange={(checked) => void savePreference({ cc_switch_auto: checked })}
         />
-      </GlassCard>
+      </Surface>
 
-      <GlassCard className="p-5">
+      <Surface className="p-5">
         <div className="mb-3 flex items-center justify-between">
           <span className="text-sm text-muted-foreground">{t("adv.ccMode")}</span>
           <div className="flex items-center gap-2 text-sm">
@@ -1049,7 +1032,7 @@ function CcSwitchPanel() {
             </button>
           ))}
         </div>
-      </GlassCard>
+      </Surface>
     </>
   );
 }
@@ -1158,7 +1141,7 @@ function HeadroomScan({
   };
 
   return (
-    <GlassCard className="p-5">
+    <Surface className="p-5">
       <div className="mb-4 flex items-center justify-between">
         <div className="flex items-center gap-2">
           <ScanSearch className="size-5 text-primary" />
@@ -1176,18 +1159,18 @@ function HeadroomScan({
       </div>
 
       {!runtimeInput && (
-        <div className="glass-inset mb-3 p-3 text-xs text-muted-foreground">
+        <div className="flat-inset mb-3 p-3 text-xs text-muted-foreground">
           {lang === "zh"
             ? "需要 runtime 返回完整 project_policy_input（含来源、语言栈、请求规模、噪声、检索率、失败率和风险标记）后才能启用。"
             : "Requires a complete runtime project_policy_input with provenance, stack, traffic, noise, retrieval, failure, and risk evidence."}
         </div>
       )}
 
-      {notice && <div className="glass-inset mb-3 p-3 text-xs text-muted-foreground">{notice}</div>}
-      {savedSummary && <div className="glass-inset mb-3 p-3 text-xs text-emerald-600 dark:text-emerald-300">{savedSummary}</div>}
+      {notice && <div className="flat-inset mb-3 p-3 text-xs text-muted-foreground">{notice}</div>}
+      {savedSummary && <div className="flat-inset mb-3 p-3 text-xs text-emerald-600 dark:text-emerald-300">{savedSummary}</div>}
 
       {recommendation && (
-        <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} className="glass-inset p-4">
+        <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} className="flat-inset p-4">
           <div className="mb-3 flex items-center justify-between">
             <span className="text-sm text-muted-foreground">{t("adv.recommendLevel")}</span>
             <span className="text-sm">{t("common.confidence")}: {confidence ?? "—"}</span>
@@ -1212,11 +1195,11 @@ function HeadroomScan({
           </Button>
         </motion.div>
       )}
-    </GlassCard>
+    </Surface>
   );
 }
 
-function projectPolicyInputFromPayload(payload: Record<string, any> | null, projectRoot: string) {
+export function projectPolicyInputFromPayload(payload: Record<string, any> | null, projectRoot: string) {
   const input = payload?.project_policy_input;
   if (!input || typeof input !== "object" || Array.isArray(input)) return null;
   const source = safeText(input.source, "");

@@ -28,10 +28,18 @@ function New-ContractCheck {
 }
 
 $Ci = Read-RequiredText ".github\workflows\ci.yml"
+$MacRelease = Read-RequiredText ".github\workflows\macos-release.yml"
+$WindowsRelease = Read-RequiredText ".github\workflows\windows-release.yml"
+$DesktopPackage = Read-RequiredText "code\apps\desktop\package.json" | ConvertFrom-Json
+$TauriConfig = Read-RequiredText "code\apps\desktop\src-tauri\tauri.conf.json" | ConvertFrom-Json
+$DesktopCargo = Read-RequiredText "code\apps\desktop\src-tauri\Cargo.toml"
+$DesktopCargoVersionMatch = [regex]::Match($DesktopCargo, '(?ms)^\[package\].*?^version\s*=\s*"([^"]+)"')
 $Verification = Read-RequiredText "support\scripts\run_release_verification.ps1"
 $Handoff = Read-RequiredText "support\scripts\run_release_handoff_manifest.ps1"
 $BundleAudit = Read-RequiredText "support\scripts\run_desktop_bundle_artifact_audit.ps1"
 $SidecarPreparation = Read-RequiredText "support\scripts\prepare_desktop_sidecars.ps1"
+$SidecarSigning = Read-RequiredText "support\scripts\sign_windows_sidecars.ps1"
+$SidecarWrapper = Read-RequiredText "code\apps\desktop\scripts\tauri-with-sidecar.mjs"
 $ProvenanceTest = Read-RequiredText "support\scripts\run_release_candidate_provenance_test.ps1"
 $StartupAudit = Read-RequiredText "support\scripts\run_installed_desktop_startup_audit.ps1"
 $DistributionAudit = Read-RequiredText "support\scripts\run_release_distribution_audit.ps1"
@@ -43,7 +51,7 @@ $Provenance = if (Test-Path -LiteralPath $ProvenancePath) {
   ""
 }
 $ScriptsParse = $true
-foreach ($ScriptText in @($Verification, $Handoff, $BundleAudit, $SidecarPreparation, $Provenance, $ProvenanceTest, $StartupAudit, $DistributionAudit, $SigningAudit)) {
+foreach ($ScriptText in @($Verification, $Handoff, $BundleAudit, $SidecarPreparation, $SidecarSigning, $Provenance, $ProvenanceTest, $StartupAudit, $DistributionAudit, $SigningAudit)) {
   try {
     [void][scriptblock]::Create($ScriptText)
   } catch {
@@ -61,6 +69,17 @@ $Checks = @(
   New-ContractCheck "ci_rust_clippy" ($Ci -match "cargo clippy --workspace --all-targets -- -D warnings") "CI rejects Clippy warnings across every target"
   New-ContractCheck "ci_rust_workspace_tests" ($Ci -match "cargo test --workspace") "CI runs all Rust workspace tests"
   New-ContractCheck "ci_candidate_provenance_test" ($Ci -match "run_release_candidate_provenance_test.ps1") "CI proves that stale candidate stamps and artifacts are rejected"
+  New-ContractCheck "desktop_release_versions_match" ($DesktopCargoVersionMatch.Success -and $DesktopPackage.version -eq $TauriConfig.version -and $DesktopPackage.version -eq $DesktopCargoVersionMatch.Groups[1].Value) "package.json, Tauri config, and the desktop Rust crate use one release version"
+  New-ContractCheck "macos_public_release_is_fail_closed" (($MacRelease -match "APPLE_CERTIFICATE") -and ($MacRelease -match "notarytool submit") -and ($MacRelease -match "spctl --assess") -and ($MacRelease -notmatch "inputs\.notarize")) "The macOS public release workflow cannot upload an unsigned or unnotarized candidate"
+  New-ContractCheck "macos_release_uploads_only_stapled_distribution" (($MacRelease -match "bundle/dmg/\*\.dmg") -and ($MacRelease -notmatch "bundle/macos/\*\.app") -and ($MacRelease -match "stapler validate")) "Only the notarized and stapled DMG is uploaded as the public macOS distribution artifact"
+  New-ContractCheck "macos_release_writes_sha256_manifest" (($MacRelease -match "SHA256SUMS-macos\.txt") -and ($MacRelease -match "shasum -a 256")) "The macOS release artifact includes a SHA-256 manifest"
+  New-ContractCheck "windows_release_uses_windows_runner" (($WindowsRelease -match "windows-2022") -and ($WindowsRelease -match "workflow_dispatch")) "The Windows release workflow builds on a real Windows runner and is manually dispatched"
+  New-ContractCheck "windows_release_is_fail_closed" (($WindowsRelease -match "WINDOWS_CERTIFICATE is required") -and ($WindowsRelease -match "certificateThumbprint") -and ($WindowsRelease -match "Get-AuthenticodeSignature") -and ($WindowsRelease -match 'Status -ne "Valid"')) "The Windows public release workflow requires signing credentials and rejects invalid signatures"
+  New-ContractCheck "windows_release_uses_sidecar_wrapper" ($WindowsRelease -match "npm run tauri:with-sidecar -- build") "Windows packaging uses the project sidecar-aware Tauri wrapper"
+  New-ContractCheck "windows_release_signs_exact_sidecar_inputs" (($SidecarWrapper -match "DTOKEN_WINDOWS_SIGNING_THUMBPRINT") -and ($SidecarWrapper -match "sign_windows_sidecars\.ps1") -and ($SidecarSigning -match "dtoken-proxy-x86_64-pc-windows-msvc\.exe") -and ($SidecarSigning -match "Get-AuthenticodeSignature") -and ($WindowsRelease -match "DTOKEN_WINDOWS_SIGNING_THUMBPRINT")) "The exact prepared and release sidecar bytes are signed and verified before Tauri bundles them"
+  New-ContractCheck "windows_release_installs_current_candidate" (($WindowsRelease -match "run_installed_desktop_startup_audit\.ps1 -SilentInstallLatest") -and ($WindowsRelease -match "uninstall\.exe")) "Windows release validation installs, launches, verifies, and uninstalls the current NSIS candidate"
+  New-ContractCheck "windows_release_verifies_installed_signatures" (($WindowsRelease -match "Verify installed Authenticode signatures") -and ($WindowsRelease -match 'd-token/dtoken-proxy\.exe') -and ($WindowsRelease -match 'Installed Authenticode verification failed')) "The installed app and exact installed runtime sidecar retain valid Authenticode signatures"
+  New-ContractCheck "windows_release_writes_sha256_manifest" (($WindowsRelease -match "SHA256SUMS-windows\.txt") -and ($WindowsRelease -match "Get-FileHash")) "The Windows release artifact includes a SHA-256 manifest"
   New-ContractCheck "verification_frontend_vitest" (($Verification -match '"frontend_vitest"') -and ($Verification -match "npm run test:run")) "No-touch verification records Vitest as its own step"
   New-ContractCheck "verification_frontend_dependencies" (($Verification -match '"frontend_dependencies"') -and ($Verification -match "npm ci")) "No-touch verification installs the exact frontend dependency lock"
   New-ContractCheck "verification_frontend_typecheck" (($Verification -match '"frontend_typecheck"') -and ($Verification -match "(?:npx|npm exec) tsc(?: --)? --noEmit")) "No-touch verification records TypeScript as its own step"

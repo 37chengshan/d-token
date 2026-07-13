@@ -2,11 +2,10 @@
 // 关联计划：OPTICAL_COMPRESSION_EXPERIMENT_PLAN.md §20-22。
 
 use std::collections::HashMap;
+use std::time::{Duration, Instant};
 
 use crate::optical::applicability::evaluate_applicability_with_policies_and_registry;
-use crate::optical::capability::{
-    resolve_model_capability_record_with_registry, OpticalCapabilityRegistry,
-};
+use crate::optical::capability::OpticalCapabilityRegistry;
 use crate::optical::context_graph::{build_context_graph, ContextGraph};
 use crate::optical::economics::{evaluate_block_economics, BlockEconomicsPlan};
 use crate::optical::inventory::{
@@ -132,6 +131,8 @@ pub fn build_shadow_plan_detailed_with_registry(
     applicability_input: &OpticalApplicabilityInput,
     registry: &OpticalCapabilityRegistry,
 ) -> ShadowPlanBuild {
+    let plan_started = Instant::now();
+    let plan_deadline = Duration::from_millis(global_policy.max_plan_time_ms.max(1));
     let applicability = evaluate_applicability_with_policies_and_registry(
         applicability_input,
         global_policy,
@@ -171,13 +172,15 @@ pub fn build_shadow_plan_detailed_with_registry(
     }
 
     let endpoint = applicability.endpoint.clone().unwrap_or_default();
-    let resolved_capability = resolve_model_capability_record_with_registry(
-        applicability_input.protocol.as_ref(),
-        applicability_input.provider_id.as_deref(),
-        applicability_input.model.as_deref(),
-        endpoint,
-        registry,
-    );
+    let resolved_capability =
+        super::capability::resolve_model_capability_record_for_route_with_registry(
+            applicability_input.protocol.as_ref(),
+            applicability_input.provider_id.as_deref(),
+            applicability_input.route_id.as_deref(),
+            applicability_input.model.as_deref(),
+            endpoint,
+            registry,
+        );
     let capability = resolved_capability.capability.clone();
     gates.push(OpticalGateDecision {
         name: "capability".into(),
@@ -206,6 +209,10 @@ pub fn build_shadow_plan_detailed_with_registry(
     let inventory = build_anthropic_inventory_with_arena(body, &mut arena);
     let graph = build_context_graph(&inventory);
     let semantic = plan_semantic_priority(&inventory);
+    let mut plan_budget_exceeded = plan_started.elapsed() > plan_deadline;
+    if plan_budget_exceeded {
+        warnings.push("plan_deadline_exceeded".to_string());
+    }
 
     let mut counters = OpticalPlanCounters::default();
     let mut bucket_totals: HashMap<OpticalBucket, (usize, usize, isize)> = HashMap::new();
@@ -213,6 +220,11 @@ pub fn build_shadow_plan_detailed_with_registry(
     let mut candidates = Vec::new();
 
     for block in &inventory.blocks {
+        if plan_started.elapsed() > plan_deadline {
+            plan_budget_exceeded = true;
+            warnings.push("plan_deadline_exceeded".to_string());
+            break;
+        }
         if block.protection != InitialProtection::Candidate {
             continue;
         }
@@ -321,6 +333,15 @@ pub fn build_shadow_plan_detailed_with_registry(
             },
         )
         .collect::<Vec<_>>();
+    gates.push(OpticalGateDecision {
+        name: "plan_budget".to_string(),
+        passed: !plan_budget_exceeded,
+        reason: if plan_budget_exceeded {
+            "plan_deadline_exceeded".to_string()
+        } else {
+            "within_plan_deadline".to_string()
+        },
+    });
     let economics_summary = OpticalEconomicsPublicSummary {
         text_tokens_before: f64_to_usize(economics_totals.text_tokens_before),
         image_tokens_after: f64_to_usize(economics_totals.image_tokens_after),
@@ -390,7 +411,11 @@ pub fn build_shadow_plan_detailed_with_registry(
         recent_tail_always_text,
         geometry_exists: geometry_is_sufficient,
     });
-    summary.final_status = decide_final_status(validation.valid, false);
+    summary.final_status = if plan_budget_exceeded {
+        OpticalPlanStatus::FailedClosed
+    } else {
+        decide_final_status(validation.valid, false)
+    };
     summary.gates.push(OpticalGateDecision {
         name: "shadow_validation".to_string(),
         passed: validation.valid,
