@@ -414,6 +414,15 @@
       "summary": "Fix Windows code graph drive-root regression test lifetime",
       "head_before": "6301ebf",
       "remote": null
+    },
+    {
+      "id": "12fef370-f777-418e-b532-d4e14a84fdfe",
+      "timestamp": "2026-07-19T22:34:46+08:00",
+      "operation": "push",
+      "branch": "codex/code-graph-mcp-integration",
+      "summary": "Push Windows code graph regression test lifetime fix for CI rerun",
+      "head_before": "1b77b83",
+      "remote": "origin"
     }
   ]
 }
