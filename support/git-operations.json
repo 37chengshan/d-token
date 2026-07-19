@@ -486,6 +486,15 @@
       "summary": "Normalize candidate provenance across Windows PowerShell hosts",
       "head_before": "0090a7f",
       "remote": null
+    },
+    {
+      "id": "d219c750-d598-4863-a7c0-b79cfbcf8c8d",
+      "timestamp": "2026-07-20T01:03:34+08:00",
+      "operation": "push",
+      "branch": "codex/code-graph-mcp-integration",
+      "summary": "Push Windows candidate provenance normalization for bundle CI rerun",
+      "head_before": "447d15a",
+      "remote": "origin"
     }
   ]
 }
