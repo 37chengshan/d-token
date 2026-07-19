@@ -450,6 +450,15 @@
       "summary": "Drain Core API mock request bodies before responding on Windows",
       "head_before": "e478d82",
       "remote": null
+    },
+    {
+      "id": "80954b1b-58d4-483b-8d21-1b13b426d9cd",
+      "timestamp": "2026-07-19T23:33:08+08:00",
+      "operation": "push",
+      "branch": "codex/code-graph-mcp-integration",
+      "summary": "Push Core API Windows mock transport repair for CI rerun",
+      "head_before": "9a5c6ed",
+      "remote": "origin"
     }
   ]
 }
