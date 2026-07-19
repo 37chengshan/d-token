@@ -1887,7 +1887,7 @@ mod tests {
         request.install_mcp = true;
         assert!(prepare_agent_integration(&request, &home, &root_path.join("backups")).is_err());
 
-        request.bridge_path = PathBuf::from(r"/opt/dtoken\agent-bridge.exe");
+        request.bridge_path = root_path.join("dtoken-agent-bridge.exe");
         fs::write(home.join(".codex/config.toml"), "# empty\n").unwrap();
         assert!(prepare_agent_integration(&request, &home, &root_path.join("backups")).is_ok());
     }

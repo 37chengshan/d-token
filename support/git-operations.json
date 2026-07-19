@@ -360,6 +360,15 @@
       "summary": "Push portable Agent integration fixture fixes",
       "head_before": "fd3a716aa878861e5a52eb5aad56d377217f7b14",
       "remote": "origin"
+    },
+    {
+      "id": "e374b55b-4b5c-47b5-84a8-ec45a673c504",
+      "timestamp": "2026-07-19T18:48:25+08:00",
+      "operation": "commit",
+      "branch": "codex/code-graph-mcp-integration",
+      "summary": "Fix Windows portable agent integration test fixture path",
+      "head_before": "84002e2",
+      "remote": null
     }
   ]
 }
