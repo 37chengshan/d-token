@@ -1244,7 +1244,8 @@ mod tests {
 
     #[test]
     fn windows_drive_root_is_not_inspected_as_a_symlink_component() {
-        let mut components = std::env::temp_dir().components();
+        let temp_dir = std::env::temp_dir();
+        let mut components = temp_dir.components();
         let mut drive_root = PathBuf::new();
         drive_root.push(components.next().expect("drive prefix").as_os_str());
         drive_root.push(components.next().expect("drive root").as_os_str());

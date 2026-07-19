@@ -396,6 +396,24 @@
       "summary": "Push Windows code graph path validation repair for CI rerun",
       "head_before": "3e38856",
       "remote": "origin"
+    },
+    {
+      "id": "a22d439c-ca4e-4a96-9203-5a52c93fbe00",
+      "timestamp": "2026-07-19T19:18:44+08:00",
+      "operation": "commit",
+      "branch": "codex/code-graph-mcp-integration",
+      "summary": "Round 1: Fix cc-switch schema compatibility (schema 13 structural probe) and Agent one-click selection flow (confirm-required pre-selected in primary list, capability labels fixed)",
+      "head_before": "6301ebf394ad",
+      "remote": null
+    },
+    {
+      "id": "2c2dd657-393b-4b7d-b724-5957396e22fd",
+      "timestamp": "2026-07-19T22:34:35+08:00",
+      "operation": "commit",
+      "branch": "codex/code-graph-mcp-integration",
+      "summary": "Fix Windows code graph drive-root regression test lifetime",
+      "head_before": "6301ebf",
+      "remote": null
     }
   ]
 }
