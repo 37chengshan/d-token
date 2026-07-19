@@ -10378,7 +10378,7 @@ const DEBUG_ONLY_HANDLER_NAMES: &[&str] = debug_desktop_handlers!(debug_only_han
 mod tests {
     use super::*;
     use std::collections::HashSet;
-    use std::net::TcpListener;
+    use std::net::{Shutdown, TcpListener};
     use std::sync::{
         atomic::{AtomicBool, Ordering},
         Arc, Mutex, OnceLock,
@@ -11654,6 +11654,8 @@ mod tests {
                             body
                         );
                         let _ = stream.write_all(response.as_bytes());
+                        let _ = stream.flush();
+                        let _ = stream.shutdown(Shutdown::Write);
                     }
                     Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
                         thread::sleep(Duration::from_millis(10));
