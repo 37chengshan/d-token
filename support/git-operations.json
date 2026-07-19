@@ -468,6 +468,15 @@
       "summary": "Allow Windows Tauri CLI shim execution during candidate build",
       "head_before": "b3fcb19",
       "remote": null
+    },
+    {
+      "id": "28681d43-3491-40c5-beea-d34540780ee3",
+      "timestamp": "2026-07-20T00:06:19+08:00",
+      "operation": "push",
+      "branch": "codex/code-graph-mcp-integration",
+      "summary": "Push Windows Tauri CLI shim repair for installer CI rerun",
+      "head_before": "1e98aff",
+      "remote": "origin"
     }
   ]
 }
