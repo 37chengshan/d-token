@@ -1407,6 +1407,11 @@ mod tests {
         project: Option<PathBuf>,
         bridge: PathBuf,
     ) -> AgentIntegrationRequest {
+        let bridge_path = if cfg!(windows) && bridge == Path::new("/opt/dtoken-agent-bridge") {
+            std::env::temp_dir().join("dtoken-agent-bridge.exe")
+        } else {
+            bridge
+        };
         AgentIntegrationRequest {
             agent_ids: vec![
                 "codex".to_string(),
@@ -1415,7 +1420,7 @@ mod tests {
             ],
             scope,
             project_root: project,
-            bridge_path: bridge,
+            bridge_path,
             install_instructions: true,
             install_hook_or_plugin: true,
             install_skill: true,

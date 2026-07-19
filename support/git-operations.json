@@ -342,6 +342,24 @@
       "summary": "Push Windows product readiness test fixes",
       "head_before": "b4f9e91b36fa33dc56821643018a243053e19aec",
       "remote": "origin"
+    },
+    {
+      "id": "c4121ffc-f341-46d5-9ac0-be68611ff46c",
+      "timestamp": "2026-07-19T18:20:13+08:00",
+      "operation": "commit",
+      "branch": "codex/code-graph-mcp-integration",
+      "summary": "Make Agent integration fixtures portable across Windows",
+      "head_before": "fd3a716aa878861e5a52eb5aad56d377217f7b14",
+      "remote": null
+    },
+    {
+      "id": "352ed86b-6d50-4d30-a557-1f943229ea0c",
+      "timestamp": "2026-07-19T18:20:13+08:00",
+      "operation": "push",
+      "branch": "codex/code-graph-mcp-integration",
+      "summary": "Push portable Agent integration fixture fixes",
+      "head_before": "fd3a716aa878861e5a52eb5aad56d377217f7b14",
+      "remote": "origin"
     }
   ]
 }
