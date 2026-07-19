@@ -432,6 +432,15 @@
       "summary": "Stabilize Windows readiness runtime test socket shutdown",
       "head_before": "c5f4c6e",
       "remote": null
+    },
+    {
+      "id": "70fe13b9-dcbb-463b-af4c-9523bf53747a",
+      "timestamp": "2026-07-19T23:02:36+08:00",
+      "operation": "push",
+      "branch": "codex/code-graph-mcp-integration",
+      "summary": "Push Windows readiness fixture stabilization for CI rerun",
+      "head_before": "3df32ce",
+      "remote": "origin"
     }
   ]
 }
