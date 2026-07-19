@@ -1173,6 +1173,11 @@ fn ensure_no_symlink_components(path: &Path) -> Result<()> {
     let mut current = PathBuf::new();
     for component in path.components() {
         current.push(component.as_os_str());
+        // Windows cannot inspect a bare drive root through this API, but every
+        // normal component below it must still be checked before use.
+        if !matches!(component, Component::Normal(_)) {
+            continue;
+        }
         match fs::symlink_metadata(&current) {
             Ok(metadata) if metadata.file_type().is_symlink() => {
                 bail!("symbolic links are not allowed in codebase-memory paths")
@@ -1231,4 +1236,20 @@ fn now_ms() -> u64 {
         .as_millis()
         .try_into()
         .unwrap_or(u64::MAX)
+}
+
+#[cfg(all(test, windows))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn windows_drive_root_is_not_inspected_as_a_symlink_component() {
+        let mut components = std::env::temp_dir().components();
+        let mut drive_root = PathBuf::new();
+        drive_root.push(components.next().expect("drive prefix").as_os_str());
+        drive_root.push(components.next().expect("drive root").as_os_str());
+
+        ensure_no_symlink_components(&drive_root.join("dtoken-codebase-memory-test"))
+            .expect("a Windows drive root should not be probed as a symlink component");
+    }
 }

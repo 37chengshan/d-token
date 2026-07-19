@@ -378,6 +378,15 @@
       "summary": "Push Windows portable agent integration fixture fix for code graph validation",
       "head_before": "429010d",
       "remote": "origin"
+    },
+    {
+      "id": "a340a22f-5941-4786-8ed7-2348e4fbf6b0",
+      "timestamp": "2026-07-19T19:13:37+08:00",
+      "operation": "commit",
+      "branch": "codex/code-graph-mcp-integration",
+      "summary": "Skip Windows drive root during code graph symlink checks",
+      "head_before": "df7f8a8",
+      "remote": null
     }
   ]
 }
