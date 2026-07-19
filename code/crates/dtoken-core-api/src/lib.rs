@@ -9439,8 +9439,33 @@ mod tests {
         let body = body.to_string();
         let server = tokio::spawn(async move {
             let (mut socket, _) = listener.accept().await.expect("accept local request");
+            let mut request = Vec::new();
             let mut buffer = [0_u8; 4096];
-            let _ = socket.read(&mut buffer).await.expect("read local request");
+            let expected_request_bytes = loop {
+                let read = socket.read(&mut buffer).await.expect("read local request");
+                assert!(read > 0, "local request closed before headers completed");
+                request.extend_from_slice(&buffer[..read]);
+                let Some(header_end) = request.windows(4).position(|window| window == b"\r\n\r\n")
+                else {
+                    continue;
+                };
+                let headers = std::str::from_utf8(&request[..header_end])
+                    .expect("local request headers are UTF-8");
+                let content_length = headers
+                    .lines()
+                    .find_map(|line| line.strip_prefix("content-length: "))
+                    .and_then(|value| value.parse::<usize>().ok())
+                    .expect("local request content length");
+                break header_end + 4 + content_length;
+            };
+            while request.len() < expected_request_bytes {
+                let read = socket
+                    .read(&mut buffer)
+                    .await
+                    .expect("read local request body");
+                assert!(read > 0, "local request closed before body completed");
+                request.extend_from_slice(&buffer[..read]);
+            }
             if delay_ms > 0 {
                 tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
             }

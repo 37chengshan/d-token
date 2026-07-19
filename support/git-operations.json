@@ -441,6 +441,15 @@
       "summary": "Push Windows readiness fixture stabilization for CI rerun",
       "head_before": "3df32ce",
       "remote": "origin"
+    },
+    {
+      "id": "5bd5a0ba-9044-4741-aa88-9d52f7dfc04f",
+      "timestamp": "2026-07-19T23:32:50+08:00",
+      "operation": "commit",
+      "branch": "codex/code-graph-mcp-integration",
+      "summary": "Drain Core API mock request bodies before responding on Windows",
+      "head_before": "e478d82",
+      "remote": null
     }
   ]
 }
