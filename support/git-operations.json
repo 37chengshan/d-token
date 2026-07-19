@@ -387,6 +387,15 @@
       "summary": "Skip Windows drive root during code graph symlink checks",
       "head_before": "df7f8a8",
       "remote": null
+    },
+    {
+      "id": "895a6141-c4b0-4757-bebf-5f3756ecc4e3",
+      "timestamp": "2026-07-19T19:13:53+08:00",
+      "operation": "push",
+      "branch": "codex/code-graph-mcp-integration",
+      "summary": "Push Windows code graph path validation repair for CI rerun",
+      "head_before": "3e38856",
+      "remote": "origin"
     }
   ]
 }
