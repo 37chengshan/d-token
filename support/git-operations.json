@@ -198,6 +198,60 @@
       "summary": "Record candidate branch push audit",
       "head_before": "dc6dcf5deef5d8003dbfaeb5404e933836cb46b7",
       "remote": null
+    },
+    {
+      "id": "953b7e3d-137d-4b76-aa47-4beb1bd32d3b",
+      "timestamp": "2026-07-19T15:08:16+08:00",
+      "operation": "branch-create",
+      "branch": "codex/windows-code-graph-validation",
+      "summary": "Create minimal default-branch bootstrap for Windows Code Graph validation",
+      "head_before": "7868873ed8502854f5ebf14d6ace8a992f8812ec",
+      "remote": "origin"
+    },
+    {
+      "id": "b30e2a97-71f4-4fcc-8a71-920740bd1b24",
+      "timestamp": "2026-07-19T15:09:59+08:00",
+      "operation": "commit",
+      "branch": "codex/windows-code-graph-validation",
+      "summary": "Add minimal Windows Code Graph validation bootstrap workflow (recorded from candidate audit ledger)",
+      "head_before": "174fb39",
+      "remote": null
+    },
+    {
+      "id": "cb47f8fc-aaa5-4ab2-a23e-a537284f732f",
+      "timestamp": "2026-07-19T15:10:00+08:00",
+      "operation": "push",
+      "branch": "codex/windows-code-graph-validation",
+      "summary": "Push minimal Windows Code Graph validation bootstrap workflow",
+      "head_before": "348f0c1",
+      "remote": "origin"
+    },
+    {
+      "id": "918421d1-48e3-4fa7-a783-e57eded5aa54",
+      "timestamp": "2026-07-19T15:14:13+08:00",
+      "operation": "merge",
+      "branch": "main",
+      "summary": "Merge minimal Windows Code Graph validation bootstrap workflow",
+      "head_before": "7868873ed8502854f5ebf14d6ace8a992f8812ec",
+      "remote": "origin"
+    },
+    {
+      "id": "3e7e432c-179c-41fe-9a93-ddcf841ff661",
+      "timestamp": "2026-07-19T15:14:13+08:00",
+      "operation": "commit",
+      "branch": "codex/code-graph-mcp-integration",
+      "summary": "Record Windows validation bootstrap branch, commit, push, and merge audit",
+      "head_before": "7868873ed8502854f5ebf14d6ace8a992f8812ec",
+      "remote": null
+    },
+    {
+      "id": "42a61cd6-7a80-4d6c-8648-61f436e69f56",
+      "timestamp": "2026-07-19T15:14:13+08:00",
+      "operation": "push",
+      "branch": "codex/code-graph-mcp-integration",
+      "summary": "Push Windows validation bootstrap audit ledger",
+      "head_before": "7868873ed8502854f5ebf14d6ace8a992f8812ec",
+      "remote": "origin"
     }
   ]
 }
