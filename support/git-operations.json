@@ -270,6 +270,24 @@
       "summary": "Push Windows release-contract literal matching fix",
       "head_before": "d35a5b74a68d4f9ef0791fae4e283a22e1edeba8",
       "remote": "origin"
+    },
+    {
+      "id": "436c0edb-f258-42ef-a51a-1c077f0dc4c2",
+      "timestamp": "2026-07-19T15:28:36+08:00",
+      "operation": "commit",
+      "branch": "codex/code-graph-mcp-integration",
+      "summary": "Fetch locked Windows desktop dependencies before sidecar preparation",
+      "head_before": "ec6e369e21b339569d41a41040c24330e8d829e2",
+      "remote": null
+    },
+    {
+      "id": "a9e0b444-9742-41cd-b797-8ee2c037f8d1",
+      "timestamp": "2026-07-19T15:28:36+08:00",
+      "operation": "push",
+      "branch": "codex/code-graph-mcp-integration",
+      "summary": "Push clean-run WebView2 sidecar preparation fix",
+      "head_before": "ec6e369e21b339569d41a41040c24330e8d829e2",
+      "remote": "origin"
     }
   ]
 }

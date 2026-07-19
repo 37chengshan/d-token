@@ -14,6 +14,7 @@ $CandidateStampPath = Join-Path $CodeRoot "target\$ProfileDir\d-token-release-ca
 
 Push-Location $CodeRoot
 try {
+  cargo fetch --locked --target $TargetTriple | Out-Null
   if ($Release) {
     cargo build -p dtoken-proxy -p dtoken-agent-bridge -p dtoken-codebase-memory --release --target $TargetTriple | Out-Null
   } else {
