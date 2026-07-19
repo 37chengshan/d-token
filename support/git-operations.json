@@ -477,6 +477,15 @@
       "summary": "Push Windows Tauri CLI shim repair for installer CI rerun",
       "head_before": "1e98aff",
       "remote": "origin"
+    },
+    {
+      "id": "c093e11b-19d5-4e0c-b0d4-7c290a841fe8",
+      "timestamp": "2026-07-20T01:02:02+08:00",
+      "operation": "commit",
+      "branch": "codex/code-graph-mcp-integration",
+      "summary": "Normalize candidate provenance across Windows PowerShell hosts",
+      "head_before": "0090a7f",
+      "remote": null
     }
   ]
 }

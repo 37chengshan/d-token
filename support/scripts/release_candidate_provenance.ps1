@@ -134,10 +134,10 @@ function Get-ReleaseCandidateProvenance {
   $RustcResult = Invoke-ReleaseMetadataCommand -WorkingDirectory $RootPath -FilePath "rustc" -ArgumentList @("--version") -AllowFailure
   $CargoResult = Invoke-ReleaseMetadataCommand -WorkingDirectory $RootPath -FilePath "cargo" -ArgumentList @("--version") -AllowFailure
   $Platform = [pscustomobject]@{
-    os_description = [System.Runtime.InteropServices.RuntimeInformation]::OSDescription
-    os_architecture = [string][System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture
-    process_architecture = [string][System.Runtime.InteropServices.RuntimeInformation]::ProcessArchitecture
-    powershell = $PSVersionTable.PSVersion.ToString()
+    os_description = [System.Runtime.InteropServices.RuntimeInformation]::OSDescription.Trim()
+    os_architecture = ([string][System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture).Trim()
+    process_architecture = ([string][System.Runtime.InteropServices.RuntimeInformation]::ProcessArchitecture).Trim()
+    powershell = $PSVersionTable.PSVersion.ToString().Trim()
   }
   $CandidateMaterial = @(
     "git_head=$($GitHeadResult.text)",
