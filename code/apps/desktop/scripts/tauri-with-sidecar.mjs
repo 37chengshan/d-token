@@ -148,6 +148,7 @@ if (process.platform === "darwin" && mode === "build") {
 
 const result = spawnSync(tauriCommand, [mode, ...tauriArgs], {
   env: tauriEnvironment,
+  shell: process.platform === "win32",
   stdio: "inherit",
 });
 if (result.error) throw result.error;

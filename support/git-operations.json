@@ -459,6 +459,15 @@
       "summary": "Push Core API Windows mock transport repair for CI rerun",
       "head_before": "9a5c6ed",
       "remote": "origin"
+    },
+    {
+      "id": "38599475-c470-47d5-97bd-d853752997d2",
+      "timestamp": "2026-07-20T00:05:55+08:00",
+      "operation": "commit",
+      "branch": "codex/code-graph-mcp-integration",
+      "summary": "Allow Windows Tauri CLI shim execution during candidate build",
+      "head_before": "b3fcb19",
+      "remote": null
     }
   ]
 }
