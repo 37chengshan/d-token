@@ -180,6 +180,24 @@
       "summary": "Complete Code Graph MCP integration, recovery, security, UI, docs, and cross-platform validation gates",
       "head_before": "fa653bc6455bcd60619e93e13c2bd1f9e444ef4f",
       "remote": null
+    },
+    {
+      "id": "21466eb5-affc-4b1f-9160-d6d7dc2ddb6c",
+      "timestamp": "2026-07-19T15:06:45+08:00",
+      "operation": "push",
+      "branch": "codex/code-graph-mcp-integration",
+      "summary": "Push validated Code Graph MCP candidate snapshot for Windows runner evidence",
+      "head_before": "dc6dcf5deef5d8003dbfaeb5404e933836cb46b7",
+      "remote": "origin"
+    },
+    {
+      "id": "df765784-2475-457c-89e7-c7000a277c65",
+      "timestamp": "2026-07-19T15:06:45+08:00",
+      "operation": "commit",
+      "branch": "codex/code-graph-mcp-integration",
+      "summary": "Record candidate branch push audit",
+      "head_before": "dc6dcf5deef5d8003dbfaeb5404e933836cb46b7",
+      "remote": null
     }
   ]
 }
