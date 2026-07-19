@@ -1,11 +1,30 @@
-export type PageId = "overview" | "install" | "advanced" | "analytics" | "doctor" | "changes" | "logs" | "compatibility" | "settings";
+export type PageId =
+  | "overview"
+  | "install"
+  | "codebase-memory"
+  | "advanced"
+  | "analytics"
+  | "visual"
+  | "doctor"
+  | "changes"
+  | "logs"
+  | "compatibility"
+  | "settings";
 
-export const NAV: { id: PageId; labelKey: string }[] = [
+export type NavItem = {
+  id: PageId;
+  labelKey: string;
+  badge?: "beta";
+};
+
+export const NAV: NavItem[] = [
   { id: "overview", labelKey: "nav.overview" },
   { id: "install", labelKey: "nav.install" },
+  { id: "codebase-memory", labelKey: "nav.codebaseMemory" },
   { id: "analytics", labelKey: "nav.analytics" },
+  { id: "visual", labelKey: "nav.visual", badge: "beta" },
   { id: "doctor", labelKey: "nav.doctor" },
   { id: "changes", labelKey: "nav.changes" },
 ];
 
-export const SETTINGS_NAV = { id: "settings" as PageId, labelKey: "nav.settings" };
+export const SETTINGS_NAV: NavItem = { id: "settings", labelKey: "nav.settings" };

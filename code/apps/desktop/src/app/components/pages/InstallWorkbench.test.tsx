@@ -1,6 +1,6 @@
 import React from "react";
 import "@testing-library/jest-dom/vitest";
-import { cleanup, render, screen, within } from "@testing-library/react";
+import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -45,6 +45,6 @@ describe("InstallWorkbench", () => {
     await user.click(smartLearning);
 
     expect(smartLearning).toHaveAttribute("aria-selected", "true");
-    expect(screen.getByRole("tabpanel")).toHaveTextContent("智能学习内容");
+    await waitFor(() => expect(screen.getByRole("tabpanel")).toHaveTextContent("智能学习内容"));
   });
 });

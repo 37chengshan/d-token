@@ -1,17 +1,19 @@
 # d-token App 功能与页面
 
-更新时间：2026-07-11 晚间
+更新时间：2026-07-18
 产品真理源：`docs/PRD.md`
 代码入口：`code/apps/desktop/src/app/`
 
 ## 1. 当前信息架构
 
-正式桌面 App 使用六个一级页面：
+正式桌面 App 使用八个一级页面（含 1 个 Beta 与 1 个实验性本地工具页）：
 
 ```text
 总体概览
 安装与连接
+代码图谱（实验性）
 分析
+视觉压缩（Beta）
 Doctor
 变更与回退
 设置
@@ -25,9 +27,11 @@ Doctor
 |---|---|---|---|
 | 总体概览 | `components/pages/Overview.tsx` | 查看 d-token 服务、运行证据、关键指标、近期问题和下一步动作 | 只有 Tauri + d-token-owned runtime 的完整新鲜证据才能显示为真实状态；浏览器预览必须明确标记 |
 | 安装与连接 | `Install.tsx`、`InstallWorkbench.tsx` | 配置 d-token 服务、选择 Agent、建立 Provider/Route、预览变更、应用、验证 | 当前能保存和应用 d-token 自有 route config；第三方 Agent 自动写入尚未形成完整生产事务 |
+| 代码图谱（实验性） | `CodebaseMemory.tsx`、`lib/codebaseMemory.ts` | 明确显示固定组件版本 `Codebase Memory MCP v0.9.0` 并打开对应官方下载页，将组件解压到默认或自定义目录后自动识别；自动扫描本机 Agent，多选批量预览/配置/验证/回退 MCP；一键启动并打开 d-token-owned 只读图谱并管理独立索引 | App 不 bundle/下载 upstream；五维状态独立；批量操作必须在 Native 返回前显示 Agent、阶段和 current/total 进度，并在刷新/重启后恢复所有未回退 transaction；大型 artifact 校验、进程与 loopback 工作必须在后台 worker 执行；仅允许 pinned headless artifact、受限 launcher、`persistence=false` 和短期授权 loopback；不得以同签名者替代 pinned SHA-256，不得直出上游原生 UI，也不得停止 Agent-owned MCP 进程 |
 | 分析 | `Analytics.tsx` | 查看请求、token、路由、延迟和错误的聚合趋势 | 不得把 fixture 或推算值冒充真实账单；估算必须标注 |
-| Doctor | `Doctor.tsx` | 检查服务、配置、路由、凭据、平台和已知问题，给出修复建议 | 低风险动作可自动执行；涉及配置写入、外部工具或危险修复时必须预览并确认 |
-| 变更与回退 | `Changes.tsx` | 查看 d-token 自有变更、rollback point、恢复和清理 | 当前可恢复 d-token active config；外部 Agent 配置恢复仍受限 |
+| 视觉压缩（Beta） | `VisualCompression.tsx`、`lib/optical/*` | 一键启用安全 Shadow 默认值；高级配置按 route 调整策略；预览 diff、确认应用与回退；状态与预览查看 status/capabilities/lifecycle/events 与 shadow plan | 信息架构对齐安装工作台（一键 + 高级 + 状态）；仅 shadow/metadata；产品路径强制 `allow_active=false`；写盘走 ConfigPatcher + 服务重启；不渲染 PNG/base64/raw body；节省为估算；Windows/macOS 共享同一 UI |
+| Doctor | `Doctor.tsx` | 自动扫描并修复或仅扫描；使用专项模块修复服务、已有 Agent 接入、路由/Optical/平台等受管项并自动复检 | v3 快照动态判定 freshness；服务和已有管理证据的 Claude Code/Codex/OpenCode Agent Integration 已接 executor，其他模块按 capability 锁定或返回来源流程；Optical Active/cc-switch 写入永远禁止 |
+| 变更与回退 | `Changes.tsx` | 默认查看备份与回滚，预检当前可恢复性；查看已提交的持久变更记录 | 顶级待批/Diff 已移除，Diff 留在写前确认和历史详情；Agent 多文件事务聚合为一个回退点，普通/Agent/Optical 按 `executor_kind` 分发并先创建反向安全备份 |
 | 设置 | `Settings.tsx` | 管理主题、语言、本地端口、安全、项目策略和应用偏好 | 设置只写 d-token 本地状态，不存储明文凭据或原始 prompt/response |
 
 ## 3. 安装与连接工作台
@@ -64,18 +68,22 @@ Doctor
 3. 将草稿应用为 d-token active config，并在写入前创建 rollback point。
 4. 使用操作系统凭据库保存 Provider credential，配置中只保留不透明引用。
 5. 启动、停止和检查由 App 管理的 d-token Rust runtime，并验证进程、可执行文件、端口和 health identity。
-6. 运行安装事务、Doctor、产品 readiness 聚合和 Agent route 配置验证。
+6. 运行安装事务、Doctor v3 统一快照/模块注册表/自动扫描与 Agent 专项修复、预览/确认/自动复检、产品 readiness 聚合和 Agent route 配置验证。
 7. 导出经过脱敏的 JSON/CSV runtime 数据。
-8. 在 debug build 中运行内部 OpenCode/benchmark/smoke 验证；release build 不注册这些开发命令。
+8. 读取 Optical 观测切片（status/capabilities/lifecycle/events）并运行 shadow preview public summary（Tauri → loopback）。
+9. 通过 `get_optical_config_editor` / `preview_optical_config_change` / `apply_optical_config_change` 编辑 active config 的 optical 全局与 route 策略（shadow-only，强制关闭 active）。
+10. 在 debug build 中运行内部 OpenCode/benchmark/smoke 验证；release build 不注册这些开发命令。
+11. 通过代码图谱页读取 package/integration/agent session/UI session/index 五维证据；先完成用户导入与固定校验，再以显式项目范围驱动本机 Agent 扫描、多选批量 MCP 配置、索引与只读图谱页面。按钮不可用时必须就地显示阻塞原因。
 
 ## 5. 尚未完成的产品闭环
 
-1. 对 OpenCode、Claude Code、Codex、Cursor、Cline 等第三方 Agent 的配置写入尚未统一为完整事务。
+1. Claude Code、Codex、OpenCode 的已有 d-token 管理区已使用 Agent Integration 完整事务；Cursor、Cline 等 Agent 仍缺专用 executor，首次接入仍归安装与连接。
 2. 自动安装 RTK/Headroom 的下载源和签名验证尚未实现；当前缺失时只检测并安全失败。
 3. Smart Learning 的真实 native 扫描、深度扫描、delegation 和 managed-block 写入事务尚未闭环。
-4. Changes 页面不能声称已能恢复所有外部配置；当前可靠范围主要是 d-token 自有 active config。
+4. Changes 已分发普通 ConfigPatcher、Agent Integration 与 Optical executor，但不能声称恢复所有外部配置；Route/安装等无来源 executor 或无完整 manifest 的专项 scope 继续锁定。
 5. Analytics、Doctor 和 Dashboard 的每项数据都需要继续收敛到统一 source/freshness/action-result 合同。
-6. macOS 和 Windows 仍缺少同一候选 commit 的完整实机发布证据。
+6. Optical active transform、PNG renderer 生产路径、post-validator 与 rollback executor 仍未开放；视觉压缩页保持 Beta / shadow-only。
+7. macOS 和 Windows 仍缺少同一候选 commit 的完整实机发布证据。
 
 ## 6. 状态与证据规则
 
@@ -85,6 +93,8 @@ Doctor
 - `freshness`：采集时间和是否过期。
 - `state`：loading、empty、unavailable、partial、ready、error。
 - `action result`：用户操作是否真实执行、写入了什么、如何验证、如何回退。
+
+正式异步动作还必须在 100ms 内显示按钮级中间态并防重复提交；成功、部分完成、失败或前置条件不足均进入统一顶部通知。通知主文案使用用户任务语言，失败详情只保留经过脱敏和限长的简短技术摘要；需要持久保留的事务 receipt 在顶部收起后仍可从通知中心查看。
 
 没有完整证据时，UI 必须显示未知、不可用或部分状态，不能用默认绿色、示例数字或静态工具路径补齐。
 

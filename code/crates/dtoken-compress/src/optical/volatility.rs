@@ -1,6 +1,8 @@
 // VolatilityPlanner：移除 per-turn 变化内容，避免 prompt-cache churn。
 // 关联计划：OPTICAL_COMPRESSION_EXPERIMENT_PLAN.md §9。
 
+use sha2::{Digest, Sha256};
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum VolatileKind {
     BillingHeader,
@@ -117,26 +119,18 @@ fn default_policy_for(kind: &VolatileKind) -> VolatilePolicy {
 }
 
 fn digest_line(line: &str) -> String {
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    use std::hash::{Hash, Hasher};
-    line.hash(&mut hasher);
-    format!("{:016x}", hasher.finish())
-        .get(..8)
-        .unwrap_or("00000000")
-        .to_string()
+    format!("{:x}", Sha256::digest(line.as_bytes()))
 }
 
 fn compute_stable_digest(segments: &[StableSegment]) -> String {
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    use std::hash::{Hash, Hasher};
+    let mut hasher = Sha256::new();
     for seg in segments {
-        seg.digest_prefix.hash(&mut hasher);
-        seg.chars.hash(&mut hasher);
+        hasher.update(seg.digest_prefix.as_bytes());
+        hasher.update([0]);
+        hasher.update(seg.chars.to_le_bytes());
+        hasher.update([0xff]);
     }
-    format!("{:016x}", hasher.finish())
-        .get(..8)
-        .unwrap_or("00000000")
-        .to_string()
+    format!("{:x}", hasher.finalize())
 }
 
 #[cfg(test)]
@@ -162,6 +156,7 @@ mod tests {
         let plan_a = plan_volatility("stable line\nDate: 2026-07-08");
         let plan_b = plan_volatility("stable line\nDate: 2026-07-09");
         assert_eq!(plan_a.stable_digest, plan_b.stable_digest);
+        assert_eq!(plan_a.stable_digest.as_deref().map(str::len), Some(64));
     }
 
     #[test]

@@ -1,5 +1,8 @@
 use anyhow::{Context, Result};
-use dtoken_types::{InstanceProfile, OpticalRuntimeConfig, ProviderProfile, RouteProfile};
+use dtoken_types::{
+    InstanceProfile, OpticalEvalArtifact, OpticalRuntimeConfig, ProviderCachePolicy,
+    ProviderProfile, RouteProfile,
+};
 use serde::{Deserialize, Serialize};
 use std::{collections::HashSet, fs, path::Path};
 
@@ -23,6 +26,8 @@ pub struct DtokenConfig {
     pub providers: Vec<ProviderProfile>,
     pub routes: Vec<RouteProfile>,
     pub instances: Vec<InstanceProfile>,
+    #[serde(default)]
+    pub provider_cache_policies: Vec<ProviderCachePolicy>,
     #[serde(default)]
     pub optical: OpticalRuntimeConfig,
 }
@@ -52,6 +57,21 @@ impl DtokenConfig {
 
     pub fn find_instance(&self, id: &str) -> Option<&InstanceProfile> {
         self.instances.iter().find(|i| i.id == id)
+    }
+
+    pub fn find_provider_cache_policy(
+        &self,
+        route_id: &str,
+        provider_id: &str,
+        model: &str,
+    ) -> Option<&ProviderCachePolicy> {
+        let mut matches = self.provider_cache_policies.iter().filter(|policy| {
+            policy.route_id == route_id
+                && policy.provider_id == provider_id
+                && policy.model == model
+        });
+        let policy = matches.next()?;
+        matches.next().is_none().then_some(policy)
     }
 
     pub fn find_optical_route_policy(
@@ -128,7 +148,7 @@ impl DtokenConfig {
             if !optical
                 .eval_artifacts
                 .iter()
-                .any(|artifact| artifact.passed)
+                .any(OpticalEvalArtifact::passes_derived_quality_gate)
             {
                 issues.push(OpticalConfigIssue::ActiveWithoutPassingEval);
             }
@@ -248,6 +268,33 @@ mod tests {
         assert!(!config.optical.global_policy.allow_active);
         assert!(config.optical.route_policies.is_empty());
         assert!(config.optical.capability_snapshots.is_empty());
+        assert!(config.provider_cache_policies.is_empty());
+    }
+
+    #[test]
+    fn provider_cache_policy_lookup_requires_exact_identity() {
+        let policy = dtoken_types::ProviderCachePolicy {
+            route_id: "route-a".to_string(),
+            provider_id: "provider-a".to_string(),
+            model: "model-a".to_string(),
+            strategy: dtoken_types::ProviderCachePolicyStrategy::AnthropicExplicit,
+            ttl_seconds: 300,
+            min_prefix_bytes: 1024,
+        };
+        let mut config = DtokenConfig {
+            provider_cache_policies: vec![policy.clone()],
+            ..Default::default()
+        };
+        assert!(config
+            .find_provider_cache_policy("route-a", "provider-a", "model-a")
+            .is_some_and(dtoken_types::ProviderCachePolicy::is_well_formed));
+        assert!(config
+            .find_provider_cache_policy("route-a", "provider-a", "other-model")
+            .is_none());
+        config.provider_cache_policies.push(policy);
+        assert!(config
+            .find_provider_cache_policy("route-a", "provider-a", "model-a")
+            .is_none());
     }
 
     #[test]

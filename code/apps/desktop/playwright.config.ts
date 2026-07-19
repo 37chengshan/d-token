@@ -1,6 +1,7 @@
 import { defineConfig, devices } from "@playwright/test";
 
 const baseURL = process.env.E2E_BASE_URL ?? "http://127.0.0.1:5180";
+const chromiumExecutablePath = process.env.E2E_CHROMIUM_EXECUTABLE_PATH;
 
 export default defineConfig({
   testDir: "./e2e",
@@ -24,7 +25,7 @@ export default defineConfig({
     reducedMotion: "reduce",
     trace: "on-first-retry",
     screenshot: "only-on-failure",
-    video: "retain-on-failure",
+    video: process.env.E2E_DISABLE_VIDEO ? "off" : "retain-on-failure",
     actionTimeout: 10_000,
     navigationTimeout: 30_000,
   },
@@ -33,6 +34,9 @@ export default defineConfig({
       name: "desktop-chromium",
       use: {
         ...devices["Desktop Chrome"],
+        launchOptions: chromiumExecutablePath
+          ? { executablePath: chromiumExecutablePath }
+          : undefined,
         viewport: { width: 1180, height: 780 },
       },
     },

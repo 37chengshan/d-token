@@ -23,6 +23,21 @@ export default defineConfig({
     },
   },
   assetsInclude: ["**/*.svg", "**/*.csv"],
+  build: {
+    manifest: true,
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          if (!id.includes("node_modules")) return undefined;
+          if (id.includes("react-dom") || /node_modules\/react\//.test(id)) return "react-vendor";
+          if (id.includes("clsx") || id.includes("tailwind-merge")) return "ui-utils-vendor";
+          if (id.includes("recharts") || id.includes("d3-") || id.includes("victory-vendor")) return "charts-vendor";
+          if (id.includes("@tauri-apps")) return "tauri-vendor";
+          return undefined;
+        },
+      },
+    },
+  },
   test: {
     environment: "jsdom",
     include: ["src/**/*.test.ts?(x)"],

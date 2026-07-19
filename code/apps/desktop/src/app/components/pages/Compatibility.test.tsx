@@ -124,6 +124,7 @@ describe("Compatibility evidence boundaries", () => {
 
 function verifiedPayload(overrides: Record<string, unknown>) {
   return {
+    desktop_revision: "compatibility-test-revision",
     source: "dtoken-owned-runtime",
     desktop_data_source: "dtoken-local-service",
     evidence_state: "verified",

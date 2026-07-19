@@ -3,6 +3,8 @@ use sha2::{Digest, Sha256};
 use dtoken_types::OpticalPlanPublicSummary;
 
 use super::context_graph::ContextGraphSummary;
+use super::risk::RiskTier;
+use crate::content_router::ContentKind;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PlanCandidateEvidence {
@@ -12,6 +14,10 @@ pub struct PlanCandidateEvidence {
     pub reason: String,
     pub chars: usize,
     pub estimated_images: usize,
+    pub content_kind: ContentKind,
+    pub risk_tier: Option<RiskTier>,
+    pub cache_stable: bool,
+    pub stable_digest_present: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

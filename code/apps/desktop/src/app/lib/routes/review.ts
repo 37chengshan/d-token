@@ -47,17 +47,15 @@ export function routeReviewFailureMessage(value: unknown, lang: "zh" | "en") {
     : "";
   const normalized = error.toLowerCase();
   if (normalized.includes("not found")) {
-    return lang === "zh" ? "无法审阅：路由草稿不存在或已被移除。" : "Review unavailable: the route draft is missing or was removed.";
+    return lang === "zh" ? "无法查看路由变更：草稿不存在或已被移除。" : "Route changes are unavailable. The draft is missing or was removed.";
   }
   if (normalized.includes("plaintext-looking secret")) {
-    return lang === "zh" ? "安全检查已阻止审阅：草稿疑似包含明文凭据。" : "Security checks blocked the review because the draft may contain a plaintext credential.";
+    return lang === "zh" ? "出于安全考虑，当前草稿不能继续处理。请先确认凭据保存方式。" : "The current draft cannot continue for safety reasons. Confirm how the credential is stored first.";
   }
-  if (error) {
-    return lang === "zh" ? `无法生成路由审阅：${error}` : `Could not prepare the route review: ${error}`;
-  }
+  if (error) return lang === "zh" ? "无法准备路由变更。请刷新当前配置后重试。" : "Route changes could not be prepared. Refresh the current configuration and try again.";
   return lang === "zh"
-    ? "无法生成路由审阅：桌面控制面未返回完整差异与 SHA-256 证据。"
-    : "Could not prepare the route review because the desktop control plane did not return complete diff and SHA-256 evidence.";
+    ? "无法准备路由变更：本机控制面未返回完整差异与 SHA-256 证据。"
+    : "Route changes could not be prepared. Complete differences and SHA-256 evidence are unavailable.";
 }
 
 export function routeApplyFailureMessage(summary: unknown, lang: "zh" | "en") {
@@ -65,24 +63,24 @@ export function routeApplyFailureMessage(summary: unknown, lang: "zh" | "en") {
   const normalized = message.toLowerCase();
   if (normalized.includes("stale") || normalized.includes("review the current diff again")) {
     return lang === "zh"
-      ? "应用已阻止：草稿或活动配置在审阅后发生变化，请重新审阅当前差异。"
-      : "Apply was blocked because the draft or active config changed after review. Review the current diff again.";
+      ? "应用已阻止：草稿或当前配置已发生变化，请重新查看当前差异。"
+      : "Apply was blocked. The draft or active configuration changed. View the current differences again.";
   }
   if (normalized.includes("review the route diff")) {
-    return lang === "zh" ? "应用已阻止：请先审阅当前路由差异。" : "Apply was blocked: review the current route diff first.";
+    return lang === "zh" ? "应用已阻止：请先查看当前路由差异。" : "Apply was blocked: view the current route differences first.";
   }
   if (normalized.includes("could not be prepared")) {
-    return lang === "zh" ? "路由草稿已变化或暂不可读，请重新生成审阅。" : "The route draft changed or cannot be read. Prepare a new review.";
+    return lang === "zh" ? "路由草稿已变化或暂不可读，请重新生成变更预览。" : "The route draft changed or cannot be read. Generate a new change preview.";
   }
   if (normalized.includes("transaction failed") || normalized.includes("not committed")) {
-    return lang === "zh" ? "配置事务失败且未提交；请重新审阅后再试。" : "The configuration transaction failed and was not committed. Review again before retrying.";
+    return lang === "zh" ? "配置事务失败且未提交；请重新查看当前变更后再试。" : "The configuration transaction failed and was not committed. View the current changes before retrying.";
   }
   if (normalized.includes("verification evidence")) {
     return lang === "zh" ? "写后验证证据缺失，未将本次操作标记为完成。" : "Post-write verification evidence is missing, so the operation was not marked complete.";
   }
-  return message
-    ? (lang === "zh" ? `路由应用未完成：${message}` : `Route apply did not complete: ${message}`)
-    : (lang === "zh" ? "路由应用未完成，请重新审阅后再试。" : "Route apply did not complete. Review again before retrying.");
+  return lang === "zh"
+    ? "路由应用未完成。请重新查看当前变更后再试。"
+    : "Route apply did not finish. View the current changes before retrying.";
 }
 
 function isSha256(value: unknown) {

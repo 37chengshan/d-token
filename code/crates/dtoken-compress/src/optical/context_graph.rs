@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
-use dtoken_types::Protocol;
+use dtoken_types::{OpticalEndpoint, Protocol};
 
 use super::inventory::{BlockKind, ConversationInventory, InitialProtection, RoleKind};
 
@@ -8,6 +8,7 @@ use super::inventory::{BlockKind, ConversationInventory, InitialProtection, Role
 pub enum ProviderToolStateMachine {
     AnthropicMessagesV1,
     OpenAiChatV1,
+    OpenAiResponsesV1,
     #[default]
     UnsupportedFailClosed,
 }
@@ -103,9 +104,17 @@ impl ContextGraph {
 }
 
 pub fn build_context_graph(inventory: &ConversationInventory) -> ContextGraph {
-    let state_machine = match &inventory.protocol {
-        Protocol::Anthropic => ProviderToolStateMachine::AnthropicMessagesV1,
-        Protocol::OpenAi => ProviderToolStateMachine::OpenAiChatV1,
+    let state_machine = match (&inventory.protocol, &inventory.endpoint) {
+        (Protocol::Anthropic, OpticalEndpoint::AnthropicMessages) => {
+            ProviderToolStateMachine::AnthropicMessagesV1
+        }
+        (Protocol::OpenAi, OpticalEndpoint::OpenAiChatCompletions) => {
+            ProviderToolStateMachine::OpenAiChatV1
+        }
+        (Protocol::OpenAi, OpticalEndpoint::OpenAiResponses) => {
+            ProviderToolStateMachine::OpenAiResponsesV1
+        }
+        _ => ProviderToolStateMachine::UnsupportedFailClosed,
     };
     let nodes = inventory
         .blocks
@@ -242,7 +251,7 @@ mod tests {
 
         assert!(graph.is_closed_tool_result(&result.block_id));
         assert!(
-            graph.is_closed_historical_tool_result(&result.block_id, inventory.recent_tail_start)
+            !graph.is_closed_historical_tool_result(&result.block_id, inventory.recent_tail_start)
         );
         assert_eq!(graph.summary().tool_dependency_edges, 1);
         assert_eq!(graph.summary().open_tool_uses, 0);
@@ -371,5 +380,35 @@ mod tests {
         );
         assert_eq!(graph.summary().closed_tool_results, 2);
         assert_eq!(graph.summary().open_tool_uses, 0);
+    }
+
+    #[test]
+    fn responses_function_calls_use_responses_state_machine() {
+        let body = json!({"input":[
+            {"type":"function_call","id":"fc-1","call_id":"call-1","name":"read","arguments":"{}"},
+            {"type":"function_call_output","call_id":"call-1","output":"done"}
+        ]});
+        let inventory = crate::optical::inventory::build_openai_responses_inventory(&body);
+        let graph = build_context_graph(&inventory);
+        assert_eq!(
+            graph.summary().state_machine,
+            ProviderToolStateMachine::OpenAiResponsesV1
+        );
+        assert_eq!(graph.summary().closed_tool_results, 1);
+        assert_eq!(graph.summary().open_tool_uses, 0);
+    }
+
+    #[test]
+    fn responses_duplicate_call_ids_fail_closed() {
+        let body = json!({"input":[
+            {"type":"function_call","call_id":"call-1","name":"read","arguments":"{}"},
+            {"type":"function_call","call_id":"call-1","name":"write","arguments":"{}"},
+            {"type":"function_call_output","call_id":"call-1","output":"done"}
+        ]});
+        let inventory = crate::optical::inventory::build_openai_responses_inventory(&body);
+        let graph = build_context_graph(&inventory);
+        assert_eq!(graph.summary().closed_tool_results, 0);
+        assert_eq!(graph.summary().orphan_tool_results, 1);
+        assert_eq!(graph.summary().open_tool_uses, 1);
     }
 }

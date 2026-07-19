@@ -1,6 +1,10 @@
 # Optical / Hybrid Context Optimization 测试矩阵
 
-更新日期：2026-07-11
+更新日期：2026-07-15
+
+最终本地门：Rust workspace `467 tests / 50 suites`、桌面 Vitest `35 files / 175 tests`、Chrome Playwright `10/10`、support Python `7/7` 全部通过；fmt、严格 Clippy、TypeScript、Vite build、structure、macOS sidecar dry-run 与 diff check 通过。WebKit、Windows 实机、真实 Provider 与本轮真实 Agent routed flow 未执行，不得由本地门推断为通过。
+
+本轮新增回归覆盖：provider-label secret、共享 in-flight byte lease、stream EOF/error/drop 终态、签名先于 bridge 执行、Agent diff secret、MCP 超长无换行输入、事务 manifest 缺失后的 UI fail-closed、同事务跨进程锁，以及稠密父目录中的 Agent project discovery。
 
 ## 1. Applicability 与安全默认值
 
@@ -51,6 +55,10 @@ open tool use remains tracked
 OpenAI assistant tool_calls are lowered to ToolUse
 OpenAI tool-role messages are lowered to ToolResult
 OpenAI parallel tool calls use OpenAiChatV1 state machine
+OpenAI Responses message/function_call/function_call_output are lowered
+OpenAI Responses call_id pairs use OpenAiResponsesV1 state machine
+OpenAI Responses recent six completed pairs remain protected
+OpenAI Responses duplicate call_id and orphan outputs fail closed
 state-machine name and version are metadata-only
 ```
 
@@ -60,7 +68,6 @@ state-machine name and version are metadata-only
 result before use fixture
 missing one of multiple parallel results
 malformed tool_call_id
-OpenAI Responses lowering
 mixed provider/protocol malformed input
 very large parallel tool fan-out
 ```
@@ -104,6 +111,9 @@ ordinary log remains RenderSafe
 geometry capacity derives from padding/cell/rows
 capability limits constrain dimensions
 token estimate applies formula and safety margin
+dynamic profile keeps full pages at max height and shrinks only the final page
+actual artifact width/height drives active token and pixel accounting
+conservative <= expected <= optimistic economics
 selected dense log produces positive economics
 secret/orphan/recent candidates contribute zero selected savings
 ```
@@ -127,6 +137,7 @@ active enforces cache stability, patch membership, image budget and net savings
 
 ```text
 GET /compression/optical/status reflects configured policy
+status schema v2 reports representation plan, Responses shadow inventory and dynamic accounting readiness
 GET /compression/optical/capabilities defaults fail closed
 GET /compression/optical/capabilities/lifecycle returns counts only
 POST /compression/optical/preview returns metadata-only summary
@@ -134,7 +145,7 @@ unsupported path becomes Ineligible
 preview uses configured route policy and snapshot registry
 preview writes LayeredStage::OpticalPreview event
 GET /compression/optical/events/recent filters OpticalPreview events
-event includes status/mode/candidate/image/economics/graph/capability aggregates
+event includes status/mode/representation/cache/risk/image/economics/graph/capability aggregates
 event does not leak request marker/provider/route/model/body/source path/base64
 ```
 

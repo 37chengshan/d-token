@@ -1,27 +1,67 @@
 /*
  * Adapted for d-token from AiMaMi's PageStage at
  * commit 297c7af56f10fb371b77bc9b6b65aa320afcbe7e (Apache-2.0).
- * Modified: AnimatePresence lifecycle, d-token spacing and explicit reduced-motion path.
+ * Modified: AnimatePresence lifecycle, d-token spacing, reduced-motion path,
+ * and non-interactive heading readiness measurement for lazy content.
  */
-import type { ReactNode } from "react";
-import { motion } from "motion/react";
+import { type ReactNode, useEffect, useRef } from "react";
+import { performanceNow, recordPerformanceDuration } from "../../lib/performance";
 
 export function PageStage({ children, reducedMotion }: { children: ReactNode; reducedMotion: boolean }) {
+  const rootRef = useRef<HTMLDivElement | null>(null);
+  const enteredAtRef = useRef(performanceNow());
+
+  useEffect(() => {
+    const root = rootRef.current;
+    if (!root) return;
+
+    let cancelled = false;
+    let observer: MutationObserver | null = null;
+    let timer = 0;
+
+    const observePageHeading = (): boolean => {
+      if (cancelled) return true;
+      const heading = root.querySelector<HTMLElement>("h1");
+      if (!heading) return false;
+      recordPerformanceDuration("page_stage", "heading_ready", enteredAtRef.current, "ok");
+      return true;
+    };
+
+    const frame = requestAnimationFrame(() => {
+      if (observePageHeading()) return;
+      // Lazy routes: h1 appears after Suspense resolves.
+      if (typeof MutationObserver !== "undefined") {
+        observer = new MutationObserver(() => {
+          if (observePageHeading()) {
+            observer?.disconnect();
+            observer = null;
+          }
+        });
+        observer.observe(root, { childList: true, subtree: true });
+      }
+      timer = window.setTimeout(() => {
+        observer?.disconnect();
+        observer = null;
+        observePageHeading();
+      }, 1500);
+    });
+
+    return () => {
+      cancelled = true;
+      cancelAnimationFrame(frame);
+      observer?.disconnect();
+      if (timer) window.clearTimeout(timer);
+    };
+  }, []);
+
   return (
-    <motion.div
+    <div
+      ref={rootRef}
       className="shell-page-stage"
       data-page-motion="enter"
       data-reduced-motion={reducedMotion ? "true" : "false"}
-      initial={reducedMotion ? false : { opacity: 0, y: 4 }}
-      animate={{ opacity: 1, y: 0 }}
-      exit={reducedMotion ? undefined : { opacity: 0, y: -2 }}
-      transition={
-        reducedMotion
-          ? { duration: 0 }
-          : { opacity: { duration: 0.18 }, y: { duration: 0.18 }, ease: [0.22, 0.84, 0.32, 1] }
-      }
     >
       {children}
-    </motion.div>
+    </div>
   );
 }

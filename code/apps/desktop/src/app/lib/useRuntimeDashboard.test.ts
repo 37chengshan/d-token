@@ -12,13 +12,13 @@ describe("runtime evidence classification", () => {
     expect(classifyRuntimePayload({
       source: "browser-preview",
       desktop_data_source: "sample",
-    })).toEqual({ status: "unavailable", error: "d-token 本地服务暂不可用" });
+    })).toEqual({ status: "unavailable", error: "RUNTIME_UNAVAILABLE" });
   });
 
   it("preserves a sanitized runtime error without inventing healthy state", () => {
     expect(classifyRuntimePayload({ desktop_service_error: "连接被拒绝" })).toEqual({
       status: "unavailable",
-      error: "连接被拒绝",
+      error: "RUNTIME_UNAVAILABLE",
     });
   });
 
@@ -32,7 +32,7 @@ describe("runtime evidence classification", () => {
       ...marker,
     })).toEqual({
       status,
-      error: "d-token 本地服务暂不可用",
+      error: "RUNTIME_UNAVAILABLE",
     });
   });
 });

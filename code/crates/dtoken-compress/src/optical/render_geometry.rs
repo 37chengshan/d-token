@@ -14,6 +14,7 @@ pub struct RenderGeometryProfile {
     pub cols: usize,
     pub readable_rows: usize,
     pub readable_chars_per_image: usize,
+    pub shrink_last_page: bool,
     pub pixels_per_token: f64,
     pub safety_margin_percent: f64,
     pub token_formula: VisionTokenFormula,
@@ -30,6 +31,27 @@ pub fn anthropic_dense_v1() -> RenderGeometryProfile {
         5,
         8,
         0,
+        false,
+        VisionTokenFormula::PatchGrid {
+            patch_size_px: 28,
+            max_tokens: 1_568,
+            safety_margin_percent: 105.0,
+        },
+    )
+}
+
+pub fn anthropic_dense_v2() -> RenderGeometryProfile {
+    build_profile(
+        "anthropic_dense_v2",
+        ProviderFamily::Anthropic,
+        1_568,
+        728,
+        4,
+        8,
+        5,
+        8,
+        0,
+        true,
         VisionTokenFormula::PatchGrid {
             patch_size_px: 28,
             max_tokens: 1_568,
@@ -49,6 +71,7 @@ fn build_profile(
     cell_width_px: usize,
     cell_height_px: usize,
     header_rows: usize,
+    shrink_last_page: bool,
     token_formula: VisionTokenFormula,
 ) -> RenderGeometryProfile {
     let usable_width = width_px.saturating_sub(pad_x_px.saturating_mul(2));
@@ -82,14 +105,19 @@ fn build_profile(
         cols,
         readable_rows,
         readable_chars_per_image,
+        shrink_last_page,
         pixels_per_token,
         safety_margin_percent,
         token_formula,
     }
 }
 
-pub fn estimate_image_tokens(profile: &RenderGeometryProfile, image_count: usize) -> usize {
-    if image_count == 0 {
+pub fn estimate_image_tokens_for_dimensions(
+    profile: &RenderGeometryProfile,
+    width_px: usize,
+    height_px: usize,
+) -> usize {
+    if width_px == 0 || height_px == 0 {
         return 0;
     }
     match profile.token_formula {
@@ -100,10 +128,7 @@ pub fn estimate_image_tokens(profile: &RenderGeometryProfile, image_count: usize
             if !pixels_per_token.is_finite() || pixels_per_token <= 0.0 {
                 return usize::MAX;
             }
-            let pixels = profile
-                .width_px
-                .saturating_mul(profile.max_height_px)
-                .saturating_mul(image_count);
+            let pixels = width_px.saturating_mul(height_px);
             let margin = if safety_margin_percent.is_finite() {
                 safety_margin_percent.max(100.0) / 100.0
             } else {
@@ -122,16 +147,22 @@ pub fn estimate_image_tokens(profile: &RenderGeometryProfile, image_count: usize
             if patch == 0 || max_tokens == 0 || !safety_margin_percent.is_finite() {
                 return usize::MAX;
             }
-            let per_image = profile
-                .width_px
+            let patches = width_px
                 .div_ceil(patch)
-                .saturating_mul(profile.max_height_px.div_ceil(patch));
-            let conservative =
-                ((per_image as f64) * (safety_margin_percent.max(100.0) / 100.0)).ceil() as usize;
-            conservative.min(max_tokens).saturating_mul(image_count)
+                .saturating_mul(height_px.div_ceil(patch));
+            (((patches as f64) * (safety_margin_percent.max(100.0) / 100.0)).ceil() as usize)
+                .min(max_tokens)
         }
         VisionTokenFormula::Unknown => usize::MAX,
     }
+}
+
+pub fn estimate_image_tokens(profile: &RenderGeometryProfile, image_count: usize) -> usize {
+    if image_count == 0 {
+        return 0;
+    }
+    estimate_image_tokens_for_dimensions(profile, profile.width_px, profile.max_height_px)
+        .saturating_mul(image_count)
 }
 
 pub fn images_required(profile: &RenderGeometryProfile, candidate_chars: usize) -> Option<usize> {
@@ -154,7 +185,7 @@ pub fn geometry_for_capability(
         return None;
     }
 
-    let base = anthropic_dense_v1();
+    let base = anthropic_dense_v2();
     let width_px = if capability.max_image_width_px > 0 {
         base.width_px.min(capability.max_image_width_px)
     } else {
@@ -179,6 +210,7 @@ pub fn geometry_for_capability(
         base.cell_width_px,
         base.cell_height_px,
         base.header_rows,
+        base.shrink_last_page,
         capability.vision_token_formula.clone(),
     );
     (profile.readable_chars_per_image > 0).then_some(profile)
@@ -198,6 +230,19 @@ mod tests {
             profile.readable_chars_per_image,
             profile.cols * profile.readable_rows
         );
+    }
+
+    #[test]
+    fn v2_profiles_shrink_last_page_without_changing_full_page_capacity() {
+        let v1 = anthropic_dense_v1();
+        let v2 = anthropic_dense_v2();
+        assert!(!v1.shrink_last_page);
+        assert!(v2.shrink_last_page);
+        assert_eq!(v1.readable_chars_per_image, v2.readable_chars_per_image);
+
+        let short_height = v2.pad_y_px * 2 + v2.cell_height_px;
+        let short_tokens = estimate_image_tokens_for_dimensions(&v2, v2.width_px, short_height);
+        assert!(short_tokens < estimate_image_tokens(&v2, 1));
     }
 
     #[test]

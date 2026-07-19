@@ -1,8 +1,16 @@
 # 第三方版权与修改声明
 
-更新时间：2026-07-12
+更新时间：2026-07-13
 
 本文件是 d-token 当前代码中直接适配第三方实现的唯一版权、来源与修改声明入口。产品边界仍以 [`docs/PRD.md`](../PRD.md) 为准；本文件不授权使用任何第三方商标或品牌资产。
+
+## Headroom 行为对照基线
+
+- 项目：[`headroomlabs-ai/headroom`](https://github.com/headroomlabs-ai/headroom)
+- 固定对照：[`1725cd1f8376828849c0e48fd9008afa25d24fff`](https://github.com/headroomlabs-ai/headroom/commit/1725cd1f8376828849c0e48fd9008afa25d24fff)
+- 上游许可证：Apache License 2.0；固定 commit 包含根目录 `NOTICE`
+- 当前使用边界：只进行公开行为、接口和测试语义对照；截至本声明更新，新增的 `dtoken-learning` 与现有 d-token Rust runtime 均为本仓库独立实现，没有从该 commit 复制源码
+- 后续边界：若迁移或修改上游源码，必须在代码进入仓库前补充许可证副本、NOTICE、逐文件来源、修改范围和保留版权声明；仅有同名接口、metadata endpoint 或布尔字段不得算作能力迁移
 
 ## AiMaMi
 
@@ -21,7 +29,7 @@
 | --- | --- | --- |
 | `code/apps/desktop/src/app/components/shell/PageStage.tsx` | `src/components/layout/page-stage.tsx` | 改用 `motion/react` 与 `AnimatePresence` 生命周期；保留 140–240ms 低幅度转场意图；加入显式 Reduce Motion 分支及 d-token 间距。 |
 | `code/apps/desktop/src/app/components/shell/AnimatedSegmentedControl.tsx` | `src/components/ui/animated-segmented-control.tsx` | 改为 d-token 泛型 API、等宽指示器和产品样式；重写焦点移动与键盘语义；加入 Reduce Motion 数据状态。 |
-| `code/apps/desktop/src/app/components/shell/Sidebar.tsx` 与 `code/apps/desktop/src/styles/shell.css` | `src/components/layout/sidebar.tsx`、`src/components/ui/sidebar.tsx` 的 inset shell、展开/折叠与主题分段结构 | 改为 d-token 六个一级页面、184/64px 布局、48px 顶部基线、跨平台窗口边界、独立导航动效、d-token 设计 token 与响应式规则。 |
+| `code/apps/desktop/src/app/components/shell/Sidebar.tsx` 与 `code/apps/desktop/src/styles/shell.css` | `src/components/layout/sidebar.tsx`、`src/components/ui/sidebar.tsx` 的 inset shell、展开/折叠与主题分段结构 | 改为 d-token 七个一级页面（含视觉压缩 Beta）、184/64px 布局、48px 顶部基线、跨平台窗口边界、独立导航动效、d-token 设计 token 与响应式规则。 |
 
 `Surface.tsx` 只借鉴 AiMaMi 的 grouped-panel 视觉原则并由 d-token 独立实现；`AnimatedNavIcon.tsx` 的图形与动画配方为 d-token 自有实现。它们仍在源码注释中明确参考边界，但不声明复制 AiMaMi 品牌或图标资产。
 
@@ -39,7 +47,7 @@ d-token 未复制或分发 AiMaMi 的名称、Logo、应用图标、截图、人
 - 固定来源：[`7b7d6efa42926a73b1bd709b5f6d1af1ae679947`](https://github.com/teamchong/pxpipe/commit/7b7d6efa42926a73b1bd709b5f6d1af1ae679947)
 - 上游版权声明：`Copyright (c) 2026 claude-image-proxy contributors`
 - 上游许可证：MIT
-- 使用边界：只参考 768×1932、Spleen 5×8、reflow/newline marker、IDS、factsheet 和 recent-six 保护等评测配方；d-token 的 Rust renderer、Hybrid分区、grader和运行器为独立实现，没有复制上游TypeScript实现。
+- 使用边界：参考 768×1932、Spleen 5×8、reflow/newline marker、IDS、factsheet、recent-six 保护，以及“本地代理在转发前将旧上下文替换为图片并保留当前请求”的公开行为；d-token 的 Rust renderer、灰度 AA、请求 IR/patcher、Agent bridge、Hybrid 分区、grader和运行器为独立实现，不是 pxpipe 的像素级或 TypeScript 实现复制。
 - 1928×1928 profile只作为历史headline研究轨道，不声明为当前pxpipe生产profile。
 
 ## Spleen 5×8
@@ -78,3 +86,13 @@ CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
 ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 POSSIBILITY OF SUCH DAMAGE.
 ```
+# codebase-memory-mcp
+
+d-token optionally redistributes the pinned headless
+`DeusData/codebase-memory-mcp` v0.9.0 binary (commit
+`b637e3330c96cfe452da623db068c241aaa3ec01`) under the MIT License. Platform
+archive and extracted-binary hashes are recorded in
+`code/runtimes/codebase-memory/artifact-manifest.json`. Every bundle containing
+the binary must also contain the upstream `LICENSE` and
+`THIRD_PARTY_NOTICES.md`; the upstream installer, updater, and native web UI are
+not used.

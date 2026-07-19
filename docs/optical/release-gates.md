@@ -1,6 +1,6 @@
 # Optical / Hybrid Context Optimization 发布门槛
 
-更新日期：2026-07-12
+更新日期：2026-07-15
 
 ## 1. Shadow Release Gates
 
@@ -78,15 +78,17 @@ Anthropic 和 OpenAI 必须分别使用版本化状态机，不得共享未经�
 ```text
 AnthropicMessagesV1 handles parallel tool_use and out-of-order matching results.
 OpenAiChatV1 handles assistant tool_calls and tool-role results.
+OpenAiResponsesV1 handles message/function_call/function_call_output items by call_id in shadow only.
 Missing result remains open.
 Result before use fails closed.
 Duplicate tool-use ID fails closed.
 Duplicate result fails closed.
 Recent tail remains protected.
+The most recent six Responses completed call pairs remain protected.
 Only closed historical tool results may become Optical candidates.
 ```
 
-当前状态：Anthropic 与 OpenAI Chat inventory/graph fixture PASS。OpenAI 仍是独立 shadow analysis，不得进入 active transform。
+当前状态：Anthropic、OpenAI Chat 与 OpenAI Responses inventory/graph fixture PASS。OpenAI 仍是独立 shadow analysis，不得进入 active transform。
 
 ## 5. Active Capability Gates
 
@@ -227,11 +229,19 @@ Real Git operations remain in support/git-operations.json.
 
 ```text
 python3 support/scripts/check_structure.py                 PASS
-cargo check --workspace --all-targets                      PASS
+python3 -m unittest discover -s support/tests              PASS, 7 tests
+cargo fmt --all -- --check                                 PASS
 cargo clippy --workspace --all-targets -- -D warnings     PASS
-cargo test --workspace                                     PASS, 236 tests / 36 suites
-cargo fmt --all                                            PASS
-real OpenCode -> d-token -> upstream                       BLOCKED: no OS credential reference or explicit auth-free upstream
+cargo test --workspace                                     PASS, 467 tests / 50 suites
+npm run test:run                                           PASS, 35 files / 175 tests
+npx tsc --noEmit                                           PASS
+npm run build                                              PASS
+Playwright desktop-chromium                                PASS, 10/10
+macOS sidecar preparation dry-run                          PASS
+git diff --check                                           PASS
+Playwright WebKit                                          NOT RUN: local binary absent; no dependency install
+real Provider / signed Capability candidate                BLOCKED: no safe credential reference/eval artifact
+current-run OpenCode -> d-token -> upstream                NOT RUN: no safe OS credential reference
 ```
 
 ## 12. 当前发布判断
@@ -261,7 +271,9 @@ Deterministic bounded PNG renderer     PASS
 Anthropic sealed patch/validator       PASS
 Send-state and pre-send fallback       PASS
 Signed multimodal accounting           PASS
-Desktop Optical Lab                    NOT IMPLEMENTED
+Desktop Visual Compression Beta UI     IMPLEMENTED; REAL WINDOWS/AGENT ACCEPTANCE PENDING
+Hybrid Agent integration transaction   IMPLEMENTED; ISOLATED CONFIG EVIDENCE ONLY
+Agent bridge Hook/MCP metadata path     IMPLEMENTED; SIGNATURE-BEFORE-EXECUTION CONTRACT PASS; REAL AGENT TRUST/ROUTE EVIDENCE PENDING
 OpenAI Optical active patcher          NOT IMPLEMENTED
 History collapse/cache-zone            NOT IMPLEMENTED
 Real-provider signed fidelity eval     BLOCKED BY EXTERNAL CREDENTIAL/EVIDENCE

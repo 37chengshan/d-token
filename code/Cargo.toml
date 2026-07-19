@@ -4,13 +4,18 @@ members = [
   "crates/dtoken-config",
   "crates/dtoken-router",
   "crates/dtoken-compress",
+  "crates/dtoken-context-store",
   "crates/dtoken-process",
   "crates/dtoken-doctor",
   "crates/dtoken-event-ledger",
   "crates/dtoken-preprocessor",
   "crates/dtoken-headroom-adapter",
   "crates/dtoken-project-policy",
+  "crates/dtoken-runtime-pipeline",
+  "crates/dtoken-learning",
   "crates/dtoken-config-patcher",
+  "crates/dtoken-agent-bridge",
+  "crates/dtoken-codebase-memory",
   "crates/dtoken-core-api",
   "crates/dtoken-proxy",
   "apps/desktop/src-tauri",
@@ -36,3 +41,9 @@ tower-http = { version = "0.6", features = ["trace", "cors"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 uuid = { version = "1", features = ["v4", "serde"] }
+
+# Large pinned sidecars are verified in desktop debug builds as well. Keep the
+# cryptographic implementation optimized so a 261 MB integrity check does not
+# monopolize a developer machine for tens of seconds.
+[profile.dev.package.sha2]
+opt-level = 3

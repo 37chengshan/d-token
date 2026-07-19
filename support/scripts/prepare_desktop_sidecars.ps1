@@ -7,7 +7,6 @@ $Root = Resolve-Path (Join-Path $PSScriptRoot "..\..")
 $CodeRoot = Join-Path $Root "code"
 $BinaryDir = Join-Path $Root "code\apps\desktop\src-tauri\binaries"
 $TargetTriple = "x86_64-pc-windows-msvc"
-$SourceName = "dtoken-proxy.exe"
 $ProfileDir = if ($Release) { "release" } else { "debug" }
 $CandidateStampPath = Join-Path $CodeRoot "target\$ProfileDir\d-token-release-candidate.json"
 
@@ -16,25 +15,26 @@ $CandidateStampPath = Join-Path $CodeRoot "target\$ProfileDir\d-token-release-ca
 Push-Location $CodeRoot
 try {
   if ($Release) {
-    cargo build -p dtoken-proxy --release --target $TargetTriple | Out-Null
+    cargo build -p dtoken-proxy -p dtoken-agent-bridge -p dtoken-codebase-memory --release --target $TargetTriple | Out-Null
   } else {
-    cargo build -p dtoken-proxy --target $TargetTriple | Out-Null
+    cargo build -p dtoken-proxy -p dtoken-agent-bridge -p dtoken-codebase-memory --target $TargetTriple | Out-Null
   }
 } finally {
   Pop-Location
 }
 
-$Source = Join-Path $CodeRoot "target\$TargetTriple\$ProfileDir\$SourceName"
-if (-not (Test-Path -LiteralPath $Source)) {
-  throw "dtoken-proxy build artifact was not found at $Source"
-}
-
 New-Item -ItemType Directory -Force -Path $BinaryDir | Out-Null
-$SidecarName = "dtoken-proxy-$TargetTriple.exe"
-$Destination = Join-Path $BinaryDir $SidecarName
-$ReleaseArtifact = Join-Path $CodeRoot "target\$ProfileDir\$SourceName"
 $Destinations = @()
-foreach ($CopyDestination in @($Destination, $ReleaseArtifact)) {
+foreach ($BinaryName in @("dtoken-proxy", "dtoken-agent-bridge", "dtoken-codebase-memory-launcher")) {
+  $SourceName = "$BinaryName.exe"
+  $Source = Join-Path $CodeRoot "target\$TargetTriple\$ProfileDir\$SourceName"
+  if (-not (Test-Path -LiteralPath $Source)) {
+    throw "$BinaryName build artifact was not found at $Source"
+  }
+  $SidecarName = "$BinaryName-$TargetTriple.exe"
+  $Destination = Join-Path $BinaryDir $SidecarName
+  $ReleaseArtifact = Join-Path $CodeRoot "target\$ProfileDir\$SourceName"
+  foreach ($CopyDestination in @($Destination, $ReleaseArtifact)) {
     $Copied = $false
     $LastError = $null
     for ($Attempt = 1; $Attempt -le 10; $Attempt++) {
@@ -55,12 +55,15 @@ foreach ($CopyDestination in @($Destination, $ReleaseArtifact)) {
     if (-not $Copied) {
       throw "failed to copy sidecar to $CopyDestination after retries: $LastError"
     }
-}
-$Destinations += [pscustomobject]@{
-  path = (Resolve-Path $Destination).Path
-  release_artifact = (Resolve-Path $ReleaseArtifact).Path
-  bytes = (Get-Item -LiteralPath $Destination).Length
-  target_triple = $TargetTriple
+  }
+  $Destinations += [pscustomobject]@{
+    binary = $BinaryName
+    source = (Resolve-Path $Source).Path
+    path = (Resolve-Path $Destination).Path
+    release_artifact = (Resolve-Path $ReleaseArtifact).Path
+    bytes = (Get-Item -LiteralPath $Destination).Length
+    target_triple = $TargetTriple
+  }
 }
 
 $WebView2Loader = $null
@@ -108,7 +111,6 @@ if ($Release) {
 [pscustomobject]@{
   ok = $true
   mode = "prepare-desktop-sidecars"
-  source = (Resolve-Path $Source).Path
   destinations = $Destinations
   webview2_loader = $WebView2Loader
   profile = $ProfileDir

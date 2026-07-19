@@ -84,7 +84,7 @@ Dashboard 中永远不明文展示：
 5. 大段 prompt。
 6. 大段 tool result。
 
-如用户显式开启 full debug log，也必须二次确认，并在导出时再次脱敏。
+正式产品不提供把完整 prompt、response、代码或 tool output 写入 ordinary debug log 的模式。调试只能增加结构化 stage/reason/size/digest 等脱敏字段；可逆原文仅允许进入明确启用的 CCR/private recovery store，并受独立权限、TTL、容量、审计和精确删除约束。
 
 ## 5. 网络边界
 
@@ -128,7 +128,25 @@ Dashboard 中永远不明文展示：
 5. sidecar 异常退出必须可见。
 6. sidecar 不允许长期无记录后台残留。
 
-## 8. Hybrid Context Optimization 安全
+### 7.1 Codebase Memory 额外边界
+
+1. `codebase-memory-mcp` 不进入 d-token App bundle。App 只可打开固定官方 `v0.9.0` release，由用户自行下载并解压到默认或自定义目录；d-token 不代为联网下载、安装或更新，也不接受可控下载 URL。只有固定 manifest 中的平台、架构和 SHA-256 全部通过才可执行；目录内任意其他 binary 必须 fail closed。版本升级必须先更新 d-token manifest/allowlist。
+2. Agent-owned MCP 会话与 d-token-owned index/UI host 必须是两类独立实例；d-token 不得接管 Agent 的 stdio、PID 或停止权限。
+3. launcher 必须强制 `persistence=false`、项目 canonical root allowlist、私有 cache namespace、受限 tool allowlist，并拒绝跨项目查询、ADR write、artifact export 与任意路径访问。
+4. d-token 只允许打开自己生成并复检过的短期授权 loopback graph URL；不得直接暴露 upstream 原生 HTTP UI。
+5. 自动扫描 Agent 只读取白名单安装证据；批量配置仍必须逐 Agent diff/backup/confirm/verify/receipt，任一失败逆序回退，不得扩大为批量读取 auth、凭据或会话正文。
+
+## 8. Doctor 与回退动作安全
+
+1. Doctor 扫描只读取本地服务清单、PID/端口/可执行文件身份、loopback health、Agent 检测、活动配置、路由验证和备份元数据；不得发起 Provider 计费请求，不得读取或返回凭据、auth 文件、完整 prompt/response。
+2. 低风险修复也必须先生成绑定 Doctor revision 的计划并由用户确认。当前直接写 executor 只开放身份完整验证的 d-token-owned 服务，以及已有 d-token 管理证据的 Claude Code/Codex/OpenCode Agent Integration；只读刷新、重新检测和其他专项模块必须逐项显式接 executor 后才能开放。
+3. 停止或替换进程前必须同时验证 manifest schema、PID 存活与出生标识、manifest identity、可执行文件 hash/路径、监听端口所有权、runtime identity/version 和 instance nonce。任一证据缺失时保护性阻止；legacy manifest 不允许自动重启，不得自动停止外部或 unmanaged 进程。
+4. Agent 配置、Hook、全局/项目文档必须复用 Agent Integration 的脱敏 Diff、逐 Agent backup/transaction、明确确认、写后验证和 rollback evidence；Provider/upstream、cc-switch profile 和任意首次 Agent 接入不属于 Doctor 自动修复。Doctor 不修改 cc-switch，也不把 Hook/Skill/MCP 存在等同于压缩生效。
+5. 回退预览必须分别返回 `integrity_verified` 与 `currently_restorable`，并以当前 SHA-256 和 preview revision 绑定确认。损坏备份、未知/legacy scope、并发修改或事务 manifest 不完整时必须在写入前拒绝。
+6. 执行回退前必须先为当前状态创建反向安全备份，并将其绑定到回退后的精确 hash 或 `missing` 状态，保证反向恢复点本身可再次预检和使用；恢复后至少验证目标文件精确 hash。涉及 managed runtime 时按需 restart/reload 并区分 `verified`、`runtime_offline` 和 `failed`，不得把“文件已恢复”直接宣称为“运行时已恢复”。
+7. 多文件 Agent integration、Optical 和其他专项事务必须由来源 transaction manifest/executor 整笔回退；通用页面不得摊平为独立文件后绕过原子性、服务 reload 或专项复检。
+
+## 9. Hybrid Context Optimization 安全
 
 1. 当前轮、近期对话、system/developer、tool schema、tool id/arguments、开放工具状态、代码/diff、secret/exact 内容不得只存在于图像。
 2. Optical active 默认关闭，只允许同协议 Anthropic closed historical low-risk tool result；未知模型、跨协议或身份不匹配必须 fail closed。
@@ -138,7 +156,7 @@ Dashboard 中永远不明文展示：
 6. shadow、passthrough 与 pre-send fallback 使用原始请求 bytes；upstream send commit 后禁止自动原文重试，避免双计费和重复工具副作用。
 7. Ledger、日志、metrics、Doctor 与导出只记录脱敏元数据，不记录 prompt、tool result、PNG、编码图片或密钥材料。
 
-## 9. 数据保留
+## 10. 数据保留
 
 默认保留：
 
@@ -154,14 +172,28 @@ Dashboard 中永远不明文展示：
 3. 完整 tool output。
 4. 完整 response body。
 
-如果用户开启完整保留，必须：
+产品不提供普通“完整保留”开关。需要可逆恢复时只允许使用默认关闭的 CCR/private recovery store：本地加密、明确存储位置、OS credential key、TTL/容量上限、项目/会话授权、访问审计、过期与一键精确删除；普通日志、Ledger、SQLite query index、Dashboard 与 export 永远不包含该原文。
 
-1. 本地保存。
-2. 明确存储位置。
-3. 可一键删除。
-4. 导出时脱敏。
+## 11. Headroom-derived Pipeline 安全状态机
 
-## 10. 合规实现原则
+1. release 未显式设置 profile 时必须是 native/unavailable，禁止默认 fixture。
+2. Agent/project/session/route/provider/model 只能来自解析证据；未知时记录 unknown reason，禁止填测试身份。
+3. 未获得 durable CCR prepare receipt 时禁止注入 recovery marker/tool reference。
+4. 未通过 protocol post-validation 的 artifact 不能进入 `ReadyToSend`。
+5. cache stability、节省、成本与 capability 必须由后端证据计算，禁止调用方布尔自报。
+6. upstream send commit/stream started 后禁止原文重试或切换 provider。
+7. memory/learning 只接收允许的结构化脱敏结果；未授权会话和项目不可扫描、索引或跨 Agent 共享。
+8. optional model/ONNX/embedding/telemetry 默认关闭，必须具备 hash/license/resource/privacy/quality evidence 才可启用。
+
+## 12. Hybrid 与 Agent bridge 加固边界
+
+1. `SecretClassifier` 是 inventory、risk、factsheet、renderer 与配置 diff 的唯一共享 secret 判定入口；provider key、JWT、PEM、cookie/session、Authorization、label-wrapped 与 Unicode/转义变体命中后整块保留文本，禁止进入 PNG、factsheet、普通 diff 或 Ledger。
+2. renderer 临时像素、最终 PNG、base64、patched body 与 retained transport clone 共享同一请求级 in-flight byte permit；deadline 也为请求级共享，禁止各阶段独立预算叠加突破上限。
+3. Agent integration transaction manifest 必须原子持久化并用 transaction ID、review digest、目标顺序和 planned-after hash 绑定 verify/rollback；跨进程锁失败或证据缺失时 fail closed。
+4. `dtoken-agent-bridge` 在任何子进程执行前先验证 release 平台签名；随后才允许读取 metadata-only identity。Hook/MCP 输入使用有界读取，不读取 transcript/raw prompt，不落盘原始请求。
+5. macOS 本机只证明当前平台代码与 dry-run；Windows 只有编译、PowerShell/workflow 合同证据时不得写成 Windows 实机通过。
+
+## 13. 合规实现原则
 
 1. d-token 只做用户本地开发环境中的压缩、路由、观测和配置管理。
 2. d-token 不替用户规避第三方平台条款。

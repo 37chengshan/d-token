@@ -40,6 +40,7 @@ fn decides_route_by_instance_and_protocol() {
             process_status: ProcessStatus::Stopped,
             log_path: "./logs/demo-instance.jsonl".to_string(),
         }],
+        provider_cache_policies: vec![],
         optical: Default::default(),
     };
 
@@ -82,6 +83,7 @@ fn rejects_ambiguous_routes_instead_of_selecting_first() {
         providers: vec![provider],
         routes: vec![route("route-a"), route("route-b")],
         instances: vec![],
+        provider_cache_policies: vec![],
         optical: Default::default(),
     };
 

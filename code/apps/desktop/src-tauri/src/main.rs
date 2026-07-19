@@ -1,10 +1,41 @@
+mod agent_registry;
 mod autostart;
+mod codebase_memory_control;
+mod learning_discovery;
 mod opencode_adapter;
 mod upstream_discovery;
 
-use dtoken_config_patcher::{stable_hash, ConfigPatcher, ExpectedFileState};
+use codebase_memory_control::{
+    apply_codebase_memory_integration, cancel_codebase_memory_index, delete_codebase_memory_index,
+    get_codebase_memory_status, open_codebase_memory_download_page, open_codebase_memory_graph,
+    open_codebase_memory_package_directory, preview_codebase_memory_integration,
+    rollback_codebase_memory_integration, set_codebase_memory_package_directory,
+    start_codebase_memory_index, start_codebase_memory_ui, stop_codebase_memory_ui,
+    verify_codebase_memory_integration,
+};
+use dtoken_agent_bridge::{BRIDGE_COMPONENT, BRIDGE_PROTOCOL_VERSION, BRIDGE_VERSION};
+use dtoken_config_patcher::{
+    agent_integration::{
+        apply_agent_integration, get_agent_integration_transaction,
+        inspect_agent_integration_evidence, prepare_agent_integration, rollback_agent_integration,
+        verify_agent_integration_transaction, AgentIntegrationRequest, AgentIntegrationScope,
+        AgentIntegrationTransactionManifest, AgentIntegrationTransactionState,
+    },
+    stable_hash, ConfigPatcher, ExpectedFileState,
+};
+use dtoken_doctor::{
+    doctor_repair_modules, DoctorEvidence, DoctorEvidenceKind, DoctorEvidenceState,
+    DoctorModuleEvidence, DoctorModuleId, DoctorRepairOutcome,
+    DoctorRepairPlan as DoctorDomainPlan, DoctorRepairReceipt as DoctorDomainReceipt,
+    DoctorRepairScope, DoctorRepairSelection, DoctorSnapshotSource,
+    DoctorSnapshotV3 as DoctorDomainSnapshot, DoctorVerificationState,
+};
 use dtoken_event_ledger::JsonlStore;
-use dtoken_process::sanitize_command_output;
+use dtoken_process::{
+    executable_identity_matches, is_process_running, listener_owned_by_pid, process_birth_token,
+    sanitize_command_output, terminate_process, ProcessIdentity, ProcessManager,
+    SystemProcessInspector,
+};
 #[cfg(debug_assertions)]
 use dtoken_process::{opencode_command_plan, run_opencode_model_test};
 use dtoken_types::{ConfigToolKind, RiskLevel};
@@ -14,20 +45,81 @@ use opencode_adapter::{
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet, VecDeque},
     env, fs,
     io::{Read, Write},
-    net::TcpStream,
+    net::{SocketAddr, TcpStream},
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
     sync::{Arc, Mutex, OnceLock},
     thread,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
+use uuid::Uuid;
 
 const DTOKEN_SERVICE_PORT: u16 = 18001;
 const EXTERNAL_HEADROOM_REFERENCE_PORT: u16 = 8787;
 const LEGACY_OPENCODE_REFERENCE_PORT: u16 = 8788;
+const MANAGED_SERVICE_MANIFEST_SCHEMA_VERSION: u32 = 2;
+const LAST_VERIFIED_DESKTOP_SUMMARY: &[&str] = &["dashboard", "last-verified-summary.json"];
+const LAST_VERIFIED_DESKTOP_DETAIL: &[&str] = &["dashboard", "last-verified-detail.json"];
+const MAX_NATIVE_PERF_OBSERVATIONS: usize = 256;
+static NATIVE_PERF_OBSERVATIONS: OnceLock<Mutex<VecDeque<NativePerfObservation>>> = OnceLock::new();
+static NATIVE_PERF_RUN_ID: OnceLock<String> = OnceLock::new();
+
+#[derive(Clone, Serialize)]
+struct NativePerfObservation {
+    schema_version: u8,
+    perf_run_id: String,
+    layer: &'static str,
+    operation: &'static str,
+    phase: &'static str,
+    duration_us: u64,
+    result_state: &'static str,
+    cache_hit: bool,
+    error_code: Option<&'static str>,
+}
+
+fn record_native_performance(
+    operation: &'static str,
+    phase: &'static str,
+    started_at: Instant,
+    result_state: &'static str,
+    cache_hit: bool,
+    error_code: Option<&'static str>,
+) {
+    let observation = NativePerfObservation {
+        schema_version: 1,
+        perf_run_id: NATIVE_PERF_RUN_ID
+            .get_or_init(|| Uuid::new_v4().to_string())
+            .clone(),
+        layer: "native",
+        operation,
+        phase,
+        duration_us: u64::try_from(started_at.elapsed().as_micros()).unwrap_or(u64::MAX),
+        result_state,
+        cache_hit,
+        error_code,
+    };
+    let mut observations = NATIVE_PERF_OBSERVATIONS
+        .get_or_init(|| Mutex::new(VecDeque::with_capacity(MAX_NATIVE_PERF_OBSERVATIONS)))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if observations.len() == MAX_NATIVE_PERF_OBSERVATIONS {
+        observations.pop_front();
+    }
+    observations.push_back(observation);
+}
+
+fn native_performance_snapshot() -> Vec<NativePerfObservation> {
+    NATIVE_PERF_OBSERVATIONS
+        .get_or_init(|| Mutex::new(VecDeque::with_capacity(MAX_NATIVE_PERF_OBSERVATIONS)))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .iter()
+        .cloned()
+        .collect()
+}
 
 #[derive(Serialize)]
 struct ToolCheck {
@@ -53,6 +145,134 @@ struct ActionResult {
     summary: String,
     logs: Vec<ActionLog>,
     tools: Vec<ToolCheck>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct DoctorRemediation {
+    kind: String,
+    label: String,
+    risk: String,
+    writes_config: bool,
+    requires_confirmation: bool,
+    destination: Option<String>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct DoctorIssue {
+    id: String,
+    category: String,
+    severity: String,
+    state: String,
+    title: String,
+    impact: String,
+    cause: String,
+    evidence: String,
+    remediation: Option<DoctorRemediation>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct DoctorCounts {
+    healthy: usize,
+    repairable: usize,
+    manual: usize,
+    blocked: usize,
+}
+
+#[derive(Serialize, Deserialize)]
+struct DoctorReport {
+    ok: bool,
+    #[serde(rename = "mode")]
+    mode_name: String,
+    revision: String,
+    source: String,
+    freshness: String,
+    collected_at: String,
+    summary: String,
+    counts: DoctorCounts,
+    issues: Vec<DoctorIssue>,
+}
+
+#[derive(Clone, Deserialize)]
+struct DoctorRepairRequest {
+    report_revision: String,
+    issue_ids: Vec<String>,
+    confirmed: Option<bool>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+struct DoctorModuleRepairSelection {
+    #[serde(default)]
+    agent_ids: Vec<String>,
+    #[serde(default)]
+    route_ids: Vec<String>,
+    #[serde(default = "default_doctor_scope")]
+    scope: String,
+    project_root: Option<String>,
+    #[serde(default = "default_true")]
+    install_instructions: bool,
+    #[serde(default = "default_true")]
+    install_hook_or_plugin: bool,
+    #[serde(default = "default_true")]
+    install_skill: bool,
+    #[serde(default)]
+    install_mcp: bool,
+}
+
+fn default_doctor_scope() -> String {
+    "global".to_string()
+}
+
+fn default_true() -> bool {
+    true
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct PreviewDoctorModuleRepairRequest {
+    snapshot_revision: String,
+    module_id: String,
+    selection: DoctorModuleRepairSelection,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct ApplyDoctorModuleRepairRequest {
+    plan_id: String,
+    review_digest: String,
+    snapshot_revision: String,
+    module_id: String,
+    selection: DoctorModuleRepairSelection,
+    confirmed: bool,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct StoredDoctorModulePlan {
+    schema_version: u16,
+    plan_id: String,
+    snapshot_revision: String,
+    module_id: String,
+    selection: DoctorModuleRepairSelection,
+    created_at_ms: u64,
+    expires_at_ms: u64,
+    review_digest: String,
+    domain_plan: DoctorDomainPlan,
+    agent_review_digests: HashMap<String, String>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct VerifyDoctorRepairRequest {
+    operation_id: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct PreviewRollbackRequest {
+    rollback_id: String,
+}
+
+#[derive(Deserialize)]
+struct ApplyRollbackRequest {
+    rollback_id: String,
+    reviewed_revision: String,
+    expected_current_sha256: String,
+    confirmed: bool,
 }
 
 #[derive(Serialize)]
@@ -87,13 +307,6 @@ struct ProjectPolicyRecommendRequest {
 }
 
 #[derive(Deserialize)]
-struct LearningSourceDiscoveryRequest {
-    roots: Option<Vec<String>>,
-    skip_paths: Option<Vec<String>>,
-    stop: Option<bool>,
-}
-
-#[derive(Deserialize)]
 struct LearningManagedBlockRequest {
     target: String,
     content: String,
@@ -102,12 +315,27 @@ struct LearningManagedBlockRequest {
 }
 
 #[derive(Deserialize)]
+struct LearningProjectAnalysisRequest {
+    project_path: String,
+}
+
+#[derive(Deserialize)]
 struct LearningDelegationRequest {
     request_id: String,
     agent: String,
+    project_root: String,
     prompt: String,
     timeout_ms: u64,
     confirmed: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+struct DelegatedLearningContext {
+    summary: String,
+    conventions: Vec<String>,
+    risks: Vec<String>,
+    recommendations: Vec<String>,
+    open_questions: Vec<String>,
 }
 
 static LEARNING_DELEGATIONS: OnceLock<Mutex<HashMap<String, Arc<Mutex<Child>>>>> = OnceLock::new();
@@ -136,9 +364,108 @@ struct ApplyRouteDraftRequest {
     reviewed_after_sha256: Option<String>,
 }
 
+#[derive(Clone, Deserialize)]
+struct OpticalGlobalDraftRequest {
+    enabled: bool,
+    default_mode: String,
+}
+
+#[derive(Clone, Deserialize)]
+struct OpticalRouteDraftRequest {
+    route_id: String,
+    enabled: bool,
+    mode: String,
+    allow_tool_result: bool,
+    allow_history: bool,
+    confirmed_experimental_lossy: bool,
+}
+
+#[derive(Clone, Deserialize)]
+struct OpticalConfigDraftRequest {
+    global: OpticalGlobalDraftRequest,
+    routes: Vec<OpticalRouteDraftRequest>,
+}
+
+#[derive(Deserialize)]
+struct PreviewOpticalConfigRequest {
+    draft: OpticalConfigDraftRequest,
+}
+
+#[derive(Deserialize)]
+struct ApplyOpticalConfigRequest {
+    draft: OpticalConfigDraftRequest,
+    reviewed_before_sha256: Option<String>,
+    reviewed_after_sha256: Option<String>,
+    restart_service: Option<bool>,
+}
+
+#[derive(Deserialize)]
+struct RollbackOpticalConfigRequest {
+    rollback_id: String,
+}
+
+#[derive(Clone, Deserialize)]
+struct HybridAgentIntegrationDraftRequest {
+    agent_ids: Vec<String>,
+    scope: String,
+    project_root: Option<String>,
+    install_instructions: bool,
+    install_hook_or_plugin: bool,
+    install_skill: bool,
+    install_mcp: bool,
+}
+
+#[derive(Deserialize)]
+struct ApplyHybridAgentIntegrationRequest {
+    draft: HybridAgentIntegrationDraftRequest,
+    reviewed_digest: String,
+}
+
+#[derive(Deserialize)]
+struct VerifyHybridAgentIntegrationRequest {
+    transaction_id: String,
+}
+
+#[derive(Deserialize)]
+struct RollbackHybridAgentIntegrationRequest {
+    transaction_id: String,
+}
+
+#[derive(Deserialize)]
+struct GetHybridAgentIntegrationTransactionRequest {
+    transaction_id: String,
+}
+
 #[derive(Deserialize)]
 struct RouteDraftReviewRequest {
     route_id: String,
+}
+
+#[derive(Clone, Deserialize)]
+struct ConnectionRouteBindingRequest {
+    agent_id: String,
+    candidate_id: String,
+    candidate_source: String,
+    model: String,
+}
+
+#[derive(Clone, Deserialize)]
+struct ConnectionRoutePlanRequest {
+    discovery_revision: String,
+    bindings: Vec<ConnectionRouteBindingRequest>,
+}
+
+#[derive(Deserialize)]
+struct ApplyConnectionRoutePlanRequest {
+    plan: ConnectionRoutePlanRequest,
+    reviewed_before_sha256: Option<String>,
+    reviewed_after_sha256: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct RollbackConnectionRoutePlanRequest {
+    rollback_id: String,
+    expected_after_sha256: String,
 }
 
 #[derive(Deserialize)]
@@ -154,14 +481,30 @@ struct DeleteProviderCredentialRequest {
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 struct ManagedServiceManifest {
+    #[serde(default)]
+    schema_version: u32,
     managed_by: String,
     identity: String,
     pid: u32,
     port: u16,
     exe_path: String,
+    #[serde(default)]
+    exe_sha256: Option<String>,
+    #[serde(default)]
+    process_birth_token: Option<String>,
+    #[serde(default)]
+    runtime_instance_nonce: Option<String>,
     config_path: String,
     data_dir: String,
     started_at: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ManagedServiceBinaryEvidence {
+    state: &'static str,
+    launch_sha256: Option<String>,
+    current_sha256: Option<String>,
+    compatible: bool,
 }
 
 fn now_label() -> String {
@@ -182,6 +525,13 @@ fn now_timestamp() -> String {
         .duration_since(UNIX_EPOCH)
         .map(|duration| format!("unix:{}", duration.as_secs()))
         .unwrap_or_else(|_| "unix:0".to_string())
+}
+
+fn epoch_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis().min(u128::from(u64::MAX)) as u64)
+        .unwrap_or_default()
 }
 
 fn log(level: &str, message: impl Into<String>) -> ActionLog {
@@ -233,6 +583,13 @@ fn app_state_path(relative: &[&str]) -> PathBuf {
         path.push(part);
     }
     path
+}
+
+fn user_home_dir() -> Result<PathBuf, String> {
+    env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" })
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute() && path.is_dir())
+        .ok_or_else(|| "An existing absolute user home directory is required".to_string())
 }
 
 fn sync_parent_directory(path: &Path) -> Result<(), String> {
@@ -493,12 +850,24 @@ fn active_route_config_status() -> Value {
             .map(Value::is_null)
             .unwrap_or(true)
     });
+    let provider_summaries = providers
+        .iter()
+        .map(|provider| {
+            json!({
+                "id": provider.get("id").cloned().unwrap_or(Value::Null),
+                "protocol": provider.get("protocol").cloned().unwrap_or(Value::Null),
+                "base_url": provider.get("base_url").cloned().unwrap_or(Value::Null),
+                "models": provider.get("models").cloned().unwrap_or_else(|| json!([])),
+            })
+        })
+        .collect::<Vec<_>>();
     if let Some(object) = status.as_object_mut() {
         object.insert("state".to_string(), json!("loaded"));
         object.insert("provider_count".to_string(), json!(providers.len()));
         object.insert("route_count".to_string(), json!(routes.len()));
         object.insert("instance_count".to_string(), json!(instances.len()));
         object.insert("fallback_disabled".to_string(), json!(fallback_disabled));
+        object.insert("providers".to_string(), json!(provider_summaries));
         object.insert(
             "provider".to_string(),
             json!({
@@ -534,6 +903,326 @@ fn active_route_config_status() -> Value {
     status
 }
 
+fn backup_original_text(backup: &dtoken_config_patcher::BackupRecord) -> Result<String, String> {
+    if !backup.original.exists {
+        return Err("Rollback point represents a previously missing target".to_string());
+    }
+    let content_file = backup
+        .content_file
+        .as_deref()
+        .ok_or_else(|| "Rollback point is missing its verified original content".to_string())?;
+    fs::read_to_string(backup.backup_dir.join(content_file))
+        .map_err(|error| format!("Read verified rollback content: {error}"))
+}
+
+fn agent_integration_transaction_for_rollback(rollback_id: &str) -> Option<String> {
+    let directory = config_backup_root().join("agent-integration-transactions");
+    let entries = fs::read_dir(directory).ok()?;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|extension| extension.to_str()) != Some("json") {
+            continue;
+        }
+        let Some(transaction_id) = path.file_stem().and_then(|stem| stem.to_str()) else {
+            continue;
+        };
+        let Ok(transaction) =
+            get_agent_integration_transaction(transaction_id, &config_backup_root())
+        else {
+            continue;
+        };
+        if transaction
+            .rollback_ids
+            .iter()
+            .any(|candidate| candidate == rollback_id)
+        {
+            return Some(transaction.transaction_id);
+        }
+    }
+    None
+}
+
+fn agent_transaction_preflight(
+    transaction_id: &str,
+) -> Result<
+    (
+        AgentIntegrationTransactionManifest,
+        Vec<dtoken_config_patcher::BackupRecord>,
+        String,
+        bool,
+    ),
+    String,
+> {
+    let transaction = get_agent_integration_transaction(transaction_id, &config_backup_root())
+        .map_err(|error| format!("Agent transaction evidence is unavailable: {error:#}"))?;
+    if transaction.rollback_ids.is_empty() {
+        return Err("Agent transaction has no rollback evidence".to_string());
+    }
+    let patcher = config_patcher();
+    let backups = transaction
+        .rollback_ids
+        .iter()
+        .map(|rollback_id| {
+            patcher
+                .load_backup(rollback_id)
+                .map_err(|error| format!("Agent rollback evidence is invalid: {error:#}"))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let current_states = backups
+        .iter()
+        .map(|backup| {
+            json!({
+                "rollback_id": backup.rollback_id,
+                "manifest_sha256": backup.manifest_sha256,
+                "current": backup_expected_current_token(backup),
+            })
+        })
+        .collect::<Vec<_>>();
+    let expected_current = format!(
+        "transaction-{}",
+        stable_hash(
+            &json!({
+                "transaction_id": transaction.transaction_id,
+                "current_states": current_states,
+            })
+            .to_string()
+        )
+    );
+    let state_allows_restore = matches!(
+        transaction.state,
+        AgentIntegrationTransactionState::Applied | AgentIntegrationTransactionState::Verified
+    );
+    let currently_restorable =
+        state_allows_restore && backups.iter().all(backup_matches_expected_current_state);
+    Ok((transaction, backups, expected_current, currently_restorable))
+}
+
+fn agent_integration_transaction_points() -> (Vec<Value>, HashSet<String>) {
+    let directory = config_backup_root().join("agent-integration-transactions");
+    let Ok(entries) = fs::read_dir(directory) else {
+        return (Vec::new(), HashSet::new());
+    };
+    let mut points = Vec::new();
+    let mut transaction_rollback_ids = HashSet::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|extension| extension.to_str()) != Some("json") {
+            continue;
+        }
+        let Some(transaction_id) = path.file_stem().and_then(|stem| stem.to_str()) else {
+            continue;
+        };
+        match agent_transaction_preflight(transaction_id) {
+            Ok((transaction, backups, expected_current, currently_restorable)) => {
+                transaction_rollback_ids.extend(transaction.rollback_ids.iter().cloned());
+                let primary_rollback_id = transaction
+                    .rollback_ids
+                    .first()
+                    .cloned()
+                    .unwrap_or_else(|| format!("agent-transaction-{transaction_id}"));
+                let created_at = backups
+                    .first()
+                    .map(|backup| backup.created_at.clone())
+                    .unwrap_or_else(|| transaction.applied_at_ms.to_string());
+                let blocked_reason = if currently_restorable {
+                    ""
+                } else if transaction.state == AgentIntegrationTransactionState::RolledBack {
+                    "This Agent integration transaction was already rolled back."
+                } else {
+                    "One or more Agent targets changed or the transaction is not in a restorable state."
+                };
+                points.push(json!({
+                    "id": primary_rollback_id,
+                    "label": format!("Agent integration transaction {}", transaction.transaction_id),
+                    "when": created_at,
+                    "files": transaction.rollback_ids.len(),
+                    "tools": ["Agent Integration"],
+                    "verified": true,
+                    "integrity_verified": true,
+                    "currently_restorable": currently_restorable,
+                    "blocked_reason": blocked_reason,
+                    "source": "dtoken-agent-integration",
+                    "target": format!("{} managed Agent target(s)", transaction.rollback_ids.len()),
+                    "scope": "agent-integration",
+                    "executor_kind": "agent_integration",
+                    "transaction_id": transaction.transaction_id,
+                    "expected_current_sha256": expected_current,
+                }));
+            }
+            Err(error) => points.push(json!({
+                "id": format!("agent-transaction-{transaction_id}"),
+                "label": format!("Unavailable Agent integration transaction {transaction_id}"),
+                "when": "unknown",
+                "files": 0,
+                "tools": ["Agent Integration"],
+                "verified": false,
+                "integrity_verified": false,
+                "currently_restorable": false,
+                "blocked_reason": sanitize_command_output(&error),
+                "source": "dtoken-agent-integration-invalid",
+                "scope": "agent-integration",
+                "executor_kind": "agent_integration",
+                "transaction_id": transaction_id,
+            })),
+        }
+    }
+    (points, transaction_rollback_ids)
+}
+
+fn backup_changes_only_optical(backup: &dtoken_config_patcher::BackupRecord) -> bool {
+    if patchable_active_config_path().ok().as_ref() != Some(&backup.target_path)
+        || backup_current_sha256(backup).as_deref() != Some(&backup.planned_after_sha256)
+    {
+        return false;
+    }
+    let Ok(original_text) = backup_original_text(backup) else {
+        return false;
+    };
+    let Ok(mut original) = serde_json::from_str::<Value>(&original_text) else {
+        return false;
+    };
+    let Ok(current_text) = fs::read_to_string(&backup.target_path) else {
+        return false;
+    };
+    let Ok(mut current) = serde_json::from_str::<Value>(&current_text) else {
+        return false;
+    };
+    let Some(original_object) = original.as_object_mut() else {
+        return false;
+    };
+    let Some(current_object) = current.as_object_mut() else {
+        return false;
+    };
+    let original_optical = original_object.remove("optical");
+    let current_optical = current_object.remove("optical");
+    original == current && original_optical != current_optical
+}
+
+fn rollback_scope_for_backup(backup: &dtoken_config_patcher::BackupRecord) -> &'static str {
+    if agent_integration_transaction_for_rollback(&backup.rollback_id).is_some() {
+        "agent-integration"
+    } else if backup_changes_only_optical(backup) {
+        "optical-config"
+    } else if backup
+        .display_target
+        .to_ascii_lowercase()
+        .contains("opencode")
+        || backup
+            .target_path
+            .file_name()
+            .and_then(|value| value.to_str())
+            == Some("opencode.json")
+    {
+        "opencode-config"
+    } else if matches!(
+        backup
+            .target_path
+            .file_name()
+            .and_then(|value| value.to_str()),
+        Some("AGENTS.md" | "CLAUDE.md" | "GEMINI.md" | "d-token.md")
+    ) {
+        "learning-managed-block"
+    } else if patchable_active_config_path().ok().as_ref() == Some(&backup.target_path) {
+        "dtoken-active-config"
+    } else {
+        "unknown"
+    }
+}
+
+fn backup_current_sha256(backup: &dtoken_config_patcher::BackupRecord) -> Option<String> {
+    file_sha256(&backup.target_path).ok()
+}
+
+fn rollback_expected_state_override_path(rollback_id: &str) -> PathBuf {
+    app_state_dir()
+        .join("rollback-expected-states")
+        .join(format!("{rollback_id}.json"))
+}
+
+fn rollback_expects_missing_target(backup: &dtoken_config_patcher::BackupRecord) -> bool {
+    let Ok(content) =
+        fs::read_to_string(rollback_expected_state_override_path(&backup.rollback_id))
+    else {
+        return false;
+    };
+    let Ok(value) = serde_json::from_str::<Value>(&content) else {
+        return false;
+    };
+    value.get("schema_version").and_then(Value::as_u64) == Some(1)
+        && value.get("rollback_id").and_then(Value::as_str) == Some(&backup.rollback_id)
+        && value.get("manifest_sha256").and_then(Value::as_str) == Some(&backup.manifest_sha256)
+        && value.get("expected_state").and_then(Value::as_str) == Some("missing")
+}
+
+fn persist_missing_rollback_expectation(
+    backup: &dtoken_config_patcher::BackupRecord,
+) -> Result<(), String> {
+    let file_name = format!("{}.json", backup.rollback_id);
+    write_json_app_state(
+        &["rollback-expected-states", &file_name],
+        &json!({
+            "schema_version": 1,
+            "rollback_id": backup.rollback_id,
+            "manifest_sha256": backup.manifest_sha256,
+            "expected_state": "missing",
+        }),
+    )
+    .map(|_| ())
+}
+
+fn backup_matches_expected_current_state(backup: &dtoken_config_patcher::BackupRecord) -> bool {
+    if rollback_expects_missing_target(backup) {
+        !backup.target_path.exists()
+    } else {
+        backup_current_sha256(backup).as_deref() == Some(&backup.planned_after_sha256)
+    }
+}
+
+fn backup_expected_current_token(backup: &dtoken_config_patcher::BackupRecord) -> String {
+    if rollback_expects_missing_target(backup) {
+        "missing".to_string()
+    } else {
+        backup_current_sha256(backup).unwrap_or_default()
+    }
+}
+
+fn generic_rollback_executor(scope: &str) -> bool {
+    matches!(
+        scope,
+        "opencode-config" | "learning-managed-block" | "dtoken-active-config"
+    )
+}
+
+fn rollback_executor_kind(scope: &str) -> &'static str {
+    match scope {
+        "agent-integration" => "agent_integration",
+        "optical-config" => "optical",
+        "opencode-config" | "learning-managed-block" | "dtoken-active-config" => "generic",
+        _ => "locked",
+    }
+}
+
+fn backup_currently_restorable(backup: &dtoken_config_patcher::BackupRecord) -> bool {
+    let scope = rollback_scope_for_backup(backup);
+    match scope {
+        "agent-integration" => agent_integration_transaction_for_rollback(&backup.rollback_id)
+            .and_then(|transaction_id| agent_transaction_preflight(&transaction_id).ok())
+            .is_some_and(|(_, _, _, currently_restorable)| currently_restorable),
+        "optical-config" => backup_matches_expected_current_state(backup),
+        _ => generic_rollback_executor(scope) && backup_matches_expected_current_state(backup),
+    }
+}
+
+fn rollback_blocked_reason(scope: &str, current_state_matches: bool) -> &'static str {
+    match scope {
+        "unknown" => "The backup target is outside the supported transaction allowlist.",
+        _ if !current_state_matches => {
+            "The current target state changed after this rollback point was created."
+        }
+        _ => "",
+    }
+}
+
 fn rollback_points_result() -> Result<Vec<Value>, String> {
     let dir = app_state_dir().join("rollback-points");
     let mut points = Vec::new();
@@ -560,13 +1249,22 @@ fn rollback_points_result() -> Result<Vec<Value>, String> {
                 "when": parsed.get("createdAt").and_then(Value::as_str).unwrap_or("local"),
                 "files": 1,
                 "tools": parsed.get("target").and_then(Value::as_str).map(|target| vec![target]).unwrap_or_else(|| vec!["d-token"]),
-                "verified": parsed.get("ok").and_then(Value::as_bool).unwrap_or(false)
+                "verified": parsed.get("ok").and_then(Value::as_bool).unwrap_or(false),
+                "integrity_verified": false,
+                "currently_restorable": false,
+                "scope": "unknown",
+                "executor_kind": "locked",
+                "blocked_reason": "Legacy install rollback manifests do not prove transaction scope or the current target hash. Return to the source workflow."
             }));
             }
         }
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
         Err(err) => return Err(format!("read {}: {err}", dir.display())),
     }
+
+    let (agent_transaction_points, agent_transaction_rollback_ids) =
+        agent_integration_transaction_points();
+    points.extend(agent_transaction_points);
 
     let patcher = config_patcher();
     let backup_root = config_backup_root();
@@ -581,19 +1279,36 @@ fn rollback_points_result() -> Result<Vec<Value>, String> {
                 let Some(id) = entry.file_name().to_str().map(str::to_string) else {
                     return Err("Config backup id is not valid UTF-8".to_string());
                 };
+                if id == "agent-integration-transactions" {
+                    continue;
+                }
+                if agent_transaction_rollback_ids.contains(&id) {
+                    continue;
+                }
                 match patcher.load_backup(&id) {
-                    Ok(backup) => points.push(json!({
-                        "id": backup.rollback_id,
-                        "label": format!("Rollback point {}", backup.display_target),
-                        "when": backup.created_at,
-                        "files": 1,
-                        "tools": if backup.display_target.to_ascii_lowercase().contains("opencode") { vec!["OpenCode"] } else if matches!(backup.target_path.file_name().and_then(|value| value.to_str()), Some("AGENTS.md" | "CLAUDE.md" | "GEMINI.md" | "d-token.md")) { vec!["Smart Learning"] } else { vec!["d-token"] },
-                        "verified": true,
-                        "source": "dtoken-config-patcher",
-                        "target": backup.target_path.display().to_string(),
-                        "scope": if backup.display_target.to_ascii_lowercase().contains("opencode") { "opencode-config" } else if matches!(backup.target_path.file_name().and_then(|value| value.to_str()), Some("AGENTS.md" | "CLAUDE.md" | "GEMINI.md" | "d-token.md")) { "learning-managed-block" } else { "dtoken-active-config" },
-                        "expectedCurrentSha256": backup.planned_after_sha256,
-                    })),
+                    Ok(backup) => {
+                        let scope = rollback_scope_for_backup(&backup);
+                        let currently_restorable = backup_currently_restorable(&backup);
+                        let current_state_matches = backup_matches_expected_current_state(&backup);
+                        let expected_current = backup_expected_current_token(&backup);
+                        points.push(json!({
+                            "id": backup.rollback_id,
+                            "label": format!("Rollback point {}", backup.display_target),
+                            "when": backup.created_at,
+                            "files": 1,
+                            "tools": if scope == "opencode-config" { vec!["OpenCode"] } else if scope == "learning-managed-block" { vec!["Smart Learning"] } else if matches!(scope, "optical-config" | "agent-integration") { vec!["Visual Compression"] } else { vec!["d-token"] },
+                            "verified": true,
+                            "integrity_verified": true,
+                            "currently_restorable": currently_restorable,
+                            "blocked_reason": rollback_blocked_reason(scope, current_state_matches),
+                            "source": "dtoken-config-patcher",
+                            "target": backup.target_path.display().to_string(),
+                            "scope": scope,
+                            "executor_kind": rollback_executor_kind(scope),
+                            "expected_current_sha256": expected_current,
+                            "expectedCurrentSha256": backup.planned_after_sha256,
+                        }));
+                    }
                     Err(_) => points.push(json!({
                         "id": id,
                         "label": "Unavailable rollback point",
@@ -601,9 +1316,13 @@ fn rollback_points_result() -> Result<Vec<Value>, String> {
                         "files": 0,
                         "tools": ["d-token"],
                         "verified": false,
+                        "integrity_verified": false,
+                        "currently_restorable": false,
                         "source": "dtoken-config-patcher-invalid",
                         "scope": "invalid-backup-evidence",
-                        "reason": "Backup metadata or target identity could not be verified; restore is disabled."
+                        "executor_kind": "locked",
+                        "reason": "Backup metadata or target identity could not be verified; restore is disabled.",
+                        "blocked_reason": "Backup metadata or target identity could not be verified; restore is disabled."
                     })),
                 }
             }
@@ -796,40 +1515,72 @@ fn install_plan_json(req: &InstallPlanRequest) -> Value {
 }
 
 fn run_capture(program: &str, args: &[&str]) -> Result<(bool, String), String> {
-    let output = Command::new(program)
+    let mut child = Command::new(program)
         .args(args)
-        .output()
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
         .map_err(|err| format!("{program}: {err}"))?;
+    let started = Instant::now();
+    let status = loop {
+        if let Some(status) = child.try_wait().map_err(|err| err.to_string())? {
+            break status;
+        }
+        if started.elapsed() >= Duration::from_millis(800) {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(format!("{program}: version check timed out"));
+        }
+        thread::sleep(Duration::from_millis(20));
+    };
     let mut text = String::new();
-    text.push_str(&String::from_utf8_lossy(&output.stdout));
-    text.push_str(&String::from_utf8_lossy(&output.stderr));
-    Ok((output.status.success(), text.trim().to_string()))
+    if let Some(mut stdout) = child.stdout.take() {
+        let _ = stdout.by_ref().take(64 * 1024).read_to_string(&mut text);
+    }
+    if let Some(mut stderr) = child.stderr.take() {
+        let _ = stderr.by_ref().take(64 * 1024).read_to_string(&mut text);
+    }
+    Ok((status.success(), text.trim().to_string()))
 }
 
 #[cfg(windows)]
 fn where_tool(name: &str) -> Option<String> {
-    let output = Command::new("where").arg(name).output().ok()?;
-    if !output.status.success() {
-        return None;
+    let extensions = env::var("PATHEXT")
+        .unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".to_string())
+        .split(';')
+        .filter(|extension| !extension.is_empty())
+        .map(str::to_ascii_lowercase)
+        .collect::<Vec<_>>();
+    for directory in env::var_os("PATH")
+        .into_iter()
+        .flat_map(|path| env::split_paths(&path).collect::<Vec<_>>())
+    {
+        let direct = directory.join(name);
+        if direct.is_file() {
+            return Some(direct.display().to_string());
+        }
+        if Path::new(name).extension().is_some() {
+            continue;
+        }
+        for extension in &extensions {
+            let candidate = directory.join(format!("{name}{extension}"));
+            if candidate.is_file() {
+                return Some(candidate.display().to_string());
+            }
+        }
     }
-    String::from_utf8_lossy(&output.stdout)
-        .lines()
-        .map(str::trim)
-        .find(|line| !line.is_empty())
-        .map(ToString::to_string)
+    None
 }
 
 #[cfg(not(windows))]
 fn where_tool(name: &str) -> Option<String> {
-    let output = Command::new("which").arg(name).output().ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    String::from_utf8_lossy(&output.stdout)
-        .lines()
-        .map(str::trim)
-        .find(|line| !line.is_empty())
-        .map(ToString::to_string)
+    env::var_os("PATH")
+        .into_iter()
+        .flat_map(|path| env::split_paths(&path).collect::<Vec<_>>())
+        .map(|directory| directory.join(name))
+        .find(|path| path.is_file())
+        .map(|path| path.display().to_string())
 }
 
 fn version_for(name: &str) -> Option<String> {
@@ -864,24 +1615,1316 @@ fn check_tool(id: &str, label: &str) -> ToolCheck {
     }
 }
 
+fn loopback_http_operation(path: &str) -> &'static str {
+    match path {
+        "/health" => "loopback_health",
+        "/config/active" => "loopback_active_config",
+        "/dashboard/payload" => "loopback_dashboard_detail",
+        "/dashboard/summary" => "loopback_dashboard_summary",
+        "/export/json" => "loopback_export_json",
+        "/export/csv" => "loopback_export_csv",
+        "/compatibility/agents" => "loopback_compatibility",
+        "/protocol-injection" => "loopback_protocol_injection",
+        "/chain/status" => "loopback_chain_status",
+        "/compression/optical/status" => "loopback_optical_status",
+        "/compression/optical/capabilities" => "loopback_optical_capabilities",
+        "/compression/optical/capabilities/lifecycle" => "loopback_optical_lifecycle",
+        "/compression/optical/events/recent" => "loopback_optical_events",
+        _ => "loopback_service",
+    }
+}
+
+fn retain_http_body(response: &mut String) {
+    if let Some(header_end) = response.find("\r\n\r\n") {
+        response.drain(..header_end + 4);
+    }
+}
+
 fn simple_http_get(host: &str, port: u16, path: &str) -> Result<String, String> {
-    let mut stream = TcpStream::connect((host, port)).map_err(|err| err.to_string())?;
-    stream
-        .set_read_timeout(Some(Duration::from_secs(2)))
+    let operation = loopback_http_operation(path);
+    let total_started = Instant::now();
+    if host != "127.0.0.1" {
+        record_native_performance(
+            operation,
+            "http_total",
+            total_started,
+            "error",
+            false,
+            Some("host_rejected"),
+        );
+        return Err("desktop control-plane HTTP is restricted to 127.0.0.1".to_string());
+    }
+    let address = SocketAddr::from(([127, 0, 0, 1], port));
+    let connect_started = Instant::now();
+    let mut stream = match TcpStream::connect_timeout(&address, Duration::from_millis(120)) {
+        Ok(stream) => {
+            record_native_performance(operation, "connect", connect_started, "ok", false, None);
+            stream
+        }
+        Err(error) => {
+            record_native_performance(
+                operation,
+                "connect",
+                connect_started,
+                "error",
+                false,
+                Some("connect_failed"),
+            );
+            record_native_performance(
+                operation,
+                "http_total",
+                total_started,
+                "error",
+                false,
+                Some("connect_failed"),
+            );
+            return Err(error.to_string());
+        }
+    };
+    let configure_started = Instant::now();
+    if let Err(error) = stream.set_read_timeout(Some(Duration::from_millis(350))) {
+        record_native_performance(
+            operation,
+            "configure",
+            configure_started,
+            "error",
+            false,
+            Some("read_timeout_config_failed"),
+        );
+        record_native_performance(
+            operation,
+            "http_total",
+            total_started,
+            "error",
+            false,
+            Some("read_timeout_config_failed"),
+        );
+        return Err(error.to_string());
+    }
+    if let Err(error) = stream.set_write_timeout(Some(Duration::from_millis(200))) {
+        record_native_performance(
+            operation,
+            "configure",
+            configure_started,
+            "error",
+            false,
+            Some("write_timeout_config_failed"),
+        );
+        record_native_performance(
+            operation,
+            "http_total",
+            total_started,
+            "error",
+            false,
+            Some("write_timeout_config_failed"),
+        );
+        return Err(error.to_string());
+    }
+    record_native_performance(operation, "configure", configure_started, "ok", false, None);
+
+    let write_started = Instant::now();
+    if let Err(error) = write!(
+        stream,
+        "GET {path} HTTP/1.1\r\nHost: {host}:{port}\r\nConnection: close\r\n\r\n"
+    ) {
+        record_native_performance(
+            operation,
+            "write",
+            write_started,
+            "error",
+            false,
+            Some("write_failed"),
+        );
+        record_native_performance(
+            operation,
+            "http_total",
+            total_started,
+            "error",
+            false,
+            Some("write_failed"),
+        );
+        return Err(error.to_string());
+    }
+    record_native_performance(operation, "write", write_started, "ok", false, None);
+
+    let mut response = String::new();
+    let read_started = Instant::now();
+    if let Err(error) = stream.read_to_string(&mut response) {
+        record_native_performance(
+            operation,
+            "read",
+            read_started,
+            "error",
+            false,
+            Some("read_failed"),
+        );
+        record_native_performance(
+            operation,
+            "http_total",
+            total_started,
+            "error",
+            false,
+            Some("read_failed"),
+        );
+        return Err(error.to_string());
+    }
+    record_native_performance(operation, "read", read_started, "ok", false, None);
+
+    let validate_started = Instant::now();
+    if let Err(error) = ensure_http_success(&response) {
+        record_native_performance(
+            operation,
+            "validate",
+            validate_started,
+            "error",
+            false,
+            Some("http_status_invalid"),
+        );
+        record_native_performance(
+            operation,
+            "http_total",
+            total_started,
+            "error",
+            false,
+            Some("http_status_invalid"),
+        );
+        return Err(error);
+    }
+    record_native_performance(operation, "validate", validate_started, "ok", false, None);
+    retain_http_body(&mut response);
+    record_native_performance(operation, "http_total", total_started, "ok", false, None);
+    Ok(response)
+}
+
+const OPTICAL_PREVIEW_MAX_BODY_BYTES: usize = 512 * 1024;
+
+fn simple_http_post_json(host: &str, port: u16, path: &str, body: &str) -> Result<String, String> {
+    if host != "127.0.0.1" {
+        return Err("desktop control-plane HTTP is restricted to 127.0.0.1".to_string());
+    }
+    if body.len() > OPTICAL_PREVIEW_MAX_BODY_BYTES {
+        return Err(format!(
+            "optical preview body exceeds {OPTICAL_PREVIEW_MAX_BODY_BYTES} bytes"
+        ));
+    }
+    let address = SocketAddr::from(([127, 0, 0, 1], port));
+    let mut stream = TcpStream::connect_timeout(&address, Duration::from_millis(200))
         .map_err(|err| err.to_string())?;
     stream
-        .set_write_timeout(Some(Duration::from_secs(2)))
+        .set_read_timeout(Some(Duration::from_millis(2_000)))
+        .map_err(|err| err.to_string())?;
+    stream
+        .set_write_timeout(Some(Duration::from_millis(500)))
         .map_err(|err| err.to_string())?;
     write!(
         stream,
-        "GET {path} HTTP/1.1\r\nHost: {host}:{port}\r\nConnection: close\r\n\r\n"
+        "POST {path} HTTP/1.1\r\nHost: {host}:{port}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
     )
     .map_err(|err| err.to_string())?;
     let mut response = String::new();
     stream
         .read_to_string(&mut response)
         .map_err(|err| err.to_string())?;
+    ensure_http_success(&response)?;
     Ok(response)
+}
+
+fn http_response_status(raw: &str) -> Result<u16, String> {
+    let status_line = raw.lines().next().unwrap_or("").trim();
+    if status_line.is_empty() {
+        return Err("missing HTTP status line".to_string());
+    }
+    let mut parts = status_line.split_whitespace();
+    let _version = parts
+        .next()
+        .ok_or_else(|| "missing HTTP version".to_string())?;
+    let code = parts
+        .next()
+        .ok_or_else(|| "missing HTTP status code".to_string())?;
+    code.parse::<u16>()
+        .map_err(|err| format!("invalid HTTP status code: {err}"))
+}
+
+fn ensure_http_success(raw: &str) -> Result<(), String> {
+    let code = http_response_status(raw)?;
+    if (200..300).contains(&code) {
+        Ok(())
+    } else {
+        Err(format!("HTTP {code}"))
+    }
+}
+
+fn optical_slice(port: u16, path: &str) -> Value {
+    match service_json(port, path) {
+        Ok(data) => json!({
+            "ok": true,
+            "source": "dtoken-local-service",
+            "error": "",
+            "data": data,
+        }),
+        Err(err) => json!({
+            "ok": false,
+            "source": "unavailable",
+            "error": err,
+            "data": Value::Null,
+        }),
+    }
+}
+
+fn optical_slice_join_error(label: &str) -> Value {
+    json!({
+        "ok": false,
+        "source": "unavailable",
+        "error": format!("optical {label} task failed"),
+        "data": Value::Null,
+    })
+}
+
+fn optical_observability_value() -> Value {
+    let port = DTOKEN_SERVICE_PORT;
+    // Four independent loopback GETs — run in parallel to cut wall-clock latency.
+    let (status, capabilities, lifecycle, events) = thread::scope(|scope| {
+        let status_handle = scope.spawn(|| optical_slice(port, "/compression/optical/status"));
+        let capabilities_handle =
+            scope.spawn(|| optical_slice(port, "/compression/optical/capabilities"));
+        let lifecycle_handle =
+            scope.spawn(|| optical_slice(port, "/compression/optical/capabilities/lifecycle"));
+        let events_handle =
+            scope.spawn(|| optical_slice(port, "/compression/optical/events/recent"));
+        (
+            status_handle
+                .join()
+                .unwrap_or_else(|_| optical_slice_join_error("status")),
+            capabilities_handle
+                .join()
+                .unwrap_or_else(|_| optical_slice_join_error("capabilities")),
+            lifecycle_handle
+                .join()
+                .unwrap_or_else(|_| optical_slice_join_error("lifecycle")),
+            events_handle
+                .join()
+                .unwrap_or_else(|_| optical_slice_join_error("events")),
+        )
+    });
+    let any_ok = status.get("ok").and_then(Value::as_bool).unwrap_or(false)
+        || capabilities
+            .get("ok")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+        || lifecycle
+            .get("ok")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+        || events.get("ok").and_then(Value::as_bool).unwrap_or(false);
+    let all_ok = status.get("ok").and_then(Value::as_bool).unwrap_or(false)
+        && capabilities
+            .get("ok")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+        && lifecycle
+            .get("ok")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+        && events.get("ok").and_then(Value::as_bool).unwrap_or(false);
+    let collected_at = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as u64)
+        .unwrap_or(0);
+    json!({
+        "ok": any_ok,
+        "complete": all_ok,
+        "partial": any_ok && !all_ok,
+        "source": if any_ok { "dtoken-local-service" } else { "unavailable" },
+        "collected_at": collected_at,
+        "service_url": format!("http://127.0.0.1:{port}"),
+        "status": status,
+        "capabilities": capabilities,
+        "lifecycle": lifecycle,
+        "events": events,
+    })
+}
+
+fn preview_optical_plan_value(request: Value) -> Value {
+    let Some(object) = request.as_object() else {
+        return json!({
+            "ok": false,
+            "source": "unavailable",
+            "error": "optical preview request must be a JSON object",
+            "data": Value::Null,
+        });
+    };
+    if !object.contains_key("body") {
+        return json!({
+            "ok": false,
+            "source": "unavailable",
+            "error": "optical preview request requires a body field",
+            "data": Value::Null,
+        });
+    }
+    if !object.contains_key("endpoint_path") {
+        return json!({
+            "ok": false,
+            "source": "unavailable",
+            "error": "optical preview request requires an endpoint_path field",
+            "data": Value::Null,
+        });
+    }
+    let body = match serde_json::to_string(&request) {
+        Ok(body) => body,
+        Err(err) => {
+            return json!({
+                "ok": false,
+                "source": "unavailable",
+                "error": format!("invalid optical preview request: {err}"),
+                "data": Value::Null,
+            });
+        }
+    };
+    match simple_http_post_json(
+        "127.0.0.1",
+        DTOKEN_SERVICE_PORT,
+        "/compression/optical/preview",
+        &body,
+    ) {
+        Ok(raw) => match serde_json::from_str::<Value>(http_body(&raw)) {
+            Ok(data) => json!({
+                "ok": true,
+                "source": "dtoken-local-service",
+                "error": "",
+                "data": data,
+            }),
+            Err(err) => json!({
+                "ok": false,
+                "source": "unavailable",
+                "error": format!("optical preview response is not JSON: {err}"),
+                "data": Value::Null,
+            }),
+        },
+        Err(err) => json!({
+            "ok": false,
+            "source": "unavailable",
+            "error": err,
+            "data": Value::Null,
+        }),
+    }
+}
+
+#[tauri::command]
+async fn get_optical_observability() -> Value {
+    tauri::async_runtime::spawn_blocking(optical_observability_value)
+        .await
+        .unwrap_or_else(|err| {
+            json!({
+                "ok": false,
+                "complete": false,
+                "partial": false,
+                "source": "unavailable",
+                "collected_at": 0,
+                "service_url": format!("http://127.0.0.1:{DTOKEN_SERVICE_PORT}"),
+                "error": format!("optical observability task failed: {err}"),
+                "status": { "ok": false, "source": "unavailable", "error": "task_failed", "data": null },
+                "capabilities": { "ok": false, "source": "unavailable", "error": "task_failed", "data": null },
+                "lifecycle": { "ok": false, "source": "unavailable", "error": "task_failed", "data": null },
+                "events": { "ok": false, "source": "unavailable", "error": "task_failed", "data": null },
+            })
+        })
+}
+
+#[tauri::command]
+async fn preview_optical_plan(request: Value) -> Value {
+    tauri::async_runtime::spawn_blocking(move || preview_optical_plan_value(request))
+        .await
+        .unwrap_or_else(|err| {
+            json!({
+                "ok": false,
+                "source": "unavailable",
+                "error": format!("optical preview task failed: {err}"),
+                "data": Value::Null,
+            })
+        })
+}
+
+fn optical_safe_mode(raw: &str) -> Result<&'static str, String> {
+    match raw.trim() {
+        "off" => Ok("off"),
+        "shadow_preview" => Ok("shadow_preview"),
+        "tool_results_only" | "history_only" | "full_experimental" => Err(
+            "product path only allows off or shadow_preview; active-leaning modes are blocked"
+                .to_string(),
+        ),
+        other => Err(format!("unsupported optical mode: {other}")),
+    }
+}
+
+fn read_active_config_value() -> Result<Value, String> {
+    let path = active_config_path();
+    if !path.exists() {
+        return Err(
+            "Active config is missing. Create a route in Install & Connect first.".to_string(),
+        );
+    }
+    let content =
+        fs::read_to_string(&path).map_err(|err| format!("Active config is unreadable: {err}"))?;
+    if content.contains("sk-") {
+        return Err("Active config contains a plaintext-looking secret".to_string());
+    }
+    serde_json::from_str(&content).map_err(|err| format!("Active config is invalid JSON: {err}"))
+}
+
+fn known_route_ids(config: &Value) -> Vec<String> {
+    config
+        .get("routes")
+        .and_then(Value::as_array)
+        .map(|routes| {
+            routes
+                .iter()
+                .filter_map(|route| {
+                    route
+                        .get("id")
+                        .and_then(Value::as_str)
+                        .map(|id| id.to_string())
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn clamp_optical_draft(
+    draft: &OpticalConfigDraftRequest,
+    known_routes: &[String],
+) -> Result<Value, String> {
+    let known: std::collections::HashSet<&str> = known_routes.iter().map(String::as_str).collect();
+    if known.is_empty() {
+        return Err("Active config has no routes; configure a route first".to_string());
+    }
+    let global_mode = optical_safe_mode(&draft.global.default_mode)?;
+    let mut route_policies = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for route in &draft.routes {
+        let route_id = route.route_id.trim();
+        if route_id.is_empty() {
+            return Err("route policy is missing route_id".to_string());
+        }
+        if !known.contains(route_id) {
+            return Err(format!("unknown route_id: {route_id}"));
+        }
+        if !seen.insert(route_id.to_string()) {
+            return Err(format!("duplicate route policy: {route_id}"));
+        }
+        let mode = optical_safe_mode(&route.mode)?;
+        route_policies.push(json!({
+            "route_id": route_id,
+            "policy": {
+                "enabled": route.enabled,
+                "mode": mode,
+                "allow_tool_result": route.allow_tool_result,
+                "allow_history": route.allow_history,
+                "allow_schema_annotations": false,
+                "allow_system_static_slab": false,
+                "min_net_saved_tokens": 1024,
+                "confirmed_experimental_lossy": route.confirmed_experimental_lossy,
+            }
+        }));
+    }
+    // Fill missing known routes with off defaults so apply is deterministic.
+    for route_id in known_routes {
+        if seen.contains(route_id) {
+            continue;
+        }
+        route_policies.push(json!({
+            "route_id": route_id,
+            "policy": {
+                "enabled": false,
+                "mode": "off",
+                "allow_tool_result": false,
+                "allow_history": false,
+                "allow_schema_annotations": false,
+                "allow_system_static_slab": false,
+                "min_net_saved_tokens": 1024,
+                "confirmed_experimental_lossy": false,
+            }
+        }));
+    }
+
+    Ok(json!({
+        "schema_version": 1,
+        "global_policy": {
+            "enabled": draft.global.enabled,
+            "default_mode": global_mode,
+            "allow_active": false,
+            "public_summary_only": true,
+        },
+        "route_policies": route_policies,
+    }))
+}
+
+fn merge_optical_into_active_config(
+    mut config: Value,
+    optical_patch: Value,
+) -> Result<Value, String> {
+    let existing_optical = config.get("optical").cloned().unwrap_or_else(|| json!({}));
+    let mut merged_optical = existing_optical;
+    let object = merged_optical
+        .as_object_mut()
+        .ok_or_else(|| "optical section is not an object".to_string())?;
+
+    object.insert(
+        "schema_version".to_string(),
+        optical_patch
+            .get("schema_version")
+            .cloned()
+            .unwrap_or(json!(1)),
+    );
+
+    let mut global = object
+        .get("global_policy")
+        .cloned()
+        .unwrap_or_else(|| json!({}));
+    let global_object = global
+        .as_object_mut()
+        .ok_or_else(|| "optical.global_policy is not an object".to_string())?;
+    if let Some(patch_global) = optical_patch
+        .get("global_policy")
+        .and_then(Value::as_object)
+    {
+        for key in [
+            "enabled",
+            "default_mode",
+            "allow_active",
+            "public_summary_only",
+        ] {
+            if let Some(value) = patch_global.get(key) {
+                global_object.insert(key.to_string(), value.clone());
+            }
+        }
+    }
+    // Hard close active regardless of prior disk state for this product path.
+    global_object.insert("allow_active".to_string(), json!(false));
+    global_object.insert("public_summary_only".to_string(), json!(true));
+    object.insert("global_policy".to_string(), global);
+    object.insert(
+        "route_policies".to_string(),
+        optical_patch
+            .get("route_policies")
+            .cloned()
+            .unwrap_or_else(|| json!([])),
+    );
+    // Preserve capability_snapshots / trusted_authorities / eval_artifacts if present.
+
+    if let Some(root) = config.as_object_mut() {
+        root.insert("optical".to_string(), merged_optical);
+    } else {
+        return Err("active config root is not an object".to_string());
+    }
+    let serialized = serde_json::to_string(&config)
+        .map_err(|err| format!("failed to serialize merged config: {err}"))?;
+    if serialized.contains("sk-") {
+        return Err("merged config contains a plaintext-looking secret".to_string());
+    }
+    Ok(config)
+}
+
+fn prepare_optical_config_change(
+    draft: &OpticalConfigDraftRequest,
+) -> Result<(dtoken_config_patcher::PreparedChange, Value), String> {
+    let current = read_active_config_value()?;
+    let known = known_route_ids(&current);
+    let optical_patch = clamp_optical_draft(draft, &known)?;
+    let merged = merge_optical_into_active_config(current, optical_patch.clone())?;
+    let serialized = serde_json::to_string_pretty(&merged)
+        .map_err(|err| format!("Active config serialize failed: {err}"))?;
+    let target_path = patchable_active_config_path()?;
+    let prepared = config_patcher()
+        .prepare_change(
+            target_path,
+            &serialized,
+            ConfigToolKind::Dtoken,
+            None,
+            RiskLevel::Medium,
+        )
+        .map_err(|err| format!("Optical config plan failed: {err:#}"))?;
+    Ok((prepared, optical_patch))
+}
+
+fn optical_runtime_projection(value: &Value) -> Value {
+    let global = value
+        .get("global_policy")
+        .cloned()
+        .unwrap_or_else(|| json!({}));
+    let routes = value
+        .get("route_policies")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|entry| {
+            let policy = entry.get("policy").cloned().unwrap_or_else(|| json!({}));
+            json!({
+                "route_id": entry.get("route_id").cloned().unwrap_or(Value::Null),
+                "policy": {
+                    "enabled": policy.get("enabled").cloned().unwrap_or(json!(false)),
+                    "mode": policy.get("mode").cloned().unwrap_or(json!("off")),
+                    "allow_tool_result": policy.get("allow_tool_result").cloned().unwrap_or(json!(false)),
+                    "allow_history": policy.get("allow_history").cloned().unwrap_or(json!(false)),
+                    "confirmed_experimental_lossy": policy.get("confirmed_experimental_lossy").cloned().unwrap_or(json!(false)),
+                }
+            })
+        })
+        .collect::<Vec<_>>();
+    json!({
+        "global_policy": {
+            "enabled": global.get("enabled").cloned().unwrap_or(json!(false)),
+            "default_mode": global.get("default_mode").cloned().unwrap_or(json!("shadow_preview")),
+            "allow_active": global.get("allow_active").cloned().unwrap_or(json!(false)),
+            "public_summary_only": global.get("public_summary_only").cloned().unwrap_or(json!(true)),
+        },
+        "route_policies": routes,
+    })
+}
+
+fn runtime_optical_matches(expected: &Value) -> bool {
+    service_json(DTOKEN_SERVICE_PORT, "/config/active")
+        .ok()
+        .and_then(|value| value.get("optical").cloned())
+        .is_some_and(|actual| {
+            optical_runtime_projection(&actual) == optical_runtime_projection(expected)
+        })
+}
+
+fn optical_editor_value() -> Value {
+    let service = dtoken_service_status_value();
+    let service_state = service
+        .get("state")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    let service_running = service_state == "running";
+    let path = active_config_path();
+    if !path.exists() {
+        return json!({
+            "ok": false,
+            "source": "dtoken-desktop-control-plane",
+            "error": "active_config_missing",
+            "service_running": service_running,
+            "service_state": service_state,
+            "active_config_exists": false,
+            "active_config_path": path.display().to_string(),
+            "route_count": 0,
+            "routes": [],
+            "draft": {
+                "global": { "enabled": false, "default_mode": "shadow_preview" },
+                "routes": []
+            },
+            "issues": [],
+            "privacy": "No active config was read beyond existence check."
+        });
+    }
+
+    let config = match read_active_config_value() {
+        Ok(config) => config,
+        Err(err) => {
+            return json!({
+                "ok": false,
+                "source": "dtoken-desktop-control-plane",
+                "error": err,
+                "service_running": service_running,
+                "service_state": service_state,
+                "active_config_exists": true,
+                "active_config_path": path.display().to_string(),
+                "route_count": 0,
+                "routes": [],
+                "draft": {
+                    "global": { "enabled": false, "default_mode": "shadow_preview" },
+                    "routes": []
+                },
+                "issues": [],
+            });
+        }
+    };
+
+    let routes = config
+        .get("routes")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let route_options: Vec<Value> = routes
+        .iter()
+        .filter_map(|route| {
+            let id = route.get("id").and_then(Value::as_str)?;
+            let name = route.get("name").and_then(Value::as_str).unwrap_or(id);
+            Some(json!({ "route_id": id, "label": name }))
+        })
+        .collect();
+
+    let optical = config.get("optical").cloned().unwrap_or_else(|| json!({}));
+    let global = optical
+        .get("global_policy")
+        .cloned()
+        .unwrap_or_else(|| json!({}));
+    let enabled = global
+        .get("enabled")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let default_mode = global
+        .get("default_mode")
+        .and_then(Value::as_str)
+        .unwrap_or("shadow_preview");
+    let default_mode = optical_safe_mode(default_mode).unwrap_or("shadow_preview");
+
+    let policy_by_route: HashMap<String, Value> = optical
+        .get("route_policies")
+        .and_then(Value::as_array)
+        .map(|entries| {
+            entries
+                .iter()
+                .filter_map(|entry| {
+                    let route_id = entry.get("route_id").and_then(Value::as_str)?.to_string();
+                    let policy = entry.get("policy").cloned().unwrap_or_else(|| json!({}));
+                    Some((route_id, policy))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let draft_routes: Vec<Value> = route_options
+        .iter()
+        .filter_map(|route| {
+            let route_id = route.get("route_id").and_then(Value::as_str)?;
+            let policy = policy_by_route.get(route_id).cloned().unwrap_or_else(|| json!({}));
+            let mode = policy
+                .get("mode")
+                .and_then(Value::as_str)
+                .unwrap_or("off");
+            let mode = optical_safe_mode(mode).unwrap_or("shadow_preview");
+            Some(json!({
+                "route_id": route_id,
+                "enabled": policy.get("enabled").and_then(Value::as_bool).unwrap_or(false),
+                "mode": mode,
+                "allow_tool_result": policy.get("allow_tool_result").and_then(Value::as_bool).unwrap_or(false),
+                "allow_history": policy.get("allow_history").and_then(Value::as_bool).unwrap_or(false),
+                "confirmed_experimental_lossy": policy.get("confirmed_experimental_lossy").and_then(Value::as_bool).unwrap_or(false),
+            }))
+        })
+        .collect();
+
+    let issues = match dtoken_config::DtokenConfig::load_json(&path) {
+        Ok(parsed) => parsed
+            .optical_config_issues()
+            .into_iter()
+            .map(|issue| format!("{issue:?}"))
+            .collect::<Vec<_>>(),
+        Err(_) => Vec::new(),
+    };
+
+    json!({
+        "ok": true,
+        "source": "dtoken-desktop-control-plane",
+        "error": "",
+        "service_running": service_running,
+        "service_state": service_state,
+        "active_config_exists": true,
+        "active_config_path": path.display().to_string(),
+        "route_count": route_options.len(),
+        "routes": route_options,
+        "draft": {
+            "global": {
+                "enabled": enabled,
+                "default_mode": default_mode,
+            },
+            "routes": draft_routes,
+        },
+        "issues": issues,
+        "allow_active_forced_off": true,
+        "privacy": "Only optical policy fields and route ids/names are exposed; credentials and request bodies are not read into this editor payload."
+    })
+}
+
+#[tauri::command]
+async fn get_optical_config_editor() -> Value {
+    tauri::async_runtime::spawn_blocking(optical_editor_value)
+        .await
+        .unwrap_or_else(|err| {
+            json!({
+                "ok": false,
+                "source": "unavailable",
+                "error": format!("optical editor task failed: {err}"),
+                "service_running": false,
+                "service_state": "unknown",
+                "active_config_exists": false,
+                "route_count": 0,
+                "routes": [],
+                "draft": {
+                    "global": { "enabled": false, "default_mode": "shadow_preview" },
+                    "routes": []
+                },
+                "issues": [],
+            })
+        })
+}
+
+#[tauri::command]
+fn preview_optical_config_change(request: PreviewOpticalConfigRequest) -> Value {
+    match prepare_optical_config_change(&request.draft) {
+        Ok((prepared, optical_patch)) => json!({
+            "ok": true,
+            "source": "dtoken-desktop-control-plane",
+            "mode": "optical-config-review",
+            "target": prepared.plan.target_file,
+            "before_sha256": prepared.plan.before_hash,
+            "after_sha256": prepared.plan.after_hash,
+            "diff": prepared.plan.diff,
+            "risk_level": prepared.plan.risk_level,
+            "requires_explicit_confirmation": true,
+            "restart_required": true,
+            "allow_active": false,
+            "optical_summary": optical_patch,
+            "privacy": "Read-only review. No config, backup, runtime, external agent, or credential state was changed."
+        }),
+        Err(err) => json!({
+            "ok": false,
+            "source": "dtoken-desktop-control-plane",
+            "mode": "optical-config-review",
+            "error": sanitize_command_output(&err),
+            "requires_explicit_confirmation": true,
+        }),
+    }
+}
+
+#[tauri::command]
+fn apply_optical_config_change(request: ApplyOpticalConfigRequest) -> Value {
+    let (Some(reviewed_before), Some(reviewed_after)) = (
+        request.reviewed_before_sha256.as_deref(),
+        request.reviewed_after_sha256.as_deref(),
+    ) else {
+        return json!({
+            "ok": false,
+            "source": "dtoken-desktop-control-plane",
+            "error": "Review the optical config diff before applying it",
+            "summary": "Missing reviewed before/after hashes",
+        });
+    };
+
+    let (prepared, optical_patch) = match prepare_optical_config_change(&request.draft) {
+        Ok(prepared) => prepared,
+        Err(err) => {
+            return json!({
+                "ok": false,
+                "source": "dtoken-desktop-control-plane",
+                "error": sanitize_command_output(&err),
+                "summary": "Optical config could not be prepared for apply",
+            });
+        }
+    };
+
+    if prepared.plan.before_hash != reviewed_before || prepared.plan.after_hash != reviewed_after {
+        return json!({
+            "ok": false,
+            "source": "dtoken-desktop-control-plane",
+            "error": "Optical config review is stale; review the current diff again",
+            "summary": "Stale review hashes",
+        });
+    }
+
+    let transaction = match config_patcher().apply_transaction(&[prepared]) {
+        Ok(transaction) => transaction,
+        Err(err) => {
+            return json!({
+                "ok": false,
+                "source": "dtoken-desktop-control-plane",
+                "error": sanitize_command_output(&format!("{err:#}")),
+                "summary": "Optical config transaction failed and was not committed",
+            });
+        }
+    };
+    let Some(receipt) = transaction.changes.first() else {
+        return json!({
+            "ok": false,
+            "source": "dtoken-desktop-control-plane",
+            "error": "Optical config transaction returned no receipt",
+            "summary": "Missing verification evidence",
+        });
+    };
+
+    let restart_requested = request.restart_service.unwrap_or(true);
+    let restart = if restart_requested {
+        restart_dtoken_service_impl()
+    } else {
+        ActionResult {
+            ok: true,
+            summary: "Service restart explicitly skipped".to_string(),
+            logs: Vec::new(),
+            tools: Vec::new(),
+        }
+    };
+    let runtime_verified =
+        restart_requested && restart.ok && runtime_optical_matches(&optical_patch);
+    let _ = append_desktop_event(
+        "optical_config_apply",
+        if runtime_verified { "ok" } else { "partial" },
+        json!({
+            "transaction_id": &transaction.transaction_id,
+            "rollback_id": &receipt.backup.rollback_id,
+            "target": receipt.target_path.display().to_string(),
+            "after_sha256": &receipt.after.sha256,
+            "config_applied": true,
+            "runtime_verified": runtime_verified,
+        }),
+    );
+
+    json!({
+        "ok": runtime_verified,
+        "source": "dtoken-desktop-control-plane",
+        "summary": if runtime_verified {
+            "Optical shadow config applied, reloaded, and verified with a durable rollback point"
+        } else {
+            "Optical config was written, but the managed service could not be reloaded; retry restart or restore the rollback point"
+        },
+        "transaction_id": transaction.transaction_id,
+        "rollback_id": receipt.backup.rollback_id,
+        "before_sha256": receipt.before.sha256,
+        "after_sha256": receipt.after.sha256,
+        "config_applied": true,
+        "runtime_verified": runtime_verified,
+        "restarted": restart_requested && restart.ok,
+        "restart_summary": restart.summary,
+        "allow_active": false,
+        "optical_summary": optical_patch,
+        "privacy": "Only d-token active-config optical fields were changed. No external Agent configs or credentials were written."
+    })
+}
+
+#[tauri::command]
+fn rollback_optical_config_change(request: RollbackOpticalConfigRequest) -> Value {
+    let rollback_id = request.rollback_id.trim();
+    if rollback_id.is_empty() || rollback_id != request.rollback_id {
+        return json!({
+            "ok": false,
+            "source": "dtoken-desktop-control-plane",
+            "summary": "Invalid optical rollback point id",
+            "config_restored": false,
+            "runtime_verified": false,
+        });
+    }
+
+    let backup = match config_patcher().load_backup(rollback_id) {
+        Ok(backup) => backup,
+        Err(err) => {
+            return json!({
+                "ok": false,
+                "source": "dtoken-desktop-control-plane",
+                "summary": "Optical rollback point failed integrity verification",
+                "error": sanitize_command_output(&format!("{err:#}")),
+                "config_restored": false,
+                "runtime_verified": false,
+            });
+        }
+    };
+    let expected_target = match patchable_active_config_path() {
+        Ok(path) => path,
+        Err(err) => {
+            return json!({
+                "ok": false,
+                "source": "dtoken-desktop-control-plane",
+                "summary": "Active config target is unavailable",
+                "error": sanitize_command_output(&err),
+                "config_restored": false,
+                "runtime_verified": false,
+            });
+        }
+    };
+    if backup.target_path != expected_target {
+        return json!({
+            "ok": false,
+            "source": "dtoken-desktop-control-plane",
+            "summary": "Rollback point does not belong to the d-token active config",
+            "config_restored": false,
+            "runtime_verified": false,
+        });
+    }
+
+    let restored = manage_backup("restore".to_string(), rollback_id.to_string());
+    if !restored.ok {
+        return json!({
+            "ok": false,
+            "source": "dtoken-desktop-control-plane",
+            "summary": restored.summary,
+            "config_restored": false,
+            "runtime_verified": false,
+        });
+    }
+
+    let restart = restart_dtoken_service_impl();
+    let restored_optical = read_active_config_value()
+        .ok()
+        .and_then(|value| value.get("optical").cloned());
+    let runtime_verified = restart.ok
+        && restored_optical
+            .as_ref()
+            .is_some_and(runtime_optical_matches);
+    let _ = append_desktop_event(
+        "optical_config_rollback",
+        if runtime_verified { "ok" } else { "partial" },
+        json!({
+            "rollback_id": rollback_id,
+            "config_restored": true,
+            "runtime_verified": runtime_verified,
+        }),
+    );
+    json!({
+        "ok": runtime_verified,
+        "source": "dtoken-desktop-control-plane",
+        "summary": if runtime_verified {
+            "Optical config restored and runtime after-state verified"
+        } else {
+            "Optical config restored, but runtime after-state could not be verified"
+        },
+        "rollback_id": rollback_id,
+        "config_restored": true,
+        "runtime_verified": runtime_verified,
+        "restarted": restart.ok,
+        "restart_summary": restart.summary,
+        "allow_active": false,
+    })
+}
+
+fn hybrid_agent_integration_request(
+    draft: &HybridAgentIntegrationDraftRequest,
+) -> Result<AgentIntegrationRequest, String> {
+    let scope = match draft.scope.as_str() {
+        "global" => AgentIntegrationScope::Global,
+        "project" => AgentIntegrationScope::Project,
+        _ => return Err("Agent integration scope must be global or project".to_string()),
+    };
+    let bridge_path = resolve_dtoken_agent_bridge_exe()?;
+    Ok(AgentIntegrationRequest {
+        agent_ids: draft.agent_ids.clone(),
+        scope,
+        project_root: draft.project_root.as_deref().map(PathBuf::from),
+        bridge_path,
+        install_instructions: draft.install_instructions,
+        install_hook_or_plugin: draft.install_hook_or_plugin,
+        install_skill: draft.install_skill,
+        install_mcp: draft.install_mcp,
+    })
+}
+
+fn prepare_hybrid_agent_integration(
+    draft: &HybridAgentIntegrationDraftRequest,
+) -> Result<dtoken_config_patcher::agent_integration::PreparedAgentIntegration, String> {
+    let request = hybrid_agent_integration_request(draft)?;
+    let home = user_home_dir()?;
+    prepare_agent_integration(&request, &home, &config_backup_root())
+        .map_err(|error| format!("Agent integration plan failed: {error:#}"))
+}
+
+#[tauri::command]
+fn get_hybrid_agent_integrations() -> Value {
+    let bridge = resolve_dtoken_agent_bridge_exe();
+    let (bridge_available, bridge_path, bridge_error) = match bridge {
+        Ok(path) => (true, Some(path.display().to_string()), None),
+        Err(error) => (false, None, Some(sanitize_command_output(&error))),
+    };
+    let service = dtoken_service_status_value();
+    let active_config = active_route_config_status();
+    let default_project_root = env::current_dir().ok().filter(|path| {
+        path.is_dir()
+            && (path.join(".git").exists()
+                || path.join("AGENTS.md").exists()
+                || path.join("Cargo.toml").exists()
+                || path.join("package.json").exists())
+    });
+    let default_scope = if default_project_root.is_some() {
+        "project"
+    } else {
+        "global"
+    };
+    let (agents, discovery_error) = match agent_registry::scan_current_process_agents() {
+        Ok(snapshot) => (
+            snapshot
+                .agents
+                .into_iter()
+                .map(|agent| {
+                    let integration_supported =
+                        matches!(agent.id.as_str(), "claude-code" | "codex" | "opencode");
+                    json!({
+                        "id": agent.id,
+                        "name": agent.name,
+                        "installed": true,
+                        "detected": true,
+                        "integration_supported": integration_supported,
+                        "install_capability": agent.install_capability,
+                        "session_capability": agent.session_capability,
+                        "evidence_count": agent.evidence.len(),
+                        "surfaces": if integration_supported {
+                            json!(["transport", "instructions", "hook_or_plugin", "skill", "mcp"])
+                        } else {
+                            json!(["transport", "discovery"])
+                        },
+                        "transport_state": "separate_route_prerequisite",
+                    })
+                })
+                .collect::<Vec<_>>(),
+            None,
+        ),
+        Err(error) => (
+            Vec::new(),
+            Some(sanitize_command_output(&format!("{error:#}"))),
+        ),
+    };
+    json!({
+        "ok": bridge_available,
+        "source": "d-token-agent-integration",
+        "agents": agents,
+        "discovery_error": discovery_error,
+        "bridge": {
+            "available": bridge_available,
+            "path": bridge_path,
+            "error": bridge_error,
+        },
+        "service": service,
+        "transport": {
+            "configured": active_config.get("state").and_then(Value::as_str) == Some("loaded"),
+            "route_count": active_config.get("route_count").and_then(Value::as_u64).unwrap_or(0),
+            "detail": "Provider/base URL routing is configured separately and this integration never changes credentials."
+        },
+        "defaults": {
+            "install_instructions": true,
+            "install_hook_or_plugin": true,
+            "install_skill": true,
+            "install_mcp": false,
+            "scope": default_scope,
+            "project_root": default_project_root.map(|path| path.display().to_string())
+        }
+    })
+}
+
+#[tauri::command]
+fn preview_hybrid_agent_integration(request: HybridAgentIntegrationDraftRequest) -> Value {
+    match prepare_hybrid_agent_integration(&request) {
+        Ok(prepared) => json!({
+            "ok": true,
+            "state": "review",
+            "source": "d-token-agent-integration",
+            "plan": prepared.plan,
+            "requires_explicit_confirmation": true,
+            "privacy": "Preview only; no Agent config, backup, credential, prompt, or transcript was written."
+        }),
+        Err(error) => json!({
+            "ok": false,
+            "state": "blocked",
+            "source": "d-token-agent-integration",
+            "error": sanitize_command_output(&error),
+        }),
+    }
+}
+
+#[tauri::command]
+fn apply_hybrid_agent_integration(request: ApplyHybridAgentIntegrationRequest) -> Value {
+    let prepared = match prepare_hybrid_agent_integration(&request.draft) {
+        Ok(prepared) => prepared,
+        Err(error) => {
+            return json!({"ok": false, "state": "blocked", "error": sanitize_command_output(&error)})
+        }
+    };
+    match apply_agent_integration(prepared, &config_backup_root(), &request.reviewed_digest) {
+        Ok(receipt) => {
+            let _ = append_desktop_event(
+                "agent_integration_apply",
+                "ok",
+                json!({
+                    "transaction_id": &receipt.transaction_id,
+                    "rollback_ids": &receipt.rollback_ids,
+                    "rollback_point_count": receipt.rollback_ids.len(),
+                    "new_session_required": receipt.new_session_required,
+                }),
+            );
+            json!({
+                "ok": true,
+                "state": "applied",
+                "source": "d-token-agent-integration",
+                "receipt": receipt,
+                "summary": "Agent integration was written atomically. Verify this transaction before judging activation."
+            })
+        }
+        Err(error) => json!({
+            "ok": false,
+            "state": "failed",
+            "source": "d-token-agent-integration",
+            "error": sanitize_command_output(&format!("{error:#}")),
+        }),
+    }
+}
+
+#[tauri::command]
+fn verify_hybrid_agent_integration(request: VerifyHybridAgentIntegrationRequest) -> Value {
+    match verify_agent_integration_transaction(&request.transaction_id, &config_backup_root()) {
+        Ok(verification) => json!({
+            "ok": verification.ok,
+            "state": if verification.ok {
+                "verified"
+            } else if verification.verified_targets.is_empty() {
+                "changed"
+            } else {
+                "partial"
+            },
+            "source": "d-token-agent-integration",
+            "verification": verification,
+            "service": dtoken_service_status_value(),
+            "transport": active_route_config_status(),
+        }),
+        Err(error) => {
+            json!({"ok": false, "state": "failed", "error": sanitize_command_output(&format!("{error:#}"))})
+        }
+    }
+}
+
+#[tauri::command]
+fn rollback_hybrid_agent_integration(request: RollbackHybridAgentIntegrationRequest) -> Value {
+    if request.transaction_id.trim().is_empty() {
+        return json!({"ok": false, "state": "blocked", "error": "Rollback requires a transaction id"});
+    }
+    match rollback_agent_integration(&request.transaction_id, &config_backup_root()) {
+        Ok(restored) => {
+            let _ = append_desktop_event(
+                "agent_integration_rollback",
+                "ok",
+                json!({
+                    "transaction_id": &request.transaction_id,
+                    "restored_target_count": restored.len(),
+                }),
+            );
+            json!({
+                "ok": true,
+                "state": "restored",
+                "source": "d-token-agent-integration",
+                "restored_targets": restored,
+                "summary": "Agent integration transaction was restored. Provider credentials were not changed."
+            })
+        }
+        Err(error) => {
+            json!({"ok": false, "state": "failed", "error": sanitize_command_output(&format!("{error:#}"))})
+        }
+    }
+}
+
+#[tauri::command]
+fn get_hybrid_agent_integration_transaction(
+    request: GetHybridAgentIntegrationTransactionRequest,
+) -> Value {
+    match get_agent_integration_transaction(&request.transaction_id, &config_backup_root()) {
+        Ok(transaction) => json!({
+            "ok": true,
+            "state": transaction.state,
+            "source": "d-token-agent-integration",
+            "transaction": transaction,
+        }),
+        Err(error) => json!({
+            "ok": false,
+            "state": "unavailable",
+            "source": "d-token-agent-integration",
+            "error": sanitize_command_output(&format!("{error:#}")),
+        }),
+    }
 }
 
 fn http_body(raw: &str) -> &str {
@@ -891,13 +2934,53 @@ fn http_body(raw: &str) -> &str {
 }
 
 fn service_json(port: u16, path: &str) -> Result<Value, String> {
-    let raw = simple_http_get("127.0.0.1", port, path)?;
-    serde_json::from_str(http_body(&raw)).map_err(|err| err.to_string())
+    let operation = loopback_http_operation(path);
+    let total_started = Instant::now();
+    let body = match simple_http_get("127.0.0.1", port, path) {
+        Ok(body) => body,
+        Err(error) => {
+            record_native_performance(
+                operation,
+                "total",
+                total_started,
+                "error",
+                false,
+                Some("transport_failed"),
+            );
+            return Err(error);
+        }
+    };
+    let parse_started = Instant::now();
+    match serde_json::from_str(&body) {
+        Ok(value) => {
+            record_native_performance(operation, "parse", parse_started, "ok", false, None);
+            record_native_performance(operation, "total", total_started, "ok", false, None);
+            Ok(value)
+        }
+        Err(error) => {
+            record_native_performance(
+                operation,
+                "parse",
+                parse_started,
+                "error",
+                false,
+                Some("json_parse_failed"),
+            );
+            record_native_performance(
+                operation,
+                "total",
+                total_started,
+                "error",
+                false,
+                Some("json_parse_failed"),
+            );
+            Err(error.to_string())
+        }
+    }
 }
 
 fn service_text(port: u16, path: &str) -> Result<String, String> {
-    let raw = simple_http_get("127.0.0.1", port, path)?;
-    Ok(http_body(&raw).to_string())
+    simple_http_get("127.0.0.1", port, path)
 }
 
 fn service_manifest_path() -> PathBuf {
@@ -927,154 +3010,84 @@ fn remove_service_manifest() -> Result<(), String> {
     durable_remove_file(&service_manifest_path())
 }
 
-fn is_process_running(pid: u32) -> bool {
-    if pid == 0 {
-        return false;
+fn file_sha256(path: &Path) -> Result<String, String> {
+    use sha2::{Digest, Sha256};
+
+    let mut file = fs::File::open(path).map_err(|error| error.to_string())?;
+    let mut digest = Sha256::new();
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let read = file.read(&mut buffer).map_err(|error| error.to_string())?;
+        if read == 0 {
+            break;
+        }
+        digest.update(&buffer[..read]);
     }
-    #[cfg(windows)]
-    {
-        let filter = format!("PID eq {pid}");
-        let output = Command::new("tasklist")
-            .args(["/FI", &filter, "/FO", "CSV", "/NH"])
-            .output();
-        let Ok(output) = output else {
-            return false;
+    Ok(format!("{:x}", digest.finalize()))
+}
+
+fn is_sha256(value: &str) -> bool {
+    value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+fn managed_service_binary_evidence(
+    manifest: &ManagedServiceManifest,
+) -> ManagedServiceBinaryEvidence {
+    let launch_sha256 = manifest
+        .exe_sha256
+        .as_deref()
+        .filter(|value| is_sha256(value))
+        .map(str::to_ascii_lowercase);
+    if manifest.schema_version == 0 || manifest.exe_sha256.is_none() {
+        return ManagedServiceBinaryEvidence {
+            state: "legacy_manifest",
+            launch_sha256,
+            current_sha256: None,
+            compatible: false,
         };
-        if !output.status.success() {
-            return false;
-        }
-        let text = String::from_utf8_lossy(&output.stdout);
-        text.contains(&pid.to_string()) && !text.contains("INFO:")
     }
-    #[cfg(not(windows))]
-    {
-        Command::new("kill")
-            .args(["-0", &pid.to_string()])
-            .status()
-            .map(|status| status.success())
-            .unwrap_or(false)
+    if manifest.schema_version != MANAGED_SERVICE_MANIFEST_SCHEMA_VERSION {
+        return ManagedServiceBinaryEvidence {
+            state: "unsupported_manifest_schema",
+            launch_sha256,
+            current_sha256: None,
+            compatible: false,
+        };
     }
-}
-
-#[cfg(target_os = "windows")]
-fn process_executable_path(pid: u32) -> Option<PathBuf> {
-    let command =
-        format!("(Get-CimInstance Win32_Process -Filter \"ProcessId = {pid}\").ExecutablePath");
-    let output = Command::new("powershell.exe")
-        .args(["-NoProfile", "-NonInteractive", "-Command", &command])
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    String::from_utf8_lossy(&output.stdout)
-        .lines()
-        .map(str::trim)
-        .find(|line| !line.is_empty())
-        .map(PathBuf::from)
-}
-
-#[cfg(target_os = "macos")]
-fn process_executable_path(pid: u32) -> Option<PathBuf> {
-    let output = Command::new("ps")
-        .args(["-p", &pid.to_string(), "-o", "comm="])
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    String::from_utf8_lossy(&output.stdout)
-        .lines()
-        .map(str::trim)
-        .find(|line| !line.is_empty())
-        .map(PathBuf::from)
-}
-
-#[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
-fn process_executable_path(pid: u32) -> Option<PathBuf> {
-    fs::read_link(format!("/proc/{pid}/exe")).ok()
-}
-
-fn executable_identity_matches(pid: u32, expected: &Path) -> bool {
-    let Some(actual) = process_executable_path(pid) else {
-        return false;
+    let Some(launch_sha256) = launch_sha256 else {
+        return ManagedServiceBinaryEvidence {
+            state: "invalid_launch_identity",
+            launch_sha256: None,
+            current_sha256: None,
+            compatible: false,
+        };
     };
-    let expected = fs::canonicalize(expected).ok();
-    let actual = fs::canonicalize(actual).ok();
-    expected.is_some() && expected == actual
+    match file_sha256(Path::new(&manifest.exe_path)) {
+        Ok(current_sha256) => ManagedServiceBinaryEvidence {
+            state: if current_sha256 == launch_sha256 {
+                "matched"
+            } else {
+                "bundle_replaced"
+            },
+            compatible: current_sha256 == launch_sha256,
+            launch_sha256: Some(launch_sha256),
+            current_sha256: Some(current_sha256),
+        },
+        Err(_) => ManagedServiceBinaryEvidence {
+            state: "current_binary_unavailable",
+            launch_sha256: Some(launch_sha256),
+            current_sha256: None,
+            compatible: false,
+        },
+    }
 }
 
-fn listener_output_contains_pid(output: &str, pid: u32) -> bool {
-    let expected = pid.to_string();
-    output.lines().any(|line| {
-        line.split(|character: char| !character.is_ascii_digit())
-            .any(|token| token == expected)
-    })
-}
-
-#[cfg(not(windows))]
-fn listener_owned_by_pid(pid: u32, port: u16) -> bool {
-    let pid_arg = pid.to_string();
-    let port_arg = format!("-iTCP:{port}");
-    let output = Command::new("lsof")
-        .args(["-nP", "-a", "-p", &pid_arg, &port_arg, "-sTCP:LISTEN", "-t"])
-        .output();
-    let Ok(output) = output else {
-        return false;
-    };
-    output.status.success()
-        && listener_output_contains_pid(&String::from_utf8_lossy(&output.stdout), pid)
-}
-
-#[cfg(windows)]
-fn listener_owned_by_pid(pid: u32, port: u16) -> bool {
-    let output = Command::new("netstat").args(["-ano", "-p", "tcp"]).output();
-    let Ok(output) = output else {
-        return false;
-    };
-    if !output.status.success() {
-        return false;
-    }
-    let port_marker = format!(":{port}");
-    String::from_utf8_lossy(&output.stdout).lines().any(|line| {
-        line.contains(&port_marker)
-            && line.to_ascii_uppercase().contains("LISTENING")
-            && listener_output_contains_pid(line, pid)
-    })
-}
-
-fn terminate_process(pid: u32) -> Result<(), String> {
-    if pid == 0 {
-        return Err("invalid pid".to_string());
-    }
-    #[cfg(windows)]
-    {
-        let output = Command::new("taskkill")
-            .args(["/PID", &pid.to_string(), "/T", "/F"])
-            .output()
-            .map_err(|err| err.to_string())?;
-        if output.status.success() {
-            Ok(())
-        } else {
-            Err(sanitize_command_output(&String::from_utf8_lossy(
-                &output.stderr,
-            )))
-        }
-    }
-    #[cfg(not(windows))]
-    {
-        let output = Command::new("kill")
-            .arg(pid.to_string())
-            .output()
-            .map_err(|err| err.to_string())?;
-        if output.status.success() {
-            Ok(())
-        } else {
-            Err(sanitize_command_output(&String::from_utf8_lossy(
-                &output.stderr,
-            )))
-        }
-    }
+fn process_birth_identity_matches(manifest: &ManagedServiceManifest) -> bool {
+    manifest
+        .process_birth_token
+        .as_deref()
+        .zip(process_birth_token(manifest.pid).as_deref())
+        .is_some_and(|(expected, actual)| expected == actual)
 }
 
 fn candidate_proxy_paths() -> Vec<PathBuf> {
@@ -1197,13 +3210,266 @@ fn resolve_dtoken_proxy_exe() -> Result<PathBuf, String> {
     Err("dtoken-proxy executable was not found; build or bundle d-token runtime first".to_string())
 }
 
+fn candidate_agent_bridge_paths() -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+    #[cfg(debug_assertions)]
+    if let Ok(explicit) = env::var("DTOKEN_AGENT_BRIDGE_EXE") {
+        candidates.push(PathBuf::from(explicit));
+    }
+    if let Ok(current) = env::current_exe() {
+        if let Some(dir) = current.parent() {
+            for name in [
+                "dtoken-agent-bridge-aarch64-apple-darwin",
+                "dtoken-agent-bridge-x86_64-apple-darwin",
+                "dtoken-agent-bridge-x86_64-pc-windows-msvc.exe",
+                "dtoken-agent-bridge.exe",
+                "dtoken-agent-bridge",
+            ] {
+                candidates.push(dir.join(name));
+                candidates.push(dir.join("binaries").join(name));
+            }
+        }
+    }
+    #[cfg(debug_assertions)]
+    {
+        for prefix in [
+            PathBuf::from("code/apps/desktop/src-tauri/binaries"),
+            PathBuf::from("code/target/debug"),
+            PathBuf::from("code/target/release"),
+            PathBuf::from("target/debug"),
+            PathBuf::from("target/release"),
+        ] {
+            candidates.push(prefix.join("dtoken-agent-bridge"));
+            candidates.push(prefix.join("dtoken-agent-bridge.exe"));
+            candidates.push(prefix.join("dtoken-agent-bridge-aarch64-apple-darwin"));
+            candidates.push(prefix.join("dtoken-agent-bridge-x86_64-apple-darwin"));
+            candidates.push(prefix.join("dtoken-agent-bridge-x86_64-pc-windows-msvc.exe"));
+        }
+    }
+    candidates
+}
+
+fn resolve_dtoken_agent_bridge_exe() -> Result<PathBuf, String> {
+    for candidate in candidate_agent_bridge_paths() {
+        let path = if candidate.is_absolute() {
+            candidate
+        } else {
+            env::current_dir()
+                .unwrap_or_else(|_| PathBuf::from("."))
+                .join(candidate)
+        };
+        if path.is_file() {
+            let canonical = fs::canonicalize(path).map_err(|error| error.to_string())?;
+            verify_dtoken_agent_bridge(&canonical)?;
+            return Ok(canonical);
+        }
+    }
+    Err(
+        "dtoken-agent-bridge executable was not found; build or bundle the Agent bridge first"
+            .to_string(),
+    )
+}
+
+fn verify_dtoken_agent_bridge(path: &Path) -> Result<(), String> {
+    use sha2::{Digest, Sha256};
+
+    let metadata = fs::metadata(path).map_err(|error| error.to_string())?;
+    if !metadata.is_file() || metadata.len() == 0 {
+        return Err("dtoken-agent-bridge is not a non-empty regular file".to_string());
+    }
+    if agent_bridge_requires_embedded_hash() {
+        let expected_sha256 = env!("DTOKEN_AGENT_BRIDGE_SHA256");
+        if expected_sha256 == "unavailable" {
+            return Err(
+                "dtoken-agent-bridge release hash was not embedded at build time".to_string(),
+            );
+        }
+        let actual_sha256 = format!(
+            "{:x}",
+            Sha256::digest(fs::read(path).map_err(|error| error.to_string())?)
+        );
+        if actual_sha256 != expected_sha256 {
+            return Err("dtoken-agent-bridge release hash mismatch".to_string());
+        }
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if metadata.permissions().mode() & 0o111 == 0 {
+            return Err("dtoken-agent-bridge is not executable".to_string());
+        }
+    }
+    let identity = verify_platform_before_agent_bridge_execution(
+        path,
+        verify_agent_bridge_platform_signature,
+        load_dtoken_agent_bridge_identity,
+    )?;
+    if identity.get("component").and_then(Value::as_str) != Some(BRIDGE_COMPONENT)
+        || identity.get("protocol_version").and_then(Value::as_u64)
+            != Some(u64::from(BRIDGE_PROTOCOL_VERSION))
+        || identity.get("arch").and_then(Value::as_str) != Some(env::consts::ARCH)
+        || identity.get("os").and_then(Value::as_str) != Some(env::consts::OS)
+        || identity.get("version").and_then(Value::as_str) != Some(BRIDGE_VERSION)
+    {
+        return Err("dtoken-agent-bridge bundle identity mismatch".to_string());
+    }
+    Ok(())
+}
+
+fn verify_platform_before_agent_bridge_execution<T>(
+    path: &Path,
+    verify_platform: impl FnOnce(&Path) -> Result<(), String>,
+    execute_identity: impl FnOnce(&Path) -> Result<T, String>,
+) -> Result<T, String> {
+    verify_platform(path)?;
+    execute_identity(path)
+}
+
+fn load_dtoken_agent_bridge_identity(path: &Path) -> Result<Value, String> {
+    let output = Command::new(path)
+        .arg("identity")
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+        .map_err(|error| format!("dtoken-agent-bridge identity failed: {error}"))?;
+    if !output.status.success() || output.stdout.len() > 16 * 1024 {
+        return Err("dtoken-agent-bridge identity response is invalid".to_string());
+    }
+    let identity: Value = serde_json::from_slice(&output.stdout)
+        .map_err(|_| "dtoken-agent-bridge identity is not JSON".to_string())?;
+    Ok(identity)
+}
+
+fn agent_bridge_requires_embedded_hash() -> bool {
+    // Tauri signs Mach-O sidecars after build.rs has embedded its digest. Since
+    // codesign changes the Mach-O bytes, macOS release authority is the strict
+    // Developer ID/Team ID check below plus the bridge protocol identity.
+    !cfg!(target_os = "macos")
+}
+
+#[cfg(any(debug_assertions, not(any(target_os = "macos", target_os = "windows"))))]
+fn verify_agent_bridge_platform_signature(_path: &Path) -> Result<(), String> {
+    Ok(())
+}
+
+#[cfg(all(target_os = "macos", not(debug_assertions)))]
+fn verify_agent_bridge_platform_signature(path: &Path) -> Result<(), String> {
+    let team_id = env!("DTOKEN_EXPECTED_APPLE_TEAM_ID");
+    if team_id.is_empty() {
+        return Err("expected Apple Team ID was not embedded in the release".to_string());
+    }
+    let verify = Command::new("/usr/bin/codesign")
+        .args(["--verify", "--strict"])
+        .arg(path)
+        .status()
+        .map_err(|error| format!("bridge signature verification failed: {error}"))?;
+    if !verify.success() {
+        return Err("dtoken-agent-bridge signature verification failed".to_string());
+    }
+    let details = Command::new("/usr/bin/codesign")
+        .args(["-dv", "--verbose=4"])
+        .arg(path)
+        .output()
+        .map_err(|error| format!("bridge signature identity failed: {error}"))?;
+    let evidence = String::from_utf8_lossy(&details.stderr);
+    if !details.status.success()
+        || !evidence
+            .lines()
+            .any(|line| line.trim() == format!("TeamIdentifier={team_id}"))
+    {
+        return Err("dtoken-agent-bridge signer identity mismatch".to_string());
+    }
+    Ok(())
+}
+
+#[cfg(all(target_os = "windows", not(debug_assertions)))]
+fn verify_agent_bridge_platform_signature(path: &Path) -> Result<(), String> {
+    let expected = env!("DTOKEN_WINDOWS_SIGNING_THUMBPRINT")
+        .replace(' ', "")
+        .to_ascii_uppercase();
+    if expected.is_empty() {
+        return Err(
+            "expected Windows signing thumbprint was not embedded in the release".to_string(),
+        );
+    }
+    let script = "$s=Get-AuthenticodeSignature -LiteralPath $args[0]; if($s.Status -ne 'Valid'){exit 1}; [Console]::Out.Write($s.SignerCertificate.Thumbprint)";
+    let output = Command::new("powershell.exe")
+        .args(["-NoProfile", "-NonInteractive", "-Command", script, "--"])
+        .arg(path)
+        .output()
+        .map_err(|error| format!("bridge Authenticode verification failed: {error}"))?;
+    let observed = String::from_utf8_lossy(&output.stdout)
+        .trim()
+        .replace(' ', "")
+        .to_ascii_uppercase();
+    if !output.status.success() || observed != expected {
+        return Err("dtoken-agent-bridge Authenticode identity mismatch".to_string());
+    }
+    Ok(())
+}
+
 fn service_health_payload() -> Option<Value> {
     service_json(DTOKEN_SERVICE_PORT, "/health").ok()
 }
 
+fn service_health_payload_cached() -> Option<Value> {
+    type HealthPayloadCache = Mutex<Option<(Instant, Option<Value>)>>;
+    static CACHE: OnceLock<HealthPayloadCache> = OnceLock::new();
+    let started_at = Instant::now();
+    let cache = CACHE.get_or_init(|| Mutex::new(None));
+    let mut guard = cache
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some((collected_at, value)) = guard.as_ref() {
+        if collected_at.elapsed() <= Duration::from_millis(200) {
+            record_native_performance(
+                "loopback_health",
+                "cache",
+                started_at,
+                if value.is_some() { "ok" } else { "error" },
+                true,
+                value.is_none().then_some("cached_unavailable"),
+            );
+            return value.clone();
+        }
+    }
+    let value = service_health_payload();
+    *guard = Some((Instant::now(), value.clone()));
+    record_native_performance(
+        "loopback_health",
+        "cache",
+        started_at,
+        if value.is_some() { "ok" } else { "error" },
+        false,
+        value.is_none().then_some("unavailable"),
+    );
+    value
+}
+
+fn legacy_managed_process_requires_restart(
+    runtime_identity: Option<&str>,
+    managed_process_owned: bool,
+    binary_identity_state: Option<&str>,
+) -> bool {
+    runtime_identity.is_none()
+        && managed_process_owned
+        && binary_identity_state == Some("legacy_manifest")
+}
+
 fn dtoken_service_status_value() -> Value {
     let manifest = read_service_manifest();
-    let health = service_health_payload();
+    let health = service_health_payload_cached();
+    let runtime_identity = health
+        .as_ref()
+        .and_then(|payload| payload.get("runtime_identity").and_then(Value::as_str));
+    let runtime_version = health
+        .as_ref()
+        .and_then(|payload| payload.get("version").and_then(Value::as_str));
+    let runtime_instance_nonce = health.as_ref().and_then(|payload| {
+        payload
+            .get("runtime_instance_nonce")
+            .and_then(Value::as_str)
+    });
     let healthy = health
         .as_ref()
         .and_then(|payload| payload.get("status").and_then(Value::as_str))
@@ -1214,6 +3480,14 @@ fn dtoken_service_status_value() -> Value {
         .and_then(|payload| payload.get("component").and_then(Value::as_str))
         .map(|component| component == "dtoken-core-api")
         .unwrap_or(false);
+    let runtime_identity_ok = health
+        .as_ref()
+        .and_then(|payload| payload.get("runtime_identity").and_then(Value::as_str))
+        .is_some_and(|identity| identity == "dtoken-runtime-local");
+    let runtime_version_ok = health
+        .as_ref()
+        .and_then(|payload| payload.get("version").and_then(Value::as_str))
+        .is_some_and(|version| !version.trim().is_empty());
     let pid_running = manifest
         .as_ref()
         .map(|item| is_process_running(item.pid))
@@ -1231,36 +3505,84 @@ fn dtoken_service_status_value() -> Value {
         .filter(|_| pid_running)
         .map(|item| executable_identity_matches(item.pid, Path::new(&item.exe_path)))
         .unwrap_or(false);
+    let process_birth_owned = manifest
+        .as_ref()
+        .filter(|_| pid_running)
+        .is_some_and(process_birth_identity_matches);
+    let runtime_instance_owned = manifest.as_ref().is_some_and(|item| {
+        item.runtime_instance_nonce
+            .as_deref()
+            .zip(runtime_instance_nonce)
+            .is_some_and(|(expected, actual)| expected == actual)
+    });
     let port_owned = manifest
         .as_ref()
         .filter(|_| pid_running)
         .map(|item| listener_owned_by_pid(item.pid, item.port))
         .unwrap_or(false);
     let manifest_stale = manifest.is_some() && !pid_running && !healthy;
-    let managed_running = healthy
+    let managed_process_owned = healthy
         && component_ok
+        && runtime_version_ok
         && pid_running
         && manifest_identity_ok
         && executable_owned
-        && port_owned;
-    let external_or_unmanaged = healthy && component_ok && !managed_running;
+        && port_owned
+        && process_birth_owned
+        && runtime_instance_owned;
+    let binary_evidence = manifest
+        .as_ref()
+        .filter(|_| managed_process_owned)
+        .map(managed_service_binary_evidence);
+    let binary_compatible = binary_evidence
+        .as_ref()
+        .map(|evidence| evidence.compatible)
+        .unwrap_or(false);
+    let managed_ownership_verified = managed_process_owned && runtime_identity_ok;
+    let legacy_restart_required = legacy_managed_process_requires_restart(
+        runtime_identity,
+        managed_process_owned,
+        binary_evidence.as_ref().map(|evidence| evidence.state),
+    );
+    let managed_running = managed_ownership_verified && binary_compatible;
+    let restart_required =
+        legacy_restart_required || (managed_ownership_verified && !binary_compatible);
+    let external_or_unmanaged = healthy
+        && component_ok
+        && runtime_identity_ok
+        && runtime_version_ok
+        && !managed_ownership_verified;
 
     json!({
         "ok": managed_running || external_or_unmanaged,
         "mode": "dtoken-service-lifecycle",
         "state": if managed_running {
             "running"
+        } else if restart_required {
+            "restart_required"
         } else if external_or_unmanaged {
             "unmanaged_running"
         } else {
             "stopped"
         },
-        "managed": managed_running,
+        "managed": managed_running || restart_required,
+        "compatible": managed_running,
+        "restart_required": restart_required,
         "pid": manifest.as_ref().map(|item| item.pid),
         "pid_running": pid_running,
         "manifest_identity_ok": manifest_identity_ok,
+        "manifest_schema_version": manifest.as_ref().map(|item| item.schema_version),
+        "runtime_identity_ok": runtime_identity_ok,
+        "runtime_version_ok": runtime_version_ok,
+        "runtime_identity": runtime_identity,
+        "runtime_version": runtime_version,
+        "runtime_instance_owned": runtime_instance_owned,
         "executable_owned": executable_owned,
+        "process_birth_owned": process_birth_owned,
         "port_owned": port_owned,
+        "binary_identity_state": binary_evidence.as_ref().map(|evidence| evidence.state).unwrap_or("unverified"),
+        "launch_exe_sha256": binary_evidence.as_ref().and_then(|evidence| evidence.launch_sha256.clone()),
+        "current_exe_sha256": binary_evidence.as_ref().and_then(|evidence| evidence.current_sha256.clone()),
         "manifest_stale": manifest_stale,
         "service_url": format!("http://127.0.0.1:{DTOKEN_SERVICE_PORT}"),
         "manifest_path": service_manifest_path().display().to_string(),
@@ -1268,6 +3590,8 @@ fn dtoken_service_status_value() -> Value {
         "health": health,
         "summary": if managed_running {
             "d-token local service is running and managed by this app"
+        } else if restart_required {
+            "The managed d-token service was started from an older or unverifiable bundle and requires an explicit restart"
         } else if external_or_unmanaged {
             "A d-token-compatible service is responding, but it was not started by this app"
         } else {
@@ -2107,6 +4431,421 @@ fn apply_route_profile_draft(request: ApplyRouteDraftRequest) -> ActionResult {
     }
 }
 
+fn prepare_connection_route_plan(
+    request: &ConnectionRoutePlanRequest,
+) -> Result<(String, dtoken_config_patcher::PreparedChange, Vec<String>), String> {
+    let discovery = enrich_upstream_discovery(upstream_discovery::discover());
+    prepare_connection_route_plan_from_discovery(request, &discovery)
+}
+
+fn prepare_connection_route_plan_from_discovery(
+    request: &ConnectionRoutePlanRequest,
+    discovery: &Value,
+) -> Result<(String, dtoken_config_patcher::PreparedChange, Vec<String>), String> {
+    if request.bindings.is_empty() || request.bindings.len() > 16 {
+        return Err(
+            "Connection plan must contain between one and sixteen Agent bindings".to_string(),
+        );
+    }
+    let current_revision = discovery
+        .get("revision")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "Current discovery revision is unavailable".to_string())?;
+    if current_revision != request.discovery_revision {
+        return Err(
+            "Agent or upstream configuration changed after discovery; scan again before review"
+                .to_string(),
+        );
+    }
+    let discovered_bindings = discovery
+        .get("agent_bindings")
+        .and_then(Value::as_array)
+        .ok_or_else(|| "Current Agent discovery result is unavailable".to_string())?;
+
+    let mut providers = Vec::new();
+    let mut routes = Vec::new();
+    let mut instances = Vec::new();
+    let mut selected_agents = Vec::new();
+    let mut route_keys: HashMap<(String, String), (String, String)> = HashMap::new();
+
+    let mut requested = request.bindings.clone();
+    requested.sort_by(|left, right| left.agent_id.cmp(&right.agent_id));
+    for binding_request in requested {
+        let agent_id = safe_slug(&binding_request.agent_id, "");
+        if agent_id.is_empty() || agent_id != binding_request.agent_id {
+            return Err("Connection plan contains an invalid Agent id".to_string());
+        }
+        if selected_agents.iter().any(|selected| selected == &agent_id) {
+            return Err(format!("Connection plan repeats Agent {agent_id}"));
+        }
+        let binding = discovered_bindings
+            .iter()
+            .find(|binding| binding.get("agent_id").and_then(Value::as_str) == Some(&agent_id))
+            .ok_or_else(|| format!("Agent {agent_id} is no longer discoverable"))?;
+        if binding.get("installed").and_then(Value::as_bool) != Some(true) {
+            return Err(format!("Agent {agent_id} is no longer installed"));
+        }
+        if matches!(
+            binding.get("capability").and_then(Value::as_str),
+            Some("prompt-only" | "manual-only")
+        ) {
+            return Err(format!(
+                "Agent {agent_id} does not support an automatic connection plan"
+            ));
+        }
+
+        let candidate = binding
+            .get("candidates")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .find(|candidate| {
+                candidate.get("id").and_then(Value::as_str)
+                    == Some(binding_request.candidate_id.as_str())
+                    && candidate.get("source").and_then(Value::as_str)
+                        == Some(binding_request.candidate_source.as_str())
+                    && candidate
+                        .get("models")
+                        .and_then(Value::as_array)
+                        .is_some_and(|models| {
+                            models
+                                .iter()
+                                .any(|model| model.as_str() == Some(binding_request.model.as_str()))
+                        })
+            })
+            .ok_or_else(|| {
+                format!(
+                    "The reviewed upstream/model for {agent_id} is no longer present in discovery"
+                )
+            })?;
+        if candidate.get("auth_mode").and_then(Value::as_str) != Some("none") {
+            return Err(format!(
+                "The upstream credential for {agent_id} cannot be reused safely"
+            ));
+        }
+        let base_url = candidate
+            .get("base_url")
+            .and_then(Value::as_str)
+            .map(|value| value.trim().trim_end_matches('/').to_string())
+            .filter(|value| value.starts_with("http://") || value.starts_with("https://"))
+            .ok_or_else(|| format!("The upstream URL for {agent_id} is unavailable"))?;
+        if provider_targets_local_listener(&base_url, DTOKEN_SERVICE_PORT) {
+            return Err(format!(
+                "The upstream for {agent_id} points back to the d-token listener"
+            ));
+        }
+        let protocol = parse_protocol(
+            candidate
+                .get("protocol")
+                .and_then(Value::as_str)
+                .unwrap_or("open_ai"),
+        )
+        .to_string();
+        let model = binding_request.model.trim().to_string();
+        if model.is_empty() || model.len() > 256 || model.contains(['\n', '\r', '\0']) {
+            return Err(format!("The model selected for {agent_id} is invalid"));
+        }
+
+        let route_key = (protocol.clone(), model.clone());
+        if let Some((existing_url, existing_agent)) = route_keys.get(&route_key) {
+            if existing_url != &base_url {
+                return Err(format!(
+                    "{agent_id} and {existing_agent} use the same protocol/model with different upstreams; a unique reviewed route is required"
+                ));
+            }
+            selected_agents.push(agent_id);
+            continue;
+        }
+
+        let candidate_name = candidate
+            .get("name")
+            .and_then(Value::as_str)
+            .unwrap_or("Discovered upstream");
+        let candidate_source = candidate
+            .get("source")
+            .and_then(Value::as_str)
+            .unwrap_or("discovery");
+        let provider_id = safe_slug(
+            &format!("auto-{agent_id}-{}", binding_request.candidate_id),
+            &format!("auto-{agent_id}-provider"),
+        );
+        let route_id = safe_slug(
+            &format!("auto-{agent_id}-route"),
+            &format!("auto-{agent_id}"),
+        );
+        let instance_id = format!("{route_id}-instance");
+        let local_chain = url::Url::parse(&base_url).ok().is_some_and(|parsed| {
+            matches!(parsed.host(), Some(url::Host::Ipv4(address)) if address.is_loopback())
+                || matches!(parsed.host(), Some(url::Host::Ipv6(address)) if address.is_loopback())
+                || matches!(parsed.host(), Some(url::Host::Domain(domain)) if domain.eq_ignore_ascii_case("localhost"))
+        }) || candidate_source.starts_with("cc-switch:");
+        let provider_kind = if local_chain {
+            "local_chain"
+        } else if candidate_source.starts_with("opencode-provider-catalog") {
+            "official"
+        } else {
+            "custom"
+        };
+
+        providers.push(json!({
+            "id": provider_id,
+            "name": candidate_name,
+            "kind": provider_kind,
+            "protocol": protocol,
+            "base_url": base_url,
+            "api_key_ref": Value::Null,
+            "models": [model],
+            "timeout_ms": 120000,
+            "healthcheck_path": "/health"
+        }));
+        routes.push(json!({
+            "id": route_id,
+            "name": format!("{} automatic route", agent_id),
+            "input_protocol": protocol,
+            "instance_id": instance_id,
+            "target_provider_id": provider_id,
+            "fallback_provider_id": Value::Null,
+            "chain_mode": if local_chain { "chain_bridge" } else { "direct" },
+            "compression_policy": "balanced",
+            "bind_host": "127.0.0.1",
+            "local_port": DTOKEN_SERVICE_PORT
+        }));
+        instances.push(json!({
+            "id": instance_id,
+            "name": format!("{} automatic instance", agent_id),
+            "agent": agent_id,
+            "route_id": route_id,
+            "local_port": DTOKEN_SERVICE_PORT,
+            "process_status": "stopped",
+            "log_path": format!("./logs/{route_id}.jsonl")
+        }));
+        route_keys.insert(route_key, (base_url, agent_id.clone()));
+        selected_agents.push(agent_id);
+    }
+
+    if routes.is_empty() {
+        return Err("Connection plan did not produce a routable upstream".to_string());
+    }
+    let content = serde_json::to_string_pretty(&json!({
+        "providers": providers,
+        "routes": routes,
+        "instances": instances,
+    }))
+    .map_err(|error| format!("Connection route plan serialize failed: {error}"))?;
+    let parent = active_config_path()
+        .parent()
+        .map(Path::to_path_buf)
+        .ok_or_else(|| "Active config parent path is unavailable".to_string())?;
+    fs::create_dir_all(&parent)
+        .map_err(|error| format!("Active config directory create failed: {error}"))?;
+    let prepared = config_patcher()
+        .prepare_change(
+            patchable_active_config_path()?,
+            &content,
+            ConfigToolKind::Dtoken,
+            Some("Automatic Agent connection plan".to_string()),
+            RiskLevel::Medium,
+        )
+        .map_err(|error| format!("Connection route review could not be prepared: {error:#}"))?;
+    Ok((current_revision.to_string(), prepared, selected_agents))
+}
+
+fn preview_connection_route_plan_value(request: ConnectionRoutePlanRequest) -> Value {
+    match prepare_connection_route_plan(&request) {
+        Ok((revision, prepared, agents)) => json!({
+            "ok": true,
+            "state": "review_required",
+            "source": "dtoken-desktop-auto-route-plan",
+            "freshness": "fresh",
+            "discovery_revision": revision,
+            "target": prepared.plan.target_file,
+            "before_sha256": prepared.plan.before_hash,
+            "after_sha256": prepared.plan.after_hash,
+            "diff": prepared.plan.diff,
+            "risk_level": prepared.plan.risk_level,
+            "agents": agents,
+            "requires_explicit_confirmation": true,
+            "summary": "Review the automatically discovered d-token route plan before applying it",
+            "privacy": "The plan is rebuilt from current read-only discovery; credential values and third-party configuration are not returned or modified."
+        }),
+        Err(error) => json!({
+            "ok": false,
+            "state": "blocked",
+            "source": "dtoken-desktop-auto-route-plan",
+            "freshness": "unknown",
+            "error": sanitize_command_output(&error),
+            "requires_explicit_confirmation": true,
+        }),
+    }
+}
+
+#[tauri::command]
+async fn preview_connection_route_plan(request: ConnectionRoutePlanRequest) -> Value {
+    tauri::async_runtime::spawn_blocking(move || preview_connection_route_plan_value(request))
+        .await
+        .unwrap_or_else(|error| {
+            json!({
+                "ok": false,
+                "state": "blocked",
+                "source": "dtoken-desktop-auto-route-plan",
+                "error": format!("Connection route preview worker failed: {error}")
+            })
+        })
+}
+
+fn apply_connection_route_plan_value(request: ApplyConnectionRoutePlanRequest) -> Value {
+    let (Some(reviewed_before), Some(reviewed_after)) = (
+        request.reviewed_before_sha256.as_deref(),
+        request.reviewed_after_sha256.as_deref(),
+    ) else {
+        return json!({
+            "ok": false,
+            "state": "blocked",
+            "summary": "Review the automatic route diff before applying it"
+        });
+    };
+    let (revision, prepared, agents) = match prepare_connection_route_plan(&request.plan) {
+        Ok(prepared) => prepared,
+        Err(error) => {
+            return json!({
+                "ok": false,
+                "state": "stale",
+                "summary": sanitize_command_output(&error)
+            });
+        }
+    };
+    if prepared.plan.before_hash != reviewed_before || prepared.plan.after_hash != reviewed_after {
+        return json!({
+            "ok": false,
+            "state": "stale",
+            "summary": "The active route or discovered upstream changed after review"
+        });
+    }
+    let transaction = match config_patcher().apply_transaction(&[prepared]) {
+        Ok(transaction) => transaction,
+        Err(error) => {
+            return json!({
+                "ok": false,
+                "state": "failed",
+                "summary": format!("Automatic route transaction failed: {error:#}")
+            });
+        }
+    };
+    let Some(receipt) = transaction.changes.first() else {
+        return json!({
+            "ok": false,
+            "state": "failed",
+            "summary": "Automatic route transaction returned no verification receipt"
+        });
+    };
+    let after_sha256 = receipt.after.sha256.clone().unwrap_or_default();
+    let result = json!({
+        "ok": true,
+        "state": "applied_verified",
+        "source": "dtoken-desktop-auto-route-plan",
+        "freshness": "fresh",
+        "discovery_revision": revision,
+        "transaction_id": transaction.transaction_id,
+        "before_sha256": receipt.before.sha256,
+        "after_sha256": after_sha256,
+        "rollback_id": receipt.backup.rollback_id,
+        "agents": agents,
+        "verified": true,
+        "summary": "Reviewed automatic d-token routes were applied with a durable rollback point"
+    });
+    let _ = append_desktop_event(
+        "install_route_plan_apply",
+        "ok",
+        json!({
+            "discovery_revision": result.get("discovery_revision"),
+            "transaction_id": result.get("transaction_id"),
+            "after_sha256": result.get("after_sha256"),
+            "rollback_id": result.get("rollback_id"),
+            "agents": result.get("agents"),
+        }),
+    );
+    result
+}
+
+#[tauri::command]
+async fn apply_connection_route_plan(request: ApplyConnectionRoutePlanRequest) -> Value {
+    tauri::async_runtime::spawn_blocking(move || apply_connection_route_plan_value(request))
+        .await
+        .unwrap_or_else(|error| {
+            json!({
+                "ok": false,
+                "state": "failed",
+                "summary": format!("Connection route apply worker failed: {error}")
+            })
+        })
+}
+
+#[tauri::command]
+fn rollback_connection_route_plan(request: RollbackConnectionRoutePlanRequest) -> ActionResult {
+    let mut logs = vec![log(
+        "info",
+        "Restoring the reviewed d-token route rollback point",
+    )];
+    let patcher = config_patcher();
+    let backup = match patcher.load_backup(&request.rollback_id) {
+        Ok(backup) => backup,
+        Err(error) => {
+            logs.push(log(
+                "error",
+                format!("Route rollback point could not be loaded: {error:#}"),
+            ));
+            return ActionResult {
+                ok: false,
+                summary: "Route rollback point is unavailable".to_string(),
+                logs,
+                tools: all_checks(),
+            };
+        }
+    };
+    if patchable_active_config_path().ok().as_ref() != Some(&backup.target_path) {
+        logs.push(log(
+            "error",
+            "Rollback point does not target the d-token active config",
+        ));
+        return ActionResult {
+            ok: false,
+            summary: "Refusing to restore an unrelated rollback point".to_string(),
+            logs,
+            tools: all_checks(),
+        };
+    }
+    match patcher.restore_backup(
+        &backup,
+        &ExpectedFileState::Hash(request.expected_after_sha256),
+    ) {
+        Ok(_) => {
+            logs.push(log(
+                "info",
+                "Exact previous d-token route bytes were restored",
+            ));
+            ActionResult {
+                ok: true,
+                summary: "The d-token route plan was rolled back exactly".to_string(),
+                logs,
+                tools: all_checks(),
+            }
+        }
+        Err(error) => {
+            logs.push(log(
+                "error",
+                format!("Route rollback failed closed: {error:#}"),
+            ));
+            ActionResult {
+                ok: false,
+                summary: "Route rollback needs attention; no unrelated file was modified"
+                    .to_string(),
+                logs,
+                tools: all_checks(),
+            }
+        }
+    }
+}
+
 #[tauri::command]
 fn recommend_project_policy(request: ProjectPolicyRecommendRequest) -> Value {
     let input = dtoken_project_policy::RecommendationInput {
@@ -2140,7 +4879,17 @@ fn recommend_project_policy(request: ProjectPolicyRecommendRequest) -> Value {
 }
 
 fn learning_allowed_root(path: &Path) -> bool {
-    if !path.is_absolute() || path.components().any(|part| part.as_os_str() == "..") {
+    if !path.is_absolute()
+        || path.parent().is_none()
+        || path.components().any(|part| part.as_os_str() == "..")
+    {
+        return false;
+    }
+    if env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" })
+        .map(PathBuf::from)
+        .as_deref()
+        == Some(path)
+    {
         return false;
     }
     let lower = path.to_string_lossy().to_lowercase();
@@ -2158,55 +4907,57 @@ fn learning_allowed_root(path: &Path) -> bool {
 }
 
 #[tauri::command]
-fn discover_learning_sources(request: LearningSourceDiscoveryRequest) -> Value {
-    if request.stop.unwrap_or(false) {
-        return json!({ "ok": true, "state": "stopped", "source": "d-token-learning-discovery", "candidates": [], "writes_performed": false });
+fn start_learning_discovery(
+    app: tauri::AppHandle,
+    request: learning_discovery::StartLearningDiscoveryRequest,
+) -> Value {
+    learning_discovery::start(request, Some(app))
+}
+
+#[tauri::command]
+fn get_learning_discovery_status(job_id: String) -> Value {
+    learning_discovery::status(&job_id)
+}
+
+#[tauri::command]
+fn list_learning_candidates(job_id: String) -> Value {
+    learning_discovery::candidates(&job_id)
+}
+
+#[tauri::command]
+fn cancel_learning_discovery(job_id: String) -> Value {
+    learning_discovery::cancel(&job_id)
+}
+
+#[tauri::command]
+fn analyze_learning_project(request: LearningProjectAnalysisRequest) -> Value {
+    let path = PathBuf::from(&request.project_path);
+    if !learning_allowed_root(&path) {
+        return json!({
+            "ok": false,
+            "state": "blocked",
+            "source": "dtoken-learning-core",
+            "error": "Project path is outside the allowed learning boundary",
+            "writes_performed": false
+        });
     }
-    let skipped = request.skip_paths.unwrap_or_default();
-    let roots = request.roots.unwrap_or_default();
-    let mut candidates = Vec::new();
-    for root in roots.into_iter().take(32) {
-        let path = PathBuf::from(&root);
-        if skipped.iter().any(|skip| skip == &root)
-            || !learning_allowed_root(&path)
-            || fs::symlink_metadata(&path)
-                .map(|metadata| metadata.file_type().is_symlink())
-                .unwrap_or(true)
-            || !path.is_dir()
-        {
-            continue;
+    match dtoken_learning::analyze_project(&path) {
+        Ok(analysis) => {
+            let mut value = serde_json::to_value(analysis).unwrap_or_else(|_| json!({}));
+            if let Some(object) = value.as_object_mut() {
+                object.insert("ok".to_string(), Value::Bool(true));
+                object.insert("freshness".to_string(), Value::String(now_timestamp()));
+            }
+            value
         }
-        let modified = fs::metadata(&path)
-            .ok()
-            .and_then(|metadata| metadata.modified().ok())
-            .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
-            .map(|duration| duration.as_secs());
-        let name = path
-            .file_name()
-            .and_then(|value| value.to_str())
-            .unwrap_or("project");
-        candidates.push(json!({
-            "id": safe_slug(name, "project"),
-            "path": path,
-            "agent": "project",
-            "mtime": modified,
-            "activity": if modified.is_some() { "observed" } else { "unknown" },
-            "confidence": "directory-verified",
-            "value": "project-policy",
-            "reasons": ["user-provided root exists", "metadata only"],
-            "freshness": now_label()
-        }));
+        Err(error) => json!({
+            "ok": false,
+            "state": "blocked",
+            "source": "dtoken-learning-core",
+            "error": error.to_string(),
+            "writes_performed": false
+        }),
     }
-    json!({
-        "ok": true,
-        "state": "complete",
-        "source": "d-token-learning-discovery",
-        "freshness": now_label(),
-        "candidates": candidates,
-        "limits": { "max_roots": 32, "max_depth": 0, "max_files": 0, "max_content_bytes": 0 },
-        "writes_performed": false,
-        "privacy": "Metadata only; file contents, prompts, responses, source code, and credentials are not returned"
-    })
 }
 
 fn learning_target_path(target: &str) -> Result<PathBuf, String> {
@@ -2215,7 +4966,16 @@ fn learning_target_path(target: &str) -> Result<PathBuf, String> {
         .file_name()
         .and_then(|value| value.to_str())
         .unwrap_or_default();
+    let parent = path.parent();
+    let unsafe_parent = parent.is_none_or(|parent| {
+        !learning_allowed_root(parent)
+            || env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" })
+                .map(PathBuf::from)
+                .as_deref()
+                == Some(parent)
+    });
     if !learning_allowed_root(&path)
+        || unsafe_parent
         || !matches!(file, "CLAUDE.md" | "AGENTS.md" | "GEMINI.md" | "d-token.md")
     {
         return Err("Learning target is outside the allowed managed-document boundary".to_string());
@@ -2318,13 +5078,145 @@ fn get_learning_delegation_capabilities() -> Value {
             })
         })
         .collect::<Vec<_>>();
-    json!({ "ok": true, "source": "d-token-learning-control-plane", "agents": agents, "default_mode": "prompt", "output_policy": "metadata-only; model output body is never persisted or returned" })
+    json!({ "ok": true, "source": "d-token-learning-control-plane", "agents": agents, "default_mode": "prompt", "output_policy": "raw model output is bounded, never persisted or returned; only a validated structured learning context can be returned for review" })
+}
+
+fn delegated_learning_prompt(input: &str) -> String {
+    format!(
+        "You are reviewing a local project for a user-approved project-learning draft. Do not read credentials, auth files, environment secrets, dependency trees, or unrelated files. Return exactly one JSON object and no markdown with this schema: {{\"summary\":\"one short project summary\",\"conventions\":[\"...\"],\"risks\":[\"...\"],\"recommendations\":[\"...\"],\"open_questions\":[\"...\"]}}. Each list may contain at most 8 short items. Do not include source code, prompt text, credentials, absolute paths, command output, or file contents.\n\nExisting local draft:\n{}",
+        input
+    )
+}
+
+fn read_bounded_output(mut reader: impl Read, limit: usize) -> Vec<u8> {
+    let mut collected = Vec::with_capacity(limit.min(8 * 1024));
+    let mut chunk = [0_u8; 4 * 1024];
+    while let Ok(read) = reader.read(&mut chunk) {
+        if read == 0 {
+            break;
+        }
+        let remaining = limit.saturating_sub(collected.len());
+        if remaining > 0 {
+            collected.extend_from_slice(&chunk[..read.min(remaining)]);
+        }
+    }
+    collected
+}
+
+fn normalize_delegated_text(value: &str) -> Option<String> {
+    let normalized = value.split_whitespace().collect::<Vec<_>>().join(" ");
+    let lower = normalized.to_ascii_lowercase();
+    if normalized.is_empty()
+        || normalized.len() > 512
+        || normalized.contains("```")
+        || [
+            "authorization:",
+            "bearer ",
+            "api_key",
+            "api-key",
+            "cookie:",
+            "password",
+            "private key",
+            "sk-ant-",
+        ]
+        .iter()
+        .any(|marker| lower.contains(marker))
+    {
+        return None;
+    }
+    Some(normalized)
+}
+
+fn delegated_string_list(value: Option<&Value>) -> Option<Vec<String>> {
+    let values = value?.as_array()?;
+    if values.len() > 8 {
+        return None;
+    }
+    values
+        .iter()
+        .map(|item| item.as_str().and_then(normalize_delegated_text))
+        .collect()
+}
+
+fn delegated_context_from_value_at(
+    value: &Value,
+    depth: usize,
+) -> Option<DelegatedLearningContext> {
+    if depth > 8 {
+        return None;
+    }
+    if let Some(object) = value.as_object() {
+        if object.contains_key("summary") {
+            return Some(DelegatedLearningContext {
+                summary: object
+                    .get("summary")
+                    .and_then(Value::as_str)
+                    .and_then(normalize_delegated_text)?,
+                conventions: delegated_string_list(object.get("conventions"))?,
+                risks: delegated_string_list(object.get("risks"))?,
+                recommendations: delegated_string_list(object.get("recommendations"))?,
+                open_questions: delegated_string_list(object.get("open_questions"))?,
+            });
+        }
+        for key in ["result", "text", "content", "message"] {
+            if let Some(text) = object.get(key).and_then(Value::as_str) {
+                if let Some(context) = delegated_context_from_text_at(text, depth + 1) {
+                    return Some(context);
+                }
+            }
+        }
+        for nested in object.values() {
+            if let Some(context) = delegated_context_from_value_at(nested, depth + 1) {
+                return Some(context);
+            }
+        }
+    } else if let Some(values) = value.as_array() {
+        for nested in values.iter().rev() {
+            if let Some(context) = delegated_context_from_value_at(nested, depth + 1) {
+                return Some(context);
+            }
+        }
+    }
+    None
+}
+
+fn delegated_context_from_text(raw: &str) -> Option<DelegatedLearningContext> {
+    delegated_context_from_text_at(raw, 0)
+}
+
+fn delegated_context_from_text_at(raw: &str, depth: usize) -> Option<DelegatedLearningContext> {
+    if depth > 8 || raw.len() > 64 * 1024 {
+        return None;
+    }
+    let trimmed = raw
+        .trim()
+        .strip_prefix("```json")
+        .or_else(|| raw.trim().strip_prefix("```"))
+        .unwrap_or(raw.trim())
+        .strip_suffix("```")
+        .unwrap_or(raw.trim())
+        .trim();
+    if let Ok(value) = serde_json::from_str::<Value>(trimmed) {
+        if let Some(context) = delegated_context_from_value_at(&value, depth + 1) {
+            return Some(context);
+        }
+    }
+    for line in raw.lines().rev() {
+        if let Ok(value) = serde_json::from_str::<Value>(line.trim()) {
+            if let Some(context) = delegated_context_from_value_at(&value, depth + 1) {
+                return Some(context);
+            }
+        }
+    }
+    None
 }
 
 #[tauri::command]
 fn spawn_learning_delegation(request: LearningDelegationRequest) -> Value {
+    let project_root = PathBuf::from(&request.project_root);
     if !request.confirmed
         || !matches!(request.agent.as_str(), "claude" | "codex")
+        || !learning_allowed_root(&project_root)
         || request.prompt.is_empty()
         || request.prompt.len() > 16_384
         || request.timeout_ms < 1_000
@@ -2343,16 +5235,24 @@ fn spawn_learning_delegation(request: LearningDelegationRequest) -> Value {
     let Some(executable) = where_tool(&request.agent) else {
         return json!({ "ok": false, "state": "unavailable", "request_id": request.request_id, "agent": request.agent, "summary": "Selected agent executable is unavailable" });
     };
+    let project_root = match fs::canonicalize(&project_root) {
+        Ok(path) if path.is_dir() && learning_allowed_root(&path) => path,
+        _ => {
+            return json!({ "ok": false, "state": "blocked", "request_id": request.request_id, "agent": request.agent, "summary": "Delegation project root is unavailable or unsafe" })
+        }
+    };
     let args: &[&str] = if request.agent == "claude" {
         &["-p", "--output-format", "json"]
     } else {
         &["exec", "-", "--json"]
     };
+    let prompt = delegated_learning_prompt(&request.prompt);
     let started = Instant::now();
     let mut child = match Command::new(&executable)
         .args(args)
+        .current_dir(&project_root)
         .stdin(Stdio::piped())
-        .stdout(Stdio::null())
+        .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()
     {
@@ -2362,11 +5262,15 @@ fn spawn_learning_delegation(request: LearningDelegationRequest) -> Value {
         }
     };
     if let Some(mut stdin) = child.stdin.take() {
-        if stdin.write_all(request.prompt.as_bytes()).is_err() {
+        if stdin.write_all(prompt.as_bytes()).is_err() {
             let _ = child.kill();
             return json!({ "ok": false, "state": "failed", "request_id": request.request_id, "agent": request.agent, "summary": "Prompt could not be written to agent stdin" });
         }
     }
+    let output_reader = child
+        .stdout
+        .take()
+        .map(|stdout| thread::spawn(move || read_bounded_output(stdout, 64 * 1024)));
     let child = Arc::new(Mutex::new(child));
     LEARNING_DELEGATIONS
         .get_or_init(|| Mutex::new(HashMap::new()))
@@ -2404,7 +5308,30 @@ fn spawn_learning_delegation(request: LearningDelegationRequest) -> Value {
         .get()
         .and_then(|registry| registry.lock().ok())
         .map(|mut registry| registry.remove(&request.request_id));
-    json!({ "ok": state == "complete", "state": state, "source": "d-token-learning-control-plane", "request_id": request.request_id, "agent": request.agent, "exit_code": exit_code, "elapsed_ms": started.elapsed().as_millis(), "prompt_bytes": request.prompt.len(), "output_persisted": false, "output_returned": false, "summary": "Delegation finished with metadata-only receipt" })
+    let raw_output = output_reader
+        .and_then(|reader| reader.join().ok())
+        .unwrap_or_default();
+    let structured_context = (state == "complete")
+        .then(|| String::from_utf8(raw_output).ok())
+        .flatten()
+        .and_then(|raw| delegated_context_from_text(&raw));
+    let completed = state == "complete" && structured_context.is_some();
+    json!({
+        "ok": completed,
+        "state": if state == "complete" && !completed { "invalid-structured-output" } else { state },
+        "source": "d-token-learning-control-plane",
+        "request_id": request.request_id,
+        "agent": request.agent,
+        "project_root": project_root,
+        "exit_code": exit_code,
+        "elapsed_ms": started.elapsed().as_millis(),
+        "prompt_bytes": request.prompt.len(),
+        "raw_output_persisted": false,
+        "raw_output_returned": false,
+        "structured_context_returned": structured_context.is_some(),
+        "context": structured_context,
+        "summary": if completed { "Delegation returned a validated structured learning context for review" } else if state == "complete" { "Agent completed but did not return the required safe structured context" } else { "Delegation did not complete" }
+    })
 }
 
 #[tauri::command]
@@ -2698,6 +5625,521 @@ fn manage_backup(action: String, id: String) -> ActionResult {
     }
 }
 
+fn rollback_preview_value(rollback_id: &str) -> Value {
+    let safe_id = rollback_id
+        .chars()
+        .filter(|ch| ch.is_ascii_alphanumeric() || *ch == '-' || *ch == '_')
+        .collect::<String>();
+    if safe_id.is_empty() || safe_id != rollback_id {
+        return json!({
+            "ok": false,
+            "mode": "rollback-preview",
+            "rollback_id": rollback_id,
+            "integrity_verified": false,
+            "currently_restorable": false,
+            "blocked_reason": "Invalid rollback point id",
+        });
+    }
+    if fs::symlink_metadata(config_backup_root().join(&safe_id)).is_err() {
+        return json!({
+            "ok": false,
+            "mode": "rollback-preview",
+            "rollback_id": rollback_id,
+            "scope": "unknown",
+            "integrity_verified": false,
+            "currently_restorable": false,
+            "blocked_reason": "Legacy or unknown rollback manifests cannot prove transaction scope and current hashes.",
+        });
+    }
+    let backup = match config_patcher().load_backup(&safe_id) {
+        Ok(backup) => backup,
+        Err(error) => {
+            return json!({
+                "ok": false,
+                "mode": "rollback-preview",
+                "rollback_id": rollback_id,
+                "scope": "unknown",
+                "integrity_verified": false,
+                "currently_restorable": false,
+                "blocked_reason": format!("Rollback integrity verification failed: {}", sanitize_command_output(&format!("{error:#}"))),
+            })
+        }
+    };
+    let scope = rollback_scope_for_backup(&backup);
+    if scope == "agent-integration" {
+        let Some(transaction_id) = agent_integration_transaction_for_rollback(&backup.rollback_id)
+        else {
+            return json!({
+                "ok": false,
+                "mode": "rollback-preview",
+                "rollback_id": backup.rollback_id,
+                "scope": scope,
+                "executor_kind": "agent_integration",
+                "integrity_verified": false,
+                "currently_restorable": false,
+                "blocked_reason": "Agent transaction ownership could not be revalidated.",
+            });
+        };
+        let (transaction, backups, expected_current, currently_restorable) =
+            match agent_transaction_preflight(&transaction_id) {
+                Ok(preflight) => preflight,
+                Err(error) => {
+                    return json!({
+                        "ok": false,
+                        "mode": "rollback-preview",
+                        "rollback_id": backup.rollback_id,
+                        "scope": scope,
+                        "executor_kind": "agent_integration",
+                        "transaction_id": transaction_id,
+                        "integrity_verified": false,
+                        "currently_restorable": false,
+                        "blocked_reason": sanitize_command_output(&error),
+                    })
+                }
+            };
+        let revision = format!(
+            "rollback-{}",
+            stable_hash(
+                &json!({
+                    "rollback_id": backup.rollback_id,
+                    "transaction_id": transaction.transaction_id,
+                    "review_digest": transaction.review_digest,
+                    "expected_current": expected_current,
+                    "scope": scope,
+                })
+                .to_string()
+            )
+        );
+        return json!({
+            "ok": currently_restorable,
+            "mode": "rollback-preview",
+            "revision": revision,
+            "rollback_id": backup.rollback_id,
+            "scope": scope,
+            "executor_kind": "agent_integration",
+            "transaction_id": transaction.transaction_id,
+            "target": format!("{} managed Agent target(s)", backups.len()),
+            "files": backups.len(),
+            "integrity_verified": true,
+            "currently_restorable": currently_restorable,
+            "blocked_reason": if currently_restorable { "" } else { "One or more Agent targets changed or the transaction is not in a restorable state." },
+            "expected_current_sha256": expected_current,
+            "expected_current_state": "transaction_hashes",
+            "summary": if currently_restorable { "Agent transaction evidence and all current target hashes are verified" } else { "Agent transaction rollback is blocked by current-state preflight" },
+        });
+    }
+    let current_state_matches = backup_matches_expected_current_state(&backup);
+    let expected_current = backup_expected_current_token(&backup);
+    let currently_restorable = backup_currently_restorable(&backup);
+    let revision = format!(
+        "rollback-{}",
+        stable_hash(
+            &json!({
+                "rollback_id": backup.rollback_id,
+                "manifest_sha256": backup.manifest_sha256,
+                "planned_after_sha256": backup.planned_after_sha256,
+                "expected_current": &expected_current,
+                "scope": scope,
+                "executor_kind": rollback_executor_kind(scope),
+            })
+            .to_string()
+        )
+    );
+    json!({
+        "ok": currently_restorable,
+        "mode": "rollback-preview",
+        "revision": revision,
+        "rollback_id": backup.rollback_id,
+        "scope": scope,
+        "executor_kind": rollback_executor_kind(scope),
+        "target": backup.target_path.display().to_string(),
+        "files": 1,
+        "integrity_verified": true,
+        "currently_restorable": currently_restorable,
+        "blocked_reason": rollback_blocked_reason(scope, current_state_matches),
+        "expected_current_sha256": expected_current,
+        "expected_current_state": if rollback_expects_missing_target(&backup) { "missing" } else { "hash" },
+        "summary": if currently_restorable { "Rollback point integrity and current target hash are verified" } else { "Rollback is blocked by current-state preflight" },
+    })
+}
+
+fn create_reverse_safety_backup(
+    patcher: &ConfigPatcher,
+    backup: &dtoken_config_patcher::BackupRecord,
+    scope: &str,
+) -> Result<dtoken_config_patcher::BackupRecord, String> {
+    let rollback_content = if backup.original.exists {
+        backup_original_text(backup)?
+    } else {
+        fs::read_to_string(&backup.target_path)
+            .map_err(|error| format!("Current state could not be protected: {error}"))?
+    };
+    let prepared = patcher
+        .prepare_change(
+            &backup.target_path,
+            &rollback_content,
+            if matches!(scope, "dtoken-active-config" | "optical-config") {
+                ConfigToolKind::Dtoken
+            } else {
+                ConfigToolKind::Agent
+            },
+            None,
+            RiskLevel::High,
+        )
+        .map_err(|error| {
+            format!(
+                "Reverse safety backup could not be prepared: {}",
+                sanitize_command_output(&format!("{error:#}"))
+            )
+        })?;
+    let reverse_backup = patcher.backup_prepared(&prepared).map_err(|error| {
+        format!(
+            "Reverse safety backup failed: {}",
+            sanitize_command_output(&format!("{error:#}"))
+        )
+    })?;
+    if !backup.original.exists {
+        persist_missing_rollback_expectation(&reverse_backup)?;
+    }
+    Ok(reverse_backup)
+}
+
+fn protect_agent_transaction_before_rollback(transaction_id: &str) -> Result<Vec<String>, String> {
+    let (_, backups, _, currently_restorable) = agent_transaction_preflight(transaction_id)?;
+    if !currently_restorable {
+        return Err(
+            "Agent transaction current hashes no longer match the reviewed state".to_string(),
+        );
+    }
+    let patcher = config_patcher();
+    backups
+        .iter()
+        .map(|backup| {
+            create_reverse_safety_backup(&patcher, backup, "agent-integration")
+                .map(|reverse| reverse.rollback_id)
+        })
+        .collect()
+}
+
+#[tauri::command]
+fn preview_rollback(request: PreviewRollbackRequest) -> Value {
+    rollback_preview_value(&request.rollback_id)
+}
+
+#[tauri::command]
+fn apply_rollback(request: ApplyRollbackRequest) -> Value {
+    if !request.confirmed {
+        return json!({
+            "ok": false,
+            "mode": "rollback-receipt",
+            "rollback_id": request.rollback_id,
+            "summary": "Explicit rollback confirmation is required",
+            "verification_state": "failed",
+        });
+    }
+    let preview = rollback_preview_value(&request.rollback_id);
+    let preview_ok = preview.get("ok").and_then(Value::as_bool).unwrap_or(false);
+    let preview_revision = preview
+        .get("revision")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let expected_current = preview
+        .get("expected_current_sha256")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    if !preview_ok
+        || preview_revision != request.reviewed_revision
+        || expected_current != request.expected_current_sha256
+    {
+        return json!({
+            "ok": false,
+            "mode": "rollback-receipt",
+            "rollback_id": request.rollback_id,
+            "summary": "Rollback review is stale or current state changed; review again",
+            "verification_state": "failed",
+        });
+    }
+
+    let patcher = config_patcher();
+    let backup = match patcher.load_backup(&request.rollback_id) {
+        Ok(backup) => backup,
+        Err(error) => {
+            return json!({
+                "ok": false,
+                "mode": "rollback-receipt",
+                "rollback_id": request.rollback_id,
+                "summary": format!("Rollback integrity verification failed: {}", sanitize_command_output(&format!("{error:#}"))),
+                "verification_state": "failed",
+            })
+        }
+    };
+    let scope = rollback_scope_for_backup(&backup);
+    if scope == "agent-integration" {
+        let Some(transaction_id) = agent_integration_transaction_for_rollback(&backup.rollback_id)
+        else {
+            return json!({
+                "ok": false,
+                "mode": "rollback-receipt",
+                "rollback_id": request.rollback_id,
+                "summary": "Agent transaction ownership could not be revalidated",
+                "verification_state": "failed",
+            });
+        };
+        let reverse_rollback_ids = match protect_agent_transaction_before_rollback(&transaction_id)
+        {
+            Ok(rollback_ids) => rollback_ids,
+            Err(error) => {
+                return json!({
+                    "ok": false,
+                    "mode": "rollback-receipt",
+                    "rollback_id": request.rollback_id,
+                    "transaction_id": transaction_id,
+                    "summary": sanitize_command_output(&error),
+                    "verification_state": "failed",
+                })
+            }
+        };
+        let restored = match rollback_agent_integration(&transaction_id, &config_backup_root()) {
+            Ok(restored) => restored,
+            Err(error) => {
+                return json!({
+                    "ok": false,
+                    "mode": "rollback-receipt",
+                    "rollback_id": request.rollback_id,
+                    "transaction_id": transaction_id,
+                    "reverse_rollback_ids": reverse_rollback_ids,
+                    "summary": format!("Agent transaction rollback failed: {}", sanitize_command_output(&format!("{error:#}"))),
+                    "verification_state": "failed",
+                })
+            }
+        };
+        let transaction_verified =
+            get_agent_integration_transaction(&transaction_id, &config_backup_root()).is_ok_and(
+                |transaction| transaction.state == AgentIntegrationTransactionState::RolledBack,
+            );
+        let verification_state = if transaction_verified {
+            "verified"
+        } else {
+            "failed"
+        };
+        let _ = append_desktop_event(
+            "rollback_apply",
+            if transaction_verified { "ok" } else { "failed" },
+            json!({
+                "rollback_id": request.rollback_id,
+                "transaction_id": transaction_id,
+                "reverse_rollback_ids": reverse_rollback_ids,
+                "scope": scope,
+                "executor_kind": "agent_integration",
+                "restored_target_count": restored.len(),
+                "verification_state": verification_state,
+            }),
+        );
+        return json!({
+            "ok": transaction_verified,
+            "mode": "rollback-receipt",
+            "rollback_id": request.rollback_id,
+            "transaction_id": transaction_id,
+            "reverse_rollback_ids": reverse_rollback_ids,
+            "summary": if transaction_verified { "Agent integration transaction restored and verified" } else { "Agent transaction restore finished without complete verification" },
+            "verification_state": verification_state,
+        });
+    }
+    if scope == "optical-config" {
+        let reverse_backup = match create_reverse_safety_backup(&patcher, &backup, scope) {
+            Ok(reverse_backup) => reverse_backup,
+            Err(error) => {
+                return json!({
+                    "ok": false,
+                    "mode": "rollback-receipt",
+                    "rollback_id": request.rollback_id,
+                    "summary": error,
+                    "verification_state": "failed",
+                })
+            }
+        };
+        let specialized = rollback_optical_config_change(RollbackOpticalConfigRequest {
+            rollback_id: request.rollback_id.clone(),
+        });
+        let config_restored = specialized
+            .get("config_restored")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let runtime_verified = specialized
+            .get("runtime_verified")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let verification_state = if !config_restored {
+            "failed"
+        } else if runtime_verified {
+            "verified"
+        } else {
+            "runtime_offline"
+        };
+        let _ = append_desktop_event(
+            "rollback_apply",
+            if config_restored { "ok" } else { "failed" },
+            json!({
+                "rollback_id": request.rollback_id,
+                "reverse_rollback_id": reverse_backup.rollback_id,
+                "scope": scope,
+                "executor_kind": "optical",
+                "config_restored": config_restored,
+                "runtime_verified": runtime_verified,
+                "verification_state": verification_state,
+            }),
+        );
+        return json!({
+            "ok": config_restored,
+            "mode": "rollback-receipt",
+            "rollback_id": request.rollback_id,
+            "reverse_rollback_id": reverse_backup.rollback_id,
+            "summary": specialized.get("summary").cloned().unwrap_or_else(|| json!("Optical rollback completed")),
+            "verification_state": verification_state,
+        });
+    }
+    let reverse_next_content = if backup.original.exists {
+        match backup_original_text(&backup) {
+            Ok(content) => content,
+            Err(error) => {
+                return json!({
+                    "ok": false,
+                    "mode": "rollback-receipt",
+                    "rollback_id": request.rollback_id,
+                    "summary": format!("Restored state could not be bound to the reverse safety backup: {error}"),
+                    "verification_state": "failed",
+                })
+            }
+        }
+    } else {
+        match fs::read_to_string(&backup.target_path) {
+            Ok(content) => content,
+            Err(error) => {
+                return json!({
+                    "ok": false,
+                    "mode": "rollback-receipt",
+                    "rollback_id": request.rollback_id,
+                    "summary": format!("Current state could not be protected before rollback: {error}"),
+                    "verification_state": "failed",
+                })
+            }
+        }
+    };
+    let reverse_prepared = match patcher.prepare_change(
+        &backup.target_path,
+        &reverse_next_content,
+        if scope == "dtoken-active-config" {
+            ConfigToolKind::Dtoken
+        } else {
+            ConfigToolKind::Agent
+        },
+        None,
+        RiskLevel::High,
+    ) {
+        Ok(prepared) => prepared,
+        Err(error) => {
+            return json!({
+                "ok": false,
+                "mode": "rollback-receipt",
+                "rollback_id": request.rollback_id,
+                "summary": format!("Reverse safety backup could not be prepared: {}", sanitize_command_output(&format!("{error:#}"))),
+                "verification_state": "failed",
+            })
+        }
+    };
+    let reverse_backup = match patcher.backup_prepared(&reverse_prepared) {
+        Ok(record) => record,
+        Err(error) => {
+            return json!({
+                "ok": false,
+                "mode": "rollback-receipt",
+                "rollback_id": request.rollback_id,
+                "summary": format!("Reverse safety backup failed: {}", sanitize_command_output(&format!("{error:#}"))),
+                "verification_state": "failed",
+            })
+        }
+    };
+    if !backup.original.exists {
+        if let Err(error) = persist_missing_rollback_expectation(&reverse_backup) {
+            return json!({
+                "ok": false,
+                "mode": "rollback-receipt",
+                "rollback_id": request.rollback_id,
+                "reverse_rollback_id": reverse_backup.rollback_id,
+                "summary": format!("Reverse safety backup could not bind the expected missing state: {error}"),
+                "verification_state": "failed",
+            });
+        }
+    }
+
+    let expected_current_state = if request.expected_current_sha256 == "missing" {
+        ExpectedFileState::Missing
+    } else {
+        ExpectedFileState::Hash(request.expected_current_sha256.clone())
+    };
+    let restore = patcher.restore_backup(&backup, &expected_current_state);
+    if let Err(error) = restore {
+        return json!({
+            "ok": false,
+            "mode": "rollback-receipt",
+            "rollback_id": request.rollback_id,
+            "reverse_rollback_id": reverse_backup.rollback_id,
+            "summary": format!("Rollback restore was refused: {}", sanitize_command_output(&format!("{error:#}"))),
+            "verification_state": "failed",
+        });
+    }
+
+    let file_verified = if backup.original.exists {
+        backup.original.sha256.as_deref() == file_sha256(&backup.target_path).ok().as_deref()
+    } else {
+        !backup.target_path.exists()
+    };
+    let verification_state = if !file_verified {
+        "failed"
+    } else if scope == "dtoken-active-config" {
+        let state = dtoken_service_status_value();
+        match state.get("state").and_then(Value::as_str) {
+            Some("running" | "restart_required") => {
+                let restart = restart_dtoken_service();
+                if restart.ok
+                    && verify_agent_route_config()
+                        .get("ok")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false)
+                {
+                    "verified"
+                } else {
+                    "runtime_offline"
+                }
+            }
+            _ => "runtime_offline",
+        }
+    } else {
+        "verified"
+    };
+    let ok = file_verified && verification_state != "failed";
+    let _ = append_desktop_event(
+        "rollback_apply",
+        if ok { "ok" } else { "failed" },
+        json!({
+            "rollback_id": request.rollback_id,
+            "reverse_rollback_id": reverse_backup.rollback_id,
+            "scope": scope,
+            "target": backup.target_path.display().to_string(),
+            "file_verified": file_verified,
+            "verification_state": verification_state,
+        }),
+    );
+    json!({
+        "ok": ok,
+        "mode": "rollback-receipt",
+        "rollback_id": request.rollback_id,
+        "reverse_rollback_id": reverse_backup.rollback_id,
+        "summary": if verification_state == "verified" { "Rollback restored the exact prior state and verification passed" } else if ok { "Rollback restored the exact prior file state; runtime verification is pending" } else { "Rollback file verification failed" },
+        "verification_state": verification_state,
+    })
+}
+
 #[tauri::command]
 fn detect_tools() -> ActionResult {
     let tools = all_checks();
@@ -2902,13 +6344,127 @@ fn apply_opencode_connection(request: OpenCodeConnectionRequest) -> Value {
 }
 
 #[tauri::command]
-fn discover_upstream_candidates() -> Value {
-    upstream_discovery::discover()
+async fn discover_upstream_candidates() -> Value {
+    tauri::async_runtime::spawn_blocking(upstream_discovery::discover)
+        .await
+        .map(enrich_upstream_discovery)
+        .unwrap_or_else(|error| {
+            json!({
+                "source": "dtoken-desktop-read-only-discovery",
+                "freshness": "unknown",
+                "revision": "unavailable",
+                "state": "unavailable",
+                "candidates": [],
+                "agent_bindings": [],
+                "sources": [],
+                "selection_required": false,
+                "cc_switch_sync": null,
+                "writes_performed": false,
+                "privacy": "No credential values were read or returned",
+                "error": format!("Discovery worker failed: {error}")
+            })
+        })
+}
+
+fn enrich_upstream_discovery(mut discovery: Value) -> Value {
+    let active = active_route_config_status();
+    let active_state = active
+        .get("state")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    let active_endpoints = active
+        .get("providers")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|provider| provider.get("base_url").and_then(Value::as_str))
+        .map(normalized_endpoint)
+        .collect::<Vec<_>>();
+    if let Some(sync) = discovery
+        .get_mut("cc_switch_sync")
+        .and_then(Value::as_object_mut)
+    {
+        let detected = sync
+            .get("detected")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let cc_endpoint = sync
+            .get("upstream")
+            .and_then(Value::as_str)
+            .map(normalized_endpoint);
+        let status = derive_cc_switch_status(
+            detected,
+            cc_endpoint.as_deref(),
+            &active_endpoints,
+            active_state,
+        );
+        sync.insert("status".to_string(), Value::String(status.to_string()));
+    }
+    if let Some(object) = discovery.as_object_mut() {
+        let prior_revision = object
+            .get("revision")
+            .and_then(Value::as_str)
+            .unwrap_or("setup-unavailable");
+        let route_revision = stable_hash(
+            &json!({
+                "discovery_revision": prior_revision,
+                "active_state": active_state,
+                "active_endpoints": active_endpoints,
+                "cc_switch_status": object.get("cc_switch_sync").and_then(|value| value.get("status"))
+            })
+            .to_string(),
+        );
+        object.insert(
+            "revision".to_string(),
+            Value::String(format!("setup-{route_revision}")),
+        );
+        object.insert(
+            "dtoken_route_state".to_string(),
+            json!({
+                "state": active_state,
+                "provider_count": active.get("provider_count").cloned().unwrap_or(json!(0)),
+                "route_count": active.get("route_count").cloned().unwrap_or(json!(0)),
+                "source": "d-token-active-config",
+            }),
+        );
+    }
+    discovery
+}
+
+fn normalized_endpoint(value: &str) -> String {
+    value.trim().trim_end_matches('/').to_ascii_lowercase()
+}
+
+fn derive_cc_switch_status(
+    detected: bool,
+    cc_endpoint: Option<&str>,
+    active_endpoints: &[String],
+    active_state: &str,
+) -> &'static str {
+    if !detected {
+        "unavailable"
+    } else if cc_endpoint
+        .is_some_and(|endpoint| active_endpoints.iter().any(|active| active == endpoint))
+    {
+        "synced"
+    } else if active_state == "loaded" {
+        "out-of-sync"
+    } else {
+        "needs-confirmation"
+    }
 }
 
 #[tauri::command]
-fn get_dtoken_service_status() -> Value {
-    dtoken_service_status_value()
+async fn get_dtoken_service_status() -> Value {
+    tauri::async_runtime::spawn_blocking(dtoken_service_status_value)
+        .await
+        .unwrap_or_else(|err| {
+            json!({
+                "ok": false,
+                "state": "unknown",
+                "summary": format!("d-token service status task failed: {err}")
+            })
+        })
 }
 
 #[tauri::command]
@@ -2971,6 +6527,59 @@ fn start_dtoken_service() -> ActionResult {
     result
 }
 
+#[tauri::command]
+fn restart_dtoken_service() -> ActionResult {
+    let result = restart_dtoken_service_impl();
+    let _ = append_desktop_event(
+        "service_restart",
+        if result.ok { "ok" } else { "failed" },
+        json!({ "ok": result.ok, "summary": result.summary.clone() }),
+    );
+    result
+}
+
+fn restart_dtoken_service_impl() -> ActionResult {
+    let current = dtoken_service_status_value();
+    match current.get("state").and_then(Value::as_str) {
+        Some("running" | "restart_required") => {
+            let stop = stop_dtoken_service_impl();
+            if !stop.ok {
+                return ActionResult {
+                    ok: false,
+                    summary: format!(
+                        "Managed d-token service could not be stopped for reload: {}",
+                        stop.summary
+                    ),
+                    logs: stop.logs,
+                    tools: stop.tools,
+                };
+            }
+            let mut start = start_dtoken_service_impl();
+            if start.ok {
+                start.summary = "Managed d-token service restarted and verified".to_string();
+            }
+            start
+        }
+        Some("unmanaged_running") => ActionResult {
+            ok: false,
+            summary: "An unmanaged d-token-compatible service owns the port; reload was refused"
+                .to_string(),
+            logs: vec![log(
+                "warn",
+                "Refused to stop or replace an unmanaged process on 127.0.0.1:18001",
+            )],
+            tools: all_checks(),
+        },
+        _ => {
+            let mut start = start_dtoken_service_impl();
+            if start.ok {
+                start.summary = "Managed d-token service started and verified".to_string();
+            }
+            start
+        }
+    }
+}
+
 fn start_dtoken_service_impl() -> ActionResult {
     let mut logs = vec![log(
         "info",
@@ -2985,6 +6594,18 @@ fn start_dtoken_service_impl() -> ActionResult {
         return ActionResult {
             ok: true,
             summary: "d-token local service is already running".to_string(),
+            logs,
+            tools: all_checks(),
+        };
+    }
+    if current.get("state").and_then(Value::as_str) == Some("restart_required") {
+        logs.push(log(
+            "warn",
+            "The managed service belongs to an older or unverifiable bundle; use the explicit restart action to replace it safely",
+        ));
+        return ActionResult {
+            ok: false,
+            summary: "Managed d-token service requires an explicit restart".to_string(),
             logs,
             tools: all_checks(),
         };
@@ -3023,6 +6644,21 @@ fn start_dtoken_service_impl() -> ActionResult {
             return ActionResult {
                 ok: false,
                 summary: "d-token runtime executable is missing".to_string(),
+                logs,
+                tools: all_checks(),
+            };
+        }
+    };
+    let launch_exe_sha256 = match file_sha256(&exe) {
+        Ok(sha256) => sha256,
+        Err(err) => {
+            logs.push(log(
+                "error",
+                format!("Runtime executable identity could not be read before launch: {err}"),
+            ));
+            return ActionResult {
+                ok: false,
+                summary: "d-token runtime executable identity is unavailable".to_string(),
                 logs,
                 tools: all_checks(),
             };
@@ -3068,6 +6704,7 @@ fn start_dtoken_service_impl() -> ActionResult {
         }
     };
 
+    let runtime_instance_nonce = Uuid::new_v4().to_string();
     let child = Command::new(&exe)
         .arg("--host")
         .arg("127.0.0.1")
@@ -3077,6 +6714,7 @@ fn start_dtoken_service_impl() -> ActionResult {
         .arg(&config_path)
         .arg("--data-dir")
         .arg(&data_dir)
+        .env("DTOKEN_RUNTIME_INSTANCE_NONCE", &runtime_instance_nonce)
         .stdin(Stdio::null())
         .stdout(Stdio::from(stdout))
         .stderr(Stdio::from(stderr))
@@ -3094,6 +6732,19 @@ fn start_dtoken_service_impl() -> ActionResult {
         }
     };
     let pid = child.id();
+    let Some(process_birth_token) = process_birth_token(pid) else {
+        let _ = terminate_process(pid);
+        logs.push(log(
+            "error",
+            "spawned process birth identity could not be captured; process was stopped",
+        ));
+        return ActionResult {
+            ok: false,
+            summary: "d-token service process identity is unavailable".to_string(),
+            logs,
+            tools: all_checks(),
+        };
+    };
     logs.push(log(
         "info",
         format!(
@@ -3108,11 +6759,15 @@ fn start_dtoken_service_impl() -> ActionResult {
     for _ in 0..40 {
         std::thread::sleep(Duration::from_millis(100));
         let health = service_health_payload();
-        healthy = health
-            .as_ref()
-            .and_then(|payload| payload.get("component").and_then(Value::as_str))
-            .map(|component| component == "dtoken-core-api")
-            .unwrap_or(false);
+        healthy = health.as_ref().is_some_and(|payload| {
+            payload.get("component").and_then(Value::as_str) == Some("dtoken-core-api")
+                && payload.get("runtime_identity").and_then(Value::as_str)
+                    == Some("dtoken-runtime-local")
+                && payload
+                    .get("runtime_instance_nonce")
+                    .and_then(Value::as_str)
+                    == Some(runtime_instance_nonce.as_str())
+        });
         if healthy {
             break;
         }
@@ -3148,12 +6803,54 @@ fn start_dtoken_service_impl() -> ActionResult {
         };
     }
 
+    match file_sha256(&exe) {
+        Ok(current_sha256) if current_sha256 == launch_exe_sha256 => {}
+        Ok(_) => {
+            let _ = terminate_process(pid);
+            let _ = remove_service_manifest();
+            logs.push(log(
+                "error",
+                "verify: runtime executable changed while the service was starting; the newly spawned process was stopped",
+            ));
+            return ActionResult {
+                ok: false,
+                summary:
+                    "d-token service start rolled back because the bundle changed during launch"
+                        .to_string(),
+                logs,
+                tools: all_checks(),
+            };
+        }
+        Err(err) => {
+            let _ = terminate_process(pid);
+            let _ = remove_service_manifest();
+            logs.push(log(
+                "error",
+                format!(
+                    "verify: runtime executable identity could not be read after launch; the newly spawned process was stopped: {err}"
+                ),
+            ));
+            return ActionResult {
+                ok: false,
+                summary:
+                    "d-token service start rolled back because executable identity verification failed"
+                        .to_string(),
+                logs,
+                tools: all_checks(),
+            };
+        }
+    }
+
     let manifest = ManagedServiceManifest {
+        schema_version: MANAGED_SERVICE_MANIFEST_SCHEMA_VERSION,
         managed_by: "d-token-desktop".to_string(),
         identity: "dtoken-core-api".to_string(),
         pid,
         port: DTOKEN_SERVICE_PORT,
         exe_path: exe.display().to_string(),
+        exe_sha256: Some(launch_exe_sha256),
+        process_birth_token: Some(process_birth_token),
+        runtime_instance_nonce: Some(runtime_instance_nonce),
         config_path: config_path.display().to_string(),
         data_dir: data_dir.display().to_string(),
         started_at: now_label(),
@@ -3240,17 +6937,19 @@ fn stop_dtoken_service_impl() -> ActionResult {
             tools: all_checks(),
         };
     };
-    if manifest.managed_by != "d-token-desktop"
-        || manifest.identity != "dtoken-core-api"
-        || manifest.port != DTOKEN_SERVICE_PORT
-    {
+    let owned_manifest =
+        manifest.managed_by == "d-token-desktop" && manifest.identity == "dtoken-core-api";
+    if !owned_manifest {
         logs.push(log(
             "error",
-            "Service manifest identity did not match d-token desktop; refusing to stop process",
+            format!(
+                "Service manifest identity mismatch: managed_by='{}' identity='{}'",
+                manifest.managed_by, manifest.identity
+            ),
         ));
         return ActionResult {
             ok: false,
-            summary: "Service identity check failed".to_string(),
+            summary: "Service manifest identity check failed".to_string(),
             logs,
             tools: all_checks(),
         };
@@ -3271,36 +6970,17 @@ fn stop_dtoken_service_impl() -> ActionResult {
             tools: all_checks(),
         };
     }
-    if !executable_identity_matches(manifest.pid, Path::new(&manifest.exe_path)) {
-        logs.push(log(
-            "error",
-            "Manifest PID is running but its executable does not match the managed d-token runtime; refusing to stop it",
-        ));
-        return ActionResult {
-            ok: false,
-            summary: "Service executable identity check failed".to_string(),
-            logs,
-            tools: all_checks(),
-        };
-    }
-    if !listener_owned_by_pid(manifest.pid, manifest.port) {
-        logs.push(log(
-            "error",
-            "Manifest PID does not own the d-token listening port; refusing to stop it",
-        ));
-        return ActionResult {
-            ok: false,
-            summary: "Service port ownership check failed".to_string(),
-            logs,
-            tools: all_checks(),
-        };
-    }
     let health = service_health_payload();
-    let health_identity_ok = health
-        .as_ref()
-        .and_then(|payload| payload.get("component").and_then(Value::as_str))
-        .map(|component| component == "dtoken-core-api")
-        .unwrap_or(false);
+    let health_identity_ok = health.as_ref().is_some_and(|payload| {
+        payload.get("component").and_then(Value::as_str) == Some("dtoken-core-api")
+            && payload.get("runtime_identity").and_then(Value::as_str)
+                == Some("dtoken-runtime-local")
+            && manifest.runtime_instance_nonce.as_deref().is_some()
+            && payload
+                .get("runtime_instance_nonce")
+                .and_then(Value::as_str)
+                == manifest.runtime_instance_nonce.as_deref()
+    });
     if !health_identity_ok {
         logs.push(log(
             "error",
@@ -3313,7 +6993,16 @@ fn stop_dtoken_service_impl() -> ActionResult {
             tools: all_checks(),
         };
     }
-    match terminate_process(manifest.pid) {
+    let identity = ProcessIdentity {
+        managed_by: manifest.managed_by.clone(),
+        component: manifest.identity.clone(),
+        pid: manifest.pid,
+        port: manifest.port,
+        executable_path: PathBuf::from(&manifest.exe_path),
+        executable_sha256: manifest.exe_sha256.clone().unwrap_or_default(),
+        process_birth_token: manifest.process_birth_token.clone().unwrap_or_default(),
+    };
+    match ProcessManager::new().stop_verified(&identity, &SystemProcessInspector) {
         Ok(()) => {
             if let Err(err) = remove_service_manifest() {
                 logs.push(log(
@@ -3645,41 +7334,1377 @@ fn run_install_transaction(request: InstallPlanRequest) -> ActionResult {
     }
 }
 
-#[tauri::command]
-fn run_doctor() -> ActionResult {
-    let tools = all_checks();
-    let mut logs = vec![log("info", "Running desktop Doctor checks")];
-    for tool in &tools {
-        logs.push(log(
-            if tool.installed { "info" } else { "warn" },
-            format!(
-                "{} status: {}",
-                tool.label,
-                if tool.installed {
-                    "installed"
-                } else {
-                    "missing"
-                }
+const DOCTOR_V3_TTL_MS: u64 = 5 * 60 * 1_000;
+const DOCTOR_PLAN_TTL_MS: u64 = 10 * 60 * 1_000;
+
+fn doctor_v3_snapshot_value() -> Option<Value> {
+    read_app_state(&["doctor", "latest-v3.json"]).ok()
+}
+
+fn doctor_v3_snapshot_is_fresh(value: &Value, now_ms: u64) -> bool {
+    value.get("schema_version").and_then(Value::as_u64) == Some(3)
+        && value
+            .get("collected_at_ms")
+            .and_then(Value::as_u64)
+            .zip(value.get("ttl_ms").and_then(Value::as_u64))
+            .filter(|(collected, ttl)| *collected > 0 && *ttl > 0 && now_ms >= *collected)
+            .and_then(|(collected, ttl)| collected.checked_add(ttl))
+            .is_some_and(|expires| now_ms <= expires)
+}
+
+fn doctor_v2_snapshot_freshness(value: &Value, now_ms: u64) -> &'static str {
+    let collected_at_ms = value
+        .get("collected_at")
+        .and_then(Value::as_str)
+        .and_then(|value| value.strip_prefix("unix:"))
+        .and_then(|value| value.parse::<u64>().ok())
+        .and_then(|seconds| seconds.checked_mul(1_000));
+
+    match collected_at_ms {
+        Some(collected) if collected > 0 && now_ms >= collected => collected
+            .checked_add(DOCTOR_V3_TTL_MS)
+            .map_or(
+                "unknown",
+                |expires| {
+                    if now_ms <= expires {
+                        "fresh"
+                    } else {
+                        "stale"
+                    }
+                },
             ),
-        ));
+        _ => "unknown",
     }
-    // OpenCode is the current real acceptance agent. RTK and external
-    // Headroom are optional no-touch references and must never gate Doctor.
-    let ok = doctor_agent_ready(&tools);
-    logs.push(log(
-        if ok { "info" } else { "error" },
-        if ok {
-            "Doctor passed with a supported Agent"
-        } else {
-            "Doctor did not detect a supported Agent"
+}
+
+fn doctor_v2_snapshot_value_at(now_ms: u64) -> Option<Value> {
+    let mut value = read_app_state(&["doctor", "latest.json"]).ok()?;
+    let freshness = doctor_v2_snapshot_freshness(&value, now_ms);
+    value
+        .as_object_mut()?
+        .insert("freshness".to_string(), json!(freshness));
+    Some(value)
+}
+
+fn current_doctor_project_root() -> Option<PathBuf> {
+    env::current_dir().ok().filter(|path| {
+        path.is_dir()
+            && (path.join(".git").exists()
+                || path.join("AGENTS.md").exists()
+                || path.join("CLAUDE.md").exists()
+                || path.join("Cargo.toml").exists()
+                || path.join("package.json").exists())
+    })
+}
+
+fn doctor_selection_scope(
+    selection: &DoctorModuleRepairSelection,
+) -> Result<(AgentIntegrationScope, Option<PathBuf>), String> {
+    match selection.scope.as_str() {
+        "global" => Ok((AgentIntegrationScope::Global, None)),
+        "project" => {
+            let root = selection
+                .project_root
+                .as_deref()
+                .filter(|value| !value.trim().is_empty())
+                .map(PathBuf::from)
+                .ok_or_else(|| "Project scope requires an absolute project root".to_string())?;
+            if !root.is_absolute() || !root.is_dir() {
+                return Err("Project root must be an existing absolute directory".to_string());
+            }
+            Ok((AgentIntegrationScope::Project, Some(root)))
+        }
+        _ => Err("Doctor repair scope must be global or project".to_string()),
+    }
+}
+
+fn doctor_agent_has_managed_evidence(
+    agent_id: &str,
+    selection: &DoctorModuleRepairSelection,
+) -> Result<bool, String> {
+    let home = user_home_dir()?;
+    let (scope, project_root) = doctor_selection_scope(selection)?;
+    let evidence =
+        inspect_agent_integration_evidence(agent_id, scope, &home, project_root.as_deref())
+            .map_err(|error| format!("Agent managed-surface inspection failed: {error:#}"))?;
+    Ok(!evidence.managed_surfaces.is_empty())
+}
+
+fn doctor_prepare_agent_integration(
+    agent_id: &str,
+    selection: &DoctorModuleRepairSelection,
+) -> Result<dtoken_config_patcher::agent_integration::PreparedAgentIntegration, String> {
+    if !selection.install_instructions
+        && !selection.install_hook_or_plugin
+        && !selection.install_skill
+        && !selection.install_mcp
+    {
+        return Err("Select at least one Agent integration surface".to_string());
+    }
+    let (_, project_root) = doctor_selection_scope(selection)?;
+    prepare_hybrid_agent_integration(&HybridAgentIntegrationDraftRequest {
+        agent_ids: vec![agent_id.to_string()],
+        scope: selection.scope.clone(),
+        project_root: project_root.map(|path| path.display().to_string()),
+        install_instructions: selection.install_instructions,
+        install_hook_or_plugin: selection.install_hook_or_plugin,
+        install_skill: selection.install_skill,
+        install_mcp: selection.install_mcp,
+    })
+}
+
+fn doctor_agent_inventory() -> (Vec<Value>, bool, usize) {
+    let snapshot = match agent_registry::scan_current_process_agents() {
+        Ok(snapshot) => snapshot,
+        Err(error) => {
+            return (
+                vec![json!({
+                    "id": "registry",
+                    "name": "Agent registry",
+                    "detected": false,
+                    "supported": false,
+                    "state": "unavailable",
+                    "summary": sanitize_command_output(&format!("{error:#}")),
+                })],
+                false,
+                0,
+            )
+        }
+    };
+    let home = match user_home_dir() {
+        Ok(home) => home,
+        Err(_) => return (Vec::new(), false, 0),
+    };
+    let project_root = current_doctor_project_root();
+    let mut complete = true;
+    let mut repairable = 0usize;
+    let agents = snapshot
+        .agents
+        .into_iter()
+        .map(|agent| {
+            let supported = matches!(agent.id.as_str(), "claude-code" | "codex" | "opencode");
+            if !supported {
+                return json!({
+                    "id": agent.id,
+                    "name": agent.name,
+                    "detected": true,
+                    "supported": false,
+                    "state": "unsupported",
+                    "managed_scopes": [],
+                });
+            }
+            let global = inspect_agent_integration_evidence(
+                &agent.id,
+                AgentIntegrationScope::Global,
+                &home,
+                None,
+            );
+            let project = project_root.as_deref().map(|root| {
+                inspect_agent_integration_evidence(
+                    &agent.id,
+                    AgentIntegrationScope::Project,
+                    &home,
+                    Some(root),
+                )
+            });
+            if global.is_err() || project.as_ref().is_some_and(Result::is_err) {
+                complete = false;
+            }
+            let global_managed = global
+                .as_ref()
+                .is_ok_and(|evidence| !evidence.managed_surfaces.is_empty());
+            let project_managed = project
+                .as_ref()
+                .and_then(|result| result.as_ref().ok())
+                .is_some_and(|evidence| !evidence.managed_surfaces.is_empty());
+            let managed = global_managed || project_managed;
+            let mut needs_repair = false;
+            for (scope, root, enabled) in [
+                ("global", None, global_managed),
+                (
+                    "project",
+                    project_root.as_ref().map(|path| path.display().to_string()),
+                    project_managed,
+                ),
+            ] {
+                if !enabled {
+                    continue;
+                }
+                let selection = DoctorModuleRepairSelection {
+                    agent_ids: vec![agent.id.clone()],
+                    route_ids: Vec::new(),
+                    scope: scope.to_string(),
+                    project_root: root,
+                    install_instructions: true,
+                    install_hook_or_plugin: true,
+                    install_skill: true,
+                    install_mcp: false,
+                };
+                match doctor_prepare_agent_integration(&agent.id, &selection) {
+                    Ok(prepared) => {
+                        needs_repair |= prepared
+                            .plan
+                            .targets
+                            .iter()
+                            .any(|target| target.before_sha256 != target.after_sha256);
+                    }
+                    Err(_) => complete = false,
+                }
+            }
+            if needs_repair {
+                repairable += 1;
+            }
+            let managed_scopes = [
+                global_managed.then_some("global"),
+                project_managed.then_some("project"),
+            ]
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>();
+            let managed_targets = [
+                global_managed.then(|| json!({ "scope": "global", "project_root": Value::Null })),
+                project_managed.then(|| json!({
+                    "scope": "project",
+                    "project_root": project_root.as_ref().map(|path| path.display().to_string()),
+                })),
+            ]
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>();
+            json!({
+                "id": agent.id,
+                "name": agent.name,
+                "detected": true,
+                "supported": true,
+                "state": if !managed { "detected_only" } else if needs_repair { "repairable" } else { "verified" },
+                "managed_scopes": managed_scopes,
+                "managed_targets": managed_targets,
+                "needs_repair": needs_repair,
+            })
+        })
+        .collect();
+    (agents, complete, repairable)
+}
+
+fn doctor_module_state_rank(state: &str) -> u8 {
+    match state {
+        "blocked" => 3,
+        "manual" | "repairable" => 2,
+        "healthy" => 1,
+        _ => 0,
+    }
+}
+
+fn run_doctor_scan_value() -> Value {
+    let collected_at_ms = epoch_ms();
+    let service = dtoken_service_status_value();
+    let service_state = service
+        .get("state")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    let active = active_route_config_status();
+    let route = verify_agent_route_config();
+    let active_ready = active.get("state").and_then(Value::as_str) == Some("loaded")
+        && active
+            .get("route_count")
+            .and_then(Value::as_u64)
+            .unwrap_or(0)
+            > 0
+        && active
+            .get("provider_count")
+            .and_then(Value::as_u64)
+            .unwrap_or(0)
+            > 0
+        && active.get("fallback_disabled").and_then(Value::as_bool) == Some(true);
+    let route_verified = route.get("ok").and_then(Value::as_bool).unwrap_or(false);
+    let core_state = match service_state {
+        "running" if active_ready && route_verified => "healthy",
+        "running" if !active_ready || !route_verified => "manual",
+        "stopped" => "repairable",
+        "restart_required" => "repairable",
+        "unmanaged_running" => "blocked",
+        _ => "unknown",
+    };
+    let core_summary = match core_state {
+        "healthy" => "d-token 服务身份、监听端口和活动路由已验证",
+        "repairable" => "d-token 自有服务未运行或需要安全重载",
+        "blocked" => "监听端口存在无法证明归属的进程，自动操作已阻止",
+        "manual" => "服务在线，但活动路由或运行时复检尚未通过",
+        _ => "核心服务证据不完整",
+    };
+
+    let (agents, agent_complete, agent_repairs) = doctor_agent_inventory();
+    let managed_agents = agents
+        .iter()
+        .filter(|agent| {
+            matches!(
+                agent.get("state").and_then(Value::as_str),
+                Some("repairable" | "verified")
+            )
+        })
+        .count();
+    let agent_state = if !agent_complete {
+        "manual"
+    } else if agent_repairs > 0 {
+        "repairable"
+    } else if managed_agents > 0 {
+        "healthy"
+    } else {
+        "manual"
+    };
+
+    let optical = optical_editor_value();
+    let optical_ok = optical.get("ok").and_then(Value::as_bool).unwrap_or(false);
+    let optical_issues = optical
+        .get("issues")
+        .and_then(Value::as_array)
+        .map(Vec::len)
+        .unwrap_or(0);
+    let optical_state = if optical_ok && optical_issues == 0 {
+        "healthy"
+    } else if optical_ok {
+        "manual"
+    } else {
+        "unknown"
+    };
+
+    let autostart = autostart::status();
+    let platform_state = if autostart.supported && autostart.state != "error" {
+        "healthy"
+    } else if autostart.supported {
+        "manual"
+    } else {
+        "unknown"
+    };
+
+    let rollback = rollback_points_result();
+    let (recovery_state, recovery_summary) = match &rollback {
+        Ok(points)
+            if points.iter().any(|point| {
+                point.get("integrity_verified").and_then(Value::as_bool) != Some(true)
+                    || matches!(
+                        point.get("scope").and_then(Value::as_str),
+                        Some("unknown" | "invalid-backup-evidence")
+                    )
+            }) =>
+        {
+            ("blocked", "至少一个备份或事务证据不完整，恢复操作保持锁定")
+        }
+        Ok(_) => ("healthy", "备份元数据与事务归属检查完成"),
+        Err(_) => ("blocked", "无法读取备份与回退证据"),
+    };
+
+    let modules = vec![
+        json!({ "module_id": "core", "state": core_state, "severity": if core_state == "blocked" { "error" } else { "warning" }, "summary": core_summary }),
+        json!({ "module_id": "agent", "state": agent_state, "severity": "warning", "summary": if managed_agents == 0 { "未发现已有 d-token 接入证据的受支持 Agent" } else if agent_repairs > 0 { "已发现需要重新注入或修复的 d-token Agent 管理区" } else { "现有 Agent 管理区已验证，可按需重新配置" }, "agents": agents }),
+        json!({ "module_id": "optical", "state": optical_state, "severity": "warning", "summary": if optical_state == "healthy" { "Optical 保持 off/shadow_preview 安全边界" } else { "Optical Shadow 配置需要在视觉压缩工作台处理" } }),
+        json!({ "module_id": "platform", "state": platform_state, "severity": "warning", "summary": autostart.summary }),
+        json!({ "module_id": "recovery", "state": recovery_state, "severity": if recovery_state == "blocked" { "error" } else { "warning" }, "summary": recovery_summary }),
+    ];
+    let mut healthy_count = 0usize;
+    let mut repairable_count = 0usize;
+    let mut manual_count = 0usize;
+    let mut blocked_count = 0usize;
+    for module in &modules {
+        if let Some(state) = module.get("state").and_then(Value::as_str) {
+            match state {
+                "healthy" => healthy_count += 1,
+                "repairable" => repairable_count += 1,
+                "manual" => manual_count += 1,
+                "blocked" => blocked_count += 1,
+                _ => {}
+            }
+        }
+    }
+    let counts = json!({
+        "healthy": healthy_count,
+        "repairable": repairable_count,
+        "manual": manual_count,
+        "blocked": blocked_count,
+    });
+    let overall_state = modules
+        .iter()
+        .filter_map(|module| module.get("state").and_then(Value::as_str))
+        .max_by_key(|state| doctor_module_state_rank(state))
+        .unwrap_or("unknown");
+    let revision = format!(
+        "doctor-v3-{}",
+        stable_hash(
+            &json!({
+                "collected_at_ms": collected_at_ms,
+                "service": service,
+                "active": active,
+                "route_ok": route_verified,
+                "modules": modules,
+            })
+            .to_string(),
+        )
+    );
+    let domain_modules = vec![
+        DoctorModuleEvidence {
+            module_id: DoctorModuleId::CoreServiceLifecycle,
+            state: doctor_domain_state(core_state),
+            observed_at_ms: collected_at_ms,
+            evidence: vec![
+                DoctorEvidence {
+                    kind: DoctorEvidenceKind::Identity,
+                    state: doctor_domain_state(core_state),
+                },
+                DoctorEvidence {
+                    kind: DoctorEvidenceKind::Ownership,
+                    state: doctor_domain_state(core_state),
+                },
+            ],
         },
-    ));
-    ActionResult {
-        ok,
-        summary: "Doctor check complete".to_string(),
-        logs,
-        tools,
+        DoctorModuleEvidence {
+            module_id: DoctorModuleId::AgentHookPlugin,
+            state: doctor_domain_state(agent_state),
+            observed_at_ms: collected_at_ms,
+            evidence: vec![DoctorEvidence {
+                kind: DoctorEvidenceKind::Configuration,
+                state: doctor_domain_state(agent_state),
+            }],
+        },
+        DoctorModuleEvidence {
+            module_id: DoctorModuleId::OpticalShadowPolicy,
+            state: doctor_domain_state(optical_state),
+            observed_at_ms: collected_at_ms,
+            evidence: vec![DoctorEvidence {
+                kind: DoctorEvidenceKind::Policy,
+                state: doctor_domain_state(optical_state),
+            }],
+        },
+        DoctorModuleEvidence {
+            module_id: DoctorModuleId::PlatformAutostart,
+            state: doctor_domain_state(platform_state),
+            observed_at_ms: collected_at_ms,
+            evidence: vec![DoctorEvidence {
+                kind: DoctorEvidenceKind::Configuration,
+                state: doctor_domain_state(platform_state),
+            }],
+        },
+        DoctorModuleEvidence {
+            module_id: DoctorModuleId::RecoveryRollbackEvidence,
+            state: doctor_domain_state(recovery_state),
+            observed_at_ms: collected_at_ms,
+            evidence: vec![DoctorEvidence {
+                kind: DoctorEvidenceKind::Rollback,
+                state: doctor_domain_state(recovery_state),
+            }],
+        },
+    ];
+    let domain = DoctorDomainSnapshot::new(
+        revision.clone(),
+        DoctorSnapshotSource::Combined,
+        collected_at_ms,
+        DOCTOR_V3_TTL_MS,
+        doctor_domain_state(overall_state),
+        domain_modules,
+    );
+    let contract = domain
+        .ok()
+        .and_then(|snapshot| serde_json::to_value(snapshot).ok())
+        .unwrap_or(Value::Null);
+    let result = json!({
+        "schema_version": 3,
+        "revision": revision,
+        "source": "dtoken-desktop-control-plane",
+        "state": overall_state,
+        "collected_at_ms": collected_at_ms,
+        "ttl_ms": DOCTOR_V3_TTL_MS,
+        "counts": counts,
+        "coverage": {
+            "completed": modules.iter().filter(|module| module.get("state").and_then(Value::as_str) != Some("unknown")).count(),
+            "total": modules.len(),
+            "agents_detected": modules.get(1).and_then(|module| module.get("agents")).and_then(Value::as_array).map(Vec::len).unwrap_or(0),
+            "agents_selected": managed_agents,
+        },
+        "modules": modules,
+        "module_contract": contract,
+        "redaction_policy_version": 1,
+    });
+    let _ = write_json_app_state(&["doctor", "latest-v3.json"], &result);
+    let _ = append_desktop_event(
+        "doctor_scan_v3",
+        if overall_state == "healthy" {
+            "ok"
+        } else {
+            "attention"
+        },
+        json!({
+            "revision": result.get("revision"),
+            "state": overall_state,
+            "repairable": result.get("counts").and_then(|value| value.get("repairable")),
+            "blocked": result.get("counts").and_then(|value| value.get("blocked")),
+        }),
+    );
+    result
+}
+
+fn doctor_domain_state(state: &str) -> DoctorEvidenceState {
+    match state {
+        "healthy" => DoctorEvidenceState::Healthy,
+        "repairable" | "manual" => DoctorEvidenceState::Attention,
+        "blocked" => DoctorEvidenceState::Blocked,
+        "unknown" => DoctorEvidenceState::Unknown,
+        _ => DoctorEvidenceState::Unavailable,
     }
+}
+
+#[tauri::command]
+fn get_doctor_snapshot() -> Value {
+    doctor_v3_snapshot_value()
+        .or_else(|| doctor_v2_snapshot_value_at(epoch_ms()))
+        .unwrap_or(Value::Null)
+}
+
+#[tauri::command]
+fn run_doctor_scan() -> Value {
+    run_doctor_scan_value()
+}
+
+#[tauri::command]
+fn get_doctor_repair_modules() -> Value {
+    json!({
+        "schema_version": 3,
+        "source": "dtoken-doctor",
+        "modules": doctor_repair_modules(),
+        "supported_agent_integrations": ["claude-code", "codex", "opencode"],
+        "agent_transport_executor": ["opencode"],
+        "optical_active_allowed": false,
+        "cc_switch_write_allowed": false,
+    })
+}
+
+#[tauri::command]
+fn run_doctor() -> DoctorReport {
+    let tools = all_checks();
+    let service = dtoken_service_status_value();
+    let active = active_route_config_status();
+    let route = verify_agent_route_config();
+    let rollback_state = rollback_points_result();
+    let mut issues = Vec::new();
+    let mut healthy = 0usize;
+
+    match service.get("state").and_then(Value::as_str) {
+        Some("running") => healthy += 1,
+        Some("restart_required") => issues.push(DoctorIssue {
+            id: "service-restart-required".to_string(),
+            category: "runtime".to_string(),
+            severity: "warning".to_string(),
+            state: "repairable".to_string(),
+            title: "d-token 本地服务需要重启".to_string(),
+            impact: "当前服务版本或二进制身份已变化，新请求可能无法使用最新能力。".to_string(),
+            cause: "桌面应用确认该进程属于 d-token，但运行中的二进制与当前版本不一致。".to_string(),
+            evidence: "服务清单、PID、端口所有权与 runtime identity 已验证；binary identity 要求重新加载。".to_string(),
+            remediation: Some(DoctorRemediation {
+                kind: "restart_managed_service".to_string(),
+                label: "重启并验证本地服务".to_string(),
+                risk: "low".to_string(),
+                writes_config: false,
+                requires_confirmation: true,
+                destination: None,
+            }),
+        }),
+        Some("unmanaged_running") => issues.push(DoctorIssue {
+            id: "external-port-owner".to_string(),
+            category: "port".to_string(),
+            severity: "error".to_string(),
+            state: "blocked".to_string(),
+            title: "端口由非 d-token 托管进程占用".to_string(),
+            impact: "桌面应用不能安全启动或重启自己的本地服务。".to_string(),
+            cause: "127.0.0.1:18001 有兼容响应，但 PID、可执行文件或启动清单不能证明属于当前应用。".to_string(),
+            evidence: "进程身份与端口所有权未同时满足 d-token-owned lifecycle 合同。".to_string(),
+            remediation: None,
+        }),
+        _ => issues.push(DoctorIssue {
+            id: "service-not-running".to_string(),
+            category: "runtime".to_string(),
+            severity: "error".to_string(),
+            state: "repairable".to_string(),
+            title: "d-token 本地服务未运行".to_string(),
+            impact: "Agent 请求当前无法经过 d-token。".to_string(),
+            cause: "未检测到由当前桌面应用管理的运行实例。".to_string(),
+            evidence: "127.0.0.1:18001 未返回已验证的 d-token runtime identity。".to_string(),
+            remediation: Some(DoctorRemediation {
+                kind: "restart_managed_service".to_string(),
+                label: "启动并验证本地服务".to_string(),
+                risk: "low".to_string(),
+                writes_config: false,
+                requires_confirmation: true,
+                destination: None,
+            }),
+        }),
+    }
+
+    if doctor_agent_ready(&tools) {
+        healthy += 1;
+    } else {
+        issues.push(DoctorIssue {
+            id: "supported-agent-missing".to_string(),
+            category: "route".to_string(),
+            severity: "warning".to_string(),
+            state: "manual".to_string(),
+            title: "未检测到当前验收 Agent".to_string(),
+            impact: "无法证明真实 Agent 请求已经连接到 d-token。".to_string(),
+            cause: "OpenCode 当前不在 PATH，或尚未完成安装与连接。".to_string(),
+            evidence: "本次本地工具扫描未检测到 OpenCode；RTK 与外部 Headroom 不参与此门禁。"
+                .to_string(),
+            remediation: Some(DoctorRemediation {
+                kind: "open_install".to_string(),
+                label: "前往安装与连接".to_string(),
+                risk: "medium".to_string(),
+                writes_config: true,
+                requires_confirmation: true,
+                destination: Some("install".to_string()),
+            }),
+        });
+    }
+
+    let active_ok = active.get("state").and_then(Value::as_str) == Some("loaded")
+        && active
+            .get("route_count")
+            .and_then(Value::as_u64)
+            .unwrap_or(0)
+            > 0
+        && active
+            .get("provider_count")
+            .and_then(Value::as_u64)
+            .unwrap_or(0)
+            > 0
+        && active.get("fallback_disabled").and_then(Value::as_bool) == Some(true);
+    if active_ok {
+        healthy += 1;
+    } else {
+        issues.push(DoctorIssue {
+            id: "active-config-not-ready".to_string(),
+            category: "route".to_string(),
+            severity: "error".to_string(),
+            state: "manual".to_string(),
+            title: "活动路由配置尚未就绪".to_string(),
+            impact: "本地服务即使启动，也不能安全路由到已确认的 Provider。".to_string(),
+            cause: "活动配置缺少路由、Provider，或静默 fallback 尚未被证明禁用。".to_string(),
+            evidence: format!(
+                "state={} · routes={} · providers={} · fallback_disabled={}",
+                active
+                    .get("state")
+                    .and_then(Value::as_str)
+                    .unwrap_or("unknown"),
+                active
+                    .get("route_count")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0),
+                active
+                    .get("provider_count")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0),
+                active
+                    .get("fallback_disabled")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false)
+            ),
+            remediation: Some(DoctorRemediation {
+                kind: "open_install".to_string(),
+                label: "前往安装与连接".to_string(),
+                risk: "high".to_string(),
+                writes_config: true,
+                requires_confirmation: true,
+                destination: Some("install".to_string()),
+            }),
+        });
+    }
+
+    if route.get("ok").and_then(Value::as_bool).unwrap_or(false) {
+        healthy += 1;
+    } else if active_ok && service.get("state").and_then(Value::as_str) == Some("running") {
+        issues.push(DoctorIssue {
+            id: "route-verification-failed".to_string(),
+            category: "route".to_string(),
+            severity: "warning".to_string(),
+            state: "manual".to_string(),
+            title: "Agent 路由复检未通过".to_string(),
+            impact: "配置文件存在，但运行时、Dashboard 或脱敏导出证据不完整。".to_string(),
+            cause: "至少一个路由验证步骤未返回当前快照的通过证据。".to_string(),
+            evidence: format!(
+                "passed={}/{}",
+                route.get("passed").and_then(Value::as_u64).unwrap_or(0),
+                route.get("total").and_then(Value::as_u64).unwrap_or(0)
+            ),
+            remediation: Some(DoctorRemediation {
+                kind: "open_install".to_string(),
+                label: "检查连接配置".to_string(),
+                risk: "medium".to_string(),
+                writes_config: true,
+                requires_confirmation: true,
+                destination: Some("install".to_string()),
+            }),
+        });
+    }
+
+    match rollback_state {
+        Ok(_) => healthy += 1,
+        Err(error) => issues.push(DoctorIssue {
+            id: "rollback-state-unreadable".to_string(),
+            category: "security".to_string(),
+            severity: "error".to_string(),
+            state: "manual".to_string(),
+            title: "回退证据无法读取".to_string(),
+            impact: "新的配置写入与回退操作应保持锁定，避免丢失恢复能力。".to_string(),
+            cause: "桌面事务存储或配置备份目录无法完成只读验证。".to_string(),
+            evidence: sanitize_command_output(&error),
+            remediation: Some(DoctorRemediation {
+                kind: "open_changes".to_string(),
+                label: "查看备份与回退".to_string(),
+                risk: "high".to_string(),
+                writes_config: false,
+                requires_confirmation: false,
+                destination: Some("changes".to_string()),
+            }),
+        }),
+    }
+
+    let collected_at = now_timestamp();
+    let revision = format!(
+        "doctor-{}",
+        stable_hash(
+            &json!({
+                "collected_at": collected_at,
+                "service": service,
+                "active": active,
+                "route_ok": route.get("ok"),
+                "issues": issues.iter().map(|issue| issue.id.as_str()).collect::<Vec<_>>()
+            })
+            .to_string()
+        )
+    );
+    let repairable = issues
+        .iter()
+        .filter(|issue| issue.state == "repairable")
+        .count();
+    let manual = issues
+        .iter()
+        .filter(|issue| issue.state == "manual")
+        .count();
+    let blocked = issues
+        .iter()
+        .filter(|issue| issue.state == "blocked")
+        .count();
+    let report = DoctorReport {
+        ok: issues.is_empty(),
+        mode_name: "doctor-report-v2".to_string(),
+        revision,
+        source: "dtoken-desktop-control-plane".to_string(),
+        freshness: "fresh".to_string(),
+        collected_at,
+        summary: if issues.is_empty() {
+            "All common Doctor checks passed".to_string()
+        } else {
+            format!("{} common Doctor issue(s) need attention", issues.len())
+        },
+        counts: DoctorCounts {
+            healthy,
+            repairable,
+            manual,
+            blocked,
+        },
+        issues,
+    };
+    if let Ok(value) = serde_json::to_value(&report) {
+        let _ = write_json_app_state(&["doctor", "latest.json"], &value);
+    }
+    let _ = append_desktop_event(
+        "doctor_scan",
+        if report.ok { "ok" } else { "attention" },
+        json!({
+            "revision": report.revision,
+            "repairable": report.counts.repairable,
+            "manual": report.counts.manual,
+            "blocked": report.counts.blocked,
+        }),
+    );
+    report
+}
+
+fn validate_doctor_repair_request(request: &DoctorRepairRequest) -> Result<Vec<String>, String> {
+    let snapshot = read_app_state(&["doctor", "latest.json"])
+        .map_err(|_| "Run Doctor before preparing a repair".to_string())?;
+    if doctor_v2_snapshot_freshness(&snapshot, epoch_ms()) != "fresh" {
+        return Err("The Doctor snapshot is stale; scan again before repairing".to_string());
+    }
+    let report: DoctorReport = serde_json::from_value(snapshot)
+        .map_err(|_| "The saved Doctor snapshot is invalid".to_string())?;
+    if request.report_revision != report.revision {
+        return Err("The Doctor snapshot changed; scan again before repairing".to_string());
+    }
+    if request.issue_ids.is_empty() || request.issue_ids.len() > 8 {
+        return Err("Select at least one valid Doctor issue".to_string());
+    }
+    let mut kinds = Vec::new();
+    for issue_id in &request.issue_ids {
+        let issue = report
+            .issues
+            .iter()
+            .find(|issue| &issue.id == issue_id)
+            .ok_or_else(|| "A selected Doctor issue no longer exists".to_string())?;
+        let remediation = issue
+            .remediation
+            .as_ref()
+            .filter(|item| issue.state == "repairable" && item.risk == "low")
+            .ok_or_else(|| {
+                "A selected Doctor issue is not eligible for common repair".to_string()
+            })?;
+        if remediation.kind != "restart_managed_service" {
+            return Err("The selected Doctor repair is not on the safe allowlist".to_string());
+        }
+        kinds.push(remediation.kind.clone());
+    }
+    kinds.sort();
+    kinds.dedup();
+    Ok(kinds)
+}
+
+#[tauri::command]
+fn preview_doctor_common_repair(request: DoctorRepairRequest) -> Value {
+    match validate_doctor_repair_request(&request) {
+        Ok(_) => json!({
+            "ok": true,
+            "mode": "doctor-repair-plan",
+            "report_revision": request.report_revision,
+            "issue_ids": request.issue_ids,
+            "risk": "low",
+            "summary": "Restart the verified d-token-owned service and run Doctor again.",
+            "writes_config": false,
+            "external_processes_touched": false,
+        }),
+        Err(error) => json!({
+            "ok": false,
+            "mode": "doctor-repair-plan",
+            "report_revision": request.report_revision,
+            "issue_ids": request.issue_ids,
+            "risk": "blocked",
+            "summary": error,
+        }),
+    }
+}
+
+#[tauri::command]
+fn apply_doctor_common_repair(request: DoctorRepairRequest) -> Value {
+    if request.confirmed != Some(true) {
+        return json!({
+            "ok": false,
+            "mode": "doctor-action-receipt",
+            "summary": "Explicit confirmation is required",
+            "report": get_doctor_snapshot(),
+        });
+    }
+    let kinds = match validate_doctor_repair_request(&request) {
+        Ok(kinds) => kinds,
+        Err(error) => {
+            return json!({
+                "ok": false,
+                "mode": "doctor-action-receipt",
+                "summary": error,
+                "report": get_doctor_snapshot(),
+            })
+        }
+    };
+    let operation_id = format!("doctor-repair-{}", stable_hash(&now_timestamp()));
+    let mut action_ok = true;
+    for kind in kinds {
+        if kind == "restart_managed_service" {
+            let result = restart_dtoken_service();
+            action_ok &= result.ok;
+        }
+    }
+    let report = run_doctor();
+    let _ = append_desktop_event(
+        "doctor_repair",
+        if action_ok { "ok" } else { "failed" },
+        json!({
+            "operation_id": operation_id,
+            "issue_ids": request.issue_ids,
+            "post_scan_revision": report.revision,
+            "post_scan_ok": report.ok,
+        }),
+    );
+    json!({
+        "ok": action_ok,
+        "mode": "doctor-action-receipt",
+        "operation_id": operation_id,
+        "summary": if action_ok { "Repair completed and Doctor verification reran" } else { "Repair was refused or failed; Doctor verification reran" },
+        "report": report,
+    })
+}
+
+fn doctor_domain_module_id(module_id: &str) -> Option<DoctorModuleId> {
+    match module_id {
+        "core" | "core_service_lifecycle" => Some(DoctorModuleId::CoreServiceLifecycle),
+        "agent" | "agent_hybrid_reinject" => Some(DoctorModuleId::AgentHookPlugin),
+        "agent_instructions" => Some(DoctorModuleId::AgentInstructions),
+        "agent_hook_plugin" => Some(DoctorModuleId::AgentHookPlugin),
+        "agent_skill" => Some(DoctorModuleId::AgentSkill),
+        "agent_metadata_mcp" => Some(DoctorModuleId::AgentMetadataMcp),
+        "optical" | "optical_shadow_policy" => Some(DoctorModuleId::OpticalShadowPolicy),
+        "platform" | "platform_autostart" => Some(DoctorModuleId::PlatformAutostart),
+        "recovery" | "recovery_rollback_evidence" => Some(DoctorModuleId::RecoveryRollbackEvidence),
+        _ => None,
+    }
+}
+
+fn doctor_domain_selection(
+    module_id: DoctorModuleId,
+    selection: &DoctorModuleRepairSelection,
+) -> Result<DoctorRepairSelection, String> {
+    let scope = match selection.scope.as_str() {
+        "global" => DoctorRepairScope::Global,
+        "project" => DoctorRepairScope::Project,
+        _ => return Err("Doctor repair scope must be global or project".to_string()),
+    };
+    let agent_module = matches!(
+        module_id,
+        DoctorModuleId::AgentInstructions
+            | DoctorModuleId::AgentHookPlugin
+            | DoctorModuleId::AgentSkill
+            | DoctorModuleId::AgentMetadataMcp
+    );
+    Ok(DoctorRepairSelection {
+        scope,
+        agent_ids: if agent_module {
+            selection.agent_ids.clone()
+        } else {
+            Vec::new()
+        },
+        route_ids: Vec::new(),
+    })
+}
+
+fn doctor_plan_path(plan_id: &str) -> Result<PathBuf, String> {
+    if plan_id.is_empty()
+        || plan_id.len() > 128
+        || !plan_id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+    {
+        return Err("Invalid Doctor repair plan id".to_string());
+    }
+    Ok(app_state_dir()
+        .join("doctor")
+        .join("plans")
+        .join(format!("{plan_id}.json")))
+}
+
+fn store_doctor_plan(plan: &StoredDoctorModulePlan) -> Result<(), String> {
+    let file_name = format!("{}.json", plan.plan_id);
+    write_json_app_state(
+        &["doctor", "plans", &file_name],
+        &serde_json::to_value(plan).map_err(|error| error.to_string())?,
+    )
+    .map(|_| ())
+}
+
+fn load_doctor_plan(plan_id: &str) -> Result<StoredDoctorModulePlan, String> {
+    let path = doctor_plan_path(plan_id)?;
+    let bytes = fs::read(&path).map_err(|_| "Doctor repair plan is unavailable".to_string())?;
+    if bytes.len() > 2 * 1024 * 1024 {
+        return Err("Doctor repair plan exceeds the size limit".to_string());
+    }
+    serde_json::from_slice(&bytes).map_err(|_| "Doctor repair plan is invalid".to_string())
+}
+
+fn doctor_plan_snapshot_is_current(snapshot_revision: &str) -> bool {
+    doctor_v3_snapshot_value().is_some_and(|snapshot| {
+        doctor_v3_snapshot_is_fresh(&snapshot, epoch_ms())
+            && snapshot.get("revision").and_then(Value::as_str) == Some(snapshot_revision)
+    })
+}
+
+#[tauri::command]
+fn preview_doctor_repair(request: PreviewDoctorModuleRepairRequest) -> Value {
+    if !doctor_plan_snapshot_is_current(&request.snapshot_revision) {
+        return json!({
+            "ok": false,
+            "schema_version": 3,
+            "error": "Doctor snapshot is stale; scan again before preparing a repair",
+        });
+    }
+    let Some(domain_module_id) = doctor_domain_module_id(&request.module_id) else {
+        return json!({"ok": false, "schema_version": 3, "error": "Unknown Doctor repair module"});
+    };
+    if matches!(
+        request.module_id.as_str(),
+        "optical" | "optical_shadow_policy"
+    ) {
+        return json!({
+            "ok": false,
+            "schema_version": 3,
+            "error": "Optical Shadow changes must be reviewed in Visual Compression",
+            "destination": "visual",
+        });
+    }
+    if matches!(
+        request.module_id.as_str(),
+        "platform" | "platform_autostart"
+    ) {
+        return json!({
+            "ok": false,
+            "schema_version": 3,
+            "error": "Autostart intent must be selected in Install & Connect",
+            "destination": "install",
+        });
+    }
+    if matches!(
+        request.module_id.as_str(),
+        "recovery" | "recovery_rollback_evidence"
+    ) {
+        return json!({
+            "ok": false,
+            "schema_version": 3,
+            "error": "Rollback must be previewed from Backup & Rollback",
+            "destination": "changes",
+        });
+    }
+    let created_at_ms = epoch_ms();
+    let expires_at_ms = created_at_ms.saturating_add(DOCTOR_PLAN_TTL_MS);
+    let plan_id = format!("doctor-plan-{}", Uuid::new_v4().simple());
+    let domain_selection = match doctor_domain_selection(domain_module_id, &request.selection) {
+        Ok(selection) => selection,
+        Err(error) => return json!({"ok": false, "schema_version": 3, "error": error}),
+    };
+    let domain_plan = match DoctorDomainPlan::new(
+        plan_id.clone(),
+        request.snapshot_revision.clone(),
+        domain_module_id,
+        domain_selection,
+        created_at_ms,
+        expires_at_ms,
+    ) {
+        Ok(plan) => plan,
+        Err(error) => return json!({"ok": false, "schema_version": 3, "error": error.to_string()}),
+    };
+
+    let mut agent_review_digests = HashMap::new();
+    let mut agent_plans = Vec::new();
+    if matches!(
+        domain_module_id,
+        DoctorModuleId::AgentInstructions
+            | DoctorModuleId::AgentHookPlugin
+            | DoctorModuleId::AgentSkill
+            | DoctorModuleId::AgentMetadataMcp
+    ) {
+        if request.selection.agent_ids.is_empty() {
+            return json!({"ok": false, "schema_version": 3, "error": "Select at least one Agent"});
+        }
+        for agent_id in &request.selection.agent_ids {
+            if !matches!(agent_id.as_str(), "claude-code" | "codex" | "opencode") {
+                agent_plans.push(json!({
+                    "agent_id": agent_id,
+                    "state": "blocked",
+                    "summary": "This Agent has no verified d-token integration executor",
+                    "targets": [],
+                }));
+                continue;
+            }
+            match doctor_agent_has_managed_evidence(agent_id, &request.selection) {
+                Ok(true) => {}
+                Ok(false) => {
+                    agent_plans.push(json!({
+                        "agent_id": agent_id,
+                        "state": "blocked",
+                        "summary": "No existing d-token managed integration evidence was found; use Install & Connect for first-time setup",
+                        "targets": [],
+                    }));
+                    continue;
+                }
+                Err(error) => {
+                    agent_plans.push(json!({
+                        "agent_id": agent_id,
+                        "state": "blocked",
+                        "summary": sanitize_command_output(&error),
+                        "targets": [],
+                    }));
+                    continue;
+                }
+            }
+            match doctor_prepare_agent_integration(agent_id, &request.selection) {
+                Ok(prepared) => {
+                    agent_review_digests
+                        .insert(agent_id.clone(), prepared.plan.review_digest.clone());
+                    agent_plans.push(json!({
+                        "agent_id": agent_id,
+                        "state": if prepared.plan.targets.iter().all(|target| target.before_sha256 == target.after_sha256) { "no_change" } else { "review" },
+                        "summary": "Existing d-token managed surfaces were inspected and bound to this review",
+                        "review_digest": prepared.plan.review_digest,
+                        "new_session_required": prepared.plan.new_session_required,
+                        "targets": prepared.plan.targets,
+                    }));
+                }
+                Err(error) => agent_plans.push(json!({
+                    "agent_id": agent_id,
+                    "state": "blocked",
+                    "summary": sanitize_command_output(&error),
+                    "targets": [],
+                })),
+            }
+        }
+        if agent_review_digests.is_empty() {
+            return json!({
+                "ok": false,
+                "schema_version": 3,
+                "error": "None of the selected Agents has an eligible existing d-token managed target",
+                "agents": agent_plans,
+            });
+        }
+    }
+
+    let mut digest_entries = agent_review_digests.iter().collect::<Vec<_>>();
+    digest_entries.sort_by(|left, right| left.0.cmp(right.0));
+    let review_digest = format!(
+        "doctor-review-{}",
+        stable_hash(
+            &json!({
+                "domain": domain_plan.review_digest,
+                "module_id": request.module_id,
+                "selection": request.selection,
+                "agents": digest_entries,
+            })
+            .to_string(),
+        )
+    );
+    let stored = StoredDoctorModulePlan {
+        schema_version: 3,
+        plan_id: plan_id.clone(),
+        snapshot_revision: request.snapshot_revision.clone(),
+        module_id: request.module_id.clone(),
+        selection: request.selection.clone(),
+        created_at_ms,
+        expires_at_ms,
+        review_digest: review_digest.clone(),
+        domain_plan,
+        agent_review_digests,
+    };
+    if let Err(error) = store_doctor_plan(&stored) {
+        return json!({"ok": false, "schema_version": 3, "error": sanitize_command_output(&error)});
+    }
+    json!({
+        "ok": true,
+        "schema_version": 3,
+        "plan_id": plan_id,
+        "snapshot_revision": request.snapshot_revision,
+        "module_id": request.module_id,
+        "selection": request.selection,
+        "risk": if agent_plans.is_empty() { "low" } else { "medium" },
+        "created_at_ms": created_at_ms,
+        "expires_at_ms": expires_at_ms,
+        "review_digest": review_digest,
+        "summary": if agent_plans.is_empty() { "Restart or start only the identity-verified d-token-owned service, then rescan." } else { "Apply each selected Agent as an independent reviewed transaction, continue after individual failures, then rescan." },
+        "agents": agent_plans,
+        "actions": if matches!(domain_module_id, DoctorModuleId::CoreServiceLifecycle) { json!([{ "action_id": "restart_managed_service", "summary": "Start or restart the verified d-token-owned service", "targets": [] }]) } else { json!([]) },
+    })
+}
+
+#[tauri::command]
+fn apply_doctor_repair(request: ApplyDoctorModuleRepairRequest) -> Value {
+    if !request.confirmed {
+        return json!({"ok": false, "schema_version": 3, "outcome": "blocked", "summary": "Explicit confirmation is required"});
+    }
+    let stored = match load_doctor_plan(&request.plan_id) {
+        Ok(plan) => plan,
+        Err(error) => {
+            return json!({"ok": false, "schema_version": 3, "outcome": "blocked", "summary": error})
+        }
+    };
+    let now = epoch_ms();
+    let matches_review = stored.schema_version == 3
+        && stored.review_digest == request.review_digest
+        && stored.snapshot_revision == request.snapshot_revision
+        && stored.module_id == request.module_id
+        && stored.selection == request.selection
+        && now < stored.expires_at_ms
+        && doctor_plan_snapshot_is_current(&stored.snapshot_revision)
+        && stored
+            .domain_plan
+            .validate_at(now, &stored.snapshot_revision)
+            .is_ok();
+    if !matches_review {
+        return json!({"ok": false, "schema_version": 3, "outcome": "blocked", "summary": "Doctor repair review is stale; scan and review again"});
+    }
+    let started_at_ms = now;
+    let operation_id = format!("doctor-operation-{}", Uuid::new_v4().simple());
+    let mut agent_receipts = Vec::new();
+    let mut attempted = 0usize;
+    let mut verified = 0usize;
+    let mut core_ok = None;
+
+    if stored.module_id == "core" || stored.module_id == "core_service_lifecycle" {
+        let before = dtoken_service_status_value();
+        let state = before
+            .get("state")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown");
+        let action = if state == "running" {
+            ActionResult {
+                ok: true,
+                summary: "d-token service is already running and identity-verified".to_string(),
+                logs: Vec::new(),
+                tools: all_checks(),
+            }
+        } else {
+            restart_dtoken_service_impl()
+        };
+        core_ok = Some(action.ok);
+    } else {
+        for agent_id in &stored.selection.agent_ids {
+            let Some(expected_digest) = stored.agent_review_digests.get(agent_id) else {
+                agent_receipts.push(json!({
+                    "agent_id": agent_id,
+                    "outcome": "blocked",
+                    "summary": "This Agent was blocked during preview and was not attempted",
+                }));
+                continue;
+            };
+            attempted += 1;
+            if !doctor_agent_has_managed_evidence(agent_id, &stored.selection).unwrap_or(false) {
+                agent_receipts.push(json!({
+                    "agent_id": agent_id,
+                    "outcome": "blocked",
+                    "summary": "Existing d-token managed evidence changed after review",
+                }));
+                continue;
+            }
+            let prepared = match doctor_prepare_agent_integration(agent_id, &stored.selection) {
+                Ok(prepared) if &prepared.plan.review_digest == expected_digest => prepared,
+                Ok(_) => {
+                    agent_receipts.push(json!({
+                        "agent_id": agent_id,
+                        "outcome": "blocked",
+                        "summary": "Agent files changed after review; this Agent was skipped",
+                    }));
+                    continue;
+                }
+                Err(error) => {
+                    agent_receipts.push(json!({
+                        "agent_id": agent_id,
+                        "outcome": "failed",
+                        "summary": sanitize_command_output(&error),
+                    }));
+                    continue;
+                }
+            };
+            match apply_agent_integration(prepared, &config_backup_root(), expected_digest) {
+                Ok(receipt) => {
+                    let verification = verify_agent_integration_transaction(
+                        &receipt.transaction_id,
+                        &config_backup_root(),
+                    );
+                    let ok = verification.as_ref().is_ok_and(|result| result.ok);
+                    if ok {
+                        verified += 1;
+                    }
+                    agent_receipts.push(json!({
+                        "agent_id": agent_id,
+                        "outcome": if ok { "verified" } else { "partial" },
+                        "summary": if ok { "Agent transaction applied and target hashes verified" } else { "Agent files were written, but post-verification is incomplete" },
+                        "transaction_id": receipt.transaction_id,
+                        "rollback_ids": receipt.rollback_ids,
+                        "new_session_required": receipt.new_session_required,
+                        "trust_required": receipt.trust_required,
+                    }));
+                }
+                Err(error) => agent_receipts.push(json!({
+                    "agent_id": agent_id,
+                    "outcome": "failed",
+                    "summary": sanitize_command_output(&format!("{error:#}")),
+                })),
+            }
+        }
+    }
+    let _ = durable_remove_file(&doctor_plan_path(&stored.plan_id).unwrap_or_default());
+    let post_snapshot = run_doctor_scan_value();
+    let post_revision = post_snapshot
+        .get("revision")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    let outcome = if let Some(ok) = core_ok {
+        if ok {
+            "verified"
+        } else {
+            "failed"
+        }
+    } else if attempted > 0 && verified == attempted {
+        "verified"
+    } else if verified > 0 {
+        "partial"
+    } else {
+        "failed"
+    };
+    let domain_outcome = if outcome == "failed" {
+        DoctorRepairOutcome::Failed
+    } else {
+        DoctorRepairOutcome::Applied
+    };
+    let domain_verification = match outcome {
+        "verified" => DoctorVerificationState::Verified,
+        "partial" => DoctorVerificationState::Partial,
+        _ => DoctorVerificationState::Failed,
+    };
+    let completed_at_ms = epoch_ms();
+    let domain_receipt = DoctorDomainReceipt::from_plan(
+        &stored.domain_plan,
+        operation_id.clone(),
+        domain_outcome,
+        domain_verification,
+        post_revision.clone(),
+        started_at_ms,
+        completed_at_ms,
+    )
+    .ok();
+    let receipt = json!({
+        "ok": outcome != "failed",
+        "schema_version": 3,
+        "operation_id": operation_id,
+        "plan_id": stored.plan_id,
+        "plan_digest": stored.review_digest,
+        "snapshot_revision": stored.snapshot_revision,
+        "module_id": stored.module_id,
+        "outcome": outcome,
+        "verification": outcome,
+        "started_at_ms": started_at_ms,
+        "completed_at_ms": completed_at_ms,
+        "post_scan_revision": post_revision,
+        "agents": agent_receipts,
+        "snapshot": post_snapshot,
+        "contract": domain_receipt,
+    });
+    let receipt_name = format!(
+        "{}.json",
+        receipt
+            .get("operation_id")
+            .and_then(Value::as_str)
+            .unwrap_or("doctor-operation")
+    );
+    let _ = write_json_app_state(&["doctor", "receipts", &receipt_name], &receipt);
+    let _ = append_desktop_event(
+        "doctor_repair_v3",
+        if outcome == "verified" { "ok" } else { outcome },
+        json!({
+            "operation_id": receipt.get("operation_id"),
+            "module_id": receipt.get("module_id"),
+            "outcome": outcome,
+            "post_scan_revision": receipt.get("post_scan_revision"),
+        }),
+    );
+    receipt
+}
+
+#[tauri::command]
+fn verify_doctor_repair(request: VerifyDoctorRepairRequest) -> Value {
+    let snapshot = run_doctor_scan_value();
+    json!({
+        "ok": doctor_v3_snapshot_is_fresh(&snapshot, epoch_ms()),
+        "schema_version": 3,
+        "operation_id": request.operation_id,
+        "snapshot": snapshot,
+    })
 }
 
 fn doctor_agent_ready(tools: &[ToolCheck]) -> bool {
@@ -4122,7 +9147,6 @@ fn run_product_readiness_check() -> Value {
         .unwrap_or(false);
     let active_ok = active.get("state").and_then(Value::as_str) == Some("loaded");
     let detected_tools = detect.tools.iter().filter(|tool| tool.installed).count();
-    let doctor_ran = !doctor.logs.is_empty();
     let install_ok = install
         .get("targets")
         .and_then(Value::as_array)
@@ -4140,7 +9164,7 @@ fn run_product_readiness_check() -> Value {
         json!({
             "id": "agent_detection",
             "label": "Agent and tool discovery",
-            "ok": !detect.tools.is_empty(),
+            "ok": doctor_agent_ready(&detect.tools),
             "summary": format!("{detected_tools}/{} known local tools available", detect.tools.len()),
             "detail": { "tools": detect.tools },
         }),
@@ -4189,9 +9213,9 @@ fn run_product_readiness_check() -> Value {
         json!({
             "id": "doctor",
             "label": "Doctor diagnostics",
-            "ok": doctor_ran,
+            "ok": doctor.ok,
             "summary": doctor.summary,
-            "detail": { "logs": doctor.logs, "tools": doctor.tools },
+            "detail": doctor,
         }),
     ];
     let passed = checks
@@ -4524,6 +9548,34 @@ fn offline_control_plane_data(
     backup_points: Vec<Value>,
 ) -> Value {
     let changes = changes_from_route_drafts(&route_drafts);
+    if let Some(mut cached) = load_stale_runtime_snapshot(
+        LAST_VERIFIED_DESKTOP_DETAIL,
+        "detail",
+        reason,
+        "get_desktop_data",
+    ) {
+        let desktop_events = desktop_transaction_events();
+        if let Some(object) = cached.as_object_mut() {
+            let mut recent_events = object
+                .get("recentEvents")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default();
+            recent_events.extend(desktop_events.iter().cloned());
+            object.insert("active_config".to_string(), active_route_config_status());
+            object.insert("service".to_string(), dtoken_service_status_value());
+            object.insert("tools".to_string(), json!(all_checks()));
+            object.insert("recentEvents".to_string(), json!(recent_events));
+            object.insert(
+                "desktopTransactionEvents".to_string(),
+                json!(desktop_events),
+            );
+            object.insert("changes".to_string(), json!(changes));
+            object.insert("routeDrafts".to_string(), json!(route_drafts));
+            object.insert("backupPoints".to_string(), json!(backup_points));
+        }
+        return cached;
+    }
     json!({
         "source": "dtoken-desktop-control-plane",
         "desktop_data_source": "dtoken-desktop-control-plane",
@@ -4573,6 +9625,48 @@ fn offline_control_plane_data(
     })
 }
 
+fn offline_desktop_summary(reason: &str) -> Value {
+    if let Some(mut cached) = load_stale_runtime_snapshot(
+        LAST_VERIFIED_DESKTOP_SUMMARY,
+        "summary",
+        reason,
+        "get_desktop_summary",
+    ) {
+        if let Some(object) = cached.as_object_mut() {
+            object.insert("active_config".to_string(), active_route_config_status());
+        }
+        return cached;
+    }
+    json!({
+        "source": "dtoken-desktop-control-plane",
+        "desktop_data_source": "dtoken-desktop-control-plane",
+        "desktop_payload_kind": "summary",
+        "evidence_state": "partial",
+        "freshness": "local",
+        "complete": false,
+        "partial": true,
+        "runtime_available": false,
+        "runtime_evidence_state": "unavailable",
+        "error": reason,
+        "stats": {},
+        "history": {},
+        "metrics": {},
+        "providers": [],
+        "routes": [],
+        "instances": [],
+        "route_decisions": [],
+        "request_logs": [],
+        "active_config": active_route_config_status(),
+        "transaction_provenance": {
+            "source": "dtoken-desktop-control-plane",
+            "command": "get_desktop_summary",
+            "schema_version": 1,
+            "generated_at": now_timestamp(),
+            "runtime_required": false
+        }
+    })
+}
+
 fn changes_from_route_drafts(route_drafts: &[Value]) -> Vec<Value> {
     route_drafts
         .iter()
@@ -4613,6 +9707,7 @@ fn complete_desktop_data(
         json!("dtoken-local-service"),
     );
     object.insert("evidence_state".to_string(), json!("verified"));
+    object.insert("desktop_payload_kind".to_string(), json!("detail"));
     object.insert("freshness".to_string(), json!("fresh"));
     object.insert("complete".to_string(), json!(true));
     object.insert("partial".to_string(), json!(false));
@@ -4662,8 +9757,184 @@ fn complete_desktop_data(
     runtime
 }
 
-#[tauri::command]
-fn get_desktop_data() -> Value {
+fn is_verified_runtime_snapshot(payload: &Value, payload_kind: &str) -> bool {
+    payload.get("source").and_then(Value::as_str) == Some("dtoken-owned-runtime")
+        && payload.get("desktop_data_source").and_then(Value::as_str)
+            == Some("dtoken-local-service")
+        && payload.get("desktop_payload_kind").and_then(Value::as_str) == Some(payload_kind)
+        && payload.get("evidence_state").and_then(Value::as_str) == Some("verified")
+        && payload.get("runtime_available").and_then(Value::as_bool) == Some(true)
+}
+
+fn stale_runtime_snapshot(
+    mut payload: Value,
+    payload_kind: &str,
+    reason: &str,
+    command: &str,
+) -> Option<Value> {
+    if !is_verified_runtime_snapshot(&payload, payload_kind) {
+        return None;
+    }
+    let cached_collected_at = payload
+        .get("desktop_collected_at")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown")
+        .to_string();
+    let object = payload.as_object_mut()?;
+    object.insert("evidence_state".to_string(), json!("stale"));
+    object.insert("freshness".to_string(), json!("stale"));
+    object.insert("complete".to_string(), json!(false));
+    object.insert("partial".to_string(), json!(true));
+    object.insert("runtime_available".to_string(), json!(false));
+    object.insert("runtime_evidence_state".to_string(), json!("unavailable"));
+    object.insert("error".to_string(), json!(reason));
+    object.insert("runtime_health".to_string(), Value::Null);
+    object.insert(
+        "cached_snapshot".to_string(),
+        json!({
+            "state": "stale",
+            "source": "dtoken-owned-runtime",
+            "collected_at": cached_collected_at,
+            "privacy": "redacted runtime evidence only; no prompt, response, credential, or auth state"
+        }),
+    );
+    object.insert(
+        "transaction_provenance".to_string(),
+        json!({
+            "source": "dtoken-desktop-control-plane",
+            "command": command,
+            "schema_version": 1,
+            "generated_at": now_timestamp(),
+            "runtime_required": false,
+            "cached_runtime_source": "dtoken-owned-runtime"
+        }),
+    );
+    Some(payload)
+}
+
+fn load_stale_runtime_snapshot(
+    path: &[&str],
+    payload_kind: &str,
+    reason: &str,
+    command: &str,
+) -> Option<Value> {
+    read_app_state(path)
+        .ok()
+        .and_then(|payload| stale_runtime_snapshot(payload, payload_kind, reason, command))
+}
+
+fn persist_verified_runtime_snapshot(path: &[&str], payload: &mut Value, payload_kind: &str) {
+    if !is_verified_runtime_snapshot(payload, payload_kind) {
+        return;
+    }
+    let revision = payload
+        .get("desktop_revision")
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+    let already_persisted = revision.as_deref().is_some_and(|revision| {
+        read_app_state(path)
+            .ok()
+            .and_then(|cached| {
+                cached
+                    .get("desktop_revision")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned)
+            })
+            .as_deref()
+            == Some(revision)
+    });
+    if let Some(object) = payload.as_object_mut() {
+        object.insert(
+            "snapshot_persistence".to_string(),
+            json!({"state": "available", "source": "dtoken-desktop-control-plane"}),
+        );
+    }
+    if already_persisted {
+        return;
+    }
+    if let Err(error) = write_json_app_state(path, payload) {
+        if let Some(object) = payload.as_object_mut() {
+            object.insert(
+                "snapshot_persistence".to_string(),
+                json!({
+                    "state": "unavailable",
+                    "source": "dtoken-desktop-control-plane",
+                    "error": format!("Failed to persist the last verified runtime snapshot: {error}")
+                }),
+            );
+        }
+    }
+}
+
+fn complete_desktop_summary(mut runtime: Value, health: Value) -> Value {
+    let object = runtime.as_object_mut().expect("validated runtime summary");
+    object.insert("source".to_string(), json!("dtoken-owned-runtime"));
+    object.insert(
+        "desktop_data_source".to_string(),
+        json!("dtoken-local-service"),
+    );
+    object.insert("desktop_payload_kind".to_string(), json!("summary"));
+    object.insert("evidence_state".to_string(), json!("verified"));
+    object.insert("freshness".to_string(), json!("fresh"));
+    object.insert("complete".to_string(), json!(true));
+    object.insert("partial".to_string(), json!(false));
+    object.insert("runtime_available".to_string(), json!(true));
+    object.insert("runtime_evidence_state".to_string(), json!("verified"));
+    object.insert("runtime_health".to_string(), health);
+    object.insert(
+        "desktop_service_url".to_string(),
+        json!(format!("http://127.0.0.1:{DTOKEN_SERVICE_PORT}")),
+    );
+    object.insert("active_config".to_string(), active_route_config_status());
+    object.insert(
+        "transaction_provenance".to_string(),
+        json!({
+            "source": "dtoken-owned-runtime",
+            "command": "get_desktop_summary",
+            "schema_version": 1,
+            "generated_at": now_timestamp(),
+            "service_url": format!("http://127.0.0.1:{DTOKEN_SERVICE_PORT}")
+        }),
+    );
+    runtime
+}
+
+fn collect_desktop_summary_value() -> Value {
+    let health = match service_health_payload_cached() {
+        Some(health)
+            if health.get("component").and_then(Value::as_str) == Some("dtoken-core-api")
+                && matches!(
+                    health.get("status").and_then(Value::as_str),
+                    Some("healthy" | "ready")
+                ) =>
+        {
+            health
+        }
+        Some(_) => {
+            return offline_desktop_summary(
+                "The local listener did not prove dtoken-core-api health",
+            )
+        }
+        None => return offline_desktop_summary("d-token local service is unavailable"),
+    };
+    match service_json(DTOKEN_SERVICE_PORT, "/dashboard/summary") {
+        Ok(payload)
+            if payload.is_object()
+                && payload.get("source").and_then(Value::as_str)
+                    == Some("dtoken-owned-runtime") =>
+        {
+            complete_desktop_summary(payload, health)
+        }
+        Ok(_) => {
+            offline_desktop_summary("Dashboard summary did not prove d-token runtime provenance")
+        }
+        Err(error) => {
+            offline_desktop_summary(&format!("Dashboard summary is unavailable: {error}"))
+        }
+    }
+}
+
+fn collect_desktop_data_value() -> Value {
     let mut slice_errors = serde_json::Map::new();
     let route_drafts = route_profile_drafts_result().unwrap_or_else(|err| {
         slice_errors.insert(
@@ -4679,7 +9950,7 @@ fn get_desktop_data() -> Value {
         );
         vec![]
     });
-    let health = match service_health_payload() {
+    let health = match service_health_payload_cached() {
         Some(health)
             if health.get("component").and_then(Value::as_str) == Some("dtoken-core-api")
                 && matches!(
@@ -4704,7 +9975,25 @@ fn get_desktop_data() -> Value {
             )
         }
     };
-    let runtime = match service_json(DTOKEN_SERVICE_PORT, "/dashboard/payload") {
+    let (runtime_result, compatibility, protocol_injection, chain_status) =
+        thread::scope(|scope| {
+            let runtime = scope.spawn(|| service_json(DTOKEN_SERVICE_PORT, "/dashboard/payload"));
+            let compatibility =
+                scope.spawn(|| service_json(DTOKEN_SERVICE_PORT, "/compatibility/agents").ok());
+            let protocol_injection =
+                scope.spawn(|| service_json(DTOKEN_SERVICE_PORT, "/protocol-injection").ok());
+            let chain_status =
+                scope.spawn(|| service_json(DTOKEN_SERVICE_PORT, "/chain/status").ok());
+            (
+                runtime
+                    .join()
+                    .unwrap_or_else(|_| Err("dashboard worker panicked".to_string())),
+                compatibility.join().unwrap_or(None),
+                protocol_injection.join().unwrap_or(None),
+                chain_status.join().unwrap_or(None),
+            )
+        });
+    let runtime = match runtime_result {
         Ok(payload)
             if payload.is_object()
                 && payload.get("source").and_then(Value::as_str)
@@ -4731,13 +10020,12 @@ fn get_desktop_data() -> Value {
         runtime,
         route_drafts,
         backup_points,
-        service_json(DTOKEN_SERVICE_PORT, "/compatibility/agents").ok(),
-        service_json(DTOKEN_SERVICE_PORT, "/protocol-injection").ok(),
-        service_json(DTOKEN_SERVICE_PORT, "/chain/status").ok(),
+        compatibility,
+        protocol_injection,
+        chain_status,
     );
     if let Some(object) = payload.as_object_mut() {
         object.insert("runtime_health".to_string(), health);
-        object.insert("tools".to_string(), json!(all_checks()));
         object.insert("active_config".to_string(), active_route_config_status());
         object.insert(
             "desktop_slice_errors".to_string(),
@@ -4747,16 +10035,188 @@ fn get_desktop_data() -> Value {
     payload
 }
 
-#[cfg(debug_assertions)]
-fn main() {
-    tauri::Builder::default()
-        .plugin(tauri_plugin_opener::init())
-        .setup(|_| {
-            start_service_when_launched_by_autostart();
-            Ok(())
+fn finalize_desktop_snapshot(mut payload: Value) -> Value {
+    let is_summary = payload.get("desktop_payload_kind").and_then(Value::as_str) == Some("summary")
+        || payload.get("payload_kind").and_then(Value::as_str) == Some("summary");
+    let revision_input = if is_summary {
+        json!({
+            "source": payload.get("desktop_data_source").or_else(|| payload.get("source")),
+            "runtime_identity": payload.get("runtime_health").and_then(|health| health.get("runtime_identity")),
+            "runtime_instance_nonce": payload.get("runtime_health").and_then(|health| health.get("runtime_instance_nonce")),
+            "slice_revisions": payload.get("slice_revisions"),
+            "active_config": payload.get("active_config")
         })
-        .invoke_handler(tauri::generate_handler![
+    } else {
+        json!({
+            "source": payload.get("desktop_data_source").or_else(|| payload.get("source")),
+            "health": payload.get("runtime_health"),
+            "providers": payload.get("providers"),
+            "routes": payload.get("routes"),
+            "instances": payload.get("instances"),
+            "request_logs": payload.get("request_logs"),
+            "route_decisions": payload.get("route_decisions"),
+            "changes": payload.get("changes"),
+            "route_drafts": payload.get("routeDrafts"),
+            "backup_points": payload.get("backupPoints"),
+            "active_config": payload.get("active_config")
+        })
+    };
+    if let Some(object) = payload.as_object_mut() {
+        object.insert(
+            "desktop_revision".to_string(),
+            Value::String(stable_hash(&revision_input.to_string())),
+        );
+        let preserve_cached_timestamp = object.get("freshness").and_then(Value::as_str)
+            == Some("stale")
+            && object
+                .get("desktop_collected_at")
+                .and_then(Value::as_str)
+                .is_some();
+        if !preserve_cached_timestamp {
+            object.insert(
+                "desktop_collected_at".to_string(),
+                Value::String(now_timestamp()),
+            );
+        }
+    }
+    payload
+}
+
+fn collect_cached_snapshot(
+    cache: &Mutex<Option<(Instant, Value)>>,
+    operation: &'static str,
+    collector: impl FnOnce() -> Value,
+) -> Value {
+    let started_at = Instant::now();
+    let mut guard = cache
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some((collected_at, payload)) = guard.as_ref() {
+        if collected_at.elapsed() <= Duration::from_millis(300) {
+            record_native_performance(operation, "complete", started_at, "ok", true, None);
+            return payload.clone();
+        }
+    }
+    let payload = collector();
+    *guard = Some((Instant::now(), payload.clone()));
+    record_native_performance(operation, "complete", started_at, "ok", false, None);
+    payload
+}
+
+fn get_desktop_data_value() -> Value {
+    static CACHE: OnceLock<Mutex<Option<(Instant, Value)>>> = OnceLock::new();
+    collect_cached_snapshot(
+        CACHE.get_or_init(|| Mutex::new(None)),
+        "desktop_detail",
+        || {
+            let mut payload = finalize_desktop_snapshot(collect_desktop_data_value());
+            persist_verified_runtime_snapshot(LAST_VERIFIED_DESKTOP_DETAIL, &mut payload, "detail");
+            payload
+        },
+    )
+}
+
+fn get_desktop_summary_value() -> Value {
+    static CACHE: OnceLock<Mutex<Option<(Instant, Value)>>> = OnceLock::new();
+    collect_cached_snapshot(
+        CACHE.get_or_init(|| Mutex::new(None)),
+        "desktop_summary",
+        || {
+            let mut payload = finalize_desktop_snapshot(collect_desktop_summary_value());
+            persist_verified_runtime_snapshot(
+                LAST_VERIFIED_DESKTOP_SUMMARY,
+                &mut payload,
+                "summary",
+            );
+            payload
+        },
+    )
+}
+
+#[tauri::command]
+fn get_native_performance_snapshot() -> Value {
+    json!({
+        "schema_version": 1,
+        "source": "d-token-native-performance",
+        "observations": native_performance_snapshot(),
+        "privacy": "Metadata-only allowlisted timing fields."
+    })
+}
+
+#[tauri::command]
+async fn get_desktop_summary() -> Value {
+    tauri::async_runtime::spawn_blocking(get_desktop_summary_value)
+        .await
+        .unwrap_or_else(|error| {
+            offline_desktop_summary(&format!("Desktop summary task failed: {error}"))
+        })
+}
+
+#[tauri::command]
+async fn get_desktop_data() -> Value {
+    tauri::async_runtime::spawn_blocking(get_desktop_data_value)
+        .await
+        .unwrap_or_else(|err| {
+            offline_control_plane_data(&format!("Desktop data task failed: {err}"), vec![], vec![])
+        })
+}
+
+fn collect_analytics_request_page_value(cursor: Option<String>, limit: Option<u16>) -> Value {
+    let limit = limit.unwrap_or(20).clamp(1, 100);
+    let cursor = cursor.filter(|value| {
+        !value.is_empty()
+            && value.len() <= 80
+            && value.chars().all(|character| {
+                character.is_ascii_alphanumeric() || matches!(character, ':' | '-')
+            })
+    });
+    let path = cursor
+        .as_deref()
+        .map(|cursor| format!("/analytics/requests?limit={limit}&cursor={cursor}"))
+        .unwrap_or_else(|| format!("/analytics/requests?limit={limit}"));
+    service_json(DTOKEN_SERVICE_PORT, &path).unwrap_or_else(|error| {
+        json!({
+            "schema_version": 1,
+            "source": "unavailable",
+            "freshness": "unknown",
+            "items": [],
+            "returned_count": 0,
+            "total_count": 0,
+            "has_more": false,
+            "next_cursor": null,
+            "error": format!("Analytics request page is unavailable: {error}")
+        })
+    })
+}
+
+#[tauri::command]
+async fn get_analytics_request_page(cursor: Option<String>, limit: Option<u16>) -> Value {
+    tauri::async_runtime::spawn_blocking(move || {
+        collect_analytics_request_page_value(cursor, limit)
+    })
+    .await
+    .unwrap_or_else(|error| {
+        json!({
+            "schema_version": 1,
+            "source": "unavailable",
+            "freshness": "unknown",
+            "items": [],
+            "returned_count": 0,
+            "total_count": 0,
+            "has_more": false,
+            "next_cursor": null,
+            "error": format!("Analytics request page task failed: {error}")
+        })
+    })
+}
+
+macro_rules! desktop_release_handlers {
+    ($consumer:ident $(, $arguments:tt)*) => {
+        $consumer!($($arguments)* [
+            get_native_performance_snapshot,
+            get_desktop_summary,
             get_desktop_data,
+            get_analytics_request_page,
             get_app_settings,
             save_app_settings,
             check_for_updates,
@@ -4766,16 +10226,25 @@ fn main() {
             list_route_profile_drafts,
             preview_route_profile_draft_apply,
             apply_route_profile_draft,
+            preview_connection_route_plan,
+            apply_connection_route_plan,
+            rollback_connection_route_plan,
             get_active_route_config_status,
             verify_agent_route_config,
             recommend_project_policy,
-            discover_learning_sources,
+            start_learning_discovery,
+            get_learning_discovery_status,
+            list_learning_candidates,
+            cancel_learning_discovery,
+            analyze_learning_project,
             preview_learning_managed_block,
             apply_learning_managed_block,
             get_learning_delegation_capabilities,
             spawn_learning_delegation,
             cancel_learning_delegation,
             manage_backup,
+            preview_rollback,
+            apply_rollback,
             detect_tools,
             install_tool,
             preview_install_plan,
@@ -4787,77 +10256,128 @@ fn main() {
             enable_autostart,
             disable_autostart,
             start_dtoken_service,
+            restart_dtoken_service,
             stop_dtoken_service,
             run_install_transaction,
+            get_doctor_snapshot,
             run_doctor,
+            run_doctor_scan,
+            get_doctor_repair_modules,
+            preview_doctor_common_repair,
+            apply_doctor_common_repair,
+            preview_doctor_repair,
+            apply_doctor_repair,
+            verify_doctor_repair,
             manage_headroom,
-            test_opencode,
-            test_opencode_models,
-            run_opencode_workload_benchmark,
-            run_headroom_capability_smoke,
             run_product_readiness_check,
             get_dtoken_dashboard_payload,
-            export_dtoken_runtime
+            export_dtoken_runtime,
+            get_optical_observability,
+            preview_optical_plan,
+            get_optical_config_editor,
+            preview_optical_config_change,
+            apply_optical_config_change,
+            rollback_optical_config_change,
+            get_hybrid_agent_integrations,
+            preview_hybrid_agent_integration,
+            apply_hybrid_agent_integration,
+            verify_hybrid_agent_integration,
+            get_hybrid_agent_integration_transaction,
+            rollback_hybrid_agent_integration,
+            get_codebase_memory_status,
+            set_codebase_memory_package_directory,
+            open_codebase_memory_package_directory,
+            open_codebase_memory_download_page,
+            preview_codebase_memory_integration,
+            apply_codebase_memory_integration,
+            verify_codebase_memory_integration,
+            rollback_codebase_memory_integration,
+            start_codebase_memory_ui,
+            stop_codebase_memory_ui,
+            start_codebase_memory_index,
+            cancel_codebase_memory_index,
+            delete_codebase_memory_index,
+            open_codebase_memory_graph,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running d-token desktop");
+    };
+}
+
+#[cfg(any(debug_assertions, test))]
+macro_rules! debug_desktop_handlers {
+    ($consumer:ident) => {
+        desktop_release_handlers!(
+            $consumer,
+            [
+                test_opencode,
+                test_opencode_models,
+                run_opencode_workload_benchmark,
+                run_headroom_capability_smoke,
+            ]
+        )
+    };
+}
+
+macro_rules! run_desktop_app_with_handlers {
+    ([$($debug_command:ident,)*] [$($release_command:ident,)*]) => {
+        tauri::Builder::default()
+            .plugin(tauri_plugin_opener::init())
+            .setup(|_| {
+                start_service_when_launched_by_autostart();
+                Ok(())
+            })
+            .invoke_handler(tauri::generate_handler![
+            $($release_command,)*
+            $($debug_command,)*
+            ])
+            .run(tauri::generate_context!())
+            .expect("error while running d-token desktop");
+    };
+}
+
+#[cfg(debug_assertions)]
+fn main() {
+    debug_desktop_handlers!(run_desktop_app_with_handlers);
 }
 
 #[cfg(not(debug_assertions))]
 fn main() {
-    tauri::Builder::default()
-        .plugin(tauri_plugin_opener::init())
-        .setup(|_| {
-            start_service_when_launched_by_autostart();
-            Ok(())
-        })
-        .invoke_handler(tauri::generate_handler![
-            get_desktop_data,
-            get_app_settings,
-            save_app_settings,
-            check_for_updates,
-            save_route_profile_draft,
-            store_provider_credential,
-            delete_provider_credential,
-            list_route_profile_drafts,
-            preview_route_profile_draft_apply,
-            apply_route_profile_draft,
-            get_active_route_config_status,
-            verify_agent_route_config,
-            recommend_project_policy,
-            discover_learning_sources,
-            preview_learning_managed_block,
-            apply_learning_managed_block,
-            get_learning_delegation_capabilities,
-            spawn_learning_delegation,
-            cancel_learning_delegation,
-            manage_backup,
-            detect_tools,
-            install_tool,
-            preview_install_plan,
-            preview_opencode_connection,
-            apply_opencode_connection,
-            discover_upstream_candidates,
-            get_dtoken_service_status,
-            get_autostart_status,
-            enable_autostart,
-            disable_autostart,
-            start_dtoken_service,
-            stop_dtoken_service,
-            run_install_transaction,
-            run_doctor,
-            manage_headroom,
-            run_product_readiness_check,
-            get_dtoken_dashboard_payload,
-            export_dtoken_runtime
-        ])
-        .run(tauri::generate_context!())
-        .expect("error while running d-token desktop");
+    desktop_release_handlers!(run_desktop_app_with_handlers, []);
 }
+
+#[cfg(test)]
+macro_rules! release_handler_names {
+    ([$($release_command:ident,)*]) => {
+        &[$(stringify!($release_command),)*]
+    };
+}
+
+#[cfg(test)]
+macro_rules! debug_handler_names {
+    ([$($debug_command:ident,)*] [$($release_command:ident,)*]) => {
+        &[$(stringify!($release_command),)* $(stringify!($debug_command),)*]
+    };
+}
+
+#[cfg(test)]
+macro_rules! debug_only_handler_names {
+    ([$($debug_command:ident,)*] [$($_release_command:ident,)*]) => {
+        &[$(stringify!($debug_command),)*]
+    };
+}
+
+#[cfg(test)]
+const RELEASE_HANDLER_NAMES: &[&str] = desktop_release_handlers!(release_handler_names);
+
+#[cfg(test)]
+const DEBUG_HANDLER_NAMES: &[&str] = debug_desktop_handlers!(debug_handler_names);
+
+#[cfg(test)]
+const DEBUG_ONLY_HANDLER_NAMES: &[&str] = debug_desktop_handlers!(debug_only_handler_names);
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashSet;
     use std::net::TcpListener;
     use std::sync::{
         atomic::{AtomicBool, Ordering},
@@ -4868,6 +10388,252 @@ mod tests {
     fn test_state_lock() -> &'static Mutex<()> {
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
         LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    fn clear_native_performance_observations() {
+        NATIVE_PERF_OBSERVATIONS
+            .get_or_init(|| Mutex::new(VecDeque::with_capacity(MAX_NATIVE_PERF_OBSERVATIONS)))
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clear();
+    }
+
+    #[test]
+    fn debug_handler_registration_is_exact_release_superset() {
+        let release = RELEASE_HANDLER_NAMES
+            .iter()
+            .copied()
+            .collect::<HashSet<_>>();
+        let debug = DEBUG_HANDLER_NAMES.iter().copied().collect::<HashSet<_>>();
+        let debug_only = DEBUG_ONLY_HANDLER_NAMES
+            .iter()
+            .copied()
+            .collect::<HashSet<_>>();
+
+        assert_eq!(release.len(), RELEASE_HANDLER_NAMES.len());
+        assert_eq!(debug.len(), DEBUG_HANDLER_NAMES.len());
+        assert_eq!(debug_only.len(), DEBUG_ONLY_HANDLER_NAMES.len());
+        assert!(
+            !debug_only.is_empty(),
+            "debug handler registration must explicitly declare its debug-only commands"
+        );
+        assert!(
+            release.is_disjoint(&debug_only),
+            "release handler registration must not contain debug-only commands"
+        );
+
+        let expected_debug = release.union(&debug_only).copied().collect::<HashSet<_>>();
+        assert_eq!(
+            debug, expected_debug,
+            "debug registration must contain every release command plus only debug-only commands"
+        );
+    }
+
+    fn serve_one_http_response(body: &str) -> (u16, thread::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind one-shot HTTP fixture");
+        let port = listener.local_addr().expect("fixture address").port();
+        let response = format!(
+            "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{body}",
+            body.len()
+        );
+        let worker = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept one-shot HTTP request");
+            let mut request = Vec::with_capacity(256);
+            let mut chunk = [0_u8; 256];
+            loop {
+                let read = stream.read(&mut chunk).expect("read one-shot HTTP request");
+                if read == 0 {
+                    break;
+                }
+                request.extend_from_slice(&chunk[..read]);
+                if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                    break;
+                }
+            }
+            stream
+                .write_all(response.as_bytes())
+                .expect("write one-shot HTTP response");
+            stream
+                .shutdown(std::net::Shutdown::Write)
+                .expect("finish one-shot HTTP response");
+        });
+        (port, worker)
+    }
+
+    #[test]
+    fn native_performance_capture_is_bounded_and_metadata_only() {
+        let guard = test_state_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        clear_native_performance_observations();
+        for _ in 0..300 {
+            record_native_performance(
+                "desktop_summary",
+                "complete",
+                Instant::now(),
+                "ok",
+                false,
+                None,
+            );
+        }
+
+        let snapshot = native_performance_snapshot();
+        assert_eq!(snapshot.len(), MAX_NATIVE_PERF_OBSERVATIONS);
+        let serialized = serde_json::to_string(&snapshot).expect("serialize native perf snapshot");
+        for forbidden in [
+            "prompt",
+            "response",
+            "credential",
+            "provider_id",
+            "model",
+            "route_id",
+            "path",
+        ] {
+            assert!(!serialized.contains(forbidden), "leaked {forbidden}");
+        }
+        drop(guard);
+    }
+
+    #[test]
+    fn loopback_service_json_records_fixed_metadata_only_phases() {
+        let guard = test_state_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        clear_native_performance_observations();
+        let (port, worker) = serve_one_http_response(
+            r#"{"status":"healthy","private_fixture":"must-not-be-observed"}"#,
+        );
+
+        let payload = service_json(port, "/compression/optical/status")
+            .expect("parse loopback fixture payload");
+        worker.join().expect("join one-shot HTTP fixture");
+        assert_eq!(payload["status"], "healthy");
+
+        let observations = native_performance_snapshot()
+            .into_iter()
+            .filter(|observation| observation.operation == "loopback_optical_status")
+            .collect::<Vec<_>>();
+        let phases = observations
+            .iter()
+            .map(|observation| observation.phase)
+            .collect::<HashSet<_>>();
+        for required in ["connect", "write", "read", "parse", "total"] {
+            assert!(phases.contains(required), "missing {required} phase");
+        }
+        assert!(observations.iter().all(|observation| {
+            observation.result_state == "ok"
+                && !observation.cache_hit
+                && observation.error_code.is_none()
+        }));
+
+        let serialized = serde_json::to_string(&observations).expect("serialize observations");
+        for forbidden in [
+            "/compression/optical/status",
+            "127.0.0.1",
+            "must-not-be-observed",
+            "provider_id",
+            "model",
+            "route_id",
+        ] {
+            assert!(!serialized.contains(forbidden), "leaked {forbidden}");
+        }
+        drop(guard);
+    }
+
+    #[test]
+    fn loopback_json_parse_failure_uses_fixed_error_metadata() {
+        let guard = test_state_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        clear_native_performance_observations();
+        let (port, worker) = serve_one_http_response("free-text-parse-error-fixture");
+
+        let error = service_json(port, "/compression/optical/capabilities")
+            .expect_err("reject invalid JSON response");
+        worker.join().expect("join one-shot HTTP fixture");
+        assert!(!error.is_empty());
+
+        let observations = native_performance_snapshot();
+        assert!(observations.iter().any(|observation| {
+            observation.operation == "loopback_optical_capabilities"
+                && observation.phase == "parse"
+                && observation.result_state == "error"
+                && observation.error_code == Some("json_parse_failed")
+        }));
+        let serialized = serde_json::to_string(&observations).expect("serialize observations");
+        assert!(!serialized.contains("free-text-parse-error-fixture"));
+        assert!(!serialized.contains(&error));
+        drop(guard);
+    }
+
+    #[test]
+    fn retain_http_body_reuses_the_response_allocation() {
+        let mut response = String::with_capacity(256);
+        response.push_str("HTTP/1.1 200 OK\r\ncontent-type: application/json\r\n\r\n{\"ok\":true}");
+        let allocation = response.as_ptr();
+        let capacity = response.capacity();
+
+        retain_http_body(&mut response);
+
+        assert_eq!(response, r#"{"ok":true}"#);
+        assert_eq!(response.as_ptr(), allocation);
+        assert_eq!(response.capacity(), capacity);
+    }
+
+    #[test]
+    fn desktop_snapshot_cache_coalesces_concurrent_collectors() {
+        use std::sync::{atomic::AtomicUsize, Barrier};
+
+        let cache = Arc::new(Mutex::new(None));
+        let collect_count = Arc::new(AtomicUsize::new(0));
+        let barrier = Arc::new(Barrier::new(8));
+        let workers = (0..8)
+            .map(|_| {
+                let cache = Arc::clone(&cache);
+                let collect_count = Arc::clone(&collect_count);
+                let barrier = Arc::clone(&barrier);
+                thread::spawn(move || {
+                    barrier.wait();
+                    collect_cached_snapshot(&cache, "desktop_summary", || {
+                        collect_count.fetch_add(1, Ordering::SeqCst);
+                        thread::sleep(Duration::from_millis(40));
+                        json!({"source": "single-flight-fixture"})
+                    })
+                })
+            })
+            .collect::<Vec<_>>();
+
+        for worker in workers {
+            assert_eq!(
+                worker.join().expect("join snapshot collector")["source"],
+                "single-flight-fixture"
+            );
+        }
+        assert_eq!(collect_count.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn bridge_hash_authority_accounts_for_macos_codesign_mutation() {
+        assert_eq!(
+            agent_bridge_requires_embedded_hash(),
+            !cfg!(target_os = "macos")
+        );
+    }
+
+    #[test]
+    fn bridge_platform_trust_is_verified_before_sidecar_execution() {
+        let executed = AtomicBool::new(false);
+        let result = verify_platform_before_agent_bridge_execution(
+            Path::new("untrusted-dtoken-agent-bridge"),
+            |_| Err("untrusted bridge signature".to_string()),
+            |_| {
+                executed.store(true, Ordering::SeqCst);
+                Ok(json!({}))
+            },
+        );
+
+        assert_eq!(result.unwrap_err(), "untrusted bridge signature");
+        assert!(!executed.load(Ordering::SeqCst));
     }
 
     fn with_isolated_app_state<T>(name: &str, run: impl FnOnce() -> T) -> T {
@@ -4921,6 +10687,28 @@ mod tests {
             local_port: DTOKEN_SERVICE_PORT,
             agent: "OpenCode".to_string(),
         })
+    }
+
+    fn apply_test_config_change(
+        target: &Path,
+        before: &str,
+        after: &str,
+        tool: ConfigToolKind,
+    ) -> dtoken_config_patcher::BackupRecord {
+        fs::create_dir_all(target.parent().expect("test config parent"))
+            .expect("create test config parent");
+        fs::write(target, before).expect("write test config before state");
+        let patcher = config_patcher();
+        let prepared = patcher
+            .prepare_change(target, after, tool, None, RiskLevel::Medium)
+            .expect("prepare test config change");
+        let backup = patcher
+            .backup_prepared(&prepared)
+            .expect("backup test config");
+        patcher
+            .apply_prepared(&prepared, &backup)
+            .expect("apply test config change");
+        backup
     }
 
     #[test]
@@ -5015,6 +10803,7 @@ mod tests {
         let payload = complete_desktop_data(runtime, vec![], vec![], None, None, None);
         assert_eq!(payload["source"], "dtoken-owned-runtime");
         assert_eq!(payload["desktop_data_source"], "dtoken-local-service");
+        assert_eq!(payload["desktop_payload_kind"], "detail");
         assert_eq!(payload["freshness"], "fresh");
         assert_eq!(payload["complete"], true);
         assert_eq!(
@@ -5032,23 +10821,199 @@ mod tests {
     }
 
     #[test]
-    fn listener_pid_parser_requires_the_manifest_pid() {
-        assert!(listener_output_contains_pid("723\n", 723));
-        assert!(listener_output_contains_pid(
-            "TCP    127.0.0.1:18001    0.0.0.0:0    LISTENING    723\n",
-            723
+    fn complete_desktop_summary_exposes_the_verified_loopback_address() {
+        let payload = complete_desktop_summary(
+            json!({"source": "dtoken-owned-runtime", "stats": {}}),
+            json!({
+                "status": "healthy",
+                "component": "dtoken-core-api",
+                "runtime_identity": "dtoken-runtime-local"
+            }),
+        );
+
+        assert_eq!(
+            payload["desktop_service_url"],
+            format!("http://127.0.0.1:{DTOKEN_SERVICE_PORT}")
+        );
+        assert_eq!(
+            payload["runtime_health"]["runtime_identity"],
+            "dtoken-runtime-local"
+        );
+    }
+
+    #[test]
+    fn stale_runtime_summary_preserves_verified_metrics_and_original_timestamp() {
+        let cached = finalize_desktop_snapshot(complete_desktop_summary(
+            json!({
+                "source": "dtoken-owned-runtime",
+                "stats": {"requests": {"total": 42, "failed": 1}},
+                "routes": [{"id": "route-a"}],
+                "request_logs": [{"route_id": "route-a", "input_tokens_before": 12}]
+            }),
+            json!({
+                "status": "healthy",
+                "component": "dtoken-core-api",
+                "runtime_identity": "dtoken-runtime-local"
+            }),
         ));
-        assert!(!listener_output_contains_pid("1723\n", 723));
-        assert!(!listener_output_contains_pid(
-            "TCP    127.0.0.1:18001    0.0.0.0:0    LISTENING    999\n",
-            723
-        ));
+        let collected_at = cached["desktop_collected_at"]
+            .as_str()
+            .expect("verified timestamp")
+            .to_string();
+
+        let stale = stale_runtime_snapshot(
+            cached,
+            "summary",
+            "d-token local service is unavailable",
+            "get_desktop_summary",
+        )
+        .expect("verified summary becomes stale evidence");
+        let finalized = finalize_desktop_snapshot(stale);
+
+        assert_eq!(finalized["stats"]["requests"]["total"], 42);
+        assert_eq!(finalized["routes"][0]["id"], "route-a");
+        assert_eq!(finalized["evidence_state"], "stale");
+        assert_eq!(finalized["freshness"], "stale");
+        assert_eq!(finalized["runtime_available"], false);
+        assert_eq!(finalized["runtime_health"], Value::Null);
+        assert_eq!(finalized["desktop_collected_at"], collected_at);
+        assert_eq!(
+            finalized["cached_snapshot"]["source"],
+            "dtoken-owned-runtime"
+        );
+    }
+
+    #[test]
+    fn stale_runtime_snapshot_rejects_unverified_or_wrong_kind_payloads() {
+        assert!(stale_runtime_snapshot(
+            json!({
+                "source": "dtoken-desktop-control-plane",
+                "desktop_data_source": "dtoken-desktop-control-plane",
+                "desktop_payload_kind": "summary",
+                "evidence_state": "partial",
+                "runtime_available": false
+            }),
+            "summary",
+            "offline",
+            "get_desktop_summary"
+        )
+        .is_none());
+        assert!(stale_runtime_snapshot(
+            json!({
+                "source": "dtoken-owned-runtime",
+                "desktop_data_source": "dtoken-local-service",
+                "desktop_payload_kind": "detail",
+                "evidence_state": "verified",
+                "runtime_available": true
+            }),
+            "summary",
+            "offline",
+            "get_desktop_summary"
+        )
+        .is_none());
     }
 
     #[test]
     fn http_body_extracts_json_payload() {
         let raw = "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\n\r\n{\"source\":\"dtoken-owned-runtime\"}";
         assert_eq!(http_body(raw), "{\"source\":\"dtoken-owned-runtime\"}");
+    }
+
+    #[test]
+    fn http_response_status_accepts_2xx_only() {
+        assert!(ensure_http_success("HTTP/1.1 200 OK\r\n\r\n{}").is_ok());
+        assert!(ensure_http_success("HTTP/1.1 204 No Content\r\n\r\n").is_ok());
+        assert!(ensure_http_success("HTTP/1.1 404 Not Found\r\n\r\n{}")
+            .unwrap_err()
+            .contains("HTTP 404"));
+        assert!(
+            ensure_http_success("HTTP/1.1 500 Internal Server Error\r\n\r\n{}")
+                .unwrap_err()
+                .contains("HTTP 500")
+        );
+    }
+
+    #[test]
+    fn optical_product_path_rejects_active_modes_and_unknown_routes() {
+        let known = vec!["route-a".to_string()];
+        let blocked = OpticalConfigDraftRequest {
+            global: OpticalGlobalDraftRequest {
+                enabled: true,
+                default_mode: "tool_results_only".to_string(),
+            },
+            routes: vec![],
+        };
+        assert!(clamp_optical_draft(&blocked, &known)
+            .unwrap_err()
+            .contains("active-leaning"));
+
+        let unknown = OpticalConfigDraftRequest {
+            global: OpticalGlobalDraftRequest {
+                enabled: true,
+                default_mode: "shadow_preview".to_string(),
+            },
+            routes: vec![OpticalRouteDraftRequest {
+                route_id: "missing".to_string(),
+                enabled: true,
+                mode: "shadow_preview".to_string(),
+                allow_tool_result: true,
+                allow_history: false,
+                confirmed_experimental_lossy: false,
+            }],
+        };
+        assert!(clamp_optical_draft(&unknown, &known)
+            .unwrap_err()
+            .contains("unknown route_id"));
+
+        let ok = OpticalConfigDraftRequest {
+            global: OpticalGlobalDraftRequest {
+                enabled: true,
+                default_mode: "shadow_preview".to_string(),
+            },
+            routes: vec![OpticalRouteDraftRequest {
+                route_id: "route-a".to_string(),
+                enabled: true,
+                mode: "shadow_preview".to_string(),
+                allow_tool_result: true,
+                allow_history: false,
+                confirmed_experimental_lossy: true,
+            }],
+        };
+        let patch = clamp_optical_draft(&ok, &known).expect("safe draft");
+        assert_eq!(patch["global_policy"]["allow_active"], false);
+        assert_eq!(patch["global_policy"]["public_summary_only"], true);
+        assert_eq!(patch["global_policy"]["enabled"], true);
+        assert_eq!(
+            patch["route_policies"][0]["policy"]["mode"],
+            "shadow_preview"
+        );
+    }
+
+    #[test]
+    fn optical_config_preview_requires_active_config() {
+        with_isolated_app_state("optical-preview-missing", || {
+            let result = preview_optical_config_change(PreviewOpticalConfigRequest {
+                draft: OpticalConfigDraftRequest {
+                    global: OpticalGlobalDraftRequest {
+                        enabled: true,
+                        default_mode: "shadow_preview".to_string(),
+                    },
+                    routes: vec![],
+                },
+            });
+            assert_eq!(result["ok"], false);
+            assert!(
+                result["error"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_ascii_lowercase()
+                    .contains("active config")
+                    || result["error"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .contains("missing")
+            );
+        });
     }
 
     #[test]
@@ -5084,6 +11049,89 @@ mod tests {
                 "providers/opencode-zen".to_string()
             )
         );
+    }
+
+    #[test]
+    fn automatic_connection_route_plan_is_bound_to_discovery_and_uses_agent_models() {
+        with_isolated_app_state("automatic-route-plan", || {
+            let discovery = json!({
+                "revision": "setup-reviewed",
+                "agent_bindings": [{
+                    "agent_id": "opencode",
+                    "installed": true,
+                    "capability": "one-click",
+                    "candidates": [{
+                        "id": "opencode",
+                        "name": "OpenCode official free catalog",
+                        "source": "opencode-provider-catalog-cache",
+                        "protocol": "open_ai",
+                        "base_url": "https://opencode.ai/zen/v1",
+                        "models": ["deepseek-v4-flash-free"],
+                        "auth_mode": "none"
+                    }]
+                }]
+            });
+            let request = ConnectionRoutePlanRequest {
+                discovery_revision: "setup-reviewed".to_string(),
+                bindings: vec![ConnectionRouteBindingRequest {
+                    agent_id: "opencode".to_string(),
+                    candidate_id: "opencode".to_string(),
+                    candidate_source: "opencode-provider-catalog-cache".to_string(),
+                    model: "deepseek-v4-flash-free".to_string(),
+                }],
+            };
+
+            let (revision, prepared, agents) =
+                prepare_connection_route_plan_from_discovery(&request, &discovery)
+                    .expect("prepare automatic route plan");
+            assert_eq!(revision, "setup-reviewed");
+            assert_eq!(agents, vec!["opencode"]);
+            assert!(prepared.plan.diff.contains("deepseek-v4-flash-free"));
+            assert!(prepared.plan.diff.contains("https://opencode.ai/zen/v1"));
+            assert!(!prepared.plan.diff.contains("sk-"));
+            assert!(!prepared.plan.diff.contains("secret-value"));
+
+            let mut stale = request.clone();
+            stale.discovery_revision = "setup-stale".to_string();
+            let error = prepare_connection_route_plan_from_discovery(&stale, &discovery)
+                .expect_err("stale discovery must fail");
+            assert!(error.contains("changed after discovery"));
+        });
+    }
+
+    #[test]
+    fn automatic_connection_route_plan_rejects_non_reusable_credentials() {
+        with_isolated_app_state("automatic-route-credential", || {
+            let discovery = json!({
+                "revision": "setup-reviewed",
+                "agent_bindings": [{
+                    "agent_id": "codex",
+                    "installed": true,
+                    "capability": "confirm-required",
+                    "candidates": [{
+                        "id": "private",
+                        "name": "Private upstream",
+                        "source": "agent-config:codex",
+                        "protocol": "open_ai",
+                        "base_url": "https://private.example/v1",
+                        "models": ["private-model"],
+                        "auth_mode": "unavailable"
+                    }]
+                }]
+            });
+            let request = ConnectionRoutePlanRequest {
+                discovery_revision: "setup-reviewed".to_string(),
+                bindings: vec![ConnectionRouteBindingRequest {
+                    agent_id: "codex".to_string(),
+                    candidate_id: "private".to_string(),
+                    candidate_source: "agent-config:codex".to_string(),
+                    model: "private-model".to_string(),
+                }],
+            };
+            let error = prepare_connection_route_plan_from_discovery(&request, &discovery)
+                .expect_err("credential reuse must fail closed");
+            assert!(error.contains("cannot be reused safely"));
+        });
     }
 
     #[test]
@@ -5144,11 +11192,15 @@ mod tests {
     fn service_lifecycle_refuses_manifest_identity_mismatch() {
         with_isolated_app_state("service-identity-mismatch", || {
             let manifest = ManagedServiceManifest {
+                schema_version: MANAGED_SERVICE_MANIFEST_SCHEMA_VERSION,
                 managed_by: "another-app".to_string(),
                 identity: "not-dtoken".to_string(),
                 pid: 999_999,
                 port: DTOKEN_SERVICE_PORT,
                 exe_path: "unknown".to_string(),
+                exe_sha256: None,
+                process_birth_token: None,
+                runtime_instance_nonce: None,
                 config_path: "unknown".to_string(),
                 data_dir: "unknown".to_string(),
                 started_at: now_label(),
@@ -5166,11 +11218,15 @@ mod tests {
     fn service_lifecycle_clears_stale_owned_manifest() {
         with_isolated_app_state("service-stale-manifest", || {
             let manifest = ManagedServiceManifest {
+                schema_version: MANAGED_SERVICE_MANIFEST_SCHEMA_VERSION,
                 managed_by: "d-token-desktop".to_string(),
                 identity: "dtoken-core-api".to_string(),
                 pid: 999_999,
                 port: DTOKEN_SERVICE_PORT,
                 exe_path: "unknown".to_string(),
+                exe_sha256: None,
+                process_birth_token: None,
+                runtime_instance_nonce: None,
                 config_path: "unknown".to_string(),
                 data_dir: "unknown".to_string(),
                 started_at: now_label(),
@@ -5182,6 +11238,122 @@ mod tests {
             assert!(result.summary.contains("Stale"));
             assert!(!service_manifest_path().exists());
         });
+    }
+
+    #[test]
+    fn managed_service_binary_evidence_matches_launch_content() {
+        with_isolated_app_state("service-binary-match", || {
+            let exe = app_state_dir().join("dtoken-proxy-fixture");
+            fs::write(&exe, b"bundle-a").expect("write runtime fixture");
+            let launch_sha256 = file_sha256(&exe).expect("hash runtime fixture");
+            let manifest = ManagedServiceManifest {
+                schema_version: MANAGED_SERVICE_MANIFEST_SCHEMA_VERSION,
+                managed_by: "d-token-desktop".to_string(),
+                identity: "dtoken-core-api".to_string(),
+                pid: 1,
+                port: DTOKEN_SERVICE_PORT,
+                exe_path: exe.display().to_string(),
+                exe_sha256: Some(launch_sha256.clone()),
+                process_birth_token: None,
+                runtime_instance_nonce: None,
+                config_path: "fixture-config".to_string(),
+                data_dir: "fixture-data".to_string(),
+                started_at: now_label(),
+            };
+
+            let evidence = managed_service_binary_evidence(&manifest);
+            assert_eq!(evidence.state, "matched");
+            assert!(evidence.compatible);
+            assert_eq!(
+                evidence.launch_sha256.as_deref(),
+                Some(launch_sha256.as_str())
+            );
+            assert_eq!(
+                evidence.current_sha256.as_deref(),
+                Some(launch_sha256.as_str())
+            );
+        });
+    }
+
+    #[test]
+    fn legacy_owned_runtime_without_runtime_identity_requires_restart() {
+        assert!(legacy_managed_process_requires_restart(
+            None,
+            true,
+            Some("legacy_manifest")
+        ));
+        assert!(!legacy_managed_process_requires_restart(
+            Some("dtoken-runtime-local"),
+            true,
+            Some("legacy_manifest")
+        ));
+        assert!(!legacy_managed_process_requires_restart(
+            None,
+            false,
+            Some("legacy_manifest")
+        ));
+        assert!(!legacy_managed_process_requires_restart(
+            None,
+            true,
+            Some("bundle_replaced")
+        ));
+    }
+
+    #[test]
+    fn managed_service_binary_evidence_detects_same_path_bundle_replacement() {
+        with_isolated_app_state("service-binary-replaced", || {
+            let exe = app_state_dir().join("dtoken-proxy-fixture");
+            fs::write(&exe, b"bundle-a").expect("write original runtime fixture");
+            let launch_sha256 = file_sha256(&exe).expect("hash original runtime fixture");
+            let manifest = ManagedServiceManifest {
+                schema_version: MANAGED_SERVICE_MANIFEST_SCHEMA_VERSION,
+                managed_by: "d-token-desktop".to_string(),
+                identity: "dtoken-core-api".to_string(),
+                pid: 1,
+                port: DTOKEN_SERVICE_PORT,
+                exe_path: exe.display().to_string(),
+                exe_sha256: Some(launch_sha256.clone()),
+                process_birth_token: None,
+                runtime_instance_nonce: None,
+                config_path: "fixture-config".to_string(),
+                data_dir: "fixture-data".to_string(),
+                started_at: now_label(),
+            };
+            fs::write(&exe, b"bundle-b").expect("replace runtime fixture in place");
+
+            let evidence = managed_service_binary_evidence(&manifest);
+            assert_eq!(evidence.state, "bundle_replaced");
+            assert!(!evidence.compatible);
+            assert_eq!(
+                evidence.launch_sha256.as_deref(),
+                Some(launch_sha256.as_str())
+            );
+            assert_ne!(
+                evidence.current_sha256.as_deref(),
+                Some(launch_sha256.as_str())
+            );
+        });
+    }
+
+    #[test]
+    fn managed_service_binary_evidence_rejects_legacy_manifest() {
+        let manifest: ManagedServiceManifest = serde_json::from_value(json!({
+            "managed_by": "d-token-desktop",
+            "identity": "dtoken-core-api",
+            "pid": 1,
+            "port": DTOKEN_SERVICE_PORT,
+            "exe_path": "legacy-runtime",
+            "config_path": "legacy-config",
+            "data_dir": "legacy-data",
+            "started_at": "00:00:00"
+        }))
+        .expect("deserialize legacy manifest");
+
+        let evidence = managed_service_binary_evidence(&manifest);
+        assert_eq!(manifest.schema_version, 0);
+        assert_eq!(manifest.exe_sha256, None);
+        assert_eq!(evidence.state, "legacy_manifest");
+        assert!(!evidence.compatible);
     }
 
     #[test]
@@ -5306,7 +11478,10 @@ mod tests {
                 check["id"] == "agent_detection" && check["ok"].as_bool().unwrap_or(false)
             }));
             assert!(checks.iter().any(|check| {
-                check["id"] == "doctor" && check["ok"].as_bool().unwrap_or(false)
+                check["id"] == "doctor"
+                    && check["summary"]
+                        .as_str()
+                        .is_some_and(|summary| !summary.trim().is_empty())
             }));
             let text = result.to_string();
             assert!(!text.contains("headroom-capability-smoke"));
@@ -5363,11 +11538,31 @@ mod tests {
                 // during workspace tests. Its live behavior is covered by the app UAT.
                 return;
             };
+            let exe = std::env::current_exe().expect("resolve readiness runtime fixture");
+            let manifest = ManagedServiceManifest {
+                schema_version: MANAGED_SERVICE_MANIFEST_SCHEMA_VERSION,
+                managed_by: "d-token-desktop".to_string(),
+                identity: "dtoken-core-api".to_string(),
+                pid: std::process::id(),
+                port: DTOKEN_SERVICE_PORT,
+                exe_sha256: Some(file_sha256(&exe).expect("hash readiness runtime fixture")),
+                exe_path: exe.display().to_string(),
+                process_birth_token: process_birth_token(std::process::id()),
+                runtime_instance_nonce: Some("test-runtime-nonce".to_string()),
+                config_path: app_state_dir()
+                    .join("active-config")
+                    .join("dtoken-config.json")
+                    .display()
+                    .to_string(),
+                data_dir: service_data_dir().display().to_string(),
+                started_at: now_label(),
+            };
+            write_service_manifest(&manifest).expect("write readiness service manifest");
             let result = run_product_readiness_check();
             shutdown.store(true, Ordering::SeqCst);
 
             assert_eq!(result["mode"], "product-readiness-check");
-            assert_eq!(result["ok"], true);
+            assert_eq!(result["ok"], true, "{result:#}");
             assert_eq!(result["passed"], 9);
             assert_eq!(result["total"], 9);
             assert!(result["privacy"]
@@ -5447,7 +11642,9 @@ mod tests {
             "/health" => json!({
                 "status": "healthy",
                 "component": "dtoken-core-api",
-                "version": "0.1.0"
+                "version": "0.1.0",
+                "runtime_identity": "dtoken-runtime-local",
+                "runtime_instance_nonce": "test-runtime-nonce"
             }),
             "/config/active" => json!({
                 "config": {
@@ -5658,6 +11855,320 @@ mod tests {
     }
 
     #[test]
+    fn rollback_preview_rejects_concurrent_edits_and_unknown_or_legacy_evidence() {
+        with_isolated_app_state("rollback-preflight", || {
+            let target = fs::canonicalize(app_state_dir())
+                .expect("canonical app state")
+                .join("opencode.json");
+            let backup = apply_test_config_change(
+                &target,
+                r#"{"provider":"original"}"#,
+                r#"{"provider":"dtoken"}"#,
+                ConfigToolKind::Agent,
+            );
+            let preview = rollback_preview_value(&backup.rollback_id);
+            assert_eq!(preview["ok"], true, "preview={preview}");
+
+            let unconfirmed = apply_rollback(ApplyRollbackRequest {
+                rollback_id: backup.rollback_id.clone(),
+                reviewed_revision: preview["revision"]
+                    .as_str()
+                    .expect("preview revision")
+                    .to_string(),
+                expected_current_sha256: preview["expected_current_sha256"]
+                    .as_str()
+                    .expect("preview current hash")
+                    .to_string(),
+                confirmed: false,
+            });
+            assert_eq!(unconfirmed["ok"], false);
+            assert!(unconfirmed["summary"]
+                .as_str()
+                .is_some_and(|summary| summary.contains("confirmation")));
+
+            fs::write(&target, r#"{"provider":"concurrent"}"#).expect("simulate concurrent edit");
+            let result = apply_rollback(ApplyRollbackRequest {
+                rollback_id: backup.rollback_id,
+                reviewed_revision: preview["revision"]
+                    .as_str()
+                    .expect("preview revision")
+                    .to_string(),
+                expected_current_sha256: preview["expected_current_sha256"]
+                    .as_str()
+                    .expect("preview current hash")
+                    .to_string(),
+                confirmed: true,
+            });
+            assert_eq!(result["ok"], false);
+            assert!(result["summary"]
+                .as_str()
+                .is_some_and(|summary| summary.contains("stale")));
+            assert_eq!(
+                fs::read_to_string(&target).expect("concurrent state remains"),
+                r#"{"provider":"concurrent"}"#
+            );
+
+            let unknown = fs::canonicalize(app_state_dir())
+                .expect("canonical app state")
+                .join("outside-allowlist.txt");
+            let unknown_backup =
+                apply_test_config_change(&unknown, "before\n", "after\n", ConfigToolKind::Agent);
+            let unknown_preview = rollback_preview_value(&unknown_backup.rollback_id);
+            assert_eq!(unknown_preview["integrity_verified"], true);
+            assert_eq!(unknown_preview["scope"], "unknown");
+            assert_eq!(unknown_preview["currently_restorable"], false);
+
+            fs::create_dir_all(app_state_dir().join("rollback-points"))
+                .expect("legacy rollback directory");
+            write_json_app_state(
+                &["rollback-points", "legacy.json"],
+                &json!({"target": "OpenCode", "createdAt": "local", "ok": true}),
+            )
+            .expect("legacy rollback evidence");
+            let legacy = rollback_points_result()
+                .expect("rollback list")
+                .into_iter()
+                .find(|point| point["id"] == "legacy")
+                .expect("legacy point");
+            assert_eq!(legacy["integrity_verified"], false);
+            assert_eq!(legacy["currently_restorable"], false);
+
+            let invalid_id = "00000000-0000-4000-8000-000000000002";
+            fs::create_dir_all(config_backup_root().join(invalid_id))
+                .expect("corrupt backup directory");
+            let corrupt = rollback_preview_value(invalid_id);
+            assert_eq!(corrupt["ok"], false);
+            assert_eq!(corrupt["integrity_verified"], false);
+        });
+    }
+
+    #[test]
+    fn rollback_apply_creates_a_reusable_reverse_backup_and_persists_receipt() {
+        with_isolated_app_state("rollback-reverse", || {
+            let target = fs::canonicalize(app_state_dir())
+                .expect("canonical app state")
+                .join("opencode.json");
+            let backup = apply_test_config_change(
+                &target,
+                r#"{"provider":"original"}"#,
+                r#"{"provider":"dtoken"}"#,
+                ConfigToolKind::Agent,
+            );
+            let preview = rollback_preview_value(&backup.rollback_id);
+            let result = apply_rollback(ApplyRollbackRequest {
+                rollback_id: backup.rollback_id.clone(),
+                reviewed_revision: preview["revision"]
+                    .as_str()
+                    .expect("preview revision")
+                    .to_string(),
+                expected_current_sha256: preview["expected_current_sha256"]
+                    .as_str()
+                    .expect("preview current hash")
+                    .to_string(),
+                confirmed: true,
+            });
+            assert_eq!(result["ok"], true, "result={result}");
+            assert_eq!(result["verification_state"], "verified");
+            assert_eq!(
+                fs::read_to_string(&target).expect("restored original"),
+                r#"{"provider":"original"}"#
+            );
+
+            let reverse_id = result["reverse_rollback_id"]
+                .as_str()
+                .expect("reverse rollback id");
+            let reverse_preview = rollback_preview_value(reverse_id);
+            assert_eq!(reverse_preview["ok"], true, "preview={reverse_preview}");
+            assert_eq!(reverse_preview["scope"], "opencode-config");
+            assert!(desktop_transaction_events().iter().any(|event| {
+                event["stage"] == "rollback_apply"
+                    && event["metadata"]["rollback_id"] == backup.rollback_id
+                    && event["metadata"]["reverse_rollback_id"] == reverse_id
+            }));
+        });
+    }
+
+    #[test]
+    fn reverse_backup_can_recover_a_file_removed_by_rollback() {
+        with_isolated_app_state("rollback-reverse-missing", || {
+            let target = fs::canonicalize(app_state_dir())
+                .expect("canonical app state")
+                .join("opencode.json");
+            let patcher = config_patcher();
+            let prepared = patcher
+                .prepare_change(
+                    &target,
+                    r#"{"provider":"dtoken"}"#,
+                    ConfigToolKind::Agent,
+                    None,
+                    RiskLevel::Medium,
+                )
+                .expect("prepare creation");
+            let backup = patcher
+                .backup_prepared(&prepared)
+                .expect("backup missing state");
+            patcher
+                .apply_prepared(&prepared, &backup)
+                .expect("create config");
+
+            let preview = rollback_preview_value(&backup.rollback_id);
+            let removed = apply_rollback(ApplyRollbackRequest {
+                rollback_id: backup.rollback_id,
+                reviewed_revision: preview["revision"]
+                    .as_str()
+                    .expect("preview revision")
+                    .to_string(),
+                expected_current_sha256: preview["expected_current_sha256"]
+                    .as_str()
+                    .expect("preview current hash")
+                    .to_string(),
+                confirmed: true,
+            });
+            assert_eq!(removed["ok"], true, "result={removed}");
+            assert!(!target.exists());
+
+            let reverse_id = removed["reverse_rollback_id"]
+                .as_str()
+                .expect("reverse rollback id");
+            let reverse_preview = rollback_preview_value(reverse_id);
+            assert_eq!(reverse_preview["ok"], true, "preview={reverse_preview}");
+            assert_eq!(reverse_preview["expected_current_state"], "missing");
+            assert_eq!(reverse_preview["expected_current_sha256"], "missing");
+
+            let recovered = apply_rollback(ApplyRollbackRequest {
+                rollback_id: reverse_id.to_string(),
+                reviewed_revision: reverse_preview["revision"]
+                    .as_str()
+                    .expect("reverse revision")
+                    .to_string(),
+                expected_current_sha256: "missing".to_string(),
+                confirmed: true,
+            });
+            assert_eq!(recovered["ok"], true, "result={recovered}");
+            assert_eq!(
+                fs::read_to_string(target).expect("recovered created config"),
+                r#"{"provider":"dtoken"}"#
+            );
+        });
+    }
+
+    #[test]
+    fn active_config_rollback_restores_file_and_reports_runtime_offline() {
+        with_isolated_app_state("rollback-runtime-offline", || {
+            assert!(save_test_route("first-route", "https://one.example.test/v1").ok);
+            assert!(review_and_apply_route("first-route").ok);
+            assert!(save_test_route("second-route", "https://two.example.test/v1").ok);
+            assert!(review_and_apply_route("second-route").ok);
+
+            let point = rollback_points_result()
+                .expect("rollback points")
+                .into_iter()
+                .find(|point| {
+                    point["scope"] == "dtoken-active-config"
+                        && point["currently_restorable"] == true
+                })
+                .expect("active config rollback point");
+            let rollback_id = point["id"].as_str().expect("rollback id");
+            let preview = rollback_preview_value(rollback_id);
+            let result = apply_rollback(ApplyRollbackRequest {
+                rollback_id: rollback_id.to_string(),
+                reviewed_revision: preview["revision"]
+                    .as_str()
+                    .expect("preview revision")
+                    .to_string(),
+                expected_current_sha256: preview["expected_current_sha256"]
+                    .as_str()
+                    .expect("preview current hash")
+                    .to_string(),
+                confirmed: true,
+            });
+            assert_eq!(result["ok"], true, "result={result}");
+            assert_eq!(result["verification_state"], "runtime_offline");
+            assert_eq!(active_route_config_status()["route"]["id"], "first-route");
+        });
+    }
+
+    #[test]
+    fn specialized_transactions_use_source_executors_and_agent_points_are_aggregated() {
+        with_isolated_app_state("rollback-specialized", || {
+            let active_path = active_config_path();
+            let active_parent = active_path.parent().expect("active parent");
+            fs::create_dir_all(active_parent).expect("create active config parent");
+            let active = patchable_active_config_path().expect("patchable active config");
+            let optical_backup = apply_test_config_change(
+                &active,
+                r#"{"providers":[],"routes":[],"instances":[]}"#,
+                r#"{"providers":[],"routes":[],"instances":[],"optical":{"global_policy":{"enabled":true,"default_mode":"shadow_preview","allow_active":false,"public_summary_only":true},"route_policies":[]}}"#,
+                ConfigToolKind::Dtoken,
+            );
+            let optical = rollback_preview_value(&optical_backup.rollback_id);
+            assert_eq!(optical["scope"], "optical-config", "preview={optical}");
+            assert_eq!(optical["executor_kind"], "optical");
+            assert_eq!(optical["integrity_verified"], true);
+            assert_eq!(optical["currently_restorable"], true);
+
+            let home = app_state_dir().join("home");
+            let project = app_state_dir().join("project");
+            fs::create_dir_all(&home).expect("create test home");
+            fs::create_dir_all(&project).expect("create test project");
+            let request = AgentIntegrationRequest {
+                agent_ids: vec!["codex".to_string()],
+                scope: AgentIntegrationScope::Project,
+                project_root: Some(project),
+                bridge_path: PathBuf::from("/opt/dtoken-agent-bridge"),
+                install_instructions: true,
+                install_hook_or_plugin: true,
+                install_skill: true,
+                install_mcp: false,
+            };
+            let prepared = prepare_agent_integration(&request, &home, &config_backup_root())
+                .expect("prepare Agent integration");
+            let digest = prepared.plan.review_digest.clone();
+            let receipt = apply_agent_integration(prepared, &config_backup_root(), &digest)
+                .expect("apply Agent integration");
+            let agent_id = receipt.rollback_ids.first().expect("Agent rollback id");
+            assert!(receipt.rollback_ids.len() > 1);
+            let points = rollback_points_result().expect("transaction rollback points");
+            let agent_points = points
+                .iter()
+                .filter(|point| point["scope"] == "agent-integration")
+                .collect::<Vec<_>>();
+            assert_eq!(agent_points.len(), 1, "points={points:?}");
+            assert_eq!(
+                agent_points[0]["files"].as_u64(),
+                Some(receipt.rollback_ids.len() as u64)
+            );
+            assert_eq!(agent_points[0]["id"], agent_id.as_str());
+            let agent = rollback_preview_value(agent_id);
+            assert_eq!(agent["scope"], "agent-integration", "preview={agent}");
+            assert_eq!(agent["executor_kind"], "agent_integration");
+            assert_eq!(agent["transaction_id"], receipt.transaction_id);
+            assert_eq!(agent["integrity_verified"], true);
+            assert_eq!(agent["currently_restorable"], true);
+
+            let restored = apply_rollback(ApplyRollbackRequest {
+                rollback_id: agent_id.clone(),
+                reviewed_revision: agent["revision"]
+                    .as_str()
+                    .expect("Agent rollback revision")
+                    .to_string(),
+                expected_current_sha256: agent["expected_current_sha256"]
+                    .as_str()
+                    .expect("Agent current transaction hash")
+                    .to_string(),
+                confirmed: true,
+            });
+            assert_eq!(restored["ok"], true, "receipt={restored}");
+            assert_eq!(restored["verification_state"], "verified");
+            assert_eq!(restored["transaction_id"], receipt.transaction_id);
+            assert_eq!(
+                restored["reverse_rollback_ids"].as_array().map(Vec::len),
+                Some(receipt.rollback_ids.len())
+            );
+        });
+    }
+
+    #[test]
     fn rollback_restore_reinstates_previous_dtoken_active_config() {
         with_isolated_app_state("rollback", || {
             let first = save_route_profile_draft(RouteProfileDraftRequest {
@@ -5831,21 +12342,13 @@ mod tests {
     }
 
     #[test]
-    fn learning_discovery_returns_metadata_without_file_content() {
-        with_isolated_app_state("learning-discovery", || {
-            let root = app_state_dir().join("sample-project");
-            fs::create_dir_all(&root).expect("create sample project");
-            fs::write(root.join("secret.txt"), "must-not-leak").expect("write fixture");
-            let result = discover_learning_sources(LearningSourceDiscoveryRequest {
-                roots: Some(vec![root.display().to_string()]),
-                skip_paths: Some(vec![]),
-                stop: Some(false),
-            });
-            assert_eq!(result["ok"], true);
-            assert_eq!(result["candidates"].as_array().map(Vec::len), Some(1));
-            assert!(!result.to_string().contains("must-not-leak"));
-            assert_eq!(result["writes_performed"], false);
-        });
+    fn learning_roots_reject_filesystem_and_home_scopes() {
+        let temp = env::temp_dir();
+        let filesystem_root = temp.ancestors().last().expect("filesystem root");
+        assert!(!learning_allowed_root(filesystem_root));
+        if let Some(home) = env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" }) {
+            assert!(!learning_allowed_root(&PathBuf::from(home)));
+        }
     }
 
     #[test]
@@ -5899,12 +12402,29 @@ mod tests {
         let result = spawn_learning_delegation(LearningDelegationRequest {
             request_id: "learning:test-invalid-agent".to_string(),
             agent: "sh".to_string(),
+            project_root: env::current_dir().unwrap().display().to_string(),
             prompt: "metadata-only test".to_string(),
             timeout_ms: 1_000,
             confirmed: true,
         });
         assert_eq!(result["ok"], false);
         assert_eq!(result["state"], "blocked");
+    }
+
+    #[test]
+    fn learning_delegation_accepts_only_bounded_structured_context() {
+        let raw = json!({
+            "type": "result",
+            "result": "{\"summary\":\"Rust desktop control plane\",\"conventions\":[\"Run workspace tests\"],\"risks\":[\"Keep route writes transactional\"],\"recommendations\":[\"Preserve explicit provider selection\"],\"open_questions\":[]}"
+        })
+        .to_string();
+        let context = delegated_context_from_text(&raw).expect("structured context");
+        assert_eq!(context.summary, "Rust desktop control plane");
+        assert_eq!(context.conventions, vec!["Run workspace tests"]);
+
+        let secret = r#"{"summary":"Authorization: Bearer secret","conventions":[],"risks":[],"recommendations":[],"open_questions":[]}"#;
+        assert!(delegated_context_from_text(secret).is_none());
+        assert!(delegated_context_from_text(&"x".repeat(64 * 1024 + 1)).is_none());
     }
 
     #[test]
@@ -5946,5 +12466,343 @@ mod tests {
             },
         ];
         assert!(doctor_agent_ready(&tools));
+    }
+
+    #[test]
+    fn doctor_repair_rejects_stale_unconfirmed_and_non_allowlisted_requests() {
+        with_isolated_app_state("doctor-repair-guards", || {
+            let report = DoctorReport {
+                ok: false,
+                mode_name: "doctor-report-v2".to_string(),
+                revision: "doctor-current".to_string(),
+                source: "test".to_string(),
+                freshness: "fresh".to_string(),
+                collected_at: now_timestamp(),
+                summary: "repairable issue".to_string(),
+                counts: DoctorCounts {
+                    healthy: 0,
+                    repairable: 1,
+                    manual: 0,
+                    blocked: 0,
+                },
+                issues: vec![DoctorIssue {
+                    id: "service-not-running".to_string(),
+                    category: "runtime".to_string(),
+                    severity: "error".to_string(),
+                    state: "repairable".to_string(),
+                    title: "service unavailable".to_string(),
+                    impact: "requests are unavailable".to_string(),
+                    cause: "managed runtime is stopped".to_string(),
+                    evidence: "runtime identity is absent".to_string(),
+                    remediation: Some(DoctorRemediation {
+                        kind: "restart_managed_service".to_string(),
+                        label: "restart".to_string(),
+                        risk: "low".to_string(),
+                        writes_config: false,
+                        requires_confirmation: true,
+                        destination: None,
+                    }),
+                }],
+            };
+            write_json_app_state(
+                &["doctor", "latest.json"],
+                &serde_json::to_value(report).expect("serialize Doctor report"),
+            )
+            .expect("persist Doctor report");
+
+            let stale = preview_doctor_common_repair(DoctorRepairRequest {
+                report_revision: "doctor-stale".to_string(),
+                issue_ids: vec!["service-not-running".to_string()],
+                confirmed: None,
+            });
+            assert_eq!(stale["ok"], false);
+            assert!(stale["summary"]
+                .as_str()
+                .is_some_and(|summary| summary.contains("changed")));
+
+            let unconfirmed = apply_doctor_common_repair(DoctorRepairRequest {
+                report_revision: "doctor-current".to_string(),
+                issue_ids: vec!["service-not-running".to_string()],
+                confirmed: Some(false),
+            });
+            assert_eq!(unconfirmed["ok"], false);
+            assert!(unconfirmed["summary"]
+                .as_str()
+                .is_some_and(|summary| summary.contains("confirmation")));
+
+            let mut snapshot =
+                read_app_state(&["doctor", "latest.json"]).expect("read Doctor report");
+            snapshot["issues"][0]["remediation"]["kind"] = json!("open_install");
+            write_json_app_state(&["doctor", "latest.json"], &snapshot)
+                .expect("persist non-allowlisted repair");
+            let blocked = preview_doctor_common_repair(DoctorRepairRequest {
+                report_revision: "doctor-current".to_string(),
+                issue_ids: vec!["service-not-running".to_string()],
+                confirmed: None,
+            });
+            assert_eq!(blocked["ok"], false);
+            assert!(blocked["summary"]
+                .as_str()
+                .is_some_and(|summary| summary.contains("allowlist")));
+        });
+    }
+
+    #[test]
+    fn doctor_v3_freshness_is_dynamic_and_fails_closed_on_overflow() {
+        let now = epoch_ms();
+        let fresh = json!({
+            "schema_version": 3,
+            "collected_at_ms": now,
+            "ttl_ms": 1_000,
+        });
+        assert!(doctor_v3_snapshot_is_fresh(&fresh, now));
+        assert!(!doctor_v3_snapshot_is_fresh(
+            &fresh,
+            now.saturating_add(1_001)
+        ));
+        assert!(!doctor_v3_snapshot_is_fresh(
+            &json!({
+                "schema_version": 3,
+                "collected_at_ms": u64::MAX,
+                "ttl_ms": 1,
+            }),
+            now,
+        ));
+        assert!(!doctor_v3_snapshot_is_fresh(
+            &json!({
+                "schema_version": 3,
+                "collected_at_ms": now.saturating_add(1),
+                "ttl_ms": 1_000,
+            }),
+            now,
+        ));
+        assert!(!doctor_v3_snapshot_is_fresh(
+            &json!({
+                "schema_version": 3,
+                "collected_at_ms": now,
+                "ttl_ms": 0,
+            }),
+            now,
+        ));
+    }
+
+    #[test]
+    fn doctor_v2_compatibility_snapshot_uses_dynamic_freshness() {
+        let now = 10_000_000;
+        let fresh = json!({
+            "mode": "doctor-report-v2",
+            "freshness": "fresh",
+            "collected_at": "unix:9950",
+        });
+        let stale = json!({
+            "mode": "doctor-report-v2",
+            "freshness": "fresh",
+            "collected_at": "unix:1",
+        });
+        let future = json!({
+            "mode": "doctor-report-v2",
+            "freshness": "fresh",
+            "collected_at": "unix:10001",
+        });
+
+        assert_eq!(doctor_v2_snapshot_freshness(&fresh, now), "fresh");
+        assert_eq!(doctor_v2_snapshot_freshness(&stale, now), "stale");
+        assert_eq!(doctor_v2_snapshot_freshness(&future, now), "unknown");
+    }
+
+    #[test]
+    fn doctor_v3_rejects_stale_snapshot_digest_mismatch_and_expired_plan() {
+        with_isolated_app_state("doctor-v3-plan-guards", || {
+            let selection = DoctorModuleRepairSelection {
+                agent_ids: Vec::new(),
+                route_ids: Vec::new(),
+                scope: "global".to_string(),
+                project_root: None,
+                install_instructions: false,
+                install_hook_or_plugin: false,
+                install_skill: false,
+                install_mcp: false,
+            };
+            write_json_app_state(
+                &["doctor", "latest-v3.json"],
+                &json!({
+                    "schema_version": 3,
+                    "revision": "doctor-v3-stale",
+                    "collected_at_ms": epoch_ms().saturating_sub(10_000),
+                    "ttl_ms": 1,
+                }),
+            )
+            .expect("persist stale Doctor snapshot");
+            let stale = preview_doctor_repair(PreviewDoctorModuleRepairRequest {
+                snapshot_revision: "doctor-v3-stale".to_string(),
+                module_id: "core_service_lifecycle".to_string(),
+                selection: selection.clone(),
+            });
+            assert_eq!(stale["ok"], false);
+            assert!(stale["error"]
+                .as_str()
+                .is_some_and(|error| error.contains("stale")));
+
+            write_json_app_state(
+                &["doctor", "latest-v3.json"],
+                &json!({
+                    "schema_version": 3,
+                    "revision": "doctor-v3-current",
+                    "collected_at_ms": epoch_ms(),
+                    "ttl_ms": DOCTOR_V3_TTL_MS,
+                }),
+            )
+            .expect("persist current Doctor snapshot");
+            let preview = preview_doctor_repair(PreviewDoctorModuleRepairRequest {
+                snapshot_revision: "doctor-v3-current".to_string(),
+                module_id: "core_service_lifecycle".to_string(),
+                selection: selection.clone(),
+            });
+            assert_eq!(preview["ok"], true, "preview={preview}");
+            let plan_id = preview["plan_id"].as_str().expect("plan id").to_string();
+            let digest = preview["review_digest"]
+                .as_str()
+                .expect("review digest")
+                .to_string();
+            let mismatched = apply_doctor_repair(ApplyDoctorModuleRepairRequest {
+                plan_id: plan_id.clone(),
+                review_digest: "doctor-review-tampered".to_string(),
+                snapshot_revision: "doctor-v3-current".to_string(),
+                module_id: "core_service_lifecycle".to_string(),
+                selection: selection.clone(),
+                confirmed: true,
+            });
+            assert_eq!(mismatched["ok"], false);
+            assert_eq!(mismatched["outcome"], "blocked");
+
+            let mut stored = load_doctor_plan(&plan_id).expect("stored Doctor plan");
+            stored.expires_at_ms = epoch_ms().saturating_sub(1);
+            store_doctor_plan(&stored).expect("expire Doctor plan");
+            let expired = apply_doctor_repair(ApplyDoctorModuleRepairRequest {
+                plan_id,
+                review_digest: digest,
+                snapshot_revision: "doctor-v3-current".to_string(),
+                module_id: "core_service_lifecycle".to_string(),
+                selection,
+                confirmed: true,
+            });
+            assert_eq!(expired["ok"], false);
+            assert_eq!(expired["outcome"], "blocked");
+        });
+    }
+
+    #[test]
+    fn doctor_v3_agent_repair_requires_existing_managed_evidence() {
+        with_isolated_app_state("doctor-v3-agent-evidence", || {
+            let project = app_state_dir().join("unmanaged-project");
+            fs::create_dir_all(&project).expect("create unmanaged project");
+            write_json_app_state(
+                &["doctor", "latest-v3.json"],
+                &json!({
+                    "schema_version": 3,
+                    "revision": "doctor-v3-agent-current",
+                    "collected_at_ms": epoch_ms(),
+                    "ttl_ms": DOCTOR_V3_TTL_MS,
+                }),
+            )
+            .expect("persist current Doctor snapshot");
+            let preview = preview_doctor_repair(PreviewDoctorModuleRepairRequest {
+                snapshot_revision: "doctor-v3-agent-current".to_string(),
+                module_id: "agent_instructions".to_string(),
+                selection: DoctorModuleRepairSelection {
+                    agent_ids: vec!["codex".to_string()],
+                    route_ids: Vec::new(),
+                    scope: "project".to_string(),
+                    project_root: Some(project.display().to_string()),
+                    install_instructions: true,
+                    install_hook_or_plugin: false,
+                    install_skill: false,
+                    install_mcp: false,
+                },
+            });
+            assert_eq!(preview["ok"], false, "preview={preview}");
+            assert!(preview["error"]
+                .as_str()
+                .is_some_and(|error| error.contains("existing d-token managed target")));
+            assert_eq!(preview["agents"][0]["state"], "blocked");
+        });
+    }
+
+    #[test]
+    fn desktop_snapshot_revision_changes_only_with_evidence() {
+        let source = json!({
+            "source": "dtoken-owned-runtime",
+            "desktop_data_source": "dtoken-local-service",
+            "providers": [{"id":"provider-a"}],
+            "routes": [{"id":"route-a"}],
+            "request_logs": []
+        });
+        let first = finalize_desktop_snapshot(source.clone());
+        let second = finalize_desktop_snapshot(source);
+        assert_eq!(first["desktop_revision"], second["desktop_revision"]);
+        assert!(first["desktop_collected_at"].is_string());
+    }
+
+    #[test]
+    fn desktop_summary_revision_uses_slice_revisions_instead_of_serializing_log_content() {
+        let source = json!({
+            "source": "dtoken-owned-runtime",
+            "desktop_data_source": "dtoken-local-service",
+            "desktop_payload_kind": "summary",
+            "slice_revisions": {"runtime_summary": 8, "request_logs": 4, "history": 8, "cache_summary": 4},
+            "runtime_health": {
+                "runtime_identity": "dtoken-runtime-local",
+                "runtime_instance_nonce": "fixture-nonce"
+            },
+            "active_config": {"revision": "config-a"},
+            "request_logs": [{"private_field": "first"}]
+        });
+        let first = finalize_desktop_snapshot(source.clone());
+        let mut content_only_change = source.clone();
+        content_only_change["request_logs"] = json!([{"private_field": "second"}]);
+        let second = finalize_desktop_snapshot(content_only_change);
+        assert_eq!(first["desktop_revision"], second["desktop_revision"]);
+
+        let mut slice_change = source;
+        slice_change["slice_revisions"]["request_logs"] = json!(5);
+        let third = finalize_desktop_snapshot(slice_change);
+        assert_ne!(first["desktop_revision"], third["desktop_revision"]);
+    }
+
+    #[test]
+    fn unavailable_loopback_listener_fails_within_offline_budget() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("reserve local port");
+        let port = listener.local_addr().expect("local address").port();
+        drop(listener);
+        let started = Instant::now();
+        let result = simple_http_get("127.0.0.1", port, "/health");
+        assert!(result.is_err());
+        assert!(started.elapsed() < Duration::from_millis(500));
+    }
+
+    #[test]
+    fn cc_switch_sync_distinguishes_matching_and_diverged_routes() {
+        let active = vec![normalized_endpoint("http://127.0.0.1:15721/")];
+        assert_eq!(
+            derive_cc_switch_status(true, Some("http://127.0.0.1:15721"), &active, "loaded"),
+            "synced"
+        );
+        assert_eq!(
+            derive_cc_switch_status(true, Some("http://127.0.0.1:15722"), &active, "loaded"),
+            "out-of-sync"
+        );
+        assert_eq!(
+            derive_cc_switch_status(true, Some("http://127.0.0.1:15721"), &[], "missing"),
+            "needs-confirmation"
+        );
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn tool_version_probe_has_a_hard_deadline() {
+        let started = Instant::now();
+        let result = run_capture("sh", &["-c", "sleep 2"]);
+        assert!(result.is_err());
+        assert!(started.elapsed() < Duration::from_millis(1_200));
     }
 }

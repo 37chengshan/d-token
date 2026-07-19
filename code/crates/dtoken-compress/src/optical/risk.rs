@@ -1,10 +1,13 @@
 // RiskPartitionPlanner：把文本 span 分类到 risk tier，构建 AnchorMap。
 // 关联计划：OPTICAL_COMPRESSION_EXPERIMENT_PLAN.md §15。
 
+use super::secret::contains_secret_like;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RiskTier {
     RenderSafe,
     ExactTextRequired,
+    DecisionSensitive,
     SecretNoDuplicate,
     StructuralUnsafe,
     BlockUnsafe,
@@ -80,33 +83,104 @@ fn is_path_like(text: &str) -> bool {
         || token.starts_with("../")
         || token.starts_with("~/")
         || token.contains('\\')
+        || (token.contains('/') && token.contains('.'))
         || (token.len() >= 3
             && token.as_bytes()[1] == b':'
             && matches!(token.as_bytes()[2], b'\\' | b'/'))
 }
 
-fn contains_secret_like(text: &str) -> bool {
-    let lower = text.to_ascii_lowercase();
-    let markers = [
-        "authorization: bearer ",
-        "authorization=bearer ",
-        "bearer ",
-        "cookie:",
-        "set-cookie:",
-        "x-api-key",
-        "api_key",
-        "api-key",
-        "apikey",
-        "sk-ant-",
-    ];
-    if markers.iter().any(|marker| lower.contains(marker)) {
-        return true;
-    }
+fn is_url_like(text: &str) -> bool {
+    let token = clean_token(text);
+    token.starts_with("http://") || token.starts_with("https://")
+}
 
-    text.split_whitespace().any(|token| {
-        let token = clean_token(token);
-        token.starts_with("sk-") && token.len() >= 12
-    })
+fn is_numeric_like(text: &str) -> bool {
+    let token = clean_token(text).trim_matches(|character: char| {
+        matches!(character, '+' | '-' | '_' | ',' | '.' | '%' | 'm' | 's')
+    });
+    !token.is_empty()
+        && token.chars().any(|character| character.is_ascii_digit())
+        && token.chars().all(|character| character.is_ascii_digit())
+}
+
+fn is_version_like(text: &str) -> bool {
+    let token = clean_token(text)
+        .strip_prefix('v')
+        .unwrap_or_else(|| clean_token(text));
+    let pieces = token.split('.').collect::<Vec<_>>();
+    pieces.len() >= 2
+        && pieces
+            .iter()
+            .all(|piece| !piece.is_empty() && piece.chars().all(|ch| ch.is_ascii_digit()))
+}
+
+fn is_cli_flag_like(text: &str) -> bool {
+    let token = clean_token(text);
+    token.starts_with('-')
+        && token.len() >= 2
+        && token
+            .trim_start_matches('-')
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || matches!(character, '_' | '-'))
+}
+
+fn is_constant_like(text: &str) -> bool {
+    let token = clean_token(text);
+    token.len() >= 3
+        && token.contains('_')
+        && token.chars().all(|character| {
+            character.is_ascii_uppercase() || character.is_ascii_digit() || character == '_'
+        })
+}
+
+fn is_assignment_like(text: &str) -> bool {
+    let token = clean_token(text);
+    let Some((label, value)) = token.split_once('=') else {
+        return false;
+    };
+    label.len() >= 2
+        && !value.is_empty()
+        && label.chars().all(|character| {
+            character.is_ascii_uppercase() || character.is_ascii_digit() || character == '_'
+        })
+}
+
+fn is_camel_case_like(text: &str) -> bool {
+    let token = clean_token(text);
+    token.len() >= 6
+        && token
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric())
+        && token
+            .chars()
+            .any(|character| character.is_ascii_lowercase())
+        && token
+            .chars()
+            .skip(1)
+            .any(|character| character.is_ascii_uppercase())
+}
+
+fn is_ticket_like(text: &str) -> bool {
+    let token = clean_token(text);
+    token.contains('-')
+        && token.chars().any(|character| character.is_ascii_digit())
+        && token.chars().all(|character| {
+            character.is_ascii_uppercase() || character.is_ascii_digit() || character == '-'
+        })
+}
+
+fn is_exact_token(text: &str) -> bool {
+    is_uuid_like(text)
+        || is_hash_like(text)
+        || is_path_like(text)
+        || is_url_like(text)
+        || is_numeric_like(text)
+        || is_version_like(text)
+        || is_cli_flag_like(text)
+        || is_constant_like(text)
+        || is_assignment_like(text)
+        || is_camel_case_like(text)
+        || is_ticket_like(text)
 }
 
 fn contains_diff_patch(text: &str) -> bool {
@@ -141,6 +215,13 @@ pub fn classify_block(text: &str) -> RiskPartitionPlan {
             skip_reason: Some("secret_no_duplicate".to_string()),
         };
     }
+    if !text.is_ascii() {
+        return RiskPartitionPlan {
+            tier: RiskTier::StructuralUnsafe,
+            anchors: None,
+            skip_reason: Some("unsupported_render_script".to_string()),
+        };
+    }
     if contains_diff_patch(text) {
         return RiskPartitionPlan {
             tier: RiskTier::StructuralUnsafe,
@@ -152,13 +233,54 @@ pub fn classify_block(text: &str) -> RiskPartitionPlan {
     let mut anchors = Vec::new();
     for (index, token) in text.split_whitespace().enumerate() {
         let cleaned = clean_token(token);
-        if is_uuid_like(cleaned) || is_hash_like(cleaned) || is_path_like(cleaned) {
+        let is_html_tag_token = token.contains('<') && token.contains('>');
+        if !is_html_tag_token && is_exact_token(cleaned) {
             anchors.push(ExactAnchor {
                 anchor_id: format!("anchor-{index}"),
                 risk_kind: RiskTier::ExactTextRequired,
                 placeholder: format!("«§{index}»"),
                 span_chars: cleaned.chars().count(),
             });
+        }
+        // HTML tag syntax contains slash-prefixed closing tags (for example
+        // `</li>`). Those are structure, not filesystem paths. The HTML
+        // router preserves tag attributes while folding only identical safe
+        // lines, so treating tag fragments as exact anchors creates false
+        // positives without adding protection.
+        if is_html_tag_token {
+            continue;
+        }
+        for (fragment_index, fragment) in token
+            .split(|character: char| {
+                character.is_whitespace()
+                    || matches!(
+                        character,
+                        ',' | ';'
+                            | ':'
+                            | '('
+                            | ')'
+                            | '['
+                            | ']'
+                            | '{'
+                            | '}'
+                            | '<'
+                            | '>'
+                            | '"'
+                            | '\''
+                            | '='
+                    )
+            })
+            .filter(|fragment| !fragment.is_empty())
+            .enumerate()
+        {
+            if fragment != cleaned && is_exact_token(fragment) {
+                anchors.push(ExactAnchor {
+                    anchor_id: format!("anchor-{index}-{fragment_index}"),
+                    risk_kind: RiskTier::ExactTextRequired,
+                    placeholder: format!("«§{index}.{fragment_index}»"),
+                    span_chars: fragment.chars().count(),
+                });
+            }
         }
     }
     let exact_chars: usize = anchors.iter().map(|anchor| anchor.span_chars).sum();
@@ -204,6 +326,14 @@ pub fn classify_block(text: &str) -> RiskPartitionPlan {
         };
     }
 
+    if crate::content_router::contains_decision_signal(text) {
+        return RiskPartitionPlan {
+            tier: RiskTier::DecisionSensitive,
+            anchors: None,
+            skip_reason: Some("decision_sensitive".to_string()),
+        };
+    }
+
     RiskPartitionPlan {
         tier: RiskTier::RenderSafe,
         anchors: None,
@@ -240,6 +370,10 @@ mod tests {
             RiskTier::SecretNoDuplicate
         );
         assert_eq!(
+            classify_block("INFO token=credentialmaterial").tier,
+            RiskTier::SecretNoDuplicate
+        );
+        assert_eq!(
             classify_block("config x-api-key=credential-material").tier,
             RiskTier::SecretNoDuplicate
         );
@@ -263,5 +397,30 @@ mod tests {
     fn ordinary_log_remains_render_safe() {
         let text = "INFO operation completed\nWARN retry scheduled\nINFO finished";
         assert_eq!(classify_block(text).tier, RiskTier::RenderSafe);
+    }
+
+    #[test]
+    fn precision_critical_shapes_require_text() {
+        for value in [
+            "https://example.test/a/b",
+            "src/lib/router.rs",
+            "v5.6.1",
+            "--max-parallel",
+            "CACHE_V3",
+            "ACTIVE_MODEL=gpt-5.6-sol",
+            "tokenLedgerShard",
+            "PROJ-1482",
+            "port 47821",
+            "{\"id\":\"a1b2c3d4e5f6\",\"dur_ms\":731}",
+        ] {
+            assert_ne!(classify_block(value).tier, RiskTier::RenderSafe, "{value}");
+        }
+    }
+
+    #[test]
+    fn final_decision_without_exact_tokens_is_decision_sensitive() {
+        let plan = classify_block("INFO final decision use floor division");
+        assert_eq!(plan.tier, RiskTier::DecisionSensitive);
+        assert_eq!(plan.skip_reason.as_deref(), Some("decision_sensitive"));
     }
 }

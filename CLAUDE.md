@@ -70,9 +70,9 @@ AI coding agent
 
 ## 5. UI 规则
 
-正式一级页面固定为：总体概览、安装与连接、分析、Doctor、变更与回退、设置。
+正式一级页面固定为：总体概览、安装与连接、分析、视觉压缩（Beta）、Doctor、变更与回退、设置。
 
-`Advanced`、`LogsSecurity`、`Compatibility`、`SmartLearning` 只能作为工作台子流程或内部组件。正式 UI 不得出现 workload benchmark、smoke test、fixture、mock、fake-bin、testing center 等开发术语。
+`Advanced`、`LogsSecurity`、`Compatibility`、`SmartLearning` 只能作为工作台子流程或内部组件。除「视觉压缩（Beta）」外不得再新增工程化顶级导航。正式 UI 不得出现 workload benchmark、smoke test、fixture、mock、fake-bin、testing center 等开发术语。
 
 真实状态必须带 source、freshness 和 action result。浏览器 preview、缺失数据和部分数据不能渲染成机器真实状态。
 
@@ -126,3 +126,15 @@ npm run test:e2e
 ```
 
 Tauri 使用 `npm run tauri:dev` 或 `npm run tauri:build`，以保证对应平台的 `dtoken-proxy` external binary 先被准备。
+
+## 11. AI Coding 行为准则
+
+本仓库使用主动分析、克制执行的 Karpathy Guidelines，完整规则见 `AGENTS.md` 和 `.agents/skills/karpathy-guidelines/SKILL.md`。
+
+- 编码前先确认目标、证据、约束、关键假设和可验证的成功标准。
+- 适度检查直接关联的调用链、数据/状态流、错误路径、边界条件、配置和测试；不因发散而扩大范围。
+- 优先修复根因，采用最小完整方案，复用现有模式，不添加推测性抽象或配置。
+- 只做能追溯到用户目标、根因修复或回归防护的精准修改；不顺手重构或删除无关代码。
+- 对方案保持批判性，主动说明证据、风险、取舍和更简单的替代方案。
+- 按“实现 → 验证 → 修正”闭环执行；未实际运行的检查不得声称通过。
+- 汇报时区分已修复、建议后续处理和不在范围的问题，并明确验证结果与限制。

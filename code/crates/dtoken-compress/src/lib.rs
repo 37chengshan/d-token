@@ -1,3 +1,6 @@
+pub mod code_codec;
+pub mod content_router;
+pub mod context_pipeline;
 pub mod hybrid;
 pub mod optical;
 
@@ -7,9 +10,9 @@ use serde_json::Value;
 use std::time::Instant;
 
 pub use hybrid::{
-    lower_hybrid_context, ApprovedHybridTarget, ApprovedHybridTargetKind, HybridContentProvenance,
-    HybridContextIr, HybridContextNode, HybridNodeKind, HybridProtection, HybridProtectionReason,
-    HybridRole, ResolvedOptimizationContext,
+    lower_hybrid_context, ApprovedHybridAction, ApprovedHybridTarget, ApprovedHybridTargetKind,
+    HybridContentProvenance, HybridContextIr, HybridContextNode, HybridNodeKind, HybridProtection,
+    HybridProtectionReason, HybridRole, ResolvedOptimizationContext,
 };
 
 #[derive(Debug, Clone, Default)]
@@ -40,6 +43,16 @@ impl CompressionEngine {
         policy: CompressionPolicy,
         body: Value,
     ) -> Result<CompressionResult> {
+        self.compress_resolved_with_cache_evidence(context, policy, body, None)
+    }
+
+    pub fn compress_resolved_with_cache_evidence(
+        &self,
+        context: &ResolvedOptimizationContext,
+        policy: CompressionPolicy,
+        body: Value,
+        cache_evidence: Option<&context_pipeline::ProviderCacheEvidence>,
+    ) -> Result<CompressionResult> {
         let started = Instant::now();
         let original_tokens = estimate_tokens(&body);
         if policy == CompressionPolicy::Off || !context.supports_safe_text_codec() {
@@ -55,9 +68,22 @@ impl CompressionEngine {
         }
 
         let original_body = body.clone();
-        let mut transforms_applied = Vec::new();
-        let compressed_body =
-            hybrid::apply_safe_text_codec(context, policy, body, &mut transforms_applied);
+        let (compressed_body, transforms_applied) =
+            match context_pipeline::prepare_context_transform_with_cache_evidence(
+                context,
+                policy,
+                body,
+                cache_evidence,
+            ) {
+                Ok(Some(prepared)) => match prepared.validate() {
+                    Ok(validated) => {
+                        let (body, manifest) = validated.into_parts();
+                        (body, manifest.transforms().to_vec())
+                    }
+                    Err(_) => (original_body.clone(), Vec::new()),
+                },
+                Ok(None) | Err(_) => (original_body.clone(), Vec::new()),
+            };
         let compressed_tokens = estimate_tokens(&compressed_body);
         let tokens_saved = original_tokens.saturating_sub(compressed_tokens);
         let context_accounting = (!transforms_applied.is_empty()).then(|| {
@@ -273,6 +299,21 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    fn followed_by_six_recent_closed_pairs(mut messages: Vec<Value>) -> Vec<Value> {
+        for index in 0..6 {
+            messages.push(json!({
+                "role":"assistant",
+                "content":[{"type":"tool_use","id":format!("recent-{index}"),"name":"read","input":{}}]
+            }));
+            messages.push(json!({
+                "role":"user",
+                "content":[{"type":"tool_result","tool_use_id":format!("recent-{index}"),"content":"recent"}]
+            }));
+        }
+        messages.push(json!({"role":"user","content":[{"type":"text","text":"current"}]}));
+        messages
+    }
+
     #[test]
     fn protocol_unknown_max_policy_fails_safe() {
         let body = json!({ "large": "fixture payload" });
@@ -288,15 +329,12 @@ mod tests {
     #[test]
     fn resolved_anthropic_policy_reduces_only_historical_closed_logs() {
         let repeated_log = ["INFO build started"; 12].join("\n");
+        let messages = followed_by_six_recent_closed_pairs(vec![
+            json!({"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"build","input":{}}]}),
+            json!({"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":repeated_log}]}),
+        ]);
         let body = json!({
-            "messages": [
-                {"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"build","input":{}}]},
-                {"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":repeated_log}]},
-                {"role":"assistant","content":[{"type":"text","text":"old"}]},
-                {"role":"user","content":[{"type":"text","text":"recent"}]},
-                {"role":"assistant","content":[{"type":"text","text":"recent"}]},
-                {"role":"user","content":[{"type":"text","text":"current"}]}
-            ]
+            "messages": messages
         });
         let context = ResolvedOptimizationContext {
             route_id: "r".into(),
@@ -319,6 +357,53 @@ mod tests {
             .any(|item| item == "repeat_line_fold"));
         assert!(result.elapsed_us > 0);
         assert!(result.body.to_string().contains("repeated x12"));
+    }
+
+    #[test]
+    fn resolved_pipeline_routes_historical_json_to_lossless_minifier() {
+        let json_output = "{\n  \"items\": [\n    {\"name\": \"alpha\", \"ok\": true},\n    {\"name\": \"beta\", \"ok\": false}\n  ]\n}";
+        let messages = followed_by_six_recent_closed_pairs(vec![
+            json!({"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"query","input":{}}]}),
+            json!({"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":json_output}]}),
+        ]);
+        let body = json!({
+            "messages": messages
+        });
+        let context = ResolvedOptimizationContext {
+            route_id: "r".into(),
+            provider_id: "p".into(),
+            model: "m".into(),
+            input_protocol: dtoken_types::Protocol::Anthropic,
+            output_protocol: dtoken_types::Protocol::Anthropic,
+            endpoint: dtoken_types::OpticalEndpoint::AnthropicMessages,
+        };
+
+        let result = CompressionEngine::new()
+            .compress_resolved(&context, CompressionPolicy::Balanced, body)
+            .expect("resolved JSON compression should succeed");
+
+        let compressed = result
+            .body
+            .pointer("/messages/1/content/0/content")
+            .and_then(Value::as_str)
+            .expect("compressed JSON string");
+        assert_eq!(
+            serde_json::from_str::<Value>(compressed).unwrap(),
+            serde_json::from_str::<Value>(json_output).unwrap()
+        );
+        assert!(compressed.len() < json_output.len());
+        assert!(result
+            .transforms_applied
+            .iter()
+            .any(|item| item == "content_router:json"));
+        assert!(result
+            .transforms_applied
+            .iter()
+            .any(|item| item == "json_minify_v1"));
+        assert!(result
+            .transforms_applied
+            .iter()
+            .any(|item| item == "semantic_closed_tool_result"));
     }
 
     #[test]

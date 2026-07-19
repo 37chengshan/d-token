@@ -1,8 +1,7 @@
 use dtoken_compress::optical::{
-    anthropic_dense_v1, estimate_image_tokens, evaluate_applicability,
-    evaluate_applicability_with_registry, experimental_anthropic_active_capability,
-    geometry_for_capability, normalize_model_base, resolve_model_capability_with_registry,
-    OpticalCapabilityRegistry, TextArena, TextSensitivity,
+    anthropic_dense_v2, estimate_image_tokens, evaluate_applicability,
+    evaluate_applicability_with_registry, normalize_model_base,
+    resolve_model_capability_with_registry, OpticalCapabilityRegistry, TextArena, TextSensitivity,
 };
 use dtoken_types::{
     CapabilityStatus, OpticalApplicabilityInput, OpticalApplicabilityReason, OpticalEndpoint,
@@ -23,20 +22,14 @@ fn supported_input() -> OpticalApplicabilityInput {
     }
 }
 
-fn active_registry() -> OpticalCapabilityRegistry {
-    let mut registry = OpticalCapabilityRegistry::new();
-    registry.register_verified(experimental_anthropic_active_capability("claude-fable-5"));
-    registry
-}
-
 #[test]
-fn capability_normalizes_model_and_requires_explicit_verified_rule_for_active() {
+fn capability_normalizes_model_and_unsigned_registry_cannot_grant_active() {
     assert_eq!(
         normalize_model_base(" Claude-Fable-5 [beta] "),
         "claude-fable-5"
     );
 
-    let registry = active_registry();
+    let registry = OpticalCapabilityRegistry::new();
     let capability = resolve_model_capability_with_registry(
         Some(&Protocol::Anthropic),
         Some("anthropic-main"),
@@ -45,18 +38,17 @@ fn capability_normalizes_model_and_requires_explicit_verified_rule_for_active() 
         &registry,
     );
 
-    assert_eq!(capability.status, CapabilityStatus::Supported);
-    assert_eq!(capability.max_mode, OpticalMode::ToolResultsOnly);
+    assert_eq!(capability.status, CapabilityStatus::Limited);
+    assert_eq!(capability.max_mode, OpticalMode::ShadowPreview);
     assert!(capability.supports_anthropic_image_block);
 }
 
 #[test]
 fn applicability_blocks_unsafe_or_unsupported_live_paths() {
-    let registry = active_registry();
+    let registry = OpticalCapabilityRegistry::new();
     let supported = evaluate_applicability_with_registry(&supported_input(), &registry);
     assert!(supported.eligible_for_shadow);
-    assert!(supported.eligible_for_active);
-    assert_eq!(supported.reason, OpticalApplicabilityReason::Eligible);
+    assert!(!supported.eligible_for_active);
 
     let mut get_request = supported_input();
     get_request.method = Some("GET".to_string());
@@ -81,25 +73,16 @@ fn applicability_blocks_unsafe_or_unsupported_live_paths() {
 
 #[test]
 fn render_geometry_is_profile_driven() {
-    let profile = anthropic_dense_v1();
-    assert_eq!(profile.profile_id, "anthropic_dense_v1");
+    let profile = anthropic_dense_v2();
+    assert_eq!(profile.profile_id, "anthropic_dense_v2");
+    assert!(profile.shrink_last_page);
     assert_eq!(
         profile.readable_chars_per_image,
         profile.cols * profile.readable_rows
     );
     assert!(estimate_image_tokens(&profile, 1) > 0);
 
-    let registry = active_registry();
-    let capability = resolve_model_capability_with_registry(
-        Some(&Protocol::Anthropic),
-        Some("anthropic-main"),
-        Some("claude-fable-5"),
-        OpticalEndpoint::AnthropicMessages,
-        &registry,
-    );
-    let resolved =
-        geometry_for_capability(&capability).expect("verified capability should resolve geometry");
-    assert_eq!(resolved.profile_id, profile.profile_id);
+    assert_eq!(profile.width_px, 1_568);
 }
 
 #[test]

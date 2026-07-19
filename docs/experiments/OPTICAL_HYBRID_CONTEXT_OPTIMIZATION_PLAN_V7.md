@@ -1,5 +1,7 @@
 # d-token Hybrid Context Optimization / Optical Codec Plan V7
 
+> 已被 [`HYBRID_CONTEXT_OPTIMIZATION_ENGINE_PLAN_V8.md`](HYBRID_CONTEXT_OPTIMIZATION_ENGINE_PLAN_V8.md) 取代；本文件仅保留为上一轮架构记录。
+
 更新日期：2026-07-10
 
 ## 0. 定位变化

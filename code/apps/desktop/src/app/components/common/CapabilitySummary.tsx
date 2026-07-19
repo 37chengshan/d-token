@@ -74,7 +74,7 @@ export function CapabilitySummary({ payload, status, compact = false }: Capabili
       status: rawAvailable(cache) === true ? "error" : rawAvailable(cache) === false ? "healthy" : "warning",
       statusLabel: cache
         ? rawAvailable(cache) === true
-          ? lang === "zh" ? "需检查" : "Review"
+          ? lang === "zh" ? "需要处理" : "Needs attention"
           : rawAvailable(cache) === false
             ? lang === "zh" ? "已验证" : "Verified"
             : lang === "zh" ? "待验证" : "Unverified"
@@ -91,7 +91,7 @@ export function CapabilitySummary({ payload, status, compact = false }: Capabili
       status: rawAvailable(memory) === true ? "error" : rawAvailable(memory) === false ? "healthy" : "warning",
       statusLabel: memory
         ? rawAvailable(memory) === true
-          ? lang === "zh" ? "需检查" : "Review"
+          ? lang === "zh" ? "需要处理" : "Needs attention"
           : rawAvailable(memory) === false
             ? lang === "zh" ? "已验证" : "Verified"
             : lang === "zh" ? "待验证" : "Unverified"
@@ -220,7 +220,7 @@ function privacyVerified(cache: Record<string, any> | null, memory: Record<strin
 
 function rawAvailabilityDetail(value: Record<string, any>, lang: string) {
   if (rawAvailable(value) === false) return lang === "zh" ? "默认只返回脱敏索引与摘要" : "Redacted indexes and summaries only by default";
-  if (rawAvailable(value) === true) return lang === "zh" ? "本地状态允许原始内容，需要检查隐私设置" : "Raw content is locally available; review privacy settings";
+  if (rawAvailable(value) === true) return lang === "zh" ? "本地状态允许原始内容，需要检查隐私设置" : "Raw content is locally available; check privacy settings";
   return lang === "zh" ? "未说明原始内容是否可用" : "Raw-content availability was not reported";
 }
 

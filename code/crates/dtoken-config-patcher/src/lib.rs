@@ -1,4 +1,5 @@
 use anyhow::{bail, Context, Result};
+use dtoken_compress::optical::contains_secret_like;
 use dtoken_types::{ConfigPatchPlan, ConfigToolKind, RiskLevel, RollbackPoint};
 use serde::{
     de::{self, DeserializeSeed, MapAccess, SeqAccess, Visitor},
@@ -15,6 +16,13 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 use uuid::Uuid;
+
+#[cfg(target_os = "windows")]
+use std::process::{Command, Stdio};
+
+pub mod agent;
+pub mod agent_integration;
+pub mod codebase_memory_integration;
 
 const BACKUP_SCHEMA_VERSION: u32 = 1;
 const BACKUP_CONTENT_FILE: &str = "original.bin";
@@ -876,12 +884,15 @@ fn redact_json_value(value: &mut serde_json::Value) {
                 redact_json_value(value);
             }
         }
+        serde_json::Value::String(text) if contains_secret_like(text) => {
+            *value = serde_json::Value::String("<redacted>".to_string());
+        }
         _ => {}
     }
 }
 
 fn contains_sensitive_marker(value: &str) -> bool {
-    is_sensitive_key(value)
+    is_sensitive_key(value) || contains_secret_like(value)
 }
 
 fn is_sensitive_key(key: &str) -> bool {
@@ -890,7 +901,7 @@ fn is_sensitive_key(key: &str) -> bool {
         .filter(|character| character.is_ascii_alphanumeric())
         .flat_map(char::to_lowercase)
         .collect();
-    [
+    let known_marker = [
         "apikey",
         "token",
         "password",
@@ -903,7 +914,8 @@ fn is_sensitive_key(key: &str) -> bool {
         "bearer",
     ]
     .iter()
-    .any(|marker| normalized.contains(marker))
+    .any(|marker| normalized.contains(marker));
+    known_marker || contains_secret_like(&format!("{key}=nonempty"))
 }
 
 fn inspect_target(path: &Path) -> Result<(FileSnapshot, Option<Vec<u8>>)> {
@@ -997,30 +1009,53 @@ fn verify_permissions(
 
 fn normalize_target_path(path: &Path) -> Result<PathBuf> {
     reject_parent_components(path)?;
-    let file_name = path
-        .file_name()
+    path.file_name()
         .context("configuration target must include a file name")?;
-    let parent = path
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .context("failed to resolve current directory")?
+            .join(path)
+    };
+    reject_parent_components(&absolute)?;
+    let parent = absolute
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
         .unwrap_or_else(|| Path::new("."));
-    ensure_path_has_no_symlinks(parent)?;
-    let parent_metadata = fs::symlink_metadata(parent).with_context(|| {
-        format!(
-            "configuration target parent {} is unavailable",
-            parent.display()
-        )
-    })?;
-    if !parent_metadata.is_dir() {
-        bail!("configuration target parent is not a directory");
+    ensure_existing_ancestors_have_no_symlinks(parent)?;
+    let mut existing_ancestor = parent;
+    loop {
+        match fs::symlink_metadata(existing_ancestor) {
+            Ok(metadata) => {
+                if metadata.file_type().is_symlink() {
+                    bail!("symbolic links are not allowed in configuration paths");
+                }
+                if !metadata.is_dir() {
+                    bail!("configuration target ancestor is not a directory");
+                }
+                break;
+            }
+            Err(error) if error.kind() == ErrorKind::NotFound => {
+                existing_ancestor = existing_ancestor
+                    .parent()
+                    .context("configuration target has no existing ancestor")?;
+            }
+            Err(error) => {
+                return Err(error).context("failed to inspect configuration target ancestor")
+            }
+        }
     }
-    let canonical_parent = fs::canonicalize(parent).with_context(|| {
+    let canonical_ancestor = fs::canonicalize(existing_ancestor).with_context(|| {
         format!(
-            "failed to normalize configuration target parent {}",
-            parent.display()
+            "failed to normalize configuration target ancestor {}",
+            existing_ancestor.display()
         )
     })?;
-    let normalized = canonical_parent.join(file_name);
+    let suffix = absolute
+        .strip_prefix(existing_ancestor)
+        .context("configuration target is outside its existing ancestor")?;
+    let normalized = canonical_ancestor.join(suffix);
     ensure_path_has_no_symlinks(&normalized)?;
     Ok(normalized)
 }
@@ -1097,6 +1132,8 @@ fn ensure_private_directory(path: &Path, label: &str) -> Result<()> {
             bail!("{label} permissions expose backup data to other users");
         }
     }
+    #[cfg(target_os = "windows")]
+    validate_private_windows_acl(path, label)?;
     Ok(())
 }
 
@@ -1109,6 +1146,8 @@ fn ensure_private_file(path: &Path, label: &str) -> Result<()> {
             bail!("{label} permissions expose backup data to other users");
         }
     }
+    #[cfg(target_os = "windows")]
+    validate_private_windows_acl(path, label)?;
     Ok(())
 }
 
@@ -1188,6 +1227,52 @@ fn set_private_dir_permissions(path: &Path) -> Result<()> {
     {
         use std::os::unix::fs::PermissionsExt;
         fs::set_permissions(path, fs::Permissions::from_mode(0o700))?;
+    }
+    #[cfg(target_os = "windows")]
+    {
+        let username = std::env::var("USERNAME").context("USERNAME is required")?;
+        let identity = std::env::var("USERDOMAIN")
+            .ok()
+            .filter(|domain| !domain.is_empty())
+            .map_or(username.clone(), |domain| format!("{domain}\\{username}"));
+        let user_grant = format!("{identity}:(OI)(CI)F");
+        let status = Command::new("icacls.exe")
+            .arg(path)
+            .args(["/inheritance:r", "/grant:r"])
+            .arg(user_grant)
+            .arg("*S-1-5-18:(OI)(CI)F")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .context("failed to enforce private Windows backup ACL")?;
+        if !status.success() {
+            bail!("failed to enforce private Windows backup ACL");
+        }
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+fn validate_private_windows_acl(path: &Path, label: &str) -> Result<()> {
+    let script = r#"$acl=Get-Acl -LiteralPath $env:DTOKEN_PRIVATE_PATH;
+$me=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value;
+$allowed=@($me,'S-1-5-18');
+foreach($rule in $acl.Access){
+  try{$sid=$rule.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value}catch{exit 2}
+  if($rule.AccessControlType -eq [Security.AccessControl.AccessControlType]::Allow -and $allowed -notcontains $sid){exit 3}
+}
+exit 0"#;
+    let status = Command::new("powershell.exe")
+        .args(["-NoProfile", "-NonInteractive", "-Command", script])
+        .env("DTOKEN_PRIVATE_PATH", path)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .context("failed to validate private Windows backup ACL")?;
+    if !status.success() {
+        bail!("{label} permissions expose backup data to other users");
     }
     Ok(())
 }

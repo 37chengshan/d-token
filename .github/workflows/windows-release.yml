@@ -27,6 +27,9 @@ jobs:
           cache: npm
           cache-dependency-path: code/apps/desktop/package-lock.json
 
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@v4.0.0
+
       - name: Install frontend dependencies
         working-directory: code/apps/desktop
         run: npm ci
@@ -121,6 +124,8 @@ jobs:
           $artifacts = @(
             "code/target/release/d-token-desktop.exe",
             "code/target/release/dtoken-proxy.exe",
+            "code/target/release/dtoken-agent-bridge.exe",
+            "code/target/release/dtoken-codebase-memory-launcher.exe",
             (Get-ChildItem "code/target/release/bundle/nsis/d-token_*_x64-setup.exe" | Sort-Object LastWriteTime -Descending | Select-Object -First 1).FullName
           )
           foreach ($artifact in $artifacts) {
@@ -150,7 +155,9 @@ jobs:
         run: |
           $installedArtifacts = @(
             (Join-Path $env:LOCALAPPDATA "d-token/d-token-desktop.exe"),
-            (Join-Path $env:LOCALAPPDATA "d-token/dtoken-proxy.exe")
+            (Join-Path $env:LOCALAPPDATA "d-token/dtoken-proxy.exe"),
+            (Join-Path $env:LOCALAPPDATA "d-token/dtoken-agent-bridge.exe"),
+            (Join-Path $env:LOCALAPPDATA "d-token/dtoken-codebase-memory-launcher.exe")
           )
           foreach ($artifact in $installedArtifacts) {
             if (-not (Test-Path -LiteralPath $artifact -PathType Leaf)) {
@@ -162,6 +169,24 @@ jobs:
             }
           }
 
+      - name: Prepare pinned user-imported Code Graph component for smoke only
+        shell: pwsh
+        run: |
+          $importDir = Join-Path $env:LOCALAPPDATA "d-token\codebase-memory\upstream"
+          New-Item -ItemType Directory -Force -Path $importDir | Out-Null
+          python support/scripts/prepare_codebase_memory_artifact.py `
+            --manifest code/runtimes/codebase-memory/artifact-manifest.json `
+            --target x86_64-pc-windows-msvc `
+            --artifact-dir code/target/codebase-memory-smoke-artifacts `
+            --binary-output (Join-Path $importDir "codebase-memory-mcp.exe") `
+            --license-output (Join-Path $importDir "LICENSE") `
+            --notices-output (Join-Path $importDir "THIRD_PARTY_NOTICES.md") `
+            --download --require-attestation
+
+      - name: Exercise installed Codebase Memory MCP, index, and graph surface
+        shell: pwsh
+        run: ./support/scripts/run_installed_codebase_memory_smoke.ps1 -OpenBrowser
+
       - name: Write SHA-256 manifest
         shell: pwsh
         run: |
@@ -169,6 +194,8 @@ jobs:
           $artifacts = @(
             "code/target/release/d-token-desktop.exe",
             "code/target/release/dtoken-proxy.exe",
+            "code/target/release/dtoken-agent-bridge.exe",
+            "code/target/release/dtoken-codebase-memory-launcher.exe",
             "code/target/release/WebView2Loader.dll",
             $installer
           )
@@ -198,6 +225,8 @@ jobs:
           path: |
             code/target/release/d-token-desktop.exe
             code/target/release/dtoken-proxy.exe
+            code/target/release/dtoken-agent-bridge.exe
+            code/target/release/dtoken-codebase-memory-launcher.exe
             code/target/release/WebView2Loader.dll
             code/target/release/bundle/nsis/*.exe
             code/target/release/d-token-release-candidate.json

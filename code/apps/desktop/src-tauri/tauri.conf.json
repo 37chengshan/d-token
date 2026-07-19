@@ -28,9 +28,15 @@
     "targets": ["nsis"],
     "icon": ["icons/icon.ico"],
     "resources": {
-      "binaries/WebView2Loader.dll": ""
+      "binaries/WebView2Loader.dll": "",
+      "binaries/codebase-memory/LICENSE": "codebase-memory/LICENSE",
+      "binaries/codebase-memory/THIRD_PARTY_NOTICES.md": "codebase-memory/THIRD_PARTY_NOTICES.md"
     },
-    "externalBin": ["binaries/dtoken-proxy"],
+    "externalBin": [
+      "binaries/dtoken-proxy",
+      "binaries/dtoken-agent-bridge",
+      "binaries/dtoken-codebase-memory-launcher"
+    ],
     "category": "DeveloperTool",
     "shortDescription": "Local AI coding token compression and routing control plane",
     "longDescription": "d-token is a local-first AI coding compression, routing, diagnostics, dashboard, and rollback desktop control plane."

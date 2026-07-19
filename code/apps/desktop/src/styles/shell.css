@@ -50,6 +50,8 @@
 .notification-banner[data-level="warning"] { background: color-mix(in srgb, #d58a13 8%, var(--card)); }
 .notification-banner[data-level="error"],
 .notification-banner[data-level="action-required"] { background: color-mix(in srgb, #df4b4b 7%, var(--card)); }
+.notification-banner[data-level="success"] { background: color-mix(in srgb, #22a46b 7%, var(--card)); }
+.notification-banner[data-level="info"] { background: color-mix(in srgb, var(--primary) 5%, var(--card)); }
 
 .is-sidebar-collapsed .shell-workspace {
   margin-left: 8px;
@@ -86,16 +88,6 @@
   margin-inline: auto;
   padding: 16px;
   padding-bottom: calc(24px + env(safe-area-inset-bottom, 0px));
-  will-change: opacity, transform;
-}
-
-.shell-page-stage[data-reduced-motion="false"] {
-  animation: dtoken-page-enter 220ms cubic-bezier(0.22, 0.84, 0.32, 1) both;
-}
-
-@keyframes dtoken-page-enter {
-  from { opacity: 0; transform: translateY(4px); }
-  to { opacity: 1; transform: translateY(0); }
 }
 
 .shell-segmented {
@@ -111,13 +103,16 @@
 
 .shell-segmented-indicator {
   position: absolute;
-  top: 3px;
-  bottom: 3px;
-  left: 0;
+  pointer-events: none;
   border-radius: 6px;
   background: color-mix(in srgb, var(--card) 92%, white 8%);
   box-shadow: 0 2px 10px rgba(15, 23, 42, 0.08);
-  transition: transform 200ms cubic-bezier(0.2, 0.82, 0.3, 1);
+  transition:
+    left 200ms cubic-bezier(0.2, 0.82, 0.3, 1),
+    top 200ms cubic-bezier(0.2, 0.82, 0.3, 1),
+    width 200ms cubic-bezier(0.2, 0.82, 0.3, 1),
+    height 200ms cubic-bezier(0.2, 0.82, 0.3, 1),
+    opacity 160ms ease;
 }
 
 .dark .shell-segmented-indicator {
@@ -146,6 +141,11 @@
   color: var(--foreground);
 }
 
+.shell-segmented-item:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
 .shell-segmented-item:focus-visible,
 .nav-motion-item:focus-visible,
 .shell-window-control:focus-visible {
@@ -153,6 +153,12 @@
   outline-offset: 2px;
 }
 
+/*
+ * Product-owned per-icon motion (AiMaMi principle: distinct enter/leave).
+ * CSS transitions reverse on leave automatically. Primary trigger is :hover /
+ * :focus-visible so Tooltip wrappers cannot swallow the effect; data-motion-play
+ * covers click pulse. Amplitudes are intentionally large for ~18px glyphs.
+ */
 .animated-nav-icon {
   display: block;
   overflow: visible;
@@ -161,76 +167,237 @@
 .animated-nav-icon .icon-part {
   transform-box: fill-box;
   transform-origin: center;
+  transition:
+    transform 240ms cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 200ms ease;
+  will-change: transform;
 }
 
-.nav-motion-item:active .animated-nav-icon {
-  transform: scale(0.86);
-  transition: transform 80ms ease-out;
+.animated-nav-icon .icon-bar-1,
+.animated-nav-icon .icon-bar-2,
+.animated-nav-icon .icon-bar-3 {
+  transform-origin: center bottom;
 }
 
-/* Overview: four metric cells lift in sequence. */
+/* Click scale on the whole control (instant band). */
+.nav-motion-item:active {
+  transform: scale(0.92);
+  transition: transform 100ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+/* --- overview: staggered grid lift --- */
 .nav-motion-item:hover [data-motion-id="overview"] .icon-grid-1,
-[data-motion-id="overview"][data-active="true"] .icon-grid-1 { animation: dtoken-grid-lift 180ms ease-out both; }
+.nav-motion-item:focus-visible [data-motion-id="overview"] .icon-grid-1,
+.nav-motion-item [data-motion-id="overview"][data-motion-play="true"] .icon-grid-1 {
+  transform: translateY(-4px) scale(1.16);
+  transition-delay: 0ms;
+}
 .nav-motion-item:hover [data-motion-id="overview"] .icon-grid-2,
-[data-motion-id="overview"][data-active="true"] .icon-grid-2 { animation: dtoken-grid-lift 180ms 24ms ease-out both; }
+.nav-motion-item:focus-visible [data-motion-id="overview"] .icon-grid-2,
+.nav-motion-item [data-motion-id="overview"][data-motion-play="true"] .icon-grid-2 {
+  transform: translateY(-4px) scale(1.16);
+  transition-delay: 40ms;
+}
 .nav-motion-item:hover [data-motion-id="overview"] .icon-grid-3,
-[data-motion-id="overview"][data-active="true"] .icon-grid-3 { animation: dtoken-grid-lift 180ms 48ms ease-out both; }
+.nav-motion-item:focus-visible [data-motion-id="overview"] .icon-grid-3,
+.nav-motion-item [data-motion-id="overview"][data-motion-play="true"] .icon-grid-3 {
+  transform: translateY(-4px) scale(1.16);
+  transition-delay: 80ms;
+}
 .nav-motion-item:hover [data-motion-id="overview"] .icon-grid-4,
-[data-motion-id="overview"][data-active="true"] .icon-grid-4 { animation: dtoken-grid-lift 180ms 72ms ease-out both; }
+.nav-motion-item:focus-visible [data-motion-id="overview"] .icon-grid-4,
+.nav-motion-item [data-motion-id="overview"][data-motion-play="true"] .icon-grid-4 {
+  transform: translateY(-4px) scale(1.16);
+  transition-delay: 120ms;
+}
 
-/* Install: arrow lands in the tray; tray absorbs the movement. */
+/* --- install: arrow drop + tray catch --- */
 .nav-motion-item:hover [data-motion-id="install"] .icon-download-arrow,
-[data-motion-id="install"][data-active="true"] .icon-download-arrow { animation: dtoken-arrow-land 200ms ease-out both; }
+.nav-motion-item:focus-visible [data-motion-id="install"] .icon-download-arrow,
+.nav-motion-item [data-motion-id="install"][data-motion-play="true"] .icon-download-arrow {
+  transform: translateY(5px);
+}
 .nav-motion-item:hover [data-motion-id="install"] .icon-download-tray,
-[data-motion-id="install"][data-active="true"] .icon-download-tray { animation: dtoken-tray-bounce 200ms 55ms ease-out both; }
+.nav-motion-item:focus-visible [data-motion-id="install"] .icon-download-tray,
+.nav-motion-item [data-motion-id="install"][data-motion-play="true"] .icon-download-tray {
+  transform: translateY(2px) scaleX(1.28);
+}
 
-/* Analytics: bars grow independently from their baselines. */
+/* --- codebase memory: graph nodes connect --- */
+.nav-motion-item:hover [data-motion-id="codebase-memory"] .icon-memory-edge,
+.nav-motion-item:focus-visible [data-motion-id="codebase-memory"] .icon-memory-edge,
+.nav-motion-item [data-motion-id="codebase-memory"][data-motion-play="true"] .icon-memory-edge {
+  transform: scale(1.08);
+  opacity: 1;
+}
+.nav-motion-item:hover [data-motion-id="codebase-memory"] .icon-memory-node-1,
+.nav-motion-item:focus-visible [data-motion-id="codebase-memory"] .icon-memory-node-1,
+.nav-motion-item [data-motion-id="codebase-memory"][data-motion-play="true"] .icon-memory-node-1 {
+  transform: translateY(-2px) scale(1.2);
+}
+.nav-motion-item:hover [data-motion-id="codebase-memory"] .icon-memory-node-2,
+.nav-motion-item:focus-visible [data-motion-id="codebase-memory"] .icon-memory-node-2,
+.nav-motion-item [data-motion-id="codebase-memory"][data-motion-play="true"] .icon-memory-node-2 {
+  transform: translateX(-2px) scale(1.2);
+}
+.nav-motion-item:hover [data-motion-id="codebase-memory"] .icon-memory-node-3,
+.nav-motion-item:focus-visible [data-motion-id="codebase-memory"] .icon-memory-node-3,
+.nav-motion-item [data-motion-id="codebase-memory"][data-motion-play="true"] .icon-memory-node-3 {
+  transform: translateX(2px) scale(1.2);
+}
+.nav-motion-item:hover [data-motion-id="codebase-memory"] .icon-memory-node-4,
+.nav-motion-item:focus-visible [data-motion-id="codebase-memory"] .icon-memory-node-4,
+.nav-motion-item [data-motion-id="codebase-memory"][data-motion-play="true"] .icon-memory-node-4 {
+  transform: translateY(2px) scale(1.2);
+}
+
+/* --- analytics: bars grow --- */
 .nav-motion-item:hover [data-motion-id="analytics"] .icon-bar-1,
-[data-motion-id="analytics"][data-active="true"] .icon-bar-1 { animation: dtoken-bar-grow 180ms ease-out both; }
+.nav-motion-item:focus-visible [data-motion-id="analytics"] .icon-bar-1,
+.nav-motion-item [data-motion-id="analytics"][data-motion-play="true"] .icon-bar-1 {
+  transform: scaleY(1.55);
+  transition-delay: 0ms;
+}
 .nav-motion-item:hover [data-motion-id="analytics"] .icon-bar-2,
-[data-motion-id="analytics"][data-active="true"] .icon-bar-2 { animation: dtoken-bar-grow 180ms 28ms ease-out both; }
+.nav-motion-item:focus-visible [data-motion-id="analytics"] .icon-bar-2,
+.nav-motion-item [data-motion-id="analytics"][data-motion-play="true"] .icon-bar-2 {
+  transform: scaleY(1.4);
+  transition-delay: 40ms;
+}
 .nav-motion-item:hover [data-motion-id="analytics"] .icon-bar-3,
-[data-motion-id="analytics"][data-active="true"] .icon-bar-3 { animation: dtoken-bar-grow 180ms 56ms ease-out both; }
+.nav-motion-item:focus-visible [data-motion-id="analytics"] .icon-bar-3,
+.nav-motion-item [data-motion-id="analytics"][data-motion-play="true"] .icon-bar-3 {
+  transform: scaleY(1.5);
+  transition-delay: 80ms;
+}
 
-/* Doctor: one diagnostic sweep and one status pulse. */
+/* --- visual: frame focus --- */
+.nav-motion-item:hover [data-motion-id="visual"] .icon-frame,
+.nav-motion-item:focus-visible [data-motion-id="visual"] .icon-frame,
+.nav-motion-item [data-motion-id="visual"][data-motion-play="true"] .icon-frame {
+  transform: scale(1.12);
+}
+.nav-motion-item:hover [data-motion-id="visual"] .icon-lens,
+.nav-motion-item:focus-visible [data-motion-id="visual"] .icon-lens,
+.nav-motion-item [data-motion-id="visual"][data-motion-play="true"] .icon-lens {
+  transform: scale(1.75);
+  opacity: 0.55;
+}
+.nav-motion-item:hover [data-motion-id="visual"] .icon-landscape,
+.nav-motion-item:focus-visible [data-motion-id="visual"] .icon-landscape,
+.nav-motion-item [data-motion-id="visual"][data-motion-play="true"] .icon-landscape {
+  transform: translateY(-2px);
+}
+
+/* --- doctor: path nudge + status pulse --- */
 .nav-motion-item:hover [data-motion-id="doctor"] .icon-doctor-path,
-[data-motion-id="doctor"][data-active="true"] .icon-doctor-path { animation: dtoken-doctor-trace 220ms ease-out both; }
+.nav-motion-item:focus-visible [data-motion-id="doctor"] .icon-doctor-path,
+.nav-motion-item [data-motion-id="doctor"][data-motion-play="true"] .icon-doctor-path {
+  transform: scale(1.1) rotate(-8deg);
+}
 .nav-motion-item:hover [data-motion-id="doctor"] .icon-doctor-dot,
-[data-motion-id="doctor"][data-active="true"] .icon-doctor-dot { animation: dtoken-dot-pulse 200ms 40ms ease-out both; }
+.nav-motion-item:focus-visible [data-motion-id="doctor"] .icon-doctor-dot,
+.nav-motion-item [data-motion-id="doctor"][data-motion-play="true"] .icon-doctor-dot {
+  transform: scale(1.9);
+  opacity: 0.45;
+}
 
-/* Changes: paired arrows move toward one another. */
+/* --- changes: opposing arrows --- */
 .nav-motion-item:hover [data-motion-id="changes"] .icon-change-top,
-[data-motion-id="changes"][data-active="true"] .icon-change-top { animation: dtoken-change-left 190ms ease-out both; }
+.nav-motion-item:focus-visible [data-motion-id="changes"] .icon-change-top,
+.nav-motion-item [data-motion-id="changes"][data-motion-play="true"] .icon-change-top {
+  transform: translateX(-6px);
+}
 .nav-motion-item:hover [data-motion-id="changes"] .icon-change-bottom,
-[data-motion-id="changes"][data-active="true"] .icon-change-bottom { animation: dtoken-change-right 190ms ease-out both; }
+.nav-motion-item:focus-visible [data-motion-id="changes"] .icon-change-bottom,
+.nav-motion-item [data-motion-id="changes"][data-motion-play="true"] .icon-change-bottom {
+  transform: translateX(6px);
+}
 
-/* Settings, theme and collapse each use their own restrained gesture. */
+/* --- settings: CW ~50° (asymmetric so leave reverse is visible; not 90°) --- */
 .nav-motion-item:hover [data-motion-id="settings"] .icon-gear,
-[data-motion-id="settings"][data-active="true"] .icon-gear { animation: dtoken-gear-turn 200ms ease-out both; }
-.nav-motion-item:hover [data-motion-id="theme"] .icon-sun-rays,
-.shell-segmented-item:hover [data-motion-id="theme"] .icon-sun-rays,
-[data-motion-id="theme"][data-active="true"] .icon-sun-rays { animation: dtoken-rays-open 180ms ease-out both; }
-.nav-motion-item:hover [data-motion-id="theme"] .icon-moon,
-.shell-segmented-item:hover [data-motion-id="theme"] .icon-moon,
-[data-motion-id="theme"][data-active="true"] .icon-moon { animation: dtoken-moon-enter 200ms ease-out both; }
-.nav-motion-item:hover [data-motion-id="collapse"] .icon-panel-line,
-.shell-window-control:hover [data-motion-id="collapse"] .icon-panel-line { animation: dtoken-panel-fold 180ms ease-out both; }
-.nav-motion-item:hover [data-motion-id="collapse"] .icon-panel-arrow,
-.shell-window-control:hover [data-motion-id="collapse"] .icon-panel-arrow { animation: dtoken-panel-arrow 180ms ease-out both; }
+.nav-motion-item:focus-visible [data-motion-id="settings"] .icon-gear,
+.nav-motion-item [data-motion-id="settings"][data-motion-play="true"] .icon-gear,
+.shell-window-control:hover [data-motion-id="settings"] .icon-gear {
+  transform: rotate(50deg) scale(1.18);
+}
+.nav-motion-item:hover [data-motion-id="settings"] .icon-gear-hub,
+.nav-motion-item:focus-visible [data-motion-id="settings"] .icon-gear-hub,
+.nav-motion-item [data-motion-id="settings"][data-motion-play="true"] .icon-gear-hub {
+  transform: scale(0.75);
+}
 
-@keyframes dtoken-grid-lift { 45% { transform: translateY(-3px) scale(1.08); } }
-@keyframes dtoken-arrow-land { 0% { transform: translateY(-4px); opacity: .55; } 65% { transform: translateY(2px); } }
-@keyframes dtoken-tray-bounce { 50% { transform: translateY(1.5px) scaleX(1.12); } }
-@keyframes dtoken-bar-grow { 0% { transform: scaleY(.28); opacity: .48; } 100% { transform: scaleY(1); opacity: 1; } }
-@keyframes dtoken-doctor-trace { 0% { stroke-dasharray: 32; stroke-dashoffset: 32; } 100% { stroke-dasharray: 32; stroke-dashoffset: 0; } }
-@keyframes dtoken-dot-pulse { 50% { transform: scale(1.55); opacity: .62; } }
-@keyframes dtoken-change-left { 50% { transform: translateX(-2.5px); } }
-@keyframes dtoken-change-right { 50% { transform: translateX(2.5px); } }
-@keyframes dtoken-gear-turn { 50% { transform: rotate(28deg) scale(1.05); } }
-@keyframes dtoken-rays-open { 0% { transform: scale(.52); opacity: .35; } 70% { transform: scale(1.12); opacity: 1; } }
-@keyframes dtoken-moon-enter { 0% { transform: translate(3px, -2px) rotate(12deg); opacity: .55; } }
-@keyframes dtoken-panel-fold { 50% { transform: scaleX(.5); } }
-@keyframes dtoken-panel-arrow { 50% { transform: translateX(-2px); } }
+/* --- theme sun / moon --- */
+.nav-motion-item:hover [data-motion-id="theme"] .icon-sun-core,
+.nav-motion-item:focus-visible [data-motion-id="theme"] .icon-sun-core,
+.nav-motion-item [data-motion-id="theme"][data-motion-play="true"] .icon-sun-core,
+.shell-segmented-item:hover [data-motion-id="theme"] .icon-sun-core,
+.shell-segmented-item:focus-visible [data-motion-id="theme"] .icon-sun-core {
+  transform: scale(1.28);
+}
+.nav-motion-item:hover [data-motion-id="theme"] .icon-sun-rays,
+.nav-motion-item:focus-visible [data-motion-id="theme"] .icon-sun-rays,
+.nav-motion-item [data-motion-id="theme"][data-motion-play="true"] .icon-sun-rays,
+.shell-segmented-item:hover [data-motion-id="theme"] .icon-sun-rays,
+.shell-segmented-item:focus-visible [data-motion-id="theme"] .icon-sun-rays {
+  transform: scale(1.35) rotate(22deg);
+}
+.nav-motion-item:hover [data-motion-id="theme"] .icon-moon,
+.nav-motion-item:focus-visible [data-motion-id="theme"] .icon-moon,
+.nav-motion-item [data-motion-id="theme"][data-motion-play="true"] .icon-moon,
+.shell-segmented-item:hover [data-motion-id="theme"] .icon-moon,
+.shell-segmented-item:focus-visible [data-motion-id="theme"] .icon-moon {
+  transform: translate(-3px, 2px) rotate(-16deg);
+}
+
+/* --- collapse: fold + arrow --- */
+.nav-motion-item:hover [data-motion-id="collapse"] .icon-panel-line,
+.nav-motion-item:focus-visible [data-motion-id="collapse"] .icon-panel-line,
+.nav-motion-item [data-motion-id="collapse"][data-motion-play="true"] .icon-panel-line,
+.shell-window-control:hover [data-motion-id="collapse"] .icon-panel-line,
+.shell-window-control:focus-visible [data-motion-id="collapse"] .icon-panel-line {
+  transform: scaleX(0.3);
+}
+.nav-motion-item:hover [data-motion-id="collapse"] .icon-panel-arrow,
+.nav-motion-item:focus-visible [data-motion-id="collapse"] .icon-panel-arrow,
+.nav-motion-item [data-motion-id="collapse"][data-motion-play="true"] .icon-panel-arrow,
+.shell-window-control:hover [data-motion-id="collapse"] .icon-panel-arrow,
+.shell-window-control:focus-visible [data-motion-id="collapse"] .icon-panel-arrow {
+  transform: translateX(-5px);
+}
+
+/* Collapsed rail labels — warm popover surface, not primary fill. */
+.shell-nav-tooltip {
+  border: 1px solid color-mix(in srgb, var(--sidebar-border) 88%, transparent) !important;
+  background: var(--popover) !important;
+  color: var(--popover-foreground) !important;
+  box-shadow: 0 8px 22px rgba(41, 37, 31, 0.12) !important;
+  font-size: 12px !important;
+  font-weight: 500 !important;
+  letter-spacing: -0.01em;
+}
+
+.shell-nav-tooltip [class*="Arrow"],
+.shell-nav-tooltip svg {
+  fill: var(--popover) !important;
+  background: var(--popover) !important;
+  color: var(--popover) !important;
+}
+
+.shell-brand-label {
+  font-family: var(--font-ui);
+  letter-spacing: -0.018em;
+}
+
+@media (max-width: 920px) {
+  .install-workbench-nav {
+    height: 3.25rem !important;
+  }
+
+  .install-workbench-nav-description {
+    display: none;
+  }
+}
 
 @media (min-width: 1080px) {
   .shell-page-stage { padding: 24px; }
@@ -240,15 +407,23 @@
   .app-shell,
   .shell-sidebar,
   .shell-segmented-indicator,
-  .shell-page-stage,
-  .animated-nav-icon .icon-part {
+  .shell-page-stage {
     animation: none !important;
     transition-duration: 0ms !important;
+  }
+
+  .animated-nav-icon .icon-part,
+  .nav-motion-item:active {
+    transition: none !important;
     transform: none !important;
   }
 }
 
-[data-reduced-motion="true"] .icon-part,
+[data-reduced-motion="true"] .icon-part {
+  transition: none !important;
+  transform: none !important;
+}
+
 .shell-segmented[data-reduced-motion="true"] .shell-segmented-indicator {
   animation: none !important;
   transition-duration: 0ms !important;

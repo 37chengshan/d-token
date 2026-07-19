@@ -3,6 +3,7 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Sidebar } from "./Sidebar";
 import { I18nContext } from "../../lib/i18n";
+import { NAV } from "../../lib/nav";
 
 const themeMock = vi.hoisted(() => ({
   theme: "light",
@@ -23,6 +24,12 @@ beforeEach(() => {
     callback(0);
     return 1;
   });
+  class ResizeObserver {
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  }
+  vi.stubGlobal("ResizeObserver", ResizeObserver);
 });
 
 afterEach(() => {
@@ -31,13 +38,15 @@ afterEach(() => {
 });
 
 describe("Sidebar", () => {
-  it("keeps six bilingual product destinations accessible and marks the current page", () => {
+  it("keeps eight bilingual product destinations accessible and marks the current page", () => {
     render(<Sidebar page="overview" setPage={vi.fn()} collapsed={false} setCollapsed={vi.fn()} reducedMotion={false} />);
 
     expect(screen.getByRole("button", { name: "总体概览" })).toHaveAttribute("aria-current", "page");
-    for (const label of ["总体概览", "安装与连接", "分析", "Doctor", "变更与回退", "设置"]) {
+    for (const label of ["总体概览", "安装与连接", "代码图谱", "分析", "视觉压缩 Beta", "Doctor", "变更与回退", "设置"]) {
       expect(screen.getByRole("button", { name: label })).toBeVisible();
     }
+    expect(screen.getByRole("button", { name: "视觉压缩 Beta" }).textContent).toMatch(/Beta/);
+    expect(NAV.slice(0, 4).map((item) => item.id)).toEqual(["overview", "install", "codebase-memory", "analytics"]);
   });
 
   it("uses radio keyboard semantics for the expanded light and dark control", () => {
@@ -65,21 +74,46 @@ describe("Sidebar", () => {
     expect(document.querySelector('[data-motion-id="theme"]')).toHaveAttribute("data-reduced-motion", "true");
   });
 
-  it("remounts a navigation icon after activation without replacing the pointer target first", () => {
+  it("shows collapsed navigation names through tooltips instead of native title only", async () => {
+    render(<Sidebar page="overview" setPage={vi.fn()} collapsed setCollapsed={vi.fn()} reducedMotion={false} />);
+
+    const analytics = screen.getByRole("button", { name: "分析" });
+    expect(analytics).not.toHaveAttribute("title");
+    fireEvent.pointerMove(analytics);
+    fireEvent.focus(analytics);
+    expect(await screen.findByRole("tooltip", { name: "分析" })).toBeVisible();
+  });
+
+  it("pulses motion on click without requiring remount of the pointer target", () => {
     const setPage = vi.fn();
     render(<Sidebar page="overview" setPage={setPage} collapsed={false} setCollapsed={vi.fn()} reducedMotion={false} />);
 
     const analytics = () => screen.getByRole("button", { name: "分析" });
     const token = () => Number(analytics().querySelector('[data-motion-id="analytics"]')?.getAttribute("data-motion-trigger"));
-    const iconBefore = analytics().querySelector('[data-motion-id="analytics"]');
     const tokenBefore = token();
     fireEvent.click(analytics());
-    const tokenAfterClick = token();
     const iconAfterClick = analytics().querySelector('[data-motion-id="analytics"]');
 
-    expect(tokenAfterClick).toBeGreaterThan(tokenBefore);
-    expect(iconAfterClick).not.toBe(iconBefore);
+    expect(token()).toBeGreaterThan(tokenBefore);
+    expect(iconAfterClick).toHaveAttribute("data-motion-play", "true");
     expect(setPage).toHaveBeenCalledWith("analytics");
+  });
+
+  it("reports enter/leave engagement so icon recipes can reverse on pointer leave", () => {
+    render(<Sidebar page="overview" setPage={vi.fn()} collapsed={false} setCollapsed={vi.fn()} reducedMotion={false} />);
+
+    const settings = screen.getByRole("button", { name: "设置" });
+    const icon = () => settings.querySelector('[data-motion-id="settings"]');
+
+    expect(icon()).toHaveAttribute("data-motion-engaged", "false");
+    fireEvent.pointerEnter(settings);
+    expect(settings).toHaveAttribute("data-nav-engaged", "true");
+    expect(icon()).toHaveAttribute("data-motion-engaged", "true");
+    expect(icon()).toHaveAttribute("data-motion-play", "true");
+
+    fireEvent.pointerLeave(settings);
+    expect(settings).toHaveAttribute("data-nav-engaged", "false");
+    expect(icon()).toHaveAttribute("data-motion-engaged", "false");
   });
 
   it("uses the shared English product labels without changing the navigation model", () => {

@@ -3,6 +3,9 @@
   "bundle": {
     "targets": ["app", "dmg"],
     "icon": ["icons/icon.icns", "icons/icon.png"],
-    "resources": null
+    "resources": {
+      "binaries/codebase-memory/LICENSE": "codebase-memory/LICENSE",
+      "binaries/codebase-memory/THIRD_PARTY_NOTICES.md": "codebase-memory/THIRD_PARTY_NOTICES.md"
+    }
   }
 }

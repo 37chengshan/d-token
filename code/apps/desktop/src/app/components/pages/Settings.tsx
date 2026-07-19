@@ -2,10 +2,8 @@ import { useEffect, useState } from "react";
 import {
   BrainCircuit,
   Check,
-  Database,
   Globe,
   Info,
-  LockKeyhole,
   Monitor,
   Moon,
   Palette,
@@ -30,7 +28,9 @@ import { cn } from "../ui/utils";
 import { invokeNative, type NativeActionResult } from "../../lib/native";
 import { useRuntimeDashboard } from "../../lib/useRuntimeDashboard";
 import { createOperationRequestId, useNotifications } from "../../lib/notifications";
+import { presentOperationFailure } from "../../lib/userCopy";
 import { OperationDialog } from "../common/OperationDialog";
+import { AnimatedSegmentedControl } from "../shell/AnimatedSegmentedControl";
 
 type SettingsState = "loading" | "loaded" | "preview" | "missing" | "error";
 type ServiceState = "loading" | "running" | "unmanaged_running" | "stopped" | "preview" | "error";
@@ -96,17 +96,42 @@ export function Settings() {
   const [preferences, setPreferences] = useState(DEFAULT_PRODUCT_PREFERENCES);
   const [preferencesSaving, setPreferencesSaving] = useState(false);
   const [preferencesAvailable, setPreferencesAvailable] = useState(false);
+  const [preferencesLoadError, setPreferencesLoadError] = useState("");
   const [updateCheck, setUpdateCheck] = useState<UpdateCheckResult | null>(null);
   const [checkingUpdates, setCheckingUpdates] = useState(false);
+  const [reducedMotion, setReducedMotion] = useState(
+    () =>
+      typeof window !== "undefined" &&
+      typeof window.matchMedia === "function" &&
+      window.matchMedia("(prefers-reduced-motion: reduce)").matches,
+  );
+
+  useEffect(() => {
+    if (typeof window.matchMedia !== "function") return;
+    const preference = window.matchMedia("(prefers-reduced-motion: reduce)");
+    const sync = () => setReducedMotion(preference.matches);
+    sync();
+    preference.addEventListener("change", sync);
+    return () => preference.removeEventListener("change", sync);
+  }, []);
 
   useEffect(() => {
     void invokeNative<{ state: string; payload?: Record<string, any> }>("get_app_settings", { section: "preferences" })
       .then((saved) => {
         setPreferences(normalizeProductPreferences(saved.payload?.preferences ?? saved.payload));
         setPreferencesAvailable(saved.state === "loaded" || saved.state === "missing");
+        setPreferencesLoadError("");
       })
-      .catch(() => setPreferencesAvailable(false));
-  }, []);
+      .catch((error) => {
+        const message = error instanceof Error && error.message === "native_unavailable"
+          ? (lang === "zh" ? "浏览器预览不能读取或保存本机偏好。" : "Browser preview cannot read or save local preferences.")
+          : (lang === "zh" ? "本机偏好读取失败；相关设置暂不可用。" : "Local preferences could not be read; related settings are unavailable.");
+        setPreferencesAvailable(false);
+        setPreferencesLoadError(message);
+        const failure = presentOperationFailure("settings", error, lang);
+        addNotification({ dedupeKey: "settings-preferences-load-failed", level: "warning", title: lang === "zh" ? "设置暂不可用" : "Settings unavailable", message, details: failure.details });
+      });
+  }, [addNotification, lang]);
 
   useEffect(() => {
     let cancelled = false;
@@ -120,7 +145,7 @@ export function Settings() {
           enabled: false,
           source: "unavailable",
           service_argument: "--dtoken-autostart-service",
-          summary: error instanceof Error ? error.message : String(error),
+          summary: lang === "zh" ? "无法读取自动启动状态。" : "Autostart status could not be read.",
         });
       });
     return () => { cancelled = true; };
@@ -137,11 +162,12 @@ export function Settings() {
         section: "preferences",
         payload: { preferences: next, scope: "d-token-local-settings", no_external_agent_write: true },
       });
-      if (!result.ok) throw new Error(result.summary);
+      if (!result.ok) throw new Error(result.summary || "settings_save_failed");
       addNotification({ dedupeKey: "settings-preferences-saved", level: "success", title: lang === "zh" ? "本地偏好已保存" : "Local preferences saved", message: lang === "zh" ? "本地偏好已保存到 d-token。" : "Local preferences were saved to d-token.", persistent: true, receipt: { requestId, targetId: "preferences" } });
     } catch (error) {
       setPreferences(preferences);
-      addNotification({ dedupeKey: "settings-preferences-failed", level: "error", title: lang === "zh" ? "偏好保存失败" : "Preference save failed", message: String(error), receipt: { requestId, targetId: "preferences" } });
+      const failure = presentOperationFailure("settings", error, lang);
+      addNotification({ dedupeKey: "settings-preferences-failed", level: "error", title: failure.title, message: failure.message, details: failure.details, receipt: { requestId, targetId: "preferences" } });
     } finally {
       setPreferencesSaving(false);
     }
@@ -157,13 +183,16 @@ export function Settings() {
         dedupeKey: "update-check-result",
         level: result.ok ? "success" : "warning",
         title: result.ok ? (lang === "zh" ? "更新检查完成" : "Update check complete") : (lang === "zh" ? "更新源不可用" : "Update source unavailable"),
-        message: result.ok ? result.summary : (lang === "zh" ? "尚未配置经过签名验证的发布源；没有下载或安装任何内容。" : result.summary),
+        message: result.ok
+          ? (lang === "zh" ? "已读取经过签名验证的更新信息；未下载或安装任何内容。" : "Signed update information was read; nothing was downloaded or installed.")
+          : (lang === "zh" ? "尚未配置经过签名验证的发布源；没有下载或安装任何内容。" : "No signed update feed is configured; nothing was downloaded or installed."),
         persistent: !result.ok,
         receipt: { requestId, targetId: `update:${preferences.updateChannel}` },
       });
     } catch (error) {
       setUpdateCheck(null);
-      addNotification({ dedupeKey: "update-check-failed", level: "error", title: lang === "zh" ? "更新检查失败" : "Update check failed", message: String(error), receipt: { requestId, targetId: "update" } });
+      const failure = presentOperationFailure("update", error, lang);
+      addNotification({ dedupeKey: "update-check-failed", level: "error", title: failure.title, message: failure.message, details: failure.details, receipt: { requestId, targetId: "update" } });
     } finally {
       setCheckingUpdates(false);
     }
@@ -207,11 +236,9 @@ export function Settings() {
       addNotification({ dedupeKey: `settings-service-${action}`, level: "success", title: success, message: success });
       await refreshServiceStatus();
     } catch (error) {
-      const failure = error instanceof Error && error.message === "native_unavailable"
-        ? (lang === "zh" ? "浏览器预览无法管理本地服务，请在桌面窗口中操作。" : "The browser preview cannot manage the local service.")
-        : (lang === "zh" ? "服务操作失败，请打开 Doctor 查看连接状态。" : "Service action failed. Open Doctor to review the connection state.");
-      setNotice(failure);
-      addNotification({ dedupeKey: `settings-service-${action}-failed`, level: "error", title: lang === "zh" ? "服务操作失败" : "Service action failed", message: failure });
+      const failure = presentOperationFailure("service", error, lang);
+      setNotice(failure.message);
+      addNotification({ dedupeKey: `settings-service-${action}-failed`, level: "error", title: failure.title, message: failure.message, details: failure.details });
     } finally {
       setServiceAction(null);
     }
@@ -248,7 +275,7 @@ export function Settings() {
         title: lang === "zh" ? "自动启动设置失败" : "Autostart change failed",
         message: error instanceof Error && error.message === "native_unavailable"
           ? (lang === "zh" ? "浏览器预览无法修改系统启动项。" : "The browser preview cannot change system startup entries.")
-          : (lang === "zh" ? "系统启动项未通过写入或验证，原有状态已尽可能恢复。" : "The system startup entry did not pass write or verification; the prior state was restored where possible."),
+          : (lang === "zh" ? "系统启动项未通过写入或验证，已恢复原有状态。" : "The system startup entry did not pass write or verification. The prior state was restored."),
         receipt: { requestId, targetId: "autostart" },
       });
     } finally {
@@ -278,6 +305,69 @@ export function Settings() {
           {notice || describePersistenceNotice(persistenceNotice, lang)}
         </Surface>
       )}
+
+      {/* Appearance first: color is the highest-frequency visual control; theme/lang follow. */}
+      <Section
+        id="appearance"
+        title={t("set.appearance")}
+        description={lang === "zh" ? "颜色与主题立即作用于当前窗口。" : "Colors and theme apply to the current window immediately."}
+        icon={Palette}
+      >
+        <Row title={t("set.accent")} desc={t("set.accentDesc")}>
+          <div className="flex flex-wrap items-center gap-2.5">
+            {ACCENTS.map((item) => (
+              <Swatch
+                key={item.key}
+                color={item.color}
+                active={accent === item.key}
+                label={`${t("set.accent")}: ${item.key}`}
+                onClick={() => setAccent(item.key)}
+              />
+            ))}
+          </div>
+        </Row>
+
+        <Row title={t("set.chartAccent")} desc={t("set.chartAccentDesc")}>
+          <div className="flex flex-wrap items-center gap-2.5">
+            {CHART_ACCENTS.map((item) => (
+              <Swatch
+                key={item.key}
+                color={item.color}
+                active={chartAccent === item.key}
+                label={`${t("set.chartAccent")}: ${item.key}`}
+                onClick={() => setChartAccent(item.key)}
+              />
+            ))}
+          </div>
+        </Row>
+
+        <Row title={t("set.theme")}>
+          <AnimatedSegmentedControl
+            ariaLabel={t("set.theme")}
+            reducedMotion={reducedMotion}
+            value={theme}
+            onValueChange={setTheme}
+            items={themeOpts.map((option) => ({
+              value: option.k,
+              label: option.label,
+              icon: <option.Icon className="size-4" />,
+            }))}
+          />
+        </Row>
+
+        <Row title={t("set.language")}>
+          <AnimatedSegmentedControl
+            ariaLabel={t("set.language")}
+            reducedMotion={reducedMotion}
+            value={lang}
+            onValueChange={(next) => updateAppearance({ lang: next })}
+            items={[
+              { value: "zh", label: "中文", icon: <Globe className="size-4" /> },
+              { value: "en", label: "English", icon: <Globe className="size-4" /> },
+            ] as const}
+          />
+        </Row>
+      </Section>
 
       <Section
         id="runtime"
@@ -335,47 +425,50 @@ export function Settings() {
       <Section
         id="privacy"
         title={lang === "zh" ? "隐私与数据" : "Privacy & Data"}
-        description={lang === "zh" ? "控制本机记录的保留与隐藏方式。" : "Control retention and redaction of local records."}
+        description={lang === "zh" ? "控制本机记录保留；日志始终高级隐藏，不上传诊断。" : "Control local retention; logs stay high-redaction and diagnostics are never uploaded."}
         icon={ShieldCheck}
       >
+        {preferencesLoadError ? (
+          <div className="mb-3 rounded-lg border border-amber-500/25 bg-amber-500/[0.06] p-3 text-sm text-amber-800 dark:text-amber-200" role="status">
+            <strong>{lang === "zh" ? "本机偏好暂不可用" : "Local preferences unavailable"}</strong>
+            <p className="mt-1 text-xs text-muted-foreground">{preferencesLoadError} {lang === "zh" ? "请在桌面窗口重试，或打开 Doctor 检查本地控制面。" : "Retry in the desktop app or open Doctor to inspect the local control plane."}</p>
+          </div>
+        ) : null}
         <Row
           title={lang === "zh" ? "数据保留时间" : "Data retention"}
-          desc={lang === "zh" ? "保存到 d-token 本地设置，供 Event Ledger 清理与导出边界使用。" : "Saved locally for Event Ledger cleanup and export boundaries."}
+          desc={lang === "zh" ? "供 Event Ledger 清理与导出边界使用。" : "Used for Event Ledger cleanup and export boundaries."}
         >
-          <Segmented>
-            <SegBtn active={preferences.retentionDays === 7} disabled={preferencesSaving || !preferencesAvailable} onClick={() => void savePreferences({ retentionDays: 7 })} label={lang === "zh" ? "保留 7 天" : "Keep 7 days"}>7 {lang === "zh" ? "天" : "days"}</SegBtn>
-            <SegBtn active={preferences.retentionDays === 30} disabled={preferencesSaving || !preferencesAvailable} onClick={() => void savePreferences({ retentionDays: 30 })} label={lang === "zh" ? "保留 30 天" : "Keep 30 days"}>30 {lang === "zh" ? "天" : "days"}</SegBtn>
-          </Segmented>
+          <AnimatedSegmentedControl
+            ariaLabel={lang === "zh" ? "数据保留时间" : "Data retention"}
+            reducedMotion={reducedMotion}
+            value={String(preferences.retentionDays) as "7" | "30"}
+            onValueChange={(next) => void savePreferences({ retentionDays: Number(next) as 7 | 30 })}
+            items={[
+              {
+                value: "7",
+                label: `7 ${lang === "zh" ? "天" : "days"}`,
+                disabled: preferencesSaving || !preferencesAvailable,
+              },
+              {
+                value: "30",
+                label: `30 ${lang === "zh" ? "天" : "days"}`,
+                disabled: preferencesSaving || !preferencesAvailable,
+              },
+            ] as const}
+          />
         </Row>
         <Row
-          title={lang === "zh" ? "日志隐藏级别" : "Log redaction"}
-          desc={lang === "zh" ? "隐藏密钥、认证信息、路径和敏感地址。" : "Hide keys, authentication data, paths, and sensitive addresses."}
+          title={lang === "zh" ? "日志与上传边界" : "Log & upload boundary"}
+          desc={lang === "zh" ? "密钥、路径与敏感地址始终隐藏；不上传提示词、代码或完整输出。" : "Keys, paths, and sensitive addresses stay redacted; prompts, code, and full outputs are never uploaded."}
         >
-          <Segmented><SegBtn active disabled label={lang === "zh" ? "高级隐藏" : "High redaction"}>{lang === "zh" ? "高（强制）" : "High (enforced)"}</SegBtn></Segmented>
-        </Row>
-        <Row
-          title={lang === "zh" ? "诊断数据上传" : "Diagnostic uploads"}
-          desc={lang === "zh" ? "当前版本不会上传提示词、代码、完整输出或诊断记录。" : "This version does not upload prompts, code, full outputs, or diagnostics."}
-        >
-          <div className="flex items-center gap-2">
-            <Badge variant="secondary">{lang === "zh" ? "始终关闭" : "Always off"}</Badge>
-          </div>
-        </Row>
-        <Row
-          title={lang === "zh" ? "本地连接保护" : "Local connection protection"}
-          desc={lang === "zh" ? "避免本机请求绕到系统代理或外部地址。" : "Keep local requests away from system proxies and external addresses."}
-        >
-          <div className="flex items-center gap-2 text-sm text-muted-foreground">
-            <LockKeyhole className="size-4 text-emerald-500" />
-            <span className="font-mono">localhost · 127.0.0.1</span>
-          </div>
+          <Badge variant="secondary">{lang === "zh" ? "高隐藏 · 上传关闭" : "High redaction · upload off"}</Badge>
         </Row>
       </Section>
 
       <Section
         id="learning"
         title={lang === "zh" ? "智能学习" : "Smart Learning"}
-        description={lang === "zh" ? "所有扫描默认留在本机，并排除敏感文件。" : "Scanning stays local and excludes sensitive files by default."}
+        description={lang === "zh" ? "本地聚合指标学习；项目扫描在「安装与连接 → 智能学习」。" : "Local aggregate learning; project scan lives under Install → Smart Learning."}
         icon={BrainCircuit}
       >
         <Row
@@ -388,16 +481,24 @@ export function Settings() {
           title={lang === "zh" ? "扫描强度" : "Scan depth"}
           desc={lang === "zh" ? "决定识别范围与本机资源占用。" : "Controls discovery scope and local resource use."}
         >
-          <Segmented>
-            <SegBtn active={preferences.scanDepth === "standard"} disabled={preferencesSaving || !preferencesAvailable} onClick={() => void savePreferences({ scanDepth: "standard" })} label={lang === "zh" ? "标准扫描" : "Standard scan"}>{lang === "zh" ? "标准" : "Standard"}</SegBtn>
-            <SegBtn active={preferences.scanDepth === "deep"} disabled={preferencesSaving || !preferencesAvailable} onClick={() => void savePreferences({ scanDepth: "deep" })} label={lang === "zh" ? "深度扫描" : "Deep scan"}>{lang === "zh" ? "深入" : "Deep"}</SegBtn>
-          </Segmented>
-        </Row>
-        <Row
-          title={lang === "zh" ? "扫描范围" : "Scan scope"}
-          desc={lang === "zh" ? "管理项目目录、排除目录和敏感文件规则。" : "Manage projects, excluded folders, and sensitive-file rules."}
-        >
-          <div className="flex items-center gap-2 text-sm text-muted-foreground"><Database className="size-4" />{lang === "zh" ? "在“安装与连接 → 智能学习”中管理" : "Manage in Install & Connect → Smart Learning"}</div>
+          <AnimatedSegmentedControl
+            ariaLabel={lang === "zh" ? "扫描强度" : "Scan depth"}
+            reducedMotion={reducedMotion}
+            value={preferences.scanDepth}
+            onValueChange={(next) => void savePreferences({ scanDepth: next })}
+            items={[
+              {
+                value: "standard",
+                label: lang === "zh" ? "标准" : "Standard",
+                disabled: preferencesSaving || !preferencesAvailable,
+              },
+              {
+                value: "deep",
+                label: lang === "zh" ? "深入" : "Deep",
+                disabled: preferencesSaving || !preferencesAvailable,
+              },
+            ] as const}
+          />
         </Row>
       </Section>
 
@@ -408,10 +509,24 @@ export function Settings() {
         icon={RefreshCw}
       >
         <Row title={lang === "zh" ? "更新通道" : "Update channel"} desc={lang === "zh" ? "选择会保存到 d-token 本地设置；检查时只使用经过签名验证的对应发布源。" : "Saved locally; checks only use the matching signed release feed."}>
-          <Segmented>
-            <SegBtn active={preferences.updateChannel === "stable"} disabled={preferencesSaving || !preferencesAvailable} onClick={() => void savePreferences({ updateChannel: "stable" })} label={lang === "zh" ? "稳定版" : "Stable"}>{lang === "zh" ? "稳定版" : "Stable"}</SegBtn>
-            <SegBtn active={preferences.updateChannel === "preview"} disabled={preferencesSaving || !preferencesAvailable} onClick={() => void savePreferences({ updateChannel: "preview" })} label={lang === "zh" ? "预览版" : "Preview"}>{lang === "zh" ? "预览版" : "Preview"}</SegBtn>
-          </Segmented>
+          <AnimatedSegmentedControl
+            ariaLabel={lang === "zh" ? "更新通道" : "Update channel"}
+            reducedMotion={reducedMotion}
+            value={preferences.updateChannel}
+            onValueChange={(next) => void savePreferences({ updateChannel: next })}
+            items={[
+              {
+                value: "stable",
+                label: lang === "zh" ? "稳定版" : "Stable",
+                disabled: preferencesSaving || !preferencesAvailable,
+              },
+              {
+                value: "preview",
+                label: lang === "zh" ? "预览版" : "Preview",
+                disabled: preferencesSaving || !preferencesAvailable,
+              },
+            ] as const}
+          />
         </Row>
         <Row
           title={lang === "zh" ? "自动检查更新" : "Check for updates automatically"}
@@ -428,87 +543,13 @@ export function Settings() {
       </Section>
 
       <Section
-        id="appearance"
-        title={t("set.appearance")}
-        description={lang === "zh" ? "这些选项会立即改变当前窗口。" : "These options immediately update the current window."}
-        icon={Palette}
-      >
-        <Row title={t("set.theme")}>
-          <Segmented>
-            {themeOpts.map((option) => (
-              <SegBtn
-                key={option.k}
-                active={theme === option.k}
-                label={option.label}
-                onClick={() => setTheme(option.k)}
-              >
-                <option.Icon className="size-4" />
-                {option.label}
-              </SegBtn>
-            ))}
-          </Segmented>
-        </Row>
-
-        <Row title={t("set.language")}>
-          <Segmented>
-            <SegBtn active={lang === "zh"} label="中文" onClick={() => updateAppearance({ lang: "zh" })}>
-              <Globe className="size-4" />
-              中文
-            </SegBtn>
-            <SegBtn active={lang === "en"} label="English" onClick={() => updateAppearance({ lang: "en" })}>
-              <Globe className="size-4" />
-              English
-            </SegBtn>
-          </Segmented>
-        </Row>
-
-        <Row title={t("set.accent")} desc={t("set.accentDesc")}>
-          <div className="flex flex-wrap items-center gap-2.5">
-            {ACCENTS.map((item) => (
-              <Swatch
-                key={item.key}
-                color={item.color}
-                active={accent === item.key}
-                label={`${t("set.accent")}: ${item.key}`}
-                onClick={() => setAccent(item.key)}
-              />
-            ))}
-          </div>
-        </Row>
-
-        <Row title={t("set.chartAccent")} desc={t("set.chartAccentDesc")}>
-          <div className="flex flex-wrap items-center gap-2.5">
-            {CHART_ACCENTS.map((item) => (
-              <Swatch
-                key={item.key}
-                color={item.color}
-                active={chartAccent === item.key}
-                label={`${t("set.chartAccent")}: ${item.key}`}
-                onClick={() => setChartAccent(item.key)}
-              />
-            ))}
-          </div>
-        </Row>
-
-      </Section>
-
-      <Section
         id="about"
         title={t("set.about")}
-        description={lang === "zh" ? "版本与本地优先边界。" : "Version and local-first boundaries."}
+        description={lang === "zh" ? "版本信息；设置仅保存在 d-token 本地。" : "Version info; settings stay in d-token local state only."}
         icon={Info}
       >
         <Row title={t("set.versionLabel")}>
           <span className="font-mono text-sm text-muted-foreground">{desktopPackage.version}</span>
-        </Row>
-        <Row
-          title={lang === "zh" ? "数据边界" : "Data boundary"}
-          desc={lang === "zh" ? "设置保存在 d-token 本地状态，不会写入外部 Agent 配置。" : "Settings stay in d-token local state and do not write external agent configuration."}
-        >
-          <div className="flex items-center gap-2 text-sm text-emerald-600 dark:text-emerald-400">
-            <ShieldCheck className="size-4" />
-            {lang === "zh" ? "本地优先" : "Local first"}
-          </div>
         </Row>
       </Section>
       <OperationDialog
@@ -583,45 +624,6 @@ function Row({ title, desc, children }: { title: string; desc?: string; children
       </div>
       <div className="min-w-0 sm:flex sm:max-w-[62%] sm:shrink-0 sm:justify-end">{children}</div>
     </div>
-  );
-}
-
-function Segmented({ children }: { children: React.ReactNode }) {
-  return (
-    <div className="flex flex-wrap items-center gap-1 rounded-lg bg-muted/70 p-1 ring-1 ring-inset ring-border/50">
-      {children}
-    </div>
-  );
-}
-
-function SegBtn({
-  active,
-  label,
-  onClick,
-  disabled = false,
-  children,
-}: {
-  active: boolean;
-  label: string;
-  onClick?: () => void;
-  disabled?: boolean;
-  children: React.ReactNode;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      disabled={disabled}
-      aria-label={label}
-      aria-pressed={active}
-      title={label}
-      className={cn(
-        "flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm transition-colors disabled:cursor-not-allowed disabled:opacity-55",
-        active ? "chip-active" : "chip",
-      )}
-    >
-      {children}
-    </button>
   );
 }
 
@@ -703,7 +705,7 @@ function autostartBadge(status: AutostartStatus | null, lang: "zh" | "en") {
   if (!status) return lang === "zh" ? "正在检查" : "Checking";
   if (status.state === "enabled") return lang === "zh" ? "已启用" : "Enabled";
   if (status.state === "disabled") return lang === "zh" ? "已关闭" : "Disabled";
-  if (status.state === "drift") return lang === "zh" ? "需要确认" : "Review required";
+  if (status.state === "drift") return lang === "zh" ? "需要确认" : "Confirmation required";
   if (status.state === "preview") return lang === "zh" ? "浏览器预览" : "Browser preview";
   if (status.state === "unsupported") return lang === "zh" ? "当前平台不支持" : "Unsupported platform";
   return lang === "zh" ? "状态读取失败" : "Status unavailable";
@@ -720,7 +722,7 @@ function describeAutostart(status: AutostartStatus | null, lang: "zh" | "en") {
   if (status.state === "drift") return lang === "zh" ? "检测到内容不匹配的 d-token 启动项；不会把它误报为已启用。" : "A mismatched d-token startup entry was found and is not reported as enabled.";
   if (status.state === "preview") return lang === "zh" ? "浏览器预览不能读取或修改系统启动项。" : "The browser preview cannot read or change system startup entries.";
   if (status.state === "unsupported") return lang === "zh" ? "自动启动仅支持 macOS 与 Windows。" : "Autostart is supported on macOS and Windows only.";
-  return lang === "zh" ? "无法验证系统启动项；为安全起见已禁止修改。" : "The system startup entry could not be verified, so changes are disabled.";
+  return lang === "zh" ? "无法验证系统启动项；暂不能修改。" : "The system startup entry could not be verified. Changes are unavailable.";
 }
 
 type DtokenServiceStatus = {

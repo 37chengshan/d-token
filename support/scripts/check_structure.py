@@ -20,6 +20,10 @@ REQUIRED = [
     "docs/legal/THIRD_PARTY_NOTICES.md",
     "docs/legal/AIMAMI_APACHE_2_0_LICENSE.txt",
     "docs/product/IMPLEMENTATION_STATUS.md",
+    "docs/research/FRONTEND_UI_PERFORMANCE_AUDIT_2026-07-15.md",
+    "docs/research/BACKEND_PERFORMANCE_AUDIT_2026-07-15.md",
+    "docs/research/PERFORMANCE_REPORTS_MULTIDIMENSIONAL_REVIEW_2026-07-15.md",
+    "docs/research/CODEBASE_MEMORY_MCP_INTEGRATION_RESEARCH_2026-07-16.md",
     "docs/archive/README.md",
     "docs/testing/TESTING_NO_TOUCH.md",
     "docs/testing/OPENCODE_LOCAL_TEST_PLAN.md",
@@ -151,6 +155,10 @@ def active_markdown_files() -> list[Path]:
             if relative.startswith("docs/archive/") or relative.startswith("docs/history/"):
                 continue
             if relative.startswith("code/apps/desktop/src-old/"):
+                continue
+            if relative.startswith("code/apps/desktop/src-tauri/binaries/codebase-memory/"):
+                # Verbatim upstream license/NOTICE bundle. Its internal source-tree
+                # links describe the upstream release and are not d-token docs links.
                 continue
             if relative.startswith("code/UI design for project/"):
                 continue

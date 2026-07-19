@@ -2,10 +2,10 @@ use base64::Engine as _;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
-use crate::{lower_hybrid_context, ResolvedOptimizationContext};
+use crate::{lower_hybrid_context, ApprovedHybridAction, ResolvedOptimizationContext};
 
 use super::patcher::{OpticalPatchSet, PatchedRequest};
-use super::renderer::validate_png;
+use super::renderer::{validate_png, RenderBytePermit};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PostValidationError {
@@ -30,12 +30,12 @@ pub struct PostValidationReport {
     pub artifact_evidence_derived: bool,
 }
 
-#[derive(Clone)]
 pub struct ValidatedActiveRequest {
     body: Value,
     report: PostValidationReport,
     patch_set: OpticalPatchSet,
     body_digest: String,
+    _memory_lease: Option<RenderBytePermit>,
 }
 
 impl std::fmt::Debug for ValidatedActiveRequest {
@@ -68,6 +68,11 @@ impl ValidatedActiveRequest {
     pub fn body_digest(&self) -> &str {
         &self.body_digest
     }
+
+    pub(crate) fn with_memory_lease(mut self, lease: RenderBytePermit) -> Self {
+        self._memory_lease = Some(lease);
+        self
+    }
 }
 
 pub(crate) fn validate_patched_request(
@@ -87,6 +92,23 @@ pub(crate) fn validate_patched_request(
     let mut image_count = 0usize;
 
     for operation in patched.patch_set().operations() {
+        let approved_target = original_ir
+            .approved_text_targets()
+            .iter()
+            .find(|target| {
+                target.node_id() == operation.node_id()
+                    && target.patch_path() == operation.path()
+                    && target.action() == ApprovedHybridAction::OpticalImage
+            })
+            .ok_or(PostValidationError::OriginalContextInvalid)?;
+        let original_value = original
+            .pointer(approved_target.patch_path())
+            .ok_or(PostValidationError::OriginalContextInvalid)?;
+        if super::patcher::json_value_digest(original_value)
+            != approved_target.precondition_digest()
+        {
+            return Err(PostValidationError::OriginalContextInvalid);
+        }
         let original_slot = original_scrubbed
             .pointer_mut(operation.path())
             .ok_or(PostValidationError::MissingPatchedTarget)?;
@@ -99,11 +121,9 @@ pub(crate) fn validate_patched_request(
         let content = patched_value
             .as_array()
             .ok_or(PostValidationError::InvalidPatchedContent)?;
-        let expected_sidecar = format!(
-            "[d-token optical capsule: {} deterministic PNG page(s); low-risk historical tool output only]",
-            operation.artifact().pages().len()
-        );
-        if content.len() != operation.artifact().pages().len().saturating_add(1)
+        let expected_pointer = operation.pointer().text();
+        let expected_guard = operation.history_guard().text();
+        if content.len() != operation.expected_content_len()
             || content
                 .first()
                 .and_then(|item| item.get("type"))
@@ -113,18 +133,40 @@ pub(crate) fn validate_patched_request(
                 .first()
                 .and_then(|item| item.get("text"))
                 .and_then(Value::as_str)
-                != Some(expected_sidecar.as_str())
+                != Some(expected_pointer.as_str())
+            || content
+                .last()
+                .and_then(|item| item.get("text"))
+                .and_then(Value::as_str)
+                != Some(expected_guard.as_str())
         {
             return Err(PostValidationError::InvalidPatchedContent);
         }
+        let image_end = operation.artifact().pages().len().saturating_add(1);
         let images = content
+            .get(1..image_end)
+            .ok_or(PostValidationError::InvalidPatchedContent)?;
+        if images
             .iter()
-            .filter(|item| item.get("type").and_then(Value::as_str) == Some("image"))
-            .collect::<Vec<_>>();
+            .any(|item| item.get("type").and_then(Value::as_str) != Some("image"))
+        {
+            return Err(PostValidationError::InvalidPatchedContent);
+        }
         if images.len() != operation.artifact().pages().len() {
             return Err(PostValidationError::PageCountMismatch);
         }
-        for (image, page) in images.into_iter().zip(operation.artifact().pages()) {
+        if let Some(expected_factsheet) = operation.exact_factsheet_text() {
+            let factsheet = content
+                .get(image_end)
+                .ok_or(PostValidationError::InvalidPatchedContent)?;
+            if factsheet.get("type").and_then(Value::as_str) != Some("text")
+                || factsheet.get("text").and_then(Value::as_str)
+                    != Some(expected_factsheet.as_str())
+            {
+                return Err(PostValidationError::InvalidPatchedContent);
+            }
+        }
+        for (image, page) in images.iter().zip(operation.artifact().pages()) {
             let source = image
                 .get("source")
                 .and_then(Value::as_object)
@@ -177,11 +219,13 @@ pub(crate) fn validate_patched_request(
         protected_structure_unchanged: true,
         artifact_evidence_derived: true,
     };
+    let (body, patch_set) = patched.into_parts();
     Ok(ValidatedActiveRequest {
-        body: patched.body().clone(),
+        body,
         report,
-        patch_set: patched.patch_set().clone(),
+        patch_set,
         body_digest,
+        _memory_lease: None,
     })
 }
 
@@ -192,9 +236,10 @@ fn sha256_hex(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::optical::capability::experimental_anthropic_active_capability;
     use crate::optical::{
-        experimental_anthropic_active_capability, geometry_for_capability,
-        DeterministicPngRenderer, OpticalPatchOperation, RenderCancellation, RenderLimits,
+        geometry_for_capability, DeterministicPngRenderer, OpticalPatchOperation,
+        RenderCancellation, RenderLimits,
     };
     use dtoken_types::{OpticalEndpoint, OpticalGlobalPolicy, Protocol};
     use std::time::Duration;
@@ -211,19 +256,21 @@ mod tests {
     }
 
     fn request_body() -> Value {
-        let log = "INFO historical operation completed successfully\n".repeat(600);
+        let log = "INFO historical operation completed successfully\n".repeat(300);
+        let mut messages = vec![
+            json!({"role":"assistant","content":[{"type":"tool_use","id":"tool-1","name":"read","input":{"path":"/tmp/a"}}]}),
+            json!({"role":"user","content":[{"type":"tool_result","tool_use_id":"tool-1","content":log}]}),
+        ];
+        for index in 0..6 {
+            messages.push(json!({"role":"assistant","content":[{"type":"tool_use","id":format!("recent-{index}"),"name":"read","input":{}}]}));
+            messages.push(json!({"role":"user","content":[{"type":"tool_result","tool_use_id":format!("recent-{index}"),"content":"recent"}]}));
+        }
+        messages.push(json!({"role":"user","content":[{"type":"text","text":"current turn"}]}));
         json!({
             "model": "claude-fable-5",
             "system": "protected system instruction",
             "tools": [{"name":"read","input_schema":{"type":"object"}}],
-            "messages": [
-                {"role":"assistant","content":[{"type":"tool_use","id":"tool-1","name":"read","input":{"path":"/tmp/a"}}]},
-                {"role":"user","content":[{"type":"tool_result","tool_use_id":"tool-1","content":log}]},
-                {"role":"assistant","content":[{"type":"text","text":"done"}]},
-                {"role":"user","content":[{"type":"text","text":"next task"}]},
-                {"role":"assistant","content":[{"type":"text","text":"working"}]},
-                {"role":"user","content":[{"type":"text","text":"current turn"}]}
-            ]
+            "messages": messages
         })
     }
 
@@ -234,6 +281,7 @@ mod tests {
             .approved_text_targets()
             .first()
             .expect("historical closed tool result is approved");
+        assert_eq!(target.action(), ApprovedHybridAction::OpticalImage);
         let text = original
             .pointer(target.patch_path())
             .and_then(Value::as_str)
@@ -248,7 +296,7 @@ mod tests {
         let artifact = renderer
             .render(text, &geometry, &limits, &RenderCancellation::default())
             .expect("fixture renders");
-        let operation = OpticalPatchOperation::from_rendered(target, artifact)
+        let operation = OpticalPatchOperation::from_rendered(target, artifact, text)
             .expect("approved target accepts rendered artifact");
         OpticalPatchSet::from_operations(vec![operation])
             .expect("non-empty patch set")
@@ -278,6 +326,23 @@ mod tests {
         assert!(validated.body()["messages"][1]["content"][0]["content"][1]
             .get("type")
             .is_some_and(|value| value == "image"));
+        let content = validated.body()["messages"][1]["content"][0]["content"]
+            .as_array()
+            .expect("patched content array");
+        assert!(content
+            .first()
+            .and_then(|item| item.get("text"))
+            .and_then(Value::as_str)
+            .is_some_and(|text| text.starts_with("[d-token rendered context pointer]")));
+        assert!(!content.iter().any(|item| item
+            .get("text")
+            .and_then(Value::as_str)
+            .is_some_and(|text| text.starts_with("[d-token exact-value references"))));
+        assert!(content
+            .last()
+            .and_then(|item| item.get("text"))
+            .and_then(Value::as_str)
+            .is_some_and(|text| text.starts_with("[d-token history boundary]")));
     }
 
     #[test]
@@ -289,6 +354,20 @@ mod tests {
         assert!(matches!(
             validate_patched_request(&context(), &original, patched),
             Err(PostValidationError::MutationOutsideApprovedTargets)
+        ));
+    }
+
+    #[test]
+    fn validator_rejects_tampered_pointer_inside_approved_path() {
+        let original = request_body();
+        let mut patched = patched_fixture(&original);
+        let content = patched.body_mut()["messages"][1]["content"][0]["content"]
+            .as_array_mut()
+            .expect("patched content array");
+        content[0]["text"] = json!("tampered");
+        assert!(matches!(
+            validate_patched_request(&context(), &original, patched),
+            Err(PostValidationError::InvalidPatchedContent)
         ));
     }
 }

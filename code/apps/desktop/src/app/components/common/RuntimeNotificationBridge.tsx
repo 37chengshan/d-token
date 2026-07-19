@@ -4,6 +4,7 @@ import { useNotifications } from "../../lib/notifications";
 import { createOperationRequestId } from "../../lib/notifications";
 import { useRuntimeDashboard } from "../../lib/useRuntimeDashboard";
 import { invokeNative, isTauriRuntime } from "../../lib/native";
+import { presentOperationFailure } from "../../lib/userCopy";
 
 type ObservableServiceState = "running" | "stopped" | "unavailable";
 
@@ -75,11 +76,13 @@ export function RuntimeNotificationBridge() {
       })
       .catch((error) => {
         if (cancelled) return;
+        const failure = presentOperationFailure("update", error, lang);
         addNotification({
           dedupeKey: "automatic-update-check-failed",
           level: "warning",
-          title: lang === "zh" ? "自动更新检查失败" : "Automatic update check failed",
-          message: error instanceof Error ? error.message : String(error),
+          title: failure.title,
+          message: failure.message,
+          details: failure.details,
           receipt: { requestId: createOperationRequestId("automatic-update-check"), targetId: "update-feed" },
         });
       });
@@ -115,7 +118,11 @@ export function autoUpdateNotification(
       : verifiedCurrent
         ? (lang === "zh" ? "当前已是最新版本" : "d-token is up to date")
         : (lang === "zh" ? "签名更新源不可用" : "Signed update feed unavailable"),
-    message: result.summary || (lang === "zh" ? "未下载或安装任何内容。" : "Nothing was downloaded or installed."),
+    message: updateAvailable
+      ? (lang === "zh" ? "已发现经过签名验证的可用版本；尚未下载或安装。" : "A signed version is available; nothing has been downloaded or installed.")
+      : verifiedCurrent
+        ? (lang === "zh" ? "当前版本已通过签名更新源确认。" : "The current version was confirmed by the signed update feed.")
+        : (lang === "zh" ? "未读取到经过签名验证的更新信息；未下载或安装任何内容。" : "No signed update information was read; nothing was downloaded or installed."),
     persistent: updateAvailable || !verifiedCurrent,
     receipt: {
       requestId: createOperationRequestId("automatic-update-check"),

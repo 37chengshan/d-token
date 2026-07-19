@@ -9,8 +9,10 @@ use dtoken_types::{
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use sha2::{Digest, Sha256};
 
+use super::contract::OpticalTransformContractV2;
+use super::economics::resolve_active_economics_contract;
 use super::render_geometry::geometry_for_capability;
-use super::renderer::{font_digest, profile_digest};
+use super::renderer::{font_digest_for, production_render_contract, render_contract_digest};
 
 #[derive(Debug, Clone)]
 pub struct ResolvedOpticalCapability {
@@ -43,6 +45,7 @@ pub enum CapabilityRegistryError {
     FontMismatch,
     EvalArtifactMissing,
     EvalArtifactRejected,
+    EconomicsContractMissing,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -61,7 +64,10 @@ impl OpticalCapabilityRegistry {
         Self::default()
     }
 
-    pub fn from_snapshots(snapshots: impl IntoIterator<Item = OpticalCapabilitySnapshot>) -> Self {
+    #[cfg(test)]
+    pub(crate) fn from_snapshots(
+        snapshots: impl IntoIterator<Item = OpticalCapabilitySnapshot>,
+    ) -> Self {
         let mut registry = Self::new();
         for snapshot in snapshots {
             registry.configured_rules = registry.configured_rules.saturating_add(1);
@@ -158,7 +164,7 @@ impl OpticalCapabilityRegistry {
         self.superseded_rules
     }
 
-    pub fn register_snapshot(
+    pub(crate) fn register_snapshot(
         &mut self,
         mut snapshot: OpticalCapabilitySnapshot,
     ) -> Result<(), CapabilityRegistryError> {
@@ -244,7 +250,8 @@ impl OpticalCapabilityRegistry {
         self.register_snapshot(snapshot)
     }
 
-    pub fn register_verified(&mut self, capability: OpticalModelCapability) {
+    #[cfg(test)]
+    pub(crate) fn register_verified(&mut self, capability: OpticalModelCapability) {
         let model_base = capability.model_base.clone().unwrap_or_default();
         let snapshot = OpticalCapabilitySnapshot {
             schema_version: 1,
@@ -341,6 +348,7 @@ fn snapshot_identity_key(snapshot: &OpticalCapabilitySnapshot) -> String {
     )
 }
 
+#[cfg(test)]
 fn lifecycle_metadata_is_valid(snapshot: &OpticalCapabilitySnapshot) -> bool {
     if !snapshot.enabled
         || snapshot.schema_version != 1
@@ -422,7 +430,8 @@ fn capability_policy_is_verified(capability: &OpticalModelCapability) -> bool {
 
 /// Builds an explicit experimental rule. Registering this rule is a configuration decision;
 /// no model is active-capable by default.
-pub fn experimental_anthropic_active_capability(model_base: &str) -> OpticalModelCapability {
+#[cfg(test)]
+pub(crate) fn experimental_anthropic_active_capability(model_base: &str) -> OpticalModelCapability {
     OpticalModelCapability {
         provider_family: ProviderFamily::Anthropic,
         provider_id: None,
@@ -447,7 +456,8 @@ pub fn experimental_anthropic_active_capability(model_base: &str) -> OpticalMode
     }
 }
 
-pub fn experimental_anthropic_active_snapshot(
+#[cfg(test)]
+pub(crate) fn experimental_anthropic_active_snapshot(
     snapshot_id: &str,
     revision: u64,
     model_base: &str,
@@ -478,7 +488,8 @@ pub fn experimental_anthropic_active_snapshot(
 }
 
 #[allow(clippy::too_many_arguments)]
-pub fn experimental_anthropic_active_snapshot_for_route(
+#[cfg(test)]
+pub(crate) fn experimental_anthropic_active_snapshot_for_route(
     snapshot_id: &str,
     revision: u64,
     provider_id: &str,
@@ -526,6 +537,7 @@ pub fn capability_attestation_payload(snapshot: &OpticalCapabilitySnapshot) -> V
             "expires_at_ms": attestation.expires_at_ms,
             "renderer_profile_digest": attestation.renderer_profile_digest,
             "font_digest": attestation.font_digest,
+            "transform_contract_digest": attestation.transform_contract_digest,
             "eval_artifact_digest": attestation.eval_artifact_digest
         }
     }))
@@ -562,7 +574,7 @@ fn verify_snapshot_attestation(
     {
         return Err(CapabilityRegistryError::InvalidIdentity);
     }
-    if attestation.schema_version != 1 {
+    if attestation.schema_version != 2 {
         return Err(CapabilityRegistryError::UnsupportedAttestationVersion);
     }
     if attestation.algorithm != "ed25519" {
@@ -603,26 +615,36 @@ fn verify_snapshot_attestation(
 
     let geometry = geometry_for_capability(&snapshot.capability)
         .ok_or(CapabilityRegistryError::RendererProfileMismatch)?;
-    if attestation.renderer_profile_digest != profile_digest(&geometry) {
+    let render_contract = production_render_contract(&geometry);
+    let renderer_profile_digest = render_contract_digest(&render_contract);
+    let economics_contract =
+        resolve_active_economics_contract(&snapshot.model_base, Some(snapshot.revision))
+            .ok_or(CapabilityRegistryError::EconomicsContractMissing)?;
+    let transform_contract_digest = OpticalTransformContractV2::current_with_economics(
+        &renderer_profile_digest,
+        economics_contract.tokenizer_revision,
+        economics_contract.pricing_revision,
+        economics_contract.cache_policy_revision,
+    )
+    .digest();
+    if attestation.renderer_profile_digest != renderer_profile_digest {
         return Err(CapabilityRegistryError::RendererProfileMismatch);
     }
-    if attestation.font_digest != font_digest() {
+    if attestation.font_digest != font_digest_for(render_contract.font) {
         return Err(CapabilityRegistryError::FontMismatch);
     }
     let eval = evals
         .get(&attestation.eval_artifact_digest)
         .ok_or(CapabilityRegistryError::EvalArtifactMissing)?;
-    if eval.schema_version != 1
-        || !eval.passed
+    if !eval.passes_derived_quality_gate()
         || eval.evaluated_at_ms == 0
         || eval.evaluated_at_ms > attestation.issued_at_ms
-        || eval.sample_count < 20
-        || eval.exact_failures != 0
-        || eval.unsafe_failures != 0
         || normalize_model_base(&eval.model_base) != normalize_model_base(&snapshot.model_base)
         || eval.endpoint != snapshot.endpoint
         || eval.renderer_profile_digest != attestation.renderer_profile_digest
         || eval.font_digest != attestation.font_digest
+        || eval.transform_contract_digest != transform_contract_digest
+        || attestation.transform_contract_digest != transform_contract_digest
     {
         return Err(CapabilityRegistryError::EvalArtifactRejected);
     }
@@ -795,13 +817,25 @@ mod tests {
         );
         let geometry = geometry_for_capability(&snapshot.capability)
             .expect("experimental capability must have geometry");
+        let render_contract = production_render_contract(&geometry);
+        let renderer_digest = render_contract_digest(&render_contract);
+        let economics = resolve_active_economics_contract("claude-fable-5", Some(1))
+            .expect("test economics contract");
+        let transform_contract_digest = OpticalTransformContractV2::current_with_economics(
+            &renderer_digest,
+            economics.tokenizer_revision,
+            economics.pricing_revision,
+            economics.cache_policy_revision,
+        )
+        .digest();
         let eval = OpticalEvalArtifact {
-            schema_version: 1,
+            schema_version: 2,
             artifact_id: "eval-v1".to_string(),
             model_base: "claude-fable-5".to_string(),
             endpoint: OpticalEndpoint::AnthropicMessages,
-            renderer_profile_digest: profile_digest(&geometry),
-            font_digest: font_digest(),
+            renderer_profile_digest: renderer_digest.clone(),
+            font_digest: font_digest_for(render_contract.font),
+            transform_contract_digest: transform_contract_digest.clone(),
             corpus_digest: "fixture-corpus-digest".to_string(),
             evaluated_at_ms: 90,
             sample_count: 20,
@@ -816,14 +850,15 @@ mod tests {
             passed: true,
         };
         snapshot.attestation = Some(dtoken_types::OpticalCapabilityAttestation {
-            schema_version: 1,
+            schema_version: 2,
             algorithm: "ed25519".to_string(),
             authority_id: "fixture-authority".to_string(),
             key_id: "fixture-key-v1".to_string(),
             issued_at_ms: 150,
             expires_at_ms: 1_000,
-            renderer_profile_digest: profile_digest(&geometry),
-            font_digest: font_digest(),
+            renderer_profile_digest: renderer_digest,
+            font_digest: font_digest_for(render_contract.font),
+            transform_contract_digest,
             eval_artifact_digest: eval_artifact_digest(&eval),
             signature_base64: String::new(),
         });
@@ -847,6 +882,25 @@ mod tests {
             eval_artifacts: vec![eval],
             ..Default::default()
         }
+    }
+
+    fn resign_runtime_config(config: &mut OpticalRuntimeConfig) {
+        let digest = eval_artifact_digest(&config.eval_artifacts[0]);
+        config.capability_snapshots[0]
+            .attestation
+            .as_mut()
+            .expect("attestation")
+            .eval_artifact_digest = digest;
+        let signing_key = SigningKey::from_bytes(&[7u8; 32]);
+        let signature = signing_key.sign(&capability_attestation_payload(
+            &config.capability_snapshots[0],
+        ));
+        config.capability_snapshots[0]
+            .attestation
+            .as_mut()
+            .expect("attestation")
+            .signature_base64 =
+            base64::engine::general_purpose::STANDARD.encode(signature.to_bytes());
     }
 
     #[test]
@@ -873,6 +927,53 @@ mod tests {
         assert_eq!(capability.status, CapabilityStatus::Limited);
         assert_eq!(capability.max_mode, OpticalMode::ShadowPreview);
         assert!(capability.supports_anthropic_image_block);
+    }
+
+    #[test]
+    fn self_reported_pass_cannot_override_derived_quality_or_contract_version() {
+        let mut degraded = signed_runtime_config();
+        degraded.eval_artifacts[0].candidate_passes = 19;
+        degraded.eval_artifacts[0].quality_delta = -0.05;
+        degraded.eval_artifacts[0].passed = true;
+        resign_runtime_config(&mut degraded);
+        let registry = OpticalCapabilityRegistry::from_runtime_config(&degraded, 200);
+        assert_eq!(registry.verified_rule_count(), 0);
+        assert_eq!(registry.rejected_rule_count(), 1);
+
+        let mut legacy = signed_runtime_config();
+        legacy.eval_artifacts[0].schema_version = 1;
+        resign_runtime_config(&mut legacy);
+        let registry = OpticalCapabilityRegistry::from_runtime_config(&legacy, 200);
+        assert_eq!(registry.verified_rule_count(), 0);
+        assert_eq!(registry.rejected_rule_count(), 1);
+    }
+
+    #[test]
+    fn signed_zero_of_twenty_quality_artifact_is_rejected() {
+        let mut config = signed_runtime_config();
+        config.eval_artifacts[0].baseline_passes = 0;
+        config.eval_artifacts[0].candidate_passes = 0;
+        config.eval_artifacts[0].quality_delta = 0.0;
+        config.eval_artifacts[0].passed = true;
+        resign_runtime_config(&mut config);
+
+        let registry = OpticalCapabilityRegistry::from_runtime_config(&config, 200);
+        assert_eq!(registry.verified_rule_count(), 0);
+        assert_eq!(registry.rejected_rule_count(), 1);
+    }
+
+    #[test]
+    fn signed_capability_without_model_bound_economics_contract_is_rejected() {
+        let mut config = signed_runtime_config();
+        config.capability_snapshots[0].model_base = "claude-unpriced-5".to_string();
+        config.capability_snapshots[0].capability.model_base =
+            Some("claude-unpriced-5".to_string());
+        config.eval_artifacts[0].model_base = "claude-unpriced-5".to_string();
+        resign_runtime_config(&mut config);
+
+        let registry = OpticalCapabilityRegistry::from_runtime_config(&config, 200);
+        assert_eq!(registry.verified_rule_count(), 0);
+        assert_eq!(registry.rejected_rule_count(), 1);
     }
 
     #[test]

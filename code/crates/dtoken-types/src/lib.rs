@@ -1,3 +1,6 @@
+pub mod agent;
+pub mod time;
+
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -177,12 +180,497 @@ pub enum RiskLevel {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum RuntimeMode {
+    Native,
     Fixture,
     FakeBinary,
     Shadow,
     External,
     Managed,
     BuiltinFallback,
+}
+
+impl RuntimeMode {
+    pub fn from_profile(profile: Option<&str>, allow_fixture: bool) -> Self {
+        match profile {
+            Some("fixture") if allow_fixture => Self::Fixture,
+            Some("fake-binary") | Some("fake_binary") => Self::FakeBinary,
+            Some("shadow") => Self::Shadow,
+            Some("external") => Self::External,
+            Some("managed") => Self::Managed,
+            Some("builtin-fallback") | Some("builtin_fallback") => Self::BuiltinFallback,
+            _ => Self::Native,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum EvidenceSource {
+    ConfiguredRoute,
+    ConfiguredInstance,
+    SessionMetadata,
+    Derived,
+    Unavailable,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct EvidenceValue<T> {
+    pub value: Option<T>,
+    pub source: EvidenceSource,
+    pub reason_code: Option<String>,
+}
+
+impl<T> EvidenceValue<T> {
+    pub fn known(value: T, source: EvidenceSource) -> Self {
+        Self {
+            value: Some(value),
+            source,
+            reason_code: None,
+        }
+    }
+
+    pub fn unknown(reason_code: impl Into<String>) -> Self {
+        Self {
+            value: None,
+            source: EvidenceSource::Unavailable,
+            reason_code: Some(reason_code.into()),
+        }
+    }
+
+    fn is_valid(&self) -> bool {
+        match (&self.value, &self.source, &self.reason_code) {
+            (Some(_), EvidenceSource::Unavailable, _) => false,
+            (Some(_), _, None) => true,
+            (None, EvidenceSource::Unavailable, Some(reason)) => !reason.trim().is_empty(),
+            _ => false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RequestScope {
+    pub request_id: Uuid,
+    pub agent: EvidenceValue<String>,
+    pub project: EvidenceValue<String>,
+    pub session: EvidenceValue<String>,
+    pub instance: EvidenceValue<String>,
+    pub route_id: String,
+    pub provider_id: String,
+    pub model: String,
+    pub input_protocol: Protocol,
+    pub output_protocol: Protocol,
+    pub config_revision: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RequestScopeError {
+    InvalidIdentityEvidence(&'static str),
+    EmptyRouteId,
+    EmptyProviderId,
+    EmptyModel,
+    EmptyConfigRevision,
+    ConfigSerialization,
+}
+
+impl RequestScope {
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        request_id: Uuid,
+        agent: EvidenceValue<String>,
+        project: EvidenceValue<String>,
+        session: EvidenceValue<String>,
+        instance: EvidenceValue<String>,
+        route_id: impl Into<String>,
+        provider_id: impl Into<String>,
+        model: impl Into<String>,
+        input_protocol: Protocol,
+        output_protocol: Protocol,
+        config_revision: impl Into<String>,
+    ) -> Result<Self, RequestScopeError> {
+        for (field, evidence) in [
+            ("agent", &agent),
+            ("project", &project),
+            ("session", &session),
+            ("instance", &instance),
+        ] {
+            if !evidence.is_valid() {
+                return Err(RequestScopeError::InvalidIdentityEvidence(field));
+            }
+        }
+        let route_id = route_id.into();
+        let provider_id = provider_id.into();
+        let model = model.into();
+        let config_revision = config_revision.into();
+        if route_id.trim().is_empty() {
+            return Err(RequestScopeError::EmptyRouteId);
+        }
+        if provider_id.trim().is_empty() {
+            return Err(RequestScopeError::EmptyProviderId);
+        }
+        if model.trim().is_empty() {
+            return Err(RequestScopeError::EmptyModel);
+        }
+        if config_revision.trim().is_empty() {
+            return Err(RequestScopeError::EmptyConfigRevision);
+        }
+        Ok(Self {
+            request_id,
+            agent,
+            project,
+            session,
+            instance,
+            route_id,
+            provider_id,
+            model,
+            input_protocol,
+            output_protocol,
+            config_revision,
+        })
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderCacheObservationKind {
+    AnthropicUsage,
+    OpenAiChatUsage,
+    OpenAiResponsesUsage,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderCachePolicyStrategy {
+    AnthropicExplicit,
+    OpenAiAutomatic,
+    GoogleExplicit,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProviderCachePolicy {
+    pub route_id: String,
+    pub provider_id: String,
+    pub model: String,
+    pub strategy: ProviderCachePolicyStrategy,
+    pub ttl_seconds: u64,
+    pub min_prefix_bytes: u64,
+}
+
+impl ProviderCachePolicy {
+    pub fn is_well_formed(&self) -> bool {
+        !self.route_id.trim().is_empty()
+            && !self.provider_id.trim().is_empty()
+            && !self.model.trim().is_empty()
+            && self.ttl_seconds > 0
+            && self.min_prefix_bytes > 0
+            && self.min_prefix_bytes <= usize::MAX as u64
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProviderCacheObservation {
+    pub route_id: String,
+    pub provider_id: String,
+    pub model: String,
+    pub protocol: Protocol,
+    pub config_revision: String,
+    pub kind: ProviderCacheObservationKind,
+    pub read_units: Option<u64>,
+    pub creation_units: Option<u64>,
+    pub creation_5m_units: Option<u64>,
+    pub creation_1h_units: Option<u64>,
+    pub source_revision: String,
+    pub observed_at_ms: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProviderCacheObservationError {
+    EmptyIdentity,
+    EmptyConfigRevision,
+    EmptySourceRevision,
+    MissingCounters,
+    ProtocolMismatch,
+    CounterOutOfRange,
+    InvalidObservationTime,
+}
+
+impl ProviderCacheObservation {
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        route_id: impl Into<String>,
+        provider_id: impl Into<String>,
+        model: impl Into<String>,
+        protocol: Protocol,
+        config_revision: impl Into<String>,
+        kind: ProviderCacheObservationKind,
+        read_units: Option<u64>,
+        creation_units: Option<u64>,
+        creation_5m_units: Option<u64>,
+        creation_1h_units: Option<u64>,
+        source_revision: impl Into<String>,
+        observed_at_ms: u64,
+    ) -> Result<Self, ProviderCacheObservationError> {
+        let observation = Self {
+            route_id: route_id.into(),
+            provider_id: provider_id.into(),
+            model: model.into(),
+            protocol,
+            config_revision: config_revision.into(),
+            kind,
+            read_units,
+            creation_units,
+            creation_5m_units,
+            creation_1h_units,
+            source_revision: source_revision.into(),
+            observed_at_ms,
+        };
+        observation.validate()?;
+        Ok(observation)
+    }
+
+    pub fn validate(&self) -> Result<(), ProviderCacheObservationError> {
+        if self.route_id.trim().is_empty()
+            || self.provider_id.trim().is_empty()
+            || self.model.trim().is_empty()
+        {
+            return Err(ProviderCacheObservationError::EmptyIdentity);
+        }
+        if self.config_revision.trim().is_empty() {
+            return Err(ProviderCacheObservationError::EmptyConfigRevision);
+        }
+        if self.source_revision.trim().is_empty() {
+            return Err(ProviderCacheObservationError::EmptySourceRevision);
+        }
+        if self.observed_at_ms == 0 || self.observed_at_ms > i64::MAX as u64 {
+            return Err(ProviderCacheObservationError::InvalidObservationTime);
+        }
+        let counters = [
+            self.read_units,
+            self.creation_units,
+            self.creation_5m_units,
+            self.creation_1h_units,
+        ];
+        if counters.iter().all(Option::is_none) {
+            return Err(ProviderCacheObservationError::MissingCounters);
+        }
+        if counters
+            .into_iter()
+            .flatten()
+            .any(|value| value > i64::MAX as u64)
+        {
+            return Err(ProviderCacheObservationError::CounterOutOfRange);
+        }
+        let protocol_matches = matches!(
+            (&self.protocol, &self.kind),
+            (
+                Protocol::Anthropic,
+                ProviderCacheObservationKind::AnthropicUsage
+            ) | (
+                Protocol::OpenAi,
+                ProviderCacheObservationKind::OpenAiChatUsage
+            ) | (
+                Protocol::OpenAi,
+                ProviderCacheObservationKind::OpenAiResponsesUsage
+            )
+        );
+        if !protocol_matches {
+            return Err(ProviderCacheObservationError::ProtocolMismatch);
+        }
+        if matches!(
+            self.kind,
+            ProviderCacheObservationKind::OpenAiChatUsage
+                | ProviderCacheObservationKind::OpenAiResponsesUsage
+        ) && (self.read_units.is_none()
+            || self.creation_units.is_some()
+            || self.creation_5m_units.is_some()
+            || self.creation_1h_units.is_some())
+        {
+            return Err(ProviderCacheObservationError::ProtocolMismatch);
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AvailabilityState {
+    Unavailable,
+    ImplementedDisabled,
+    Ready,
+    Degraded,
+    Blocked,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum EvidenceFreshness {
+    Live,
+    Recent,
+    Stale,
+    Unknown,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CapabilityEvidence {
+    pub id: String,
+    pub state: AvailabilityState,
+    pub implementation_revision: String,
+    pub config_revision: Option<String>,
+    pub evidence_revision: Option<String>,
+    pub freshness: EvidenceFreshness,
+    pub reason_codes: Vec<String>,
+    pub last_verified_at_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CapabilityEvidenceError {
+    EmptyCapabilityId,
+    EmptyImplementationRevision,
+    EmptyReasonCodes,
+    MissingEvidenceRevision,
+    MissingVerificationTimestamp,
+    MissingVerifiedFreshness,
+    EmptyRegistryRevision,
+    InvalidCollectionTimestamp,
+    DuplicateCapabilityId(String),
+}
+
+impl CapabilityEvidence {
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        id: impl Into<String>,
+        state: AvailabilityState,
+        implementation_revision: impl Into<String>,
+        config_revision: Option<String>,
+        evidence_revision: Option<String>,
+        freshness: EvidenceFreshness,
+        reason_codes: Vec<String>,
+        last_verified_at_ms: Option<u64>,
+    ) -> Result<Self, CapabilityEvidenceError> {
+        let evidence = Self {
+            id: id.into(),
+            state,
+            implementation_revision: implementation_revision.into(),
+            config_revision,
+            evidence_revision,
+            freshness,
+            reason_codes,
+            last_verified_at_ms,
+        };
+        evidence.validate()?;
+        Ok(evidence)
+    }
+
+    pub fn unavailable(
+        id: impl Into<String>,
+        implementation_revision: impl Into<String>,
+        reason_code: impl Into<String>,
+    ) -> Result<Self, CapabilityEvidenceError> {
+        Self::new(
+            id,
+            AvailabilityState::Unavailable,
+            implementation_revision,
+            None,
+            None,
+            EvidenceFreshness::Unknown,
+            vec![reason_code.into()],
+            None,
+        )
+    }
+
+    pub fn is_available(&self) -> bool {
+        matches!(
+            self.state,
+            AvailabilityState::Ready | AvailabilityState::Degraded
+        )
+    }
+
+    fn validate(&self) -> Result<(), CapabilityEvidenceError> {
+        if self.id.trim().is_empty() {
+            return Err(CapabilityEvidenceError::EmptyCapabilityId);
+        }
+        if self.implementation_revision.trim().is_empty() {
+            return Err(CapabilityEvidenceError::EmptyImplementationRevision);
+        }
+        if self.reason_codes.is_empty()
+            || self
+                .reason_codes
+                .iter()
+                .any(|reason| reason.trim().is_empty())
+        {
+            return Err(CapabilityEvidenceError::EmptyReasonCodes);
+        }
+        if matches!(
+            self.state,
+            AvailabilityState::ImplementedDisabled
+                | AvailabilityState::Ready
+                | AvailabilityState::Degraded
+        ) {
+            if self
+                .evidence_revision
+                .as_deref()
+                .is_none_or(|revision| revision.trim().is_empty())
+            {
+                return Err(CapabilityEvidenceError::MissingEvidenceRevision);
+            }
+            if self
+                .last_verified_at_ms
+                .is_none_or(|timestamp| timestamp == 0)
+            {
+                return Err(CapabilityEvidenceError::MissingVerificationTimestamp);
+            }
+            if matches!(self.freshness, EvidenceFreshness::Unknown) {
+                return Err(CapabilityEvidenceError::MissingVerifiedFreshness);
+            }
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CapabilityRegistrySnapshot {
+    pub schema_version: u32,
+    pub revision: String,
+    pub collected_at_ms: u64,
+    pub capabilities: Vec<CapabilityEvidence>,
+}
+
+impl CapabilityRegistrySnapshot {
+    pub fn new(
+        revision: impl Into<String>,
+        collected_at_ms: u64,
+        mut capabilities: Vec<CapabilityEvidence>,
+    ) -> Result<Self, CapabilityEvidenceError> {
+        let revision = revision.into();
+        if revision.trim().is_empty() {
+            return Err(CapabilityEvidenceError::EmptyRegistryRevision);
+        }
+        if collected_at_ms == 0 {
+            return Err(CapabilityEvidenceError::InvalidCollectionTimestamp);
+        }
+        capabilities.sort_by(|left, right| left.id.cmp(&right.id));
+        let mut seen = std::collections::BTreeSet::new();
+        for capability in &capabilities {
+            capability.validate()?;
+            if !seen.insert(capability.id.as_str()) {
+                return Err(CapabilityEvidenceError::DuplicateCapabilityId(
+                    capability.id.clone(),
+                ));
+            }
+        }
+        Ok(Self {
+            schema_version: 1,
+            revision,
+            collected_at_ms,
+            capabilities,
+        })
+    }
+
+    pub fn find(&self, id: &str) -> Option<&CapabilityEvidence> {
+        self.capabilities
+            .binary_search_by(|candidate| candidate.id.as_str().cmp(id))
+            .ok()
+            .map(|index| &self.capabilities[index])
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -858,6 +1346,9 @@ pub struct RequestLog {
     pub latency_ms: Option<u64>,
     pub error: Option<String>,
     pub config_source: Option<String>,
+    /// Allowlisted numeric quota metadata captured from an upstream response; never raw headers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quota_metadata: Option<serde_json::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_accounting: Option<HybridContextAccounting>,
 }
@@ -867,6 +1358,9 @@ pub struct HealthResponse {
     pub status: String,
     pub component: String,
     pub version: String,
+    pub runtime_identity: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_instance_nonce: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1182,6 +1676,8 @@ pub struct OpticalCapabilityAttestation {
     pub expires_at_ms: u64,
     pub renderer_profile_digest: String,
     pub font_digest: String,
+    #[serde(default)]
+    pub transform_contract_digest: String,
     pub eval_artifact_digest: String,
     pub signature_base64: String,
 }
@@ -1201,6 +1697,8 @@ pub struct OpticalEvalArtifact {
     pub endpoint: OpticalEndpoint,
     pub renderer_profile_digest: String,
     pub font_digest: String,
+    #[serde(default)]
+    pub transform_contract_digest: String,
     pub corpus_digest: String,
     pub evaluated_at_ms: u64,
     pub sample_count: u64,
@@ -1213,6 +1711,34 @@ pub struct OpticalEvalArtifact {
     pub signed_cost_delta_microusd: i64,
     pub latency_p95_delta_ms: i64,
     pub passed: bool,
+}
+
+impl OpticalEvalArtifact {
+    /// Recomputes the release-critical quality result from the measured fields.
+    /// The serialized `passed` member is retained for artifact compatibility and
+    /// display only; callers must not use it as an authorization decision.
+    pub fn passes_derived_quality_gate(&self) -> bool {
+        if self.schema_version != 2
+            || self.sample_count < 20
+            || self.baseline_passes > self.sample_count
+            || self.candidate_passes > self.sample_count
+            || self.exact_failures != 0
+            || self.unsafe_failures != 0
+            || !self.quality_delta.is_finite()
+            || self.signed_input_token_delta <= 0
+            || self.signed_cost_delta_microusd <= 0
+            || self.latency_p95_delta_ms > 2_000
+        {
+            return false;
+        }
+        let sample_count = self.sample_count as f64;
+        let expected_quality_delta =
+            (self.candidate_passes as f64 - self.baseline_passes as f64) / sample_count;
+        let candidate_accuracy = self.candidate_passes as f64 / sample_count;
+        candidate_accuracy >= 0.95
+            && (self.quality_delta - expected_quality_delta).abs() <= f64::EPSILON
+            && self.quality_delta >= 0.0
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1289,6 +1815,9 @@ pub struct OpticalEconomicsPublicSummary {
     pub sidecar_tokens: usize,
     pub cache_burn_tokens: usize,
     pub net_saved_tokens: isize,
+    pub conservative_net_saved_tokens: isize,
+    pub expected_net_saved_tokens: isize,
+    pub optimistic_net_saved_tokens: isize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1325,12 +1854,35 @@ pub struct OpticalStatusPublicSummary {
     /// Backward-compatible alias for `effective_mode`.
     pub default_mode: OpticalMode,
     pub allow_active: bool,
+    /// True only when current config, route, signed capability and runtime
+    /// gates make Active reachable. It is not proof that an Active request ran.
+    pub active_reachable: bool,
+    /// Derived exclusively from a durable terminal Ledger event for a completed
+    /// Active request.
+    pub active_execution_observed: bool,
     pub public_summary_only: bool,
     pub fail_closed: bool,
     pub renderer_ready: bool,
     pub patcher_ready: bool,
     pub post_validator_ready: bool,
     pub signed_accounting_ready: bool,
+    pub representation_plan_ready: bool,
+    pub responses_shadow_inventory_ready: bool,
+    pub dynamic_page_accounting_ready: bool,
+    pub active_direct_routes: usize,
+    pub verified_attested_capabilities: usize,
+    pub rejected_capabilities: usize,
+    pub config_issue_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct EffectiveOpticalState {
+    pub enabled: bool,
+    pub configured_mode: OpticalMode,
+    pub effective_mode: OpticalMode,
+    pub active_reachable: bool,
+    pub active_execution_observed: bool,
+    pub public_summary_only: bool,
     pub active_direct_routes: usize,
     pub verified_attested_capabilities: usize,
     pub rejected_capabilities: usize,
@@ -1443,4 +1995,132 @@ pub struct OpticalEventPublicSummary {
     pub stage: LayeredStage,
     pub status: EventStatus,
     pub metadata: OpticalEventMetadataPublicSummary,
+}
+
+#[cfg(test)]
+mod capability_contract_tests {
+    use super::*;
+
+    #[test]
+    fn fixture_profile_is_rejected_when_debug_fixtures_are_not_allowed() {
+        assert_eq!(
+            RuntimeMode::from_profile(Some("fixture"), false),
+            RuntimeMode::Native
+        );
+        assert_eq!(
+            RuntimeMode::from_profile(Some("fixture"), true),
+            RuntimeMode::Fixture
+        );
+        assert_eq!(
+            RuntimeMode::from_profile(Some("unexpected-profile"), true),
+            RuntimeMode::Native
+        );
+    }
+
+    #[test]
+    fn request_scope_preserves_unknown_identity_as_evidence_not_fake_defaults() {
+        let request_id = Uuid::new_v4();
+        let scope = RequestScope::new(
+            request_id,
+            EvidenceValue::known(
+                "claude-code".to_string(),
+                EvidenceSource::ConfiguredInstance,
+            ),
+            EvidenceValue::unknown("project_identity_unavailable"),
+            EvidenceValue::unknown("session_identity_unavailable"),
+            EvidenceValue::known(
+                "instance-claude".to_string(),
+                EvidenceSource::ConfiguredRoute,
+            ),
+            "route-claude",
+            "provider-a",
+            "claude-model",
+            Protocol::Anthropic,
+            Protocol::Anthropic,
+            "config-sha256",
+        )
+        .expect("valid configured scope");
+
+        assert_eq!(scope.request_id, request_id);
+        assert_eq!(scope.agent.value.as_deref(), Some("claude-code"));
+        assert_eq!(scope.project.value, None);
+        assert_eq!(
+            scope.project.reason_code.as_deref(),
+            Some("project_identity_unavailable")
+        );
+        assert!(!serde_json::to_string(&scope)
+            .expect("serialize scope")
+            .contains("OpenCode"));
+    }
+
+    #[test]
+    fn implemented_disabled_requires_verified_evidence() {
+        let evidence = CapabilityEvidence::new(
+            "code-compressor",
+            AvailabilityState::ImplementedDisabled,
+            "code-compressor-v1",
+            None,
+            None,
+            EvidenceFreshness::Unknown,
+            vec!["disabled_by_default".to_string()],
+            None,
+        );
+
+        assert_eq!(
+            evidence.expect_err("disabled implementation without evidence must fail"),
+            CapabilityEvidenceError::MissingEvidenceRevision
+        );
+    }
+
+    #[test]
+    fn registry_rejects_duplicate_capability_ids() {
+        let unavailable = CapabilityEvidence::unavailable(
+            "mcp",
+            "mcp-schema-v1",
+            "mcp_transport_not_implemented",
+        )
+        .expect("valid unavailable evidence");
+
+        assert_eq!(
+            CapabilityRegistrySnapshot::new(
+                "runtime-capabilities-v1",
+                1,
+                vec![unavailable.clone(), unavailable],
+            )
+            .expect_err("duplicate IDs must fail"),
+            CapabilityEvidenceError::DuplicateCapabilityId("mcp".to_string())
+        );
+    }
+
+    #[test]
+    fn optical_eval_quality_is_derived_from_measurements_not_passed_label() {
+        let mut artifact = OpticalEvalArtifact {
+            schema_version: 2,
+            artifact_id: "eval-1".to_string(),
+            model_base: "model".to_string(),
+            endpoint: OpticalEndpoint::AnthropicMessages,
+            renderer_profile_digest: "renderer".to_string(),
+            font_digest: "font".to_string(),
+            transform_contract_digest: "contract".to_string(),
+            corpus_digest: "corpus".to_string(),
+            evaluated_at_ms: 1,
+            sample_count: 20,
+            exact_failures: 0,
+            unsafe_failures: 0,
+            baseline_passes: 19,
+            candidate_passes: 20,
+            quality_delta: 0.05,
+            signed_input_token_delta: 1,
+            signed_cost_delta_microusd: 1,
+            latency_p95_delta_ms: 0,
+            passed: false,
+        };
+
+        assert!(artifact.passes_derived_quality_gate());
+        artifact.candidate_passes = 0;
+        artifact.baseline_passes = 0;
+        artifact.quality_delta = 0.0;
+        artifact.passed = true;
+        assert!(!artifact.passes_derived_quality_gate());
+    }
 }

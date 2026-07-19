@@ -4,16 +4,18 @@
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
+use crate::content_router::{route_content, ContentKind};
 use crate::optical::applicability::evaluate_applicability_with_policies_and_registry;
 use crate::optical::capability::OpticalCapabilityRegistry;
 use crate::optical::context_graph::{build_context_graph, ContextGraph};
 use crate::optical::economics::{evaluate_block_economics, BlockEconomicsPlan};
 use crate::optical::inventory::{
-    build_anthropic_inventory_with_arena, BlockKind, BlockRef, InitialProtection,
+    build_anthropic_inventory_with_arena, build_openai_chat_inventory_with_arena,
+    build_openai_responses_inventory_with_arena, BlockKind, BlockRef, InitialProtection,
 };
 use crate::optical::plan_ir::{ContextOptimizationPlan, PlanCandidateEvidence};
 use crate::optical::render_geometry::{
-    anthropic_dense_v1, geometry_for_capability, images_required,
+    anthropic_dense_v2, geometry_for_capability, images_required,
 };
 use crate::optical::risk::{classify_block, RiskPartitionPlan, RiskTier};
 use crate::optical::semantic_priority::plan_semantic_priority;
@@ -22,6 +24,7 @@ use crate::optical::validate::{
     decide_final_status, validate_shadow_plan_input, CandidateValidationEvidence,
     ShadowPlanValidationInput,
 };
+use crate::optical::volatility::plan_volatility;
 use dtoken_types::{
     CachePublicSummary, CapabilityStatus, OpticalApplicabilityInput, OpticalBucket,
     OpticalBucketSummary, OpticalEconomicsPublicSummary, OpticalGateDecision, OpticalGlobalPolicy,
@@ -39,6 +42,10 @@ pub struct CandidateDecision {
     pub chars: usize,
     pub estimated_images: usize,
     pub economics: Option<BlockEconomicsPlan>,
+    pub content_kind: ContentKind,
+    pub risk_tier: Option<RiskTier>,
+    pub cache_stable: bool,
+    pub stable_digest_present: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -48,6 +55,7 @@ pub enum CandidateAction {
     SkipTooSmall,
     SkipUnprofitable,
     SkipExactnessRisk,
+    SkipDecisionSensitive,
     SkipSecretRisk,
     SkipStructuralRisk,
     SkipCacheUnstable,
@@ -63,6 +71,7 @@ impl CandidateAction {
             Self::SkipTooSmall => "skip_too_small",
             Self::SkipUnprofitable => "skip_unprofitable",
             Self::SkipExactnessRisk => "skip_exactness_risk",
+            Self::SkipDecisionSensitive => "skip_decision_sensitive",
             Self::SkipSecretRisk => "skip_secret_risk",
             Self::SkipStructuralRisk => "skip_structural_risk",
             Self::SkipCacheUnstable => "skip_cache_unstable",
@@ -86,6 +95,8 @@ struct EconomicsAccumulator {
     sidecar_tokens: f64,
     cache_burn_tokens: f64,
     net_saved_tokens: f64,
+    conservative_net_saved_tokens: f64,
+    optimistic_net_saved_tokens: f64,
 }
 
 pub fn build_shadow_plan(
@@ -178,7 +189,7 @@ pub fn build_shadow_plan_detailed_with_registry(
             applicability_input.provider_id.as_deref(),
             applicability_input.route_id.as_deref(),
             applicability_input.model.as_deref(),
-            endpoint,
+            endpoint.clone(),
             registry,
         );
     let capability = resolved_capability.capability.clone();
@@ -200,13 +211,26 @@ pub fn build_shadow_plan_detailed_with_registry(
     let geometry = geometry_for_capability(&capability).or_else(|| {
         if capability.supports_anthropic_image_block {
             warnings.push("geometry_fallback_profile".to_string());
-            Some(anthropic_dense_v1())
+            Some(anthropic_dense_v2())
         } else {
             None
         }
     });
     let mut arena = TextArena::new(request_id);
-    let inventory = build_anthropic_inventory_with_arena(body, &mut arena);
+    let inventory = match endpoint {
+        dtoken_types::OpticalEndpoint::AnthropicMessages => {
+            build_anthropic_inventory_with_arena(body, &mut arena)
+        }
+        dtoken_types::OpticalEndpoint::OpenAiChatCompletions => {
+            build_openai_chat_inventory_with_arena(body, &mut arena)
+        }
+        dtoken_types::OpticalEndpoint::OpenAiResponses => {
+            build_openai_responses_inventory_with_arena(body, &mut arena)
+        }
+        dtoken_types::OpticalEndpoint::Unsupported => {
+            build_anthropic_inventory_with_arena(body, &mut arena)
+        }
+    };
     let graph = build_context_graph(&inventory);
     let semantic = plan_semantic_priority(&inventory);
     let mut plan_budget_exceeded = plan_started.elapsed() > plan_deadline;
@@ -236,6 +260,13 @@ pub fn build_shadow_plan_detailed_with_registry(
             .and_then(|text_ref| arena.get(text_ref));
         let bucket = bucket_for_block(block, raw_text);
         let risk = raw_text.map(classify_block);
+        let content_kind = raw_text
+            .map(route_content)
+            .map_or(ContentKind::Unknown, |route| route.content_kind);
+        let volatility = raw_text.map(plan_volatility);
+        let cache_stable = volatility
+            .as_ref()
+            .is_some_and(|plan| plan.stable_digest.is_some() && plan.volatile_chars == 0);
         let estimated_images = geometry
             .as_ref()
             .and_then(|profile| images_required(profile, block.chars))
@@ -258,6 +289,7 @@ pub fn build_shadow_plan_detailed_with_registry(
             block,
             raw_text,
             risk.as_ref(),
+            cache_stable,
             economics.as_ref(),
             estimated_images,
             &capability,
@@ -307,6 +339,10 @@ pub fn build_shadow_plan_detailed_with_registry(
                 economics_totals.sidecar_tokens += plan.sidecar_tokens;
                 economics_totals.cache_burn_tokens += plan.cache_burn_image_side;
                 economics_totals.net_saved_tokens += plan.net_saved_tokens;
+                economics_totals.conservative_net_saved_tokens +=
+                    plan.estimate_range.conservative_net_saved_tokens;
+                economics_totals.optimistic_net_saved_tokens +=
+                    plan.estimate_range.optimistic_net_saved_tokens;
             }
         }
 
@@ -319,6 +355,12 @@ pub fn build_shadow_plan_detailed_with_registry(
             chars: block.chars,
             estimated_images,
             economics,
+            content_kind,
+            risk_tier: risk.as_ref().map(|plan| plan.tier.clone()),
+            cache_stable,
+            stable_digest_present: volatility
+                .as_ref()
+                .is_some_and(|plan| plan.stable_digest.is_some()),
         });
     }
 
@@ -348,6 +390,9 @@ pub fn build_shadow_plan_detailed_with_registry(
         sidecar_tokens: f64_to_usize(economics_totals.sidecar_tokens),
         cache_burn_tokens: f64_to_usize(economics_totals.cache_burn_tokens),
         net_saved_tokens: f64_to_isize(economics_totals.net_saved_tokens),
+        conservative_net_saved_tokens: f64_to_isize(economics_totals.conservative_net_saved_tokens),
+        expected_net_saved_tokens: f64_to_isize(economics_totals.net_saved_tokens),
+        optimistic_net_saved_tokens: f64_to_isize(economics_totals.optimistic_net_saved_tokens),
     };
     let geometry_is_sufficient = geometry.is_some()
         || candidates.iter().all(|candidate| {
@@ -435,6 +480,10 @@ pub fn build_shadow_plan_detailed_with_registry(
             reason: candidate.reason.clone(),
             chars: candidate.chars,
             estimated_images: candidate.estimated_images,
+            content_kind: candidate.content_kind,
+            risk_tier: candidate.risk_tier.clone(),
+            cache_stable: candidate.cache_stable,
+            stable_digest_present: candidate.stable_digest_present,
         })
         .collect();
     let plan = ContextOptimizationPlan::new(
@@ -488,6 +537,7 @@ fn decide_candidate(
     block: &BlockRef,
     raw_text: Option<&str>,
     risk: Option<&RiskPartitionPlan>,
+    cache_stable: bool,
     economics: Option<&BlockEconomicsPlan>,
     estimated_images: usize,
     capability: &dtoken_types::OpticalModelCapability,
@@ -564,6 +614,18 @@ fn decide_candidate(
         return (
             CandidateAction::SkipExactnessRisk,
             "exact_text_required".into(),
+        );
+    }
+    if matches!(risk.tier, RiskTier::DecisionSensitive) {
+        return (
+            CandidateAction::SkipDecisionSensitive,
+            "decision_sensitive".into(),
+        );
+    }
+    if !cache_stable {
+        return (
+            CandidateAction::SkipCacheUnstable,
+            "volatile_or_unstable_source".into(),
         );
     }
     if matches!(
@@ -696,15 +758,53 @@ mod tests {
     }
 
     #[test]
+    fn responses_shadow_plan_uses_responses_inventory_without_active_patch_targets() {
+        let output = "INFO stable repeated line\n".repeat(100);
+        let body = json!({"instructions":"keep exact rules","input":[
+            {"type":"function_call","id":"fc-1","call_id":"call-1","name":"read","arguments":"{}"},
+            {"type":"function_call_output","call_id":"call-1","output":output},
+            {"type":"message","role":"assistant","content":[{"type":"output_text","text":"done"}]},
+            {"type":"message","role":"user","content":[{"type":"input_text","text":"continue"}]},
+            {"type":"message","role":"assistant","content":[{"type":"output_text","text":"working"}]}
+        ]});
+        let input = OpticalApplicabilityInput {
+            method: Some("POST".into()),
+            endpoint_path: Some("/v1/responses".into()),
+            body_bytes: Some(serde_json::to_vec(&body).expect("body").len()),
+            protocol: Some(Protocol::OpenAi),
+            provider_id: Some("openai-main".into()),
+            route_id: Some("responses-route".into()),
+            model: Some("gpt-5.6-sol".into()),
+            global_enabled: true,
+            route_enabled: true,
+        };
+        let (global, route) = shadow_policies();
+        let build = build_shadow_plan_detailed("responses-shadow", &body, &global, &route, &input);
+
+        assert!(build.plan.body_unchanged());
+        assert_eq!(
+            build.plan.graph_summary().state_machine,
+            crate::optical::context_graph::ProviderToolStateMachine::OpenAiResponsesV1
+        );
+        assert!(build
+            .candidates
+            .iter()
+            .all(|candidate| candidate.action != CandidateAction::ShadowEstimateOnly));
+    }
+
+    #[test]
     fn real_secret_tool_result_is_skipped() {
         let secret = format!("Bearer {}", "credential-material ".repeat(180));
-        let body = json!({"messages":[
-            {"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"read","input":{}}]},
-            {"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":secret}]},
-            {"role":"assistant","content":"done"},
-            {"role":"user","content":"next task"},
-            {"role":"assistant","content":"working"}
-        ]});
+        let mut messages = vec![
+            json!({"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"read","input":{}}]}),
+            json!({"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":secret}]}),
+        ];
+        for index in 0..6 {
+            messages.push(json!({"role":"assistant","content":[{"type":"tool_use","id":format!("recent-{index}"),"name":"read","input":{}}]}));
+            messages.push(json!({"role":"user","content":[{"type":"tool_result","tool_use_id":format!("recent-{index}"),"content":"recent"}]}));
+        }
+        messages.push(json!({"role":"user","content":"next task"}));
+        let body = json!({"messages": messages});
         let (global, route) = shadow_policies();
         let build =
             build_shadow_plan_detailed("plan-secret", &body, &global, &route, &make_input(&body));
@@ -723,13 +823,16 @@ mod tests {
     #[test]
     fn dense_log_populates_economics_summary() {
         let log = "INFO operation completed successfully\n".repeat(1_000);
-        let body = json!({"messages":[
-            {"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"read","input":{}}]},
-            {"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":log}]},
-            {"role":"assistant","content":"done"},
-            {"role":"user","content":"next task"},
-            {"role":"assistant","content":"working"}
-        ]});
+        let mut messages = vec![
+            json!({"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"read","input":{}}]}),
+            json!({"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":log}]}),
+        ];
+        for index in 0..6 {
+            messages.push(json!({"role":"assistant","content":[{"type":"tool_use","id":format!("recent-{index}"),"name":"read","input":{}}]}));
+            messages.push(json!({"role":"user","content":[{"type":"tool_result","tool_use_id":format!("recent-{index}"),"content":"recent"}]}));
+        }
+        messages.push(json!({"role":"user","content":"next task"}));
+        let body = json!({"messages": messages});
         let (global, route) = shadow_policies();
         let build = build_shadow_plan_detailed(
             "plan-economics",

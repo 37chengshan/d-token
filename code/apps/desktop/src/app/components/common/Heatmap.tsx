@@ -1,6 +1,7 @@
 import { AnimatePresence, motion } from "motion/react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useI18n } from "../../lib/i18n";
+import { AnimatedSegmentedControl } from "../shell/AnimatedSegmentedControl";
 
 const LEVELS = [0, 1, 2, 3, 4] as const;
 
@@ -39,11 +40,14 @@ function formatNumber(value: number) {
   return String(value);
 }
 
-function activityLevel(day: ActivityDay): 0 | 1 | 2 | 3 | 4 {
+export function activityLevel(day: ActivityDay): 0 | 1 | 2 | 3 | 4 {
   if (day.sessions <= 0) return 0;
-  if (day.sessions >= 5) return 4;
-  if (day.sessions >= 3) return 3;
-  if (day.sessions >= 2) return 2;
+  // Request volume is intentionally mapped to stable absolute bands instead of
+  // the largest value in the current range. A quiet day must stay visually
+  // quiet even when it is the only active day in an otherwise empty year.
+  if (day.sessions >= 200) return 4;
+  if (day.sessions >= 80) return 3;
+  if (day.sessions >= 25) return 2;
   return 1;
 }
 
@@ -73,6 +77,21 @@ export function Heatmap({
   const { lang } = useI18n();
   const [range, setRange] = useState<Range>("year");
   const [view, setView] = useState<View>("activity");
+  const [reducedMotion, setReducedMotion] = useState(
+    () =>
+      typeof window !== "undefined" &&
+      typeof window.matchMedia === "function" &&
+      window.matchMedia("(prefers-reduced-motion: reduce)").matches,
+  );
+
+  useEffect(() => {
+    if (typeof window.matchMedia !== "function") return;
+    const preference = window.matchMedia("(prefers-reduced-motion: reduce)");
+    const updatePreference = (event: MediaQueryListEvent | MediaQueryList) => setReducedMotion(event.matches);
+    updatePreference(preference);
+    preference.addEventListener("change", updatePreference);
+    return () => preference.removeEventListener("change", updatePreference);
+  }, []);
 
   const visibleDays = useMemo(() => activityDays.slice(-rangeDays[range]), [activityDays, range]);
   const activeDays = visibleDays.filter((day) => day.sessions > 0).length;
@@ -80,40 +99,43 @@ export function Heatmap({
   const totalTokens = visibleDays.reduce((sum, day) => sum + day.tokens, 0);
   const totalSteps = visibleDays.reduce((sum, day) => sum + day.tools, 0);
 
+  const viewItems = useMemo(
+    () =>
+      (["activity", "tokens", "tools"] as const).map((item) => ({
+        value: item,
+        label: viewLabel(item, lang),
+      })),
+    [lang],
+  );
+  const rangeItems = useMemo(
+    () =>
+      (["week", "month", "year"] as const).map((item) => ({
+        value: item,
+        label: rangeLabel(item, lang),
+      })),
+    [lang],
+  );
+
   return (
     <div className="activity-panel">
       <div className="activity-toolbar">
-        <div className="activity-tabs" role="radiogroup" aria-label={lang === "zh" ? "统计视图" : "Metric view"}>
-          {(["activity", "tokens", "tools"] as const).map((item) => (
-            <button
-              key={item}
-              type="button"
-              aria-label={`${lang === "zh" ? "切换统计视图" : "Switch metric view"}: ${viewLabel(item, lang)}`}
-              aria-pressed={view === item}
-              className={view === item ? "activity-tab active" : "activity-tab"}
-              onClick={() => setView(item)}
-            >
-              {view === item && <motion.span layoutId="activity-tab-indicator" className="activity-tab-indicator" />}
-              <span className="relative z-10">{viewLabel(item, lang)}</span>
-            </button>
-          ))}
-        </div>
+        <AnimatedSegmentedControl
+          items={viewItems}
+          value={view}
+          onValueChange={setView}
+          ariaLabel={lang === "zh" ? "统计视图" : "Metric view"}
+          reducedMotion={reducedMotion}
+          className="activity-tabs"
+        />
 
-        <div className="activity-range-tabs">
-          {(["week", "month", "year"] as const).map((item) => (
-            <button
-              key={item}
-              type="button"
-              aria-label={`${lang === "zh" ? "切换时间范围" : "Switch time range"}: ${rangeLabel(item, lang)}`}
-              aria-pressed={range === item}
-              className={range === item ? "activity-range active" : "activity-range"}
-              onClick={() => setRange(item)}
-            >
-              {range === item && <motion.span layoutId="activity-range-indicator" className="activity-tab-indicator" />}
-              <span className="relative z-10">{rangeLabel(item, lang)}</span>
-            </button>
-          ))}
-        </div>
+        <AnimatedSegmentedControl
+          items={rangeItems}
+          value={range}
+          onValueChange={setRange}
+          ariaLabel={lang === "zh" ? "时间范围" : "Time range"}
+          reducedMotion={reducedMotion}
+          className="activity-range-tabs"
+        />
 
         <span className="rounded-full border border-border/60 px-2 py-1 text-xs text-muted-foreground">{source}</span>
       </div>
@@ -382,11 +404,12 @@ function TokenTrend({ range, lang, activityDays }: { range: Range; lang: string;
           ))}
           {series.map((item, index) => {
             const barHeight = item.period > 0 ? Math.max(2, (item.period / max) * plotHeight) : 0;
-            const x = left + index * step - 24;
+            const barW = Math.min(48, Math.max(4, step * 0.6));
+            const x = left + index * step - barW / 2;
             const y = top + plotHeight - barHeight;
             return (
               <g key={item.date}>
-                <rect x={x} y={y} width={48} height={barHeight} rx={6} className="token-bar" />
+                <rect x={x} y={y} width={barW} height={barHeight} rx={6} className="token-bar" />
                 <text x={left + index * step} y={chartHeight - 8} textAnchor="middle" className="token-axis-label">
                   {item.date}
                 </text>

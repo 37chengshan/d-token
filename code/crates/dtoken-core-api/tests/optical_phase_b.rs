@@ -5,7 +5,8 @@ use axum::{
 use dtoken_config::DtokenConfig;
 use dtoken_core_api::{build_router, AppState};
 use dtoken_types::{
-    BaselineKind, DtokenEvent, EventSource, EventStatus, LayeredStage, OpticalMode,
+    BaselineKind, DtokenEvent, EventSource, EventStatus, LayeredStage, OpticalCapabilitySnapshot,
+    OpticalMode,
 };
 use serde_json::{json, Value};
 use std::fs;
@@ -21,6 +22,47 @@ async fn response_json(response: axum::response::Response) -> Value {
 
 fn app() -> axum::Router {
     build_router(AppState::new(DtokenConfig::empty()))
+}
+
+fn unsigned_active_snapshot(id: &str, revision: u64) -> OpticalCapabilitySnapshot {
+    serde_json::from_value(json!({
+        "schema_version": 1,
+        "snapshot_id": id,
+        "revision": revision,
+        "enabled": true,
+        "lifecycle": "active",
+        "revoked_at_ms": null,
+        "revocation_reason": null,
+        "supersedes_snapshot_id": null,
+        "provider_family": "anthropic",
+        "provider_id": null,
+        "route_id": null,
+        "model_base": "claude-fable-5",
+        "endpoint": "anthropic_messages",
+        "capability": {
+            "provider_family": "anthropic",
+            "provider_id": null,
+            "model_base": "claude-fable-5",
+            "endpoint": "anthropic_messages",
+            "status": "supported",
+            "max_mode": "tool_results_only",
+            "supports_image_input": true,
+            "supports_anthropic_image_block": true,
+            "supports_openai_image_url": false,
+            "supports_openai_input_image": false,
+            "supports_data_url": true,
+            "max_images_per_request": 10,
+            "max_image_width_px": 1568,
+            "max_image_height_px": 728,
+            "vision_token_formula": {"patch_grid": {"patch_size_px": 28, "max_tokens": 1568, "safety_margin_percent": 105.0}},
+            "exactness_class": "technical_readable"
+        },
+        "verified_at_ms": 100,
+        "source": "test-fixture",
+        "notes": "unsigned test fixture",
+        "attestation": null
+    }))
+    .expect("unsigned capability fixture")
 }
 
 #[tokio::test]
@@ -234,15 +276,10 @@ async fn configured_active_intent_remains_gated_without_route_and_attestation() 
     config.optical.global_policy.allow_active = true;
     config.optical.global_policy.default_mode = OpticalMode::FullExperimental;
     config.optical.global_policy.public_summary_only = false;
-    config.optical.capability_snapshots.push(
-        dtoken_compress::optical::experimental_anthropic_active_snapshot(
-            "verified-shadow-estimator",
-            1,
-            "claude-fable-5",
-            100,
-            "test-fixture",
-        ),
-    );
+    config
+        .optical
+        .capability_snapshots
+        .push(unsigned_active_snapshot("verified-shadow-estimator", 1));
     let router = build_router(AppState::new(config));
 
     for (path, expected_field) in [
@@ -279,20 +316,8 @@ async fn configured_active_intent_remains_gated_without_route_and_attestation() 
 
 #[tokio::test]
 async fn lifecycle_rejects_unsigned_runtime_snapshots() {
-    let valid = dtoken_compress::optical::experimental_anthropic_active_snapshot(
-        "valid-snapshot",
-        1,
-        "claude-fable-5",
-        100,
-        "test-fixture",
-    );
-    let mut invalid = dtoken_compress::optical::experimental_anthropic_active_snapshot(
-        "invalid-snapshot",
-        2,
-        "claude-fable-5",
-        200,
-        "test-fixture",
-    );
+    let valid = unsigned_active_snapshot("valid-snapshot", 1);
+    let mut invalid = unsigned_active_snapshot("invalid-snapshot", 2);
     invalid.capability.supports_image_input = false;
     let mut config = DtokenConfig::empty();
     config.optical.capability_snapshots = vec![valid, invalid];

@@ -27,6 +27,9 @@ jobs:
           cache: npm
           cache-dependency-path: code/apps/desktop/package-lock.json
 
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@v4.0.0
+
       - name: Install frontend dependencies
         working-directory: code/apps/desktop
         run: npm ci
@@ -100,13 +103,40 @@ jobs:
 
       - name: Build macOS Tauri bundle
         working-directory: code/apps/desktop
+        env:
+          DTOKEN_EXPECTED_APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: npm run tauri:with-sidecar -- build --bundles app,dmg
 
       - name: Verify signed app bundle
+        env:
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
           APP_PATH="$(find code/target/release/bundle/macos -name '*.app' -print -quit)"
+          BRIDGE_BINARY="$(find code/target/release/bundle/macos -path '*/Contents/MacOS/dtoken-agent-bridge' -print -quit)"
+          CODEBASE_MEMORY_LAUNCHER="$(find code/target/release/bundle/macos -path '*/Contents/MacOS/dtoken-codebase-memory-launcher' -print -quit)"
           test -n "$APP_PATH"
+          test -n "$BRIDGE_BINARY"
+          test -n "$CODEBASE_MEMORY_LAUNCHER"
           codesign --verify --deep --strict --verbose=2 "$APP_PATH"
+          codesign --verify --strict --verbose=2 "$BRIDGE_BINARY"
+          codesign --verify --strict --verbose=2 "$CODEBASE_MEMORY_LAUNCHER"
+          codesign -dv --verbose=4 "$BRIDGE_BINARY" 2>&1 | grep -Fx "TeamIdentifier=${APPLE_TEAM_ID}"
+          codesign -dv --verbose=4 "$CODEBASE_MEMORY_LAUNCHER" 2>&1 | grep -Fx "TeamIdentifier=${APPLE_TEAM_ID}"
+          BRIDGE_IDENTITY="$RUNNER_TEMP/dtoken-agent-bridge-identity.json"
+          "$BRIDGE_BINARY" identity > "$BRIDGE_IDENTITY"
+          python3 - "$BRIDGE_IDENTITY" <<'PY'
+          import json
+          import pathlib
+          import sys
+
+          identity = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+          assert identity["component"] == "dtoken-agent-bridge"
+          assert identity["protocol_version"] == 1
+          assert identity["os"] == "macos"
+          assert identity["arch"] in {"aarch64", "x86_64"}
+          assert isinstance(identity["version"], str) and identity["version"]
+          PY
+          "$CODEBASE_MEMORY_LAUNCHER" identity | python3 -c 'import json,sys; identity=json.load(sys.stdin); assert identity["component"] == "dtoken-codebase-memory-launcher"; assert identity["protocol_version"] == 1'
 
       - name: Notarize macOS DMG
         env:
@@ -139,11 +169,15 @@ jobs:
         run: |
           APP_BINARY="$(find code/target/release/bundle/macos -path '*/Contents/MacOS/d-token-desktop' -print -quit)"
           SIDECAR_BINARY="$(find code/target/release/bundle/macos -path '*/Contents/MacOS/dtoken-proxy' -print -quit)"
+          BRIDGE_BINARY="$(find code/target/release/bundle/macos -path '*/Contents/MacOS/dtoken-agent-bridge' -print -quit)"
+          CODEBASE_MEMORY_LAUNCHER="$(find code/target/release/bundle/macos -path '*/Contents/MacOS/dtoken-codebase-memory-launcher' -print -quit)"
           DMG_PATH="$(find code/target/release/bundle/dmg -name '*.dmg' -print -quit)"
           test -n "$APP_BINARY"
           test -n "$SIDECAR_BINARY"
+          test -n "$BRIDGE_BINARY"
+          test -n "$CODEBASE_MEMORY_LAUNCHER"
           test -n "$DMG_PATH"
-          shasum -a 256 "$APP_BINARY" "$SIDECAR_BINARY" "$DMG_PATH" > code/target/release/SHA256SUMS-macos.txt
+          shasum -a 256 "$APP_BINARY" "$SIDECAR_BINARY" "$BRIDGE_BINARY" "$CODEBASE_MEMORY_LAUNCHER" "$DMG_PATH" > code/target/release/SHA256SUMS-macos.txt
 
       - name: Upload macOS artifacts
         uses: actions/upload-artifact@v4

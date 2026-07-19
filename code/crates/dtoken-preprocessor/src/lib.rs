@@ -20,6 +20,9 @@ impl RtkAdapter {
         if mode == RuntimeMode::Fixture {
             return fixture_status("fixture");
         }
+        if mode == RuntimeMode::Native {
+            return native_unavailable_status();
+        }
 
         let adapter = Self::default();
         match adapter.run_version().await {
@@ -54,6 +57,17 @@ impl RtkAdapter {
         if mode == RuntimeMode::Fixture {
             return fixture_gain_report();
         }
+        if mode == RuntimeMode::Native {
+            return RtkGainReport {
+                available: false,
+                total_commands: 0,
+                input_tokens: 0,
+                output_tokens: 0,
+                saved_tokens: 0,
+                savings_percent: 0.0,
+                source: "native_unavailable".to_string(),
+            };
+        }
 
         match self
             .run_json_command(&["gain", "--all", "--format", "json"])
@@ -83,8 +97,17 @@ impl RtkAdapter {
     }
 
     pub async fn discover_report(&self) -> RtkDiscoverReport {
-        if runtime_mode_from_env() == RuntimeMode::Fixture {
+        let mode = runtime_mode_from_env();
+        if mode == RuntimeMode::Fixture {
             return fixture_discover_report();
+        }
+        if mode == RuntimeMode::Native {
+            return RtkDiscoverReport {
+                available: false,
+                source: "native_unavailable".to_string(),
+                missed_opportunities: vec![],
+                raw_summary: None,
+            };
         }
 
         match self.run_text_command(&["discover", "--all"]).await {
@@ -99,8 +122,17 @@ impl RtkAdapter {
     }
 
     pub async fn session_report(&self) -> RtkSessionReport {
-        if runtime_mode_from_env() == RuntimeMode::Fixture {
+        let mode = runtime_mode_from_env();
+        if mode == RuntimeMode::Fixture {
             return fixture_session_report();
+        }
+        if mode == RuntimeMode::Native {
+            return RtkSessionReport {
+                available: false,
+                source: "native_unavailable".to_string(),
+                sessions: vec![],
+                raw_summary: None,
+            };
         }
 
         match self.run_text_command(&["session"]).await {
@@ -198,13 +230,22 @@ pub async fn list_preprocessors() -> Vec<PreprocessorProfile> {
 }
 
 fn runtime_mode_from_env() -> RuntimeMode {
-    match env::var("DTOKEN_PROFILE").ok().as_deref() {
-        Some("fake-binary") | Some("fake_binary") => RuntimeMode::FakeBinary,
-        Some("shadow") => RuntimeMode::Shadow,
-        Some("external") => RuntimeMode::External,
-        Some("managed") => RuntimeMode::Managed,
-        Some("builtin-fallback") | Some("builtin_fallback") => RuntimeMode::BuiltinFallback,
-        _ => RuntimeMode::Fixture,
+    let profile = env::var("DTOKEN_PROFILE").ok();
+    RuntimeMode::from_profile(profile.as_deref(), cfg!(debug_assertions))
+}
+
+fn native_unavailable_status() -> RtkStatus {
+    RtkStatus {
+        status: ToolStatus::Missing,
+        binary_path: None,
+        version: None,
+        install_method: None,
+        hook_status: HookStatus::Missing,
+        integrity_state: IntegrityState::NotInstalled,
+        telemetry_status: TelemetryStatus::Unknown,
+        warnings: vec![
+            "integrated RTK preprocessing is not available in the native runtime yet".to_string(),
+        ],
     }
 }
 
@@ -304,8 +345,22 @@ mod tests {
     }
 
     #[test]
-    fn unknown_profile_defaults_to_fixture_for_no_touch_development() {
+    fn missing_or_unknown_profile_defaults_to_native_and_fixture_is_explicit() {
         env::remove_var("DTOKEN_PROFILE");
-        assert_eq!(runtime_mode_from_env(), RuntimeMode::Fixture);
+        assert_eq!(runtime_mode_from_env(), RuntimeMode::Native);
+
+        env::set_var("DTOKEN_PROFILE", "fixture");
+        assert_eq!(
+            runtime_mode_from_env(),
+            if cfg!(debug_assertions) {
+                RuntimeMode::Fixture
+            } else {
+                RuntimeMode::Native
+            }
+        );
+
+        env::set_var("DTOKEN_PROFILE", "unexpected-profile");
+        assert_eq!(runtime_mode_from_env(), RuntimeMode::Native);
+        env::remove_var("DTOKEN_PROFILE");
     }
 }

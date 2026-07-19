@@ -54,7 +54,6 @@ function hasTransactionProvenance(payload: Record<string, any>): boolean {
 function explicitEvidenceMarker(payload: Record<string, any> | null): Exclude<EvidenceState, "loading" | "verified"> | null {
   if (!payload) return null;
   if (payload.stale === true || payload.is_stale === true) return "stale";
-  if (payload.partial === true || payload.is_partial === true || payload.complete === false) return "partial";
 
   const candidates = [
     payload.evidence_state,
@@ -74,6 +73,7 @@ function explicitEvidenceMarker(payload: Record<string, any> | null): Exclude<Ev
       return normalized;
     }
   }
+  if (payload.partial === true || payload.is_partial === true || payload.complete === false) return "partial";
   return null;
 }
 

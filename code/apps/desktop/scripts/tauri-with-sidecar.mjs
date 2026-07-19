@@ -9,6 +9,9 @@ if (mode !== "dev" && mode !== "build") {
   throw new Error("expected Tauri mode: dev or build");
 }
 
+const isReleaseBuild = mode === "build" && !tauriArgs.includes("--debug");
+const bundleProfile = isReleaseBuild ? "release" : "debug";
+
 const targetFlagIndex = tauriArgs.indexOf("--target");
 const targetFlag = tauriArgs.find((argument) => argument.startsWith("--target="));
 const target =
@@ -32,13 +35,13 @@ if (process.platform === "win32") {
     "Bypass",
     "-File",
     resolve(root, "support/scripts/prepare_desktop_sidecars.ps1"),
-    ...(mode === "build" ? ["-Release"] : []),
+    ...(isReleaseBuild ? ["-Release"] : []),
   ];
 } else if (process.platform === "darwin") {
   prepareCommand = "bash";
   prepareArgs = [
     resolve(root, "support/scripts/prepare_desktop_sidecars_macos.sh"),
-    ...(mode === "build" ? ["--release"] : []),
+    ...(isReleaseBuild ? ["--release"] : []),
     ...(target ? ["--target", target] : []),
   ];
 } else {
@@ -51,7 +54,7 @@ const prepared = spawnSync(prepareCommand, prepareArgs, { stdio: "inherit" });
 if (prepared.error) throw prepared.error;
 if (prepared.status !== 0) process.exit(prepared.status ?? 1);
 
-if (process.platform === "win32" && mode === "build") {
+if (process.platform === "win32" && isReleaseBuild) {
   const signingThumbprint = process.env.DTOKEN_WINDOWS_SIGNING_THUMBPRINT?.trim();
   if (signingThumbprint) {
     const signed = spawnSync(
@@ -114,12 +117,12 @@ if (process.platform === "darwin" && mode === "build") {
   const previousBundle = resolve(
     cargoTargetDirectory,
     ...(target ? [target] : []),
-    "release/bundle/macos/d-token.app",
+    `${bundleProfile}/bundle/macos/d-token.app`,
   );
   const previousDmgDirectory = resolve(
     cargoTargetDirectory,
     ...(target ? [target] : []),
-    "release/bundle/dmg",
+    `${bundleProfile}/bundle/dmg`,
   );
   const macosBundleDirectory = dirname(previousBundle);
 

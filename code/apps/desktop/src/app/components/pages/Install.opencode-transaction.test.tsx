@@ -7,6 +7,7 @@ const invokeNative = vi.fn();
 const refresh = vi.fn().mockResolvedValue(undefined);
 
 vi.mock("../../lib/native", () => ({
+  RUNTIME_INVALIDATED_EVENT: "dtoken:runtime-invalidated",
   invokeNative: (...args: unknown[]) => invokeNative(...args),
   isTauriRuntime: () => true,
 }));
@@ -56,12 +57,43 @@ describe("Install OpenCode guarded transaction", () => {
         };
       }
       if (command === "discover_upstream_candidates") {
+        const candidate = { id: "deepseek", name: "DeepSeek", protocol: "open_ai", base_url: "https://example.test/v1", models: ["deepseek-chat"], source: "opencode-normal-config", freshness: "unix:1", auth_mode: "none", active: true, state: "discovered", agent_ids: ["opencode"], confidence: 98, reasons: ["current"] };
         return {
           source: "dtoken-desktop-read-only-discovery",
           freshness: "unix:1",
+          revision: "setup-1",
           state: "loaded",
-          candidates: [{ id: "deepseek", name: "DeepSeek", protocol: "open_ai", base_url: "https://example.test/v1", models: ["deepseek-chat"], source: "opencode-normal-config", freshness: "unix:1", auth_mode: "os-ref", active: true, state: "discovered" }],
-          selection_required: true,
+          candidates: [candidate],
+          agent_bindings: [{
+            agent_id: "opencode",
+            agent_name: "OpenCode",
+            installed: true,
+            binary_path: "/usr/local/bin/opencode",
+            config_path: "~/.config/opencode/opencode.json",
+            current_config_source: "opencode-normal-config",
+            candidates: [candidate],
+            resolved_candidate: candidate,
+            resolution: "auto-resolved",
+            confidence: 98,
+            reasons: ["current"],
+            capability: "one-click",
+            already_connected: false,
+          }, {
+            agent_id: "cline",
+            agent_name: "Cline",
+            installed: false,
+            current_config_source: "unknown",
+            candidates: [],
+            resolved_candidate: null,
+            resolution: "unavailable",
+            confidence: 0,
+            reasons: ["not detected"],
+            capability: "prompt-only",
+            already_connected: false,
+          }],
+          sources: [],
+          cc_switch_sync: null,
+          selection_required: false,
           writes_performed: false,
           privacy: "redacted",
         };
@@ -84,6 +116,50 @@ describe("Install OpenCode guarded transaction", () => {
           privacy: "auth.json is never read",
         };
       }
+      if (command === "preview_connection_route_plan") {
+        return {
+          ok: true,
+          state: "review_required",
+          source: "dtoken-desktop-auto-route-plan",
+          freshness: "fresh",
+          target: "~/.dtoken/active-config/dtoken-config.json",
+          discovery_revision: "setup-1",
+          before_sha256: "route-before-hash",
+          after_sha256: "route-after-hash",
+          diff: "+ automatic OpenCode route",
+          agents: ["opencode"],
+          summary: "Review the automatic route plan",
+        };
+      }
+      if (command === "preview_hybrid_agent_integration") {
+        return {
+          ok: true,
+          state: "review",
+          plan: {
+            review_digest: "agent-review-1",
+            targets: [{
+              target_path: "~/.config/opencode/plugins/dtoken-hybrid-context.js",
+              before_sha256: "agent-before",
+              after_sha256: "agent-after",
+              diff: "+ d-token plugin",
+            }],
+          },
+        };
+      }
+      if (command === "stop_dtoken_service" || command === "run_install_transaction") {
+        return { ok: true, summary: "service lifecycle complete", logs: [], tools: [] };
+      }
+      if (command === "apply_connection_route_plan") {
+        return {
+          ok: true,
+          state: "applied_verified",
+          verified: true,
+          summary: "automatic route applied",
+          rollback_id: "route-rollback-1",
+          before_sha256: "route-before-hash",
+          after_sha256: "route-after-hash",
+        };
+      }
       if (command === "apply_opencode_connection") {
         return {
           ok: true,
@@ -102,20 +178,48 @@ describe("Install OpenCode guarded transaction", () => {
           privacy: "auth.json is never read",
         };
       }
+      if (command === "apply_hybrid_agent_integration") {
+        return {
+          ok: true,
+          state: "applied",
+          summary: "Agent integration applied",
+          receipt: { transaction_id: "agent-transaction-1" },
+        };
+      }
+      if (command === "verify_hybrid_agent_integration") {
+        return { ok: true, state: "verified", summary: "Agent integration verified" };
+      }
+      if (command === "rollback_hybrid_agent_integration") {
+        return { ok: true, state: "rolled_back", summary: "Agent integration rolled back" };
+      }
       if (command === "run_product_readiness_check") return { ok: true, checks: [], privacy: "redacted" };
       if (command === "verify_agent_route_config") return { ok: true, passed: 1, total: 1, summary: "verified", checks: [], service_url: "http://127.0.0.1:18001" };
       throw new Error(`unexpected command: ${command}`);
     });
 
     render(<Install />);
-    fireEvent.click(await screen.findByRole("button", { name: "检测工具" }));
-    await screen.findByText("v1.14.51");
-    fireEvent.change((await screen.findAllByRole("combobox"))[0], { target: { value: "opencode-normal-config::deepseek::deepseek-chat" } });
-    fireEvent.click(screen.getByRole("button", { name: "连接 OpenCode" }));
-    fireEvent.click(await screen.findByRole("button", { name: "生成真实配置预览" }));
+    expect(await screen.findByText("OpenCode")).toBeInTheDocument();
+    expect(screen.queryByText("Cline")).not.toBeInTheDocument();
+    fireEvent.click(await screen.findByRole("button", { name: "查看连接方案" }));
     expect(await screen.findByText(/before before-hash/)).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "确认并应用" }));
+    expect(screen.getByText(/before route-befo/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "确认并连接" }));
 
+    await waitFor(() => expect(invokeNative).toHaveBeenCalledWith("apply_connection_route_plan", {
+      request: {
+        plan: {
+          discovery_revision: "setup-1",
+          bindings: [{
+            agent_id: "opencode",
+            candidate_id: "deepseek",
+            candidate_source: "opencode-normal-config",
+            model: "deepseek-chat",
+          }],
+        },
+        reviewed_before_sha256: "route-before-hash",
+        reviewed_after_sha256: "route-after-hash",
+      },
+    }));
     await waitFor(() => expect(invokeNative).toHaveBeenCalledWith("apply_opencode_connection", {
       request: {
         model: "deepseek-chat",
@@ -125,6 +229,23 @@ describe("Install OpenCode guarded transaction", () => {
         reviewed_after_sha256: "after-hash",
       },
     }));
-    expect((await screen.findAllByText(/OpenCode 连接配置已按审阅内容写入并验证/)).length).toBeGreaterThan(0);
+    await waitFor(() => expect(invokeNative).toHaveBeenCalledWith("apply_hybrid_agent_integration", {
+      request: {
+        draft: {
+          agent_ids: ["opencode"],
+          scope: "global",
+          project_root: null,
+          install_instructions: true,
+          install_hook_or_plugin: true,
+          install_skill: true,
+          install_mcp: false,
+        },
+        reviewed_digest: "agent-review-1",
+      },
+    }));
+    await waitFor(() => expect(invokeNative).toHaveBeenCalledWith("verify_hybrid_agent_integration", {
+      request: { transaction_id: "agent-transaction-1" },
+    }));
+    expect(await screen.findByText(/已确认配置生效、本地服务健康且路由可用/)).toBeInTheDocument();
   });
 });

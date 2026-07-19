@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { motion } from "motion/react";
 import { Download, KeyRound, RefreshCcw, ShieldCheck, Filter, Route, Gauge, Server, AlertTriangle, Layers, ListChecks } from "lucide-react";
 import { Surface } from "../common/Surface";
@@ -11,8 +11,15 @@ import { Badge } from "../ui/badge";
 import { useI18n, useT } from "../../lib/i18n";
 import type { RuntimeLogEntry as LogEntry } from "../../lib/runtime/types";
 import { invokeNative, isTauriRuntime } from "../../lib/native";
-import { useRuntimeDashboard } from "../../lib/useRuntimeDashboard";
+import { useSessionTab } from "../../lib/sessionTab";
+import { useRuntimeDashboardDetail } from "../../lib/useRuntimeDashboard";
 import { useNotifications } from "../../lib/notifications";
+import { AnimatedSegmentedControl } from "../shell/AnimatedSegmentedControl";
+import { presentOperationFailure } from "../../lib/userCopy";
+
+const LOGS_TABS = ["logs", "ledger", "secrets"] as const;
+const LOG_FILTERS = ["all", "route", "compression", "provider", "error"] as const;
+const LOG_PAGE_SIZE = 80;
 
 const filterMeta: Record<
   LogEntry["type"] | "all",
@@ -30,12 +37,28 @@ export function LogsSecurity() {
   const { lang } = useI18n();
   const { addNotification } = useNotifications();
   const nativeRuntime = isTauriRuntime();
+  const [tab, setTab] = useSessionTab("d-token.logs.tab", LOGS_TABS, "logs");
   const [filter, setFilter] = useState<LogEntry["type"] | "all">("all");
-  const { payload, status: payloadStatus, updatedAt } = useRuntimeDashboard();
+  const [visibleLogCount, setVisibleLogCount] = useState(LOG_PAGE_SIZE);
+  const [reducedMotion, setReducedMotion] = useState(
+    () =>
+      typeof window !== "undefined" &&
+      typeof window.matchMedia === "function" &&
+      window.matchMedia("(prefers-reduced-motion: reduce)").matches,
+  );
+  const { payload, status: payloadStatus, updatedAt } = useRuntimeDashboardDetail();
   const [exportState, setExportState] = useState<{ state: "idle" | "exporting" | "done" | "failed"; format?: "json" | "csv" }>({ state: "idle" });
   const [securityState, setSecurityState] = useState<"idle" | "checking" | "done" | "preview" | "failed">("idle");
   const [securityVerification, setSecurityVerification] = useState<AgentRouteVerification | null>(null);
-  const types: (LogEntry["type"] | "all")[] = ["all", "route", "compression", "provider", "error"];
+
+  useEffect(() => {
+    if (typeof window.matchMedia !== "function") return;
+    const preference = window.matchMedia("(prefers-reduced-motion: reduce)");
+    const updatePreference = (event: MediaQueryListEvent | MediaQueryList) => setReducedMotion(event.matches);
+    updatePreference(preference);
+    preference.addEventListener("change", updatePreference);
+    return () => preference.removeEventListener("change", updatePreference);
+  }, []);
 
   const runtimeLogs = useMemo(() => runtimePayloadToLogs(payload), [payload]);
   const ledgerRows = useMemo(() => runtimePayloadToLedgerRows(payload, payloadStatus, lang), [payload, payloadStatus, lang]);
@@ -60,6 +83,11 @@ export function LogsSecurity() {
   }, [activeLogs]);
 
   const shown = activeLogs.filter((l) => filter === "all" || l.type === filter);
+  const visibleLogs = shown.slice(0, visibleLogCount);
+
+  useEffect(() => {
+    setVisibleLogCount(LOG_PAGE_SIZE);
+  }, [filter, payload?.desktop_revision]);
   const securityRows = useMemo(
     () => buildSecurityRows(payload, payloadStatus, securityVerification, lang),
     [payload, payloadStatus, securityVerification, lang],
@@ -79,13 +107,15 @@ export function LogsSecurity() {
       addNotification({ dedupeKey: `export-${format}-${exported.filename}`, level: "success", title: lang === "zh" ? "脱敏导出已生成" : "Redacted export created", message: exported.filename, persistent: true, details: `format=${exported.format} · source=${exported.source} · redacted=${exported.redacted}` });
     } catch (error) {
       setExportState({ state: "failed", format });
-      addNotification({ dedupeKey: `export-${format}-failed`, level: "error", title: lang === "zh" ? "导出失败" : "Export failed", message: lang === "zh" ? "未能生成脱敏导出。" : "The redacted export could not be created.", details: String(error) });
+      const failure = presentOperationFailure("settings", error, lang);
+      addNotification({ dedupeKey: `export-${format}-failed`, level: "error", title: failure.title, message: failure.message, details: failure.details });
     }
   };
 
   const verifySecurity = async () => {
     if (!nativeRuntime) {
       setSecurityState("preview");
+      addNotification({ dedupeKey: "security-verification-unavailable", level: "warning", title: lang === "zh" ? "安全验证不可用" : "Security verification unavailable", message: lang === "zh" ? "浏览器预览不能读取本机安全状态；请在 d-token 桌面窗口中验证。" : "Browser preview cannot read local safety state; verify in the d-token desktop app." });
       return;
     }
 
@@ -97,7 +127,8 @@ export function LogsSecurity() {
       addNotification({ dedupeKey: "security-verification", level: result.ok ? "success" : "warning", title: result.ok ? (lang === "zh" ? "安全验证已通过" : "Security verification passed") : (lang === "zh" ? "安全验证需要处理" : "Security verification needs attention"), message: `${result.passed}/${result.total}`, persistent: !result.ok, details: `passed=${result.passed} · total=${result.total}` });
     } catch (error) {
       setSecurityState("failed");
-      addNotification({ dedupeKey: "security-verification-failed", level: "error", title: lang === "zh" ? "安全验证失败" : "Security verification failed", message: lang === "zh" ? "无法读取当前路由与脱敏证据。" : "Current route and redaction evidence could not be read.", details: String(error) });
+      const failure = presentOperationFailure("route", error, lang);
+      addNotification({ dedupeKey: "security-verification-failed", level: "error", title: failure.title, message: failure.message, details: failure.details });
     }
   };
 
@@ -109,7 +140,7 @@ export function LogsSecurity() {
         <Badge variant={payloadStatus === "runtime" ? "default" : "secondary"}>{dataSourceLabel}</Badge>
       </div>
 
-      <Tabs defaultValue="logs">
+      <Tabs value={tab} onValueChange={setTab}>
         <TabsList>
           <TabsTrigger value="logs">{t("ls.tab.logs")}</TabsTrigger>
           <TabsTrigger value="ledger">{lang === "zh" ? "Event Ledger" : "Event Ledger"}</TabsTrigger>
@@ -124,36 +155,37 @@ export function LogsSecurity() {
                 <span>{lang === "zh" ? "日志筛选" : "Log filters"}</span>
               </div>
 
-              <div className="log-filter-bar">
-                {types.map((ty) => {
+              <AnimatedSegmentedControl
+                items={LOG_FILTERS.map((ty) => {
                   const meta = filterMeta[ty];
                   const Icon = meta.icon;
-                  return (
-                    <motion.button
-                      key={ty}
-                      type="button"
-                      onClick={() => setFilter(ty)}
-                      className={filter === ty ? "log-filter-item active" : "log-filter-item"}
-                      whileHover={{ y: -1 }}
-                      whileTap={{ scale: 0.98 }}
-                    >
-                      <Icon className="size-3.5" />
-                      <span>{lang === "zh" ? meta.zh : meta.en}</span>
-                      <span className="log-filter-count">{counts[ty]}</span>
-                    </motion.button>
-                  );
+                  return {
+                    value: ty,
+                    label: (
+                      <span className="inline-flex items-center gap-1.5">
+                        <Icon className="size-3.5" />
+                        <span>{lang === "zh" ? meta.zh : meta.en}</span>
+                        <span className="log-filter-count">{counts[ty]}</span>
+                      </span>
+                    ),
+                  };
                 })}
-              </div>
+                value={filter}
+                onValueChange={(next) => setFilter(next as LogEntry["type"] | "all")}
+                ariaLabel={lang === "zh" ? "日志筛选" : "Log filters"}
+                reducedMotion={reducedMotion}
+                className="log-filter-bar min-w-0 max-w-full"
+              />
 
               <div className="flex items-center gap-2">
-                <Button variant="outline" size="sm" onClick={() => exportLogs("json")} disabled={!canExport || exportState.state === "exporting"}>
-                  <Download className="size-4" />
+                <Button variant="outline" size="sm" onClick={() => exportLogs("json")} disabled={exportState.state === "exporting"} aria-busy={exportState.state === "exporting" && exportState.format === "json"}>
+                  {exportState.state === "exporting" && exportState.format === "json" ? <RefreshCcw className="size-4 animate-spin" aria-hidden /> : <Download className="size-4" />}
                   {exportState.state === "exporting" && exportState.format === "json"
                     ? lang === "zh" ? "导出中" : "Exporting"
                     : "JSON"}
                 </Button>
-                <Button variant="outline" size="sm" onClick={() => exportLogs("csv")} disabled={!canExport || exportState.state === "exporting"}>
-                  <Download className="size-4" />
+                <Button variant="outline" size="sm" onClick={() => exportLogs("csv")} disabled={exportState.state === "exporting"} aria-busy={exportState.state === "exporting" && exportState.format === "csv"}>
+                  {exportState.state === "exporting" && exportState.format === "csv" ? <RefreshCcw className="size-4 animate-spin" aria-hidden /> : <Download className="size-4" />}
                   {exportState.state === "exporting" && exportState.format === "csv"
                     ? lang === "zh" ? "导出中" : "Exporting"
                     : "CSV"}
@@ -181,7 +213,14 @@ export function LogsSecurity() {
                 : "d-token runtime has no request log / route decision / event yet. Connect an agent and verify the route to populate this view."}
             </div>
           )}
-          <Terminal lines={shown} />
+          <Terminal lines={visibleLogs} />
+          {shown.length > visibleLogs.length && (
+            <div className="flex justify-center pt-2">
+              <Button variant="outline" size="sm" onClick={() => setVisibleLogCount((count) => count + LOG_PAGE_SIZE)}>
+                {lang === "zh" ? `加载更多（已显示 ${visibleLogs.length}/${shown.length}）` : `Load more (${visibleLogs.length}/${shown.length})`}
+              </Button>
+            </div>
+          )}
         </TabsContent>
 
         <TabsContent value="ledger" className="mt-4 space-y-4">
@@ -278,8 +317,8 @@ export function LogsSecurity() {
                   </div>
                 </div>
               </div>
-              <Button size="sm" variant="outline" onClick={verifySecurity} disabled={securityState === "checking"}>
-                <RefreshCcw className="size-3.5" />
+              <Button size="sm" variant="outline" onClick={verifySecurity} disabled={securityState === "checking"} aria-busy={securityState === "checking"}>
+                <RefreshCcw className={`size-3.5 ${securityState === "checking" ? "animate-spin" : ""}`} />
                 {securityState === "checking"
                   ? lang === "zh" ? "验证中" : "Verifying"
                   : t("common.verify")}
@@ -393,7 +432,7 @@ type AgentRouteVerification = {
 
 function buildSecurityRows(
   payload: Record<string, any> | null,
-  payloadStatus: ReturnType<typeof useRuntimeDashboard>["status"],
+  payloadStatus: ReturnType<typeof useRuntimeDashboardDetail>["status"],
   verification: AgentRouteVerification | null,
   lang: "zh" | "en",
 ): SecurityRow[] {
@@ -549,10 +588,10 @@ function runtimePayloadToLogs(payload: Record<string, any> | null): LogEntry[] {
       type: log.error ? "error" : "provider",
       agent,
       msg: log.error
-        ? `Provider ${provider} 失败：${safeText(log.error, "未知错误")}`
+        ? `Provider ${provider} 请求失败。请检查连接状态后重试。`
         : `Provider ${provider} · model=${model} · route=${route} · latency=${latency === null ? "—" : `${latency}ms`}`,
       msgEn: log.error
-        ? `Provider ${provider} failed: ${safeText(log.error, "unknown error")}`
+        ? `Provider ${provider} request failed. Check the connection status, then retry.`
         : `Provider ${provider} · model=${model} · route=${route} · latency=${latency === null ? "—" : `${latency}ms`}`,
     }, log.timestamp_ms));
   }
@@ -577,7 +616,7 @@ function runtimePayloadToLogs(payload: Record<string, any> | null): LogEntry[] {
 
 function runtimePayloadToLedgerRows(
   payload: Record<string, any> | null,
-  payloadStatus: ReturnType<typeof useRuntimeDashboard>["status"],
+  payloadStatus: ReturnType<typeof useRuntimeDashboardDetail>["status"],
   lang: "zh" | "en",
 ): LedgerRow[] {
   if (payloadStatus !== "runtime" || !payload) return [];
@@ -620,7 +659,7 @@ function runtimePayloadToLedgerRows(
         `agent=${safeText(event.agent_id, "—")}`,
         `route=${safeText(event.route_id, "—")}`,
         `provider=${safeText(event.provider_id, "—")}`,
-        error ? `error=${error}` : "",
+        error ? "needs_attention=true" : "",
       ].filter(Boolean).join(" · "),
       status: status === "failed" || error ? "failed" : status === "ok" ? "ok" : "warning",
       tokens: tokenSummary(inputTokens, outputTokens, saved),
@@ -666,7 +705,7 @@ function runtimePayloadToLedgerRows(
         `route=${safeText(log.route_id, "—")}`,
         `provider=${safeText(log.provider_id, "—")}`,
         `latency=${finiteNumber(log.latency_ms) === null ? "—" : `${finiteNumber(log.latency_ms)}ms`}`,
-        error ? `error=${error}` : "redacted=true",
+        error ? "needs_attention=true" : "redacted=true",
       ].join(" · "),
       status: error ? "failed" : "ok",
       tokens: pendingAttribution

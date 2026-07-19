@@ -42,18 +42,18 @@ describe("resolveDoctorDestination", () => {
 
   it("uses readable Chinese copy for diagnostic failures and readiness", () => {
     expect(doctorFailureSummary(new Error("native_unavailable"))).toBe(
-      "当前是浏览器预览，请在 d-token 桌面窗口中运行完整诊断。",
+      "浏览器预览不会读取或修改本机配置。请在 d-token 桌面窗口中继续操作。",
     );
-    expect(doctorFailureSummary(new Error("boom"))).toBe("诊断失败，请稍后重试或查看连接日志。");
+    expect(doctorFailureSummary(new Error("boom"))).toBe("请重试；如果问题仍然存在，请查看连接日志。");
     expect(doctorFailureSummary(new Error("native_unavailable"), "en")).toBe(
-      "Run the full diagnosis in the d-token desktop window; the browser is preview-only.",
+      "Browser preview does not read or modify local configuration. Continue in the d-token desktop window.",
     );
-    expect(doctorFailureSummary(new Error("boom"), "en")).toBe("Diagnosis failed. Try again or review connection logs.");
+    expect(doctorFailureSummary(new Error("boom"), "en")).toBe("Try again. If the issue persists, check Connection Logs.");
     expect(DOCTOR_READINESS_TITLE).toBe("产品就绪检查");
     expect(doctorFailureDetail(new Error("readiness unavailable"), "zh")).toBe("");
-    expect(doctorFailureDetail(new Error("readiness unavailable"), "en")).toBe("readiness unavailable");
+    expect(doctorFailureDetail(new Error("readiness unavailable"), "en")).toBe("");
     expect(doctorFailureDetail(new Error("Authorization: Bearer secret"), "en")).toBe("");
-    expect(doctorFailureDetail(new Error("读取诊断失败"), "zh")).toBe("读取诊断失败");
+    expect(doctorFailureDetail(new Error("读取诊断失败"), "zh")).toBe("");
   });
 
   it("localizes native check copy by stable id without exposing raw backend prose", () => {
@@ -245,111 +245,63 @@ describe("Doctor polling", () => {
     native.invokeNative.mockRejectedValue(new Error("native_unavailable"));
     render(createElement(Doctor, { setPage: vi.fn() }));
     await waitFor(() => {
-      expect(native.invokeNative).toHaveBeenCalledWith("get_desktop_data");
+      expect(native.invokeNative).toHaveBeenCalledWith("get_doctor_snapshot");
     });
 
-    let rejectReadiness: ((reason: Error) => void) | undefined;
+    let rejectScan: ((reason: Error) => void) | undefined;
     native.invokeNative.mockImplementation((command: string) => {
-      if (command === "run_product_readiness_check") {
+      if (command === "run_doctor_scan") {
         return new Promise((_resolve, reject) => {
-          rejectReadiness = reject;
+          rejectScan = reject;
         });
       }
       return Promise.reject(new Error("native_unavailable"));
     });
 
-    await waitFor(() => expect(screen.getByRole("button", { name: "运行全部检查" })).toBeEnabled());
-    fireEvent.click(screen.getByRole("button", { name: "运行全部检查" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "扫描常规问题" })).toBeEnabled());
+    fireEvent.click(screen.getByRole("button", { name: "扫描常规问题" }));
     const runningStatus = screen.getByRole("status");
     expect(runningStatus).toHaveAttribute("aria-live", "polite");
-    expect(runningStatus).toHaveTextContent("正在检查本地服务、Agent、路由与安全边界");
-    expect(screen.getByRole("button", { name: "运行全部检查" })).toBeDisabled();
+    expect(runningStatus).toHaveTextContent("正在扫描本地服务、端口、Agent、路由与安全边界");
+    expect(screen.getByRole("button", { name: "扫描常规问题" })).toBeDisabled();
 
     await act(async () => {
-      rejectReadiness?.(new Error("readiness unavailable"));
+      rejectScan?.(new Error("readiness unavailable"));
     });
     const failureAlert = await screen.findByRole("alert");
     expect(failureAlert).toHaveAttribute("aria-live", "assertive");
-    expect(failureAlert).toHaveTextContent("诊断失败，请稍后重试或查看连接日志。");
+    expect(failureAlert).toHaveTextContent("请重试；如果问题仍然存在，请查看连接日志。");
     expect(failureAlert).not.toHaveTextContent("readiness unavailable");
-    expect(screen.queryByText("技术详情")).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "运行全部检查" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "扫描常规问题" })).toBeEnabled();
   });
 
-  it("preserves a manual Doctor result after the app-wide snapshot refreshes", async () => {
-    const dashboardPayload = {
-      source: "dtoken-owned-runtime",
-      desktop_data_source: "dtoken-local-service",
-      stats: { requests: { total: 1 } },
-      route_decisions: [],
-      request_logs: [],
-      active_config: {
-        source: "dtoken-owned-runtime",
-        config: {
-          source: "desktop_active_config",
-          loaded: true,
-          route_count: 1,
-          provider_count: 1,
-          fallback_disabled: true,
-        },
-      },
-    };
+  it("loads the saved snapshot first and replaces it with one manual scan", async () => {
     native.invokeNative.mockImplementation(async (command: string) => {
-      if (command === "get_desktop_data") return dashboardPayload;
-      if (command === "get_dtoken_service_status") {
-        return { state: "running", managed: true, service_url: "http://127.0.0.1:18001" };
-      }
-      if (command === "get_active_route_config_status") {
-        return {
-          source: "d-token-desktop",
-          state: "loaded",
-          route_count: 1,
-          provider_count: 1,
-          fallback_disabled: true,
-        };
-      }
-      if (command === "verify_agent_route_config") {
-        return { ok: true, passed: 1, total: 1, summary: "连接配置已验证", checks: [] };
-      }
-      if (command === "run_product_readiness_check") {
+      if (command === "get_doctor_snapshot") return null;
+      if (command === "run_doctor_scan") {
         return {
           ok: true,
-          mode: "product-readiness-check",
-          passed: 1,
-          total: 1,
-          summary: "本地能力已验证",
-          privacy: "仅使用本地元数据。",
-          external_services: "none",
-          checks: [{ id: "local-runtime", label: "本地服务", ok: true, summary: "已验证" }],
-        };
-      }
-      if (command === "run_doctor") {
-        return {
-          ok: true,
-          summary: "诊断完成",
-          logs: [],
-          tools: [{
-            id: "opencode",
-            label: "OpenCode",
-            installed: true,
-            version: "1.0.0",
-            status: "available",
-            detail: "已安装",
-          }],
+          mode: "doctor-report-v2",
+          revision: "doctor-rev-healthy",
+          source: "dtoken-desktop-control-plane",
+          freshness: "fresh",
+          collected_at: "2026-07-15T10:00:00Z",
+          summary: "All common checks passed",
+          counts: { healthy: 5, repairable: 0, manual: 0, blocked: 0 },
+          issues: [],
         };
       }
       throw new Error(`unexpected command: ${command}`);
     });
 
     render(createElement(Doctor, { setPage: vi.fn() }));
-    await screen.findByText("尚未运行完整诊断，暂不判断 Agent 连接状态。");
+    await screen.findByText("尚未扫描常规问题");
 
-    fireEvent.click(screen.getByRole("button", { name: "运行全部检查" }));
-    await screen.findAllByText(/OpenCode 已检测到：1\.0\.0/);
-    expect(await screen.findByRole("status")).toHaveTextContent("检查完成：1/1 项通过。");
-    expect(screen.queryByText("本地能力已验证")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "扫描常规问题" }));
+    expect(await screen.findByRole("status")).toHaveTextContent("扫描完成，当前未发现需要处理的常规问题。");
+    expect(screen.getByText("当前未发现需要处理的常规问题。")).toBeVisible();
 
-    await waitFor(() => expect(screen.getAllByText(/OpenCode 已检测到：1\.0\.0/).length).toBeGreaterThan(0));
-    expect(screen.queryByText("尚未运行完整诊断，暂不判断 Agent 连接状态。")).not.toBeInTheDocument();
+    expect(native.invokeNative.mock.calls.filter(([command]) => command === "run_doctor_scan")).toHaveLength(1);
+    expect(native.invokeNative.mock.calls.some(([command]) => command === "run_product_readiness_check")).toBe(false);
   });
 });

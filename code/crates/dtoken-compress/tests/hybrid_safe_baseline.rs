@@ -1,6 +1,9 @@
+use dtoken_compress::content_router::ContentKind;
+use dtoken_compress::optical::risk::RiskTier;
 use dtoken_compress::{
-    lower_hybrid_context, CompressionEngine, HybridContentProvenance, HybridNodeKind,
-    HybridProtection, HybridProtectionReason, HybridRole, ResolvedOptimizationContext,
+    lower_hybrid_context, ApprovedHybridAction, CompressionEngine, HybridContentProvenance,
+    HybridNodeKind, HybridProtection, HybridProtectionReason, HybridRole,
+    ResolvedOptimizationContext,
 };
 use dtoken_types::{CompressionPolicy, OpticalEndpoint, Protocol};
 use serde_json::{json, Value};
@@ -17,6 +20,32 @@ fn resolved_context(
         input_protocol,
         output_protocol,
         endpoint,
+    }
+}
+
+fn append_anthropic_recent_pairs(messages: &mut Vec<Value>, prefix: &str) {
+    for index in 0..6 {
+        let id = format!("{prefix}-{index}");
+        messages.push(json!({
+            "role":"assistant",
+            "content":[{"type":"tool_use","id":id,"name":"recent","input":{}}]
+        }));
+        messages.push(json!({
+            "role":"user",
+            "content":[{"type":"tool_result","tool_use_id":id,"content":"recent result"}]
+        }));
+    }
+}
+
+fn append_openai_recent_pairs(messages: &mut Vec<Value>, prefix: &str) {
+    for index in 0..6 {
+        let id = format!("{prefix}-{index}");
+        messages.push(json!({
+            "role":"assistant",
+            "content":null,
+            "tool_calls":[{"id":id,"type":"function","function":{"name":"recent","arguments":"{}"}}]
+        }));
+        messages.push(json!({"role":"tool","tool_call_id":id,"content":"recent result"}));
     }
 }
 
@@ -77,6 +106,15 @@ fn protocol_unknown_legacy_entry_is_fail_safe_passthrough() {
 #[test]
 fn anthropic_hybrid_only_mutates_approved_historical_closed_tool_result() {
     let repeated_log = ["INFO build step complete"; 12].join("\n");
+    let mut messages = vec![
+        json!({"role":"assistant","content":[{"type":"tool_use","id":"toolu_exact_1","name":"build_project","input":{"target":"  ./src EXACT  "}}]}),
+        json!({"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_exact_1","content":repeated_log}]}),
+        json!({"role":"assistant","content":[{"type":"text","text":"old assistant exact"}]}),
+    ];
+    append_anthropic_recent_pairs(&mut messages, "toolu-recent");
+    messages.push(
+        json!({"role":"user","content":[{"type":"text","text":"current user exact\n\nkeep"}]}),
+    );
     let body = json!({
         "model": "claude-exact-model-revision",
         "system": [{"type":"text","text":"  exact system\n\nkeep whitespace  ","cache_control":{"type":"ephemeral"}}],
@@ -91,14 +129,7 @@ fn anthropic_hybrid_only_mutates_approved_historical_closed_tool_result() {
         }],
         "stop_sequences": ["END  EXACT"],
         "metadata": {"user_id":"user-0123456789abcdef"},
-        "messages": [
-            {"role":"assistant","content":[{"type":"tool_use","id":"toolu_exact_1","name":"build_project","input":{"target":"  ./src EXACT  "}}]},
-            {"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_exact_1","content":repeated_log}]},
-            {"role":"assistant","content":[{"type":"text","text":"old assistant exact"}]},
-            {"role":"user","content":[{"type":"text","text":"recent user exact\n\nkeep"}]},
-            {"role":"assistant","content":[{"type":"text","text":"recent assistant exact"}]},
-            {"role":"user","content":[{"type":"text","text":"current user exact\n\nkeep"}]}
-        ],
+        "messages": messages,
         "unknown_extension": {"preserve":"  exact unknown  "}
     });
 
@@ -165,19 +196,19 @@ fn exact_or_secret_historical_tool_results_are_preserved() {
 #[test]
 fn openai_tool_arguments_and_protocol_fields_remain_identical() {
     let repeated_log = ["WARN compile retry"; 12].join("\n");
+    let mut messages = vec![
+        json!({"role":"system","content":"  exact system  "}),
+        json!({"role":"assistant","tool_calls":[{"id":"call_exact_1","type":"function","function":{"name":"compile","arguments":"{\"path\":\"  ./src EXACT  \"}"}}]}),
+        json!({"role":"tool","tool_call_id":"call_exact_1","content":repeated_log}),
+        json!({"role":"assistant","content":"old"}),
+    ];
+    append_openai_recent_pairs(&mut messages, "call-recent");
+    messages.push(json!({"role":"user","content":"current exact"}));
     let body = json!({
         "model":"gpt-exact-model",
         "stream":true,
         "tools":[{"type":"function","function":{"name":"compile","description":" exact ","parameters":{"type":"object","properties":{"path":{"type":"string"}},"required":["path"]}}}],
-        "messages":[
-            {"role":"system","content":"  exact system  "},
-            {"role":"assistant","tool_calls":[{"id":"call_exact_1","type":"function","function":{"name":"compile","arguments":"{\"path\":\"  ./src EXACT  \"}"}}]},
-            {"role":"tool","tool_call_id":"call_exact_1","content":repeated_log},
-            {"role":"assistant","content":"old"},
-            {"role":"user","content":"recent exact"},
-            {"role":"assistant","content":"recent exact"},
-            {"role":"user","content":"current exact"}
-        ],
+        "messages":messages,
         "unknown_control":{"preserve":" exact "}
     });
 
@@ -358,17 +389,16 @@ fn schema_arguments_and_identifiers_have_explicit_protected_nodes() {
 #[test]
 fn approved_targets_are_sealed_and_recent_or_orphan_results_never_appear() {
     let repeated_log = ["INFO safe repeated line"; 12].join("\n");
-    let body = json!({
-        "messages": [
-            {"role":"user","content":[{"type":"tool_result","tool_use_id":"orphan","content":repeated_log.clone()}]},
-            {"role":"assistant","content":[{"type":"tool_use","id":"valid","name":"build","input":{}}]},
-            {"role":"user","content":[{"type":"tool_result","tool_use_id":"valid","content":repeated_log.clone()}]},
-            {"role":"assistant","content":[{"type":"text","text":"old"}]},
-            {"role":"user","content":[{"type":"text","text":"recent"}]},
-            {"role":"assistant","content":[{"type":"tool_use","id":"recent","name":"build","input":{}}]},
-            {"role":"user","content":[{"type":"tool_result","tool_use_id":"recent","content":repeated_log}]}
-        ]
-    });
+    let mut messages = vec![
+        json!({"role":"user","content":[{"type":"tool_result","tool_use_id":"orphan","content":repeated_log.clone()}]}),
+        json!({"role":"assistant","content":[{"type":"tool_use","id":"valid","name":"build","input":{}}]}),
+        json!({"role":"user","content":[{"type":"tool_result","tool_use_id":"valid","content":repeated_log}]}),
+        json!({"role":"assistant","content":[{"type":"text","text":"old"}]}),
+    ];
+    append_anthropic_recent_pairs(&mut messages, "recent");
+    let current_user_turn = messages.len();
+    messages.push(json!({"role":"user","content":[{"type":"text","text":"continue"}]}));
+    let body = json!({"messages": messages});
     let context = resolved_context(
         Protocol::Anthropic,
         Protocol::Anthropic,
@@ -376,7 +406,7 @@ fn approved_targets_are_sealed_and_recent_or_orphan_results_never_appear() {
     );
     let ir = lower_hybrid_context(&context, &body).expect("Anthropic IR");
 
-    assert_eq!(ir.current_user_turn(), Some(6));
+    assert_eq!(ir.current_user_turn(), Some(current_user_turn));
     assert_eq!(ir.approved_text_targets().len(), 1);
     assert_eq!(
         ir.approved_text_targets()[0].patch_path(),
@@ -386,4 +416,119 @@ fn approved_targets_are_sealed_and_recent_or_orphan_results_never_appear() {
     assert!(!ir.approved_text_targets()[0]
         .precondition_digest()
         .is_empty());
+    assert_eq!(
+        ir.approved_text_targets()[0].action(),
+        ApprovedHybridAction::OpticalImage
+    );
+    assert_eq!(
+        ir.approved_text_targets()[0].content_kind(),
+        ContentKind::Log
+    );
+    assert_eq!(
+        ir.approved_text_targets()[0].risk_tier(),
+        RiskTier::RenderSafe
+    );
+    assert_eq!(
+        ir.approved_text_targets()[0].reason_code(),
+        "optical_image_candidate"
+    );
+    let candidate_chars = body
+        .pointer("/messages/2/content/0/content")
+        .and_then(Value::as_str)
+        .expect("candidate text")
+        .chars()
+        .count();
+    assert!(ir.approved_text_targets()[0].stable_chars() > 0);
+    assert!(ir.approved_text_targets()[0].stable_chars() <= candidate_chars);
+    assert_eq!(ir.approved_text_targets()[0].volatile_chars(), 0);
+    assert_eq!(
+        ir.approved_text_targets()[0].stable_digest().map(str::len),
+        Some(64)
+    );
+    assert!(ir.approved_text_targets()[0].cache_stable());
+}
+
+#[test]
+fn responses_shadow_ir_preserves_recent_pairs_and_never_approves_active_targets() {
+    let body = json!({
+        "instructions":"Never expose secrets",
+        "tools":[{"type":"function","name":"read_file","parameters":{"type":"object"}}],
+        "input":[
+            {"type":"function_call","id":"fc-1","call_id":"call-1","name":"read_file","arguments":"{\"path\":\"src/lib.rs\"}"},
+            {"type":"function_call_output","call_id":"call-1","output":"INFO safe repeated line\nINFO safe repeated line\nINFO safe repeated line\nINFO safe repeated line\nINFO safe repeated line\nINFO safe repeated line\nINFO safe repeated line\nINFO safe repeated line"},
+            {"type":"message","role":"user","content":[{"type":"input_text","text":"continue"}]}
+        ]
+    });
+    let context = resolved_context(
+        Protocol::OpenAi,
+        Protocol::OpenAi,
+        OpticalEndpoint::OpenAiResponses,
+    );
+    let ir = lower_hybrid_context(&context, &body).expect("Responses shadow IR");
+
+    assert_eq!(ir.endpoint(), OpticalEndpoint::OpenAiResponses);
+    assert!(ir.representation_targets().is_empty());
+    for path in [
+        "/instructions",
+        "/tools/0",
+        "/input/0",
+        "/input/0/call_id",
+        "/input/0/arguments",
+        "/input/1/call_id",
+        "/input/1/output",
+        "/input/2/content/0",
+    ] {
+        assert!(ir.node_at(path).is_some(), "missing {path}");
+    }
+    assert_eq!(
+        ir.node_at("/input/1/output").expect("tool output").reason(),
+        HybridProtectionReason::RecentTail
+    );
+}
+
+#[test]
+fn json_uses_text_codec_while_decision_logs_are_fully_preserved() {
+    let cases = [
+        (
+            "{\n  \"items\": [1, 2, 3],\n  \"ok\": true\n}".to_string(),
+            Some(ApprovedHybridAction::SafeTextCodec),
+        ),
+        (
+            [
+                "INFO build complete",
+                "INFO build complete",
+                "INFO final decision use floor division",
+                "INFO build complete",
+                "INFO build complete",
+                "INFO build complete",
+                "INFO build complete",
+                "INFO build complete",
+            ]
+            .join("\n"),
+            None,
+        ),
+    ];
+    for (content, expected_action) in cases {
+        let mut messages = vec![
+            json!({"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"build","input":{}}]}),
+            json!({"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":content}]}),
+            json!({"role":"assistant","content":[{"type":"text","text":"old"}]}),
+        ];
+        append_anthropic_recent_pairs(&mut messages, "recent-json");
+        messages.push(json!({"role":"user","content":[{"type":"text","text":"current"}]}));
+        let body = json!({"messages": messages});
+        let context = resolved_context(
+            Protocol::Anthropic,
+            Protocol::Anthropic,
+            OpticalEndpoint::AnthropicMessages,
+        );
+        let ir = lower_hybrid_context(&context, &body).expect("Anthropic IR");
+        match expected_action {
+            Some(action) => {
+                assert_eq!(ir.approved_text_targets().len(), 1);
+                assert_eq!(ir.approved_text_targets()[0].action(), action);
+            }
+            None => assert!(ir.approved_text_targets().is_empty()),
+        }
+    }
 }

@@ -1,12 +1,18 @@
-use anyhow::Result;
-use dtoken_types::{InstanceProfile, ProcessStatus};
 use serde::Serialize;
 use std::{
     collections::HashMap,
     process::Command,
     time::{SystemTime, UNIX_EPOCH},
 };
-use tokio::process::Child;
+
+mod lifecycle;
+
+pub use lifecycle::{
+    executable_identity_matches, file_sha256, is_process_running, listener_owned_by_pid,
+    process_birth_token, process_executable_path, terminate_process, verify_service_identity,
+    ProcessIdentity, ProcessInspector, ProcessManager, ProcessStopError, SystemProcessInspector,
+    DTOKEN_MANAGED_BY, DTOKEN_SERVICE_COMPONENT, DTOKEN_SERVICE_PORT,
+};
 
 pub const OPENCODE_TEST_PROMPT: &str = "Reply with exactly: d-token-ok";
 const OPENCODE_EXCLUDED_AGENTS: &str =
@@ -212,37 +218,6 @@ pub fn opencode_ledger_event(outcome: &OpencodeTestOutcome) -> OpencodeLedgerEve
         ok: outcome.ok,
         category: outcome.category.clone(),
         output_summary: sanitize_command_output(&outcome.output_summary),
-    }
-}
-
-#[derive(Default)]
-pub struct ProcessManager {
-    children: HashMap<String, Child>,
-}
-
-impl ProcessManager {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    pub fn status(&self, instance: &InstanceProfile) -> ProcessStatus {
-        if self.children.contains_key(&instance.id) {
-            ProcessStatus::Running
-        } else {
-            instance.process_status.clone()
-        }
-    }
-
-    pub async fn start_placeholder(&mut self, instance: &InstanceProfile) -> Result<ProcessStatus> {
-        tracing::info!(instance_id = %instance.id, "M1 placeholder start requested");
-        Ok(ProcessStatus::Starting)
-    }
-
-    pub async fn stop(&mut self, instance_id: &str) -> Result<ProcessStatus> {
-        if let Some(mut child) = self.children.remove(instance_id) {
-            let _ = child.kill().await;
-        }
-        Ok(ProcessStatus::Stopped)
     }
 }
 

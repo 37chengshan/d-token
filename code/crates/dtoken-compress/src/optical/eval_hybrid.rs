@@ -1,4 +1,4 @@
-use super::eval_profile::contains_secret_like;
+use super::secret::contains_secret_like;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EvalHybridBlockKind {

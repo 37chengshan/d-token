@@ -26,11 +26,13 @@ function New-Check {
 $WorkflowPath = Join-Path $Root ".github\workflows\macos-release.yml"
 $SidecarScriptPath = Join-Path $Root "support\scripts\prepare_desktop_sidecars_macos.sh"
 $TauriConfigPath = Join-Path $Root "code\apps\desktop\src-tauri\tauri.conf.json"
+$TauriMacConfigPath = Join-Path $Root "code\apps\desktop\src-tauri\tauri.macos.conf.json"
 $PackageJsonPath = Join-Path $Root "code\apps\desktop\package.json"
 
 $WorkflowText = if (Test-Path -LiteralPath $WorkflowPath) { Get-Content -LiteralPath $WorkflowPath -Raw } else { "" }
 $SidecarScriptText = if (Test-Path -LiteralPath $SidecarScriptPath) { Get-Content -LiteralPath $SidecarScriptPath -Raw } else { "" }
 $TauriConfigText = if (Test-Path -LiteralPath $TauriConfigPath) { Get-Content -LiteralPath $TauriConfigPath -Raw } else { "" }
+$TauriMacConfigText = if (Test-Path -LiteralPath $TauriMacConfigPath) { Get-Content -LiteralPath $TauriMacConfigPath -Raw } else { "" }
 $PackageJsonText = if (Test-Path -LiteralPath $PackageJsonPath) { Get-Content -LiteralPath $PackageJsonPath -Raw } else { "" }
 
 $Checks = @(
@@ -59,13 +61,22 @@ $Checks = @(
   New-Check "workflow_has_signing_secret_boundary" (($WorkflowText -match "APPLE_CERTIFICATE") -and ($WorkflowText -match "APPLE_ID") -and ($WorkflowText -match "notarytool")) @{
     note = "Presence only. This audit does not read or require actual secrets."
   }
+  New-Check "workflow_installs_cosign" ($WorkflowText -match "sigstore/cosign-installer") @{
+    path = $WorkflowPath
+  }
   New-Check "macos_sidecar_script_exists" (Test-Path -LiteralPath $SidecarScriptPath) @{ path = $SidecarScriptPath }
   New-Check "macos_sidecar_script_rejects_non_macos" ($SidecarScriptText -match "Darwin") @{ path = $SidecarScriptPath }
   New-Check "macos_sidecar_script_targets_apple_darwin" (($SidecarScriptText -match "aarch64-apple-darwin") -and ($SidecarScriptText -match "x86_64-apple-darwin")) @{
     path = $SidecarScriptPath
   }
-  New-Check "tauri_external_bin_configured" ($TauriConfigText -match '"externalBin"\s*:\s*\[\s*"binaries/dtoken-proxy"\s*\]') @{
+  New-Check "tauri_external_bin_configured" (($TauriConfigText -match '"binaries/dtoken-proxy"') -and ($TauriConfigText -match '"binaries/dtoken-agent-bridge"')) @{
     path = $TauriConfigPath
+  }
+  New-Check "codebase_memory_lightweight_distribution_configured" (($TauriConfigText -match '"binaries/dtoken-codebase-memory-launcher"') -and -not ($TauriConfigText -match '"binaries/codebase-memory-mcp"') -and -not ($SidecarScriptText -match "prepare_codebase_memory_artifact.py")) @{
+    path = $TauriConfigPath
+  }
+  New-Check "codebase_memory_legal_resources_configured" (($TauriMacConfigText -match 'binaries/codebase-memory/LICENSE') -and ($TauriMacConfigText -match 'binaries/codebase-memory/THIRD_PARTY_NOTICES.md')) @{
+    path = $TauriMacConfigPath
   }
   New-Check "desktop_package_build_exists" ($PackageJsonText -match '"tauri:build"') @{
     path = $PackageJsonPath

@@ -7,7 +7,7 @@ import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { useI18n, useT } from "../../lib/i18n";
 import { classifyEvidence, type EvidenceState } from "../../lib/state/evidence";
-import { useRuntimeDashboard } from "../../lib/useRuntimeDashboard";
+import { useRuntimeDashboardDetail } from "../../lib/useRuntimeDashboard";
 
 type CompatibilityAgent = {
   name: string;
@@ -74,7 +74,7 @@ export const compatibilityCatalogEvidence = {
 export function Compatibility() {
   const t = useT();
   const { lang } = useI18n();
-  const { payload, status, updatedAt, refresh } = useRuntimeDashboard();
+  const { payload, status, updatedAt, refresh } = useRuntimeDashboardDetail();
   const data = payload as DesktopCompatibilityData | null;
   const loadState = status === "runtime" ? "native" : status === "browser-preview" ? "preview" : status === "loading" ? "loading" : "error";
 

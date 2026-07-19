@@ -2,11 +2,22 @@ import "@testing-library/jest-dom/vitest";
 import { cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it } from "vitest";
-import { buildMonthCells, buildWeekDays, buildYearCells, buildYearMonthLabelColumns, Heatmap } from "./Heatmap";
+import { activityLevel, buildMonthCells, buildWeekDays, buildYearCells, buildYearMonthLabelColumns, Heatmap } from "./Heatmap";
 
 afterEach(cleanup);
 
 describe("Heatmap runtime evidence", () => {
+  it("keeps low request volume in a light absolute intensity band", () => {
+    const day = (sessions: number) => ({ date: "2026-07-13", sessions, minutes: 0, tokens: 0, tools: 0 });
+
+    expect(activityLevel(day(0))).toBe(0);
+    expect(activityLevel(day(1))).toBe(1);
+    expect(activityLevel(day(20))).toBe(1);
+    expect(activityLevel(day(25))).toBe(2);
+    expect(activityLevel(day(80))).toBe(3);
+    expect(activityLevel(day(200))).toBe(4);
+  });
+
   it("defaults to a compact real zero-data year heatmap instead of an empty placeholder", () => {
     const { container } = render(<Heatmap now={new Date(2024, 1, 15, 12)} />);
 
@@ -29,17 +40,17 @@ describe("Heatmap runtime evidence", () => {
   it("uses distinct week, month and year layouts with complete zero-date cells", async () => {
     const user = userEvent.setup();
     const { container } = render(<Heatmap now={new Date(2026, 2, 1, 12)} />);
-    await user.click(screen.getByRole("button", { name: "切换时间范围: 本月" }));
+    await user.click(screen.getByRole("radio", { name: "本月" }));
     const month = await screen.findByTestId("activity-month");
     expect(month.querySelectorAll(".activity-date-cell")).toHaveLength(42);
     expect(month.querySelector('[data-date="2026-02-23"]')).toHaveAttribute("data-outside", "true");
 
-    await user.click(screen.getByRole("button", { name: "切换时间范围: 本周" }));
+    await user.click(screen.getByRole("radio", { name: "本周" }));
     expect((await screen.findByTestId("activity-week")).querySelectorAll(".activity-week-day")).toHaveLength(7);
     expect(screen.getByTestId("activity-week")).toHaveClass("activity-week-strip");
     expect(screen.queryByTestId("activity-month")).not.toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: "切换时间范围: 年" }));
+    await user.click(screen.getByRole("radio", { name: "年" }));
     expect((await screen.findByTestId("activity-year")).querySelectorAll(".activity-year-month-label")).toHaveLength(12);
     expect(screen.queryByTestId("activity-week")).not.toBeInTheDocument();
     expect(container.querySelectorAll('[data-testid="activity-year"] .activity-date-cell[data-level="0"]')).toHaveLength(371);
@@ -83,12 +94,12 @@ describe("Heatmap runtime evidence", () => {
     const user = userEvent.setup();
     const { container } = render(<Heatmap activityDays={[]} tools={[]} />);
 
-    await user.click(screen.getByRole("button", { name: "切换统计视图: Token" }));
+    await user.click(screen.getByRole("radio", { name: "Token" }));
     expect(await screen.findByText("暂无真实请求记录")).toBeInTheDocument();
     expect(container.querySelector(".token-svg")).toBeNull();
     expect(screen.queryByText("99%")).not.toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: "切换统计视图: 处理步骤" }));
+    await user.click(screen.getByRole("radio", { name: "处理步骤" }));
     expect(await screen.findByText("暂无真实请求记录")).toBeInTheDocument();
     expect(container.querySelector(".activity-tool-row")).toBeNull();
     expect(container.querySelector(".activity-donut-ring")).toBeNull();
@@ -99,7 +110,7 @@ describe("Heatmap runtime evidence", () => {
     const user = userEvent.setup();
     const { container } = render(<Heatmap activityDays={[]} tools={[{ name: "真实工具", calls: 0 }]} />);
 
-    await user.click(screen.getByRole("button", { name: "切换统计视图: 处理步骤" }));
+    await user.click(screen.getByRole("radio", { name: "处理步骤" }));
 
     expect(await screen.findByText("真实工具")).toBeInTheDocument();
     expect(container.querySelector<HTMLElement>(".activity-tool-bar")?.style.width).toBe("0%");

@@ -61,6 +61,25 @@ fn plain_text_diff_redacts_sensitive_lines() {
 }
 
 #[test]
+fn diff_redacts_unlabeled_and_provider_labeled_credentials() {
+    let github = "ghp_abcdefghijklmnopqrstuvwxyz012345";
+    let slack = "xoxb-123456789-abcdefghijklmnopqrstuv";
+    let json_diff = simple_diff(
+        &format!(r#"{{"note":"{github}","mode":"off"}}"#),
+        &format!(r#"{{"github_token":"{github}","mode":"on"}}"#),
+    );
+    assert!(!json_diff.contains(github));
+    assert!(json_diff.contains("<redacted>"));
+
+    let text_diff = simple_diff(
+        &format!("endpoint=local\nvalue={slack}"),
+        &format!("endpoint=remote\nvalue={slack}"),
+    );
+    assert!(!text_diff.contains(slack));
+    assert!(text_diff.contains("<redacted sensitive setting>"));
+}
+
+#[test]
 fn missing_target_can_be_planned_applied_and_removed_by_restore() {
     let root = workspace_tempdir();
     let target = root.path().join("new.json");

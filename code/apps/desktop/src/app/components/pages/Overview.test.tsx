@@ -12,8 +12,21 @@ const dashboard = vi.hoisted(() => ({
   },
 }));
 
+const connection = vi.hoisted(() => ({
+  state: {
+    snapshot: null as Record<string, unknown> | null,
+    status: "unavailable",
+    error: "",
+    refresh: vi.fn(),
+  },
+}));
+
 vi.mock("../../lib/useRuntimeDashboard", () => ({
   useRuntimeDashboard: () => dashboard.state,
+}));
+
+vi.mock("../../lib/connectionSetup", () => ({
+  useConnectionSetup: () => connection.state,
 }));
 
 vi.mock("../common/Heatmap", () => ({
@@ -28,7 +41,7 @@ vi.mock("recharts", () => ({
   XAxis: () => null,
 }));
 
-import { Overview, deriveOverviewOperationalSummary, overviewFromPayload } from "./Overview";
+import { Overview, deriveAccountQuotaSummary, deriveOverviewOperationalSummary, overviewFromPayload } from "./Overview";
 
 const runtimePayload = {
   source: "dtoken-owned-runtime",
@@ -52,6 +65,12 @@ beforeEach(() => {
     error: "",
     refresh: vi.fn(),
   };
+  connection.state = {
+    snapshot: null,
+    status: "unavailable",
+    error: "",
+    refresh: vi.fn(),
+  };
 });
 
 afterEach(cleanup);
@@ -62,6 +81,8 @@ describe("Overview information hierarchy and truthfulness", () => {
 
     expect(summary.service.label).toBe("正在运行");
     expect(summary.agents.label).toBe("OpenCode");
+    expect(summary.agents.detail).toContain("历史中有 2 条请求");
+    expect(summary.agents.tone).toBe("warning");
     expect(summary.route.label).toBe("主连接 → 本地主上游");
     expect(summary.issues.label).toBe("1 个问题");
   });
@@ -75,6 +96,98 @@ describe("Overview information hierarchy and truthfulness", () => {
     expect(summary.ccSwitch.state).toBe("unverified");
     expect(summary.ccSwitch.label).not.toContain("已同步");
     expect(summary.ccSwitch.label).not.toContain("正常");
+  });
+
+  it("uses the shared native connection snapshot for configured Agents and cc-switch sync", () => {
+    const summary = deriveOverviewOperationalSummary({
+      source: "dtoken-owned-runtime",
+      desktop_data_source: "dtoken-local-service",
+      request_logs: [],
+      providers: [],
+      routes: [],
+      instances: [],
+    }, "runtime", "zh", {
+      status: "ready",
+      snapshot: {
+        source: "dtoken-desktop-read-only-discovery",
+        freshness: "unix:1",
+        revision: "setup-1",
+        state: "loaded",
+        candidates: [],
+        agent_bindings: [{
+          agent_id: "codex",
+          agent_name: "Codex",
+          installed: true,
+          current_config_source: "agent-config:codex",
+          candidates: [],
+          resolution: "already-connected",
+          confidence: 100,
+          reasons: [],
+          capability: "one-click",
+          already_connected: true,
+        }],
+        sources: [],
+        selection_required: false,
+        cc_switch_sync: {
+          detected: true,
+          status: "synced",
+          profile: "profile-a",
+          upstream: "https://provider.example/v1",
+          connection_path: "Agent -> d-token -> cc-switch",
+          source: "cc-switch-read-only",
+          writes_performed: false,
+        },
+        writes_performed: false,
+        privacy: "metadata only",
+      },
+    });
+
+    expect(summary.agents.label).toBe("Codex");
+    expect(summary.agents.detail).toContain("当前配置已指向 d-token");
+    expect(summary.agents.tone).toBe("positive");
+    expect(summary.ccSwitch.state).toBe("synced");
+    expect(summary.ccSwitch.detail).toContain("profile-a");
+  });
+
+  it("keeps stale connection discovery visible without presenting it as live traffic or verified sync", () => {
+    const snapshot = {
+      source: "dtoken-desktop-read-only-discovery",
+      freshness: "unix:1",
+      revision: "setup-1",
+      state: "loaded",
+      candidates: [],
+      agent_bindings: [{
+        agent_id: "codex",
+        agent_name: "Codex",
+        installed: true,
+        current_config_source: "agent-config:codex",
+        candidates: [],
+        resolution: "already-connected" as const,
+        confidence: 100,
+        reasons: [],
+        capability: "one-click" as const,
+        already_connected: true,
+      }],
+      sources: [],
+      selection_required: false,
+      cc_switch_sync: {
+        detected: true,
+        status: "synced",
+        source: "cc-switch-read-only",
+        writes_performed: false as const,
+      },
+      writes_performed: false as const,
+      privacy: "metadata only",
+    };
+    const summary = deriveOverviewOperationalSummary(null, "unavailable", "zh", {
+      status: "stale",
+      snapshot,
+    });
+
+    expect(summary.agents.label).toBe("Codex");
+    expect(summary.agents.detail).toContain("配置证据已过期");
+    expect(summary.agents.detail).not.toContain("真实请求证据");
+    expect(summary.ccSwitch.state).toBe("unverified");
   });
 
   it.each([
@@ -132,6 +245,30 @@ describe("Overview information hierarchy and truthfulness", () => {
     expect(within(kpis).getByText("0.0%")).toBeVisible();
     expect(screen.getAllByText("本地服务在线 · 暂无请求记录")).not.toHaveLength(0);
     expect(screen.getByText("尚无请求记录")).toBeVisible();
+  });
+
+  it("keeps last verified KPI values visible while clearly marking stale evidence", () => {
+    const stale = overviewFromPayload({
+      ...runtimePayload,
+      evidence_state: "stale",
+      freshness: "stale",
+      complete: false,
+      partial: true,
+      runtime_available: false,
+      stats: {
+        requests: { total: 125, failed: 20 },
+        tokens: { input: 1_000, input_after: 750, saved: 100 },
+      },
+    }, "stale", "zh");
+
+    expect(stale.trafficAvailable).toBe(true);
+    expect(stale.metricsAvailable).toBe(true);
+    expect(stale.stats.requestCount).toBe(125);
+    expect(stale.stats.savedTotal).toBe(250);
+    expect(stale.stats.errorsToday).toBe(20);
+    expect(stale.sourceLabel).toContain("上次验证");
+    expect(stale.sourceLabel).toContain("数据已过期");
+    expect(stale.errorLabel).toContain("非当前状态");
   });
 
   it("shows real zero KPIs when the verified runtime has a valid empty traffic collection", () => {
@@ -221,7 +358,27 @@ describe("Overview information hierarchy and truthfulness", () => {
     const kpis = screen.getByTestId("overview-kpis");
     expect(within(kpis).getByText("279.3k")).toBeVisible();
     expect(within(kpis).getByText("4.0%")).toBeVisible();
-    expect(within(kpis).getByText(/可计入节省 0（待上游归因）/)).toBeVisible();
+    expect(within(kpis).getByText("按压缩前后值计算；账单影响待确认。")).toBeVisible();
+  });
+
+  it("uses durable aggregate token totals instead of the truncated recent-request window", () => {
+    const view = overviewFromPayload({
+      source: "dtoken-owned-runtime",
+      desktop_data_source: "dtoken-local-service",
+      request_logs: [
+        { input_tokens_before: 100, input_tokens_after: 100, tokens_saved: 0 },
+      ],
+      stats: {
+        requests: { total: 116, failed: 11 },
+        tokens: { input: 21_865_560, input_after: 21_585_347, saved: 471 },
+      },
+    }, "runtime");
+
+    expect(view.stats.requestCount).toBe(116);
+    expect(view.stats.errorsToday).toBe(11);
+    expect(view.stats.savedTotal).toBe(280_213);
+    expect(view.stats.claimableSaved).toBe(471);
+    expect(view.stats.compressionRate).toBeCloseTo(280_213 / 21_865_560);
   });
 
   it("puts activity directly after KPIs and keeps operational status at the bottom", () => {
@@ -229,7 +386,7 @@ describe("Overview information hierarchy and truthfulness", () => {
     const sections = Array.from(container.querySelectorAll("[data-overview-section]"))
       .map((node) => node.getAttribute("data-overview-section"));
 
-    expect(sections).toEqual(["kpis", "activity", "issues", "trend", "operational"]);
+    expect(sections).toEqual(["kpis", "activity", "issues", "trend", "operational", "account-quotas"]);
     const kpis = container.querySelector('[data-overview-section="kpis"]');
     expect(kpis).not.toBeNull();
     expect(kpis).toHaveAttribute("data-surface", "metric-strip");
@@ -251,5 +408,78 @@ describe("Overview information hierarchy and truthfulness", () => {
     expect(within(issues as HTMLElement).getByText("最近问题")).toBeVisible();
     expect(screen.queryByRole("button")).not.toBeInTheDocument();
     expect(screen.getByTestId("activity-heatmap")).toBeVisible();
+  });
+
+  it("shows only runtime-backed Claude and Codex quota windows", () => {
+    const quotas = deriveAccountQuotaSummary({
+      account_quotas: {
+        claude: {
+          source: "passive-runtime-metadata",
+          captured_at: new Date().toISOString(),
+          five_hour: { utilization_pct: 42, resets_at: "2026-07-15T14:00:00Z" },
+          seven_day: { utilization_pct: 65 },
+        },
+        codex: {
+          source: "passive-runtime-metadata",
+          captured_at: new Date().toISOString(),
+          account_ref: "codex-account-7b21",
+          primary: { used_percent: 20, window_minutes: 300 },
+          secondary: { used_percent: 35, window_minutes: 10080 },
+        },
+      },
+    }, "verified", "zh");
+
+    expect(quotas[0].windows.map((window) => [window.label, window.usedPercent])).toEqual([["5 小时", 20], ["7 日", 35]]);
+    expect(quotas[0].accountRef).toBe("codex-account-7b21");
+    expect(quotas[1].windows.map((window) => [window.label, window.usedPercent])).toEqual([["5 小时", 42], ["7 日", 65]]);
+    expect(deriveAccountQuotaSummary(null, "unavailable", "zh").every((quota) => quota.state === "unavailable")).toBe(true);
+  });
+
+  it("renders Codex and Claude 5-hour and 7-day account quota cards", () => {
+    dashboard.state = {
+      ...dashboard.state,
+      payload: {
+        ...runtimePayload,
+        account_quotas: {
+          codex: { account_ref: "codex-account-7b21", source: "passive-runtime-metadata", captured_at: new Date().toISOString(), primary: { used_percent: 20, window_minutes: 300 }, secondary: { used_percent: 35, window_minutes: 10080 } },
+          claude: { account_ref: "claude-account-018c", source: "passive-runtime-metadata", captured_at: new Date().toISOString(), five_hour: { utilization_pct: 42 }, seven_day: { utilization_pct: 65 } },
+        },
+      },
+    };
+
+    render(<Overview setPage={vi.fn()} />);
+    const quota = screen.getByTestId("overview-account-quotas");
+    expect(within(quota).getByText("codex-account-7b21")).toBeVisible();
+    expect(within(quota).getByText("claude-account-018c")).toBeVisible();
+    expect(within(quota).getAllByText("5 小时")).toHaveLength(2);
+    expect(within(quota).getAllByText("7 日")).toHaveLength(2);
+    expect(within(quota).getByText("20%")).toBeVisible();
+    expect(within(quota).getByText("65%")).toBeVisible();
+  });
+
+  it("rejects stale, unknown-source, and out-of-range quota evidence", () => {
+    const quotas = deriveAccountQuotaSummary({
+      account_quotas: {
+        codex: { source: "unknown", captured_at: new Date().toISOString(), primary: { used_percent: 140, window_minutes: 300 }, secondary: { used_percent: -1, window_minutes: 10080 } },
+        claude: { source: "passive-runtime-metadata", captured_at: "2020-01-01T00:00:00Z", five_hour: { utilization_pct: 42 }, seven_day: { utilization_pct: 65 } },
+      },
+    }, "verified", "zh");
+    expect(quotas[0].state).toBe("unavailable");
+    expect(quotas[1].state).toBe("stale");
+  });
+
+  it("marks an account partial when only one quota window is available", () => {
+    const quotas = deriveAccountQuotaSummary({
+      account_quotas: {
+        codex: {
+          source: "codex-wham-usage",
+          captured_at: new Date().toISOString(),
+          primary: { used_percent: 20, window_minutes: 300 },
+        },
+      },
+    }, "verified", "zh");
+
+    expect(quotas[0].state).toBe("partial");
+    expect(quotas[0].windows.map((window) => window.usedPercent)).toEqual([20, null]);
   });
 });

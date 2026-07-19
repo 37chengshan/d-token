@@ -37,12 +37,39 @@ export type AnalyticsSnapshot = {
   upstreamBreakdown: BreakdownItem[];
   routeBreakdown: BreakdownItem[];
   strategyBreakdown: BreakdownItem[];
+  modelBreakdown: BreakdownItem[];
+  protocolBreakdown: BreakdownItem[];
+  projectBreakdown: BreakdownItem[];
+  chainBreakdown: BreakdownItem[];
+  errorBreakdown: BreakdownItem[];
+  cache: CacheSummary | null;
+  wasteSignals: WasteSignal[];
+  pipeline: PipelineSummary | null;
   trend7d: TrendPoint[];
   trend30d: TrendPoint[];
   warnings: string[];
 };
 
+export type CacheSummary = {
+  aligned: number;
+  misaligned: number;
+  reads: number;
+  writes: number;
+  misses: number;
+  busts: number;
+};
+
+export type WasteSignal = { label: string; count: number; detail: string };
+
+export type PipelineSummary = {
+  compressionMs: number | null;
+  routeMs: number | null;
+  upstreamTtfbMs: number | null;
+  endToEndMs: number | null;
+};
+
 export type RequestLogRow = {
+  request_id?: string;
   timestamp_ms?: number;
   agent?: string;
   provider_id?: string;
@@ -51,6 +78,23 @@ export type RequestLogRow = {
   provider?: string;
   /** 兼容旧版已持久化请求日志；新运行时使用 route_id。 */
   route?: string;
+  model?: string;
+  model_id?: string;
+  input_protocol?: string;
+  protocol?: string;
+  project_id?: string;
+  project?: string;
+  chain_mode?: string;
+  error_type?: string;
+  cache_alignment?: string;
+  cache_read?: boolean;
+  cache_write?: boolean;
+  cache_miss?: boolean;
+  cache_bust?: boolean;
+  compression_ms?: number;
+  route_ms?: number;
+  upstream_ttfb_ms?: number;
+  end_to_end_ms?: number;
   input_tokens_before?: number;
   input_tokens_after?: number;
   output_tokens?: number;
@@ -99,6 +143,15 @@ export function buildAnalyticsSnapshot(
   const upstreamMap = new Map<string, MutableBreakdown>();
   const routeMap = new Map<string, MutableBreakdown>();
   const strategyMap = new Map<string, MutableBreakdown>();
+  const modelMap = new Map<string, MutableBreakdown>();
+  const protocolMap = new Map<string, MutableBreakdown>();
+  const projectMap = new Map<string, MutableBreakdown>();
+  const chainMap = new Map<string, MutableBreakdown>();
+  const errorMap = new Map<string, MutableBreakdown>();
+  const cache: CacheSummary = { aligned: 0, misaligned: 0, reads: 0, writes: 0, misses: 0, busts: 0 };
+  const pipelineSamples: Record<keyof PipelineSummary, number[]> = {
+    compressionMs: [], routeMs: [], upstreamTtfbMs: [], endToEndMs: [],
+  };
 
   for (const log of records) {
     const before = nonNegativeNumber(log.input_tokens_before);
@@ -130,7 +183,8 @@ export function buildAnalyticsSnapshot(
       rateSavedTokens += saved;
       rateEvidenceCount += 1;
     }
-    if (log.error) errorCount += 1;
+    if (log.error || log.error_type) errorCount += 1;
+    if (log.error || log.error_type) bump(errorMap, safeLabel(log.error_type) ?? "unknown", saved);
 
     const timestamp = timestampNumber(log.timestamp_ms);
     if (timestamp === null) missingTimestampCount += 1;
@@ -142,6 +196,27 @@ export function buildAnalyticsSnapshot(
     bump(agentMap, safeLabel(log.agent), saved);
     bump(upstreamMap, safeLabel(log.provider_id) ?? safeLabel(log.provider), saved);
     bump(routeMap, safeLabel(log.route_id) ?? safeLabel(log.route), saved);
+    bump(modelMap, safeLabel(log.model_id) ?? safeLabel(log.model), saved);
+    bump(protocolMap, safeLabel(log.input_protocol) ?? safeLabel(log.protocol), saved);
+    bump(projectMap, safeLabel(log.project_id), saved);
+    bump(chainMap, safeLabel(log.chain_mode), saved);
+
+    if (log.cache_alignment === "aligned" || log.cache_alignment === "hit") cache.aligned += 1;
+    if (log.cache_alignment === "misaligned" || log.cache_alignment === "miss") cache.misaligned += 1;
+    if (log.cache_read === true) cache.reads += 1;
+    if (log.cache_write === true) cache.writes += 1;
+    if (log.cache_miss === true) cache.misses += 1;
+    if (log.cache_bust === true) cache.busts += 1;
+    const timingKeys: Array<[keyof PipelineSummary, keyof RequestLogRow]> = [
+      ["compressionMs", "compression_ms"],
+      ["routeMs", "route_ms"],
+      ["upstreamTtfbMs", "upstream_ttfb_ms"],
+      ["endToEndMs", "end_to_end_ms"],
+    ];
+    for (const [summaryKey, logKey] of timingKeys) {
+      const value = nonNegativeNumber(log[logKey]);
+      if (value !== null) pipelineSamples[summaryKey].push(value);
+    }
 
     const transforms = Array.isArray(log.transforms_applied)
       ? Array.from(new Set(log.transforms_applied.map(safeLabel).filter((item): item is string => item !== null)))
@@ -175,6 +250,10 @@ export function buildAnalyticsSnapshot(
       ? `${inconsistentSavingsCount} 条请求的节省量与输入前后值不一致，已按输入前后值重新计算。`
       : `${inconsistentSavingsCount} request(s) report savings inconsistent with before/after values; savings were recalculated.`);
   }
+  const wasteSignals: WasteSignal[] = [];
+  const noTransform = records.filter((log) => !Array.isArray(log.transforms_applied) || log.transforms_applied.length === 0).length;
+  if (noTransform > 0) wasteSignals.push({ label: zh ? "未发生变换" : "No transform applied", count: noTransform, detail: zh ? "请求通过但没有记录压缩步骤" : "Requests passed without a recorded compression step" });
+  if (cache.misses > 0) wasteSignals.push({ label: zh ? "缓存未命中" : "Cache misses", count: cache.misses, detail: zh ? "存在缓存 miss 证据" : "Requests contain cache-miss evidence" });
 
   return {
     generatedAt: new Date().toISOString(),
@@ -195,10 +274,29 @@ export function buildAnalyticsSnapshot(
     upstreamBreakdown: toArray(upstreamMap),
     routeBreakdown: toArray(routeMap),
     strategyBreakdown: toArray(strategyMap),
+    modelBreakdown: toArray(modelMap),
+    protocolBreakdown: toArray(protocolMap),
+    projectBreakdown: toArray(projectMap),
+    chainBreakdown: toArray(chainMap),
+    errorBreakdown: toArray(errorMap),
+    cache: cache.aligned + cache.misaligned + cache.reads + cache.writes + cache.misses + cache.busts > 0 ? cache : null,
+    wasteSignals,
+    pipeline: Object.values(pipelineSamples).some((samples) => samples.length > 0)
+      ? {
+          compressionMs: average(pipelineSamples.compressionMs),
+          routeMs: average(pipelineSamples.routeMs),
+          upstreamTtfbMs: average(pipelineSamples.upstreamTtfbMs),
+          endToEndMs: average(pipelineSamples.endToEndMs),
+        }
+      : null,
     trend7d: buildTrend(processed, 7),
     trend30d: buildTrend(processed, 30),
     warnings,
   };
+}
+
+function average(values: number[]): number | null {
+  return values.length > 0 ? roundOne(values.reduce((sum, value) => sum + value, 0) / values.length) : null;
 }
 
 function isRequestLogRecord(log: RequestLogRow): boolean {
@@ -217,7 +315,7 @@ function timestampNumber(value: unknown): number | null {
 
 function safeLabel(value: unknown): string | null {
   if (typeof value !== "string") return null;
-  const trimmed = value.trim();
+  const trimmed = value.replace(/[\u0000-\u001F\u007F]/g, "").trim().slice(0, 96);
   return trimmed.length > 0 ? redactString(trimmed) : null;
 }
 

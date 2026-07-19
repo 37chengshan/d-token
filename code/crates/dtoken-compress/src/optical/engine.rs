@@ -3,17 +3,26 @@ use std::time::{Duration, Instant};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
-use crate::{lower_hybrid_context, ResolvedOptimizationContext};
+use crate::{lower_hybrid_context, ApprovedHybridAction, ResolvedOptimizationContext};
 
 use super::applicability::evaluate_applicability_with_policies_and_registry;
 use super::capability::{
     resolve_model_capability_record_for_route_with_registry, OpticalCapabilityRegistry,
 };
 use super::decision::build_shadow_plan_detailed_with_registry;
+use super::economics::{
+    evaluate_materialized_capsule, resolve_active_economics_contract, CacheEvidenceState,
+};
 use super::patcher::{OpticalPatchOperation, OpticalPatchSet, PatchError};
 use super::post_validate::{validate_patched_request, PostValidationError, ValidatedActiveRequest};
-use super::render_geometry::{estimate_image_tokens, geometry_for_capability};
-use super::renderer::{DeterministicPngRenderer, RenderCancellation, RenderError, RenderLimits};
+use super::render_geometry::{
+    estimate_image_tokens, estimate_image_tokens_for_dimensions, geometry_for_capability,
+    images_required,
+};
+use super::renderer::{
+    production_render_contract, DeterministicPngRenderer, RenderBytePermitPool, RenderCancellation,
+    RenderError, RenderLimits,
+};
 use super::validate::{
     validate_active_plan_input, ActivePlanValidationInput, PlanValidationResult,
 };
@@ -26,7 +35,39 @@ use dtoken_types::{
 };
 
 const MIN_ACTIVE_CANDIDATE_CHARS: usize = 2_000;
-const SIDECAR_TOKENS_PER_PAGE: u64 = 32;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HybridPlanV2 {
+    pub selected_node_ids: Vec<String>,
+    pub selected_chars: usize,
+    pub estimated_images: usize,
+    pub estimated_vision_tokens: u64,
+    pub rejected_by_budget: usize,
+}
+
+fn selected_targets_cache_stable(stability: &[bool]) -> bool {
+    !stability.is_empty() && stability.iter().all(|stable| *stable)
+}
+
+fn active_cache_assumption(
+    _cache_evidence_present: bool,
+    prior_prefix_tokens: u64,
+) -> (CacheEvidenceState, f64) {
+    // A configured cache policy is not proof that this request is warm, and
+    // missing telemetry is not proof that it is cold. Active economics always
+    // prices the unobserved state conservatively as the maximum cache burn.
+    (CacheEvidenceState::Unknown, prior_prefix_tokens as f64)
+}
+
+fn remaining_request_budget(
+    request_started: Instant,
+    request_budget: Duration,
+) -> Result<Duration, HybridEngineError> {
+    request_budget
+        .checked_sub(request_started.elapsed())
+        .filter(|remaining| !remaining.is_zero())
+        .ok_or(HybridEngineError::PlanDeadlineExceeded)
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HybridPreparationKind {
@@ -43,6 +84,11 @@ pub struct HybridExecutionReport {
     pub kind: HybridPreparationKind,
     pub reason_code: String,
     pub candidate_count: usize,
+    pub safe_text_candidate_count: usize,
+    pub optical_candidate_count: usize,
+    pub cache_stable_candidate_count: usize,
+    pub exact_preserved_count: usize,
+    pub decision_preserved_count: usize,
     pub patched_count: usize,
     pub image_count: usize,
     pub source_chars: usize,
@@ -72,6 +118,11 @@ impl HybridExecutionReport {
             kind,
             reason_code: reason_code.into(),
             candidate_count: 0,
+            safe_text_candidate_count: 0,
+            optical_candidate_count: 0,
+            cache_stable_candidate_count: 0,
+            exact_preserved_count: 0,
+            decision_preserved_count: 0,
             patched_count: 0,
             image_count: 0,
             source_chars: 0,
@@ -91,7 +142,6 @@ impl HybridExecutionReport {
     }
 }
 
-#[derive(Clone)]
 pub enum PreparedHybridRequest {
     Passthrough {
         body: Value,
@@ -198,6 +248,7 @@ pub enum HybridEngineError {
     Cancelled,
     MissingContextIr,
     MissingGeometry,
+    MissingEconomicsContract,
     NoApprovedCandidate,
     Unprofitable,
     Render(RenderError),
@@ -206,18 +257,87 @@ pub enum HybridEngineError {
     ActiveGateRejected,
 }
 
+fn select_hybrid_plan_v2(
+    ir: &crate::HybridContextIr,
+    body: &Value,
+    geometry: &super::render_geometry::RenderGeometryProfile,
+    global: &OpticalGlobalPolicy,
+    chars_per_text_token: f64,
+) -> HybridPlanV2 {
+    let mut candidates = ir
+        .approved_text_targets()
+        .iter()
+        .filter(|target| {
+            target.action() == ApprovedHybridAction::OpticalImage && target.cache_stable()
+        })
+        .filter_map(|target| {
+            let text = body.pointer(target.patch_path()).and_then(Value::as_str)?;
+            let chars = text.chars().count();
+            if chars < MIN_ACTIVE_CANDIDATE_CHARS {
+                return None;
+            }
+            let images = images_required(geometry, chars)?;
+            let vision_tokens = estimate_image_tokens(geometry, images);
+            let text_tokens = ((chars as f64) / chars_per_text_token)
+                .ceil()
+                .min(usize::MAX as f64) as usize;
+            let gross_savings = text_tokens.saturating_sub(vision_tokens);
+            Some((
+                target.node_id(),
+                chars,
+                images,
+                vision_tokens,
+                gross_savings,
+            ))
+        })
+        .collect::<Vec<_>>();
+    candidates.sort_by(|left, right| right.4.cmp(&left.4).then_with(|| left.0.cmp(right.0)));
+
+    let mut plan = HybridPlanV2 {
+        selected_node_ids: Vec::new(),
+        selected_chars: 0,
+        estimated_images: 0,
+        estimated_vision_tokens: 0,
+        rejected_by_budget: 0,
+    };
+    for (node_id, chars, images, vision_tokens, gross_savings) in candidates {
+        let within_chars =
+            plan.selected_chars.saturating_add(chars) <= global.max_candidate_chars_per_request;
+        let within_images =
+            plan.estimated_images.saturating_add(images) <= global.max_images_per_request;
+        if gross_savings == 0 || !within_chars || !within_images {
+            plan.rejected_by_budget = plan.rejected_by_budget.saturating_add(1);
+            continue;
+        }
+        plan.selected_node_ids.push(node_id.to_string());
+        plan.selected_chars = plan.selected_chars.saturating_add(chars);
+        plan.estimated_images = plan.estimated_images.saturating_add(images);
+        plan.estimated_vision_tokens = plan
+            .estimated_vision_tokens
+            .saturating_add(u64::try_from(vision_tokens).unwrap_or(u64::MAX));
+    }
+    plan
+}
+
 #[derive(Clone)]
 pub struct HybridContextEngine {
     renderer: DeterministicPngRenderer,
+    request_bytes: RenderBytePermitPool,
+    queue_timeout: Duration,
 }
 
 impl HybridContextEngine {
     pub fn new(global: &OpticalGlobalPolicy) -> Self {
+        let queue_timeout = Duration::from_millis(global.render_queue_timeout_ms.max(1));
+        let request_bytes = RenderBytePermitPool::new(global.max_memory_bytes);
         Self {
-            renderer: DeterministicPngRenderer::new(
+            renderer: DeterministicPngRenderer::new_with_memory_pool(
                 global.max_concurrent_renders,
-                Duration::from_millis(global.render_queue_timeout_ms.max(1)),
+                queue_timeout,
+                request_bytes.clone(),
             ),
+            request_bytes,
+            queue_timeout,
         }
     }
 
@@ -233,6 +353,34 @@ impl HybridContextEngine {
         route: &RouteOpticalPolicy,
         registry: &OpticalCapabilityRegistry,
         cancellation: &RenderCancellation,
+    ) -> PreparedHybridRequest {
+        self.prepare_with_cache_evidence(
+            request_id,
+            context,
+            compression_policy,
+            original_body,
+            raw_body_bytes,
+            global,
+            route,
+            registry,
+            cancellation,
+            None,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn prepare_with_cache_evidence(
+        &self,
+        request_id: &str,
+        context: &ResolvedOptimizationContext,
+        compression_policy: dtoken_types::CompressionPolicy,
+        original_body: Value,
+        raw_body_bytes: Option<&[u8]>,
+        global: &OpticalGlobalPolicy,
+        route: &RouteOpticalPolicy,
+        registry: &OpticalCapabilityRegistry,
+        cancellation: &RenderCancellation,
+        cache_evidence: Option<&crate::context_pipeline::ProviderCacheEvidence>,
     ) -> PreparedHybridRequest {
         let prepare_started = Instant::now();
         let raw_available = raw_body_bytes.is_some();
@@ -282,6 +430,7 @@ impl HybridContextEngine {
                 raw_available,
                 baseline_tokens,
                 baseline_bytes,
+                cache_evidence,
             );
         }
 
@@ -341,6 +490,7 @@ impl HybridContextEngine {
                 raw_available,
             );
             report.candidate_count = shadow.summary.counters.candidate_blocks;
+            apply_shadow_evidence(&mut report, &shadow);
             report.image_count = shadow.summary.counters.estimated_images;
             report.estimated_text_tokens_before = baseline_tokens;
             report.estimated_input_tokens_after = estimate
@@ -377,6 +527,8 @@ impl HybridContextEngine {
             resolved.revision,
             &shadow,
             cancellation,
+            prepare_started,
+            cache_evidence,
         ) {
             Ok((request, report, comparison)) => PreparedHybridRequest::Active {
                 request,
@@ -425,6 +577,8 @@ impl HybridContextEngine {
         capability_revision: Option<u64>,
         shadow: &super::decision::ShadowPlanBuild,
         cancellation: &RenderCancellation,
+        request_started: Instant,
+        cache_evidence: Option<&crate::context_pipeline::ProviderCacheEvidence>,
     ) -> Result<
         (
             ValidatedActiveRequest,
@@ -433,19 +587,18 @@ impl HybridContextEngine {
         ),
         HybridEngineError,
     > {
-        let plan_started = Instant::now();
         if cancellation.is_cancelled() {
             return Err(HybridEngineError::Cancelled);
         }
         let plan_deadline = Duration::from_millis(global.max_plan_time_ms.max(1));
         let ir = lower_hybrid_context(context, original_body)
             .ok_or(HybridEngineError::MissingContextIr)?;
-        if ir.approved_text_targets().is_empty() {
+        if !ir.approved_text_targets().iter().any(|target| {
+            target.action() == ApprovedHybridAction::OpticalImage && target.cache_stable()
+        }) {
             return Err(HybridEngineError::NoApprovedCandidate);
         }
-        if plan_started.elapsed() > plan_deadline {
-            return Err(HybridEngineError::PlanDeadlineExceeded);
-        }
+        remaining_request_budget(request_started, plan_deadline)?;
 
         let resolved = resolve_model_capability_record_for_route_with_registry(
             Some(&context.output_protocol),
@@ -455,15 +608,42 @@ impl HybridContextEngine {
             context.endpoint.clone(),
             registry,
         );
+        let economics_contract =
+            resolve_active_economics_contract(&context.model, capability_revision)
+                .filter(|contract| {
+                    !contract.tokenizer_revision.is_empty()
+                        && !contract.pricing_revision.is_empty()
+                        && !contract.cache_policy_revision.is_empty()
+                        && contract.chars_per_text_token.is_finite()
+                        && contract.chars_per_text_token > 0.0
+                })
+                .ok_or(HybridEngineError::MissingEconomicsContract)?;
         let geometry = geometry_for_capability(&resolved.capability)
             .ok_or(HybridEngineError::MissingGeometry)?;
-        let limits = RenderLimits::from_policy(global);
+        let render_contract = production_render_contract(&geometry);
+        let hybrid_plan = select_hybrid_plan_v2(
+            &ir,
+            original_body,
+            &render_contract.geometry,
+            global,
+            economics_contract.chars_per_text_token,
+        );
+        if hybrid_plan.selected_node_ids.is_empty() {
+            return Err(HybridEngineError::NoApprovedCandidate);
+        }
+        let base_limits = RenderLimits::from_policy(global);
         let mut operations = Vec::new();
         let mut source_chars = 0usize;
         let mut capsule_digests = Vec::new();
         let mut total_images = 0usize;
+        let mut selected_cache_stability = Vec::new();
 
-        for target in ir.approved_text_targets() {
+        for target in ir.approved_text_targets().iter().filter(|target| {
+            hybrid_plan
+                .selected_node_ids
+                .iter()
+                .any(|node_id| node_id == target.node_id())
+        }) {
             if cancellation.is_cancelled() {
                 return Err(HybridEngineError::Cancelled);
             }
@@ -478,12 +658,12 @@ impl HybridContextEngine {
                 continue;
             }
             source_chars = source_chars.saturating_add(chars);
-            if source_chars > global.max_candidate_chars_per_request {
-                return Err(HybridEngineError::Render(RenderError::CandidateTooLarge));
-            }
+            let remaining_deadline = remaining_request_budget(request_started, plan_deadline)?;
+            let mut limits = base_limits.clone();
+            limits.deadline = limits.deadline.min(remaining_deadline);
             let artifact = self
                 .renderer
-                .render(text, &geometry, &limits, cancellation)
+                .render_with_contract(text, &render_contract, &limits, cancellation)
                 .map_err(HybridEngineError::Render)?;
             total_images = total_images.saturating_add(artifact.pages().len());
             if total_images > global.max_images_per_request {
@@ -495,8 +675,9 @@ impl HybridContextEngine {
                 artifact.source_digest(),
                 artifact.profile_digest(),
             ));
+            selected_cache_stability.push(target.cache_stable());
             operations.push(
-                OpticalPatchOperation::from_rendered(target, artifact)
+                OpticalPatchOperation::from_rendered(target, artifact, text)
                     .map_err(HybridEngineError::Patch)?,
             );
         }
@@ -506,10 +687,7 @@ impl HybridContextEngine {
 
         let patch_set =
             OpticalPatchSet::from_operations(operations).map_err(HybridEngineError::Patch)?;
-        let total_pixels = u64::try_from(geometry.width_px)
-            .unwrap_or(u64::MAX)
-            .saturating_mul(u64::try_from(geometry.max_height_px).unwrap_or(u64::MAX))
-            .saturating_mul(u64::try_from(patch_set.image_count()).unwrap_or(u64::MAX));
+        let total_pixels = patch_set.total_pixels();
         if total_pixels > global.max_total_pixels {
             return Err(HybridEngineError::Render(RenderError::PixelBudgetExceeded));
         }
@@ -526,36 +704,80 @@ impl HybridContextEngine {
         {
             return Err(HybridEngineError::Render(RenderError::MemoryBudgetExceeded));
         }
-        let image_tokens = u64::try_from(estimate_image_tokens(&geometry, patch_set.image_count()))
+        let image_tokens = patch_set
+            .operations()
+            .iter()
+            .flat_map(|operation| operation.artifact().pages())
+            .map(|page| {
+                estimate_image_tokens_for_dimensions(
+                    &geometry,
+                    usize::try_from(page.width()).unwrap_or(usize::MAX),
+                    usize::try_from(page.height()).unwrap_or(usize::MAX),
+                )
+            })
+            .try_fold(0u64, |total, tokens| {
+                total.checked_add(u64::try_from(tokens).unwrap_or(u64::MAX))
+            })
             .unwrap_or(u64::MAX);
-        let candidate_text_tokens = baseline_tokens
-            .saturating_sub(u64::try_from(source_chars.div_ceil(4)).unwrap_or(u64::MAX));
+        let source_text_tokens = ((source_chars as f64) / economics_contract.chars_per_text_token)
+            .ceil()
+            .min(u64::MAX as f64) as u64;
+        let candidate_text_tokens = baseline_tokens.saturating_sub(source_text_tokens);
+        let sidecar_tokens = patch_set.estimated_sidecar_tokens();
         let candidate_input_tokens = candidate_text_tokens
             .saturating_add(image_tokens)
-            .saturating_add(
-                u64::try_from(patch_set.image_count())
-                    .unwrap_or(u64::MAX)
-                    .saturating_mul(SIDECAR_TOKENS_PER_PAGE),
-            );
+            .saturating_add(sidecar_tokens);
         let signed_savings = i128::from(baseline_tokens) - i128::from(candidate_input_tokens);
         if signed_savings < route.min_net_saved_tokens as i128 {
+            return Err(HybridEngineError::Unprofitable);
+        }
+        let (cache_state, prior_prefix_tokens) =
+            active_cache_assumption(cache_evidence.is_some(), candidate_text_tokens);
+        let materialized_cost = evaluate_materialized_capsule(
+            source_text_tokens as f64,
+            image_tokens as f64,
+            sidecar_tokens as f64,
+            prior_prefix_tokens,
+            economics_contract.cache_create_rate,
+            economics_contract.cache_read_rate,
+            cache_state,
+        );
+        let conservative_total =
+            candidate_text_tokens as f64 + materialized_cost.conservative_input_tokens;
+        if !conservative_total.is_finite() || conservative_total >= baseline_tokens as f64 {
             return Err(HybridEngineError::Unprofitable);
         }
 
         let patched = patch_set
             .apply(original_body.clone())
             .map_err(HybridEngineError::Patch)?;
+        remaining_request_budget(request_started, plan_deadline)?;
         let patched_bytes = serde_json::to_vec(patched.body()).unwrap_or_default().len();
         if u64::try_from(patched_bytes).unwrap_or(u64::MAX) > global.max_outbound_body_bytes {
             return Err(HybridEngineError::Render(RenderError::Base64BudgetExceeded));
         }
-        let peak_validation_memory = total_pixels
-            .saturating_add(patch_set.png_bytes().saturating_mul(2))
-            .saturating_add(patch_set.base64_bytes())
-            .saturating_add(u64::try_from(patched_bytes).unwrap_or(u64::MAX));
+        let duplicated_patched_bytes = u64::try_from(patched_bytes)
+            .unwrap_or(u64::MAX)
+            .saturating_mul(2);
+        let retained_request_memory = patched
+            .patch_set()
+            .png_bytes()
+            .saturating_add(patched.patch_set().base64_bytes())
+            .saturating_add(duplicated_patched_bytes);
+        let peak_validation_memory = patched
+            .patch_set()
+            .png_bytes()
+            .saturating_add(retained_request_memory);
         if peak_validation_memory > global.max_memory_bytes {
             return Err(HybridEngineError::Render(RenderError::MemoryBudgetExceeded));
         }
+        // Rendered artifacts retain their PNG leases from the same global pool.
+        // Reserve the remaining validation/send footprint, including the owned
+        // patched body and the transport copy created by the core adapter.
+        let request_memory = self
+            .request_bytes
+            .acquire(retained_request_memory.max(1), self.queue_timeout)
+            .map_err(HybridEngineError::Render)?;
         let comparison = estimated_comparison(
             baseline_tokens,
             candidate_input_tokens,
@@ -563,8 +785,8 @@ impl HybridContextEngine {
             image_tokens,
             baseline_bytes,
             patched_bytes,
-            patch_set.png_bytes(),
-            patch_set.base64_bytes(),
+            patched.patch_set().png_bytes(),
+            patched.patch_set().base64_bytes(),
             geometry.profile_id.as_str(),
         );
 
@@ -582,10 +804,16 @@ impl HybridContextEngine {
             global_policy: global,
             route_policy: route,
             capability: &resolved.capability,
-            cache_stable: true,
+            cache_stable: selected_targets_cache_stable(&selected_cache_stability),
             secret_sidecar_duplication: false,
             patch_paths_inside_candidates: true,
-            image_count: patch_set.image_count(),
+            operation_page_counts: &patched
+                .patch_set()
+                .operations()
+                .iter()
+                .map(|operation| operation.artifact().pages().len())
+                .collect::<Vec<_>>(),
+            image_count: patched.patch_set().image_count(),
             net_saved_tokens: i64::try_from(signed_savings)
                 .unwrap_or(if signed_savings.is_negative() {
                     i64::MIN
@@ -597,8 +825,10 @@ impl HybridContextEngine {
         if !active_validation.valid {
             return Err(HybridEngineError::ActiveGateRejected);
         }
+        remaining_request_budget(request_started, plan_deadline)?;
         let validated = validate_patched_request(context, original_body, patched)
-            .map_err(HybridEngineError::PostValidation)?;
+            .map_err(HybridEngineError::PostValidation)?
+            .with_memory_lease(request_memory);
 
         let first_artifact = validated
             .patch_set()
@@ -611,7 +841,42 @@ impl HybridContextEngine {
             "validated_active",
             raw_available,
         );
-        report.candidate_count = ir.approved_text_targets().len();
+        report.candidate_count = ir
+            .approved_text_targets()
+            .iter()
+            .filter(|target| {
+                target.action() == ApprovedHybridAction::OpticalImage && target.cache_stable()
+            })
+            .count();
+        report.safe_text_candidate_count = ir
+            .representation_targets()
+            .iter()
+            .filter(|target| target.action() == ApprovedHybridAction::SafeTextCodec)
+            .count();
+        report.optical_candidate_count = ir
+            .representation_targets()
+            .iter()
+            .filter(|target| target.action() == ApprovedHybridAction::OpticalImage)
+            .count();
+        report.cache_stable_candidate_count = ir
+            .representation_targets()
+            .iter()
+            .filter(|target| target.cache_stable())
+            .count();
+        report.exact_preserved_count = shadow
+            .candidates
+            .iter()
+            .filter(|candidate| {
+                candidate.risk_tier == Some(crate::optical::risk::RiskTier::ExactTextRequired)
+            })
+            .count();
+        report.decision_preserved_count = shadow
+            .candidates
+            .iter()
+            .filter(|candidate| {
+                candidate.risk_tier == Some(crate::optical::risk::RiskTier::DecisionSensitive)
+            })
+            .count();
         report.patched_count = validated.report().approved_patch_count;
         report.image_count = validated.report().image_count;
         report.source_chars = source_chars;
@@ -629,6 +894,38 @@ impl HybridContextEngine {
         report.artifact_validated = validated.report().artifact_evidence_derived;
         Ok((validated, report, comparison))
     }
+}
+
+fn apply_shadow_evidence(
+    report: &mut HybridExecutionReport,
+    shadow: &super::decision::ShadowPlanBuild,
+) {
+    report.optical_candidate_count = shadow
+        .candidates
+        .iter()
+        .filter(|candidate| {
+            candidate.action == super::decision::CandidateAction::ShadowEstimateOnly
+        })
+        .count();
+    report.cache_stable_candidate_count = shadow
+        .candidates
+        .iter()
+        .filter(|candidate| candidate.cache_stable)
+        .count();
+    report.exact_preserved_count = shadow
+        .candidates
+        .iter()
+        .filter(|candidate| {
+            candidate.risk_tier == Some(crate::optical::risk::RiskTier::ExactTextRequired)
+        })
+        .count();
+    report.decision_preserved_count = shadow
+        .candidates
+        .iter()
+        .filter(|candidate| {
+            candidate.risk_tier == Some(crate::optical::risk::RiskTier::DecisionSensitive)
+        })
+        .count();
 }
 
 fn passthrough(
@@ -669,6 +966,7 @@ fn passthrough(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn semantic_or_passthrough(
     request_id: &str,
     context: &ResolvedOptimizationContext,
@@ -677,9 +975,10 @@ fn semantic_or_passthrough(
     raw_available: bool,
     baseline_tokens: u64,
     baseline_bytes: usize,
+    cache_evidence: Option<&crate::context_pipeline::ProviderCacheEvidence>,
 ) -> PreparedHybridRequest {
     let result = crate::CompressionEngine::new()
-        .compress_resolved(context, policy, body.clone())
+        .compress_resolved_with_cache_evidence(context, policy, body.clone(), cache_evidence)
         .ok();
     let Some(result) = result.filter(|result| {
         result.compressed_tokens < result.original_tokens && !result.transforms_applied.is_empty()
@@ -875,6 +1174,7 @@ fn engine_error_code(error: &HybridEngineError) -> &'static str {
         HybridEngineError::Cancelled => "render_cancelled",
         HybridEngineError::MissingContextIr => "context_ir_unavailable",
         HybridEngineError::MissingGeometry => "render_geometry_unavailable",
+        HybridEngineError::MissingEconomicsContract => "economics_contract_unavailable",
         HybridEngineError::NoApprovedCandidate => "no_approved_candidate",
         HybridEngineError::Unprofitable => "estimated_savings_below_threshold",
         HybridEngineError::Render(RenderError::Cancelled) => "render_cancelled",
@@ -905,21 +1205,46 @@ mod tests {
         }
     }
 
+    #[test]
+    fn active_cache_evidence_requires_nonempty_all_stable_selection() {
+        assert!(!selected_targets_cache_stable(&[]));
+        assert!(!selected_targets_cache_stable(&[true, false]));
+        assert!(selected_targets_cache_stable(&[true, true]));
+
+        assert_eq!(
+            active_cache_assumption(true, 500),
+            (CacheEvidenceState::Unknown, 500.0)
+        );
+        assert_eq!(
+            active_cache_assumption(false, 500),
+            (CacheEvidenceState::Unknown, 500.0)
+        );
+        assert!(matches!(
+            remaining_request_budget(
+                Instant::now() - Duration::from_millis(10),
+                Duration::from_millis(1)
+            ),
+            Err(HybridEngineError::PlanDeadlineExceeded)
+        ));
+    }
+
     fn request_body() -> Value {
         let dense_line = format!("INFO {}\n", "historical operation completed ".repeat(16));
-        let log = dense_line.repeat(200);
+        let log = dense_line.repeat(40);
+        let mut messages = vec![
+            json!({"role":"assistant","content":[{"type":"tool_use","id":"tool-1","name":"read","input":{"path":"/tmp/a"}}]}),
+            json!({"role":"user","content":[{"type":"tool_result","tool_use_id":"tool-1","content":log}]}),
+        ];
+        for index in 0..6 {
+            messages.push(json!({"role":"assistant","content":[{"type":"tool_use","id":format!("recent-{index}"),"name":"read","input":{}}]}));
+            messages.push(json!({"role":"user","content":[{"type":"tool_result","tool_use_id":format!("recent-{index}"),"content":"recent"}]}));
+        }
+        messages.push(json!({"role":"user","content":[{"type":"text","text":"current turn"}]}));
         json!({
             "model": "claude-fable-5",
             "system": "protected system instruction",
             "tools": [{"name":"read","input_schema":{"type":"object"}}],
-            "messages": [
-                {"role":"assistant","content":[{"type":"tool_use","id":"tool-1","name":"read","input":{"path":"/tmp/a"}}]},
-                {"role":"user","content":[{"type":"tool_result","tool_use_id":"tool-1","content":log}]},
-                {"role":"assistant","content":[{"type":"text","text":"done"}]},
-                {"role":"user","content":[{"type":"text","text":"next task"}]},
-                {"role":"assistant","content":[{"type":"text","text":"working"}]},
-                {"role":"user","content":[{"type":"text","text":"current turn"}]}
-            ]
+            "messages": messages
         })
     }
 
@@ -928,7 +1253,7 @@ mod tests {
             OpticalGlobalPolicy {
                 enabled: true,
                 allow_active: true,
-                max_plan_time_ms: 500,
+                max_plan_time_ms: 5_000,
                 max_render_time_ms: 5_000,
                 ..Default::default()
             },
@@ -1035,7 +1360,12 @@ mod tests {
             &RenderCancellation::default(),
         );
 
-        assert_eq!(prepared.kind(), HybridPreparationKind::Active);
+        assert_eq!(
+            prepared.kind(),
+            HybridPreparationKind::Active,
+            "{}",
+            prepared.report().reason_code
+        );
         assert_eq!(prepared.body()["model"], body["model"]);
         assert_eq!(prepared.body()["system"], body["system"]);
         assert_eq!(prepared.body()["tools"], body["tools"]);
@@ -1049,6 +1379,9 @@ mod tests {
         assert_eq!(patched_content[1]["type"], "image");
         assert!(prepared.report().artifact_validated);
         assert!(prepared.report().image_count > 0);
+        assert_eq!(prepared.report().optical_candidate_count, 1);
+        assert_eq!(prepared.report().cache_stable_candidate_count, 1);
+        assert_eq!(prepared.report().safe_text_candidate_count, 0);
         assert!(prepared.report().png_bytes > 0);
         assert!(prepared.report().base64_bytes > prepared.report().png_bytes);
         assert_eq!(prepared.report().capability_revision, Some(1));
@@ -1099,8 +1432,18 @@ mod tests {
             &RenderCancellation::default(),
         );
 
-        assert_eq!(first.kind(), HybridPreparationKind::Active);
-        assert_eq!(second.kind(), HybridPreparationKind::Active);
+        assert_eq!(
+            first.kind(),
+            HybridPreparationKind::Active,
+            "{}",
+            first.report().reason_code
+        );
+        assert_eq!(
+            second.kind(),
+            HybridPreparationKind::Active,
+            "{}",
+            second.report().reason_code
+        );
         assert_eq!(
             first.body().pointer("/messages/1/content/0/content"),
             second.body().pointer("/messages/1/content/0/content")

@@ -162,6 +162,24 @@
       "summary": "Bind local release hashes through per-candidate manifests instead of stale docs",
       "head_before": "c02251a8c50ac2aa10b407bf0b5b526765e144db",
       "remote": null
+    },
+    {
+      "id": "a2a57639-34e0-4e8f-847d-7cc9c24059a4",
+      "timestamp": "2026-07-19T14:50:44+08:00",
+      "operation": "branch-create",
+      "branch": "codex/code-graph-mcp-integration",
+      "summary": "Create isolated branch for complete Code Graph MCP integration and Windows validation",
+      "head_before": "fa653bc6455bcd60619e93e13c2bd1f9e444ef4f",
+      "remote": null
+    },
+    {
+      "id": "30b79d92-6b05-4520-9f73-7aae136d5da0",
+      "timestamp": "2026-07-19T15:06:28+08:00",
+      "operation": "commit",
+      "branch": "codex/code-graph-mcp-integration",
+      "summary": "Complete Code Graph MCP integration, recovery, security, UI, docs, and cross-platform validation gates",
+      "head_before": "fa653bc6455bcd60619e93e13c2bd1f9e444ef4f",
+      "remote": null
     }
   ]
 }

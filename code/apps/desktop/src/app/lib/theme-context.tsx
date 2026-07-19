@@ -167,14 +167,14 @@ function AppearanceProvider({ children, initial }: { children: ReactNode; initia
         if (!result.ok) throw new Error(result.summary || "save_failed");
         if (revision === updateRevisionRef.current) {
           setLoadState("loaded");
-          setPersistenceNotice(result.summary);
+          setPersistenceNotice("saved");
         }
       })
       .catch((error) => {
         const preview = error instanceof Error && error.message === "native_unavailable";
         if (revision === updateRevisionRef.current) {
           if (preview) setLoadState("preview");
-          setPersistenceNotice(preview ? "session_only" : `save_failed:${String(error)}`);
+          setPersistenceNotice(preview ? "session_only" : "save_failed:OPERATION_FAILED");
         }
       })
       .finally(() => {

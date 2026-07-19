@@ -72,6 +72,76 @@ describe("StatusBar runtime truthfulness", () => {
     expect(summary.modeLabel).toBe(mode);
     expect(summary.requestCount).toBe("—");
     expect(summary.routeCount).toBe("—");
-    expect(summary.doctorLabel).toBe("需检查");
+    expect(summary.doctorLabel).toBe("需要处理");
+  });
+
+  it("distinguishes an unavailable port observation from a verified stopped service", () => {
+    const unavailable = buildStatusSummary(null, "unavailable", null, "status unavailable");
+    const stopped = buildStatusSummary(null, "unavailable", null, "", "zh", { state: "stopped" });
+
+    expect(unavailable.portsLabel).toBe("端口状态不可用");
+    expect(unavailable.runtimeLabel).toBe("暂不可用");
+    expect(stopped.portsLabel).toBe("未监听");
+    expect(stopped.runtimeLabel).toBe("已停止");
+  });
+
+  it("does not surface stale manifest identifiers from a retained runtime payload", () => {
+    const summary = buildStatusSummary(
+      {
+        source: "dtoken-owned-runtime",
+        desktop_service_url: "http://127.0.0.1:18001",
+        routes: [{ id: "old-route" }],
+        stats: { requests: { total: 12, failed: 0 } },
+      },
+      "runtime",
+      new Date(),
+      "",
+      "zh",
+      {
+        state: "stopped",
+        pid: 91930,
+        pid_running: false,
+        manifest_stale: true,
+        service_url: "http://127.0.0.1:18001",
+      },
+    );
+
+    expect(summary.runtimeLabel).toBe("已停止");
+    expect(summary.runtimeHealth).toBe("error");
+    expect(summary.portsLabel).toBe("未监听");
+    expect(summary.portsLabel).not.toContain("18001");
+    expect(summary.routeLabel).toBe("路由不可用");
+  });
+
+  it("surfaces a stale managed binary as restart-required instead of healthy runtime", () => {
+    const summary = buildStatusSummary(
+      {
+        source: "dtoken-owned-runtime",
+        desktop_service_url: "http://127.0.0.1:18001",
+        routes: [{ id: "old-route" }],
+        stats: { requests: { total: 12, failed: 0 } },
+        doctor: { ok: true },
+      },
+      "runtime",
+      new Date(),
+      "",
+      "zh",
+      {
+        state: "restart_required",
+        managed: true,
+        restart_required: true,
+        service_url: "http://127.0.0.1:18001",
+      },
+    );
+
+    expect(summary.runtimeLabel).toBe("需要重启");
+    expect(summary.runtimeHealth).toBe("warning");
+    expect(summary.routeLabel).toBe("重启后重新验证");
+    expect(summary.portsLabel).toBe("127.0.0.1:18001 · 需重启");
+    expect(summary.modeLabel).toBe("旧进程待替换");
+    expect(summary.doctorLabel).toBe("需重启服务");
+    expect(summary.doctorHealth).toBe("warning");
+    expect(summary.requestCount).toBe("—");
+    expect(summary.routeCount).toBe("—");
   });
 });

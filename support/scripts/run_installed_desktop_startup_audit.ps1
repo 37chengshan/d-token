@@ -20,6 +20,8 @@ New-Item -ItemType Directory -Force -Path $OutputDir | Out-Null
 $CandidateStampPath = Join-Path $Root "code\target\release\d-token-release-candidate.json"
 $ReleaseAppExe = Join-Path $Root "code\target\release\d-token-desktop.exe"
 $ReleaseRuntimeSidecar = Join-Path $Root "code\target\release\dtoken-proxy.exe"
+$ReleaseAgentBridge = Join-Path $Root "code\target\release\dtoken-agent-bridge.exe"
+$ReleaseCodebaseMemoryLauncher = Join-Path $Root "code\target\release\dtoken-codebase-memory-launcher.exe"
 $ReleaseWebView2Loader = Join-Path $Root "code\target\release\WebView2Loader.dll"
 
 $InstallerPattern = Join-Path $Root "code\target\release\bundle\nsis\d-token_*_x64-setup.exe"
@@ -85,6 +87,8 @@ if ($SilentInstallLatest) {
 
 $AppExe = Join-Path $InstalledDir "d-token-desktop.exe"
 $RuntimeSidecar = Join-Path $InstalledDir "dtoken-proxy.exe"
+$AgentBridge = Join-Path $InstalledDir "dtoken-agent-bridge.exe"
+$CodebaseMemoryLauncher = Join-Path $InstalledDir "dtoken-codebase-memory-launcher.exe"
 $WebView2Loader = Join-Path $InstalledDir "WebView2Loader.dll"
 $UninstallExe = Join-Path $InstalledDir "uninstall.exe"
 
@@ -92,6 +96,8 @@ $InstalledFiles = [pscustomobject]@{
   directory = $InstalledDir
   app_exe = New-FileInfo $AppExe
   runtime_sidecar = New-FileInfo $RuntimeSidecar
+  agent_bridge = New-FileInfo $AgentBridge
+  codebase_memory_launcher = New-FileInfo $CodebaseMemoryLauncher
   webview2_loader = New-FileInfo $WebView2Loader
   uninstall = New-FileInfo $UninstallExe
 }
@@ -99,21 +105,29 @@ $InstalledFiles = [pscustomobject]@{
 $ReleaseFiles = [pscustomobject]@{
   app_exe = New-FileInfo $ReleaseAppExe
   runtime_sidecar = New-FileInfo $ReleaseRuntimeSidecar
+  agent_bridge = New-FileInfo $ReleaseAgentBridge
+  codebase_memory_launcher = New-FileInfo $ReleaseCodebaseMemoryLauncher
   webview2_loader = New-FileInfo $ReleaseWebView2Loader
 }
 
 $DependencyOk = (
   $InstalledFiles.app_exe.exists -and
   $InstalledFiles.runtime_sidecar.exists -and
+  $InstalledFiles.agent_bridge.exists -and
+  $InstalledFiles.codebase_memory_launcher.exists -and
   $InstalledFiles.webview2_loader.exists
 )
 $InstalledMatchesCurrentBundle = (
   $DependencyOk -and
   $ReleaseFiles.app_exe.exists -and
   $ReleaseFiles.runtime_sidecar.exists -and
+  $ReleaseFiles.agent_bridge.exists -and
+  $ReleaseFiles.codebase_memory_launcher.exists -and
   $ReleaseFiles.webview2_loader.exists -and
   $InstalledFiles.app_exe.sha256 -eq $ReleaseFiles.app_exe.sha256 -and
   $InstalledFiles.runtime_sidecar.sha256 -eq $ReleaseFiles.runtime_sidecar.sha256 -and
+  $InstalledFiles.agent_bridge.sha256 -eq $ReleaseFiles.agent_bridge.sha256 -and
+  $InstalledFiles.codebase_memory_launcher.sha256 -eq $ReleaseFiles.codebase_memory_launcher.sha256 -and
   $InstalledFiles.webview2_loader.sha256 -eq $ReleaseFiles.webview2_loader.sha256
 )
 

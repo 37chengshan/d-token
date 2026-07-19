@@ -55,6 +55,9 @@ src-tauri/target/
 /code/apps/desktop/src-tauri/binaries/dtoken-proxy-*-apple-darwin
 /code/apps/desktop/src-tauri/binaries/dtoken-proxy-*-pc-windows-*.exe
 /code/apps/desktop/src-tauri/binaries/dtoken-proxy-*-unknown-linux-*
+/code/apps/desktop/src-tauri/binaries/dtoken-agent-bridge-*
+/code/apps/desktop/src-tauri/binaries/dtoken-codebase-memory-launcher-*
+/code/apps/desktop/src-tauri/binaries/codebase-memory-mcp-*
 /code/apps/desktop/src-tauri/gen/schemas/desktop-schema 2.json
 /code/apps/desktop/src-tauri/gen/schemas/macOS-schema.json
 /code/apps/desktop/src-tauri/icons/android/

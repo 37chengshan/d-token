@@ -53,8 +53,11 @@
     0 8px 24px color-mix(in srgb, var(--accent-500, #f97316) 10%, transparent);
 }
 
+/* Icon part transforms live in shell.css; do not put filters on the whole SVG
+ * that compete with per-part motion. Soft color shift is enough. */
 .nav-motion-item:hover svg {
-  filter: drop-shadow(0 4px 10px color-mix(in srgb, var(--accent-500, #f97316) 26%, transparent));
+  filter: none;
+  color: var(--interaction-accent-strong, var(--accent-500, #ea580c));
 }
 
 .segmented-control,
@@ -499,7 +502,8 @@
 }
 
 .nav-motion-item:hover svg {
-  filter: drop-shadow(0 4px 10px color-mix(in srgb, var(--accent-500, #f97316) 28%, transparent));
+  filter: none;
+  color: var(--interaction-accent-strong, var(--accent-500, #ea580c));
 }
 
 .segmented-control,
@@ -1640,7 +1644,15 @@
 }
 
 .overview-kpi {
-  min-height: 98px;
+  min-height: 112px;
+}
+
+.overview-kpi-detail {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-height: 1.35;
 }
 
 .overview-status-grid {
@@ -1653,7 +1665,7 @@
   }
 
   .overview-kpi {
-    min-height: 88px;
+    min-height: 100px;
     padding: 0.75rem !important;
   }
 

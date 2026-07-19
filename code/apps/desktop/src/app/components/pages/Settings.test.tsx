@@ -53,8 +53,13 @@ describe("Settings product hierarchy and honest behavior", () => {
 
     const sectionOrder = Array.from(container.querySelectorAll("[data-settings-section]"))
       .map((node) => node.getAttribute("data-settings-section"));
-    expect(sectionOrder).toEqual(["runtime", "privacy", "learning", "updates", "appearance", "about"]);
+    expect(sectionOrder).toEqual(["appearance", "runtime", "privacy", "learning", "updates", "about"]);
     expect(container.querySelectorAll(".settings-group")).toHaveLength(6);
+    // Colors lead appearance; pure display-only rows are not duplicated.
+    expect(screen.getByText(/主题色|Accent/i)).toBeVisible();
+    expect(screen.queryByText("诊断数据上传")).not.toBeInTheDocument();
+    expect(screen.queryByText("本地连接保护")).not.toBeInTheDocument();
+    expect(screen.queryByText("扫描范围")).not.toBeInTheDocument();
     expect(native.invokeNative.mock.calls.some(([command]) => command === "get_app_settings")).toBe(true);
   });
 

@@ -118,7 +118,7 @@ describe("AppearanceProvider", () => {
     expect(screen.getByTestId("notice")).toBeEmptyDOMElement();
     await act(async () => saves[2].resolve({ ok: true, summary: "final-light", logs: [], tools: [] }));
 
-    await waitFor(() => expect(screen.getByTestId("notice")).toHaveTextContent("final-light"));
+    await waitFor(() => expect(screen.getByTestId("notice")).toHaveTextContent("saved"));
     const saveCalls = native.invokeNative.mock.calls.filter(([command]) => command === "save_app_settings");
     expect(saveCalls).toHaveLength(3);
     expect(saveCalls[saveCalls.length - 1]?.[1]?.payload.appearance.theme).toBe("light");

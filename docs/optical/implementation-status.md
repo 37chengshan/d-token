@@ -1,6 +1,6 @@
 # Optical / Hybrid Context Optimization 实现状态
 
-更新时间：2026-07-12
+更新时间：2026-07-15
 事实来源：`code/crates/dtoken-compress/src/optical/`、`code/crates/dtoken-core-api/`、`code/crates/dtoken-types/`
 
 ## 1. 当前定位
@@ -20,14 +20,15 @@ Optical/Hybrid 后端执行链已经实现，但仍默认关闭。运行时可�
 
 - applicability 与 protocol/endpoint/policy gate。
 - request-local `TextArena`、文本引用和风险分类。
-- semantic priority、volatility、secret/exact/diff 保护规则。
+- semantic priority、SHA-256 volatility/cache evidence、secret/exact/decision/diff 保护规则。
 - Capability registry、版本化 snapshot 与 active/revoked/superseded 生命周期。
-- Anthropic 与 OpenAI Chat 工具调用 inventory、ContextGraph 和状态机 lowering。
-- immutable Plan IR、候选证据、render geometry 和 economics 估算。
+- Anthropic、OpenAI Chat 与 OpenAI Responses 工具调用 inventory、ContextGraph 和独立状态机 lowering；Responses 仅 shadow。
+- immutable Plan IR、content/risk/action/cache 候选证据、render geometry 和 conservative/expected/optimistic economics 估算。
 - raw request bytes 与 canonical JSON 的 SHA-256 fingerprint 结构。
 - route-resolved Protected Context IR；只批准已闭合、历史、低风险的 tool result。
-- 纯 Rust 确定性 bitmap-font PNG renderer、分页、自解码与资源/取消/并发限制。
+- 纯 Rust 确定性 bitmap-font PNG renderer、动态末页、自解码与资源/取消/并发限制；实际 artifact 页尺寸参与视觉 token 与像素核算。
 - sealed typed patch set 和 artifact-derived post-transform validator；approved path 之外必须完全不变。
+- 请求内 capsule 合同：`RenderedContextPointer` 标明历史 closed tool result 来源，PNG 后只在非敏感事实存在时附加有界 `ExactFactSheet`，最后由 `HistoryBoundaryGuard` 重申当前原生请求和 open tool state 优先；validator 校验顺序、内容、页数和 PNG digest。
 - Ed25519 Capability attestation，绑定 provider、route、model、endpoint、renderer、font、eval 与有效期。
 - multimodal signed accounting、send-state/fallback 状态机、typed Optical Ledger、metrics 与 Doctor/status evidence。
 
@@ -40,10 +41,11 @@ Optical/Hybrid 后端执行链已经实现，但仍默认关闭。运行时可�
 - Anthropic `tool_use` / `tool_result` 的顺序、并行、闭合和 recent-tail 保护。
 - orphan result、重复 tool-use id、重复 result 和未闭合 tool use 的 fail-closed 处理。
 - OpenAI Chat `tool_calls` / `tool` role 的 inventory 与 graph lowering。
+- OpenAI Responses `message` / `function_call` / `function_call_output` 的 shadow inventory、`OpenAiResponsesV1` 状态机、最近六个完成对和异常状态保护。
 
 当前未完成：
 
-- OpenAI Responses 的完整 provider-specific 状态机。
+- OpenAI Responses active patch contract；当前 inventory/state/plan 只用于 shadow evidence，不产生 active target。
 - 更大的 malformed、parallel、adversarial corpus。
 - 跨 Provider 统一 execution state。
 - summary、schema、cache zone 等更完整依赖边。
@@ -83,6 +85,7 @@ Preview 与 recent events 可以公开：
 - closed/orphan/open tool 数量。
 - route-policy 与 capability 规则计数。
 - snapshot revision 是否存在。
+- representation action、cache-stable、exact/decision-preserve 的聚合计数，以及三点 economics 区间。
 
 不得公开：
 
@@ -98,7 +101,7 @@ Preview 与 recent events 可以公开：
 3. OpenAI Chat/Responses Optical active patcher；跨协议 bridge 明确只能 passthrough/shadow。
 4. history collapse、cache-zone 持久恢复与独立 summary/drop 策略。
 5. post-commit rollback 不可能安全自动重试；当前保证 pre-send 原文回退，commit 后只记录失败并禁止重复发送。
-6. 面向用户的安全预览 UI；本任务按范围没有接入前端，也不得新增工程化“Optical Lab”一级导航。
+6. 正式桌面已提供「视觉压缩（Beta）」一级页（一键启用 + 高级配置 + 状态与预览）：可写 Shadow 策略（强制 `allow_active=false`）与只读 status/capabilities/lifecycle/events / shadow preview public summary；一键区另有 Claude Code/Codex/OpenCode Agent 接入事务和 `dtoken-agent-bridge`，但它们与请求压缩/Active 独立。不得渲染 PNG/base64/raw body，不得 UI 开启 production active，不得把 estimator 标为 verified savings。除该 Beta 入口外不得再扩张 Optical Lab 式工程化顶级导航。
 
 ## 7. 发布判断
 
@@ -127,6 +130,10 @@ cargo test -p dtoken-core-api
 cargo test --workspace
 ```
 
+2026-07-15 最终加固工作树验证结果：Rust workspace `467 tests / 50 suites` 全部通过，workspace fmt 与严格 Clippy 通过；桌面 Vitest `35 files / 175 tests`、TypeScript、Vite production build 与系统 Chrome Playwright `10/10` 通过；structure、support Python `7/7`、macOS sidecar dry-run 与 `git diff --check` 通过。Playwright WebKit 因本机缺少对应二进制且本轮不安装依赖而未执行。该结果证明本地代码门，不替代真实 Provider fidelity/cost/latency、签名 Capability、Windows 实机或三类 Agent routed 验收。
+
+本轮发布前加固同时验证了共享 `SecretClassifier v4`、三协议 recent-six、全请求共享的 in-flight byte permit、stream EOF/error/drop 终态 Ledger、持久 Agent transaction lock、diff secret redaction、MCP 有界读取、UI 丢失事务证据 fail-closed，以及 macOS/Windows bridge 在任何 sidecar 执行前先验证平台签名。Capability registry 仍为空，production Active 仍不可达。
+
 阶段文件和历史提交记录可以查看 `support/pending-commits.json`，真实 Git 操作查看 `support/git-operations.json`。两份账本只用于追溯，不替代当前 Git 状态和测试结果。
 
 ## 9. 下一顺序
@@ -137,14 +144,14 @@ cargo test --workspace
 4. 扩充 malformed/adversarial/fault-injection corpus；OpenAI active 继续保持不可达。
 5. 后续单独设计 history collapse/cache-zone；不得与首批 Optical active 混合启用。
 
-## 10. Codex CLI pxpipe / Hybrid 视觉评测 V2
+## 10. Codex CLI pxpipe / Hybrid 视觉评测 V3
 
-仓库已加入独立、默认不联网的 V2 实验harness：
+仓库已加入独立、默认不联网的 V3 上游等价与扩展实验 harness：
 
 - Rust eval-only H/R/B/P profile、Spleen 5×8 atlas、缩放、reflow、newline marker、banner/IDS和secret-first factsheet。
 - exact model matcher只接受 `gpt-5.6-luna`、`gpt-5.6-terra`、`gpt-5.6-sol`；每个模型生成独立profile revision，不继承Sol证据。
-- Python Stage 0/1/2/3状态机最多42次调用；标准费软停 `$4.25`，中转硬限额证据要求 `$5.00`，原子attempt和orphan禁止重试。
-- Codex 0.144.1隔离适配使用全新最小`CODEX_HOME`+`--strict-config`；不使用会连隔离relay配置一起忽略的`--ignore-user-config`。provider URL只存在于临时配置，不进入argv或持久产物。
+- Responses 主证据与 Codex CLI transport sentinel 分轨；原子 attempt、outcome-unknown 禁重放、身份/usage fail-closed。
+- arithmetic、gist/state、never-stated、dense hex、coding history 和 max/medium reasoning 分层报告，不能用算术成绩替代综合质量。
 - 图片调用、provider usage、文字离线反事实、中转原始金额和缓存趋势在产物中分别标注。
 
-当前状态：Rust 107项测试、Python新旧harness 35项测试、Rust harness clippy、结构检查以及12张Stage 1真实离线PNG/Stage 0均已通过；付费授权绑定已生成，但尚未执行V2模型调用，因此不能标记 `LAB_CANDIDATE`。默认 Capability registry仍为空，OpenAI active路径仍不可达。
+当前状态：V3 medium base arithmetic 为 Luna `96/100`、Terra `90/100`、Sol `93/100`；gist 为 `82/98`、`85/98`、`91/98`；state 为 `16/18`、`17/18`、`18/18`；三模型 dense hex 均 `0/15`。Max Prompted 当前 `130/143` 合同有效，剩余 13 个是 Luna outcome-unknown 与 Terra HTTP 200 但缺 output/usage 的 transport failure，不计入模型质量分。现有 evidence 未通过安全生产门，默认 Capability registry 仍为空，OpenAI active 路径仍不可达。

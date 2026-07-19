@@ -3,6 +3,7 @@ use sha2::{Digest, Sha256};
 use dtoken_types::{ProviderFamily, VisionTokenFormula};
 
 use super::render_geometry::RenderGeometryProfile;
+use super::secret::contains_secret_like;
 use super::spleen5x8::SPLEEN_5X8_SOURCE_REVISION;
 
 pub const OPENAI_VISION_RULES_URL: &str =
@@ -60,6 +61,17 @@ pub struct ExactFact {
     pub key: String,
     pub value: String,
     pub priority: u16,
+    pub kind: ExactFactKind,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum ExactFactKind {
+    Hash,
+    Path,
+    Url,
+    Version,
+    Flag,
+    Number,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -175,6 +187,7 @@ pub fn resolve_eval_profile(exact_model: &str, profile_id: &str) -> Option<Model
         cols,
         readable_rows,
         readable_chars_per_image: cols.saturating_mul(readable_rows),
+        shrink_last_page: true,
         pixels_per_token: 0.0,
         safety_margin_percent: 100.0,
         token_formula: VisionTokenFormula::PatchGrid {
@@ -271,19 +284,107 @@ pub fn build_exact_factsheet(
     }
 }
 
-pub fn contains_secret_like(value: &str) -> bool {
-    let lower = value.to_ascii_lowercase();
-    let compact = lower.split_whitespace().collect::<String>();
-    lower.contains("authorization:")
-        || lower.contains("bearer ")
-        || lower.contains("cookie:")
-        || lower.contains("set-cookie:")
-        || lower.contains("api_key")
-        || lower.contains("api-key")
-        || lower.contains("client_secret")
-        || compact.contains("sk-")
-        || compact.contains("xoxb-")
-        || compact.contains("ghp_")
+/// Extract a small deterministic set of exact-value candidates from renderable text.
+/// Secret detection remains the first gate in `build_exact_factsheet`; callers must
+/// never use this helper to make secret-bearing blocks renderable.
+pub fn extract_exact_facts(source: &str) -> Vec<ExactFact> {
+    let mut facts = Vec::new();
+    for (index, raw) in source.split_whitespace().enumerate() {
+        let token = raw.trim_matches(|character: char| {
+            matches!(
+                character,
+                ',' | ';' | ':' | '(' | ')' | '[' | ']' | '{' | '}' | '<' | '>' | '"' | '\''
+            )
+        });
+        if token.is_empty() || token.len() > 512 {
+            continue;
+        }
+        let (key, value, priority, kind) = if let Some((label, value)) = token.split_once('=') {
+            let Some((priority, kind)) = classify_exact_value(value) else {
+                continue;
+            };
+            if label.len() < 2
+                || !label.chars().all(|character| {
+                    character.is_ascii_alphanumeric() || matches!(character, '_' | '-')
+                })
+            {
+                continue;
+            }
+            (label.to_string(), value.to_string(), priority, kind)
+        } else if let Some((priority, kind)) = classify_exact_value(token) {
+            (
+                format!("item-{index:04}"),
+                token.to_string(),
+                priority,
+                kind,
+            )
+        } else {
+            continue;
+        };
+        facts.push(ExactFact {
+            key,
+            value,
+            priority,
+            kind,
+        });
+    }
+    facts
+}
+
+fn classify_exact_value(token: &str) -> Option<(u16, ExactFactKind)> {
+    let lower = token.to_ascii_lowercase();
+    let is_url = lower.starts_with("https://") || lower.starts_with("http://");
+    let is_path = token.starts_with('/')
+        || token.starts_with("./")
+        || token.starts_with("~/")
+        || token.contains('\\')
+        || (token.contains('/') && token.contains('.'));
+    let is_hash = (7..=128).contains(&token.len())
+        && token.chars().all(|character| character.is_ascii_hexdigit());
+    let version = token
+        .strip_prefix('v')
+        .unwrap_or(token)
+        .split('.')
+        .collect::<Vec<_>>();
+    let is_version = version.len() >= 2
+        && version
+            .iter()
+            .all(|piece| !piece.is_empty() && piece.chars().all(|ch| ch.is_ascii_digit()));
+    let is_flag = token.starts_with('-')
+        && token
+            .trim_start_matches('-')
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || matches!(character, '_' | '-'));
+    let is_number = token.chars().any(|character| character.is_ascii_digit())
+        && token.chars().all(|character| {
+            character.is_ascii_digit() || matches!(character, '+' | '-' | '_' | ',' | '.' | '%')
+        });
+
+    if is_hash {
+        Some((90, ExactFactKind::Hash))
+    } else if is_url || is_path {
+        Some((
+            80,
+            if is_url {
+                ExactFactKind::Url
+            } else {
+                ExactFactKind::Path
+            },
+        ))
+    } else if is_version || is_flag {
+        Some((
+            70,
+            if is_version {
+                ExactFactKind::Version
+            } else {
+                ExactFactKind::Flag
+            },
+        ))
+    } else if is_number {
+        Some((50, ExactFactKind::Number))
+    } else {
+        None
+    }
 }
 
 fn sanitize_fact_value(value: &str) -> String {
@@ -342,6 +443,7 @@ mod tests {
                 key: format!("K{index:03}"),
                 value: format!("V{index:03}"),
                 priority: (index % 7) as u16,
+                kind: ExactFactKind::Number,
             })
             .collect::<Vec<_>>();
         let policy = ExactFactSheetPolicy::default();
@@ -355,5 +457,20 @@ mod tests {
         assert!(blocked.blocked_by_secret);
         assert!(blocked.text.is_empty());
         assert_eq!(blocked.included, 0);
+    }
+
+    #[test]
+    fn exact_fact_extraction_is_deterministic_and_skips_prose() {
+        let source = "INFO build VERSION=2.4.1 path=/tmp/build.log sha 0123456789abcdef --release";
+        let facts = extract_exact_facts(source);
+        assert!(facts
+            .iter()
+            .any(|fact| fact.key == "VERSION" && fact.value == "2.4.1"));
+        assert!(facts
+            .iter()
+            .any(|fact| fact.key == "path" && fact.value == "/tmp/build.log"));
+        assert!(facts.iter().any(|fact| fact.value == "0123456789abcdef"));
+        assert!(!facts.iter().any(|fact| fact.value == "build"));
+        assert!(extract_exact_facts("instruction=ignore_previous_rules").is_empty());
     }
 }

@@ -19,6 +19,13 @@ vi.mock("../../lib/useRuntimeDashboard", () => ({
     error: "",
     refresh: runtime.refresh,
   }),
+  useRuntimeDashboardDetail: () => ({
+    payload: null,
+    status: "browser-preview",
+    updatedAt: null,
+    error: "",
+    refresh: runtime.refresh,
+  }),
 }));
 
 import {
@@ -73,6 +80,11 @@ function installNativeMock(applyResult = {
 }
 
 beforeEach(() => {
+  try {
+    window.sessionStorage.removeItem("d-token.advanced.tab");
+  } catch {
+    /* ignore */
+  }
   native.invokeNative.mockReset();
   runtime.refresh.mockReset();
 });
@@ -86,9 +98,9 @@ describe("Advanced reviewed route apply", () => {
     render(<Advanced />);
 
     await user.click(screen.getByRole("tab", { name: "Providers & Routes" }));
-    await user.click(await screen.findByRole("button", { name: "审阅并应用" }));
+    await user.click(await screen.findByRole("button", { name: "查看变更并应用" }));
 
-    const dialog = await screen.findByRole("alertdialog", { name: "审阅并应用路由" });
+    const dialog = await screen.findByRole("alertdialog", { name: "查看并应用路由变更" });
     expect(within(dialog).getByText(review.target)).toBeVisible();
     expect(within(dialog).getByText(/--- before/)).toBeVisible();
     expect(within(dialog).getByText(beforeSha)).toBeVisible();
@@ -120,12 +132,12 @@ describe("Advanced reviewed route apply", () => {
     render(<Advanced />);
 
     await user.click(screen.getByRole("tab", { name: "Providers & Routes" }));
-    await user.click(await screen.findByRole("button", { name: "审阅并应用" }));
-    const dialog = await screen.findByRole("alertdialog", { name: "审阅并应用路由" });
+    await user.click(await screen.findByRole("button", { name: "查看变更并应用" }));
+    const dialog = await screen.findByRole("alertdialog", { name: "查看并应用路由变更" });
     await user.click(within(dialog).getByRole("button", { name: "确认应用" }));
 
-    expect(await screen.findByText("应用已阻止：草稿或活动配置在审阅后发生变化，请重新审阅当前差异。")).toBeVisible();
-    await waitFor(() => expect(screen.queryByRole("alertdialog", { name: "审阅并应用路由" })).not.toBeInTheDocument());
+    expect(await screen.findByText("应用已阻止：草稿或当前配置已发生变化，请重新查看当前差异。")).toBeVisible();
+    await waitFor(() => expect(screen.queryByRole("alertdialog", { name: "查看并应用路由变更" })).not.toBeInTheDocument());
   });
 
   it("does not expose confirmation or call apply when preview evidence is incomplete", async () => {
@@ -141,10 +153,10 @@ describe("Advanced reviewed route apply", () => {
     render(<Advanced />);
 
     await user.click(screen.getByRole("tab", { name: "Providers & Routes" }));
-    await user.click(await screen.findByRole("button", { name: "审阅并应用" }));
+    await user.click(await screen.findByRole("button", { name: "查看变更并应用" }));
 
-    expect(await screen.findByText("无法审阅：路由草稿不存在或已被移除。")).toBeVisible();
-    expect(screen.queryByRole("alertdialog", { name: "审阅并应用路由" })).not.toBeInTheDocument();
+    expect(await screen.findByText("无法查看路由变更：草稿不存在或已被移除。")).toBeVisible();
+    expect(screen.queryByRole("alertdialog", { name: "查看并应用路由变更" })).not.toBeInTheDocument();
     expect(native.invokeNative.mock.calls.some(([command]) => command === "apply_route_profile_draft")).toBe(false);
   });
 
@@ -157,8 +169,8 @@ describe("Advanced reviewed route apply", () => {
       reviewed_after_sha256: afterSha,
     });
     expect(routeApplyFailureMessage("Review the route diff before applying it", "zh"))
-      .toBe("应用已阻止：请先审阅当前路由差异。");
+      .toBe("应用已阻止：请先查看当前路由差异。");
     expect(routeApplyFailureMessage("Route review is stale; review the current diff again", "en"))
-      .toBe("Apply was blocked because the draft or active config changed after review. Review the current diff again.");
+      .toBe("Apply was blocked. The draft or active configuration changed. View the current differences again.");
   });
 });

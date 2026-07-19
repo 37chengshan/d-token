@@ -3,44 +3,77 @@
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "../ui/tabs";
 import { Rocket, ScanSearch, ScrollText, SlidersHorizontal } from "lucide-react";
 import { useT } from "../../lib/i18n";
-import { useState } from "react";
+import { lazy, Suspense, useState } from "react";
 import { Install } from "./Install";
-import { SmartLearning } from "./SmartLearning";
-import { Advanced } from "./Advanced";
-import { LogsSecurity } from "./LogsSecurity";
+
+const SmartLearning = lazy(() => import("./SmartLearning").then((module) => ({ default: module.SmartLearning })));
+const Advanced = lazy(() => import("./Advanced").then((module) => ({ default: module.Advanced })));
+const LogsSecurity = lazy(() => import("./LogsSecurity").then((module) => ({ default: module.LogsSecurity })));
+
+const WORKBENCH_TAB_KEY = "d-token.install.workbench-tab";
+const WORKBENCH_TABS = ["one-click", "smart-learning", "advanced", "logs"] as const;
+type WorkbenchTab = (typeof WORKBENCH_TABS)[number];
+
+function readWorkbenchTab(): WorkbenchTab {
+  if (typeof window === "undefined") return "one-click";
+  try {
+    const saved = window.sessionStorage.getItem(WORKBENCH_TAB_KEY);
+    if (saved && (WORKBENCH_TABS as readonly string[]).includes(saved)) return saved as WorkbenchTab;
+  } catch {
+    /* ignore */
+  }
+  return "one-click";
+}
+
+function WorkbenchPanelFallback() {
+  const t = useT();
+  return <div className="rounded-lg border border-border/60 bg-card/60 p-6 text-sm text-muted-foreground">{t("app.loading")}</div>;
+}
 
 export function InstallWorkbench() {
   const t = useT();
-  const [activeTab, setActiveTab] = useState("one-click");
+  const [activeTab, setActiveTabState] = useState<WorkbenchTab>(readWorkbenchTab);
+  const setActiveTab = (value: string) => {
+    if (!(WORKBENCH_TABS as readonly string[]).includes(value)) return;
+    const next = value as WorkbenchTab;
+    setActiveTabState(next);
+    try {
+      window.sessionStorage.setItem(WORKBENCH_TAB_KEY, next);
+    } catch {
+      /* ignore */
+    }
+  };
+
   const workbenchTabs = [
     {
-      value: "one-click",
+      value: "one-click" as const,
       title: t("in.tab.oneClick"),
       description: t("in.tab.oneClickDesc"),
       icon: Rocket,
     },
     {
-      value: "smart-learning",
+      value: "smart-learning" as const,
       title: t("in.tab.smartLearning"),
       description: t("in.tab.smartLearningDesc"),
       icon: ScanSearch,
     },
     {
-      value: "advanced",
+      value: "advanced" as const,
       title: t("in.tab.advanced"),
       description: t("in.tab.advancedDesc"),
       icon: SlidersHorizontal,
     },
     {
-      value: "logs",
+      value: "logs" as const,
       title: t("in.tab.logs"),
       description: t("in.tab.logsDesc"),
       icon: ScrollText,
     },
-  ] as const;
+  ];
 
   return (
     <div>
+      <h1 className="mb-4">{t("in.title")}</h1>
       <Tabs value={activeTab} onValueChange={setActiveTab} className="gap-5">
         <TabsList className="install-workbench-nav grid h-20 w-full grid-cols-4 overflow-hidden rounded-lg border border-border/70 bg-card/80 p-0 shadow-sm">
           {workbenchTabs.map((item) => {
@@ -68,13 +101,19 @@ export function InstallWorkbench() {
           <Install onOpenAdvanced={() => setActiveTab("advanced")} />
         </TabsContent>
         <TabsContent value="smart-learning">
-          <SmartLearning />
+          <Suspense fallback={<WorkbenchPanelFallback />}>
+            <SmartLearning />
+          </Suspense>
         </TabsContent>
         <TabsContent value="advanced">
-          <Advanced />
+          <Suspense fallback={<WorkbenchPanelFallback />}>
+            <Advanced />
+          </Suspense>
         </TabsContent>
         <TabsContent value="logs">
-          <LogsSecurity />
+          <Suspense fallback={<WorkbenchPanelFallback />}>
+            <LogsSecurity />
+          </Suspense>
         </TabsContent>
       </Tabs>
     </div>

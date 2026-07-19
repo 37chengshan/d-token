@@ -112,21 +112,26 @@ export function NotificationProvider({ children }: { children: ReactNode }) {
 
 function sanitizeInput(input: NotificationInput): Pick<AppNotification, "dedupeKey" | "level" | "title" | "message" | "details" | "receipt"> {
   return {
-    dedupeKey: redactString(input.dedupeKey),
+    dedupeKey: redactAndLimit(input.dedupeKey, 160),
     level: input.level,
-    title: redactString(input.title),
-    message: redactString(input.message),
-    ...(input.details ? { details: redactString(input.details) } : {}),
+    title: redactAndLimit(input.title, 100),
+    message: redactAndLimit(input.message, 280),
+    ...(input.details ? { details: redactAndLimit(input.details, 400) } : {}),
     ...(input.receipt ? { receipt: sanitizeReceipt(input.receipt) } : {}),
   };
 }
 
+function redactAndLimit(value: string, maxLength: number): string {
+  const safe = redactString(value).replace(/\s+/g, " ").trim();
+  return safe.length <= maxLength ? safe : `${safe.slice(0, Math.max(0, maxLength - 1))}…`;
+}
+
 function sanitizeReceipt(receipt: NotificationReceipt): NotificationReceipt {
   return {
-    requestId: redactString(receipt.requestId),
-    ...(receipt.transactionId ? { transactionId: redactString(receipt.transactionId) } : {}),
-    ...(receipt.rollbackId ? { rollbackId: redactString(receipt.rollbackId) } : {}),
-    ...(receipt.targetId ? { targetId: redactString(receipt.targetId) } : {}),
+    requestId: redactAndLimit(receipt.requestId, 160),
+    ...(receipt.transactionId ? { transactionId: redactAndLimit(receipt.transactionId, 160) } : {}),
+    ...(receipt.rollbackId ? { rollbackId: redactAndLimit(receipt.rollbackId, 160) } : {}),
+    ...(receipt.targetId ? { targetId: redactAndLimit(receipt.targetId, 160) } : {}),
   };
 }
 

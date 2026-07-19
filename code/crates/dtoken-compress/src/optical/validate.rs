@@ -37,6 +37,7 @@ pub struct ActivePlanValidationInput<'a> {
     pub cache_stable: bool,
     pub secret_sidecar_duplication: bool,
     pub patch_paths_inside_candidates: bool,
+    pub operation_page_counts: &'a [usize],
     pub image_count: usize,
     pub net_saved_tokens: isize,
 }
@@ -134,6 +135,15 @@ pub fn validate_active_plan_input(input: &ActivePlanValidationInput<'_>) -> Plan
     }
     if !input.patch_paths_inside_candidates {
         failures.push("patch_path_outside_candidate".to_string());
+    }
+    if input.operation_page_counts.is_empty()
+        || input
+            .operation_page_counts
+            .iter()
+            .any(|page_count| *page_count != 1)
+        || input.operation_page_counts.iter().sum::<usize>() != input.image_count
+    {
+        failures.push("active_rejects_multi_page_operation".to_string());
     }
     let capability_limit = if input.capability.max_images_per_request == 0 {
         usize::MAX
@@ -332,9 +342,49 @@ mod tests {
             cache_stable: true,
             secret_sidecar_duplication: false,
             patch_paths_inside_candidates: true,
+            operation_page_counts: &[1, 1],
             image_count: 2,
             net_saved_tokens: 200,
         });
         assert!(result.valid, "{:?}", result.failures);
+    }
+
+    #[test]
+    fn active_rejects_multi_page_operation_while_shadow_remains_valid() {
+        let shadow = validate_shadow_plan(true, false, true, true, true, true);
+        assert!(shadow.valid);
+        let global = OpticalGlobalPolicy {
+            enabled: true,
+            allow_active: true,
+            ..Default::default()
+        };
+        let route = RouteOpticalPolicy {
+            enabled: true,
+            mode: OpticalMode::ToolResultsOnly,
+            allow_tool_result: true,
+            confirmed_experimental_lossy: true,
+            ..Default::default()
+        };
+        let capability = OpticalModelCapability {
+            status: CapabilityStatus::Supported,
+            max_images_per_request: 4,
+            ..Default::default()
+        };
+        let result = validate_active_plan_input(&ActivePlanValidationInput {
+            shadow_validation: &shadow,
+            global_policy: &global,
+            route_policy: &route,
+            capability: &capability,
+            cache_stable: true,
+            secret_sidecar_duplication: false,
+            patch_paths_inside_candidates: true,
+            operation_page_counts: &[2],
+            image_count: 2,
+            net_saved_tokens: 10_000,
+        });
+        assert!(!result.valid);
+        assert!(result
+            .failures
+            .contains(&"active_rejects_multi_page_operation".to_string()));
     }
 }

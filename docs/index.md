@@ -1,6 +1,6 @@
 # d-token 文档导航
 
-更新时间：2026-07-11 晚间
+更新时间：2026-07-16
 
 本页是 `docs/` 的唯一导航入口。当前事实、执行计划、历史证据和归档材料必须分开理解。
 
@@ -8,11 +8,11 @@
 
 1. [`PRD.md`](PRD.md) — 唯一产品真理源：产品边界、信息架构、安全要求和验收标准。
 2. [`PLAN.md`](PLAN.md) — 唯一 Living Plan：当前实施顺序、发布阻断和下一步。
-3. [`product/IMPLEMENTATION_STATUS.md`](product/IMPLEMENTATION_STATUS.md) — 2026-07-11 晚间按实际源码整理的当前能力与限制。
+3. [`product/IMPLEMENTATION_STATUS.md`](product/IMPLEMENTATION_STATUS.md) — 2026-07-15 按实际源码与最终本地门整理的当前能力与限制。
 4. [`ARCHITECTURE.md`](ARCHITECTURE.md) — Rust-owned runtime、Tauri 桌面壳和本地服务架构。
 5. [`TECH_STACK.md`](TECH_STACK.md) — Windows/macOS 技术选型和平台边界。
 6. [`SECURITY_BOUNDARIES.md`](SECURITY_BOUNDARIES.md) — loopback、凭据、脱敏、配置写入和进程边界。
-7. [`APP_FUNCTIONS_AND_PAGES.md`](APP_FUNCTIONS_AND_PAGES.md) — 当前六个一级页面与实际代码组件映射。
+7. [`APP_FUNCTIONS_AND_PAGES.md`](APP_FUNCTIONS_AND_PAGES.md) — 当前八个一级页面（含视觉压缩 Beta 与代码图谱实验页）与实际代码组件映射。
 
 ## 2. 当前代码与产品专题
 
@@ -20,6 +20,15 @@
 - [`PRD.md`](PRD.md#125-桌面视觉布局与交互产品契约) — UI 视觉、布局、交互、真实性和验收的唯一产品契约。
 - [`research/open-source-reference.md`](research/open-source-reference.md) — 外部项目参考，只用于设计与研究，不是运行时依赖。
 - [`research/aimami-dtoken-deep-study-2026-07-12/README.md`](research/aimami-dtoken-deep-study-2026-07-12/README.md) — AiMaMi 源码、桌面产品、前端 UI/动画、Tauri/Rust、状态、算法、安全、差距与三轮审核的完整专题研究。
+- [`research/DESKTOP_UI_OPTIMIZATION_RESEARCH_2026-07-13.md`](research/DESKTOP_UI_OPTIMIZATION_RESEARCH_2026-07-13.md) — 2026-07-13 基于生产入口源码的桌面 UI 优化研究：UX、性能、Claude/神话感视觉、二级页与切页、侧栏 Tooltip/图标动画对照 AiMaMi。
+- [`research/FRONTEND_UI_PERFORMANCE_AUDIT_2026-07-15.md`](research/FRONTEND_UI_PERFORMANCE_AUDIT_2026-07-15.md) — 当前 React/Tauri 前端 UI、启动、渲染、IPC、长列表、动画与性能门禁的系统性审计。
+- [`research/BACKEND_PERFORMANCE_AUDIT_2026-07-15.md`](research/BACKEND_PERFORMANCE_AUDIT_2026-07-15.md) — 当前 Rust runtime、Dashboard、持久化、Tauri snapshot、智能学习和并发性能的系统性审计。
+- [`research/PERFORMANCE_REPORTS_MULTIDIMENSIONAL_REVIEW_2026-07-15.md`](research/PERFORMANCE_REPORTS_MULTIDIMENSIONAL_REVIEW_2026-07-15.md) — 对前后端性能报告的事实、优先级、安全、跨平台与实施依赖交叉复核。
+- [`research/RELEASE_READINESS_SYNTHESIS_2026-07-16.md`](research/RELEASE_READINESS_SYNTHESIS_2026-07-16.md) — 2026-07-16 发布前全面审查的**综合总览与统一迭代路线图**（三份子报告的交叉综合、把关与决策项）。
+- [`research/claude report/FRONTEND_AND_INTEGRATION_REVIEW_2026-07-16.md`](<research/claude report/FRONTEND_AND_INTEGRATION_REVIEW_2026-07-16.md>) — 2026-07-16 前端 UI 与前后端对接审查（信息架构、设计系统、统一状态模型、对接契约、可访问性）。
+- [`research/claude report/BACKEND_CAPABILITIES_REVIEW_2026-07-16.md`](<research/claude report/BACKEND_CAPABILITIES_REVIEW_2026-07-16.md>) — 2026-07-16 后端各层能力审查（17 crate 能力完整性、Headroom §8/G0-G8 迁移达成度、安全边界、事务回退、占位识别）。
+- [`research/claude report/UX_FLOW_AND_PERFORMANCE_REVIEW_2026-07-16.md`](<research/claude report/UX_FLOW_AND_PERFORMANCE_REVIEW_2026-07-16.md>) — 2026-07-16 用户流程与整体性能审查（七页旅程贯通度、一键安装状态机、性能预算达成度、release 实测缺口）。
+- [`research/CODEBASE_MEMORY_MCP_INTEGRATION_RESEARCH_2026-07-16.md`](research/CODEBASE_MEMORY_MCP_INTEGRATION_RESEARCH_2026-07-16.md) — `codebase-memory-mcp` 作为 d-token 实验性受管 sidecar 的上游能力、生命周期、安全、许可证、产品边界与实施前门槛研究。
 - [`legal/THIRD_PARTY_NOTICES.md`](legal/THIRD_PARTY_NOTICES.md) — 直接适配第三方实现的版权、固定来源、许可证与修改声明唯一入口。
 
 2026-07-01 的 Headroom Dashboard Draft 清单/迁移矩阵已归入 `archive/product-matrices/2026-07-01/`；当前页面与数据合同以 PRD、App 页面文档和实际代码为准。
@@ -28,7 +37,8 @@
 
 当前 Optical 只允许 shadow preview 与 metadata-only observability，不允许生产 active mutation。
 
-- [`experiments/OPTICAL_HYBRID_CONTEXT_OPTIMIZATION_PLAN_V7.md`](experiments/OPTICAL_HYBRID_CONTEXT_OPTIMIZATION_PLAN_V7.md) — 当前实验架构与实施计划。
+- [`experiments/HYBRID_CONTEXT_OPTIMIZATION_ENGINE_PLAN_V8.md`](experiments/HYBRID_CONTEXT_OPTIMIZATION_ENGINE_PLAN_V8.md) — 当前 Hybrid Context Optimization Engine 完整后端迭代合同。
+- [`experiments/OPTICAL_HYBRID_CONTEXT_OPTIMIZATION_PLAN_V7.md`](experiments/OPTICAL_HYBRID_CONTEXT_OPTIMIZATION_PLAN_V7.md) — 上一轮实验架构记录。
 - [`optical/README.md`](optical/README.md) — Optical 文档总入口。
 - [`optical/implementation-status.md`](optical/implementation-status.md) — 当前实现矩阵。
 - [`optical/test-matrix.md`](optical/test-matrix.md) — 测试合同。

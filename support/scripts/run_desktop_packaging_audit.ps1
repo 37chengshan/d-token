@@ -15,6 +15,10 @@ $TauriPath = Join-Path $Root "code\apps\desktop\src-tauri\tauri.conf.json"
 $IconPath = Join-Path $Root "code\apps\desktop\src-tauri\icons\icon.ico"
 $DistPath = Join-Path $Root "code\apps\desktop\dist\index.html"
 $SidecarPathMsvc = Join-Path $Root "code\apps\desktop\src-tauri\binaries\dtoken-proxy-x86_64-pc-windows-msvc.exe"
+$AgentBridgePathMsvc = Join-Path $Root "code\apps\desktop\src-tauri\binaries\dtoken-agent-bridge-x86_64-pc-windows-msvc.exe"
+$CodebaseMemoryLauncherPathMsvc = Join-Path $Root "code\apps\desktop\src-tauri\binaries\dtoken-codebase-memory-launcher-x86_64-pc-windows-msvc.exe"
+$CodebaseMemoryLicensePath = Join-Path $Root "code\apps\desktop\src-tauri\binaries\codebase-memory\LICENSE"
+$CodebaseMemoryNoticesPath = Join-Path $Root "code\apps\desktop\src-tauri\binaries\codebase-memory\THIRD_PARTY_NOTICES.md"
 $PreparedWebView2Loader = Join-Path $Root "code\apps\desktop\src-tauri\binaries\WebView2Loader.dll"
 
 $Package = Get-Content -LiteralPath $PackagePath -Raw | ConvertFrom-Json
@@ -39,8 +43,10 @@ $Targets = @($Tauri.bundle.targets)
 $ExternalBins = @($Tauri.bundle.externalBin)
 $Resources = $Tauri.bundle.resources
 $WebView2ResourceConfigured = $false
+$CodebaseMemoryNoticesConfigured = $false
 if ($null -ne $Resources) {
   $WebView2ResourceConfigured = $null -ne $Resources.'binaries/WebView2Loader.dll'
+  $CodebaseMemoryNoticesConfigured = ($null -ne $Resources.'binaries/codebase-memory/LICENSE') -and ($null -ne $Resources.'binaries/codebase-memory/THIRD_PARTY_NOTICES.md')
 }
 $Scripts = $Package.scripts
 $Checks = @(
@@ -74,6 +80,17 @@ $Checks = @(
     msvc_path = $SidecarPathMsvc
     msvc_bytes = if (Test-Path $SidecarPathMsvc) { (Get-Item $SidecarPathMsvc).Length } else { 0 }
   }
+  New-Check "agent_bridge_configured" "dtoken-agent-bridge sidecar is configured for bundling" ($ExternalBins -contains "binaries/dtoken-agent-bridge") @{
+    external_bin = $ExternalBins
+  }
+  New-Check "agent_bridge_prepared" "canonical MSVC dtoken-agent-bridge sidecar exists before packaging" (Test-Path $AgentBridgePathMsvc) @{
+    msvc_path = $AgentBridgePathMsvc
+    msvc_bytes = if (Test-Path $AgentBridgePathMsvc) { (Get-Item $AgentBridgePathMsvc).Length } else { 0 }
+  }
+  New-Check "codebase_memory_launcher_configured" "Codebase Memory launcher is configured for bundling" ($ExternalBins -contains "binaries/dtoken-codebase-memory-launcher") @{ external_bin = $ExternalBins }
+  New-Check "codebase_memory_launcher_prepared" "canonical MSVC Codebase Memory launcher exists before packaging" (Test-Path $CodebaseMemoryLauncherPathMsvc) @{ path = $CodebaseMemoryLauncherPathMsvc }
+  New-Check "codebase_memory_upstream_not_bundled" "large upstream is user-imported and absent from externalBin" (-not ($ExternalBins -contains "binaries/codebase-memory-mcp")) @{ external_bin = $ExternalBins; distribution = "user-imported-pinned-upstream" }
+  New-Check "codebase_memory_notices" "upstream license and notices are configured and staged" ($CodebaseMemoryNoticesConfigured -and (Test-Path $CodebaseMemoryLicensePath) -and (Test-Path $CodebaseMemoryNoticesPath)) @{ resources = $Resources; license = $CodebaseMemoryLicensePath; notices = $CodebaseMemoryNoticesPath }
   New-Check "webview2_loader_resource_configured" "WebView2Loader.dll is configured as root install resource" $WebView2ResourceConfigured @{
     resources = $Resources
   }

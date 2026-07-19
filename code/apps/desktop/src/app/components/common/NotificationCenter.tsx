@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Bell, CheckCheck, ChevronRight, X } from "lucide-react";
 import { useI18n } from "../../lib/i18n";
 import { useNotifications, type AppNotification } from "../../lib/notifications";
@@ -83,19 +83,48 @@ function NotificationRow({ item, expanded, onToggle, onDismiss, lang }: { item: 
 export function NotificationBanner() {
   const { lang } = useI18n();
   const { notifications, markRead, dismiss } = useNotifications();
-  const important = notifications.find((item) =>
-    !item.read
-    && item.persistent
-    && ["warning", "error", "action-required"].includes(item.level),
-  );
+  const consumedSignaturesRef = useRef(new Set(notifications.map((item) => `${item.id}:${item.count}`)));
+  const [bannerId, setBannerId] = useState<string | null>(null);
+  const newest = notifications[0];
+  const important = bannerId
+    ? notifications.find((item) => item.id === bannerId && !item.read)
+    : undefined;
+
+  // The shell banner is a latest-state surface, not an unread queue. Older
+  // history remains in NotificationCenter and must never replay after the
+  // current banner is read, dismissed, or expires.
+  useEffect(() => {
+    if (!newest || newest.read) return;
+    const signature = `${newest.id}:${newest.count}`;
+    if (consumedSignaturesRef.current.has(signature)) return;
+    consumedSignaturesRef.current.add(signature);
+    setBannerId(newest.id);
+  }, [newest]);
+
+  // Informational and success receipts are useful at the top of the shell,
+  // but should not pin the banner forever when they are intentionally
+  // transient. Persistent receipts/errors remain unread in the notification
+  // center after the banner itself recedes.
+  useEffect(() => {
+    if (!important) return;
+    const timer = window.setTimeout(() => {
+      setBannerId(null);
+      if (!important.persistent) markRead(important.id);
+    }, important.level === "error" || important.level === "action-required" ? 8000 : 5000);
+    return () => window.clearTimeout(timer);
+  }, [important, markRead]);
+
   if (!important) return null;
   return (
     <div className="notification-banner" data-level={important.level} role="status" aria-live="polite">
       <span className="notification-level-dot" aria-hidden="true" />
       <strong>{important.title}</strong>
-      <span className="min-w-0 flex-1 truncate text-muted-foreground">{important.message}</span>
-      <button type="button" onClick={() => markRead(important.id)} className="text-xs font-medium">{important.level === "action-required" ? (lang === "zh" ? "查看" : "View") : (lang === "zh" ? "标为已读" : "Mark read")}</button>
-      <button type="button" onClick={() => dismiss(important.id)} aria-label={lang === "zh" ? "移除通知" : "Dismiss notification"}><X className="size-3.5" /></button>
+      <span className="min-w-0 flex-1 truncate text-muted-foreground" title={important.details ? `${important.message} · ${important.details}` : important.message}>
+        {important.message}
+        {important.details ? <span className="ml-1 text-[11px] opacity-75">· {important.details}</span> : null}
+      </span>
+      <button type="button" onClick={() => { setBannerId(null); markRead(important.id); }} className="text-xs font-medium">{important.level === "action-required" ? (lang === "zh" ? "查看" : "View") : (lang === "zh" ? "知道了" : "Dismiss")}</button>
+      <button type="button" onClick={() => { setBannerId(null); dismiss(important.id); }} aria-label={lang === "zh" ? "移除通知" : "Dismiss notification"}><X className="size-3.5" /></button>
     </div>
   );
 }

@@ -1,24 +1,27 @@
+import { useEffect, useState } from "react";
 import type { PageId } from "../../lib/nav";
 import { cn } from "../ui/utils";
 
 export type AnimatedNavIconId = PageId | "theme" | "collapse";
 export type VisibleAnimatedNavIconId = Extract<
   AnimatedNavIconId,
-  "overview" | "install" | "analytics" | "doctor" | "changes" | "settings" | "theme" | "collapse"
+  "overview" | "install" | "codebase-memory" | "analytics" | "visual" | "doctor" | "changes" | "settings" | "theme" | "collapse"
 >;
 
 export const NAV_MOTION_RECIPES: Record<
   VisibleAnimatedNavIconId,
   { durationMs: number; iterationCount: 1; recipe: string }
 > = {
-  overview: { durationMs: 180, iterationCount: 1, recipe: "staggered-grid-lift" },
-  install: { durationMs: 200, iterationCount: 1, recipe: "arrow-land-tray-bounce" },
-  analytics: { durationMs: 180, iterationCount: 1, recipe: "staggered-bar-grow" },
-  doctor: { durationMs: 220, iterationCount: 1, recipe: "path-trace-status-pulse" },
-  changes: { durationMs: 190, iterationCount: 1, recipe: "paired-arrow-converge" },
-  settings: { durationMs: 200, iterationCount: 1, recipe: "gear-quarter-turn" },
-  theme: { durationMs: 200, iterationCount: 1, recipe: "sun-rays-or-moon-arc" },
-  collapse: { durationMs: 180, iterationCount: 1, recipe: "panel-fold" },
+  overview: { durationMs: 240, iterationCount: 1, recipe: "staggered-grid-lift" },
+  install: { durationMs: 260, iterationCount: 1, recipe: "arrow-land-tray-bounce" },
+  "codebase-memory": { durationMs: 260, iterationCount: 1, recipe: "graph-nodes-connect" },
+  analytics: { durationMs: 240, iterationCount: 1, recipe: "staggered-bar-grow" },
+  visual: { durationMs: 250, iterationCount: 1, recipe: "image-frame-focus" },
+  doctor: { durationMs: 280, iterationCount: 1, recipe: "path-trace-status-pulse" },
+  changes: { durationMs: 240, iterationCount: 1, recipe: "paired-arrow-converge" },
+  settings: { durationMs: 260, iterationCount: 1, recipe: "gear-quarter-turn" },
+  theme: { durationMs: 240, iterationCount: 1, recipe: "sun-rays-or-moon-arc" },
+  collapse: { durationMs: 220, iterationCount: 1, recipe: "panel-fold" },
 };
 
 export type AnimatedNavIconProps = {
@@ -28,12 +31,16 @@ export type AnimatedNavIconProps = {
   className?: string;
   expanded?: boolean;
   dark?: boolean;
+  /** Parent reports pointer hover / keyboard focus (CSS also uses :hover as primary path). */
+  engaged?: boolean;
+  /** Bumped on click so the recipe can replay without relying on :hover. */
   motionToken?: number;
 };
 
 /**
- * Product-owned icon set. Each glyph has a motion recipe tied to its meaning;
- * no AiMaMi brand or icon assets are copied here.
+ * Product-owned icon set. Parts are plain SVG; motion is CSS-driven via
+ * `.nav-motion-item:hover` / `:focus-visible` / `[data-motion-play]` so leave
+ * reverses through transitions. No AiMaMi brand assets.
  */
 export function AnimatedNavIcon({
   id,
@@ -42,13 +49,29 @@ export function AnimatedNavIcon({
   className,
   expanded = true,
   dark = false,
+  engaged = false,
   motionToken = 0,
 }: AnimatedNavIconProps) {
+  const recipe = id in NAV_MOTION_RECIPES ? NAV_MOTION_RECIPES[id as VisibleAnimatedNavIconId] : null;
+  const [playing, setPlaying] = useState(false);
+
+  useEffect(() => {
+    if (reducedMotion || motionToken <= 0) {
+      setPlaying(false);
+      return;
+    }
+    setPlaying(true);
+    const timer = window.setTimeout(() => setPlaying(false), (recipe?.durationMs ?? 240) + 40);
+    return () => window.clearTimeout(timer);
+  }, [motionToken, reducedMotion, recipe?.durationMs]);
+
+  const motionActive = !reducedMotion && (engaged || playing);
+
   const common = {
-    "aria-hidden": true,
+    "aria-hidden": true as const,
     focusable: "false" as const,
     viewBox: "0 0 24 24",
-    fill: "none",
+    fill: "none" as const,
     stroke: "currentColor",
     strokeWidth: 1.75,
     strokeLinecap: "round" as const,
@@ -59,10 +82,12 @@ export function AnimatedNavIcon({
     "data-reduced-motion": reducedMotion ? "true" : "false",
     "data-motion-state": reducedMotion ? "color-only" : "enabled",
     "data-motion-trigger": String(motionToken),
-    ...(id in NAV_MOTION_RECIPES
+    "data-motion-engaged": engaged && !reducedMotion ? "true" : "false",
+    "data-motion-play": motionActive ? "true" : "false",
+    ...(recipe
       ? {
-          "data-motion-recipe": NAV_MOTION_RECIPES[id as VisibleAnimatedNavIconId].recipe,
-          "data-motion-duration": String(NAV_MOTION_RECIPES[id as VisibleAnimatedNavIconId].durationMs),
+          "data-motion-recipe": recipe.recipe,
+          "data-motion-duration": String(recipe.durationMs),
           "data-motion-iterations": "1",
         }
       : {}),
@@ -85,6 +110,16 @@ export function AnimatedNavIcon({
           <path className="icon-part icon-download-tray" d="M4.5 15.5v3.2c0 1 .8 1.8 1.8 1.8h11.4c1 0 1.8-.8 1.8-1.8v-3.2" />
         </svg>
       );
+    case "codebase-memory":
+      return (
+        <svg {...common}>
+          <path className="icon-part icon-memory-edge" d="M7.2 7.2 12 4.7l4.8 2.5M7.2 7.2v5.6L12 16m4.8-8.8v5.6L12 16m0 0v3.3" />
+          <circle className="icon-part icon-memory-node-1" cx="12" cy="4.5" r="2" />
+          <circle className="icon-part icon-memory-node-2" cx="6.8" cy="8" r="2" />
+          <circle className="icon-part icon-memory-node-3" cx="17.2" cy="8" r="2" />
+          <circle className="icon-part icon-memory-node-4" cx="12" cy="19.5" r="2" />
+        </svg>
+      );
     case "analytics":
       return (
         <svg {...common}>
@@ -92,6 +127,14 @@ export function AnimatedNavIcon({
           <path className="icon-part icon-bar-1" d="M6.5 18v-5" />
           <path className="icon-part icon-bar-2" d="M12 18V7" />
           <path className="icon-part icon-bar-3" d="M17.5 18v-8" />
+        </svg>
+      );
+    case "visual":
+      return (
+        <svg {...common}>
+          <rect className="icon-part icon-frame" x="3.5" y="5" width="17" height="14" rx="2" />
+          <circle className="icon-part icon-lens" cx="9" cy="10.5" r="1.6" />
+          <path className="icon-part icon-landscape" d="m5.5 16.5 3.2-3.4 2.4 2.1 3.1-3.8 4.3 5.1" />
         </svg>
       );
     case "doctor":
@@ -112,8 +155,11 @@ export function AnimatedNavIcon({
     case "settings":
       return (
         <svg {...common}>
-          <path className="icon-part icon-gear" d="M9.5 3.7h5l.7 2.3 2 .9 2.1-1.1 2.5 4.3-1.7 1.6v2.4l1.7 1.6-2.5 4.3-2.1-1.1-2 .9-.7 2.3h-5l-.7-2.3-2-.9L4.7 20l-2.5-4.3 1.7-1.6v-2.4l-1.7-1.6 2.5-4.3 2.1 1.1 2-.9.7-2.3Z" />
-          <circle cx="12" cy="12.9" r="2.8" />
+          <path
+            className="icon-part icon-gear"
+            d="M9.5 3.7h5l.7 2.3 2 .9 2.1-1.1 2.5 4.3-1.7 1.6v2.4l1.7 1.6-2.5 4.3-2.1-1.1-2 .9-.7 2.3h-5l-.7-2.3-2-.9L4.7 20l-2.5-4.3 1.7-1.6v-2.4l-1.7-1.6 2.5-4.3 2.1 1.1 2-.9.7-2.3Z"
+          />
+          <circle className="icon-part icon-gear-hub" cx="12" cy="12.9" r="2.8" />
         </svg>
       );
     case "theme":
@@ -124,7 +170,10 @@ export function AnimatedNavIcon({
       ) : (
         <svg {...common}>
           <circle className="icon-part icon-sun-core" cx="12" cy="12" r="3.2" />
-          <path className="icon-part icon-sun-rays" d="M12 2.5v2M12 19.5v2M2.5 12h2M19.5 12h2M5.3 5.3l1.4 1.4M17.3 17.3l1.4 1.4M18.7 5.3l-1.4 1.4M6.7 17.3l-1.4 1.4" />
+          <path
+            className="icon-part icon-sun-rays"
+            d="M12 2.5v2M12 19.5v2M2.5 12h2M19.5 12h2M5.3 5.3l1.4 1.4M17.3 17.3l1.4 1.4M18.7 5.3l-1.4 1.4M6.7 17.3l-1.4 1.4"
+          />
         </svg>
       );
     case "collapse":

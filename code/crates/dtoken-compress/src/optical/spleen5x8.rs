@@ -4,6 +4,7 @@
 //! Copyright (c) 2018-2026, Frederic Cambus. BSD-2-Clause.
 
 pub const SPLEEN_5X8_SOURCE_REVISION: &str = "spleen-5x8-2.2.0-ascii";
+pub const SPLEEN_5X8_AA_REVISION: &str = "dtoken-spleen-5x8-aa-kernel-v1";
 
 #[rustfmt::skip]
 pub const SPLEEN_5X8_ASCII: [[u8; 8]; 95] = [

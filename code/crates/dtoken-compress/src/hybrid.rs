@@ -2,12 +2,14 @@ use dtoken_types::{OpticalEndpoint, Protocol};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
+use crate::content_router::{route_content, ContentKind};
 use crate::optical::context_graph::{build_context_graph, ContextGraph};
 use crate::optical::inventory::{
-    build_anthropic_inventory, build_openai_chat_inventory, BlockKind, ConversationInventory,
-    InitialProtection, RoleKind,
+    build_anthropic_inventory, build_openai_chat_inventory, build_openai_responses_inventory,
+    BlockKind, ConversationInventory, InitialProtection, RoleKind,
 };
 use crate::optical::risk::{classify_block, RiskTier};
+use crate::optical::volatility::plan_volatility;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolvedOptimizationContext {
@@ -20,11 +22,29 @@ pub struct ResolvedOptimizationContext {
 }
 
 impl ResolvedOptimizationContext {
-    pub fn supports_safe_text_codec(&self) -> bool {
+    pub fn supports_inventory(&self) -> bool {
         if self.route_id.trim().is_empty()
             || self.provider_id.trim().is_empty()
             || self.model.trim().is_empty()
         {
+            return false;
+        }
+        matches!(
+            (&self.input_protocol, &self.output_protocol, &self.endpoint),
+            (
+                Protocol::Anthropic,
+                Protocol::Anthropic,
+                OpticalEndpoint::AnthropicMessages
+            ) | (
+                Protocol::OpenAi,
+                Protocol::OpenAi,
+                OpticalEndpoint::OpenAiChatCompletions | OpticalEndpoint::OpenAiResponses
+            )
+        )
+    }
+
+    pub fn supports_safe_text_codec(&self) -> bool {
+        if !self.supports_inventory() {
             return false;
         }
 
@@ -164,12 +184,25 @@ pub enum ApprovedHybridTargetKind {
     ClosedHistoricalLowRiskToolResult,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ApprovedHybridAction {
+    SafeTextCodec,
+    OpticalImage,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ApprovedHybridTarget {
     node_id: String,
     patch_path: String,
     precondition_digest: String,
     kind: ApprovedHybridTargetKind,
+    action: ApprovedHybridAction,
+    content_kind: ContentKind,
+    risk_tier: RiskTier,
+    reason_code: String,
+    stable_digest: Option<String>,
+    stable_chars: usize,
+    volatile_chars: usize,
 }
 
 impl ApprovedHybridTarget {
@@ -187,6 +220,38 @@ impl ApprovedHybridTarget {
 
     pub fn kind(&self) -> ApprovedHybridTargetKind {
         self.kind.clone()
+    }
+
+    pub fn action(&self) -> ApprovedHybridAction {
+        self.action
+    }
+
+    pub fn content_kind(&self) -> ContentKind {
+        self.content_kind
+    }
+
+    pub fn risk_tier(&self) -> RiskTier {
+        self.risk_tier.clone()
+    }
+
+    pub fn reason_code(&self) -> &str {
+        &self.reason_code
+    }
+
+    pub fn stable_digest(&self) -> Option<&str> {
+        self.stable_digest.as_deref()
+    }
+
+    pub fn stable_chars(&self) -> usize {
+        self.stable_chars
+    }
+
+    pub fn volatile_chars(&self) -> usize {
+        self.volatile_chars
+    }
+
+    pub fn cache_stable(&self) -> bool {
+        self.stable_digest.is_some() && self.volatile_chars == 0
     }
 }
 
@@ -235,6 +300,10 @@ impl HybridContextIr {
     pub fn approved_text_targets(&self) -> &[ApprovedHybridTarget] {
         &self.approved_text_targets
     }
+
+    pub fn representation_targets(&self) -> &[ApprovedHybridTarget] {
+        &self.approved_text_targets
+    }
 }
 
 struct LoweredContext {
@@ -249,7 +318,7 @@ pub fn lower_hybrid_context(
 }
 
 fn lower_context(context: &ResolvedOptimizationContext, body: &Value) -> Option<LoweredContext> {
-    if !context.supports_safe_text_codec() {
+    if !context.supports_inventory() {
         return None;
     }
 
@@ -259,6 +328,9 @@ fn lower_context(context: &ResolvedOptimizationContext, body: &Value) -> Option<
         }
         (Protocol::OpenAi, OpticalEndpoint::OpenAiChatCompletions) => {
             build_openai_chat_inventory(body)
+        }
+        (Protocol::OpenAi, OpticalEndpoint::OpenAiResponses) => {
+            build_openai_responses_inventory(body)
         }
         _ => return None,
     };
@@ -315,19 +387,70 @@ fn lower_node(
     let role = map_role(&block.role);
     let provenance = provenance_for(&kind, &role);
     let patch_path = patch_path_for(context, body, block);
-    let patch_value = patch_path.as_deref().and_then(|path| body.pointer(path));
+    let patch_value = patch_path
+        .as_deref()
+        .and_then(|path| body.pointer(path))
+        .or_else(|| body.pointer(&block.source_path));
     let text = patch_value.and_then(Value::as_str);
+    let content_kind = text
+        .map(route_content)
+        .map_or(ContentKind::Unknown, |decision| decision.content_kind);
+    let risk_plan = text.map(classify_block);
+    let volatility = text.map(plan_volatility);
 
     let (mut protection, mut reason) = baseline_protection(block, inventory);
+    let mut approved_action = None;
     if block.kind == BlockKind::ToolResult {
         if graph.is_closed_historical_tool_result(&block.block_id, inventory.recent_tail_start) {
-            (protection, reason) = match text.map(classify_block) {
+            (protection, reason) = match risk_plan.clone() {
                 Some(plan) => match plan.tier {
                     RiskTier::SecretNoDuplicate => {
                         (HybridProtection::Secret, HybridProtectionReason::Secret)
                     }
+                    RiskTier::ExactTextRequired
+                        if text.is_some_and(|text| {
+                            crate::content_router::is_safe_lossless_candidate(text)
+                                || crate::content_router::is_safe_search_codec_candidate(text)
+                                || crate::content_router::is_safe_build_codec_candidate(text)
+                                || crate::content_router::is_safe_html_repeat_candidate(text)
+                        }) =>
+                    {
+                        approved_action = Some(ApprovedHybridAction::SafeTextCodec);
+                        (
+                            HybridProtection::Candidate,
+                            HybridProtectionReason::ClosedHistoricalLowRiskToolResult,
+                        )
+                    }
+                    RiskTier::BlockUnsafe
+                        if text.is_some_and(|text| {
+                            crate::content_router::is_safe_lossless_candidate(text)
+                                || crate::content_router::is_safe_search_codec_candidate(text)
+                                || crate::content_router::is_safe_build_codec_candidate(text)
+                                || crate::content_router::is_safe_html_repeat_candidate(text)
+                        }) =>
+                    {
+                        approved_action = Some(ApprovedHybridAction::SafeTextCodec);
+                        (
+                            HybridProtection::Candidate,
+                            HybridProtectionReason::ClosedHistoricalLowRiskToolResult,
+                        )
+                    }
                     RiskTier::ExactTextRequired => {
                         (HybridProtection::Exact, HybridProtectionReason::Exact)
+                    }
+                    RiskTier::DecisionSensitive => (
+                        HybridProtection::AlwaysText,
+                        HybridProtectionReason::GeneralPreserve,
+                    ),
+                    RiskTier::StructuralUnsafe
+                        if text
+                            .is_some_and(crate::content_router::is_safe_diff_codec_candidate) =>
+                    {
+                        approved_action = Some(ApprovedHybridAction::SafeTextCodec);
+                        (
+                            HybridProtection::Candidate,
+                            HybridProtectionReason::ClosedHistoricalLowRiskToolResult,
+                        )
                     }
                     RiskTier::StructuralUnsafe => {
                         (HybridProtection::Opaque, HybridProtectionReason::CodeOrDiff)
@@ -335,10 +458,75 @@ fn lower_node(
                     RiskTier::BlockUnsafe => {
                         (HybridProtection::Opaque, HybridProtectionReason::Exact)
                     }
-                    RiskTier::RenderSafe if text.is_some_and(is_low_risk_repetitive_log) => (
-                        HybridProtection::Candidate,
-                        HybridProtectionReason::ClosedHistoricalLowRiskToolResult,
-                    ),
+                    RiskTier::RenderSafe
+                        if text.is_some_and(|text| {
+                            crate::content_router::is_safe_lossless_candidate(text)
+                        }) =>
+                    {
+                        approved_action = Some(ApprovedHybridAction::SafeTextCodec);
+                        (
+                            HybridProtection::Candidate,
+                            HybridProtectionReason::ClosedHistoricalLowRiskToolResult,
+                        )
+                    }
+                    RiskTier::RenderSafe
+                        if text.is_some_and(crate::content_router::is_safe_log_codec_candidate) =>
+                    {
+                        approved_action = Some(
+                            if text.is_some_and(|text| {
+                                is_low_risk_repetitive_log(text)
+                                    && !crate::content_router::contains_decision_signal(text)
+                            }) {
+                                ApprovedHybridAction::OpticalImage
+                            } else {
+                                ApprovedHybridAction::SafeTextCodec
+                            },
+                        );
+                        (
+                            HybridProtection::Candidate,
+                            HybridProtectionReason::ClosedHistoricalLowRiskToolResult,
+                        )
+                    }
+                    RiskTier::RenderSafe
+                        if text
+                            .is_some_and(crate::content_router::is_safe_search_codec_candidate) =>
+                    {
+                        approved_action = Some(ApprovedHybridAction::SafeTextCodec);
+                        (
+                            HybridProtection::Candidate,
+                            HybridProtectionReason::ClosedHistoricalLowRiskToolResult,
+                        )
+                    }
+                    RiskTier::RenderSafe
+                        if text
+                            .is_some_and(crate::content_router::is_safe_build_codec_candidate) =>
+                    {
+                        approved_action = Some(ApprovedHybridAction::SafeTextCodec);
+                        (
+                            HybridProtection::Candidate,
+                            HybridProtectionReason::ClosedHistoricalLowRiskToolResult,
+                        )
+                    }
+                    RiskTier::RenderSafe
+                        if text
+                            .is_some_and(crate::content_router::is_safe_text_repeat_candidate) =>
+                    {
+                        approved_action = Some(ApprovedHybridAction::SafeTextCodec);
+                        (
+                            HybridProtection::Candidate,
+                            HybridProtectionReason::ClosedHistoricalLowRiskToolResult,
+                        )
+                    }
+                    RiskTier::RenderSafe
+                        if text
+                            .is_some_and(crate::content_router::is_safe_html_repeat_candidate) =>
+                    {
+                        approved_action = Some(ApprovedHybridAction::SafeTextCodec);
+                        (
+                            HybridProtection::Candidate,
+                            HybridProtectionReason::ClosedHistoricalLowRiskToolResult,
+                        )
+                    }
                     RiskTier::RenderSafe => (
                         HybridProtection::AlwaysText,
                         HybridProtectionReason::GeneralPreserve,
@@ -373,12 +561,32 @@ fn lower_node(
         .as_deref()
         .map(|tool_id| digest_bytes(tool_id.as_bytes()));
     let target = if protection == HybridProtection::Candidate {
-        match (patch_path, patch_value) {
-            (Some(patch_path), Some(value)) => Some(ApprovedHybridTarget {
+        match (patch_path, patch_value, approved_action) {
+            (Some(patch_path), Some(value), Some(action)) => Some(ApprovedHybridTarget {
                 node_id: node_id.clone(),
                 patch_path,
                 precondition_digest: digest_json_value(value),
                 kind: ApprovedHybridTargetKind::ClosedHistoricalLowRiskToolResult,
+                action,
+                content_kind,
+                risk_tier: risk_plan
+                    .as_ref()
+                    .map_or(RiskTier::BlockUnsafe, |plan| plan.tier.clone()),
+                reason_code: match action {
+                    ApprovedHybridAction::SafeTextCodec => "safe_text_codec",
+                    ApprovedHybridAction::OpticalImage => "optical_image_candidate",
+                }
+                .to_string(),
+                stable_digest: volatility
+                    .as_ref()
+                    .and_then(|plan| plan.stable_digest.clone()),
+                stable_chars: volatility.as_ref().map_or(0, |plan| {
+                    plan.stable_segments
+                        .iter()
+                        .map(|segment| segment.chars)
+                        .sum()
+                }),
+                volatile_chars: volatility.as_ref().map_or(0, |plan| plan.volatile_chars),
             }),
             _ => None,
         }
@@ -662,6 +870,87 @@ fn append_explicit_protected_nodes(
                 }
             }
         }
+        OpticalEndpoint::OpenAiResponses => {
+            if let Some(tools) = body.get("tools").and_then(Value::as_array) {
+                for tool_index in 0..tools.len() {
+                    for (suffix, kind, reason) in [
+                        (
+                            "parameters",
+                            HybridNodeKind::ToolSchema,
+                            HybridProtectionReason::ToolSchema,
+                        ),
+                        (
+                            "name",
+                            HybridNodeKind::Identifier,
+                            HybridProtectionReason::Identifier,
+                        ),
+                    ] {
+                        push_explicit_node(
+                            context,
+                            body,
+                            nodes,
+                            format!("/tools/{tool_index}/{suffix}"),
+                            kind,
+                            HybridRole::System,
+                            HybridContentProvenance::ToolSchema,
+                            HybridProtection::AlwaysText,
+                            reason,
+                            None,
+                        );
+                    }
+                }
+            }
+            if let Some(input) = body.get("input").and_then(Value::as_array) {
+                for (turn_index, item) in input.iter().enumerate() {
+                    let item_type = item.get("type").and_then(Value::as_str);
+                    if item_type == Some("function_call") {
+                        for (suffix, kind, reason) in [
+                            (
+                                "call_id",
+                                HybridNodeKind::Identifier,
+                                HybridProtectionReason::Identifier,
+                            ),
+                            (
+                                "name",
+                                HybridNodeKind::Identifier,
+                                HybridProtectionReason::Identifier,
+                            ),
+                            (
+                                "arguments",
+                                HybridNodeKind::ToolArguments,
+                                HybridProtectionReason::ToolArguments,
+                            ),
+                        ] {
+                            push_explicit_node(
+                                context,
+                                body,
+                                nodes,
+                                format!("/input/{turn_index}/{suffix}"),
+                                kind,
+                                HybridRole::Assistant,
+                                HybridContentProvenance::ToolInvocation,
+                                HybridProtection::Exact,
+                                reason,
+                                Some(turn_index),
+                            );
+                        }
+                    } else if item_type == Some("function_call_output") {
+                        push_explicit_node(
+                            context,
+                            body,
+                            nodes,
+                            format!("/input/{turn_index}/call_id"),
+                            HybridNodeKind::Identifier,
+                            HybridRole::Tool,
+                            HybridContentProvenance::ToolOutput,
+                            HybridProtection::Exact,
+                            HybridProtectionReason::Identifier,
+                            Some(turn_index),
+                        );
+                    }
+                }
+            }
+        }
         _ => {}
     }
 }
@@ -808,9 +1097,9 @@ fn is_low_risk_repetitive_log(text: &str) -> bool {
                 .or_else(|| line.strip_prefix("DEBUG "));
             payload.is_some_and(|payload| {
                 !payload.is_empty()
-                    && payload
-                        .chars()
-                        .all(|character| character.is_ascii_alphabetic() || character == ' ')
+                    && payload.chars().all(|character| {
+                        character.is_ascii_alphabetic() || character == ' ' || character == '='
+                    })
             })
         })
 }
@@ -851,7 +1140,7 @@ pub(crate) fn apply_safe_text_codec(
             continue;
         };
         let compressed =
-            crate::compress_text(dtoken_types::CompressionPolicy::Balanced, text, transforms);
+            crate::content_router::apply_routed_codec(policy.clone(), text, transforms);
         if compressed == text {
             continue;
         }
