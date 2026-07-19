@@ -592,10 +592,10 @@ fn user_home_dir() -> Result<PathBuf, String> {
         .ok_or_else(|| "An existing absolute user home directory is required".to_string())
 }
 
-fn sync_parent_directory(path: &Path) -> Result<(), String> {
+fn sync_parent_directory(_path: &Path) -> Result<(), String> {
     #[cfg(unix)]
     {
-        let parent = path
+        let parent = _path
             .parent()
             .ok_or_else(|| "state file has no parent directory".to_string())?;
         fs::File::open(parent)

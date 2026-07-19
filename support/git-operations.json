@@ -288,6 +288,24 @@
       "summary": "Push clean-run WebView2 sidecar preparation fix",
       "head_before": "ec6e369e21b339569d41a41040c24330e8d829e2",
       "remote": "origin"
+    },
+    {
+      "id": "44e3e415-0144-43a6-a09d-87939ab869bb",
+      "timestamp": "2026-07-19T15:56:52+08:00",
+      "operation": "commit",
+      "branch": "codex/code-graph-mcp-integration",
+      "summary": "Fix stable Windows registry and Code Graph file identity compilation",
+      "head_before": "ef48742517adee058970002900ba1fb406189ec0",
+      "remote": null
+    },
+    {
+      "id": "6b00b31c-f23f-4cc9-8f2d-133e2d215f41",
+      "timestamp": "2026-07-19T15:56:52+08:00",
+      "operation": "push",
+      "branch": "codex/code-graph-mcp-integration",
+      "summary": "Push Windows native compilation fixes",
+      "head_before": "ef48742517adee058970002900ba1fb406189ec0",
+      "remote": "origin"
     }
   ]
 }

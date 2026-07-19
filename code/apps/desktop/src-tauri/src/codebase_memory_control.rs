@@ -846,41 +846,77 @@ fn artifact_file_identity(path: &Path) -> Result<ArtifactFileIdentity, String> {
         .and_then(|value| value.duration_since(UNIX_EPOCH).ok())
         .map(|value| value.as_nanos())
         .unwrap_or(0);
+    let platform_marker = platform_file_marker(&path, &metadata)?;
     Ok(ArtifactFileIdentity {
         path,
         len: metadata.len(),
         modified_nanos,
-        platform_marker: platform_file_marker(&metadata),
+        platform_marker,
     })
 }
 
 #[cfg(unix)]
-fn platform_file_marker(metadata: &fs::Metadata) -> String {
+fn platform_file_marker(_path: &Path, metadata: &fs::Metadata) -> Result<String, String> {
     use std::os::unix::fs::MetadataExt;
-    format!(
+    Ok(format!(
         "{}:{}:{}:{}",
         metadata.dev(),
         metadata.ino(),
         metadata.ctime(),
         metadata.ctime_nsec()
-    )
+    ))
 }
 
 #[cfg(windows)]
-fn platform_file_marker(metadata: &fs::Metadata) -> String {
-    use std::os::windows::fs::MetadataExt;
-    format!(
-        "{}:{}:{}:{}",
-        metadata.volume_serial_number().unwrap_or(0),
-        metadata.file_index().unwrap_or(0),
-        metadata.creation_time(),
-        metadata.last_write_time()
-    )
+fn platform_file_marker(path: &Path, _metadata: &fs::Metadata) -> Result<String, String> {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::{
+        FileIdInfo, GetFileInformationByHandle, GetFileInformationByHandleEx,
+        BY_HANDLE_FILE_INFORMATION, FILE_ID_INFO,
+    };
+
+    let file = fs::File::open(path).map_err(|error| {
+        format!("Failed to open Code Graph upstream for identity verification: {error}")
+    })?;
+    let handle = file.as_raw_handle();
+
+    let mut file_id = unsafe { std::mem::zeroed::<FILE_ID_INFO>() };
+    let inspected_file_id = unsafe {
+        GetFileInformationByHandleEx(
+            handle,
+            FileIdInfo,
+            std::ptr::addr_of_mut!(file_id).cast(),
+            std::mem::size_of::<FILE_ID_INFO>() as u32,
+        )
+    };
+    if inspected_file_id != 0 {
+        let identifier = file_id
+            .FileId
+            .Identifier
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        return Ok(format!("{}:{identifier}", file_id.VolumeSerialNumber));
+    }
+
+    let mut info = unsafe { std::mem::zeroed::<BY_HANDLE_FILE_INFORMATION>() };
+    let inspected = unsafe { GetFileInformationByHandle(handle, &mut info) };
+    if inspected == 0 {
+        return Err(format!(
+            "Failed to inspect Code Graph upstream file identity: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+
+    Ok(format!(
+        "{}:{}:{}",
+        info.dwVolumeSerialNumber, info.nFileIndexHigh, info.nFileIndexLow
+    ))
 }
 
 #[cfg(not(any(unix, windows)))]
-fn platform_file_marker(_metadata: &fs::Metadata) -> String {
-    "portable".to_string()
+fn platform_file_marker(_path: &Path, _metadata: &fs::Metadata) -> Result<String, String> {
+    Ok("portable".to_string())
 }
 
 fn resolve_upstream() -> Result<ResolvedUpstream, String> {
