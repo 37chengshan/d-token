@@ -1026,6 +1026,9 @@ fn normalize_target_path(path: &Path) -> Result<PathBuf> {
     ensure_existing_ancestors_have_no_symlinks(parent)?;
     let mut existing_ancestor = parent;
     loop {
+        if existing_ancestor.parent().is_none() {
+            break;
+        }
         match fs::symlink_metadata(existing_ancestor) {
             Ok(metadata) => {
                 if metadata.file_type().is_symlink() {
@@ -1075,6 +1078,9 @@ fn ensure_existing_ancestors_have_no_symlinks(path: &Path) -> Result<()> {
     let mut current = PathBuf::new();
     for component in path.components() {
         current.push(component.as_os_str());
+        if !matches!(component, Component::Normal(_)) {
+            continue;
+        }
         match fs::symlink_metadata(&current) {
             Ok(metadata) if metadata.file_type().is_symlink() => {
                 bail!("symbolic links are not allowed in configuration paths");
@@ -1095,6 +1101,9 @@ fn ensure_path_has_no_symlinks(path: &Path) -> Result<()> {
     let mut current = PathBuf::new();
     for component in path.components() {
         current.push(component.as_os_str());
+        if !matches!(component, Component::Normal(_)) {
+            continue;
+        }
         match fs::symlink_metadata(&current) {
             Ok(metadata) if metadata.file_type().is_symlink() => {
                 bail!("symbolic links are not allowed in configuration paths");
@@ -1470,6 +1479,14 @@ mod tests {
     fn workspace_tempdir() -> TempDir {
         tempfile::tempdir_in(std::env::current_dir().expect("current directory"))
             .expect("temporary directory")
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_verbatim_roots_do_not_bypass_ancestor_link_checks() {
+        let root = fs::canonicalize(std::env::temp_dir()).expect("canonical temporary directory");
+        ensure_existing_ancestors_have_no_symlinks(&root)
+            .expect("Windows verbatim path should retain ancestor link checks");
     }
 
     #[test]

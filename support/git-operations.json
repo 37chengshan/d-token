@@ -306,6 +306,24 @@
       "summary": "Push Windows native compilation fixes",
       "head_before": "ef48742517adee058970002900ba1fb406189ec0",
       "remote": "origin"
+    },
+    {
+      "id": "c182cb38-a2e9-49f4-90e6-27b82efbce38",
+      "timestamp": "2026-07-19T17:31:41+08:00",
+      "operation": "commit",
+      "branch": "codex/code-graph-mcp-integration",
+      "summary": "Handle Windows verbatim roots in configuration path security checks",
+      "head_before": "5d7b7782f57f34165f84c385d8c99aa59778dc87",
+      "remote": null
+    },
+    {
+      "id": "1e80e107-2326-4ab9-805c-cc6c6f4f1e7f",
+      "timestamp": "2026-07-19T17:31:41+08:00",
+      "operation": "push",
+      "branch": "codex/code-graph-mcp-integration",
+      "summary": "Push Windows configuration path security fix",
+      "head_before": "5d7b7782f57f34165f84c385d8c99aa59778dc87",
+      "remote": "origin"
     }
   ]
 }
