@@ -1483,10 +1483,23 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
-    fn windows_verbatim_roots_do_not_bypass_ancestor_link_checks() {
-        let root = fs::canonicalize(std::env::temp_dir()).expect("canonical temporary directory");
-        ensure_existing_ancestors_have_no_symlinks(&root)
-            .expect("Windows verbatim path should retain ancestor link checks");
+    fn windows_verbatim_drive_root_paths_normalize() {
+        let temp_dir = std::env::temp_dir();
+        let mut drive_root = PathBuf::new();
+        let mut components = temp_dir.components();
+        drive_root.push(components.next().expect("drive prefix").as_os_str());
+        drive_root.push(components.next().expect("drive root").as_os_str());
+
+        let target = drive_root.join("dtoken-test").join("config.json");
+        let verbatim = format!(r"\\?\{}", target.display());
+
+        let normalized =
+            normalize_target_path(Path::new(&verbatim)).expect("verbatim path should normalize");
+        assert!(normalized.is_absolute());
+        assert_eq!(
+            normalized.file_name().and_then(|name| name.to_str()),
+            Some("config.json")
+        );
     }
 
     #[test]

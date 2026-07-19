@@ -10659,6 +10659,30 @@ mod tests {
         result
     }
 
+    fn with_fake_opencode_on_path<T>(run: impl FnOnce() -> T) -> T {
+        let directory = app_state_dir().join("test-bin");
+        fs::create_dir_all(&directory).expect("create test tool directory");
+        let executable = directory.join(if cfg!(windows) {
+            "opencode.exe"
+        } else {
+            "opencode"
+        });
+        fs::write(&executable, b"d-token test tool").expect("write fake OpenCode executable");
+
+        let previous = env::var_os("PATH");
+        let mut paths = vec![directory];
+        if let Some(path) = previous.as_ref() {
+            paths.extend(env::split_paths(path));
+        }
+        env::set_var("PATH", env::join_paths(paths).expect("compose test PATH"));
+        let result = run();
+        match previous {
+            Some(path) => env::set_var("PATH", path),
+            None => env::remove_var("PATH"),
+        }
+        result
+    }
+
     fn review_and_apply_route(route_id: &str) -> ActionResult {
         let review = preview_route_profile_draft_apply(RouteDraftReviewRequest {
             route_id: route_id.to_string(),
@@ -11466,133 +11490,137 @@ mod tests {
     #[test]
     fn product_readiness_check_is_product_scoped_without_external_headroom_gate() {
         with_isolated_app_state("product-readiness", || {
-            let result = run_product_readiness_check();
-            assert_eq!(result["mode"], "product-readiness-check");
-            assert_eq!(result["total"], 9);
-            assert_eq!(result["external_services"], "Does not start, stop, reconfigure, or depend on external Headroom, RTK, or cc-switch services.");
-            let checks = result["checks"].as_array().expect("readiness checks");
-            assert!(checks.iter().any(|check| {
-                check["id"] == "install_connect" && check["ok"].as_bool().unwrap_or(false)
-            }));
-            assert!(checks.iter().any(|check| {
-                check["id"] == "agent_detection" && check["ok"].as_bool().unwrap_or(false)
-            }));
-            assert!(checks.iter().any(|check| {
-                check["id"] == "doctor"
-                    && check["summary"]
-                        .as_str()
-                        .is_some_and(|summary| !summary.trim().is_empty())
-            }));
-            let text = result.to_string();
-            assert!(!text.contains("headroom-capability-smoke"));
-            assert!(!text.contains("workload UI"));
-            assert!(!app_state_dir().join("settings").exists());
-            assert!(!app_state_dir().join("backups").exists());
-            assert!(!app_state_dir().join("rollback-points").exists());
-            assert!(!app_state_dir().join("config-backups").exists());
+            with_fake_opencode_on_path(|| {
+                let result = run_product_readiness_check();
+                assert_eq!(result["mode"], "product-readiness-check");
+                assert_eq!(result["total"], 9);
+                assert_eq!(result["external_services"], "Does not start, stop, reconfigure, or depend on external Headroom, RTK, or cc-switch services.");
+                let checks = result["checks"].as_array().expect("readiness checks");
+                assert!(checks.iter().any(|check| {
+                    check["id"] == "install_connect" && check["ok"].as_bool().unwrap_or(false)
+                }));
+                assert!(checks.iter().any(|check| {
+                    check["id"] == "agent_detection" && check["ok"].as_bool().unwrap_or(false)
+                }));
+                assert!(checks.iter().any(|check| {
+                    check["id"] == "doctor"
+                        && check["summary"]
+                            .as_str()
+                            .is_some_and(|summary| !summary.trim().is_empty())
+                }));
+                let text = result.to_string();
+                assert!(!text.contains("headroom-capability-smoke"));
+                assert!(!text.contains("workload UI"));
+                assert!(!app_state_dir().join("settings").exists());
+                assert!(!app_state_dir().join("backups").exists());
+                assert!(!app_state_dir().join("rollback-points").exists());
+                assert!(!app_state_dir().join("config-backups").exists());
+            });
         });
     }
 
     #[test]
     fn product_readiness_check_passes_with_dtoken_runtime_metadata() {
         with_isolated_app_state("product-readiness-runtime", || {
-            let config = json!({
-                "providers": [{
-                    "id": "readiness-provider",
-                    "name": "Readiness Provider",
-                    "kind": "custom",
-                    "protocol": "open_ai",
-                    "base_url": "http://127.0.0.1:39199",
-                    "api_key_ref": null,
-                    "models": ["mock/model"]
-                }],
-                "routes": [{
-                    "id": "readiness-route",
-                    "name": "Readiness Route",
-                    "input_protocol": "open_ai",
-                    "instance_id": "readiness-instance",
-                    "target_provider_id": "readiness-provider",
-                    "fallback_provider_id": null,
-                    "chain_mode": "direct",
-                    "compression_policy": "balanced",
-                    "bind_host": "127.0.0.1",
-                    "local_port": DTOKEN_SERVICE_PORT
-                }],
-                "instances": [{
-                    "id": "readiness-instance",
-                    "name": "Readiness Instance",
-                    "agent": "OpenCode",
-                    "route_id": "readiness-route",
-                    "local_port": DTOKEN_SERVICE_PORT,
-                    "process_status": "running"
-                }]
+            with_fake_opencode_on_path(|| {
+                let config = json!({
+                    "providers": [{
+                        "id": "readiness-provider",
+                        "name": "Readiness Provider",
+                        "kind": "custom",
+                        "protocol": "open_ai",
+                        "base_url": "http://127.0.0.1:39199",
+                        "api_key_ref": null,
+                        "models": ["mock/model"]
+                    }],
+                    "routes": [{
+                        "id": "readiness-route",
+                        "name": "Readiness Route",
+                        "input_protocol": "open_ai",
+                        "instance_id": "readiness-instance",
+                        "target_provider_id": "readiness-provider",
+                        "fallback_provider_id": null,
+                        "chain_mode": "direct",
+                        "compression_policy": "balanced",
+                        "bind_host": "127.0.0.1",
+                        "local_port": DTOKEN_SERVICE_PORT
+                    }],
+                    "instances": [{
+                        "id": "readiness-instance",
+                        "name": "Readiness Instance",
+                        "agent": "OpenCode",
+                        "route_id": "readiness-route",
+                        "local_port": DTOKEN_SERVICE_PORT,
+                        "process_status": "running"
+                    }]
+                });
+                write_app_state(
+                    &["active-config", "dtoken-config.json"],
+                    &serde_json::to_string_pretty(&config).expect("serialize active config"),
+                )
+                .expect("write active config");
+
+                let Some(shutdown) = start_fake_dtoken_runtime() else {
+                    // A real d-token service can legitimately own the fixed product port
+                    // during workspace tests. Its live behavior is covered by the app UAT.
+                    return;
+                };
+                let exe = std::env::current_exe().expect("resolve readiness runtime fixture");
+                let manifest = ManagedServiceManifest {
+                    schema_version: MANAGED_SERVICE_MANIFEST_SCHEMA_VERSION,
+                    managed_by: "d-token-desktop".to_string(),
+                    identity: "dtoken-core-api".to_string(),
+                    pid: std::process::id(),
+                    port: DTOKEN_SERVICE_PORT,
+                    exe_sha256: Some(file_sha256(&exe).expect("hash readiness runtime fixture")),
+                    exe_path: exe.display().to_string(),
+                    process_birth_token: process_birth_token(std::process::id()),
+                    runtime_instance_nonce: Some("test-runtime-nonce".to_string()),
+                    config_path: app_state_dir()
+                        .join("active-config")
+                        .join("dtoken-config.json")
+                        .display()
+                        .to_string(),
+                    data_dir: service_data_dir().display().to_string(),
+                    started_at: now_label(),
+                };
+                write_service_manifest(&manifest).expect("write readiness service manifest");
+                let result = run_product_readiness_check();
+                shutdown.store(true, Ordering::SeqCst);
+
+                assert_eq!(result["mode"], "product-readiness-check");
+                assert_eq!(result["ok"], true, "{result:#}");
+                assert_eq!(result["passed"], 9);
+                assert_eq!(result["total"], 9);
+                assert!(result["privacy"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .contains("Product action only"));
+                let checks = result["checks"].as_array().expect("readiness checks");
+                for expected in [
+                    "install_connect",
+                    "agent_detection",
+                    "route_config",
+                    "compression_data",
+                    "hook_or_config_effect",
+                    "local_transaction_state",
+                    "headroom_derived_capabilities",
+                    "export_redaction",
+                    "doctor",
+                ] {
+                    assert!(
+                        checks.iter().any(|check| {
+                            check["id"] == expected && check["ok"].as_bool().unwrap_or(false)
+                        }),
+                        "missing or failed readiness check: {expected}"
+                    );
+                }
+                assert!(!app_state_dir()
+                    .join("settings")
+                    .join("project-policy.json")
+                    .exists());
+                assert!(!app_state_dir().join("backups").exists());
             });
-            write_app_state(
-                &["active-config", "dtoken-config.json"],
-                &serde_json::to_string_pretty(&config).expect("serialize active config"),
-            )
-            .expect("write active config");
-
-            let Some(shutdown) = start_fake_dtoken_runtime() else {
-                // A real d-token service can legitimately own the fixed product port
-                // during workspace tests. Its live behavior is covered by the app UAT.
-                return;
-            };
-            let exe = std::env::current_exe().expect("resolve readiness runtime fixture");
-            let manifest = ManagedServiceManifest {
-                schema_version: MANAGED_SERVICE_MANIFEST_SCHEMA_VERSION,
-                managed_by: "d-token-desktop".to_string(),
-                identity: "dtoken-core-api".to_string(),
-                pid: std::process::id(),
-                port: DTOKEN_SERVICE_PORT,
-                exe_sha256: Some(file_sha256(&exe).expect("hash readiness runtime fixture")),
-                exe_path: exe.display().to_string(),
-                process_birth_token: process_birth_token(std::process::id()),
-                runtime_instance_nonce: Some("test-runtime-nonce".to_string()),
-                config_path: app_state_dir()
-                    .join("active-config")
-                    .join("dtoken-config.json")
-                    .display()
-                    .to_string(),
-                data_dir: service_data_dir().display().to_string(),
-                started_at: now_label(),
-            };
-            write_service_manifest(&manifest).expect("write readiness service manifest");
-            let result = run_product_readiness_check();
-            shutdown.store(true, Ordering::SeqCst);
-
-            assert_eq!(result["mode"], "product-readiness-check");
-            assert_eq!(result["ok"], true, "{result:#}");
-            assert_eq!(result["passed"], 9);
-            assert_eq!(result["total"], 9);
-            assert!(result["privacy"]
-                .as_str()
-                .unwrap_or_default()
-                .contains("Product action only"));
-            let checks = result["checks"].as_array().expect("readiness checks");
-            for expected in [
-                "install_connect",
-                "agent_detection",
-                "route_config",
-                "compression_data",
-                "hook_or_config_effect",
-                "local_transaction_state",
-                "headroom_derived_capabilities",
-                "export_redaction",
-                "doctor",
-            ] {
-                assert!(
-                    checks.iter().any(|check| {
-                        check["id"] == expected && check["ok"].as_bool().unwrap_or(false)
-                    }),
-                    "missing or failed readiness check: {expected}"
-                );
-            }
-            assert!(!app_state_dir()
-                .join("settings")
-                .join("project-policy.json")
-                .exists());
-            assert!(!app_state_dir().join("backups").exists());
         });
     }
 
@@ -12115,7 +12143,7 @@ mod tests {
                 agent_ids: vec!["codex".to_string()],
                 scope: AgentIntegrationScope::Project,
                 project_root: Some(project),
-                bridge_path: PathBuf::from("/opt/dtoken-agent-bridge"),
+                bridge_path: env::current_exe().expect("resolve absolute test bridge path"),
                 install_instructions: true,
                 install_hook_or_plugin: true,
                 install_skill: true,

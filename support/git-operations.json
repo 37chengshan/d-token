@@ -324,6 +324,24 @@
       "summary": "Push Windows configuration path security fix",
       "head_before": "5d7b7782f57f34165f84c385d8c99aa59778dc87",
       "remote": "origin"
+    },
+    {
+      "id": "2f415286-8500-4b19-8360-2a0f389789f8",
+      "timestamp": "2026-07-19T18:00:36+08:00",
+      "operation": "commit",
+      "branch": "codex/code-graph-mcp-integration",
+      "summary": "Make Windows Agent discovery and product readiness tests platform-aware",
+      "head_before": "b4f9e91b36fa33dc56821643018a243053e19aec",
+      "remote": null
+    },
+    {
+      "id": "7a053de8-16ae-4680-895e-5d845e4534e6",
+      "timestamp": "2026-07-19T18:00:36+08:00",
+      "operation": "push",
+      "branch": "codex/code-graph-mcp-integration",
+      "summary": "Push Windows product readiness test fixes",
+      "head_before": "b4f9e91b36fa33dc56821643018a243053e19aec",
+      "remote": "origin"
     }
   ]
 }
