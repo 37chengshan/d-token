@@ -504,6 +504,24 @@
       "summary": "Accept Tauri NSIS bundle marker while verifying installed app identity and exact sidecars",
       "head_before": "983342cb7a833a6de7a680d529ca35c7e49a7895",
       "remote": null
+    },
+    {
+      "id": "fcd6e8ed-7b24-4083-9149-e52d424db8e6",
+      "timestamp": "2026-07-20T16:10:27+08:00",
+      "operation": "push",
+      "branch": "codex/code-graph-mcp-integration",
+      "summary": "Push NSIS installed-app identity audit fix for Windows validation",
+      "head_before": "592832490deaa14ca4850d93b1f73ab9ea7a1f16",
+      "remote": "origin"
+    },
+    {
+      "id": "1cc9bddb-1b8d-40b8-b5cf-8062fcbb4b93",
+      "timestamp": "2026-07-20T16:19:04+08:00",
+      "operation": "commit",
+      "branch": "codex/code-graph-mcp-integration",
+      "summary": "Gate unsigned validation launcher on exact candidate hash and add Windows graph workflow",
+      "head_before": "592832490deaa14ca4850d93b1f73ab9ea7a1f16",
+      "remote": null
     }
   ]
 }

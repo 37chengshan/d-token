@@ -3,7 +3,9 @@ param(
   [string]$UpstreamPath = "",
   [string]$OutputDir = "",
   [int]$TimeoutSeconds = 120,
-  [switch]$OpenBrowser
+  [switch]$OpenBrowser,
+  [switch]$AllowUnsignedValidationLauncher,
+  [string]$ExpectedLauncherPath = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -18,19 +20,36 @@ if ([string]::IsNullOrWhiteSpace($OutputDir)) {
 New-Item -ItemType Directory -Force -Path $OutputDir | Out-Null
 
 $Launcher = Join-Path $InstalledDir "dtoken-codebase-memory-launcher.exe"
+$ExpectedLauncher = if ([string]::IsNullOrWhiteSpace($ExpectedLauncherPath)) {
+  Join-Path $Root "code\target\release\dtoken-codebase-memory-launcher.exe"
+} else {
+  $ExpectedLauncherPath
+}
 $Upstream = if ([string]::IsNullOrWhiteSpace($UpstreamPath)) {
   Join-Path $env:LOCALAPPDATA "d-token\codebase-memory\upstream\codebase-memory-mcp.exe"
 } else {
   $UpstreamPath
 }
-foreach ($Artifact in @($Launcher)) {
-  if (-not (Test-Path -LiteralPath $Artifact -PathType Leaf)) {
-    throw "Installed Codebase Memory artifact is missing: $Artifact"
+if (-not (Test-Path -LiteralPath $Launcher -PathType Leaf)) {
+  throw "Installed Codebase Memory artifact is missing: $Launcher"
+}
+if (-not (Test-Path -LiteralPath $ExpectedLauncher -PathType Leaf)) {
+  throw "Current release Codebase Memory launcher is missing: $ExpectedLauncher"
+}
+
+$InstalledLauncherHash = (Get-FileHash -LiteralPath $Launcher -Algorithm SHA256).Hash.ToLowerInvariant()
+$ExpectedLauncherHash = (Get-FileHash -LiteralPath $ExpectedLauncher -Algorithm SHA256).Hash.ToLowerInvariant()
+if ($InstalledLauncherHash -ne $ExpectedLauncherHash) {
+  throw "Installed Codebase Memory launcher does not match the current release candidate."
+}
+
+$LauncherSignature = Get-AuthenticodeSignature -LiteralPath $Launcher
+$LauncherIntegrityMode = "authenticode-valid"
+if ($LauncherSignature.Status -ne "Valid") {
+  if (-not ($AllowUnsignedValidationLauncher -and $LauncherSignature.Status -eq "NotSigned")) {
+    throw "Installed Codebase Memory artifact is not Authenticode-valid: $Launcher"
   }
-  $Signature = Get-AuthenticodeSignature -LiteralPath $Artifact
-  if ($Signature.Status -ne "Valid") {
-    throw "Installed Codebase Memory artifact is not Authenticode-valid: $Artifact"
-  }
+  $LauncherIntegrityMode = "candidate-hash-unsigned-validation"
 }
 if (-not (Test-Path -LiteralPath $Upstream -PathType Leaf)) {
   throw "User-imported pinned Codebase Memory artifact is missing: $Upstream"
@@ -190,6 +209,7 @@ try {
     mode = "installed-codebase-memory-smoke"
     generated_at = (Get-Date).ToString("o")
     candidate_surface = "installed-launcher-with-user-imported-upstream"
+    launcher_integrity = @{ mode = $LauncherIntegrityMode; sha256 = $InstalledLauncherHash }
     mcp = @{ initialize = 1; tools_list = 11; allowed_tool_calls = 1; denied = 0 }
     index = @{ outcome = $IndexReceipt.outcome; reason_code = $IndexReceipt.reason_code }
     ui_host = @{ owner = $Ready.owner; host = $Ready.host; health = 200; architecture = 200; unauthorized = 404; admin_route = 404 }
