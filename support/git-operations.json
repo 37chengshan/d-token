@@ -495,6 +495,15 @@
       "summary": "Push Windows candidate provenance normalization for bundle CI rerun",
       "head_before": "447d15a",
       "remote": "origin"
+    },
+    {
+      "id": "f913b5c4-7179-4baf-b823-6817cc133228",
+      "timestamp": "2026-07-20T16:09:24+08:00",
+      "operation": "commit",
+      "branch": "codex/code-graph-mcp-integration",
+      "summary": "Accept Tauri NSIS bundle marker while verifying installed app identity and exact sidecars",
+      "head_before": "983342cb7a833a6de7a680d529ca35c7e49a7895",
+      "remote": null
     }
   ]
 }

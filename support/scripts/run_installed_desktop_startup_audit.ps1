@@ -59,6 +59,66 @@ function New-FileInfo {
   }
 }
 
+function Get-AppBundleIdentity {
+  param([string]$Path)
+
+  $File = New-FileInfo $Path
+  if (-not $File.exists) {
+    return [pscustomobject]@{
+      file = $File
+      file_description = $null
+      file_version = $null
+      product_name = $null
+      product_version = $null
+      original_filename = $null
+      internal_name = $null
+    }
+  }
+
+  $Version = [System.Diagnostics.FileVersionInfo]::GetVersionInfo($File.path)
+  return [pscustomobject]@{
+    file = $File
+    file_description = $Version.FileDescription
+    file_version = $Version.FileVersion
+    product_name = $Version.ProductName
+    product_version = $Version.ProductVersion
+    original_filename = $Version.OriginalFilename
+    internal_name = $Version.InternalName
+  }
+}
+
+function Test-AppBundleIdentityMatch {
+  param(
+    [object]$Installed,
+    [object]$Release
+  )
+
+  if (-not $Installed.file.exists -or -not $Release.file.exists) {
+    return $false
+  }
+
+  if ([string]::IsNullOrWhiteSpace($Installed.product_name) -or
+      [string]::IsNullOrWhiteSpace($Installed.product_version) -or
+      [string]::IsNullOrWhiteSpace($Release.product_name) -or
+      [string]::IsNullOrWhiteSpace($Release.product_version)) {
+    return $false
+  }
+
+  foreach ($Property in @(
+    "file_description",
+    "file_version",
+    "product_name",
+    "product_version",
+    "original_filename",
+    "internal_name"
+  )) {
+    if ($Installed.$Property -ne $Release.$Property) {
+      return $false
+    }
+  }
+  return $true
+}
+
 $CandidateStampStatus = Get-ReleaseCandidateStampStatus -Root $Root -StampPath $CandidateStampPath -ArtifactPaths @(
   $ReleaseAppExe
   if ($null -ne $LatestInstaller) { $LatestInstaller.FullName } else { $null }
@@ -110,6 +170,16 @@ $ReleaseFiles = [pscustomobject]@{
   webview2_loader = New-FileInfo $ReleaseWebView2Loader
 }
 
+# Tauri writes an NSIS-specific bundle-type marker into the executable copied
+# into the installer, then restores the source executable after bundling. The
+# installed app therefore need not have the same raw SHA-256 as the restored
+# target\release executable. Verify stable version identity for the app and
+# exact bytes for every d-token-owned sidecar instead of treating that intended
+# bundle marker as an integrity failure.
+$InstalledAppIdentity = Get-AppBundleIdentity $AppExe
+$ReleaseAppIdentity = Get-AppBundleIdentity $ReleaseAppExe
+$InstalledAppIdentityMatches = Test-AppBundleIdentityMatch $InstalledAppIdentity $ReleaseAppIdentity
+
 $DependencyOk = (
   $InstalledFiles.app_exe.exists -and
   $InstalledFiles.runtime_sidecar.exists -and
@@ -119,12 +189,11 @@ $DependencyOk = (
 )
 $InstalledMatchesCurrentBundle = (
   $DependencyOk -and
-  $ReleaseFiles.app_exe.exists -and
+  $InstalledAppIdentityMatches -and
   $ReleaseFiles.runtime_sidecar.exists -and
   $ReleaseFiles.agent_bridge.exists -and
   $ReleaseFiles.codebase_memory_launcher.exists -and
   $ReleaseFiles.webview2_loader.exists -and
-  $InstalledFiles.app_exe.sha256 -eq $ReleaseFiles.app_exe.sha256 -and
   $InstalledFiles.runtime_sidecar.sha256 -eq $ReleaseFiles.runtime_sidecar.sha256 -and
   $InstalledFiles.agent_bridge.sha256 -eq $ReleaseFiles.agent_bridge.sha256 -and
   $InstalledFiles.codebase_memory_launcher.sha256 -eq $ReleaseFiles.codebase_memory_launcher.sha256 -and
@@ -190,6 +259,12 @@ $Checks = @(
   }
   New-Check "installed_dependencies_present" $DependencyOk $InstalledFiles
   New-Check "installed_files_match_current_bundle" $InstalledMatchesCurrentBundle @{
+    app_identity = [pscustomobject]@{
+      matches_release_identity = $InstalledAppIdentityMatches
+      validation = "Version metadata must match the current release executable. Raw SHA-256 may differ because Tauri patches the installer copy with an NSIS bundle-type marker and restores the source executable after bundling."
+      installed = $InstalledAppIdentity
+      release = $ReleaseAppIdentity
+    }
     installed = $InstalledFiles
     release = $ReleaseFiles
   }
