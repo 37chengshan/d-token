@@ -1,3 +1,4 @@
+use crate::code_codec::production_registry;
 use crate::content_router::{route_content, CodecKind, ContentKind};
 use crate::hybrid::{
     lower_hybrid_context, ApprovedHybridTarget, HybridContextIr, HybridProtectionReason,
@@ -660,6 +661,14 @@ fn validate_codec_semantics(
                 return Err(ContextTransformError::CodecSemanticMismatch);
             }
         }
+        CodecKind::CodeFenceEnvelopeTrim => {
+            let prepared = production_registry()
+                .prepare_production_candidate(source)
+                .map_err(|_| ContextTransformError::CodecSemanticMismatch)?;
+            if prepared.candidate_source() != candidate {
+                return Err(ContextTransformError::CodecSemanticMismatch);
+            }
+        }
         CodecKind::LogFold => {
             for line in source
                 .lines()
@@ -676,7 +685,8 @@ fn validate_codec_semantics(
         | CodecKind::SearchFold
         | CodecKind::DiffFold
         | CodecKind::TextRepeatFold
-        | CodecKind::HtmlRepeatFold => {
+        | CodecKind::HtmlRepeatFold
+        | CodecKind::ConfigFold => {
             if expand_exact_folded_lines(candidate).as_deref() != Some(source) {
                 return Err(ContextTransformError::CodecSemanticMismatch);
             }
@@ -687,25 +697,7 @@ fn validate_codec_semantics(
 }
 
 fn expand_exact_folded_lines(candidate: &str) -> Option<String> {
-    let mut expanded = Vec::new();
-    for line in candidate.lines() {
-        let Some((base, suffix)) = line.rsplit_once(" [repeated x") else {
-            expanded.push(line.to_string());
-            continue;
-        };
-        let Some(count) = suffix
-            .strip_suffix(']')
-            .and_then(|value| value.parse::<usize>().ok())
-        else {
-            expanded.push(line.to_string());
-            continue;
-        };
-        if !(2..=1_000_000).contains(&count) {
-            return None;
-        }
-        expanded.extend(std::iter::repeat_n(base.to_string(), count));
-    }
-    Some(expanded.join("\n"))
+    crate::content_router::expand_exact_folded_lines_losslessly(candidate)
 }
 
 fn normalize_log_line_for_validation(line: &str) -> String {
@@ -723,16 +715,9 @@ fn normalize_log_line_for_validation(line: &str) -> String {
 }
 
 fn codec_revision(codec: CodecKind) -> &'static str {
-    match codec {
-        CodecKind::JsonMinify => "json_minify_v1",
-        CodecKind::LogFold => "log_fold_v1",
-        CodecKind::SearchFold => "search_fold_v1",
-        CodecKind::BuildFold => "build_fold_v1",
-        CodecKind::DiffFold => "diff_fold_v1",
-        CodecKind::TextRepeatFold => "text_repeat_fold_v1",
-        CodecKind::HtmlRepeatFold => "html_repeat_fold_v1",
-        CodecKind::Passthrough => "passthrough",
-    }
+    crate::compressor_registry::production_compressor_registry()
+        .descriptor_for(codec)
+        .map_or("passthrough", |descriptor| descriptor.revision)
 }
 
 fn collect_changed_pointers(

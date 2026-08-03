@@ -55,6 +55,21 @@ fn request() -> Value {
     })
 }
 
+fn code_fixture(language: &str) -> &'static str {
+    match language {
+        "rust" => include_str!("fixtures/code_codec/rust/async_and_generics.rs"),
+        "typescript" => include_str!("fixtures/code_codec/typescript/sample.ts"),
+        "javascript" => include_str!("fixtures/code_codec/javascript/sample.js"),
+        "python" => include_str!("fixtures/code_codec/python/sample.py"),
+        "go" => include_str!("fixtures/code_codec/go/sample.go"),
+        "java" => include_str!("fixtures/code_codec/java/Sample.java"),
+        "c" => include_str!("fixtures/code_codec/c/sample.c"),
+        "cpp" => include_str!("fixtures/code_codec/cpp/sample.cpp"),
+        _ => unreachable!(),
+    }
+    .trim_end_matches('\n')
+}
+
 #[test]
 fn cache_breakpoint_separates_frozen_prefix_transformable_window_and_protected_tail() {
     let body = request();
@@ -300,13 +315,13 @@ fn build_output_fold_retains_every_distinct_status_line() {
 }
 
 #[test]
-fn unified_diff_remains_native_text_without_a_manifest() {
+fn strictly_reversible_unified_diff_context_repeat_enters_manifest() {
     let mut body = request();
     let diff = [
         "diff --git a/src/a.rs b/src/a.rs",
         "--- a/src/a.rs",
         "+++ b/src/a.rs",
-        "@@ -1,7 +1,7 @@",
+        "@@ -1,4 +1,4 @@",
         " unchanged",
         " unchanged",
         " unchanged",
@@ -320,7 +335,79 @@ fn unified_diff_remains_native_text_without_a_manifest() {
 
     let prepared =
         prepare_context_transform(&context(), CompressionPolicy::Balanced, body).expect("prepare");
-    assert!(prepared.is_none(), "diffs must not enter any codec");
+    let prepared = prepared.expect("strictly reversible diff candidate");
+    assert_eq!(
+        prepared.manifest().entries()[0].codec_revision(),
+        "diff_fold_v1"
+    );
+    let validated = prepared.validate().expect("validated diff");
+    let text = validated
+        .body()
+        .pointer("/messages/1/content/0/content")
+        .and_then(Value::as_str)
+        .expect("diff text");
+    assert!(text.contains(" unchanged [repeated x3]"));
+}
+
+#[test]
+fn multi_language_code_tool_results_use_production_codec() {
+    for language in [
+        "rust",
+        "typescript",
+        "javascript",
+        "python",
+        "go",
+        "java",
+        "c",
+        "cpp",
+    ] {
+        let source = format!("```{language}\n\n{}\n\n```", code_fixture(language));
+        let expected = format!("```{language}\n{}\n```", code_fixture(language));
+        let mut body = request();
+        *body
+            .pointer_mut("/messages/1/content/0/content")
+            .expect("historical result") = Value::String(source.clone());
+
+        let prepared = prepare_context_transform(&context(), CompressionPolicy::Balanced, body)
+            .expect("prepare")
+            .unwrap_or_else(|| panic!("code candidate: {language}"));
+        assert_eq!(
+            prepared.manifest().entries()[0].codec_revision(),
+            "code_fence_envelope_trim_v1"
+        );
+        let validated = prepared.validate().expect("validated code");
+        let code = validated
+            .body()
+            .pointer("/messages/1/content/0/content")
+            .and_then(Value::as_str)
+            .expect("code");
+        assert_eq!(code, expected, "{language}");
+    }
+}
+
+#[test]
+fn secret_malformed_or_nonbeneficial_code_stays_passthrough() {
+    for source in [
+        "```python\n\nconst TOKEN = \"sk-not-for-codec\";\n\n```",
+        "```typescript\n\n//# sourceMappingURL=sample.js.map\nconst value: number = 1;\n\n```",
+        "```javascript\n\n//# sourceMappingURL=sample.js.map\nconst value = 1;\n\n```",
+        "```go\n\n//line generated.go:7\npackage main\nfunc main() {}\n\n```",
+        "```java\n\nException in thread \"main\" java.lang.RuntimeException\n\tat codec.Sample.add(Sample.java:7)\n\n```",
+        "```c\n\n#line 42 \"generated.c\"\nint main(void) { return __LINE__; }\n\n```",
+        "```cpp\n\n#line 42 \"generated.cpp\"\nint main() { return __LINE__; }\n\n```",
+        "```rust\npub fn add() {}\n```",
+        "```rust\n\nconst TOKEN: &str = \"sk-not-for-codec\";\n\n```",
+        "```python\n\npass\n```extra",
+    ] {
+        let mut body = request();
+        *body
+            .pointer_mut("/messages/1/content/0/content")
+            .expect("historical result") = Value::String(source.to_string());
+
+        let prepared = prepare_context_transform(&context(), CompressionPolicy::Balanced, body)
+            .expect("rejection is not an error");
+        assert!(prepared.is_none(), "code must stay byte-exact: {source}");
+    }
 }
 
 #[test]
@@ -462,11 +549,11 @@ fn openai_responses_inventory_remains_shadow_only_for_text_codecs() {
 }
 
 #[test]
-fn newline_or_crlf_drift_causes_exact_engine_fallback() {
+fn newline_and_crlf_repeat_folds_preserve_exact_line_endings() {
     let line = "The exact repeated line must preserve its line ending.";
-    for source in [
-        format!("{line}\n{line}\n{line}\n{line}\n"),
-        format!("{line}\r\n{line}\r\n{line}\r\n{line}\r\n"),
+    for (source, line_ending) in [
+        (format!("{line}\n{line}\n{line}\n{line}\n"), "\n"),
+        (format!("{line}\r\n{line}\r\n{line}\r\n{line}\r\n"), "\r\n"),
     ] {
         let mut body = request();
         *body
@@ -474,8 +561,18 @@ fn newline_or_crlf_drift_causes_exact_engine_fallback() {
             .expect("historical result") = Value::String(source);
         let result = CompressionEngine::new()
             .compress_resolved(&context(), CompressionPolicy::Balanced, body.clone())
-            .expect("safe fallback");
-        assert_eq!(result.body, body);
-        assert!(result.transforms_applied.is_empty());
+            .expect("line-ending-aware repeat fold");
+        assert!(result
+            .transforms_applied
+            .iter()
+            .any(|item| item == "text_repeat_fold_v1"));
+        let candidate = result
+            .body
+            .pointer("/messages/1/content/0/content")
+            .and_then(Value::as_str)
+            .expect("folded historical result");
+        assert!(candidate.contains("[repeated x4]"));
+        assert!(candidate.ends_with(line_ending));
+        assert!(result.compressed_tokens < result.original_tokens);
     }
 }

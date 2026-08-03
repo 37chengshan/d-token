@@ -412,6 +412,7 @@ fn lower_node(
                             crate::content_router::is_safe_lossless_candidate(text)
                                 || crate::content_router::is_safe_search_codec_candidate(text)
                                 || crate::content_router::is_safe_build_codec_candidate(text)
+                                || crate::content_router::is_safe_code_codec_candidate(text)
                                 || crate::content_router::is_safe_html_repeat_candidate(text)
                         }) =>
                     {
@@ -426,6 +427,7 @@ fn lower_node(
                             crate::content_router::is_safe_lossless_candidate(text)
                                 || crate::content_router::is_safe_search_codec_candidate(text)
                                 || crate::content_router::is_safe_build_codec_candidate(text)
+                                || crate::content_router::is_safe_code_codec_candidate(text)
                                 || crate::content_router::is_safe_html_repeat_candidate(text)
                         }) =>
                     {
@@ -444,6 +446,16 @@ fn lower_node(
                     ),
                     RiskTier::StructuralUnsafe
                         if text
+                            .is_some_and(crate::content_router::is_safe_code_codec_candidate) =>
+                    {
+                        approved_action = Some(ApprovedHybridAction::SafeTextCodec);
+                        (
+                            HybridProtection::Candidate,
+                            HybridProtectionReason::ClosedHistoricalLowRiskToolResult,
+                        )
+                    }
+                    RiskTier::StructuralUnsafe
+                        if text
                             .is_some_and(crate::content_router::is_safe_diff_codec_candidate) =>
                     {
                         approved_action = Some(ApprovedHybridAction::SafeTextCodec);
@@ -457,6 +469,16 @@ fn lower_node(
                     }
                     RiskTier::BlockUnsafe => {
                         (HybridProtection::Opaque, HybridProtectionReason::Exact)
+                    }
+                    RiskTier::RenderSafe
+                        if text
+                            .is_some_and(crate::content_router::is_safe_code_codec_candidate) =>
+                    {
+                        approved_action = Some(ApprovedHybridAction::SafeTextCodec);
+                        (
+                            HybridProtection::Candidate,
+                            HybridProtectionReason::ClosedHistoricalLowRiskToolResult,
+                        )
                     }
                     RiskTier::RenderSafe
                         if text.is_some_and(|text| {
@@ -1139,8 +1161,11 @@ pub(crate) fn apply_safe_text_codec(
         let Some(text) = current.as_str() else {
             continue;
         };
-        let compressed =
-            crate::content_router::apply_routed_codec(policy.clone(), text, transforms);
+        let compressed = crate::compressor_registry::production_compressor_registry().compress(
+            policy.clone(),
+            text,
+            transforms,
+        );
         if compressed == text {
             continue;
         }

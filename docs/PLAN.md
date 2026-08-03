@@ -9,17 +9,17 @@
 |------|------|
 | PRD | 单一 living PRD，§18 已去计划化，指向本文件 |
 | 文档 | 当前导航见 `docs/index.md`，代码事实见 `docs/product/IMPLEMENTATION_STATUS.md`；旧计划/矩阵/研究已归档 |
-| 代码 | 14 个 Rust 业务 crate + 1 个 Tauri app crate + React 18/TypeScript/Vite 桌面 UI |
+| 代码 | 18 个 Rust 业务 crate + 1 个 Tauri app crate + React 18/TypeScript/Vite 桌面 UI + 薄 TypeScript SDK |
 | 已交付里程碑 | M1（no-touch 基础）、M2（Headroom 只读集成）、M3（GUI MVP） |
 | 交付证据 | `docs/history/M1_NO_TOUCH_DEV_FOUNDATION_REPORT.md`、`docs/history/M2_EXTERNAL_READ_ONLY_INTEGRATION_REPORT.md`、`docs/history/M3_GUI_CONTROL_PLANE_MVP_REPORT.md`、`docs/history/M1_M3_DELIVERY_AUDIT.md` |
-| 当前 Node | M4 macOS 主链路已完成历史候选验证；当前唯一实施主线为 PRD §8 Headroom 全能力的 Rust-owned **后端优先迁移**。先完成后端生产路径、持久化、安全、性能、协议、Agent/RTK/MCP 与真实 OpenCode Gate，再统一处理前端真假状态和 UI；Windows、正式签名发布和其他 Agent 仍未验收 |
+| 当前 Node | `v0.2.0-beta.1` 发布收口：G2 codec、G3 CCR/ACL 实现、G4 surface parity、Agent/cc-switch/RTK 本机候选证据已显著推进；仍须完成最新全仓复证、真实 OpenCode 当前候选、Windows MSVC runner、同 commit 双平台产物与 G6–G8 后才能发布 |
 | 历史路线图 | `docs/archive/ROADMAP_M0_M6_HISTORICAL.md`（M0–M6 原文快照） |
 
 当前 M4 历史设计输入：
 
 - `docs/history/M4_REAL_CAPABILITY_OPENCODE_PLAN.md` — 当时的真实能力接入计划，仅作为历史设计和既有测试证据；当前执行状态与剩余工作以本文件、PRD、`docs/product/IMPLEMENTATION_STATUS.md` 和当前源码/测试为准。
 
-代码现状盘点（2026-07-13）：
+代码现状盘点（2026-07-31）：
 
 ```text
 code/crates/
@@ -31,8 +31,9 @@ code/apps/desktop/   Tauri 2 + React 18 + Vite，共享 Windows/macOS UI 与 nat
 code/runtimes/headroom/   Headroom-derived runtime provenance/兼容边界（非 Python sidecar）
 support/fixtures/ support/fake-bin/   no-touch 测试资产
 .github/workflows/ci.yml   structure / cargo test / no-touch smoke / desktop build
-.github/workflows/macos-release.yml   macOS app/DMG、强制签名/notarization/Gatekeeper/hash workflow
-.github/workflows/windows-release.yml Windows NSIS、强制 Authenticode、静默安装/启动/hash workflow
+.github/workflows/macos-release.yml   macOS ARM64 unsigned prerelease reusable workflow（app/DMG、包审计、hash、SBOM/license/security/provenance）
+.github/workflows/windows-release.yml Windows x64 unsigned prerelease reusable workflow（NSIS、静默安装/启动/卸载、hash、SBOM/license/security/provenance）
+.github/workflows/public-unsigned-prerelease.yml 同一 tag/同一 commit 聚合 macOS ARM64 + Windows x64，成功后才创建 GitHub public prerelease
 ```
 
 当前已交付基础：
@@ -40,21 +41,24 @@ support/fixtures/ support/fake-bin/   no-touch 测试资产
 1. d-token-owned Rust local service 已提供 OpenAI Chat/Responses、Anthropic Messages、Dashboard、stats/history/metrics、Provider/Route/Instance、Doctor、Event/Logs/Export 与 Optical shadow APIs。
 2. Dashboard、Doctor、Analytics、Logs、Changes 和 Export 已统一从 Tauri command 与 d-token-owned local service 读取真实证据；桌面页面不再用浏览器 fixture 或 mock 数字补齐状态。
 3. 当前 macOS 候选已完成真实 `OpenCode -> d-token 127.0.0.1:18001 -> OpenCode Zen` 验证：单请求物理减少 33,705 Token，`claimable=0`；持久化 runtime 汇总为 89 条 routed request、20 条可见 request record、物理减少 279,270 Token（约 4.0%）。
-4. Tauri bundling 已启用：Windows NSIS，macOS `.app`/DMG；两个公开发布 workflow 都已改为 fail-closed，缺少签名凭据、签名/公证校验、安装启动证据或 SHA-256 manifest 时不会上传发布候选。
+4. Tauri bundling 已启用：Windows NSIS，macOS `.app`/DMG；当前公开分发路径是同一 tag/同一 commit 的 GitHub **公开未签名 prerelease**。只有聚合 workflow 中 macOS ARM64 与 Windows x64 两个 reusable job 同时通过，并附带 SHA-256、SBOM、license、安全扫描和 provenance 证据时，才创建或更新 GitHub prerelease。它不宣称签名、公证或系统信誉。
 5. OS credential store 写入、引用和出站短生命周期读取已有 Rust 实现；仍需认证 Provider 的候选版实机证据。
 6. 桌面统一采用 AiMaMi 信息层级取向的纯色 shell/surface、默认全年 heatmap、分组设置、统一 `OperationDialog` 与持久化 `NotificationCenter`；成功/信息/警告/失败均即时进入顶栏 banner，短时收起与通知中心持久 receipt 解耦。侧栏图标 enter/leave 可逆动效与点击 scale 已按 PRD §12.5.7 落地（原则借鉴、不抄 AiMaMi 资产）。
 7. OpenCode 配置与 d-token active route 均已通过最小 diff、双 hash、备份、验证和精确恢复闭环；恢复后 SHA-256 分别为 `47772c85307f02e1d910dc3cc93b85165a9fc37db5911b7d4201be766f85baab` 与 `37149d6c69561a4562a67d7d53bf03337e37e98104424c694aaa4a4038c45843`。Smart Learning 也已在临时目录证明 managed block 精确回退。
-8. Hybrid Agent Integration 已进入代码验收：Rust-owned 多文件事务覆盖 Claude Code/Codex/OpenCode 的规则、Hook/Plugin、Skill 与可选 MCP，新增 metadata-only `dtoken-agent-bridge` sidecar 和真实 UI diff/apply/verify/rollback；这只代表本地实现，尚未授权写入真实 Claude/Codex 配置，也尚未完成三类 Agent routed request 验收。
+8. Hybrid Agent Integration 与 transport 已进入候选验收：Rust-owned 多文件事务覆盖 Claude Code/Codex/OpenCode 的规则、Hook/Plugin、Skill 与可选 MCP；独立 transport adapter 已覆盖 Claude Code、Codex、Cline CLI、Goose、Kilo Code、OpenCode、OpenClaw 的 Configure/Clear。2026-07-31 已按真实本机 schema 对 Claude Code、Codex、Cline 执行 preview → apply → reread verify → clear → exact restore，未启动 Agent、未发模型请求、未读取凭据值，原文件 SHA-256 与 `0600` 权限均恢复。
+9. Rust 检测注册表当前覆盖 20 个 Agent；每个检测项都有显式 transport capability decision。上述 7 个已验证 adapter 可受控配置/清除，其余 13 个保持 detection-only/fail-closed，不再用通用 JSON 递归猜字段或写 metadata block 冒充路由。前端静态 6 项 Agent catalog 已删除，Install 只消费 Rust 发现结果；每行统一显示“配置”“清除”，未验证操作只返回无写入状态，不再把用户跳转到手工配置流程。支持 adapter 的上游解析覆盖 Claude Code、Codex、Cline、Goose、Kilo Code、OpenCode、OpenClaw；Goose 相邻 custom provider 文件也参与 watcher/fingerprint。
+10. cc-switch 使用只读 DB/WAL/SHM watcher、750ms debounce 与 polling fallback；pending 变更回滚到稳定快照会被清除，下一次变更须重新完成 debounce。首次 hash-bound 授权后仅可自动更新 d-token 自有 route/runtime，绝不写 cc-switch。2026-07-31 本机已完成 A→B→A 静态 provider 切换识别与恢复，不做模型请求；最终 active route identity 与初始状态一致。
+11. managed RTK macOS candidate probe 已通过安装/验证、命令过滤、成功/失败 exit propagation、usage metadata、精确卸载与私有根目录清理；最新 metadata-only receipt 为 `support/artifacts/managed-rtk-candidate/candidate-20260731T223754Z-7536.json`。Windows/WSL runner 证据仍待补齐。
 
-当前发布阻断：
+当前发布边界：当前 `0.2.0-beta.1` 只允许作为 macOS ARM64 / Windows x64 的**公开未签名 prerelease**，不得写成已签名、公证、已通过系统安全检查或 production-certified 的安装包；未签名/ad-hoc macOS 构建出现系统安全警告属于预期，不能据此绕过系统安全保护。
 
-1. macOS 正式签名/notarization/Gatekeeper workflow 已 fail-closed 配置，但仍缺 Apple Developer ID 凭据和同一候选提交的真实执行证据；当前本机 `.app` 是 ad-hoc 签名候选。
-2. Windows 正式 NSIS/AuthentiCode/静默安装启动/hash workflow 已配置，但仍需具备签名凭据的 Windows runner 执行，并补 UTF-8/路径、Credential Manager、回退和视觉一致性实机证据。
+1. 公开未签名 prerelease 聚合 workflow 已配置为 tag `v*` 下同一 run 聚合 macOS ARM64 与 Windows x64 reusable job，只有两端门禁、SHA-256、SBOM、license、安全扫描和 provenance 全绿后才创建 GitHub prerelease；当前本地 dirty tree 仍需以真实门禁结果为准，不能把配置存在当作发布完成。
+2. macOS 仍缺 Developer ID/notarization/Gatekeeper 的正式签名路径；Windows 仍缺 AuthentiCode 的正式签名路径。公开 prerelease 不等于已具备系统信任链或生产签名。
 3. 平台自动启动控制面已接通 macOS LaunchAgent 与 Windows HKCU Run，并具备写入校验与失败回滚；仍需同一候选在真实登录会话完成 macOS/Windows 启动、状态恢复和关闭验证。
-4. Claude Code、Codex、OpenCode 的统一接入事务已实现但仅完成隔离目录验证；真实 Claude/Codex 用户配置仍未授权写入，三类 Agent 尚未完成同候选 routed request 验收。Cursor、Cline 仍未进入本轮完整接入范围。
+4. Claude Code、Codex、Cline 的真实本机临时配置事务已完成并精确恢复；按授权未发送模型请求。OpenCode 仍须在最终候选上重跑真实 routed compression；Cursor/Gemini 等未验证 schema 的 Agent 保持 detection-only，不得伪造自动接入。
 5. 真实认证 Provider 的 macOS Keychain/Windows Credential Manager 出站读取仍缺不暴露凭据的候选版实证。
 6. Headroom §8 能力尚未完整迁移：当前多个同名端点仍是 metadata-only、preview-only、静态兼容声明或透传；在逐能力 runtime/eval/Agent 证据闭环前不得进入公开试用候选。
-7. 截至 2026-07-15 当前 working tree，G0/G1 已完成：release 默认不再落入 fixture，真实请求身份来自 route/Agent scope，Optical cache evidence 来自实际 target，动态 Agent registry 与 session roots 由后端证据生成，ContextStore schema v3 持久化 capability/request/CCR/Agent projection 与精确 route/provider/model/config 绑定的 Provider cache counter observation，Chat/Responses/Anthropic direct/bridge 均经由 sealed pipeline，CCR durable receipt 在发送前门控。G2 已新增显式、默认空的 Provider cache policy registry；只有 exact policy + exact fresh observation 同时存在时，OpenAI Chat、Responses-to-Chat 与 Anthropic-to-OpenAI bridge 才把 evidence 交给 resolved compression plan。Direct Anthropic Hybrid、provider 实际 breakpoint、stream final usage 与 raw-wire prefix 仍未闭环；尚未通过 G2–G8 前不得进入前端阶段或发布候选。
+7. 截至 2026-07-31 当前 working tree，G0/G1 仍以最新全仓复证为准。G2 的本地 release probe 已将 JSON、log、search、build、diff、text、HTML 与覆盖 Rust/TS/JS/Python/Go/Java/C/C++ 的 code-compressor 全部标记 active；每类至少 128 个 property/semantic/rollback cases，negative/budget/cancellation 门通过，零失败，evidence revision 为 `d0cb2e0346339d8985ea949b1c6dbdb25fc7b347d3440e04e5584cfce9233b69`。G3 已实现 CCR lifecycle journal/reconciliation、Unix 权限与 Windows current-user+SYSTEM protected DACL；Windows GNU cross-check 通过，但 MSVC runner 仍须实际运行 ACL tests。G4 的 Rust/HTTP/MCP/TS SDK parity 已有定向回归。以上证据尚未绑定最终 clean candidate；G6–G8、真实 OpenCode 与双平台产物未全绿前不得发布。
 
 ## 1. 计划原则
 
@@ -775,7 +779,9 @@ idle
 
 ## 1C. 当前唯一实施主线：Headroom 后端全能力迁移（实施中）
 
-参考基线固定为 `headroomlabs-ai/headroom@1725cd1f8376828849c0e48fd9008afa25d24fff`，Apache-2.0。当前先做行为与接口对照；如复制或修改上游源码，必须在动手前补齐 NOTICE、文件清单和修改说明。外部 Headroom 8787 只允许 no-touch 只读对照。
+当前参考基线固定为 `headroomlabs-ai/headroom@main` / `01df2452529a86c689cf226fecd5918cc5d19676`（2026-08-02，未发布 tag）；前一发布基线 `v0.33.0` / `28aa53dc7ca51e687cc719c3fe160f3be50c6570`，历史 commit `1725cd1f8376828849c0e48fd9008afa25d24fff` 只解释旧证据，不再作为完成口径。当前先做行为与接口对照；如复制或修改上游源码，必须在动手前补齐 NOTICE、文件清单和修改说明。外部 Headroom 8787 只允许 no-touch 只读对照。
+
+v0.33 delta 必须纳入 G0–G8：compressor registry、route-bound `/v1/compress` gateway/SDK surface、递归/混合/config 内容路由、cold-prefix/thinking compaction、tool-schema savings、streamable MCP、CCR sliding TTL、persistent metrics 与新增 Provider/Agent 路由均须逐项标为真实、部分、缺失或不在范围。2026-08-02 首批已接入 Rust-owned 内置 compressor registry 和不转发请求的显式 route-bound `/v1/compress`；动态 Python entry point/进程内第三方插件继续禁止，第三方中转通过 d-token RouteProfile 与受限 HTTP/MCP/SDK 合同接入。
 
 状态口径：`真实` 表示已有 d-token-owned production 执行路径与运行证据；`部分` 表示仅覆盖子集；`占位` 表示只有同名 endpoint/metadata/UI；`缺失` 表示没有可用实现；`不安全默认` 表示有代码但 release 默认可能返回 fixture、测试身份或未经计算的成功证据。占位、缺失和不安全默认均为发布阻断。
 
@@ -784,23 +790,23 @@ idle
 | 能力 | 当前事实 | 目标与最小完成证据 | 优先级 |
 |---|---|---|---|
 | Local proxy、OpenAI/Anthropic 协议与显式路由 | 部分真实：OpenCode routed flow 已通过，其他 Agent/Provider 矩阵未闭环 | official/custom/cc-switch/chain 五类 route，错误透传、无静默 fallback、每类 Ledger 证据 | P0 |
-| Library/SDK/middleware | 缺失 | 稳定 Rust API；需要对外 SDK 时提供薄 TS binding；与 proxy 共用同一 pipeline 与生命周期 | P1 |
-| Agent wrap/unwrap | 部分：OpenCode 配置事务真实，其他多为检测或静态能力描述 | 每个受支持 Agent 使用 detection → preview → backup → apply → verify → rollback；UI 只显示实机识别到的 Agent | P0 |
-| MCP server/tools | 占位：状态面声明工具名，但无 MCP transport/handler | `compress`、`retrieve`、`stats` 具备真实 schema、transport、权限、取消和集成测试；未完成前 `configured=false` | P0 |
-| ContentRouter | 部分：resolved production path 已接类型化分类、confidence/size/deadline budget、JSON/log/search/build/diff/HTML/code/text/passthrough reason、manifest/post-validation；Image 与完整 decision evidence 尚未闭环 | 类型化内容分类与 fail-closed router，选择 JSON/log/search/diff/HTML/code/text/image/passthrough，并写入 decision evidence | P0 |
-| SmartCrusher / JSON compressor | 部分：object/array lossless minify 已进入 sealed manifest/semantic validator；未知/非 container/负收益 passthrough | 继续补 schema/tool args/secret/exact corpus、property/fuzz、token 与质量 eval | P0 |
-| CodeCompressor | 部分 gate：已检测 Rust/TS/JS/Python/Go/Java/C/C++，严格校验 parser revision、corpus digest、syntax/semantic case 与零失败证据；Rust 已有 syn@2 parse/reparse、digest-bound、负收益拒绝、metadata-only Debug 的 parser-backed evaluation candidate，但明确记录 macro token stringification 风险且仍仅 `EvaluationOnly`；其余七类语言无 parser implementation，production 全部 passthrough | 实现其余逐语言 AST/结构安全 transform；完成语义、格式化、编译与测试 fixture 后才允许任一语言 active | P0 |
-| Kompress/text compressor | 部分：受保护历史结果已有 Log fold 与可精确重建的 Search/Build/Diff/Text/HTML repeat codecs；decision/secret/code/blocked HTML/负收益 fail-closed；通用 legacy `compress` 仍显式透传 | 继续补一般 text/HTML 质量 codec、取消/限时、检索/指令/secret corpus 与真实模型质量/延迟 eval | P0 |
+| Library/SDK/middleware | 部分真实：Rust API、HTTP、MCP 与薄 TS SDK 已共享 decision contract；新增 `/v1/compress` 返回 route-bound validated candidate body、不发送上游、不持久化请求，并与 MCP/SDK 共用 execution contract。framework adapters 与最终候选复证仍缺 | 稳定 Rust API；薄 TS binding/framework adapters 与 proxy 共用同一 pipeline 与生命周期 | P1 |
+| Agent wrap/unwrap | 部分真实：20 项检测矩阵均有显式能力状态；7 个版本化 transport adapter 具备 Configure/Clear，Claude/Codex/Cline 已完成真实临时事务与精确恢复；其余 fail-closed | 每个宣称支持自动写入的 Agent 使用 detection → preview → backup → apply → verify → rollback；未验证项保持 unavailable | P0 |
+| MCP server/tools | 部分真实：有界 stdio JSON-RPC、`compress`/`retrieve`/`delete`/`stats`、权限、取消与集成测试已实现；`headroom_compress` 与 `/v1/compress` 现复用同一 execution contract，OpenAI Chat 和 direct Anthropic 同协议 route 可解析，跨协议与 streamable HTTP MCP 尚未闭环 | 全协议 route-resolved MCP、受控 capability transaction、错误传播、streamable HTTP 与最终候选 integration evidence | P0 |
+| ContentRouter | 本地 gate 通过：resolved production path 已接类型化分类、confidence/size/deadline budget、JSON/log/search/build/diff/HTML/code/text/passthrough、manifest/post-validation；v0.33 风格 Rust-owned compressor registry 已登记八类 active lossless codec，生产路径不动态加载第三方代码；普通图片文件压缩不在范围 | 补递归/混合/config 内容的 IR-safe 路由，并将同一 active decision 绑定最终 Provider/Agent 真实质量、延迟与 Ledger 证据 | P0 |
+| SmartCrusher / JSON compressor | active candidate：lossless minify、sealed manifest/semantic validator、128+ property/semantic/rollback、negative/budget/cancel 门零失败 | 绑定最终候选 commit 与真实 Provider 质量/延迟证据 | P0 |
+| CodeCompressor | active candidate：Rust/TS/JS/Python/Go/Java/C/C++ 均进入 production codec evidence；128 property/semantic/rollback、8 corpus、negative/budget/cancel 门零失败 | 绑定最终候选 commit、真实 Agent 请求与 provider quality/latency evidence | P0 |
+| Kompress/text compressor | active candidate：Log/Search/Build/Diff/Text/HTML 均具备可逆 transform、manifest 重建验证与 release evidence；风险/secret/负收益严格 passthrough | 绑定最终候选 commit、真实模型质量与性能预算 | P0 |
 | Optical code/context → PNG compression | 部分实验：Optical shadow/严格门控路径是 d-token 的正式方向；普通输入图片 resize/re-encode/tile/ONNX 明确不在产品范围 | 完成 Optical provider cache、fidelity/cost/latency、post-validation 与跨平台证据；production active 继续默认关闭 | P0 |
-| CacheAligner / live-zone | 部分：通用 Hybrid IR 已生成 FrozenPrefix/TransformableWindow/ProtectedTail 与 route/provider/model-bound stable-prefix cache key；validator 禁止 frozen/non-target mutation；schema v3 已按 exact route/provider/model/protocol/config identity 持久化 Anthropic/OpenAI 非流式成功响应中的 allowlisted cache counters。显式 cache policy registry 提供 TTL/min-prefix/strategy，且只有 exact fresh observation 同时存在时，OpenAI Chat、Responses-to-Chat 与 Anthropic-to-OpenAI bridge 才生成 64-hex evidence revision 并接入 resolved plan。Direct Anthropic Hybrid、provider 实际 breakpoint、stream final usage 与 raw-wire prefix 证据仍缺 | 冻结前缀 byte-identical、仅压缩新 zone、history 不丢失、provider cache breakpoint/policy 与回归测试 | P0 |
-| CCR reversible compression / retrieval | 部分：已有 AES-256-GCM、TTL/quota、Unix 权限、精确 retrieve/delete；生产请求已在 pre-send 阶段要求 durable receipt，缺失 receipt 或验证失败会发送原文；仍缺 marker/tool retrieve/finalize/delete、stream 与 Windows ACL 全链证据 | 默认关闭；完成 `prepare → receipt/marker → send → finalize/delete`，随机 capability ref、权限/审计、响应 tool-call、stream 与跨平台故障测试 | P0 |
-| Local/per-project/cross-agent memory、SharedContext | 占位 | 本地结构化脱敏存储、provenance、去重、项目隔离、跨 Agent 授权共享、删除/导出与真实检索 | P0 |
+| CacheAligner / live-zone | 部分：通用 Hybrid IR 已生成 FrozenPrefix/TransformableWindow/ProtectedTail 与 route/provider/model-bound stable-prefix cache key；validator 禁止 frozen/non-target mutation；schema v5 已按 exact route/provider/model/protocol/config identity 持久化 Anthropic/OpenAI 成功响应中的 allowlisted cache counters。Direct Anthropic SSE 在 `message_stop` 无 error 时仅从有界瞬时 parser 写入 final usage/cache evidence；不完整/error/drop 不写 observation。显式 cache policy registry 提供 TTL/min-prefix/strategy，且只有 exact fresh observation 同时存在时，OpenAI Chat、Responses-to-Chat 与 Anthropic-to-OpenAI bridge 才生成 64-hex evidence revision 并接入 resolved plan。Direct Anthropic Hybrid、provider 实际 breakpoint 与 raw-wire prefix 证据仍缺 | 冻结前缀 byte-identical、仅压缩新 zone、history 不丢失、provider cache breakpoint/policy 与回归测试 | P0 |
+| CCR reversible compression / retrieval | 部分真实：AES-256-GCM、TTL/quota、inspect/retrieve/delete、lifecycle journal/reconciliation、SQLite projection rebuild、Unix permissions 与 Windows protected DACL 实现已完成；Windows GNU cross-check 通过。仍缺 MSVC runner DACL 实测、自动 tool-call retrieve 与跨存储原子 crash evidence | 完成最终候选 `prepare → receipt/marker → send → finalize/delete`、权限/审计、tool-call 与双平台故障测试 | P0 |
+| Local/per-project/cross-agent memory、SharedContext | 部分：typed 脱敏存储、provenance、去重、项目/Agent/session isolation、session-bound share grant/revoke、删除/导出与受控 MCP list/export/delete/write 已实现；v4 project-wide grants 迁移后 fail-closed | capability transaction 分发、真实 managed Agent 检索/跨 Agent 授权证据与 route-bound application | P0 |
 | learn / Smart Learning | 部分：会话 metadata 项目发现、安全结构索引、managed block/rollback 已有；失败挖掘与结构化委派未闭环 | 多 Agent 增量发现、真实项目理解、失败模式提炼、preview/direct 两模式、受控写入与真实回退 | P0 |
-| output shaper / verbosity / effort routing | 占位 | route-resolved 请求中真实应用；错误/新问题保留 effort；holdout、measured/estimated/unknown 分账 | P0 |
+| output shaper / verbosity / effort routing | 部分真实：route-resolved policy 已在 core API 应用，保护 error/new-question，支持 holdout 与 measured/estimated/unknown 分账；仍缺真实 Provider/Agent 质量证据 | 绑定最终候选 route evidence、holdout 对照与跨协议验证 | P0 |
 | lifecycle/hooks/extensions | 部分 | proxy/library/MCP 共用类型化 request lifecycle；pre/post hooks 有 deadline、取消、隔离、Ledger | P1 |
 | durable ledger、metrics、stats/history/export、cost/breakdown | 大部分真实 | 统一 denominator、per-model/agent/project、signed delta、跨重启一致性与 Dashboard/export 对账 | P0 |
 | Doctor/perf/benchmark/troubleshooting | 部分真实；benchmark 仅开发面 | release Doctor 只检查产品能力；perf/eval 留在 CI/support；故障注入、资源门与修复回执 | P0 |
-| integrated RTK | 不安全默认/部分：主要仍是外部检测与 metadata，adapter 未显式 profile 时可落 fixture | d-token 管理 bundled/reimplemented provenance、command rewrite/filter/exit/fail-safe、tracking/tee、hook integrity/uninstall、macOS/Windows/WSL 矩阵 | P0 |
+| integrated RTK | 部分真实：d-token-owned managed macOS probe 已通过 install/verify、filter、success/failure exit propagation、usage evidence、exact uninstall 与 root cleanup；不保存 argv/raw output/credential value。Windows/WSL 与最终候选 workflow 证据仍缺 | 绑定同一候选的 macOS/Windows/WSL lifecycle、hook integrity、tracking 与 uninstall evidence | P0 |
 
 ### 1C.0 后端架构与能力覆盖合同
 
@@ -852,7 +858,7 @@ dtoken-preprocessor         integrated RTK internal capability
 9. **G8 Candidate**：full fmt/Clippy/test/audit/build，macOS/Windows 产物同 commit，哈希、SBOM、NOTICE、已知限制绑定 manifest；矩阵零占位/缺失/不安全默认。
 10. **G9 Frontend completeness gate**：仅 G0–G8 全绿后进入“完整 Headroom 迁移已在前端闭环”的候选验收；不得把它解释为冻结现有 UI 的安全修复。
 
-当前 gate 进度（2026-07-15 working tree）：G0、G1 已通过本地 contract/regression 门；G2 已实现通用 plan/router/manifest/validator、安全 codec 子集和 explicit-policy cache evidence，但 direct Anthropic provider breakpoint/raw-wire、完整 Code 与 provider 质量/故障/性能证据仍是部分。G3–G8 未全部完成，因此不能进入发布候选或启用 Optical Active。该进度只描述当前未提交工作树。
+当前 gate 进度（2026-07-31 working tree）：G0/G1 需在最新全仓门禁中复证；G2 八类 production codec release probe 已全绿，但仍须绑定最终 candidate 与真实 Provider/Agent 质量证据；G3 lifecycle/权限实现已补齐到 Windows DACL 代码与 cross-check，仍缺 Windows MSVC 实测和剩余 crash/tool-call 证据；G4 Rust/HTTP/MCP/TS parity 定向通过；G5 macOS managed RTK、真实 Claude/Codex/Cline 临时事务与 cc-switch 静态切换有证据，其他 Agent 未验证项保持 unavailable；G6–G8、当前候选 OpenCode 和双平台产物仍未完成，因此不能发布。
 
 ## 1D. 实验性代码智能图谱接入（实施中，仍未达到发布候选）
 
@@ -1036,11 +1042,12 @@ M4 的实际落地先走 `OpenCode Real Route Track`：使用用户原本 OpenCo
 ### M5.S1 打包与签名（构建配置已启用，发布证据未闭环）
 
 - [x] Windows NSIS 与 macOS `.app`/DMG 的 Tauri bundle 配置。
-- [x] Windows 发布 workflow：Windows runner、Tauri bundling 阶段签名、AuthentiCode 验证、当前候选静默安装/启动/卸载、SHA-256 manifest 和 artifact upload；缺证书时 fail-closed。
+- [x] Windows unsigned prerelease workflow：Windows runner、当前候选静默安装/启动/卸载、SHA-256 manifest、SBOM/license/security/provenance 与 artifact upload；明确 unsigned，不宣称 AuthentiCode。
 - [x] 平台自动启动控制面：macOS LaunchAgent 与 Windows HKCU Run 均使用精确启动参数、原值快照、写入后校验和失败回滚；设置页读取 native 状态并使用统一确认弹窗。
 - [x] 干净 checkout 在 workspace Clippy/test 前按 Linux/macOS/Windows host 构建并准备真实 `dtoken-proxy` externalBin，避免本地残留生成物掩盖 Tauri build-script 失败。
 - [ ] 同一候选在 macOS 与 Windows 真实登录会话验证自动启动、重复启用、禁用、损坏配置和 App 升级路径。
-- [x] macOS 发布 workflow：Developer ID 导入、严格 codesign、notarization/staple、Gatekeeper、SHA-256 manifest 和 artifact upload；缺证书/公证凭据时 fail-closed。
+- [x] macOS unsigned prerelease workflow：ARM64 `.app`/DMG、包审计、SHA-256 manifest、SBOM/license/security/provenance 与 artifact upload；明确 unsigned，不宣称 Developer ID/notarization/Gatekeeper。
+- [x] 聚合 public prerelease workflow：tag `v*` 在同一 run/同一 commit 调用 macOS ARM64 与 Windows x64 reusable job；两端全部成功后才创建 GitHub public prerelease。
 - [ ] Windows 安装后 UTF-8、路径、credential、`.cmd` shim 与回退实机验收。
 - [x] macOS 本机 `.app`/DMG、安装后 runtime、真实窗口与 artifact hash 候选证据。
 - [ ] Apple Developer ID、notarization、xattr/quarantine 分发验收。
@@ -1139,7 +1146,7 @@ M4 的实际落地先走 `OpenCode Real Route Track`：使用用户原本 OpenCo
 
 ## 5. CI Gate（贯穿 M4–M6）
 
-当前 `.github/workflows/ci.yml` 已含 structure、前端 test/typecheck/build、Rust fmt/clippy/test 和 no-touch fixture smoke；`macos-release.yml` 对公开产物强制 Developer ID、notarization、staple、Gatekeeper 和哈希，缺凭据即失败。2026-07-13 当前本地候选门禁为前端 125 项通过、Playwright E2E 20 项通过、`npm audit` 0 个漏洞；macOS 六页基线截图位于 `support/artifacts/macos-ui/final-candidate-2026-07-12T18-52-02-502Z/`，当前 autostart/窄窗口证据位于 `support/artifacts/macos-ui/final-candidate-2026-07-13/`。本机 ad-hoc 产物哈希由候选专属 manifest 绑定 commit，源码文档不复用旧哈希；正式发布仍须在候选 commit 上重新签名构建。计划延续并加强：
+当前 `.github/workflows/ci.yml` 已含 structure、前端 test/typecheck/build、Rust fmt/clippy/test 和 no-touch fixture smoke；tag `v*` 的 GitHub public prerelease 现在改为聚合 unsigned workflow：只有 macOS ARM64 与 Windows x64 两个 reusable job 在同一 run/同一 commit 下同时完成安装/启动审计、SHA-256、SBOM/license/security/provenance，才创建 GitHub prerelease。它不宣称 Developer ID/notarization/Gatekeeper 或 Authenticode。2026-07-13 当前本地候选门禁为前端 125 项通过、Playwright E2E 20 项通过、`npm audit` 0 个漏洞；macOS 六页基线截图位于 `support/artifacts/macos-ui/final-candidate-2026-07-12T18-52-02-502Z/`，当前 autostart/窄窗口证据位于 `support/artifacts/macos-ui/final-candidate-2026-07-13/`。本机 ad-hoc 产物哈希由候选专属 manifest 绑定 commit，源码文档不复用旧哈希；生产级正式发布仍须在候选 commit 上重新签名构建。计划延续并加强：
 
 1. `python support/scripts/check_structure.py` —— 目录边界。
 2. `cargo fmt --all -- --check` / `cargo check --workspace --tests` / `cargo test --workspace`。

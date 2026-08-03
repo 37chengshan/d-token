@@ -1,15 +1,17 @@
 # 第三方版权与修改声明
 
-更新时间：2026-07-13
+更新时间：2026-08-02
 
-本文件是 d-token 当前代码中直接适配第三方实现的唯一版权、来源与修改声明入口。产品边界仍以 [`docs/PRD.md`](../PRD.md) 为准；本文件不授权使用任何第三方商标或品牌资产。
+本文件保存维护者使用的详细版权、来源与修改记录；面向源码与安装包分发的权威声明位于仓库根目录 [`THIRD_PARTY_NOTICES.md`](../../THIRD_PARTY_NOTICES.md)。产品边界仍以 [`docs/PRD.md`](../PRD.md) 为准；两份声明都不授权使用任何第三方商标或品牌资产。
 
 ## Headroom 行为对照基线
 
 - 项目：[`headroomlabs-ai/headroom`](https://github.com/headroomlabs-ai/headroom)
-- 固定对照：[`1725cd1f8376828849c0e48fd9008afa25d24fff`](https://github.com/headroomlabs-ai/headroom/commit/1725cd1f8376828849c0e48fd9008afa25d24fff)
+- 当前固定对照：[`main`](https://github.com/headroomlabs-ai/headroom/tree/main) / [`01df2452529a86c689cf226fecd5918cc5d19676`](https://github.com/headroomlabs-ai/headroom/commit/01df2452529a86c689cf226fecd5918cc5d19676)（2026-08-02 获取，未发布 tag）
+- 前一发布对照：[`v0.33.0`](https://github.com/headroomlabs-ai/headroom/releases/tag/v0.33.0) / [`28aa53dc7ca51e687cc719c3fe160f3be50c6570`](https://github.com/headroomlabs-ai/headroom/commit/28aa53dc7ca51e687cc719c3fe160f3be50c6570)
+- 历史对照：[`1725cd1f8376828849c0e48fd9008afa25d24fff`](https://github.com/headroomlabs-ai/headroom/commit/1725cd1f8376828849c0e48fd9008afa25d24fff)，仅用于解释 2026-07 的旧证据
 - 上游许可证：Apache License 2.0；固定 commit 包含根目录 `NOTICE`
-- 当前使用边界：只进行公开行为、接口和测试语义对照；截至本声明更新，新增的 `dtoken-learning` 与现有 d-token Rust runtime 均为本仓库独立实现，没有从该 commit 复制源码
+- 当前使用边界：只进行公开行为、接口和测试语义对照；`dtoken-learning`、Rust compressor registry、route-bound gateway compression 与现有 d-token runtime 均为本仓库独立实现，没有从该 commit 复制源码
 - 后续边界：若迁移或修改上游源码，必须在代码进入仓库前补充许可证副本、NOTICE、逐文件来源、修改范围和保留版权声明；仅有同名接口、metadata endpoint 或布尔字段不得算作能力迁移
 
 ## AiMaMi
@@ -29,7 +31,7 @@
 | --- | --- | --- |
 | `code/apps/desktop/src/app/components/shell/PageStage.tsx` | `src/components/layout/page-stage.tsx` | 改用 `motion/react` 与 `AnimatePresence` 生命周期；保留 140–240ms 低幅度转场意图；加入显式 Reduce Motion 分支及 d-token 间距。 |
 | `code/apps/desktop/src/app/components/shell/AnimatedSegmentedControl.tsx` | `src/components/ui/animated-segmented-control.tsx` | 改为 d-token 泛型 API、等宽指示器和产品样式；重写焦点移动与键盘语义；加入 Reduce Motion 数据状态。 |
-| `code/apps/desktop/src/app/components/shell/Sidebar.tsx` 与 `code/apps/desktop/src/styles/shell.css` | `src/components/layout/sidebar.tsx`、`src/components/ui/sidebar.tsx` 的 inset shell、展开/折叠与主题分段结构 | 改为 d-token 七个一级页面（含视觉压缩 Beta）、184/64px 布局、48px 顶部基线、跨平台窗口边界、独立导航动效、d-token 设计 token 与响应式规则。 |
+| `code/apps/desktop/src/app/components/shell/Sidebar.tsx` 与 `code/apps/desktop/src/styles/shell.css` | `src/components/layout/sidebar.tsx`、`src/components/ui/sidebar.tsx` 的 inset shell、展开/折叠与主题分段结构 | 改为 d-token 八个一级页面（含代码图谱实验页与视觉压缩 Beta）、184/64px 布局、48px 顶部基线、跨平台窗口边界、独立导航动效、d-token 设计 token 与响应式规则。 |
 
 `Surface.tsx` 只借鉴 AiMaMi 的 grouped-panel 视觉原则并由 d-token 独立实现；`AnimatedNavIcon.tsx` 的图形与动画配方为 d-token 自有实现。它们仍在源码注释中明确参考边界，但不声明复制 AiMaMi 品牌或图标资产。
 
@@ -88,11 +90,13 @@ POSSIBILITY OF SUCH DAMAGE.
 ```
 # codebase-memory-mcp
 
-d-token optionally redistributes the pinned headless
+d-token integrates an explicit user-import flow for the pinned headless
 `DeusData/codebase-memory-mcp` v0.9.0 binary (commit
 `b637e3330c96cfe452da623db068c241aaa3ec01`) under the MIT License. Platform
 archive and extracted-binary hashes are recorded in
-`code/runtimes/codebase-memory/artifact-manifest.json`. Every bundle containing
-the binary must also contain the upstream `LICENSE` and
-`THIRD_PARTY_NOTICES.md`; the upstream installer, updater, and native web UI are
-not used.
+`code/runtimes/codebase-memory/artifact-manifest.json`. The d-token installer
+contains the restricted launcher and upstream legal text, but not the upstream
+executable. When a user imports the pinned archive, d-token verifies the
+platform, architecture and SHA-256 and keeps the upstream `LICENSE` and
+`THIRD_PARTY_NOTICES.md` with the imported component. The upstream installer,
+updater and native web UI are not used.

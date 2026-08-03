@@ -1,8 +1,13 @@
 pub mod code_codec;
+pub mod codec_evidence;
+pub mod compressor_registry;
 pub mod content_router;
 pub mod context_pipeline;
+pub mod diff_codec;
 pub mod hybrid;
 pub mod optical;
+pub mod output_shaper;
+pub mod text_codec;
 
 use anyhow::Result;
 use dtoken_types::{CompressionPolicy, CompressionResult};

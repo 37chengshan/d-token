@@ -1,11 +1,11 @@
 # d-token 当前实现状态
 
-更新时间：2026-07-19
+更新时间：2026-07-31
 状态类型：代码事实快照，不替代 `docs/PRD.md` 与 `docs/PLAN.md`
 
 ## 1. 当前结论
 
-d-token 当前已形成可运行的 Rust-owned 本地 runtime、Tauri 2 桌面控制面和 React 18/TypeScript UI。macOS 历史候选已完成安装/服务生命周期、OpenCode 配置事务、真实 routed compression、持久化 Dashboard/Event Ledger、product-readiness 9/9、Smart Learning exact rollback 与真实窗口 UX 验证；这里的 9/9 是历史 readiness 聚合，不等于 Doctor 的问题→修复→复检闭环。当前工作树已新增用户主动扫描、低风险常规修复确认与自动复检，以及默认备份页、变更记录和 hash-bound 回退预检，并新增“代码图谱（实验性）”独立一级页面、受限 launcher、Agent MCP transaction、d-token-owned 只读 graph host 与五维状态。Codebase Memory 已通过真实 OpenCode MCP initialize/tools/list/allowed tool-call 与 exact rollback 验收。macOS/Windows 的 fail-closed 签名、安装验证与 hash workflow 已配置。它仍不是可公开发布版本：真实公开签名、Windows runner、其他 Agent 与 Headroom §8 全能力迁移证据仍未完成，当前多个同名接口仍是 metadata-only、preview-only、静态声明或部分实现。
+d-token 当前已形成可运行的 Rust-owned 本地 runtime、Tauri 2 桌面控制面、React 18/TypeScript UI 与薄 TypeScript SDK。当前工作树已补齐八类 production codec release evidence、CCR lifecycle/reconciliation 与 Windows DACL 实现、Rust/HTTP/MCP/TS surface parity、20 项 Agent 检测/transport capability matrix、Claude/Codex/Cline 真实临时配置精确恢复、cc-switch A→B→A 只读静态识别以及 macOS managed RTK lifecycle probe。它仍不是可发布候选：最新全仓门禁、当前候选真实 OpenCode、Windows MSVC runner、同 commit 双平台安装包以及 G6–G8 尚未全部通过。公开未签名 prerelease 只有在这些硬门全绿后才允许创建。
 
 ## 2. 代码所有权
 
@@ -17,7 +17,7 @@ d-token 当前已形成可运行的 Rust-owned 本地 runtime、Tauri 2 桌面�
 | `code/runtimes/headroom/` | Headroom-derived 能力迁移与 provenance 边界，不是 Python sidecar 或外部服务依赖 |
 | `code/UI design for project/` | 设计原型/历史 UI 输入，不是生产代码入口 |
 | `code/apps/desktop/src-old/` | 旧前端实现，不得作为新功能落点 |
-| `code/packages/sdk/` | 尚未实现的 SDK 预留目录，不是当前对外能力 |
+| `code/packages/sdk/` | 薄 TypeScript SDK；与 Rust/HTTP/MCP 共用 compression decision parity contract |
 
 ## 3. 当前 Rust workspace
 
@@ -65,20 +65,22 @@ AI coding agent
 - Provider、Route、Instance、active config、chain status 与近期 route decision。
 - Doctor、recent logs、JSON/CSV export、Event Ledger。
 - CCR、memory/learn、output shaping、项目策略与兼容性信息。
-- Headroom-derived 与 integrated RTK 的 metadata-only 状态面。
+- Headroom-derived 状态面，以及 d-token-owned managed RTK command filter/lifecycle evidence。
 - Optical shadow preview、status、capabilities、lifecycle 与 recent events。
 
 这些端点的存在只证明实现面存在，不自动等于已达到稳定 Beta。真实 release claim 仍需同一候选 commit 的构建、运行、路由、持久化和平台证据。
 
 ### Headroom 全能力迁移事实
 
-固定对照基线为 `headroomlabs-ai/headroom@1725cd1f8376828849c0e48fd9008afa25d24fff`。当前事实如下：
+当前固定对照基线为 `headroomlabs-ai/headroom@main` / `01df2452529a86c689cf226fecd5918cc5d19676`（未发布，2026-08-02 获取）；前一发布基线 `v0.33.0` / `28aa53dc7ca51e687cc719c3fe160f3be50c6570`，历史 `1725cd1f8376828849c0e48fd9008afa25d24fff` 仅用于解释旧证据。当前事实如下：
 
-- proxy、显式 route、Ledger、stats/history/metrics、Dashboard/export 已有真实 d-token-owned 基础，但 Provider/Agent 矩阵未完整验收。
-- 通用 legacy `dtoken-compress::CompressionEngine::compress` 仍是显式透传；resolved production path 已接入类型化 context plan：`FrozenPrefix → TransformableWindow → ProtectedTail`、route/provider/model-bound cache key、带 byte/deadline budget 的 ContentRouter、逐目标 digest/codec revision/byte delta manifest 与非目标 mutation/codec semantic post-validation。当前 active-safe codecs 为 JSON minify、受限 Log fold，以及可精确重建的 Search/Build/Diff/Text/HTML repeat fold。CodeCodec registry 已覆盖 Rust/TS/JS/Python/Go/Java/C/C++ 与严格 parser/eval evidence；Rust 已有 syn@2 parser-backed evaluation candidate、parse/reparse、digest、负收益与 Debug-redaction gate，但因 macro stringification 风险和缺少 commit-bound corpus/compile evidence 仍仅 `EvaluationOnly`，其余七类语言无 parser implementation，production Code 全部 passthrough。Provider cache counters 已从 Anthropic/OpenAI 非流式成功响应按精确 route/provider/model/protocol/config identity 写入 ContextStore schema v3；新增的显式 cache policy registry 只有在 exact fresh observation 同时存在时，才为 resolved routes 生成 evidence。Direct Anthropic Optical active provider breakpoint/raw-wire、完整 Code 与质量/fuzz/perf gate尚未完成，因此 G2 仍是部分。普通输入图片文件压缩明确不在产品范围，不是缺口。
-- CCR 已新增 AES-256-GCM 私有存储基础：TTL、entry/byte quota、opaque UUID 格式引用、Unix 权限、symlink guard、精确 retrieve/delete 与 tamper/expiry tests；Chat/Responses/Anthropic direct/bridge 的生产准备链已在发送前要求 durable receipt，缺失 receipt 或验证失败会回退原文。marker/tool retrieve、finalize/delete、stream、Windows ACL 与完整本机授权审计仍未闭环，因此只能标为部分。
-- memory、output shaping 的同名 API 仍主要是 sanitized metadata/summary；当前没有 typed/indexed local/per-project/cross-agent memory/SharedContext 或真实 output shaping 执行链。
-- `/headroom/mcp` 目前只是状态描述，没有 MCP transport 和真实 tool handler；不得显示为已配置完成。
+- proxy、显式 route、Ledger、stats/history/metrics、Dashboard/export 已有真实 d-token-owned 基础，但 Provider/Agent 矩阵未完整验收。v0.33 delta 已开始吸收：八类 production codec 现由 Rust-owned declarative compressor registry 统一登记和门控；`POST /v1/compress` 使用显式 route/provider/model/protocol 生成 validated candidate body，不发送上游、不持久化请求，并与 MCP 和 TS SDK 共用合同。d-token 不加载 Python entry point 或任意第三方进程内插件，第三方中转只能通过显式 RouteProfile 接入。
+- resolved production path 已接入 `FrozenPrefix → TransformableWindow → ProtectedTail`、route/provider/model-bound cache key、ContentRouter、manifest 与 post-validation。JSON、log、search、build、diff、text、HTML、code-compressor 八类 codec 在本地 release probe 中均为 active；每类至少 128 个 property/semantic/rollback cases，negative、budget/cancellation 门零失败，evidence revision 为 `d0cb2e0346339d8985ea949b1c6dbdb25fc7b347d3440e04e5584cfce9233b69`。code-compressor corpus 覆盖 Rust/TS/JS/Python/Go/Java/C/C++。未知、secret、风险和负收益输入继续精确 passthrough。该 evidence 尚未绑定最终 clean candidate 或真实 Provider 质量/延迟，因此 G2 不能据此单独宣布完成。普通输入图片文件压缩明确不在产品范围。
+- CCR 已实现 AES-256-GCM、TTL/quota、非破坏性 inspect、精确 retrieve/delete、`write_intent → pending_retained → terminal` 与 `delete_intent → deleted` journal、重启保守 reconciliation、JSONL 到 SQLite projection rebuild、幂等 tombstone 与 lifecycle lock。Unix 目录/DB/WAL/SHM/CCR 文件分别收紧为 `0700`/`0600`。Windows 实现 current user + SYSTEM、protected DACL、禁继承、`SetNamedSecurityInfoW` 与读回验证，并接入 DB/WAL/SHM 和 CCR root/temp/final；Windows GNU cross-check 通过，仍须 MSVC runner 实测。跨 JSONL/密文/Event/SQLite 原子 transaction 和自动 tool-call retrieve 仍是 G3 缺口。
+- memory 已接入 typed `ContextStore` 写入、重启持久化、项目/Agent/session 精确 scope isolation、share grant/revoke 与敏感原始字段拒绝；v4 的 project-wide grant 迁移后保留审计但强制撤销。managed MCP capability 可注册 `headroom_memory_list/export/delete/write`，并将不透明授权、project/agent/session scope 绑定到 launcher，工具参数不能自报 scope；公开 HTTP summary 因缺少调用方授权 scope 而 fail-closed。route-aware output shaping、跨 Agent capability transaction 与本机授权审计仍未完成。
+- `/headroom/mcp` 已提供有界 stdio JSON-RPC transport：`initialize`、`ping`、`tools/list`、`headroom_compress`、`headroom_stats`、受控 `headroom_retrieve`、返回 deletion receipt 的 `headroom_delete` 与 SharedContext 工具，取消账本和 payload 限制均有测试。Rust library、HTTP、MCP 与 TS SDK 对同一 fixture 的 decision/reason/artifact parity 定向回归已通过；完整协议覆盖、caller capability 分发与最终候选复证仍缺。
+- MCP `headroom_compress` 现要求受限 `route_ref`，并从 d-token active config 重新解析 route/provider/model/protocol；缺失、未知、endpoint/model/policy 不匹配均 fail-closed 且不回显输入或凭据。OpenAI Chat → OpenAI Chat 与 direct Anthropic Messages → Anthropic Messages 已接 resolved compression；跨协议 bridge、Responses 和 streamable HTTP MCP 仍未完成，故 MCP 仍不是全协议完成态。
+- `dtoken-proxy --mcp-stdio` 已成为 d-token-owned MCP stdio launcher，可复用同一持久化 runtime/config 而不绑定 HTTP listener。Agent MCP transaction 仍默认使用 metadata-only `dtoken-agent-bridge`；将 raw CCR retrieve capability 分发给独立 Agent MCP entry 前，不能把该 capability 写进常规 Agent 配置或日志。
 - Smart Learning 已新增 `dtoken-learning` 有界安全项目索引、真实项目分析、Agent 会话 metadata 发现和 managed block transaction；草稿生成具备立即反馈、自动定位与顶部通知，保存必须先显示 diff 并确认，重启后可从持久化分析继续操作。失败模式挖掘、跨 Agent memory 仍未完成。
 - Overview 已新增 Codex/Claude 5h 与 7d 额度摘要合同。Codex 优先消费当前 ChatGPT OAuth 请求按账号节流获取的 `/backend-api/wham/usage` allowlist 数字字段，并兼容旧式 `x-codex-*` 响应头；`ChatGPT-Account-Id` 与 credential 只用于生成不可逆的 account/context 引用。Codex cache 绑定完整 credential+account context，Claude cache 绑定 OAuth credential hash；两者均有 provider 级 single-flight、账户级 attempt floor、15 分钟硬 TTL 与 8 项上限，active context 消失或切换时禁止跨账户回落。Claude 仅在检测到真实 `sk-ant-oat*` OAuth 上下文时读取官方 usage endpoint。两条链均为只读后台刷新，不保存原始账号 ID、Authorization、OAuth credential、完整 headers 或原始 usage response；单窗口证据标为 partial，无证据时保持 unavailable。
 - Analytics 已扩展 Model、Protocol、Project、relay chain、失败分类、缓存/浪费/流水线 availability 与请求明细；新增 `/analytics/requests` cursor API、Tauri 只读桥接和前端分页。Agent/Model/Protocol/Route/Provider/Chain/Error 与 30 日 daily 聚合由 Rust read model 提供，不再由最近 20 条摘要重建；分页独立显示 source/freshness/revision，支持 loading/error/invalid-cursor 自动恢复。当前 runtime 最多恢复/查询最近 10,000 条；Project、真实 cache alignment 与完整 route/upstream/end-to-end timing 尚无生产字段时保持 unavailable。`RequestLog.latency_ms` 只作为 compression-only 证据，route/provider/cc-switch/end-to-end 与 route overhead 不再用比例或 0 值推算。以上不能称为全量 lifetime analytics。
@@ -86,8 +88,12 @@ AI coding agent
 - 前端 production build 已加入 manifest 递归 bundle gate。2026-07-15 最新干净 Tauri 候选的初始静态 JS 为 160,769 B（157.00 KiB），低于 160 KiB 门限；`charts-vendor` 仍只由 Analytics 动态加载。该门只证明产物体积合同，不证明 WebKit parse/evaluate 或真实冷启动达标。
 - Native loopback GET 已记录 metadata-only connect/configure/write/read/validate/parse/total 阶段及 health cache hit/miss，并复用响应分配剥离 header。当前仍是 blocking `TcpStream + Connection: close + read_to_string`，没有 response cap 或共享 typed client，因此只算测量与小幅复制优化，不算 HTTP 架构收敛。
 - terminal evidence 仍保持四个 durable JSONL sync 边界，未为速度删除 durability；当前已能记录各阶段 duration/sync count、ContextStore lock/projection 与 total 分位数。canonical commit、fault injection、双写/重放和持久化收敛仍未完成。
-- Agent compatibility 中的上游能力描述不等于 d-token wrap 已实现；当前只有 OpenCode 达到真实配置事务/routed flow 证据等级。
-- G0/G1 已在当前 working tree 闭环：release profile 默认 native/unavailable、请求 attribution 来自 route/Agent scope、Optical cache evidence 来自实际 target；动态后端 Agent registry 只返回有 executable/app/config/session/extension 证据的 Agent；ContextStore schema v3 持久化 capability/request/CCR/Agent projection 与 Provider cache counter observation；共享 sealed pipeline 覆盖 Chat/Responses/Anthropic direct/bridge。G2 已完成上述通用 plan/router/manifest/validator、安全 codec 子集和 resolved route 的 explicit-policy cache evidence，但 direct Anthropic Hybrid/provider breakpoint/raw-wire、Code、完整质量/故障/性能门仍是当前发布阻断。Optical code/context → PNG 保持正确方向。
+- Rust 检测注册表覆盖 20 个 Agent；前端不再维护第二份 Agent catalog。Claude Code、Codex、Cline CLI、Goose、Kilo Code、OpenCode、OpenClaw 有版本化 Configure/Clear adapter；CommandCode、Claude Desktop、Cursor、Gemini CLI、Hermes、Roo Code、Continue、Aider、OpenHands、Copilot CLI、Windsurf、Antigravity、Mistral Vibe 有显式 detection-only/fail-closed decision。未知 JSON 不再递归猜 upstream。支持 adapter 的 parser 只读取 provider/model/protocol/脱敏 endpoint 与 credential-present；Goose custom provider sidecar 参与 watcher/fingerprint。
+- 2026-07-31 已在本机真实 Claude Code、Codex、Cline 配置上完成 preview → apply → reread verify → clear → exact restore，不启动 Agent、不发模型请求、不返回 credential value；最终 SHA-256 分别为 `341e468283ce253d7a31699dc6b514bb556a1da8b8ca71e9db6786f404460ed3`、`8af5fd43ea971d118cc533dc0c09eed23d34f7036c012c6b4777769bc9064c4b`、`9adf48a01f16427ed4c40fca78fcf8389fd06e387e263383459e4265c4d67a05`，权限均为 `0600`。OpenCode 仍须在最终候选上重跑真实 routed compression。
+- cc-switch 保持只读：`CcSwitchSnapshot` 仅提供 schema/source 状态、app type、active upstream、脱敏 endpoint、protocol/model、credential-present、fingerprint/revision。它监听已定位的 DB/WAL/SHM 与父目录，使用 750ms debounce、single-flight 处理和 polling fallback；监听不可用时显式报告 fallback。pending 变更若回滚至稳定快照会被清除，之后再次出现必须完成新的完整 debounce。用户在一次 hash-bound 确认中授权后，高置信单一 upstream 的变化可自动生成并执行 d-token 自有 route sync/reload receipt；手动首轮 sync 只有 `runtime_reloaded` 或安全的 `runtime_not_running` receipt 才会持久化 auto-follow 授权，否则保留已应用 route 但不授予后续自动跟随。多 active、未知 schema、缺 model/新凭据一律 `needs-selection`/blocked，不写 cc-switch。
+- d-token-owned managed RTK 已在 macOS candidate probe 通过 install/verify、ANSI/空行/重复行过滤、有界输出、成功与失败 exit propagation、usage metadata、exact uninstall 和 private root cleanup；receipt 明确 `command_argv_persisted=false`、`raw_output_returned=false`、`credential_value_read=false`。最新证据为 `support/artifacts/managed-rtk-candidate/candidate-20260731T223754Z-7536.json`。Windows/WSL、hook integrity 与最终候选 workflow 证据仍未完成，因此 integrated RTK 保持 partial。
+- Doctor v3 已将 `agent_cc_switch_sync` 作为实际 domain module：同步、可修复 drift、需要选择和缺失证据分别由同一只读 discovery 产生。Doctor 尚未直接执行同步写入；用户仍从 Install 的 diff/确认流应用 d-token-owned route。
+- 当前 gate 结论：G2 本地 codec release probe、G3 lifecycle/ACL 实现、G4 surface parity、G5 部分 Agent/cc-switch/macOS RTK 证据已推进；它们尚未绑定最终 clean candidate。G6–G8、当前候选真实 OpenCode、Windows runner 和双平台产物仍阻断发布。Optical code/context → PNG 保持默认关闭与独立 fidelity/cost/latency gate。
 
 逐能力缺口、顺序与发布 Gate 见 `docs/PLAN.md` §1C。任何 metadata-only endpoint、静态布尔值、fixture smoke 或外部 8787 对照都不算迁移完成。
 
@@ -176,12 +182,12 @@ active 代码路径存在但生产默认仍关闭：必须同时满足全局/路
 
 ## 9. 仍然阻断发布的事项
 
-1. Headroom §8 全能力迁移尚未完成；ContentRouter/通用 codecs、CacheAligner/live-zone、可逆 CCR、memory/SharedContext、output shaping、MCP、完整 wrap 与 integrated RTK 仍有占位或缺口。
-2. macOS 发布 workflow 已强制 Developer ID、notarization、staple、Gatekeeper 与 SHA-256 manifest，但缺真实 Apple 凭据执行和 signed update feed；当前本机候选仍是 ad-hoc 签名产物。
-3. Windows 发布 workflow 已强制 Tauri bundling 阶段 Authenticode、NSIS 静默安装/启动/卸载、逐文件一致性与 SHA-256 manifest，但缺具备签名凭据的 Windows 实机/runner 结果，以及 UTF-8/路径、Credential Manager、回退和视觉一致性证据。
+1. Headroom §8 仍未达到“完整迁移”发布声明：八类 codec 已 active，但最终候选真实 Provider/Agent 质量证据、G3 Windows runner/剩余 crash/tool-call、全协议 MCP/capability 分发、Agent/RTK 双平台矩阵与 G6–G8 尚未全部闭环。
+2. GitHub public prerelease workflow 已改为 unsigned-only 聚合发布：同一 tag/同一 commit 的 macOS ARM64 与 Windows x64 reusable job 全部通过后，才创建 GitHub prerelease；它明确不宣称 Developer ID/notarization/Gatekeeper 或 Authenticode。
+3. 生产级签名发布仍未完成：macOS 仍缺真实 Apple Developer ID/notarization/Gatekeeper 证据；Windows 仍缺具备签名凭据的 Authenticode 结果，以及 UTF-8/路径、Credential Manager、回退和视觉一致性证据。
    Linux CI、macOS release 与 Windows release 均会在 Rust workspace 门禁前从当前源码准备 host 对应的真实 `dtoken-proxy` externalBin，干净 checkout 不再依赖仓库内或开发机残留二进制。
 4. macOS LaunchAgent 与 Windows HKCU Run 已接通，但尚未绑定同一候选完成两端真实登录、禁用和覆盖升级验证，不能宣称平台 autostart 已通过发布验收。
-5. Claude Code/Codex/OpenCode 已有 plan → diff → backup → confirm → apply → verify → rollback 代码路径和隔离验证，但真实 Claude/Codex 配置写入未授权，三类 Agent routed request 仍待同候选验收；Cursor/Cline 未进入本轮完整接入。
+5. Claude Code/Codex/Cline 已完成真实临时配置事务并精确恢复，但按授权未发送模型请求；OpenCode 仍待最终候选真实 routed compression。其余未验证 schema Agent 必须继续显示 unavailable/detection-only，不能计入自动接入完成率。
 6. 真实认证 Provider 的 Keychain/Credential Manager 引用、短生命周期出站读取和不泄露凭据的候选版实证仍缺失。
 7. `code/UI design for project/` 与 `src-old/` 等旧实现需要在后续清理任务中决定保留、迁移或删除；它们不是生产入口。
 
