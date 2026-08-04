@@ -164,7 +164,16 @@ const CURSOR_APPS: &[AgentPathSpec] = &[path(
     "Cursor.app",
 )];
 const CLINE_CONFIG: &[AgentPathSpec] = &[
-    path(None, AgentPathBase::Home, ".cline/settings.json"),
+    // Cline CLI 3.x stores provider selection in this versioned JSON file.
+    // The VS Code extension paths below remain discovery-only evidence and
+    // must not be treated as an interchangeable transport schema.
+    path(
+        None,
+        AgentPathBase::Home,
+        ".cline/data/settings/providers.json",
+    ),
+    // Retain the pre-3.0 location as read/write-compatible legacy evidence.
+    path(None, AgentPathBase::Home, ".cline/settings/providers.json"),
     path(
         Some(HostPlatform::Macos),
         AgentPathBase::Home,
@@ -177,6 +186,7 @@ const CLINE_CONFIG: &[AgentPathSpec] = &[
     ),
 ];
 const CLINE_SESSIONS: &[AgentPathSpec] = &[
+    path(None, AgentPathBase::Home, ".cline/data/sessions"),
     path(None, AgentPathBase::Home, ".cline/tasks"),
     path(
         None,
@@ -497,6 +507,38 @@ pub fn known_agent_adapters() -> &'static [AgentAdapterDescriptor] {
 
 pub fn agent_adapter(id: &str) -> Option<&'static AgentAdapterDescriptor> {
     KNOWN_AGENT_ADAPTERS.iter().find(|adapter| adapter.id == id)
+}
+
+/// Returns every registry-owned configuration target that the current Agent
+/// adapter may use in the supplied scan context. Unlike discovery evidence,
+/// this includes known targets that do not exist yet so a caller can validate
+/// a guarded first-time file creation without accepting an arbitrary path.
+pub fn allowed_agent_config_paths(
+    agent_id: &str,
+    context: &AgentScanContext,
+) -> Result<Vec<PathBuf>, AgentRegistryError> {
+    let adapter = agent_adapter(agent_id)
+        .ok_or_else(|| AgentRegistryError::InvalidAdapterId(agent_id.to_string()))?;
+    let mut paths = adapter
+        .config_paths
+        .iter()
+        .filter(|spec| spec.platform.is_none() || spec.platform == Some(context.platform))
+        .flat_map(|spec| resolve_paths(*spec, context))
+        .collect::<Vec<_>>();
+    paths.extend(
+        context
+            .additional_evidence
+            .iter()
+            .filter(|evidence| {
+                evidence.agent_id == agent_id
+                    && evidence.kind == AgentEvidenceKind::Config
+                    && evidence.path.is_absolute()
+            })
+            .map(|evidence| evidence.path.clone()),
+    );
+    paths.sort();
+    paths.dedup();
+    Ok(paths)
 }
 
 pub fn scan_current_process_agents() -> Result<AgentDiscoverySnapshot, AgentRegistryError> {
@@ -886,5 +928,70 @@ mod tests {
                 .and_then(|name| name.to_str())
                 .is_some_and(|name| name.contains("auth"))
         }));
+    }
+
+    #[test]
+    fn allowed_config_paths_are_registry_and_config_evidence_only() {
+        let root = tempfile::tempdir().expect("temporary directory");
+        let explicit = root.path().join("explicit-opencode.json");
+        let unrelated = root.path().join("unrelated.json");
+        let context = AgentScanContext {
+            platform: HostPlatform::Macos,
+            home_dir: root.path().to_path_buf(),
+            path_dirs: vec![],
+            applications_dir: Some(root.path().join("Applications")),
+            roaming_app_data: None,
+            local_app_data: None,
+            additional_evidence: vec![
+                AgentEvidenceOverride {
+                    agent_id: "opencode".to_string(),
+                    kind: AgentEvidenceKind::Config,
+                    path: explicit.clone(),
+                },
+                AgentEvidenceOverride {
+                    agent_id: "opencode".to_string(),
+                    kind: AgentEvidenceKind::SessionRoot,
+                    path: unrelated.clone(),
+                },
+            ],
+            observed_at_ms: 1,
+        };
+
+        let paths =
+            allowed_agent_config_paths("opencode", &context).expect("known OpenCode adapter");
+        assert!(paths.contains(&root.path().join(".config/opencode/opencode.json")));
+        assert!(paths.contains(&root.path().join(".config/opencode/opencode.jsonc")));
+        assert!(paths.contains(&explicit));
+        assert!(!paths.contains(&unrelated));
+        assert!(allowed_agent_config_paths("unknown-agent", &context).is_err());
+    }
+
+    #[test]
+    fn cline_cli_3_config_and_session_paths_are_registered_before_legacy_paths() {
+        let root = tempfile::tempdir().expect("temporary directory");
+        let context = AgentScanContext {
+            platform: HostPlatform::Macos,
+            home_dir: root.path().to_path_buf(),
+            path_dirs: vec![],
+            applications_dir: Some(root.path().join("Applications")),
+            roaming_app_data: None,
+            local_app_data: None,
+            additional_evidence: vec![],
+            observed_at_ms: 1,
+        };
+
+        let config_paths =
+            allowed_agent_config_paths("cline", &context).expect("known Cline adapter");
+        assert_eq!(
+            config_paths.first(),
+            Some(&root.path().join(".cline/data/settings/providers.json"))
+        );
+        assert!(config_paths.contains(&root.path().join(".cline/settings/providers.json")));
+
+        let cline = agent_adapter("cline").expect("Cline registry entry");
+        assert_eq!(
+            cline.session_paths.first().map(|path| path.relative),
+            Some(".cline/data/sessions")
+        );
     }
 }

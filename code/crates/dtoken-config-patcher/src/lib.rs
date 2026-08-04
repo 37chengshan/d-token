@@ -22,7 +22,10 @@ use std::process::{Command, Stdio};
 
 pub mod agent;
 pub mod agent_integration;
+pub mod agent_transport;
 pub mod codebase_memory_integration;
+
+pub const CONFIG_TRANSACTION_CAPABILITY_REVISION: &str = "dtoken-config-transaction-v1";
 
 const BACKUP_SCHEMA_VERSION: u32 = 1;
 const BACKUP_CONTENT_FILE: &str = "original.bin";
@@ -34,6 +37,7 @@ const MAX_MANIFEST_BYTES: u64 = 1024 * 1024;
 pub enum ValidationKind {
     Utf8,
     Json,
+    Json5,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -204,9 +208,49 @@ impl ConfigPatcher {
         agent: Option<String>,
         risk_level: RiskLevel,
     ) -> Result<PreparedChange> {
-        let display_target = target_file.as_ref().display().to_string();
-        let target_path = normalize_target_path(target_file.as_ref())?;
-        let validation = validation_for_path(&target_path);
+        let validation = validation_for_path(target_file.as_ref());
+        self.prepare_change_with_validation(
+            target_file.as_ref(),
+            next_content,
+            tool,
+            agent,
+            risk_level,
+            validation,
+        )
+    }
+
+    /// Prepares a JSON5 configuration change while keeping the same
+    /// hash-bound backup/apply/verify guarantees as strict JSON. This is used
+    /// only for versioned third-party schemas that explicitly accept JSON5.
+    pub fn prepare_json5_change(
+        &self,
+        target_file: impl AsRef<Path>,
+        next_content: &str,
+        tool: ConfigToolKind,
+        agent: Option<String>,
+        risk_level: RiskLevel,
+    ) -> Result<PreparedChange> {
+        self.prepare_change_with_validation(
+            target_file.as_ref(),
+            next_content,
+            tool,
+            agent,
+            risk_level,
+            ValidationKind::Json5,
+        )
+    }
+
+    fn prepare_change_with_validation(
+        &self,
+        target_file: &Path,
+        next_content: &str,
+        tool: ConfigToolKind,
+        agent: Option<String>,
+        risk_level: RiskLevel,
+        validation: ValidationKind,
+    ) -> Result<PreparedChange> {
+        let display_target = target_file.display().to_string();
+        let target_path = normalize_target_path(target_file)?;
         let (before, before_bytes) = inspect_target(&target_path)?;
         if let Some(bytes) = before_bytes.as_deref() {
             validate_content(validation, bytes).context("existing configuration is invalid")?;
@@ -736,9 +780,11 @@ fn validation_for_path(path: &Path) -> ValidationKind {
 }
 
 fn validate_content(kind: ValidationKind, bytes: &[u8]) -> Result<()> {
-    bytes_to_utf8(bytes)?;
-    if kind == ValidationKind::Json {
-        validate_strict_json(bytes)?;
+    let text = bytes_to_utf8(bytes)?;
+    match kind {
+        ValidationKind::Utf8 => {}
+        ValidationKind::Json => validate_strict_json(bytes)?,
+        ValidationKind::Json5 => validate_strict_json5(text)?,
     }
     Ok(())
 }
@@ -756,6 +802,23 @@ fn validate_strict_json(bytes: &[u8]) -> Result<()> {
         .end()
         .context("configuration contains trailing JSON data")?;
     Ok(())
+}
+
+fn validate_strict_json5(text: &str) -> Result<()> {
+    json5::from_str::<StrictJson5Document>(text)
+        .context("configuration must contain exactly one valid JSON5 value")?;
+    Ok(())
+}
+
+struct StrictJson5Document;
+
+impl<'de> Deserialize<'de> for StrictJson5Document {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        StrictJsonSeed.deserialize(deserializer).map(|()| Self)
+    }
 }
 
 struct StrictJsonSeed;
@@ -1546,5 +1609,45 @@ mod tests {
             fs::read_to_string(second).expect("second result"),
             "{\"external\":true}"
         );
+    }
+
+    #[test]
+    fn json5_change_accepts_comments_and_trailing_commas() {
+        let root = workspace_tempdir();
+        let target = root.path().join("openclaw.json");
+        fs::write(&target, "{ // comment\n models: { providers: {}, },\n}\n")
+            .expect("JSON5 fixture");
+        let patcher = ConfigPatcher::new(root.path().join("backups"));
+        let change = patcher
+            .prepare_json5_change(
+                &target,
+                "{ models: { providers: { dtoken: { baseUrl: \"http://127.0.0.1:8787/v1\", }, }, }, }\n",
+                ConfigToolKind::Agent,
+                Some("openclaw".to_string()),
+                RiskLevel::Medium,
+            )
+            .expect("JSON5 change");
+        let receipt = patcher
+            .apply_transaction(&[change])
+            .expect("apply JSON5 change");
+        assert_eq!(receipt.changes.len(), 1);
+        assert!(json5::from_str::<serde_json::Value>(&fs::read_to_string(target).unwrap()).is_ok());
+    }
+
+    #[test]
+    fn json5_change_rejects_duplicate_object_keys() {
+        let root = workspace_tempdir();
+        let target = root.path().join("openclaw.json");
+        fs::write(&target, "{ models: {}, models: {}, }\n").expect("duplicate JSON5 fixture");
+        let patcher = ConfigPatcher::new(root.path().join("backups"));
+        assert!(patcher
+            .prepare_json5_change(
+                &target,
+                "{ models: {} }\n",
+                ConfigToolKind::Agent,
+                Some("openclaw".to_string()),
+                RiskLevel::Medium,
+            )
+            .is_err());
     }
 }

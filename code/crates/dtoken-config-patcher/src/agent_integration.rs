@@ -77,10 +77,23 @@ pub struct AgentIntegrationRequest {
     pub scope: AgentIntegrationScope,
     pub project_root: Option<PathBuf>,
     pub bridge_path: PathBuf,
+    #[serde(default)]
+    pub managed_mcp_launches: BTreeMap<String, ManagedMcpLaunch>,
     pub install_instructions: bool,
     pub install_hook_or_plugin: bool,
     pub install_skill: bool,
     pub install_mcp: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ManagedMcpLaunch {
+    pub runtime_path: PathBuf,
+    pub active_config_path: PathBuf,
+    pub data_dir: PathBuf,
+    pub capability_path: PathBuf,
+    pub route_id: String,
+    pub model: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -249,12 +262,16 @@ pub fn prepare_agent_integration(
 
     if request.install_mcp {
         for agent_id in &selected {
+            let launch = request
+                .managed_mcp_launches
+                .get(agent_id)
+                .with_context(|| format!("managed MCP launch is missing for Agent {agent_id}"))?;
             let (path, content) = mcp_target(
                 agent_id,
                 request.scope,
                 home_dir,
                 project_root.as_deref(),
-                &request.bridge_path,
+                launch,
             )?;
             merge_pending(
                 &mut pending,
@@ -1176,8 +1193,11 @@ fn mcp_target(
     scope: AgentIntegrationScope,
     home: &Path,
     project: Option<&Path>,
-    bridge: &Path,
+    launch: &ManagedMcpLaunch,
 ) -> Result<(PathBuf, String)> {
+    validate_managed_mcp_launch(launch)?;
+    let command = launch.runtime_path.display().to_string();
+    let arguments = managed_mcp_arguments(launch);
     match agent_id {
         "codex" => {
             let path = if scope == AgentIntegrationScope::Global {
@@ -1185,7 +1205,7 @@ fn mcp_target(
             } else {
                 project.unwrap().join(".codex/config.toml")
             };
-            let content = merge_codex_mcp_toml(&path, bridge)?;
+            let content = merge_codex_mcp_toml(&path, &command, &arguments)?;
             Ok((path, content))
         }
         "claude-code" => {
@@ -1197,7 +1217,7 @@ fn mcp_target(
             let path = project.unwrap().join(".mcp.json");
             let mut root = read_json_object(&path)?;
             let servers = object_field(&mut root, "mcpServers")?;
-            let desired = json!({"command": bridge, "args": ["mcp", "stdio"]});
+            let desired = json!({"command": command, "args": arguments});
             insert_managed_json_entry(servers, "dtoken-hybrid", desired)?;
             Ok((
                 path,
@@ -1212,8 +1232,9 @@ fn mcp_target(
             };
             let mut root = read_json_object(&path)?;
             let servers = object_field(&mut root, "mcp")?;
-            let desired =
-                json!({"type": "local", "command": [bridge, "mcp", "stdio"], "enabled": true});
+            let mut command_with_args = vec![command];
+            command_with_args.extend(arguments);
+            let desired = json!({"type": "local", "command": command_with_args, "enabled": true});
             insert_managed_json_entry(servers, "dtoken-hybrid", desired)?;
             Ok((
                 path,
@@ -1286,7 +1307,7 @@ fn read_json_object(path: &Path) -> Result<Map<String, Value>> {
         .context("Agent JSON configuration must be an object")
 }
 
-fn merge_codex_mcp_toml(path: &Path, bridge: &Path) -> Result<String> {
+fn merge_codex_mcp_toml(path: &Path, command: &str, arguments: &[String]) -> Result<String> {
     let text = read_text(path)?;
     let mut document = if text.trim().is_empty() {
         toml_edit::DocumentMut::new()
@@ -1300,10 +1321,11 @@ fn merge_codex_mcp_toml(path: &Path, bridge: &Path) -> Result<String> {
         .as_table_mut()
         .context("mcp_servers must be a TOML table")?;
     let mut server = toml_edit::Table::new();
-    server["command"] = toml_edit::value(bridge.display().to_string());
+    server["command"] = toml_edit::value(command);
     let mut args = toml_edit::Array::new();
-    args.push("mcp");
-    args.push("stdio");
+    for argument in arguments {
+        args.push(argument);
+    }
     server["args"] = toml_edit::value(args);
     server["enabled"] = toml_edit::value(true);
     if let Some(existing) = servers.get("dtoken_hybrid") {
@@ -1314,6 +1336,77 @@ fn merge_codex_mcp_toml(path: &Path, bridge: &Path) -> Result<String> {
         servers["dtoken_hybrid"] = toml_edit::Item::Table(server);
     }
     Ok(document.to_string())
+}
+
+fn managed_mcp_arguments(launch: &ManagedMcpLaunch) -> Vec<String> {
+    vec![
+        "--mcp-stdio".to_string(),
+        "--config".to_string(),
+        launch.active_config_path.display().to_string(),
+        "--data-dir".to_string(),
+        launch.data_dir.display().to_string(),
+        "--mcp-memory-capability-file".to_string(),
+        launch.capability_path.display().to_string(),
+        "--mcp-route-id".to_string(),
+        launch.route_id.clone(),
+        "--mcp-model".to_string(),
+        launch.model.clone(),
+    ]
+}
+
+fn validate_managed_mcp_launch(launch: &ManagedMcpLaunch) -> Result<()> {
+    for (label, path, expected_kind) in [
+        ("runtime", &launch.runtime_path, "file"),
+        ("active config", &launch.active_config_path, "file"),
+        ("runtime data", &launch.data_dir, "directory"),
+    ] {
+        if !path.is_absolute() || path.components().any(|part| part == Component::ParentDir) {
+            bail!("managed MCP {label} path must be absolute and traversal-free");
+        }
+        let metadata = fs::symlink_metadata(path)
+            .with_context(|| format!("managed MCP {label} path is unavailable"))?;
+        if metadata.file_type().is_symlink()
+            || (expected_kind == "file" && !metadata.is_file())
+            || (expected_kind == "directory" && !metadata.is_dir())
+        {
+            bail!("managed MCP {label} path has the wrong file type");
+        }
+    }
+    if !launch.capability_path.is_absolute()
+        || launch
+            .capability_path
+            .components()
+            .any(|part| part == Component::ParentDir)
+        || launch.capability_path.parent()
+            != Some(launch.data_dir.join("memory-capabilities").as_path())
+    {
+        bail!("managed MCP capability path is outside the private runtime capability root");
+    }
+    if let Ok(metadata) = fs::symlink_metadata(&launch.capability_path) {
+        if metadata.file_type().is_symlink() || !metadata.is_file() {
+            bail!("managed MCP capability path must be a regular file when present");
+        }
+    }
+    let capability_name = launch
+        .capability_path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .context("managed MCP capability filename is invalid")?;
+    if !capability_name.starts_with("memcap-") || !capability_name.ends_with(".json") {
+        bail!("managed MCP capability filename is not d-token-owned");
+    }
+    for (label, value) in [("route", &launch.route_id), ("model", &launch.model)] {
+        if value.trim().is_empty()
+            || value.len() > 192
+            || value.chars().any(|character| {
+                !(character.is_ascii_alphanumeric()
+                    || matches!(character, '-' | '_' | '.' | ':' | '/' | '@'))
+            })
+        {
+            bail!("managed MCP {label} binding is invalid");
+        }
+    }
+    Ok(())
 }
 
 fn insert_managed_json_entry(
@@ -1421,10 +1514,34 @@ mod tests {
             scope,
             project_root: project,
             bridge_path,
+            managed_mcp_launches: BTreeMap::new(),
             install_instructions: true,
             install_hook_or_plugin: true,
             install_skill: true,
             install_mcp: false,
+        }
+    }
+
+    fn managed_mcp_launch(root: &Path) -> ManagedMcpLaunch {
+        let runtime_path = root.join("dtoken-proxy");
+        let active_config_path = root.join("active-config.json");
+        let data_dir = root.join("runtime");
+        fs::write(&runtime_path, b"fixture runtime").unwrap();
+        fs::write(
+            &active_config_path,
+            b"{\"providers\":[],\"routes\":[],\"instances\":[]}",
+        )
+        .unwrap();
+        fs::create_dir_all(&data_dir).unwrap();
+        ManagedMcpLaunch {
+            runtime_path,
+            active_config_path,
+            capability_path: data_dir
+                .join("memory-capabilities")
+                .join("memcap-fixture.json"),
+            data_dir,
+            route_id: "fixture-route".to_string(),
+            model: "fixture/model".to_string(),
         }
     }
 
@@ -1712,6 +1829,9 @@ mod tests {
         request.install_hook_or_plugin = false;
         request.install_skill = false;
         request.install_mcp = true;
+        request
+            .managed_mcp_launches
+            .insert("codex".to_string(), managed_mcp_launch(&root_path));
         let prepared =
             prepare_agent_integration(&request, &home, &root_path.join("backups")).unwrap();
         let digest = prepared.plan.review_digest.clone();
@@ -1885,6 +2005,9 @@ mod tests {
         request.install_hook_or_plugin = false;
         request.install_skill = false;
         request.install_mcp = true;
+        request
+            .managed_mcp_launches
+            .insert("codex".to_string(), managed_mcp_launch(&root_path));
         assert!(prepare_agent_integration(&request, &home, &root_path.join("backups")).is_err());
 
         request.bridge_path = root_path.join("dtoken-agent-bridge.exe");
@@ -1910,13 +2033,14 @@ mod tests {
             r#"{"mcp":{"dtoken-hybrid":{"type":"local","command":["user-owned"]}}}"#,
         )
         .unwrap();
+        let launch = managed_mcp_launch(&root_path);
 
         assert!(mcp_target(
             "claude-code",
             AgentIntegrationScope::Project,
             &home,
             Some(&project),
-            Path::new("/opt/dtoken-agent-bridge"),
+            &launch,
         )
         .is_err());
         assert!(mcp_target(
@@ -1924,7 +2048,7 @@ mod tests {
             AgentIntegrationScope::Project,
             &home,
             Some(&project),
-            Path::new("/opt/dtoken-agent-bridge"),
+            &launch,
         )
         .is_err());
     }

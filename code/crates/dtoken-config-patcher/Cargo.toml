@@ -1,6 +1,6 @@
 [package]
 name = "dtoken-config-patcher"
-version = "0.1.0"
+version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
@@ -11,6 +11,7 @@ dtoken-compress = { path = "../dtoken-compress" }
 dtoken-types = { path = "../dtoken-types" }
 serde.workspace = true
 serde_json.workspace = true
+json5.workspace = true
 sha2 = "0.10"
 similar = "2"
 toml = "0.8"
