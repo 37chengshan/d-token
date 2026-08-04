@@ -10,6 +10,8 @@ $Utf8NoBom = [System.Text.UTF8Encoding]::new($false)
 $VerificationStartedAt = Get-Date
 if ([string]::IsNullOrWhiteSpace($OutputDir)) {
   $OutputDir = Join-Path $Root "support\artifacts"
+} elseif (-not [System.IO.Path]::IsPathRooted($OutputDir)) {
+  $OutputDir = Join-Path $Root $OutputDir
 }
 New-Item -ItemType Directory -Force -Path $OutputDir | Out-Null
 
@@ -19,6 +21,10 @@ if ($IncludeOpenCode -and $SkipOpenCode) {
 
 . (Join-Path $PSScriptRoot "release_candidate_provenance.ps1")
 $Candidate = Get-ReleaseCandidateProvenance -Root $Root -OutputDir $OutputDir
+$CapabilityArtifactStamp = $VerificationStartedAt.ToString("yyyyMMdd-HHmmssfff")
+$CapabilityRegistryPath = Join-Path $OutputDir ("capability-registry-" + $Candidate.candidate_id + "-" + $CapabilityArtifactStamp + ".json")
+$CapabilitySnapshotPath = Join-Path $OutputDir ("headroom-capability-snapshot-" + $Candidate.candidate_id + "-" + $CapabilityArtifactStamp + ".json")
+$Candidate | Add-Member -NotePropertyName capability_snapshot_path -NotePropertyValue $CapabilitySnapshotPath -Force
 
 function Invoke-VerificationStep {
   param(
@@ -67,6 +73,73 @@ function Invoke-VerificationStep {
   }
 }
 
+function Assert-OpenCodeSummary {
+  param(
+    [object]$Summary,
+    [object]$Candidate
+  )
+
+  if ($null -eq $Summary) {
+    throw "opencode real workload summary is missing"
+  }
+
+  foreach ($Field in @("candidate_id", "runtime_identity", "service_url", "route", "provider", "report_path")) {
+    if ([string]::IsNullOrWhiteSpace([string]$Summary.$Field)) {
+      throw "opencode real workload summary is missing required field: $Field"
+    }
+  }
+
+  if ([string]$Summary.candidate_id -ne [string]$Candidate.candidate_id) {
+    throw "opencode real workload candidate mismatch"
+  }
+  if ([string]$Summary.runtime_identity -ne "dtoken-runtime-local") {
+    throw "opencode real workload runtime identity mismatch"
+  }
+  if ([string]$Summary.service_url -notmatch '^http://127\.0\.0\.1:\d+$') {
+    throw "opencode real workload service URL must stay on loopback"
+  }
+  if ($Summary.route_decision_count -lt 1 -or $Summary.request_log_count -lt 1) {
+    throw "opencode real workload must record route and request logs"
+  }
+  if ($Summary.ledger.events -lt 1 -or $Summary.ledger.route_decisions -lt 1 -or $Summary.ledger.request_logs -lt 1 -or $Summary.ledger.ccr_metadata -lt 1) {
+    throw "opencode real workload ledger evidence is incomplete"
+  }
+  if ($null -eq $Summary.metrics -or $null -eq $Summary.metrics.compression -or $null -eq $Summary.metrics.route) {
+    throw "opencode real workload metrics are incomplete"
+  }
+  if ($null -eq $Summary.ccr -or $Summary.ccr.entries -lt 1 -or $Summary.ccr.raw_available -ne $false) {
+    throw "opencode real workload CCR evidence is incomplete"
+  }
+  if ($Summary.export_redacted -ne $true -or $Summary.export_raw_available -ne $false) {
+    throw "opencode real workload export redaction mismatch"
+  }
+  if (-not (Test-Path -LiteralPath ([string]$Summary.report_path) -PathType Leaf)) {
+    throw "opencode real workload report path is missing: $($Summary.report_path)"
+  }
+}
+
+function Invoke-RepositoryPython {
+  param([string[]]$ArgumentList)
+
+  $Python = Get-Command "python3" -ErrorAction SilentlyContinue
+  if ($null -eq $Python) {
+    $Python = Get-Command "python" -ErrorAction SilentlyContinue
+  }
+  if ($null -eq $Python) {
+    throw "Python 3 is required for candidate capability snapshot validation"
+  }
+
+  $PythonMajor = (& $Python.Source -c "import sys; print(sys.version_info[0])").Trim()
+  if ($LASTEXITCODE -ne 0 -or $PythonMajor -ne "3") {
+    throw "Python 3 is required for candidate capability snapshot validation"
+  }
+
+  & $Python.Source @ArgumentList
+  if ($LASTEXITCODE -ne 0) {
+    throw "Python command failed with exit code $LASTEXITCODE"
+  }
+}
+
 $Steps = @()
 
 $Steps += Invoke-VerificationStep "release_gate_contract" "Static regression contract for CI, no-touch verification, provenance, and artifact freshness" {
@@ -75,6 +148,11 @@ $Steps += Invoke-VerificationStep "release_gate_contract" "Static regression con
 
 $Steps += Invoke-VerificationStep "release_candidate_provenance" "Dynamic rejection tests for stale candidate stamps and pre-candidate artifacts" {
   powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $Root "support\scripts\run_release_candidate_provenance_test.ps1")
+}
+
+$Steps += Invoke-VerificationStep "headroom_capability_contract" "Static and fixture contracts for candidate-bound native capability evidence" {
+  Invoke-RepositoryPython -ArgumentList @((Join-Path $Root "support\scripts\test_generate_headroom_capability_snapshot.py"))
+  Invoke-RepositoryPython -ArgumentList @((Join-Path $Root "support\scripts\test_headroom_capability_coverage_audit_contract.py"))
 }
 
 $Steps += Invoke-VerificationStep "frontend_dependencies" "Install the exact desktop frontend dependency lock" {
@@ -97,6 +175,12 @@ $Steps += Invoke-VerificationStep "desktop_build" "Vite desktop build with page-
   try { npm run build } finally { Pop-Location }
 }
 
+$Steps += Invoke-VerificationStep "release_performance_gate" "Candidate-bound bundle budget plus release-profile routed concurrency, short soak, failure, disconnect, latency, and RSS gate" {
+  powershell -NoProfile -ExecutionPolicy Bypass `
+    -File (Join-Path $Root "support\scripts\run_release_performance_gate.ps1") `
+    -OutputPath (Join-Path $OutputDir "release-performance-gate.json")
+}
+
 $Steps += Invoke-VerificationStep "rust_fmt" "Rust formatting check across the workspace" {
   Push-Location (Join-Path $Root "code")
   try { cargo fmt --all -- --check } finally { Pop-Location }
@@ -112,7 +196,13 @@ $Steps += Invoke-VerificationStep "rust_workspace_tests" "All Rust workspace tes
   try { cargo test --workspace } finally { Pop-Location }
 }
 
-$Steps += Invoke-VerificationStep "fixture_runtime" "No-touch fixture runtime, Doctor, route adapter, dashboard payload" {
+$Steps += Invoke-VerificationStep "codec_candidate_evidence" "Candidate-bound active codec corpus, property, semantic, negative, cancellation, rollback, and latency evidence" {
+  powershell -NoProfile -ExecutionPolicy Bypass `
+    -File (Join-Path $Root "support\scripts\run_codec_candidate_evidence.ps1") `
+    -OutputPath (Join-Path $OutputDir "production-codec-candidate-evidence.json")
+}
+
+$Steps += Invoke-VerificationStep "fixture_runtime" "No-touch fixture runtime, Doctor, read-only Headroom/RTK diagnostics, dashboard payload" {
   powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $Root "support\scripts\run_fixture_tests.ps1") -Port 38101
 }
 
@@ -122,6 +212,23 @@ $Steps += Invoke-VerificationStep "mock_routed_runtime" "d-token routed mock ups
 
 $Steps += Invoke-VerificationStep "active_config_runtime" "d-token active config load, route, export redaction" {
   powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $Root "support\scripts\run_dtoken_active_config_mock_test.ps1")
+}
+
+$Steps += Invoke-VerificationStep "candidate_capability_registry" "Native /capabilities evidence from the already-built candidate runtime on loopback" {
+  powershell -NoProfile -ExecutionPolicy Bypass `
+    -File (Join-Path $Root "support\scripts\run_candidate_capability_registry_snapshot.ps1") `
+    -CandidateId $Candidate.candidate_id `
+    -OutputDir $OutputDir `
+    -RegistryPath $CapabilityRegistryPath
+}
+
+$Steps += Invoke-VerificationStep "candidate_capability_snapshot" "Strict candidate wrapper generated from the native capability registry artifact" {
+  Invoke-RepositoryPython -ArgumentList @(
+    (Join-Path $Root "support\scripts\generate_headroom_capability_snapshot.py"),
+    "--registry", $CapabilityRegistryPath,
+    "--candidate-id", $Candidate.candidate_id,
+    "--output", $CapabilitySnapshotPath
+  )
 }
 
 $Steps += Invoke-VerificationStep "agent_route_config_verification" "Product route config verification through d-token-owned runtime" {
@@ -154,8 +261,12 @@ if ($IncludeOpenCode) {
   }
 }
 
-$Steps += Invoke-VerificationStep "headroom_capability_coverage" "Headroom-derived capability coverage across runtime, UI, and verification evidence" {
-  powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $Root "support\scripts\run_headroom_capability_coverage_audit.ps1") -OutputDir $OutputDir
+$Steps += Invoke-VerificationStep "headroom_capability_coverage" "Candidate-bound Headroom active coverage from native runtime capability evidence" {
+  powershell -NoProfile -ExecutionPolicy Bypass `
+    -File (Join-Path $Root "support\scripts\run_headroom_capability_coverage_audit.ps1") `
+    -CapabilitySnapshot $CapabilitySnapshotPath `
+    -ExpectedCandidateId $Candidate.candidate_id `
+    -OutputDir $OutputDir
 }
 
 $Steps += Invoke-VerificationStep "desktop_packaging_audit" "Desktop packaging configuration audit" {
@@ -194,15 +305,24 @@ $Ok = ($Steps | Where-Object { -not $_.ok }).Count -eq 0
 $LatestOpenCode = $Steps | Where-Object { $_.id -eq "opencode_real_workload" } | Select-Object -First 1
 $OpenCodeSummary = $null
 if ($LatestOpenCode -and $LatestOpenCode.ok -and $LatestOpenCode.summary) {
+  Assert-OpenCodeSummary -Summary $LatestOpenCode.summary -Candidate $Candidate
   $OpenCodeSummary = @{
+    candidate_id = $LatestOpenCode.summary.candidate_id
+    runtime_identity = $LatestOpenCode.summary.runtime_identity
+    service_url = $LatestOpenCode.summary.service_url
     route = $LatestOpenCode.summary.route
     provider = $LatestOpenCode.summary.provider
+    route_decision_count = $LatestOpenCode.summary.route_decision_count
+    request_log_count = $LatestOpenCode.summary.request_log_count
     workload_count = $LatestOpenCode.summary.workload_count
     total_saved_tokens = $LatestOpenCode.summary.total_saved_tokens
     savings_percent = $LatestOpenCode.summary.savings_percent
     fallback_disabled = $LatestOpenCode.summary.runtime_config_fallback_disabled
     export_redacted = $LatestOpenCode.summary.export_redacted
     export_raw_available = $LatestOpenCode.summary.export_raw_available
+    ledger = $LatestOpenCode.summary.ledger
+    metrics = $LatestOpenCode.summary.metrics
+    ccr = $LatestOpenCode.summary.ccr
     report_path = $LatestOpenCode.summary.report_path
   }
 }

@@ -1,13 +1,15 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+CALLER_UMASK="$(umask)"
 umask 077
 
 usage() {
   cat <<'EOF'
 Usage:
   run_opencode_real_routed_test_macos.sh --model PROVIDER/MODEL \
-    --upstream-base-url URL (--api-key-ref REF | --upstream-no-auth) [--compression-workload]
+    --upstream-base-url URL (--api-key-ref REF | --upstream-no-auth) \
+    [--compression-workload] [--pure]
   run_opencode_real_routed_test_macos.sh --list-models [PROVIDER]
   run_opencode_real_routed_test_macos.sh --dry-run --model PROVIDER/MODEL \
     --upstream-base-url URL (--api-key-ref REF | --upstream-no-auth)
@@ -44,8 +46,10 @@ Safety and evidence contract:
   - Only a dtoken-local-route provider (and, when already present, one
     enabled_providers entry) is added temporarily. Existing provider/model data
     remains unchanged and the config is restored byte-for-byte.
-  - d-token binds 127.0.0.1 and obtains upstream auth only from an OS credential
-    reference. A literal API key is never accepted.
+- d-token binds 127.0.0.1 and obtains upstream auth only from an OS credential
+  reference. A literal API key is never accepted.
+- --pure disables external OpenCode plugins for d-token-owned route evidence;
+  the normal user config and state remain authoritative and are still restored.
   - Success requires OpenCode response proof plus matching route, request,
     provider, model, CCR, and four distinct valid JSONL evidence files.
   - The nonce must not occur in any d-token runtime persistence file.
@@ -108,6 +112,7 @@ DRY_RUN=0
 LIST_MODELS=0
 LIST_PROVIDER=""
 COMPRESSION_WORKLOAD=0
+OPENCODE_PURE=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -148,6 +153,10 @@ while [[ $# -gt 0 ]]; do
       COMPRESSION_WORKLOAD=1
       shift
       ;;
+    --pure)
+      OPENCODE_PURE=1
+      shift
+      ;;
     --dry-run|--preflight-only)
       DRY_RUN=1
       shift
@@ -177,6 +186,20 @@ while [[ $# -gt 0 ]]; do
 done
 
 [[ $# -eq 0 ]] || die "unexpected positional arguments: $*"
+
+run_opencode_clean() (
+  umask "$CALLER_UMASK"
+  unset OPENCODE_CONFIG_CONTENT
+  unset ANTHROPIC_BASE_URL
+  unset ANTHROPIC_API_URL
+  unset CLAUDE_CODE_PROXY
+  if [[ "$OPENCODE_PURE" -eq 1 ]]; then
+    command opencode --pure "$@"
+  else
+    command opencode "$@"
+  fi
+)
+
 [[ "$(uname -s)" == "Darwin" ]] || die "this test must run on macOS/Darwin"
 command -v python3 >/dev/null 2>&1 || die "python3 is required"
 
@@ -184,19 +207,11 @@ if [[ "$LIST_MODELS" -eq 1 ]]; then
   [[ "$DRY_RUN" -eq 0 ]] || die "--list-models and --dry-run cannot be combined"
   command -v opencode >/dev/null 2>&1 || die "opencode is required"
   if [[ -n "$LIST_PROVIDER" ]]; then
-    exec env \
-      -u OPENCODE_CONFIG_CONTENT \
-      -u ANTHROPIC_BASE_URL \
-      -u ANTHROPIC_API_URL \
-      -u CLAUDE_CODE_PROXY \
-      opencode models "$LIST_PROVIDER"
+    run_opencode_clean models "$LIST_PROVIDER"
+    exit $?
   fi
-  exec env \
-    -u OPENCODE_CONFIG_CONTENT \
-    -u ANTHROPIC_BASE_URL \
-    -u ANTHROPIC_API_URL \
-    -u CLAUDE_CODE_PROXY \
-    opencode models
+  run_opencode_clean models
+  exit $?
 fi
 
 [[ -z "${OPENCODE_CONFIG_CONTENT+x}" ]] || die "OPENCODE_CONFIG_CONTENT is active; unset it so the normal user config is authoritative"
@@ -284,7 +299,7 @@ PY
 [[ "$(basename "$CONFIG_PATH")" != "auth.json" ]] || die "auth.json is never a valid config transaction target"
 
 # Strict, read-only compatibility validation. No config values are printed.
-CONFIG_PREFLIGHT="$(python3 - "$CONFIG_PATH" <<'PY'
+CONFIG_PREFLIGHT="$(python3 - "$CONFIG_PATH" "$PORT" "$UPSTREAM_MODEL" <<'PY'
 import json
 import os
 import pathlib
@@ -292,6 +307,8 @@ import stat
 import sys
 
 path = pathlib.Path(sys.argv[1])
+port = int(sys.argv[2])
+requested_model = sys.argv[3]
 if path.is_symlink():
     raise SystemExit("error: OpenCode config symlinks are rejected for conflict-safe atomic restore")
 if not path.is_file():
@@ -316,8 +333,41 @@ if not isinstance(value, dict):
 providers = value.get("provider", {})
 if not isinstance(providers, dict):
     raise SystemExit("error: OpenCode config provider must be an object")
-if "dtoken-local-route" in providers:
-    raise SystemExit("error: provider dtoken-local-route already exists; refusing to overwrite it")
+provider_state = "absent"
+existing = providers.get("dtoken-local-route")
+desired = {
+    "npm": "@ai-sdk/openai-compatible",
+    "name": "d-token local route",
+    "options": {
+        "baseURL": f"http://127.0.0.1:{port}/v1",
+        "apiKey": "{env:DTOKEN_LOCAL_LISTENER_TOKEN}",
+    },
+    "models": {
+        requested_model: {"name": f"d-token routed {requested_model}"},
+    },
+}
+if existing is not None:
+    owned = (
+        isinstance(existing, dict)
+        and set(existing) == {"npm", "name", "options", "models"}
+        and existing.get("npm") == "@ai-sdk/openai-compatible"
+        and existing.get("name") == "d-token local route"
+        and isinstance(existing.get("options"), dict)
+        and set(existing["options"]) == {"baseURL", "apiKey"}
+        and isinstance(existing["options"].get("baseURL"), str)
+        and existing["options"].get("apiKey") == "{env:DTOKEN_LOCAL_LISTENER_TOKEN}"
+        and isinstance(existing.get("models"), dict)
+        and len(existing["models"]) == 1
+    )
+    if owned:
+        model, definition = next(iter(existing["models"].items()))
+        owned = (
+            isinstance(definition, dict)
+            and definition == {"name": f"d-token routed {model}"}
+        )
+    if not owned:
+        raise SystemExit("error: existing dtoken-local-route provider is not provably d-token-owned")
+    provider_state = "owned_matching" if existing == desired else "owned_existing"
 for key in ("enabled_providers", "disabled_providers"):
     entry = value.get(key)
     if entry is not None and (not isinstance(entry, list) or not all(isinstance(item, str) for item in entry)):
@@ -325,11 +375,24 @@ for key in ("enabled_providers", "disabled_providers"):
 if "dtoken-local-route" in value.get("disabled_providers", []):
     raise SystemExit("error: dtoken-local-route is explicitly disabled; refusing an ambiguous temporary patch")
 mode = stat.S_IMODE(path.stat().st_mode)
+enabled_providers_append = (
+    "enabled_providers" in value
+    and "dtoken-local-route" not in value["enabled_providers"]
+)
+config_change_required = existing != desired or enabled_providers_append
 print(json.dumps({
     "size": len(raw),
     "mode": format(mode, "04o"),
-    "enabled_providers_append": "enabled_providers" in value and "dtoken-local-route" not in value["enabled_providers"],
+    "provider_state": provider_state,
+    "enabled_providers_append": enabled_providers_append,
+    "config_change_required": config_change_required,
 }, separators=(",", ":")))
+PY
+)"
+CONFIG_CHANGE_REQUIRED="$(python3 - "$CONFIG_PREFLIGHT" <<'PY'
+import json
+import sys
+print("1" if json.loads(sys.argv[1])["config_change_required"] else "0")
 PY
 )"
 
@@ -345,11 +408,11 @@ PY
 
 CONFIG_PATH_REDACTED="$(redact_home_path "$CONFIG_PATH")"
 if [[ "$DRY_RUN" -eq 1 ]]; then
-  python3 - "$SELECTED_PROVIDER" "$MODEL" "$PORT" "$CREDENTIAL_MODE" "$CONFIG_PATH_REDACTED" "$CONFIG_PREFLIGHT" <<'PY'
+  python3 - "$SELECTED_PROVIDER" "$MODEL" "$PORT" "$CREDENTIAL_MODE" "$CONFIG_PATH_REDACTED" "$CONFIG_PREFLIGHT" "$OPENCODE_PURE" "$COMPRESSION_WORKLOAD" <<'PY'
 import json
 import sys
 
-provider, model, port, credential_mode, config_path, config_preflight = sys.argv[1:]
+provider, model, port, credential_mode, config_path, config_preflight, opencode_pure, compression_workload = sys.argv[1:]
 preflight = json.loads(config_preflight)
 print(json.dumps({
     "status": "preflight_ok",
@@ -363,11 +426,16 @@ print(json.dumps({
     "normal_user_config": config_path,
     "strict_json_valid": True,
     "config_mode": preflight["mode"],
+    "provider_state": preflight["provider_state"],
+    "config_change_required": preflight["config_change_required"],
     "config_mutated": False,
     "backup_created": False,
     "report_created": False,
     "opencode_executed": False,
     "external_request_made": False,
+    "opencode_external_plugins_enabled": opencode_pure != "1",
+    "ccr_private_store_enabled": compression_workload == "1",
+    "ccr_key_cleanup_planned": compression_workload == "1",
     "real_run_checks_deferred": [
         "existing_model_catalog_match",
         "listener_health",
@@ -419,20 +487,38 @@ FAILURE_STAGE="preflight"
 PERSISTED_COUNTS='{}'
 CCR_ENTRIES=0
 COMPRESSION_EVIDENCE='{}'
+CCR_EVIDENCE='{}'
+OPENCODE_FAILURE_CODE="not_run"
+CCR_KEYCHAIN_ACCOUNT=""
+CCR_KEYCHAIN_CLEANUP_STATUS="not_required"
+if [[ "$COMPRESSION_WORKLOAD" -eq 1 ]]; then
+  command -v security >/dev/null 2>&1 || die "macOS security CLI is required for scoped CCR key cleanup"
+  CCR_KEYCHAIN_ACCOUNT="$(python3 - "$DATA_DIR" <<'PY'
+import hashlib
+import sys
+identity = hashlib.sha256(sys.argv[1].encode("utf-8")).hexdigest()
+print(f"runtime-{identity[:24]}")
+PY
+)"
+  if security find-generic-password -s "d-token.ccr" -a "$CCR_KEYCHAIN_ACCOUNT" >/dev/null 2>&1; then
+    die "the temporary CCR Keychain identity already exists; refusing to delete a pre-existing credential"
+  fi
+  CCR_KEYCHAIN_CLEANUP_STATUS="planned"
+fi
 
 write_redacted_report() {
   local exit_code="$1"
   local final_status="$RUN_STATUS"
-  if [[ "$RESTORE_STATUS" == "conflict_preserved" || "$RESTORE_STATUS" == "restore_failed" ]]; then
+  if [[ "$RESTORE_STATUS" == "conflict_preserved" || "$RESTORE_STATUS" == "concurrent_change_preserved" || "$RESTORE_STATUS" == "restore_failed" ]]; then
     final_status="failed_restore"
   elif [[ "$exit_code" -ne 0 && "$final_status" != "pass" ]]; then
     final_status="failed"
   fi
   mkdir -p "$REPORT_DIR"
-  python3 - "$REPORT_PATH" "$final_status" "$exit_code" "$FAILURE_STAGE" \
+  DTOKEN_OPENCODE_REAL_ROOT="$TEMP_ROOT" python3 - "$REPORT_PATH" "$final_status" "$exit_code" "$FAILURE_STAGE" \
     "$SELECTED_PROVIDER" "$MODEL" "$PORT" "$CREDENTIAL_MODE" \
     "$CONFIG_PATH_REDACTED" "$BACKUP_PATH_REDACTED" "$BACKUP_CREATED" \
-    "$RESTORE_STATUS" "$REPORT_PATH_REDACTED" "$PERSISTED_COUNTS" "$CCR_ENTRIES" "$COMPRESSION_WORKLOAD" "$COMPRESSION_EVIDENCE" <<'PY'
+    "$RESTORE_STATUS" "$REPORT_PATH_REDACTED" "$PERSISTED_COUNTS" "$CCR_ENTRIES" "$COMPRESSION_WORKLOAD" "$COMPRESSION_EVIDENCE" "$CCR_EVIDENCE" "$CONFIG_PREFLIGHT" "$OPENCODE_FAILURE_CODE" "$OPENCODE_PURE" "$CCR_KEYCHAIN_CLEANUP_STATUS" <<'PY'
 import json
 import os
 import pathlib
@@ -444,27 +530,50 @@ from datetime import datetime, timezone
     report_path, status, exit_code, failure_stage, provider, model, port,
     credential_mode, config_path, backup_path, backup_created, restore_status,
     report_path_redacted, persisted_counts, ccr_entries, compression_workload,
-    compression_evidence,
+    compression_evidence, ccr_evidence, config_preflight, opencode_failure_code,
+    opencode_pure, ccr_keychain_cleanup_status,
 ) = sys.argv[1:]
+candidate_id = os.environ.get("DTOKEN_RELEASE_CANDIDATE_ID") or None
+root_path = pathlib.Path(os.environ["DTOKEN_OPENCODE_REAL_ROOT"])
+health_path = root_path / "health.json"
+health = json.loads(health_path.read_text(encoding="utf-8")) if health_path.exists() else {}
+result_state_path = root_path / "result.json"
+try:
+    result_state = json.loads(result_state_path.read_text(encoding="utf-8"))
+except (OSError, json.JSONDecodeError):
+    result_state = {}
+diagnostics = result_state.get("diagnostics") if isinstance(result_state, dict) else None
+effective_ccr_entries = int(result_state.get("ccr_entries") or ccr_entries or 0)
+ccr_evidence_payload = json.loads(ccr_evidence)
 payload = {
-    "schema_version": 1,
+    "schema_version": 2,
     "created_at": datetime.now(timezone.utc).isoformat(),
     "status": status,
     "exit_code": int(exit_code),
     "failure_stage": None if status == "pass" else failure_stage,
+    "candidate_id": candidate_id,
+    "runtime_identity": health.get("runtime_identity"),
+    "service_url": f"http://127.0.0.1:{port}",
     "selected_provider": provider,
     "selected_model": model,
     "listener": f"127.0.0.1:{port}",
     "credential_mode": credential_mode,
     "normal_user_config": config_path,
     "normal_user_state_used": True,
+    "opencode_external_plugins_enabled": opencode_pure != "1",
     "config_transaction": {
+        "change_required": json.loads(config_preflight)["config_change_required"],
         "backup_created": backup_created == "1",
         "backup_path": backup_path if backup_created == "1" else None,
         "backup_mode": "0600" if backup_created == "1" else None,
-        "temporary_changes": ["provider.dtoken-local-route", "enabled_providers append when present"],
+        "provider_state_before": json.loads(config_preflight)["provider_state"],
+        "temporary_changes": (
+            ["create or replace provably d-token-owned provider.dtoken-local-route", "enabled_providers append when present"]
+            if json.loads(config_preflight)["config_change_required"]
+            else []
+        ),
         "restore_status": restore_status,
-        "original_bytes_restored": restore_status == "restored_exact",
+        "original_bytes_restored": restore_status in {"restored_exact", "not_required_identical"},
         "conflicting_edit_overwritten": False,
     },
     "evidence": {
@@ -472,11 +581,42 @@ payload = {
         "distinct_jsonl_files": 4 if status == "pass" else None,
         "route_request_provider_model_verified": status == "pass",
         "provider_forward_verified": status == "pass",
-        "ccr_entries": int(ccr_entries),
-        "ccr_raw_available": False if status == "pass" else None,
+        "ccr_entries": effective_ccr_entries,
+        "ccr_raw_available_before_delete": (
+            ccr_evidence_payload.get("raw_available_before_delete")
+            if status == "pass"
+            else None
+        ),
+        "ccr_raw_returned": (
+            ccr_evidence_payload.get("raw_returned")
+            if status == "pass"
+            else None
+        ),
         "nonce_persisted_in_dtoken_runtime": False if status == "pass" else None,
+        "opencode_failure_code": opencode_failure_code,
         "compression_workload": compression_workload == "1",
         "compression": json.loads(compression_evidence),
+        "diagnostics": diagnostics,
+    },
+    "ledger": {
+        "events": json.loads(persisted_counts).get("events.jsonl"),
+        "route_decisions": json.loads(persisted_counts).get("route-decisions.jsonl"),
+        "request_logs": json.loads(persisted_counts).get("request-logs.jsonl"),
+        "ccr_metadata": json.loads(persisted_counts).get("ccr-metadata.jsonl"),
+    },
+    "metrics": {
+        "compression": json.loads(compression_evidence),
+        "route": {
+            "route_id": "opencode-real-routed",
+            "provider_id": provider,
+            "model": model,
+        },
+    },
+    "ccr": {
+        "entries": effective_ccr_entries,
+        **ccr_evidence_payload,
+        "private_store_configured": compression_workload == "1",
+        "keychain_cleanup_status": ccr_keychain_cleanup_status,
     },
     "privacy": {
         "auth_json_read": False,
@@ -582,6 +722,22 @@ cleanup() {
     wait "$PROXY_PID" 2>/dev/null
   fi
 
+  if [[ -n "$CCR_KEYCHAIN_ACCOUNT" ]]; then
+    if security delete-generic-password -s "d-token.ccr" -a "$CCR_KEYCHAIN_ACCOUNT" >/dev/null 2>&1; then
+      if security find-generic-password -s "d-token.ccr" -a "$CCR_KEYCHAIN_ACCOUNT" >/dev/null 2>&1; then
+        CCR_KEYCHAIN_CLEANUP_STATUS="cleanup_failed"
+        final_status=76
+      else
+        CCR_KEYCHAIN_CLEANUP_STATUS="deleted"
+      fi
+    elif security find-generic-password -s "d-token.ccr" -a "$CCR_KEYCHAIN_ACCOUNT" >/dev/null 2>&1; then
+      CCR_KEYCHAIN_CLEANUP_STATUS="cleanup_failed"
+      final_status=76
+    else
+      CCR_KEYCHAIN_CLEANUP_STATUS="not_created"
+    fi
+  fi
+
   if [[ "$CONFIG_TRANSACTION_STARTED" -eq 1 ]]; then
     if [[ -z "$TEMP_CONFIG_HASH" && -s "$TRANSACTION_STATE_PATH" ]]; then
       TEMP_CONFIG_HASH="$(python3 - "$TRANSACTION_STATE_PATH" <<'PY'
@@ -622,6 +778,13 @@ PY
       RESTORE_STATUS="restore_failed"
       final_status=74
     fi
+  elif [[ "$CONFIG_CHANGE_REQUIRED" -eq 0 && -n "$ORIGINAL_CONFIG_HASH" ]]; then
+    if [[ "$(sha256_file "$CONFIG_PATH" 2>/dev/null)" == "$ORIGINAL_CONFIG_HASH" ]]; then
+      RESTORE_STATUS="not_required_identical"
+    else
+      RESTORE_STATUS="concurrent_change_preserved"
+      final_status=75
+    fi
   fi
 
   write_redacted_report "$final_status"
@@ -633,16 +796,12 @@ trap 'exit 130' INT
 trap 'exit 143' TERM HUP
 
 FAILURE_STAGE="model_catalog"
-if ! env \
-  -u OPENCODE_CONFIG_CONTENT \
-  -u ANTHROPIC_BASE_URL \
-  -u ANTHROPIC_API_URL \
-  -u CLAUDE_CODE_PROXY \
-  OPENCODE_CONFIG="$CONFIG_PATH" \
-  opencode models "$SELECTED_PROVIDER" >"$MODELS_PATH" 2>"$TEMP_ROOT/models.stderr"; then
+if ! OPENCODE_CONFIG="$CONFIG_PATH" \
+  run_opencode_clean models "$SELECTED_PROVIDER" >"$MODELS_PATH" 2>"$TEMP_ROOT/models.stderr"; then
   die "OpenCode could not list the selected provider; CLI output was deleted and not printed"
 fi
 python3 - "$MODELS_PATH" "$MODEL" <<'PY'
+import json
 import pathlib
 import re
 import sys
@@ -655,7 +814,6 @@ if expected not in models:
 PY
 rm -f "$MODELS_PATH" "$TEMP_ROOT/models.stderr"
 
-FAILURE_STAGE="config_backup"
 ORIGINAL_CONFIG_HASH="$(sha256_file "$CONFIG_PATH")"
 ORIGINAL_CONFIG_MODE="$(python3 - "$CONFIG_PATH" <<'PY'
 import pathlib
@@ -664,6 +822,8 @@ import sys
 print(format(stat.S_IMODE(pathlib.Path(sys.argv[1]).stat().st_mode), "04o"))
 PY
 )"
+if [[ "$CONFIG_CHANGE_REQUIRED" -eq 1 ]]; then
+FAILURE_STAGE="config_backup"
 python3 - "$CONFIG_PATH" "$BACKUP_PATH" "$ORIGINAL_CONFIG_HASH" <<'PY'
 import hashlib
 import os
@@ -730,8 +890,30 @@ try:
 except (UnicodeDecodeError, json.JSONDecodeError, ValueError):
     raise SystemExit("error: OpenCode config stopped being valid strict JSON before patch")
 providers = value.setdefault("provider", {})
-if not isinstance(providers, dict) or "dtoken-local-route" in providers:
+if not isinstance(providers, dict):
     raise SystemExit("error: OpenCode provider map changed before patch; temporary patch was not applied")
+existing = providers.get("dtoken-local-route")
+if existing is not None:
+    owned = (
+        isinstance(existing, dict)
+        and set(existing) == {"npm", "name", "options", "models"}
+        and existing.get("npm") == "@ai-sdk/openai-compatible"
+        and existing.get("name") == "d-token local route"
+        and isinstance(existing.get("options"), dict)
+        and set(existing["options"]) == {"baseURL", "apiKey"}
+        and isinstance(existing["options"].get("baseURL"), str)
+        and existing["options"].get("apiKey") == "{env:DTOKEN_LOCAL_LISTENER_TOKEN}"
+        and isinstance(existing.get("models"), dict)
+        and len(existing["models"]) == 1
+    )
+    if owned:
+        owned_model, definition = next(iter(existing["models"].items()))
+        owned = (
+            isinstance(definition, dict)
+            and definition == {"name": f"d-token routed {owned_model}"}
+        )
+    if not owned:
+        raise SystemExit("error: OpenCode provider map changed to an unowned dtoken-local-route before patch")
 providers["dtoken-local-route"] = {
     "npm": "@ai-sdk/openai-compatible",
     "name": "d-token local route",
@@ -740,7 +922,7 @@ providers["dtoken-local-route"] = {
         "apiKey": "{env:DTOKEN_LOCAL_LISTENER_TOKEN}",
     },
     "models": {
-        model: {"name": f"d-token routed {provider}/{model}"},
+        model: {"name": f"d-token routed {model}"},
     },
 }
 enabled_appended = False
@@ -753,6 +935,7 @@ temporary_hash = hashlib.sha256(temporary_bytes).hexdigest()
 state_payload = {
     "original_hash": original_hash,
     "temporary_hash": temporary_hash,
+    "provider_preexisting": existing is not None,
     "enabled_providers_appended": enabled_appended,
 }
 state.write_text(json.dumps(state_payload, separators=(",", ":")), encoding="utf-8")
@@ -788,6 +971,11 @@ import sys
 print(json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))["temporary_hash"])
 PY
 )"
+else
+  FAILURE_STAGE="config_verified"
+  TEMP_CONFIG_HASH="$ORIGINAL_CONFIG_HASH"
+  RESTORE_STATUS="not_required_identical"
+fi
 
 FAILURE_STAGE="runtime_config"
 python3 - "$CONFIG_RUNTIME_PATH" "$PORT" "$SELECTED_PROVIDER" "$UPSTREAM_MODEL" "$UPSTREAM_BASE_URL" "$UPSTREAM_API_KEY_REF" <<'PY'
@@ -841,15 +1029,25 @@ FAILURE_STAGE="runtime_build"
 (
   cd "$CODE_ROOT"
   cargo build -p dtoken-proxy >/dev/null
+  cargo build -p dtoken-core-api --example ccr_candidate_probe >/dev/null
 )
 
 FAILURE_STAGE="runtime_start"
-"$CODE_ROOT/target/debug/dtoken-proxy" \
-  --host 127.0.0.1 \
-  --port "$PORT" \
-  --config "$CONFIG_RUNTIME_PATH" \
-  --data-dir "$DATA_DIR" \
-  >"$PROXY_STDOUT" 2>"$PROXY_STDERR" &
+if [[ "$COMPRESSION_WORKLOAD" -eq 1 ]]; then
+  DTOKEN_CCR_ENABLED=1 "$CODE_ROOT/target/debug/dtoken-proxy" \
+    --host 127.0.0.1 \
+    --port "$PORT" \
+    --config "$CONFIG_RUNTIME_PATH" \
+    --data-dir "$DATA_DIR" \
+    >"$PROXY_STDOUT" 2>"$PROXY_STDERR" &
+else
+  "$CODE_ROOT/target/debug/dtoken-proxy" \
+    --host 127.0.0.1 \
+    --port "$PORT" \
+    --config "$CONFIG_RUNTIME_PATH" \
+    --data-dir "$DATA_DIR" \
+    >"$PROXY_STDOUT" 2>"$PROXY_STDERR" &
+fi
 PROXY_PID=$!
 
 for _ in $(seq 1 60); do
@@ -870,23 +1068,50 @@ OPENCODE_SESSION_ID=""
 if [[ "$COMPRESSION_WORKLOAD" -eq 1 ]]; then
   BOOTSTRAP_STDOUT="$TEMP_ROOT/opencode-bootstrap.jsonl"
   BOOTSTRAP_STDERR="$TEMP_ROOT/opencode-bootstrap.stderr"
-  BOOTSTRAP_PROMPT='Use the shell tool exactly once to run this safe local command: python3 -c "print((\"PUBLIC_PLACEHOLDER_CONTEXT alpha beta gamma delta\\n\" * 240), end=\"\")". After the tool finishes, reply only READY.'
+  REQUIRED_COMPLETED_TOOL_RESULTS=7
+  BOOTSTRAP_PROMPT='Use the shell tool exactly seven times, in order, and do not skip or combine calls. Call 1: for alpha in alpha beta gamma delta epsilon zeta eta theta iota kappa; do for beta in alpha beta gamma delta epsilon zeta eta theta iota kappa; do echo public placeholder context alpha beta gamma delta; done; done. Calls 2 through 7: run echo public filler tool result once per call. After all seven shell calls finish, reply only READY.'
   set +e
   (
     cd "$ROOT"
-    env \
-      -u OPENCODE_CONFIG_CONTENT \
-      -u ANTHROPIC_BASE_URL \
-      -u ANTHROPIC_API_URL \
-      -u CLAUDE_CODE_PROXY \
-      OPENCODE_CONFIG="$CONFIG_PATH" \
+    OPENCODE_CONFIG="$CONFIG_PATH" \
       DTOKEN_LOCAL_LISTENER_TOKEN="$LOCAL_LISTENER_TOKEN" \
-      opencode run --format json --dangerously-skip-permissions --model "$LOCAL_MODEL" \
+      run_opencode_clean run --format json --dangerously-skip-permissions --model "$LOCAL_MODEL" \
         --title "d-token compression verification" "$BOOTSTRAP_PROMPT"
   ) >"$BOOTSTRAP_STDOUT" 2>"$BOOTSTRAP_STDERR"
   OPENCODE_STATUS=$?
   set -e
   [[ "$OPENCODE_STATUS" -eq 0 ]] || die "OpenCode could not create the synthetic historical tool-result workload"
+  python3 - "$BOOTSTRAP_STDOUT" "$REQUIRED_COMPLETED_TOOL_RESULTS" <<'PY'
+import json
+import pathlib
+import sys
+
+path, required = sys.argv[1:]
+required = int(required)
+completed = 0
+large_output = False
+for line in pathlib.Path(path).read_text(encoding="utf-8", errors="replace").splitlines():
+    try:
+        event = json.loads(line)
+    except json.JSONDecodeError:
+        continue
+    part = event.get("part") if isinstance(event, dict) else None
+    if not isinstance(part, dict) or part.get("type") != "tool":
+        continue
+    state = part.get("state")
+    if not isinstance(state, dict) or state.get("status") != "completed":
+        continue
+    completed += 1
+    output = state.get("output")
+    if isinstance(output, str) and len(output.encode("utf-8")) >= 4096:
+        large_output = True
+if completed < required:
+    raise SystemExit(
+        f"error: OpenCode completed only {completed} safe tool results; {required} are required to cross the protected-tail gate"
+    )
+if not large_output:
+    raise SystemExit("error: OpenCode did not retain the large safe tool result required for compression")
+PY
   OPENCODE_SESSION_ID="$(python3 - "$BOOTSTRAP_STDOUT" <<'PY'
 import json
 import pathlib
@@ -920,43 +1145,26 @@ for line in pathlib.Path(sys.argv[1]).read_text(encoding="utf-8", errors="replac
 raise SystemExit(1)
 PY
 )" || die "OpenCode did not expose a session id for the compression workload"
-
-  for filler in "Reply only OK." "Reply only OK again."; do
-    set +e
-    (
-      cd "$ROOT"
-      env \
-        -u OPENCODE_CONFIG_CONTENT \
-        -u ANTHROPIC_BASE_URL \
-        -u ANTHROPIC_API_URL \
-        -u CLAUDE_CODE_PROXY \
-        OPENCODE_CONFIG="$CONFIG_PATH" \
-        DTOKEN_LOCAL_LISTENER_TOKEN="$LOCAL_LISTENER_TOKEN" \
-        opencode run --format json --session "$OPENCODE_SESSION_ID" --model "$LOCAL_MODEL" "$filler"
-    ) >"$STDOUT_PATH" 2>"$STDERR_PATH"
-    OPENCODE_STATUS=$?
-    set -e
-    [[ "$OPENCODE_STATUS" -eq 0 ]] || die "OpenCode could not advance the synthetic tool result into safe historical context"
-  done
 fi
 
 set +e
-OPENCODE_SESSION_ARGS=()
 if [[ -n "$OPENCODE_SESSION_ID" ]]; then
-  OPENCODE_SESSION_ARGS=(--session "$OPENCODE_SESSION_ID")
-fi
-(
-  cd "$ROOT"
-  env \
-    -u OPENCODE_CONFIG_CONTENT \
-    -u ANTHROPIC_BASE_URL \
-    -u ANTHROPIC_API_URL \
-    -u CLAUDE_CODE_PROXY \
+  (
+    cd "$ROOT"
     OPENCODE_CONFIG="$CONFIG_PATH" \
-    DTOKEN_LOCAL_LISTENER_TOKEN="$LOCAL_LISTENER_TOKEN" \
-    opencode run "${OPENCODE_SESSION_ARGS[@]}" \
-      --model "$LOCAL_MODEL" --title "d-token routed verification" "$OPENCODE_PROMPT"
-) >"$STDOUT_PATH" 2>"$STDERR_PATH"
+      DTOKEN_LOCAL_LISTENER_TOKEN="$LOCAL_LISTENER_TOKEN" \
+      run_opencode_clean run --format json --session "$OPENCODE_SESSION_ID" \
+        --model "$LOCAL_MODEL" --title "d-token routed verification" "$OPENCODE_PROMPT"
+  ) >"$STDOUT_PATH" 2>"$STDERR_PATH"
+else
+  (
+    cd "$ROOT"
+    OPENCODE_CONFIG="$CONFIG_PATH" \
+      DTOKEN_LOCAL_LISTENER_TOKEN="$LOCAL_LISTENER_TOKEN" \
+      run_opencode_clean run --format json \
+        --model "$LOCAL_MODEL" --title "d-token routed verification" "$OPENCODE_PROMPT"
+  ) >"$STDOUT_PATH" 2>"$STDERR_PATH"
+fi
 OPENCODE_STATUS=$?
 set -e
 
@@ -971,19 +1179,106 @@ PY
 then
   RESPONSE_NONCE_OK=1
 fi
+OPENCODE_FAILURE_CODE="$(python3 - "$STDOUT_PATH" "$STDERR_PATH" "$OPENCODE_STATUS" <<'PY'
+import json
+import pathlib
+import re
+import sys
+
+stdout_path, stderr_path, status = sys.argv[1:]
+if int(status) == 0:
+    print("none")
+    raise SystemExit(0)
+stdout_text = pathlib.Path(stdout_path).read_text(encoding="utf-8", errors="replace")
+stderr_text = pathlib.Path(stderr_path).read_text(encoding="utf-8", errors="replace")
+raw_text = stdout_text + "\n" + stderr_text
+if not raw_text.strip():
+    print("empty_output")
+    raise SystemExit(0)
+
+def safe_identifier(value):
+    if not isinstance(value, str) or not re.fullmatch(r"[A-Za-z][A-Za-z0-9_.-]{0,79}", value):
+        return None
+    return re.sub(r"[^a-z0-9]+", "_", value.lower()).strip("_")
+
+for line in raw_text.splitlines():
+    try:
+        event = json.loads(line)
+    except json.JSONDecodeError:
+        continue
+    if not isinstance(event, dict) or event.get("type") != "error":
+        continue
+    error = event.get("error")
+    if isinstance(error, dict):
+        for key in ("name", "code", "type"):
+            identifier = safe_identifier(error.get(key))
+            if identifier:
+                print(f"error_event_{identifier}")
+                raise SystemExit(0)
+        data = error.get("data")
+        if isinstance(data, dict):
+            for key in ("name", "code", "type"):
+                identifier = safe_identifier(data.get(key))
+                if identifier:
+                    print(f"error_event_{identifier}")
+                    raise SystemExit(0)
+    print("error_event_unclassified")
+    raise SystemExit(0)
+
+text = raw_text.lower()
+error_classes = sorted(
+    {
+        match.group(0)
+        for match in re.finditer(
+            r"\b[a-z][a-z0-9_]{2,63}error\b",
+            text,
+            flags=re.IGNORECASE,
+        )
+    }
+)
+if error_classes:
+    safe = re.sub(r"[^a-z0-9]+", "_", error_classes[0].lower()).strip("_")
+    print(f"error_class_{safe[:64]}")
+    raise SystemExit(0)
+rules = (
+    ("config_rejected", (r"invalid config", r"configuration.*invalid", r"zoderror")),
+    ("missing_environment", (r"environment variable.*(missing|not set|undefined)", r"missing.*environment variable")),
+    ("provider_not_found", (r"provider.*not found", r"unknown provider")),
+    ("model_not_found", (r"model.*not found", r"unknown model")),
+    ("local_connection_failed", (r"connection refused", r"failed to connect", r"econnrefused")),
+    ("database_locked", (r"database.*locked", r"sqlite.*busy", r"sqlite_busy")),
+    ("permission_denied", (r"permission denied", r"eacces", r"operation not permitted")),
+    ("shell_unbound_variable", (r"unbound variable", r"bad substitution")),
+    ("mcp_startup_failed", (r"\bmcp\b.*(failed|error|unavailable)", r"(failed|error).*mcp")),
+    ("config_file_unavailable", (r"config.*no such file", r"failed to (read|load).*config")),
+    ("upstream_auth_failed", (r"unauthorized", r"authentication", r"api key")),
+    ("plugin_or_hook_failed", (r"plugin", r"hook")),
+)
+for code, patterns in rules:
+    if any(re.search(pattern, text) for pattern in patterns):
+        print(code)
+        break
+else:
+    print(
+        "opencode_runtime_error"
+        f"_stdout_{len(stdout_text.encode('utf-8'))}_{len(stdout_text.splitlines())}"
+        f"_stderr_{len(stderr_text.encode('utf-8'))}_{len(stderr_text.splitlines())}"
+    )
+PY
+)"
 rm -f "$STDOUT_PATH" "$STDERR_PATH"
 
 FAILURE_STAGE="runtime_evidence"
 curl --fail --silent "http://127.0.0.1:${PORT}/dashboard/payload" >"$TEMP_ROOT/dashboard.json"
 curl --fail --silent "http://127.0.0.1:${PORT}/ccr/summary" >"$TEMP_ROOT/ccr.json"
 
-python3 - "$TEMP_ROOT" "$PORT" "$SELECTED_PROVIDER" "$MODEL" "$UPSTREAM_MODEL" "$OPENCODE_STATUS" "$RESPONSE_NONCE_OK" "$RUN_NONCE" "$RESULT_STATE_PATH" "$COMPRESSION_WORKLOAD" <<'PY'
+python3 - "$TEMP_ROOT" "$PORT" "$SELECTED_PROVIDER" "$MODEL" "$UPSTREAM_MODEL" "$OPENCODE_STATUS" "$RESPONSE_NONCE_OK" "$RUN_NONCE" "$RESULT_STATE_PATH" "$COMPRESSION_WORKLOAD" "$OPENCODE_FAILURE_CODE" <<'PY'
 import json
 import os
 import pathlib
 import sys
 
-root, port, provider, selected_model, upstream_model, opencode_status, nonce_ok, nonce, result_path, compression_workload = sys.argv[1:]
+root, port, provider, selected_model, upstream_model, opencode_status, nonce_ok, nonce, result_path, compression_workload, opencode_failure_code = sys.argv[1:]
 root_path = pathlib.Path(root)
 data_path = root_path / "runtime-data"
 dashboard = json.loads((root_path / "dashboard.json").read_text(encoding="utf-8"))
@@ -992,21 +1287,110 @@ ccr = json.loads((root_path / "ccr.json").read_text(encoding="utf-8"))
 routes = dashboard.get("route_decisions") or []
 requests = dashboard.get("request_logs") or []
 route = next((item for item in routes if item.get("route_id") == "opencode-real-routed" and item.get("provider_id") == provider), None)
-request = next((item for item in reversed(requests) if item.get("route_id") == "opencode-real-routed" and item.get("provider_id") == provider and item.get("model") == upstream_model), None)
+matching_requests = [
+    item for item in requests
+    if item.get("route_id") == "opencode-real-routed"
+    and item.get("provider_id") == provider
+    and item.get("model") == upstream_model
+]
+successful_requests = [
+    item for item in matching_requests
+    if item.get("agent") == "OpenCode" and item.get("error") is None
+]
+inventory_snapshots = []
+for item in dashboard.get("events") or []:
+    metadata = item.get("metadata")
+    if not isinstance(metadata, dict):
+        continue
+    inventory = metadata.get("compression_inventory")
+    if isinstance(inventory, dict) and inventory.get("raw_available") is False:
+        inventory_snapshots.append(inventory)
+
+request_summaries = []
+for item in matching_requests[-24:]:
+    accounting = item.get("context_accounting")
+    if not isinstance(accounting, dict):
+        accounting = {}
+    request_summaries.append({
+        "error": item.get("error"),
+        "input_tokens_before": item.get("input_tokens_before"),
+        "input_tokens_after": item.get("input_tokens_after"),
+        "transforms_applied": item.get("transforms_applied") or [],
+        "disposition": accounting.get("disposition"),
+        "sent_payload": accounting.get("sent_payload"),
+        "upstream_state": accounting.get("upstream_state"),
+        "attribution_basis": accounting.get("attribution_basis"),
+        "fallback_reason_code": accounting.get("fallback_reason_code"),
+    })
+diagnostics = {
+    "matching_request_count": len(matching_requests),
+    "successful_request_count": len(successful_requests),
+    "request_summaries": request_summaries,
+    "compression_inventories": inventory_snapshots[-8:],
+    "raw_available": False,
+}
+destination = pathlib.Path(result_path)
+destination.write_text(json.dumps({
+    "persisted": {},
+    "ccr_entries": int(ccr.get("entries") or 0),
+    "compression": {},
+    "diagnostics": diagnostics,
+}, separators=(",", ":")), encoding="utf-8")
+os.chmod(destination, 0o600)
+
+if compression_workload == "1":
+    request = next(
+        (
+            item for item in reversed(successful_requests)
+            if item.get("transforms_applied")
+            and (item.get("context_accounting") or {}).get("sent_payload") == "optimized"
+        ),
+        None,
+    )
+else:
+    request = next(reversed(successful_requests), None)
 if route is None:
-    raise SystemExit("dashboard did not record the selected d-token route/provider")
+    raise SystemExit(
+        "dashboard did not record the selected d-token route/provider "
+        f"(opencode_exit={opencode_status}, nonce_observed={nonce_ok}, "
+        f"failure_code={opencode_failure_code})"
+    )
 if request is None:
-    raise SystemExit("dashboard did not record the selected request/provider/model")
-if request.get("agent") != "OpenCode" or request.get("error") is not None:
-    raise SystemExit("dashboard did not record a successful OpenCode request")
+    error_category = matching_requests[-1].get("error") if matching_requests else None
+    if not isinstance(error_category, str) or not error_category:
+        error_category = (
+            "optimized_request_missing"
+            if compression_workload == "1"
+            else "successful_request_missing"
+        )
+    raise SystemExit(
+        "dashboard did not record the required successful OpenCode request "
+        f"(reason_code={error_category})"
+    )
 if dashboard.get("source") != "dtoken-owned-runtime":
     raise SystemExit("dashboard evidence is not from the d-token-owned runtime")
 if int(opencode_status) != 0 or int(nonce_ok) != 1:
     raise SystemExit("OpenCode did not return the response nonce through d-token")
-if int(ccr.get("entries") or 0) < 1 or ccr.get("raw_available") is not False:
-    raise SystemExit("CCR aggregate-only evidence is missing or exposes raw content")
 if ccr.get("source") != "dtoken-owned-runtime":
     raise SystemExit("CCR evidence is not from the d-token-owned runtime")
+if ccr.get("raw_returned") is not False:
+    raise SystemExit("CCR HTTP summary does not explicitly prove that raw content was withheld")
+if compression_workload == "1":
+    if ccr.get("private_store_configured") is not True:
+        raise SystemExit("CCR private store is not configured for the compression workload")
+    if int(ccr.get("private_entries") or 0) < 1:
+        raise SystemExit("CCR private store does not contain an encrypted recovery entry")
+    if ccr.get("raw_available") is not True:
+        raise SystemExit("CCR private store does not report the encrypted original as available")
+    if ccr.get("raw_access") != "in-process-authorized-only":
+        raise SystemExit("CCR private store does not enforce the authorized in-process boundary")
+else:
+    if int(ccr.get("entries") or 0) < 1:
+        raise SystemExit("CCR metadata-only evidence is missing")
+    if ccr.get("private_store_configured") is not False:
+        raise SystemExit("CCR private store was unexpectedly configured for the ordinary routed test")
+    if int(ccr.get("private_entries") or 0) != 0 or ccr.get("raw_available") is not False:
+        raise SystemExit("CCR ordinary routed evidence unexpectedly retained a private original")
 
 compression = {}
 if compression_workload == "1":
@@ -1048,6 +1432,10 @@ if compression_workload == "1":
         "signed_input_savings": signed_input,
         "claimable": attribution_basis == "estimated_active" and signed_input is not None,
         "actual_provider_usage": accounting.get("provider_actual_sent", {}).get("measurement") is not None,
+        "matching_request_count": len(matching_requests),
+        "background_failed_request_count": sum(
+            1 for item in matching_requests if item.get("error") is not None
+        ),
     }
 
 required_files = [
@@ -1079,22 +1467,59 @@ if len(set(identities)) != 4:
 
 if not any(item.get("route_id") == "opencode-real-routed" and item.get("provider_id") == provider for item in parsed["route-decisions.jsonl"]):
     raise SystemExit("route JSONL does not prove the selected route/provider")
-if not any(
-    item.get("route_id") == "opencode-real-routed"
-    and item.get("provider_id") == provider
-    and item.get("model") == upstream_model
-    and item.get("agent") == "OpenCode"
-    and item.get("error") is None
-    for item in parsed["request-logs.jsonl"]
-):
+selected_request_id = request.get("request_id")
+if not isinstance(selected_request_id, str) or not selected_request_id.strip():
+    raise SystemExit("selected request does not expose a stable request identity")
+selected_recovery_ref = f"ccr:{selected_request_id}"
+selected_request_persisted = next(
+    (
+        item for item in parsed["request-logs.jsonl"]
+        if item.get("route_id") == "opencode-real-routed"
+        and item.get("provider_id") == provider
+        and item.get("model") == upstream_model
+        and item.get("agent") == "OpenCode"
+        and item.get("error") is None
+        and (
+            selected_request_id is None
+            or item.get("request_id") == selected_request_id
+        )
+    ),
+    None,
+)
+if selected_request_persisted is None:
     raise SystemExit("request JSONL does not prove request/provider/model success")
-if not any(
-    item.get("route_id") == "opencode-real-routed"
-    and item.get("provider_id") == provider
-    and item.get("raw_available") is False
-    for item in parsed["ccr-metadata.jsonl"]
+if compression_workload == "1" and (
+    not selected_request_persisted.get("transforms_applied")
+    or (selected_request_persisted.get("context_accounting") or {}).get("sent_payload")
+    != "optimized"
 ):
-    raise SystemExit("CCR JSONL does not contain metadata-only route/provider proof")
+    raise SystemExit("request JSONL does not prove the selected optimized payload")
+selected_ccr_record = next(
+    (
+        item for item in reversed(parsed["ccr-metadata.jsonl"])
+        if item.get("recovery_ref") == selected_recovery_ref
+        and item.get("request_id") == selected_request_id
+        and item.get("route_id") == "opencode-real-routed"
+        and item.get("provider_id") == provider
+    ),
+    None,
+)
+if selected_ccr_record is None:
+    raise SystemExit("CCR JSONL does not bind the selected request to its recovery reference")
+if compression_workload == "1":
+    if selected_ccr_record.get("raw_available") is not True:
+        raise SystemExit("selected CCR lifecycle record does not retain its encrypted original")
+    if selected_ccr_record.get("raw_storage") != "encrypted-private-store":
+        raise SystemExit("selected CCR lifecycle record does not identify encrypted private storage")
+    if selected_ccr_record.get("state") not in {
+        "finalized",
+        "send_failed_retained",
+        "finalized_with_non_ok_terminal",
+    }:
+        raise SystemExit("selected CCR lifecycle record is not terminal and recoverable")
+else:
+    if selected_ccr_record.get("raw_available") is not False:
+        raise SystemExit("ordinary routed CCR metadata unexpectedly exposes a private original")
 provider_events = [
     item for item in parsed["events.jsonl"]
     if item.get("stage") == "provider_forward"
@@ -1112,7 +1537,22 @@ for path in data_path.rglob("*"):
 result = {
     "persisted": counts,
     "ccr_entries": int(ccr["entries"]),
+    "ccr": {
+        "selected_recovery_ref": selected_recovery_ref,
+        "selected_request_bound": True,
+        "private_store_configured": ccr.get("private_store_configured") is True,
+        "private_entries_before_delete": int(ccr.get("private_entries") or 0),
+        "raw_available_before_delete": ccr.get("raw_available") is True,
+        "raw_access": ccr.get("raw_access"),
+        "raw_returned": ccr.get("raw_returned"),
+        "retrieve_state": "pending" if compression_workload == "1" else "not_required",
+        "delete_state": "pending" if compression_workload == "1" else "not_required",
+        "repeat_delete_state": "pending" if compression_workload == "1" else "not_required",
+        "post_delete_retrieve": "pending" if compression_workload == "1" else "not_required",
+        "raw_available_after_delete": None,
+    },
     "compression": compression,
+    "diagnostics": diagnostics,
 }
 destination = pathlib.Path(result_path)
 destination.write_text(json.dumps(result, separators=(",", ":")), encoding="utf-8")
@@ -1140,9 +1580,86 @@ import sys
 print(json.dumps(json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8")).get("compression", {}), separators=(",", ":")))
 PY
 )"
+CCR_EVIDENCE="$(python3 - "$RESULT_STATE_PATH" <<'PY'
+import json
+import pathlib
+import sys
+evidence = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8")).get("ccr", {})
+evidence.pop("selected_recovery_ref", None)
+print(json.dumps(evidence, separators=(",", ":")))
+PY
+)"
 
 if [[ "$OPENCODE_STATUS" -ne 0 ]]; then
   die "OpenCode exited with status ${OPENCODE_STATUS}; output was deleted and not printed"
+fi
+
+if [[ "$COMPRESSION_WORKLOAD" -eq 1 ]]; then
+  FAILURE_STAGE="ccr_lifecycle_probe"
+  SELECTED_RECOVERY_REF="$(python3 - "$RESULT_STATE_PATH" <<'PY'
+import json
+import pathlib
+import sys
+value = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))["ccr"]["selected_recovery_ref"]
+if not isinstance(value, str) or not value.startswith("ccr:"):
+    raise SystemExit(1)
+print(value)
+PY
+)"
+  if [[ -n "$PROXY_PID" ]] && kill -0 "$PROXY_PID" 2>/dev/null; then
+    kill "$PROXY_PID"
+    wait "$PROXY_PID" 2>/dev/null || true
+    PROXY_PID=""
+  else
+    die "d-token proxy stopped before the CCR lifecycle probe"
+  fi
+  CCR_PROBE_OUTPUT="$(
+    DTOKEN_CCR_ENABLED=1 \
+      "$CODE_ROOT/target/debug/examples/ccr_candidate_probe" \
+      "$CONFIG_RUNTIME_PATH" "$DATA_DIR" "$SELECTED_RECOVERY_REF"
+  )"
+  CCR_EVIDENCE="$(python3 - "$RESULT_STATE_PATH" "$CCR_PROBE_OUTPUT" <<'PY'
+import json
+import pathlib
+import sys
+
+result_path, probe_text = sys.argv[1:]
+result = json.loads(pathlib.Path(result_path).read_text(encoding="utf-8"))
+probe = json.loads(probe_text)
+expected = {
+    "source": "dtoken-owned-runtime",
+    "initialized": True,
+    "raw_available_before_delete": True,
+    "retrieve_state": "retrieved",
+    "delete_state": "deleted",
+    "repeat_delete_state": "already_deleted",
+    "post_delete_retrieve": "recovery_unavailable",
+    "raw_available_after_delete": False,
+    "raw_returned": False,
+    "capability_returned": False,
+    "recovery_ref_returned": False,
+}
+for key, value in expected.items():
+    if probe.get(key) != value:
+        raise SystemExit(f"CCR lifecycle probe failed its redacted {key} contract")
+if not isinstance(probe.get("retrieved_body_bytes"), int) or probe["retrieved_body_bytes"] <= 0:
+    raise SystemExit("CCR lifecycle probe did not retrieve the exact stored request object")
+evidence = result["ccr"]
+evidence.pop("selected_recovery_ref", None)
+evidence.update({
+    "retrieve_state": probe["retrieve_state"],
+    "retrieved_body_bytes": probe["retrieved_body_bytes"],
+    "delete_state": probe["delete_state"],
+    "repeat_delete_state": probe["repeat_delete_state"],
+    "post_delete_retrieve": probe["post_delete_retrieve"],
+    "raw_available_after_delete": probe["raw_available_after_delete"],
+    "raw_returned": probe["raw_returned"],
+    "capability_returned": probe["capability_returned"],
+    "recovery_ref_returned": probe["recovery_ref_returned"],
+})
+print(json.dumps(evidence, separators=(",", ":")))
+PY
+)"
 fi
 
 FAILURE_STAGE="complete"

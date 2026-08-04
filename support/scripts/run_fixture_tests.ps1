@@ -21,6 +21,8 @@ try {
   $dlltool = Get-Command dlltool.exe -ErrorAction SilentlyContinue
   $canLinkRustBinary = $hostLine -notmatch "windows-gnu" -or $dlltool
   if ($canLinkRustBinary) {
+    cargo test -p dtoken-config-patcher --test agent_bridge_fixture
+    cargo test -p dtoken-agent-bridge --test subprocess_contract
     cargo test --workspace
   } else {
     Write-Host "Skipping cargo test: windows-gnu toolchain requires dlltool.exe, which is not installed."
@@ -63,24 +65,7 @@ try {
     $headroom = Invoke-RestMethod "http://127.0.0.1:$Port/headroom/status"
     $history = Invoke-RestMethod "http://127.0.0.1:$Port/stats-history"
     $doctor = Invoke-RestMethod -Method Post "http://127.0.0.1:$Port/doctor/run"
-    $chatBody = @{
-      model = "opencode/deepseek-v4-flash-free"
-      messages = @(@{
-        role = "user"
-        content = "repeat log line`nrepeat log line`ncompile warning warning"
-      })
-    } | ConvertTo-Json -Depth 8
-    $chat = Invoke-RestMethod -Method Post "http://127.0.0.1:$Port/v1/chat/completions" -ContentType "application/json" -Body $chatBody
-    $memoryBody = @{
-      project_id = "fixture-project"
-      agent = "OpenCode"
-      kind = "verbosity"
-      summary = "Prefer concise fixture output."
-      output_verbosity = "terse"
-      raw_prompt = "fixture raw prompt must not persist"
-      raw_response = "fixture raw response must not persist"
-    } | ConvertTo-Json -Depth 8
-    $memoryLearn = Invoke-RestMethod -Method Post "http://127.0.0.1:$Port/memory/learn" -ContentType "application/json" -Body $memoryBody
+    $projects = Invoke-RestMethod "http://127.0.0.1:$Port/projects"
     $dashboard = Invoke-RestMethod "http://127.0.0.1:$Port/dashboard/payload"
     $ccr = Invoke-RestMethod "http://127.0.0.1:$Port/ccr/summary"
     $memory = Invoke-RestMethod "http://127.0.0.1:$Port/memory/summary"
@@ -106,21 +91,16 @@ try {
     if ($history.source -ne "dtoken-owned-runtime") { throw "runtime history source failed" }
     if (-not ($history.PSObject.Properties.Name -contains "history")) { throw "runtime history payload missing" }
     if (-not $doctor.ok) { throw "doctor failed" }
-    if ($chat.choices[0].message.content -ne "d-token-ok") { throw "d-token route adapter response failed" }
-    if ($chat.dtoken.route_decision.route_id -ne "dtoken-opencode-local") { throw "d-token route decision failed" }
-    if ($chat.dtoken.compression.saved_tokens -le 0) { throw "d-token compression summary failed" }
+    if ($projects.source -ne "dtoken-owned-runtime") { throw "project registry source failed" }
+    if ($projects.state -ne "unavailable") { throw "unverified project registry must fail closed" }
     if ($dashboard.source -ne "dtoken-owned-runtime") { throw "dashboard source failed" }
     if ($ccr.source -ne "dtoken-owned-runtime") { throw "ccr source failed" }
     if ($ccr.raw_available -ne $false) { throw "ccr raw availability boundary failed" }
-    if ($ccr.entries -lt 1) { throw "ccr metadata entry missing after routed request" }
-    if (-not $memoryLearn.ok) { throw "memory learn failed" }
     if ($memory.source -ne "dtoken-owned-runtime") { throw "memory source failed" }
     if ($memory.raw_available -ne $false) { throw "memory raw availability boundary failed" }
-    if ($memory.entries -lt 1) { throw "memory summary entry missing after learn" }
-    if (($memory | ConvertTo-Json -Depth 10) -match "fixture raw prompt must not persist|fixture raw response must not persist") { throw "memory raw prompt/response leaked" }
     if ($outputShape.source -ne "dtoken-owned-runtime") { throw "output-shape source failed" }
     if ($outputShape.raw_available -ne $false) { throw "output-shape raw availability boundary failed" }
-    if ($outputShape.output_verbosity -ne "terse") { throw "output-shape learned verbosity failed" }
+    if ($outputShape.reason_code -ne "memory_output_shape_authorization_unavailable") { throw "output-shape authorization boundary failed" }
     if ($headroomProxy.source -ne "dtoken-owned-runtime" -or $headroomProxy.external_headroom_dependency -ne $false) { throw "headroom proxy ownership failed" }
     if ($headroomMcp.source -ne "dtoken-owned-runtime" -or $headroomMcp.raw_available -ne $false) { throw "headroom mcp metadata boundary failed" }
     if ($headroomStats.source -ne "dtoken-owned-runtime" -or $headroomStats.external_headroom_dependency -ne $false) { throw "headroom stats ownership failed" }
@@ -137,14 +117,14 @@ try {
       history_source = $history.source
       history_points = @($history.history).Count
       doctor = $doctor.ok
-      route = $chat.dtoken.route_decision.route_id
-      saved_tokens = $chat.dtoken.compression.saved_tokens
+      projects_state = $projects.state
       dashboard_source = $dashboard.source
       ccr_entries = $ccr.entries
       ccr_raw_available = $ccr.raw_available
       memory_entries = $memory.entries
       memory_raw_available = $memory.raw_available
-      output_verbosity = $outputShape.output_verbosity
+      output_shape_state = $outputShape.state
+      output_shape_reason = $outputShape.reason_code
       output_shape_raw_available = $outputShape.raw_available
       headroom_proxy_source = $headroomProxy.source
       headroom_mcp_raw_available = $headroomMcp.raw_available

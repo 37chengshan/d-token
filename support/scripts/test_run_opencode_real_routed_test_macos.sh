@@ -18,6 +18,42 @@ fail() {
 [[ "$(uname -s)" == "Darwin" ]] || fail "this focused test requires macOS"
 [[ -x "$SCRIPT" ]] || fail "real routed test script must be executable"
 bash -n "$SCRIPT"
+if rg -q 'OPENCODE_SESSION_ARGS' "$SCRIPT"; then
+  fail "macOS Bash 3.2 must not expand an empty OpenCode session argument array under set -u"
+fi
+rg -q 'REQUIRED_COMPLETED_TOOL_RESULTS=7' "$SCRIPT" || fail "compression workload must cross the six completed-tool-pair protected tail"
+rg -q 'ccr_candidate_probe' "$SCRIPT" || fail "compression workload must run the real MCP CCR lifecycle probe"
+rg -q 'private_store_configured' "$SCRIPT" || fail "CCR evidence must distinguish private-store and metadata-only modes"
+rg -q 'raw_available_before_delete' "$SCRIPT" || fail "CCR evidence must prove availability before authorized deletion"
+rg -q 'repeat_delete_state' "$SCRIPT" || fail "CCR evidence must prove idempotent deletion"
+if rg -q 'CCR aggregate-only evidence is missing or exposes raw content' "$SCRIPT"; then
+  fail "private encrypted CCR storage must not be rejected as raw exposure"
+fi
+if rg -q 'for filler in' "$SCRIPT"; then
+  fail "plain-text filler turns do not cross the completed-tool-pair protected tail"
+fi
+rg -q 'public placeholder context alpha beta gamma delta' "$SCRIPT" || fail "compression workload must use repeat-fold-safe natural text"
+if rg -q 'PUBLIC_PLACEHOLDER_CONTEXT' "$SCRIPT"; then
+  fail "all-uppercase underscore markers are exact anchors and cannot be used as a compression candidate"
+fi
+
+CALLER_UMASK="$(umask)"
+mkdir -p "$TEMP_ROOT/umask-bin"
+python3 - "$TEMP_ROOT/umask-bin/opencode" <<'PY'
+import os
+import pathlib
+import sys
+
+executable = pathlib.Path(sys.argv[1])
+executable.write_text("#!/bin/sh\numask\n", encoding="utf-8")
+os.chmod(executable, 0o700)
+PY
+OBSERVED_UMASK="$(PATH="$TEMP_ROOT/umask-bin:$PATH" "$SCRIPT" --list-models)"
+python3 - "$CALLER_UMASK" "$OBSERVED_UMASK" <<'PY'
+import sys
+expected, observed = sys.argv[1:]
+assert int(expected, 8) == int(observed, 8), (expected, observed)
+PY
 
 mkdir -p "$TEMP_ROOT/bin"
 python3 - "$TEMP_ROOT/bin/opencode" "$TEMP_ROOT/opencode-called" <<'PY'
@@ -52,6 +88,7 @@ PY
 BEFORE_HASH="$(shasum -a 256 "$CONFIG_PATH" | awk '{print $1}')"
 PATH="$TEMP_ROOT/bin:$PATH" "$SCRIPT" \
   --dry-run \
+  --pure \
   --config-path "$CONFIG_PATH" \
   --model existing/model-v1 \
   --upstream-base-url https://example.invalid/v1 \
@@ -73,12 +110,116 @@ assert result["status"] == "preflight_ok"
 assert result["mode"] == "dry_run"
 assert result["credential_mode"] == "os_store_reference"
 assert result["strict_json_valid"] is True
+assert result["provider_state"] == "absent"
+assert result["config_change_required"] is True
 assert result["config_mutated"] is False
 assert result["backup_created"] is False
 assert result["report_created"] is False
 assert result["opencode_executed"] is False
 assert result["external_request_made"] is False
+assert result["opencode_external_plugins_enabled"] is False
+assert result["ccr_private_store_enabled"] is False
+assert result["ccr_key_cleanup_planned"] is False
 assert result["normal_user_config"].startswith("<explicit-config>/")
+PY
+
+PATH="$TEMP_ROOT/bin:$PATH" "$SCRIPT" \
+  --dry-run \
+  --pure \
+  --compression-workload \
+  --config-path "$CONFIG_PATH" \
+  --model existing/model-v1 \
+  --upstream-base-url https://example.invalid/v1 \
+  --api-key-ref keychain://dtoken-test/existing \
+  --port "$PORT" \
+  >"$TEMP_ROOT/compression-preflight.json"
+python3 - "$TEMP_ROOT/compression-preflight.json" <<'PY'
+import json
+import pathlib
+import sys
+result = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+assert result["status"] == "preflight_ok"
+assert result["ccr_private_store_enabled"] is True
+assert result["ccr_key_cleanup_planned"] is True
+assert result["config_mutated"] is False
+assert result["external_request_made"] is False
+PY
+
+OWNED_PATH="$TEMP_ROOT/owned.json"
+python3 - "$OWNED_PATH" <<'PY'
+import json
+import pathlib
+import sys
+pathlib.Path(sys.argv[1]).write_text(json.dumps({
+    "provider": {
+        "dtoken-local-route": {
+            "npm": "@ai-sdk/openai-compatible",
+            "name": "d-token local route",
+            "options": {
+                "baseURL": "http://127.0.0.1:18001/v1",
+                "apiKey": "{env:DTOKEN_LOCAL_LISTENER_TOKEN}",
+            },
+            "models": {
+                "existing-model": {"name": "d-token routed existing-model"},
+            },
+        },
+    },
+}, separators=(",", ":")) + "\n", encoding="utf-8")
+PY
+OWNED_HASH="$(shasum -a 256 "$OWNED_PATH" | awk '{print $1}')"
+"$SCRIPT" --dry-run --config-path "$OWNED_PATH" --model existing/model-v1 \
+  --upstream-base-url https://example.invalid/v1 --upstream-no-auth --port "$PORT" \
+  >"$TEMP_ROOT/owned-result.json"
+[[ "$OWNED_HASH" == "$(shasum -a 256 "$OWNED_PATH" | awk '{print $1}')" ]] || fail "owned-provider dry-run changed config"
+python3 - "$TEMP_ROOT/owned-result.json" <<'PY'
+import json
+import pathlib
+import sys
+result = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+assert result["status"] == "preflight_ok"
+assert result["provider_state"] == "owned_existing"
+assert result["config_change_required"] is True
+assert result["config_mutated"] is False
+PY
+
+MATCHING_PATH="$TEMP_ROOT/matching.json"
+python3 - "$MATCHING_PATH" "$PORT" <<'PY'
+import json
+import pathlib
+import sys
+
+path, port = sys.argv[1:]
+pathlib.Path(path).write_text(json.dumps({
+    "provider": {
+        "dtoken-local-route": {
+            "npm": "@ai-sdk/openai-compatible",
+            "name": "d-token local route",
+            "options": {
+                "baseURL": f"http://127.0.0.1:{port}/v1",
+                "apiKey": "{env:DTOKEN_LOCAL_LISTENER_TOKEN}",
+            },
+            "models": {
+                "model-v1": {"name": "d-token routed model-v1"},
+            },
+        },
+    },
+}, separators=(",", ":")) + "\n", encoding="utf-8")
+PY
+MATCHING_HASH="$(shasum -a 256 "$MATCHING_PATH" | awk '{print $1}')"
+"$SCRIPT" --dry-run --pure --config-path "$MATCHING_PATH" --model existing/model-v1 \
+  --upstream-base-url https://example.invalid/v1 --upstream-no-auth --port "$PORT" \
+  >"$TEMP_ROOT/matching-result.json"
+[[ "$MATCHING_HASH" == "$(shasum -a 256 "$MATCHING_PATH" | awk '{print $1}')" ]] || fail "matching-provider dry-run changed config"
+python3 - "$TEMP_ROOT/matching-result.json" <<'PY'
+import json
+import pathlib
+import sys
+result = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+assert result["status"] == "preflight_ok"
+assert result["provider_state"] == "owned_matching"
+assert result["config_change_required"] is False
+assert result["config_mutated"] is False
+assert result["backup_created"] is False
 PY
 
 INVALID_PATH="$TEMP_ROOT/invalid.json"
@@ -111,5 +252,5 @@ if "$SCRIPT" --dry-run --config-path "$CONFLICT_PATH" --model existing/model-v1 
 fi
 
 rg -q "strict UTF-8 JSON" "$TEMP_ROOT/invalid.err" || fail "invalid JSON did not fail closed clearly"
-rg -q "already exists" "$TEMP_ROOT/conflict.err" || fail "provider conflict did not fail closed clearly"
+rg -q "not provably d-token-owned" "$TEMP_ROOT/conflict.err" || fail "provider conflict did not fail closed clearly"
 echo "PASS: OpenCode real routed dry-run is read-only and fail-closed"

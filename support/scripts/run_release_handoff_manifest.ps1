@@ -98,6 +98,48 @@ function Get-Artifact {
   }
 }
 
+function Assert-OpenCodeReport {
+  param(
+    [object]$Report,
+    [object]$Candidate
+  )
+
+  if ($null -eq $Report) {
+    throw "opencode workload report is missing"
+  }
+
+  foreach ($Field in @("candidate_id", "runtime_identity", "service_url", "route", "provider", "report_path")) {
+    if ([string]::IsNullOrWhiteSpace([string]$Report.$Field)) {
+      throw "opencode workload report is missing required field: $Field"
+    }
+  }
+
+  if ([string]$Report.candidate_id -ne [string]$Candidate.candidate_id) {
+    throw "opencode workload candidate mismatch"
+  }
+  if ([string]$Report.runtime_identity -ne "dtoken-runtime-local") {
+    throw "opencode workload runtime identity mismatch"
+  }
+  if ([string]$Report.service_url -notmatch '^http://127\.0\.0\.1:\d+$') {
+    throw "opencode workload service URL must stay on loopback"
+  }
+  if ($null -eq $Report.ledger -or $Report.ledger.events -lt 1 -or $Report.ledger.route_decisions -lt 1 -or $Report.ledger.request_logs -lt 1 -or $Report.ledger.ccr_metadata -lt 1) {
+    throw "opencode workload ledger evidence is incomplete"
+  }
+  if ($null -eq $Report.metrics -or $null -eq $Report.metrics.compression -or $null -eq $Report.metrics.route) {
+    throw "opencode workload metrics are incomplete"
+  }
+  if ($null -eq $Report.ccr -or $Report.ccr.entries -lt 1 -or $Report.ccr.raw_available -ne $false) {
+    throw "opencode workload CCR evidence is incomplete"
+  }
+  if ($Report.export_redacted -ne $true -or $Report.export_raw_available -ne $false) {
+    throw "opencode workload export redaction mismatch"
+  }
+  if (-not (Test-Path -LiteralPath ([string]$Report.report_path) -PathType Leaf)) {
+    throw "opencode workload report path is missing: $($Report.report_path)"
+  }
+}
+
 function New-Check {
   param(
     [string]$Id,
@@ -148,6 +190,11 @@ $MacTemplateReport = Read-JsonFile $LatestMacTemplate
 $RedactionReport = Read-JsonFile $LatestRedaction
 $CleanupReport = Read-JsonFile $LatestCleanup
 $StartupReport = Read-JsonFile $LatestStartup
+$OpenCodeStepReport = Get-ReleaseStepSummary -ReleaseReport $ReleaseReport -Id "opencode_real_workload"
+if ($null -ne $OpenCodeStepReport) {
+  $OpenCodeReport = $OpenCodeStepReport
+  $LatestOpenCode = Get-ReportFileFromSummary $OpenCodeStepReport $LatestOpenCode
+}
 
 # Bind every release-readiness subreport to the explicit verification report
 # when available. Falling back to "latest" is retained only for standalone
@@ -182,6 +229,8 @@ $RequiredReleaseGateSteps = @(
   "frontend_vitest",
   "frontend_typecheck",
   "desktop_build",
+  "release_performance_gate",
+  "codec_candidate_evidence",
   "rust_fmt",
   "rust_clippy",
   "rust_workspace_tests",
@@ -210,6 +259,11 @@ $StartupOk = ($null -ne $StartupReport -and $StartupReport.ok -eq $true -and $St
 $CrossPlatformRecorded = ($CandidateIdMatches -and $null -ne $CrossPlatformReport -and $CrossPlatformReport.ok -eq $true)
 $CrossPlatformLocalReady = ($CandidateIdMatches -and $null -ne $CrossPlatformReport -and $CrossPlatformReport.cross_platform_local_release_candidate_ready -eq $true)
 $MacTemplateReady = ($CandidateIdMatches -and $null -ne $MacTemplateReport -and $MacTemplateReport.ok -eq $true)
+$OpenCodeReady = $false
+if ($null -ne $OpenCodeReport) {
+  Assert-OpenCodeReport -Report $OpenCodeReport -Candidate $CurrentCandidate
+  $OpenCodeReady = ($OpenCodeReport.candidate_id -eq $CurrentCandidate.candidate_id)
+}
 
 $Checks = @(
   New-Check "required_artifacts_exist" $RequiredArtifactsExist $Artifacts
@@ -236,6 +290,12 @@ $Checks = @(
     path = if ($LatestStartup) { $LatestStartup.FullName } else { $null }
     report_candidate_id = $StartupCandidateId
     current_candidate_id = $CurrentCandidate.candidate_id
+  }
+  New-Check "opencode_report_bound_to_current_candidate" $OpenCodeReady @{
+    path = if ($LatestOpenCode) { $LatestOpenCode.FullName } else { $null }
+    report_candidate_id = if ($null -ne $OpenCodeReport) { [string]$OpenCodeReport.candidate_id } else { $null }
+    current_candidate_id = $CurrentCandidate.candidate_id
+    runtime_identity = if ($null -ne $OpenCodeReport) { [string]$OpenCodeReport.runtime_identity } else { $null }
   }
 )
 
@@ -281,14 +341,22 @@ $Report = [pscustomobject]@{
   }
   opencode_summary = if ($null -ne $OpenCodeReport) {
     [pscustomobject]@{
+      candidate_id = $OpenCodeReport.candidate_id
+      runtime_identity = $OpenCodeReport.runtime_identity
+      service_url = $OpenCodeReport.service_url
       route = $OpenCodeReport.route
       provider = $OpenCodeReport.provider
+      route_decision_count = $OpenCodeReport.route_decision_count
+      request_log_count = $OpenCodeReport.request_log_count
       workload_count = $OpenCodeReport.workload_count
       total_saved_tokens = $OpenCodeReport.total_saved_tokens
       savings_percent = $OpenCodeReport.savings_percent
       fallback_disabled = $OpenCodeReport.runtime_config_fallback_disabled
       export_redacted = $OpenCodeReport.export_redacted
       export_raw_available = $OpenCodeReport.export_raw_available
+      ledger = $OpenCodeReport.ledger
+      metrics = $OpenCodeReport.metrics
+      ccr = $OpenCodeReport.ccr
       report_path = $OpenCodeReport.report_path
     }
   } else { $null }

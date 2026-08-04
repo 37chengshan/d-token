@@ -1,5 +1,6 @@
 param(
   [string]$OutputDir = "",
+  [string[]]$AdditionalPath = @(),
   [switch]$All
 )
 
@@ -31,30 +32,48 @@ $SensitiveValuePatterns = @(
 )
 
 function Get-JsonArtifactsToScan {
-  if ($All) {
-    return @(Get-ChildItem -LiteralPath $OutputDir -Filter "*.json" -File -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending)
-  }
-
-  $Prefixes = @(
-    "release-verification-",
-    "opencode-workload-benchmark-",
-    "product-readiness-command-",
-    "dtoken-service-lifecycle-",
-    "headroom-capability-coverage-",
-    "desktop-packaging-audit-",
-    "desktop-bundle-artifact-audit-",
-    "release-distribution-manifest-"
-  )
-
   $Files = @()
-  foreach ($Prefix in $Prefixes) {
-    $Latest = Get-ChildItem -LiteralPath $OutputDir -Filter "$Prefix*.json" -File -ErrorAction SilentlyContinue |
-      Sort-Object LastWriteTime -Descending |
-      Select-Object -First 1
-    if ($null -ne $Latest) {
-      $Files += $Latest
+  if ($All) {
+    $Files += @(Get-ChildItem -LiteralPath $OutputDir -Filter "*.json" -File -ErrorAction SilentlyContinue)
+  } else {
+    $Prefixes = @(
+      "release-verification-",
+      "release-performance-gate",
+      "opencode-workload-benchmark-",
+      "product-readiness-command-",
+      "dtoken-service-lifecycle-",
+      "headroom-capability-coverage-",
+      "desktop-packaging-audit-",
+      "desktop-bundle-artifact-audit-",
+      "release-distribution-manifest-"
+    )
+
+    foreach ($Prefix in $Prefixes) {
+      $Latest = Get-ChildItem -LiteralPath $OutputDir -Filter "$Prefix*.json" -File -ErrorAction SilentlyContinue |
+        Sort-Object LastWriteTime -Descending |
+        Select-Object -First 1
+      if ($null -ne $Latest) {
+        $Files += $Latest
+      }
     }
   }
+
+  foreach ($Candidate in $AdditionalPath) {
+    if ([string]::IsNullOrWhiteSpace($Candidate)) {
+      continue
+    }
+    $Resolved = Resolve-Path -LiteralPath $Candidate -ErrorAction SilentlyContinue
+    if ($null -eq $Resolved) {
+      throw "Additional redaction audit path is missing: $Candidate"
+    }
+    $Item = Get-Item -LiteralPath $Resolved.Path
+    if ($Item.PSIsContainer) {
+      $Files += @(Get-ChildItem -LiteralPath $Item.FullName -Filter "*.json" -File -Recurse -ErrorAction SilentlyContinue)
+    } elseif ($Item.Extension -eq ".json") {
+      $Files += $Item
+    }
+  }
+
   return @($Files | Sort-Object FullName -Unique)
 }
 

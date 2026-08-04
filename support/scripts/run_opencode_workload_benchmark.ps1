@@ -12,6 +12,9 @@ if ([string]::IsNullOrWhiteSpace($OutputDir)) {
 }
 New-Item -ItemType Directory -Force -Path $OutputDir | Out-Null
 
+. (Join-Path $PSScriptRoot "release_candidate_provenance.ps1")
+$Candidate = Get-ReleaseCandidateProvenance -Root $Root -OutputDir $OutputDir
+
 $ConfigPath = Join-Path $env:TEMP "dtoken-opencode-workload-upstream.json"
 $DataDir = Join-Path $env:TEMP ("dtoken-opencode-workload-data-" + [guid]::NewGuid().ToString("N"))
 $Config = @{
@@ -169,14 +172,50 @@ try {
     $Dashboard = Invoke-RestMethod "http://127.0.0.1:$DtokenPort/dashboard/payload"
     $Active = Invoke-RestMethod "http://127.0.0.1:$DtokenPort/config/active"
     $Export = Invoke-RestMethod "http://127.0.0.1:$DtokenPort/export/json"
+    $Ccr = Invoke-RestMethod "http://127.0.0.1:$DtokenPort/ccr/summary"
     $RequestLogs = @($Dashboard.request_logs)
     $RouteDecisions = @($Dashboard.route_decisions)
+    $Ledger = [pscustomobject]@{
+      events = (Get-Content (Join-Path $DataDir "events.jsonl")).Count
+      route_decisions = (Get-Content (Join-Path $DataDir "route-decisions.jsonl")).Count
+      request_logs = (Get-Content (Join-Path $DataDir "request-logs.jsonl")).Count
+      ccr_metadata = (Get-Content (Join-Path $DataDir "ccr-metadata.jsonl")).Count
+    }
+    $Metrics = [pscustomobject]@{
+      compression = $Dashboard.metrics.compression_performance
+      route = $Dashboard.metrics.route_performance
+    }
+    if ($RouteDecisions.Count -lt 1) {
+      throw "runtime did not record any route decisions"
+    }
     if ($RequestLogs.Count -lt $Workloads.Count) {
       throw "expected at least $($Workloads.Count) request logs, got $($RequestLogs.Count)"
     }
-    if ($RouteDecisions[0].route_id -ne "opencode-workload-routed") {
+    if ($Ledger.events -lt 1 -or $Ledger.route_decisions -lt 1 -or $Ledger.request_logs -lt 1 -or $Ledger.ccr_metadata -lt 1) {
+      throw "runtime ledger evidence is incomplete"
+    }
+    if ($Dashboard.source -ne "dtoken-owned-runtime") {
+      throw "dashboard source mismatch"
+    }
+    if ($Dashboard.request_logs[0].agent -ne "OpenCode") {
+      throw "dashboard did not record OpenCode agent"
+    }
+    if ($Dashboard.route_decisions[0].route_id -ne "opencode-workload-routed") {
       throw "dashboard did not record opencode-workload-routed"
     }
+    if ($Dashboard.route_decisions[0].provider_id -ne "opencode-zen") {
+      throw "dashboard did not record opencode-zen"
+    }
+    if ($Dashboard.request_logs[0].route_id -ne "opencode-workload-routed") {
+      throw "request log route mismatch"
+    }
+    if ($Dashboard.request_logs[0].provider_id -ne "opencode-zen") {
+      throw "request log provider mismatch"
+    }
+    if ($Dashboard.request_logs[0].error) {
+      throw "runtime request log recorded error: $($Dashboard.request_logs[0].error)"
+    }
+    $RequestLogs = @($Dashboard.request_logs)
     if ($Active.config.source -ne "explicit_cli_config") {
       throw "runtime active config source mismatch"
     }
@@ -204,11 +243,16 @@ try {
     $SavingsPercent = if ($TotalBefore -gt 0) { [math]::Round(($TotalSaved / $TotalBefore) * 100, 2) } else { 0 }
 
     $Result = [pscustomobject]@{
+      candidate_id = $Candidate.candidate_id
+      runtime_identity = $Health.runtime_identity
+      service_url = "http://127.0.0.1:$DtokenPort"
       health = $Health.status
       model = $Model
       workload_count = $Workloads.Count
       route = $RouteDecisions[0].route_id
       provider = $RouteDecisions[0].provider_id
+      route_decision_count = $RouteDecisions.Count
+      request_log_count = $RequestLogs.Count
       dashboard_source = $Dashboard.source
       runtime_config_source = $Active.config.source
       runtime_config_route_count = $Active.config.route_count
@@ -221,13 +265,19 @@ try {
       export_redacted = $Export.redacted
       export_raw_available = $Export.raw_available
       export_active_config_source = $Export.active_config.config.source
+      metrics = $Metrics
+      ccr = [pscustomobject]@{
+        entries = $Ccr.entries
+        raw_available = $Ccr.raw_available
+      }
       compression_performance = $Dashboard.metrics.compression_performance
       route_performance = $Dashboard.metrics.route_performance
       runs = $Runs
-      persisted_events = (Get-Content (Join-Path $DataDir "events.jsonl")).Count
-      persisted_routes = (Get-Content (Join-Path $DataDir "route-decisions.jsonl")).Count
-      persisted_logs = (Get-Content (Join-Path $DataDir "request-logs.jsonl")).Count
-      persisted_ccr = (Get-Content (Join-Path $DataDir "ccr-metadata.jsonl")).Count
+      ledger = $Ledger
+      persisted_events = $Ledger.events
+      persisted_routes = $Ledger.route_decisions
+      persisted_logs = $Ledger.request_logs
+      persisted_ccr = $Ledger.ccr_metadata
       data_dir = $DataDir
     }
     $Stamp = (Get-Date).ToString("yyyyMMdd-HHmmss")

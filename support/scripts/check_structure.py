@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 import re
 
@@ -7,6 +8,10 @@ ROOT = Path(__file__).resolve().parents[2]
 
 REQUIRED = [
     "README.md",
+    "LICENSE",
+    "THIRD_PARTY_NOTICES.md",
+    "CHANGELOG.md",
+    "SECURITY.md",
     "AGENTS.md",
     "CLAUDE.md",
     "docs/PRD.md",
@@ -61,6 +66,10 @@ REQUIRED = [
     "support/fixtures/README.md",
     "support/fake-bin/rtk",
     "support/fake-bin/headroom",
+    "support/scripts/check_release_scope.py",
+    "support/scripts/check_release_version.py",
+    "support/scripts/generate_release_metadata.py",
+    "support/scripts/run_macos_release_package_audit.sh",
     "support/scripts/run_fixture_tests.sh",
     "support/scripts/run_fixture_tests.ps1",
     "support/scripts/run_fake_binary_tests.sh",
@@ -116,7 +125,15 @@ FORBIDDEN = [
     "scripts/check_structure.py",
 ]
 
-ROOT_MARKDOWN_ALLOWED = {"README.md", "AGENTS.md", "CLAUDE.md"}
+ROOT_MARKDOWN_ALLOWED = {
+    "README.md",
+    "README-cn.md",
+    "CHANGELOG.md",
+    "SECURITY.md",
+    "THIRD_PARTY_NOTICES.md",
+    "AGENTS.md",
+    "CLAUDE.md",
+}
 DOCS_ROOT_MARKDOWN_ALLOWED = {
     "APP_FUNCTIONS_AND_PAGES.md",
     "ARCHITECTURE.md",
@@ -138,6 +155,25 @@ ACTIVE_MARKDOWN_ROOTS = [
 ]
 
 LINK_PATTERN = re.compile(r"(?<!!)\[[^\]]+\]\(([^)]+)\)")
+MARKDOWN_SCAN_SKIPPED_DIRS = {
+    ".git",
+    "artifacts",
+    "dist",
+    "node_modules",
+    "target",
+}
+MARKDOWN_SCAN_SKIPPED_PREFIXES = (
+    "docs/archive/",
+    "docs/history/",
+    "code/apps/desktop/src-old/",
+    "code/apps/desktop/src-tauri/binaries/codebase-memory/",
+    "code/UI design for project/",
+)
+
+
+def markdown_scan_path_is_skipped(path: Path) -> bool:
+    relative = path.relative_to(ROOT).as_posix().rstrip("/") + "/"
+    return any(relative.startswith(prefix) for prefix in MARKDOWN_SCAN_SKIPPED_PREFIXES)
 
 
 def active_markdown_files() -> list[Path]:
@@ -148,21 +184,22 @@ def active_markdown_files() -> list[Path]:
             continue
         if not entry.exists():
             continue
-        for path in entry.rglob("*.md"):
-            relative = path.relative_to(ROOT).as_posix()
-            if any(part in {"node_modules", "target", "dist", "artifacts", ".git"} for part in path.parts):
+        for current, directories, filenames in os.walk(entry, topdown=True):
+            current_path = Path(current)
+            if markdown_scan_path_is_skipped(current_path):
+                directories.clear()
                 continue
-            if relative.startswith("docs/archive/") or relative.startswith("docs/history/"):
-                continue
-            if relative.startswith("code/apps/desktop/src-old/"):
-                continue
-            if relative.startswith("code/apps/desktop/src-tauri/binaries/codebase-memory/"):
-                # Verbatim upstream license/NOTICE bundle. Its internal source-tree
-                # links describe the upstream release and are not d-token docs links.
-                continue
-            if relative.startswith("code/UI design for project/"):
-                continue
-            files.append(path)
+            directories[:] = [
+                directory
+                for directory in directories
+                if directory not in MARKDOWN_SCAN_SKIPPED_DIRS
+                and not markdown_scan_path_is_skipped(current_path / directory)
+            ]
+            files.extend(
+                current_path / filename
+                for filename in filenames
+                if filename.endswith(".md")
+            )
     return sorted(set(files))
 
 

@@ -1,7 +1,8 @@
 param(
   [string]$OutputDir = "",
   [string]$CertificatePath = "",
-  [switch]$RequireCertificate
+  [switch]$RequireCertificate,
+  [switch]$UnsignedTechnicalPreview
 )
 
 $ErrorActionPreference = "Stop"
@@ -90,7 +91,7 @@ $Checks = @(
   New-Check "release_artifacts_built_after_candidate_stamp" $CandidateStampStatus.artifact_built_after_candidate_stamp @{
     stamp_last_write_time = $CandidateStampStatus.stamp_last_write_time
   }
-  New-Check "signtool_available" ($null -ne $Signtool) @{
+  New-Check "signtool_available" ($UnsignedTechnicalPreview -or $null -ne $Signtool) @{
     source = if ($null -ne $Signtool) { $Signtool.Source } else { $null }
   }
   New-Check "artifacts_exist" ($MissingArtifacts.Count -eq 0) @{
@@ -112,7 +113,8 @@ $CanSignNow = (
   $CandidateStampStatus.artifact_built_after_candidate_stamp -and
   ($null -ne $Signtool) -and
   ($MissingArtifacts.Count -eq 0) -and
-  ((-not $RequireCertificate) -or $CertificateExists)
+  ((-not $RequireCertificate) -or $CertificateExists) -and
+  (-not $UnsignedTechnicalPreview -or -not $RequireCertificate)
 )
 $ChecksPassed = @($Checks | Where-Object { -not $_.ok }).Count -eq 0
 $RequiredSignaturesValid = (-not $RequireCertificate) -or ($UnsignedArtifacts.Count -eq 0)
@@ -124,12 +126,13 @@ $Report = [pscustomobject]@{
   candidate = $CurrentCandidate
   candidate_stamp = $CandidateStampStatus.stamp
   can_sign_now = $CanSignNow
-  distribution_ready_public = ($ChecksPassed -and $UnsignedArtifacts.Count -eq 0)
+  distribution_ready_public = $false
+  unsigned_technical_preview = [bool]$UnsignedTechnicalPreview
   signtool = if ($null -ne $Signtool) { $Signtool.Source } else { $null }
   unsigned_artifact_count = $UnsignedArtifacts.Count
   unsigned_artifacts = $UnsignedArtifacts
   checks = $Checks
-  signing_note = "Readiness audit only. It does not sign files, install certificates, read certificate passwords, or access credentials."
+  signing_note = if ($UnsignedTechnicalPreview) { "UNSIGNED TECHNICAL PREVIEW: signatures are observed but not required; this report never asserts public distribution readiness." } else { "Readiness audit only. It does not sign files, install certificates, read certificate passwords, or access credentials." }
 }
 
 $Stamp = (Get-Date).ToString("yyyyMMdd-HHmmss")
