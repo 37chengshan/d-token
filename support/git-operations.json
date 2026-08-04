@@ -648,6 +648,33 @@
       "summary": "chore(support): fixture scripts, fake-bin, release gates, and git operations audit",
       "head_before": "747410a829c02a080f3d906d0c8038b76ae3429c",
       "remote": null
+    },
+    {
+      "id": "6675e17e-a54f-41b1-aa8d-14dadcc32d29",
+      "timestamp": "2026-08-04T16:44:10+08:00",
+      "operation": "commit",
+      "branch": "codex/code-graph-mcp-integration",
+      "summary": "docs: sync PLAN, implementation status, index, and research notes",
+      "head_before": "cda7e7781d354df9e3a9af5f45def6de8be17c57",
+      "remote": null
+    },
+    {
+      "id": "737e8ab7-0342-42c2-be04-680d731bce33",
+      "timestamp": "2026-08-04T16:45:52+08:00",
+      "operation": "commit",
+      "branch": "codex/code-graph-mcp-integration",
+      "summary": "ci: expand CI matrix and add public unsigned prerelease workflow",
+      "head_before": "22a6904944d891e5bfff33c24d04aef42f5cf961",
+      "remote": null
+    },
+    {
+      "id": "9a93cf80-284d-4419-a665-271a8936ee36",
+      "timestamp": "2026-08-04T16:46:54+08:00",
+      "operation": "commit",
+      "branch": "codex/code-graph-mcp-integration",
+      "summary": "chore: update headroom README and sync git operations audit ledger",
+      "head_before": "a53667251c30f64325fa8ff764e0b126a6a05baa",
+      "remote": null
     }
   ]
 }
