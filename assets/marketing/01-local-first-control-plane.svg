@@ -1,0 +1,127 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="900" viewBox="0 0 1600 900" role="img" aria-labelledby="title desc">
+  <title id="title">d-token — Local-first control plane for AI coding</title>
+  <desc id="desc">A dark promotional banner showing the d-token desktop control plane, local Rust runtime and multi-agent support.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0b1220"/>
+      <stop offset="0.55" stop-color="#121827"/>
+      <stop offset="1" stop-color="#1e293b"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#fb923c"/>
+      <stop offset="1" stop-color="#ea580c"/>
+    </linearGradient>
+    <linearGradient id="panel" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#1f2937" stop-opacity="0.96"/>
+      <stop offset="1" stop-color="#111827" stop-opacity="0.98"/>
+    </linearGradient>
+    <filter id="shadow" x="-30%" y="-30%" width="160%" height="160%">
+      <feDropShadow dx="0" dy="24" stdDeviation="28" flood-color="#020617" flood-opacity="0.48"/>
+    </filter>
+    <pattern id="grid" width="48" height="48" patternUnits="userSpaceOnUse">
+      <path d="M48 0H0V48" fill="none" stroke="#94a3b8" stroke-opacity="0.055"/>
+    </pattern>
+  </defs>
+
+  <rect width="1600" height="900" fill="url(#bg)"/>
+  <rect width="1600" height="900" fill="url(#grid)"/>
+  <circle cx="1400" cy="86" r="320" fill="#ea580c" opacity="0.08"/>
+  <circle cx="134" cy="844" r="260" fill="#2563eb" opacity="0.07"/>
+
+  <g transform="translate(100 92)">
+    <g>
+      <rect x="0" y="0" width="72" height="72" rx="20" fill="url(#accent)"/>
+      <circle cx="36" cy="36" r="20" fill="none" stroke="#fff" stroke-width="5" opacity="0.95"/>
+      <path d="M36 18V54M25 28H42C50 28 54 33 54 40C54 48 49 53 41 53H25" fill="none" stroke="#fff" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
+    </g>
+    <text x="92" y="48" fill="#f8fafc" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="42" font-weight="760" letter-spacing="-1">d-token</text>
+  </g>
+
+  <g transform="translate(100 224)">
+    <text x="0" y="0" fill="#f8fafc" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="76" font-weight="800" letter-spacing="-2.8">
+      Local-first control plane
+    </text>
+    <text x="0" y="88" fill="#f8fafc" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="76" font-weight="800" letter-spacing="-2.8">
+      for AI coding.
+    </text>
+    <text x="0" y="154" fill="#cbd5e1" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="28" font-weight="450">
+      统一连接、上下文优化、路由、诊断、观测与安全回退
+    </text>
+  </g>
+
+  <g transform="translate(100 520)">
+    <g>
+      <rect width="210" height="64" rx="18" fill="#ffffff" fill-opacity="0.06" stroke="#ffffff" stroke-opacity="0.11"/>
+      <circle cx="28" cy="32" r="7" fill="#22c55e"/>
+      <text x="48" y="40" fill="#e2e8f0" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="20" font-weight="600">Rust-owned runtime</text>
+    </g>
+    <g transform="translate(226 0)">
+      <rect width="190" height="64" rx="18" fill="#ffffff" fill-opacity="0.06" stroke="#ffffff" stroke-opacity="0.11"/>
+      <circle cx="28" cy="32" r="7" fill="#38bdf8"/>
+      <text x="48" y="40" fill="#e2e8f0" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="20" font-weight="600">Loopback only</text>
+    </g>
+    <g transform="translate(432 0)">
+      <rect width="204" height="64" rx="18" fill="#ffffff" fill-opacity="0.06" stroke="#ffffff" stroke-opacity="0.11"/>
+      <circle cx="28" cy="32" r="7" fill="#fb923c"/>
+      <text x="48" y="40" fill="#e2e8f0" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="20" font-weight="600">Explainable routes</text>
+    </g>
+  </g>
+
+  <g transform="translate(822 116)" filter="url(#shadow)">
+    <rect x="0" y="0" width="680" height="660" rx="32" fill="url(#panel)" stroke="#ffffff" stroke-opacity="0.14"/>
+    <rect x="0" y="0" width="680" height="58" rx="32" fill="#ffffff" fill-opacity="0.035"/>
+    <circle cx="30" cy="29" r="6" fill="#fb7185"/>
+    <circle cx="50" cy="29" r="6" fill="#fbbf24"/>
+    <circle cx="70" cy="29" r="6" fill="#34d399"/>
+    <text x="114" y="37" fill="#94a3b8" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="16">d-token / overview</text>
+
+    <rect x="24" y="82" width="132" height="552" rx="18" fill="#0f172a" stroke="#ffffff" stroke-opacity="0.07"/>
+    <g fill="#94a3b8" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="15">
+      <text x="48" y="126" fill="#fb923c" font-weight="700">Overview</text>
+      <text x="48" y="172">Connect</text>
+      <text x="48" y="218">Code Graph</text>
+      <text x="48" y="264">Analytics</text>
+      <text x="48" y="310">Visual Beta</text>
+      <text x="48" y="356">Doctor</text>
+      <text x="48" y="402">Changes</text>
+      <text x="48" y="448">Settings</text>
+    </g>
+
+    <g transform="translate(180 82)">
+      <text x="0" y="26" fill="#f8fafc" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="28" font-weight="760">System overview</text>
+      <text x="0" y="54" fill="#94a3b8" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="15">Verified local evidence only</text>
+
+      <g transform="translate(0 82)">
+        <rect width="224" height="112" rx="18" fill="#ffffff" fill-opacity="0.045" stroke="#ffffff" stroke-opacity="0.09"/>
+        <text x="18" y="30" fill="#94a3b8" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="14">LOCAL SERVICE</text>
+        <circle cx="24" cy="72" r="7" fill="#22c55e"/>
+        <text x="42" y="80" fill="#f8fafc" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="25" font-weight="720">Running</text>
+      </g>
+      <g transform="translate(240 82)">
+        <rect width="224" height="112" rx="18" fill="#ffffff" fill-opacity="0.045" stroke="#ffffff" stroke-opacity="0.09"/>
+        <text x="18" y="30" fill="#94a3b8" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="14">CONNECTED AGENTS</text>
+        <text x="18" y="80" fill="#f8fafc" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="34" font-weight="760">3</text>
+        <text x="52" y="80" fill="#94a3b8" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="15">active</text>
+      </g>
+
+      <g transform="translate(0 214)">
+        <rect width="464" height="186" rx="18" fill="#ffffff" fill-opacity="0.045" stroke="#ffffff" stroke-opacity="0.09"/>
+        <text x="18" y="30" fill="#e2e8f0" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="17" font-weight="650">Request activity</text>
+        <g transform="translate(18 54)">
+          <path d="M0 96 C42 88 46 53 86 66 S145 103 181 63 S245 29 286 48 S360 72 428 17" fill="none" stroke="#fb923c" stroke-width="4" stroke-linecap="round"/>
+          <path d="M0 96 C42 88 46 53 86 66 S145 103 181 63 S245 29 286 48 S360 72 428 17 L428 116 L0 116Z" fill="#fb923c" fill-opacity="0.10"/>
+          <line x1="0" y1="116" x2="428" y2="116" stroke="#64748b" stroke-opacity="0.34"/>
+        </g>
+      </g>
+
+      <g transform="translate(0 420)">
+        <rect width="464" height="112" rx="18" fill="#0f172a" stroke="#ffffff" stroke-opacity="0.08"/>
+        <circle cx="28" cy="33" r="8" fill="#22c55e"/>
+        <text x="48" y="40" fill="#f8fafc" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="17" font-weight="650">OpenCode → d-token → upstream</text>
+        <text x="20" y="75" fill="#94a3b8" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="14">127.0.0.1 · explicit route · redacted ledger</text>
+      </g>
+    </g>
+  </g>
+
+  <text x="100" y="824" fill="#64748b" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="18">macOS · Windows · Tauri 2 · React · TypeScript · Rust</text>
+</svg>

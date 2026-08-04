@@ -1,146 +1,174 @@
+<div align="center">
+  <img src="icons/logo.svg" width="112" alt="d-token logo" />
+
 # d-token
 
-> 面向 AI Coding 的本地优先桌面控制面与 Rust runtime。
+**Save tokens, understand every request, and keep your AI coding workflow under control.**
 
-更新时间：2026-07-11 晚间
+A local desktop app for connecting AI coding agents, tracking token usage, previewing optimization strategies, and safely managing changes from one place.
 
-d-token 在 Windows/macOS 上把本地 AI 请求入口、上下文优化、Provider/Route、运行状态、Doctor、Event Ledger、配置变更与回退统一到一个 Tauri 桌面应用中。项目目标是让用户明确知道流量经过哪里、配置将改什么、数据是否真实、出现问题如何诊断和恢复。
+English · [简体中文](README-cn.md)
 
-## 当前状态
+[![CI](https://github.com/37chengshan/d-token/actions/workflows/ci.yml/badge.svg)](https://github.com/37chengshan/d-token/actions/workflows/ci.yml)
+![Version](https://img.shields.io/badge/version-0.2.0--beta.1-ea580c)
+![Status](https://img.shields.io/badge/status-beta-ea580c)
+![Desktop](https://img.shields.io/badge/desktop-Tauri%202-24c8db?logo=tauri&logoColor=white)
+![Core](https://img.shields.io/badge/core-Rust-b7410e?logo=rust&logoColor=white)
+![License](https://img.shields.io/badge/license-Apache--2.0-2563eb)
+</div>
 
-仓库已经包含可编译的 Rust workspace、Tauri 2 桌面壳和 React 18/TypeScript UI，不再是占位项目。当前已有：
+---
 
-- OpenAI Chat Completions、OpenAI Responses 和 Anthropic Messages 本地入口。
-- 显式 Provider/Route/Instance 配置和无静默 fallback 的路由基础。
-- d-token-owned Dashboard、stats/history/metrics、Doctor、logs、Event Ledger 和脱敏导出。
-- d-token route 草稿、active config、rollback point 和本地配置恢复。
-- 操作系统凭据库接入，配置只保存不透明 credential reference。
-- App-managed `dtoken-proxy` Rust runtime 的状态、启动、停止和身份验证。
-- macOS/Windows Tauri sidecar 准备与平台 bundle 配置。
-- Optical / Hybrid Context Optimization 的 shadow planner、Preview API 和 Capability 生命周期可观测面。
+> **Public unsigned prerelease, not a signed installer release.** `0.2.0-beta.1` may be published as a GitHub public prerelease for **macOS ARM64** and **Windows x64** only after the tagged aggregate release workflow succeeds for both platforms in the same run and uploads the matching SHA-256, SBOM, license, security, and provenance evidence. That public prerelease is still unsigned: macOS assets are not Developer ID signed or notarized, and Windows assets are not Authenticode-signed. An unsigned or ad-hoc macOS build may trigger an operating-system security warning. Treat that warning as expected, verify the repository and supplied hashes, and do not bypass security controls for packages from untrusted sources.
 
-当前仍不是可无条件公开发布的稳定版本。以下能力尚未闭环：
+## Overview
 
-- 第三方 Agent 配置的完整 plan → diff → backup → apply → verify → rollback 事务。
-- 缺失 RTK/Headroom 时的可信下载、签名校验和真实自动安装。
-- 多 Agent、真实认证 Provider、长期持久化和故障注入的完整矩阵。
-- macOS 签名/notarization、Windows 签名和同一候选 commit 的实机发布证据。
-- Optical PNG renderer、request patcher、active mutation、post-validator 和 rollback。
+AI coding tools can consume large amounts of context without making it clear where those tokens went, which route handled the request, or whether an optimization actually helped.
 
-完整事实见 [`docs/product/IMPLEMENTATION_STATUS.md`](docs/product/IMPLEMENTATION_STATUS.md)。
+d-token brings those daily tasks into one desktop app. Connect supported agents, route requests through your chosen provider, review token reduction and errors, preview compression before applying it, and recover configuration changes when something goes wrong.
 
-## 产品页面
+The goal is simple: **use fewer tokens without turning your workflow into a collection of scripts, config files, and guesswork.**
 
-正式一级页面固定为：
+## Core capabilities
 
-1. 总体概览。
-2. 安装与连接。
-3. 分析。
-4. Doctor。
-5. 变更与回退。
-6. 设置。
+| Capability | What it gives you |
+|---|---|
+| **Token savings you can see** | Review processed requests, estimated or measured token reduction, compression ratios, trends, and errors in one place. |
+| **One place for AI coding agents** | Detect and connect supported agents through a consistent desktop workflow instead of editing each configuration by hand. |
+| **Clear request routing** | See which route and upstream handled a request, then adjust the path without silently switching providers. |
+| **Preview before changing anything** | Use Shadow previews to inspect compression strategies and expected impact before enabling a configuration change. |
+| **Codebase understanding with less context** | Build a project index and code graph so agents can focus on relevant files and relationships instead of repeatedly receiving unnecessary context. |
+| **Safer local changes** | Preview differences, create backups, verify the result, and roll back supported configuration changes from the app. |
+| **Local diagnostics** | Check service state, ports, agent connections, configuration health, and problems that need attention. |
+| **Comfortable daily use** | Switch between light, dark, and system themes, and choose separate colors for the interface and analytics. |
 
-高级 Provider/Route、Smart Learning、日志安全和兼容性能力通过工作台子流程或内部页面承载，不作为工程化测试中心。
+## Product tour
 
-## 架构
+### 1. Local-first control plane for AI coding
+
+Use one local desktop control plane to inspect local runtime state, supported Agent connections, route evidence, token measurements, and diagnostics. Availability is evidence-based: unavailable or partial surfaces stay labeled instead of being filled with example success data.
+
+<p align="center">
+  <img src="assets/marketing/01-local-first-control-plane.svg" width="100%" alt="d-token local-first control plane" />
+</p>
+
+### 2. Explicit routing, without silent provider switching
+
+d-token records the selected route and upstream for supported flows. It does not silently fall back to another provider when a route is unavailable; incomplete integrations remain blocked or require explicit user action.
+
+<p align="center">
+  <img src="assets/marketing/02-explicit-routing-pipeline.svg" width="100%" alt="d-token explicit routing pipeline" />
+</p>
+
+### 3. Observability and code intelligence with explicit limits
+
+Review redacted Event Ledger evidence, analytics, diagnostics, and supported code-intelligence state. Code Graph is experimental and needs an explicit verified component import. Visual Compression is preview-first; its production Active transformation remains disabled.
+
+<p align="center">
+  <img src="assets/marketing/03-observability-and-code-intelligence.svg" width="100%" alt="d-token observability and code intelligence" />
+</p>
+
+> Estimated savings are guidance, not a billing statement. Metadata-only, preview-only, disabled, blocked, and unavailable capabilities are not equivalents of production-ready functionality.
+
+### 4. Configure safely: review, back up, verify, and roll back
+
+For supported configuration actions, d-token presents a user-readable summary and redacted diff, creates a backup, requires confirmation, verifies the result, and retains rollback evidence. Unsupported Agent, repair, route, or transform operations remain unavailable rather than writing guessed configuration.
+
+<p align="center">
+  <img src="assets/marketing/04-safe-config-and-rollback.svg" width="100%" alt="d-token safe configuration and rollback" />
+</p>
+
+> OpenCode currently has the strongest verified configure and rollback path. Other Agent and platform paths may be partial, disabled, or unavailable.
+
+## How it fits into your workflow
 
 ```text
-AI coding agent
-→ 127.0.0.1 d-token listener
-→ d-token-owned Rust runtime
-→ compression / context optimization / route decision
-→ configured upstream
-→ redacted Event Ledger / metrics / Dashboard / Doctor / App
+Your AI coding agent
+        ↓
+      d-token
+  connect · optimize · route · observe
+        ↓
+Your configured model provider
 ```
 
-技术主线：
+You continue using your preferred coding agent. d-token runs locally between the agent and the provider you configured, then presents the request history, token data, route state, diagnostics, and supported recovery actions in the desktop app.
 
-- Rust：核心业务、local API、proxy、路由、压缩、Doctor、事件和进程。
-- Tauri 2：桌面 native command、平台适配、凭据和打包。
-- React 18 + TypeScript + Vite：Windows/macOS 共用 UI。
-- Python：仅用于 `support/` 中的开发与审计脚本，不是成品 runtime。
+## Getting started
 
-外部 Headroom、standalone RTK 和 cc-switch 不是 d-token App 的隐式运行依赖。`code/runtimes/headroom/` 只保存 Headroom-derived 能力的 provenance/迁移边界。
+### Current availability
 
-## 仓库结构
+`0.2.0-beta.1` is a **public unsigned prerelease** only when it is attached to the matching GitHub prerelease tag after the same-run macOS ARM64 and Windows x64 aggregate workflow succeeds. It is still not a signed or notarized production installer release. Do not treat chat attachments, unofficial mirrors, or arbitrary unsigned local builds as official prerelease assets.
 
-```text
-AGENTS.md                       通用 AI coding agent 入口
-CLAUDE.md                       Claude Code 入口
-README.md                       项目概览
-docs/                           当前规范、历史与归档
-code/                           Rust workspace 与桌面 App
-support/                        测试、脚本、fixture、CI 和审计账本
-```
+Preview target coverage is macOS ARM64 and Windows x64. macOS assets may show a security warning because the prerelease is unsigned or ad-hoc signed. Windows assets remain unsigned and do not claim Authenticode or SmartScreen reputation. Production signing, notarization, and broader platform acceptance remain release blockers.
 
-核心代码：
+### Requirements
 
-```text
-code/apps/desktop/              唯一正式桌面 App
-code/apps/desktop/src/app/      当前 React UI
-code/apps/desktop/src-tauri/    Tauri commands 与平台打包
-code/crates/                    13 个 Rust 业务 crate
-```
+- Node.js 24 and npm
+- Rust stable toolchain
+- macOS ARM64 or Windows x64 desktop development environment
+- Xcode Command Line Tools on macOS
+- Tauri and WebView2 prerequisites on Windows
 
-`code/UI design for project/` 是设计原型，`code/apps/desktop/src-old/` 是旧实现，均不是生产功能落点。
-
-## 开发
-
-### 前端
+### Run the desktop app
 
 ```bash
-cd code/apps/desktop
-npm install
-npm run dev
-npm run test:run
-npx tsc --noEmit
-npm run build
-npm run test:e2e
-```
-
-### Rust workspace
-
-```bash
-cd code
-cargo fmt --all -- --check
-cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace
-```
-
-### Tauri 桌面
-
-```bash
-cd code/apps/desktop
+git clone https://github.com/37chengshan/d-token.git
+cd d-token/code/apps/desktop
+npm ci
 npm run tauri:dev
+```
+
+`npm run tauri:dev` prepares the local runtime sidecar before starting the desktop app. Running the frontend by itself only previews the interface and cannot connect to local agents or services.
+
+### Build a local candidate
+
+```bash
+cd code/apps/desktop
 npm run tauri:build
 ```
 
-`tauri:dev` 和 `tauri:build` 会先准备当前平台的 `dtoken-proxy` external binary。不要绕过准备脚本直接构建不完整 bundle。
+A successful local build is not the same as an officially signed release.
 
-### 文档与结构检查
+## Beta notes
 
-```bash
-python3 support/scripts/check_structure.py
-```
+- This is a public unsigned prerelease, not a signed production release. It is not Developer ID signed, notarized, Gatekeeper-approved, or Authenticode-signed.
+- OpenCode currently has the most complete verified connection and rollback flow. Claude Code and Codex integration paths exist, but full same-candidate real-user acceptance is still in progress.
+- Visual Compression focuses on Shadow previews; production Active transformation remains disabled. Code Graph is experimental and does not bundle its large upstream component.
+- Some Headroom-derived and Agent-facing surfaces are metadata-only, preview-only, static compatibility declarations, partial, blocked, or unavailable. They must not be read as full Headroom completion.
+- Token reduction can be measured or estimated depending on available request evidence. Estimates are not provider billing data.
+- Supported configuration writes follow preview → redacted diff → backup → confirmation → apply → verify → rollback. Where that transaction is not available, d-token should not write configuration automatically.
 
-## 文档入口
+The latest implementation facts and release blockers are maintained in [`docs/product/IMPLEMENTATION_STATUS.md`](docs/product/IMPLEMENTATION_STATUS.md).
 
-- [`docs/index.md`](docs/index.md) — 文档总导航。
-- [`docs/PRD.md`](docs/PRD.md) — 唯一产品真理源。
-- [`docs/PLAN.md`](docs/PLAN.md) — 当前执行计划。
-- [`docs/product/IMPLEMENTATION_STATUS.md`](docs/product/IMPLEMENTATION_STATUS.md) — 当前代码事实。
-- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — 架构。
-- [`docs/SECURITY_BOUNDARIES.md`](docs/SECURITY_BOUNDARIES.md) — 安全边界。
-- [`docs/archive/README.md`](docs/archive/README.md) — 归档说明。
+## Privacy and local data
 
-## 安全原则
+d-token keeps its own settings, diagnostics, request metadata, and rollback records on your machine. It is designed not to store complete prompts, responses, source files, API keys, or authorization headers in ordinary logs.
 
-- 默认只绑定 loopback。
-- 禁止存储或提交真实密钥、token、cookie、Authorization、auth 文件和完整 prompt/response。
-- 凭据只进入操作系统凭据库，不允许明文 fallback。
-- 所有真实配置写入都必须有摘要、diff、备份、确认、验证和回退证据。
-- 没有当前 runtime evidence 时，UI 必须显示 unavailable、partial 或 preview，不能冒充真实机器状态。
+Your selected model provider still receives the requests you choose to send through it. d-token does not make a third-party provider local or private by itself.
 
-## 许可证
+## Technology
 
-Apache-2.0。复用外部开源实现时必须遵守对应许可证、NOTICE、来源和修改记录要求。
+Tauri 2 · React 18 · TypeScript · Vite · Rust · SQLite
+
+## Development and documentation
+
+- [Product contract](docs/PRD.md)
+- [Current implementation status](docs/product/IMPLEMENTATION_STATUS.md)
+- [Architecture](docs/ARCHITECTURE.md)
+- [Security boundaries](docs/SECURITY_BOUNDARIES.md)
+- [Changelog](CHANGELOG.md)
+- [Security policy](SECURITY.md)
+- [Third-party notices](THIRD_PARTY_NOTICES.md)
+
+Contributions, bug reports, and product feedback are welcome through GitHub Issues and Pull Requests. Please read [`AGENTS.md`](AGENTS.md) before making repository-wide changes.
+
+## License
+
+Licensed under the [Apache License 2.0](LICENSE). See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for bundled and adapted third-party components.
+
+---
+
+<div align="center">
+  <strong>d-token</strong><br />
+  Save tokens. See what changed. Stay in control.
+</div>

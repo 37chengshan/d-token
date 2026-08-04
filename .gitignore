@@ -33,16 +33,24 @@ logs/
 *.jsonl
 
 # local agent / workspace state
+.agents/
 .ai-bridge/
+.codex/
 .codebase-memory/
 .commandcode/
 .planning/
+/headroom-*/
 /findings.md
 /progress.md
 /task_plan.md
 
 # generated local verification artifacts
 support/artifacts/
+/test/artifacts/
+.pytest_cache/
+
+# standalone visual evaluation harness (depends on main repo, not product code)
+/test/
 
 # OS / editor
 .DS_Store
