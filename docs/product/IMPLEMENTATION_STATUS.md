@@ -5,7 +5,7 @@
 
 ## 1. 当前结论
 
-d-token 当前已形成可运行的 Rust-owned 本地 runtime、Tauri 2 桌面控制面、React 18/TypeScript UI 与薄 TypeScript SDK。当前工作树已补齐九类 production codec release evidence（id 列表由 compressor registry 编译期投影）、CCR lifecycle/reconciliation 与 Windows DACL 实现、Rust/HTTP/MCP/TS surface parity、20 项 Agent 检测/transport capability matrix、Claude/Codex/Cline 真实临时配置精确恢复、cc-switch A→B→A 只读静态识别以及 macOS managed RTK lifecycle probe；G4 Responses bridge 现已对非法 tool choice/消息角色/函数字段 fail-closed，并将流式 Ledger/CCR finalize 延迟到完整终态。它仍不是可发布候选：最新全仓门禁、当前候选真实 OpenCode、Windows MSVC runner、同 commit 双平台安装包以及 G6–G8 尚未全部通过。公开未签名 prerelease 只有在这些硬门全绿后才允许创建。
+d-token 当前已形成可运行的 Rust-owned 本地 runtime、Tauri 2 桌面控制面、React 18/TypeScript UI 与薄 TypeScript SDK。当前工作树已补齐九类 production codec release evidence（id 列表由 compressor registry 编译期投影）、CCR lifecycle/reconciliation 与 Windows DACL 实现、Rust/HTTP/MCP/TS surface parity、23 项 Agent 检测/transport capability matrix、Claude/Codex/Cline 真实临时配置精确恢复、cc-switch A→B→A 只读静态识别以及 macOS managed RTK lifecycle probe；G4 Responses bridge 现已对非法 tool choice/消息角色/函数字段 fail-closed，并将流式 Ledger/CCR finalize 延迟到完整终态。它仍不是可发布候选：最新全仓门禁、当前候选真实 OpenCode、Windows MSVC runner、同 commit 双平台安装包以及 G6–G8 尚未全部通过。公开未签名 prerelease 只有在这些硬门全绿后才允许创建。
 
 ## 2. 代码所有权
 

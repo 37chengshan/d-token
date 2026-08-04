@@ -702,6 +702,15 @@
       "summary": "收口 23-Agent 注册表、cc-switch 只读发现与 readiness 测试隔离（health 缓存测试态直连、fake runtime 有界重试不掩盖断言）",
       "head_before": "8651757ae584",
       "remote": null
+    },
+    {
+      "id": "841c1fc9-a9f9-4cf4-8359-436750efaa3c",
+      "timestamp": "2026-08-04T19:17:31+08:00",
+      "operation": "commit",
+      "branch": "codex/code-graph-mcp-integration",
+      "summary": "fix: IMPLEMENTATION_STATUS agent count 20->23; lock byte-identical OpenCode provider writes between dedicated adapter and managed transport with regression tests",
+      "head_before": "4cc05aa1b311b819c2a0556586b74e829dabd05e",
+      "remote": null
     }
   ]
 }

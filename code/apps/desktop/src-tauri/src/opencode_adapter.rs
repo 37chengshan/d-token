@@ -603,4 +603,109 @@ mod tests {
             "owned entry must leave the allowlist"
         );
     }
+
+    /// Byte-level lock: for the same input document, endpoint, and model, the
+    /// dedicated desktop flow and the managed transport must serialize the
+    /// exact same bytes. Byte drift would let one path rewrite what the other
+    /// wrote, or fail mutual verification of the provider shape.
+    #[test]
+    fn dedicated_apply_and_managed_configure_write_byte_identical_provider_json() {
+        let _guard = env_lock();
+        let dir = tempdir().expect("temp dir");
+        let root = fs::canonicalize(dir.path()).expect("canonical temp dir");
+        let config = dir.path().join("opencode.json");
+        let original = b"{\"provider\":{\"existing\":{\"name\":\"Existing\",\"options\":{\"apiKey\":\"user-credential-placeholder\"}}},\"enabled_providers\":[\"existing\"]}\n";
+        fs::write(&config, original).expect("write config");
+        env::set_var(
+            "DTOKEN_OPENCODE_CONFIG_PATH",
+            fs::canonicalize(&config).expect("canonical config"),
+        );
+
+        let managed = configure_opencode_transport_document(
+            std::str::from_utf8(original).expect("original is UTF-8"),
+            "http://127.0.0.1:18001",
+            "deepseek/model-v1",
+            true,
+        )
+        .expect("managed configure");
+
+        let review = preview(&request(), &root.join("backups"));
+        assert!(review.ok, "{}", review.summary);
+        let mut apply_request = request();
+        apply_request.reviewed_before_sha256 = review.before_sha256;
+        apply_request.reviewed_after_sha256 = review.after_sha256;
+        apply_request.reviewed_revision = review.revision;
+        let receipt = apply(&apply_request, &root.join("backups"));
+        assert!(receipt.ok, "{}", receipt.summary);
+        let applied = fs::read_to_string(&config).expect("read applied config");
+
+        assert_eq!(
+            applied, managed,
+            "dedicated and managed OpenCode writes must be byte-identical"
+        );
+        env::remove_var("DTOKEN_OPENCODE_CONFIG_PATH");
+    }
+
+    /// Semantic lock: a provider written by the dedicated desktop flow stays
+    /// owned, so the managed transport may reconfigure it without touching user
+    /// providers, and the dedicated flow still recognizes the result. The
+    /// dedicated flow remains install-only: it refuses to overwrite any
+    /// existing provider and directs reconfiguration to Changes.
+    #[test]
+    fn dedicated_apply_then_managed_reconfigure_stays_mutually_recognized() {
+        let _guard = env_lock();
+        let dir = tempdir().expect("temp dir");
+        let root = fs::canonicalize(dir.path()).expect("canonical temp dir");
+        let config = dir.path().join("opencode.json");
+        let original = "{\"provider\":{\"existing\":{\"name\":\"Existing\",\"options\":{\"apiKey\":\"user-credential-placeholder\"}}},\"enabled_providers\":[\"existing\"]}\n";
+        fs::write(&config, original).expect("write config");
+        env::set_var(
+            "DTOKEN_OPENCODE_CONFIG_PATH",
+            fs::canonicalize(&config).expect("canonical config"),
+        );
+
+        let review = preview(&request(), &root.join("backups"));
+        assert!(review.ok, "{}", review.summary);
+        let mut apply_request = request();
+        apply_request.reviewed_before_sha256 = review.before_sha256;
+        apply_request.reviewed_after_sha256 = review.after_sha256;
+        apply_request.reviewed_revision = review.revision;
+        let receipt = apply(&apply_request, &root.join("backups"));
+        assert!(receipt.ok, "{}", receipt.summary);
+        let applied = fs::read_to_string(&config).expect("read applied config");
+
+        // The managed transport may reconfigure the dedicated-owned provider.
+        let reconfigured = configure_opencode_transport_document(
+            &applied,
+            "http://127.0.0.1:18002",
+            "deepseek/model-v2",
+            true,
+        )
+        .expect("managed reconfigure of dedicated-owned provider");
+        let reconfigured_value: Value =
+            serde_json::from_str(&reconfigured).expect("reconfigured JSON");
+        assert!(
+            reconfigured_value.pointer("/provider/existing").is_some(),
+            "user provider must be preserved across managed reconfigure"
+        );
+        fs::write(&config, reconfigured).expect("write reconfigured config");
+        verify_provider(&config, "deepseek/model-v2", 18002)
+            .expect("dedicated verify recognizes managed reconfigure");
+
+        // The dedicated flow is install-only and never overwrites an existing
+        // provider; reconfiguration goes through the managed transport.
+        let again = preview(&request(), &root.join("backups"));
+        assert!(
+            !again.ok,
+            "dedicated preview must refuse an existing provider"
+        );
+        assert!(
+            again
+                .summary
+                .contains("already contains dtoken-local-route"),
+            "unexpected refusal summary: {}",
+            again.summary
+        );
+        env::remove_var("DTOKEN_OPENCODE_CONFIG_PATH");
+    }
 }
