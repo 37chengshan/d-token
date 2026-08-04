@@ -12,7 +12,7 @@
 | 代码 | 18 个 Rust 业务 crate + 1 个 Tauri app crate + React 18/TypeScript/Vite 桌面 UI + 薄 TypeScript SDK |
 | 已交付里程碑 | M1（no-touch 基础）、M2（Headroom 只读集成）、M3（GUI MVP） |
 | 交付证据 | `docs/history/M1_NO_TOUCH_DEV_FOUNDATION_REPORT.md`、`docs/history/M2_EXTERNAL_READ_ONLY_INTEGRATION_REPORT.md`、`docs/history/M3_GUI_CONTROL_PLANE_MVP_REPORT.md`、`docs/history/M1_M3_DELIVERY_AUDIT.md` |
-| 当前 Node | `v0.2.0-beta.1` 发布收口：G2 codec、G3 CCR/ACL 实现、G4 surface parity（含 Responses fail-closed/stream terminal）、G5 Agent/cc-switch/RTK 本机候选证据已推进，G7 当前候选真实 OpenCode 已通过（candidate_id=G7，2026-08-04）；仍须完成最新全仓复证、G6 剩余 PowerShell 门、Windows MSVC runner、同 commit 双平台产物与 G8 后才能发布 |
+| 当前 Node | `v0.2.0-beta.1` 发布收口：G2 codec、G3 CCR/ACL 实现、G4 surface parity（含 Responses fail-closed/stream terminal）、G5 Agent/cc-switch/RTK 本机候选证据已推进，G7 当前候选真实 OpenCode 已通过（candidate_id=G7，2026-08-04），G7 macOS package audit 已通过（c124d9f，2026-08-04：DMG 挂载/安装/启动/退出/卸载全链路验证通过，无 immediate crash，Window 可见）；仍须完成最新全仓复证、G6 剩余 PowerShell 门（.ps1 未执行）、Windows MSVC runner、同 commit 双平台产物与 G8 后才能发布 |
 | 历史路线图 | `docs/archive/ROADMAP_M0_M6_HISTORICAL.md`（M0–M6 原文快照） |
 
 当前 M4 历史设计输入：

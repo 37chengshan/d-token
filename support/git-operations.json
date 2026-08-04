@@ -747,6 +747,15 @@
       "summary": "fix: tauri-specta single invoke_handler regression, bindings fail-closed, AGENTS.md corrections, sidecar CI",
       "head_before": "922b86632c0d",
       "remote": null
+    },
+    {
+      "id": "bc62f314-21f5-4833-bd60-0cb3b2225aea",
+      "timestamp": "2026-08-04T22:38:40+08:00",
+      "operation": "commit",
+      "branch": "codex/code-graph-mcp-integration",
+      "summary": "docs: record c124d9f macOS package audit evidence — G7 macOS DMG/app launch/quit/cleanup verified, G6 .ps1 gates unexecuted, G8 blocked",
+      "head_before": "c124d9f",
+      "remote": null
     }
   ]
 }
