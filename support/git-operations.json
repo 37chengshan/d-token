@@ -729,6 +729,15 @@
       "summary": "chore: per-directory AGENTS.md, tauri-specta scaffolding, worktree scripts",
       "head_before": "1bf9ad514e6a1b1809f0e744a75dc572038a2581",
       "remote": null
+    },
+    {
+      "id": "6a3c7964-004c-49ee-bada-4e338867536c",
+      "timestamp": "2026-08-04T21:46:32+08:00",
+      "operation": "commit",
+      "branch": "detached",
+      "summary": "fix: tauri-specta single invoke_handler regression, bindings fail-closed, AGENTS.md corrections, sidecar CI",
+      "head_before": "922b86632c0d",
+      "remote": null
     }
   ]
 }

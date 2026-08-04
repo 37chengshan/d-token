@@ -68,30 +68,37 @@ fn my_new_command(arg: String) -> Result<MyReturnType, String> {
 }
 ```
 
-然后在 `collect_commands!` 宏中注册：
+然后在 `specta_commands!` 宏中注册（用于 debug bindings 导出）：
 
 ```rust
-tauri_specta::Builder::<tauri::Wry>::new()
-    .commands(tauri_specta::collect_commands![my_new_command])
-    // ...
+macro_rules! specta_commands {
+    () => { collect_commands![my_new_command,] };
+}
 ```
+
+同时把 `my_new_command` 加入 `desktop_release_handlers!` / `debug_desktop_handlers!` 宏的命令列表，使其通过单一的 `tauri::generate_handler!` 注册。**不要**单独调用 `tauri_specta::Builder::invoke_handler()`，那会覆盖既有命令。
 
 前端调用：
 
 ```typescript
-// src/app/lib/native.ts
-import { commands } from "./bindings";
-
+// src/app/lib/native.ts — 通过 spectaCommands Proxy 调用
 export async function myNewCommand(arg: string) {
-  return commands.myNewCommand(arg);
+  return spectaCommands.myNewCommand(arg);
 }
 ```
+
+注意：bindings.ts 生成后，`spectaCommands` 可获取完全类型签名；缺失时抛
+`native_unavailable`（fail-closed），不引入 Node `require` 全局。`spectaCommands`
+由 `native.ts` 的 Proxy 提供，无需消费者手动 import bindings 模块。
 
 ### 关键约束
 
 1. **`#[specta::specta]` 必须加在 `#[tauri::command]` 之后**。
 2. **bindings.ts 是自动生成的，不要手改**。
 3. **改 command 签名后，前端类型检查会立即报错** → 这是 feature，不是 bug。
+4. **禁止双重 `invoke_handler`**：Tauri 的 `Builder::invoke_handler` 是 replace 语义，第二次调用覆盖第一次注册的所有既有命令。所有命令（含 specta）统一注册进 `desktop_release_handlers!` / `debug_desktop_handlers!` 宏的单一 `tauri::generate_handler!`。tauri-specta `Builder` 只用于 debug 模式导出 `bindings.ts`（`export_specta_bindings`），不参与运行时命令路由。
+5. **bindings 导出失败不 panic**：`export_specta_bindings` 用 `eprintln!` 降级，避免破坏 desktop 启动。
+6. **前端禁止裸 `require` 和静态 `import("./bindings")`**：`native.ts` 用非 literal 动态 `import(BINDINGS_MODULE)` + try/catch 惰性加载；缺失时 `spectaCommands` 抛 `native_unavailable`（fail-closed），不引入 Node 全局。
 
 ## 4. 页面与导航边界（硬约束）
 
