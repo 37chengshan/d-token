@@ -30,6 +30,12 @@ pub enum CodecKind {
     TextRepeatFold,
     HtmlRepeatFold,
     ConfigFold,
+    /// Manifest-level marker for a target rewritten by the IR-safe section
+    /// router ([`route_mixed_content`]).  Never produced by [`route_content`]
+    /// or the compressor registry; the pipeline uses it so the manifest can
+    /// declare a section-wise transform and re-derive the exact candidate at
+    /// validation time.
+    Mixed,
     Passthrough,
 }
 
@@ -262,19 +268,17 @@ pub fn route_content_with_budget(text: &str, budget: RoutingBudget) -> ContentRo
         );
     }
     if looks_like_structured_config(trimmed) {
+        // ConfigFold is a lossless adjacent-exact-repeat fold whose
+        // application verifies byte-exact reconstruction, so exact-anchor
+        // spans (IPs, hashes, paths inside values) survive verbatim; the
+        // `exact_preserve` guard is redundant for this codec and would
+        // block legitimate config folding whenever a value contains a
+        // dotted IP.
         return decision(
             ContentKind::Config,
-            if exact_preserve {
-                CodecKind::Passthrough
-            } else {
-                CodecKind::ConfigFold
-            },
-            if exact_preserve {
-                "exact-anchor-preserve-text"
-            } else {
-                "structured-config-repeat-fold"
-            },
-            if exact_preserve { 100 } else { 92 },
+            CodecKind::ConfigFold,
+            "structured-config-repeat-fold",
+            92,
             text.len(),
         );
     }
@@ -359,6 +363,18 @@ pub fn is_safe_html_repeat_candidate(text: &str) -> bool {
 
 pub fn is_safe_code_codec_candidate(text: &str) -> bool {
     matches!(route_content(text).codec, CodecKind::CodeFenceEnvelopeTrim)
+}
+
+pub fn is_safe_config_codec_candidate(text: &str) -> bool {
+    matches!(route_content(text).codec, CodecKind::ConfigFold)
+}
+
+/// Mixed content is a routing candidate when the section router can split it
+/// into typed sections and no CCR retrieval marker is present.  Each section
+/// is still routed through the same secret/marker/negative-benefit guards as
+/// a single-type payload, so approval here never bypasses a codec gate.
+pub fn is_safe_mixed_candidate(text: &str) -> bool {
+    is_mixed_content(text) && !is_already_compressed(text)
 }
 
 pub fn contains_decision_signal(text: &str) -> bool {
@@ -502,6 +518,10 @@ pub(crate) fn apply_routed_codec_with_registry(
             crate::push_transform(transforms, "config_repeat_fold_v1");
             compressed
         }
+        // The registry never selects the section router; this arm is
+        // unreachable from `registry.select` and exists only to keep the
+        // match exhaustive.
+        CodecKind::Mixed => text.to_string(),
         CodecKind::Passthrough => text.to_string(),
     }
 }
@@ -543,13 +563,52 @@ pub fn route_mixed_content(
     policy: CompressionPolicy,
     text: &str,
     transforms: &mut Vec<String>,
-) -> (String, Vec<SectionRouteRecord>) {
+) -> (String, MixedRouteOutcome, Vec<SectionRouteRecord>) {
     if !is_mixed_content(text) || is_already_compressed(text) {
-        return (text.to_string(), Vec::new());
+        return (
+            text.to_string(),
+            MixedRouteOutcome {
+                section_count: 0,
+                sections_changed: 0,
+                original_bytes: text.len(),
+                candidate_bytes: text.len(),
+                applied: false,
+            },
+            Vec::new(),
+        );
     }
+    // Sections are logical lines (`.lines()` strips `\r`), so reassembly
+    // can only reproduce the source's uniform line ending (and trailing
+    // ending).  Mixed or bare-CR endings fail closed instead of silently
+    // normalizing bytes; interior `\r` inside section bodies follows the
+    // same `str::lines()` semantics the section splitter always used.
+    let Some(line_ending) = uniform_line_ending(text) else {
+        return (
+            text.to_string(),
+            MixedRouteOutcome {
+                section_count: 0,
+                sections_changed: 0,
+                original_bytes: text.len(),
+                candidate_bytes: text.len(),
+                applied: false,
+            },
+            Vec::new(),
+        );
+    };
+    let trailing_line_ending = text.ends_with(line_ending);
     let sections = split_into_sections(text);
     if sections.len() < 2 {
-        return (text.to_string(), Vec::new());
+        return (
+            text.to_string(),
+            MixedRouteOutcome {
+                section_count: sections.len(),
+                sections_changed: 0,
+                original_bytes: text.len(),
+                candidate_bytes: text.len(),
+                applied: false,
+            },
+            Vec::new(),
+        );
     }
     let mut records = Vec::with_capacity(sections.len());
     let mut output = Vec::with_capacity(sections.len());
@@ -577,12 +636,33 @@ pub fn route_mixed_content(
         output.push(candidate);
     }
     if sections_changed == 0 {
-        return (text.to_string(), records);
+        return (
+            text.to_string(),
+            MixedRouteOutcome {
+                section_count: sections.len(),
+                sections_changed: 0,
+                original_bytes,
+                candidate_bytes,
+                applied: false,
+            },
+            records,
+        );
     }
     crate::push_transform(transforms, "content_router:mixed");
     crate::push_transform(transforms, "mixed_section_route_v1");
+    let mut reassembled = output.join(line_ending);
+    if trailing_line_ending {
+        reassembled.push_str(line_ending);
+    }
     (
-        output.join("\n"),
+        reassembled,
+        MixedRouteOutcome {
+            section_count: sections.len(),
+            sections_changed,
+            original_bytes,
+            candidate_bytes,
+            applied: true,
+        },
         records,
     )
 }
@@ -603,7 +683,7 @@ fn route_single_section(
             format!("```{label}\n{}\n```", section.body)
         };
         let mut codec_transforms = Vec::new();
-        let candidate = apply_routed_codec(*policy, &fenced, &mut codec_transforms);
+        let candidate = apply_routed_codec(policy.clone(), &fenced, &mut codec_transforms);
         let codec = route_content(&fenced).codec;
         let reason = route_content(&fenced).reason_code;
         let changed = candidate != fenced;
@@ -615,7 +695,7 @@ fn route_single_section(
         (body_candidate, codec, reason)
     } else {
         let mut codec_transforms = Vec::new();
-        let candidate = apply_routed_codec(*policy, &section.body, &mut codec_transforms);
+        let candidate = apply_routed_codec(policy.clone(), &section.body, &mut codec_transforms);
         let decision = route_content(&section.body);
         (candidate, decision.codec, decision.reason_code)
     }
@@ -720,7 +800,11 @@ fn fold_search_result_repeats(text: &str) -> String {
     folded
 }
 
-pub(crate) fn expand_exact_folded_lines_losslessly(candidate: &str) -> Option<String> {
+/// Expand `[repeated xN]` fold markers back to the exact source lines.
+/// Returns `None` when the candidate is not a valid fold of one uniform line
+/// ending or contains an out-of-range count, so callers can prove exact
+/// reconstruction before sending a candidate upstream.
+pub fn expand_exact_folded_lines_losslessly(candidate: &str) -> Option<String> {
     let line_ending = uniform_line_ending(candidate)?;
     let trailing_line_ending = candidate.ends_with(line_ending);
     let body = if trailing_line_ending {
@@ -1088,62 +1172,218 @@ pub fn is_already_compressed(text: &str) -> bool {
 }
 
 /// YAML/TOML/INI structured-config detection (upstream content_detector
-/// parity, heuristic-only — no third-party parsers).  A config is a small
-/// set of section headers / key-value assignments with comment lines.
-/// Prose and log lines are guarded out so config never steals text/log
-/// routing.
+/// parity, heuristic-only — no third-party parsers).
+///
+/// TOML/INI claims require at least one `[section]` header plus ≥2
+/// assignments dominating the body; YAML claims require ≥3 identifier-ish
+/// `key:` lines with a ≥0.6 share, guarded against prose (sentence enders
+/// and long average line length) and markdown front-matter.  Comment lines
+/// are neutral.  JSON (`{`) and markup (`<`) heads are never config.
 fn looks_like_structured_config(text: &str) -> bool {
-    let lines = text
-        .lines()
-        .filter(|line| !line.trim().is_empty())
-        .take(96)
-        .collect::<Vec<_>>();
-    if lines.len() < 3 {
+    let head = text.trim_start().chars().next();
+    if head.is_none_or(|character| matches!(character, '{' | '<')) {
         return false;
     }
-    if looks_like_log(text) || looks_like_build_output(text) || looks_like_code(text) {
-        return false;
-    }
-    let section = |line: &str| {
-        let trimmed = line.trim();
-        (trimmed.starts_with('[') && trimmed.ends_with(']'))
-            || trimmed == "---"
-            || trimmed == "..."
-    };
-    let assignment = |line: &str| {
-        let trimmed = line.trim_start();
-        if trimmed.starts_with('#') || trimmed.starts_with(';') {
-            return false;
-        }
-        // TOML/INI: `key = value` / `key: value`.  Colon form is also
-        // YAML's mapping separator, so it needs the value to be a plain
-        // scalar and the line to be short — prose with a colon ("Note:")
-        // must not qualify.
-        if let Some((key, value)) = trimmed.split_once('=') {
-            return !key.trim().is_empty() && !value.trim().is_empty() && value.trim().len() < 200;
-        }
-        if let Some((key, value)) = trimmed.split_once(':') {
-            let key = key.trim();
-            let value = value.trim();
-            return !key.is_empty()
-                && !value.is_empty()
-                && value.len() < 200
-                && !value.contains(' ')
-                && !key.contains(' ');
-        }
-        // YAML list item: `- value`.
-        trimmed.starts_with("- ")
-    };
-    let config_like = lines
+    let lines = text.lines().take(200).collect::<Vec<_>>();
+    let non_empty = lines
         .iter()
-        .filter(|line| section(line) || assignment(line))
+        .filter(|line| !line.trim().is_empty())
+        .collect::<Vec<_>>();
+    if non_empty.len() < 3 {
+        return false;
+    }
+    // Comment lines are neutral: excluded so comment-heavy configs and
+    // #-heading markdown don't skew the share either way.
+    let body = non_empty
+        .iter()
+        .filter(|line| !is_config_comment(line))
+        .collect::<Vec<_>>();
+    if body.len() < 3 {
+        return false;
+    }
+
+    // TOML / INI: section header plus assignment-dominant body.
+    let sections = body.iter().filter(|line| is_config_section(line)).count();
+    if sections >= 1 {
+        let assigns = body
+            .iter()
+            .filter(|line| is_toml_assign(line) || is_ini_assign(line))
+            .count();
+        if assigns >= 2 && (sections + assigns) as f64 / body.len() as f64 >= 0.6 {
+            return true;
+        }
+    }
+
+    // Markdown front-matter guard: a `---` fence closed within 60 lines
+    // followed by non-YAML content is a markdown document, not YAML.
+    if lines.first().is_some_and(|line| line.trim() == "---") {
+        for (index, line) in lines.iter().enumerate().skip(1).take(60) {
+            if matches!(line.trim(), "---" | "...") {
+                let tail = lines[index + 1..]
+                    .iter()
+                    .filter(|line| !line.trim().is_empty())
+                    .collect::<Vec<_>>();
+                let tail_yaml = tail
+                    .iter()
+                    .filter(|line| is_yaml_key(line) || is_yaml_list(line))
+                    .count();
+                if !tail.is_empty() && tail_yaml as f64 / (tail.len() as f64) < 0.3 {
+                    return false;
+                }
+                break;
+            }
+        }
+    }
+
+    // YAML heuristic.
+    let yaml_keys = body.iter().filter(|line| is_yaml_key(line)).count();
+    let yaml_lists = body
+        .iter()
+        .filter(|line| is_yaml_list(line) && !is_yaml_key(line))
         .count();
-    config_like * 2 >= lines.len()
+    let doc_marks = body.iter().filter(|line| is_yaml_doc(line)).count();
+    if yaml_keys < 3 {
+        return false;
+    }
+    let share = (yaml_keys + yaml_lists + doc_marks) as f64 / body.len() as f64;
+    if share < 0.6 {
+        return false;
+    }
+    // Prose guards: config lines are short field-ish tuples, prose reads
+    // like sentences.
+    let enders = body
+        .iter()
+        .filter(|line| line.trim_end().ends_with(['.', '!', '?']))
+        .count();
+    if enders as f64 / body.len() as f64 >= 0.5 {
+        return false;
+    }
+    let avg_words = body
+        .iter()
+        .map(|line| line.split_whitespace().count())
+        .sum::<usize>() as f64
+        / body.len() as f64;
+    if avg_words > 8.0 {
+        return false;
+    }
+    // Structure signal: nested indentation, a document marker, or real
+    // list items.
+    let mut indents = std::collections::BTreeSet::new();
+    for line in &body {
+        if is_yaml_key(line) || is_yaml_list(line) {
+            indents.insert(line.len() - line.trim_start_matches(' ').len());
+        }
+    }
+    if indents.len() < 2 && doc_marks == 0 && yaml_lists < 3 {
+        return false;
+    }
+    true
+}
+
+fn is_config_comment(line: &str) -> bool {
+    let trimmed = line.trim_start();
+    trimmed.starts_with('#') || trimmed.starts_with(';')
+}
+
+/// `[section]` or `[[array-of-tables]]` header.
+fn is_config_section(line: &str) -> bool {
+    let trimmed = line.trim();
+    let (inner, closer) = if let Some(rest) = trimmed.strip_prefix("[[") {
+        (rest, "]]")
+    } else if let Some(rest) = trimmed.strip_prefix('[') {
+        (rest, "]")
+    } else {
+        return false;
+    };
+    let Some(body) = inner.strip_suffix(closer) else {
+        return false;
+    };
+    !body.is_empty()
+        && body.chars().all(|character| {
+            character.is_ascii_alphanumeric()
+                || matches!(character, '.' | '-' | '_' | '"' | '\'' | ' ')
+        })
+}
+
+/// TOML assignment: `key = value` with a bare or quoted key.
+fn is_toml_assign(line: &str) -> bool {
+    let trimmed = line.trim_start();
+    let Some(separator) = trimmed.find('=') else {
+        return false;
+    };
+    let key = trimmed[..separator].trim_end();
+    if key.is_empty() {
+        return false;
+    }
+    let bare = key
+        .chars()
+        .all(|character| character.is_ascii_alphanumeric() || matches!(character, '.' | '-' | '_'));
+    let quoted = (key.starts_with('"') && key.ends_with('"') && key.len() >= 2)
+        || (key.starts_with('\'') && key.ends_with('\'') && key.len() >= 2);
+    if !(bare || quoted) {
+        return false;
+    }
+    !trimmed[separator + 1..].trim_start().is_empty()
+}
+
+/// INI assignment: `key = value` / `key: value` (looser key charset).
+fn is_ini_assign(line: &str) -> bool {
+    let trimmed = line.trim_start();
+    let Some(separator) = trimmed.find(['=', ':']) else {
+        return false;
+    };
+    let key = trimmed[..separator].trim_end();
+    !key.is_empty()
+        && key.chars().all(|character| {
+            character.is_ascii_alphanumeric() || matches!(character, '.' | '-' | '_' | '@' | ' ')
+        })
+        && !trimmed[separator + 1..].trim_start().is_empty()
+}
+
+/// YAML mapping line: optional `- ` list prefix, identifier-ish key,
+/// then `:` followed by whitespace or end-of-line.
+fn is_yaml_key(line: &str) -> bool {
+    let trimmed = line.trim_start();
+    let trimmed = trimmed
+        .strip_prefix("- ")
+        .map(str::trim_start)
+        .unwrap_or(trimmed);
+    let Some(separator) = trimmed.find(':') else {
+        return false;
+    };
+    let key = &trimmed[..separator];
+    if key.is_empty() {
+        return false;
+    }
+    let bare = key.chars().all(|character| {
+        character.is_ascii_alphanumeric() || matches!(character, '.' | '-' | '_' | '/')
+    });
+    let quoted = (key.starts_with('"') && key.ends_with('"') && key.len() >= 2)
+        || (key.starts_with('\'') && key.ends_with('\'') && key.len() >= 2);
+    if !(bare || quoted) {
+        return false;
+    }
+    let rest = &trimmed[separator + 1..];
+    rest.is_empty() || rest.starts_with([' ', '\t'])
+}
+
+/// YAML list item: `- value`.
+fn is_yaml_list(line: &str) -> bool {
+    let trimmed = line.trim_start();
+    trimmed.starts_with("- ") && trimmed.len() > 2 && !trimmed[2..].trim_start().is_empty()
+}
+
+/// YAML document marker: `---` / `...`.
+fn is_yaml_doc(line: &str) -> bool {
+    matches!(line.trim(), "---" | "...")
 }
 
 /// A typed section of mixed content (upstream `mixed_content.ContentSection`
-/// parity).  Sections are line-based so reconstruction is exact: joining
-/// section bodies with `\n` reproduces the original byte-for-byte.
+/// parity).  Sections are logical lines: `str::lines()` semantics, so `\r`
+/// from CRLF input is stripped from section bodies.  [`route_mixed_content`]
+/// restores the source's uniform line ending (and trailing ending) at
+/// reassembly, so LF and uniform-CRLF inputs round-trip the joining exactly;
+/// mixed or bare-CR endings fail closed instead of normalizing bytes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ContentSection {
     pub kind: ContentKind,
@@ -1156,13 +1396,13 @@ pub struct ContentSection {
 /// `is_mixed_content` parity).  At least two distinct signals must fire.
 pub fn is_mixed_content(text: &str) -> bool {
     let mut indicators = 0usize;
-    if text.lines().any(|line| line.trim_start().starts_with("```")) {
-        indicators += 1;
-    }
     if text
         .lines()
-        .any(|line| line.trim_start().starts_with('{') || line.trim_start().starts_with('['))
+        .any(|line| line.trim_start().starts_with("```"))
     {
+        indicators += 1;
+    }
+    if text.lines().any(is_json_section_start) {
         indicators += 1;
     }
     if text.lines().any(is_search_anchor_line) {
@@ -1196,13 +1436,12 @@ pub fn split_into_sections(text: &str) -> Vec<ContentSection> {
             let label = line
                 .trim_start()
                 .trim_start_matches('`')
-                .trim()
                 .split_whitespace()
                 .next()
                 .filter(|value| !value.is_empty())
                 .map(str::to_string);
             let mut body = Vec::new();
-            while let Some(next) = lines.next() {
+            for next in lines.by_ref() {
                 if next.trim_start().starts_with("```") {
                     break;
                 }
@@ -1216,7 +1455,7 @@ pub fn split_into_sections(text: &str) -> Vec<ContentSection> {
             continue;
         }
         // JSON block: collect a balanced {…}/[…].
-        if line.trim_start().starts_with('{') || line.trim_start().starts_with('[') {
+        if is_json_section_start(line) {
             let mut block = vec![line];
             let mut depth = json_balance_delta(line);
             while depth > 0 {
@@ -1259,8 +1498,7 @@ pub fn split_into_sections(text: &str) -> Vec<ContentSection> {
         let mut run = vec![line];
         while lines.peek().is_some_and(|next| {
             !next.trim_start().starts_with("```")
-                && !next.trim_start().starts_with('{')
-                && !next.trim_start().starts_with('[')
+                && !is_json_section_start(next)
                 && !is_search_anchor_line(next)
         }) {
             run.push(lines.next().expect("peeked line"));
@@ -1294,6 +1532,11 @@ fn json_balance_delta(line: &str) -> isize {
         }
     }
     delta
+}
+
+fn is_json_section_start(line: &str) -> bool {
+    let trimmed = line.trim_start();
+    trimmed.starts_with('{') || (trimmed.starts_with('[') && !is_config_section(trimmed))
 }
 
 #[cfg(test)]
@@ -1635,6 +1878,289 @@ mod tests {
         ] {
             assert_eq!(route_content(blocked).content_kind, ContentKind::Html);
             assert_eq!(route_content(blocked).codec, CodecKind::Passthrough);
+        }
+    }
+
+    #[test]
+    fn ccr_retrieval_markers_are_preserved_before_any_codec_decision() {
+        for marker in [
+            "<<ccr:abc123def456,base64,128>>",
+            "Retrieve more: hash=abc123def456",
+            "Retrieve original: hash=abc123def456",
+        ] {
+            let text = format!("INFO first\n{marker}\nINFO third\nINFO third");
+            let decision = route_content(&text);
+            assert_eq!(decision.codec, CodecKind::Passthrough);
+            assert_eq!(decision.reason_code, "ccr-retrieval-marker-preserve");
+            let mut transforms = Vec::new();
+            let candidate = apply_routed_codec(CompressionPolicy::Balanced, &text, &mut transforms);
+            assert_eq!(candidate, text);
+            assert!(transforms.is_empty());
+        }
+        // A JSON payload carrying a marker must not be minified either.
+        let json_with_marker = "{\"blob\": \"<<ccr:deadbeef,string,64>>\"}";
+        assert_eq!(
+            route_content(json_with_marker).codec,
+            CodecKind::Passthrough
+        );
+    }
+
+    #[test]
+    fn structured_config_is_detected_and_folded_losslessly() {
+        let config = [
+            "[server]",
+            "host = 127.0.0.1",
+            "port = 8080",
+            "port = 8080",
+            "port = 8080",
+            "[logging]",
+            "level = \"info\"",
+        ]
+        .join("\n");
+        let decision = route_content(&config);
+        assert_eq!(decision.content_kind, ContentKind::Config);
+        assert_eq!(decision.codec, CodecKind::ConfigFold);
+        let mut transforms = Vec::new();
+        let candidate = apply_routed_codec(CompressionPolicy::Balanced, &config, &mut transforms);
+        assert_ne!(candidate, config);
+        assert!(candidate.contains("port = 8080 [repeated x3]"));
+        assert_eq!(
+            expand_exact_folded_lines_losslessly(&candidate).as_deref(),
+            Some(config.as_str())
+        );
+        assert!(transforms.contains(&"content_router:config".to_string()));
+        assert!(transforms.contains(&"config_repeat_fold_v1".to_string()));
+
+        // Prose with colons must NOT route as config.
+        let prose = "Note: the build finished.\nResult: success\nInfo: all tests pass.\nInfo: all tests pass.";
+        assert_ne!(route_content(prose).content_kind, ContentKind::Config);
+    }
+
+    #[test]
+    fn yaml_and_ini_shapes_route_as_config_while_code_and_log_do_not() {
+        let yaml = [
+            "version: 2",
+            "services:",
+            "  - name: web",
+            "  - name: web",
+            "  - name: web",
+            "  - name: worker",
+        ]
+        .join("\n");
+        assert_eq!(route_content(&yaml).content_kind, ContentKind::Config);
+
+        let ini = [
+            "; comment",
+            "[database]",
+            "user = admin",
+            "user = admin",
+            "host = db.local",
+        ]
+        .join("\n");
+        assert_eq!(route_content(&ini).content_kind, ContentKind::Config);
+
+        // A config carrying a sensitive label is preserved, never folded.
+        let secret_config = ["[database]", "user = admin", "password = sekrit"].join("\n");
+        assert_eq!(route_content(&secret_config).codec, CodecKind::Passthrough);
+
+        let code = "def main():\n    return 1\n";
+        assert_ne!(route_content(code).content_kind, ContentKind::Config);
+        let log = "INFO start\nINFO start\nWARN end";
+        assert_ne!(route_content(log).content_kind, ContentKind::Config);
+    }
+
+    #[test]
+    fn mixed_content_sections_route_independently_and_reassemble_losslessly() {
+        let mixed = [
+            "Here is the result:",
+            "```rust",
+            "",
+            "fn main() {}",
+            "",
+            "```",
+            "src/a.rs:10 result",
+            "src/b.rs:20 other",
+            "```json",
+            "",
+            "{\"items\": [1, 2]}",
+            "",
+            "```",
+        ]
+        .join("\n");
+        assert!(is_mixed_content(&mixed));
+        let sections = split_into_sections(&mixed);
+        assert!(sections.len() >= 3);
+        // Reassembly is exact: join bodies with \n.
+        let reassembled = sections
+            .iter()
+            .map(|section| section.body.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        let fence_stripped = mixed
+            .lines()
+            .filter(|line| !line.trim_start().starts_with("```"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert_eq!(reassembled, fence_stripped);
+
+        let mut transforms = Vec::new();
+        let (candidate, outcome, records) =
+            route_mixed_content(CompressionPolicy::Balanced, &mixed, &mut transforms);
+        assert!(outcome.applied);
+        assert!(outcome.sections_changed >= 1);
+        assert!(candidate.len() < mixed.len());
+        assert!(records.iter().any(|record| record.changed));
+        assert!(transforms.contains(&"content_router:mixed".to_string()));
+    }
+
+    #[test]
+    fn mixed_content_with_secret_or_marker_section_passes_through_entirely() {
+        let mixed = [
+            "Summary:",
+            "```rust",
+            "",
+            "fn main() {}",
+            "",
+            "```",
+            "Authorization: Bearer sk-live-secret",
+        ]
+        .join("\n");
+        let mut transforms = Vec::new();
+        let (candidate, outcome, _records) =
+            route_mixed_content(CompressionPolicy::Balanced, &mixed, &mut transforms);
+        assert!(!outcome.applied);
+        assert_eq!(candidate, mixed);
+        assert!(transforms.is_empty());
+
+        let marked = ["Intro text", "<<ccr:abc123,base64,64>>", "tail line"].join("\n");
+        assert!(is_already_compressed(&marked));
+        assert!(route_content(&marked).codec == CodecKind::Passthrough);
+    }
+
+    #[test]
+    fn mixed_section_route_is_idempotent_on_already_compressed_output() {
+        let mixed = [
+            "```python",
+            "",
+            "def helper():",
+            "    return 1",
+            "",
+            "```",
+            "{\"items\": [1, 2, 3]}",
+            "{\"items\": [1, 2, 3]}",
+        ]
+        .join("\n");
+        assert!(is_mixed_content(&mixed));
+        let mut first = Vec::new();
+        let (candidate, outcome, _records) =
+            route_mixed_content(CompressionPolicy::Balanced, &mixed, &mut first);
+        assert!(outcome.applied);
+        assert!(candidate.contains("def helper():"));
+        assert!(candidate.contains("{\"items\":[1,2,3]}"));
+        // Re-running the candidate must not change it: the code fence is
+        // already envelope-trimmed (non-beneficial second pass) and the
+        // JSON is already minified.
+        let mut second = Vec::new();
+        let (again, outcome2, _records2) =
+            route_mixed_content(CompressionPolicy::Balanced, &candidate, &mut second);
+        assert!(!outcome2.applied);
+        assert_eq!(again, candidate);
+    }
+
+    #[test]
+    fn config_and_mixed_candidate_helpers_match_the_registry_decision() {
+        let config = [
+            "[server]",
+            "host = \"aa.example.internal\"",
+            "host = \"aa.example.internal\"",
+            "zone = \"primary\"",
+            "mode = \"fast\"",
+        ]
+        .join("\n");
+        assert_eq!(route_content(&config).codec, CodecKind::ConfigFold);
+        assert!(!is_mixed_content(&config));
+        assert!(is_safe_config_codec_candidate(&config));
+        assert!(!is_safe_config_codec_candidate(
+            "plain text without repeats"
+        ));
+
+        let mixed = [
+            "```rust",
+            "",
+            "fn main() {}",
+            "",
+            "```",
+            "{\"items\": [1, 2, 3]}",
+            "{\"items\": [1, 2, 3]}",
+        ]
+        .join("\n");
+        assert!(is_safe_mixed_candidate(&mixed));
+        assert!(!is_safe_mixed_candidate("single kind of content here"));
+        assert!(!is_safe_mixed_candidate(&format!(
+            "{mixed}\n<<ccr:abc123,base64,64>>"
+        )));
+    }
+
+    #[test]
+    fn mixed_route_preserves_crlf_line_endings_byte_exactly() {
+        let mixed = [
+            "```rust",
+            "",
+            "fn main() {}",
+            "",
+            "```",
+            "{\"items\": [1, 2, 3]}",
+            "{\"items\": [1, 2, 3]}",
+        ]
+        .join("\r\n");
+        let with_trailing = format!("{mixed}\r\n");
+        assert!(is_mixed_content(&with_trailing));
+
+        let mut transforms = Vec::new();
+        let (candidate, outcome, _records) =
+            route_mixed_content(CompressionPolicy::Balanced, &with_trailing, &mut transforms);
+        assert!(outcome.applied);
+        // Reassembly restores CRLF, so the round trip is byte-exact.
+        assert!(candidate.ends_with("\r\n"));
+        assert!(candidate.contains("\r\n"));
+        assert!(candidate.contains("{\"items\":[1,2,3]}"));
+        assert!(candidate.len() < with_trailing.len());
+
+        // Re-running the candidate is a no-op: idempotent and still CRLF.
+        let mut again_transforms = Vec::new();
+        let (again, outcome2, _records2) = route_mixed_content(
+            CompressionPolicy::Balanced,
+            &candidate,
+            &mut again_transforms,
+        );
+        assert!(!outcome2.applied);
+        assert_eq!(again, candidate);
+        assert!(again.ends_with("\r\n"));
+    }
+
+    #[test]
+    fn mixed_route_fails_closed_on_mixed_or_bare_cr_line_endings() {
+        let mixed_signals = [
+            "```rust\r\n",
+            "\n",
+            "fn main() {}\r\n",
+            "\n",
+            "```\r\n",
+            "{\"items\": [1, 2, 3]}\r\n",
+            "{\"items\": [1, 2, 3]}\r\n",
+        ]
+        .join("");
+        assert!(is_mixed_content(&mixed_signals));
+        for text in [
+            mixed_signals,
+            "{\"items\": [1, 2, 3]}\r{\"items\": [1, 2, 3]}\r".to_string(),
+        ] {
+            let mut transforms = Vec::new();
+            let (candidate, outcome, _records) =
+                route_mixed_content(CompressionPolicy::Balanced, &text, &mut transforms);
+            assert!(!outcome.applied, "{text:?}");
+            assert_eq!(candidate, text);
+            assert!(transforms.is_empty());
         }
     }
 }

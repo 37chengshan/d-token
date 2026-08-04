@@ -56,6 +56,10 @@ pub struct CacheAlignmentPlan {
     frozen_prefix_bytes: usize,
     frozen_zone_count: usize,
     breakpoint_zone_index: usize,
+    /// Message-index floor derived from customer `cache_control` markers
+    /// (upstream #2718).  Messages with index `< floor` are part of the
+    /// cached prefix and are never transformed.  0 = no markers.
+    frozen_message_floor: usize,
     evidence_status: CacheEvidenceStatus,
     provider_strategy: Option<ProviderCacheStrategy>,
     evidence_revision: Option<String>,
@@ -86,6 +90,10 @@ impl CacheAlignmentPlan {
 
     pub fn breakpoint_zone_index(&self) -> usize {
         self.breakpoint_zone_index
+    }
+
+    pub fn frozen_message_floor(&self) -> usize {
+        self.frozen_message_floor
     }
 
     pub fn evidence_status(&self) -> CacheEvidenceStatus {
@@ -388,10 +396,12 @@ pub fn prepare_context_transform_with_cache_evidence(
         .ok_or(ContextTransformError::UnsupportedContext)?;
     let plan = apply_cache_evidence(context, build_context_plan(&ir, &original_body), evidence)?;
     let mut transforms = Vec::new();
+    let frozen_message_floor = compute_frozen_message_count(&original_body);
     let candidate_body = crate::hybrid::apply_safe_text_codec(
         context,
         policy,
         original_body.clone(),
+        frozen_message_floor,
         &mut transforms,
     );
     if candidate_body == original_body {
@@ -474,6 +484,7 @@ pub fn validate_context_transform(
 }
 
 fn build_context_plan(ir: &HybridContextIr, body: &Value) -> ContextPlan {
+    let frozen_message_floor = compute_frozen_message_count(body);
     let first_transformable = ir
         .nodes()
         .iter()
@@ -482,9 +493,23 @@ fn build_context_plan(ir: &HybridContextIr, body: &Value) -> ContextPlan {
         node.turn_index()
             .is_some_and(|turn| turn >= ir.recent_tail_start())
     });
+    // The cache_control-marker floor (upstream #2718) is exclusive:
+    // messages with index < floor are part of the cached prefix and must
+    // stay frozen.  The pipeline's transform breakpoint can never move
+    // below that floor, no matter how attractive a transformable node is.
+    // A floor of 0 (no markers) imposes no constraint.
+    let first_at_or_above_frozen_floor = (frozen_message_floor > 0)
+        .then(|| {
+            ir.nodes().iter().position(|node| {
+                node.turn_index()
+                    .is_some_and(|turn| turn >= frozen_message_floor)
+            })
+        })
+        .flatten();
     let breakpoint = first_transformable
         .into_iter()
         .chain(first_recent)
+        .chain(first_at_or_above_frozen_floor)
         .min()
         .unwrap_or(ir.nodes().len());
 
@@ -501,7 +526,10 @@ fn build_context_plan(ir: &HybridContextIr, body: &Value) -> ContextPlan {
             let source_digest = body
                 .pointer(&pointer)
                 .map_or_else(|| digest_bytes(pointer.as_bytes()), digest_value);
-            let disposition = if index < breakpoint {
+            let below_frozen_floor = node
+                .turn_index()
+                .is_some_and(|turn| turn < frozen_message_floor);
+            let disposition = if below_frozen_floor || index < breakpoint {
                 ZoneDisposition::FrozenPrefix
             } else if target.is_some() {
                 ZoneDisposition::TransformableWindow
@@ -513,7 +541,11 @@ fn build_context_plan(ir: &HybridContextIr, body: &Value) -> ContextPlan {
                 pointer,
                 source_digest,
                 disposition,
-                reason_code: protection_reason_code(node.reason()),
+                reason_code: if below_frozen_floor {
+                    "cache-control-frozen-message"
+                } else {
+                    protection_reason_code(node.reason())
+                },
             }
         })
         .collect::<Vec<_>>();
@@ -549,6 +581,7 @@ fn build_context_plan(ir: &HybridContextIr, body: &Value) -> ContextPlan {
             frozen_prefix_bytes,
             frozen_zone_count: breakpoint,
             breakpoint_zone_index: breakpoint,
+            frozen_message_floor,
             evidence_status: CacheEvidenceStatus::Unavailable,
             provider_strategy: None,
             evidence_revision: None,
@@ -556,6 +589,42 @@ fn build_context_plan(ir: &HybridContextIr, body: &Value) -> ContextPlan {
             min_prefix_bytes: None,
         },
     }
+}
+
+/// Compute the smallest `N` such that `messages[i]` is in the cache hot
+/// zone for every `i < N` (upstream `compute_frozen_count`, #2718 parity).
+///
+/// - A `cache_control` marker in `messages[i].content[*]` bumps the floor
+///   to at least `i + 1` (exclusive: `messages[i]` itself is frozen).
+/// - Markers in `system` or `tools[*]` do NOT bump the message-index
+///   floor — those fields are unconditionally cache-hot independently.
+/// - Returns `0` when there are no markers in `messages[*]`.
+///
+/// The walker tolerates both Anthropic content shapes: string content
+/// (no block list, no markers) and a block list (each block may carry a
+/// top-level `cache_control`).
+pub fn compute_frozen_message_count(body: &Value) -> usize {
+    let Some(messages) = body.get("messages").and_then(Value::as_array) else {
+        return 0;
+    };
+    let mut highest_message_index: Option<usize> = None;
+    for (index, message) in messages.iter().enumerate() {
+        let Some(content) = message.get("content") else {
+            continue;
+        };
+        let Some(blocks) = content.as_array() else {
+            continue;
+        };
+        for block in blocks {
+            if block.get("cache_control").is_some() {
+                highest_message_index = Some(match highest_message_index {
+                    Some(previous) => previous.max(index),
+                    None => index,
+                });
+            }
+        }
+    }
+    highest_message_index.map(|index| index + 1).unwrap_or(0)
 }
 
 fn validate_provider_cache_evidence(
@@ -615,18 +684,27 @@ fn build_manifest_entries(
         let source_text = source
             .as_str()
             .ok_or(ContextTransformError::CodecSemanticMismatch)?;
+        let mixed = crate::content_router::is_mixed_content(source_text);
         let route = route_content(source_text);
-        if route.codec == CodecKind::Passthrough {
+        // A mixed target is declared with the section-router marker even when
+        // the whole text's single-type route would be a passthrough; the
+        // validator re-derives the exact section-wise candidate.
+        if !mixed && route.codec == CodecKind::Passthrough {
             return Err(ContextTransformError::CodecSemanticMismatch);
         }
+        let codec = if mixed { CodecKind::Mixed } else { route.codec };
         entries.push(TransformManifestEntry {
             pointer: target.patch_path().to_string(),
             source_digest: target.precondition_digest().to_string(),
             candidate_digest: digest_value(candidate),
             content_kind: route.content_kind,
-            codec: route.codec,
-            codec_revision: codec_revision(route.codec),
-            reason_code: route.reason_code,
+            codec,
+            codec_revision: codec_revision(codec),
+            reason_code: if mixed {
+                "mixed-section-route"
+            } else {
+                route.reason_code
+            },
             original_bytes: json_bytes(source).len(),
             candidate_bytes: json_bytes(candidate).len(),
         });
@@ -691,6 +769,21 @@ fn validate_codec_semantics(
                 return Err(ContextTransformError::CodecSemanticMismatch);
             }
         }
+        CodecKind::Mixed => {
+            // The section router must reproduce the exact candidate from the
+            // source.  Section decisions are policy-invariant (the log codec
+            // forces Balanced internally), so re-derivation with Balanced is
+            // the same computation the production path ran.
+            let mut transforms = Vec::new();
+            let (derived, outcome, _records) = crate::content_router::route_mixed_content(
+                dtoken_types::CompressionPolicy::Balanced,
+                source,
+                &mut transforms,
+            );
+            if !outcome.applied || derived != candidate {
+                return Err(ContextTransformError::CodecSemanticMismatch);
+            }
+        }
         CodecKind::Passthrough => return Err(ContextTransformError::CodecSemanticMismatch),
     }
     Ok(())
@@ -715,6 +808,9 @@ fn normalize_log_line_for_validation(line: &str) -> String {
 }
 
 fn codec_revision(codec: CodecKind) -> &'static str {
+    if codec == CodecKind::Mixed {
+        return "mixed_section_route_v1";
+    }
     crate::compressor_registry::production_compressor_registry()
         .descriptor_for(codec)
         .map_or("passthrough", |descriptor| descriptor.revision)
@@ -764,6 +860,7 @@ fn protection_reason_code(reason: HybridProtectionReason) -> &'static str {
         HybridProtectionReason::StructuralToolState => "structural-tool-state",
         HybridProtectionReason::ToolSchema => "tool-schema",
         HybridProtectionReason::ToolArguments => "tool-arguments",
+        HybridProtectionReason::Thinking => "thinking",
         HybridProtectionReason::CodeOrDiff => "code-or-diff",
         HybridProtectionReason::Secret => "secret",
         HybridProtectionReason::Exact => "exact",

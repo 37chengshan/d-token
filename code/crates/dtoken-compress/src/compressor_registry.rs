@@ -113,6 +113,24 @@ const DESCRIPTORS: [CompressorDescriptor; 9] = [
     },
 ];
 
+/// Compile-time projection of the registry's descriptor ids, in registry
+/// order.  The array length is pinned to `DESCRIPTORS.len()` at compile time:
+/// adding or removing a descriptor changes this function's signature and the
+/// release evidence list together, so the count can never drift.
+pub const fn production_registry_codec_ids() -> [&'static str; 9] {
+    [
+        DESCRIPTORS[0].id,
+        DESCRIPTORS[1].id,
+        DESCRIPTORS[2].id,
+        DESCRIPTORS[3].id,
+        DESCRIPTORS[4].id,
+        DESCRIPTORS[5].id,
+        DESCRIPTORS[6].id,
+        DESCRIPTORS[7].id,
+        DESCRIPTORS[8].id,
+    ]
+}
+
 impl ProductionCompressorRegistry {
     pub const fn descriptors(self) -> &'static [CompressorDescriptor; 9] {
         &DESCRIPTORS

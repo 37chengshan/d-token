@@ -1,6 +1,7 @@
 use dtoken_types::{OpticalEndpoint, Protocol};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
+use std::collections::{HashMap, HashSet};
 
 use crate::content_router::{route_content, ContentKind};
 use crate::optical::context_graph::{build_context_graph, ContextGraph};
@@ -71,6 +72,7 @@ pub enum HybridNodeKind {
     ToolUse,
     ToolArguments,
     ToolResult,
+    Thinking,
     Identifier,
     Text,
     Image,
@@ -118,6 +120,7 @@ pub enum HybridProtectionReason {
     StructuralToolState,
     ToolSchema,
     ToolArguments,
+    Thinking,
     CodeOrDiff,
     Secret,
     Exact,
@@ -203,6 +206,7 @@ pub struct ApprovedHybridTarget {
     stable_digest: Option<String>,
     stable_chars: usize,
     volatile_chars: usize,
+    turn_index: Option<usize>,
 }
 
 impl ApprovedHybridTarget {
@@ -252,6 +256,10 @@ impl ApprovedHybridTarget {
 
     pub fn cache_stable(&self) -> bool {
         self.stable_digest.is_some() && self.volatile_chars == 0
+    }
+
+    pub fn turn_index(&self) -> Option<usize> {
+        self.turn_index
     }
 }
 
@@ -414,6 +422,8 @@ fn lower_node(
                                 || crate::content_router::is_safe_build_codec_candidate(text)
                                 || crate::content_router::is_safe_code_codec_candidate(text)
                                 || crate::content_router::is_safe_html_repeat_candidate(text)
+                                || crate::content_router::is_safe_config_codec_candidate(text)
+                                || crate::content_router::is_safe_mixed_candidate(text)
                         }) =>
                     {
                         approved_action = Some(ApprovedHybridAction::SafeTextCodec);
@@ -429,6 +439,8 @@ fn lower_node(
                                 || crate::content_router::is_safe_build_codec_candidate(text)
                                 || crate::content_router::is_safe_code_codec_candidate(text)
                                 || crate::content_router::is_safe_html_repeat_candidate(text)
+                                || crate::content_router::is_safe_config_codec_candidate(text)
+                                || crate::content_router::is_safe_mixed_candidate(text)
                         }) =>
                     {
                         approved_action = Some(ApprovedHybridAction::SafeTextCodec);
@@ -549,6 +561,25 @@ fn lower_node(
                             HybridProtectionReason::ClosedHistoricalLowRiskToolResult,
                         )
                     }
+                    RiskTier::RenderSafe
+                        if text
+                            .is_some_and(crate::content_router::is_safe_config_codec_candidate) =>
+                    {
+                        approved_action = Some(ApprovedHybridAction::SafeTextCodec);
+                        (
+                            HybridProtection::Candidate,
+                            HybridProtectionReason::ClosedHistoricalLowRiskToolResult,
+                        )
+                    }
+                    RiskTier::RenderSafe
+                        if text.is_some_and(crate::content_router::is_safe_mixed_candidate) =>
+                    {
+                        approved_action = Some(ApprovedHybridAction::SafeTextCodec);
+                        (
+                            HybridProtection::Candidate,
+                            HybridProtectionReason::ClosedHistoricalLowRiskToolResult,
+                        )
+                    }
                     RiskTier::RenderSafe => (
                         HybridProtection::AlwaysText,
                         HybridProtectionReason::GeneralPreserve,
@@ -609,6 +640,7 @@ fn lower_node(
                         .sum()
                 }),
                 volatile_chars: volatility.as_ref().map_or(0, |plan| plan.volatile_chars),
+                turn_index: block.turn_index,
             }),
             _ => None,
         }
@@ -667,6 +699,15 @@ fn baseline_protection(
         return (
             HybridProtection::AlwaysText,
             HybridProtectionReason::OpenToolState,
+        );
+    }
+    if block.kind == BlockKind::Thinking {
+        // Anthropic `thinking`/`redacted_thinking` blocks are part of the
+        // cache hot zone (upstream HOT_ZONE_BLOCK_TYPES) and carry the
+        // model's private reasoning; they are never rewritten.
+        return (
+            HybridProtection::AlwaysText,
+            HybridProtectionReason::Thinking,
         );
     }
     if block.turn_index == inventory.current_user_turn {
@@ -1054,6 +1095,7 @@ fn map_kind(kind: &BlockKind) -> HybridNodeKind {
         BlockKind::ToolResult => HybridNodeKind::ToolResult,
         BlockKind::Text => HybridNodeKind::Text,
         BlockKind::Image => HybridNodeKind::Image,
+        BlockKind::Thinking => HybridNodeKind::Thinking,
         BlockKind::Unknown => HybridNodeKind::Unknown,
     }
 }
@@ -1082,7 +1124,9 @@ fn provenance_for(kind: &HybridNodeKind, role: &HybridRole) -> HybridContentProv
             HybridContentProvenance::ToolInvocation
         }
         HybridNodeKind::ToolResult => HybridContentProvenance::ToolOutput,
-        HybridNodeKind::Image | HybridNodeKind::Unknown => HybridContentProvenance::OpaqueInput,
+        HybridNodeKind::Image | HybridNodeKind::Unknown | HybridNodeKind::Thinking => {
+            HybridContentProvenance::OpaqueInput
+        }
         HybridNodeKind::Text => match role {
             HybridRole::User => HybridContentProvenance::UserMessage,
             HybridRole::Assistant => HybridContentProvenance::AssistantMessage,
@@ -1139,6 +1183,7 @@ pub(crate) fn apply_safe_text_codec(
     context: &ResolvedOptimizationContext,
     policy: dtoken_types::CompressionPolicy,
     mut body: Value,
+    frozen_message_floor: usize,
     transforms: &mut Vec<String>,
 ) -> Value {
     if matches!(policy, dtoken_types::CompressionPolicy::Off) {
@@ -1147,9 +1192,28 @@ pub(crate) fn apply_safe_text_codec(
     let Some(lowered) = lower_context(context, &body) else {
         return body;
     };
+    let ccr_retrieve_result_paths = ccr_retrieve_result_paths(context, &body);
 
     for target in lowered.ir.approved_text_targets() {
         if target.kind != ApprovedHybridTargetKind::ClosedHistoricalLowRiskToolResult {
+            continue;
+        }
+        // A retrieve tool returns the already-restored original bytes. Running
+        // that result through ContentRouter again can create a retrieval loop
+        // or change the exact payload the capability authorized. Match both
+        // the bare tool name and MCP-qualified aliases such as
+        // `mcp__dtoken__headroom_retrieve`.
+        if ccr_retrieve_result_paths.contains(&target.patch_path) {
+            continue;
+        }
+        // Cache hot-zone floor (upstream #2718): messages below the
+        // customer's cache_control marker floor are part of the cached
+        // prefix and must never be rewritten, even when they look like
+        // approved low-risk historical tool results.
+        if target
+            .turn_index
+            .is_some_and(|turn| turn < frozen_message_floor)
+        {
             continue;
         }
         let Some(current) = body.pointer(&target.patch_path) else {
@@ -1161,11 +1225,28 @@ pub(crate) fn apply_safe_text_codec(
         let Some(text) = current.as_str() else {
             continue;
         };
-        let compressed = crate::compressor_registry::production_compressor_registry().compress(
-            policy.clone(),
-            text,
-            transforms,
-        );
+        // The registry owns the whole-text single-type decision (including
+        // ConfigFold); the IR-safe section router is the fallback only when
+        // the registry would leave the text untouched — a fence with trailing
+        // content, a config-shaped block the splitter treats as sections, or
+        // genuinely mixed tool output.  Every section still passes the same
+        // secret/marker/negative-benefit guards and verifies losslessly.
+        let mut registry_transforms = Vec::new();
+        let registry_candidate = crate::compressor_registry::production_compressor_registry()
+            .compress(policy.clone(), text, &mut registry_transforms);
+        let compressed =
+            if registry_transforms.is_empty() && crate::content_router::is_mixed_content(text) {
+                let (candidate, outcome, _records) =
+                    crate::content_router::route_mixed_content(policy.clone(), text, transforms);
+                if outcome.applied {
+                    candidate
+                } else {
+                    text.to_string()
+                }
+            } else {
+                transforms.extend(registry_transforms);
+                registry_candidate
+            };
         if compressed == text {
             continue;
         }
@@ -1177,4 +1258,131 @@ pub(crate) fn apply_safe_text_codec(
     }
 
     body
+}
+
+fn is_ccr_retrieve_tool_name(name: &str) -> bool {
+    let normalized = name.trim().to_ascii_lowercase();
+    normalized == "headroom_retrieve"
+        || (normalized.starts_with("mcp__")
+            && normalized
+                .rsplit("__")
+                .next()
+                .is_some_and(|tail| tail == "headroom_retrieve"))
+}
+
+fn ccr_retrieve_result_paths(
+    context: &ResolvedOptimizationContext,
+    body: &Value,
+) -> HashSet<String> {
+    let mut tool_names = HashMap::<String, String>::new();
+    let mut paths = HashSet::new();
+
+    match context.endpoint {
+        OpticalEndpoint::AnthropicMessages => {
+            let Some(messages) = body.get("messages").and_then(Value::as_array) else {
+                return paths;
+            };
+            for message in messages {
+                let Some(content) = message.get("content").and_then(Value::as_array) else {
+                    continue;
+                };
+                for item in content {
+                    if item.get("type").and_then(Value::as_str) != Some("tool_use") {
+                        continue;
+                    }
+                    if let (Some(id), Some(name)) = (
+                        item.get("id").and_then(Value::as_str),
+                        item.get("name").and_then(Value::as_str),
+                    ) {
+                        tool_names.insert(id.to_string(), name.to_string());
+                    }
+                }
+            }
+            for (message_index, message) in messages.iter().enumerate() {
+                let Some(content) = message.get("content").and_then(Value::as_array) else {
+                    continue;
+                };
+                for (content_index, item) in content.iter().enumerate() {
+                    if item.get("type").and_then(Value::as_str) != Some("tool_result") {
+                        continue;
+                    }
+                    let is_retrieve = item
+                        .get("tool_use_id")
+                        .and_then(Value::as_str)
+                        .and_then(|id| tool_names.get(id))
+                        .is_some_and(|name| is_ccr_retrieve_tool_name(name));
+                    if is_retrieve && item.get("content").and_then(Value::as_str).is_some() {
+                        paths.insert(format!(
+                            "/messages/{message_index}/content/{content_index}/content"
+                        ));
+                    }
+                }
+            }
+        }
+        OpticalEndpoint::OpenAiChatCompletions => {
+            let Some(messages) = body.get("messages").and_then(Value::as_array) else {
+                return paths;
+            };
+            for message in messages {
+                let Some(calls) = message.get("tool_calls").and_then(Value::as_array) else {
+                    continue;
+                };
+                for call in calls {
+                    if let (Some(id), Some(name)) = (
+                        call.get("id").and_then(Value::as_str),
+                        call.pointer("/function/name").and_then(Value::as_str),
+                    ) {
+                        tool_names.insert(id.to_string(), name.to_string());
+                    }
+                }
+            }
+            for (message_index, message) in messages.iter().enumerate() {
+                if message.get("role").and_then(Value::as_str) != Some("tool") {
+                    continue;
+                }
+                let is_retrieve = message
+                    .get("tool_call_id")
+                    .and_then(Value::as_str)
+                    .and_then(|id| tool_names.get(id))
+                    .is_some_and(|name| is_ccr_retrieve_tool_name(name));
+                if is_retrieve && message.get("content").and_then(Value::as_str).is_some() {
+                    paths.insert(format!("/messages/{message_index}/content"));
+                }
+            }
+        }
+        OpticalEndpoint::OpenAiResponses => {
+            let Some(input) = body.get("input").and_then(Value::as_array) else {
+                return paths;
+            };
+            for item in input {
+                if item.get("type").and_then(Value::as_str) != Some("function_call") {
+                    continue;
+                }
+                if let (Some(id), Some(name)) = (
+                    item.get("call_id")
+                        .or_else(|| item.get("id"))
+                        .and_then(Value::as_str),
+                    item.get("name").and_then(Value::as_str),
+                ) {
+                    tool_names.insert(id.to_string(), name.to_string());
+                }
+            }
+            for (item_index, item) in input.iter().enumerate() {
+                if item.get("type").and_then(Value::as_str) != Some("function_call_output") {
+                    continue;
+                }
+                let is_retrieve = item
+                    .get("call_id")
+                    .and_then(Value::as_str)
+                    .and_then(|id| tool_names.get(id))
+                    .is_some_and(|name| is_ccr_retrieve_tool_name(name));
+                if is_retrieve && item.get("output").and_then(Value::as_str).is_some() {
+                    paths.insert(format!("/input/{item_index}/output"));
+                }
+            }
+        }
+        _ => {}
+    }
+
+    paths
 }

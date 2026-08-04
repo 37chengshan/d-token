@@ -576,3 +576,343 @@ fn newline_and_crlf_repeat_folds_preserve_exact_line_endings() {
         assert!(result.compressed_tokens < result.original_tokens);
     }
 }
+
+#[test]
+fn frozen_message_count_follows_cache_control_markers() {
+    use dtoken_compress::context_pipeline::compute_frozen_message_count;
+
+    let no_markers = json!({"messages": [{"role": "user", "content": "hi"}]});
+    assert_eq!(compute_frozen_message_count(&no_markers), 0);
+
+    let marker_at_one = json!({
+        "messages": [
+            {"role": "user", "content": "first"},
+            {"role": "assistant", "content": [
+                {"type": "text", "text": "x", "cache_control": {"type": "ephemeral"}}
+            ]}
+        ]
+    });
+    assert_eq!(compute_frozen_message_count(&marker_at_one), 2);
+
+    let highest_marker_wins = json!({
+        "messages": [
+            {"role": "user", "content": [
+                {"type": "text", "text": "a", "cache_control": {"type": "ephemeral"}}
+            ]},
+            {"role": "user", "content": "b"},
+            {"role": "assistant", "content": [
+                {"type": "text", "text": "c", "cache_control": {"type": "ephemeral", "ttl": "1h"}}
+            ]}
+        ]
+    });
+    assert_eq!(compute_frozen_message_count(&highest_marker_wins), 3);
+
+    // Markers in system / tools never bump the message floor.
+    let system_marker = json!({
+        "system": [{"type": "text", "text": "sys", "cache_control": {"type": "ephemeral"}}],
+        "tools": [{"name": "t", "cache_control": {"type": "ephemeral"}, "input_schema": {}}],
+        "messages": [{"role": "user", "content": "hi"}]
+    });
+    assert_eq!(compute_frozen_message_count(&system_marker), 0);
+
+    // String content carries no block list, hence no markers.
+    let string_content = json!({
+        "messages": [{"role": "user", "content": "cache_control is not a marker here"}]
+    });
+    assert_eq!(compute_frozen_message_count(&string_content), 0);
+}
+
+#[test]
+fn cache_control_frozen_floor_keeps_below_floor_messages_in_frozen_prefix() {
+    let body = request();
+    // Marker on message 1 (the historical tool result that is normally the
+    // single transformable window): floor becomes 2, so that message and
+    // everything before it must be frozen.
+    let mut marked = body.clone();
+    marked["messages"][1]["content"][0]["cache_control"] = json!({"type": "ephemeral"});
+    let plan = plan_context(&context(), &marked).expect("marked plan");
+    assert_eq!(plan.cache_alignment().frozen_message_floor(), 2);
+    assert!(plan.transformable_zones().is_empty());
+    assert!(
+        plan.zones()
+            .iter()
+            .filter(|zone| zone.reason_code() == "cache-control-frozen-message")
+            .count()
+            >= 2
+    );
+    assert!(plan
+        .zones()
+        .iter()
+        .all(|zone| { zone.disposition() != ZoneDisposition::TransformableWindow }));
+
+    // Compression must be a no-op when the only transformable node is
+    // below the frozen floor.
+    let result = CompressionEngine::new()
+        .compress_resolved(&context(), CompressionPolicy::Balanced, marked.clone())
+        .expect("frozen compression");
+    assert!(result.transforms_applied.is_empty());
+    assert_eq!(result.body, marked);
+}
+
+#[test]
+fn thinking_blocks_are_explicitly_protected_and_never_transformed() {
+    use dtoken_compress::{HybridNodeKind, HybridProtection, HybridProtectionReason};
+
+    let body = json!({
+        "model": "model-exact-revision",
+        "system": "system",
+        "messages": [
+            {"role": "user", "content": [{"type": "text", "text": "build it"}]},
+            {"role": "assistant", "content": [
+                {"type": "thinking", "thinking": "let me plan the build steps", "signature": "sig1"},
+                {"type": "tool_use", "id": "t1", "name": "build", "input": {}}
+            ]},
+            {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t1", "content": "done"}]}
+        ]
+    });
+    let ir = dtoken_compress::lower_hybrid_context(&context(), &body).expect("lowered context");
+    let thinking = ir
+        .nodes()
+        .iter()
+        .find(|node| node.kind() == HybridNodeKind::Thinking)
+        .expect("thinking node present");
+    assert_eq!(thinking.protection(), HybridProtection::AlwaysText);
+    assert_eq!(thinking.reason(), HybridProtectionReason::Thinking);
+    assert_eq!(thinking.source_path(), "/messages/1/content/0");
+
+    let result = CompressionEngine::new()
+        .compress_resolved(&context(), CompressionPolicy::Balanced, body.clone())
+        .expect("thinking compression");
+    assert!(result.transforms_applied.is_empty());
+    assert_eq!(
+        result.body.pointer("/messages/1/content/0/thinking"),
+        Some(&json!("let me plan the build steps"))
+    );
+    assert_eq!(result.body, body);
+}
+
+#[test]
+fn redacted_thinking_blocks_are_equally_protected() {
+    use dtoken_compress::HybridNodeKind;
+
+    let body = json!({
+        "model": "model-exact-revision",
+        "messages": [
+            {"role": "user", "content": [{"type": "text", "text": "go"}]},
+            {"role": "assistant", "content": [
+                {"type": "redacted_thinking", "data": "redacted-blob", "signature": "sig2"}
+            ]}
+        ]
+    });
+    let ir = dtoken_compress::lower_hybrid_context(&context(), &body).expect("lowered context");
+    assert!(ir
+        .nodes()
+        .iter()
+        .any(|node| node.kind() == HybridNodeKind::Thinking));
+    let result = CompressionEngine::new()
+        .compress_resolved(&context(), CompressionPolicy::Balanced, body.clone())
+        .expect("redacted thinking compression");
+    assert!(result.transforms_applied.is_empty());
+    assert_eq!(result.body, body);
+}
+
+#[test]
+fn structured_config_tool_result_uses_the_config_codec_in_production_path() {
+    let config = [
+        "[server]",
+        "host = \"aa.example.internal\"",
+        "host = \"aa.example.internal\"",
+        "zone = \"primary\"",
+        "mode = \"fast\"",
+    ]
+    .join("\n");
+    let mut messages = vec![
+        json!({"role":"assistant","content":[{"type":"tool_use","id":"old-call","name":"config","input":{}}]}),
+        json!({"role":"user","content":[{"type":"tool_result","tool_use_id":"old-call","content":config}]}),
+    ];
+    for index in 0..6 {
+        messages.push(json!({
+            "role":"assistant",
+            "content":[{"type":"tool_use","id":format!("recent-{index}"),"name":"read","input":{}}]
+        }));
+        messages.push(json!({
+            "role":"user",
+            "content":[{"type":"tool_result","tool_use_id":format!("recent-{index}"),"content":"recent"}]
+        }));
+    }
+    messages.push(json!({"role":"user","content":[{"type":"text","text":"current"}]}));
+    let body = json!({
+        "model": "model-exact-revision",
+        "system": "system remains exact",
+        "messages": messages
+    });
+
+    let result = CompressionEngine::new()
+        .compress_resolved(&context(), CompressionPolicy::Balanced, body)
+        .expect("config compression");
+    assert!(
+        result
+            .transforms_applied
+            .iter()
+            .any(|item| item == "content_router:config"),
+        "{result:#?}"
+    );
+    assert!(result
+        .transforms_applied
+        .iter()
+        .any(|item| item == "config_repeat_fold_v1"));
+    let candidate = result
+        .body
+        .pointer("/messages/1/content/0/content")
+        .and_then(Value::as_str)
+        .expect("compressed config");
+    assert!(candidate.contains("host = \"aa.example.internal\" [repeated x2]"));
+    assert!(candidate.contains("zone = \"primary\""));
+    // The fold is byte-exact reversible.
+    assert_eq!(
+        dtoken_compress::content_router::expand_exact_folded_lines_losslessly(candidate).as_deref(),
+        Some(config.as_str())
+    );
+}
+
+#[test]
+fn anthropic_qualified_ccr_retrieve_result_is_preserved_verbatim() {
+    let retrieved = [
+        "[server]",
+        "host = \"aa.example.internal\"",
+        "host = \"aa.example.internal\"",
+        "zone = \"primary\"",
+        "mode = \"fast\"",
+    ]
+    .join("\n");
+    let mut messages = vec![
+        json!({"role":"assistant","content":[{"type":"tool_use","id":"retrieve-call","name":"mcp__dtoken__headroom_retrieve","input":{}}]}),
+        json!({"role":"user","content":[{"type":"tool_result","tool_use_id":"retrieve-call","content":retrieved}]}),
+    ];
+    for index in 0..6 {
+        messages.push(json!({
+            "role":"assistant",
+            "content":[{"type":"tool_use","id":format!("recent-{index}"),"name":"read","input":{}}]
+        }));
+        messages.push(json!({
+            "role":"user",
+            "content":[{"type":"tool_result","tool_use_id":format!("recent-{index}"),"content":"recent"}]
+        }));
+    }
+    messages.push(json!({"role":"user","content":[{"type":"text","text":"current"}]}));
+    let body = json!({
+        "model": "model-exact-revision",
+        "system": "system remains exact",
+        "messages": messages
+    });
+
+    let result = CompressionEngine::new()
+        .compress_resolved(&context(), CompressionPolicy::Balanced, body.clone())
+        .expect("CCR retrieve passthrough");
+
+    assert_eq!(result.body, body);
+    assert!(result.transforms_applied.is_empty());
+}
+
+#[test]
+fn openai_ccr_retrieve_result_is_preserved_verbatim() {
+    let retrieved = [
+        "[server]",
+        "host = \"aa.example.internal\"",
+        "host = \"aa.example.internal\"",
+        "zone = \"primary\"",
+        "mode = \"fast\"",
+    ]
+    .join("\n");
+    let mut messages = vec![
+        json!({"role":"assistant","content":null,"tool_calls":[{"id":"retrieve-call","type":"function","function":{"name":"headroom_retrieve","arguments":"{}"}}]}),
+        json!({"role":"tool","tool_call_id":"retrieve-call","content":retrieved}),
+    ];
+    for index in 0..6 {
+        messages.push(json!({
+            "role":"assistant",
+            "content":null,
+            "tool_calls":[{"id":format!("recent-{index}"),"type":"function","function":{"name":"read","arguments":"{}"}}]
+        }));
+        messages.push(json!({
+            "role":"tool",
+            "tool_call_id":format!("recent-{index}"),
+            "content":"recent"
+        }));
+    }
+    messages.push(json!({"role":"user","content":"current"}));
+    let body = json!({
+        "model": "model-openai-revision",
+        "messages": messages
+    });
+    let openai = openai_context(OpticalEndpoint::OpenAiChatCompletions);
+
+    let result = CompressionEngine::new()
+        .compress_resolved(&openai, CompressionPolicy::Balanced, body.clone())
+        .expect("CCR retrieve passthrough");
+
+    assert_eq!(result.body, body);
+    assert!(result.transforms_applied.is_empty());
+}
+
+#[test]
+fn mixed_tool_result_uses_the_section_router_in_production_path() {
+    let mixed = [
+        "```rust",
+        "",
+        "fn main() {}",
+        "",
+        "```",
+        "{\"items\": [1, 2, 3]}",
+        "{\"items\": [1, 2, 3]}",
+    ]
+    .join("\n");
+    assert!(dtoken_compress::content_router::is_safe_mixed_candidate(
+        &mixed
+    ));
+    let mut messages = vec![
+        json!({"role":"assistant","content":[{"type":"tool_use","id":"old-call","name":"mixed","input":{}}]}),
+        json!({"role":"user","content":[{"type":"tool_result","tool_use_id":"old-call","content":mixed}]}),
+    ];
+    for index in 0..6 {
+        messages.push(json!({
+            "role":"assistant",
+            "content":[{"type":"tool_use","id":format!("recent-{index}"),"name":"read","input":{}}]
+        }));
+        messages.push(json!({
+            "role":"user",
+            "content":[{"type":"tool_result","tool_use_id":format!("recent-{index}"),"content":"recent"}]
+        }));
+    }
+    messages.push(json!({"role":"user","content":[{"type":"text","text":"current"}]}));
+    let body = json!({
+        "model": "model-exact-revision",
+        "system": "system remains exact",
+        "messages": messages
+    });
+
+    let result = CompressionEngine::new()
+        .compress_resolved(&context(), CompressionPolicy::Balanced, body)
+        .expect("mixed compression");
+    assert!(result
+        .transforms_applied
+        .iter()
+        .any(|item| item == "content_router:mixed"));
+    assert!(result
+        .transforms_applied
+        .iter()
+        .any(|item| item == "mixed_section_route_v1"));
+    let candidate = result
+        .body
+        .pointer("/messages/1/content/0/content")
+        .and_then(Value::as_str)
+        .expect("mixed candidate");
+    // Code fence trimmed and JSON sections minified.
+    assert!(candidate.contains("fn main() {}"));
+    assert!(candidate.contains("{\"items\":[1,2,3]}"));
+    assert!(candidate.len() < mixed.len());
+    assert_eq!(
+        result.body["system"].as_str().unwrap(),
+        "system remains exact"
+    );
+}

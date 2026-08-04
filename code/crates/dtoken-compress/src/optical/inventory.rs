@@ -21,6 +21,7 @@ pub enum BlockKind {
     ToolUse,
     ToolResult,
     Image,
+    Thinking,
     SystemPrompt,
     ToolDefinition,
     Unknown,
@@ -225,6 +226,13 @@ fn build_anthropic_inventory_internal(
                         "tool_use" => (BlockKind::ToolUse, InitialProtection::AlwaysText),
                         "tool_result" => (BlockKind::ToolResult, InitialProtection::Candidate),
                         "image" => (BlockKind::Image, InitialProtection::Opaque),
+                        // Anthropic `thinking` / `redacted_thinking` blocks
+                        // are in the cache hot zone (upstream live_zone
+                        // HOT_ZONE_BLOCK_TYPES): they must never be
+                        // rewritten, exactly like `tool_use`.
+                        "thinking" | "redacted_thinking" => {
+                            (BlockKind::Thinking, InitialProtection::AlwaysText)
+                        }
                         "text" => (
                             BlockKind::Text,
                             if role == RoleKind::User {

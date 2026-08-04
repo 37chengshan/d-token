@@ -16,16 +16,13 @@ use std::sync::OnceLock;
 use std::time::Instant;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-pub const PRODUCTION_CODEC_IDS: [&str; 8] = [
-    "json-codec",
-    "log-codec",
-    "search-codec",
-    "build-codec",
-    "diff-codec",
-    "text-codec",
-    "html-codec",
-    "code-compressor",
-];
+/// Registry-derived production codec ids, in the registry's declared order.
+/// The constant is a compile-time projection of the compressor registry so
+/// the count can never drift from the authoritative descriptor list: adding
+/// or removing a codec in [`crate::compressor_registry`] changes this list
+/// (and the release gate) instead of silently desynchronizing the evidence.
+pub const PRODUCTION_CODEC_IDS: [&str; 9] =
+    crate::compressor_registry::production_registry_codec_ids();
 
 const PROPERTY_CASES_PER_CODEC: usize = 128;
 const EVIDENCE_IMPLEMENTATION_REVISION: &str = "production-codec-runtime-evidence-v1";
@@ -169,6 +166,7 @@ pub fn candidate_codec_evidence_report(
                 "diff-codec" => "diff_codec_latency_p95",
                 "text-codec" => "text_codec_latency_p95",
                 "html-codec" => "html_codec_latency_p95",
+                "config-codec" => "config_codec_latency_p95",
                 "code-compressor" => "code_compressor_latency_p95",
                 _ => "unknown_codec_latency_p95",
             });
@@ -394,6 +392,7 @@ fn build_production_codec_evidence() -> ProductionCodecEvidence {
         evaluate_diff(),
         evaluate_text(),
         evaluate_html(),
+        evaluate_config(),
         evaluate_code(),
     ];
     let mut revision = Sha256::new();
@@ -566,6 +565,48 @@ fn evaluate_text() -> CodecEvidence {
         evidence.observe_negative(source);
     }
     evidence.observe_budget("The task completed.\nThe task completed.");
+    evidence.finish()
+}
+
+fn evaluate_config() -> CodecEvidence {
+    let mut evidence = EvidenceBuilder::new("config-codec");
+    let corpus = [
+        "[server]",
+        "host = \"aa.example.internal\"",
+        "host = \"aa.example.internal\"",
+        "zone = \"primary\"",
+        "mode = \"fast\"",
+    ]
+    .join("\n");
+    evidence.add_corpus(&corpus);
+    for index in 0..PROPERTY_CASES_PER_CODEC {
+        let label = alphabetic_label(index);
+        let source = [
+            "[server]".to_string(),
+            format!("host = \"{label}.example.internal\""),
+            format!("host = \"{label}.example.internal\""),
+            "zone = \"primary\"".to_string(),
+            "mode = \"fast\"".to_string(),
+        ]
+        .join("\n");
+        evidence.observe_routed(&source, CodecKind::ConfigFold, exact_repeat_reconstruction);
+    }
+    for source in [
+        // Config shape without adjacent repeats: nothing to fold, no
+        // invented transform.
+        "[server]\nhost = \"aa.example.internal\"\nzone = \"primary\"",
+        // Secret line inside config: the fold would fire on the repeated
+        // line if the secret guard failed.
+        "[server]\nAuthorization: Bearer sk-redacted-test\nAuthorization: Bearer sk-redacted-test\nzone = \"primary\"",
+        // Already-folded marker inside config: never re-folded.
+        "[server]\nhost = \"aa.example.internal\" [repeated x2]\nhost = \"aa.example.internal\" [repeated x2]\nzone = \"primary\"",
+        // Markdown front matter is not YAML config.
+        "---\ntitle: demo\n---\n\nSome prose here.",
+    ] {
+        evidence.observe_negative(source);
+    }
+    evidence
+        .observe_budget("[server]\nhost = \"aa.example.internal\"\nhost = \"aa.example.internal\"");
     evidence.finish()
 }
 

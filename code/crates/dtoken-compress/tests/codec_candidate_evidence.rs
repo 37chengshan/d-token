@@ -42,6 +42,23 @@ fn request_with_historical_result(result: &str) -> Value {
 }
 
 #[test]
+fn production_codec_ids_cover_the_entire_compressor_registry() {
+    use dtoken_compress::compressor_registry::production_compressor_registry;
+
+    let registry_ids: Vec<&str> = production_compressor_registry()
+        .descriptors()
+        .iter()
+        .map(|descriptor| descriptor.id)
+        .collect();
+    // The evidence list is a compile-time projection of the registry: every
+    // registry codec must be measured, in registry order, and no codec may
+    // be measured that the registry does not declare.
+    assert_eq!(registry_ids, PRODUCTION_CODEC_IDS.to_vec());
+    assert_eq!(PRODUCTION_CODEC_IDS.len(), 9);
+    assert!(PRODUCTION_CODEC_IDS.contains(&"config-codec"));
+}
+
+#[test]
 fn production_codec_evidence_is_measured_not_declared() {
     let evidence = production_codec_evidence();
 
