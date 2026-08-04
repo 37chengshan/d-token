@@ -711,6 +711,15 @@
       "summary": "fix: IMPLEMENTATION_STATUS agent count 20->23; lock byte-identical OpenCode provider writes between dedicated adapter and managed transport with regression tests",
       "head_before": "4cc05aa1b311b819c2a0556586b74e829dabd05e",
       "remote": null
+    },
+    {
+      "id": "aaff02a9-485e-4995-bba4-7fc88e802624",
+      "timestamp": "2026-08-04T19:40:15+08:00",
+      "operation": "commit",
+      "branch": "codex/code-graph-mcp-integration",
+      "summary": "G6 macOS 本机验证收口：G7 当前候选真实 OpenCode 证据写实，G6 仅按实际通过项标记，Windows/G8 保持阻塞",
+      "head_before": "8e80ebd07a7d",
+      "remote": null
     }
   ]
 }
