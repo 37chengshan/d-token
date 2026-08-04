@@ -44,9 +44,10 @@ pub enum RecommendationConfidence {
     High,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum OutputVerbosity {
+    #[default]
     Auto,
     Terse,
     Normal,
@@ -108,6 +109,88 @@ pub enum PreprocessorImplementation {
     RtkManaged,
     DtokenBuiltin,
     Custom,
+}
+
+/// The only lifecycle actions a d-token-owned integrated RTK adapter may
+/// request. These metadata-only operations deliberately do not carry agent
+/// configuration bytes, commands, prompts, or credentials.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ManagedRtkOperation {
+    Install,
+    Configure,
+    Verify,
+    Rollback,
+    Uninstall,
+}
+
+/// A managed RTK transaction is only successful after a versioned host hook
+/// adapter has verified its own write and rollback. `Blocked` is an expected,
+/// safe state while no such adapter is shipped for the host platform.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ManagedRtkTransactionState {
+    Planned,
+    Installed,
+    Configured,
+    Verified,
+    RolledBack,
+    Uninstalled,
+    Blocked,
+    Failed,
+}
+
+/// Platform capability for the managed RTK hook/wrap boundary. This is kept
+/// separate from the builtin output filter: an available filter must never be
+/// presented as an installed Agent hook.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ManagedRtkPlatformCapability {
+    pub platform: agent::HostPlatform,
+    pub hook_status: HookStatus,
+    pub can_modify_agent_config: bool,
+    pub reason: String,
+}
+
+/// A redacted, hash-bound plan for a prospective managed RTK lifecycle.
+/// `host_config_fingerprint` identifies only the reviewed host configuration;
+/// the actual configuration and any credential material remain private to the
+/// owning Agent adapter.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ManagedRtkTransactionPlan {
+    pub schema_version: u8,
+    pub transaction_id: String,
+    pub platform: agent::HostPlatform,
+    pub host_config_fingerprint: String,
+    pub capability: ManagedRtkPlatformCapability,
+    pub operations: Vec<ManagedRtkOperation>,
+    pub requires_user_confirmation: bool,
+}
+
+/// A metadata-only lifecycle receipt. It is safe for the Event Ledger because
+/// it records neither a command nor transformed command output.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ManagedRtkTransactionReceipt {
+    pub schema_version: u8,
+    pub transaction_id: String,
+    pub operation: ManagedRtkOperation,
+    pub state: ManagedRtkTransactionState,
+    pub host_config_fingerprint: String,
+    pub summary: String,
+}
+
+/// Byte-level usage evidence for one command result. The output itself is
+/// intentionally absent: callers may deliver it directly to the Agent but
+/// must not persist it as RTK telemetry.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ManagedRtkUsageEvidence {
+    pub schema_version: u8,
+    pub transaction_id: String,
+    pub exit_code: Option<i32>,
+    pub input_bytes: usize,
+    pub output_bytes: usize,
+    pub saved_bytes: usize,
+    pub transforms: Vec<String>,
+    pub disposition: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -526,6 +609,8 @@ pub enum CapabilityEvidenceError {
     EmptyCapabilityId,
     EmptyImplementationRevision,
     EmptyReasonCodes,
+    InvalidReasonCode(String),
+    DuplicateReasonCode(String),
     MissingEvidenceRevision,
     MissingVerificationTimestamp,
     MissingVerifiedFreshness,
@@ -591,13 +676,17 @@ impl CapabilityEvidence {
         if self.implementation_revision.trim().is_empty() {
             return Err(CapabilityEvidenceError::EmptyImplementationRevision);
         }
-        if self.reason_codes.is_empty()
-            || self
-                .reason_codes
-                .iter()
-                .any(|reason| reason.trim().is_empty())
-        {
+        if self.reason_codes.is_empty() {
             return Err(CapabilityEvidenceError::EmptyReasonCodes);
+        }
+        let mut seen_reason_codes = std::collections::BTreeSet::new();
+        for reason in &self.reason_codes {
+            if !valid_reason_code(reason) {
+                return Err(CapabilityEvidenceError::InvalidReasonCode(reason.clone()));
+            }
+            if !seen_reason_codes.insert(reason.as_str()) {
+                return Err(CapabilityEvidenceError::DuplicateReasonCode(reason.clone()));
+            }
         }
         if matches!(
             self.state,
@@ -624,6 +713,15 @@ impl CapabilityEvidence {
         }
         Ok(())
     }
+}
+
+fn valid_reason_code(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    (1..=64).contains(&bytes.len())
+        && (bytes[0].is_ascii_lowercase() || bytes[0].is_ascii_digit())
+        && bytes[1..].iter().all(|byte| {
+            byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'.' | b'_' | b'-')
+        })
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -716,6 +814,35 @@ pub struct RouteProfile {
     pub bind_host: String,
     pub local_port: u16,
 }
+
+/// Explicit, model-bound authorization for response-side output shaping.
+///
+/// This is intentionally separate from input compression. A route must name
+/// the exact provider and model it permits, and an absent policy is disabled.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OutputShapingRoutePolicy {
+    pub route_id: String,
+    pub provider_id: String,
+    pub model: String,
+    pub enabled: bool,
+    #[serde(default)]
+    pub output_verbosity: OutputVerbosity,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub holdout_ratio: Option<f32>,
+}
+
+impl PartialEq for OutputShapingRoutePolicy {
+    fn eq(&self, other: &Self) -> bool {
+        self.route_id == other.route_id
+            && self.provider_id == other.provider_id
+            && self.model == other.model
+            && self.enabled == other.enabled
+            && self.output_verbosity == other.output_verbosity
+            && self.holdout_ratio.map(f32::to_bits) == other.holdout_ratio.map(f32::to_bits)
+    }
+}
+
+impl Eq for OutputShapingRoutePolicy {}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InstanceProfile {
@@ -2069,6 +2196,36 @@ mod capability_contract_tests {
         assert_eq!(
             evidence.expect_err("disabled implementation without evidence must fail"),
             CapabilityEvidenceError::MissingEvidenceRevision
+        );
+    }
+
+    #[test]
+    fn capability_reason_codes_are_unique_bounded_ascii_metadata() {
+        let too_long = "a".repeat(65);
+        assert_eq!(
+            CapabilityEvidence::unavailable("memory", "memory-v1", too_long.clone())
+                .expect_err("oversized reason codes must fail"),
+            CapabilityEvidenceError::InvalidReasonCode(too_long)
+        );
+
+        let duplicate = CapabilityEvidence::new(
+            "memory",
+            AvailabilityState::Unavailable,
+            "memory-v1",
+            None,
+            None,
+            EvidenceFreshness::Unknown,
+            vec!["scope_required".to_string(), "scope_required".to_string()],
+            None,
+        );
+        assert_eq!(
+            duplicate.expect_err("duplicate reason codes must fail"),
+            CapabilityEvidenceError::DuplicateReasonCode("scope_required".to_string())
+        );
+
+        assert!(
+            CapabilityEvidence::unavailable("memory", "memory-v1", "scope_required.v2-safe")
+                .is_ok()
         );
     }
 
