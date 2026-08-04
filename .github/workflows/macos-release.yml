@@ -239,17 +239,23 @@ jobs:
 
       - name: Write SHA-256 manifest
         run: |
+          set -euo pipefail
           TARGET=code/target/aarch64-apple-darwin/release
           APP_BINARY="$(find "$TARGET/bundle/macos" -path '*/Contents/MacOS/d-token-desktop' -print -quit)"
           SIDECAR_BINARY="$(find "$TARGET/bundle/macos" -path '*/Contents/MacOS/dtoken-proxy' -print -quit)"
           BRIDGE_BINARY="$(find "$TARGET/bundle/macos" -path '*/Contents/MacOS/dtoken-agent-bridge' -print -quit)"
           CODEBASE_MEMORY_LAUNCHER="$(find "$TARGET/bundle/macos" -path '*/Contents/MacOS/dtoken-codebase-memory-launcher' -print -quit)"
           DMG_PATH="$(find "$TARGET/bundle/dmg" -name '*_aarch64.dmg' -print -quit)"
+          METADATA_ARTIFACTS=()
+          while IFS= read -r -d '' artifact; do
+            METADATA_ARTIFACTS+=("$artifact")
+          done < <(find code/target/release/metadata -type f -print0)
           test -n "$APP_BINARY"
           test -n "$SIDECAR_BINARY"
           test -n "$BRIDGE_BINARY"
           test -n "$CODEBASE_MEMORY_LAUNCHER"
           test -n "$DMG_PATH"
+          test "${#METADATA_ARTIFACTS[@]}" -gt 0
           shasum -a 256 \
             "$APP_BINARY" \
             "$SIDECAR_BINARY" \
@@ -259,7 +265,7 @@ jobs:
             code/target/release/d-token-release-candidate.json \
             "$TARGET/macos-arm64-unsigned-technical-preview-package-audit.md" \
             "$TARGET/UNSIGNED-TECHNICAL-PREVIEW.txt" \
-            code/target/release/metadata/* \
+            "${METADATA_ARTIFACTS[@]}" \
             > "$TARGET/SHA256SUMS-macos-arm64-unsigned-technical-preview.txt"
 
       - name: Upload verified macOS candidate artifacts

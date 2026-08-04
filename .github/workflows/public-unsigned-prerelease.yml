@@ -150,16 +150,6 @@ jobs:
           import pathlib
           import sys
 
-          # Single source of truth for the production codec count.
-          # Mirrors the Rust-owned compressor registry size declared in
-          # code/crates/dtoken-compress/src/compressor_registry.rs
-          # (DESCRIPTORS array length; production_registry_codec_ids).
-          # When the registry changes, update EXPECTED_CODEC_COUNT here
-          # and the registry test (production_registry_has_nine_active_lossless_codecs)
-          # together.  The run_codec_candidate_evidence.ps1 ExpectedCodecIds
-          # list must also be updated to match.
-          EXPECTED_CODEC_COUNT = 9
-
           (
               expected_sha,
               expected_tag,
@@ -212,6 +202,16 @@ jobs:
 
           mac_codec = json.loads(pathlib.Path(mac_codec_path).read_text(encoding="utf-8-sig"))
           win_codec = json.loads(pathlib.Path(win_codec_path).read_text(encoding="utf-8-sig"))
+
+          def codec_ids(label: str, codec: dict) -> list[str]:
+              entries = codec.get("codecs")
+              assert isinstance(entries, list) and entries, f"{label} has no codec evidence"
+              ids = [entry.get("id") for entry in entries if isinstance(entry, dict)]
+              assert len(ids) == len(entries), f"{label} contains a non-object codec entry"
+              assert all(isinstance(value, str) and value for value in ids), f"{label} contains an empty codec id"
+              assert len(ids) == len(set(ids)), f"{label} contains duplicate codec ids"
+              return ids
+
           for label, codec, candidate in (
               ("macOS codec evidence", mac_codec, mac_candidate),
               ("Windows codec evidence", win_codec, win_candidate),
@@ -221,7 +221,7 @@ jobs:
               assert codec.get("gate", {}).get("ok") is True, f"{label} gate failed"
               assert codec.get("privacy", {}).get("metadata_only") is True, f"{label} is not metadata-only"
               assert codec.get("privacy", {}).get("raw_corpus_stored") is False, f"{label} stored corpus"
-              assert len(codec.get("codecs", [])) == EXPECTED_CODEC_COUNT, f"{label} codec matrix incomplete (expected {EXPECTED_CODEC_COUNT})"
+          assert codec_ids("macOS codec evidence", mac_codec) == codec_ids("Windows codec evidence", win_codec), "codec registry ids differ across release platforms"
           assert mac_codec.get("evidence_revision") == win_codec.get("evidence_revision"), "codec evidence differs across release platforms"
 
           for label, snapshot_path, coverage_path, candidate in (

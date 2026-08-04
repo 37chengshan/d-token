@@ -848,6 +848,80 @@ fn responses_bridge_converts_function_tools_and_fails_closed_on_hosted() {
 }
 
 #[test]
+fn responses_bridge_validates_tool_choice_and_required_function_fields() {
+    for valid_choice in [
+        json!("auto"),
+        json!("none"),
+        json!("required"),
+        json!({"type": "function", "name": "lookup"}),
+    ] {
+        let converted = responses_to_openai_chat_body(&json!({
+            "input": "test",
+            "tool_choice": valid_choice
+        }))
+        .expect("valid tool choice");
+        assert!(converted.get("tool_choice").is_some());
+    }
+
+    for (body, needle) in [
+        (
+            json!({"input": "test", "tool_choice": "mystery"}),
+            "tool_choice",
+        ),
+        (
+            json!({"input": "test", "tool_choice": {"type": "function"}}),
+            "name",
+        ),
+        (
+            json!({"input": [{"type": "function_call", "name": "lookup", "arguments": "{}"}]}),
+            "call_id",
+        ),
+        (
+            json!({"input": [{"type": "function_call", "call_id": "call_1", "arguments": "{}"}]}),
+            "name",
+        ),
+        (
+            json!({"input": [{"type": "function_call_output", "output": "ok"}]}),
+            "call_id",
+        ),
+        (
+            json!({"input": [{"type": "function_call", "call_id": "call_1", "name": "lookup"}]}),
+            "arguments",
+        ),
+        (
+            json!({"input": [{"type": "function_call", "call_id": "call_1", "name": "lookup", "arguments": "not-json"}]}),
+            "valid JSON",
+        ),
+        (
+            json!({"input": [{"type": "function_call_output", "call_id": "call_1"}]}),
+            "output",
+        ),
+        (
+            json!({"input": [{"type": "message", "role": "tool", "content": "no"}]}),
+            "role",
+        ),
+        (
+            json!({"input": "test", "tools": [{"type": "function", "name": "lookup", "parameters": []}]}),
+            "parameters",
+        ),
+        (
+            json!({"input": "test", "tools": [{"type": "function", "name": "lookup", "description": [], "parameters": {}}]}),
+            "description",
+        ),
+        (
+            json!({"input": "test", "tools": [{"type": "function", "name": "lookup", "parameters": {}, "strict": "yes"}]}),
+            "strict",
+        ),
+    ] {
+        let error = responses_to_openai_chat_body(&body).expect_err("invalid bridge input");
+        assert!(
+            error.contains(needle),
+            "expected `{needle}` in error message, got: {error}"
+        );
+    }
+}
+
+#[test]
 fn responses_bridge_fails_closed_on_reasoning_item_reference_and_unknown_items() {
     for (input, needle) in [
         (json!([{"type": "reasoning"}]), "reasoning"),
@@ -857,7 +931,7 @@ fn responses_bridge_fails_closed_on_reasoning_item_reference_and_unknown_items()
         ),
         (json!([{"type": "mystery_item"}]), "mystery_item"),
         (
-            json!([{"type": "message", "content": [{"type": "input_image"}]}]),
+            json!([{"type": "message", "role": "user", "content": [{"type": "input_image"}]}]),
             "input_image",
         ),
     ] {

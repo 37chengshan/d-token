@@ -675,6 +675,24 @@
       "summary": "chore: update headroom README and sync git operations audit ledger",
       "head_before": "a53667251c30f64325fa8ff764e0b126a6a05baa",
       "remote": null
+    },
+    {
+      "id": "9bdd8cda-7c60-4ecb-a881-36dd4e1575ed",
+      "timestamp": "2026-08-04T17:46:02+08:00",
+      "operation": "push",
+      "branch": "codex/code-graph-mcp-integration",
+      "summary": "Push 15-commit working-tree cleanup batch to origin",
+      "head_before": "ff8fbc6c46062452ac39baed1b1730290909f155",
+      "remote": "origin"
+    },
+    {
+      "id": "f9e3b939-615b-4983-ace2-9ca11974f3ed",
+      "timestamp": "2026-08-04T18:24:20+08:00",
+      "operation": "commit",
+      "branch": "codex/code-graph-mcp-integration",
+      "summary": "fix: finalize Responses stream truth and release gates",
+      "head_before": "ff8fbc6c46062452ac39baed1b1730290909f155",
+      "remote": null
     }
   ]
 }

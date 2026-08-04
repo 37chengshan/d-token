@@ -7933,8 +7933,11 @@ pub fn responses_to_openai_chat_body(body: &Value) -> Result<Value, String> {
     if let Some(tools) = body.get("tools") {
         converted.insert("tools".to_string(), json!(responses_tools_to_chat(tools)?));
     }
-    if let Some(choice) = responses_tool_choice_to_chat(body.get("tool_choice")) {
-        converted.insert("tool_choice".to_string(), choice);
+    if body.get("tool_choice").is_some() {
+        converted.insert(
+            "tool_choice".to_string(),
+            responses_tool_choice_to_chat(body.get("tool_choice"))?,
+        );
     }
     Ok(Value::Object(converted))
 }
@@ -7975,9 +7978,16 @@ fn responses_input_item_to_chat_messages(
             let role = item
                 .get("role")
                 .and_then(Value::as_str)
-                .unwrap_or("user")
-                .to_string();
-            let content = item.get("content").cloned().unwrap_or(Value::Null);
+                .ok_or_else(|| "Responses `message` item is missing string `role`".to_string())?;
+            if !matches!(role, "user" | "assistant" | "system" | "developer") {
+                return Err(format!(
+                    "unsupported Responses `message` role `{role}` for the Chat bridge"
+                ));
+            }
+            let content = item
+                .get("content")
+                .cloned()
+                .ok_or_else(|| "Responses `message` item is missing `content`".to_string())?;
             let text = responses_content_to_text(&content)?;
             messages.push(json!({"role": role, "content": text}));
             Ok(())
@@ -7987,16 +7997,35 @@ fn responses_input_item_to_chat_messages(
                 .get("call_id")
                 .and_then(Value::as_str)
                 .or_else(|| item.get("id").and_then(Value::as_str))
-                .unwrap_or_default()
+                .filter(|value| !value.trim().is_empty())
+                .ok_or_else(|| {
+                    "Responses `function_call` is missing non-empty string `call_id`".to_string()
+                })?
                 .to_string();
             let name = item
                 .get("name")
                 .and_then(Value::as_str)
-                .unwrap_or_default()
+                .filter(|value| !value.trim().is_empty())
+                .ok_or_else(|| {
+                    "Responses `function_call` is missing non-empty string `name`".to_string()
+                })?
                 .to_string();
             let arguments = match item.get("arguments") {
-                None => "{}".to_string(),
-                Some(Value::String(arguments)) => arguments.clone(),
+                None => {
+                    return Err(
+                        "Responses `function_call` is missing string `arguments`".to_string()
+                    )
+                }
+                Some(Value::String(arguments))
+                    if serde_json::from_str::<Value>(arguments).is_ok() =>
+                {
+                    arguments.clone()
+                }
+                Some(Value::String(_)) => {
+                    return Err(
+                        "Responses `function_call` `arguments` must contain valid JSON".to_string(),
+                    )
+                }
                 Some(_) => {
                     return Err(
                         "Responses `function_call` `arguments` must be a JSON-encoded string"
@@ -8019,10 +8048,18 @@ fn responses_input_item_to_chat_messages(
             let call_id = item
                 .get("call_id")
                 .and_then(Value::as_str)
-                .unwrap_or_default()
+                .filter(|value| !value.trim().is_empty())
+                .ok_or_else(|| {
+                    "Responses `function_call_output` is missing non-empty string `call_id`"
+                        .to_string()
+                })?
                 .to_string();
             let output = match item.get("output") {
-                None => String::new(),
+                None => {
+                    return Err(
+                        "Responses `function_call_output` is missing string `output`".to_string(),
+                    )
+                }
                 Some(Value::String(output)) => output.clone(),
                 Some(_) => {
                     return Err(
@@ -8093,20 +8130,38 @@ fn responses_tools_to_chat(tools: &Value) -> Result<Vec<Value>, String> {
                 let name = tool
                     .get("name")
                     .and_then(Value::as_str)
-                    .ok_or_else(|| "Responses function tool is missing string `name`".to_string())?;
-                let description = tool
-                    .get("description")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default();
+                    .filter(|value| !value.trim().is_empty())
+                    .ok_or_else(|| {
+                        "Responses function tool is missing non-empty string `name`".to_string()
+                    })?;
+                let description = match tool.get("description") {
+                    None => "",
+                    Some(Value::String(description)) => description,
+                    Some(_) => {
+                        return Err(
+                            "Responses function tool `description` must be a string".to_string()
+                        )
+                    }
+                };
                 let parameters = tool
                     .get("parameters")
                     .cloned()
                     .unwrap_or_else(|| json!({"type": "object"}));
+                if !parameters.is_object() {
+                    return Err(
+                        "Responses function tool `parameters` must be a JSON object".to_string()
+                    );
+                }
                 let mut function = serde_json::Map::new();
                 function.insert("name".to_string(), json!(name));
                 function.insert("description".to_string(), json!(description));
                 function.insert("parameters".to_string(), parameters);
                 if let Some(strict) = tool.get("strict") {
+                    if !strict.is_boolean() {
+                        return Err(
+                            "Responses function tool `strict` must be a boolean".to_string()
+                        );
+                    }
                     function.insert("strict".to_string(), strict.clone());
                 }
                 converted.push(json!({"type": "function", "function": Value::Object(function)}));
@@ -8127,19 +8182,41 @@ fn responses_tools_to_chat(tools: &Value) -> Result<Vec<Value>, String> {
     Ok(converted)
 }
 
-fn responses_tool_choice_to_chat(choice: Option<&Value>) -> Option<Value> {
-    let choice = choice?;
-    match choice.get("type").and_then(Value::as_str) {
-        Some("auto") => Some(json!("auto")),
-        Some("none") => Some(json!("none")),
-        Some("required") => Some(json!("required")),
-        Some("function") => Some(json!({
-            "type": "function",
-            "function": {
-                "name": choice.get("name").and_then(Value::as_str).unwrap_or_default()
-            }
-        })),
-        _ => None,
+fn responses_tool_choice_to_chat(choice: Option<&Value>) -> Result<Value, String> {
+    let choice =
+        choice.ok_or_else(|| "Responses `tool_choice` value is unavailable".to_string())?;
+    if let Some(value) = choice.as_str() {
+        return match value {
+            "auto" | "none" | "required" => Ok(json!(value)),
+            other => Err(format!(
+                "unsupported Responses `tool_choice` string `{other}`"
+            )),
+        };
+    }
+    let choice_type = choice.get("type").and_then(Value::as_str).ok_or_else(|| {
+        "Responses `tool_choice` must be a supported string or object".to_string()
+    })?;
+    match choice_type {
+        "auto" => Ok(json!("auto")),
+        "none" => Ok(json!("none")),
+        "required" => Ok(json!("required")),
+        "function" => {
+            let name = choice
+                .get("name")
+                .and_then(Value::as_str)
+                .filter(|value| !value.trim().is_empty())
+                .ok_or_else(|| {
+                    "Responses function `tool_choice` is missing non-empty string `name`"
+                        .to_string()
+                })?;
+            Ok(json!({
+                "type": "function",
+                "function": {"name": name}
+            }))
+        }
+        other => Err(format!(
+            "unsupported Responses `tool_choice` type `{other}`"
+        )),
     }
 }
 
@@ -8226,10 +8303,15 @@ fn unix_timestamp_seconds() -> u64 {
 /// the stream closes with `response.completed` / `response.incomplete`. A
 /// clean EOF without a terminal `finish_reason` fails closed with
 /// `response.failed` instead of synthesizing success.
-fn responses_sse_from_chat_sse(body: Body, response_id: String, model: Option<String>) -> Body {
+fn responses_sse_from_chat_sse(
+    body: Body,
+    response_id: String,
+    model: Option<String>,
+    guard: ResponsesStreamTerminalLedgerGuard,
+) -> Body {
     let inner: Pin<Box<dyn Stream<Item = Result<Bytes, std::io::Error>> + Send>> =
         Box::pin(body.into_data_stream().map_err(std::io::Error::other));
-    Body::from_stream(ResponsesSseStream::new(inner, response_id, model))
+    Body::from_stream(ResponsesSseStream::new(inner, response_id, model, guard))
 }
 
 struct ResponsesSseState {
@@ -8245,6 +8327,7 @@ struct ResponsesSseState {
     content_index: u64,
     created_emitted: bool,
     terminal_emitted: bool,
+    terminal_error_code: Option<String>,
 }
 
 impl ResponsesSseState {
@@ -8261,6 +8344,7 @@ impl ResponsesSseState {
             content_index: 0,
             created_emitted: false,
             terminal_emitted: false,
+            terminal_error_code: None,
         }
     }
 
@@ -8463,6 +8547,7 @@ impl ResponsesSseState {
             return;
         }
         self.terminal_emitted = true;
+        self.terminal_error_code = Some(code.to_string());
         if !self.created_emitted {
             self.created_emitted = true;
             pending.push_back(Self::sse_event(
@@ -8481,11 +8566,148 @@ impl ResponsesSseState {
     }
 }
 
+struct ResponsesStreamTerminalLedgerGuard {
+    state: AppState,
+    scope: RequestScope,
+    request_id: Uuid,
+    provider_id: String,
+    upstream_status: u16,
+    terminal_record: Option<StreamTerminalRequestRecord>,
+    terminal: bool,
+}
+
+impl ResponsesStreamTerminalLedgerGuard {
+    fn finish_from_state(mut self, stream_state: &ResponsesSseState) {
+        self.terminal = true;
+        let error_code = stream_state.terminal_error_code.as_deref();
+        let status = if error_code.is_some() {
+            EventStatus::Failed
+        } else {
+            EventStatus::Ok
+        };
+        let send_state = if error_code.is_some() {
+            UpstreamSendState::FailedAfterCommit
+        } else {
+            UpstreamSendState::Completed
+        };
+        self.commit_terminal_record(stream_state, &status, send_state, error_code);
+        append_stage_event(
+            &self.state,
+            self.request_id,
+            LayeredStage::ProviderForward,
+            status,
+            json!({
+                "provider_id": self.provider_id,
+                "protocol": "openai_responses",
+                "output_protocol": "openai_responses_sse",
+                "stream": true,
+                "upstream_status": self.upstream_status,
+                "terminal": true,
+                "stream_end": if error_code.is_some() { "failed" } else { "completed" },
+                "fallback": "disabled",
+                "raw_available": false
+            }),
+            error_code,
+        );
+    }
+
+    fn commit_terminal_record(
+        &mut self,
+        stream_state: &ResponsesSseState,
+        status: &EventStatus,
+        send_state: UpstreamSendState,
+        error_code: Option<&str>,
+    ) {
+        let Some(mut record) = self.terminal_record.take() else {
+            return;
+        };
+        let quota_metadata = record.request_log.quota_metadata.clone();
+        let usage = stream_state.usage.clone().unwrap_or(Value::Null);
+        let response = if status == &EventStatus::Ok {
+            json!({
+                "usage": {
+                    "prompt_tokens": usage["input_tokens"].as_u64().unwrap_or_default(),
+                    "completion_tokens": usage["output_tokens"].as_u64().unwrap_or_default(),
+                    "total_tokens": usage["total_tokens"].as_u64().unwrap_or_default()
+                }
+            })
+        } else {
+            json!({"error": {"type": error_code.unwrap_or("provider_stream_failed")}})
+        };
+        let upstream = UpstreamResult {
+            response,
+            status: Some(self.upstream_status),
+            error_category: error_code.map(ToString::to_string),
+            send_state,
+            quota_metadata,
+        };
+        mark_upstream_outcome(&upstream, &mut record.request_log, &mut record.event);
+        if status == &EventStatus::Ok {
+            persist_provider_cache_observation(
+                &self.state,
+                &self.scope,
+                &upstream,
+                dtoken_types::ProviderCacheObservationKind::OpenAiChatUsage,
+            );
+        }
+        record.event.status = status.clone();
+        if let Some(metadata) = record.event.metadata.as_object_mut() {
+            metadata.insert("stream".to_string(), json!(true));
+            metadata.insert("stream_terminal".to_string(), json!(true));
+            metadata.insert("send_state".to_string(), json!(send_state));
+            if let Some(error_code) = error_code {
+                metadata.insert("stream_error_code".to_string(), json!(error_code));
+            }
+        }
+        self.state.record_routed_request_with_ccr_receipt(
+            &record.decision,
+            record.request_log,
+            record.event,
+            &record.prepared_ccr,
+        );
+    }
+}
+
+impl Drop for ResponsesStreamTerminalLedgerGuard {
+    fn drop(&mut self) {
+        if self.terminal {
+            return;
+        }
+        self.terminal = true;
+        let stream_state = ResponsesSseState::new(format!("resp-{}", self.request_id), None);
+        self.commit_terminal_record(
+            &stream_state,
+            &EventStatus::Failed,
+            UpstreamSendState::FailedAfterCommit,
+            Some("provider_stream_dropped"),
+        );
+        append_stage_event(
+            &self.state,
+            self.request_id,
+            LayeredStage::ProviderForward,
+            EventStatus::Failed,
+            json!({
+                "provider_id": self.provider_id,
+                "protocol": "openai_responses",
+                "output_protocol": "openai_responses_sse",
+                "stream": true,
+                "upstream_status": self.upstream_status,
+                "terminal": true,
+                "stream_end": "body_dropped",
+                "fallback": "disabled",
+                "raw_available": false
+            }),
+            Some("provider_stream_dropped"),
+        );
+    }
+}
+
 struct ResponsesSseStream {
     inner: Pin<Box<dyn Stream<Item = Result<Bytes, std::io::Error>> + Send>>,
     state: ResponsesSseState,
     pending: VecDeque<String>,
     finished: bool,
+    guard: Option<ResponsesStreamTerminalLedgerGuard>,
 }
 
 impl ResponsesSseStream {
@@ -8493,12 +8715,14 @@ impl ResponsesSseStream {
         inner: Pin<Box<dyn Stream<Item = Result<Bytes, std::io::Error>> + Send>>,
         response_id: String,
         model: Option<String>,
+        guard: ResponsesStreamTerminalLedgerGuard,
     ) -> Self {
         Self {
             inner,
             state: ResponsesSseState::new(response_id, model),
             pending: VecDeque::new(),
             finished: false,
+            guard: Some(guard),
         }
     }
 }
@@ -8512,12 +8736,16 @@ impl Stream for ResponsesSseStream {
             state,
             pending,
             finished,
+            guard,
         } = &mut *self;
         loop {
             if let Some(event) = pending.pop_front() {
                 return Poll::Ready(Some(Ok(Bytes::from(event))));
             }
             if *finished {
+                if let Some(guard) = guard.take() {
+                    guard.finish_from_state(state);
+                }
                 return Poll::Ready(None);
             }
             match inner.as_mut().poll_next(cx) {
@@ -11085,16 +11313,10 @@ async fn openai_responses(
                             ),
                         );
                     }
-                    state.record_routed_request_with_ccr_receipt(
-                        &decision,
-                        request_log,
-                        event,
-                        &prepared_ccr,
-                    );
                     append_stage_event(
                         &state,
                         request_id,
-                        LayeredStage::ProviderForward,
+                        LayeredStage::UpstreamSendCommitted,
                         EventStatus::Ok,
                         json!({
                             "route_id": decision.route_id,
@@ -11103,6 +11325,8 @@ async fn openai_responses(
                             "output_protocol": "openai_responses_sse",
                             "stream": true,
                             "upstream_status": status_code,
+                            "terminal": false,
+                            "send_state": "stream_started",
                             "fallback": "disabled",
                             "raw_available": false,
                             "privacy": "Responses SSE bridge emits converted events only; raw Chat SSE is not stored."
@@ -11117,6 +11341,20 @@ async fn openai_responses(
                         body,
                         format!("resp-{request_id}"),
                         request.model.clone(),
+                        ResponsesStreamTerminalLedgerGuard {
+                            state: state.clone(),
+                            scope: scope.clone(),
+                            request_id,
+                            provider_id: decision.provider_id.clone(),
+                            upstream_status: status_code,
+                            terminal_record: Some(StreamTerminalRequestRecord {
+                                decision,
+                                request_log,
+                                event,
+                                prepared_ccr,
+                            }),
+                            terminal: false,
+                        },
                     );
                     return (
                         StatusCode::from_u16(status_code).unwrap_or(StatusCode::OK),
@@ -18115,6 +18353,135 @@ mod tests {
         assert_eq!(
             terminal.error_code.as_deref(),
             Some("provider_stream_incomplete")
+        );
+    }
+
+    #[tokio::test]
+    async fn responses_stream_defers_terminal_record_and_matches_failed_event() {
+        use axum::body::to_bytes;
+        use futures_util::stream;
+
+        for (chunks, expected_status, expected_event) in [
+            (
+                vec![Ok(Bytes::from_static(
+                    b"data: {\"choices\":[{\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":2,\"completion_tokens\":1,\"total_tokens\":3}}\n\ndata: [DONE]\n\n",
+                ))],
+                EventStatus::Ok,
+                "response.completed",
+            ),
+            (
+                vec![Ok(Bytes::from_static(
+                    b"data: {\"choices\":[{\"delta\":{\"content\":\"partial\"},\"finish_reason\":null}]}\n\ndata: [DONE]\n\n",
+                ))],
+                EventStatus::Failed,
+                "response.failed",
+            ),
+        ] {
+            let state = AppState::new(DtokenConfig::default());
+            let request = OpenAiChatRequest {
+                model: Some("fixture-model".to_string()),
+                messages: Some(vec![json!({"role":"user","content":"stream input"})]),
+                stream: Some(true),
+            };
+            let (_response, decision, request_log, event) = routed_openai_payload(&request);
+            let prepared = state
+                .prepare_ccr_for_request(&decision, &request_log, b"{}")
+                .expect("prepare metadata-only CCR");
+            let request_id = decision.request_id;
+            let inner: Pin<
+                Box<dyn Stream<Item = Result<Bytes, std::io::Error>> + Send>,
+            > = Box::pin(stream::iter(chunks));
+            let body = Body::from_stream(ResponsesSseStream::new(
+                inner,
+                format!("resp-{request_id}"),
+                request.model.clone(),
+                ResponsesStreamTerminalLedgerGuard {
+                    state: state.clone(),
+                    scope: cache_test_scope(Protocol::OpenAi),
+                    request_id,
+                    provider_id: decision.provider_id.clone(),
+                    upstream_status: 200,
+                    terminal_record: Some(StreamTerminalRequestRecord {
+                        decision,
+                        request_log,
+                        event,
+                        prepared_ccr: prepared,
+                    }),
+                    terminal: false,
+                },
+            ));
+
+            assert!(state.recent_request_logs(10).is_empty());
+            let bytes = to_bytes(body, usize::MAX)
+                .await
+                .expect("consume converted Responses stream");
+            let converted = String::from_utf8(bytes.to_vec()).expect("UTF-8 SSE");
+            assert!(converted.contains(expected_event), "{converted}");
+            assert_eq!(state.recent_request_logs(10).len(), 1);
+            let terminal = state
+                .recent_events(20)
+                .into_iter()
+                .find(|entry| {
+                    entry.request_id == Some(request_id)
+                        && entry.metadata["stream_terminal"] == true
+                })
+                .expect("Responses terminal request event");
+            assert_eq!(terminal.status, expected_status);
+            assert_eq!(terminal.metadata["stream_terminal"], true);
+        }
+    }
+
+    #[tokio::test]
+    async fn dropped_responses_stream_records_failure_instead_of_success() {
+        use futures_util::stream;
+
+        let state = AppState::new(DtokenConfig::default());
+        let request = OpenAiChatRequest {
+            model: Some("fixture-model".to_string()),
+            messages: Some(vec![json!({"role":"user","content":"stream input"})]),
+            stream: Some(true),
+        };
+        let (_response, decision, request_log, event) = routed_openai_payload(&request);
+        let prepared = state
+            .prepare_ccr_for_request(&decision, &request_log, b"{}")
+            .expect("prepare metadata-only CCR");
+        let request_id = decision.request_id;
+        let inner: Pin<Box<dyn Stream<Item = Result<Bytes, std::io::Error>> + Send>> =
+            Box::pin(stream::pending());
+        let body = Body::from_stream(ResponsesSseStream::new(
+            inner,
+            format!("resp-{request_id}"),
+            request.model.clone(),
+            ResponsesStreamTerminalLedgerGuard {
+                state: state.clone(),
+                scope: cache_test_scope(Protocol::OpenAi),
+                request_id,
+                provider_id: decision.provider_id.clone(),
+                upstream_status: 200,
+                terminal_record: Some(StreamTerminalRequestRecord {
+                    decision,
+                    request_log,
+                    event,
+                    prepared_ccr: prepared,
+                }),
+                terminal: false,
+            },
+        ));
+
+        assert!(state.recent_request_logs(10).is_empty());
+        drop(body);
+        assert_eq!(state.recent_request_logs(10).len(), 1);
+        let terminal = state
+            .recent_events(20)
+            .into_iter()
+            .find(|entry| {
+                entry.request_id == Some(request_id) && entry.metadata["stream_terminal"] == true
+            })
+            .expect("dropped Responses stream terminal event");
+        assert_eq!(terminal.status, EventStatus::Failed);
+        assert_eq!(
+            terminal.error_code.as_deref(),
+            Some("provider_stream_dropped")
         );
     }
 

@@ -12,7 +12,7 @@
 | 代码 | 18 个 Rust 业务 crate + 1 个 Tauri app crate + React 18/TypeScript/Vite 桌面 UI + 薄 TypeScript SDK |
 | 已交付里程碑 | M1（no-touch 基础）、M2（Headroom 只读集成）、M3（GUI MVP） |
 | 交付证据 | `docs/history/M1_NO_TOUCH_DEV_FOUNDATION_REPORT.md`、`docs/history/M2_EXTERNAL_READ_ONLY_INTEGRATION_REPORT.md`、`docs/history/M3_GUI_CONTROL_PLANE_MVP_REPORT.md`、`docs/history/M1_M3_DELIVERY_AUDIT.md` |
-| 当前 Node | `v0.2.0-beta.1` 发布收口：G2 codec、G3 CCR/ACL 实现、G4 surface parity、Agent/cc-switch/RTK 本机候选证据已显著推进；仍须完成最新全仓复证、真实 OpenCode 当前候选、Windows MSVC runner、同 commit 双平台产物与 G6–G8 后才能发布 |
+| 当前 Node | `v0.2.0-beta.1` 发布收口：G2 codec、G3 CCR/ACL 实现、G4 surface parity（含 Responses fail-closed/stream terminal）、Agent/cc-switch/RTK 本机候选证据已显著推进；仍须完成最新全仓复证、真实 OpenCode 当前候选、Windows MSVC runner、同 commit 双平台产物与 G6–G8 后才能发布 |
 | 历史路线图 | `docs/archive/ROADMAP_M0_M6_HISTORICAL.md`（M0–M6 原文快照） |
 
 当前 M4 历史设计输入：
@@ -58,7 +58,7 @@ support/fixtures/ support/fake-bin/   no-touch 测试资产
 4. Claude Code、Codex、Cline 的真实本机临时配置事务已完成并精确恢复；按授权未发送模型请求。Gemini CLI/Roo Code/Continue/Aider 已具备版本化 Configure/Clear adapter（fixture 级验证，真实本机候选 probe 待执行）。OpenCode 仍须在最终候选上重跑真实 routed compression；Cursor 因官方路由架构保持 detection-only（所有 BYO-key 请求经 Cursor 服务器），其余未验证 schema 的 Agent 保持 detection-only，不得伪造自动接入。
 5. 真实认证 Provider 的 macOS Keychain/Windows Credential Manager 出站读取仍缺不暴露凭据的候选版实证。
 6. Headroom §8 能力尚未完整迁移：当前多个同名端点仍是 metadata-only、preview-only、静态兼容声明或透传；在逐能力 runtime/eval/Agent 证据闭环前不得进入公开试用候选。
-7. 截至 2026-07-31 当前 working tree，G0/G1 仍以最新全仓复证为准。G2 的本地 release probe 已将 JSON、log、search、build、diff、text、HTML 与覆盖 Rust/TS/JS/Python/Go/Java/C/C++ 的 code-compressor 全部标记 active；每类至少 128 个 property/semantic/rollback cases，negative/budget/cancellation 门通过，零失败，evidence revision 为 `d0cb2e0346339d8985ea949b1c6dbdb25fc7b347d3440e04e5584cfce9233b69`。G3 已实现 CCR lifecycle journal/reconciliation、Unix 权限与 Windows current-user+SYSTEM protected DACL；Windows GNU cross-check 通过，但 MSVC runner 仍须实际运行 ACL tests。G4 的 Rust/HTTP/MCP/TS SDK parity 已有定向回归。以上证据尚未绑定最终 clean candidate；G6–G8、真实 OpenCode 与双平台产物未全绿前不得发布。
+7. 截至 2026-08-04 当前 working tree，G0/G1 仍以最新全仓复证为准。G2 的本地 release probe 已将 JSON、log、search、build、diff、text、HTML 与覆盖 Rust/TS/JS/Python/Go/Java/C/C++ 的 code-compressor 全部标记 active；每类至少 128 个 property/semantic/rollback cases，negative/budget/cancellation 门通过，零失败，evidence revision 为 `d0cb2e0346339d8985ea949b1c6dbdb25fc7b347d3440e04e5584cfce9233b69`。G3 已实现 CCR lifecycle journal/reconciliation、Unix 权限与 Windows current-user+SYSTEM protected DACL；Windows GNU cross-check 通过，但 MSVC runner 仍须实际运行 ACL tests。G4 的 Rust/HTTP/MCP/TS SDK parity 与 Responses 输入/流式终态 fail-closed 回归已通过。以上证据尚未绑定最终 clean candidate；G6–G8、真实 OpenCode 与双平台产物未全绿前不得发布。
 
 ## 1. 计划原则
 
@@ -858,7 +858,7 @@ dtoken-preprocessor         integrated RTK internal capability
 9. **G8 Candidate**：full fmt/Clippy/test/audit/build，macOS/Windows 产物同 commit，哈希、SBOM、NOTICE、已知限制绑定 manifest；矩阵零占位/缺失/不安全默认。
 10. **G9 Frontend completeness gate**：仅 G0–G8 全绿后进入“完整 Headroom 迁移已在前端闭环”的候选验收；不得把它解释为冻结现有 UI 的安全修复。
 
-当前 gate 进度（2026-08-03 working tree）：G0/G1 需在最新全仓门禁中复证；G2 九类 production codec release probe 已全绿（`config-codec` 已纳入，evidence id 由 registry 投影），混合/config 内容与 tool-schema PR-E1/E2 已接入 resolved 生产路径，但仍须绑定最终 candidate 与真实 Provider/Agent 质量证据；G3 lifecycle/权限实现已补齐到 Windows DACL 代码与 cross-check，仍缺 Windows MSVC 实测和剩余 crash/tool-call 证据；G4 Rust/HTTP/MCP/TS parity 定向通过；G5 macOS managed RTK、真实 Claude/Codex/Cline 临时事务与 cc-switch 静态切换有证据，其他 Agent 未验证项保持 unavailable；G6–G8、当前候选 OpenCode 和双平台产物仍未完成，因此不能发布。
+当前 gate 进度（2026-08-04 working tree）：G0/G1 需在最新全仓门禁中复证；G2 九类 production codec release probe 已全绿（`config-codec` 已纳入，evidence id 由 registry 投影），混合/config 内容与 tool-schema PR-E1/E2 已接入 resolved 生产路径，但仍须绑定最终 candidate 与真实 Provider/Agent 质量证据；G3 lifecycle/权限实现已补齐到 Windows DACL 代码与 cross-check，仍缺 Windows MSVC 实测和剩余 crash/tool-call 证据；G4 Rust/HTTP/MCP/TS parity 与 Responses fail-closed/stream-terminal regression 定向通过；G5 macOS managed RTK、真实 Claude/Codex/Cline 临时事务与 cc-switch 静态切换有证据，其他 Agent 未验证项保持 unavailable；G6–G8、当前候选 OpenCode 和双平台产物仍未完成，因此不能发布。
 
 ## 1D. 实验性代码智能图谱接入（实施中，仍未达到发布候选）
 

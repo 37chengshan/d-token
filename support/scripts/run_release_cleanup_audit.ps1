@@ -1,10 +1,10 @@
+#Requires -Version 7.0
+
 param(
   [string]$OutputDir = ""
 )
 
 $ErrorActionPreference = "Stop"
-
-#Requires -Version 7.0
 
 if ($PSVersionTable.PSVersion -lt [version]"7.0") {
   throw "run_release_cleanup_audit.ps1 requires PowerShell 7 or newer (found $($PSVersionTable.PSVersion))."
