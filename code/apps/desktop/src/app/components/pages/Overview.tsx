@@ -6,7 +6,7 @@ import { Heatmap } from "../common/Heatmap";
 import { useI18n, useT, type Lang } from "../../lib/i18n";
 import type { PageId } from "../../lib/nav";
 import { Badge } from "../ui/badge";
-import { useRuntimeDashboard } from "../../lib/useRuntimeDashboard";
+import { useRuntimeDashboardSelector, shallowEqualSlice, type RuntimeDashboardState } from "../../lib/useRuntimeDashboard";
 import { classifyEvidence, type EvidenceState } from "../../lib/state/evidence";
 import { useConnectionSetup } from "../../lib/connectionSetup";
 import {
@@ -40,10 +40,26 @@ function fmt(n: number) {
   return String(n);
 }
 
+/** Overview reads the summary evidence only; other slices must not repaint it. */
+type SummaryRuntimeSlice = {
+  payload: RuntimeDashboardState["payload"];
+  status: RuntimeDashboardState["status"];
+  updatedAt: RuntimeDashboardState["updatedAt"];
+};
+
+const selectSummaryRuntime = (state: RuntimeDashboardState): SummaryRuntimeSlice => ({
+  payload: state.payload,
+  status: state.status,
+  updatedAt: state.updatedAt,
+});
+
 export function Overview(_props: { setPage: (p: PageId) => void }) {
   const t = useT();
   const { lang } = useI18n();
-  const { payload, status: payloadStatus, updatedAt } = useRuntimeDashboard();
+  const { payload, status: payloadStatus, updatedAt } = useRuntimeDashboardSelector(
+    selectSummaryRuntime,
+    shallowEqualSlice,
+  );
   const connectionSetup = useConnectionSetup();
   const evidenceState = useMemo(
     () => classifyEvidence({ payload, status: payloadStatus, requireRuntimeIdentity: true }),
@@ -75,8 +91,8 @@ export function Overview(_props: { setPage: (p: PageId) => void }) {
 
     <MetricStrip data-overview-section="kpis" data-testid="overview-kpis">
       <OverviewKpi label={t("ov.routedRequests")} value={trafficAvailable ? fmt(stats.requestCount) : "—"} detail={trafficAvailable ? (lang === "zh" ? "来自 d-token 本地请求记录" : "From local d-token request records") : unavailableDetail} icon={Activity} />
-      <OverviewKpi label={lang === "zh" ? "实际减少 Token" : "Actual Token Reduction"} value={metricsAvailable ? fmt(stats.savedTotal) : "—"} detail={metricsAvailable ? (lang === "zh" ? "按压缩前后值计算；账单影响待确认。" : "Based on before/after values; billing impact is pending.") : unavailableDetail} icon={Coins} />
-      <OverviewKpi label={lang === "zh" ? "物理减少比例" : "Physical Reduction Rate"} value={compressionAvailable ? `${(stats.compressionRate * 100).toFixed(1)}%` : "—"} detail={compressionAvailable ? (lang === "zh" ? "仅基于同时具备压缩前后值的请求" : "Only requests with both before and after values are included") : unavailableDetail} icon={Gauge} />
+      <OverviewKpi label={lang === "zh" ? "实际减少 Token" : "Actual token reduction"} value={metricsAvailable ? fmt(stats.savedTotal) : "—"} detail={metricsAvailable ? (lang === "zh" ? "按压缩前后值计算；账单影响待确认。" : "Based on before/after values; billing impact is pending.") : unavailableDetail} icon={Coins} />
+      <OverviewKpi label={lang === "zh" ? "物理减少比例" : "Physical reduction rate"} value={compressionAvailable ? `${(stats.compressionRate * 100).toFixed(1)}%` : "—"} detail={compressionAvailable ? (lang === "zh" ? "仅基于同时具备压缩前后值的请求" : "Only requests with both before and after values are included") : unavailableDetail} icon={Gauge} />
       <OverviewKpi label={lang === "zh" ? "请求错误" : "Request errors"} value={trafficAvailable ? fmt(stats.errorsToday) : "—"} detail={trafficAvailable ? runtime.errorLabel : unavailableDetail} icon={CircleAlert} tone={trafficAvailable && stats.errorsToday > 0 ? "negative" : trafficAvailable ? "positive" : "neutral"} />
     </MetricStrip>
 

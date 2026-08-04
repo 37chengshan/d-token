@@ -186,7 +186,7 @@ describe("Changes rollback safety", () => {
 
     render(<Changes />);
 
-    expect(await screen.findByText("transaction_id=tx-agent-1")).toBeVisible();
+    expect(await screen.findByText("tx-agent-1")).toBeVisible();
     expect(screen.getByText(/3 个文件/)).toBeVisible();
     fireEvent.click(screen.getByRole("button", { name: "预览回退" }));
     const dialog = await screen.findByRole("alertdialog", { name: "确认回退" });
@@ -251,7 +251,7 @@ describe("Changes rollback safety", () => {
 
     await user.click(await screen.findByRole("tab", { name: "变更记录" }));
     expect(screen.getByText("安装与连接配置已提交")).toBeVisible();
-    expect(screen.getByText("rollback_id=rb-1")).toBeVisible();
+    expect(screen.getByText("rb-1")).toBeVisible();
     expect(screen.getByText("查看变更详情")).toBeVisible();
     expect(screen.queryByText("service_restart")).not.toBeInTheDocument();
     expect(screen.queryByText("install_scan_plan_diff")).not.toBeInTheDocument();

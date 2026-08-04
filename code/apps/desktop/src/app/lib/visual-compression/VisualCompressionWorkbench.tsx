@@ -726,7 +726,7 @@ export function VisualCompression() {
         return;
       }
       setPreviewResult(result.data);
-      addNotification({ dedupeKey: `optical-shadow-preview-${requestId}`, level: "success", title: lang === "zh" ? "Shadow 预览完成" : "Shadow preview complete", message: lang === "zh" ? "已生成 metadata-only 规划摘要，未改写真实请求。" : "A metadata-only planning summary was created without modifying a real request.", receipt: { requestId, targetId: "optical-shadow-preview" } });
+      addNotification({ dedupeKey: `optical-shadow-preview-${requestId}`, level: "success", title: lang === "zh" ? "Shadow 预览完成" : "Shadow preview complete", message: lang === "zh" ? "已生成仅含元数据的规划摘要，未改写真实请求。" : "A metadata-only planning summary was created without modifying a real request.", receipt: { requestId, targetId: "optical-shadow-preview" } });
     } catch (err) {
       if (!mountedRef.current || seq !== previewSeqRef.current) return;
       const failure = presentOperationFailure("visual", err, lang);
@@ -869,7 +869,7 @@ export function VisualCompression() {
                 <div className="flex items-center gap-2">
                   <Cable className="size-4 text-muted-foreground" aria-hidden />
                   <h2 className="text-base font-semibold">
-                    {lang === "zh" ? "Agent 接入" : "Agent Integration"}
+                    {lang === "zh" ? "Agent 接入" : "Agent integration"}
                   </h2>
                 </div>
                 <p className="max-w-3xl text-sm text-muted-foreground">
@@ -1011,7 +1011,7 @@ export function VisualCompression() {
               </div>
 
               <div className="space-y-3 rounded-xl border border-border/70 p-4">
-                <h3 className="text-sm font-semibold">{lang === "zh" ? "接入组件" : "Integration Surfaces"}</h3>
+                <h3 className="text-sm font-semibold">{lang === "zh" ? "接入组件" : "Integration surfaces"}</h3>
                 {([
                   ["install_instructions", lang === "zh" ? "规则 / Instructions" : "Rules / Instructions", true],
                   ["install_hook_or_plugin", lang === "zh" ? "Hook / Plugin（动态状态）" : "Hook / Plugin (dynamic status)", true],

@@ -55,6 +55,7 @@ const MUTATING_COMMANDS = new Set([
   "rollback_hybrid_agent_integration",
   "apply_connection_route_plan",
   "rollback_connection_route_plan",
+  "finalize_agent_auto_follow_authorization",
   "apply_doctor_common_repair",
   "apply_doctor_repair",
   "apply_rollback",

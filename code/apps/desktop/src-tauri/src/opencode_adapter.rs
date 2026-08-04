@@ -1,13 +1,20 @@
+use dtoken_config_patcher::agent_transport::{
+    ensure_owned_opencode_provider, opencode_base_url, opencode_provider_value,
+    OPENCODE_PROVIDER_ID,
+};
 use dtoken_config_patcher::{ConfigPatcher, ExpectedFileState};
 use dtoken_types::{ConfigToolKind, RiskLevel};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value};
 use std::{
     env, fs,
     path::{Path, PathBuf},
 };
 
-const PROVIDER_ID: &str = "dtoken-local-route";
+/// The dedicated desktop flow writes the same provider shape as the managed
+/// transport through the Rust-owned canonical builder in
+/// `dtoken_config_patcher::agent_transport`, so either flow can verify or
+/// clear what the other wrote.
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct OpenCodeConnectionRequest {
@@ -190,7 +197,11 @@ fn patch_provider(root: &mut Map<String, Value>, model: &str, port: u16) -> Resu
     if root
         .get("disabled_providers")
         .and_then(Value::as_array)
-        .is_some_and(|items| items.iter().any(|item| item.as_str() == Some(PROVIDER_ID)))
+        .is_some_and(|items| {
+            items
+                .iter()
+                .any(|item| item.as_str() == Some(OPENCODE_PROVIDER_ID))
+        })
     {
         return Err("dtoken-local-route is explicitly disabled in OpenCode".to_string());
     }
@@ -200,22 +211,12 @@ fn patch_provider(root: &mut Map<String, Value>, model: &str, port: u16) -> Resu
             .or_insert_with(|| Value::Object(Map::new()))
             .as_object_mut()
             .ok_or_else(|| "OpenCode provider must be an object".to_string())?;
-        if providers.contains_key(PROVIDER_ID) {
+        if providers.contains_key(OPENCODE_PROVIDER_ID) {
             return Err("OpenCode already contains dtoken-local-route; use Changes to verify or roll it back".to_string());
         }
         providers.insert(
-            PROVIDER_ID.to_string(),
-            json!({
-                "npm": "@ai-sdk/openai-compatible",
-                "name": "d-token local route",
-                "options": {
-                    "baseURL": format!("http://127.0.0.1:{port}/v1"),
-                    "apiKey": "{env:DTOKEN_LOCAL_LISTENER_TOKEN}"
-                },
-                "models": {
-                    model: { "name": format!("d-token routed {model}") }
-                }
-            }),
+            OPENCODE_PROVIDER_ID.to_string(),
+            opencode_provider_value(&format!("http://127.0.0.1:{port}"), model),
         );
     }
     if let Some(enabled) = root.get_mut("enabled_providers") {
@@ -227,9 +228,9 @@ fn patch_provider(root: &mut Map<String, Value>, model: &str, port: u16) -> Resu
         }
         if !enabled
             .iter()
-            .any(|item| item.as_str() == Some(PROVIDER_ID))
+            .any(|item| item.as_str() == Some(OPENCODE_PROVIDER_ID))
         {
-            enabled.push(Value::String(PROVIDER_ID.to_string()));
+            enabled.push(Value::String(OPENCODE_PROVIDER_ID.to_string()));
         }
     }
     Ok(())
@@ -241,10 +242,15 @@ fn verify_provider(path: &Path, model: &str, port: u16) -> Result<(), String> {
     )
     .map_err(|error| format!("parse applied config: {error}"))?;
     let provider = value
-        .pointer(&format!("/provider/{PROVIDER_ID}"))
+        .pointer(&format!("/provider/{OPENCODE_PROVIDER_ID}"))
         .ok_or_else(|| "applied provider is missing".to_string())?;
+    // The same canonical ownership predicate the managed transport uses: an
+    // applied provider must still be provably d-token-owned before it passes.
+    ensure_owned_opencode_provider(provider)
+        .map_err(|error| format!("applied provider ownership check failed: {error:#}"))?;
+    let expected_base_url = opencode_base_url(&format!("http://127.0.0.1:{port}"));
     if provider.pointer("/options/baseURL").and_then(Value::as_str)
-        != Some(format!("http://127.0.0.1:{port}/v1").as_str())
+        != Some(expected_base_url.as_str())
         || provider
             .pointer("/models")
             .and_then(Value::as_object)
@@ -368,6 +374,9 @@ fn failed_receipt(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use dtoken_config_patcher::agent_transport::{
+        clear_agent_transport_document, configure_opencode_transport_document,
+    };
     use std::sync::{Mutex, OnceLock};
     use tempfile::tempdir;
 
@@ -446,5 +455,152 @@ mod tests {
         assert!(!receipt.ok);
         assert_eq!(fs::read(&config).expect("read current"), concurrent);
         env::remove_var("DTOKEN_OPENCODE_CONFIG_PATH");
+    }
+
+    /// End-to-end fixture: the dedicated desktop flow applies the provider, then
+    /// the managed transport clears it. User providers and their credentials are
+    /// preserved, the second clear is a no-op, and a user edit to the owned
+    /// provider makes the managed clear fail closed.
+    #[test]
+    fn dedicated_apply_then_managed_clear_preserves_user_providers_and_is_idempotent() {
+        let _guard = env_lock();
+        let dir = tempdir().expect("temp dir");
+        let root = fs::canonicalize(dir.path()).expect("canonical temp dir");
+        let config = dir.path().join("opencode.json");
+        let original = b"{\"provider\":{\"existing\":{\"name\":\"Existing\",\"options\":{\"apiKey\":\"user-credential-placeholder\"}}},\"enabled_providers\":[\"existing\"]}\n";
+        fs::write(&config, original).expect("write config");
+        env::set_var(
+            "DTOKEN_OPENCODE_CONFIG_PATH",
+            fs::canonicalize(&config).expect("canonical config"),
+        );
+
+        // Dedicated flow writes the provider through the canonical builder.
+        let review = preview(&request(), &root.join("backups"));
+        assert!(review.ok, "{}", review.summary);
+        let mut apply_request = request();
+        apply_request.reviewed_before_sha256 = review.before_sha256;
+        apply_request.reviewed_after_sha256 = review.after_sha256;
+        apply_request.reviewed_revision = review.revision;
+        let receipt = apply(&apply_request, &root.join("backups"));
+        assert!(receipt.ok, "{}", receipt.summary);
+        let request = request();
+        verify_provider(&config, &request.model, request.listener_port)
+            .expect("dedicated verify after dedicated apply");
+
+        // The managed transport recognizes and clears the same ownership evidence.
+        let applied = fs::read_to_string(&config).expect("read applied config");
+        let cleared = clear_agent_transport_document("opencode", &applied).expect("managed clear");
+        let cleared_value: Value = serde_json::from_str(&cleared).expect("cleared JSON");
+        assert!(
+            cleared_value.pointer("/provider/existing").is_some(),
+            "user provider must be preserved"
+        );
+        assert_eq!(
+            cleared_value
+                .pointer("/provider/existing/options/apiKey")
+                .and_then(Value::as_str),
+            Some("user-credential-placeholder"),
+            "user credential must be preserved"
+        );
+        assert!(
+            cleared_value
+                .pointer("/provider/dtoken-local-route")
+                .is_none(),
+            "owned dtoken provider must be removed"
+        );
+        let enabled = cleared_value
+            .get("enabled_providers")
+            .and_then(Value::as_array)
+            .expect("enabled_providers array");
+        assert!(enabled
+            .iter()
+            .any(|entry| entry.as_str() == Some("existing")));
+        assert!(
+            !enabled
+                .iter()
+                .any(|entry| entry.as_str() == Some("dtoken-local-route")),
+            "owned entry must leave the allowlist"
+        );
+
+        // Clear is idempotent when no d-token transport is present.
+        let cleared_again =
+            clear_agent_transport_document("opencode", &cleared).expect("idempotent clear");
+        assert_eq!(cleared_again, cleared);
+
+        // A user edit to the owned provider fails closed instead of deleting it.
+        let mut edited: Value = serde_json::from_str(&applied).expect("applied JSON");
+        *edited
+            .pointer_mut("/provider/dtoken-local-route/options/apiKey")
+            .expect("owned apiKey") = Value::String("user-changed".to_string());
+        let edited_text = serde_json::to_string_pretty(&edited).expect("serialize edit") + "\n";
+        let error = clear_agent_transport_document("opencode", &edited_text)
+            .expect_err("clear must fail closed on user-edited provider");
+        assert!(
+            error.to_string().contains("not provably d-token-owned"),
+            "unexpected error: {error}"
+        );
+        env::remove_var("DTOKEN_OPENCODE_CONFIG_PATH");
+    }
+
+    /// End-to-end fixture: the managed transport configures the provider, the
+    /// dedicated desktop flow verifies it, and the managed clear restores the
+    /// user-owned providers and credentials untouched.
+    #[test]
+    fn managed_configure_then_dedicated_verify_and_managed_clear_preserve_user_providers() {
+        let original = "{\"provider\":{\"existing\":{\"name\":\"Existing\",\"options\":{\"apiKey\":\"user-credential-placeholder\"}}},\"enabled_providers\":[\"existing\"]}\n";
+        let configured = configure_opencode_transport_document(
+            original,
+            "http://127.0.0.1:18001",
+            "deepseek/model-v1",
+            true,
+        )
+        .expect("managed configure");
+        let configured_value: Value = serde_json::from_str(&configured).expect("configured JSON");
+        ensure_owned_opencode_provider(
+            configured_value
+                .pointer("/provider/dtoken-local-route")
+                .expect("managed provider"),
+        )
+        .expect("canonical ownership predicate accepts managed configure");
+
+        let dir = tempdir().expect("temp dir");
+        let config = dir.path().join("opencode.json");
+        fs::write(&config, configured).expect("write configured config");
+        verify_provider(&config, "deepseek/model-v1", 18001)
+            .expect("dedicated verify accepts managed configure");
+
+        let current = fs::read_to_string(&config).expect("read config");
+        let cleared = clear_agent_transport_document("opencode", &current).expect("managed clear");
+        let cleared_value: Value = serde_json::from_str(&cleared).expect("cleared JSON");
+        assert!(
+            cleared_value.pointer("/provider/existing").is_some(),
+            "user provider must be preserved"
+        );
+        assert_eq!(
+            cleared_value
+                .pointer("/provider/existing/options/apiKey")
+                .and_then(Value::as_str),
+            Some("user-credential-placeholder"),
+            "user credential must be preserved"
+        );
+        assert!(
+            cleared_value
+                .pointer("/provider/dtoken-local-route")
+                .is_none(),
+            "owned dtoken provider must be removed"
+        );
+        let enabled = cleared_value
+            .get("enabled_providers")
+            .and_then(Value::as_array)
+            .expect("enabled_providers array");
+        assert!(enabled
+            .iter()
+            .any(|entry| entry.as_str() == Some("existing")));
+        assert!(
+            !enabled
+                .iter()
+                .any(|entry| entry.as_str() == Some("dtoken-local-route")),
+            "owned entry must leave the allowlist"
+        );
     }
 }

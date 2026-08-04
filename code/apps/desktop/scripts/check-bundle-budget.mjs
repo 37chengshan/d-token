@@ -1,4 +1,5 @@
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { gzipSync } from "node:zlib";
 import { fileURLToPath } from "node:url";
 
@@ -7,10 +8,16 @@ import { fileURLToPath } from "node:url";
 // eager regressions, but align it to the current split boundary instead of
 // failing every build on the steady-state shell footprint.
 const INITIAL_JS_BUDGET_BYTES = 176 * 1024;
+const jsonOutputIndex = process.argv.indexOf("--json-output");
+const jsonOutputPath = jsonOutputIndex >= 0 ? process.argv[jsonOutputIndex + 1] : undefined;
+if (jsonOutputIndex >= 0 && !jsonOutputPath) {
+  throw new Error("bundle_gate_json_output_path_missing");
+}
 const distRoot = new URL("../dist/", import.meta.url);
 const manifestPath = fileURLToPath(new URL("../dist/.vite/manifest.json", import.meta.url));
 
-const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+const manifestBytes = readFileSync(manifestPath);
+const manifest = JSON.parse(manifestBytes.toString("utf8"));
 const entryKey = Object.keys(manifest).find((key) => manifest[key]?.isEntry && manifest[key]?.src === "index.html")
   ?? Object.keys(manifest).find((key) => manifest[key]?.isEntry);
 
@@ -56,4 +63,24 @@ if (eagerCharts.length > 0) {
 if (initialGzipBytes > INITIAL_JS_BUDGET_BYTES) {
   console.error(`Bundle gate failed: initial recursive JS exceeds the budget by ${initialGzipBytes - INITIAL_JS_BUDGET_BYTES} B.`);
   process.exitCode = 1;
+}
+
+const failedChecks = [
+  ...(eagerCharts.length > 0 ? ["charts_remain_lazy"] : []),
+  ...(initialGzipBytes > INITIAL_JS_BUDGET_BYTES ? ["initial_recursive_js_gzip_bytes"] : []),
+];
+const report = {
+  schema_version: 1,
+  scope: "desktop-bundle-budget",
+  manifest: "dist/.vite/manifest.json",
+  manifest_sha256: createHash("sha256").update(manifestBytes).digest("hex"),
+  initial_recursive_js_gzip_bytes: initialGzipBytes,
+  initial_recursive_js_budget_bytes: INITIAL_JS_BUDGET_BYTES,
+  initial_asset_count: initialJavaScript.length,
+  eager_chart_asset_count: eagerCharts.length,
+  assets: initialJavaScript.map(({ file, gzipBytes }) => ({ file, gzip_bytes: gzipBytes })),
+  gate: { ok: failedChecks.length === 0, failed_checks: failedChecks },
+};
+if (jsonOutputPath) {
+  writeFileSync(jsonOutputPath, `${JSON.stringify(report, null, 2)}\n`, "utf8");
 }

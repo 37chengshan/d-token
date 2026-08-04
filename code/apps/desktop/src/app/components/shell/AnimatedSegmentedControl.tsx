@@ -144,8 +144,7 @@ export function AnimatedSegmentedControl<T extends string>({
         aria-hidden="true"
         className="shell-segmented-indicator"
         style={{
-          left: indicator.left,
-          top: indicator.top,
+          transform: `translate(${indicator.left}px, ${indicator.top}px)`,
           width: indicator.width,
           height: indicator.height,
           opacity: indicator.opacity,

@@ -17,6 +17,8 @@ const native = vi.hoisted(() => ({ enabled: false, invoke: vi.fn() }));
 vi.mock("../../lib/useRuntimeDashboard", () => ({
   useRuntimeDashboard: () => dashboard.state,
   useRuntimeDashboardDetail: () => dashboard.state,
+  useRuntimeDashboardSelector: (selector: (state: unknown) => unknown) => selector(dashboard.state),
+  shallowEqualSlice: () => false,
 }));
 
 vi.mock("../../lib/native", () => ({

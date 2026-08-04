@@ -207,7 +207,11 @@ export function canReviewInstall(snapshot: ConnectionSetupSnapshot, selections: 
 export function deriveInstallPhase(snapshot: ConnectionSetupSnapshot, selections: Record<string, AgentSelection>, selectedAgentIds = defaultSelectedAgentIds(snapshot)): InstallPhase {
   const installed = snapshot.agent_bindings.filter((binding) => binding.installed);
   const actionable = selectedBindings(snapshot, selectedAgentIds);
-  if (installed.length === 0 || actionable.length === 0) return "blocked";
+  if (installed.length === 0) return "blocked";
+  // Detection-only Agents still have explicit Configure/Clear controls in the
+  // UI, but they cannot enter a route batch until native discovery proves a
+  // verified transport adapter.
+  if (actionable.length === 0) return "partial";
   if (actionable.every((binding) => binding.already_connected)) return "already-connected";
   if (actionable.some((binding) => binding.resolution === "needs-credential")) return "needs-credential";
   if (actionable.some((binding) => binding.resolution === "needs-choice" && !selectedCandidate(binding, selections[binding.agent_id]))) {
@@ -216,14 +220,23 @@ export function deriveInstallPhase(snapshot: ConnectionSetupSnapshot, selections
   return canReviewInstall(snapshot, selections, selectedAgentIds) ? "ready" : "blocked";
 }
 
+/// Bindings that are eligible for transport-level connection. A historical
+/// prompt/manual registry label must not override a verified native transport
+/// adapter; only Agents without such an adapter stay suggestion-only.
 function actionableBindings(snapshot: ConnectionSetupSnapshot) {
-  return snapshot.agent_bindings.filter((binding) =>
-    binding.installed && !["prompt-only", "manual-only"].includes(binding.capability),
-  );
+  return snapshot.agent_bindings.filter(canJoinInstallBatch);
 }
 
+/// Selection means "include in this verified connection batch". Detection-only
+/// rows remain visible with Configure/Clear controls but do not get a checkbox
+/// that would be silently ignored.
 function selectableBindings(snapshot: ConnectionSetupSnapshot) {
-  return actionableBindings(snapshot);
+  return snapshot.agent_bindings.filter(canJoinInstallBatch);
+}
+
+export function canJoinInstallBatch(binding: AgentUpstreamBinding) {
+  return binding.installed
+    && (binding.already_connected || binding.can_configure === true);
 }
 
 function selectedBindings(snapshot: ConnectionSetupSnapshot, selectedAgentIds: string[]) {
@@ -232,13 +245,16 @@ function selectedBindings(snapshot: ConnectionSetupSnapshot, selectedAgentIds: s
 }
 
 function defaultSelectedAgentIds(snapshot: ConnectionSetupSnapshot) {
-  // Only include bindings that can be installed without an additional user
-  // decision.  Discovery may find many installed Agents, but a credential
-  // gap (or an ambiguous upstream) for one Agent must not block an otherwise
-  // ready automatic connection such as OpenCode's resolved free model.
+  // Pre-select agents that are ready for one-shot confirmation:
+  //   - already connected
+  //   - one-click + auto-resolved
+  //   - confirm-required + auto-resolved (the plan is ready, just needs user ok)
   return actionableBindings(snapshot)
     .filter((binding) => binding.already_connected
-      || (binding.capability === "one-click" && binding.resolution === "auto-resolved"))
+      || ((binding.capability === "one-click"
+            || binding.capability === "confirm-required"
+            || binding.can_configure === true)
+          && binding.resolution === "auto-resolved"))
     .map((binding) => binding.agent_id);
 }
 

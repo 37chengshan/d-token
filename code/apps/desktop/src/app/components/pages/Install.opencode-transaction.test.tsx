@@ -12,8 +12,8 @@ vi.mock("../../lib/native", () => ({
   isTauriRuntime: () => true,
 }));
 
-vi.mock("../../lib/useRuntimeDashboard", () => ({
-  useRuntimeDashboard: () => ({
+vi.mock("../../lib/useRuntimeDashboard", () => {
+  const buildState = () => ({
     payload: {
       desktop_data_source: "dtoken-local-service",
       runtime_active_config: {
@@ -31,8 +31,13 @@ vi.mock("../../lib/useRuntimeDashboard", () => ({
     operational: {
       service: { data: { ok: true, state: "running", managed: true, service_url: "http://127.0.0.1:18001", summary: "running" } },
     },
-  }),
-}));
+  });
+  return {
+    useRuntimeDashboard: () => buildState(),
+    useRuntimeDashboardSelector: (selector: (value: unknown) => unknown) => selector(buildState()),
+    shallowEqualSlice: () => false,
+  };
+});
 
 import { Install } from "./Install";
 
@@ -77,6 +82,10 @@ describe("Install OpenCode guarded transaction", () => {
             confidence: 98,
             reasons: ["current"],
             capability: "one-click",
+            can_configure: true,
+            can_clear: false,
+            transport_supported: true,
+            transport_status: "configure_only",
             already_connected: false,
           }, {
             agent_id: "cline",
@@ -158,6 +167,10 @@ describe("Install OpenCode guarded transaction", () => {
           rollback_id: "route-rollback-1",
           before_sha256: "route-before-hash",
           after_sha256: "route-after-hash",
+          auto_follow: {
+            enabled: false,
+            state: "pending_runtime_verification",
+          },
         };
       }
       if (command === "apply_opencode_connection") {
@@ -194,6 +207,9 @@ describe("Install OpenCode guarded transaction", () => {
       }
       if (command === "run_product_readiness_check") return { ok: true, checks: [], privacy: "redacted" };
       if (command === "verify_agent_route_config") return { ok: true, passed: 1, total: 1, summary: "verified", checks: [], service_url: "http://127.0.0.1:18001" };
+      if (command === "finalize_agent_auto_follow_authorization") {
+        return { ok: true, state: "authorized" };
+      }
       throw new Error(`unexpected command: ${command}`);
     });
 
@@ -218,6 +234,12 @@ describe("Install OpenCode guarded transaction", () => {
         },
         reviewed_before_sha256: "route-before-hash",
         reviewed_after_sha256: "route-after-hash",
+        enable_auto_follow: true,
+      },
+    }));
+    await waitFor(() => expect(invokeNative).toHaveBeenCalledWith("finalize_agent_auto_follow_authorization", {
+      request: {
+        expected_route_sha256: "route-after-hash",
       },
     }));
     await waitFor(() => expect(invokeNative).toHaveBeenCalledWith("apply_opencode_connection", {

@@ -8,7 +8,12 @@ import { Badge } from "../../components/ui/badge";
 import type { Health } from "../runtime/types";
 import type { NativeActionLog } from "../native";
 import type { AgentUpstreamBinding, ConnectionSetupSnapshot } from "../connectionSetup";
-import type { InstallAgentReceipt, InstallMachineEvent, InstallMachineState } from "../installMachine";
+import {
+  canJoinInstallBatch,
+  type InstallAgentReceipt,
+  type InstallMachineEvent,
+  type InstallMachineState,
+} from "../installMachine";
 import { redactString } from "../security/redaction";
 import {
   AgentBindingRow,
@@ -23,11 +28,12 @@ import type {
   ConnectionRoutePlanReview,
   DtokenServiceStatus,
   HybridAgentIntegrationReview,
+  ManagedAgentTransportReview,
   OpenCodeConnectionReview,
   RouteVerification,
 } from "./presentation";
 
-type PendingAction = "discover" | "preview" | "apply" | "verify" | "restart" | "stop" | "credential" | null;
+type PendingAction = "discover" | "preview" | "apply" | "verify" | "restart" | "stop" | "credential" | "sync" | null;
 
 export type InstallViewProps = {
   lang: "zh" | "en";
@@ -62,11 +68,13 @@ export type InstallViewProps = {
   setShowReview: (value: boolean) => void;
   setConnectionReview: (value: OpenCodeConnectionReview | null) => void;
   setRoutePlanReview: (value: ConnectionRoutePlanReview | null) => void;
+  setManagedTransportReviews: (value: Record<string, ManagedAgentTransportReview>) => void;
   setAgentIntegrationReviews: (value: Record<string, HybridAgentIntegrationReview>) => void;
   actionableBindings: AgentUpstreamBinding[];
   serviceEndpoint: string;
   routePlanReview: ConnectionRoutePlanReview | null;
   connectionReview: OpenCodeConnectionReview | null;
+  managedTransportReviews: Record<string, ManagedAgentTransportReview>;
   agentIntegrationReviews: Record<string, HybridAgentIntegrationReview>;
   openCodeSelection: { model: string } | null;
   applyConnectionPlan: () => Promise<void>;
@@ -84,10 +92,22 @@ export type InstallViewProps = {
   serviceStatus: DtokenServiceStatus | null;
   serviceIdentifiersCurrent: boolean;
   stopService: () => Promise<void>;
+  transportBusyAgent: string | null;
+  onConfigureAgent: (binding: AgentUpstreamBinding) => void;
+  onClearAgent: (binding: AgentUpstreamBinding) => void;
+  agentAutoFollow: boolean;
+  setAgentAutoFollow: (value: boolean) => void;
+  ccSwitchSyncReview: ConnectionRoutePlanReview | null;
+  setCcSwitchSyncReview: (value: ConnectionRoutePlanReview | null) => void;
+  ccSwitchAutoFollow: boolean;
+  setCcSwitchAutoFollow: (value: boolean) => void;
+  ccSwitchSyncBusy: boolean;
+  onPreviewCcSwitchSync: () => void;
+  onApplyCcSwitchSync: () => void;
 };
 
 export function InstallView(props: InstallViewProps) {
-  const { lang, t, snapshot, discoveryStatus, phasePresentation, discoveryCounts, refreshAll, busy, pendingAction, handlePrimaryAction, primaryAction, serviceInstanceDetail, servicePresentation, restartRequired, serviceOnline, serviceManaged, setStopError, setConfirmServiceStop, visibleBindings, primaryBindings, machine, dispatch, secondaryBindings, ccSwitchPresentation, notice, transactionLogs, agentIntegrationReceipts, routeVerification, showReview, setShowReview, setConnectionReview, setRoutePlanReview, setAgentIntegrationReviews, actionableBindings, serviceEndpoint, routePlanReview, connectionReview, agentIntegrationReviews, openCodeSelection, applyConnectionPlan, credentialDialogOpen, setCredentialDialogOpen, setProviderCredential, setCredentialError, credentialBinding, credentialProviderId, providerCredential, credentialError, saveInlineCredential, confirmServiceStop, stopError, serviceStatus, serviceIdentifiersCurrent, stopService } = props;
+  const { lang, t, snapshot, discoveryStatus, phasePresentation, discoveryCounts, refreshAll, busy, pendingAction, handlePrimaryAction, primaryAction, serviceInstanceDetail, servicePresentation, restartRequired, serviceOnline, serviceManaged, setStopError, setConfirmServiceStop, visibleBindings, primaryBindings, machine, dispatch, secondaryBindings, ccSwitchPresentation, notice, transactionLogs, agentIntegrationReceipts, routeVerification, showReview, setShowReview, setConnectionReview, setRoutePlanReview, setManagedTransportReviews, setAgentIntegrationReviews, actionableBindings, serviceEndpoint, routePlanReview, connectionReview, managedTransportReviews, agentIntegrationReviews, openCodeSelection, applyConnectionPlan, credentialDialogOpen, setCredentialDialogOpen, setProviderCredential, setCredentialError, credentialBinding, credentialProviderId, providerCredential, credentialError, saveInlineCredential, confirmServiceStop, stopError, serviceStatus, serviceIdentifiersCurrent, stopService, transportBusyAgent, onConfigureAgent, onClearAgent, agentAutoFollow, setAgentAutoFollow, ccSwitchSyncReview, setCcSwitchSyncReview, ccSwitchAutoFollow, setCcSwitchAutoFollow, ccSwitchSyncBusy, onPreviewCcSwitchSync, onApplyCcSwitchSync } = props;
   return (
     <div className="page-enter mx-auto w-full max-w-6xl space-y-4">
       <Surface className="overflow-hidden">
@@ -172,16 +192,19 @@ export function InstallView(props: InstallViewProps) {
                     binding={binding}
                     selection={machine.selections[binding.agent_id]}
                     included={machine.selectedAgentIds.includes(binding.agent_id)}
-                    selectable={binding.capability === "one-click"}
+                    selectable={canJoinInstallBatch(binding)}
                     lang={lang}
                     busy={busy}
+                    transportBusy={transportBusyAgent === binding.agent_id}
+                    onConfigure={() => onConfigureAgent(binding)}
+                    onClear={() => onClearAgent(binding)}
                     onSelect={(candidateKey, model) => dispatch({ type: "SELECT_UPSTREAM", agentId: binding.agent_id, selection: { candidateKey, model } })}
                     onToggle={(selected) => dispatch({ type: "TOGGLE_AGENT", agentId: binding.agent_id, selected })}
                   />
                 ))}
                 {primaryBindings.length === 0 && visibleBindings.length > 0 && (
                   <div className="py-4 text-sm text-muted-foreground">
-                    {lang === "zh" ? "检测到的工具当前需要手动确认，尚无可直接加入本批次的 Agent。" : "Detected tools currently require manual confirmation; none can join this batch automatically."}
+                    {lang === "zh" ? "已检测到工具，但当前版本尚无可验证的自动连接 adapter。" : "Tools were detected, but this version has no verified automatic connection adapter for them."}
                   </div>
                 )}
                 </div>
@@ -199,12 +222,15 @@ export function InstallView(props: InstallViewProps) {
                           key={binding.agent_id}
                           binding={binding}
                           selection={machine.selections[binding.agent_id]}
-                          included={false}
-                          selectable={false}
+                          included={machine.selectedAgentIds.includes(binding.agent_id)}
+                          selectable={canJoinInstallBatch(binding)}
                           lang={lang}
                           busy={busy}
+                          transportBusy={transportBusyAgent === binding.agent_id}
+                          onConfigure={() => onConfigureAgent(binding)}
+                          onClear={() => onClearAgent(binding)}
                           onSelect={(candidateKey, model) => dispatch({ type: "SELECT_UPSTREAM", agentId: binding.agent_id, selection: { candidateKey, model } })}
-                          onToggle={() => undefined}
+                          onToggle={(selected) => dispatch({ type: "TOGGLE_AGENT", agentId: binding.agent_id, selected })}
                         />
                       ))}
                     </div>
@@ -228,10 +254,17 @@ export function InstallView(props: InstallViewProps) {
                   : (lang === "zh" ? "未发现 cc-switch；不会自动安装或改写第三方配置。" : "cc-switch was not found; third-party configuration is never installed or rewritten automatically.")}
               </div>
             </div>
-            <StatusBadge
-              status={ccSwitchPresentation.health}
-              label={ccSwitchPresentation.label}
-            />
+            <div className="flex items-center gap-2">
+              {snapshot?.cc_switch_sync?.status === "out-of-sync" && (
+                <Button size="sm" variant="outline" disabled={busy || ccSwitchSyncBusy} onClick={onPreviewCcSwitchSync}>
+                  {lang === "zh" ? "同步当前上游" : "Sync current upstream"}
+                </Button>
+              )}
+              <StatusBadge
+                status={ccSwitchPresentation.health}
+                label={ccSwitchPresentation.label}
+              />
+            </div>
           </div>
         </div>
 
@@ -266,12 +299,48 @@ export function InstallView(props: InstallViewProps) {
       </Surface>
 
       <OperationDialog
+        open={Boolean(ccSwitchSyncReview)}
+        onOpenChange={(open) => { if (!open) setCcSwitchSyncReview(null); }}
+        title={lang === "zh" ? "同步 cc-switch 当前上游" : "Sync current cc-switch upstream"}
+        summary={lang === "zh" ? "只更新 d-token 自己的路由；不会改写 cc-switch、Agent 现有 provider 或凭据。" : "Only d-token's route changes; cc-switch, existing Agent providers, and credentials are not rewritten."}
+        impact={ccSwitchSyncReview?.target ?? "d-token active route"}
+        confirmLabel={lang === "zh" ? "确认同步并重新验证" : "Confirm sync and reverify"}
+        cancelLabel={t("common.cancel")}
+        pending={ccSwitchSyncBusy}
+        confirmDisabled={!ccSwitchSyncReview?.ok}
+        onConfirm={onApplyCcSwitchSync}
+        details={ccSwitchSyncReview ? (
+          <div className="space-y-3 text-[11px] text-muted-foreground">
+            <label className="flex items-start gap-2 rounded-md border border-border/60 bg-background p-2">
+              <input
+                type="checkbox"
+                checked={ccSwitchAutoFollow}
+                disabled={ccSwitchSyncBusy}
+                onChange={(event) => setCcSwitchAutoFollow(event.target.checked)}
+                className="mt-0.5"
+              />
+              <span>
+                {lang === "zh"
+                  ? "跟随当前上游：仅自动切换到本次确认且无需新凭据的 provider/endpoint/protocol；新身份会停止并要求重新确认。"
+                  : "Follow current upstream: only identities confirmed in this step and requiring no new credential may sync automatically; a new provider, endpoint, or protocol stops for confirmation."}
+              </span>
+            </label>
+            <div className="font-mono">
+            <div>before {shortHash(ccSwitchSyncReview.before_sha256)} → after {shortHash(ccSwitchSyncReview.after_sha256)}</div>
+            {ccSwitchSyncReview.diff && <pre className="max-h-48 overflow-auto whitespace-pre-wrap rounded-md bg-background p-2">{ccSwitchSyncReview.diff}</pre>}
+            </div>
+          </div>
+        ) : null}
+      />
+
+      <OperationDialog
         open={showReview}
         onOpenChange={(open) => {
           setShowReview(open);
           if (!open) {
             setConnectionReview(null);
             setRoutePlanReview(null);
+            setManagedTransportReviews({});
             setAgentIntegrationReviews({});
           }
         }}
@@ -281,6 +350,20 @@ export function InstallView(props: InstallViewProps) {
         details={(
           <div className="max-h-[46vh] space-y-3 overflow-y-auto pr-1 text-sm">
             {pendingAction === "preview" && <div className="flex items-center gap-2 text-muted-foreground"><RefreshCw className="size-4 animate-spin" />{lang === "zh" ? "正在生成 hash 绑定的脱敏 diff…" : "Building a hash-bound redacted diff…"}</div>}
+            <label className="flex items-start gap-2 rounded-md border border-border/60 bg-background p-3 text-xs text-muted-foreground">
+              <input
+                type="checkbox"
+                checked={agentAutoFollow}
+                disabled={pendingAction === "apply" || pendingAction === "preview"}
+                onChange={(event) => setAgentAutoFollow(event.target.checked)}
+                className="mt-0.5"
+              />
+              <span>
+                {lang === "zh"
+                  ? "跟随已确认的 Agent 上游：配置文件中的 provider、model、protocol 或 endpoint 变化后，只更新 d-token 自己的路由并重新验证 runtime；不会自动改写 Agent 或凭据。新身份、歧义或新凭据会停止并要求重新确认。"
+                  : "Follow confirmed Agent upstreams: provider, model, protocol, or endpoint changes update only d-token's route and reverify the runtime. Agent configuration and credentials are not rewritten automatically; new identities, ambiguity, or credentials stop for confirmation."}
+              </span>
+            </label>
             {routePlanReview && (
               <div className="rounded-lg border border-border bg-muted/30 p-3">
                 <div className="font-medium">{lang === "zh" ? "d-token 自动路由" : "Automatic d-token routes"}</div>
@@ -309,6 +392,27 @@ export function InstallView(props: InstallViewProps) {
                 {connectionReview.diff && <pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap rounded-md bg-background p-2 text-[11px]">{connectionReview.diff}</pre>}
               </div>
             )}
+            {Object.entries(managedTransportReviews).map(([agentId, transport]) => {
+              const binding = actionableBindings.find((item) => item.agent_id === agentId);
+              const transportPlan = transport.review;
+              return (
+                <div key={`${agentId}-transport`} className="rounded-lg border border-border bg-muted/30 p-3">
+                  <div className="font-medium">{binding?.agent_name ?? agentId} · {lang === "zh" ? "传输配置" : "Transport configuration"}</div>
+                  <div className="mt-1 text-xs text-muted-foreground">
+                    {transport.ok && transportPlan
+                      ? (lang === "zh" ? "只写入 d-token 托管字段，并保留原配置和精确清除证据。" : "Only d-token-owned fields change, with the original configuration and exact clear evidence preserved.")
+                      : (lang === "zh" ? "当前配置无法安全自动写入，未执行任何变更。" : "This configuration cannot be changed safely, so no write will run.")}
+                  </div>
+                  {transportPlan && (
+                    <div className="mt-2 font-mono text-[11px] text-muted-foreground">
+                      <div>{transportPlan.target_path}</div>
+                      <div>before {shortHash(transportPlan.before_sha256)} → after {shortHash(transportPlan.after_sha256)}</div>
+                      {transportPlan.redacted_diff && <pre className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap rounded-md bg-background p-2">{transportPlan.redacted_diff}</pre>}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
             {Object.entries(agentIntegrationReviews).map(([agentId, review]) => {
               const binding = actionableBindings.find((item) => item.agent_id === agentId);
               return (
@@ -344,6 +448,7 @@ export function InstallView(props: InstallViewProps) {
         pending={pendingAction === "apply" || pendingAction === "preview"}
         confirmDisabled={!routePlanReview?.ok
           || Boolean(openCodeSelection && !connectionReview?.ok)
+          || Object.values(managedTransportReviews).some((transport) => !transport.ok || !transport.review)
           || Object.values(agentIntegrationReviews).some((review) => !review.ok || !review.plan?.review_digest)}
         onConfirm={applyConnectionPlan}
       />

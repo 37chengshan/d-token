@@ -26,7 +26,7 @@ import {
 } from "../../lib/theme-context";
 import { cn } from "../ui/utils";
 import { invokeNative, type NativeActionResult } from "../../lib/native";
-import { useRuntimeDashboard } from "../../lib/useRuntimeDashboard";
+import { useRuntimeDashboardSelector, shallowEqualSlice, type RuntimeDashboardState } from "../../lib/useRuntimeDashboard";
 import { createOperationRequestId, useNotifications } from "../../lib/notifications";
 import { presentOperationFailure } from "../../lib/userCopy";
 import { OperationDialog } from "../common/OperationDialog";
@@ -68,11 +68,25 @@ const DEFAULT_PRODUCT_PREFERENCES: ProductPreferences = {
   autoUpdateCheck: false,
 };
 
+/** Settings reads service evidence only; payload changes must not repaint it. */
+type SettingsRuntimeSlice = {
+  operational: RuntimeDashboardState["operational"];
+  refresh: RuntimeDashboardState["refresh"];
+};
+
+const selectSettingsRuntime = (state: RuntimeDashboardState): SettingsRuntimeSlice => ({
+  operational: state.operational,
+  refresh: state.refresh,
+});
+
 export function Settings() {
   const t = useT();
   const { lang } = useI18n();
   const { addNotification } = useNotifications();
-  const { operational, refresh: refreshOperational } = useRuntimeDashboard();
+  const { operational, refresh: refreshOperational } = useRuntimeDashboardSelector(
+    selectSettingsRuntime,
+    shallowEqualSlice,
+  );
   const {
     theme,
     setTheme,

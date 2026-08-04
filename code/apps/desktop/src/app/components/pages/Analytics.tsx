@@ -35,7 +35,7 @@ import {
   type RequestLogRow,
 } from "../../lib/analytics/snapshot";
 import { useSessionTab } from "../../lib/sessionTab";
-import { useRuntimeDashboard } from "../../lib/useRuntimeDashboard";
+import { useRuntimeDashboardSelector, shallowEqualSlice, type RuntimeDashboardState } from "../../lib/useRuntimeDashboard";
 import { classifyEvidence } from "../../lib/state/evidence";
 import { redactString } from "../../lib/security/redaction";
 import { invokeNative, isTauriRuntime } from "../../lib/native";
@@ -59,6 +59,19 @@ type AnalyticsRequestPage = {
   error?: string;
 };
 
+/** Analytics reads the summary evidence only; other slices must not repaint it. */
+type SummaryRuntimeSlice = {
+  payload: RuntimeDashboardState["payload"];
+  status: RuntimeDashboardState["status"];
+  updatedAt: RuntimeDashboardState["updatedAt"];
+};
+
+const selectSummaryRuntime = (state: RuntimeDashboardState): SummaryRuntimeSlice => ({
+  payload: state.payload,
+  status: state.status,
+  updatedAt: state.updatedAt,
+});
+
 export function Analytics() {
   const t = useT();
   const { lang } = useI18n();
@@ -70,7 +83,10 @@ export function Analytics() {
   const [nativeRequestPage, setNativeRequestPage] = useState<AnalyticsRequestPage | null>(null);
   const [nativePageStatus, setNativePageStatus] = useState<"idle" | "loading" | "ready" | "error">("idle");
   const [nativePageError, setNativePageError] = useState<"invalid_cursor" | "invalid_evidence" | "unavailable" | null>(null);
-  const { payload, status: payloadStatus, updatedAt } = useRuntimeDashboard();
+  const { payload, status: payloadStatus, updatedAt } = useRuntimeDashboardSelector(
+    selectSummaryRuntime,
+    shallowEqualSlice,
+  );
   const evidenceState = useMemo(
     () => classifyEvidence({ payload, status: payloadStatus, requireRuntimeIdentity: true }),
     [payload, payloadStatus],
@@ -205,7 +221,7 @@ export function Analytics() {
       <Tabs value={tab} onValueChange={setTab}>
         <TabsList>
           <TabsTrigger value="live">{lang === "zh" ? "价值概览" : "Value overview"}</TabsTrigger>
-          <TabsTrigger value="history">{lang === "zh" ? "历史趋势" : "History"}</TabsTrigger>
+          <TabsTrigger value="history">{lang === "zh" ? "历史趋势" : "Trend history"}</TabsTrigger>
           <TabsTrigger value="parity">{lang === "zh" ? "数据范围" : "Data scope"}</TabsTrigger>
         </TabsList>
 
@@ -233,7 +249,7 @@ export function Analytics() {
             <Metric
               index={2}
               icon={<Coins className="size-3.5" />}
-              label={lang === "zh" ? "物理减少 Token" : "Physical Token Reduction"}
+              label={lang === "zh" ? "物理减少 Token" : "Physical token reduction"}
               value={trafficEvidenceAvailable ? optionalNumber(snapshot.estimatedSavedTokens) : unavailableValue}
               detail={metricDetail(snapshot.estimatedSavedTokens, sourceLabel, lang)}
               color="var(--chart-accent)"
@@ -241,7 +257,7 @@ export function Analytics() {
             <Metric
               index={3}
               icon={<GitBranch className="size-3.5" />}
-              label={lang === "zh" ? "物理减少比例" : "Physical Reduction Rate"}
+              label={lang === "zh" ? "物理减少比例" : "Physical reduction rate"}
               value={trafficEvidenceAvailable && snapshot.estimatedSavingsRate !== null
                 ? `${(snapshot.estimatedSavingsRate * 100).toFixed(1)}%`
                 : unavailableValue}
@@ -285,7 +301,7 @@ export function Analytics() {
               </h3>
               {snapshot.latency ? (
                 <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-                  <Summary label={lang === "zh" ? "有耗时记录" : "Records"} value={nf(snapshot.latency.sampleCount)} />
+                  <Summary label={lang === "zh" ? "有耗时记录" : "Records with timing"} value={nf(snapshot.latency.sampleCount)} />
                   <Summary label={lang === "zh" ? "平均" : "Average"} value={`${snapshot.latency.averageMs.toFixed(1)}ms`} />
                   <Summary label="p50" value={`${snapshot.latency.p50Ms.toFixed(1)}ms`} />
                   <Summary label="p95" value={`${snapshot.latency.p95Ms.toFixed(1)}ms`} />
@@ -293,7 +309,7 @@ export function Analytics() {
               ) : (
                 <NoData
                   title={lang === "zh" ? "暂无压缩耗时记录" : "No compression latency records"}
-                  detail={lang === "zh" ? "当前 latency_ms 仅作为压缩阶段证据；不会推算上游或端到端耗时" : "latency_ms is treated as compression-stage evidence; upstream and end-to-end timing are never inferred"}
+                  detail={lang === "zh" ? "记录的耗时只覆盖压缩阶段，不用于推算上游或端到端延迟" : "Recorded timing covers the compression stage only, and is not used to infer upstream or end-to-end latency"}
                 />
               )}
             </Surface>
@@ -383,7 +399,7 @@ export function Analytics() {
 
           <Surface className="p-4" hover={false}>
             <div className="mb-3 flex items-center justify-between gap-2"><h3 className="text-sm">{lang === "zh" ? "请求明细（有界分页）" : "Request detail (bounded pages)"}</h3><span className="text-xs text-muted-foreground">{requestTotal > 0 ? `${requestTotal} ${lang === "zh" ? (nativePagination ? "条 runtime 记录" : "条当前快照") : (nativePagination ? "runtime records" : "in current snapshot")}` : sourceLabel}</span></div>
-            {nativePageError && <div role="status" className="mb-2 text-xs text-amber-600 dark:text-amber-400">{nativePageError === "invalid_cursor" ? (lang === "zh" ? "分页游标已失效，已显示第一页数据。" : "The page cursor expired. First-page data is shown.") : nativePageError === "invalid_evidence" ? (lang === "zh" ? "分页响应缺少可信的 source、freshness 或 revision 证据，已显示当前摘要快照。" : "The page response lacks trusted source, freshness, or revision evidence. The current summary snapshot is shown.") : (lang === "zh" ? "请求分页暂不可用，已显示当前摘要快照。" : "Request pagination is unavailable. The current summary snapshot is shown.")}</div>}
+            {nativePageError && <div role="status" className="mb-2 text-xs text-amber-600 dark:text-amber-400">{nativePageError === "invalid_cursor" ? (lang === "zh" ? "分页游标已失效，已显示第一页数据。" : "The page cursor expired. First-page data is shown.") : nativePageError === "invalid_evidence" ? (lang === "zh" ? "分页结果缺少可信的来源与时效标记，已显示当前摘要快照。" : "The page result lacks trusted source and freshness markers. The current summary snapshot is shown.") : (lang === "zh" ? "请求分页暂不可用，已显示当前摘要快照。" : "Request pagination is unavailable. The current summary snapshot is shown.")}</div>}
             {nativeRequestPage && <div className="mb-2 text-xs text-muted-foreground">{lang === "zh" ? `明细源 d-token runtime · fresh · r${requestRevision}${summaryRevision === null ? "" : `；摘要 r${summaryRevision}`}${requestRevisionAligned === false ? "。runtime 在两次读取间已更新，明细与摘要需分别解读。" : ""}` : `Detail source d-token runtime · fresh · r${requestRevision}${summaryRevision === null ? "" : `; summary r${summaryRevision}`}${requestRevisionAligned === false ? ". The runtime changed between reads; interpret detail and summary as separate snapshots." : ""}`}</div>}
             {nativeInitialLoading ? <div role="status" className="rounded-lg border border-dashed border-border/60 bg-muted/15 px-3 py-3 text-xs text-muted-foreground">{lang === "zh" ? "正在加载有界请求明细…" : "Loading bounded request detail…"}</div> : visibleRequestRows.length > 0 ? <>
               <div className="overflow-x-auto">
@@ -792,10 +808,10 @@ function coverageRows(snapshot: AnalyticsSnapshot, lang: "zh" | "en") {
     { label: lang === "zh" ? "缓存读写与对齐" : "Cache alignment", available: snapshot.cache !== null },
     { label: lang === "zh" ? "流水线分段耗时" : "Pipeline stage timing", available: snapshot.pipeline !== null },
     { label: lang === "zh" ? "TTFB 与吞吐" : "TTFB and throughput", available: snapshot.pipeline?.upstreamTtfbMs !== null && snapshot.pipeline?.upstreamTtfbMs !== undefined },
-    { label: lang === "zh" ? "缓存 TTL / bust / miss 归因" : "Cache TTL / bust / miss attribution", available: snapshot.cache !== null && (snapshot.cache.busts > 0 || snapshot.cache.misses > 0) },
+    { label: lang === "zh" ? "缓存失效与未命中归因" : "Cache expiry and miss attribution", available: snapshot.cache !== null && (snapshot.cache.busts > 0 || snapshot.cache.misses > 0) },
     { label: lang === "zh" ? "成本与定价来源" : "Cost and pricing source", available: false },
     { label: lang === "zh" ? "输出整形反事实" : "Output-shaping counterfactual", available: false },
-    { label: lang === "zh" ? "Tool schema 节省" : "Tool-schema savings", available: false },
+    { label: lang === "zh" ? "工具定义压缩节省" : "Tool definition savings", available: false },
     { label: lang === "zh" ? "Checkpoint / 周 / 月历史" : "Checkpoint / weekly / monthly history", available: false },
   ];
 }

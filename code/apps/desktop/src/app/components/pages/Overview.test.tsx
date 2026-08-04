@@ -23,6 +23,8 @@ const connection = vi.hoisted(() => ({
 
 vi.mock("../../lib/useRuntimeDashboard", () => ({
   useRuntimeDashboard: () => dashboard.state,
+  useRuntimeDashboardSelector: (selector: (state: unknown) => unknown) => selector(dashboard.state),
+  shallowEqualSlice: () => false,
 }));
 
 vi.mock("../../lib/connectionSetup", () => ({

@@ -4,10 +4,19 @@
  * This file contains d-token-specific layout, accessibility and motion work.
  */
 
+/* Interpolating the custom property lets the grid column and the sidebar
+ * box follow one animated value instead of each transitioning its own
+ * layout-bound property. */
+@property --shell-sidebar-width {
+  syntax: "<length>";
+  inherits: true;
+  initial-value: 184px;
+}
+
 .app-shell {
   --shell-sidebar-width: 184px;
   grid-template-columns: var(--shell-sidebar-width) minmax(0, 1fr);
-  transition: grid-template-columns 200ms linear;
+  transition: --shell-sidebar-width var(--duration-base) var(--ease-standard);
 }
 
 .app-shell.is-sidebar-collapsed {
@@ -16,7 +25,6 @@
 
 .shell-sidebar {
   padding: 8px 0 8px 8px;
-  transition: width 200ms linear, padding 200ms linear;
 }
 
 .shell-sidebar-header {
@@ -103,16 +111,18 @@
 
 .shell-segmented-indicator {
   position: absolute;
+  left: 0;
+  top: 0;
   pointer-events: none;
   border-radius: 6px;
   background: color-mix(in srgb, var(--card) 92%, white 8%);
   box-shadow: 0 2px 10px rgba(15, 23, 42, 0.08);
+  /* Travel runs on the compositor. Size follows the active item without a
+   * transition so a resized control never animates its own layout. */
   transition:
-    left 200ms cubic-bezier(0.2, 0.82, 0.3, 1),
-    top 200ms cubic-bezier(0.2, 0.82, 0.3, 1),
-    width 200ms cubic-bezier(0.2, 0.82, 0.3, 1),
-    height 200ms cubic-bezier(0.2, 0.82, 0.3, 1),
-    opacity 160ms ease;
+    transform var(--duration-base) var(--ease-decelerate),
+    opacity var(--duration-fast) var(--ease-standard);
+  will-change: transform;
 }
 
 .dark .shell-segmented-indicator {
@@ -134,7 +144,7 @@
   color: color-mix(in srgb, var(--sidebar-foreground) 72%, transparent);
   font-size: 12px;
   font-weight: 500;
-  transition: color 180ms ease;
+  transition: color var(--duration-fast) var(--ease-standard);
 }
 
 .shell-segmented-item[aria-checked="true"] {
@@ -168,8 +178,8 @@
   transform-box: fill-box;
   transform-origin: center;
   transition:
-    transform 240ms cubic-bezier(0.22, 1, 0.36, 1),
-    opacity 200ms ease;
+    transform var(--duration-slow) var(--ease-spring),
+    opacity var(--duration-base) var(--ease-standard);
   will-change: transform;
 }
 
@@ -182,7 +192,7 @@
 /* Click scale on the whole control (instant band). */
 .nav-motion-item:active {
   transform: scale(0.92);
-  transition: transform 100ms cubic-bezier(0.22, 1, 0.36, 1);
+  transition: transform var(--duration-instant) var(--ease-spring);
 }
 
 /* --- overview: staggered grid lift --- */

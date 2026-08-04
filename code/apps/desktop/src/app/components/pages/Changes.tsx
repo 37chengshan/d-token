@@ -16,6 +16,8 @@ import { createOperationRequestId, useNotifications } from "../../lib/notificati
 import { presentOperationFailure } from "../../lib/userCopy";
 
 const CHANGES_TABS = ["backup", "history"] as const;
+// Rollback points and change history grow with use; render a bounded window.
+const CHANGES_PAGE_SIZE = 40;
 
 type ChangeSource = "loading" | "desktop" | "browser-preview" | "unavailable" | "stale" | "partial";
 
@@ -87,8 +89,17 @@ export function Changes({ setPage }: { setPage?: (page: PageId) => void } = {}) 
   const [refreshRequestId, setRefreshRequestId] = useState("");
 
   const source = useMemo(() => sourceFromPayload(payload, status), [payload, status]);
-  const rollbackPoints = useMemo(() => buildRollbackPoints(payload, source), [payload, source]);
+  const rollbackPoints = useMemo(() => buildRollbackPoints(payload, source, lang), [payload, source, lang]);
   const historyEntries = useMemo(() => buildChangeHistory(payload, lang), [lang, payload]);
+  const [visibleRollbackCount, setVisibleRollbackCount] = useState(CHANGES_PAGE_SIZE);
+  const [visibleHistoryCount, setVisibleHistoryCount] = useState(CHANGES_PAGE_SIZE);
+  const visibleRollbackPoints = rollbackPoints.slice(0, visibleRollbackCount);
+  const visibleHistoryEntries = historyEntries.slice(0, visibleHistoryCount);
+
+  useEffect(() => {
+    setVisibleRollbackCount(CHANGES_PAGE_SIZE);
+    setVisibleHistoryCount(CHANGES_PAGE_SIZE);
+  }, [payload?.desktop_revision]);
   const unfinishedDrafts = useMemo(() => countUnfinishedDrafts(payload), [payload]);
 
   useEffect(() => {
@@ -238,7 +249,7 @@ export function Changes({ setPage }: { setPage?: (page: PageId) => void } = {}) 
         <TabsContent value="backup" className="mt-4 space-y-4">
           {rollbackPoints.length === 0 ? (
             <Surface className="p-6 text-sm text-muted-foreground">{zh ? "当前没有可用回滚点" : "No rollback points are available"}</Surface>
-          ) : rollbackPoints.map((point) => (
+          ) : visibleRollbackPoints.map((point) => (
             <Surface key={point.id} variant="row" className="p-4">
               <div className="flex flex-wrap items-start justify-between gap-4">
                 <div className="min-w-0">
@@ -248,7 +259,7 @@ export function Changes({ setPage }: { setPage?: (page: PageId) => void } = {}) 
                     <Badge variant={point.currentlyRestorable ? "secondary" : "outline"}>{scopeLabel(point.scope, lang)}</Badge>
                   </div>
                   <div className="mt-1 text-xs text-muted-foreground">{point.time} · {point.files ?? "—"} {zh ? "个文件" : "file(s)"}</div>
-                  {point.transactionId && <div className="mt-1 break-all font-mono text-xs text-muted-foreground">transaction_id={point.transactionId}</div>}
+                  {point.transactionId && <div className="mt-1 break-all text-xs text-muted-foreground">{zh ? "事务编号" : "Transaction"} <span className="font-mono">{point.transactionId}</span></div>}
                   {point.target && <div className="mt-2 break-all font-mono text-xs text-muted-foreground">{point.target}</div>}
                 </div>
                 <Button
@@ -268,12 +279,21 @@ export function Changes({ setPage }: { setPage?: (page: PageId) => void } = {}) 
               </div>
             </Surface>
           ))}
+          {rollbackPoints.length > visibleRollbackPoints.length && (
+            <div className="flex justify-center pt-2">
+              <Button variant="outline" size="sm" onClick={() => setVisibleRollbackCount((count) => count + CHANGES_PAGE_SIZE)}>
+                {zh
+                  ? `加载更多（已显示 ${visibleRollbackPoints.length}/${rollbackPoints.length}）`
+                  : `Load more (${visibleRollbackPoints.length}/${rollbackPoints.length})`}
+              </Button>
+            </div>
+          )}
         </TabsContent>
 
         <TabsContent value="history" className="mt-4 space-y-3">
           {historyEntries.length === 0 ? (
             <Surface className="p-6 text-sm text-muted-foreground">{zh ? "尚无已提交的持久变更记录" : "No committed persistent changes are recorded"}</Surface>
-          ) : historyEntries.map((entry) => (
+          ) : visibleHistoryEntries.map((entry) => (
             <Surface key={entry.id} variant="row" className="p-4">
               <div className="flex items-start gap-3">
                 <History className="mt-0.5 size-4 shrink-0 text-primary" />
@@ -284,7 +304,7 @@ export function Changes({ setPage }: { setPage?: (page: PageId) => void } = {}) 
                   </div>
                   <div className="mt-1 text-xs text-muted-foreground">{entry.timestamp} · {entry.kind}</div>
                   {entry.target && <div className="mt-2 break-all font-mono text-xs text-muted-foreground">{entry.target}</div>}
-                  {entry.rollbackId && <div className="mt-1 text-xs text-muted-foreground">rollback_id={entry.rollbackId}</div>}
+                  {entry.rollbackId && <div className="mt-1 break-all text-xs text-muted-foreground">{zh ? "回退点" : "Rollback point"} <span className="font-mono">{entry.rollbackId}</span></div>}
                   {entry.diff && (
                     <details className="mt-3 text-xs">
                       <summary className="cursor-pointer font-medium text-foreground">{zh ? "查看变更详情" : "View change details"}</summary>
@@ -295,6 +315,15 @@ export function Changes({ setPage }: { setPage?: (page: PageId) => void } = {}) 
               </div>
             </Surface>
           ))}
+          {historyEntries.length > visibleHistoryEntries.length && (
+            <div className="flex justify-center pt-2">
+              <Button variant="outline" size="sm" onClick={() => setVisibleHistoryCount((count) => count + CHANGES_PAGE_SIZE)}>
+                {zh
+                  ? `加载更多（已显示 ${visibleHistoryEntries.length}/${historyEntries.length}）`
+                  : `Load more (${visibleHistoryEntries.length}/${historyEntries.length})`}
+              </Button>
+            </div>
+          )}
         </TabsContent>
       </Tabs>
 
@@ -348,7 +377,7 @@ function sourceBlockedReason(source: ChangeSource, lang: "zh" | "en"): string {
   return zh ? "无法读取可信的本地事务证据，回退已锁定。" : "Trusted local transaction evidence is unavailable; rollback is locked.";
 }
 
-function buildRollbackPoints(payload: Record<string, any> | null, source: ChangeSource): UiRollbackPoint[] {
+function buildRollbackPoints(payload: Record<string, any> | null, source: ChangeSource, lang: "zh" | "en"): UiRollbackPoint[] {
   if (!["desktop", "partial", "stale"].includes(source)) return [];
   const rows = Array.isArray(payload?.backupPoints) ? payload.backupPoints : [];
   return rows.map((row: any) => {
@@ -366,7 +395,10 @@ function buildRollbackPoints(payload: Record<string, any> | null, source: Change
       transactionId: safeText(row.transaction_id, ""),
       integrityVerified,
       currentlyRestorable,
-      blockedReason: safeText(row.blocked_reason ?? row.reason, currentlyRestorable ? "" : "当前状态尚未通过可恢复性预检。"),
+      blockedReason: safeText(
+        row.blocked_reason ?? row.reason,
+        currentlyRestorable ? "" : lang === "zh" ? "当前状态尚未通过可恢复性预检。" : "This point has not passed the restorability preflight.",
+      ),
       expectedCurrentSha256: safeText(row.expected_current_sha256 ?? row.expectedCurrentSha256, ""),
     };
   });

@@ -3,13 +3,17 @@ import { autoUpdateNotification, observableServiceState } from "./RuntimeNotific
 
 describe("observableServiceState", () => {
   it("normalizes managed and unmanaged running instances", () => {
-    expect(observableServiceState({ state: "running" }, "verified")).toBe("running");
-    expect(observableServiceState({ state: "unmanaged_running" }, "verified")).toBe("running");
+    expect(observableServiceState("running", "verified")).toBe("running");
+    expect(observableServiceState("unmanaged_running", "verified")).toBe("running");
   });
 
   it("does not turn loading into a false outage", () => {
-    expect(observableServiceState(null, "loading")).toBeNull();
-    expect(observableServiceState(null, "unavailable")).toBe("unavailable");
+    expect(observableServiceState("", "loading")).toBeNull();
+    expect(observableServiceState("", "unavailable")).toBe("unavailable");
+  });
+
+  it("keeps a verified runtime summary from reporting a transient service probe outage", () => {
+    expect(observableServiceState("", "unavailable", "runtime")).toBe("running");
   });
 });
 

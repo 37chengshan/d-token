@@ -83,6 +83,17 @@ const DEFAULT_RUNTIME_POLL_INTERVAL_MS = 8000;
 const RUNTIME_INVALIDATED_EVENT = "dtoken:runtime-invalidated";
 const RUNTIME_SUMMARY_REFRESH_KEY = "runtime-dashboard-summary";
 
+/**
+ * Compares selected runtime slices field by field. Every poll rebuilds the
+ * snapshot object, so a reference check would repaint each consumer on the
+ * fallback interval even when the fields it reads are unchanged.
+ */
+export function shallowEqualSlice<T extends Record<string, unknown>>(left: T, right: T): boolean {
+  const keys = Object.keys(left);
+  if (keys.length !== Object.keys(right).length) return false;
+  return keys.every((key) => Object.is(left[key], right[key]));
+}
+
 function createRuntimeDashboardStore(initial: RuntimeDashboardState): RuntimeDashboardStore {
   let snapshot = initial;
   const listeners = new Set<() => void>();
@@ -131,7 +142,11 @@ export function RuntimeEvidenceProvider({ children }: { children: ReactNode }) {
   );
 }
 
-/** One app-wide snapshot. Pages must not infer service state from mount-local defaults. */
+/**
+ * One app-wide snapshot. Pages must not infer service state from mount-local
+ * defaults. Prefer useRuntimeDashboardSelector with an explicit slice: this
+ * hook observes every field, so each poll repaints the caller.
+ */
 export function useRuntimeDashboard(intervalMs = DEFAULT_RUNTIME_POLL_INTERVAL_MS): RuntimeDashboardState {
   const store = useContext(RuntimeEvidenceContext);
   const standalone = useRuntimeEvidence(intervalMs, store === null);
@@ -139,7 +154,11 @@ export function useRuntimeDashboard(intervalMs = DEFAULT_RUNTIME_POLL_INTERVAL_M
   return store ? shared : standalone;
 }
 
-/** Subscribe to one runtime slice so unrelated snapshot updates do not repaint the consumer. */
+/**
+ * Subscribe to one runtime slice so unrelated snapshot updates do not repaint
+ * the consumer. Without a provider the caller still needs real evidence, so a
+ * mount-local poll backs the selector instead of an empty snapshot.
+ */
 export function useRuntimeDashboardSelector<T>(
   selector: (state: RuntimeDashboardState) => T,
   isEqual: (left: T, right: T) => boolean = Object.is,
@@ -147,6 +166,8 @@ export function useRuntimeDashboardSelector<T>(
 ): T {
   const contextStore = useContext(RuntimeEvidenceContext);
   const store = suppliedStore === undefined ? contextStore : suppliedStore;
+  const standaloneEnabled = suppliedStore === undefined && contextStore === null;
+  const standalone = useRuntimeEvidence(DEFAULT_RUNTIME_POLL_INTERVAL_MS, standaloneEnabled);
   const selectedRef = useRef<T | undefined>(undefined);
   const selectedInitializedRef = useRef(false);
   const selectorRef = useRef(selector);
@@ -168,8 +189,13 @@ export function useRuntimeDashboardSelector<T>(
   const fallbackStoreRef = useRef<RuntimeDashboardStore | null>(null);
   if (!fallbackStoreRef.current) fallbackStoreRef.current = createRuntimeDashboardStore(fallback.current);
   const activeStore = store ?? fallbackStoreRef.current;
-  if (!selectedInitializedRef.current) {
-    selectedRef.current = selector(activeStore.getSnapshot());
+  const currentSelectionSource = standaloneEnabled ? standalone : activeStore.getSnapshot();
+  const currentSelection = selector(currentSelectionSource);
+  if (
+    !selectedInitializedRef.current
+    || !equalRef.current(selectedRef.current as T, currentSelection)
+  ) {
+    selectedRef.current = currentSelection;
     selectedInitializedRef.current = true;
   }
 
@@ -181,7 +207,8 @@ export function useRuntimeDashboardSelector<T>(
     }
   }), [activeStore]);
 
-  return useSyncExternalStore(subscribe, () => selectedRef.current as T, () => selectedRef.current as T);
+  const subscribed = useSyncExternalStore(subscribe, () => selectedRef.current as T, () => selectedRef.current as T);
+  return standaloneEnabled ? selector(standalone) : subscribed;
 }
 
 /** Full logs, events and transaction history are loaded only by pages that need them. */

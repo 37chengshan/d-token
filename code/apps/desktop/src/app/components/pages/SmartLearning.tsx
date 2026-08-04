@@ -83,7 +83,7 @@ export function SmartLearning() {
     setDiscoveryAction("start");
     try {
       const next = await learningDiscovery.start(refreshDiscovery, roots);
-      addNotification({ dedupeKey: "learning-discovery-started", level: "success", title: lang === "zh" ? "项目扫描已开始" : "Project scan started", message: lang === "zh" ? "正在本机枚举白名单 metadata；不会读取提示词、响应、源码正文或凭据。" : "Allowlisted metadata is being enumerated locally; prompts, responses, source bodies, and credentials are not read.", receipt: { requestId, targetId: next?.job_id ?? "learning-discovery" } });
+      addNotification({ dedupeKey: "learning-discovery-started", level: "success", title: lang === "zh" ? "项目扫描已开始" : "Project scan started", message: lang === "zh" ? "正在本机枚举白名单元数据；不会读取提示词、响应、源码正文或凭据。" : "Allowlisted metadata is being enumerated locally; prompts, responses, source bodies, and credentials are not read.", receipt: { requestId, targetId: next?.job_id ?? "learning-discovery" } });
     } catch (error) {
       const failure = presentOperationFailure("learning", error, lang);
       addNotification({ dedupeKey: "learning-discovery-start-failed", level: "error", title: failure.title, message: failure.message, details: failure.details, receipt: { requestId, targetId: "learning-discovery" } });
@@ -313,7 +313,7 @@ export function SmartLearning() {
 
       <div className="flex items-center gap-2 rounded-lg border border-border/70 bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
         <ShieldCheck className="size-3.5 shrink-0 text-emerald-600" />
-        <span>{lang === "zh" ? "本地枚举受支持 Agent 的会话记录，只索引路径、时间、数量和格式状态等白名单 metadata；不返回或缓存原始提示词、响应、源码与凭据。" : "Supported Agent sessions are enumerated locally using allowlisted path, time, count, and format metadata; raw prompts, responses, source code, and credentials are not returned or cached."}</span>
+        <span>{lang === "zh" ? "本地枚举受支持 Agent 的会话记录，只索引路径、时间、数量和格式状态等白名单元数据；不返回或缓存原始提示词、响应、源码与凭据。" : "Supported Agent sessions are enumerated locally using allowlisted path, time, count, and format metadata; raw prompts, responses, source code, and credentials are not returned or cached."}</span>
       </div>
 
       <Surface className="p-4" hover={false}>
@@ -450,7 +450,7 @@ export function SmartLearning() {
         </div>
       )}
       <OperationDialog open={review !== null} onOpenChange={(open) => { if (!open && !applying) { setReview(null); setWriteError(""); } }} title={lang === "zh" ? "确认写入 d-token 管理区块" : "Confirm d-token managed block write"} summary={lang === "zh" ? "只新增或更新 d-token 标记区块；区块外内容保持不变。" : "Only the d-token marked block is added or updated; content outside it remains unchanged."} impact={review?.target} confirmLabel={lang === "zh" ? "确认原子写入" : "Confirm atomic write"} cancelLabel={t("common.cancel")} risk="warning" pending={applying} confirmDisabled={!review} onConfirm={applyManagedBlock} details={review ? <div className="space-y-2">{writeError && <p className="text-xs text-destructive" role="alert">{writeError}</p>}<pre className="max-h-64 overflow-auto whitespace-pre-wrap rounded-md bg-muted/50 p-3 text-xs">{review.diff}</pre></div> : null} />
-      <OperationDialog open={delegationReview} onOpenChange={setDelegationReview} title={lang === "zh" ? `确认委派给 ${delegationAgent}？` : `Delegate to ${delegationAgent}?`} summary={lang === "zh" ? "Agent 只在选中项目目录运行；提示词通过 stdin 发送，不使用 shell。原始模型输出会在内存中有界读取后立即丢弃，只返回经过字段、长度和敏感内容校验的结构化项目理解。" : "The Agent runs only in the selected project directory; the prompt is sent through stdin without a shell. Raw output is read with an in-memory bound and discarded; only a field-, length-, and sensitivity-validated project context is returned."} impact={`${effectiveProjectRoot} · ${managedText.length} bytes · timeout 120s`} confirmLabel={lang === "zh" ? "确认直接委派" : "Confirm delegation"} cancelLabel={t("common.cancel")} risk="warning" pending={delegationRunning} onConfirm={startDelegation} details={delegationRunning ? <Button variant="outline" onClick={() => void cancelDelegation()}>{lang === "zh" ? "取消正在运行的委派" : "Cancel running delegation"}</Button> : null} />
+      <OperationDialog open={delegationReview} onOpenChange={setDelegationReview} title={lang === "zh" ? `确认委派给 ${delegationAgent}？` : `Delegate to ${delegationAgent}?`} summary={lang === "zh" ? "Agent 只在选中项目目录运行，提示词直接传入进程，不经过命令行解释。原始模型输出会在内存中有界读取后立即丢弃，只返回经过字段、长度和敏感内容校验的结构化项目理解。" : "The Agent runs only in the selected project directory, and the prompt is passed straight to the process without shell interpretation. Raw output is read with an in-memory bound and discarded; only a field-, length-, and sensitivity-validated project context is returned."} impact={`${effectiveProjectRoot} · ${managedText.length} bytes · timeout 120s`} confirmLabel={lang === "zh" ? "确认直接委派" : "Confirm delegation"} cancelLabel={t("common.cancel")} risk="warning" pending={delegationRunning} onConfirm={startDelegation} details={delegationRunning ? <Button variant="outline" onClick={() => void cancelDelegation()}>{lang === "zh" ? "取消正在运行的委派" : "Cancel running delegation"}</Button> : null} />
     </div>
   );
 }
@@ -579,7 +579,7 @@ function sourceSummary(source: LearningSourceState, lang: "zh" | "en") {
   if (source.state === "missing") {
     return lang === "zh" ? "本机未发现会话目录" : "No session directory found on this device";
   }
-  return lang === "zh" ? "未能读取该来源的白名单 metadata" : "Could not read allowlisted metadata from this source";
+  return lang === "zh" ? "未能读取该来源的白名单元数据" : "Could not read allowlisted metadata from this source";
 }
 
 function LearningCandidateRow({ candidate, selected, lang, onSelect }: {

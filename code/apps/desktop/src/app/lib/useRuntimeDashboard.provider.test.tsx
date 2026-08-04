@@ -71,6 +71,24 @@ describe("RuntimeEvidenceProvider performance behavior", () => {
     expect((latest as unknown as RuntimeDashboardState).operational.service.data?.state).toBe("stopped");
   });
 
+  it("recomputes the selected value when only the selector changes", async () => {
+    mocks.invokeNative.mockImplementation(async (command: string) => command === "get_desktop_summary" ? { ...desktop } : { ...service });
+    let mode: "status" | "error" = "status";
+    let observed = "";
+    function Probe() {
+      observed = useRuntimeDashboardSelector((state) => mode === "status" ? state.status : state.error);
+      return <span>{observed}</span>;
+    }
+
+    const rendered = render(<RuntimeEvidenceProvider><Probe /></RuntimeEvidenceProvider>);
+    await waitFor(() => expect(observed).toBe("runtime"));
+
+    mode = "error";
+    rendered.rerender(<RuntimeEvidenceProvider><Probe /></RuntimeEvidenceProvider>);
+
+    expect(observed).toBe("");
+  });
+
   it("maps an unversioned native desktop payload to an explicit partial state", async () => {
     mocks.invokeNative.mockImplementation(async (command: string) => command === "get_desktop_summary"
       ? { source: "dtoken-owned-runtime", desktop_data_source: "dtoken-local-service" }

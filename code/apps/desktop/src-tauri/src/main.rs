@@ -3,6 +3,7 @@ mod autostart;
 mod codebase_memory_control;
 mod learning_discovery;
 mod opencode_adapter;
+mod tray;
 mod upstream_discovery;
 
 use codebase_memory_control::{
@@ -13,15 +14,31 @@ use codebase_memory_control::{
     start_codebase_memory_index, start_codebase_memory_ui, stop_codebase_memory_ui,
     verify_codebase_memory_integration,
 };
+use tray::show_control_plane;
+
 use dtoken_agent_bridge::{BRIDGE_COMPONENT, BRIDGE_PROTOCOL_VERSION, BRIDGE_VERSION};
+use dtoken_config::DtokenConfig;
+use dtoken_config_patcher::agent_transport::{
+    apply_reviewed_agent_transport, preview_clear_agent_transport,
+    preview_configure_agent_transport, verify_agent_transport, AgentTransportOperation,
+    AgentTransportRequest as ManagedAgentTransportRequest,
+};
 use dtoken_config_patcher::{
+    agent::{allowed_agent_config_paths, current_process_scan_context, AgentScanContext},
     agent_integration::{
         apply_agent_integration, get_agent_integration_transaction,
         inspect_agent_integration_evidence, prepare_agent_integration, rollback_agent_integration,
         verify_agent_integration_transaction, AgentIntegrationRequest, AgentIntegrationScope,
-        AgentIntegrationTransactionManifest, AgentIntegrationTransactionState,
+        AgentIntegrationTransactionManifest, AgentIntegrationTransactionState, ManagedMcpLaunch,
+        PreparedAgentIntegration,
     },
     stable_hash, ConfigPatcher, ExpectedFileState,
+};
+use dtoken_context_store::{
+    prepare_memory_capability_transaction_for_runtime, ContextStore, MemoryAccessScope,
+    MemoryCapabilityPermission, MemoryCapabilityRouteBinding, MemoryCapabilityTransactionPlan,
+    MemoryCapabilityTransactionReceipt, MemoryCapabilityTransactionRequest,
+    PreparedMemoryCapabilityTransaction,
 };
 use dtoken_doctor::{
     doctor_repair_modules, DoctorEvidence, DoctorEvidenceKind, DoctorEvidenceState,
@@ -31,6 +48,10 @@ use dtoken_doctor::{
     DoctorSnapshotV3 as DoctorDomainSnapshot, DoctorVerificationState,
 };
 use dtoken_event_ledger::JsonlStore;
+use dtoken_preprocessor::{
+    inspect_managed_rtk_runtime, uninstall_managed_rtk_runtime, ManagedHookPaths,
+    ManagedRtkLifecycle, MAX_MANAGED_RTK_OUTPUT_BYTES, MIN_MANAGED_RTK_OUTPUT_BYTES,
+};
 use dtoken_process::{
     executable_identity_matches, is_process_running, listener_owned_by_pid, process_birth_token,
     sanitize_command_output, terminate_process, ProcessIdentity, ProcessManager,
@@ -38,20 +59,29 @@ use dtoken_process::{
 };
 #[cfg(debug_assertions)]
 use dtoken_process::{opencode_command_plan, run_opencode_model_test};
-use dtoken_types::{ConfigToolKind, RiskLevel};
+use dtoken_types::{
+    agent::{
+        AgentAutoFollowAuthorization, AgentRouteFollowBinding, AgentRouteSyncReceipt,
+        CcSwitchAutoFollowAuthorization, CcSwitchRouteSyncReceipt, HostPlatform, UpstreamSignature,
+    },
+    ConfigToolKind, RiskLevel,
+};
 use opencode_adapter::{
     OpenCodeConnectionReceipt, OpenCodeConnectionRequest, OpenCodeConnectionReview,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{
-    collections::{HashMap, HashSet, VecDeque},
+    collections::{BTreeMap, HashMap, HashSet, VecDeque},
     env, fs,
     io::{Read, Write},
     net::{SocketAddr, TcpStream},
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
-    sync::{Arc, Mutex, OnceLock},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex, OnceLock,
+    },
     thread,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
@@ -66,6 +96,68 @@ const LAST_VERIFIED_DESKTOP_DETAIL: &[&str] = &["dashboard", "last-verified-deta
 const MAX_NATIVE_PERF_OBSERVATIONS: usize = 256;
 static NATIVE_PERF_OBSERVATIONS: OnceLock<Mutex<VecDeque<NativePerfObservation>>> = OnceLock::new();
 static NATIVE_PERF_RUN_ID: OnceLock<String> = OnceLock::new();
+const CC_SWITCH_AUTO_FOLLOW_SCHEMA_VERSION: u8 = 2;
+const AGENT_AUTO_FOLLOW_SCHEMA_VERSION: u8 = 1;
+const CC_SWITCH_AUTO_FOLLOW_POLL_INTERVAL: Duration = Duration::from_secs(10);
+const CC_SWITCH_AUTO_FOLLOW_DEBOUNCE: Duration = Duration::from_millis(750);
+static CC_SWITCH_AUTO_FOLLOW_COORDINATOR: OnceLock<Arc<CcSwitchAutoFollowCoordinator>> =
+    OnceLock::new();
+const HYBRID_AGENT_PREVIEW_TTL_MS: u64 = 10 * 60 * 1_000;
+const HYBRID_AGENT_MEMORY_CAPABILITY_TTL_MS: u64 = 30 * 24 * 60 * 60 * 1_000;
+const MAX_PENDING_HYBRID_AGENT_PREVIEWS: usize = 16;
+static PENDING_HYBRID_AGENT_PREVIEWS: OnceLock<
+    Mutex<HashMap<String, PendingHybridAgentIntegration>>,
+> = OnceLock::new();
+
+#[derive(Debug, Clone, Serialize)]
+struct ManagedAgentCapabilityBinding {
+    agent_id: String,
+    scope: MemoryAccessScope,
+    route_binding: MemoryCapabilityRouteBinding,
+    source_revision: String,
+}
+
+struct PendingHybridAgentIntegration {
+    created_at_ms: u64,
+    draft_digest: String,
+    active_config_sha256: Option<String>,
+    review_digest: String,
+    agent_review_digest: String,
+    agent: PreparedAgentIntegration,
+    capabilities: Vec<PreparedMemoryCapabilityTransaction>,
+    capability_plans: Vec<MemoryCapabilityTransactionPlan>,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+struct ManagedAgentCapabilityReference {
+    agent_id: String,
+    transaction_id: String,
+    target_path: PathBuf,
+    document_sha256: String,
+    review_digest: String,
+    route_binding: MemoryCapabilityRouteBinding,
+    expires_at_ms: u64,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+struct HybridAgentCapabilityManifest {
+    schema_version: u8,
+    agent_transaction_id: String,
+    composite_review_digest: String,
+    active_config_sha256: Option<String>,
+    state: String,
+    capabilities: Vec<ManagedAgentCapabilityReference>,
+    updated_at_ms: u64,
+    failure_reason: Option<String>,
+}
+
+/// Coalesces watcher and fallback-poll notifications. The worker is deliberately
+/// single-flight: config writes are serialized and every execution re-discovers
+/// cc-switch before touching d-token's own route snapshot.
+struct CcSwitchAutoFollowCoordinator {
+    pending: AtomicBool,
+    running: AtomicBool,
+}
 
 #[derive(Clone, Serialize)]
 struct NativePerfObservation {
@@ -145,6 +237,22 @@ struct ActionResult {
     summary: String,
     logs: Vec<ActionLog>,
     tools: Vec<ToolCheck>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ApplyManagedRtkRequest {
+    transaction_id: String,
+    reviewed_host_config_fingerprint: String,
+    reviewed_bridge_sha256: String,
+    max_output_bytes: Option<usize>,
+    confirmed: bool,
+}
+
+#[derive(Debug, Deserialize)]
+struct ClearManagedRtkRequest {
+    transaction_id: String,
+    reviewed_host_config_fingerprint: String,
+    confirmed: bool,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -404,7 +512,7 @@ struct RollbackOpticalConfigRequest {
     rollback_id: String,
 }
 
-#[derive(Clone, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 struct HybridAgentIntegrationDraftRequest {
     agent_ids: Vec<String>,
     scope: String,
@@ -452,6 +560,10 @@ struct ConnectionRouteBindingRequest {
 #[derive(Clone, Deserialize)]
 struct ConnectionRoutePlanRequest {
     discovery_revision: String,
+    #[serde(default)]
+    source_fingerprint: Option<String>,
+    #[serde(default)]
+    source_fingerprint_scope: Option<String>,
     bindings: Vec<ConnectionRouteBindingRequest>,
 }
 
@@ -460,12 +572,51 @@ struct ApplyConnectionRoutePlanRequest {
     plan: ConnectionRoutePlanRequest,
     reviewed_before_sha256: Option<String>,
     reviewed_after_sha256: Option<String>,
+    #[serde(default)]
+    enable_auto_follow: bool,
+}
+
+#[derive(Deserialize)]
+struct FinalizeAgentAutoFollowRequest {
+    expected_route_sha256: String,
 }
 
 #[derive(Deserialize)]
 struct RollbackConnectionRoutePlanRequest {
     rollback_id: String,
     expected_after_sha256: String,
+}
+
+#[derive(Deserialize)]
+struct CcSwitchSyncPlanRequest {
+    /// The cc-switch-owned snapshot revision, not the aggregate Agent +
+    /// cc-switch discovery revision.
+    discovery_revision: String,
+    source_fingerprint: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CcSwitchRouteIdentity {
+    upstream_signature: String,
+    route_signature: String,
+}
+
+#[derive(Deserialize)]
+struct ApplyCcSwitchSyncPlanRequest {
+    plan: CcSwitchSyncPlanRequest,
+    reviewed_before_sha256: Option<String>,
+    reviewed_after_sha256: Option<String>,
+    /// A user may opt in only while confirming a hash-bound initial sync.
+    /// Subsequent changes are still restricted to d-token's active route.
+    #[serde(default)]
+    enable_auto_follow: bool,
+}
+
+#[derive(Deserialize)]
+struct SetCcSwitchAutoFollowRequest {
+    enabled: bool,
+    discovery_revision: Option<String>,
+    source_fingerprint: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -2687,8 +2838,454 @@ fn rollback_optical_config_change(request: RollbackOpticalConfigRequest) -> Valu
     })
 }
 
+fn hybrid_agent_draft_digest(draft: &HybridAgentIntegrationDraftRequest) -> Result<String, String> {
+    serde_json::to_string(draft)
+        .map(|encoded| stable_hash(&encoded))
+        .map_err(|error| format!("Agent integration draft could not be hashed: {error}"))
+}
+
+fn hybrid_agent_composite_review_digest(
+    draft_digest: &str,
+    agent_review_digest: &str,
+    active_config_sha256: Option<&str>,
+    capabilities: &[MemoryCapabilityTransactionPlan],
+) -> Result<String, String> {
+    serde_json::to_string(&json!({
+        "schema_version": 2,
+        "draft_digest": draft_digest,
+        "agent_review_digest": agent_review_digest,
+        "active_config_sha256": active_config_sha256,
+        "capabilities": capabilities,
+    }))
+    .map(|encoded| stable_hash(&encoded))
+    .map_err(|error| format!("Agent integration review could not be hashed: {error}"))
+}
+
+fn pending_hybrid_agent_previews() -> &'static Mutex<HashMap<String, PendingHybridAgentIntegration>>
+{
+    PENDING_HYBRID_AGENT_PREVIEWS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn prune_pending_hybrid_agent_previews(
+    pending: &mut HashMap<String, PendingHybridAgentIntegration>,
+    now_ms: u64,
+) {
+    pending.retain(|_, preview| {
+        now_ms.saturating_sub(preview.created_at_ms) <= HYBRID_AGENT_PREVIEW_TTL_MS
+    });
+    while pending.len() > MAX_PENDING_HYBRID_AGENT_PREVIEWS {
+        let oldest = pending
+            .iter()
+            .min_by_key(|(_, preview)| preview.created_at_ms)
+            .map(|(digest, _)| digest.clone());
+        let Some(oldest) = oldest else {
+            break;
+        };
+        pending.remove(&oldest);
+    }
+}
+
+fn cache_pending_hybrid_agent_preview(
+    prepared: PendingHybridAgentIntegration,
+) -> Result<(), String> {
+    let mut pending = pending_hybrid_agent_previews()
+        .lock()
+        .map_err(|_| "Agent integration preview cache is unavailable".to_string())?;
+    prune_pending_hybrid_agent_previews(&mut pending, epoch_ms());
+    let review_digest = prepared.review_digest.clone();
+    pending.insert(review_digest, prepared);
+    prune_pending_hybrid_agent_previews(&mut pending, epoch_ms());
+    Ok(())
+}
+
+fn take_pending_hybrid_agent_preview(
+    review_digest: &str,
+) -> Result<PendingHybridAgentIntegration, String> {
+    let mut pending = pending_hybrid_agent_previews()
+        .lock()
+        .map_err(|_| "Agent integration preview cache is unavailable".to_string())?;
+    prune_pending_hybrid_agent_previews(&mut pending, epoch_ms());
+    pending.remove(review_digest).ok_or_else(|| {
+        "Agent integration preview is missing or expired; preview the current draft again"
+            .to_string()
+    })
+}
+
+fn active_config_snapshot() -> Result<(String, DtokenConfig, String), String> {
+    let path = active_config_path();
+    let active_config_sha256 = file_sha256(&path)
+        .map_err(|error| format!("Active d-token config is unavailable: {error}"))?;
+    let config = DtokenConfig::load_json(&path)
+        .map_err(|error| format!("Active d-token config is invalid: {error:#}"))?;
+    let config_json = serde_json::to_string(&config)
+        .map_err(|error| format!("Active d-token config could not be normalized: {error}"))?;
+    let config_revision = stable_hash(&config_json);
+    Ok((active_config_sha256, config, config_revision))
+}
+
+fn validate_hybrid_agent_transaction_id(transaction_id: &str) -> Result<(), String> {
+    if transaction_id.is_empty()
+        || transaction_id.len() > 128
+        || !transaction_id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+    {
+        return Err("Agent integration transaction id is invalid".to_string());
+    }
+    Ok(())
+}
+
+fn hybrid_capability_manifest_path(transaction_id: &str) -> Result<PathBuf, String> {
+    validate_hybrid_agent_transaction_id(transaction_id)?;
+    Ok(config_backup_root()
+        .join("agent-integration-capabilities")
+        .join(format!("{transaction_id}.json")))
+}
+
+fn save_hybrid_capability_manifest(
+    manifest: &HybridAgentCapabilityManifest,
+) -> Result<PathBuf, String> {
+    let path = hybrid_capability_manifest_path(&manifest.agent_transaction_id)?;
+    let parent = path
+        .parent()
+        .ok_or_else(|| "Agent capability manifest parent is unavailable".to_string())?;
+    if let Ok(metadata) = fs::symlink_metadata(parent) {
+        if metadata.file_type().is_symlink() || !metadata.is_dir() {
+            return Err("Agent capability manifest parent must be a real directory".to_string());
+        }
+    } else {
+        fs::create_dir_all(parent).map_err(|error| {
+            format!(
+                "Create Agent capability manifest directory {}: {error}",
+                parent.display()
+            )
+        })?;
+    }
+    let bytes = serde_json::to_vec_pretty(manifest)
+        .map_err(|error| format!("Serialize Agent capability manifest: {error}"))?;
+    durable_atomic_write(&path, &bytes)?;
+    Ok(path)
+}
+
+fn load_hybrid_capability_manifest(
+    transaction_id: &str,
+) -> Result<Option<HybridAgentCapabilityManifest>, String> {
+    let path = hybrid_capability_manifest_path(transaction_id)?;
+    let bytes = match fs::read(&path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(format!(
+                "Read Agent capability manifest {}: {error}",
+                path.display()
+            ))
+        }
+    };
+    let manifest: HybridAgentCapabilityManifest = serde_json::from_slice(&bytes)
+        .map_err(|error| format!("Agent capability manifest is invalid: {error}"))?;
+    if manifest.schema_version != 1 || manifest.agent_transaction_id != transaction_id {
+        return Err("Agent capability manifest identity is invalid".to_string());
+    }
+    if manifest.capabilities.len() > 64 {
+        return Err("Agent capability manifest exceeds the capability limit".to_string());
+    }
+    Ok(Some(manifest))
+}
+
+fn capability_target_is_runtime_owned(path: &Path) -> bool {
+    let Some(runtime_dir) = fs::canonicalize(service_data_dir()).ok() else {
+        return false;
+    };
+    let expected_root = runtime_dir.join("memory-capabilities");
+    path.is_absolute() && path.parent() == Some(expected_root.as_path())
+}
+
+fn managed_mcp_context_store_path() -> Result<PathBuf, String> {
+    fs::canonicalize(service_data_dir())
+        .map(|runtime_dir| runtime_dir.join("runtime-state.sqlite3"))
+        .map_err(|error| format!("Managed MCP runtime data directory is unavailable: {error}"))
+}
+
+fn current_memory_capability_route_binding(
+    config: &DtokenConfig,
+    reference: &ManagedAgentCapabilityReference,
+    config_revision: &str,
+) -> Result<MemoryCapabilityRouteBinding, String> {
+    let route = config
+        .find_route(&reference.route_binding.route_id)
+        .ok_or_else(|| {
+            format!(
+                "Managed capability route {} is no longer available",
+                reference.route_binding.route_id
+            )
+        })?;
+    let provider = config
+        .find_provider(&route.target_provider_id)
+        .ok_or_else(|| {
+            format!(
+                "Managed capability provider {} is no longer available",
+                route.target_provider_id
+            )
+        })?;
+    if provider.id != reference.route_binding.provider_id {
+        return Err(format!(
+            "Managed capability provider changed for route {}",
+            route.id
+        ));
+    }
+    if provider.models.len() != 1
+        || provider.models.first().map(String::as_str)
+            != Some(reference.route_binding.model.as_str())
+    {
+        return Err(format!(
+            "Managed capability model changed or became ambiguous for route {}",
+            route.id
+        ));
+    }
+    Ok(MemoryCapabilityRouteBinding {
+        route_id: route.id.clone(),
+        provider_id: provider.id.clone(),
+        model: reference.route_binding.model.clone(),
+        config_revision: config_revision.to_string(),
+    })
+}
+
+fn revoke_hybrid_capabilities(
+    store: &ContextStore,
+    capabilities: &[ManagedAgentCapabilityReference],
+) -> (Vec<MemoryCapabilityTransactionReceipt>, Vec<String>) {
+    let mut receipts = Vec::new();
+    let mut errors = Vec::new();
+    for capability in capabilities.iter().rev() {
+        match store.revoke_memory_capability_transaction(
+            &capability.transaction_id,
+            &capability.document_sha256,
+            epoch_ms().max(1),
+        ) {
+            Ok(receipt) => receipts.push(receipt),
+            Err(error) => errors.push(format!(
+                "{}: {}",
+                capability.transaction_id,
+                sanitize_command_output(&format!("{error:#}"))
+            )),
+        }
+    }
+    (receipts, errors)
+}
+
+fn verify_hybrid_capabilities(
+    manifest: &HybridAgentCapabilityManifest,
+) -> (bool, Vec<Value>, Option<String>) {
+    if manifest.capabilities.is_empty() {
+        return (true, Vec::new(), None);
+    }
+    let (active_config_sha256, config, config_revision) = match active_config_snapshot() {
+        Ok(snapshot) => snapshot,
+        Err(error) => return (false, Vec::new(), Some(error)),
+    };
+    if manifest.active_config_sha256.as_deref() != Some(active_config_sha256.as_str()) {
+        return (
+            false,
+            Vec::new(),
+            Some(
+                "Active d-token config changed after the Agent capability review; re-preview is required"
+                    .to_string(),
+            ),
+        );
+    }
+    let store_path = match managed_mcp_context_store_path() {
+        Ok(path) => path,
+        Err(error) => return (false, Vec::new(), Some(error)),
+    };
+    let store = match ContextStore::open(store_path) {
+        Ok(store) => store,
+        Err(error) => {
+            return (
+                false,
+                Vec::new(),
+                Some(format!(
+                    "Managed capability projection is unavailable: {}",
+                    sanitize_command_output(&format!("{error:#}"))
+                )),
+            )
+        }
+    };
+    let observed_at_ms = epoch_ms().max(1);
+    let mut results = Vec::new();
+    let mut failures = Vec::new();
+    for capability in &manifest.capabilities {
+        if !capability_target_is_runtime_owned(&capability.target_path) {
+            failures.push(format!(
+                "{}: capability target is outside the d-token runtime",
+                capability.transaction_id
+            ));
+            continue;
+        }
+        let expected =
+            match current_memory_capability_route_binding(&config, capability, &config_revision) {
+                Ok(binding) => binding,
+                Err(error) => {
+                    failures.push(format!("{}: {error}", capability.transaction_id));
+                    continue;
+                }
+            };
+        match store.resolve_memory_capability_file(
+            &capability.target_path,
+            &expected,
+            observed_at_ms,
+        ) {
+            Ok(resolved) if resolved.scope.agent_id == capability.agent_id => {
+                results.push(json!({
+                    "agent_id": capability.agent_id,
+                    "transaction_id": capability.transaction_id,
+                    "state": "verified",
+                    "target_path": capability.target_path,
+                    "document_sha256": capability.document_sha256,
+                    "route_binding": resolved.route_binding,
+                    "expires_at_ms": resolved.expires_at_ms,
+                }));
+            }
+            Ok(_) => failures.push(format!(
+                "{}: capability Agent binding changed",
+                capability.transaction_id
+            )),
+            Err(error) => failures.push(format!(
+                "{}: {}",
+                capability.transaction_id,
+                sanitize_command_output(&format!("{error:#}"))
+            )),
+        }
+    }
+    let error = (!failures.is_empty()).then(|| failures.join("; "));
+    (failures.is_empty(), results, error)
+}
+
+fn managed_agent_project_identity(project_root: &Path) -> String {
+    format!(
+        "project-{}",
+        &stable_hash(project_root.to_string_lossy().as_ref())[..32]
+    )
+}
+
+fn managed_agent_session_identity(project_id: &str, agent_id: &str, route_id: &str) -> String {
+    format!(
+        "session-{}",
+        &stable_hash(&format!("{project_id}\n{agent_id}\n{route_id}"))[..32]
+    )
+}
+
+fn resolve_managed_agent_capability_bindings(
+    draft: &HybridAgentIntegrationDraftRequest,
+    config: &DtokenConfig,
+    config_revision: &str,
+) -> Result<Vec<ManagedAgentCapabilityBinding>, String> {
+    if !draft.install_mcp {
+        return Ok(Vec::new());
+    }
+    if draft.scope != "project" {
+        return Err(
+            "Managed SharedContext MCP requires project scope; global memory authorization is refused"
+                .to_string(),
+        );
+    }
+    let project_root = draft
+        .project_root
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+        .map(PathBuf::from)
+        .ok_or_else(|| "Managed SharedContext MCP requires a project root".to_string())?;
+    if !project_root.is_absolute() || !project_root.is_dir() {
+        return Err(
+            "Managed SharedContext MCP project root must be an existing absolute directory"
+                .to_string(),
+        );
+    }
+    let project_root = fs::canonicalize(project_root).map_err(|error| {
+        format!("Managed SharedContext MCP project root is unavailable: {error}")
+    })?;
+    let project_id = managed_agent_project_identity(&project_root);
+    let source_revision = format!("managed-agent-integration-{}", &config_revision[..16]);
+    let selected = draft.agent_ids.iter().collect::<HashSet<_>>();
+    if selected.len() != draft.agent_ids.len() {
+        return Err("Managed SharedContext MCP Agent selection contains duplicates".to_string());
+    }
+
+    let mut bindings = Vec::new();
+    for agent_id in &draft.agent_ids {
+        let matching_instances = config
+            .instances
+            .iter()
+            .filter(|instance| instance.agent == *agent_id)
+            .collect::<Vec<_>>();
+        if matching_instances.is_empty() {
+            return Err(format!(
+                "Managed SharedContext MCP has no active route for Agent {agent_id}"
+            ));
+        }
+        if matching_instances.len() != 1 {
+            return Err(format!(
+                "Managed SharedContext MCP found multiple active routes for Agent {agent_id}; choose one before preview"
+            ));
+        }
+        let instance = matching_instances[0];
+        let route = config.find_route(&instance.route_id).ok_or_else(|| {
+            format!(
+                "Managed SharedContext MCP route {} is unavailable for Agent {agent_id}",
+                instance.route_id
+            )
+        })?;
+        if route.instance_id != instance.id {
+            return Err(format!(
+                "Managed SharedContext MCP route/instance binding is inconsistent for Agent {agent_id}"
+            ));
+        }
+        let provider = config
+            .find_provider(&route.target_provider_id)
+            .ok_or_else(|| {
+                format!(
+                    "Managed SharedContext MCP provider {} is unavailable for Agent {agent_id}",
+                    route.target_provider_id
+                )
+            })?;
+        if provider.models.len() != 1 {
+            return Err(format!(
+                "Managed SharedContext MCP model is ambiguous for Agent {agent_id}; choose exactly one model before preview"
+            ));
+        }
+        let model = provider.models[0].trim();
+        if model.is_empty() {
+            return Err(format!(
+                "Managed SharedContext MCP model is unavailable for Agent {agent_id}"
+            ));
+        }
+        let route_binding = MemoryCapabilityRouteBinding {
+            route_id: route.id.clone(),
+            provider_id: provider.id.clone(),
+            model: model.to_string(),
+            config_revision: config_revision.to_string(),
+        };
+        bindings.push(ManagedAgentCapabilityBinding {
+            agent_id: agent_id.clone(),
+            scope: MemoryAccessScope {
+                project_id: project_id.clone(),
+                agent_id: agent_id.clone(),
+                session_id: Some(managed_agent_session_identity(
+                    &project_id,
+                    agent_id,
+                    &route.id,
+                )),
+            },
+            route_binding,
+            source_revision: source_revision.clone(),
+        });
+    }
+    bindings.sort_by(|left, right| left.agent_id.cmp(&right.agent_id));
+    Ok(bindings)
+}
+
 fn hybrid_agent_integration_request(
     draft: &HybridAgentIntegrationDraftRequest,
+    managed_mcp_launches: BTreeMap<String, ManagedMcpLaunch>,
 ) -> Result<AgentIntegrationRequest, String> {
     let scope = match draft.scope.as_str() {
         "global" => AgentIntegrationScope::Global,
@@ -2701,6 +3298,7 @@ fn hybrid_agent_integration_request(
         scope,
         project_root: draft.project_root.as_deref().map(PathBuf::from),
         bridge_path,
+        managed_mcp_launches,
         install_instructions: draft.install_instructions,
         install_hook_or_plugin: draft.install_hook_or_plugin,
         install_skill: draft.install_skill,
@@ -2710,11 +3308,111 @@ fn hybrid_agent_integration_request(
 
 fn prepare_hybrid_agent_integration(
     draft: &HybridAgentIntegrationDraftRequest,
-) -> Result<dtoken_config_patcher::agent_integration::PreparedAgentIntegration, String> {
-    let request = hybrid_agent_integration_request(draft)?;
+) -> Result<PendingHybridAgentIntegration, String> {
+    let draft_digest = hybrid_agent_draft_digest(draft)?;
+    let (active_config_sha256, config, bindings) = if draft.install_mcp {
+        let (active_config_sha256, config, config_revision) = active_config_snapshot()?;
+        let bindings = resolve_managed_agent_capability_bindings(draft, &config, &config_revision)?;
+        (Some(active_config_sha256), Some(config), bindings)
+    } else {
+        (None, None, Vec::new())
+    };
+    let runtime_path = if draft.install_mcp {
+        Some(resolve_dtoken_proxy_exe()?)
+    } else {
+        None
+    };
+    let data_dir = service_data_dir();
+    if draft.install_mcp {
+        let metadata = fs::symlink_metadata(&data_dir).map_err(|error| {
+            format!("Managed SharedContext MCP runtime data directory is unavailable: {error}")
+        })?;
+        if metadata.file_type().is_symlink() || !metadata.is_dir() {
+            return Err(
+                "Managed SharedContext MCP runtime data path must be an existing directory"
+                    .to_string(),
+            );
+        }
+    }
+    let data_dir = if draft.install_mcp {
+        fs::canonicalize(&data_dir).map_err(|error| {
+            format!("Managed SharedContext MCP runtime data directory is unavailable: {error}")
+        })?
+    } else {
+        data_dir
+    };
+    let issued_at_ms = epoch_ms().max(1);
+    let expires_at_ms = issued_at_ms.saturating_add(HYBRID_AGENT_MEMORY_CAPABILITY_TTL_MS);
+    let mut capabilities = Vec::new();
+    let mut managed_mcp_launches = BTreeMap::new();
+    for binding in bindings {
+        let prepared = prepare_memory_capability_transaction_for_runtime(
+            &data_dir,
+            &MemoryCapabilityTransactionRequest {
+                scope: binding.scope,
+                route_binding: binding.route_binding.clone(),
+                permissions: vec![
+                    MemoryCapabilityPermission::List,
+                    MemoryCapabilityPermission::Export,
+                    MemoryCapabilityPermission::Write,
+                    MemoryCapabilityPermission::Delete,
+                ],
+                source_revision: binding.source_revision,
+                issued_at_ms,
+                expires_at_ms,
+            },
+        )
+        .map_err(|error| {
+            format!(
+                "Managed SharedContext MCP capability plan failed for {}: {error:#}",
+                binding.agent_id
+            )
+        })?;
+        managed_mcp_launches.insert(
+            binding.agent_id,
+            ManagedMcpLaunch {
+                runtime_path: runtime_path
+                    .as_ref()
+                    .expect("runtime path is present when MCP is selected")
+                    .clone(),
+                active_config_path: fs::canonicalize(active_config_path()).map_err(|error| {
+                    format!("Managed SharedContext MCP active config is unavailable: {error}")
+                })?,
+                data_dir: fs::canonicalize(&data_dir).map_err(|error| {
+                    format!("Managed SharedContext MCP runtime data is unavailable: {error}")
+                })?,
+                capability_path: prepared.plan.target_path.clone(),
+                route_id: prepared.plan.route_binding.route_id.clone(),
+                model: prepared.plan.route_binding.model.clone(),
+            },
+        );
+        capabilities.push(prepared);
+    }
+    let request = hybrid_agent_integration_request(draft, managed_mcp_launches)?;
     let home = user_home_dir()?;
-    prepare_agent_integration(&request, &home, &config_backup_root())
-        .map_err(|error| format!("Agent integration plan failed: {error:#}"))
+    let agent = prepare_agent_integration(&request, &home, &config_backup_root())
+        .map_err(|error| format!("Agent integration plan failed: {error:#}"))?;
+    let capability_plans = capabilities
+        .iter()
+        .map(|prepared| prepared.plan.clone())
+        .collect::<Vec<_>>();
+    let review_digest = hybrid_agent_composite_review_digest(
+        &draft_digest,
+        &agent.plan.review_digest,
+        active_config_sha256.as_deref(),
+        &capability_plans,
+    )?;
+    drop(config);
+    Ok(PendingHybridAgentIntegration {
+        created_at_ms: issued_at_ms,
+        draft_digest,
+        active_config_sha256,
+        review_digest,
+        agent_review_digest: agent.plan.review_digest.clone(),
+        agent,
+        capabilities,
+        capability_plans,
+    })
 }
 
 #[tauri::command]
@@ -2801,14 +3499,57 @@ fn get_hybrid_agent_integrations() -> Value {
 #[tauri::command]
 fn preview_hybrid_agent_integration(request: HybridAgentIntegrationDraftRequest) -> Value {
     match prepare_hybrid_agent_integration(&request) {
-        Ok(prepared) => json!({
-            "ok": true,
-            "state": "review",
-            "source": "d-token-agent-integration",
-            "plan": prepared.plan,
-            "requires_explicit_confirmation": true,
-            "privacy": "Preview only; no Agent config, backup, credential, prompt, or transcript was written."
-        }),
+        Ok(prepared) => {
+            let mut plan = match serde_json::to_value(&prepared.agent.plan) {
+                Ok(Value::Object(plan)) => plan,
+                Ok(_) => {
+                    return json!({
+                        "ok": false,
+                        "state": "blocked",
+                        "source": "d-token-agent-integration",
+                        "error": "Agent integration plan shape is invalid",
+                    })
+                }
+                Err(error) => {
+                    return json!({
+                        "ok": false,
+                        "state": "blocked",
+                        "source": "d-token-agent-integration",
+                        "error": sanitize_command_output(&error.to_string()),
+                    })
+                }
+            };
+            plan.insert("schema_version".to_string(), json!(2));
+            plan.insert("review_digest".to_string(), json!(&prepared.review_digest));
+            plan.insert(
+                "agent_review_digest".to_string(),
+                json!(&prepared.agent_review_digest),
+            );
+            plan.insert(
+                "active_config_sha256".to_string(),
+                json!(&prepared.active_config_sha256),
+            );
+            plan.insert(
+                "capabilities".to_string(),
+                json!(&prepared.capability_plans),
+            );
+            if let Err(error) = cache_pending_hybrid_agent_preview(prepared) {
+                return json!({
+                    "ok": false,
+                    "state": "blocked",
+                    "source": "d-token-agent-integration",
+                    "error": sanitize_command_output(&error),
+                });
+            }
+            json!({
+                "ok": true,
+                "state": "review",
+                "source": "d-token-agent-integration",
+                "plan": Value::Object(plan),
+                "requires_explicit_confirmation": true,
+                "privacy": "Preview only; no Agent config, backup, capability, credential, prompt, or transcript was written."
+            })
+        }
         Err(error) => json!({
             "ok": false,
             "state": "blocked",
@@ -2820,62 +3561,396 @@ fn preview_hybrid_agent_integration(request: HybridAgentIntegrationDraftRequest)
 
 #[tauri::command]
 fn apply_hybrid_agent_integration(request: ApplyHybridAgentIntegrationRequest) -> Value {
-    let prepared = match prepare_hybrid_agent_integration(&request.draft) {
+    if request.reviewed_digest.trim().is_empty() {
+        return json!({
+            "ok": false,
+            "state": "blocked",
+            "source": "d-token-agent-integration",
+            "error": "Agent integration apply requires a reviewed digest",
+        });
+    }
+    let prepared = match take_pending_hybrid_agent_preview(&request.reviewed_digest) {
         Ok(prepared) => prepared,
         Err(error) => {
             return json!({"ok": false, "state": "blocked", "error": sanitize_command_output(&error)})
         }
     };
-    match apply_agent_integration(prepared, &config_backup_root(), &request.reviewed_digest) {
-        Ok(receipt) => {
-            let _ = append_desktop_event(
-                "agent_integration_apply",
-                "ok",
-                json!({
-                    "transaction_id": &receipt.transaction_id,
-                    "rollback_ids": &receipt.rollback_ids,
-                    "rollback_point_count": receipt.rollback_ids.len(),
-                    "new_session_required": receipt.new_session_required,
-                }),
-            );
-            json!({
-                "ok": true,
-                "state": "applied",
+    let current_draft_digest = match hybrid_agent_draft_digest(&request.draft) {
+        Ok(digest) => digest,
+        Err(error) => {
+            return json!({
+                "ok": false,
+                "state": "blocked",
                 "source": "d-token-agent-integration",
-                "receipt": receipt,
-                "summary": "Agent integration was written atomically. Verify this transaction before judging activation."
+                "error": sanitize_command_output(&error),
             })
         }
-        Err(error) => json!({
+    };
+    if prepared.review_digest != request.reviewed_digest
+        || prepared.draft_digest != current_draft_digest
+    {
+        return json!({
             "ok": false,
-            "state": "failed",
+            "state": "blocked",
             "source": "d-token-agent-integration",
-            "error": sanitize_command_output(&format!("{error:#}")),
-        }),
+            "error": "Agent integration draft or review changed after preview",
+        });
     }
+    if let Some(expected_sha256) = prepared.active_config_sha256.as_deref() {
+        match file_sha256(&active_config_path()) {
+            Ok(current_sha256) if current_sha256 == expected_sha256 => {}
+            Ok(_) => {
+                return json!({
+                    "ok": false,
+                    "state": "blocked",
+                    "source": "d-token-agent-integration",
+                    "error": "Active d-token config changed after preview; review the current route again",
+                })
+            }
+            Err(error) => {
+                return json!({
+                    "ok": false,
+                    "state": "blocked",
+                    "source": "d-token-agent-integration",
+                    "error": sanitize_command_output(&format!(
+                        "Active d-token config is unavailable: {error}"
+                    )),
+                })
+            }
+        }
+    }
+
+    let PendingHybridAgentIntegration {
+        active_config_sha256,
+        review_digest,
+        agent_review_digest,
+        agent,
+        capabilities,
+        ..
+    } = prepared;
+    let store = if capabilities.is_empty() {
+        None
+    } else {
+        let store_path = match managed_mcp_context_store_path() {
+            Ok(path) => path,
+            Err(error) => {
+                return json!({
+                    "ok": false,
+                    "state": "failed",
+                    "source": "d-token-agent-integration",
+                    "error": sanitize_command_output(&error),
+                });
+            }
+        };
+        match ContextStore::open(store_path) {
+            Ok(store) => Some(store),
+            Err(error) => {
+                return json!({
+                    "ok": false,
+                    "state": "failed",
+                    "source": "d-token-agent-integration",
+                    "error": sanitize_command_output(&format!(
+                        "Managed capability projection is unavailable: {error:#}"
+                    )),
+                })
+            }
+        }
+    };
+    let mut capability_receipts = Vec::new();
+    let mut capability_references = Vec::new();
+    for capability in capabilities {
+        let plan = capability.plan.clone();
+        let receipt = match store
+            .as_ref()
+            .expect("capability store exists when capability plans are present")
+            .apply_memory_capability_transaction(capability, &plan.review_digest)
+        {
+            Ok(receipt) => receipt,
+            Err(error) => {
+                let (rollback_receipts, rollback_errors) = store
+                    .as_ref()
+                    .map(|store| revoke_hybrid_capabilities(store, &capability_references))
+                    .unwrap_or_default();
+                let _ = append_desktop_event(
+                    "agent_integration_apply",
+                    if rollback_errors.is_empty() {
+                        "failed"
+                    } else {
+                        "partial"
+                    },
+                    json!({
+                        "review_digest": &review_digest,
+                        "capability_count": capability_references.len(),
+                        "failure_stage": "capability_apply",
+                        "rollback_error_count": rollback_errors.len(),
+                    }),
+                );
+                return json!({
+                    "ok": false,
+                    "state": if rollback_errors.is_empty() { "failed" } else { "partial" },
+                    "source": "d-token-agent-integration",
+                    "error": sanitize_command_output(&format!(
+                        "Managed capability apply failed: {error:#}"
+                    )),
+                    "capability_receipts": capability_receipts,
+                    "capability_rollback_receipts": rollback_receipts,
+                    "capability_rollback_errors": rollback_errors,
+                });
+            }
+        };
+        capability_references.push(ManagedAgentCapabilityReference {
+            agent_id: plan.scope.agent_id.clone(),
+            transaction_id: plan.transaction_id.clone(),
+            target_path: plan.target_path.clone(),
+            document_sha256: plan.document_sha256.clone(),
+            review_digest: plan.review_digest.clone(),
+            route_binding: plan.route_binding.clone(),
+            expires_at_ms: plan.expires_at_ms,
+        });
+        capability_receipts.push(receipt);
+    }
+
+    let receipt = match apply_agent_integration(agent, &config_backup_root(), &agent_review_digest)
+    {
+        Ok(receipt) => receipt,
+        Err(error) => {
+            let (rollback_receipts, rollback_errors) = store
+                .as_ref()
+                .map(|store| revoke_hybrid_capabilities(store, &capability_references))
+                .unwrap_or_default();
+            let _ = append_desktop_event(
+                "agent_integration_apply",
+                if rollback_errors.is_empty() {
+                    "failed"
+                } else {
+                    "partial"
+                },
+                json!({
+                    "review_digest": &review_digest,
+                    "capability_count": capability_references.len(),
+                    "failure_stage": "agent_apply",
+                    "rollback_error_count": rollback_errors.len(),
+                }),
+            );
+            return json!({
+                "ok": false,
+                "state": if rollback_errors.is_empty() { "failed" } else { "partial" },
+                "source": "d-token-agent-integration",
+                "error": sanitize_command_output(&format!("{error:#}")),
+                "capability_receipts": capability_receipts,
+                "capability_rollback_receipts": rollback_receipts,
+                "capability_rollback_errors": rollback_errors,
+            });
+        }
+    };
+    let verification = match verify_agent_integration_transaction(
+        &receipt.transaction_id,
+        &config_backup_root(),
+    ) {
+        Ok(verification) if verification.ok => verification,
+        Ok(verification) => {
+            let agent_rollback =
+                rollback_agent_integration(&receipt.transaction_id, &config_backup_root());
+            let (capability_rollback_receipts, capability_rollback_errors) = store
+                .as_ref()
+                .map(|store| revoke_hybrid_capabilities(store, &capability_references))
+                .unwrap_or_default();
+            let rollback_error = agent_rollback
+                .as_ref()
+                .err()
+                .map(|error| sanitize_command_output(&format!("{error:#}")));
+            return json!({
+                "ok": false,
+                "state": if rollback_error.is_none() && capability_rollback_errors.is_empty() { "failed" } else { "partial" },
+                "source": "d-token-agent-integration",
+                "error": "Agent integration post-write verification failed; rollback was attempted",
+                "verification": verification,
+                "agent_rollback_error": rollback_error,
+                "capability_rollback_receipts": capability_rollback_receipts,
+                "capability_rollback_errors": capability_rollback_errors,
+            });
+        }
+        Err(error) => {
+            let agent_rollback =
+                rollback_agent_integration(&receipt.transaction_id, &config_backup_root());
+            let (capability_rollback_receipts, capability_rollback_errors) = store
+                .as_ref()
+                .map(|store| revoke_hybrid_capabilities(store, &capability_references))
+                .unwrap_or_default();
+            let rollback_error = agent_rollback
+                .as_ref()
+                .err()
+                .map(|rollback_error| sanitize_command_output(&format!("{rollback_error:#}")));
+            return json!({
+                "ok": false,
+                "state": if rollback_error.is_none() && capability_rollback_errors.is_empty() { "failed" } else { "partial" },
+                "source": "d-token-agent-integration",
+                "error": sanitize_command_output(&format!(
+                    "Agent integration verification failed: {error:#}"
+                )),
+                "agent_rollback_error": rollback_error,
+                "capability_rollback_receipts": capability_rollback_receipts,
+                "capability_rollback_errors": capability_rollback_errors,
+            });
+        }
+    };
+
+    if let Some(expected_sha256) = active_config_sha256.as_deref() {
+        if file_sha256(&active_config_path()).as_deref() != Ok(expected_sha256) {
+            let agent_rollback =
+                rollback_agent_integration(&receipt.transaction_id, &config_backup_root());
+            let (capability_rollback_receipts, capability_rollback_errors) = store
+                .as_ref()
+                .map(|store| revoke_hybrid_capabilities(store, &capability_references))
+                .unwrap_or_default();
+            let rollback_error = agent_rollback
+                .as_ref()
+                .err()
+                .map(|error| sanitize_command_output(&format!("{error:#}")));
+            return json!({
+                "ok": false,
+                "state": if rollback_error.is_none() && capability_rollback_errors.is_empty() { "failed" } else { "partial" },
+                "source": "d-token-agent-integration",
+                "error": "Active d-token config changed during apply; Agent and capability rollback was attempted",
+                "agent_rollback_error": rollback_error,
+                "capability_rollback_receipts": capability_rollback_receipts,
+                "capability_rollback_errors": capability_rollback_errors,
+            });
+        }
+    }
+
+    let manifest_path = if capability_references.is_empty() {
+        None
+    } else {
+        let manifest = HybridAgentCapabilityManifest {
+            schema_version: 1,
+            agent_transaction_id: receipt.transaction_id.clone(),
+            composite_review_digest: review_digest.clone(),
+            active_config_sha256: active_config_sha256.clone(),
+            state: "verified".to_string(),
+            capabilities: capability_references.clone(),
+            updated_at_ms: epoch_ms().max(1),
+            failure_reason: None,
+        };
+        match save_hybrid_capability_manifest(&manifest) {
+            Ok(path) => Some(path),
+            Err(error) => {
+                let agent_rollback =
+                    rollback_agent_integration(&receipt.transaction_id, &config_backup_root());
+                let (capability_rollback_receipts, capability_rollback_errors) = store
+                    .as_ref()
+                    .map(|store| revoke_hybrid_capabilities(store, &capability_references))
+                    .unwrap_or_default();
+                let rollback_error = agent_rollback
+                    .as_ref()
+                    .err()
+                    .map(|rollback_error| sanitize_command_output(&format!("{rollback_error:#}")));
+                return json!({
+                    "ok": false,
+                    "state": if rollback_error.is_none() && capability_rollback_errors.is_empty() { "failed" } else { "partial" },
+                    "source": "d-token-agent-integration",
+                    "error": sanitize_command_output(&format!(
+                        "Capability manifest persistence failed; rollback was attempted: {error}"
+                    )),
+                    "agent_rollback_error": rollback_error,
+                    "capability_rollback_receipts": capability_rollback_receipts,
+                    "capability_rollback_errors": capability_rollback_errors,
+                });
+            }
+        }
+    };
+    let _ = append_desktop_event(
+        "agent_integration_apply",
+        "ok",
+        json!({
+            "transaction_id": &receipt.transaction_id,
+            "composite_review_digest": &review_digest,
+            "rollback_ids": &receipt.rollback_ids,
+            "rollback_point_count": receipt.rollback_ids.len(),
+            "capability_count": capability_references.len(),
+            "new_session_required": receipt.new_session_required,
+        }),
+    );
+    json!({
+        "ok": true,
+        "state": "applied",
+        "source": "d-token-agent-integration",
+        "receipt": receipt,
+        "verification": verification,
+        "composite_review_digest": review_digest,
+        "capability_receipts": capability_receipts,
+        "capability_manifest_path": manifest_path,
+        "summary": "Agent integration and route-bound capabilities were applied and verified atomically."
+    })
 }
 
 #[tauri::command]
 fn verify_hybrid_agent_integration(request: VerifyHybridAgentIntegrationRequest) -> Value {
-    match verify_agent_integration_transaction(&request.transaction_id, &config_backup_root()) {
-        Ok(verification) => json!({
-            "ok": verification.ok,
-            "state": if verification.ok {
-                "verified"
-            } else if verification.verified_targets.is_empty() {
-                "changed"
-            } else {
-                "partial"
-            },
-            "source": "d-token-agent-integration",
-            "verification": verification,
-            "service": dtoken_service_status_value(),
-            "transport": active_route_config_status(),
-        }),
+    let agent_verification =
+        verify_agent_integration_transaction(&request.transaction_id, &config_backup_root());
+    let mut capability_results = Vec::new();
+    let mut capability_error = None;
+    let mut capability_ok = true;
+    let mut capability_manifest = match load_hybrid_capability_manifest(&request.transaction_id) {
+        Ok(manifest) => manifest,
         Err(error) => {
-            json!({"ok": false, "state": "failed", "error": sanitize_command_output(&format!("{error:#}"))})
+            capability_ok = false;
+            capability_error = Some(error);
+            None
+        }
+    };
+    if let Some(manifest) = capability_manifest.as_mut() {
+        let (ok, results, error) = verify_hybrid_capabilities(manifest);
+        capability_ok = ok;
+        capability_results = results;
+        capability_error = error;
+        manifest.state = if ok {
+            "verified".to_string()
+        } else {
+            "changed".to_string()
+        };
+        manifest.failure_reason = capability_error.clone();
+        manifest.updated_at_ms = epoch_ms().max(1);
+        if let Err(error) = save_hybrid_capability_manifest(manifest) {
+            capability_ok = false;
+            capability_error = Some(format!(
+                "Capability verification manifest could not be persisted: {error}"
+            ));
         }
     }
+    let agent_ok = agent_verification.as_ref().is_ok_and(|result| result.ok);
+    let ok = agent_ok && capability_ok;
+    let state = if ok {
+        "verified"
+    } else if agent_verification
+        .as_ref()
+        .is_ok_and(|result| result.verified_targets.is_empty())
+    {
+        "changed"
+    } else {
+        "partial"
+    };
+    let agent_error = agent_verification
+        .as_ref()
+        .err()
+        .map(|error| sanitize_command_output(&format!("{error:#}")));
+    let verification_value = agent_verification.ok();
+    json!({
+        "ok": ok,
+        "state": state,
+        "source": "d-token-agent-integration",
+        "verification": verification_value,
+        "agent_error": agent_error,
+        "capabilities": capability_results,
+        "capability_error": capability_error.map(|error| sanitize_command_output(&error)),
+        "service": dtoken_service_status_value(),
+        "transport": active_route_config_status(),
+        "summary": if ok {
+            "Agent targets and route-bound capabilities were verified."
+        } else {
+            "Agent integration or route-bound capability verification needs attention."
+        }
+    })
 }
 
 #[tauri::command]
@@ -2883,28 +3958,83 @@ fn rollback_hybrid_agent_integration(request: RollbackHybridAgentIntegrationRequ
     if request.transaction_id.trim().is_empty() {
         return json!({"ok": false, "state": "blocked", "error": "Rollback requires a transaction id"});
     }
-    match rollback_agent_integration(&request.transaction_id, &config_backup_root()) {
-        Ok(restored) => {
-            let _ = append_desktop_event(
-                "agent_integration_rollback",
-                "ok",
-                json!({
-                    "transaction_id": &request.transaction_id,
-                    "restored_target_count": restored.len(),
-                }),
-            );
-            json!({
-                "ok": true,
-                "state": "restored",
+    let mut capability_manifest = match load_hybrid_capability_manifest(&request.transaction_id) {
+        Ok(manifest) => manifest,
+        Err(error) => {
+            return json!({
+                "ok": false,
+                "state": "failed",
                 "source": "d-token-agent-integration",
-                "restored_targets": restored,
-                "summary": "Agent integration transaction was restored. Provider credentials were not changed."
+                "error": sanitize_command_output(&error),
             })
         }
-        Err(error) => {
-            json!({"ok": false, "state": "failed", "error": sanitize_command_output(&format!("{error:#}"))})
+    };
+    let agent_rollback = rollback_agent_integration(&request.transaction_id, &config_backup_root());
+    let mut capability_receipts = Vec::new();
+    let mut capability_errors = Vec::new();
+    if let Some(manifest) = capability_manifest.as_mut() {
+        match managed_mcp_context_store_path()
+            .and_then(|path| ContextStore::open(path).map_err(|error| format!("{error:#}")))
+        {
+            Ok(store) => {
+                (capability_receipts, capability_errors) =
+                    revoke_hybrid_capabilities(&store, &manifest.capabilities);
+            }
+            Err(error) => capability_errors.push(sanitize_command_output(&format!(
+                "Managed capability projection is unavailable: {error:#}"
+            ))),
+        }
+        let agent_ok = agent_rollback.is_ok();
+        manifest.state = if agent_ok && capability_errors.is_empty() {
+            "rolled_back".to_string()
+        } else {
+            "partial".to_string()
+        };
+        manifest.failure_reason = if agent_ok && capability_errors.is_empty() {
+            None
+        } else {
+            Some(format!(
+                "agent_rollback_ok={agent_ok}; capability_error_count={}",
+                capability_errors.len()
+            ))
+        };
+        manifest.updated_at_ms = epoch_ms().max(1);
+        if let Err(error) = save_hybrid_capability_manifest(manifest) {
+            capability_errors.push(format!(
+                "Capability rollback manifest could not be persisted: {error}"
+            ));
         }
     }
+    let agent_error = agent_rollback
+        .as_ref()
+        .err()
+        .map(|error| sanitize_command_output(&format!("{error:#}")));
+    let restored = agent_rollback.unwrap_or_default();
+    let ok = agent_error.is_none() && capability_errors.is_empty();
+    let _ = append_desktop_event(
+        "agent_integration_rollback",
+        if ok { "ok" } else { "partial" },
+        json!({
+            "transaction_id": &request.transaction_id,
+            "restored_target_count": restored.len(),
+            "capability_receipt_count": capability_receipts.len(),
+            "capability_error_count": capability_errors.len(),
+        }),
+    );
+    json!({
+        "ok": ok,
+        "state": if ok { "restored" } else { "partial" },
+        "source": "d-token-agent-integration",
+        "restored_targets": restored,
+        "agent_error": agent_error,
+        "capability_receipts": capability_receipts,
+        "capability_errors": capability_errors,
+        "summary": if ok {
+            "Agent integration and route-bound capabilities were restored to the pre-transaction state."
+        } else {
+            "Rollback was incomplete; inspect the Agent and capability receipts before retrying."
+        }
+    })
 }
 
 #[tauri::command]
@@ -2912,12 +4042,32 @@ fn get_hybrid_agent_integration_transaction(
     request: GetHybridAgentIntegrationTransactionRequest,
 ) -> Value {
     match get_agent_integration_transaction(&request.transaction_id, &config_backup_root()) {
-        Ok(transaction) => json!({
-            "ok": true,
-            "state": transaction.state,
-            "source": "d-token-agent-integration",
-            "transaction": transaction,
-        }),
+        Ok(transaction) => match load_hybrid_capability_manifest(&request.transaction_id) {
+            Ok(capability_manifest) => json!({
+                "ok": true,
+                "state": capability_manifest
+                    .as_ref()
+                    .map(|manifest| manifest.state.as_str())
+                    .unwrap_or_else(|| match transaction.state {
+                        AgentIntegrationTransactionState::Applied => "applied",
+                        AgentIntegrationTransactionState::Verified => "verified",
+                        AgentIntegrationTransactionState::Partial => "partial",
+                        AgentIntegrationTransactionState::Changed => "changed",
+                        AgentIntegrationTransactionState::RolledBack => "rolled_back",
+                        AgentIntegrationTransactionState::Failed => "failed",
+                    }),
+                "source": "d-token-agent-integration",
+                "transaction": transaction,
+                "capability_manifest": capability_manifest,
+            }),
+            Err(error) => json!({
+                "ok": false,
+                "state": "partial",
+                "source": "d-token-agent-integration",
+                "transaction": transaction,
+                "error": sanitize_command_output(&error),
+            }),
+        },
         Err(error) => json!({
             "ok": false,
             "state": "unavailable",
@@ -3024,6 +4174,307 @@ fn file_sha256(path: &Path) -> Result<String, String> {
         digest.update(&buffer[..read]);
     }
     Ok(format!("{:x}", digest.finalize()))
+}
+
+fn managed_rtk_root_path() -> PathBuf {
+    service_data_dir().join("managed-rtk")
+}
+
+fn current_host_platform() -> HostPlatform {
+    if cfg!(target_os = "windows") {
+        HostPlatform::Windows
+    } else if cfg!(target_os = "macos") {
+        HostPlatform::Macos
+    } else {
+        HostPlatform::Linux
+    }
+}
+
+fn managed_rtk_host_config_fingerprint() -> Result<String, String> {
+    let path = active_config_path();
+    if !path.is_file() {
+        return Err(
+            "A verified active d-token configuration is required before enabling integrated RTK"
+                .to_string(),
+        );
+    }
+    file_sha256(&path)
+}
+
+#[tauri::command]
+fn get_managed_rtk_status() -> Value {
+    let evidence = inspect_managed_rtk_runtime(&managed_rtk_root_path());
+    json!({
+        "ok": evidence.verified,
+        "state": if evidence.verified && evidence.usage_count > 0 {
+            "active_verified"
+        } else if evidence.verified {
+            "installed_no_usage"
+        } else if evidence.installed {
+            "unverified"
+        } else {
+            "not_installed"
+        },
+        "source": "dtoken-managed-rtk",
+        "evidence": evidence,
+        "writes_performed": false,
+        "privacy": "Status excludes command argv, output, paths, and digests.",
+    })
+}
+
+#[tauri::command]
+fn preview_managed_rtk_install() -> Value {
+    let host_config_fingerprint = match managed_rtk_host_config_fingerprint() {
+        Ok(value) => value,
+        Err(error) => {
+            return json!({
+                "ok": false,
+                "state": "blocked",
+                "summary": error,
+                "writes_performed": false,
+            });
+        }
+    };
+    let bridge_path = match resolve_dtoken_agent_bridge_exe() {
+        Ok(path) => path,
+        Err(error) => {
+            return json!({
+                "ok": false,
+                "state": "blocked",
+                "summary": error,
+                "writes_performed": false,
+            });
+        }
+    };
+    let bridge_sha256 = match file_sha256(&bridge_path) {
+        Ok(value) => value,
+        Err(error) => {
+            return json!({
+                "ok": false,
+                "state": "blocked",
+                "summary": format!("Managed RTK bridge identity is unavailable: {error}"),
+                "writes_performed": false,
+            });
+        }
+    };
+    let transaction_id = format!("rtk-{}", Uuid::new_v4());
+    let lifecycle = ManagedRtkLifecycle::plan(
+        &transaction_id,
+        current_host_platform(),
+        &host_config_fingerprint,
+    );
+    json!({
+        "ok": lifecycle.state() == dtoken_types::ManagedRtkTransactionState::Planned,
+        "state": "review",
+        "source": "dtoken-managed-rtk",
+        "transaction_id": transaction_id,
+        "host_config_fingerprint": host_config_fingerprint,
+        "bridge_sha256": bridge_sha256,
+        "target": managed_rtk_root_path(),
+        "max_output_bytes": 65_536,
+        "requires_explicit_confirmation": true,
+        "writes_performed": false,
+        "summary": "Install a d-token-owned RTK wrapper manifest and verify its bundled bridge identity. Agent command configuration remains a separate reviewed transaction.",
+    })
+}
+
+#[tauri::command]
+fn apply_managed_rtk_install(request: ApplyManagedRtkRequest) -> Value {
+    if !request.confirmed {
+        return json!({
+            "ok": false,
+            "state": "confirmation_required",
+            "writes_performed": false,
+        });
+    }
+    let current_fingerprint = match managed_rtk_host_config_fingerprint() {
+        Ok(value) => value,
+        Err(error) => {
+            return json!({
+                "ok": false,
+                "state": "blocked",
+                "summary": error,
+                "writes_performed": false,
+            });
+        }
+    };
+    if current_fingerprint != request.reviewed_host_config_fingerprint {
+        return json!({
+            "ok": false,
+            "state": "stale_review",
+            "summary": "The active d-token configuration changed after review",
+            "writes_performed": false,
+        });
+    }
+    let bridge_path = match resolve_dtoken_agent_bridge_exe() {
+        Ok(path) => path,
+        Err(error) => {
+            return json!({
+                "ok": false,
+                "state": "blocked",
+                "summary": error,
+                "writes_performed": false,
+            });
+        }
+    };
+    let bridge_sha256 = match file_sha256(&bridge_path) {
+        Ok(value) => value,
+        Err(error) => {
+            return json!({
+                "ok": false,
+                "state": "blocked",
+                "summary": format!("Managed RTK bridge identity is unavailable: {error}"),
+                "writes_performed": false,
+            });
+        }
+    };
+    if bridge_sha256 != request.reviewed_bridge_sha256 {
+        return json!({
+            "ok": false,
+            "state": "stale_review",
+            "summary": "The d-token Agent bridge changed after review",
+            "writes_performed": false,
+        });
+    }
+    let max_output_bytes = request.max_output_bytes.unwrap_or(65_536);
+    if !(MIN_MANAGED_RTK_OUTPUT_BYTES..=MAX_MANAGED_RTK_OUTPUT_BYTES).contains(&max_output_bytes) {
+        return json!({
+            "ok": false,
+            "state": "blocked",
+            "summary": "Managed RTK output limit must be between 1 KiB and 1 MiB",
+            "writes_performed": false,
+        });
+    }
+    let mut lifecycle = ManagedRtkLifecycle::plan(
+        &request.transaction_id,
+        current_host_platform(),
+        &current_fingerprint,
+    );
+    let install = match lifecycle.install_hook(ManagedHookPaths {
+        managed_root: managed_rtk_root_path(),
+        bridge_path,
+        max_output_bytes: Some(max_output_bytes),
+    }) {
+        Ok(receipt) => receipt,
+        Err(error) => {
+            return json!({
+                "ok": false,
+                "state": "failed",
+                "summary": format!("Managed RTK install failed closed: {error:#}"),
+                "writes_performed": false,
+            });
+        }
+    };
+    let verify = match lifecycle.verify_hook() {
+        Ok(receipt) => receipt,
+        Err(error) => {
+            let _ = uninstall_managed_rtk_runtime(&managed_rtk_root_path());
+            return json!({
+                "ok": false,
+                "state": "rolled_back",
+                "summary": format!("Managed RTK verification failed; the manifest was removed: {error:#}"),
+                "writes_performed": false,
+            });
+        }
+    };
+    let evidence = inspect_managed_rtk_runtime(&managed_rtk_root_path());
+    let _ = append_desktop_event(
+        "managed_rtk_installed",
+        "ok",
+        json!({
+            "transaction_id": request.transaction_id,
+            "verified": evidence.verified,
+            "usage_count": evidence.usage_count,
+        }),
+    );
+    json!({
+        "ok": evidence.verified,
+        "state": "installed_verified",
+        "source": "dtoken-managed-rtk",
+        "install_receipt": install,
+        "verify_receipt": verify,
+        "evidence": evidence,
+        "writes_performed": true,
+        "summary": "Managed RTK wrapper installed and verified; it becomes active only after a reviewed Agent command invokes it.",
+    })
+}
+
+#[tauri::command]
+fn preview_managed_rtk_clear() -> Value {
+    let root = managed_rtk_root_path();
+    match dtoken_preprocessor::verify_managed_hook_root(&root, false) {
+        Ok(verification) => json!({
+            "ok": true,
+            "state": "review",
+            "source": "dtoken-managed-rtk",
+            "transaction_id": verification.manifest.transaction_id,
+            "host_config_fingerprint": verification.manifest.host_config_fingerprint,
+            "target": root,
+            "requires_explicit_confirmation": true,
+            "writes_performed": false,
+            "summary": "Remove only the verified d-token-owned RTK manifest and bounded usage receipts.",
+        }),
+        Err(_) => json!({
+            "ok": false,
+            "state": "not_installed_or_unverified",
+            "writes_performed": false,
+            "summary": "No verified d-token-owned RTK manifest is available to clear.",
+        }),
+    }
+}
+
+#[tauri::command]
+fn apply_managed_rtk_clear(request: ClearManagedRtkRequest) -> Value {
+    if !request.confirmed {
+        return json!({
+            "ok": false,
+            "state": "confirmation_required",
+            "writes_performed": false,
+        });
+    }
+    let root = managed_rtk_root_path();
+    let verification = match dtoken_preprocessor::verify_managed_hook_root(&root, false) {
+        Ok(value) => value,
+        Err(_) => {
+            return json!({
+                "ok": false,
+                "state": "not_installed_or_unverified",
+                "writes_performed": false,
+            });
+        }
+    };
+    if verification.manifest.transaction_id != request.transaction_id
+        || verification.manifest.host_config_fingerprint != request.reviewed_host_config_fingerprint
+    {
+        return json!({
+            "ok": false,
+            "state": "stale_review",
+            "writes_performed": false,
+            "summary": "Managed RTK ownership evidence changed after review.",
+        });
+    }
+    match uninstall_managed_rtk_runtime(&root) {
+        Ok(receipt) => {
+            let _ = append_desktop_event(
+                "managed_rtk_uninstalled",
+                "ok",
+                json!({"transaction_id": receipt.transaction_id}),
+            );
+            json!({
+                "ok": true,
+                "state": "uninstalled",
+                "source": "dtoken-managed-rtk",
+                "receipt": receipt,
+                "writes_performed": true,
+            })
+        }
+        Err(error) => json!({
+            "ok": false,
+            "state": "failed",
+            "summary": format!("Managed RTK clear failed closed: {error:#}"),
+            "writes_performed": false,
+        }),
+    }
 }
 
 fn is_sha256(value: &str) -> bool {
@@ -3457,8 +4908,15 @@ fn legacy_managed_process_requires_restart(
 }
 
 fn dtoken_service_status_value() -> Value {
+    dtoken_service_status_value_with_health(service_health_payload_cached())
+}
+
+fn dtoken_service_status_value_fresh() -> Value {
+    dtoken_service_status_value_with_health(service_health_payload())
+}
+
+fn dtoken_service_status_value_with_health(health: Option<Value>) -> Value {
     let manifest = read_service_manifest();
-    let health = service_health_payload_cached();
     let runtime_identity = health
         .as_ref()
         .and_then(|payload| payload.get("runtime_identity").and_then(Value::as_str));
@@ -4438,6 +5896,195 @@ fn prepare_connection_route_plan(
     prepare_connection_route_plan_from_discovery(request, &discovery)
 }
 
+fn merge_connection_route_document(
+    existing: Option<Value>,
+    selected_agents: &[String],
+    new_providers: Vec<Value>,
+    new_routes: Vec<Value>,
+    new_instances: Vec<Value>,
+) -> Result<String, String> {
+    let mut root = match existing {
+        Some(Value::Object(root)) => root,
+        Some(_) => return Err("Active config root must be a JSON object".to_string()),
+        None => serde_json::Map::new(),
+    };
+    let mut providers = root
+        .remove("providers")
+        .map(|value| {
+            value
+                .as_array()
+                .cloned()
+                .ok_or_else(|| "Active config providers must be an array".to_string())
+        })
+        .transpose()?
+        .unwrap_or_default();
+    let mut routes = root
+        .remove("routes")
+        .map(|value| {
+            value
+                .as_array()
+                .cloned()
+                .ok_or_else(|| "Active config routes must be an array".to_string())
+        })
+        .transpose()?
+        .unwrap_or_default();
+    let mut instances = root
+        .remove("instances")
+        .map(|value| {
+            value
+                .as_array()
+                .cloned()
+                .ok_or_else(|| "Active config instances must be an array".to_string())
+        })
+        .transpose()?
+        .unwrap_or_default();
+
+    let selected_route_ids = selected_agents
+        .iter()
+        .map(|agent_id| {
+            safe_slug(
+                &format!("auto-{agent_id}-route"),
+                &format!("auto-{agent_id}"),
+            )
+        })
+        .collect::<HashSet<_>>();
+    let selected_instance_ids = selected_route_ids
+        .iter()
+        .map(|route_id| format!("{route_id}-instance"))
+        .collect::<HashSet<_>>();
+    let removed_provider_ids = routes
+        .iter()
+        .filter(|route| {
+            route
+                .get("id")
+                .and_then(Value::as_str)
+                .is_some_and(|route_id| selected_route_ids.contains(route_id))
+        })
+        .flat_map(|route| {
+            ["target_provider_id", "fallback_provider_id"]
+                .into_iter()
+                .filter_map(|field| route.get(field).and_then(Value::as_str))
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        })
+        .collect::<HashSet<_>>();
+    routes.retain(|route| {
+        !route
+            .get("id")
+            .and_then(Value::as_str)
+            .is_some_and(|route_id| selected_route_ids.contains(route_id))
+    });
+    instances.retain(|instance| {
+        !instance
+            .get("id")
+            .and_then(Value::as_str)
+            .is_some_and(|instance_id| selected_instance_ids.contains(instance_id))
+    });
+    let preserved_provider_references = routes
+        .iter()
+        .flat_map(|route| {
+            ["target_provider_id", "fallback_provider_id"]
+                .into_iter()
+                .filter_map(|field| route.get(field).and_then(Value::as_str))
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        })
+        .collect::<HashSet<_>>();
+    let new_provider_ids = new_providers
+        .iter()
+        .filter_map(|provider| provider.get("id").and_then(Value::as_str))
+        .map(str::to_string)
+        .collect::<HashSet<_>>();
+    providers.retain(|provider| {
+        let Some(provider_id) = provider.get("id").and_then(Value::as_str) else {
+            return true;
+        };
+        !new_provider_ids.contains(provider_id)
+            && (!removed_provider_ids.contains(provider_id)
+                || preserved_provider_references.contains(provider_id))
+    });
+
+    providers.extend(new_providers);
+    routes.extend(new_routes);
+    instances.extend(new_instances);
+    root.insert("providers".to_string(), Value::Array(providers));
+    root.insert("routes".to_string(), Value::Array(routes));
+    root.insert("instances".to_string(), Value::Array(instances));
+    let content = serde_json::to_string_pretty(&Value::Object(root))
+        .map_err(|error| format!("Connection route plan serialize failed: {error}"))?;
+    let parsed = serde_json::from_str::<DtokenConfig>(&content)
+        .map_err(|error| format!("Connection route plan is not a valid d-token config: {error}"))?;
+    validate_connection_route_config(&parsed)?;
+    Ok(content)
+}
+
+fn validate_connection_route_config(config: &DtokenConfig) -> Result<(), String> {
+    let mut provider_ids = HashSet::new();
+    for provider in &config.providers {
+        if !provider_ids.insert(provider.id.as_str()) {
+            return Err(format!(
+                "Connection route plan contains duplicate provider {}",
+                provider.id
+            ));
+        }
+        if provider_targets_local_listener(&provider.base_url, DTOKEN_SERVICE_PORT) {
+            return Err(format!(
+                "Connection route plan provider {} loops back into d-token",
+                provider.id
+            ));
+        }
+    }
+    let mut route_ids = HashSet::new();
+    for route in &config.routes {
+        if !route_ids.insert(route.id.as_str()) {
+            return Err(format!(
+                "Connection route plan contains duplicate route {}",
+                route.id
+            ));
+        }
+        if !provider_ids.contains(route.target_provider_id.as_str()) {
+            return Err(format!(
+                "Connection route {} references a missing target provider",
+                route.id
+            ));
+        }
+        if route
+            .fallback_provider_id
+            .as_deref()
+            .is_some_and(|provider_id| !provider_ids.contains(provider_id))
+        {
+            return Err(format!(
+                "Connection route {} references a missing fallback provider",
+                route.id
+            ));
+        }
+    }
+    let mut instance_ids = HashSet::new();
+    for instance in &config.instances {
+        if !instance_ids.insert(instance.id.as_str()) {
+            return Err(format!(
+                "Connection route plan contains duplicate instance {}",
+                instance.id
+            ));
+        }
+        if !route_ids.contains(instance.route_id.as_str()) {
+            return Err(format!(
+                "Connection instance {} references a missing route",
+                instance.id
+            ));
+        }
+    }
+    for route in &config.routes {
+        if !instance_ids.contains(route.instance_id.as_str()) {
+            return Err(format!(
+                "Connection route {} references a missing instance",
+                route.id
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn prepare_connection_route_plan_from_discovery(
     request: &ConnectionRoutePlanRequest,
     discovery: &Value,
@@ -4447,15 +6094,68 @@ fn prepare_connection_route_plan_from_discovery(
             "Connection plan must contain between one and sixteen Agent bindings".to_string(),
         );
     }
-    let current_revision = discovery
-        .get("revision")
-        .and_then(Value::as_str)
-        .ok_or_else(|| "Current discovery revision is unavailable".to_string())?;
+    let requested_agent_ids = request
+        .bindings
+        .iter()
+        .map(|binding| binding.agent_id.clone())
+        .collect::<Vec<_>>();
+    let scoped_agent_fingerprint = (request.source_fingerprint_scope.as_deref()
+        == Some("agent_configs"))
+    .then(|| agent_config_source_fingerprint(discovery, &requested_agent_ids))
+    .transpose()?;
+    let current_revision = if request.source_fingerprint_scope.as_deref() == Some("cc_switch") {
+        discovery
+            .get("external_config_snapshot")
+            .and_then(|snapshot| snapshot.get("cc_switch"))
+            .and_then(|cc_switch| cc_switch.get("revision"))
+            .and_then(Value::as_str)
+            .ok_or_else(|| "Current cc-switch revision is unavailable".to_string())?
+            .to_string()
+    } else if let Some(fingerprint) = scoped_agent_fingerprint.as_deref() {
+        format!("agent-config-{fingerprint}")
+    } else {
+        discovery
+            .get("revision")
+            .and_then(Value::as_str)
+            .ok_or_else(|| "Current discovery revision is unavailable".to_string())?
+            .to_string()
+    };
     if current_revision != request.discovery_revision {
         return Err(
             "Agent or upstream configuration changed after discovery; scan again before review"
                 .to_string(),
         );
+    }
+    if let Some(reviewed_fingerprint) = request.source_fingerprint.as_deref() {
+        let snapshot = discovery
+            .get("external_config_snapshot")
+            .ok_or_else(|| "External configuration snapshot is unavailable".to_string())?;
+        let (current_fingerprint, drift_error) = if request.source_fingerprint_scope.as_deref()
+            == Some("cc_switch")
+        {
+            (
+                snapshot
+                    .get("cc_switch")
+                    .and_then(|cc_switch| cc_switch.get("fingerprint"))
+                    .and_then(Value::as_str),
+                "cc-switch configuration changed after review; scan again before apply",
+            )
+        } else if request.source_fingerprint_scope.as_deref() == Some("agent_configs") {
+            (
+                scoped_agent_fingerprint.as_deref(),
+                "External Agent configuration changed after review; scan again before apply",
+            )
+        } else {
+            (
+                    snapshot.get("fingerprint").and_then(Value::as_str),
+                    "External Agent or cc-switch configuration changed after review; scan again before apply",
+                )
+        };
+        let current_fingerprint = current_fingerprint
+            .ok_or_else(|| "External configuration fingerprint is unavailable".to_string())?;
+        if current_fingerprint != reviewed_fingerprint {
+            return Err(drift_error.to_string());
+        }
     }
     let discovered_bindings = discovery
         .get("agent_bindings")
@@ -4488,7 +6188,8 @@ fn prepare_connection_route_plan_from_discovery(
         if matches!(
             binding.get("capability").and_then(Value::as_str),
             Some("prompt-only" | "manual-only")
-        ) {
+        ) && binding.get("can_configure").and_then(Value::as_bool) != Some(true)
+        {
             return Err(format!(
                 "Agent {agent_id} does not support an automatic connection plan"
             ));
@@ -4626,18 +6327,22 @@ fn prepare_connection_route_plan_from_discovery(
     if routes.is_empty() {
         return Err("Connection plan did not produce a routable upstream".to_string());
     }
-    let content = serde_json::to_string_pretty(&json!({
-        "providers": providers,
-        "routes": routes,
-        "instances": instances,
-    }))
-    .map_err(|error| format!("Connection route plan serialize failed: {error}"))?;
     let parent = active_config_path()
         .parent()
         .map(Path::to_path_buf)
         .ok_or_else(|| "Active config parent path is unavailable".to_string())?;
     fs::create_dir_all(&parent)
         .map_err(|error| format!("Active config directory create failed: {error}"))?;
+    let existing = match fs::read_to_string(active_config_path()) {
+        Ok(content) => Some(
+            serde_json::from_str::<Value>(&content)
+                .map_err(|error| format!("Active config is invalid JSON: {error}"))?,
+        ),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => return Err(format!("Active config could not be read: {error}")),
+    };
+    let content =
+        merge_connection_route_document(existing, &selected_agents, providers, routes, instances)?;
     let prepared = config_patcher()
         .prepare_change(
             patchable_active_config_path()?,
@@ -4647,7 +6352,7 @@ fn prepare_connection_route_plan_from_discovery(
             RiskLevel::Medium,
         )
         .map_err(|error| format!("Connection route review could not be prepared: {error:#}"))?;
-    Ok((current_revision.to_string(), prepared, selected_agents))
+    Ok((current_revision, prepared, selected_agents))
 }
 
 fn preview_connection_route_plan_value(request: ConnectionRoutePlanRequest) -> Value {
@@ -4679,6 +6384,2124 @@ fn preview_connection_route_plan_value(request: ConnectionRoutePlanRequest) -> V
     }
 }
 
+fn normalize_follow_endpoint(value: &str) -> Result<String, String> {
+    let parsed = url::Url::parse(value)
+        .map_err(|_| "Agent upstream endpoint is not a valid URL".to_string())?;
+    if !matches!(parsed.scheme(), "http" | "https")
+        || !parsed.username().is_empty()
+        || parsed.password().is_some()
+        || parsed.query().is_some()
+        || parsed.fragment().is_some()
+    {
+        return Err(
+            "Agent upstream endpoint is unsupported or contains credential-like metadata"
+                .to_string(),
+        );
+    }
+    let normalized = parsed.to_string().trim_end_matches('/').to_string();
+    if provider_targets_local_listener(&normalized, DTOKEN_SERVICE_PORT) {
+        return Err("Agent upstream points back to the d-token listener".to_string());
+    }
+    Ok(normalized)
+}
+
+fn agent_follow_upstream_signature(binding: &AgentRouteFollowBinding) -> String {
+    stable_hash(
+        &json!({
+            "agent_id": binding.agent_id,
+            "provider_id": binding.upstream.provider_id,
+            "candidate_source": binding.candidate_source,
+            "protocol": binding.upstream.protocol,
+            "endpoint": binding.upstream.normalized_endpoint,
+            "profile_scope": binding.upstream.profile_scope,
+        })
+        .to_string(),
+    )
+}
+
+fn agent_follow_route_signature(bindings: &[AgentRouteFollowBinding]) -> String {
+    let mut stable = bindings
+        .iter()
+        .map(|binding| {
+            json!({
+                "agent_id": binding.agent_id,
+                "upstream_signature": agent_follow_upstream_signature(binding),
+                "model": binding.upstream.model,
+            })
+        })
+        .collect::<Vec<_>>();
+    stable.sort_by(|left, right| {
+        left.get("agent_id")
+            .and_then(Value::as_str)
+            .cmp(&right.get("agent_id").and_then(Value::as_str))
+    });
+    stable_hash(&Value::Array(stable).to_string())
+}
+
+fn agent_follow_binding_from_candidate(
+    agent_id: &str,
+    candidate: &Value,
+    model: &str,
+) -> Result<AgentRouteFollowBinding, String> {
+    if candidate.get("auth_mode").and_then(Value::as_str) != Some("none") {
+        return Err(format!(
+            "The current upstream credential for {agent_id} cannot be followed automatically"
+        ));
+    }
+    if candidate
+        .get("confidence")
+        .and_then(Value::as_u64)
+        .is_some_and(|confidence| confidence < 70)
+    {
+        return Err(format!(
+            "The current upstream for {agent_id} has insufficient discovery confidence"
+        ));
+    }
+    if model.trim().is_empty()
+        || model.len() > 256
+        || model.contains(['\n', '\r', '\0'])
+        || !candidate
+            .get("models")
+            .and_then(Value::as_array)
+            .is_some_and(|models| models.iter().any(|value| value.as_str() == Some(model)))
+    {
+        return Err(format!(
+            "The current upstream model for {agent_id} is unavailable or ambiguous"
+        ));
+    }
+    let candidate_id = candidate
+        .get("id")
+        .and_then(Value::as_str)
+        .ok_or_else(|| format!("The current upstream id for {agent_id} is unavailable"))?;
+    let candidate_source = candidate
+        .get("source")
+        .and_then(Value::as_str)
+        .ok_or_else(|| format!("The current upstream source for {agent_id} is unavailable"))?;
+    let endpoint = candidate
+        .get("base_url")
+        .and_then(Value::as_str)
+        .ok_or_else(|| format!("The current upstream endpoint for {agent_id} is unavailable"))
+        .and_then(normalize_follow_endpoint)?;
+    let protocol = parse_protocol(
+        candidate
+            .get("protocol")
+            .and_then(Value::as_str)
+            .unwrap_or("open_ai"),
+    )
+    .to_string();
+    Ok(AgentRouteFollowBinding {
+        agent_id: agent_id.to_string(),
+        candidate_id: candidate_id.to_string(),
+        candidate_source: candidate_source.to_string(),
+        upstream: UpstreamSignature {
+            provider_id: candidate_id.to_string(),
+            model: model.to_string(),
+            protocol,
+            normalized_endpoint: endpoint,
+            profile_scope: Some(candidate_source.to_string()),
+        },
+    })
+}
+
+fn agent_config_fingerprints(
+    discovery: &Value,
+    agent_ids: &[String],
+) -> Result<BTreeMap<String, String>, String> {
+    let configs = discovery
+        .get("external_config_snapshot")
+        .and_then(|snapshot| snapshot.get("agent_configs"))
+        .and_then(Value::as_array)
+        .ok_or_else(|| "External Agent configuration snapshot is unavailable".to_string())?;
+    let requested = agent_ids.iter().map(String::as_str).collect::<HashSet<_>>();
+    let mut grouped = BTreeMap::<String, Vec<Value>>::new();
+    for config in configs {
+        let Some(agent_id) = config.get("agent_id").and_then(Value::as_str) else {
+            continue;
+        };
+        if !requested.contains(agent_id) {
+            continue;
+        }
+        grouped
+            .entry(agent_id.to_string())
+            .or_default()
+            .push(json!({
+                "path": config.get("path"),
+                "state": config.get("state"),
+                "fingerprint": config.get("fingerprint"),
+            }));
+    }
+    let mut fingerprints = BTreeMap::new();
+    for agent_id in agent_ids {
+        let mut entries = grouped.remove(agent_id).unwrap_or_default();
+        entries.sort_by(|left, right| {
+            left.get("path")
+                .and_then(Value::as_str)
+                .cmp(&right.get("path").and_then(Value::as_str))
+        });
+        fingerprints.insert(
+            agent_id.clone(),
+            stable_hash(
+                &json!({
+                    "agent_id": agent_id,
+                    "configs": entries,
+                })
+                .to_string(),
+            ),
+        );
+    }
+    Ok(fingerprints)
+}
+
+fn agent_config_source_fingerprint(
+    discovery: &Value,
+    agent_ids: &[String],
+) -> Result<String, String> {
+    let mut ids = agent_ids.to_vec();
+    ids.sort();
+    ids.dedup();
+    Ok(stable_hash(
+        &serde_json::to_string(&agent_config_fingerprints(discovery, &ids)?)
+            .map_err(|error| format!("Agent source fingerprint serialize failed: {error}"))?,
+    ))
+}
+
+fn current_dtoken_transport_model(discovery: &Value, agent_id: &str) -> Option<String> {
+    let mut models = discovery
+        .get("candidates")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|candidate| {
+            candidate.get("active").and_then(Value::as_bool) == Some(true)
+                && candidate
+                    .get("agent_ids")
+                    .and_then(Value::as_array)
+                    .is_some_and(|agent_ids| {
+                        agent_ids
+                            .iter()
+                            .any(|value| value.as_str() == Some(agent_id))
+                    })
+                && candidate
+                    .get("base_url")
+                    .and_then(Value::as_str)
+                    .is_some_and(|endpoint| {
+                        provider_targets_local_listener(endpoint, DTOKEN_SERVICE_PORT)
+                    })
+        })
+        .flat_map(|candidate| {
+            candidate
+                .get("models")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+                .map(str::to_string)
+        })
+        .collect::<Vec<_>>();
+    models.sort();
+    models.dedup();
+    (models.len() == 1).then(|| models.remove(0))
+}
+
+fn selected_agent_follow_binding(
+    discovery: &Value,
+    request: &ConnectionRouteBindingRequest,
+) -> Result<AgentRouteFollowBinding, String> {
+    let binding = discovery
+        .get("agent_bindings")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .find(|binding| {
+            binding.get("agent_id").and_then(Value::as_str) == Some(request.agent_id.as_str())
+        })
+        .ok_or_else(|| format!("Agent {} is no longer discoverable", request.agent_id))?;
+    let candidate = binding
+        .get("candidates")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .find(|candidate| {
+            candidate.get("id").and_then(Value::as_str) == Some(request.candidate_id.as_str())
+                && candidate.get("source").and_then(Value::as_str)
+                    == Some(request.candidate_source.as_str())
+        })
+        .ok_or_else(|| {
+            format!(
+                "The reviewed upstream for {} is no longer discoverable",
+                request.agent_id
+            )
+        })?;
+    agent_follow_binding_from_candidate(&request.agent_id, candidate, &request.model)
+}
+
+fn authorizable_agent_upstream_signatures(
+    discovery: &Value,
+    agent_id: &str,
+) -> Result<Vec<String>, String> {
+    let binding = discovery
+        .get("agent_bindings")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .find(|binding| binding.get("agent_id").and_then(Value::as_str) == Some(agent_id))
+        .ok_or_else(|| format!("Agent {agent_id} is no longer discoverable"))?;
+    let mut signatures = binding
+        .get("candidates")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|candidate| {
+            candidate.get("auth_mode").and_then(Value::as_str) == Some("none")
+                && candidate
+                    .get("source")
+                    .and_then(Value::as_str)
+                    .is_some_and(|source| !source.starts_with("cc-switch:"))
+                && candidate
+                    .get("confidence")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(100)
+                    >= 70
+        })
+        .filter_map(|candidate| {
+            let model = candidate
+                .get("models")
+                .and_then(Value::as_array)?
+                .first()?
+                .as_str()?;
+            let binding = agent_follow_binding_from_candidate(agent_id, candidate, model).ok()?;
+            Some(agent_follow_upstream_signature(&binding))
+        })
+        .collect::<Vec<_>>();
+    signatures.sort();
+    signatures.dedup();
+    if signatures.is_empty() {
+        return Err(format!(
+            "Agent {agent_id} has no credential-free upstream identity safe for follow mode"
+        ));
+    }
+    Ok(signatures)
+}
+
+fn default_agent_auto_follow_authorization() -> AgentAutoFollowAuthorization {
+    AgentAutoFollowAuthorization {
+        schema_version: AGENT_AUTO_FOLLOW_SCHEMA_VERSION,
+        enabled: false,
+        authorized_at_ms: 0,
+        authorized_upstream_signatures: BTreeMap::new(),
+        last_synced_bindings: Vec::new(),
+        last_observed_config_fingerprints: BTreeMap::new(),
+        last_observed_source_fingerprint: None,
+        last_synced_source_fingerprint: None,
+        last_synced_route_signature: None,
+        active_config_sha256: String::new(),
+        runtime_identity: None,
+        last_sync_state: "not_authorized".to_string(),
+    }
+}
+
+fn load_agent_auto_follow_authorization() -> AgentAutoFollowAuthorization {
+    read_app_state(&["routing", "agent-auto-follow.json"])
+        .ok()
+        .and_then(|value| serde_json::from_value(value).ok())
+        .filter(|authorization: &AgentAutoFollowAuthorization| {
+            authorization.schema_version == AGENT_AUTO_FOLLOW_SCHEMA_VERSION
+        })
+        .unwrap_or_else(default_agent_auto_follow_authorization)
+}
+
+fn save_agent_auto_follow_authorization(
+    authorization: &AgentAutoFollowAuthorization,
+) -> Result<(), String> {
+    let value = serde_json::to_value(authorization)
+        .map_err(|error| format!("Agent follow authorization serialize failed: {error}"))?;
+    write_json_app_state(&["routing", "agent-auto-follow.json"], &value).map(|_| ())
+}
+
+fn stage_agent_auto_follow_authorization(
+    plan: &ConnectionRoutePlanRequest,
+    discovery: &Value,
+    active_config_sha256: &str,
+) -> Result<Option<AgentAutoFollowAuthorization>, String> {
+    let selected = plan
+        .bindings
+        .iter()
+        .filter(|binding| !binding.candidate_source.starts_with("cc-switch:"))
+        .collect::<Vec<_>>();
+    if selected.is_empty() {
+        return Ok(None);
+    }
+    let agent_ids = selected
+        .iter()
+        .map(|binding| binding.agent_id.clone())
+        .collect::<Vec<_>>();
+    let mut bindings = Vec::with_capacity(selected.len());
+    let mut authorized_upstream_signatures = BTreeMap::new();
+    for request in selected {
+        let binding = selected_agent_follow_binding(discovery, request)?;
+        let signatures = authorizable_agent_upstream_signatures(discovery, &request.agent_id)?;
+        if !signatures.contains(&agent_follow_upstream_signature(&binding)) {
+            return Err(format!(
+                "The reviewed upstream for {} is outside the safe follow set",
+                request.agent_id
+            ));
+        }
+        authorized_upstream_signatures.insert(request.agent_id.clone(), signatures);
+        bindings.push(binding);
+    }
+    bindings.sort_by(|left, right| left.agent_id.cmp(&right.agent_id));
+    let config_fingerprints = agent_config_fingerprints(discovery, &agent_ids)?;
+    let source_fingerprint = agent_config_source_fingerprint(discovery, &agent_ids)?;
+    Ok(Some(AgentAutoFollowAuthorization {
+        schema_version: AGENT_AUTO_FOLLOW_SCHEMA_VERSION,
+        enabled: false,
+        authorized_at_ms: epoch_ms(),
+        authorized_upstream_signatures,
+        last_synced_route_signature: Some(agent_follow_route_signature(&bindings)),
+        last_synced_bindings: bindings,
+        last_observed_config_fingerprints: config_fingerprints,
+        last_observed_source_fingerprint: Some(source_fingerprint.clone()),
+        last_synced_source_fingerprint: Some(source_fingerprint),
+        active_config_sha256: active_config_sha256.to_string(),
+        runtime_identity: None,
+        last_sync_state: "pending_runtime_verification".to_string(),
+    }))
+}
+
+fn active_config_sha256() -> Result<String, String> {
+    fs::read_to_string(active_config_path())
+        .map(|content| stable_hash(&content))
+        .map_err(|error| format!("Active route config could not be hashed: {error}"))
+}
+
+fn finalize_agent_auto_follow_authorization_value(
+    request: FinalizeAgentAutoFollowRequest,
+) -> Value {
+    let mut authorization = load_agent_auto_follow_authorization();
+    if authorization.last_sync_state != "pending_runtime_verification" {
+        return json!({
+            "ok": false,
+            "state": "not_pending",
+            "summary": "No reviewed Agent follow authorization is waiting for runtime verification",
+        });
+    }
+    let current_sha256 = match active_config_sha256() {
+        Ok(sha256) => sha256,
+        Err(error) => {
+            return json!({"ok":false, "state":"failed", "summary":sanitize_command_output(&error)})
+        }
+    };
+    if request.expected_route_sha256 != authorization.active_config_sha256
+        || current_sha256 != authorization.active_config_sha256
+    {
+        authorization.last_sync_state = "stale_route".to_string();
+        let _ = save_agent_auto_follow_authorization(&authorization);
+        return json!({
+            "ok": false,
+            "state": "stale",
+            "summary": "The active d-token route changed before Agent follow authorization completed",
+        });
+    }
+    let status = dtoken_service_status_value_fresh();
+    if status.get("state").and_then(Value::as_str) != Some("running")
+        || status.get("managed").and_then(Value::as_bool) != Some(true)
+    {
+        authorization.last_sync_state = "runtime_verification_required".to_string();
+        let _ = save_agent_auto_follow_authorization(&authorization);
+        return json!({
+            "ok": false,
+            "state": "runtime_verification_required",
+            "summary": "Agent follow mode requires a healthy d-token-managed runtime",
+        });
+    }
+    let discovery = enrich_upstream_discovery(upstream_discovery::discover());
+    let agent_ids = authorization
+        .last_synced_bindings
+        .iter()
+        .map(|binding| binding.agent_id.clone())
+        .collect::<Vec<_>>();
+    let fingerprints = match agent_config_fingerprints(&discovery, &agent_ids) {
+        Ok(fingerprints) => fingerprints,
+        Err(error) => {
+            return json!({"ok":false, "state":"failed", "summary":sanitize_command_output(&error)})
+        }
+    };
+    let source_fingerprint = match agent_config_source_fingerprint(&discovery, &agent_ids) {
+        Ok(fingerprint) => fingerprint,
+        Err(error) => {
+            return json!({"ok":false, "state":"failed", "summary":sanitize_command_output(&error)})
+        }
+    };
+    authorization.enabled = true;
+    authorization.last_observed_config_fingerprints = fingerprints;
+    authorization.last_observed_source_fingerprint = Some(source_fingerprint.clone());
+    authorization.last_synced_source_fingerprint = Some(source_fingerprint.clone());
+    authorization.runtime_identity = status
+        .get("runtime_identity")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    authorization.last_sync_state = "applied_verified".to_string();
+    if let Err(error) = save_agent_auto_follow_authorization(&authorization) {
+        return json!({"ok":false, "state":"failed", "summary":sanitize_command_output(&error)});
+    }
+    let _ = append_desktop_event(
+        "route_sync_authorization",
+        "authorized",
+        json!({
+            "source": "agent-config",
+            "agent_ids": agent_ids,
+            "source_fingerprint": source_fingerprint,
+            "active_config_sha256": current_sha256,
+            "runtime_identity": authorization.runtime_identity,
+        }),
+    );
+    json!({
+        "ok": true,
+        "state": "authorized",
+        "source_fingerprint": source_fingerprint,
+        "agent_ids": agent_ids,
+        "runtime_identity": authorization.runtime_identity,
+    })
+}
+
+#[tauri::command]
+async fn finalize_agent_auto_follow_authorization(
+    request: FinalizeAgentAutoFollowRequest,
+) -> Value {
+    tauri::async_runtime::spawn_blocking(move || {
+        finalize_agent_auto_follow_authorization_value(request)
+    })
+    .await
+    .unwrap_or_else(|error| {
+        json!({
+            "ok": false,
+            "state": "failed",
+            "summary": format!("Agent follow authorization worker failed: {error}"),
+        })
+    })
+}
+
+fn resolve_agent_follow_bindings(
+    authorization: &AgentAutoFollowAuthorization,
+    discovery: &Value,
+    changed_agents: &HashSet<String>,
+) -> Result<Vec<AgentRouteFollowBinding>, String> {
+    let discovered_bindings = discovery
+        .get("agent_bindings")
+        .and_then(Value::as_array)
+        .ok_or_else(|| "Current Agent discovery result is unavailable".to_string())?;
+    let mut resolved = Vec::with_capacity(authorization.last_synced_bindings.len());
+    for stored in &authorization.last_synced_bindings {
+        if !changed_agents.contains(&stored.agent_id) {
+            resolved.push(stored.clone());
+            continue;
+        }
+        let binding = discovered_bindings
+            .iter()
+            .find(|binding| {
+                binding.get("agent_id").and_then(Value::as_str) == Some(stored.agent_id.as_str())
+            })
+            .ok_or_else(|| format!("Agent {} is no longer discoverable", stored.agent_id))?;
+        let current = if let Some(candidate) = binding.get("resolved_candidate") {
+            if candidate
+                .get("source")
+                .and_then(Value::as_str)
+                .is_some_and(|source| source.starts_with("cc-switch:"))
+            {
+                return Err(format!(
+                    "Agent {} now follows cc-switch and requires the separate cc-switch authorization",
+                    stored.agent_id
+                ));
+            }
+            let model = candidate
+                .get("models")
+                .and_then(Value::as_array)
+                .and_then(|models| (models.len() == 1).then_some(models))
+                .and_then(|models| models.first())
+                .and_then(Value::as_str)
+                .ok_or_else(|| {
+                    format!(
+                        "The current model for {} is unavailable or ambiguous",
+                        stored.agent_id
+                    )
+                })?;
+            agent_follow_binding_from_candidate(&stored.agent_id, candidate, model)?
+        } else if binding.get("already_connected").and_then(Value::as_bool) == Some(true) {
+            let mut retained = stored.clone();
+            if let Some(model) = current_dtoken_transport_model(discovery, &stored.agent_id) {
+                retained.upstream.model = model;
+            }
+            retained
+        } else {
+            return Err(format!(
+                "Agent {} changed to an ambiguous, unsupported, or credential-bearing upstream",
+                stored.agent_id
+            ));
+        };
+        let approved = authorization
+            .authorized_upstream_signatures
+            .get(&stored.agent_id)
+            .ok_or_else(|| {
+                format!(
+                    "Agent {} has no persisted follow authorization",
+                    stored.agent_id
+                )
+            })?;
+        if !approved.contains(&agent_follow_upstream_signature(&current)) {
+            return Err(format!(
+                "Agent {} changed to a provider, endpoint, or protocol outside the approved follow set",
+                stored.agent_id
+            ));
+        }
+        resolved.push(current);
+    }
+    resolved.sort_by(|left, right| left.agent_id.cmp(&right.agent_id));
+    Ok(resolved)
+}
+
+fn discovery_with_agent_follow_bindings(
+    mut discovery: Value,
+    bindings: &[AgentRouteFollowBinding],
+) -> Result<Value, String> {
+    let discovered_bindings = discovery
+        .get_mut("agent_bindings")
+        .and_then(Value::as_array_mut)
+        .ok_or_else(|| "Current Agent discovery result is unavailable".to_string())?;
+    for followed in bindings {
+        let binding = discovered_bindings
+            .iter_mut()
+            .find(|binding| {
+                binding.get("agent_id").and_then(Value::as_str) == Some(followed.agent_id.as_str())
+            })
+            .ok_or_else(|| format!("Agent {} is no longer discoverable", followed.agent_id))?;
+        let candidate = json!({
+            "id": followed.candidate_id,
+            "name": format!("{} followed upstream", followed.agent_id),
+            "source": followed.candidate_source,
+            "protocol": followed.upstream.protocol,
+            "base_url": followed.upstream.normalized_endpoint,
+            "models": [followed.upstream.model],
+            "auth_mode": "none",
+            "active": true,
+            "state": "discovered",
+            "agent_ids": [followed.agent_id],
+            "confidence": 100,
+            "reasons": ["Previously reviewed Agent follow identity"],
+        });
+        let object = binding
+            .as_object_mut()
+            .ok_or_else(|| "Agent binding is not a JSON object".to_string())?;
+        object.insert("installed".to_string(), json!(true));
+        object.insert("capability".to_string(), json!("confirm-required"));
+        object.insert("candidates".to_string(), json!([candidate.clone()]));
+        object.insert("resolved_candidate".to_string(), candidate);
+        object.insert("resolution".to_string(), json!("auto-resolved"));
+        object.insert("already_connected".to_string(), json!(false));
+    }
+    Ok(discovery)
+}
+
+fn agent_follow_plan(
+    discovery: &Value,
+    bindings: &[AgentRouteFollowBinding],
+) -> Result<ConnectionRoutePlanRequest, String> {
+    let agent_ids = bindings
+        .iter()
+        .map(|binding| binding.agent_id.clone())
+        .collect::<Vec<_>>();
+    let fingerprint = agent_config_source_fingerprint(discovery, &agent_ids)?;
+    Ok(ConnectionRoutePlanRequest {
+        discovery_revision: format!("agent-config-{fingerprint}"),
+        source_fingerprint: Some(fingerprint),
+        source_fingerprint_scope: Some("agent_configs".to_string()),
+        bindings: bindings
+            .iter()
+            .map(|binding| ConnectionRouteBindingRequest {
+                agent_id: binding.agent_id.clone(),
+                candidate_id: binding.candidate_id.clone(),
+                candidate_source: binding.candidate_source.clone(),
+                model: binding.upstream.model.clone(),
+            })
+            .collect(),
+    })
+}
+
+fn save_agent_route_sync_receipt(receipt: &AgentRouteSyncReceipt) {
+    if let Ok(value) = serde_json::to_value(receipt) {
+        let _ = write_json_app_state(&["routing", "agent-auto-follow-receipt.json"], &value);
+    }
+}
+
+fn load_agent_route_sync_receipt() -> Option<AgentRouteSyncReceipt> {
+    read_app_state(&["routing", "agent-auto-follow-receipt.json"])
+        .ok()
+        .and_then(|value| serde_json::from_value(value).ok())
+        .filter(|receipt: &AgentRouteSyncReceipt| {
+            receipt.schema_version == AGENT_AUTO_FOLLOW_SCHEMA_VERSION
+        })
+}
+
+fn record_agent_auto_follow_receipt(
+    state: &str,
+    source_fingerprint: &str,
+    changed_agents: Vec<String>,
+    route_before_sha256: Option<String>,
+    route_after_sha256: Option<String>,
+    rollback_id: Option<String>,
+    runtime_state: &str,
+) {
+    let receipt = AgentRouteSyncReceipt {
+        schema_version: AGENT_AUTO_FOLLOW_SCHEMA_VERSION,
+        state: state.to_string(),
+        source_fingerprint: source_fingerprint.to_string(),
+        changed_agents,
+        route_before_sha256,
+        route_after_sha256,
+        rollback_id,
+        runtime_state: runtime_state.to_string(),
+        occurred_at_ms: epoch_ms(),
+    };
+    save_agent_route_sync_receipt(&receipt);
+    let event = if state == "applied_verified" {
+        "route_sync_applied"
+    } else if state.contains("rolled_back") {
+        "route_sync_rolled_back"
+    } else {
+        "route_sync_failed"
+    };
+    let _ = append_desktop_event(
+        event,
+        if state == "applied_verified" {
+            "ok"
+        } else {
+            state
+        },
+        json!({
+            "source": "agent-config",
+            "source_fingerprint": source_fingerprint,
+            "changed_agents": receipt.changed_agents,
+            "route_before_sha256": receipt.route_before_sha256,
+            "route_after_sha256": receipt.route_after_sha256,
+            "rollback_id": receipt.rollback_id,
+            "runtime_state": runtime_state,
+            "auto_follow": true,
+        }),
+    );
+}
+
+fn active_config_matches_agent_follow_bindings(
+    bindings: &[AgentRouteFollowBinding],
+) -> Result<(), String> {
+    let config = read_app_state(&["active-config", "dtoken-config.json"])
+        .map_err(|error| format!("Active route verification failed: {error}"))?;
+    let providers = config
+        .get("providers")
+        .and_then(Value::as_array)
+        .ok_or_else(|| "Active config providers are unavailable".to_string())?;
+    let routes = config
+        .get("routes")
+        .and_then(Value::as_array)
+        .ok_or_else(|| "Active config routes are unavailable".to_string())?;
+    let instances = config
+        .get("instances")
+        .and_then(Value::as_array)
+        .ok_or_else(|| "Active config instances are unavailable".to_string())?;
+    for binding in bindings {
+        let route_id = safe_slug(
+            &format!("auto-{}-route", binding.agent_id),
+            &format!("auto-{}", binding.agent_id),
+        );
+        let route = routes
+            .iter()
+            .find(|route| route.get("id").and_then(Value::as_str) == Some(route_id.as_str()))
+            .ok_or_else(|| format!("Active route for {} is missing", binding.agent_id))?;
+        let provider_id = route
+            .get("target_provider_id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| {
+                format!(
+                    "Active route for {} has no target provider",
+                    binding.agent_id
+                )
+            })?;
+        let provider = providers
+            .iter()
+            .find(|provider| provider.get("id").and_then(Value::as_str) == Some(provider_id))
+            .ok_or_else(|| format!("Active provider for {} is unavailable", binding.agent_id))?;
+        let endpoint = provider
+            .get("base_url")
+            .and_then(Value::as_str)
+            .ok_or_else(|| {
+                format!(
+                    "Active provider endpoint for {} is unavailable",
+                    binding.agent_id
+                )
+            })
+            .and_then(normalize_follow_endpoint)?;
+        if endpoint != binding.upstream.normalized_endpoint
+            || provider.get("protocol").and_then(Value::as_str)
+                != Some(binding.upstream.protocol.as_str())
+            || !provider
+                .get("models")
+                .and_then(Value::as_array)
+                .is_some_and(|models| {
+                    models
+                        .iter()
+                        .any(|model| model.as_str() == Some(binding.upstream.model.as_str()))
+                })
+        {
+            return Err(format!(
+                "Active provider identity for {} does not match the followed upstream",
+                binding.agent_id
+            ));
+        }
+        let instance_id = route
+            .get("instance_id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| format!("Active route for {} has no instance", binding.agent_id))?;
+        if !instances.iter().any(|instance| {
+            instance.get("id").and_then(Value::as_str) == Some(instance_id)
+                && instance.get("agent").and_then(Value::as_str) == Some(binding.agent_id.as_str())
+                && instance.get("route_id").and_then(Value::as_str) == Some(route_id.as_str())
+        }) {
+            return Err(format!(
+                "Active instance for {} does not match the followed route",
+                binding.agent_id
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn execute_agent_auto_follow() -> Value {
+    let mut authorization = load_agent_auto_follow_authorization();
+    if !authorization.enabled {
+        return json!({"state":"not_authorized"});
+    }
+    let agent_ids = authorization
+        .last_synced_bindings
+        .iter()
+        .map(|binding| binding.agent_id.clone())
+        .collect::<Vec<_>>();
+    if agent_ids.is_empty() {
+        authorization.enabled = false;
+        authorization.last_sync_state = "empty_authorization".to_string();
+        let _ = save_agent_auto_follow_authorization(&authorization);
+        return json!({"state":"empty_authorization"});
+    }
+    let discovery = enrich_upstream_discovery(upstream_discovery::discover());
+    let fingerprints = match agent_config_fingerprints(&discovery, &agent_ids) {
+        Ok(fingerprints) => fingerprints,
+        Err(error) => {
+            return json!({"state":"discovery_unavailable", "summary":sanitize_command_output(&error)})
+        }
+    };
+    let source_fingerprint = match agent_config_source_fingerprint(&discovery, &agent_ids) {
+        Ok(fingerprint) => fingerprint,
+        Err(error) => {
+            return json!({"state":"discovery_unavailable", "summary":sanitize_command_output(&error)})
+        }
+    };
+    let changed_agents = agent_ids
+        .iter()
+        .filter(|agent_id| {
+            authorization
+                .last_observed_config_fingerprints
+                .get(*agent_id)
+                != fingerprints.get(*agent_id)
+        })
+        .cloned()
+        .collect::<HashSet<_>>();
+    if changed_agents.is_empty() {
+        return json!({
+            "state":"unchanged",
+            "source_fingerprint":source_fingerprint,
+            "route_signature":authorization.last_synced_route_signature,
+        });
+    }
+    let mut changed_agents_list = changed_agents.iter().cloned().collect::<Vec<_>>();
+    changed_agents_list.sort();
+    authorization.last_observed_config_fingerprints = fingerprints.clone();
+    authorization.last_observed_source_fingerprint = Some(source_fingerprint.clone());
+    let bindings = match resolve_agent_follow_bindings(&authorization, &discovery, &changed_agents)
+    {
+        Ok(bindings) => bindings,
+        Err(error) => {
+            authorization.last_sync_state = "reauthorization_required".to_string();
+            let _ = save_agent_auto_follow_authorization(&authorization);
+            record_agent_auto_follow_receipt(
+                "reauthorization_required",
+                &source_fingerprint,
+                changed_agents_list.clone(),
+                None,
+                None,
+                None,
+                "not_reloaded",
+            );
+            let _ = append_desktop_event(
+                "route_sync_needed",
+                "reauthorization_required",
+                json!({
+                    "source": "agent-config",
+                    "source_fingerprint": source_fingerprint,
+                    "changed_agents": changed_agents_list,
+                    "auto_follow": true,
+                }),
+            );
+            return json!({
+                "state":"reauthorization_required",
+                "summary":sanitize_command_output(&error),
+            });
+        }
+    };
+    let route_signature = agent_follow_route_signature(&bindings);
+    if authorization.last_synced_route_signature.as_deref() == Some(route_signature.as_str()) {
+        authorization.last_sync_state = "metadata_changed_route_unchanged".to_string();
+        let _ = save_agent_auto_follow_authorization(&authorization);
+        return json!({
+            "state":"unchanged",
+            "source_fingerprint":source_fingerprint,
+            "route_signature":route_signature,
+            "changed_agents":changed_agents_list,
+        });
+    }
+    let current_active_sha256 = match active_config_sha256() {
+        Ok(sha256) => sha256,
+        Err(error) => {
+            authorization.last_sync_state = "active_route_unavailable".to_string();
+            let _ = save_agent_auto_follow_authorization(&authorization);
+            return json!({"state":"active_route_unavailable","summary":sanitize_command_output(&error)});
+        }
+    };
+    if current_active_sha256 != authorization.active_config_sha256 {
+        authorization.last_sync_state = "active_route_changed_reauthorization_required".to_string();
+        let _ = save_agent_auto_follow_authorization(&authorization);
+        record_agent_auto_follow_receipt(
+            "active_route_changed_reauthorization_required",
+            &source_fingerprint,
+            changed_agents_list,
+            Some(current_active_sha256),
+            None,
+            None,
+            "not_reloaded",
+        );
+        return json!({
+            "state":"reauthorization_required",
+            "summary":"The d-token active route changed outside this follow authorization",
+        });
+    }
+    let runtime_status = dtoken_service_status_value_fresh();
+    if runtime_status.get("state").and_then(Value::as_str) == Some("running")
+        && authorization.runtime_identity.as_deref()
+            != runtime_status
+                .get("runtime_identity")
+                .and_then(Value::as_str)
+    {
+        authorization.last_sync_state = "runtime_identity_changed".to_string();
+        let _ = save_agent_auto_follow_authorization(&authorization);
+        return json!({
+            "state":"reauthorization_required",
+            "summary":"The managed runtime identity changed and must be reverified before Agent follow can continue",
+        });
+    }
+    authorization.last_sync_state = "evaluating".to_string();
+    if let Err(error) = save_agent_auto_follow_authorization(&authorization) {
+        return json!({"state":"authorization_persist_failed","summary":sanitize_command_output(&error)});
+    }
+    let _ = append_desktop_event(
+        "external_config_changed",
+        "observed",
+        json!({
+            "source": "agent-config",
+            "source_fingerprint": source_fingerprint,
+            "changed_agents": changed_agents_list,
+            "auto_follow": true,
+        }),
+    );
+    let synthetic = match discovery_with_agent_follow_bindings(discovery.clone(), &bindings) {
+        Ok(synthetic) => synthetic,
+        Err(error) => {
+            authorization.last_sync_state = "blocked".to_string();
+            let _ = save_agent_auto_follow_authorization(&authorization);
+            return json!({"state":"blocked","summary":sanitize_command_output(&error)});
+        }
+    };
+    let plan = match agent_follow_plan(&synthetic, &bindings) {
+        Ok(plan) => plan,
+        Err(error) => {
+            authorization.last_sync_state = "blocked".to_string();
+            let _ = save_agent_auto_follow_authorization(&authorization);
+            return json!({"state":"blocked","summary":sanitize_command_output(&error)});
+        }
+    };
+    let (revision, prepared, agents) =
+        match prepare_connection_route_plan_from_discovery(&plan, &synthetic) {
+            Ok(prepared) => prepared,
+            Err(error) => {
+                authorization.last_sync_state = "blocked".to_string();
+                let _ = save_agent_auto_follow_authorization(&authorization);
+                record_agent_auto_follow_receipt(
+                    "blocked",
+                    &source_fingerprint,
+                    changed_agents_list,
+                    None,
+                    None,
+                    None,
+                    "not_reloaded",
+                );
+                return json!({"state":"blocked","summary":sanitize_command_output(&error)});
+            }
+        };
+    let transaction = match config_patcher().apply_transaction(&[prepared]) {
+        Ok(transaction) => transaction,
+        Err(error) => {
+            authorization.last_sync_state = "apply_failed".to_string();
+            let _ = save_agent_auto_follow_authorization(&authorization);
+            record_agent_auto_follow_receipt(
+                "apply_failed",
+                &source_fingerprint,
+                changed_agents_list,
+                None,
+                None,
+                None,
+                "not_reloaded",
+            );
+            return json!({"state":"apply_failed","summary":sanitize_command_output(&format!("Agent route sync failed: {error:#}"))});
+        }
+    };
+    let Some(change) = transaction.changes.first() else {
+        authorization.last_sync_state = "apply_failed".to_string();
+        let _ = save_agent_auto_follow_authorization(&authorization);
+        return json!({"state":"apply_failed","summary":"Agent route sync returned no verification receipt"});
+    };
+    let before_sha256 = change.before.sha256.clone();
+    let after_sha256 = change.after.sha256.clone();
+    let rollback_id = change.backup.rollback_id.clone();
+    let latest_discovery = enrich_upstream_discovery(upstream_discovery::discover());
+    let latest_fingerprint = agent_config_source_fingerprint(&latest_discovery, &agent_ids);
+    let latest_bindings =
+        resolve_agent_follow_bindings(&authorization, &latest_discovery, &changed_agents);
+    let source_still_matches = latest_fingerprint.as_deref() == Ok(source_fingerprint.as_str())
+        && latest_bindings
+            .as_ref()
+            .is_ok_and(|latest| agent_follow_route_signature(latest) == route_signature);
+    if !source_still_matches {
+        let rollback_result = config_patcher().restore_backup(
+            &change.backup,
+            &ExpectedFileState::Hash(after_sha256.clone().unwrap_or_default()),
+        );
+        authorization.last_sync_state = if rollback_result.is_ok() {
+            "source_changed_rolled_back".to_string()
+        } else {
+            "source_changed_rollback_failed".to_string()
+        };
+        let _ = save_agent_auto_follow_authorization(&authorization);
+        record_agent_auto_follow_receipt(
+            &authorization.last_sync_state,
+            &source_fingerprint,
+            changed_agents_list,
+            before_sha256,
+            after_sha256,
+            Some(rollback_id),
+            "not_reloaded",
+        );
+        return json!({
+            "state":authorization.last_sync_state,
+            "summary":"Agent configuration changed during apply; the d-token route was restored when possible",
+            "agents":agents,
+            "discovery_revision":revision,
+        });
+    }
+    if let Err(error) = active_config_matches_agent_follow_bindings(&bindings) {
+        let rollback_result = config_patcher().restore_backup(
+            &change.backup,
+            &ExpectedFileState::Hash(after_sha256.clone().unwrap_or_default()),
+        );
+        authorization.last_sync_state = if rollback_result.is_ok() {
+            "verification_failed_rolled_back".to_string()
+        } else {
+            "verification_failed_rollback_failed".to_string()
+        };
+        let _ = save_agent_auto_follow_authorization(&authorization);
+        record_agent_auto_follow_receipt(
+            &authorization.last_sync_state,
+            &source_fingerprint,
+            changed_agents_list,
+            before_sha256,
+            after_sha256,
+            Some(rollback_id),
+            "not_reloaded",
+        );
+        return json!({
+            "state":authorization.last_sync_state,
+            "summary":sanitize_command_output(&error),
+        });
+    }
+    let reload = reload_managed_runtime_after_route_sync();
+    let runtime_state = reload
+        .get("state")
+        .and_then(Value::as_str)
+        .unwrap_or("runtime_unknown");
+    if !matches!(runtime_state, "runtime_reloaded" | "runtime_not_running") {
+        let rollback_result = config_patcher().restore_backup(
+            &change.backup,
+            &ExpectedFileState::Hash(after_sha256.clone().unwrap_or_default()),
+        );
+        authorization.last_sync_state = if rollback_result.is_ok() {
+            format!("rolled_back_{runtime_state}")
+        } else {
+            format!("{runtime_state}_rollback_failed")
+        };
+        let _ = save_agent_auto_follow_authorization(&authorization);
+        record_agent_auto_follow_receipt(
+            &authorization.last_sync_state,
+            &source_fingerprint,
+            changed_agents_list,
+            before_sha256,
+            after_sha256,
+            Some(rollback_id),
+            runtime_state,
+        );
+        return json!({
+            "state":authorization.last_sync_state,
+            "summary":"Runtime reload was unavailable; the d-token route snapshot was restored when possible",
+            "runtime":reload,
+        });
+    }
+    let current_runtime = dtoken_service_status_value_fresh();
+    if runtime_state == "runtime_reloaded"
+        && (current_runtime.get("state").and_then(Value::as_str) != Some("running")
+            || current_runtime.get("managed").and_then(Value::as_bool) != Some(true))
+    {
+        let rollback_result = config_patcher().restore_backup(
+            &change.backup,
+            &ExpectedFileState::Hash(after_sha256.clone().unwrap_or_default()),
+        );
+        authorization.last_sync_state = if rollback_result.is_ok() {
+            "runtime_verify_failed_rolled_back".to_string()
+        } else {
+            "runtime_verify_failed_rollback_failed".to_string()
+        };
+        let _ = save_agent_auto_follow_authorization(&authorization);
+        record_agent_auto_follow_receipt(
+            &authorization.last_sync_state,
+            &source_fingerprint,
+            changed_agents_list,
+            before_sha256,
+            after_sha256,
+            Some(rollback_id),
+            "runtime_verify_failed",
+        );
+        return json!({
+            "state":authorization.last_sync_state,
+            "summary":"The managed runtime did not verify the new route and the route file was restored when possible",
+        });
+    }
+    authorization.last_synced_bindings = bindings;
+    authorization.last_synced_route_signature = Some(route_signature.clone());
+    authorization.last_synced_source_fingerprint = Some(source_fingerprint.clone());
+    authorization.active_config_sha256 = after_sha256.clone().unwrap_or_default();
+    authorization.runtime_identity = current_runtime
+        .get("runtime_identity")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .or(authorization.runtime_identity);
+    authorization.last_sync_state = "applied_verified".to_string();
+    let _ = save_agent_auto_follow_authorization(&authorization);
+    record_agent_auto_follow_receipt(
+        "applied_verified",
+        &source_fingerprint,
+        changed_agents_list.clone(),
+        before_sha256.clone(),
+        after_sha256.clone(),
+        Some(rollback_id.clone()),
+        runtime_state,
+    );
+    json!({
+        "state":"applied_verified",
+        "discovery_revision":revision,
+        "source_fingerprint":source_fingerprint,
+        "route_signature":route_signature,
+        "before_sha256":before_sha256,
+        "after_sha256":after_sha256,
+        "rollback_id":rollback_id,
+        "runtime":reload,
+        "agents":agents,
+        "changed_agents":changed_agents_list,
+    })
+}
+
+/// Builds a d-token-only route plan from one unambiguous cc-switch active
+/// provider. cc-switch remains read-only: the resulting plan changes only the
+/// d-token active config and is still subject to the normal review/apply
+/// transaction.
+fn prepare_cc_switch_sync_plan(
+    request: &CcSwitchSyncPlanRequest,
+) -> Result<ConnectionRoutePlanRequest, String> {
+    let discovery = enrich_upstream_discovery(upstream_discovery::discover());
+    prepare_cc_switch_sync_plan_from_discovery(request, &discovery)
+}
+
+fn prepare_cc_switch_sync_plan_from_discovery(
+    request: &CcSwitchSyncPlanRequest,
+    discovery: &Value,
+) -> Result<ConnectionRoutePlanRequest, String> {
+    let current_revision = discovery
+        .get("external_config_snapshot")
+        .and_then(|snapshot| snapshot.get("cc_switch"))
+        .and_then(|cc_switch| cc_switch.get("revision"))
+        .and_then(Value::as_str)
+        .ok_or_else(|| "Current cc-switch revision is unavailable".to_string())?;
+    if current_revision != request.discovery_revision {
+        return Err("cc-switch changed after discovery; scan again before review".to_string());
+    }
+    let fingerprint = discovery
+        .get("external_config_snapshot")
+        .and_then(|snapshot| snapshot.get("cc_switch"))
+        .and_then(|cc_switch| cc_switch.get("fingerprint"))
+        .and_then(Value::as_str)
+        .ok_or_else(|| "cc-switch source fingerprint is unavailable".to_string())?;
+    if fingerprint != request.source_fingerprint {
+        return Err(
+            "cc-switch metadata changed after discovery; scan again before review".to_string(),
+        );
+    }
+    let active_identity = cc_switch_active_route_identity(discovery)?;
+    let authorizable = authorizable_cc_switch_upstream_signatures(discovery)?;
+    if !authorizable.contains(&active_identity.upstream_signature) {
+        return Err(
+            "The active cc-switch upstream is not credential-free or has insufficient evidence"
+                .to_string(),
+        );
+    }
+    let upstreams = discovery
+        .get("cc_switch_sync")
+        .and_then(|sync| sync.get("active_upstreams"))
+        .and_then(Value::as_array)
+        .ok_or_else(|| "cc-switch has no safely readable active upstream".to_string())?;
+    if upstreams.len() != 1 {
+        return Err(
+            "cc-switch has zero or multiple active upstreams; choose one before syncing"
+                .to_string(),
+        );
+    }
+    let upstream = &upstreams[0];
+    let candidate_id = upstream
+        .get("provider_id")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "cc-switch active provider id is unavailable".to_string())?;
+    let candidate_source = upstream
+        .get("source")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "cc-switch active provider source is unavailable".to_string())?;
+    let model = upstream
+        .get("models")
+        .and_then(Value::as_array)
+        .and_then(|models| (models.len() == 1).then_some(models))
+        .and_then(|models| models.first())
+        .and_then(Value::as_str)
+        .ok_or_else(|| "cc-switch active provider model is ambiguous or unavailable".to_string())?;
+    let agent_ids = upstream
+        .get("agent_ids")
+        .and_then(Value::as_array)
+        .ok_or_else(|| "cc-switch active provider has no Agent mapping".to_string())?;
+    let bindings = discovery
+        .get("agent_bindings")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|binding| {
+            let agent_id = binding.get("agent_id").and_then(Value::as_str)?;
+            let mapped = agent_ids
+                .iter()
+                .any(|mapped| mapped.as_str() == Some(agent_id));
+            let candidate_exists = binding
+                .get("candidates")
+                .and_then(Value::as_array)
+                .is_some_and(|candidates| {
+                    candidates.iter().any(|candidate| {
+                        candidate.get("id").and_then(Value::as_str) == Some(candidate_id)
+                            && candidate.get("source").and_then(Value::as_str)
+                                == Some(candidate_source)
+                            && candidate.get("auth_mode").and_then(Value::as_str) == Some("none")
+                            && candidate
+                                .get("models")
+                                .and_then(Value::as_array)
+                                .is_some_and(|models| {
+                                    models.iter().any(|value| value.as_str() == Some(model))
+                                })
+                    })
+                });
+            (mapped
+                && binding.get("installed").and_then(Value::as_bool) == Some(true)
+                && candidate_exists)
+                .then(|| ConnectionRouteBindingRequest {
+                    agent_id: agent_id.to_string(),
+                    candidate_id: candidate_id.to_string(),
+                    candidate_source: candidate_source.to_string(),
+                    model: model.to_string(),
+                })
+        })
+        .collect::<Vec<_>>();
+    if bindings.is_empty() {
+        return Err("No installed Agent can safely use the current cc-switch upstream".to_string());
+    }
+    Ok(ConnectionRoutePlanRequest {
+        discovery_revision: request.discovery_revision.clone(),
+        source_fingerprint: Some(request.source_fingerprint.clone()),
+        source_fingerprint_scope: Some("cc_switch".to_string()),
+        bindings,
+    })
+}
+
+fn cc_switch_sync_request_from_discovery(
+    discovery: &Value,
+) -> Result<CcSwitchSyncPlanRequest, String> {
+    let cc_switch = discovery
+        .get("external_config_snapshot")
+        .and_then(|snapshot| snapshot.get("cc_switch"))
+        .ok_or_else(|| "cc-switch snapshot is unavailable".to_string())?;
+    let discovery_revision = cc_switch
+        .get("revision")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "Current cc-switch revision is unavailable".to_string())?
+        .to_string();
+    let source_fingerprint = cc_switch
+        .get("fingerprint")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "cc-switch source fingerprint is unavailable".to_string())?
+        .to_string();
+    Ok(CcSwitchSyncPlanRequest {
+        discovery_revision,
+        source_fingerprint,
+    })
+}
+
+fn canonical_cc_switch_protocol(value: &str) -> Result<&'static str, String> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "anthropic" => Ok("anthropic"),
+        "open_ai" | "openai" => Ok("open_ai"),
+        _ => Err("cc-switch protocol is unknown and requires explicit review".to_string()),
+    }
+}
+
+fn canonical_cc_switch_endpoint(value: &str) -> Result<String, String> {
+    let mut parsed = url::Url::parse(value)
+        .map_err(|_| "cc-switch endpoint is invalid and requires explicit review".to_string())?;
+    if !matches!(parsed.scheme(), "http" | "https")
+        || parsed.host_str().is_none()
+        || !parsed.username().is_empty()
+        || parsed.password().is_some()
+    {
+        return Err(
+            "cc-switch endpoint is unsafe or incomplete and requires explicit review".to_string(),
+        );
+    }
+    parsed.set_query(None);
+    parsed.set_fragment(None);
+    let normalized_path = parsed.path().trim_end_matches('/').to_string();
+    parsed.set_path(&normalized_path);
+    Ok(parsed.as_str().trim_end_matches('/').to_string())
+}
+
+fn cc_switch_upstream_signature(
+    provider_id: &str,
+    source: &str,
+    protocol: &str,
+    endpoint: &str,
+) -> Result<String, String> {
+    let provider_id = provider_id.trim();
+    let source = source.trim();
+    if provider_id.is_empty()
+        || source.is_empty()
+        || provider_id.contains(['\n', '\r', '\0'])
+        || source.contains(['\n', '\r', '\0'])
+    {
+        return Err("cc-switch provider identity is invalid".to_string());
+    }
+    let protocol = canonical_cc_switch_protocol(protocol)?;
+    let endpoint = canonical_cc_switch_endpoint(endpoint)?;
+    Ok(stable_hash(&format!(
+        "cc-switch-upstream-v1\n{provider_id}\n{source}\n{protocol}\n{endpoint}"
+    )))
+}
+
+fn cc_switch_active_route_identity(discovery: &Value) -> Result<CcSwitchRouteIdentity, String> {
+    let upstreams = discovery
+        .get("cc_switch_sync")
+        .and_then(|sync| sync.get("active_upstreams"))
+        .and_then(Value::as_array)
+        .ok_or_else(|| "cc-switch active upstream evidence is unavailable".to_string())?;
+    if upstreams.len() != 1 {
+        return Err(
+            "cc-switch has zero or multiple active upstreams; explicit selection is required"
+                .to_string(),
+        );
+    }
+    let upstream = &upstreams[0];
+    let provider_id = upstream
+        .get("provider_id")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "cc-switch active provider id is unavailable".to_string())?;
+    let source = upstream
+        .get("source")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "cc-switch active provider source is unavailable".to_string())?;
+    let protocol = upstream
+        .get("protocol")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "cc-switch active protocol is unavailable".to_string())?;
+    let endpoint = upstream
+        .get("upstream")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "cc-switch active endpoint is unavailable".to_string())?;
+    let models = upstream
+        .get("models")
+        .and_then(Value::as_array)
+        .ok_or_else(|| "cc-switch active model evidence is unavailable".to_string())?;
+    let model = (models.len() == 1)
+        .then(|| models[0].as_str())
+        .flatten()
+        .ok_or_else(|| "cc-switch active model is ambiguous or unavailable".to_string())?;
+    if model.trim().is_empty() || model.len() > 256 || model.contains(['\n', '\r', '\0']) {
+        return Err("cc-switch active model is invalid".to_string());
+    }
+    let upstream_signature = cc_switch_upstream_signature(provider_id, source, protocol, endpoint)?;
+    let route_signature = stable_hash(&format!(
+        "cc-switch-route-v1\n{upstream_signature}\n{}",
+        model.trim()
+    ));
+    Ok(CcSwitchRouteIdentity {
+        upstream_signature,
+        route_signature,
+    })
+}
+
+fn authorizable_cc_switch_upstream_signatures(discovery: &Value) -> Result<Vec<String>, String> {
+    let candidates = discovery
+        .get("candidates")
+        .and_then(Value::as_array)
+        .ok_or_else(|| "cc-switch provider candidates are unavailable".to_string())?;
+    let mut signatures = candidates
+        .iter()
+        .filter(|candidate| {
+            candidate
+                .get("source")
+                .and_then(Value::as_str)
+                .is_some_and(|source| source.starts_with("cc-switch:"))
+                && candidate.get("auth_mode").and_then(Value::as_str) == Some("none")
+                && candidate
+                    .get("confidence")
+                    .and_then(Value::as_u64)
+                    .is_some_and(|confidence| confidence >= 70)
+        })
+        .filter_map(|candidate| {
+            cc_switch_upstream_signature(
+                candidate.get("id").and_then(Value::as_str)?,
+                candidate.get("source").and_then(Value::as_str)?,
+                candidate.get("protocol").and_then(Value::as_str)?,
+                candidate.get("base_url").and_then(Value::as_str)?,
+            )
+            .ok()
+        })
+        .collect::<Vec<_>>();
+    signatures.sort();
+    signatures.dedup();
+    if signatures.is_empty() {
+        return Err(
+            "No credential-free cc-switch upstream identity is safe to authorize".to_string(),
+        );
+    }
+    Ok(signatures)
+}
+
+fn cc_switch_follow_decision(
+    authorization: &CcSwitchAutoFollowAuthorization,
+    identity: &CcSwitchRouteIdentity,
+) -> &'static str {
+    if !authorization
+        .authorized_upstream_signatures
+        .contains(&identity.upstream_signature)
+    {
+        "reauthorization_required"
+    } else if authorization.last_synced_route_signature.as_deref()
+        == Some(identity.route_signature.as_str())
+    {
+        "unchanged"
+    } else {
+        "sync_required"
+    }
+}
+
+fn default_cc_switch_auto_follow_authorization() -> CcSwitchAutoFollowAuthorization {
+    CcSwitchAutoFollowAuthorization {
+        schema_version: CC_SWITCH_AUTO_FOLLOW_SCHEMA_VERSION,
+        enabled: false,
+        authorized_at_ms: 0,
+        authorized_source_fingerprint: String::new(),
+        authorized_upstream_signatures: Vec::new(),
+        last_observed_source_fingerprint: None,
+        last_synced_source_fingerprint: None,
+        last_observed_route_signature: None,
+        last_synced_route_signature: None,
+        last_sync_state: "not_authorized".to_string(),
+    }
+}
+
+fn load_cc_switch_auto_follow_authorization() -> CcSwitchAutoFollowAuthorization {
+    read_app_state(&["routing", "cc-switch-auto-follow.json"])
+        .ok()
+        .and_then(|value| serde_json::from_value(value).ok())
+        .filter(|authorization: &CcSwitchAutoFollowAuthorization| {
+            authorization.schema_version == CC_SWITCH_AUTO_FOLLOW_SCHEMA_VERSION
+        })
+        .unwrap_or_else(default_cc_switch_auto_follow_authorization)
+}
+
+fn save_cc_switch_auto_follow_authorization(
+    authorization: &CcSwitchAutoFollowAuthorization,
+) -> Result<(), String> {
+    let value = serde_json::to_value(authorization)
+        .map_err(|error| format!("cc-switch follow authorization serialize failed: {error}"))?;
+    write_json_app_state(&["routing", "cc-switch-auto-follow.json"], &value).map(|_| ())
+}
+
+fn authorize_cc_switch_auto_follow(
+    request: &CcSwitchSyncPlanRequest,
+) -> Result<CcSwitchAutoFollowAuthorization, String> {
+    let discovery = enrich_upstream_discovery(upstream_discovery::discover());
+    // Preparing against the same snapshot performs the required revision,
+    // fingerprint, unique-active-upstream, credential, model, protocol, and
+    // Agent-mapping checks before any persistent opt-in is recorded.
+    let _ = prepare_cc_switch_sync_plan_from_discovery(request, &discovery)?;
+    let current_identity = cc_switch_active_route_identity(&discovery)?;
+    let authorized_upstream_signatures = authorizable_cc_switch_upstream_signatures(&discovery)?;
+    if !authorized_upstream_signatures.contains(&current_identity.upstream_signature) {
+        return Err(
+            "The active cc-switch upstream is outside the approved identity set".to_string(),
+        );
+    }
+    let authorization = CcSwitchAutoFollowAuthorization {
+        schema_version: CC_SWITCH_AUTO_FOLLOW_SCHEMA_VERSION,
+        enabled: true,
+        authorized_at_ms: epoch_ms(),
+        authorized_source_fingerprint: request.source_fingerprint.clone(),
+        authorized_upstream_signatures,
+        last_observed_source_fingerprint: Some(request.source_fingerprint.clone()),
+        last_synced_source_fingerprint: None,
+        last_observed_route_signature: Some(current_identity.route_signature),
+        last_synced_route_signature: None,
+        last_sync_state: "authorized_waiting_for_change".to_string(),
+    };
+    save_cc_switch_auto_follow_authorization(&authorization)?;
+    Ok(authorization)
+}
+
+/// A manual initial sync may leave the reviewed d-token route in place, but
+/// it must not persist auto-follow authorization until the existing managed
+/// runtime reload receipt proves the route is live (or that no runtime is
+/// running and the route will be loaded on the next managed start).
+fn runtime_reload_receipt_allows_initial_auto_follow(reload: &Value) -> bool {
+    reload.get("ok").and_then(Value::as_bool) == Some(true)
+        && matches!(
+            reload.get("state").and_then(Value::as_str),
+            Some("runtime_reloaded" | "runtime_not_running")
+        )
+}
+
+fn authorize_initial_cc_switch_auto_follow_after_runtime_reload(
+    request: &CcSwitchSyncPlanRequest,
+    reload: &Value,
+) -> Result<CcSwitchAutoFollowAuthorization, Value> {
+    if !runtime_reload_receipt_allows_initial_auto_follow(reload) {
+        return Err(json!({
+            "enabled": false,
+            "runtime": reload,
+            "summary": "The reviewed route was applied, but auto-follow was not authorized because the managed runtime did not provide a valid reload receipt",
+        }));
+    }
+
+    let mut authorization = authorize_cc_switch_auto_follow(request).map_err(|error| {
+        json!({
+            "enabled": false,
+            "runtime": reload,
+            "summary": sanitize_command_output(&error),
+        })
+    })?;
+    authorization.last_synced_source_fingerprint = Some(request.source_fingerprint.clone());
+    authorization.last_synced_route_signature = authorization.last_observed_route_signature.clone();
+    authorization.last_sync_state = "applied_verified".to_string();
+    save_cc_switch_auto_follow_authorization(&authorization).map_err(|error| {
+        json!({
+            "enabled": false,
+            "runtime": reload,
+            "summary": sanitize_command_output(&error),
+        })
+    })?;
+    Ok(authorization)
+}
+
+fn save_cc_switch_route_sync_receipt(receipt: &CcSwitchRouteSyncReceipt) {
+    if let Ok(value) = serde_json::to_value(receipt) {
+        let _ = write_json_app_state(&["routing", "cc-switch-auto-follow-receipt.json"], &value);
+    }
+}
+
+fn record_cc_switch_auto_follow_receipt(
+    state: &str,
+    source_fingerprint: &str,
+    route_before_sha256: Option<String>,
+    route_after_sha256: Option<String>,
+    rollback_id: Option<String>,
+    runtime_state: &str,
+) {
+    let receipt = CcSwitchRouteSyncReceipt {
+        schema_version: CC_SWITCH_AUTO_FOLLOW_SCHEMA_VERSION,
+        state: state.to_string(),
+        source_fingerprint: source_fingerprint.to_string(),
+        route_before_sha256,
+        route_after_sha256,
+        rollback_id,
+        runtime_state: runtime_state.to_string(),
+        occurred_at_ms: epoch_ms(),
+    };
+    save_cc_switch_route_sync_receipt(&receipt);
+    let event = if state == "applied_verified" {
+        "route_sync_applied"
+    } else if state.contains("rolled_back") {
+        "route_sync_rolled_back"
+    } else {
+        "route_sync_failed"
+    };
+    let _ = append_desktop_event(
+        event,
+        if state == "applied_verified" {
+            "ok"
+        } else {
+            state
+        },
+        json!({
+            "source_fingerprint": source_fingerprint,
+            "route_before_sha256": receipt.route_before_sha256,
+            "route_after_sha256": receipt.route_after_sha256,
+            "rollback_id": receipt.rollback_id,
+            "runtime_state": runtime_state,
+            "auto_follow": true,
+        }),
+    );
+}
+
+/// Executes only after a user persisted an authorization. It re-discovers and
+/// validates cc-switch immediately before each transaction; it never imports a
+/// credential and never writes the cc-switch database, WAL, SHM, or profile.
+fn execute_cc_switch_auto_follow() -> Value {
+    let mut authorization = load_cc_switch_auto_follow_authorization();
+    if !authorization.enabled {
+        return json!({"state":"not_authorized"});
+    }
+    let discovery = enrich_upstream_discovery(upstream_discovery::discover());
+    let request = match cc_switch_sync_request_from_discovery(&discovery) {
+        Ok(request) => request,
+        Err(error) => {
+            return json!({"state":"discovery_unavailable", "summary": sanitize_command_output(&error)})
+        }
+    };
+    let identity = match cc_switch_active_route_identity(&discovery) {
+        Ok(identity) => identity,
+        Err(error) => {
+            authorization.last_observed_source_fingerprint =
+                Some(request.source_fingerprint.clone());
+            authorization.last_sync_state = "reauthorization_required".to_string();
+            let _ = save_cc_switch_auto_follow_authorization(&authorization);
+            record_cc_switch_auto_follow_receipt(
+                "reauthorization_required",
+                &request.source_fingerprint,
+                None,
+                None,
+                None,
+                "not_reloaded",
+            );
+            return json!({
+                "state":"reauthorization_required",
+                "summary":sanitize_command_output(&error),
+            });
+        }
+    };
+    if authorization.last_observed_source_fingerprint.as_deref()
+        == Some(request.source_fingerprint.as_str())
+        && authorization.last_observed_route_signature.as_deref()
+            == Some(identity.route_signature.as_str())
+    {
+        return json!({
+            "state":"unchanged",
+            "source_fingerprint":request.source_fingerprint,
+            "route_signature":identity.route_signature,
+        });
+    }
+
+    // Record the observation before a potentially failing read/apply. This
+    // prevents the polling fallback from repeatedly attempting an ambiguous or
+    // credential-bearing selection; a new external fingerprint re-enables a
+    // fresh evaluation.
+    authorization.last_observed_source_fingerprint = Some(request.source_fingerprint.clone());
+    authorization.last_observed_route_signature = Some(identity.route_signature.clone());
+    let follow_decision = cc_switch_follow_decision(&authorization, &identity);
+    if follow_decision == "reauthorization_required" {
+        authorization.last_sync_state = "reauthorization_required".to_string();
+        let _ = save_cc_switch_auto_follow_authorization(&authorization);
+        record_cc_switch_auto_follow_receipt(
+            "reauthorization_required",
+            &request.source_fingerprint,
+            None,
+            None,
+            None,
+            "not_reloaded",
+        );
+        let _ = append_desktop_event(
+            "route_sync_needed",
+            "reauthorization_required",
+            json!({
+                "source_fingerprint": request.source_fingerprint,
+                "route_signature": identity.route_signature,
+                "auto_follow": true,
+            }),
+        );
+        return json!({
+            "state":"reauthorization_required",
+            "summary":"The active cc-switch provider, endpoint, or protocol is outside the approved follow set",
+        });
+    }
+    if follow_decision == "unchanged" {
+        authorization.last_sync_state = "metadata_changed_route_unchanged".to_string();
+        let _ = save_cc_switch_auto_follow_authorization(&authorization);
+        return json!({
+            "state":"unchanged",
+            "source_fingerprint":request.source_fingerprint,
+            "route_signature":identity.route_signature,
+        });
+    }
+    authorization.last_sync_state = "evaluating".to_string();
+    if let Err(error) = save_cc_switch_auto_follow_authorization(&authorization) {
+        return json!({"state":"authorization_persist_failed", "summary":sanitize_command_output(&error)});
+    }
+    let _ = append_desktop_event(
+        "external_config_changed",
+        "observed",
+        json!({"source_fingerprint": request.source_fingerprint, "auto_follow": true}),
+    );
+
+    let plan = match prepare_cc_switch_sync_plan_from_discovery(&request, &discovery) {
+        Ok(plan) => plan,
+        Err(error) => {
+            authorization.last_sync_state = "blocked".to_string();
+            let _ = save_cc_switch_auto_follow_authorization(&authorization);
+            record_cc_switch_auto_follow_receipt(
+                "blocked",
+                &request.source_fingerprint,
+                None,
+                None,
+                None,
+                "not_reloaded",
+            );
+            return json!({"state":"blocked", "summary":sanitize_command_output(&error)});
+        }
+    };
+    let (revision, prepared, agents) = match prepare_connection_route_plan(&plan) {
+        Ok(prepared) => prepared,
+        Err(error) => {
+            authorization.last_sync_state = "blocked".to_string();
+            let _ = save_cc_switch_auto_follow_authorization(&authorization);
+            record_cc_switch_auto_follow_receipt(
+                "blocked",
+                &request.source_fingerprint,
+                None,
+                None,
+                None,
+                "not_reloaded",
+            );
+            return json!({"state":"blocked", "summary":sanitize_command_output(&error)});
+        }
+    };
+    let transaction = match config_patcher().apply_transaction(&[prepared]) {
+        Ok(transaction) => transaction,
+        Err(error) => {
+            authorization.last_sync_state = "apply_failed".to_string();
+            let _ = save_cc_switch_auto_follow_authorization(&authorization);
+            record_cc_switch_auto_follow_receipt(
+                "apply_failed",
+                &request.source_fingerprint,
+                None,
+                None,
+                None,
+                "not_reloaded",
+            );
+            return json!({"state":"apply_failed", "summary":sanitize_command_output(&format!("cc-switch route sync failed: {error:#}"))});
+        }
+    };
+    let Some(change) = transaction.changes.first() else {
+        authorization.last_sync_state = "apply_failed".to_string();
+        let _ = save_cc_switch_auto_follow_authorization(&authorization);
+        record_cc_switch_auto_follow_receipt(
+            "apply_failed",
+            &request.source_fingerprint,
+            None,
+            None,
+            None,
+            "not_reloaded",
+        );
+        return json!({"state":"apply_failed", "summary":"cc-switch route sync returned no verification receipt"});
+    };
+    let before_sha256 = change.before.sha256.clone();
+    let after_sha256 = change.after.sha256.clone();
+    let rollback_id = change.backup.rollback_id.clone();
+    let latest_discovery = enrich_upstream_discovery(upstream_discovery::discover());
+    let latest_request = cc_switch_sync_request_from_discovery(&latest_discovery);
+    let latest_identity = cc_switch_active_route_identity(&latest_discovery);
+    let source_still_matches = latest_identity
+        .as_ref()
+        .is_ok_and(|latest| latest == &identity)
+        && latest_identity.as_ref().is_ok_and(|latest| {
+            authorization
+                .authorized_upstream_signatures
+                .contains(&latest.upstream_signature)
+        });
+    if !source_still_matches {
+        let rollback_result = config_patcher().restore_backup(
+            &change.backup,
+            &ExpectedFileState::Hash(after_sha256.clone().unwrap_or_default()),
+        );
+        if let Ok(latest) = &latest_request {
+            authorization.last_observed_source_fingerprint =
+                Some(latest.source_fingerprint.clone());
+        }
+        if let Ok(latest) = &latest_identity {
+            authorization.last_observed_route_signature = Some(latest.route_signature.clone());
+        }
+        authorization.last_sync_state = if rollback_result.is_ok() {
+            "source_changed_rolled_back".to_string()
+        } else {
+            "source_changed_rollback_failed".to_string()
+        };
+        let _ = save_cc_switch_auto_follow_authorization(&authorization);
+        record_cc_switch_auto_follow_receipt(
+            &authorization.last_sync_state,
+            &request.source_fingerprint,
+            before_sha256,
+            after_sha256,
+            Some(rollback_id),
+            "not_reloaded",
+        );
+        return json!({
+            "state":authorization.last_sync_state,
+            "summary":"cc-switch changed during apply; the d-token route was restored when possible",
+            "agents":agents,
+            "discovery_revision":revision,
+        });
+    }
+    let verified_request = latest_request.expect("validated latest cc-switch request");
+    let verified_identity = latest_identity.expect("validated latest cc-switch identity");
+    let reload = reload_managed_runtime_after_route_sync();
+    let runtime_state = reload
+        .get("state")
+        .and_then(Value::as_str)
+        .unwrap_or("runtime_unknown");
+
+    // A route file is not a runtime reload receipt. Keep the last-known-good
+    // d-token route snapshot whenever the managed reload fails *or* the port
+    // belongs to an unmanaged compatible runtime that d-token may not reload.
+    if !matches!(runtime_state, "runtime_reloaded" | "runtime_not_running") {
+        let rollback_result = config_patcher().restore_backup(
+            &change.backup,
+            &ExpectedFileState::Hash(after_sha256.clone().unwrap_or_default()),
+        );
+        authorization.last_sync_state = if rollback_result.is_ok() {
+            format!("rolled_back_{runtime_state}")
+        } else {
+            format!("{runtime_state}_rollback_failed")
+        };
+        let _ = save_cc_switch_auto_follow_authorization(&authorization);
+        record_cc_switch_auto_follow_receipt(
+            &authorization.last_sync_state,
+            &request.source_fingerprint,
+            before_sha256,
+            after_sha256,
+            Some(rollback_id),
+            runtime_state,
+        );
+        return json!({
+            "state": authorization.last_sync_state,
+            "summary": "Runtime reload was unavailable; the d-token route snapshot was restored when possible",
+            "agents": agents,
+            "discovery_revision": revision,
+        });
+    }
+
+    authorization.last_observed_source_fingerprint =
+        Some(verified_request.source_fingerprint.clone());
+    authorization.last_synced_source_fingerprint =
+        Some(verified_request.source_fingerprint.clone());
+    authorization.last_observed_route_signature = Some(verified_identity.route_signature.clone());
+    authorization.last_synced_route_signature = Some(verified_identity.route_signature.clone());
+    authorization.last_sync_state = "applied_verified".to_string();
+    let _ = save_cc_switch_auto_follow_authorization(&authorization);
+    record_cc_switch_auto_follow_receipt(
+        "applied_verified",
+        &verified_request.source_fingerprint,
+        before_sha256.clone(),
+        after_sha256.clone(),
+        Some(rollback_id.clone()),
+        runtime_state,
+    );
+    json!({
+        "state":"applied_verified",
+        "discovery_revision": revision,
+        "source_fingerprint": verified_request.source_fingerprint,
+        "route_signature": verified_identity.route_signature,
+        "before_sha256": before_sha256,
+        "after_sha256": after_sha256,
+        "rollback_id": rollback_id,
+        "runtime": reload,
+        "agents": agents,
+    })
+}
+
+fn schedule_cc_switch_auto_follow() {
+    let coordinator = CC_SWITCH_AUTO_FOLLOW_COORDINATOR
+        .get_or_init(|| {
+            Arc::new(CcSwitchAutoFollowCoordinator {
+                pending: AtomicBool::new(false),
+                running: AtomicBool::new(false),
+            })
+        })
+        .clone();
+    coordinator.pending.store(true, Ordering::Release);
+    if coordinator.running.swap(true, Ordering::AcqRel) {
+        return;
+    }
+    thread::spawn(move || {
+        loop {
+            thread::sleep(CC_SWITCH_AUTO_FOLLOW_DEBOUNCE);
+            if !coordinator.pending.swap(false, Ordering::AcqRel) {
+                break;
+            }
+            let _ = execute_cc_switch_auto_follow();
+            let _ = execute_agent_auto_follow();
+            if !coordinator.pending.load(Ordering::Acquire) {
+                break;
+            }
+        }
+        coordinator.running.store(false, Ordering::Release);
+        // Close the small race where a notification arrives after the final
+        // pending check but before the worker releases `running`.
+        if coordinator.pending.load(Ordering::Acquire) {
+            schedule_cc_switch_auto_follow();
+        }
+    });
+}
+
+fn start_external_route_follow_observer() {
+    let callback: Arc<dyn Fn() + Send + Sync> = Arc::new(schedule_cc_switch_auto_follow);
+    match upstream_discovery::start_external_config_watcher(callback) {
+        Ok(watcher) => {
+            let _ = append_desktop_event(
+                "external_config_watcher",
+                &watcher.state,
+                json!({
+                    "mode": watcher.mode,
+                    "watched_paths": watcher.watched_paths,
+                    "polling_fallback": watcher.polling_fallback,
+                }),
+            );
+        }
+        Err(error) => {
+            let _ = append_desktop_event(
+                "external_config_watcher",
+                "unavailable",
+                json!({
+                    "mode": "polling_fallback_only",
+                    "summary": sanitize_command_output(&error),
+                }),
+            );
+        }
+    }
+    thread::spawn(|| loop {
+        thread::sleep(CC_SWITCH_AUTO_FOLLOW_POLL_INTERVAL);
+        schedule_cc_switch_auto_follow();
+    });
+}
+
+#[tauri::command]
+async fn set_cc_switch_auto_follow(request: SetCcSwitchAutoFollowRequest) -> Value {
+    tauri::async_runtime::spawn_blocking(move || {
+        if !request.enabled {
+            let mut authorization = load_cc_switch_auto_follow_authorization();
+            authorization.enabled = false;
+            authorization.last_sync_state = "revoked".to_string();
+            return match save_cc_switch_auto_follow_authorization(&authorization) {
+                Ok(()) => {
+                    let _ = append_desktop_event(
+                        "route_sync_authorization",
+                        "revoked",
+                        json!({"auto_follow": false}),
+                    );
+                    json!({"ok":true, "state":"revoked", "auto_follow":authorization})
+                }
+                Err(error) => json!({
+                    "ok":false,
+                    "state":"failed",
+                    "summary":sanitize_command_output(&error),
+                }),
+            };
+        }
+        let (Some(discovery_revision), Some(source_fingerprint)) = (
+            request.discovery_revision,
+            request.source_fingerprint,
+        ) else {
+            return json!({
+                "ok":false,
+                "state":"blocked",
+                "summary":"A current cc-switch discovery revision and source fingerprint are required for authorization",
+            });
+        };
+        match authorize_cc_switch_auto_follow(&CcSwitchSyncPlanRequest {
+            discovery_revision,
+            source_fingerprint,
+        }) {
+            Ok(authorization) => {
+                let _ = append_desktop_event(
+                    "route_sync_authorization",
+                    "authorized",
+                    json!({
+                        "source_fingerprint": authorization.authorized_source_fingerprint,
+                        "auto_follow": true,
+                    }),
+                );
+                json!({"ok":true, "state":"authorized", "auto_follow":authorization})
+            }
+            Err(error) => json!({
+                "ok":false,
+                "state":"blocked",
+                "summary":sanitize_command_output(&error),
+            }),
+        }
+    })
+    .await
+    .unwrap_or_else(|error| {
+        json!({
+            "ok":false,
+            "state":"failed",
+            "summary":format!("cc-switch auto-follow authorization worker failed: {error}"),
+        })
+    })
+}
+
+#[tauri::command]
+async fn preview_cc_switch_sync_plan(request: CcSwitchSyncPlanRequest) -> Value {
+    tauri::async_runtime::spawn_blocking(move || match prepare_cc_switch_sync_plan(&request) {
+        Ok(plan) => {
+            let mut review = preview_connection_route_plan_value(plan);
+            if let Some(object) = review.as_object_mut() {
+                object.insert(
+                    "source".to_string(),
+                    json!("dtoken-cc-switch-read-only-sync"),
+                );
+                object.insert(
+                    "source_fingerprint".to_string(),
+                    json!(request.source_fingerprint),
+                );
+            }
+            review
+        }
+        Err(error) => json!({
+            "ok": false,
+            "state": "blocked",
+            "source": "dtoken-cc-switch-read-only-sync",
+            "summary": sanitize_command_output(&error),
+            "requires_explicit_confirmation": true,
+        }),
+    })
+    .await
+    .unwrap_or_else(|error| {
+        json!({
+            "ok": false,
+            "state": "failed",
+            "source": "dtoken-cc-switch-read-only-sync",
+            "summary": format!("cc-switch sync preview worker failed: {error}"),
+        })
+    })
+}
+
+#[tauri::command]
+async fn apply_cc_switch_sync_plan(request: ApplyCcSwitchSyncPlanRequest) -> Value {
+    tauri::async_runtime::spawn_blocking(move || match prepare_cc_switch_sync_plan(&request.plan) {
+        Ok(plan) => {
+            let mut result = apply_connection_route_plan_value(ApplyConnectionRoutePlanRequest {
+                plan,
+                reviewed_before_sha256: request.reviewed_before_sha256,
+                reviewed_after_sha256: request.reviewed_after_sha256,
+                enable_auto_follow: false,
+            });
+            if request.enable_auto_follow && result.get("ok").and_then(Value::as_bool) == Some(true)
+            {
+                let reload = reload_managed_runtime_after_route_sync();
+                if let Some(object) = result.as_object_mut() {
+                    object.insert("runtime".to_string(), reload.clone());
+                }
+                match authorize_initial_cc_switch_auto_follow_after_runtime_reload(
+                    &request.plan,
+                    &reload,
+                ) {
+                    Ok(authorization) => {
+                        if let Some(object) = result.as_object_mut() {
+                            object.insert("auto_follow".to_string(), json!(authorization));
+                        }
+                    }
+                    Err(receipt) => {
+                        if let Some(object) = result.as_object_mut() {
+                            object.insert("auto_follow".to_string(), receipt);
+                        }
+                    }
+                }
+            }
+            let event_state = if result.get("ok").and_then(Value::as_bool) == Some(true) {
+                "ok"
+            } else {
+                "failed"
+            };
+            let _ = append_desktop_event(
+                if event_state == "ok" {
+                    "route_sync_applied"
+                } else {
+                    "route_sync_failed"
+                },
+                event_state,
+                json!({
+                    "source_fingerprint": request.plan.source_fingerprint,
+                    "state": result.get("state"),
+                    "after_sha256": result.get("after_sha256"),
+                    "rollback_id": result.get("rollback_id"),
+                }),
+            );
+            result
+        }
+        Err(error) => json!({
+            "ok": false,
+            "state": "stale",
+            "source": "dtoken-cc-switch-read-only-sync",
+            "summary": sanitize_command_output(&error),
+        }),
+    })
+    .await
+    .unwrap_or_else(|error| {
+        json!({
+            "ok": false,
+            "state": "failed",
+            "source": "dtoken-cc-switch-read-only-sync",
+            "summary": format!("cc-switch sync apply worker failed: {error}"),
+        })
+    })
+}
+
 #[tauri::command]
 async fn preview_connection_route_plan(request: ConnectionRoutePlanRequest) -> Value {
     tauri::async_runtime::spawn_blocking(move || preview_connection_route_plan_value(request))
@@ -4704,16 +8527,18 @@ fn apply_connection_route_plan_value(request: ApplyConnectionRoutePlanRequest) -
             "summary": "Review the automatic route diff before applying it"
         });
     };
-    let (revision, prepared, agents) = match prepare_connection_route_plan(&request.plan) {
-        Ok(prepared) => prepared,
-        Err(error) => {
-            return json!({
-                "ok": false,
-                "state": "stale",
-                "summary": sanitize_command_output(&error)
-            });
-        }
-    };
+    let discovery = enrich_upstream_discovery(upstream_discovery::discover());
+    let (revision, prepared, agents) =
+        match prepare_connection_route_plan_from_discovery(&request.plan, &discovery) {
+            Ok(prepared) => prepared,
+            Err(error) => {
+                return json!({
+                    "ok": false,
+                    "state": "stale",
+                    "summary": sanitize_command_output(&error)
+                });
+            }
+        };
     if prepared.plan.before_hash != reviewed_before || prepared.plan.after_hash != reviewed_after {
         return json!({
             "ok": false,
@@ -4721,6 +8546,24 @@ fn apply_connection_route_plan_value(request: ApplyConnectionRoutePlanRequest) -
             "summary": "The active route or discovered upstream changed after review"
         });
     }
+    let staged_auto_follow = if request.enable_auto_follow {
+        match stage_agent_auto_follow_authorization(
+            &request.plan,
+            &discovery,
+            &prepared.plan.after_hash,
+        ) {
+            Ok(authorization) => authorization,
+            Err(error) => {
+                return json!({
+                    "ok": false,
+                    "state": "blocked",
+                    "summary": sanitize_command_output(&error),
+                });
+            }
+        }
+    } else {
+        None
+    };
     let transaction = match config_patcher().apply_transaction(&[prepared]) {
         Ok(transaction) => transaction,
         Err(error) => {
@@ -4739,6 +8582,19 @@ fn apply_connection_route_plan_value(request: ApplyConnectionRoutePlanRequest) -
         });
     };
     let after_sha256 = receipt.after.sha256.clone().unwrap_or_default();
+    if let Some(authorization) = staged_auto_follow.as_ref() {
+        if let Err(error) = save_agent_auto_follow_authorization(authorization) {
+            let rollback = config_patcher().restore_backup(
+                &receipt.backup,
+                &ExpectedFileState::Hash(after_sha256.clone()),
+            );
+            return json!({
+                "ok": false,
+                "state": if rollback.is_ok() { "authorization_failed_rolled_back" } else { "authorization_failed_rollback_failed" },
+                "summary": sanitize_command_output(&error),
+            });
+        }
+    }
     let result = json!({
         "ok": true,
         "state": "applied_verified",
@@ -4751,6 +8607,12 @@ fn apply_connection_route_plan_value(request: ApplyConnectionRoutePlanRequest) -
         "rollback_id": receipt.backup.rollback_id,
         "agents": agents,
         "verified": true,
+        "auto_follow": staged_auto_follow.as_ref().map(|authorization| json!({
+            "enabled": authorization.enabled,
+            "state": authorization.last_sync_state,
+            "agent_ids": authorization.last_synced_bindings.iter().map(|binding| binding.agent_id.clone()).collect::<Vec<_>>(),
+            "requires_runtime_verification": true,
+        })),
         "summary": "Reviewed automatic d-token routes were applied with a durable rollback point"
     });
     let _ = append_desktop_event(
@@ -5471,125 +9333,24 @@ fn manage_backup(action: String, id: String) -> ActionResult {
         .join("rollback-points")
         .join(format!("{safe_id}.json"));
     match action.as_str() {
-        "restore" => match fs::read_to_string(&path) {
-            Ok(content) => {
-                let parsed: Value = serde_json::from_str(&content).unwrap_or_else(|_| json!({}));
-                logs.push(log(
-                    "info",
-                    format!("Restore plan loaded from {}", path.display()),
-                ));
-                logs.push(log(
-                    "info",
-                    format!("Restore manifest bytes: {}", content.len()),
-                ));
-                let active_path = active_config_path();
-                let is_dtoken_active_config = parsed
-                    .get("target")
-                    .and_then(Value::as_str)
-                    .map(|target| target == "d-token active route config")
-                    .unwrap_or(false);
-                if is_dtoken_active_config {
-                    match parsed.get("previous_config") {
-                        Some(Value::String(previous)) => {
-                            if let Err(err) = serde_json::from_str::<Value>(previous) {
-                                logs.push(log(
-                                    "error",
-                                    format!("Previous active config is not valid JSON: {err}"),
-                                ));
-                                return ActionResult {
-                                    ok: false,
-                                    summary: "Rollback manifest invalid".to_string(),
-                                    logs,
-                                    tools: all_checks(),
-                                };
-                            }
-                            if let Err(err) =
-                                durable_atomic_write(&active_path, previous.as_bytes())
-                            {
-                                logs.push(log(
-                                    "error",
-                                    format!("Active config restore failed: {err}"),
-                                ));
-                                return ActionResult {
-                                    ok: false,
-                                    summary: "Rollback restore failed".to_string(),
-                                    logs,
-                                    tools: all_checks(),
-                                };
-                            }
-                            logs.push(log(
-                                "info",
-                                format!(
-                                    "Restored previous d-token active config to {}",
-                                    active_path.display()
-                                ),
-                            ));
-                            logs.push(log("info", "No external agent, Headroom, RTK, cc-switch, shell profile, or system proxy config was changed"));
-                            ActionResult {
-                                ok: true,
-                                summary: "d-token active config restored".to_string(),
-                                logs,
-                                tools: all_checks(),
-                            }
-                        }
-                        Some(Value::Null) | None => {
-                            if active_path.exists() {
-                                if let Err(err) = durable_remove_file(&active_path) {
-                                    logs.push(log(
-                                        "error",
-                                        format!("Active config remove failed: {err}"),
-                                    ));
-                                    return ActionResult {
-                                        ok: false,
-                                        summary: "Rollback restore failed".to_string(),
-                                        logs,
-                                        tools: all_checks(),
-                                    };
-                                }
-                            }
-                            logs.push(log("info", "Removed d-token active config because the rollback point had no previous config"));
-                            logs.push(log("info", "No external agent, Headroom, RTK, cc-switch, shell profile, or system proxy config was changed"));
-                            ActionResult {
-                                ok: true,
-                                summary: "d-token active config restored to empty state"
-                                    .to_string(),
-                                logs,
-                                tools: all_checks(),
-                            }
-                        }
-                        _ => {
-                            logs.push(log("error", "Rollback manifest previous_config is invalid"));
-                            ActionResult {
-                                ok: false,
-                                summary: "Rollback manifest invalid".to_string(),
-                                logs,
-                                tools: all_checks(),
-                            }
-                        }
-                    }
-                } else {
-                    logs.push(log(
-                        "warn",
-                        "External config restore is gated; this action validates and stages the rollback plan only",
-                    ));
-                    ActionResult {
-                        ok: true,
-                        summary: "Rollback point staged for restore".to_string(),
-                        logs,
-                        tools: all_checks(),
-                    }
-                }
+        "restore" => {
+            logs.push(log(
+                "warn",
+                "Legacy rollback manifests cannot prove the reviewed revision and current target hash",
+            ));
+            logs.push(log(
+                "info",
+                "Use preview_rollback followed by apply_rollback for a hash-bound restore",
+            ));
+            ActionResult {
+                ok: false,
+                summary:
+                    "Legacy rollback restore is blocked; preview and apply a verified rollback point"
+                        .to_string(),
+                logs,
+                tools: all_checks(),
             }
-            Err(err) => {
-                logs.push(log("error", format!("Restore plan not found: {err}")));
-                ActionResult {
-                    ok: false,
-                    summary: "Rollback point not found".to_string(),
-                    logs,
-                    tools: all_checks(),
-                }
-            }
-        },
+        }
         "cleanup" => match fs::remove_file(&path) {
             Ok(()) => {
                 logs.push(log(
@@ -6343,6 +10104,193 @@ fn apply_opencode_connection(request: OpenCodeConnectionRequest) -> Value {
     json!(receipt)
 }
 
+/// Produce a no-write, hash-bound review for a d-token-owned Agent transport
+/// change. The review has no credential or user-provider payload.
+#[tauri::command]
+fn preview_managed_agent_transport(
+    request: ManagedAgentTransportRequest,
+    operation: String,
+) -> Value {
+    let request = match resolve_managed_agent_path(request) {
+        Ok(request) => request,
+        Err(error) => return json!({ "ok": false, "state": "failed", "summary": error }),
+    };
+    let result = match operation.as_str() {
+        "configure" => preview_configure_agent_transport(&request),
+        "clear" => preview_clear_agent_transport(&request),
+        _ => {
+            return json!({ "ok": false, "state": "failed", "summary": "Unsupported Agent transport operation" })
+        }
+    };
+    match result {
+        Ok(review) => json!({ "ok": true, "review": review }),
+        Err(error) => json!({
+            "ok": false,
+            "state": "failed",
+            "summary": error.to_string(),
+            "privacy": "Only d-token-owned transport metadata was considered; credentials were not read or written"
+        }),
+    }
+}
+
+/// Apply exactly the no-write review returned by
+/// `preview_managed_agent_transport`. Any external configuration edit makes
+/// the review stale and the operation fails before writing.
+#[tauri::command]
+fn apply_reviewed_managed_agent_transport(
+    request: ManagedAgentTransportRequest,
+    operation: String,
+    reviewed_revision: String,
+    reviewed_before_sha256: String,
+    reviewed_after_sha256: String,
+) -> Value {
+    let request = match resolve_managed_agent_path(request) {
+        Ok(request) => request,
+        Err(error) => return json!({ "ok": false, "state": "failed", "summary": error }),
+    };
+    let operation = match operation.as_str() {
+        "configure" => AgentTransportOperation::Configure,
+        "clear" => AgentTransportOperation::Clear,
+        _ => {
+            return json!({ "ok": false, "state": "failed", "summary": "Unsupported Agent transport operation" })
+        }
+    };
+    match apply_reviewed_agent_transport(
+        &request,
+        operation,
+        &config_backup_root(),
+        &reviewed_revision,
+        &reviewed_before_sha256,
+        &reviewed_after_sha256,
+    ) {
+        Ok(receipt) => json!(receipt),
+        Err(error) => json!({
+            "ok": false,
+            "state": "failed",
+            "summary": error.to_string(),
+            "privacy": "Only d-token-owned transport metadata was considered; credentials were not read or written"
+        }),
+    }
+}
+
+#[tauri::command]
+fn verify_managed_agent_transport(request: ManagedAgentTransportRequest) -> Value {
+    let request = match resolve_managed_agent_path(request) {
+        Ok(request) => request,
+        Err(error) => return json!({ "ok": false, "detail": error }),
+    };
+    match verify_agent_transport(&request) {
+        Ok(verification) => json!(verification),
+        Err(error) => json!({ "ok": false, "detail": error.to_string() }),
+    }
+}
+
+fn resolve_managed_agent_path(
+    request: ManagedAgentTransportRequest,
+) -> Result<ManagedAgentTransportRequest, String> {
+    let context = current_process_scan_context(epoch_ms())
+        .map_err(|error| format!("Agent configuration roots are unavailable: {error}"))?;
+    resolve_managed_agent_path_with_context(request, &context)
+}
+
+fn resolve_managed_agent_path_with_context(
+    mut request: ManagedAgentTransportRequest,
+    context: &AgentScanContext,
+) -> Result<ManagedAgentTransportRequest, String> {
+    let raw = request.target_path.to_string_lossy();
+    if let Some(relative) = raw.strip_prefix("~/") {
+        request.target_path = context.home_dir.join(relative);
+    } else if !request.target_path.is_absolute() {
+        return Err("Agent config path is not an absolute or home-relative path".to_string());
+    }
+    request.target_path = normalize_managed_agent_target(&request.target_path)?;
+    let allowed = allowed_agent_config_paths(&request.agent_id, context)
+        .map_err(|_| "Agent config path is not registered for this Agent".to_string())?
+        .into_iter()
+        .map(|path| normalize_managed_agent_target(&path))
+        .collect::<Result<Vec<_>, _>>()?;
+    let Some(expected_path) = allowed
+        .iter()
+        .find(|candidate| *candidate == &request.target_path)
+    else {
+        return Err("Agent config path is outside the registered Agent targets".to_string());
+    };
+    reject_symlink_components(&request.target_path)?;
+    if request.target_path.exists() {
+        let metadata = fs::symlink_metadata(&request.target_path)
+            .map_err(|error| format!("Agent config metadata is unavailable: {error}"))?;
+        if !metadata.is_file() {
+            return Err("Agent config target must be a regular file".to_string());
+        }
+        let resolved = fs::canonicalize(&request.target_path)
+            .map_err(|error| format!("Agent config path cannot be canonicalized: {error}"))?;
+        let expected = fs::canonicalize(expected_path).map_err(|error| {
+            format!("Registered Agent config path cannot be canonicalized: {error}")
+        })?;
+        if resolved != expected {
+            return Err("Agent config path does not resolve to the registered target".to_string());
+        }
+    } else {
+        let parent = request
+            .target_path
+            .parent()
+            .ok_or_else(|| "Agent config target has no parent directory".to_string())?;
+        let expected_parent = expected_path
+            .parent()
+            .ok_or_else(|| "Registered Agent config target has no parent directory".to_string())?;
+        let resolved_parent = fs::canonicalize(parent)
+            .map_err(|_| "Agent config parent directory must already exist".to_string())?;
+        let resolved_expected_parent = fs::canonicalize(expected_parent).map_err(|_| {
+            "Registered Agent config parent directory must already exist".to_string()
+        })?;
+        if resolved_parent != resolved_expected_parent || !resolved_parent.is_dir() {
+            return Err("Agent config parent is outside the registered Agent target".to_string());
+        }
+    }
+    Ok(request)
+}
+
+fn normalize_managed_agent_target(path: &Path) -> Result<PathBuf, String> {
+    use std::path::Component;
+
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::Prefix(_) | Component::RootDir | Component::Normal(_) => {
+                normalized.push(component.as_os_str())
+            }
+            Component::CurDir => {}
+            Component::ParentDir => {
+                return Err("Agent config path cannot contain parent traversal".to_string())
+            }
+        }
+    }
+    if !normalized.is_absolute() {
+        return Err("Agent config path must resolve to an absolute path".to_string());
+    }
+    Ok(normalized)
+}
+
+fn reject_symlink_components(path: &Path) -> Result<(), String> {
+    let mut current = PathBuf::new();
+    for component in path.components() {
+        current.push(component.as_os_str());
+        match fs::symlink_metadata(&current) {
+            Ok(metadata) if metadata.file_type().is_symlink() => {
+                return Err("Agent config path cannot contain symbolic links".to_string())
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => break,
+            Err(error) => {
+                return Err(format!(
+                    "Agent config path metadata is unavailable: {error}"
+                ))
+            }
+        }
+    }
+    Ok(())
+}
+
 #[tauri::command]
 async fn discover_upstream_candidates() -> Value {
     tauri::async_runtime::spawn_blocking(upstream_discovery::discover)
@@ -6372,13 +10320,18 @@ fn enrich_upstream_discovery(mut discovery: Value) -> Value {
         .get("state")
         .and_then(Value::as_str)
         .unwrap_or("unknown");
-    let active_endpoints = active
+    let active_providers = active
         .get("providers")
         .and_then(Value::as_array)
         .into_iter()
         .flatten()
-        .filter_map(|provider| provider.get("base_url").and_then(Value::as_str))
-        .map(normalized_endpoint)
+        .map(|provider| {
+            json!({
+                "endpoint": provider.get("base_url").and_then(Value::as_str).map(normalized_endpoint),
+                "protocol": provider.get("protocol").and_then(Value::as_str),
+                "models": provider.get("models").cloned().unwrap_or_else(|| json!([])),
+            })
+        })
         .collect::<Vec<_>>();
     if let Some(sync) = discovery
         .get_mut("cc_switch_sync")
@@ -6388,18 +10341,16 @@ fn enrich_upstream_discovery(mut discovery: Value) -> Value {
             .get("detected")
             .and_then(Value::as_bool)
             .unwrap_or(false);
-        let cc_endpoint = sync
-            .get("upstream")
-            .and_then(Value::as_str)
-            .map(normalized_endpoint);
-        let status = derive_cc_switch_status(
-            detected,
-            cc_endpoint.as_deref(),
-            &active_endpoints,
-            active_state,
-        );
+        let status = derive_cc_switch_status(detected, sync, &active_providers, active_state);
         sync.insert("status".to_string(), Value::String(status.to_string()));
     }
+    let agent_follow_authorization = load_agent_auto_follow_authorization();
+    let agent_follow_receipt = load_agent_route_sync_receipt();
+    project_agent_follow_status(
+        &mut discovery,
+        &agent_follow_authorization,
+        agent_follow_receipt.as_ref(),
+    );
     if let Some(object) = discovery.as_object_mut() {
         let prior_revision = object
             .get("revision")
@@ -6409,8 +10360,9 @@ fn enrich_upstream_discovery(mut discovery: Value) -> Value {
             &json!({
                 "discovery_revision": prior_revision,
                 "active_state": active_state,
-                "active_endpoints": active_endpoints,
-                "cc_switch_status": object.get("cc_switch_sync").and_then(|value| value.get("status"))
+                "active_providers": active_providers,
+                "cc_switch_status": object.get("cc_switch_sync").and_then(|value| value.get("status")),
+                "agent_route_follow": object.get("agent_route_follow"),
             })
             .to_string(),
         );
@@ -6428,7 +10380,145 @@ fn enrich_upstream_discovery(mut discovery: Value) -> Value {
             }),
         );
     }
+    record_external_config_refresh_evidence(&discovery);
     discovery
+}
+
+fn project_agent_follow_status(
+    discovery: &mut Value,
+    authorization: &AgentAutoFollowAuthorization,
+    receipt: Option<&AgentRouteSyncReceipt>,
+) {
+    let Some(object) = discovery.as_object_mut() else {
+        return;
+    };
+    let bindings = object
+        .get_mut("agent_bindings")
+        .and_then(Value::as_array_mut);
+    if let Some(bindings) = bindings {
+        for binding in bindings {
+            let Some(agent_id) = binding.get("agent_id").and_then(Value::as_str) else {
+                continue;
+            };
+            let Some(stored) = authorization
+                .last_synced_bindings
+                .iter()
+                .find(|stored| stored.agent_id == agent_id)
+            else {
+                if let Some(binding) = binding.as_object_mut() {
+                    binding.insert(
+                        "follow".to_string(),
+                        json!({
+                            "authorized": false,
+                            "enabled": false,
+                            "state": "not_authorized",
+                            "transport_out_of_sync": false,
+                            "next_action": "enable_follow_in_connection",
+                            "current_upstream": null,
+                            "last_receipt": null,
+                        }),
+                    );
+                }
+                continue;
+            };
+            let already_connected = binding
+                .get("already_connected")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            let related_receipt = receipt.filter(|receipt| {
+                receipt
+                    .changed_agents
+                    .iter()
+                    .any(|changed| changed == agent_id)
+            });
+            let receipt_failure = related_receipt
+                .map(|receipt| receipt.state.as_str())
+                .filter(|state| *state != "applied_verified");
+            let transport_out_of_sync = authorization.enabled && !already_connected;
+            let state = if let Some(state) = receipt_failure {
+                state
+            } else if transport_out_of_sync {
+                "transport_out_of_sync"
+            } else if authorization.enabled {
+                "following"
+            } else if authorization.last_sync_state != "not_authorized" {
+                authorization.last_sync_state.as_str()
+            } else {
+                "not_authorized"
+            };
+            let can_configure = binding
+                .get("can_configure")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            let next_action = match state {
+                "following" | "applied_verified" => "none",
+                "transport_out_of_sync" if can_configure => "configure",
+                "transport_out_of_sync" => "advanced_configuration",
+                "pending_runtime_verification"
+                | "runtime_verification_required"
+                | "runtime_identity_changed"
+                | "runtime_verify_failed_rolled_back"
+                | "runtime_verify_failed_rollback_failed" => "verify_runtime",
+                "reauthorization_required"
+                | "active_route_changed_reauthorization_required"
+                | "stale_route" => "review_follow",
+                "not_authorized" => "enable_follow_in_connection",
+                _ => "retry_review",
+            };
+            if let Some(binding) = binding.as_object_mut() {
+                binding.insert(
+                    "follow".to_string(),
+                    json!({
+                        "authorized": true,
+                        "enabled": authorization.enabled,
+                        "state": state,
+                        "transport_out_of_sync": transport_out_of_sync,
+                        "next_action": next_action,
+                        "current_upstream": stored.upstream,
+                        "last_receipt": related_receipt,
+                    }),
+                );
+            }
+        }
+    }
+    object.insert(
+        "agent_route_follow".to_string(),
+        json!({
+            "schema_version": authorization.schema_version,
+            "enabled": authorization.enabled,
+            "state": authorization.last_sync_state,
+            "authorized_at_ms": authorization.authorized_at_ms,
+            "runtime_identity": authorization.runtime_identity,
+            "last_synced_source_fingerprint": authorization.last_synced_source_fingerprint,
+            "last_receipt": receipt,
+        }),
+    );
+}
+
+/// Persist only the state transition and metadata fingerprint of an external
+/// Agent/cc-switch configuration observation. The event intentionally never
+/// includes external config content, credentials, or a mutation instruction.
+fn record_external_config_refresh_evidence(discovery: &Value) {
+    let Some(refresh) = discovery.get("external_config_refresh") else {
+        return;
+    };
+    let state = refresh.get("state").and_then(Value::as_str);
+    let event_payload = json!({
+        "snapshot_fingerprint": refresh.get("snapshot_fingerprint"),
+        "previous_fingerprint": refresh.get("previous_fingerprint"),
+        "changed_sources": refresh.get("changed_sources"),
+        "automatic_apply_allowed": false,
+    });
+    match state {
+        Some("external_config_snapshot") => {
+            let _ = append_desktop_event("external_config_detected", "ok", event_payload);
+        }
+        Some("external_config_review_required") => {
+            let _ = append_desktop_event("external_config_changed", "ok", event_payload.clone());
+            let _ = append_desktop_event("route_sync_needed", "review_required", event_payload);
+        }
+        _ => {}
+    }
 }
 
 fn normalized_endpoint(value: &str) -> String {
@@ -6437,14 +10527,48 @@ fn normalized_endpoint(value: &str) -> String {
 
 fn derive_cc_switch_status(
     detected: bool,
-    cc_endpoint: Option<&str>,
-    active_endpoints: &[String],
+    sync: &serde_json::Map<String, Value>,
+    active_providers: &[Value],
     active_state: &str,
 ) -> &'static str {
     if !detected {
         "unavailable"
-    } else if cc_endpoint
-        .is_some_and(|endpoint| active_endpoints.iter().any(|active| active == endpoint))
+    } else if sync
+        .get("active_upstreams")
+        .and_then(Value::as_array)
+        .is_some_and(|upstreams| upstreams.len() > 1)
+    {
+        "needs-selection"
+    } else if sync
+        .get("active_upstreams")
+        .and_then(Value::as_array)
+        .and_then(|upstreams| upstreams.first())
+        .is_some_and(|upstream| {
+            let endpoint = upstream
+                .get("upstream")
+                .and_then(Value::as_str)
+                .map(normalized_endpoint);
+            let protocol = upstream.get("protocol").and_then(Value::as_str);
+            let model = upstream
+                .get("models")
+                .and_then(Value::as_array)
+                .and_then(|models| models.first())
+                .and_then(Value::as_str);
+            endpoint.is_some_and(|endpoint| {
+                active_providers.iter().any(|provider| {
+                    provider.get("endpoint").and_then(Value::as_str) == Some(endpoint.as_str())
+                        && provider.get("protocol").and_then(Value::as_str) == protocol
+                        && model.is_some_and(|model| {
+                            provider
+                                .get("models")
+                                .and_then(Value::as_array)
+                                .is_some_and(|models| {
+                                    models.iter().any(|value| value.as_str() == Some(model))
+                                })
+                        })
+                })
+            })
+        })
     {
         "synced"
     } else if active_state == "loaded" {
@@ -6539,7 +10663,7 @@ fn restart_dtoken_service() -> ActionResult {
 }
 
 fn restart_dtoken_service_impl() -> ActionResult {
-    let current = dtoken_service_status_value();
+    let current = dtoken_service_status_value_fresh();
     match current.get("state").and_then(Value::as_str) {
         Some("running" | "restart_required") => {
             let stop = stop_dtoken_service_impl();
@@ -6580,12 +10704,65 @@ fn restart_dtoken_service_impl() -> ActionResult {
     }
 }
 
+/// Reloads only a d-token-managed runtime after an already-reviewed route
+/// sync. Unmanaged processes are never stopped; callers receive an explicit
+/// restart-required receipt instead of a silent partial success.
+#[tauri::command]
+fn reload_managed_runtime_after_route_sync() -> Value {
+    let status = dtoken_service_status_value_fresh();
+    let state = status
+        .get("state")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    match state {
+        "running" | "restart_required" => {
+            let result = restart_dtoken_service_impl();
+            let event = if result.ok {
+                "runtime_reloaded"
+            } else {
+                "route_sync_failed"
+            };
+            let _ = append_desktop_event(
+                event,
+                if result.ok { "ok" } else { "failed" },
+                json!({ "summary": result.summary, "service_state": state }),
+            );
+            json!({
+                "ok": result.ok,
+                "state": if result.ok { "runtime_reloaded" } else { "runtime_reload_failed" },
+                "managed": true,
+                "summary": result.summary,
+                "logs": result.logs,
+            })
+        }
+        "unmanaged_running" => {
+            let _ = append_desktop_event(
+                "runtime_reload_required",
+                "restart_required",
+                json!({ "service_state": state, "managed": false }),
+            );
+            json!({
+                "ok": false,
+                "state": "restart_required",
+                "managed": false,
+                "summary": "An unmanaged d-token-compatible service owns the port; restart it manually to load the reviewed route",
+            })
+        }
+        _ => json!({
+            "ok": true,
+            "state": "runtime_not_running",
+            "managed": false,
+            "summary": "The reviewed route is saved; the runtime will load it on the next managed start",
+        }),
+    }
+}
+
 fn start_dtoken_service_impl() -> ActionResult {
     let mut logs = vec![log(
         "info",
         "Starting d-token-owned local service lifecycle action",
     )];
-    let current = dtoken_service_status_value();
+    let current = dtoken_service_status_value_fresh();
     if current.get("state").and_then(Value::as_str) == Some("running") {
         logs.push(log(
             "info",
@@ -7441,6 +11618,12 @@ fn doctor_prepare_agent_integration(
     {
         return Err("Select at least one Agent integration surface".to_string());
     }
+    if selection.install_mcp {
+        return Err(
+            "Doctor cannot create or renew Managed SharedContext MCP capabilities; use Install & Connect so the project, route, provider, model, and capability review are bound in one transaction"
+                .to_string(),
+        );
+    }
     let (_, project_root) = doctor_selection_scope(selection)?;
     prepare_hybrid_agent_integration(&HybridAgentIntegrationDraftRequest {
         agent_ids: vec![agent_id.to_string()],
@@ -7451,6 +11634,7 @@ fn doctor_prepare_agent_integration(
         install_skill: selection.install_skill,
         install_mcp: selection.install_mcp,
     })
+    .map(|prepared| prepared.agent)
 }
 
 fn doctor_agent_inventory() -> (Vec<Value>, bool, usize) {
@@ -7617,6 +11801,24 @@ fn run_doctor_scan_value() -> Value {
             > 0
         && active.get("fallback_disabled").and_then(Value::as_bool) == Some(true);
     let route_verified = route.get("ok").and_then(Value::as_bool).unwrap_or(false);
+    let connection_discovery = enrich_upstream_discovery(upstream_discovery::discover());
+    let cc_switch_sync = connection_discovery
+        .get("cc_switch_sync")
+        .cloned()
+        .unwrap_or(Value::Null);
+    let cc_switch_state = match cc_switch_sync.get("status").and_then(Value::as_str) {
+        Some("synced") => "healthy",
+        Some("out-of-sync") => "repairable",
+        Some("needs-selection" | "needs-confirmation") => "manual",
+        Some("unavailable") => "unknown",
+        _ => "unknown",
+    };
+    let cc_switch_summary = match cc_switch_state {
+        "healthy" => "cc-switch 当前上游与 d-token route 的 endpoint、协议和模型一致",
+        "repairable" => "cc-switch 当前上游已变化；可预览并同步 d-token 自有 route",
+        "manual" => "cc-switch 有多个或不完整的活动上游，需要选择后才能生成同步计划",
+        _ => "未检测到可安全验证的 cc-switch 同步证据",
+    };
     let core_state = match service_state {
         "running" if active_ready && route_verified => "healthy",
         "running" if !active_ready || !route_verified => "manual",
@@ -7697,6 +11899,7 @@ fn run_doctor_scan_value() -> Value {
     let modules = vec![
         json!({ "module_id": "core", "state": core_state, "severity": if core_state == "blocked" { "error" } else { "warning" }, "summary": core_summary }),
         json!({ "module_id": "agent", "state": agent_state, "severity": "warning", "summary": if managed_agents == 0 { "未发现已有 d-token 接入证据的受支持 Agent" } else if agent_repairs > 0 { "已发现需要重新注入或修复的 d-token Agent 管理区" } else { "现有 Agent 管理区已验证，可按需重新配置" }, "agents": agents }),
+        json!({ "module_id": "agent_cc_switch_sync", "state": cc_switch_state, "severity": if cc_switch_state == "repairable" { "warning" } else { "info" }, "summary": cc_switch_summary, "sync": cc_switch_sync }),
         json!({ "module_id": "optical", "state": optical_state, "severity": "warning", "summary": if optical_state == "healthy" { "Optical 保持 off/shadow_preview 安全边界" } else { "Optical Shadow 配置需要在视觉压缩工作台处理" } }),
         json!({ "module_id": "platform", "state": platform_state, "severity": "warning", "summary": autostart.summary }),
         json!({ "module_id": "recovery", "state": recovery_state, "severity": if recovery_state == "blocked" { "error" } else { "warning" }, "summary": recovery_summary }),
@@ -7763,6 +11966,15 @@ fn run_doctor_scan_value() -> Value {
             evidence: vec![DoctorEvidence {
                 kind: DoctorEvidenceKind::Configuration,
                 state: doctor_domain_state(agent_state),
+            }],
+        },
+        DoctorModuleEvidence {
+            module_id: DoctorModuleId::AgentCcSwitchSync,
+            state: doctor_domain_state(cc_switch_state),
+            observed_at_ms: collected_at_ms,
+            evidence: vec![DoctorEvidence {
+                kind: DoctorEvidenceKind::Configuration,
+                state: doctor_domain_state(cc_switch_state),
             }],
         },
         DoctorModuleEvidence {
@@ -10229,6 +14441,10 @@ macro_rules! desktop_release_handlers {
             preview_connection_route_plan,
             apply_connection_route_plan,
             rollback_connection_route_plan,
+            finalize_agent_auto_follow_authorization,
+            preview_cc_switch_sync_plan,
+            apply_cc_switch_sync_plan,
+            set_cc_switch_auto_follow,
             get_active_route_config_status,
             verify_agent_route_config,
             recommend_project_policy,
@@ -10250,6 +14466,9 @@ macro_rules! desktop_release_handlers {
             preview_install_plan,
             preview_opencode_connection,
             apply_opencode_connection,
+            verify_managed_agent_transport,
+            preview_managed_agent_transport,
+            apply_reviewed_managed_agent_transport,
             discover_upstream_candidates,
             get_dtoken_service_status,
             get_autostart_status,
@@ -10257,7 +14476,13 @@ macro_rules! desktop_release_handlers {
             disable_autostart,
             start_dtoken_service,
             restart_dtoken_service,
+            reload_managed_runtime_after_route_sync,
             stop_dtoken_service,
+            get_managed_rtk_status,
+            preview_managed_rtk_install,
+            apply_managed_rtk_install,
+            preview_managed_rtk_clear,
+            apply_managed_rtk_clear,
             run_install_transaction,
             get_doctor_snapshot,
             run_doctor,
@@ -10298,6 +14523,7 @@ macro_rules! desktop_release_handlers {
             cancel_codebase_memory_index,
             delete_codebase_memory_index,
             open_codebase_memory_graph,
+            show_control_plane,
         ])
     };
 }
@@ -10321,10 +14547,14 @@ macro_rules! run_desktop_app_with_handlers {
     ([$($debug_command:ident,)*] [$($release_command:ident,)*]) => {
         tauri::Builder::default()
             .plugin(tauri_plugin_opener::init())
-            .setup(|_| {
+            .setup(|app| {
                 start_service_when_launched_by_autostart();
+                start_external_route_follow_observer();
+                tray::install(app.handle())?;
+                tray::apply_panel_material(app.handle());
                 Ok(())
             })
+            .on_window_event(|window, event| tray::handle_window_event(window, event))
             .invoke_handler(tauri::generate_handler![
             $($release_command,)*
             $($debug_command,)*
@@ -10681,6 +14911,318 @@ mod tests {
             None => env::remove_var("PATH"),
         }
         result
+    }
+
+    #[test]
+    fn managed_mcp_capability_binding_is_project_and_route_bound() {
+        with_isolated_app_state("managed-mcp-capability-binding", || {
+            let project = app_state_dir().join("project");
+            fs::create_dir_all(&project).expect("create project");
+            let config: dtoken_config::DtokenConfig = serde_json::from_value(json!({
+                "providers": [{
+                    "id": "provider-codex",
+                    "name": "Codex upstream",
+                    "kind": "custom",
+                    "protocol": "open_ai",
+                    "base_url": "https://example.invalid/v1",
+                    "api_key_ref": null,
+                    "models": ["example/model"],
+                    "timeout_ms": 120000,
+                    "healthcheck_path": "/health"
+                }],
+                "routes": [{
+                    "id": "route-codex",
+                    "name": "Codex route",
+                    "input_protocol": "open_ai",
+                    "instance_id": "instance-codex",
+                    "target_provider_id": "provider-codex",
+                    "fallback_provider_id": null,
+                    "chain_mode": "direct",
+                    "compression_policy": "balanced",
+                    "bind_host": "127.0.0.1",
+                    "local_port": 18001
+                }],
+                "instances": [{
+                    "id": "instance-codex",
+                    "name": "Codex instance",
+                    "agent": "codex",
+                    "route_id": "route-codex",
+                    "local_port": 18001,
+                    "process_status": "stopped",
+                    "log_path": "./logs/route-codex.jsonl"
+                }]
+            }))
+            .expect("parse config");
+            let draft = HybridAgentIntegrationDraftRequest {
+                agent_ids: vec!["codex".to_string()],
+                scope: "project".to_string(),
+                project_root: Some(project.display().to_string()),
+                install_instructions: false,
+                install_hook_or_plugin: false,
+                install_skill: false,
+                install_mcp: true,
+            };
+
+            let bindings =
+                resolve_managed_agent_capability_bindings(&draft, &config, &"a".repeat(64))
+                    .expect("resolve capability binding");
+            assert_eq!(bindings.len(), 1);
+            let binding = &bindings[0];
+            assert_eq!(binding.agent_id, "codex");
+            assert_eq!(binding.scope.agent_id, "codex");
+            assert!(binding.scope.project_id.starts_with("project-"));
+            assert!(!binding
+                .scope
+                .project_id
+                .contains(project.to_string_lossy().as_ref()));
+            assert!(binding
+                .scope
+                .session_id
+                .as_deref()
+                .is_some_and(|value| value.starts_with("session-")));
+            assert_eq!(binding.route_binding.route_id, "route-codex");
+            assert_eq!(binding.route_binding.provider_id, "provider-codex");
+            assert_eq!(binding.route_binding.model, "example/model");
+            assert_eq!(binding.route_binding.config_revision, "a".repeat(64));
+        });
+    }
+
+    #[test]
+    fn managed_mcp_capability_binding_rejects_global_and_ambiguous_routes() {
+        with_isolated_app_state("managed-mcp-capability-ambiguous", || {
+            let project = app_state_dir().join("project");
+            fs::create_dir_all(&project).expect("create project");
+            let mut config: dtoken_config::DtokenConfig = serde_json::from_value(json!({
+                "providers": [{
+                    "id": "provider-a",
+                    "name": "Provider A",
+                    "kind": "custom",
+                    "protocol": "open_ai",
+                    "base_url": "https://example.invalid/v1",
+                    "api_key_ref": null,
+                    "models": ["example/model"],
+                    "timeout_ms": 120000,
+                    "healthcheck_path": null
+                }],
+                "routes": [{
+                    "id": "route-a",
+                    "name": "Route A",
+                    "input_protocol": "open_ai",
+                    "instance_id": "instance-a",
+                    "target_provider_id": "provider-a",
+                    "fallback_provider_id": null,
+                    "chain_mode": "direct",
+                    "compression_policy": "balanced",
+                    "bind_host": "127.0.0.1",
+                    "local_port": 18001
+                }],
+                "instances": [{
+                    "id": "instance-a",
+                    "name": "Instance A",
+                    "agent": "codex",
+                    "route_id": "route-a",
+                    "local_port": 18001,
+                    "process_status": "stopped",
+                    "log_path": "./logs/route-a.jsonl"
+                }]
+            }))
+            .expect("parse config");
+            let mut draft = HybridAgentIntegrationDraftRequest {
+                agent_ids: vec!["codex".to_string()],
+                scope: "global".to_string(),
+                project_root: None,
+                install_instructions: false,
+                install_hook_or_plugin: false,
+                install_skill: false,
+                install_mcp: true,
+            };
+            assert!(
+                resolve_managed_agent_capability_bindings(&draft, &config, &"b".repeat(64),)
+                    .unwrap_err()
+                    .contains("project scope")
+            );
+
+            draft.scope = "project".to_string();
+            draft.project_root = Some(project.display().to_string());
+            let mut duplicate = config.instances[0].clone();
+            duplicate.id = "instance-b".to_string();
+            duplicate.route_id = "route-b".to_string();
+            config.instances.push(duplicate);
+            let mut route = config.routes[0].clone();
+            route.id = "route-b".to_string();
+            route.instance_id = "instance-b".to_string();
+            config.routes.push(route);
+            assert!(
+                resolve_managed_agent_capability_bindings(&draft, &config, &"b".repeat(64),)
+                    .unwrap_err()
+                    .contains("multiple active routes")
+            );
+        });
+    }
+
+    #[test]
+    fn hybrid_agent_mcp_transaction_applies_verifies_and_revokes_capability() {
+        with_isolated_app_state("hybrid-agent-mcp-transaction", || {
+            let home = app_state_dir().join("home");
+            let project = app_state_dir().join("project");
+            let bin = app_state_dir().join("bin");
+            fs::create_dir_all(&home).expect("create home");
+            fs::create_dir_all(&project).expect("create project");
+            fs::create_dir_all(&bin).expect("create bin");
+            fs::create_dir_all(service_data_dir()).expect("create runtime data");
+            fs::create_dir_all(active_config_path().parent().expect("active config parent"))
+                .expect("create active config parent");
+            fs::write(
+                active_config_path(),
+                serde_json::to_vec_pretty(&json!({
+                    "providers": [{
+                        "id": "provider-codex",
+                        "name": "Codex upstream",
+                        "kind": "custom",
+                        "protocol": "open_ai",
+                        "base_url": "https://example.invalid/v1",
+                        "api_key_ref": null,
+                        "models": ["example/model"],
+                        "timeout_ms": 120000,
+                        "healthcheck_path": null
+                    }],
+                    "routes": [{
+                        "id": "route-codex",
+                        "name": "Codex route",
+                        "input_protocol": "open_ai",
+                        "instance_id": "instance-codex",
+                        "target_provider_id": "provider-codex",
+                        "fallback_provider_id": null,
+                        "chain_mode": "direct",
+                        "compression_policy": "balanced",
+                        "bind_host": "127.0.0.1",
+                        "local_port": 18001
+                    }],
+                    "instances": [{
+                        "id": "instance-codex",
+                        "name": "Codex instance",
+                        "agent": "codex",
+                        "route_id": "route-codex",
+                        "local_port": 18001,
+                        "process_status": "stopped",
+                        "log_path": "./logs/route-codex.jsonl"
+                    }]
+                }))
+                .expect("serialize active config"),
+            )
+            .expect("write active config");
+            let proxy = bin.join(if cfg!(windows) {
+                "dtoken-proxy.exe"
+            } else {
+                "dtoken-proxy"
+            });
+            let bridge = bin.join(if cfg!(windows) {
+                "dtoken-agent-bridge.exe"
+            } else {
+                "dtoken-agent-bridge"
+            });
+            fs::write(&proxy, b"test proxy").expect("write proxy");
+            let bridge_identity = json!({
+                "component": BRIDGE_COMPONENT,
+                "protocol_version": BRIDGE_PROTOCOL_VERSION,
+                "arch": env::consts::ARCH,
+                "os": env::consts::OS,
+                "version": BRIDGE_VERSION,
+            })
+            .to_string();
+            if cfg!(windows) {
+                fs::write(&bridge, format!("@echo {bridge_identity}\r\n")).expect("write bridge");
+            } else {
+                fs::write(
+                    &bridge,
+                    format!(
+                        "#!/bin/sh\nif [ \"$1\" = identity ]; then printf '%s' '{bridge_identity}'; fi\n"
+                    ),
+                )
+                .expect("write bridge");
+            }
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                fs::set_permissions(&proxy, fs::Permissions::from_mode(0o755))
+                    .expect("make proxy executable");
+                fs::set_permissions(&bridge, fs::Permissions::from_mode(0o755))
+                    .expect("make bridge executable");
+            }
+            let previous_home = env::var_os("HOME");
+            let previous_userprofile = env::var_os("USERPROFILE");
+            let previous_proxy = env::var_os("DTOKEN_PROXY_EXE");
+            let previous_bridge = env::var_os("DTOKEN_AGENT_BRIDGE_EXE");
+            env::set_var("HOME", &home);
+            env::set_var("USERPROFILE", &home);
+            env::set_var("DTOKEN_PROXY_EXE", &proxy);
+            env::set_var("DTOKEN_AGENT_BRIDGE_EXE", &bridge);
+
+            let draft = HybridAgentIntegrationDraftRequest {
+                agent_ids: vec!["codex".to_string()],
+                scope: "project".to_string(),
+                project_root: Some(project.display().to_string()),
+                install_instructions: false,
+                install_hook_or_plugin: false,
+                install_skill: false,
+                install_mcp: true,
+            };
+            let preview = preview_hybrid_agent_integration(draft.clone());
+            assert_eq!(preview["ok"], true, "preview={preview}");
+            assert_eq!(
+                preview["plan"]["capabilities"].as_array().map(Vec::len),
+                Some(1)
+            );
+            let review_digest = preview["plan"]["review_digest"]
+                .as_str()
+                .expect("review digest")
+                .to_string();
+            let capability_path = PathBuf::from(
+                preview["plan"]["capabilities"][0]["target_path"]
+                    .as_str()
+                    .expect("capability path"),
+            );
+            assert!(!capability_path.exists());
+
+            let applied = apply_hybrid_agent_integration(ApplyHybridAgentIntegrationRequest {
+                draft,
+                reviewed_digest: review_digest,
+            });
+            assert_eq!(applied["ok"], true, "applied={applied}");
+            assert!(capability_path.is_file());
+            let transaction_id = applied["receipt"]["transaction_id"]
+                .as_str()
+                .expect("transaction id")
+                .to_string();
+            let verified = verify_hybrid_agent_integration(VerifyHybridAgentIntegrationRequest {
+                transaction_id: transaction_id.clone(),
+            });
+            assert_eq!(verified["ok"], true, "verified={verified}");
+
+            let rolled_back =
+                rollback_hybrid_agent_integration(RollbackHybridAgentIntegrationRequest {
+                    transaction_id,
+                });
+            assert_eq!(rolled_back["ok"], true, "rolled_back={rolled_back}");
+            assert!(!capability_path.exists());
+
+            match previous_home {
+                Some(value) => env::set_var("HOME", value),
+                None => env::remove_var("HOME"),
+            }
+            match previous_userprofile {
+                Some(value) => env::set_var("USERPROFILE", value),
+                None => env::remove_var("USERPROFILE"),
+            }
+            match previous_proxy {
+                Some(value) => env::set_var("DTOKEN_PROXY_EXE", value),
+                None => env::remove_var("DTOKEN_PROXY_EXE"),
+            }
+            match previous_bridge {
+                Some(value) => env::set_var("DTOKEN_AGENT_BRIDGE_EXE", value),
+                None => env::remove_var("DTOKEN_AGENT_BRIDGE_EXE"),
+            }
+        });
     }
 
     fn review_and_apply_route(route_id: &str) -> ActionResult {
@@ -11076,10 +15618,97 @@ mod tests {
     }
 
     #[test]
+    fn managed_agent_transport_rejects_unregistered_sensitive_paths() {
+        use dtoken_config_patcher::agent::HostPlatform;
+
+        let canonical_temp_root =
+            fs::canonicalize(std::env::temp_dir()).expect("canonical temporary root");
+        let root = tempfile::tempdir_in(canonical_temp_root).expect("temporary home");
+        let codex_dir = root.path().join(".codex");
+        fs::create_dir_all(&codex_dir).expect("create Codex directory");
+        let registered = codex_dir.join("config.toml");
+        fs::write(&registered, "model = \"existing\"\n").expect("write Codex config");
+        let context = AgentScanContext {
+            platform: HostPlatform::Macos,
+            home_dir: root.path().to_path_buf(),
+            path_dirs: vec![],
+            applications_dir: Some(root.path().join("Applications")),
+            roaming_app_data: None,
+            local_app_data: None,
+            additional_evidence: vec![],
+            observed_at_ms: 1,
+        };
+        let request = |target_path: PathBuf| ManagedAgentTransportRequest {
+            agent_id: "codex".to_string(),
+            target_path,
+            endpoint: "http://127.0.0.1:18001".to_string(),
+            enabled: true,
+            model: Some("test-model".to_string()),
+        };
+
+        let resolved =
+            resolve_managed_agent_path_with_context(request(registered.clone()), &context)
+                .expect("registered Codex target");
+        assert_eq!(resolved.target_path, registered);
+        let arbitrary = resolve_managed_agent_path_with_context(
+            request(PathBuf::from("/tmp/x.toml")),
+            &context,
+        )
+        .expect_err("arbitrary absolute path must fail closed");
+        assert!(arbitrary.contains("outside the registered Agent targets"));
+        let ssh = resolve_managed_agent_path_with_context(
+            request(root.path().join(".ssh/config")),
+            &context,
+        )
+        .expect_err("sensitive home path must fail closed");
+        assert!(ssh.contains("outside the registered Agent targets"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn managed_agent_transport_rejects_symlinked_registered_target() {
+        use dtoken_config_patcher::agent::HostPlatform;
+        use std::os::unix::fs::symlink;
+
+        let canonical_temp_root =
+            fs::canonicalize(std::env::temp_dir()).expect("canonical temporary root");
+        let root = tempfile::tempdir_in(canonical_temp_root).expect("temporary home");
+        let codex_dir = root.path().join(".codex");
+        fs::create_dir_all(&codex_dir).expect("create Codex directory");
+        let outside = root.path().join("outside.toml");
+        fs::write(&outside, "model = \"outside\"\n").expect("write outside target");
+        let registered = codex_dir.join("config.toml");
+        symlink(&outside, &registered).expect("create config symlink");
+        let context = AgentScanContext {
+            platform: HostPlatform::Macos,
+            home_dir: root.path().to_path_buf(),
+            path_dirs: vec![],
+            applications_dir: Some(root.path().join("Applications")),
+            roaming_app_data: None,
+            local_app_data: None,
+            additional_evidence: vec![],
+            observed_at_ms: 1,
+        };
+        let error = resolve_managed_agent_path_with_context(
+            ManagedAgentTransportRequest {
+                agent_id: "codex".to_string(),
+                target_path: registered,
+                endpoint: "http://127.0.0.1:18001".to_string(),
+                enabled: true,
+                model: Some("test-model".to_string()),
+            },
+            &context,
+        )
+        .expect_err("symlinked Agent config must fail closed");
+        assert!(error.contains("symbolic links"));
+    }
+
+    #[test]
     fn automatic_connection_route_plan_is_bound_to_discovery_and_uses_agent_models() {
         with_isolated_app_state("automatic-route-plan", || {
             let discovery = json!({
                 "revision": "setup-reviewed",
+                "external_config_snapshot": { "fingerprint": "external-a" },
                 "agent_bindings": [{
                     "agent_id": "opencode",
                     "installed": true,
@@ -11097,6 +15726,8 @@ mod tests {
             });
             let request = ConnectionRoutePlanRequest {
                 discovery_revision: "setup-reviewed".to_string(),
+                source_fingerprint: None,
+                source_fingerprint_scope: None,
                 bindings: vec![ConnectionRouteBindingRequest {
                     agent_id: "opencode".to_string(),
                     candidate_id: "opencode".to_string(),
@@ -11120,7 +15751,409 @@ mod tests {
             let error = prepare_connection_route_plan_from_discovery(&stale, &discovery)
                 .expect_err("stale discovery must fail");
             assert!(error.contains("changed after discovery"));
+
+            let mut external_stale = request;
+            external_stale.source_fingerprint = Some("external-b".to_string());
+            let error = prepare_connection_route_plan_from_discovery(&external_stale, &discovery)
+                .expect_err("external source drift must fail");
+            assert!(error.contains("External Agent or cc-switch configuration changed"));
         });
+    }
+
+    #[test]
+    fn connection_route_merge_replaces_only_selected_agent_owned_routes() {
+        let existing = json!({
+            "providers": [{
+                "id": "user-provider",
+                "name": "User provider",
+                "kind": "custom",
+                "protocol": "open_ai",
+                "base_url": "https://user.example.test/v1",
+                "api_key_ref": null,
+                "models": ["user-model"],
+                "timeout_ms": 120000,
+                "healthcheck_path": null
+            }, {
+                "id": "auto-opencode-old",
+                "name": "Old OpenCode provider",
+                "kind": "custom",
+                "protocol": "open_ai",
+                "base_url": "https://old.example.test/v1",
+                "api_key_ref": null,
+                "models": ["old-model"],
+                "timeout_ms": 120000,
+                "healthcheck_path": null
+            }],
+            "routes": [{
+                "id": "user-route",
+                "name": "User route",
+                "input_protocol": "open_ai",
+                "instance_id": "user-instance",
+                "target_provider_id": "user-provider",
+                "fallback_provider_id": null,
+                "chain_mode": "direct",
+                "compression_policy": "balanced",
+                "bind_host": "127.0.0.1",
+                "local_port": 18002
+            }, {
+                "id": "auto-opencode-route",
+                "name": "Old OpenCode route",
+                "input_protocol": "open_ai",
+                "instance_id": "auto-opencode-route-instance",
+                "target_provider_id": "auto-opencode-old",
+                "fallback_provider_id": null,
+                "chain_mode": "direct",
+                "compression_policy": "balanced",
+                "bind_host": "127.0.0.1",
+                "local_port": 18001
+            }],
+            "instances": [{
+                "id": "user-instance",
+                "name": "User instance",
+                "agent": "custom",
+                "route_id": "user-route",
+                "local_port": 18002,
+                "process_status": "stopped",
+                "log_path": "./logs/user.jsonl"
+            }, {
+                "id": "auto-opencode-route-instance",
+                "name": "Old OpenCode instance",
+                "agent": "opencode",
+                "route_id": "auto-opencode-route",
+                "local_port": 18001,
+                "process_status": "stopped",
+                "log_path": "./logs/old.jsonl"
+            }],
+            "custom_extension": {"preserve": true}
+        });
+        let content = merge_connection_route_document(
+            Some(existing),
+            &["opencode".to_string()],
+            vec![json!({
+                "id": "auto-opencode-new",
+                "name": "New OpenCode provider",
+                "kind": "official",
+                "protocol": "open_ai",
+                "base_url": "https://new.example.test/v1",
+                "api_key_ref": null,
+                "models": ["new-model"],
+                "timeout_ms": 120000,
+                "healthcheck_path": null
+            })],
+            vec![json!({
+                "id": "auto-opencode-route",
+                "name": "New OpenCode route",
+                "input_protocol": "open_ai",
+                "instance_id": "auto-opencode-route-instance",
+                "target_provider_id": "auto-opencode-new",
+                "fallback_provider_id": null,
+                "chain_mode": "direct",
+                "compression_policy": "balanced",
+                "bind_host": "127.0.0.1",
+                "local_port": 18001
+            })],
+            vec![json!({
+                "id": "auto-opencode-route-instance",
+                "name": "New OpenCode instance",
+                "agent": "opencode",
+                "route_id": "auto-opencode-route",
+                "local_port": 18001,
+                "process_status": "stopped",
+                "log_path": "./logs/new.jsonl"
+            })],
+        )
+        .expect("merge connection routes");
+        let merged: Value = serde_json::from_str(&content).expect("parse merged config");
+
+        assert_eq!(merged["custom_extension"]["preserve"], true);
+        assert!(merged["providers"]
+            .as_array()
+            .is_some_and(|providers| providers
+                .iter()
+                .any(|provider| provider["id"] == "user-provider")));
+        assert!(merged["providers"]
+            .as_array()
+            .is_some_and(|providers| providers
+                .iter()
+                .any(|provider| provider["id"] == "auto-opencode-new")));
+        assert!(!merged["providers"]
+            .as_array()
+            .is_some_and(|providers| providers
+                .iter()
+                .any(|provider| provider["id"] == "auto-opencode-old")));
+        assert!(merged["routes"]
+            .as_array()
+            .is_some_and(|routes| routes.iter().any(|route| route["id"] == "user-route")));
+        assert_eq!(
+            merged["routes"]
+                .as_array()
+                .and_then(|routes| routes
+                    .iter()
+                    .find(|route| route["id"] == "auto-opencode-route"))
+                .and_then(|route| route["target_provider_id"].as_str()),
+            Some("auto-opencode-new")
+        );
+    }
+
+    #[test]
+    fn agent_follow_allows_reviewed_provider_switch_and_rejects_new_identity() {
+        let discovery = json!({
+            "revision": "setup-reviewed",
+            "external_config_snapshot": {
+                "agent_configs": [{
+                    "agent_id": "cline",
+                    "path": "~/.cline/settings/providers.json",
+                    "state": "present",
+                    "fingerprint": "cline-a"
+                }]
+            },
+            "agent_bindings": [{
+                "agent_id": "cline",
+                "installed": true,
+                "capability": "confirm-required",
+                "already_connected": false,
+                "candidates": [{
+                    "id": "cline-one",
+                    "source": "agent-config:cline-cli-v1",
+                    "protocol": "open_ai",
+                    "base_url": "https://one.example.test/v1",
+                    "models": ["model-a"],
+                    "auth_mode": "none",
+                    "confidence": 99
+                }, {
+                    "id": "cline-two",
+                    "source": "agent-config:cline-cli-v1",
+                    "protocol": "open_ai",
+                    "base_url": "https://two.example.test/v1",
+                    "models": ["model-b"],
+                    "auth_mode": "none",
+                    "confidence": 99
+                }],
+                "resolved_candidate": {
+                    "id": "cline-one",
+                    "source": "agent-config:cline-cli-v1",
+                    "protocol": "open_ai",
+                    "base_url": "https://one.example.test/v1",
+                    "models": ["model-a"],
+                    "auth_mode": "none",
+                    "confidence": 99
+                }
+            }]
+        });
+        let plan = ConnectionRoutePlanRequest {
+            discovery_revision: "setup-reviewed".to_string(),
+            source_fingerprint: None,
+            source_fingerprint_scope: None,
+            bindings: vec![ConnectionRouteBindingRequest {
+                agent_id: "cline".to_string(),
+                candidate_id: "cline-one".to_string(),
+                candidate_source: "agent-config:cline-cli-v1".to_string(),
+                model: "model-a".to_string(),
+            }],
+        };
+        let authorization =
+            stage_agent_auto_follow_authorization(&plan, &discovery, &"a".repeat(64))
+                .expect("stage follow")
+                .expect("Agent follow authorization");
+        assert_eq!(
+            authorization
+                .authorized_upstream_signatures
+                .get("cline")
+                .map(Vec::len),
+            Some(2)
+        );
+
+        let mut switched = discovery.clone();
+        switched["agent_bindings"][0]["resolved_candidate"] =
+            switched["agent_bindings"][0]["candidates"][1].clone();
+        switched["external_config_snapshot"]["agent_configs"][0]["fingerprint"] = json!("cline-b");
+        let resolved = resolve_agent_follow_bindings(
+            &authorization,
+            &switched,
+            &HashSet::from(["cline".to_string()]),
+        )
+        .expect("reviewed provider switch");
+        assert_eq!(resolved[0].candidate_id, "cline-two");
+        assert_eq!(resolved[0].upstream.model, "model-b");
+
+        switched["agent_bindings"][0]["resolved_candidate"]["base_url"] =
+            json!("https://new.example.test/v1");
+        let error = resolve_agent_follow_bindings(
+            &authorization,
+            &switched,
+            &HashSet::from(["cline".to_string()]),
+        )
+        .expect_err("new endpoint must require confirmation");
+        assert!(error.contains("outside the approved follow set"));
+    }
+
+    #[test]
+    fn agent_follow_projection_reports_transport_drift_and_next_action() {
+        const SECRET: &str = "AGENT_FOLLOW_PROJECTION_SECRET";
+        let mut discovery = json!({
+            "revision": "setup-reviewed",
+            "agent_bindings": [{
+                "agent_id": "cline",
+                "agent_name": "Cline",
+                "already_connected": false,
+                "can_configure": true
+            }, {
+                "agent_id": "codex",
+                "agent_name": "Codex",
+                "already_connected": true,
+                "can_configure": true
+            }, {
+                "agent_id": "cursor",
+                "agent_name": "Cursor",
+                "already_connected": false,
+                "can_configure": false
+            }]
+        });
+        let authorization = AgentAutoFollowAuthorization {
+            schema_version: AGENT_AUTO_FOLLOW_SCHEMA_VERSION,
+            enabled: true,
+            authorized_at_ms: 42,
+            authorized_upstream_signatures: BTreeMap::new(),
+            last_synced_bindings: vec![
+                AgentRouteFollowBinding {
+                    agent_id: "cline".to_string(),
+                    candidate_id: "cline-upstream".to_string(),
+                    candidate_source: "agent-config:cline".to_string(),
+                    upstream: UpstreamSignature {
+                        provider_id: "cline-upstream".to_string(),
+                        model: "cline-model".to_string(),
+                        protocol: "open_ai".to_string(),
+                        normalized_endpoint: "https://cline.example.test/v1".to_string(),
+                        profile_scope: Some("agent-config:cline".to_string()),
+                    },
+                },
+                AgentRouteFollowBinding {
+                    agent_id: "codex".to_string(),
+                    candidate_id: "codex-upstream".to_string(),
+                    candidate_source: "agent-config:codex".to_string(),
+                    upstream: UpstreamSignature {
+                        provider_id: "codex-upstream".to_string(),
+                        model: "codex-model".to_string(),
+                        protocol: "responses".to_string(),
+                        normalized_endpoint: "https://codex.example.test/v1".to_string(),
+                        profile_scope: Some("agent-config:codex".to_string()),
+                    },
+                },
+            ],
+            last_observed_config_fingerprints: BTreeMap::new(),
+            last_observed_source_fingerprint: Some("source-b".to_string()),
+            last_synced_source_fingerprint: Some("source-b".to_string()),
+            last_synced_route_signature: Some("route-b".to_string()),
+            active_config_sha256: "a".repeat(64),
+            runtime_identity: Some("runtime-safe".to_string()),
+            last_sync_state: "applied_verified".to_string(),
+        };
+        let receipt = AgentRouteSyncReceipt {
+            schema_version: AGENT_AUTO_FOLLOW_SCHEMA_VERSION,
+            state: "applied_verified".to_string(),
+            source_fingerprint: "source-b".to_string(),
+            changed_agents: vec!["cline".to_string()],
+            route_before_sha256: Some("b".repeat(64)),
+            route_after_sha256: Some("c".repeat(64)),
+            rollback_id: Some("rollback-safe".to_string()),
+            runtime_state: "runtime_reloaded".to_string(),
+            occurred_at_ms: 43,
+        };
+
+        project_agent_follow_status(&mut discovery, &authorization, Some(&receipt));
+
+        assert_eq!(
+            discovery["agent_bindings"][0]["follow"]["state"],
+            "transport_out_of_sync"
+        );
+        assert_eq!(
+            discovery["agent_bindings"][0]["follow"]["next_action"],
+            "configure"
+        );
+        assert_eq!(
+            discovery["agent_bindings"][0]["follow"]["current_upstream"]["model"],
+            "cline-model"
+        );
+        assert_eq!(
+            discovery["agent_bindings"][0]["follow"]["last_receipt"]["runtime_state"],
+            "runtime_reloaded"
+        );
+        assert_eq!(
+            discovery["agent_bindings"][1]["follow"]["state"],
+            "following"
+        );
+        assert_eq!(
+            discovery["agent_bindings"][1]["follow"]["next_action"],
+            "none"
+        );
+        assert!(discovery["agent_bindings"][1]["follow"]["last_receipt"].is_null());
+        assert_eq!(
+            discovery["agent_bindings"][2]["follow"]["state"],
+            "not_authorized"
+        );
+        assert_eq!(discovery["agent_route_follow"]["enabled"], true);
+        let encoded = discovery.to_string();
+        assert!(!encoded.contains(SECRET));
+        assert!(!encoded.contains("api_key"));
+        assert!(!encoded.contains("Authorization"));
+    }
+
+    #[test]
+    fn agent_follow_projection_prioritizes_failed_receipt_over_connected_state() {
+        let mut discovery = json!({
+            "agent_bindings": [{
+                "agent_id": "codex",
+                "already_connected": true,
+                "can_configure": true
+            }]
+        });
+        let authorization = AgentAutoFollowAuthorization {
+            schema_version: AGENT_AUTO_FOLLOW_SCHEMA_VERSION,
+            enabled: true,
+            authorized_at_ms: 42,
+            authorized_upstream_signatures: BTreeMap::new(),
+            last_synced_bindings: vec![AgentRouteFollowBinding {
+                agent_id: "codex".to_string(),
+                candidate_id: "codex-upstream".to_string(),
+                candidate_source: "agent-config:codex".to_string(),
+                upstream: UpstreamSignature {
+                    provider_id: "codex-upstream".to_string(),
+                    model: "codex-model".to_string(),
+                    protocol: "responses".to_string(),
+                    normalized_endpoint: "https://codex.example.test/v1".to_string(),
+                    profile_scope: None,
+                },
+            }],
+            last_observed_config_fingerprints: BTreeMap::new(),
+            last_observed_source_fingerprint: Some("source-b".to_string()),
+            last_synced_source_fingerprint: Some("source-a".to_string()),
+            last_synced_route_signature: Some("route-a".to_string()),
+            active_config_sha256: "a".repeat(64),
+            runtime_identity: Some("runtime-safe".to_string()),
+            last_sync_state: "reauthorization_required".to_string(),
+        };
+        let receipt = AgentRouteSyncReceipt {
+            schema_version: AGENT_AUTO_FOLLOW_SCHEMA_VERSION,
+            state: "reauthorization_required".to_string(),
+            source_fingerprint: "source-b".to_string(),
+            changed_agents: vec!["codex".to_string()],
+            route_before_sha256: None,
+            route_after_sha256: None,
+            rollback_id: None,
+            runtime_state: "not_reloaded".to_string(),
+            occurred_at_ms: 43,
+        };
+
+        project_agent_follow_status(&mut discovery, &authorization, Some(&receipt));
+
+        assert_eq!(
+            discovery["agent_bindings"][0]["follow"]["state"],
+            "reauthorization_required"
+        );
+        assert_eq!(
+            discovery["agent_bindings"][0]["follow"]["next_action"],
+            "review_follow"
+        );
     }
 
     #[test]
@@ -11145,6 +16178,8 @@ mod tests {
             });
             let request = ConnectionRoutePlanRequest {
                 discovery_revision: "setup-reviewed".to_string(),
+                source_fingerprint: None,
+                source_fingerprint_scope: None,
                 bindings: vec![ConnectionRouteBindingRequest {
                     agent_id: "codex".to_string(),
                     candidate_id: "private".to_string(),
@@ -11155,6 +16190,329 @@ mod tests {
             let error = prepare_connection_route_plan_from_discovery(&request, &discovery)
                 .expect_err("credential reuse must fail closed");
             assert!(error.contains("cannot be reused safely"));
+        });
+    }
+
+    #[test]
+    fn verified_transport_adapter_overrides_legacy_prompt_only_route_label() {
+        with_isolated_app_state("prompt-only-verified-transport", || {
+            let discovery = json!({
+                "revision": "setup-reviewed",
+                "agent_bindings": [{
+                    "agent_id": "cline",
+                    "installed": true,
+                    "capability": "prompt-only",
+                    "can_configure": true,
+                    "candidates": [{
+                        "id": "cline-current",
+                        "name": "Cline current upstream",
+                        "source": "agent-config:cline-cli-v1",
+                        "protocol": "open_ai",
+                        "base_url": "https://cline.example.test/v1",
+                        "models": ["cline-model"],
+                        "auth_mode": "none"
+                    }]
+                }]
+            });
+            let request = ConnectionRoutePlanRequest {
+                discovery_revision: "setup-reviewed".to_string(),
+                source_fingerprint: None,
+                source_fingerprint_scope: None,
+                bindings: vec![ConnectionRouteBindingRequest {
+                    agent_id: "cline".to_string(),
+                    candidate_id: "cline-current".to_string(),
+                    candidate_source: "agent-config:cline-cli-v1".to_string(),
+                    model: "cline-model".to_string(),
+                }],
+            };
+
+            let (_, prepared, agents) =
+                prepare_connection_route_plan_from_discovery(&request, &discovery)
+                    .expect("verified Cline transport must be routable");
+
+            assert_eq!(agents, ["cline"]);
+            assert!(prepared.plan.diff.contains("cline-model"));
+        });
+    }
+
+    #[test]
+    fn cc_switch_scoped_route_review_ignores_agent_only_snapshot_drift() {
+        with_isolated_app_state("cc-switch-scoped-route-review", || {
+            let discovery = json!({
+                "revision": "setup-agent-config-b",
+                "external_config_snapshot": {
+                    "fingerprint": "aggregate-b",
+                    "cc_switch": {
+                        "fingerprint": "cc-switch-a",
+                        "revision": "cc-switch-cc-switch-a"
+                    }
+                },
+                "agent_bindings": [{
+                    "agent_id": "opencode",
+                    "installed": true,
+                    "capability": "one-click",
+                    "candidates": [{
+                        "id": "cc-one",
+                        "name": "cc-switch one",
+                        "source": "cc-switch:opencode",
+                        "protocol": "open_ai",
+                        "base_url": "https://one.example.test/v1",
+                        "models": ["model-a"],
+                        "auth_mode": "none"
+                    }]
+                }]
+            });
+            let request = ConnectionRoutePlanRequest {
+                discovery_revision: "cc-switch-cc-switch-a".to_string(),
+                source_fingerprint: Some("cc-switch-a".to_string()),
+                source_fingerprint_scope: Some("cc_switch".to_string()),
+                bindings: vec![ConnectionRouteBindingRequest {
+                    agent_id: "opencode".to_string(),
+                    candidate_id: "cc-one".to_string(),
+                    candidate_source: "cc-switch:opencode".to_string(),
+                    model: "model-a".to_string(),
+                }],
+            };
+
+            prepare_connection_route_plan_from_discovery(&request, &discovery)
+                .expect("aggregate Agent drift must not invalidate a cc-switch-scoped review");
+
+            let mut stale = request;
+            stale.source_fingerprint = Some("cc-switch-b".to_string());
+            let error = prepare_connection_route_plan_from_discovery(&stale, &discovery)
+                .expect_err("cc-switch fingerprint drift must invalidate the review");
+            assert!(error.contains("cc-switch configuration changed"));
+        });
+    }
+
+    #[test]
+    fn cc_switch_follow_allows_only_preapproved_identities_and_tracks_model_changes() {
+        let mut discovery = json!({
+            "candidates": [
+                {
+                    "id": "provider-one",
+                    "source": "cc-switch:codex",
+                    "protocol": "open_ai",
+                    "base_url": "https://one.example.test/v1/",
+                    "auth_mode": "none",
+                    "confidence": 96
+                },
+                {
+                    "id": "provider-two",
+                    "source": "cc-switch:codex",
+                    "protocol": "open_ai",
+                    "base_url": "https://two.example.test/v1",
+                    "auth_mode": "none",
+                    "confidence": 72
+                },
+                {
+                    "id": "credential-provider",
+                    "source": "cc-switch:codex",
+                    "protocol": "open_ai",
+                    "base_url": "https://credential.example.test/v1",
+                    "auth_mode": "unavailable",
+                    "confidence": 96
+                }
+            ],
+            "cc_switch_sync": {
+                "active_upstreams": [{
+                    "provider_id": "provider-one",
+                    "source": "cc-switch:codex",
+                    "protocol": "open_ai",
+                    "upstream": "https://one.example.test/v1",
+                    "models": ["model-a"]
+                }]
+            }
+        });
+        let approved =
+            authorizable_cc_switch_upstream_signatures(&discovery).expect("approved identities");
+        assert_eq!(
+            approved.len(),
+            2,
+            "credential-bearing candidates stay excluded"
+        );
+        let initial = cc_switch_active_route_identity(&discovery).expect("initial identity");
+        let authorization = CcSwitchAutoFollowAuthorization {
+            schema_version: CC_SWITCH_AUTO_FOLLOW_SCHEMA_VERSION,
+            enabled: true,
+            authorized_at_ms: 1,
+            authorized_source_fingerprint: "cc-a".to_string(),
+            authorized_upstream_signatures: approved,
+            last_observed_source_fingerprint: Some("cc-a".to_string()),
+            last_synced_source_fingerprint: Some("cc-a".to_string()),
+            last_observed_route_signature: Some(initial.route_signature.clone()),
+            last_synced_route_signature: Some(initial.route_signature.clone()),
+            last_sync_state: "applied_verified".to_string(),
+        };
+        assert_eq!(
+            cc_switch_follow_decision(&authorization, &initial),
+            "unchanged"
+        );
+
+        discovery["cc_switch_sync"]["active_upstreams"][0]["models"] = json!(["model-b"]);
+        let model_change =
+            cc_switch_active_route_identity(&discovery).expect("model-only identity");
+        assert_eq!(
+            model_change.upstream_signature, initial.upstream_signature,
+            "model changes must keep the approved upstream identity"
+        );
+        assert_ne!(model_change.route_signature, initial.route_signature);
+        assert_eq!(
+            cc_switch_follow_decision(&authorization, &model_change),
+            "sync_required"
+        );
+
+        discovery["cc_switch_sync"]["active_upstreams"][0] = json!({
+            "provider_id": "provider-two",
+            "source": "cc-switch:codex",
+            "protocol": "open_ai",
+            "upstream": "https://two.example.test/v1",
+            "models": ["model-c"]
+        });
+        let known_switch =
+            cc_switch_active_route_identity(&discovery).expect("known provider switch");
+        assert_eq!(
+            cc_switch_follow_decision(&authorization, &known_switch),
+            "sync_required",
+            "a provider present in the reviewed identity set may follow"
+        );
+
+        discovery["cc_switch_sync"]["active_upstreams"][0]["upstream"] =
+            json!("https://attacker.example.test/v1");
+        let new_endpoint =
+            cc_switch_active_route_identity(&discovery).expect("new endpoint identity");
+        assert_eq!(
+            cc_switch_follow_decision(&authorization, &new_endpoint),
+            "reauthorization_required"
+        );
+
+        discovery["cc_switch_sync"]["active_upstreams"][0] = json!({
+            "provider_id": "provider-two",
+            "source": "cc-switch:codex",
+            "protocol": "anthropic",
+            "upstream": "https://two.example.test/v1",
+            "models": ["model-c"]
+        });
+        let new_protocol =
+            cc_switch_active_route_identity(&discovery).expect("new protocol identity");
+        assert_eq!(
+            cc_switch_follow_decision(&authorization, &new_protocol),
+            "reauthorization_required"
+        );
+    }
+
+    #[test]
+    fn cc_switch_sync_requires_endpoint_protocol_and_model_match() {
+        let sync = serde_json::Map::from_iter([(
+            "active_upstreams".to_string(),
+            json!([{
+                "provider_id": "cc-codex",
+                "protocol": "open_ai",
+                "upstream": "https://example.test/v1",
+                "models": ["model-a"]
+            }]),
+        )]);
+        let active = vec![json!({
+            "endpoint": "https://example.test/v1",
+            "protocol": "open_ai",
+            "models": ["model-a"]
+        })];
+        assert_eq!(
+            derive_cc_switch_status(true, &sync, &active, "loaded"),
+            "synced"
+        );
+
+        let wrong_model = vec![json!({
+            "endpoint": "https://example.test/v1",
+            "protocol": "open_ai",
+            "models": ["model-b"]
+        })];
+        assert_eq!(
+            derive_cc_switch_status(true, &sync, &wrong_model, "loaded"),
+            "out-of-sync"
+        );
+    }
+
+    #[test]
+    fn cc_switch_sync_requires_selection_for_multiple_active_upstreams() {
+        let sync = serde_json::Map::from_iter([(
+            "active_upstreams".to_string(),
+            json!([
+                {"protocol": "open_ai", "upstream": "https://one.test/v1", "models": ["one"]},
+                {"protocol": "open_ai", "upstream": "https://two.test/v1", "models": ["two"]}
+            ]),
+        )]);
+        assert_eq!(
+            derive_cc_switch_status(true, &sync, &[], "loaded"),
+            "needs-selection"
+        );
+    }
+
+    #[test]
+    fn cc_switch_auto_follow_is_explicit_and_persists_only_metadata() {
+        with_isolated_app_state("cc-switch-auto-follow", || {
+            const SECRET: &str = "cc-switch-auto-follow-secret";
+            let default = load_cc_switch_auto_follow_authorization();
+            assert!(!default.enabled);
+            assert_eq!(execute_cc_switch_auto_follow()["state"], "not_authorized");
+            assert!(!active_config_path().exists());
+
+            let authorization = CcSwitchAutoFollowAuthorization {
+                schema_version: CC_SWITCH_AUTO_FOLLOW_SCHEMA_VERSION,
+                enabled: true,
+                authorized_at_ms: 1,
+                authorized_source_fingerprint: "external-config-safe".to_string(),
+                authorized_upstream_signatures: vec!["approved-upstream".to_string()],
+                last_observed_source_fingerprint: Some("external-config-safe".to_string()),
+                last_synced_source_fingerprint: None,
+                last_observed_route_signature: Some("route-current".to_string()),
+                last_synced_route_signature: None,
+                last_sync_state: "authorized_waiting_for_change".to_string(),
+            };
+            save_cc_switch_auto_follow_authorization(&authorization).expect("save authorization");
+            let saved = read_app_state(&["routing", "cc-switch-auto-follow.json"])
+                .expect("read authorization");
+            assert_eq!(saved["enabled"], true);
+            assert!(!saved.to_string().contains(SECRET));
+            assert!(!saved.to_string().contains("api_key"));
+            assert_eq!(
+                load_cc_switch_auto_follow_authorization(),
+                authorization,
+                "the d-token-owned opt-in must round trip exactly"
+            );
+        });
+    }
+
+    #[test]
+    fn manual_initial_auto_follow_requires_a_valid_runtime_reload_receipt() {
+        with_isolated_app_state("cc-switch-initial-auto-follow-reload", || {
+            let request = CcSwitchSyncPlanRequest {
+                discovery_revision: "reviewed".to_string(),
+                source_fingerprint: "external-config-safe".to_string(),
+            };
+            let invalid = json!({
+                "ok": false,
+                "state": "restart_required",
+                "managed": false,
+            });
+
+            let receipt =
+                authorize_initial_cc_switch_auto_follow_after_runtime_reload(&request, &invalid)
+                    .expect_err("an unmanaged runtime cannot authorize auto-follow");
+            assert_eq!(receipt["enabled"], false);
+            assert_eq!(receipt["runtime"]["state"], "restart_required");
+            assert!(!app_state_dir()
+                .join("routing")
+                .join("cc-switch-auto-follow.json")
+                .exists());
+
+            for valid in [
+                json!({"ok": true, "state": "runtime_reloaded", "managed": true}),
+                json!({"ok": true, "state": "runtime_not_running", "managed": false}),
+            ] {
+                assert!(runtime_reload_receipt_allows_initial_auto_follow(&valid));
+            }
+            assert!(!runtime_reload_receipt_allows_initial_auto_follow(&invalid));
         });
     }
 
@@ -11718,6 +17076,26 @@ mod tests {
     }
 
     #[test]
+    fn route_sync_reload_refuses_an_unmanaged_runtime() {
+        with_isolated_app_state("route-sync-unmanaged-runtime", || {
+            let Some(shutdown) = start_fake_dtoken_runtime() else {
+                // Do not disturb a user-owned runtime on the product port.
+                return;
+            };
+
+            let receipt = reload_managed_runtime_after_route_sync();
+            shutdown.store(true, Ordering::SeqCst);
+
+            assert_eq!(receipt["ok"], false, "{receipt:#}");
+            assert_eq!(receipt["state"], "restart_required", "{receipt:#}");
+            assert_eq!(receipt["managed"], false, "{receipt:#}");
+            assert!(receipt["summary"]
+                .as_str()
+                .is_some_and(|summary| summary.contains("unmanaged")));
+        });
+    }
+
+    #[test]
     fn headroom_derived_runtime_capability_status_uses_dtoken_dashboard_metadata() {
         let dashboard = json!({
             "ok": true,
@@ -12146,6 +17524,7 @@ mod tests {
                 scope: AgentIntegrationScope::Project,
                 project_root: Some(project),
                 bridge_path: env::current_exe().expect("resolve absolute test bridge path"),
+                managed_mcp_launches: BTreeMap::new(),
                 install_instructions: true,
                 install_hook_or_plugin: true,
                 install_skill: true,
@@ -12295,6 +17674,40 @@ mod tests {
                 Some(&json!("verified-config-backup-after-hash"))
             );
             assert!(changes_from_route_drafts(&drafts).is_empty());
+        });
+    }
+
+    #[test]
+    fn legacy_rollback_manifest_cannot_bypass_hash_bound_preview_and_apply() {
+        with_isolated_app_state("legacy-rollback-blocked", || {
+            let active_path = active_config_path();
+            fs::create_dir_all(active_path.parent().expect("active config parent"))
+                .expect("create active config parent");
+            fs::write(&active_path, r#"{"routes":[{"id":"current"}]}"#)
+                .expect("write current config");
+            write_json_app_state(
+                &["rollback-points", "legacy-route.json"],
+                &json!({
+                    "id": "legacy-route",
+                    "target": "d-token active route config",
+                    "previous_config": r#"{"routes":[{"id":"stale"}]}"#,
+                }),
+            )
+            .expect("write legacy rollback manifest");
+
+            let result = manage_backup("restore".to_string(), "legacy-route".to_string());
+            assert!(!result.ok);
+            assert!(result
+                .summary
+                .contains("Legacy rollback restore is blocked"));
+            assert_eq!(
+                fs::read_to_string(&active_path).expect("read unchanged config"),
+                r#"{"routes":[{"id":"current"}]}"#
+            );
+            assert_eq!(
+                rollback_preview_value("legacy-route")["currently_restorable"],
+                false
+            );
         });
     }
 
@@ -12812,17 +18225,34 @@ mod tests {
 
     #[test]
     fn cc_switch_sync_distinguishes_matching_and_diverged_routes() {
-        let active = vec![normalized_endpoint("http://127.0.0.1:15721/")];
+        let sync = serde_json::Map::from_iter([(
+            "active_upstreams".to_string(),
+            json!([{
+                "protocol": "open_ai",
+                "upstream": "http://127.0.0.1:15721",
+                "models": ["model-a"]
+            }]),
+        )]);
+        let active = vec![json!({
+            "endpoint": normalized_endpoint("http://127.0.0.1:15721/"),
+            "protocol": "open_ai",
+            "models": ["model-a"]
+        })];
         assert_eq!(
-            derive_cc_switch_status(true, Some("http://127.0.0.1:15721"), &active, "loaded"),
+            derive_cc_switch_status(true, &sync, &active, "loaded"),
             "synced"
         );
+        let diverged = vec![json!({
+            "endpoint": "http://127.0.0.1:15722",
+            "protocol": "open_ai",
+            "models": ["model-a"]
+        })];
         assert_eq!(
-            derive_cc_switch_status(true, Some("http://127.0.0.1:15722"), &active, "loaded"),
+            derive_cc_switch_status(true, &sync, &diverged, "loaded"),
             "out-of-sync"
         );
         assert_eq!(
-            derive_cc_switch_status(true, Some("http://127.0.0.1:15721"), &[], "missing"),
+            derive_cc_switch_status(true, &sync, &[], "missing"),
             "needs-confirmation"
         );
     }

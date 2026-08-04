@@ -1,6 +1,7 @@
 import { Badge } from "../../components/ui/badge";
 import { Checkbox } from "../../components/ui/checkbox";
 import { StatusBadge } from "../../components/common/StatusBadge";
+import { Button } from "../../components/ui/button";
 import { bindingOptions, selectedCandidate, type InstallPhase } from "../installMachine";
 import type { AgentUpstreamBinding, ConnectionSetupSnapshot, UpstreamCandidate } from "../connectionSetup";
 
@@ -11,6 +12,9 @@ function AgentBindingRow({
   selectable,
   lang,
   busy,
+  transportBusy,
+  onConfigure,
+  onClear,
   onSelect,
   onToggle,
 }: {
@@ -20,16 +24,22 @@ function AgentBindingRow({
   selectable: boolean;
   lang: "zh" | "en";
   busy: boolean;
+  transportBusy: boolean;
+  onConfigure: () => void;
+  onClear: () => void;
   onSelect: (candidateKey: string, model: string) => void;
   onToggle: (selected: boolean) => void;
 }) {
   const presentation = presentBinding(binding, lang);
+  const canConfigure = binding.can_configure === true;
+  const canClear = binding.can_clear === true;
   const options = bindingOptions(binding);
   const selected = selectedCandidate(binding, selection);
   const resolved = selected?.candidate ?? binding.resolved_candidate;
   const model = selected?.model || resolved?.models?.[0];
+  const follow = presentAgentFollow(binding, lang);
   return (
-    <div className="grid gap-3 py-3 md:grid-cols-[28px_minmax(0,1fr)_minmax(220px,0.8fr)_auto] md:items-center">
+    <div className="grid gap-3 py-3 md:grid-cols-[28px_minmax(0,1fr)_minmax(220px,0.8fr)_auto_auto] md:items-center">
       <div className="flex items-center justify-center">
         {selectable ? (
           <Checkbox
@@ -43,11 +53,21 @@ function AgentBindingRow({
       <div className="min-w-0">
         <div className="flex flex-wrap items-center gap-2">
           <span className="font-medium">{binding.agent_name}</span>
-          <Badge variant="secondary">{capabilityLabel(binding.capability, lang)}</Badge>
+          <Badge variant="secondary">{capabilityLabel(binding, lang)}</Badge>
+          {binding.follow && <Badge variant="outline">{follow.label}</Badge>}
         </div>
         <div className="mt-1 truncate text-xs text-muted-foreground">
           {presentAgentLocation(binding, lang)}
         </div>
+        {binding.follow && (
+          <div
+            className={binding.follow.transport_out_of_sync
+              ? "mt-1 text-xs text-amber-700 dark:text-amber-300"
+              : "mt-1 text-xs text-muted-foreground"}
+          >
+            {follow.nextAction}
+          </div>
+        )}
       </div>
       <div className="min-w-0">
         {selectable && binding.resolution === "needs-choice" ? (
@@ -67,14 +87,99 @@ function AgentBindingRow({
             ))}
           </select>
         ) : (
-          <div className="truncate text-sm text-muted-foreground">
-            {presentBindingSummary(binding, resolved, model, lang)}
-          </div>
+          <>
+            <div className="truncate text-sm text-muted-foreground">
+              {presentBindingSummary(binding, resolved, model, lang)}
+            </div>
+            {binding.follow?.current_upstream && (
+              <div className="mt-1 truncate text-[11px] text-muted-foreground">
+                {lang === "zh" ? "d-token 路由" : "d-token route"} · {binding.follow.current_upstream.provider_id} · {binding.follow.current_upstream.model} · {binding.follow.current_upstream.protocol}
+              </div>
+            )}
+            {binding.follow?.last_receipt && (
+              <div className="mt-1 truncate font-mono text-[10px] text-muted-foreground">
+                receipt {binding.follow.last_receipt.state} · {binding.follow.last_receipt.runtime_state}
+              </div>
+            )}
+          </>
         )}
       </div>
       <StatusBadge status={presentation.health} label={presentation.label} />
+      <div className="flex items-center justify-end gap-1">
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          disabled={busy || transportBusy || !canConfigure}
+          title={!canConfigure ? (lang === "zh" ? "当前版本没有可验证的自动配置 schema" : "No verified automatic configuration schema is available for this version") : undefined}
+          onClick={onConfigure}
+        >
+          {transportBusy ? (lang === "zh" ? "处理中…" : "Working…") : (lang === "zh" ? "配置" : "Configure")}
+        </Button>
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          disabled={busy || transportBusy || !canClear}
+          title={!canClear ? (lang === "zh" ? "没有 d-token ownership receipt，不能安全清除" : "No d-token ownership receipt is available for a safe clear") : undefined}
+          onClick={onClear}
+        >
+          {lang === "zh" ? "清除" : "Clear"}
+        </Button>
+      </div>
     </div>
   );
+}
+
+function presentAgentFollow(binding: AgentUpstreamBinding, lang: "zh" | "en") {
+  const follow = binding.follow;
+  const zh = lang === "zh";
+  if (!follow || follow.state === "not_authorized") {
+    return {
+      label: zh ? "未启用跟随" : "Follow off",
+      nextAction: zh
+        ? "下一步：在连接方案中启用“跟随已确认上游”。"
+        : "Next: enable follow for confirmed upstreams in the connection plan.",
+    };
+  }
+  if (follow.state === "transport_out_of_sync") {
+    return {
+      label: zh ? "流量可能绕过 d-token" : "Transport out of sync",
+      nextAction: follow.next_action === "configure"
+        ? (zh ? "下一步：重新配置此 Agent，使请求重新经过 d-token。" : "Next: configure this Agent again so requests pass through d-token.")
+        : (zh ? "当前版本未开放安全自动写入；d-token 保留上一次可用路由。" : "Safe automatic writes are not available for this version; d-token keeps the last-known-good route."),
+    };
+  }
+  if (follow.state === "following" || follow.state === "applied_verified") {
+    return {
+      label: zh ? "自动跟随中" : "Following",
+      nextAction: zh
+        ? "当前 Agent transport 与 d-token route 一致。"
+        : "The Agent transport and d-token route currently agree.",
+    };
+  }
+  if (follow.next_action === "verify_runtime") {
+    return {
+      label: zh ? "等待 runtime 验证" : "Runtime verification needed",
+      nextAction: zh
+        ? "下一步：重启或重新验证 d-token runtime。"
+        : "Next: restart or reverify the d-token runtime.",
+    };
+  }
+  if (follow.next_action === "review_follow") {
+    return {
+      label: zh ? "需要重新确认" : "Confirmation needed",
+      nextAction: zh
+        ? "下一步：检查新的 provider、endpoint 或 protocol 并重新确认。"
+        : "Next: confirm the new provider, endpoint, or protocol.",
+    };
+  }
+  return {
+    label: zh ? "跟随未完成" : "Follow incomplete",
+    nextAction: zh
+      ? "下一步：重新查看连接方案；失败时 d-token 保留上一次可用路由。"
+      : "Next: reopen the connection plan; d-token keeps the last-known-good route on failure.",
+  };
 }
 
 function presentAgentLocation(binding: AgentUpstreamBinding, lang: "zh" | "en") {
@@ -85,8 +190,11 @@ function presentAgentLocation(binding: AgentUpstreamBinding, lang: "zh" | "en") 
   return location;
 }
 
-function presentCcSwitch(status: string | undefined, detected: boolean, lang: "zh" | "en") {
-  if (!detected) return { health: "error" as const, label: lang === "zh" ? "未检测到" : "Not detected" };
+function presentCcSwitch(status: string | undefined, detected: boolean, sourceState: string | undefined, lang: "zh" | "en") {
+  if (!detected) {
+    const incompatible = ["unsupported_schema", "locked_or_corrupt", "unsupported_format"].includes(sourceState ?? "");
+    return { health: "warning" as const, label: incompatible ? (lang === "zh" ? "已发现但需要兼容处理" : "Detected, compatibility action needed") : (lang === "zh" ? "未检测到" : "Not detected") };
+  }
   if (status === "synced") return { health: "healthy" as const, label: lang === "zh" ? "已同步" : "Synced" };
   if (status === "out-of-sync") return { health: "warning" as const, label: lang === "zh" ? "与 d-token 不一致" : "Out of sync" };
   return { health: "warning" as const, label: lang === "zh" ? "待连接确认" : "Needs confirmation" };
@@ -103,7 +211,7 @@ function presentBindingSummary(
   if (!binding.installed || binding.resolution === "unavailable") return `未检测到可用的 ${binding.agent_name} 配置`;
   if (binding.resolution === "needs-credential") return "已发现上游，需要补充凭据";
   if (binding.resolution === "unsupported") {
-    return binding.capability === "prompt-only" ? "已检测应用，可生成配置建议" : "已检测应用，需要手动配置";
+    return "已检测；当前版本暂未开放安全自动写入";
   }
   return "未发现可安全复用的上游配置";
 }
@@ -154,18 +262,26 @@ function presentBinding(binding: AgentUpstreamBinding, lang: "zh" | "en") {
   const zh = lang === "zh";
   if (!binding.installed) return { health: "error" as const, label: zh ? "未检测到" : "Not detected" };
   if (binding.already_connected) return { health: "healthy" as const, label: zh ? "已连接" : "Connected" };
+  if (binding.resolution === "auto-resolved" && binding.capability === "confirm-required") {
+    return { health: "healthy" as const, label: zh ? "已准备好，需你确认" : "Ready, needs confirmation" };
+  }
   if (binding.resolution === "auto-resolved") return { health: "healthy" as const, label: zh ? "已自动解析" : "Auto-resolved" };
   if (binding.resolution === "needs-choice") return { health: "warning" as const, label: zh ? "需要选择" : "Choose" };
   if (binding.resolution === "needs-credential") return { health: "warning" as const, label: zh ? "需要凭据" : "Credential" };
-  return { health: "warning" as const, label: binding.capability === "prompt-only" ? (zh ? "提供配置建议" : "Guided setup") : (zh ? "高级安装" : "Advanced") };
+  if (binding.transport_status === "advanced_required" || binding.transport_status === "schema_unverified") {
+    return { health: "warning" as const, label: zh ? "自动写入未开放" : "Automatic write unavailable" };
+  }
+  return { health: "warning" as const, label: zh ? "等待安全适配" : "Awaiting safe adapter" };
 }
 
-function capabilityLabel(capability: AgentUpstreamBinding["capability"], lang: "zh" | "en") {
+function capabilityLabel(binding: AgentUpstreamBinding, lang: "zh" | "en") {
   const zh = lang === "zh";
+  if (binding.can_configure === true) return zh ? "一键配置" : "One-click";
+  const { capability } = binding;
   if (capability === "one-click") return zh ? "一键配置" : "One-click";
-  if (capability === "confirm-required") return zh ? "已识别，需手动连接" : "Detected, manual connect";
-  if (capability === "prompt-only") return zh ? "配置建议" : "Guided";
-  return zh ? "手动" : "Manual";
+  if (capability === "confirm-required") return zh ? "确认后连接" : "Confirm to connect";
+  if (capability === "prompt-only") return zh ? "仅检测" : "Detection only";
+  return zh ? "安全锁定" : "Write locked";
 }
 
 function connectionPath(binding: AgentUpstreamBinding, selection: { candidateKey: string; model: string } | undefined, endpoint: string) {
@@ -200,7 +316,7 @@ export function buildConnectionRoutePlanRequest(
 function machineMessage(message: string, lang: "zh" | "en") {
   if (message === "native_unavailable" || message === "connection_setup_unavailable") return lang === "zh" ? "当前是浏览器预览，不读取或改写本机配置。" : "Browser preview does not read or modify local configuration.";
   if (message === "source-config-changed") return lang === "zh" ? "检测到源配置变化，旧连接方案已失效。" : "The source configuration changed, so the previous connection plan is no longer valid.";
-  if (message === "manual-agent-step-required") return lang === "zh" ? "仍有 Agent 需要按当前变更手动完成。" : "One or more Agents still need a manual configuration step.";
+  if (message === "agent-write-unavailable") return lang === "zh" ? "部分 Agent 当前仅检测，现有配置保持不变。" : "Some Agents are detection-only in this version; their existing configuration remains unchanged.";
   if (message === "select-at-least-one-agent") return lang === "zh" ? "请至少选择一个可一键连接的 Agent。" : "Select at least one one-click Agent.";
   return message;
 }
@@ -318,6 +434,7 @@ type ConnectionRoutePlanReview = {
   state: string;
   target?: string;
   discovery_revision?: string;
+  source_fingerprint?: string;
   before_sha256?: string | null;
   after_sha256?: string | null;
   diff?: string | null;
@@ -334,6 +451,41 @@ type ConnectionRoutePlanReceipt = {
   rollback_id?: string | null;
   before_sha256?: string | null;
   after_sha256?: string | null;
+  runtime?: {
+    ok: boolean;
+    state: string;
+    summary: string;
+  };
+  auto_follow?: {
+    enabled?: boolean;
+    state?: string;
+    summary?: string;
+  };
+};
+
+type ManagedAgentTransportReview = {
+  ok: boolean;
+  state?: string;
+  summary?: string;
+  review?: {
+    agent_id: string;
+    target_path: string;
+    revision: string;
+    before_sha256: string;
+    after_sha256: string;
+    changed: boolean;
+    redacted_diff: string;
+  };
+};
+
+type ManagedAgentTransportReceipt = {
+  ok?: boolean;
+  state?: string;
+  changed?: boolean;
+  verification?: {
+    ok: boolean;
+    detail: string;
+  };
 };
 
 type RouteVerification = {
@@ -410,6 +562,8 @@ export type {
   HybridAgentIntegrationApply,
   HybridAgentIntegrationReview,
   HybridAgentIntegrationVerification,
+  ManagedAgentTransportReceipt,
+  ManagedAgentTransportReview,
   OpenCodeConnectionReceipt,
   OpenCodeConnectionReview,
   RouteVerification,

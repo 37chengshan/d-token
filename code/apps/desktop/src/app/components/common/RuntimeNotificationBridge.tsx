@@ -2,11 +2,23 @@ import { useEffect, useRef } from "react";
 import { useI18n } from "../../lib/i18n";
 import { useNotifications } from "../../lib/notifications";
 import { createOperationRequestId } from "../../lib/notifications";
-import { useRuntimeDashboard } from "../../lib/useRuntimeDashboard";
+import { shallowEqualSlice, useRuntimeDashboardSelector, type RuntimeDashboardState, type RuntimeDashboardStatus } from "../../lib/useRuntimeDashboard";
 import { invokeNative, isTauriRuntime } from "../../lib/native";
 import { presentOperationFailure } from "../../lib/userCopy";
 
 type ObservableServiceState = "running" | "stopped" | "unavailable";
+
+type RuntimeNotificationSlice = {
+  runtimeStatus: RuntimeDashboardStatus;
+  serviceSliceState: RuntimeDashboardState["operational"]["service"]["state"];
+  serviceState: string;
+};
+
+const selectRuntimeNotificationSlice = (state: RuntimeDashboardState): RuntimeNotificationSlice => ({
+  runtimeStatus: state.status,
+  serviceSliceState: state.operational.service.state,
+  serviceState: typeof state.operational.service.data?.state === "string" ? state.operational.service.data.state : "",
+});
 
 /**
  * Converts shared runtime evidence into user-visible receipts. The first
@@ -15,11 +27,11 @@ type ObservableServiceState = "running" | "stopped" | "unavailable";
 export function RuntimeNotificationBridge() {
   const { lang } = useI18n();
   const { addNotification } = useNotifications();
-  const { operational } = useRuntimeDashboard();
+  const runtime = useRuntimeDashboardSelector(selectRuntimeNotificationSlice, shallowEqualSlice);
   const previous = useRef<ObservableServiceState | null>(null);
   const autoUpdateStarted = useRef(false);
 
-  const current = observableServiceState(operational.service.data, operational.service.state);
+  const current = observableServiceState(runtime.serviceState, runtime.serviceSliceState, runtime.runtimeStatus);
 
   useEffect(() => {
     if (!current) return;
@@ -132,12 +144,13 @@ export function autoUpdateNotification(
 }
 
 export function observableServiceState(
-  data: Record<string, any> | null,
+  serviceState: string,
   sliceState: string,
+  runtimeStatus: RuntimeDashboardStatus = "loading",
 ): ObservableServiceState | null {
-  const state = typeof data?.state === "string" ? data.state : "";
-  if (state === "running" || state === "unmanaged_running") return "running";
-  if (state === "stopped") return "stopped";
+  if (serviceState === "running" || serviceState === "unmanaged_running") return "running";
+  if (serviceState === "stopped") return "stopped";
+  if (sliceState === "unavailable" && runtimeStatus === "runtime") return "running";
   if (sliceState === "unavailable") return "unavailable";
   return null;
 }

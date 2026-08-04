@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useState } from "react";
 import { Sidebar } from "./Sidebar";
 import { Topbar } from "./Topbar";
 import { StatusBar } from "./StatusBar";
@@ -51,23 +51,24 @@ export function AppShell() {
     () => typeof window !== "undefined" && typeof window.matchMedia === "function" && window.matchMedia("(prefers-reduced-motion: reduce)").matches,
   );
 
-  const setPage = (next: PageId) => {
+  // Stable identities keep the sidebar and topbar out of every shell repaint.
+  const setPage = useCallback((next: PageId) => {
     setPageState(next);
     try {
       window.sessionStorage.setItem(PAGE_SESSION_KEY, next);
     } catch {
       /* ignore */
     }
-  };
+  }, []);
 
-  const setCollapsed = (next: boolean) => {
+  const setCollapsed = useCallback((next: boolean) => {
     setCollapsedState(next);
     try {
       window.localStorage.setItem(SIDEBAR_COLLAPSED_KEY, next ? "1" : "0");
     } catch {
       /* ignore */
     }
-  };
+  }, []);
 
   useEffect(() => {
     if (typeof window.matchMedia !== "function") return;
@@ -111,9 +112,12 @@ export function AppShell() {
           <div className="shell-notification-slot"><NotificationBanner /></div>
           <div className="shell-page-content relative flex min-w-0 flex-1 flex-col">
             <main className="shell-content-scroll min-h-0 flex-1 overflow-y-auto">
-              <PageStage key={page} reducedMotion={reduceMotion}>
-                <Suspense fallback={<PageFallback />}>{render()}</Suspense>
-              </PageStage>
+              {/* Suspense sits outside the stage so the enter animation runs once,
+                * on real content, instead of playing against the fallback and
+                * again when the lazy chunk resolves. */}
+              <Suspense fallback={<PageFallback />}>
+                <PageStage key={page} reducedMotion={reduceMotion}>{render()}</PageStage>
+              </Suspense>
             </main>
             <StatusBar />
           </div>

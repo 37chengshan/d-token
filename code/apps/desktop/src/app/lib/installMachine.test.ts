@@ -44,6 +44,10 @@ const binding = (overrides: Partial<AgentUpstreamBinding> = {}): AgentUpstreamBi
     confidence: 98,
     reasons: ["current"],
     capability: "one-click",
+    can_configure: true,
+    can_clear: false,
+    transport_supported: true,
+    transport_status: "configure_only",
     already_connected: false,
     ...overrides,
   };
@@ -92,7 +96,7 @@ describe("installMachine", () => {
     const second = candidate({ id: "two", active: false, models: ["model-b"] });
     const ambiguous = binding({ candidates: [first, second], resolved_candidate: null, resolution: "needs-choice" });
     let state = installMachineReducer(initialInstallMachineState, { type: "DISCOVERED", snapshot: snapshot("r1", ambiguous) });
-    expect(state.phase).toBe("blocked");
+    expect(state.phase).toBe("partial");
     state = installMachineReducer(state, { type: "TOGGLE_AGENT", agentId: "opencode", selected: true });
     expect(state.phase).toBe("needs-choice");
     state = installMachineReducer(state, {
@@ -110,7 +114,7 @@ describe("installMachine", () => {
     });
     // Credential-gated Agents are not selected by default; selecting one is
     // an explicit user action and then surfaces the credential requirement.
-    expect(credential.phase).toBe("blocked");
+    expect(credential.phase).toBe("partial");
     credential = installMachineReducer(credential, { type: "TOGGLE_AGENT", agentId: "opencode", selected: true });
     expect(credential.phase).toBe("needs-credential");
 
@@ -121,7 +125,7 @@ describe("installMachine", () => {
     expect(connected.phase).toBe("already-connected");
   });
 
-  it("keeps an auto-resolved confirm-required Agent out of the automatic batch until selected", () => {
+  it("pre-selects an auto-resolved confirm-required Agent together with one-click Agents", () => {
     const current = snapshot("r1");
     current.agent_bindings.push(binding({
       agent_id: "claude-code",
@@ -132,17 +136,44 @@ describe("installMachine", () => {
     }));
     let state = installMachineReducer(initialInstallMachineState, { type: "DISCOVERED", snapshot: current });
     expect(state.phase).toBe("ready");
-    expect(state.selectedAgentIds).toEqual(["opencode"]);
-    expect(state.selections["claude-code"].model).toBe("claude-sonnet");
-    state = installMachineReducer(state, { type: "TOGGLE_AGENT", agentId: "claude-code", selected: true });
-    expect(state.phase).toBe("ready");
+    // confirm-required + auto-resolved is pre-selected alongside one-click agents
     expect(state.selectedAgentIds).toEqual(["opencode", "claude-code"]);
+    expect(state.selections["claude-code"].model).toBe("claude-sonnet");
+    // unselecting confirm-required leaves the one-click agent still ready
+    state = installMachineReducer(state, { type: "TOGGLE_AGENT", agentId: "claude-code", selected: false });
+    expect(state.phase).toBe("ready");
+    expect(state.selectedAgentIds).toEqual(["opencode"]);
+  });
+
+  it("treats a verified transport adapter as actionable despite an older prompt-only label", () => {
+    const cline = binding({
+      agent_id: "cline",
+      agent_name: "Cline",
+      capability: "prompt-only",
+      can_configure: true,
+      can_clear: true,
+      resolution: "auto-resolved",
+      resolved_candidate: candidate({
+        id: "cline-provider",
+        source: "agent-config:cline-cli-v1",
+        agent_ids: ["cline"],
+      }),
+    });
+
+    const state = installMachineReducer(initialInstallMachineState, {
+      type: "DISCOVERED",
+      snapshot: snapshot("r1", cline),
+    });
+
+    expect(state.phase).toBe("ready");
+    expect(state.selectedAgentIds).toEqual(["cline"]);
+    expect(state.selections.cline.model).toBe("model-a");
   });
 
   it("lets the user exclude a one-click Agent without losing discovered evidence", () => {
     let state = installMachineReducer(initialInstallMachineState, { type: "DISCOVERED", snapshot: snapshot("r1") });
     state = installMachineReducer(state, { type: "TOGGLE_AGENT", agentId: "opencode", selected: false });
-    expect(state.phase).toBe("blocked");
+    expect(state.phase).toBe("partial");
     expect(state.selectedAgentIds).toEqual([]);
     expect(state.snapshot?.agent_bindings).toHaveLength(1);
   });
