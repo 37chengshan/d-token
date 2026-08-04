@@ -41,6 +41,7 @@ fn decides_route_by_instance_and_protocol() {
             log_path: "./logs/demo-instance.jsonl".to_string(),
         }],
         provider_cache_policies: vec![],
+        output_shaping_policies: vec![],
         optical: Default::default(),
     };
 
@@ -84,6 +85,7 @@ fn rejects_ambiguous_routes_instead_of_selecting_first() {
         routes: vec![route("route-a"), route("route-b")],
         instances: vec![],
         provider_cache_policies: vec![],
+        output_shaping_policies: vec![],
         optical: Default::default(),
     };
 

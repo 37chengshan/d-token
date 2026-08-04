@@ -9,6 +9,8 @@ use std::{
 };
 use thiserror::Error;
 
+pub const LEARNING_CAPABILITY_REVISION: &str = "dtoken-learning-cache-v2";
+
 const MAX_ENTRIES: usize = 5_000;
 const MAX_DEPTH: usize = 4;
 const MAX_MANIFEST_BYTES: u64 = 256 * 1024;

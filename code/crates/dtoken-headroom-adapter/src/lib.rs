@@ -325,9 +325,18 @@ fn fixture_candidates(relative: &str) -> Vec<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Mutex, OnceLock};
+
+    fn environment_lock() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+            .lock()
+            .expect("Headroom test environment lock")
+    }
 
     #[test]
     fn missing_or_unknown_profile_defaults_to_native_and_fixture_is_explicit() {
+        let _guard = environment_lock();
         env::remove_var("DTOKEN_PROFILE");
         assert_eq!(runtime_mode_from_env(), RuntimeMode::Native);
 
@@ -348,6 +357,7 @@ mod tests {
 
     #[test]
     fn native_history_is_unavailable_instead_of_falling_back_to_fixture() {
+        let _guard = environment_lock();
         env::remove_var("DTOKEN_PROFILE");
         let value = HeadroomAdapter::stats_history_json();
         assert_eq!(value["status"], "unavailable");
@@ -356,9 +366,12 @@ mod tests {
 
     #[test]
     fn fixture_history_has_required_top_level_shape() {
+        let _guard = environment_lock();
+        env::set_var("DTOKEN_PROFILE", "fixture");
         let value = HeadroomAdapter::stats_history_json();
         assert!(value.get("history").is_some());
         assert!(value.get("series").is_some());
+        env::remove_var("DTOKEN_PROFILE");
     }
 
     #[test]

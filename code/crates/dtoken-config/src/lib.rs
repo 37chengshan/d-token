@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use dtoken_types::{
-    InstanceProfile, OpticalEvalArtifact, OpticalRuntimeConfig, ProviderCachePolicy,
-    ProviderProfile, RouteProfile,
+    InstanceProfile, OpticalEvalArtifact, OpticalRuntimeConfig, OutputShapingRoutePolicy,
+    ProviderCachePolicy, ProviderProfile, RouteProfile,
 };
 use serde::{Deserialize, Serialize};
 use std::{collections::HashSet, fs, path::Path};
@@ -19,6 +19,7 @@ pub enum OpticalConfigIssue {
     ActiveWithoutTrustedAuthority,
     ActiveWithoutPassingEval,
     ActiveWithoutAttestedCapability,
+    ActiveDisabledByReleasePolicy,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -28,6 +29,8 @@ pub struct DtokenConfig {
     pub instances: Vec<InstanceProfile>,
     #[serde(default)]
     pub provider_cache_policies: Vec<ProviderCachePolicy>,
+    #[serde(default)]
+    pub output_shaping_policies: Vec<OutputShapingRoutePolicy>,
     #[serde(default)]
     pub optical: OpticalRuntimeConfig,
 }
@@ -66,6 +69,23 @@ impl DtokenConfig {
         model: &str,
     ) -> Option<&ProviderCachePolicy> {
         let mut matches = self.provider_cache_policies.iter().filter(|policy| {
+            policy.route_id == route_id
+                && policy.provider_id == provider_id
+                && policy.model == model
+        });
+        let policy = matches.next()?;
+        matches.next().is_none().then_some(policy)
+    }
+
+    /// Returns a policy only when its route/provider/model binding is exact
+    /// and unambiguous. Broad or duplicate policies never authorize shaping.
+    pub fn find_output_shaping_policy(
+        &self,
+        route_id: &str,
+        provider_id: &str,
+        model: &str,
+    ) -> Option<&OutputShapingRoutePolicy> {
+        let mut matches = self.output_shaping_policies.iter().filter(|policy| {
             policy.route_id == route_id
                 && policy.provider_id == provider_id
                 && policy.model == model
@@ -164,7 +184,8 @@ impl DtokenConfig {
     }
 
     pub fn normalize_optical_fail_closed(&mut self) -> Vec<OpticalConfigIssue> {
-        let issues = self.optical_config_issues();
+        let mut issues = self.optical_config_issues();
+        let active_requested = self.optical.global_policy.allow_active;
         if issues.iter().any(|issue| {
             matches!(
                 issue,
@@ -180,6 +201,10 @@ impl DtokenConfig {
             )
         }) {
             self.optical.global_policy.allow_active = false;
+        }
+        if active_requested {
+            self.optical.global_policy.allow_active = false;
+            issues.push(OpticalConfigIssue::ActiveDisabledByReleasePolicy);
         }
         let known_routes = self
             .routes
@@ -272,6 +297,17 @@ mod tests {
     }
 
     #[test]
+    fn release_policy_always_disables_requested_optical_active() {
+        let mut config = DtokenConfig::default();
+        config.optical.global_policy.allow_active = true;
+
+        let issues = config.normalize_optical_fail_closed();
+
+        assert!(!config.optical.global_policy.allow_active);
+        assert!(issues.contains(&OpticalConfigIssue::ActiveDisabledByReleasePolicy));
+    }
+
+    #[test]
     fn provider_cache_policy_lookup_requires_exact_identity() {
         let policy = dtoken_types::ProviderCachePolicy {
             route_id: "route-a".to_string(),
@@ -294,6 +330,32 @@ mod tests {
         config.provider_cache_policies.push(policy);
         assert!(config
             .find_provider_cache_policy("route-a", "provider-a", "model-a")
+            .is_none());
+    }
+
+    #[test]
+    fn output_shaping_policy_lookup_requires_exact_unambiguous_route_binding() {
+        let policy = OutputShapingRoutePolicy {
+            route_id: "route-a".to_string(),
+            provider_id: "provider-a".to_string(),
+            model: "model-a".to_string(),
+            enabled: true,
+            output_verbosity: dtoken_types::OutputVerbosity::Terse,
+            holdout_ratio: Some(0.2),
+        };
+        let mut config = DtokenConfig {
+            output_shaping_policies: vec![policy.clone()],
+            ..Default::default()
+        };
+        assert!(config
+            .find_output_shaping_policy("route-a", "provider-a", "model-a")
+            .is_some());
+        assert!(config
+            .find_output_shaping_policy("route-a", "provider-a", "model-b")
+            .is_none());
+        config.output_shaping_policies.push(policy);
+        assert!(config
+            .find_output_shaping_policy("route-a", "provider-a", "model-a")
             .is_none());
     }
 

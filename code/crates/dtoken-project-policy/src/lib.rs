@@ -4,6 +4,8 @@ use dtoken_types::{
 };
 use uuid::Uuid;
 
+pub const PROJECT_POLICY_CAPABILITY_REVISION: &str = "dtoken-project-policy-v1";
+
 const UNMEASURED_SAVINGS_REASON: &str =
     "Expected savings are unknown until this project, route, and compressor are measured";
 const UNMEASURED_SAVINGS_RISK: &str =

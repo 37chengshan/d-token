@@ -25,6 +25,22 @@ impl EventLedger {
         Ok(())
     }
 
+    /// Keeps the hot in-memory read model bounded while the append-only JSONL
+    /// ledger remains the durable history. Pruning in batches avoids shifting
+    /// the vector on every request once the limit is reached.
+    pub fn record_bounded(&mut self, event: DtokenEvent, max_entries: usize) -> Result<()> {
+        if max_entries == 0 {
+            return Err(anyhow!("event ledger memory limit must be positive"));
+        }
+        if self.events.len() >= max_entries {
+            let retain = max_entries.saturating_mul(3) / 4;
+            let remove = self.events.len().saturating_sub(retain);
+            self.events.drain(..remove);
+        }
+        self.events.push(event);
+        Ok(())
+    }
+
     pub fn recent(&self, limit: usize) -> Vec<DtokenEvent> {
         self.events.iter().rev().take(limit).cloned().collect()
     }
@@ -72,6 +88,13 @@ impl JsonlEventLedger {
 
     pub fn recent(&self, limit: usize) -> Result<Vec<DtokenEvent>> {
         self.store.recent(limit)
+    }
+
+    pub fn visit_all<F>(&self, visit: F) -> Result<()>
+    where
+        F: FnMut(DtokenEvent) -> Result<()>,
+    {
+        self.store.visit_all(visit)
     }
 }
 
@@ -196,6 +219,63 @@ impl JsonlStore {
 
         Ok(records.into_iter().rev().collect())
     }
+
+    /// Streams every complete durable record in journal order without forcing
+    /// callers to select a lossy "recent N" window. This is intended for
+    /// restart reconciliation and projection rebuilds; ordinary UI reads
+    /// should continue to use `recent`.
+    pub fn visit_all<T, F>(&self, mut visit: F) -> Result<()>
+    where
+        T: DeserializeOwned,
+        F: FnMut(T) -> Result<()>,
+    {
+        let _guard = self
+            .io_lock
+            .lock()
+            .map_err(|_| anyhow!("JSONL I/O lock is poisoned"))?;
+        if !Path::new(&self.path).exists() {
+            return Ok(());
+        }
+        let file = OpenOptions::new()
+            .read(true)
+            .open(&self.path)
+            .with_context(|| format!("open JSONL store {}", self.path.display()))?;
+        let mut reader = BufReader::new(file);
+        let mut line = Vec::new();
+
+        loop {
+            line.clear();
+            let bytes_read = reader
+                .read_until(b'\n', &mut line)
+                .with_context(|| format!("read JSONL store {}", self.path.display()))?;
+            if bytes_read == 0 {
+                break;
+            }
+            if !line.ends_with(b"\n") {
+                break;
+            }
+            let payload = &line[..line.len() - 1];
+            if payload.iter().all(u8::is_ascii_whitespace) {
+                continue;
+            }
+            match serde_json::from_slice::<T>(payload) {
+                Ok(record) => visit(record)?,
+                Err(error) => {
+                    let is_tail = reader
+                        .fill_buf()
+                        .with_context(|| format!("inspect JSONL tail in {}", self.path.display()))?
+                        .is_empty();
+                    if is_tail {
+                        break;
+                    }
+                    return Err(error).with_context(|| {
+                        format!("parse non-tail JSONL record in {}", self.path.display())
+                    });
+                }
+            }
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Default)]
@@ -318,6 +398,29 @@ mod tests {
     }
 
     #[test]
+    fn bounded_memory_ledger_plateaus_and_keeps_the_newest_events() {
+        let mut ledger = EventLedger::new();
+        let mut ids = Vec::new();
+        for sequence in 0..25 {
+            let event = test_event(sequence);
+            ids.push(event.event_id);
+            ledger
+                .record_bounded(event, 10)
+                .expect("bounded record succeeds");
+            assert!(ledger.events.len() <= 10);
+        }
+
+        let recent = ledger.recent(10);
+        assert_eq!(
+            recent.first().map(|event| event.event_id),
+            ids.last().copied()
+        );
+        assert!(recent
+            .iter()
+            .all(|event| ids[15..].contains(&event.event_id)));
+    }
+
+    #[test]
     fn recent_ignores_an_unterminated_tail_and_preserves_valid_events() {
         let path = test_path();
         let ledger = JsonlEventLedger::new(&path);
@@ -340,6 +443,43 @@ mod tests {
         assert_eq!(recent.len(), 2);
         assert_eq!(recent[0].event_id, second.event_id);
         assert_eq!(recent[1].event_id, first.event_id);
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn visit_all_streams_complete_records_without_a_recent_window() {
+        let path = test_path();
+        let ledger = JsonlEventLedger::new(&path);
+        let expected = (0..5).map(test_event).collect::<Vec<_>>();
+        for event in &expected {
+            ledger.append(event).expect("append event");
+        }
+        let mut file = OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .expect("open ledger for truncated tail");
+        file.write_all(br#"{"event_id":"truncated"#)
+            .expect("append truncated tail");
+        file.flush().expect("flush truncated tail");
+
+        let mut observed = Vec::new();
+        ledger
+            .visit_all(|event| {
+                observed.push(event);
+                Ok(())
+            })
+            .expect("visit complete records");
+        assert_eq!(
+            observed
+                .iter()
+                .map(|event| event.event_id)
+                .collect::<Vec<_>>(),
+            expected
+                .iter()
+                .map(|event| event.event_id)
+                .collect::<Vec<_>>()
+        );
 
         let _ = std::fs::remove_file(path);
     }

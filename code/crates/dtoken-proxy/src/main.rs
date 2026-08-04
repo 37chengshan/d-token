@@ -12,6 +12,23 @@ use tokio::net::TcpListener;
 #[command(name = "dtoken-proxy")]
 #[command(about = "d-token local proxy and core API skeleton")]
 struct Cli {
+    /// Run the d-token-owned MCP server on stdio instead of binding the HTTP
+    /// proxy listener. The managed launcher may provide a retrieval capability
+    /// through its private process environment.
+    #[arg(long)]
+    mcp_stdio: bool,
+
+    /// Private d-token-owned SharedContext capability document. The file is
+    /// hash-bound to the exact route/model and is never emitted through MCP.
+    #[arg(long, requires = "mcp_stdio")]
+    mcp_memory_capability_file: Option<String>,
+
+    #[arg(long, requires = "mcp_memory_capability_file")]
+    mcp_route_id: Option<String>,
+
+    #[arg(long, requires = "mcp_memory_capability_file")]
+    mcp_model: Option<String>,
+
     #[arg(long, default_value = "127.0.0.1")]
     host: String,
 
@@ -33,6 +50,36 @@ async fn main() -> Result<()> {
 
     let cli = Cli::parse();
     let (config, config_status) = load_runtime_config(cli.config.as_deref())?;
+
+    if cli.mcp_stdio {
+        let state = AppState::new_persistent_with_config_status(
+            config,
+            config_status,
+            runtime_data_dir(cli.data_dir.as_deref()),
+        );
+        if let Some(path) = cli.mcp_memory_capability_file.as_deref() {
+            let route_id = cli
+                .mcp_route_id
+                .as_deref()
+                .ok_or_else(|| anyhow::anyhow!("--mcp-route-id is required"))?;
+            let model = cli
+                .mcp_model
+                .as_deref()
+                .ok_or_else(|| anyhow::anyhow!("--mcp-model is required"))?;
+            let capability = state.resolve_memory_capability_for_route(
+                &PathBuf::from(path),
+                route_id,
+                model,
+                dtoken_types::time::now_ms(),
+            )?;
+            return dtoken_core_api::mcp::serve_stdio_with_memory_capability(state, capability)
+                .await
+                .map_err(Into::into);
+        }
+        return dtoken_core_api::mcp::serve_stdio(state)
+            .await
+            .map_err(Into::into);
+    }
 
     let host = parse_loopback_host(&cli.host)?;
 
