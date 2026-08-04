@@ -50,48 +50,66 @@ desktop_release_handlers!(run_desktop_app_with_handlers, []);
 
 ### 依赖（在 `src-tauri/Cargo.toml`）
 
+三个 specta crate 必须 pin 到完全相同的版本，否则跨版本会破坏构建。当前 pin：
+
 ```toml
-[dependencies]
-specta = { version = "=2.0.0-rc.26", features = ["derive"] }
-specta-typescript = "0.0.13"
+specta = { version = "=2.0.0-rc.25", features = ["derive"] }
+specta-typescript = "0.0.12"
 tauri-specta = { version = "=2.0.0-rc.25", features = ["derive", "typescript"] }
 ```
 
-### Builder 配置（在 `main.rs` 的 `run_desktop_app_with_handlers` 宏中）
+升级时三个版本必须一起改并重新跑 `cargo check`。
+
+### 架构（P1 修复后）
+
+**关键约束：禁止双重 `invoke_handler`。** Tauri 的 `Builder::invoke_handler`
+是 *replace* 语义，第二次调用会覆盖第一次注册的所有既有命令。因此
+tauri-specta 的 `Builder::invoke_handler()` 不能与
+`tauri::generate_handler!` 并列调用。
+
+当前架构：
+
+1. 所有命令（含 `#[specta::specta]` 的）统一注册进
+   `desktop_release_handlers!` / `debug_desktop_handlers!` 宏，由单一的
+   `tauri::generate_handler!` 暴露。
+2. tauri-specta 的 `Builder` 只用于 **debug 模式下导出 `bindings.ts`**
+   （见 `export_specta_bindings`），不参与运行时命令路由。
+3. `bindings.ts` 导出失败时只 `eprintln!` 警告，不 panic，避免破坏 desktop
+   启动。
 
 ```rust
-use tauri_specta::{ts, collect_commands};
-
-// 在 app setup 中导出 bindings
-let builder = tauri_specta::Builder::<tauri::Wry>::new()
-    .commands(collect_commands![
-        // 列出所有 #[specta::specta] 标注的 command
-        my_command_1,
-        my_command_2,
-    ]);
-
+// main.rs — debug 入口
 #[cfg(debug_assertions)]
-{
-    // debug 模式下导出 bindings.ts 到前端
-    builder
-        .export_events("../src/app/lib/bindings.ts")
-        .expect("Failed to export tauri-specta bindings");
+fn main() {
+    export_specta_bindings();          // 只导出 bindings，不注册命令
+    debug_desktop_handlers!(run_desktop_app_with_handlers);
 }
 
-// 正常 run tauri
-tauri::Builder::default()
-    .invoke_handler(builder.invoke_handler())
-    .run(tauri::generate_context!())
-    .expect("error while running d-token desktop");
+// run_desktop_app_with_handlers! 只调用一次 invoke_handler：
+//   .invoke_handler(tauri::generate_handler![
+//       ...既有命令...,
+//       get_specta_ipc_status,         // specta 命令也在同一列表
+//   ])
 ```
 
 ### 前端使用（在 `src/app/lib/native.ts`）
 
-```typescript
-import { commands } from "./bindings";
+`bindings.ts` 被 gitignore，可能不存在。前端通过
+`loadSpectaBindings()` 异步惰性加载；缺失时 `spectaCommands` 抛
+`native_unavailable`（fail-closed），不引入 Node `require` 全局：
 
-// 直接调用，有类型检查
-const result = await commands.myCommand(arg);
+```typescript
+// native.ts — 不裸 require，不静态 import("./bindings")（moduleResolution: Node
+// 下 TS2307），用非 literal 动态 import + try/catch
+const BINDINGS_MODULE = "./bindings";
+
+async function loadSpectaBindings(): Promise<SpectaBindings | null> {
+  try {
+    return (await import(BINDINGS_MODULE)) as SpectaBindings;
+  } catch {
+    return null;   // bindings 缺失，fail-closed
+  }
+}
 ```
 
 ## 5. 凭据与安全边界

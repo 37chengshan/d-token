@@ -11,6 +11,14 @@
 # The worktree is created at ~/Documents/d-token-worktrees/<branch-name>.
 # Dependencies are installed automatically (pnpm preferred, falls back to npm).
 # Rust target/ is per-worktree; sccache is used if available.
+#
+# ⚠ BASE BRANCH NOTE ⚠
+# This repository's integration line is NOT always `main`. Verify the
+# current default branch with `git -C <repo> symbolic-ref refs/heads/main`
+# or `git branch --show-current` before relying on the `main` default.
+# Pass an explicit base-branch (e.g. codex/code-graph-mcp-integration)
+# when in doubt. Creating a worktree off the wrong base silently diverges
+# your work from the intended integration line.
 
 set -euo pipefail
 

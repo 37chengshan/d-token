@@ -738,6 +738,15 @@
       "summary": "cherry-pick a0720cd from isolated worktree: fix specta scaffolding regression — single invoke_handler, fail-closed bindings",
       "head_before": "922b866",
       "remote": null
+    },
+    {
+      "id": "6a3c7964-004c-49ee-bada-4e338867536c",
+      "timestamp": "2026-08-04T21:46:32+08:00",
+      "operation": "commit",
+      "branch": "detached",
+      "summary": "fix: tauri-specta single invoke_handler regression, bindings fail-closed, AGENTS.md corrections, sidecar CI",
+      "head_before": "922b86632c0d",
+      "remote": null
     }
   ]
 }

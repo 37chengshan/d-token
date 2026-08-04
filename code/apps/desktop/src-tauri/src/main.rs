@@ -86,6 +86,7 @@ use std::{
     thread,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
+#[cfg(any(debug_assertions, test))]
 use tauri_specta::collect_commands;
 use uuid::Uuid;
 
@@ -14477,26 +14478,22 @@ macro_rules! specta_commands {
     };
 }
 
-/// Builds the tauri-specta command registry shared by debug and release runs.
-/// In debug builds this also exports `bindings.ts` to the frontend so the
-/// React layer gets compile-time type checking against the Rust IPC surface.
-fn build_specta_command_registry(
-) -> Box<dyn Fn(tauri::ipc::Invoke<tauri::Wry>) -> bool + Send + Sync> {
+/// Exports the tauri-specta TypeScript bindings to the frontend in debug
+/// builds. This is the only side-effect of the specta scaffolding at runtime:
+/// the type-safe commands themselves are registered through the normal
+/// `tauri::generate_handler!` macro (see `desktop_release_handlers!`) so they
+/// share the same invoke handler as the rest of the IPC surface.
+///
+/// Failure to export bindings is logged but does not panic, so a missing
+/// export path or filesystem error cannot break the desktop app.
+#[cfg(debug_assertions)]
+fn export_specta_bindings() {
     let builder = tauri_specta::Builder::<tauri::Wry>::new().commands(specta_commands!());
-
-    #[cfg(debug_assertions)]
-    {
-        let export_path =
-            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../src/app/lib/bindings.ts");
-        builder
-            .export(specta_typescript::Typescript::default(), export_path)
-            .expect("failed to export tauri-specta bindings");
+    let export_path =
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../src/app/lib/bindings.ts");
+    if let Err(error) = builder.export(specta_typescript::Typescript::default(), export_path) {
+        eprintln!("warn: failed to export tauri-specta bindings: {error}");
     }
-
-    // `invoke_handler` clones the command registry into the returned closure,
-    // so `builder` can be dropped immediately after this call.
-    let handler = builder.invoke_handler();
-    Box::new(handler)
 }
 
 macro_rules! desktop_release_handlers {
@@ -14601,6 +14598,7 @@ macro_rules! desktop_release_handlers {
             delete_codebase_memory_index,
             open_codebase_memory_graph,
             show_control_plane,
+            get_specta_ipc_status,
         ])
     };
 }
@@ -14636,7 +14634,6 @@ macro_rules! run_desktop_app_with_handlers {
             $($release_command,)*
             $($debug_command,)*
             ])
-            .invoke_handler(build_specta_command_registry())
             .run(tauri::generate_context!())
             .expect("error while running d-token desktop");
     };
@@ -14644,6 +14641,7 @@ macro_rules! run_desktop_app_with_handlers {
 
 #[cfg(debug_assertions)]
 fn main() {
+    export_specta_bindings();
     debug_desktop_handlers!(run_desktop_app_with_handlers);
 }
 
@@ -14735,6 +14733,51 @@ mod tests {
             debug, expected_debug,
             "debug registration must contain every release command plus only debug-only commands"
         );
+    }
+
+    /// P1 回归防护：get_specta_ipc_status 必须在 release 和 debug handler
+    /// 列表中可达，且 specta_commands! 也注册了它。这锁定「specta 命令与
+    /// 既有命令共用单一 generate_handler!」的不变量，防止未来有人重新引入
+    /// 第二个 invoke_handler 调用。
+    #[test]
+    fn specta_ipc_status_command_is_reachable_in_all_modes() {
+        const COMMAND_NAME: &str = "get_specta_ipc_status";
+
+        assert!(
+            RELEASE_HANDLER_NAMES.contains(&COMMAND_NAME),
+            "get_specta_ipc_status must be reachable in release builds"
+        );
+        assert!(
+            DEBUG_HANDLER_NAMES.contains(&COMMAND_NAME),
+            "get_specta_ipc_status must be reachable in debug builds"
+        );
+    }
+
+    /// P1 回归防护：一组既有命令必须在 release 和 debug 模式下都可达，
+    /// 防止未来误把核心命令从 handler 列表删除或被第二个 invoke_handler 覆盖。
+    #[test]
+    fn existing_core_commands_remain_reachable() {
+        const CORE_COMMANDS: &[&str] = &[
+            "get_desktop_summary",
+            "get_desktop_data",
+            "run_doctor",
+            "apply_rollback",
+            "get_dtoken_dashboard_payload",
+            "save_app_settings",
+            "start_dtoken_service",
+            "stop_dtoken_service",
+        ];
+
+        for command in CORE_COMMANDS {
+            assert!(
+                RELEASE_HANDLER_NAMES.contains(command),
+                "existing command '{command}' must remain reachable in release builds"
+            );
+            assert!(
+                DEBUG_HANDLER_NAMES.contains(command),
+                "existing command '{command}' must remain reachable in debug builds"
+            );
+        }
     }
 
     fn serve_one_http_response(body: &str) -> (u16, thread::JoinHandle<()>) {

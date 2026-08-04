@@ -41,20 +41,42 @@ const result = await invoke<MyReturnType>("my_command", { arg });
 
 ### 新模式（tauri-specta 类型安全）
 
-```typescript
-// src/app/lib/native.ts
-import { commands } from "./bindings";
+`bindings.ts` 被 gitignore，可能不存在。前端通过
+`loadSpectaBindings()` 异步惰性加载（动态 `import("./bindings")` +
+try/catch）；缺失时 `spectaCommands` 抛 `native_unavailable`
+（fail-closed），不引入 Node `require` 全局：
 
-export async function invokeNative<T>(command: string, args?: Record<string, unknown>): Promise<T> {
-  if (!isTauriRuntime()) {
-    return mockInvoke<T>(command, args);  // 开发模式 mock
+```typescript
+// src/app/lib/native.ts — 不裸 import，用非 literal 动态 import + try/catch
+const BINDINGS_MODULE = "./bindings";
+
+async function loadSpectaBindings(): Promise<SpectaBindings | null> {
+  try {
+    return (await import(BINDINGS_MODULE)) as SpectaBindings;
+  } catch {
+    return null;   // bindings 缺失，fail-closed
   }
-  const { invoke } = await import("@tauri-apps/api/core");
-  return invoke<T>(command, args);
 }
+
+export const spectaCommands = new Proxy(
+  {} as Record<string, (...args: unknown[]) => Promise<unknown>>,
+  {
+    get(_target, prop: string) {
+      return async (...args: unknown[]) => {
+        const bindings = await loadSpectaBindings();
+        if (!bindings) throw new Error("native_unavailable");
+        const fn = bindings.commands[prop];
+        if (typeof fn !== "function") {
+          throw new Error(`specta command not found: ${prop}`);
+        }
+        return fn(...args);
+      };
+    },
+  },
+);
 ```
 
-**迁移策略**：新 command 直接用 `commands.xxx()`，旧 command 逐步迁移。
+**迁移策略**：新 command 直接用 `spectaCommands.xxx()`，旧 command 逐步迁移。
 
 ### 前端 mock 层（独立开发 UI 时不启动 Rust）
 
@@ -100,4 +122,4 @@ npm run test:e2e
 
 1. **`isTauriRuntime()` 判断**：在浏览器 dev 模式下 `__TAURI_INTERNALS__` 不存在，要走 mock 分支。
 2. **`invokeNative` 的泛型**：前端调用时要显式指定返回类型 `invokeNative<MyReturnType>(...)`。
-3. **bindings.ts 是自动生成的**：不要手改，改 Rust command 后重新 `npm run tauri:dev` 即可重新生成。
+3. **bindings.ts 是自动生成的**：不要手改，改 Rust command 后重新 `npm run tauri:dev` 即可重新生成。文件被 gitignore，缺失时前端 fail-closed 为 `native_unavailable`。
