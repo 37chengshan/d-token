@@ -1,0 +1,138 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="900" viewBox="0 0 1600 900" role="img" aria-labelledby="title desc">
+  <title id="title">d-token safe configuration and rollback</title>
+  <desc id="desc">A security-focused promotional banner showing preview, redacted diff, backup, explicit confirmation, verification and rollback.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#fff7ed"/>
+      <stop offset="0.52" stop-color="#ffffff"/>
+      <stop offset="1" stop-color="#eff6ff"/>
+    </linearGradient>
+    <linearGradient id="orange" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#fb923c"/>
+      <stop offset="1" stop-color="#ea580c"/>
+    </linearGradient>
+    <linearGradient id="shield" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#1e293b"/>
+      <stop offset="1" stop-color="#0f172a"/>
+    </linearGradient>
+    <filter id="shadow" x="-30%" y="-30%" width="160%" height="180%">
+      <feDropShadow dx="0" dy="18" stdDeviation="24" flood-color="#0f172a" flood-opacity="0.13"/>
+    </filter>
+    <marker id="arrow" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto">
+      <path d="M0 0L12 6L0 12Z" fill="#cbd5e1"/>
+    </marker>
+    <pattern id="dots" width="28" height="28" patternUnits="userSpaceOnUse">
+      <circle cx="2" cy="2" r="1.3" fill="#64748b" opacity="0.12"/>
+    </pattern>
+  </defs>
+
+  <rect width="1600" height="900" fill="url(#bg)"/>
+  <rect width="1600" height="900" fill="url(#dots)"/>
+  <circle cx="1410" cy="100" r="270" fill="#2563eb" opacity="0.045"/>
+  <circle cx="110" cy="820" r="250" fill="#ea580c" opacity="0.055"/>
+
+  <g transform="translate(82 68)">
+    <rect width="58" height="58" rx="17" fill="url(#orange)"/>
+    <text x="29" y="40" text-anchor="middle" fill="#ffffff" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="34" font-weight="800">d</text>
+    <text x="76" y="39" fill="#0f172a" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="34" font-weight="780">d-token</text>
+  </g>
+
+  <g transform="translate(82 178)">
+    <text x="0" y="0" fill="#0f172a" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="64" font-weight="820" letter-spacing="-2">Configuration changes you can trust.</text>
+    <text x="0" y="56" fill="#475569" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="25">先预览，再确认；写入有备份，结果可验证，失败可精确恢复</text>
+  </g>
+
+  <g transform="translate(82 306)">
+    <g transform="translate(0 48)" filter="url(#shadow)">
+      <rect width="476" height="430" rx="30" fill="#ffffff" stroke="#e2e8f0"/>
+      <g transform="translate(30 28)">
+        <rect width="56" height="56" rx="17" fill="#fff7ed" stroke="#fed7aa"/>
+        <path d="M18 20H38M18 28H34M18 36H30" stroke="#ea580c" stroke-width="3" stroke-linecap="round"/>
+        <text x="74" y="24" fill="#0f172a" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="24" font-weight="760">Review the exact change</text>
+        <text x="74" y="49" fill="#64748b" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="14">Human summary + redacted diff + risk</text>
+      </g>
+
+      <g transform="translate(30 112)">
+        <rect width="416" height="226" rx="18" fill="#0f172a"/>
+        <text x="18" y="31" fill="#64748b" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="13">agent-config.json</text>
+        <rect x="18" y="49" width="380" height="1" fill="#334155"/>
+        <text x="18" y="79" fill="#fda4af" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="14">- "base_url": "https://upstream.example"</text>
+        <text x="18" y="108" fill="#86efac" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="14">+ "base_url": "http://127.0.0.1:18001"</text>
+        <text x="18" y="145" fill="#94a3b8" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="14">  "credential": "os-keychain://••••"</text>
+        <text x="18" y="182" fill="#fbbf24" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="13">! source hash must still match at apply time</text>
+      </g>
+
+      <g transform="translate(30 360)">
+        <rect width="188" height="46" rx="14" fill="#f8fafc" stroke="#e2e8f0"/>
+        <text x="94" y="30" text-anchor="middle" fill="#475569" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="15" font-weight="650">Cancel</text>
+        <rect x="204" width="212" height="46" rx="14" fill="url(#orange)"/>
+        <text x="310" y="30" text-anchor="middle" fill="#ffffff" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="15" font-weight="700">Confirm and apply</text>
+      </g>
+    </g>
+
+    <g transform="translate(604 0)">
+      <path d="M196 35C278 78 355 82 355 82V276C355 382 288 459 196 496C104 459 37 382 37 276V82C37 82 114 78 196 35Z" fill="url(#shield)" stroke="#334155" stroke-width="3" filter="url(#shadow)"/>
+      <path d="M119 270L174 325L279 206" fill="none" stroke="#fb923c" stroke-width="22" stroke-linecap="round" stroke-linejoin="round"/>
+      <circle cx="196" cy="158" r="54" fill="#ffffff" fill-opacity="0.055" stroke="#ffffff" stroke-opacity="0.10"/>
+      <path d="M174 162V145C174 119 218 119 218 145V162M165 162H227V214H165Z" fill="none" stroke="#f8fafc" stroke-width="8" stroke-linejoin="round"/>
+      <text x="196" y="548" text-anchor="middle" fill="#0f172a" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="28" font-weight="780">Local. Explainable. Reversible.</text>
+      <text x="196" y="580" text-anchor="middle" fill="#64748b" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="16">Credentials stay in the OS credential store</text>
+    </g>
+
+    <g transform="translate(1000 48)" filter="url(#shadow)">
+      <rect width="518" height="430" rx="30" fill="#ffffff" stroke="#e2e8f0"/>
+      <text x="30" y="48" fill="#0f172a" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="24" font-weight="760">Transaction evidence</text>
+      <text x="30" y="75" fill="#64748b" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="14">Every write has a durable recovery path</text>
+
+      <g transform="translate(30 104)">
+        <g>
+          <circle cx="22" cy="22" r="22" fill="#fff7ed" stroke="#fdba74"/>
+          <text x="22" y="28" text-anchor="middle" fill="#ea580c" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="17" font-weight="780">1</text>
+          <text x="58" y="19" fill="#0f172a" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="18" font-weight="680">Preview</text>
+          <text x="58" y="39" fill="#64748b" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="13">summary · diff · digest</text>
+        </g>
+        <line x1="22" y1="48" x2="22" y2="74" stroke="#cbd5e1" stroke-width="3"/>
+        <g transform="translate(0 78)">
+          <circle cx="22" cy="22" r="22" fill="#eff6ff" stroke="#93c5fd"/>
+          <text x="22" y="28" text-anchor="middle" fill="#2563eb" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="17" font-weight="780">2</text>
+          <text x="58" y="19" fill="#0f172a" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="18" font-weight="680">Backup</text>
+          <text x="58" y="39" fill="#64748b" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="13">before hash · private recovery copy</text>
+        </g>
+        <line x1="22" y1="126" x2="22" y2="152" stroke="#cbd5e1" stroke-width="3"/>
+        <g transform="translate(0 156)">
+          <circle cx="22" cy="22" r="22" fill="#f5f3ff" stroke="#c4b5fd"/>
+          <text x="22" y="28" text-anchor="middle" fill="#7c3aed" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="17" font-weight="780">3</text>
+          <text x="58" y="19" fill="#0f172a" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="18" font-weight="680">Atomic apply</text>
+          <text x="58" y="39" fill="#64748b" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="13">source hash revalidation · write lock</text>
+        </g>
+        <line x1="22" y1="204" x2="22" y2="230" stroke="#cbd5e1" stroke-width="3"/>
+        <g transform="translate(0 234)">
+          <circle cx="22" cy="22" r="22" fill="#ecfdf5" stroke="#86efac"/>
+          <text x="22" y="28" text-anchor="middle" fill="#16a34a" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="17" font-weight="780">4</text>
+          <text x="58" y="19" fill="#0f172a" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="18" font-weight="680">Verify or rollback</text>
+          <text x="58" y="39" fill="#64748b" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="13">parse · health · exact restore</text>
+        </g>
+      </g>
+
+      <g transform="translate(310 112)">
+        <rect width="178" height="252" rx="18" fill="#f8fafc" stroke="#e2e8f0"/>
+        <text x="18" y="30" fill="#64748b" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="12" font-weight="750">RECEIPT</text>
+        <g transform="translate(18 52)" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="12">
+          <text x="0" y="0" fill="#475569">state</text><text x="78" y="0" fill="#16a34a">verified</text>
+          <text x="0" y="31" fill="#475569">backup</text><text x="78" y="31" fill="#0f172a">present</text>
+          <text x="0" y="62" fill="#475569">source</text><text x="78" y="62" fill="#0f172a">matched</text>
+          <text x="0" y="93" fill="#475569">runtime</text><text x="78" y="93" fill="#0f172a">healthy</text>
+          <text x="0" y="124" fill="#475569">rollback</text><text x="78" y="124" fill="#2563eb">ready</text>
+        </g>
+        <rect x="18" y="203" width="142" height="34" rx="10" fill="#0f172a"/>
+        <text x="89" y="225" text-anchor="middle" fill="#ffffff" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="13" font-weight="650">View evidence</text>
+      </g>
+    </g>
+  </g>
+
+  <g transform="translate(82 824)">
+    <rect width="1436" height="50" rx="16" fill="#ffffff" fill-opacity="0.78" stroke="#e2e8f0"/>
+    <text x="24" y="32" fill="#0f172a" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="17" font-weight="680">Security boundary:</text>
+    <text x="177" y="32" fill="#475569" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="17">loopback by default · no plaintext credential fallback · redacted logs · fail-closed release gates</text>
+  </g>
+</svg>

@@ -1,0 +1,734 @@
+{
+  "schema_version": 1,
+  "operations": [
+    {
+      "id": "initial-optical-branch-baseline",
+      "timestamp": "2026-07-10T14:48:25Z",
+      "operation": "branch-use",
+      "branch": "optical",
+      "summary": "继续在既有 optical 分支整合项目审查、Optical Phase B、macOS 与 UI 真实性改进。",
+      "head_before": "cf65cc4",
+      "remote": "origin"
+    },
+    {
+      "id": "45fb14b7-9ace-427b-9f38-db3c2fdc55f9",
+      "timestamp": "2026-07-10T23:50:25+08:00",
+      "operation": "branch-create",
+      "branch": "codex/prd-macos-polish",
+      "summary": "从 optical 当前工作树创建 PRD 对齐与 macOS UI 功能完善分支。",
+      "head_before": "cf65cc434b0e",
+      "remote": null
+    },
+    {
+      "id": "7f8e002f-e529-49a1-a97b-bcc705f9c172",
+      "timestamp": "2026-07-10T23:50:25+08:00",
+      "operation": "branch-switch",
+      "branch": "codex/prd-macos-polish",
+      "summary": "切换到新分支继续 Rust、Tauri、UI、OpenCode 与真实窗口验收。",
+      "head_before": "cf65cc434b0e",
+      "remote": null
+    },
+    {
+      "id": "566c6bc2-5e6e-414f-b433-679e12e61a5f",
+      "timestamp": "2026-07-11T04:57:25+08:00",
+      "operation": "commit",
+      "branch": "codex/prd-macos-polish",
+      "summary": "聚合既有文档整理、macOS Tauri 基线、前端真实性防线、Optical shadow planner 与验证工具。",
+      "head_before": "cf65cc434b0e",
+      "remote": null
+    },
+    {
+      "id": "4f362115-5af2-4268-aaaa-770264bb4e6c",
+      "timestamp": "2026-07-11T04:57:25+08:00",
+      "operation": "push",
+      "branch": "codex/prd-macos-polish",
+      "summary": "推送 codex/prd-macos-polish 的首次聚合基线到 origin。",
+      "head_before": "cf65cc434b0e",
+      "remote": "origin"
+    },
+    {
+      "id": "9511c6e8-f101-4882-9b8b-5ce23e9b39a5",
+      "timestamp": "2026-07-11T05:55:22+08:00",
+      "operation": "commit",
+      "branch": "codex/prd-macos-polish",
+      "summary": "加固路由歧义处理、请求体上限及所有运行时 JSONL 元数据持久化。",
+      "head_before": "ad276ccc28502d3a22088d668ad105ba027e118c",
+      "remote": null
+    },
+    {
+      "id": "ac9e53c1-8f1d-46b3-aaf1-bbc21845d72b",
+      "timestamp": "2026-07-11T05:55:22+08:00",
+      "operation": "push",
+      "branch": "codex/prd-macos-polish",
+      "summary": "推送 Rust 路由与运行时持久化加固提交到 origin。",
+      "head_before": "ad276ccc28502d3a22088d668ad105ba027e118c",
+      "remote": "origin"
+    },
+    {
+      "id": "83474c3e-6cd7-4f17-9c4e-5232a08d977a",
+      "timestamp": "2026-07-11T05:59:44+08:00",
+      "operation": "commit",
+      "branch": "codex/prd-macos-polish",
+      "summary": "落实跨平台持久状态、原子配置事务、服务身份校验和真实桌面数据契约。",
+      "head_before": "ef9afb73634f54830cee1aa5b6906eff2d9292b7",
+      "remote": null
+    },
+    {
+      "id": "6dc903c3-47fe-4f01-9c74-68aac1f69ad0",
+      "timestamp": "2026-07-11T05:59:44+08:00",
+      "operation": "push",
+      "branch": "codex/prd-macos-polish",
+      "summary": "推送 Tauri 运行时真实性与生命周期加固提交到 origin。",
+      "head_before": "ef9afb73634f54830cee1aa5b6906eff2d9292b7",
+      "remote": "origin"
+    },
+    {
+      "id": "367587aa-0de2-4338-88a0-b8b7549ff209",
+      "timestamp": "2026-07-11T08:52:19+08:00",
+      "operation": "commit",
+      "branch": "codex/prd-macos-polish",
+      "summary": "移除安装页伪状态与自环配置，统一桌面运行证据并完善双语连接体验。",
+      "head_before": "83a2b7983f974ee31005179792424e609c649555",
+      "remote": null
+    },
+    {
+      "id": "30742e64-3cfd-4c2f-bf79-7a8583bd08bd",
+      "timestamp": "2026-07-11T08:52:19+08:00",
+      "operation": "push",
+      "branch": "codex/prd-macos-polish",
+      "summary": "推送前端运行时真实性与安装连接体验改进到 origin。",
+      "head_before": "83a2b7983f974ee31005179792424e609c649555",
+      "remote": "origin"
+    },
+    {
+      "id": "412e05b7-902b-41ac-ad58-592dff487551",
+      "timestamp": "2026-07-11T20:51:32+08:00",
+      "operation": "commit",
+      "branch": "codex/prd-macos-polish",
+      "summary": "新增 Chromium 与 macOS WebKit 桌面控制面 E2E，覆盖导航、预览安全和生产文案边界。",
+      "head_before": "92359dd71bc1a61208c9b662975202b5d16aecf1",
+      "remote": null
+    },
+    {
+      "id": "44312c00-9f5a-442c-940d-8a2b9fb2361f",
+      "timestamp": "2026-07-11T20:51:32+08:00",
+      "operation": "push",
+      "branch": "codex/prd-macos-polish",
+      "summary": "推送通过 8 项真实浏览器验证的 Playwright E2E 基线到 origin。",
+      "head_before": "92359dd71bc1a61208c9b662975202b5d16aecf1",
+      "remote": "origin"
+    },
+    {
+      "id": "9020fb61-4f6c-420f-ae6d-f34c6e275397",
+      "timestamp": "2026-07-11T21:28:02+08:00",
+      "operation": "branch-switch",
+      "branch": "codex/prd-macos-polish",
+      "summary": "检测到共享工作树被外部切回 optical 后，恢复到用户指定的 PRD 与 macOS 完善分支继续验收。",
+      "head_before": "cf65cc434b0e626e87f6bd539ff37b4b70b64566",
+      "remote": null
+    },
+    {
+      "id": "d10314d2-2621-4842-b1a8-d2c0cf68489b",
+      "timestamp": "2026-07-12T01:02:08+08:00",
+      "operation": "commit",
+      "branch": "codex/prd-macos-polish",
+      "summary": "收敛产品文档、真实数据界面、AiMaMi连续桌面壳、配置事务与回归测试",
+      "head_before": "0eb1b23e8f0fe4dc55e4aa4e5cc01d1e2d801913",
+      "remote": null
+    },
+    {
+      "id": "d6e88188-b7cb-4d00-80b5-3a929e99faa9",
+      "timestamp": "2026-07-13T12:02:23+08:00",
+      "operation": "commit",
+      "branch": "codex/prd-macos-polish",
+      "summary": "Build PRD-aligned desktop release candidate with real runtime state, AiMaMi UI, autostart and fail-closed platform workflows",
+      "head_before": "08f7f9f5526273f8ef6af57f0d80fac16d3fda61",
+      "remote": null
+    },
+    {
+      "id": "d099c2df-b102-46fc-9c1e-9a29673cc272",
+      "timestamp": "2026-07-13T12:06:58+08:00",
+      "operation": "commit",
+      "branch": "codex/prd-macos-polish",
+      "summary": "Make clean checkout workspace gates prepare platform runtime sidecars",
+      "head_before": "e4eca905f3c1edabdd2a0238d891c56101fb3261",
+      "remote": null
+    },
+    {
+      "id": "e0db0cf3-2fb2-4393-bddd-e02aaaec6961",
+      "timestamp": "2026-07-13T12:17:41+08:00",
+      "operation": "commit",
+      "branch": "codex/prd-macos-polish",
+      "summary": "Bind local release hashes through per-candidate manifests instead of stale docs",
+      "head_before": "c02251a8c50ac2aa10b407bf0b5b526765e144db",
+      "remote": null
+    },
+    {
+      "id": "a2a57639-34e0-4e8f-847d-7cc9c24059a4",
+      "timestamp": "2026-07-19T14:50:44+08:00",
+      "operation": "branch-create",
+      "branch": "codex/code-graph-mcp-integration",
+      "summary": "Create isolated branch for complete Code Graph MCP integration and Windows validation",
+      "head_before": "fa653bc6455bcd60619e93e13c2bd1f9e444ef4f",
+      "remote": null
+    },
+    {
+      "id": "30b79d92-6b05-4520-9f73-7aae136d5da0",
+      "timestamp": "2026-07-19T15:06:28+08:00",
+      "operation": "commit",
+      "branch": "codex/code-graph-mcp-integration",
+      "summary": "Complete Code Graph MCP integration, recovery, security, UI, docs, and cross-platform validation gates",
+      "head_before": "fa653bc6455bcd60619e93e13c2bd1f9e444ef4f",
+      "remote": null
+    },
+    {
+      "id": "21466eb5-affc-4b1f-9160-d6d7dc2ddb6c",
+      "timestamp": "2026-07-19T15:06:45+08:00",
+      "operation": "push",
+      "branch": "codex/code-graph-mcp-integration",
+      "summary": "Push validated Code Graph MCP candidate snapshot for Windows runner evidence",
+      "head_before": "dc6dcf5deef5d8003dbfaeb5404e933836cb46b7",
+      "remote": "origin"
+    },
+    {
+      "id": "df765784-2475-457c-89e7-c7000a277c65",
+      "timestamp": "2026-07-19T15:06:45+08:00",
+      "operation": "commit",
+      "branch": "codex/code-graph-mcp-integration",
+      "summary": "Record candidate branch push audit",
+      "head_before": "dc6dcf5deef5d8003dbfaeb5404e933836cb46b7",
+      "remote": null
+    },
+    {
+      "id": "953b7e3d-137d-4b76-aa47-4beb1bd32d3b",
+      "timestamp": "2026-07-19T15:08:16+08:00",
+      "operation": "branch-create",
+      "branch": "codex/windows-code-graph-validation",
+      "summary": "Create minimal default-branch bootstrap for Windows Code Graph validation",
+      "head_before": "7868873ed8502854f5ebf14d6ace8a992f8812ec",
+      "remote": "origin"
+    },
+    {
+      "id": "b30e2a97-71f4-4fcc-8a71-920740bd1b24",
+      "timestamp": "2026-07-19T15:09:59+08:00",
+      "operation": "commit",
+      "branch": "codex/windows-code-graph-validation",
+      "summary": "Add minimal Windows Code Graph validation bootstrap workflow (recorded from candidate audit ledger)",
+      "head_before": "174fb39",
+      "remote": null
+    },
+    {
+      "id": "cb47f8fc-aaa5-4ab2-a23e-a537284f732f",
+      "timestamp": "2026-07-19T15:10:00+08:00",
+      "operation": "push",
+      "branch": "codex/windows-code-graph-validation",
+      "summary": "Push minimal Windows Code Graph validation bootstrap workflow",
+      "head_before": "348f0c1",
+      "remote": "origin"
+    },
+    {
+      "id": "918421d1-48e3-4fa7-a783-e57eded5aa54",
+      "timestamp": "2026-07-19T15:14:13+08:00",
+      "operation": "merge",
+      "branch": "main",
+      "summary": "Merge minimal Windows Code Graph validation bootstrap workflow",
+      "head_before": "7868873ed8502854f5ebf14d6ace8a992f8812ec",
+      "remote": "origin"
+    },
+    {
+      "id": "3e7e432c-179c-41fe-9a93-ddcf841ff661",
+      "timestamp": "2026-07-19T15:14:13+08:00",
+      "operation": "commit",
+      "branch": "codex/code-graph-mcp-integration",
+      "summary": "Record Windows validation bootstrap branch, commit, push, and merge audit",
+      "head_before": "7868873ed8502854f5ebf14d6ace8a992f8812ec",
+      "remote": null
+    },
+    {
+      "id": "42a61cd6-7a80-4d6c-8648-61f436e69f56",
+      "timestamp": "2026-07-19T15:14:13+08:00",
+      "operation": "push",
+      "branch": "codex/code-graph-mcp-integration",
+      "summary": "Push Windows validation bootstrap audit ledger",
+      "head_before": "7868873ed8502854f5ebf14d6ace8a992f8812ec",
+      "remote": "origin"
+    },
+    {
+      "id": "b9be465a-8633-49cc-935f-a4e2ea708a52",
+      "timestamp": "2026-07-19T15:18:27+08:00",
+      "operation": "commit",
+      "branch": "codex/code-graph-mcp-integration",
+      "summary": "Fix Windows release-contract literal matching for Code Graph launcher",
+      "head_before": "d35a5b74a68d4f9ef0791fae4e283a22e1edeba8",
+      "remote": null
+    },
+    {
+      "id": "6cb58bd1-c5c0-4938-a080-5e3d634a08f1",
+      "timestamp": "2026-07-19T15:18:27+08:00",
+      "operation": "push",
+      "branch": "codex/code-graph-mcp-integration",
+      "summary": "Push Windows release-contract literal matching fix",
+      "head_before": "d35a5b74a68d4f9ef0791fae4e283a22e1edeba8",
+      "remote": "origin"
+    },
+    {
+      "id": "436c0edb-f258-42ef-a51a-1c077f0dc4c2",
+      "timestamp": "2026-07-19T15:28:36+08:00",
+      "operation": "commit",
+      "branch": "codex/code-graph-mcp-integration",
+      "summary": "Fetch locked Windows desktop dependencies before sidecar preparation",
+      "head_before": "ec6e369e21b339569d41a41040c24330e8d829e2",
+      "remote": null
+    },
+    {
+      "id": "a9e0b444-9742-41cd-b797-8ee2c037f8d1",
+      "timestamp": "2026-07-19T15:28:36+08:00",
+      "operation": "push",
+      "branch": "codex/code-graph-mcp-integration",
+      "summary": "Push clean-run WebView2 sidecar preparation fix",
+      "head_before": "ec6e369e21b339569d41a41040c24330e8d829e2",
+      "remote": "origin"
+    },
+    {
+      "id": "44e3e415-0144-43a6-a09d-87939ab869bb",
+      "timestamp": "2026-07-19T15:56:52+08:00",
+      "operation": "commit",
+      "branch": "codex/code-graph-mcp-integration",
+      "summary": "Fix stable Windows registry and Code Graph file identity compilation",
+      "head_before": "ef48742517adee058970002900ba1fb406189ec0",
+      "remote": null
+    },
+    {
+      "id": "6b00b31c-f23f-4cc9-8f2d-133e2d215f41",
+      "timestamp": "2026-07-19T15:56:52+08:00",
+      "operation": "push",
+      "branch": "codex/code-graph-mcp-integration",
+      "summary": "Push Windows native compilation fixes",
+      "head_before": "ef48742517adee058970002900ba1fb406189ec0",
+      "remote": "origin"
+    },
+    {
+      "id": "c182cb38-a2e9-49f4-90e6-27b82efbce38",
+      "timestamp": "2026-07-19T17:31:41+08:00",
+      "operation": "commit",
+      "branch": "codex/code-graph-mcp-integration",
+      "summary": "Handle Windows verbatim roots in configuration path security checks",
+      "head_before": "5d7b7782f57f34165f84c385d8c99aa59778dc87",
+      "remote": null
+    },
+    {
+      "id": "1e80e107-2326-4ab9-805c-cc6c6f4f1e7f",
+      "timestamp": "2026-07-19T17:31:41+08:00",
+      "operation": "push",
+      "branch": "codex/code-graph-mcp-integration",
+      "summary": "Push Windows configuration path security fix",
+      "head_before": "5d7b7782f57f34165f84c385d8c99aa59778dc87",
+      "remote": "origin"
+    },
+    {
+      "id": "2f415286-8500-4b19-8360-2a0f389789f8",
+      "timestamp": "2026-07-19T18:00:36+08:00",
+      "operation": "commit",
+      "branch": "codex/code-graph-mcp-integration",
+      "summary": "Make Windows Agent discovery and product readiness tests platform-aware",
+      "head_before": "b4f9e91b36fa33dc56821643018a243053e19aec",
+      "remote": null
+    },
+    {
+      "id": "7a053de8-16ae-4680-895e-5d845e4534e6",
+      "timestamp": "2026-07-19T18:00:36+08:00",
+      "operation": "push",
+      "branch": "codex/code-graph-mcp-integration",
+      "summary": "Push Windows product readiness test fixes",
+      "head_before": "b4f9e91b36fa33dc56821643018a243053e19aec",
+      "remote": "origin"
+    },
+    {
+      "id": "c4121ffc-f341-46d5-9ac0-be68611ff46c",
+      "timestamp": "2026-07-19T18:20:13+08:00",
+      "operation": "commit",
+      "branch": "codex/code-graph-mcp-integration",
+      "summary": "Make Agent integration fixtures portable across Windows",
+      "head_before": "fd3a716aa878861e5a52eb5aad56d377217f7b14",
+      "remote": null
+    },
+    {
+      "id": "352ed86b-6d50-4d30-a557-1f943229ea0c",
+      "timestamp": "2026-07-19T18:20:13+08:00",
+      "operation": "push",
+      "branch": "codex/code-graph-mcp-integration",
+      "summary": "Push portable Agent integration fixture fixes",
+      "head_before": "fd3a716aa878861e5a52eb5aad56d377217f7b14",
+      "remote": "origin"
+    },
+    {
+      "id": "e374b55b-4b5c-47b5-84a8-ec45a673c504",
+      "timestamp": "2026-07-19T18:48:25+08:00",
+      "operation": "commit",
+      "branch": "codex/code-graph-mcp-integration",
+      "summary": "Fix Windows portable agent integration test fixture path",
+      "head_before": "84002e2",
+      "remote": null
+    },
+    {
+      "id": "420c66df-b0ee-4f8f-804f-30f15557d67d",
+      "timestamp": "2026-07-19T18:48:42+08:00",
+      "operation": "push",
+      "branch": "codex/code-graph-mcp-integration",
+      "summary": "Push Windows portable agent integration fixture fix for code graph validation",
+      "head_before": "429010d",
+      "remote": "origin"
+    },
+    {
+      "id": "a340a22f-5941-4786-8ed7-2348e4fbf6b0",
+      "timestamp": "2026-07-19T19:13:37+08:00",
+      "operation": "commit",
+      "branch": "codex/code-graph-mcp-integration",
+      "summary": "Skip Windows drive root during code graph symlink checks",
+      "head_before": "df7f8a8",
+      "remote": null
+    },
+    {
+      "id": "895a6141-c4b0-4757-bebf-5f3756ecc4e3",
+      "timestamp": "2026-07-19T19:13:53+08:00",
+      "operation": "push",
+      "branch": "codex/code-graph-mcp-integration",
+      "summary": "Push Windows code graph path validation repair for CI rerun",
+      "head_before": "3e38856",
+      "remote": "origin"
+    },
+    {
+      "id": "a22d439c-ca4e-4a96-9203-5a52c93fbe00",
+      "timestamp": "2026-07-19T19:18:44+08:00",
+      "operation": "commit",
+      "branch": "codex/code-graph-mcp-integration",
+      "summary": "Round 1: Fix cc-switch schema compatibility (schema 13 structural probe) and Agent one-click selection flow (confirm-required pre-selected in primary list, capability labels fixed)",
+      "head_before": "6301ebf394ad",
+      "remote": null
+    },
+    {
+      "id": "2c2dd657-393b-4b7d-b724-5957396e22fd",
+      "timestamp": "2026-07-19T22:34:35+08:00",
+      "operation": "commit",
+      "branch": "codex/code-graph-mcp-integration",
+      "summary": "Fix Windows code graph drive-root regression test lifetime",
+      "head_before": "6301ebf",
+      "remote": null
+    },
+    {
+      "id": "12fef370-f777-418e-b532-d4e14a84fdfe",
+      "timestamp": "2026-07-19T22:34:46+08:00",
+      "operation": "push",
+      "branch": "codex/code-graph-mcp-integration",
+      "summary": "Push Windows code graph regression test lifetime fix for CI rerun",
+      "head_before": "1b77b83",
+      "remote": "origin"
+    },
+    {
+      "id": "0032a2d2-97b4-42bc-aa2e-9ede8254e119",
+      "timestamp": "2026-07-19T23:02:07+08:00",
+      "operation": "commit",
+      "branch": "codex/code-graph-mcp-integration",
+      "summary": "Stabilize Windows readiness runtime test socket shutdown",
+      "head_before": "c5f4c6e",
+      "remote": null
+    },
+    {
+      "id": "70fe13b9-dcbb-463b-af4c-9523bf53747a",
+      "timestamp": "2026-07-19T23:02:36+08:00",
+      "operation": "push",
+      "branch": "codex/code-graph-mcp-integration",
+      "summary": "Push Windows readiness fixture stabilization for CI rerun",
+      "head_before": "3df32ce",
+      "remote": "origin"
+    },
+    {
+      "id": "5bd5a0ba-9044-4741-aa88-9d52f7dfc04f",
+      "timestamp": "2026-07-19T23:32:50+08:00",
+      "operation": "commit",
+      "branch": "codex/code-graph-mcp-integration",
+      "summary": "Drain Core API mock request bodies before responding on Windows",
+      "head_before": "e478d82",
+      "remote": null
+    },
+    {
+      "id": "80954b1b-58d4-483b-8d21-1b13b426d9cd",
+      "timestamp": "2026-07-19T23:33:08+08:00",
+      "operation": "push",
+      "branch": "codex/code-graph-mcp-integration",
+      "summary": "Push Core API Windows mock transport repair for CI rerun",
+      "head_before": "9a5c6ed",
+      "remote": "origin"
+    },
+    {
+      "id": "38599475-c470-47d5-97bd-d853752997d2",
+      "timestamp": "2026-07-20T00:05:55+08:00",
+      "operation": "commit",
+      "branch": "codex/code-graph-mcp-integration",
+      "summary": "Allow Windows Tauri CLI shim execution during candidate build",
+      "head_before": "b3fcb19",
+      "remote": null
+    },
+    {
+      "id": "28681d43-3491-40c5-beea-d34540780ee3",
+      "timestamp": "2026-07-20T00:06:19+08:00",
+      "operation": "push",
+      "branch": "codex/code-graph-mcp-integration",
+      "summary": "Push Windows Tauri CLI shim repair for installer CI rerun",
+      "head_before": "1e98aff",
+      "remote": "origin"
+    },
+    {
+      "id": "c093e11b-19d5-4e0c-b0d4-7c290a841fe8",
+      "timestamp": "2026-07-20T01:02:02+08:00",
+      "operation": "commit",
+      "branch": "codex/code-graph-mcp-integration",
+      "summary": "Normalize candidate provenance across Windows PowerShell hosts",
+      "head_before": "0090a7f",
+      "remote": null
+    },
+    {
+      "id": "d219c750-d598-4863-a7c0-b79cfbcf8c8d",
+      "timestamp": "2026-07-20T01:03:34+08:00",
+      "operation": "push",
+      "branch": "codex/code-graph-mcp-integration",
+      "summary": "Push Windows candidate provenance normalization for bundle CI rerun",
+      "head_before": "447d15a",
+      "remote": "origin"
+    },
+    {
+      "id": "f913b5c4-7179-4baf-b823-6817cc133228",
+      "timestamp": "2026-07-20T16:09:24+08:00",
+      "operation": "commit",
+      "branch": "codex/code-graph-mcp-integration",
+      "summary": "Accept Tauri NSIS bundle marker while verifying installed app identity and exact sidecars",
+      "head_before": "983342cb7a833a6de7a680d529ca35c7e49a7895",
+      "remote": null
+    },
+    {
+      "id": "fcd6e8ed-7b24-4083-9149-e52d424db8e6",
+      "timestamp": "2026-07-20T16:10:27+08:00",
+      "operation": "push",
+      "branch": "codex/code-graph-mcp-integration",
+      "summary": "Push NSIS installed-app identity audit fix for Windows validation",
+      "head_before": "592832490deaa14ca4850d93b1f73ab9ea7a1f16",
+      "remote": "origin"
+    },
+    {
+      "id": "1cc9bddb-1b8d-40b8-b5cf-8062fcbb4b93",
+      "timestamp": "2026-07-20T16:19:04+08:00",
+      "operation": "commit",
+      "branch": "codex/code-graph-mcp-integration",
+      "summary": "Gate unsigned validation launcher on exact candidate hash and add Windows graph workflow",
+      "head_before": "592832490deaa14ca4850d93b1f73ab9ea7a1f16",
+      "remote": null
+    },
+    {
+      "id": "5a794727-c051-4698-8680-91efadf5bf4d",
+      "timestamp": "2026-07-20T16:20:03+08:00",
+      "operation": "push",
+      "branch": "codex/code-graph-mcp-integration",
+      "summary": "Push hardened unsigned Windows Code Graph validation workflow",
+      "head_before": "d5ea0b9bfb942093ddcec8e5995e6f1fcc73023d",
+      "remote": "origin"
+    },
+    {
+      "id": "929ee69f-dcb5-423c-8beb-f64bab0c17eb",
+      "timestamp": "2026-08-03T17:06:59+08:00",
+      "operation": "commit",
+      "branch": "codex/code-graph-mcp-integration",
+      "summary": "headroom migration to main HEAD: update baselines + absorb PHP codec",
+      "head_before": "d5ea0b9",
+      "remote": null
+    },
+    {
+      "id": "4eecf1e7-29fd-4135-a575-1e803281ce19",
+      "timestamp": "2026-08-04T16:15:08+08:00",
+      "operation": "commit",
+      "branch": "codex/code-graph-mcp-integration",
+      "summary": "整理工作树:开始分批提交(预记录)",
+      "head_before": "0f10d644b728acb4eab05661080384d5fd67c2d7",
+      "remote": null
+    },
+    {
+      "id": "fd9bc91b-4119-4cd7-94c7-e737b649dd46",
+      "timestamp": "2026-08-04T16:18:38+08:00",
+      "operation": "commit",
+      "branch": "codex/code-graph-mcp-integration",
+      "summary": "feat(core-api): expand core API surface and MCP gateway",
+      "head_before": "73e068499cd30438032f658938dfaef66990f578",
+      "remote": null
+    },
+    {
+      "id": "19ff923a-24f7-49b6-b5c7-726c93e01f89",
+      "timestamp": "2026-08-04T16:21:14+08:00",
+      "operation": "commit",
+      "branch": "codex/code-graph-mcp-integration",
+      "summary": "feat(compress): codec evidence, tool schema, content router and context pipeline",
+      "head_before": "5d879870705f4c33994035bdbece215f620408e4",
+      "remote": null
+    },
+    {
+      "id": "4a435796-b33b-400d-9dbc-ccda6267e922",
+      "timestamp": "2026-08-04T16:34:17+08:00",
+      "operation": "commit",
+      "branch": "codex/code-graph-mcp-integration",
+      "summary": "feat(context-store): memory capability, windows private ACL, migrations",
+      "head_before": "75ebfb270a11fa568642d57e266f926fca1916d7",
+      "remote": null
+    },
+    {
+      "id": "d6d26011-d9b3-445f-b9b4-6ea6731af63a",
+      "timestamp": "2026-08-04T16:35:08+08:00",
+      "operation": "commit",
+      "branch": "codex/code-graph-mcp-integration",
+      "summary": "feat(config-patcher): agent transport and cc-switch fixture support",
+      "head_before": "a45450d438d29c72fe48808699fa2fb7c7b505b8",
+      "remote": null
+    },
+    {
+      "id": "5daa3e8b-6aef-4e99-b8dd-32ab2c9be4b1",
+      "timestamp": "2026-08-04T16:36:42+08:00",
+      "operation": "commit",
+      "branch": "codex/code-graph-mcp-integration",
+      "summary": "feat(types): expand agent and runtime type surface",
+      "head_before": "3224961991fc45fe055b285751f700cc8925f615",
+      "remote": null
+    },
+    {
+      "id": "80881170-373f-421b-aaa7-208a09b67453",
+      "timestamp": "2026-08-04T16:37:53+08:00",
+      "operation": "commit",
+      "branch": "codex/code-graph-mcp-integration",
+      "summary": "feat(preprocessor): expand preprocessor pipeline",
+      "head_before": "1287236fbf6a2f65fb81b709a56766c231a60442",
+      "remote": null
+    },
+    {
+      "id": "1adc6529-215e-4b71-a260-b4688e3f9b28",
+      "timestamp": "2026-08-04T16:39:00+08:00",
+      "operation": "commit",
+      "branch": "codex/code-graph-mcp-integration",
+      "summary": "feat(agent-bridge): managed RTK candidate probe and subprocess contract",
+      "head_before": "2795c282568571eb6f2e8243e3fc651c0f4d9f40",
+      "remote": null
+    },
+    {
+      "id": "7e164b5e-2dec-4711-83ed-c02c5ff2d765",
+      "timestamp": "2026-08-04T16:40:14+08:00",
+      "operation": "commit",
+      "branch": "codex/code-graph-mcp-integration",
+      "summary": "chore(crates): dependency and manifest bumps across remaining crates",
+      "head_before": "7027684206b29adc44606a09ec7a1770acb14534",
+      "remote": null
+    },
+    {
+      "id": "59515436-8642-491b-bf90-064a9eb55399",
+      "timestamp": "2026-08-04T16:41:09+08:00",
+      "operation": "commit",
+      "branch": "codex/code-graph-mcp-integration",
+      "summary": "feat(desktop): tray panel, runtime notification bridge, and UI updates",
+      "head_before": "f72ce5f94baf5d5e034de4c2ebd9501cd6b43e9e",
+      "remote": null
+    },
+    {
+      "id": "cd4486fe-8662-4e2b-a8dc-57d6a0c049e0",
+      "timestamp": "2026-08-04T16:42:07+08:00",
+      "operation": "commit",
+      "branch": "codex/code-graph-mcp-integration",
+      "summary": "feat(sdk): add @d-token/sdk compression client package",
+      "head_before": "7bb28d7240033e7f0c724577d1684233cd9ee1fa",
+      "remote": null
+    },
+    {
+      "id": "ebcc4830-a9af-485e-9391-fc973f21863e",
+      "timestamp": "2026-08-04T16:43:07+08:00",
+      "operation": "commit",
+      "branch": "codex/code-graph-mcp-integration",
+      "summary": "chore(support): fixture scripts, fake-bin, release gates, and git operations audit",
+      "head_before": "747410a829c02a080f3d906d0c8038b76ae3429c",
+      "remote": null
+    },
+    {
+      "id": "6675e17e-a54f-41b1-aa8d-14dadcc32d29",
+      "timestamp": "2026-08-04T16:44:10+08:00",
+      "operation": "commit",
+      "branch": "codex/code-graph-mcp-integration",
+      "summary": "docs: sync PLAN, implementation status, index, and research notes",
+      "head_before": "cda7e7781d354df9e3a9af5f45def6de8be17c57",
+      "remote": null
+    },
+    {
+      "id": "737e8ab7-0342-42c2-be04-680d731bce33",
+      "timestamp": "2026-08-04T16:45:52+08:00",
+      "operation": "commit",
+      "branch": "codex/code-graph-mcp-integration",
+      "summary": "ci: expand CI matrix and add public unsigned prerelease workflow",
+      "head_before": "22a6904944d891e5bfff33c24d04aef42f5cf961",
+      "remote": null
+    },
+    {
+      "id": "9a93cf80-284d-4419-a665-271a8936ee36",
+      "timestamp": "2026-08-04T16:46:54+08:00",
+      "operation": "commit",
+      "branch": "codex/code-graph-mcp-integration",
+      "summary": "chore: update headroom README and sync git operations audit ledger",
+      "head_before": "a53667251c30f64325fa8ff764e0b126a6a05baa",
+      "remote": null
+    },
+    {
+      "id": "9bdd8cda-7c60-4ecb-a881-36dd4e1575ed",
+      "timestamp": "2026-08-04T17:46:02+08:00",
+      "operation": "push",
+      "branch": "codex/code-graph-mcp-integration",
+      "summary": "Push 15-commit working-tree cleanup batch to origin",
+      "head_before": "ff8fbc6c46062452ac39baed1b1730290909f155",
+      "remote": "origin"
+    },
+    {
+      "id": "f9e3b939-615b-4983-ace2-9ca11974f3ed",
+      "timestamp": "2026-08-04T18:24:20+08:00",
+      "operation": "commit",
+      "branch": "codex/code-graph-mcp-integration",
+      "summary": "fix: finalize Responses stream truth and release gates",
+      "head_before": "ff8fbc6c46062452ac39baed1b1730290909f155",
+      "remote": null
+    },
+    {
+      "id": "2435eb11-7632-4cce-9165-eee187ed4610",
+      "timestamp": "2026-08-04T19:10:44+08:00",
+      "operation": "commit",
+      "branch": "codex/code-graph-mcp-integration",
+      "summary": "收口 23-Agent 注册表、cc-switch 只读发现与 readiness 测试隔离（health 缓存测试态直连、fake runtime 有界重试不掩盖断言）",
+      "head_before": "8651757ae584",
+      "remote": null
+    },
+    {
+      "id": "841c1fc9-a9f9-4cf4-8359-436750efaa3c",
+      "timestamp": "2026-08-04T19:17:31+08:00",
+      "operation": "commit",
+      "branch": "codex/code-graph-mcp-integration",
+      "summary": "fix: IMPLEMENTATION_STATUS agent count 20->23; lock byte-identical OpenCode provider writes between dedicated adapter and managed transport with regression tests",
+      "head_before": "4cc05aa1b311b819c2a0556586b74e829dabd05e",
+      "remote": null
+    },
+    {
+      "id": "aaff02a9-485e-4995-bba4-7fc88e802624",
+      "timestamp": "2026-08-04T19:40:15+08:00",
+      "operation": "commit",
+      "branch": "codex/code-graph-mcp-integration",
+      "summary": "G6 macOS 本机验证收口：G7 当前候选真实 OpenCode 证据写实，G6 仅按实际通过项标记，Windows/G8 保持阻塞",
+      "head_before": "8e80ebd07a7d",
+      "remote": null
+    },
+    {
+      "id": "83bf9937-2fae-4bc4-912d-850bba734c8e",
+      "timestamp": "2026-08-04T20:01:43+08:00",
+      "operation": "commit",
+      "branch": "codex/code-graph-mcp-integration",
+      "summary": "chore: per-directory AGENTS.md, tauri-specta scaffolding, worktree scripts",
+      "head_before": "1bf9ad514e6a1b1809f0e744a75dc572038a2581",
+      "remote": null
+    }
+  ]
+}

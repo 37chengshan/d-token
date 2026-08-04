@@ -1,0 +1,71 @@
+{
+  "schema_version": 1,
+  "upstream": {
+    "repository": "https://github.com/DeusData/codebase-memory-mcp",
+    "tag": "v0.9.0",
+    "commit": "b637e3330c96cfe452da623db068c241aaa3ec01",
+    "release_published_at": "2026-07-08T11:16:08Z",
+    "release_immutable": true,
+    "license": "MIT"
+  },
+  "sigstore": {
+    "bundle_format": "cosign_message_signature_v0.3",
+    "certificate_identity": "https://github.com/DeusData/codebase-memory-mcp/.github/workflows/release.yml@refs/heads/main",
+    "certificate_oidc_issuer": "https://token.actions.githubusercontent.com",
+    "macos_code_identifiers": [
+      "codebase-memory-mcp-55554944cea4cdbe09de37fea3bb22328d9fe41b",
+      "codebase-memory-mcp-55554944195fdc3be8ff38039b051d62ec4a757b"
+    ]
+  },
+  "artifacts": [
+    {
+      "target": "aarch64-apple-darwin",
+      "archive": "codebase-memory-mcp-darwin-arm64.tar.gz",
+      "archive_sha256": "faa02f0404230c451a9812230394481948f80183801fa5bf67044b41c2f25ed4",
+      "binary_sha256": "d9fbdd7d8570a77b2fb32453e00bd52a02627281309cd56003a4eccfcfe878d6",
+      "sigstore_bundle": "codebase-memory-mcp-darwin-arm64.tar.gz.bundle"
+    },
+    {
+      "target": "x86_64-apple-darwin",
+      "archive": "codebase-memory-mcp-darwin-amd64.tar.gz",
+      "archive_sha256": "6af3d02a27f589901fa763d3971089337bc8c9838bbed5d0cf543ca9f1a9e543",
+      "binary_sha256": "04ee3048810c19099502adc8bb83039423f02f2553d17677892a7f03b924e01f",
+      "sigstore_bundle": "codebase-memory-mcp-darwin-amd64.tar.gz.bundle"
+    },
+    {
+      "target": "x86_64-pc-windows-msvc",
+      "archive": "codebase-memory-mcp-windows-amd64.zip",
+      "archive_sha256": "92f96896f952e539f0d6cb34d7892a25064b677ccbf808b8f8310ad897e86f2c",
+      "binary_sha256": "9a205fa5ae759fbc866bfe1554f0c05a303be9ae6e0a00f94d875dc0c25e0680",
+      "sigstore_bundle": "codebase-memory-mcp-windows-amd64.zip.bundle"
+    },
+    {
+      "target": "aarch64-pc-windows-msvc",
+      "archive": "codebase-memory-mcp-windows-arm64.zip",
+      "archive_sha256": "63994fcfd15bf5e3f03cbf368cce86261713c7d7802e31469ae81a3939e4fae6",
+      "binary_sha256": "a299150de19bb4da9a880a6139757076bd4139b2f6a7e7cf31bdd431d53aed9c",
+      "sigstore_bundle": "codebase-memory-mcp-windows-arm64.zip.bundle"
+    }
+  ],
+  "derived_artifacts": [
+    {
+      "target": "universal-apple-darwin",
+      "derivation": "lipo-create",
+      "inputs": [
+        "codebase-memory-mcp-darwin-arm64.tar.gz",
+        "codebase-memory-mcp-darwin-amd64.tar.gz"
+      ],
+      "binary_sha256": "dbd7473051e8459f0b16e83eb91ed6d2ef90e31ed238c10067eb952ab985759f",
+      "upstream_signed": false,
+      "note": "d-token-derived universal binary from the two independently pinned and attested upstream release binaries; release signing is applied by d-token after derivation"
+    }
+  ],
+  "runtime_policy": {
+    "runtime_download": false,
+    "upstream_installer": false,
+    "upstream_ui": false,
+    "auto_update": false,
+    "auto_watch": false,
+    "repository_persistence": false
+  }
+}

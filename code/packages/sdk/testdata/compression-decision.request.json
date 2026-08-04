@@ -1,0 +1,15 @@
+{
+  "route_id": "surface-route",
+  "input_protocol": "open_ai",
+  "endpoint": "open_ai_chat_completions",
+  "requested_policy": "balanced",
+  "body": {
+    "model": "surface-model",
+    "messages": [
+      {
+        "role": "user",
+        "content": "surface parity hello"
+      }
+    ]
+  }
+}

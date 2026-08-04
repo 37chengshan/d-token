@@ -116,8 +116,11 @@ body,
 .tab,
 .diff-line,
 .mode-card {
-  transition: background-color 0.35s var(--ease), color 0.3s var(--ease),
-    border-color 0.35s var(--ease), box-shadow 0.3s var(--ease);
+  transition:
+    background-color var(--duration-slow) var(--ease-standard),
+    color var(--duration-slow) var(--ease-standard),
+    border-color var(--duration-slow) var(--ease-standard),
+    box-shadow var(--duration-slow) var(--ease-standard);
 }
 
 /* ---------- App shell ---------- */
@@ -307,7 +310,7 @@ body,
 .page {
   max-width: 1180px;
   margin: 0 auto;
-  animation: page-in 0.4s var(--ease);
+  animation: page-in var(--duration-slower) var(--ease-spring);
 }
 
 @keyframes page-in {
@@ -332,7 +335,12 @@ body,
   display: grid;
   place-items: center;
   cursor: pointer;
-  transition: all 0.2s var(--ease);
+  transition:
+    background var(--duration-base) var(--ease-spring),
+    color var(--duration-base) var(--ease-spring),
+    border-color var(--duration-base) var(--ease-spring),
+    box-shadow var(--duration-base) var(--ease-spring),
+    transform var(--duration-base) var(--ease-spring);
 }
 .icon-btn:hover {
   background: var(--surface-hover);
@@ -359,7 +367,12 @@ body,
   font-weight: 700;
   padding: 8px 12px;
   cursor: pointer;
-  transition: all 0.2s var(--ease);
+  transition:
+    background var(--duration-base) var(--ease-spring),
+    color var(--duration-base) var(--ease-spring),
+    border-color var(--duration-base) var(--ease-spring),
+    box-shadow var(--duration-base) var(--ease-spring),
+    transform var(--duration-base) var(--ease-spring);
 }
 .lang-toggle button.active {
   background: var(--brand-grad);
@@ -380,7 +393,12 @@ body,
   font-family: inherit;
   padding: 8px 14px;
   cursor: pointer;
-  transition: all 0.2s var(--ease);
+  transition:
+    background var(--duration-base) var(--ease-spring),
+    color var(--duration-base) var(--ease-spring),
+    border-color var(--duration-base) var(--ease-spring),
+    box-shadow var(--duration-base) var(--ease-spring),
+    transform var(--duration-base) var(--ease-spring);
 }
 .btn:hover {
   background: var(--surface-hover);
@@ -695,7 +713,7 @@ table.tbl tr:last-child td {
   border-bottom: none;
 }
 table.tbl tbody tr {
-  transition: background 0.18s var(--ease);
+  transition: background var(--duration-fast) var(--ease-spring);
 }
 table.tbl tbody tr:hover {
   background: var(--surface-hover);
@@ -741,7 +759,7 @@ table.tbl td.name {
   margin-bottom: 20px;
   border: 1px solid var(--border);
   background: var(--info-bg);
-  animation: page-in 0.5s var(--ease);
+  animation: page-in var(--duration-slower) var(--ease-spring);
 }
 .banner.safe {
   background: var(--success-bg);
@@ -1028,7 +1046,7 @@ table.tbl td.name {
 
 /* stagger entrance for grids */
 .stagger > * {
-  animation: page-in 0.45s var(--ease) both;
+  animation: page-in var(--duration-slower) var(--ease-spring) both;
 }
 .stagger > *:nth-child(1) { animation-delay: 0.02s; }
 .stagger > *:nth-child(2) { animation-delay: 0.06s; }

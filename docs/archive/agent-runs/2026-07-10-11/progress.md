@@ -1,0 +1,86 @@
+# Progress log
+
+## 2026-07-10
+
+- Confirmed branch `optical` and macOS ARM64 environment.
+- Confirmed `rtk` is available at `/Users/cc/.local/bin/rtk`.
+- Confirmed Codebase Memory MCP is available with project `Users-cc-Documents-d-token`.
+- Read PRD, execution plan, Optical experiment/report/review docs, latest backend and frontend audits, and OpenCode test constraints.
+- Completed read-only subagent review using the built-in `gpt-5.4-mini` test-engineer role; no code files were changed by subagents.
+- Began macOS-first implementation planning; next step is disjoint code changes plus targeted verification.
+- Added persistent planning files and a macOS shell entry point for the real OpenCode routed test; it uses the existing user OpenCode configuration without printing secrets.
+- Optical Phase B API changes are currently being integrated in the Rust workspace; verification is still pending.
+- Restored `task_plan.md`, `findings.md`, and `progress.md`, ran session catch-up, and inspected the current dirty worktree without changing user-owned edits.
+- Confirmed codebase-memory-mcp is callable and discovered the broader global specialist-agent catalog.
+- Refined execution into eight evidence-gated phases and selected three initial read-only subagent lanes to avoid concurrent write conflicts.
+- Started three read-only subagents for product/code/Optical mapping, frontend UI/UX audit, and backend/runtime/test architecture.
+- Queried codebase-memory-mcp for the current architecture and key Optical/runtime paths; recorded the canonical code evidence anchors and duplicate prototype-directory risk.
+- Located the reorganized authoritative reports and Optical documents; confirmed that apparent root-level deletions are documentation moves into `history`, `experiments`, `product`, and `release`.
+- Read the PRD, desktop technology decision, architecture, and security boundaries; recorded the release transaction, UI-language, runtime-evidence, cross-platform, and local-security gates.
+- Identified an architecture-document conflict: legacy transitional Python-sidecar language must be reconciled with the user's Rust-core/minimal-Swift requirement.
+- Read the latest backend/frontend audits and formal Optical implementation/release/test documents.
+- Recorded release blockers, stale audit claims, UI refactor priorities, and the safe product placement for Optical preview without exposing a testing-oriented top-level page.
+- Reviewed the current dirty diff, desktop package scripts, cross-platform Tauri config, and macOS OpenCode real-test entry point.
+- Identified a real-test preflight gap: the script starts a temporary listener but does not establish that the user's OpenCode provider points to that listener.
+- Ran fresh automated gates: frontend Vitest passed 40/40; TypeScript failed on one missing event-log module; Rust workspace failed on an unprepared macOS sidecar binary. Both failures are logged with non-repeating next actions.
+- Traced the TypeScript failure to a stale shared-state file that references a nonexistent log module; current evidence-state code follows a separate model.
+- Removed the unreferenced broken `state/operational.ts` file after confirming both no consumers and no historical `logs/event.ts` implementation.
+- Prepared the macOS ARM64 d-token proxy sidecar successfully; TypeScript and production Vite build now pass.
+- Added a delivery phase for the user-requested Git operation JSON audit trail, aggregate initial commit, and precise subsequent commits/pushes.
+- Added the top-level Git-operation audit rule, initialized support/git-operations.json, and added a cross-platform Python record/query utility with atomic writes.
+- Validated the Git audit utility against both the tracked log and a temporary record/query file; JSON parsing and atomic append behavior pass.
+- Integrated the product/code mapper's evidence on Optical V7, route duplication, credential progress, runtime truth debt, and transaction/lifecycle blockers.
+- Re-ran the Rust workspace after sidecar preparation; the next blocker is a missing Tauri icon source, now logged for targeted packaging repair.
+- Located the tracked root SVG logo sources and confirmed macOS icon outputs are absent; SVG direct viewing failed, so the next approach is source inspection plus Tauri icon generation.
+- Inspected the SVG sources and selected `icons/icon-2.svg` for cross-platform Tauri icon generation because it matches the AI coding product rather than the coin-themed alternative.
+- Generated and visually verified cross-platform Tauri desktop icon assets from the coding-cat source.
+- Cleared both macOS Tauri build prerequisites and completed the full Rust workspace gate: 146 tests passed across 34 suites.
+- Ran Rust format/Clippy gates and isolated the remaining failures to mechanical formatting plus three targeted Optical lints.
+- Reworked the Optical capability match and geometry division guards to satisfy the three Clippy findings without changing fail-closed behavior.
+- Completed Rust fmt, Clippy (`-D warnings`), and workspace tests successfully after the targeted fixes.
+- Recorded the backend auditor's interim macOS CI, signing, persistence, placeholder-route, production-command, process-identity, and durability blockers.
+- Recorded the frontend auditor's interim P0 evidence without changing its assigned UI audit scope.
+- Attempted the required npm dependency audit; the configured mirror returned an unsupported-endpoint error, so the official registry will be used for a one-off read-only audit.
+- Completed the dependency audit through the official npm registry: 0 vulnerabilities; no npm configuration was changed.
+- Ran a path-only high-confidence secret scan across all changed/untracked files with no matches, and confirmed the generated macOS proxy is the only new oversized artifact.
+- Closed the initial evidence-audit phase and corrected the plan so Optical preview stays inside the existing product IA rather than becoming a developer-facing top-level lab.
+- Completed the documentation reorganization repair: structure check, Markdown relative-link scan, and diff check pass; historical moved files retain exact hashes except the intentionally updated Optical Phase A/B report.
+- Reordered the macOS release workflow so the debug sidecar exists before Clippy/tests, the release sidecar exists before bundling, and signing identity is imported before Tauri builds signed artifacts.
+- Added the macOS Tauri icon/resource overlay and ignored target-specific generated sidecars, duplicate schemas, and unused platform icon variants; retained only the cross-platform ICO plus required macOS PNG/ICNS assets.
+- Rejected the first revised OpenCode script despite its removal of free/fixed models because it still replaced the normal config through `OPENCODE_CONFIG_CONTENT` and isolated XDG state, contradicting the explicit PRD/AGENTS real-test contract.
+- Requested a second script revision using the user's normal OpenCode config with a persistent 0600 backup, temporary minimal provider addition, normal HOME/data/state, conflict-safe exact restore, and a redacted support artifact.
+- Verified the local OpenCode CLI is 1.14.51 and that `opencode debug paths` resolves the normal macOS config directory to `~/.config/opencode`; no config or auth content was printed.
+- Recorded branch-create and branch-switch operations, then moved the entire dirty worktree from `optical` to `codex/prd-macos-polish` as requested; all subsequent work stays on the new branch.
+- Re-ran frontend verification on the new branch: Vitest 40/40, TypeScript, and Vite production build pass.
+- Re-ran repository structure and Git-audit checks: structure passes and the pytest-based audit utility tests pass 2/2; the first unittest invocation correctly exposed that the file is pytest-style rather than unittest-style.
+- Detected that the previously generated macOS app predates late Optical ContextGraph/PlanIR edits, so it is not accepted as current-candidate evidence and will be rebuilt after Rust convergence.
+- Preserved the original 387-line Optical Phase A report byte-for-byte under `docs/history/` while keeping the current implementation report under `docs/experiments/`.
+- Completed the first user-requested aggregate delivery: commit `ad276cc` contains the documentation reorganization, Rust/Tauri macOS baseline, UI evidence safety, Optical shadow planner, Git audit tooling, and OpenCode normal-config transaction harness.
+- Pushed `ad276cc` to `origin/codex/prd-macos-polish`; local and remote branch heads match and the worktree was clean immediately after push.
+- Verified the aggregate candidate before commit: Rust workspace 177 tests, Clippy/fmt, frontend 50 tests, TypeScript/build, npm audit 0 vulnerabilities, Git ledger pytest/unittest 9/9, OpenCode dry-run transaction test, structure check, secret scan, and current macOS `.app` bundle all passed.
+- Began three disjoint P0 slices for Tauri persistent runtime/provenance, backend route/durability hardening, and truthful Install/shared runtime evidence UI.
+
+## 2026-07-11
+
+- Completed all three P0 slices without overlapping ownership: Tauri lifecycle/provenance, Rust route/JSONL durability, and truthful Install/shared runtime evidence UI.
+- Removed production placeholder routes, fake first-paint Agent/cc-switch states, d-token self-loop drafts, and release invoke access to developer test/benchmark/smoke commands.
+- Added persistent cross-platform state roots, durable atomic state replacement, applied-config validation, PID/executable/port ownership checks, and fail-closed desktop runtime provenance.
+- Added explicit route/instance/model selection, 409 ambiguity handling, a 16 MiB body limit, and consistent synchronized JSONL tail repair across runtime metadata streams.
+- Main-session UI review fixed Tauri-offline source labeling, English/Chinese state copy, four-metric desktop layout, and connection-instruction localization.
+- Combined verification passed: Rust fmt/Clippy/workspace tests, desktop release check, frontend 54/54 tests, TypeScript, Vite build, repository structure, Git audit validation and 9 tests, OpenCode normal-config dry-run, npm audit with 0 vulnerabilities, diff check, and changed-file high-confidence secret scan.
+- Resumed the macOS/PRD delivery after context compaction. Re-read the explicitly requested `cast-subagents` and `planning-with-files` skills plus RTK guidance, recovered both planning contexts, and confirmed the independent Hybrid backend plan must remain separate from this UI/product objective.
+- Recovered completed subagent evidence: Overview truth cleanup is implemented but uncommitted; the installation transaction audit identified a first-run deadlock, hidden writes during verification, and missing real-traffic proof; the shell-visual lane previously hit a 429 and will be replaced with a bounded verification lane.
+- Re-dispatched three bounded lanes: Luna owns Overview truth/tests, Terra owns shell/theme motion and typography, and Sol owns a read-only symbol-level product-truth/installation blueprint. Main-thread write scopes remain separate.
+- Read the E2E, macOS build/run/debug, and Computer Use workflows. Confirmed browser E2E and real Tauri-window acceptance are separate gates and selected the existing sidecar-aware Tauri package scripts as the canonical build/run path.
+- Re-ran the self-contained macOS OpenCode transaction harness test: it passes and proves dry-run preflight is read-only/fail-closed against invalid JSON and provider conflicts.
+- Read the complete real-route harness before use. Verified its real path makes an exact sibling backup, atomically patches only the temporary provider, restores only if the temporary hash still matches, routes a nonce through d-token, requires four distinct metadata JSONL files plus owned-runtime/CCR evidence, and scans persistence for nonce leakage.
+- Completed the first Shell visual convergence: transparent continuous top layer, no duplicate title/divider, warm neutral palette, coral interaction semantics, restrained serif display headings, 64–96s low-amplitude nebula motion, and full Reduce Motion shutdown. Focused Shell tests pass 5/5.
+- Started follow-up E2E coverage for 920×640 layout, dark/Reduce Motion, single Overview heading/no CTA, and keyboard focus. Started a disjoint Rust `dtoken-config-patcher` transaction refactor with exact backup/hash/atomic-restore tests.
+- Detected that another workspace task concurrently archived historical documentation and this planning set. Preserved all moves; updated the relocated planning files instead of restoring root clutter.
+- Removed Smart Learning's 900ms fake scan, fabricated project paths/scores/Agent hits, preview candidate controls, and pseudo-output. Browser and Tauri now share one explicit unavailable state until a real native scanner exists; focused tests and diff check pass.
+- Completed production log truth changes: browser preview no longer imports fabricated logs, runtime export failure no longer falls back to a frontend-built download, unverified security states no longer appear healthy, missing timestamps/tokens render `—`, and the Terminal simulation was replaced by an immediate redacted-row viewer with a real empty state. TypeScript and diff check pass.
+- Luna completed Analytics single-snapshot truth: removed `hr`, fake trends/costs/p50/p95/Agent shares and synthetic zero walls; 11 focused tests plus TypeScript pass.
+- Added direct LogsSecurity/Terminal regression coverage: browser preview has zero fixture rows and disabled export, unverified safety is not green, native export failure remains visible, and no fake shell/path/prompt exists. Focused tests pass 4/4.
+- Removed Changes fixture rows and invented ownership paths; preview now has explicit empty pending/diff/backup/ownership states, drafts no longer default to port 18001 or fabricated fallback claims, and backup ports/process/health display only supplied evidence. Changes tests pass 15/15 and TypeScript is green.
+- Terra replacement completed E2E hardening after the prior 403/429 lane failures: compact layout, Overview hierarchy, dark mode, Reduce Motion, keyboard focus, and empty Changes preview pass 18/18 across Chromium and macOS WebKit.
+- Removed the release fixture module entirely after migrating `Health` and `DoctorCheck` to pure runtime/doctor type modules. Full frontend verification passes 76/76 tests, TypeScript, and production Vite build.

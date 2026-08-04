@@ -1,0 +1,417 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>d-token 发布实施计划</title>
+  <style>
+    :root {
+      --bg: #f6f8fb;
+      --card: rgba(255, 255, 255, 0.82);
+      --text: #142033;
+      --muted: #627086;
+      --line: rgba(37, 54, 81, 0.12);
+      --brand: #4f7cff;
+      --brand2: #26b99a;
+      --warn: #f59e0b;
+      --danger: #ef4444;
+      --shadow: 0 20px 60px rgba(25, 39, 73, 0.12);
+      --radius: 24px;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+      color: var(--text);
+      background:
+        radial-gradient(circle at top left, rgba(79, 124, 255, 0.22), transparent 34rem),
+        radial-gradient(circle at top right, rgba(38, 185, 154, 0.18), transparent 28rem),
+        linear-gradient(180deg, #fbfcff 0%, var(--bg) 52%, #eef3f8 100%);
+      min-height: 100vh;
+    }
+
+    .shell {
+      width: min(1180px, calc(100vw - 40px));
+      margin: 0 auto;
+      padding: 52px 0 64px;
+    }
+
+    .hero {
+      display: grid;
+      grid-template-columns: 1.2fr 0.8fr;
+      gap: 26px;
+      align-items: stretch;
+      margin-bottom: 26px;
+    }
+
+    .panel {
+      background: var(--card);
+      border: 1px solid var(--line);
+      box-shadow: var(--shadow);
+      border-radius: var(--radius);
+      backdrop-filter: blur(18px);
+    }
+
+    .hero-main {
+      padding: 38px;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .hero-main::after {
+      content: "";
+      position: absolute;
+      right: -80px;
+      bottom: -100px;
+      width: 260px;
+      height: 260px;
+      border-radius: 999px;
+      background: linear-gradient(135deg, rgba(79, 124, 255, 0.16), rgba(38, 185, 154, 0.12));
+    }
+
+    .eyebrow {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 12px;
+      border-radius: 999px;
+      color: #244078;
+      background: rgba(79, 124, 255, 0.1);
+      font-size: 13px;
+      font-weight: 700;
+      margin-bottom: 20px;
+    }
+
+    h1 {
+      margin: 0 0 16px;
+      font-size: clamp(34px, 5vw, 58px);
+      line-height: 1.04;
+      letter-spacing: -0.04em;
+    }
+
+    .lead {
+      max-width: 760px;
+      color: var(--muted);
+      font-size: 18px;
+      line-height: 1.8;
+      margin: 0;
+    }
+
+    .hero-side {
+      padding: 28px;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      gap: 18px;
+    }
+
+    .status-card {
+      padding: 18px;
+      border-radius: 18px;
+      background: rgba(255, 255, 255, 0.72);
+      border: 1px solid var(--line);
+    }
+
+    .status-card strong {
+      display: block;
+      font-size: 15px;
+      margin-bottom: 8px;
+    }
+
+    .status-card span {
+      color: var(--muted);
+      font-size: 14px;
+      line-height: 1.6;
+    }
+
+    .section-title {
+      display: flex;
+      align-items: end;
+      justify-content: space-between;
+      gap: 20px;
+      margin: 40px 0 18px;
+    }
+
+    .section-title h2 {
+      margin: 0;
+      font-size: 28px;
+      letter-spacing: -0.02em;
+    }
+
+    .section-title p {
+      margin: 0;
+      color: var(--muted);
+      max-width: 620px;
+      line-height: 1.7;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(5, 1fr);
+      gap: 16px;
+    }
+
+    .phase {
+      padding: 22px;
+      min-height: 280px;
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+    }
+
+    .phase-num {
+      width: 42px;
+      height: 42px;
+      border-radius: 14px;
+      display: grid;
+      place-items: center;
+      color: #fff;
+      font-weight: 800;
+      background: linear-gradient(135deg, var(--brand), #7d9cff);
+      box-shadow: 0 12px 26px rgba(79, 124, 255, 0.25);
+    }
+
+    .phase:nth-child(2) .phase-num { background: linear-gradient(135deg, #26b99a, #67d9c2); }
+    .phase:nth-child(3) .phase-num { background: linear-gradient(135deg, #8b5cf6, #b59cff); }
+    .phase:nth-child(4) .phase-num { background: linear-gradient(135deg, #f59e0b, #fbc65f); }
+    .phase:nth-child(5) .phase-num { background: linear-gradient(135deg, #ef4444, #ff8f8f); }
+
+    .phase h3 {
+      margin: 0;
+      font-size: 19px;
+      line-height: 1.35;
+    }
+
+    .phase p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 14px;
+      line-height: 1.7;
+    }
+
+    .phase a {
+      margin-top: auto;
+      color: var(--brand);
+      text-decoration: none;
+      font-weight: 700;
+      font-size: 14px;
+    }
+
+    .two-col {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 18px;
+    }
+
+    .card {
+      padding: 26px;
+    }
+
+    .card h3 {
+      margin: 0 0 14px;
+      font-size: 22px;
+    }
+
+    .card ul {
+      padding-left: 20px;
+      margin: 0;
+      color: var(--muted);
+      line-height: 1.85;
+    }
+
+    .badge-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-top: 18px;
+    }
+
+    .badge {
+      padding: 8px 11px;
+      border-radius: 999px;
+      background: rgba(20, 32, 51, 0.06);
+      border: 1px solid var(--line);
+      color: #2d3b52;
+      font-size: 13px;
+      font-weight: 700;
+    }
+
+    .review {
+      padding: 30px;
+      border-left: 6px solid var(--brand2);
+    }
+
+    .review h3 { margin-top: 0; }
+
+    .cta {
+      margin-top: 22px;
+      padding: 28px;
+      display: flex;
+      justify-content: space-between;
+      gap: 24px;
+      align-items: center;
+    }
+
+    .cta strong {
+      display: block;
+      font-size: 22px;
+      margin-bottom: 8px;
+    }
+
+    .cta span {
+      color: var(--muted);
+      line-height: 1.7;
+    }
+
+    .cta a {
+      white-space: nowrap;
+      padding: 12px 16px;
+      border-radius: 14px;
+      background: var(--text);
+      color: white;
+      text-decoration: none;
+      font-weight: 800;
+    }
+
+    @media (max-width: 980px) {
+      .hero, .two-col { grid-template-columns: 1fr; }
+      .grid { grid-template-columns: 1fr; }
+      .section-title { align-items: start; flex-direction: column; }
+      .cta { flex-direction: column; align-items: start; }
+    }
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <section class="hero">
+      <div class="hero-main panel">
+        <div class="eyebrow">d-token Release Plan · 2026-07</div>
+        <h1>从工程项目到可发布桌面产品</h1>
+        <p class="lead">这份计划把 d-token 第一版拆成 5 个阶段：先统一产品信息架构，再打通一键安装、Agent 检测与 cc-switch 上游同步，然后实现智能学习，补齐分析、Doctor、日志和回退，最后完成 UI、稳定性和发布验收。</p>
+      </div>
+      <aside class="hero-side panel">
+        <div class="status-card">
+          <strong>发布目标</strong>
+          <span>可公开试用的稳定 Beta / 候选发布版，不再按内部 demo 标准验收。</span>
+        </div>
+        <div class="status-card">
+          <strong>关键边界</strong>
+          <span>d-token 只安装和管理自有本地服务；第三方工具只检测、读取配置和受控写入。</span>
+        </div>
+        <div class="status-card">
+          <strong>核心突破</strong>
+          <span>cc-switch 上游自动同步 + 智能学习全面扫描 + 文档受控追加/插入。</span>
+        </div>
+      </aside>
+    </section>
+
+    <section class="section-title">
+      <h2>五个实施阶段</h2>
+      <p>每个阶段都包含研究报告、实施计划和审查结论。建议严格按顺序推进，避免先做高级功能导致基础闭环不稳。</p>
+    </section>
+
+    <section class="grid">
+      <article class="phase panel">
+        <div class="phase-num">01</div>
+        <h3>产品信息架构与 UI 文案</h3>
+        <p>重构导航、页面职责和中文文案，让 d-token 从开发测试面板变成用户能理解的桌面控制中心。</p>
+        <a href="phase-01-product-ia-ui-copy.md">查看 Phase 1 →</a>
+      </article>
+      <article class="phase panel">
+        <div class="phase-num">02</div>
+        <h3>一键安装与 cc-switch 同步</h3>
+        <p>管理 d-token 自有服务，检测 Agent，读取 cc-switch 配置，并在 profile 切换时同步上游。</p>
+        <a href="phase-02-install-agent-ccswitch.md">查看 Phase 2 →</a>
+      </article>
+      <article class="phase panel">
+        <div class="phase-num">03</div>
+        <h3>智能学习</h3>
+        <p>全面扫描 Agent 会话和项目目录，快速排序，生成上下文，并以受控块直接写入文档。</p>
+        <a href="phase-03-smart-learning.md">查看 Phase 3 →</a>
+      </article>
+      <article class="phase panel">
+        <div class="phase-num">04</div>
+        <h3>分析、Doctor、日志、回退</h3>
+        <p>让真实能力可见、可诊断、可导出、可恢复，形成用户信任闭环。</p>
+        <a href="phase-04-analytics-doctor-logs-rollback.md">查看 Phase 4 →</a>
+      </article>
+      <article class="phase panel">
+        <div class="phase-num">05</div>
+        <h3>UI 完整度与稳定发布</h3>
+        <p>补齐空状态、错误状态、跨平台验收、安全验收和发布文档，准备公开试用。</p>
+        <a href="phase-05-ui-stability-release.md">查看 Phase 5 →</a>
+      </article>
+    </section>
+
+    <section class="section-title">
+      <h2>第一版必须守住的边界</h2>
+      <p>这些不是优化项，而是发布门槛。任何实现偏离这些边界，都应该回到 PRD 和计划重新审查。</p>
+    </section>
+
+    <section class="two-col">
+      <div class="card panel">
+        <h3>产品边界</h3>
+        <ul>
+          <li>主页面收敛为总体概览、安装与连接、分析、Doctor、变更与回退。</li>
+          <li>安装与连接页包含一键安装、智能学习、高级安装、日志四个上栏。</li>
+          <li>第三方工具只检测，不自动安装。</li>
+          <li>所有真实写入必须有备份、日志和回退。</li>
+        </ul>
+      </div>
+      <div class="card panel">
+        <h3>安全边界</h3>
+        <ul>
+          <li>cc-switch 默认只读，但必须同步当前上游。</li>
+          <li>智能学习全面扫描，但默认本地索引、敏感排除和脱敏。</li>
+          <li>文档写入只能追加或插入 d-token 管理块。</li>
+          <li>日志和导出不显示完整密钥、token、cookie、prompt、response。</li>
+        </ul>
+      </div>
+    </section>
+
+    <section class="section-title">
+      <h2>重点验收 Agent</h2>
+      <p>第一版不宣传“全部已稳定”，而是用能力状态展示。以下 Agent 是第一批重点验收对象。</p>
+    </section>
+
+    <section class="card panel">
+      <div class="badge-row">
+        <span class="badge">Claude Code</span>
+        <span class="badge">Codex</span>
+        <span class="badge">OpenCode</span>
+        <span class="badge">Cursor</span>
+        <span class="badge">Cline</span>
+        <span class="badge">CommandCode</span>
+      </div>
+    </section>
+
+    <section class="section-title">
+      <h2>总审查结论</h2>
+      <p>整套计划已经从 PRD 一致性、技术风险、安全风险、遗漏项和发布门槛几个维度做了审查。</p>
+    </section>
+
+    <section class="review panel">
+      <h3>建议严格按 Phase 1 → Phase 5 推进</h3>
+      <p>最优先落地三件事：第一，把 UI 导航和第二页四个上栏做出来；第二，把 d-token 服务、Agent 检测、cc-switch 只读读取和上游同步做成真实闭环；第三，把智能学习的全面扫描、受控写入块和回退做成可验证能力。</p>
+    </section>
+
+    <section class="cta panel">
+      <div>
+        <strong>下一步：把计划交给实现阶段</strong>
+        <span>计划已完成多轮审查并升级为可直接开工的实施规格。建议从 Phase 1 开始，把页面结构、文案、状态和数据来源统一后，再进入真实功能接入。</span>
+      </div>
+      <a href="implementation-kickoff.md">实施启动</a>
+    </section>
+
+    <section class="cta panel">
+      <div>
+        <strong>多轮审查结果</strong>
+        <span>查看每个 Phase 的缺口发现、修正动作和最终“无已知阻塞设计缺口”判定。</span>
+      </div>
+      <a href="multi-round-audit.md">查看审查报告</a>
+    </section>
+  </main>
+</body>
+</html>

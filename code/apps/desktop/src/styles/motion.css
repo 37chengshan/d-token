@@ -1,0 +1,24 @@
+/* ============================================================
+   d-token Motion Tokens
+   ------------------------------------------------------------
+   Single source for transition timing. Durations and curves were
+   previously inlined per rule, which let unrelated surfaces drift
+   apart. Reference these variables instead of literal values.
+
+   Reduced motion is handled globally in theme.css; this file does
+   not repeat the override.
+   ============================================================ */
+
+:root {
+  /* Duration ladder */
+  --duration-instant: 100ms; /* press feedback */
+  --duration-fast: 160ms; /* hover, color, icon parts */
+  --duration-base: 200ms; /* collapse, indicators, overlays */
+  --duration-slow: 280ms; /* enter, expand */
+  --duration-slower: 400ms; /* page-level enter */
+
+  /* Easing curves */
+  --ease-standard: cubic-bezier(0.2, 0, 0, 1); /* symmetric state change */
+  --ease-decelerate: cubic-bezier(0.2, 0.82, 0.3, 1); /* enter, indicator travel */
+  --ease-spring: cubic-bezier(0.22, 1, 0.36, 1); /* settle with overshoot */
+}

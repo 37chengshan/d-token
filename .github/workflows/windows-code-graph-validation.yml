@@ -107,7 +107,9 @@ jobs:
 
       - name: Exercise installed MCP index and graph surface
         shell: pwsh
-        run: ./support/scripts/run_installed_codebase_memory_smoke.ps1 -OpenBrowser
+        # This is an unsigned validation-only installer. The smoke script still
+        # requires the installed launcher hash to exactly match this candidate.
+        run: ./support/scripts/run_installed_codebase_memory_smoke.ps1 -OpenBrowser -AllowUnsignedValidationLauncher
 
       - name: Upload validation evidence
         if: always()

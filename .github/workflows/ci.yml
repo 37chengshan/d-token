@@ -4,6 +4,9 @@ on:
   push:
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   check:
     runs-on: ubuntu-latest
@@ -13,6 +16,8 @@ jobs:
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
 
       - name: Install Node
         uses: actions/setup-node@v4
@@ -21,22 +26,96 @@ jobs:
           cache: npm
           cache-dependency-path: code/apps/desktop/package-lock.json
 
-      - name: Structure check
-        run: python support/scripts/check_structure.py
+      - name: Install Linux desktop build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libxdo-dev \
+            patchelf
 
-      - name: Cargo check
+      - name: Structure and release scope checks
+        run: |
+          python support/scripts/check_structure.py
+          python support/scripts/check_release_scope.py
+          python support/scripts/check_release_version.py
+
+      - name: Release gate contract
+        shell: pwsh
+        run: ./support/scripts/run_release_gate_contract_test.ps1
+
+      - name: Release candidate provenance
+        shell: pwsh
+        run: ./support/scripts/run_release_candidate_provenance_test.ps1
+
+      - name: Install frontend dependencies
+        working-directory: code/apps/desktop
+        run: npm ci
+
+      - name: Install Playwright browsers
+        working-directory: code/apps/desktop
+        run: npx playwright install --with-deps chromium webkit
+
+      - name: Frontend Vitest
+        working-directory: code/apps/desktop
+        run: npm run test:run
+
+      - name: Frontend TypeScript
+        working-directory: code/apps/desktop
+        run: npx tsc --noEmit
+
+      - name: Desktop build
+        working-directory: code/apps/desktop
+        run: npm run build
+
+      - name: Frontend E2E
+        working-directory: code/apps/desktop
+        run: npm run test:e2e
+
+      - name: Rust formatting
         working-directory: code
-        run: cargo check --workspace
+        run: cargo fmt --all -- --check
 
-      - name: Cargo test
+      - name: Prepare Linux d-token runtime sidecar for workspace checks
+        run: bash support/scripts/prepare_desktop_sidecar_for_checks.sh
+
+      - name: Rust Clippy
+        working-directory: code
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Rust workspace tests
         working-directory: code
         run: cargo test --workspace
 
       - name: No-touch fixture smoke
         run: bash support/scripts/run_fixture_tests.sh
 
-      - name: Desktop build
-        working-directory: code/apps/desktop
-        run: |
-          npm ci
-          npm run build
+  check-windows:
+    runs-on: windows-2022
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+          targets: x86_64-pc-windows-msvc
+
+      - name: Prepare Windows d-token runtime sidecar for workspace checks
+        shell: pwsh
+        run: ./support/scripts/prepare_desktop_sidecars.ps1
+
+      - name: Rust formatting
+        working-directory: code
+        run: cargo fmt --all -- --check
+
+      - name: Rust Clippy
+        working-directory: code
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Rust workspace tests
+        working-directory: code
+        run: cargo test --workspace
