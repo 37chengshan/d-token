@@ -1,24 +1,76 @@
-name: macos-release
+name: macos-unsigned-technical-preview
 
 on:
+  workflow_call:
+    inputs:
+      artifact_suffix:
+        description: Optional suffix for the uploaded artifact name.
+        required: false
+        type: string
+        default: ""
+      release_tag:
+        description: Optional release tag to verify with check_release_version.py.
+        required: false
+        type: string
+        default: ""
+    outputs:
+      artifact_name:
+        description: Uploaded macOS artifact bundle name.
+        value: ${{ jobs.build-unsigned-arm64-technical-preview.outputs.artifact_name }}
   workflow_dispatch:
+    inputs:
+      artifact_suffix:
+        description: Optional suffix for the uploaded artifact name.
+        required: false
+        type: string
+        default: ""
+      release_tag:
+        description: Optional release tag to verify with check_release_version.py.
+        required: false
+        type: string
+        default: ""
+
+concurrency:
+  group: macos-release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
 
 jobs:
-  build-macos:
+  build-unsigned-arm64-technical-preview:
     runs-on: macos-14
-    permissions:
-      contents: read
+    outputs:
+      artifact_name: ${{ steps.resolve_artifact.outputs.artifact_name }}
     env:
       CARGO_TERM_COLOR: always
       RUST_BACKTRACE: "1"
     steps:
-      - name: Checkout
+      - name: Checkout tagged source
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve artifact names
+        id: resolve_artifact
+        shell: bash
+        env:
+          INPUT_ARTIFACT_SUFFIX: ${{ inputs.artifact_suffix }}
+        run: |
+          set -euo pipefail
+          suffix="${INPUT_ARTIFACT_SUFFIX:-}"
+          if [[ -z "$suffix" ]]; then
+            suffix="${GITHUB_REF_NAME:-manual-$GITHUB_RUN_ID}"
+          fi
+          safe_suffix="$(printf '%s' "$suffix" | tr -cs 'A-Za-z0-9._-' '-')"
+          artifact_name="d-token-macos-arm64-unsigned-technical-preview-${safe_suffix}"
+          printf 'artifact_name=%s\n' "$artifact_name" >> "$GITHUB_OUTPUT"
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+          targets: aarch64-apple-darwin
 
       - name: Install Node
         uses: actions/setup-node@v4
@@ -27,12 +79,35 @@ jobs:
           cache: npm
           cache-dependency-path: code/apps/desktop/package-lock.json
 
-      - name: Install Cosign
-        uses: sigstore/cosign-installer@v4.0.0
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+
+      - name: Verify repository structure and release scope
+        run: |
+          python3 support/scripts/check_structure.py
+          python3 support/scripts/check_release_scope.py
+
+      - name: Verify release version and tag
+        shell: bash
+        env:
+          INPUT_RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          set -euo pipefail
+          if [[ -n "${INPUT_RELEASE_TAG:-}" ]]; then
+            python3 support/scripts/check_release_version.py --tag "$INPUT_RELEASE_TAG"
+          elif [[ "${GITHUB_REF_TYPE:-}" == "tag" ]]; then
+            python3 support/scripts/check_release_version.py --tag "$GITHUB_REF_NAME"
+          else
+            python3 support/scripts/check_release_version.py
+          fi
 
       - name: Install frontend dependencies
         working-directory: code/apps/desktop
         run: npm ci
+
+      - name: Install Playwright browsers
+        working-directory: code/apps/desktop
+        run: npx playwright install chromium webkit
 
       - name: Release gate contract
         shell: pwsh
@@ -54,6 +129,10 @@ jobs:
         working-directory: code/apps/desktop
         run: npm run build
 
+      - name: Frontend E2E
+        working-directory: code/apps/desktop
+        run: npm run test:e2e
+
       - name: Rust formatting
         working-directory: code
         run: cargo fmt --all -- --check
@@ -69,6 +148,25 @@ jobs:
         working-directory: code
         run: cargo test --workspace
 
+      - name: Generate SBOM, license inventory, security report and release notes
+        shell: bash
+        env:
+          INPUT_RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          set -euo pipefail
+          args=(
+            --output-dir code/target/release/metadata
+            --require-cargo-audit
+            --fail-on-high
+            --source-revision "$GITHUB_SHA"
+          )
+          if [[ -n "${INPUT_RELEASE_TAG:-}" ]]; then
+            args+=(--tag "$INPUT_RELEASE_TAG")
+          elif [[ "${GITHUB_REF_TYPE:-}" == "tag" ]]; then
+            args+=(--tag "$GITHUB_REF_NAME")
+          fi
+          python3 support/scripts/generate_release_metadata.py "${args[@]}"
+
       - name: Prepare release macOS d-token runtime sidecar
         run: bash support/scripts/prepare_desktop_sidecars_macos.sh --release
 
@@ -78,113 +176,101 @@ jobs:
           . ./support/scripts/release_candidate_provenance.ps1
           Write-ReleaseCandidateStamp -Root . -Path code/target/release/d-token-release-candidate.json | Out-Null
 
-      - name: Import Apple signing certificate
-        env:
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
-        run: |
-          test -n "$APPLE_CERTIFICATE"
-          test -n "$APPLE_CERTIFICATE_PASSWORD"
-          test -n "$KEYCHAIN_PASSWORD"
-          CERTIFICATE_PATH="$RUNNER_TEMP/d-token-apple-cert.p12"
-          KEYCHAIN_PATH="$RUNNER_TEMP/d-token-signing.keychain-db"
-          echo "$APPLE_CERTIFICATE" | base64 --decode > "$CERTIFICATE_PATH"
-          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
-          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
-          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
-          security import "$CERTIFICATE_PATH" -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
-          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
-          security list-keychains -d user -s "$KEYCHAIN_PATH"
-          security default-keychain -d user -s "$KEYCHAIN_PATH"
-          SIGNING_IDENTITY="$(security find-identity -v -p codesigning "$KEYCHAIN_PATH" | awk -F'"' 'NF >= 3 { print $2; exit }')"
-          test -n "$SIGNING_IDENTITY"
-          printf 'APPLE_SIGNING_IDENTITY=%s\n' "$SIGNING_IDENTITY" >> "$GITHUB_ENV"
+      - name: Production codec candidate evidence
+        shell: pwsh
+        run: ./support/scripts/run_codec_candidate_evidence.ps1
 
-      - name: Build macOS Tauri bundle
+      - name: Candidate capability registry and Headroom coverage
+        shell: pwsh
+        run: |
+          $candidate = Get-Content -LiteralPath "code/target/release/d-token-release-candidate.json" -Raw | ConvertFrom-Json
+          $metadata = "code/target/release/metadata"
+          $registry = Join-Path $metadata "candidate-capability-registry.json"
+          $snapshot = Join-Path $metadata "headroom-capability-snapshot.json"
+          ./support/scripts/run_candidate_capability_registry_snapshot.ps1 `
+            -CandidateId $candidate.candidate_id `
+            -OutputDir $metadata `
+            -RegistryPath $registry
+          python3 support/scripts/generate_headroom_capability_snapshot.py `
+            --registry $registry `
+            --candidate-id $candidate.candidate_id `
+            --output $snapshot
+          ./support/scripts/run_headroom_capability_coverage_audit.ps1 `
+            -CapabilitySnapshot $snapshot `
+            -ExpectedCandidateId $candidate.candidate_id `
+            -OutputDir $metadata
+
+      - name: Release performance and stability gate
+        shell: pwsh
+        run: ./support/scripts/run_release_performance_gate.ps1
+
+      - name: Build unsigned macOS ARM64 technical-preview bundle
         working-directory: code/apps/desktop
-        env:
-          DTOKEN_EXPECTED_APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-        run: npm run tauri:with-sidecar -- build --bundles app,dmg
-
-      - name: Verify signed app bundle
-        env:
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
-          APP_PATH="$(find code/target/release/bundle/macos -name '*.app' -print -quit)"
-          BRIDGE_BINARY="$(find code/target/release/bundle/macos -path '*/Contents/MacOS/dtoken-agent-bridge' -print -quit)"
-          CODEBASE_MEMORY_LAUNCHER="$(find code/target/release/bundle/macos -path '*/Contents/MacOS/dtoken-codebase-memory-launcher' -print -quit)"
-          test -n "$APP_PATH"
-          test -n "$BRIDGE_BINARY"
-          test -n "$CODEBASE_MEMORY_LAUNCHER"
-          codesign --verify --deep --strict --verbose=2 "$APP_PATH"
-          codesign --verify --strict --verbose=2 "$BRIDGE_BINARY"
-          codesign --verify --strict --verbose=2 "$CODEBASE_MEMORY_LAUNCHER"
-          codesign -dv --verbose=4 "$BRIDGE_BINARY" 2>&1 | grep -Fx "TeamIdentifier=${APPLE_TEAM_ID}"
-          codesign -dv --verbose=4 "$CODEBASE_MEMORY_LAUNCHER" 2>&1 | grep -Fx "TeamIdentifier=${APPLE_TEAM_ID}"
-          BRIDGE_IDENTITY="$RUNNER_TEMP/dtoken-agent-bridge-identity.json"
-          "$BRIDGE_BINARY" identity > "$BRIDGE_IDENTITY"
-          python3 - "$BRIDGE_IDENTITY" <<'PY'
-          import json
-          import pathlib
-          import sys
+          npm run tauri:with-sidecar -- build --target aarch64-apple-darwin --bundles app,dmg
+          test -n "$(find ../../target/aarch64-apple-darwin/release/bundle/dmg -name '*_aarch64.dmg' -print -quit)"
 
-          identity = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
-          assert identity["component"] == "dtoken-agent-bridge"
-          assert identity["protocol_version"] == 1
-          assert identity["os"] == "macos"
-          assert identity["arch"] in {"aarch64", "x86_64"}
-          assert isinstance(identity["version"], str) and identity["version"]
-          PY
-          "$CODEBASE_MEMORY_LAUNCHER" identity | python3 -c 'import json,sys; identity=json.load(sys.stdin); assert identity["component"] == "dtoken-codebase-memory-launcher"; assert identity["protocol_version"] == 1'
-
-      - name: Notarize macOS DMG
-        env:
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+      - name: Audit unsigned ARM64 installation, startup, uninstall and bundle contents
         run: |
-          test -n "$APPLE_ID"
-          test -n "$APPLE_TEAM_ID"
-          test -n "$APPLE_APP_SPECIFIC_PASSWORD"
-          DMG_PATH="$(find code/target/release/bundle/dmg -name '*.dmg' -print -quit)"
-          test -n "$DMG_PATH"
-          xcrun notarytool submit "$DMG_PATH" \
-            --apple-id "$APPLE_ID" \
-            --team-id "$APPLE_TEAM_ID" \
-            --password "$APPLE_APP_SPECIFIC_PASSWORD" \
-            --wait
-          xcrun stapler staple "$DMG_PATH"
+          bash support/scripts/run_macos_release_package_audit.sh \
+            --dmg "$(find code/target/aarch64-apple-darwin/release/bundle/dmg -name '*_aarch64.dmg' -print -quit)" \
+            --report code/target/aarch64-apple-darwin/release/macos-arm64-unsigned-technical-preview-package-audit.md
+          printf '%s\n' 'PUBLIC UNSIGNED PRERELEASE: GitHub public prerelease artifact only. Not Developer ID signed, notarized, Gatekeeper-approved, or production certified.' > code/target/aarch64-apple-darwin/release/UNSIGNED-TECHNICAL-PREVIEW.txt
 
-      - name: Verify notarization and Gatekeeper
+      - name: Ensure redaction audit inputs exist
+        shell: bash
         run: |
-          APP_PATH="$(find code/target/release/bundle/macos -name '*.app' -print -quit)"
-          DMG_PATH="$(find code/target/release/bundle/dmg -name '*.dmg' -print -quit)"
-          test -n "$APP_PATH"
-          test -n "$DMG_PATH"
-          xcrun stapler validate "$DMG_PATH"
-          spctl --assess --type execute --verbose=2 "$APP_PATH"
+          set -euo pipefail
+          # Fresh macOS runners do not have support/artifacts yet, and the
+          # redaction audit's Resolve-Path fails when an AdditionalPath is
+          # missing.  Create it unconditionally so the audit sees an empty
+          # directory instead of throwing on a missing path.
+          mkdir -p support/artifacts
+          test -f code/target/release/d-token-release-candidate.json
+
+      - name: Audit release cleanup and metadata redaction
+        shell: pwsh
+        run: |
+          ./support/scripts/run_release_cleanup_audit.ps1 -OutputDir code/target/release/metadata
+          ./support/scripts/run_release_artifact_redaction_audit.ps1 `
+            -OutputDir code/target/release/metadata `
+            -AdditionalPath @("code/target/release/d-token-release-candidate.json", "support/artifacts") `
+            -All
 
       - name: Write SHA-256 manifest
         run: |
-          APP_BINARY="$(find code/target/release/bundle/macos -path '*/Contents/MacOS/d-token-desktop' -print -quit)"
-          SIDECAR_BINARY="$(find code/target/release/bundle/macos -path '*/Contents/MacOS/dtoken-proxy' -print -quit)"
-          BRIDGE_BINARY="$(find code/target/release/bundle/macos -path '*/Contents/MacOS/dtoken-agent-bridge' -print -quit)"
-          CODEBASE_MEMORY_LAUNCHER="$(find code/target/release/bundle/macos -path '*/Contents/MacOS/dtoken-codebase-memory-launcher' -print -quit)"
-          DMG_PATH="$(find code/target/release/bundle/dmg -name '*.dmg' -print -quit)"
+          TARGET=code/target/aarch64-apple-darwin/release
+          APP_BINARY="$(find "$TARGET/bundle/macos" -path '*/Contents/MacOS/d-token-desktop' -print -quit)"
+          SIDECAR_BINARY="$(find "$TARGET/bundle/macos" -path '*/Contents/MacOS/dtoken-proxy' -print -quit)"
+          BRIDGE_BINARY="$(find "$TARGET/bundle/macos" -path '*/Contents/MacOS/dtoken-agent-bridge' -print -quit)"
+          CODEBASE_MEMORY_LAUNCHER="$(find "$TARGET/bundle/macos" -path '*/Contents/MacOS/dtoken-codebase-memory-launcher' -print -quit)"
+          DMG_PATH="$(find "$TARGET/bundle/dmg" -name '*_aarch64.dmg' -print -quit)"
           test -n "$APP_BINARY"
           test -n "$SIDECAR_BINARY"
           test -n "$BRIDGE_BINARY"
           test -n "$CODEBASE_MEMORY_LAUNCHER"
           test -n "$DMG_PATH"
-          shasum -a 256 "$APP_BINARY" "$SIDECAR_BINARY" "$BRIDGE_BINARY" "$CODEBASE_MEMORY_LAUNCHER" "$DMG_PATH" > code/target/release/SHA256SUMS-macos.txt
+          shasum -a 256 \
+            "$APP_BINARY" \
+            "$SIDECAR_BINARY" \
+            "$BRIDGE_BINARY" \
+            "$CODEBASE_MEMORY_LAUNCHER" \
+            "$DMG_PATH" \
+            code/target/release/d-token-release-candidate.json \
+            "$TARGET/macos-arm64-unsigned-technical-preview-package-audit.md" \
+            "$TARGET/UNSIGNED-TECHNICAL-PREVIEW.txt" \
+            code/target/release/metadata/* \
+            > "$TARGET/SHA256SUMS-macos-arm64-unsigned-technical-preview.txt"
 
-      - name: Upload macOS artifacts
+      - name: Upload verified macOS candidate artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: d-token-macos
+          name: ${{ steps.resolve_artifact.outputs.artifact_name }}
           if-no-files-found: error
           path: |
-            code/target/release/bundle/dmg/*.dmg
+            code/target/aarch64-apple-darwin/release/bundle/dmg/*_aarch64.dmg
             code/target/release/d-token-release-candidate.json
-            code/target/release/SHA256SUMS-macos.txt
+            code/target/aarch64-apple-darwin/release/macos-arm64-unsigned-technical-preview-package-audit.md
+            code/target/aarch64-apple-darwin/release/SHA256SUMS-macos-arm64-unsigned-technical-preview.txt
+            code/target/aarch64-apple-darwin/release/UNSIGNED-TECHNICAL-PREVIEW.txt
+            code/target/release/metadata/*

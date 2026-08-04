@@ -36,8 +36,11 @@ jobs:
             libxdo-dev \
             patchelf
 
-      - name: Structure check
-        run: python support/scripts/check_structure.py
+      - name: Structure and release scope checks
+        run: |
+          python support/scripts/check_structure.py
+          python support/scripts/check_release_scope.py
+          python support/scripts/check_release_version.py
 
       - name: Release gate contract
         shell: pwsh
@@ -51,6 +54,10 @@ jobs:
         working-directory: code/apps/desktop
         run: npm ci
 
+      - name: Install Playwright browsers
+        working-directory: code/apps/desktop
+        run: npx playwright install --with-deps chromium webkit
+
       - name: Frontend Vitest
         working-directory: code/apps/desktop
         run: npm run test:run
@@ -62,6 +69,10 @@ jobs:
       - name: Desktop build
         working-directory: code/apps/desktop
         run: npm run build
+
+      - name: Frontend E2E
+        working-directory: code/apps/desktop
+        run: npm run test:e2e
 
       - name: Rust formatting
         working-directory: code
@@ -80,3 +91,31 @@ jobs:
 
       - name: No-touch fixture smoke
         run: bash support/scripts/run_fixture_tests.sh
+
+  check-windows:
+    runs-on: windows-2022
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+          targets: x86_64-pc-windows-msvc
+
+      - name: Prepare Windows d-token runtime sidecar for workspace checks
+        shell: pwsh
+        run: ./support/scripts/prepare_desktop_sidecars.ps1
+
+      - name: Rust formatting
+        working-directory: code
+        run: cargo fmt --all -- --check
+
+      - name: Rust Clippy
+        working-directory: code
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Rust workspace tests
+        working-directory: code
+        run: cargo test --workspace
