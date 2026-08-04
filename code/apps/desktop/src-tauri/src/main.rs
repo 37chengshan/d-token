@@ -71,6 +71,7 @@ use opencode_adapter::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use specta::Type;
 use std::{
     collections::{BTreeMap, HashMap, HashSet, VecDeque},
     env, fs,
@@ -85,6 +86,7 @@ use std::{
     thread,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
+use tauri_specta::collect_commands;
 use uuid::Uuid;
 
 const DTOKEN_SERVICE_PORT: u16 = 18001;
@@ -14430,6 +14432,73 @@ async fn get_analytics_request_page(cursor: Option<String>, limit: Option<u16>) 
     })
 }
 
+// ---------------------------------------------------------------------------
+// tauri-specta type-safe IPC scaffolding
+// ---------------------------------------------------------------------------
+//
+// New commands should be annotated with `#[specta::specta]` and registered in
+// the `specta_commands!` macro below. The Builder exports TypeScript bindings
+// to `src/app/lib/bindings.ts` in debug builds so the frontend gets compile-
+// time type checking. Existing `#[tauri::command]` handlers continue to work
+// unchanged and can be migrated incrementally.
+//
+// Migration recipe for an existing command:
+//   1. Add `#[specta::specta]` next to `#[tauri::command]`.
+//   2. Ensure all argument/return types implement `specta::Type`.
+//   3. Register the command in `specta_commands!` below.
+//   4. In `src/app/lib/native.ts`, switch to `commands.my_command(...)`.
+
+/// Example type-safe command demonstrating the tauri-specta workflow.
+/// Returns a structured snapshot that the frontend can consume with full
+/// type checking via `bindings.ts`.
+#[tauri::command]
+#[specta::specta]
+fn get_specta_ipc_status() -> SpectaIpcStatus {
+    SpectaIpcStatus {
+        available: true,
+        contract_revision: dtoken_core_api::COMPRESSION_DECISION_CONTRACT_REVISION.to_string(),
+        runtime: std::env::consts::OS.to_string(),
+    }
+}
+
+/// Type-safe status payload exported to the frontend via tauri-specta.
+#[derive(Debug, Clone, Serialize, Type)]
+pub struct SpectaIpcStatus {
+    pub available: bool,
+    pub contract_revision: String,
+    pub runtime: String,
+}
+
+/// Registers the subset of Tauri commands that carry `#[specta::specta]`.
+/// Add new type-safe commands here as they are migrated.
+macro_rules! specta_commands {
+    () => {
+        collect_commands![get_specta_ipc_status,]
+    };
+}
+
+/// Builds the tauri-specta command registry shared by debug and release runs.
+/// In debug builds this also exports `bindings.ts` to the frontend so the
+/// React layer gets compile-time type checking against the Rust IPC surface.
+fn build_specta_command_registry(
+) -> Box<dyn Fn(tauri::ipc::Invoke<tauri::Wry>) -> bool + Send + Sync> {
+    let builder = tauri_specta::Builder::<tauri::Wry>::new().commands(specta_commands!());
+
+    #[cfg(debug_assertions)]
+    {
+        let export_path =
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../src/app/lib/bindings.ts");
+        builder
+            .export(specta_typescript::Typescript::default(), export_path)
+            .expect("failed to export tauri-specta bindings");
+    }
+
+    // `invoke_handler` clones the command registry into the returned closure,
+    // so `builder` can be dropped immediately after this call.
+    let handler = builder.invoke_handler();
+    Box::new(handler)
+}
+
 macro_rules! desktop_release_handlers {
     ($consumer:ident $(, $arguments:tt)*) => {
         $consumer!($($arguments)* [
@@ -14567,6 +14636,7 @@ macro_rules! run_desktop_app_with_handlers {
             $($release_command,)*
             $($debug_command,)*
             ])
+            .invoke_handler(build_specta_command_registry())
             .run(tauri::generate_context!())
             .expect("error while running d-token desktop");
     };

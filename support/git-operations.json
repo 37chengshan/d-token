@@ -720,6 +720,15 @@
       "summary": "G6 macOS 本机验证收口：G7 当前候选真实 OpenCode 证据写实，G6 仅按实际通过项标记，Windows/G8 保持阻塞",
       "head_before": "8e80ebd07a7d",
       "remote": null
+    },
+    {
+      "id": "83bf9937-2fae-4bc4-912d-850bba734c8e",
+      "timestamp": "2026-08-04T20:01:43+08:00",
+      "operation": "commit",
+      "branch": "codex/code-graph-mcp-integration",
+      "summary": "chore: per-directory AGENTS.md, tauri-specta scaffolding, worktree scripts",
+      "head_before": "1bf9ad514e6a1b1809f0e744a75dc572038a2581",
+      "remote": null
     }
   ]
 }

@@ -1,5 +1,21 @@
 import { performanceNow, recordPerformanceDuration } from "./performance";
 
+// tauri-specta auto-generated bindings. Re-run `npm run tauri:dev` after
+// changing #[specta::specta] commands in src-tauri/src/main.rs to regenerate.
+// This file is gitignored until the first tauri:dev run; type-checking falls
+// back to `unknown` when bindings are absent.
+type SpectaBindings = {
+  commands: Record<string, (...args: unknown[]) => Promise<unknown>>;
+};
+const spectaBindings: SpectaBindings | null = (() => {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    return require("./bindings") as SpectaBindings;
+  } catch {
+    return null;
+  }
+})();
+
 export type NativeToolCheck = {
   id: string;
   label: string;
@@ -110,3 +126,42 @@ export async function invokeNative<T>(command: string, args?: Record<string, unk
     throw error;
   }
 }
+
+// ---------------------------------------------------------------------------
+// tauri-specta type-safe IPC surface
+// ---------------------------------------------------------------------------
+//
+// `spectaCommands` exposes the Rust commands registered in
+// `specta_commands!` (src-tauri/src/main.rs) with full TypeScript types.
+// When bindings are absent (e.g. running `npm run dev` without Tauri), the
+// proxy throws `native_unavailable` so callers fall back to mock data.
+//
+// Usage:
+//   import { spectaCommands } from "@/app/lib/native";
+//   const status = await spectaCommands.getSpectaIpcStatus();
+//
+// Migration recipe (Rust → TS):
+//   1. Add `#[specta::specta]` to the Rust command.
+//   2. Register it in `specta_commands!`.
+//   3. Re-run `npm run tauri:dev` to regenerate `bindings.ts`.
+//   4. Call it via `spectaCommands.myCommand(...)`.
+
+export const spectaCommands = new Proxy(
+  spectaBindings?.commands ?? {},
+  {
+    get(target, prop: string) {
+      const fn = (target as Record<string, (...args: unknown[]) => Promise<unknown>>)[prop];
+      if (typeof fn !== "function") {
+        throw new Error(`specta command not found: ${prop}`);
+      }
+      return fn;
+    },
+  },
+) as SpectaBindings extends { commands: infer C } ? C : never;
+
+// Re-export the bindings module type for consumers that want the raw types.
+export type SpectaIpcStatus = {
+  available: boolean;
+  contractRevision: string;
+  runtime: string;
+};
