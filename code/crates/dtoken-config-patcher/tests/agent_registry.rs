@@ -27,7 +27,7 @@ fn context(root: &TempDir, platform: HostPlatform) -> AgentScanContext {
 #[test]
 fn known_registry_is_typed_unique_and_not_limited_to_first_release_agents() {
     let adapters = known_agent_adapters();
-    assert!(adapters.len() >= 20);
+    assert_eq!(adapters.len(), 23);
 
     let mut ids = adapters
         .iter()
@@ -62,6 +62,13 @@ fn known_registry_is_typed_unique_and_not_limited_to_first_release_agents() {
         .session_paths
         .iter()
         .any(|path| path.relative.ends_with("archived_sessions")));
+
+    for detection_only in ["vscode-copilot-chat", "pi", "cortex-code"] {
+        assert!(
+            adapters.iter().any(|adapter| adapter.id == detection_only),
+            "missing {detection_only}"
+        );
+    }
 }
 
 #[test]

@@ -20,7 +20,7 @@ mod tests {
         ids.sort_unstable();
         ids.dedup();
         assert_eq!(ids.len(), original_len);
-        assert!(AGENT_REGISTRY.len() >= 20);
+        assert_eq!(AGENT_REGISTRY.len(), 23);
         assert_eq!(
             agent_descriptor("opencode").unwrap().session_capability,
             AgentSessionCapability::Metadata

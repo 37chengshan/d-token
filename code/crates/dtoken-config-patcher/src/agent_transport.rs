@@ -240,6 +240,33 @@ const ADAPTERS: &[AgentTransportAdapterDescriptor] = &[
         ),
     },
     AgentTransportAdapterDescriptor {
+        id: "vscode-copilot-chat",
+        kind: AgentTransportAdapterKind::DedicatedUnavailable,
+        can_configure: false,
+        can_clear: false,
+        advanced_required_reason: Some(
+            "VS Code Copilot Chat exposes network-proxy debug settings, but d-token is not an HTTP CONNECT/forward proxy; writing those settings would not prove a routed compression flow",
+        ),
+    },
+    AgentTransportAdapterDescriptor {
+        id: "pi",
+        kind: AgentTransportAdapterKind::DedicatedUnavailable,
+        can_configure: false,
+        can_clear: false,
+        advanced_required_reason: Some(
+            "Pi has no verified versioned custom upstream override and ownership-safe clear contract in this candidate",
+        ),
+    },
+    AgentTransportAdapterDescriptor {
+        id: "cortex-code",
+        kind: AgentTransportAdapterKind::DedicatedUnavailable,
+        can_configure: false,
+        can_clear: false,
+        advanced_required_reason: Some(
+            "Cortex Code connections.toml is credential-bearing metadata with no verified credential-free d-token route schema; detection remains metadata-only",
+        ),
+    },
+    AgentTransportAdapterDescriptor {
         id: "windsurf",
         kind: AgentTransportAdapterKind::DedicatedUnavailable,
         can_configure: false,
@@ -7231,6 +7258,9 @@ mod tests {
             ("aider", true, true),
             ("openhands", false, false),
             ("copilot-cli", false, false),
+            ("vscode-copilot-chat", false, false),
+            ("pi", false, false),
+            ("cortex-code", false, false),
             ("windsurf", false, false),
             ("antigravity", false, false),
             ("mistral-vibe", false, false),
@@ -7275,6 +7305,9 @@ mod tests {
             "hermes",
             "openhands",
             "copilot-cli",
+            "vscode-copilot-chat",
+            "pi",
+            "cortex-code",
             "windsurf",
             "antigravity",
             "mistral-vibe",

@@ -722,14 +722,28 @@ fn cc_switch_snapshot(
 }
 
 fn agent_config_snapshot(agent_id: &str, path: &Path) -> AgentConfigSnapshot {
+    agent_config_snapshot_with_reader(agent_id, path, |path| fs::read(path))
+}
+
+fn agent_config_snapshot_with_reader<F>(agent_id: &str, path: &Path, read: F) -> AgentConfigSnapshot
+where
+    F: FnOnce(&Path) -> std::io::Result<Vec<u8>>,
+{
     let metadata = external_file_metadata("config", path);
-    let content_digest = match fs::read(path) {
-        Ok(raw) if raw.len() <= 8 * 1024 * 1024 => {
-            format!("sha256:{:x}", Sha256::digest(&raw))
+    let content_digest = if agent_id == "cortex-code" {
+        // Cortex connections.toml may contain credentials. Its watcher and
+        // fingerprint contract is metadata-only: size/mtime/state are enough
+        // to schedule a fresh, user-reviewed discovery without reading bytes.
+        "metadata_only".to_string()
+    } else {
+        match read(path) {
+            Ok(raw) if raw.len() <= 8 * 1024 * 1024 => {
+                format!("sha256:{:x}", Sha256::digest(&raw))
+            }
+            Ok(_) => "too_large".to_string(),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => "missing".to_string(),
+            Err(_) => "unavailable".to_string(),
         }
-        Ok(_) => "too_large".to_string(),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => "missing".to_string(),
-        Err(_) => "unavailable".to_string(),
     };
     let stable = json!({
         "agent_id": agent_id,
@@ -3155,6 +3169,27 @@ mod tests {
                     .join("selected-provider.json"),
             ]
         );
+    }
+
+    #[test]
+    fn cortex_connections_snapshot_is_strictly_metadata_only() {
+        let root = tempfile::tempdir().expect("temporary directory");
+        let connections = root.path().join("connections.toml");
+        fs::write(&connections, "credential = \"must-not-be-read\"\n")
+            .expect("Cortex metadata fixture");
+
+        let snapshot = agent_config_snapshot_with_reader(
+            "cortex-code",
+            &connections,
+            |_| -> std::io::Result<Vec<u8>> {
+                panic!("Cortex connections.toml content must not be read")
+            },
+        );
+
+        assert_eq!(snapshot.agent_id, "cortex-code");
+        assert_eq!(snapshot.state, "present");
+        assert!(snapshot.fingerprint.starts_with("agent-config-"));
+        assert!(!snapshot.fingerprint.contains("must-not-be-read"));
     }
 
     #[test]

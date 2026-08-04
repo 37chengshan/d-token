@@ -259,6 +259,43 @@ home_config!(AIDER_CONFIG, ".aider.conf.yml");
 home_config!(GOOSE_CONFIG, ".config/goose/config.yaml");
 home_config!(OPENHANDS_CONFIG, ".openhands/config.toml");
 home_config!(COPILOT_CONFIG, ".copilot/config.json");
+const VSCODE_COPILOT_CONFIG: &[AgentPathSpec] = &[
+    path(
+        Some(HostPlatform::Macos),
+        AgentPathBase::Home,
+        "Library/Application Support/Code/User/settings.json",
+    ),
+    path(
+        Some(HostPlatform::Macos),
+        AgentPathBase::Home,
+        "Library/Application Support/Code - Insiders/User/settings.json",
+    ),
+    path(
+        Some(HostPlatform::Windows),
+        AgentPathBase::RoamingAppData,
+        "Code/User/settings.json",
+    ),
+    path(
+        Some(HostPlatform::Windows),
+        AgentPathBase::RoamingAppData,
+        "Code - Insiders/User/settings.json",
+    ),
+    path(
+        Some(HostPlatform::Linux),
+        AgentPathBase::Home,
+        ".config/Code/User/settings.json",
+    ),
+    path(
+        Some(HostPlatform::Linux),
+        AgentPathBase::Home,
+        ".config/Code - Insiders/User/settings.json",
+    ),
+];
+const PI_CONFIG: &[AgentPathSpec] = &[
+    path(None, AgentPathBase::Home, ".pi/agent/settings.json"),
+    path(None, AgentPathBase::Home, ".pi/agent/models.json"),
+];
+home_config!(CORTEX_CODE_CONFIG, ".cortex/connections.toml");
 home_config!(
     WINDSURF_CONFIG,
     ".codeium/windsurf/memories/global_rules.md"
@@ -451,6 +488,39 @@ pub const KNOWN_AGENT_ADAPTERS: &[AgentAdapterDescriptor] = &[
         install_capability: AgentInstallCapability::ManualOnly,
         session_capability: AgentSessionCapability::Unsupported,
         config_paths: COPILOT_CONFIG,
+        session_paths: &[],
+        app_paths: &[],
+        extension_prefixes: &[],
+    },
+    AgentAdapterDescriptor {
+        id: "vscode-copilot-chat",
+        name: "VS Code Copilot Chat",
+        executables: &[],
+        install_capability: AgentInstallCapability::ManualOnly,
+        session_capability: AgentSessionCapability::Unsupported,
+        config_paths: VSCODE_COPILOT_CONFIG,
+        session_paths: &[],
+        app_paths: &[],
+        extension_prefixes: &["github.copilot-chat-"],
+    },
+    AgentAdapterDescriptor {
+        id: "pi",
+        name: "Pi",
+        executables: &["pi"],
+        install_capability: AgentInstallCapability::ManualOnly,
+        session_capability: AgentSessionCapability::Unsupported,
+        config_paths: PI_CONFIG,
+        session_paths: &[],
+        app_paths: &[],
+        extension_prefixes: &[],
+    },
+    AgentAdapterDescriptor {
+        id: "cortex-code",
+        name: "Cortex Code",
+        executables: &[],
+        install_capability: AgentInstallCapability::ManualOnly,
+        session_capability: AgentSessionCapability::Unsupported,
+        config_paths: CORTEX_CODE_CONFIG,
         session_paths: &[],
         app_paths: &[],
         extension_prefixes: &[],
@@ -701,6 +771,16 @@ pub fn scan_agent_adapters(
             AgentEvidenceKind::AppBundle,
         ));
         evidence.extend(extension_evidence(adapter, context));
+        if adapter.id == "vscode-copilot-chat"
+            && !evidence
+                .iter()
+                .any(|item| item.kind == AgentEvidenceKind::Extension)
+        {
+            // VS Code's shared settings.json is not evidence that Copilot Chat
+            // is installed. Keep it as an allowed target path, but require the
+            // extension directory before projecting this Agent as detected.
+            evidence.retain(|item| item.kind != AgentEvidenceKind::Config);
+        }
         evidence.extend(
             context
                 .additional_evidence
@@ -993,5 +1073,54 @@ mod tests {
             cline.session_paths.first().map(|path| path.relative),
             Some(".cline/data/sessions")
         );
+    }
+
+    #[test]
+    fn vscode_copilot_requires_extension_evidence_instead_of_shared_settings_only() {
+        let root = tempfile::tempdir().expect("temporary directory");
+        let mut context = AgentScanContext {
+            platform: HostPlatform::Macos,
+            home_dir: root.path().to_path_buf(),
+            path_dirs: vec![],
+            applications_dir: Some(root.path().join("Applications")),
+            roaming_app_data: None,
+            local_app_data: None,
+            additional_evidence: vec![],
+            observed_at_ms: 1,
+        };
+        let settings = context
+            .home_dir
+            .join("Library/Application Support/Code/User/settings.json");
+        std::fs::create_dir_all(settings.parent().expect("settings parent"))
+            .expect("settings directory");
+        std::fs::write(&settings, "{}").expect("VS Code settings");
+
+        let snapshot =
+            scan_agent_adapters(known_agent_adapters(), &context).expect("settings-only scan");
+        assert!(!snapshot
+            .agents
+            .iter()
+            .any(|agent| agent.id == "vscode-copilot-chat"));
+
+        let extension = context
+            .home_dir
+            .join(".vscode/extensions/github.copilot-chat-1.0.0");
+        std::fs::create_dir_all(&extension).expect("Copilot Chat extension");
+        context.observed_at_ms = 2;
+        let snapshot =
+            scan_agent_adapters(known_agent_adapters(), &context).expect("extension scan");
+        let copilot = snapshot
+            .agents
+            .iter()
+            .find(|agent| agent.id == "vscode-copilot-chat")
+            .expect("Copilot Chat detected");
+        assert!(copilot
+            .evidence
+            .iter()
+            .any(|item| item.kind == AgentEvidenceKind::Extension));
+        assert!(copilot
+            .evidence
+            .iter()
+            .any(|item| item.kind == AgentEvidenceKind::Config));
     }
 }

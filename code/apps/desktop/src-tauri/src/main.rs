@@ -4864,6 +4864,14 @@ fn service_health_payload() -> Option<Value> {
 }
 
 fn service_health_payload_cached() -> Option<Value> {
+    // Test isolation: the 200ms process-global cache must not leak a previous
+    // test's probe result across isolated workspace tests (a stale "not
+    // running" or foreign-nonce payload makes Doctor report service-not-running
+    // even though the fake runtime is up). Production has no
+    // DTOKEN_TEST_STATE_DIR and keeps the cache behavior unchanged.
+    if env::var_os("DTOKEN_TEST_STATE_DIR").is_some() {
+        return service_health_payload();
+    }
     type HealthPayloadCache = Mutex<Option<(Instant, Option<Value>)>>;
     static CACHE: OnceLock<HealthPayloadCache> = OnceLock::new();
     let started_at = Instant::now();
@@ -16918,11 +16926,7 @@ mod tests {
                 )
                 .expect("write active config");
 
-                let Some(shutdown) = start_fake_dtoken_runtime() else {
-                    // A real d-token service can legitimately own the fixed product port
-                    // during workspace tests. Its live behavior is covered by the app UAT.
-                    return;
-                };
+                let shutdown = start_fake_dtoken_runtime();
                 let exe = std::env::current_exe().expect("resolve readiness runtime fixture");
                 let manifest = ManagedServiceManifest {
                     schema_version: MANAGED_SERVICE_MANIFEST_SCHEMA_VERSION,
@@ -16982,11 +16986,28 @@ mod tests {
         });
     }
 
-    fn start_fake_dtoken_runtime() -> Option<Arc<AtomicBool>> {
-        let listener = match TcpListener::bind(("127.0.0.1", DTOKEN_SERVICE_PORT)) {
-            Ok(listener) => listener,
-            Err(error) if error.kind() == std::io::ErrorKind::AddrInUse => return None,
-            Err(error) => panic!("bind fake d-token runtime on product port: {error}"),
+    fn start_fake_dtoken_runtime() -> Arc<AtomicBool> {
+        // A parallel workspace test binary or a real service can transiently own
+        // the fixed product port. Retry briefly instead of silently skipping the
+        // assertions; a persistent foreign owner must fail loudly so the
+        // managed-runtime readiness contract is never masked.
+        let retry_deadline = Instant::now() + Duration::from_secs(3);
+        let listener = loop {
+            match TcpListener::bind(("127.0.0.1", DTOKEN_SERVICE_PORT)) {
+                Ok(listener) => break listener,
+                Err(error) if error.kind() == std::io::ErrorKind::AddrInUse => {
+                    if Instant::now() >= retry_deadline {
+                        panic!(
+                            "cannot bind fake d-token runtime on 127.0.0.1:{DTOKEN_SERVICE_PORT} \
+                             after retries: {error}. Stop the external d-token service (or run \
+                             workspace tests with the product port free) so the readiness \
+                             assertions can actually execute."
+                        );
+                    }
+                    thread::sleep(Duration::from_millis(50));
+                }
+                Err(error) => panic!("bind fake d-token runtime on product port: {error}"),
+            }
         };
         listener
             .set_nonblocking(true)
@@ -17022,7 +17043,7 @@ mod tests {
                 }
             }
         });
-        Some(shutdown)
+        shutdown
     }
 
     fn fake_runtime_body(path: &str) -> String {
@@ -17078,10 +17099,7 @@ mod tests {
     #[test]
     fn route_sync_reload_refuses_an_unmanaged_runtime() {
         with_isolated_app_state("route-sync-unmanaged-runtime", || {
-            let Some(shutdown) = start_fake_dtoken_runtime() else {
-                // Do not disturb a user-owned runtime on the product port.
-                return;
-            };
+            let shutdown = start_fake_dtoken_runtime();
 
             let receipt = reload_managed_runtime_after_route_sync();
             shutdown.store(true, Ordering::SeqCst);

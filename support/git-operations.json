@@ -693,6 +693,15 @@
       "summary": "fix: finalize Responses stream truth and release gates",
       "head_before": "ff8fbc6c46062452ac39baed1b1730290909f155",
       "remote": null
+    },
+    {
+      "id": "2435eb11-7632-4cce-9165-eee187ed4610",
+      "timestamp": "2026-08-04T19:10:44+08:00",
+      "operation": "commit",
+      "branch": "codex/code-graph-mcp-integration",
+      "summary": "收口 23-Agent 注册表、cc-switch 只读发现与 readiness 测试隔离（health 缓存测试态直连、fake runtime 有界重试不掩盖断言）",
+      "head_before": "8651757ae584",
+      "remote": null
     }
   ]
 }
