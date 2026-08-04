@@ -729,6 +729,15 @@
       "summary": "chore: per-directory AGENTS.md, tauri-specta scaffolding, worktree scripts",
       "head_before": "1bf9ad514e6a1b1809f0e744a75dc572038a2581",
       "remote": null
+    },
+    {
+      "id": "dfc9e193-5a76-4a27-b0dd-eeef8b59fd6c",
+      "timestamp": "2026-08-04T21:51:01+08:00",
+      "operation": "commit",
+      "branch": "codex/code-graph-mcp-integration",
+      "summary": "cherry-pick a0720cd from isolated worktree: fix specta scaffolding regression — single invoke_handler, fail-closed bindings",
+      "head_before": "922b866",
+      "remote": null
     }
   ]
 }
