@@ -7,13 +7,40 @@ use dtoken_types::{
     CapabilityEvidence, Protocol, ProviderCacheObservation,
 };
 use rusqlite::{params, types::Type, Connection, OptionalExtension, Row};
+use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
+use sha2::{Digest, Sha256};
 use std::{path::Path, time::Duration};
 
-const SCHEMA_VERSION: i64 = 4;
+#[cfg(any(unix, windows))]
+use std::{ffi::OsString, path::PathBuf};
+
+#[cfg(windows)]
+mod windows_private_acl;
+
+mod memory_capability;
+
+pub use memory_capability::{
+    prepare_memory_capability_transaction_for_runtime, MemoryCapabilityPermission,
+    MemoryCapabilityRouteBinding, MemoryCapabilityTransactionPlan,
+    MemoryCapabilityTransactionReceipt, MemoryCapabilityTransactionRequest,
+    MemoryCapabilityTransactionState, PreparedMemoryCapabilityTransaction,
+    ResolvedMemoryCapability,
+};
+
+#[cfg(windows)]
+pub use windows_private_acl::{
+    apply_private_directory_acl, apply_private_file_acl, verify_private_directory_acl,
+    verify_private_file_acl,
+};
+
+const SCHEMA_VERSION: i64 = 7;
+const MAX_FAILURE_PATTERN_TTL_MS: u64 = 180 * 24 * 60 * 60 * 1_000;
+const MAX_FAILURE_PATTERN_RESULTS: usize = 1_000;
 
 pub struct ContextStore {
     connection: Connection,
+    path: PathBuf,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -38,6 +65,95 @@ pub struct CcrMetadataProjection {
     pub plaintext_bytes: Option<u64>,
     pub state: String,
     pub updated_at_ms: u64,
+}
+
+/// A closed vocabulary prevents raw upstream errors, prompts, responses, or
+/// command output from entering the learning store.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum FailureClass {
+    ProviderAuth,
+    ProviderCredentialUnavailable,
+    ProviderInvalidJson,
+    ProviderInvalidResponse,
+    ProviderNetwork,
+    ProviderRateOrTimeout,
+    ProviderRouteNotFound,
+    ProviderServerError,
+    ProviderStreamErrorEvent,
+    ProviderStreamIncomplete,
+    ProviderTimeout,
+    RouteUnavailable,
+    RuntimeCancelled,
+}
+
+impl FailureClass {
+    pub fn from_reason_code(value: &str) -> Option<Self> {
+        Some(match value {
+            "provider_auth" => Self::ProviderAuth,
+            "provider_credential_invalid"
+            | "provider_credential_reference_invalid"
+            | "provider_credential_unavailable" => Self::ProviderCredentialUnavailable,
+            "provider_invalid_json" => Self::ProviderInvalidJson,
+            "provider_invalid_response" => Self::ProviderInvalidResponse,
+            "provider_network" => Self::ProviderNetwork,
+            "provider_rate_or_timeout" => Self::ProviderRateOrTimeout,
+            "provider_route_not_found" => Self::ProviderRouteNotFound,
+            "provider_server_error" => Self::ProviderServerError,
+            "provider_stream_error_event" => Self::ProviderStreamErrorEvent,
+            "provider_stream_incomplete" => Self::ProviderStreamIncomplete,
+            "provider_timeout" => Self::ProviderTimeout,
+            "route_unavailable" => Self::RouteUnavailable,
+            "runtime_cancelled" => Self::RuntimeCancelled,
+            _ => return None,
+        })
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::ProviderAuth => "provider_auth",
+            Self::ProviderCredentialUnavailable => "provider_credential_unavailable",
+            Self::ProviderInvalidJson => "provider_invalid_json",
+            Self::ProviderInvalidResponse => "provider_invalid_response",
+            Self::ProviderNetwork => "provider_network",
+            Self::ProviderRateOrTimeout => "provider_rate_or_timeout",
+            Self::ProviderRouteNotFound => "provider_route_not_found",
+            Self::ProviderServerError => "provider_server_error",
+            Self::ProviderStreamErrorEvent => "provider_stream_error_event",
+            Self::ProviderStreamIncomplete => "provider_stream_incomplete",
+            Self::ProviderTimeout => "provider_timeout",
+            Self::RouteUnavailable => "route_unavailable",
+            Self::RuntimeCancelled => "runtime_cancelled",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct FailurePatternObservation {
+    pub failure_class: FailureClass,
+    pub route_id: String,
+    pub provider_id: String,
+    pub model: Option<String>,
+    pub agent_id: Option<String>,
+    pub project_id: Option<String>,
+    pub observed_at_ms: u64,
+    pub evidence_revision: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct FailurePatternRecord {
+    pub pattern_id: String,
+    pub failure_class: FailureClass,
+    pub route_id: String,
+    pub provider_id: String,
+    pub model: Option<String>,
+    pub agent_id: Option<String>,
+    pub project_id: Option<String>,
+    pub first_observed_at_ms: u64,
+    pub last_observed_at_ms: u64,
+    pub occurrences: u64,
+    pub evidence_revision: String,
+    pub expires_at_ms: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -76,7 +192,8 @@ pub struct MemoryRecord {
     pub updated_at_ms: u64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct MemoryAccessScope {
     pub project_id: String,
     pub agent_id: String,
@@ -92,12 +209,30 @@ pub struct MemoryShareGrantRequest {
     pub granted_at_ms: u64,
 }
 
+/// A share authorization is deliberately bound to one project, owner, grantee,
+/// and session.  It is not a project-wide Agent permission.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MemoryShareGrantScope {
+    pub project_id: String,
+    pub owner_agent_id: String,
+    pub grantee_agent_id: String,
+    pub session_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScopedMemoryShareGrantRequest {
+    pub scope: MemoryShareGrantScope,
+    pub grant_revision: String,
+    pub granted_at_ms: u64,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MemoryShareGrant {
     pub grant_id: String,
     pub project_id: String,
     pub owner_agent_id: String,
     pub grantee_agent_id: String,
+    pub session_id: String,
     pub grant_revision: String,
     pub granted_at_ms: u64,
     pub revoked_at_ms: Option<u64>,
@@ -192,6 +327,7 @@ pub fn parse_memory_write_request(value: &Value) -> Result<MemoryWriteRequest> {
 
 impl ContextStore {
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
+        ensure_private_storage_platform_support()?;
         let path = path.as_ref();
         if let Ok(metadata) = std::fs::symlink_metadata(path) {
             if metadata.file_type().is_symlink() || !metadata.is_file() {
@@ -201,6 +337,7 @@ impl ContextStore {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)
                 .with_context(|| format!("create context-store directory {}", parent.display()))?;
+            restrict_store_directory_permissions(parent)?;
         }
         let mut connection = Connection::open(path)
             .with_context(|| format!("open context store {}", path.display()))?;
@@ -212,7 +349,11 @@ impl ContextStore {
         )?;
         migrate(&mut connection)?;
         restrict_store_permissions(path)?;
-        Ok(Self { connection })
+        restrict_store_sidecar_permissions(path)?;
+        Ok(Self {
+            connection,
+            path: path.to_path_buf(),
+        })
     }
 
     pub fn schema_version(&self) -> Result<i64> {
@@ -282,6 +423,168 @@ impl ContextStore {
         Ok(())
     }
 
+    /// Rebuilds the disposable SQLite request view from the append-only
+    /// runtime request journal.  Callers must pass the journal's request logs
+    /// in append order; the table is replaced inside one transaction so a
+    /// crash mid-rebuild leaves either the old view or the new view, never a
+    /// partial one.  This is what makes the cross-store terminal commit
+    /// recoverable: the JSONL journal is the durable source of truth and the
+    /// SQLite view is always a rebuildable projection of it.
+    pub fn replace_request_projections(&mut self, projections: &[RequestProjection]) -> Result<()> {
+        let transaction = self.connection.transaction()?;
+        transaction.execute("DELETE FROM request_projection", [])?;
+        {
+            let mut statement = transaction.prepare(
+                "INSERT INTO request_projection (
+                     request_id, route_id, provider_id, agent_id, project_id, status,
+                     input_units, output_units, saved_units, observed_at_ms
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            )?;
+            for projection in projections {
+                statement.execute(params![
+                    projection.request_id,
+                    projection.route_id,
+                    projection.provider_id,
+                    projection.agent_id,
+                    projection.project_id,
+                    projection.status,
+                    to_i64(projection.input_units),
+                    to_i64(projection.output_units),
+                    to_i64(projection.saved_units),
+                    capped_i64(projection.observed_at_ms),
+                ])?;
+            }
+        }
+        transaction.commit()?;
+        Ok(())
+    }
+
+    /// Records only an allowlisted failure classification and redacted route
+    /// identity. Replayed or out-of-order observations do not inflate the
+    /// occurrence count.
+    pub fn record_failure_pattern(
+        &self,
+        observation: &FailurePatternObservation,
+        ttl_ms: u64,
+    ) -> Result<FailurePatternRecord> {
+        validate_failure_pattern_observation(observation, ttl_ms)?;
+        let pattern_id = failure_pattern_id(observation);
+        let expires_at_ms = observation
+            .observed_at_ms
+            .checked_add(ttl_ms)
+            .context("failure pattern expiry overflow")?;
+        self.connection.execute(
+            "INSERT INTO failure_pattern (
+                 pattern_id, failure_class, route_id, provider_id, model,
+                 agent_id, project_id, first_observed_at_ms, last_observed_at_ms,
+                 occurrences, evidence_revision, expires_at_ms
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8, 1, ?9, ?10)
+             ON CONFLICT(pattern_id) DO UPDATE SET
+                 last_observed_at_ms = CASE
+                   WHEN excluded.last_observed_at_ms > failure_pattern.last_observed_at_ms
+                   THEN excluded.last_observed_at_ms
+                   ELSE failure_pattern.last_observed_at_ms
+                 END,
+                 occurrences = CASE
+                   WHEN excluded.last_observed_at_ms > failure_pattern.last_observed_at_ms
+                   THEN failure_pattern.occurrences + 1
+                   ELSE failure_pattern.occurrences
+                 END,
+                 evidence_revision = CASE
+                   WHEN excluded.last_observed_at_ms > failure_pattern.last_observed_at_ms
+                   THEN excluded.evidence_revision
+                   ELSE failure_pattern.evidence_revision
+                 END,
+                 expires_at_ms = CASE
+                   WHEN excluded.expires_at_ms > failure_pattern.expires_at_ms
+                   THEN excluded.expires_at_ms
+                   ELSE failure_pattern.expires_at_ms
+                 END",
+            params![
+                pattern_id,
+                observation.failure_class.as_str(),
+                observation.route_id,
+                observation.provider_id,
+                observation.model,
+                observation.agent_id,
+                observation.project_id,
+                capped_i64(observation.observed_at_ms),
+                observation.evidence_revision,
+                capped_i64(expires_at_ms),
+            ],
+        )?;
+        self.failure_pattern(&pattern_id)?
+            .context("failure pattern was not readable after upsert")
+    }
+
+    pub fn failure_pattern(&self, pattern_id: &str) -> Result<Option<FailurePatternRecord>> {
+        validate_failure_pattern_id(pattern_id)?;
+        self.connection
+            .query_row(
+                "SELECT pattern_id, failure_class, route_id, provider_id, model,
+                        agent_id, project_id, first_observed_at_ms, last_observed_at_ms,
+                        occurrences, evidence_revision, expires_at_ms
+                 FROM failure_pattern
+                 WHERE pattern_id = ?1",
+                [pattern_id],
+                failure_pattern_from_row,
+            )
+            .optional()
+            .map_err(Into::into)
+    }
+
+    pub fn list_failure_patterns(
+        &self,
+        project_id: Option<&str>,
+        agent_id: Option<&str>,
+        observed_at_ms: u64,
+        limit: usize,
+    ) -> Result<Vec<FailurePatternRecord>> {
+        if let Some(project_id) = project_id {
+            validate_failure_scope_identifier("project_id", project_id)?;
+        }
+        if let Some(agent_id) = agent_id {
+            validate_failure_scope_identifier("agent_id", agent_id)?;
+        }
+        if observed_at_ms == 0 {
+            bail!("failure pattern query time must be positive");
+        }
+        let limit = limit.clamp(1, MAX_FAILURE_PATTERN_RESULTS);
+        let mut statement = self.connection.prepare(
+            "SELECT pattern_id, failure_class, route_id, provider_id, model,
+                    agent_id, project_id, first_observed_at_ms, last_observed_at_ms,
+                    occurrences, evidence_revision, expires_at_ms
+             FROM failure_pattern
+             WHERE expires_at_ms > ?1
+               AND (?2 IS NULL OR project_id = ?2)
+               AND (?3 IS NULL OR agent_id = ?3)
+             ORDER BY last_observed_at_ms DESC, pattern_id
+             LIMIT ?4",
+        )?;
+        let rows = statement.query_map(
+            params![
+                capped_i64(observed_at_ms),
+                project_id,
+                agent_id,
+                i64::try_from(limit).unwrap_or(i64::MAX),
+            ],
+            failure_pattern_from_row,
+        )?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    pub fn prune_failure_patterns(&self, observed_at_ms: u64) -> Result<usize> {
+        if observed_at_ms == 0 {
+            bail!("failure pattern prune time must be positive");
+        }
+        self.connection
+            .execute(
+                "DELETE FROM failure_pattern WHERE expires_at_ms <= ?1",
+                [capped_i64(observed_at_ms)],
+            )
+            .map_err(Into::into)
+    }
+
     pub fn upsert_ccr_metadata(&self, projection: &CcrMetadataProjection) -> Result<()> {
         self.connection.execute(
             "INSERT INTO ccr_metadata (
@@ -302,6 +605,51 @@ impl ContextStore {
             ],
         )?;
         Ok(())
+    }
+
+    /// Rebuilds the disposable SQLite CCR view from the append-only runtime
+    /// journal.  Callers must pass only the latest redacted record per
+    /// recovery reference; raw CCR bytes are never accepted here.
+    pub fn replace_ccr_metadata(&mut self, projections: &[CcrMetadataProjection]) -> Result<()> {
+        let transaction = self.connection.transaction()?;
+        transaction.execute("DELETE FROM ccr_metadata", [])?;
+        {
+            let mut statement = transaction.prepare(
+                "INSERT INTO ccr_metadata (
+                     recovery_ref, request_id, expires_at_ms, plaintext_bytes, state, updated_at_ms
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            )?;
+            for projection in projections {
+                statement.execute(params![
+                    projection.recovery_ref,
+                    projection.request_id,
+                    to_i64(projection.expires_at_ms),
+                    to_i64(projection.plaintext_bytes),
+                    projection.state,
+                    capped_i64(projection.updated_at_ms),
+                ])?;
+            }
+        }
+        transaction.commit()?;
+        Ok(())
+    }
+
+    /// Reads only the durable lifecycle state for a CCR reference.  The
+    /// encrypted original stays in the separate private store; callers use
+    /// this during recovery to distinguish a completed send from a retained
+    /// failed stream without reopening any request body.
+    pub fn ccr_metadata_state(&self, recovery_ref: &str) -> Result<Option<String>> {
+        if recovery_ref.trim().is_empty() || recovery_ref.len() > 512 {
+            bail!("CCR recovery reference is invalid");
+        }
+        self.connection
+            .query_row(
+                "SELECT state FROM ccr_metadata WHERE recovery_ref = ?1",
+                [recovery_ref],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(Into::into)
     }
 
     pub fn upsert_provider_cache_observation(
@@ -488,13 +836,21 @@ impl ContextStore {
 
     pub fn grant_memory_share(
         &self,
-        request: &MemoryShareGrantRequest,
+        _request: &MemoryShareGrantRequest,
     ) -> Result<MemoryShareGrant> {
-        validate_memory_share_grant(request)?;
+        bail!("memory share grant requires an exact session scope")
+    }
+
+    pub fn grant_memory_share_for_scope(
+        &self,
+        request: &ScopedMemoryShareGrantRequest,
+    ) -> Result<MemoryShareGrant> {
+        validate_scoped_memory_share_grant(request)?;
         if let Some(existing) = self.memory_share_grant(
-            &request.project_id,
-            &request.owner_agent_id,
-            &request.grantee_agent_id,
+            &request.scope.project_id,
+            &request.scope.owner_agent_id,
+            &request.scope.grantee_agent_id,
+            &request.scope.session_id,
         )? {
             if existing.grant_revision == request.grant_revision && existing.revoked_at_ms.is_none()
             {
@@ -513,39 +869,48 @@ impl ContextStore {
         } else {
             self.connection.execute(
                 "INSERT INTO memory_share_grant (
-                   grant_id, project_id, owner_agent_id, grantee_agent_id,
-                   grant_revision, granted_at_ms, revoked_at_ms
+                 grant_id, project_id, owner_agent_id, grantee_agent_id,
+                   session_id, grant_revision, granted_at_ms, revoked_at_ms
                  ) VALUES (
-                   'grant-' || lower(hex(randomblob(16))), ?1, ?2, ?3, ?4, ?5, NULL
+                   'grant-' || lower(hex(randomblob(16))), ?1, ?2, ?3, ?4, ?5, ?6, NULL
                  )",
                 params![
-                    request.project_id,
-                    request.owner_agent_id,
-                    request.grantee_agent_id,
+                    request.scope.project_id,
+                    request.scope.owner_agent_id,
+                    request.scope.grantee_agent_id,
+                    request.scope.session_id,
                     request.grant_revision,
                     capped_i64(request.granted_at_ms),
                 ],
             )?;
         }
         self.memory_share_grant(
-            &request.project_id,
-            &request.owner_agent_id,
-            &request.grantee_agent_id,
+            &request.scope.project_id,
+            &request.scope.owner_agent_id,
+            &request.scope.grantee_agent_id,
+            &request.scope.session_id,
         )?
         .context("memory share grant was not readable after upsert")
     }
 
     pub fn revoke_memory_share(
         &self,
-        project_id: &str,
-        owner_agent_id: &str,
-        grantee_agent_id: &str,
+        _project_id: &str,
+        _owner_agent_id: &str,
+        _grantee_agent_id: &str,
+        _expected_revision: &str,
+        _revoked_at_ms: u64,
+    ) -> Result<bool> {
+        bail!("memory share revoke requires an exact session scope")
+    }
+
+    pub fn revoke_memory_share_for_scope(
+        &self,
+        scope: &MemoryShareGrantScope,
         expected_revision: &str,
         revoked_at_ms: u64,
     ) -> Result<bool> {
-        validate_scope_identifier("project_id", project_id)?;
-        validate_scope_identifier("owner_agent_id", owner_agent_id)?;
-        validate_scope_identifier("grantee_agent_id", grantee_agent_id)?;
+        validate_memory_share_scope(scope)?;
         validate_revision("expected grant revision", expected_revision)?;
         if revoked_at_ms == 0 {
             bail!("memory share revoke time must be positive");
@@ -553,12 +918,13 @@ impl ContextStore {
         let changed = self.connection.execute(
             "UPDATE memory_share_grant SET revoked_at_ms = ?1
              WHERE project_id = ?2 AND owner_agent_id = ?3 AND grantee_agent_id = ?4
-               AND grant_revision = ?5 AND revoked_at_ms IS NULL",
+               AND session_id = ?5 AND grant_revision = ?6 AND revoked_at_ms IS NULL",
             params![
                 capped_i64(revoked_at_ms),
-                project_id,
-                owner_agent_id,
-                grantee_agent_id,
+                scope.project_id,
+                scope.owner_agent_id,
+                scope.grantee_agent_id,
+                scope.session_id,
                 expected_revision,
             ],
         )?;
@@ -580,6 +946,8 @@ impl ContextStore {
                    WHERE grant_record.project_id = memory.project_id
                      AND grant_record.owner_agent_id = memory.agent_id
                      AND grant_record.grantee_agent_id = ?2
+                     AND grant_record.session_id = memory.session_id
+                     AND grant_record.session_id = ?3
                      AND grant_record.revoked_at_ms IS NULL
                  )
                )
@@ -591,6 +959,44 @@ impl ContextStore {
             memory_record_from_row,
         )?;
         rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(Into::into)
+    }
+
+    /// Returns the safe, typed memory projection only when the caller's scope
+    /// can see it. This store never persists or rehydrates raw prompt/response
+    /// payloads, so this retrieval has no raw-content mode.
+    pub fn visible_memory_metadata(
+        &self,
+        memory_id: &str,
+        scope: &MemoryAccessScope,
+    ) -> Result<Option<MemoryRecord>> {
+        validate_memory_id(memory_id)?;
+        validate_memory_access_scope(scope)?;
+        let session_id = normalized_optional_scope(scope.session_id.as_deref());
+        self.connection
+            .query_row(
+                "SELECT memory_id, project_id, agent_id, session_id, kind, summary,
+                        keywords_json, dedup_key, entry_revision, provenance_source,
+                        provenance_revision, observed_at_ms, created_at_ms, updated_at_ms
+                 FROM memory_entry AS memory
+                 WHERE memory.memory_id = ?1 AND memory.project_id = ?2
+                   AND memory.state = 'active'
+                   AND (
+                     memory.agent_id = '' OR memory.agent_id = ?3 OR EXISTS (
+                       SELECT 1 FROM memory_share_grant AS grant_record
+                       WHERE grant_record.project_id = memory.project_id
+                         AND grant_record.owner_agent_id = memory.agent_id
+                         AND grant_record.grantee_agent_id = ?3
+                         AND grant_record.session_id = memory.session_id
+                         AND grant_record.session_id = ?4
+                         AND grant_record.revoked_at_ms IS NULL
+                     )
+                   )
+                   AND (memory.session_id = '' OR memory.session_id = ?4)",
+                params![memory_id, scope.project_id, scope.agent_id, session_id],
+                memory_record_from_row,
+            )
+            .optional()
             .map_err(Into::into)
     }
 
@@ -670,6 +1076,8 @@ impl ContextStore {
                    WHERE grant_record.project_id = memory.project_id
                      AND grant_record.owner_agent_id = memory.agent_id
                      AND grant_record.grantee_agent_id = ?2
+                     AND grant_record.session_id = memory.session_id
+                     AND grant_record.session_id = ?3
                      AND grant_record.revoked_at_ms IS NULL
                  )
                )
@@ -730,23 +1138,26 @@ impl ContextStore {
         project_id: &str,
         owner_agent_id: &str,
         grantee_agent_id: &str,
+        session_id: &str,
     ) -> Result<Option<MemoryShareGrant>> {
         self.connection
             .query_row(
                 "SELECT grant_id, project_id, owner_agent_id, grantee_agent_id,
-                        grant_revision, granted_at_ms, revoked_at_ms
+                        session_id, grant_revision, granted_at_ms, revoked_at_ms
                  FROM memory_share_grant
-                 WHERE project_id = ?1 AND owner_agent_id = ?2 AND grantee_agent_id = ?3",
-                params![project_id, owner_agent_id, grantee_agent_id],
+                 WHERE project_id = ?1 AND owner_agent_id = ?2 AND grantee_agent_id = ?3
+                   AND session_id = ?4",
+                params![project_id, owner_agent_id, grantee_agent_id, session_id],
                 |row| {
                     Ok(MemoryShareGrant {
                         grant_id: row.get(0)?,
                         project_id: row.get(1)?,
                         owner_agent_id: row.get(2)?,
                         grantee_agent_id: row.get(3)?,
-                        grant_revision: row.get(4)?,
-                        granted_at_ms: row.get(5)?,
-                        revoked_at_ms: row.get(6)?,
+                        session_id: row.get(4)?,
+                        grant_revision: row.get(5)?,
+                        granted_at_ms: row.get(6)?,
+                        revoked_at_ms: row.get(7)?,
                     })
                 },
             )
@@ -850,6 +1261,31 @@ impl ContextStore {
         rows.collect::<rusqlite::Result<Vec<_>>>()
             .map_err(Into::into)
     }
+}
+
+fn failure_pattern_from_row(row: &Row<'_>) -> rusqlite::Result<FailurePatternRecord> {
+    let failure_class_text: String = row.get(1)?;
+    let failure_class = FailureClass::from_reason_code(&failure_class_text).ok_or_else(|| {
+        rusqlite::Error::FromSqlConversionFailure(
+            1,
+            Type::Text,
+            format!("unsupported failure class {failure_class_text}").into(),
+        )
+    })?;
+    Ok(FailurePatternRecord {
+        pattern_id: row.get(0)?,
+        failure_class,
+        route_id: row.get(2)?,
+        provider_id: row.get(3)?,
+        model: row.get(4)?,
+        agent_id: row.get(5)?,
+        project_id: row.get(6)?,
+        first_observed_at_ms: row.get(7)?,
+        last_observed_at_ms: row.get(8)?,
+        occurrences: row.get(9)?,
+        evidence_revision: row.get(10)?,
+        expires_at_ms: row.get(11)?,
+    })
 }
 
 fn memory_record_from_row(row: &Row<'_>) -> rusqlite::Result<MemoryRecord> {
@@ -971,6 +1407,105 @@ fn validate_memory_write(request: &MemoryWriteRequest) -> Result<()> {
     Ok(())
 }
 
+fn validate_failure_pattern_observation(
+    observation: &FailurePatternObservation,
+    ttl_ms: u64,
+) -> Result<()> {
+    validate_failure_route_component("route_id", &observation.route_id)?;
+    validate_failure_route_component("provider_id", &observation.provider_id)?;
+    if let Some(model) = observation.model.as_deref() {
+        validate_failure_route_component("model", model)?;
+    }
+    if let Some(agent_id) = observation.agent_id.as_deref() {
+        validate_failure_scope_identifier("agent_id", agent_id)?;
+    }
+    if let Some(project_id) = observation.project_id.as_deref() {
+        validate_failure_scope_identifier("project_id", project_id)?;
+    }
+    validate_failure_route_component("evidence_revision", &observation.evidence_revision)?;
+    if observation.observed_at_ms == 0 {
+        bail!("failure pattern observation time must be positive");
+    }
+    if ttl_ms == 0 || ttl_ms > MAX_FAILURE_PATTERN_TTL_MS {
+        bail!("failure pattern TTL is outside the supported range");
+    }
+    Ok(())
+}
+
+fn validate_failure_route_component(field: &str, value: &str) -> Result<()> {
+    let value = value.trim();
+    if value.is_empty()
+        || value.len() > 192
+        || value.chars().any(|character| {
+            !(character.is_ascii_alphanumeric()
+                || matches!(character, '-' | '_' | '.' | ':' | '/' | '@'))
+        })
+        || is_secret_shaped_failure_metadata(value)
+    {
+        bail!("{field} must be a bounded, non-secret identifier");
+    }
+    Ok(())
+}
+
+fn validate_failure_scope_identifier(field: &str, value: &str) -> Result<()> {
+    let value = value.trim();
+    if value.is_empty()
+        || value.len() > 128
+        || value.chars().any(|character| {
+            !(character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '.' | ':'))
+        })
+        || is_secret_shaped_failure_metadata(value)
+    {
+        bail!("{field} must be a bounded, non-secret opaque identifier");
+    }
+    Ok(())
+}
+
+fn is_secret_shaped_failure_metadata(value: &str) -> bool {
+    let lower = value.to_ascii_lowercase();
+    lower.starts_with("sk-")
+        || lower.starts_with("ghp_")
+        || lower.starts_with("xox")
+        || [
+            "authorization",
+            "bearer",
+            "api_key",
+            "apikey",
+            "cookie",
+            "password",
+            "secret",
+            "token=",
+        ]
+        .iter()
+        .any(|marker| lower.contains(marker))
+}
+
+fn failure_pattern_id(observation: &FailurePatternObservation) -> String {
+    let mut digest = Sha256::new();
+    for value in [
+        observation.failure_class.as_str(),
+        observation.route_id.as_str(),
+        observation.provider_id.as_str(),
+        observation.model.as_deref().unwrap_or_default(),
+        observation.agent_id.as_deref().unwrap_or_default(),
+        observation.project_id.as_deref().unwrap_or_default(),
+    ] {
+        digest.update(value.as_bytes());
+        digest.update([0]);
+    }
+    format!("failure-{:x}", digest.finalize())
+}
+
+fn validate_failure_pattern_id(pattern_id: &str) -> Result<()> {
+    let Some(digest) = pattern_id.strip_prefix("failure-") else {
+        bail!("failure pattern id has an invalid prefix");
+    };
+    if digest.len() != 64 || !digest.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        bail!("failure pattern id has an invalid encoding");
+    }
+    Ok(())
+}
+
 fn validate_memory_access_scope(scope: &MemoryAccessScope) -> Result<()> {
     validate_scope_identifier("project_id", &scope.project_id)?;
     validate_scope_identifier("agent_id", &scope.agent_id)?;
@@ -980,16 +1515,22 @@ fn validate_memory_access_scope(scope: &MemoryAccessScope) -> Result<()> {
     Ok(())
 }
 
-fn validate_memory_share_grant(request: &MemoryShareGrantRequest) -> Result<()> {
-    validate_scope_identifier("project_id", &request.project_id)?;
-    validate_scope_identifier("owner_agent_id", &request.owner_agent_id)?;
-    validate_scope_identifier("grantee_agent_id", &request.grantee_agent_id)?;
+fn validate_scoped_memory_share_grant(request: &ScopedMemoryShareGrantRequest) -> Result<()> {
+    validate_memory_share_scope(&request.scope)?;
     validate_revision("memory share grant revision", &request.grant_revision)?;
-    if request.owner_agent_id == request.grantee_agent_id {
-        bail!("memory share grant requires two different Agents");
-    }
     if request.granted_at_ms == 0 {
         bail!("memory share grant time must be positive");
+    }
+    Ok(())
+}
+
+fn validate_memory_share_scope(scope: &MemoryShareGrantScope) -> Result<()> {
+    validate_scope_identifier("project_id", &scope.project_id)?;
+    validate_scope_identifier("owner_agent_id", &scope.owner_agent_id)?;
+    validate_scope_identifier("grantee_agent_id", &scope.grantee_agent_id)?;
+    validate_scope_identifier("session_id", &scope.session_id)?;
+    if scope.owner_agent_id == scope.grantee_agent_id {
+        bail!("memory share grant requires two different Agents");
     }
     Ok(())
 }
@@ -1190,6 +1731,109 @@ fn migrate(connection: &mut Connection) -> Result<()> {
             [now_ms()],
         )?;
     }
+    if current < 5 {
+        transaction.execute_batch(
+            "ALTER TABLE memory_share_grant RENAME TO memory_share_grant_v4;
+             CREATE TABLE memory_share_grant (
+                 grant_id TEXT PRIMARY KEY NOT NULL,
+                 project_id TEXT NOT NULL,
+                 owner_agent_id TEXT NOT NULL,
+                 grantee_agent_id TEXT NOT NULL,
+                 session_id TEXT NOT NULL,
+                 grant_revision TEXT NOT NULL,
+                 granted_at_ms INTEGER NOT NULL,
+                 revoked_at_ms INTEGER,
+                 UNIQUE(project_id, owner_agent_id, grantee_agent_id, session_id),
+                 CHECK (owner_agent_id <> grantee_agent_id)
+             );",
+        )?;
+        // v4 grants were project-wide. Keep their audit history but revoke
+        // them during migration: no legacy permission may silently acquire a
+        // session scope it was never granted.
+        transaction.execute(
+            "INSERT INTO memory_share_grant (
+                 grant_id, project_id, owner_agent_id, grantee_agent_id,
+                 session_id, grant_revision, granted_at_ms, revoked_at_ms
+             )
+             SELECT grant_id, project_id, owner_agent_id, grantee_agent_id,
+                    '', grant_revision, granted_at_ms,
+                    COALESCE(revoked_at_ms, ?1)
+             FROM memory_share_grant_v4",
+            [now_ms()],
+        )?;
+        transaction.execute_batch(
+            "DROP TABLE memory_share_grant_v4;
+             CREATE INDEX memory_share_grant_lookup
+               ON memory_share_grant(
+                   project_id, grantee_agent_id, owner_agent_id, session_id, revoked_at_ms
+               );",
+        )?;
+        transaction.execute(
+            "INSERT INTO schema_migrations (version, applied_at_ms) VALUES (5, ?1)",
+            [now_ms()],
+        )?;
+    }
+    if current < 6 {
+        transaction.execute_batch(
+            "CREATE TABLE failure_pattern (
+                 pattern_id TEXT PRIMARY KEY NOT NULL,
+                 failure_class TEXT NOT NULL,
+                 route_id TEXT NOT NULL,
+                 provider_id TEXT NOT NULL,
+                 model TEXT,
+                 agent_id TEXT,
+                 project_id TEXT,
+                 first_observed_at_ms INTEGER NOT NULL,
+                 last_observed_at_ms INTEGER NOT NULL,
+                 occurrences INTEGER NOT NULL,
+                 evidence_revision TEXT NOT NULL,
+                 expires_at_ms INTEGER NOT NULL
+             );
+             CREATE INDEX failure_pattern_scope_lookup
+               ON failure_pattern(project_id, agent_id, expires_at_ms, last_observed_at_ms);
+             CREATE INDEX failure_pattern_route_lookup
+               ON failure_pattern(route_id, provider_id, failure_class, last_observed_at_ms);",
+        )?;
+        transaction.execute(
+            "INSERT INTO schema_migrations (version, applied_at_ms) VALUES (6, ?1)",
+            [now_ms()],
+        )?;
+    }
+    if current < 7 {
+        transaction.execute_batch(
+            "CREATE TABLE memory_capability_transaction (
+                 transaction_id TEXT PRIMARY KEY NOT NULL,
+                 target_path TEXT NOT NULL UNIQUE,
+                 document_sha256 TEXT NOT NULL,
+                 nonce_sha256 TEXT NOT NULL,
+                 project_id TEXT NOT NULL,
+                 agent_id TEXT NOT NULL,
+                 session_id TEXT NOT NULL,
+                 route_id TEXT NOT NULL,
+                 provider_id TEXT NOT NULL,
+                 model TEXT NOT NULL,
+                 config_revision TEXT NOT NULL,
+                 permissions_json TEXT NOT NULL,
+                 source_revision TEXT NOT NULL,
+                 review_digest TEXT NOT NULL,
+                 state TEXT NOT NULL,
+                 issued_at_ms INTEGER NOT NULL,
+                 expires_at_ms INTEGER NOT NULL,
+                 applied_at_ms INTEGER,
+                 verified_at_ms INTEGER,
+                 revoked_at_ms INTEGER,
+                 failure_reason TEXT
+             );
+             CREATE INDEX memory_capability_active_lookup
+               ON memory_capability_transaction(
+                   state, project_id, agent_id, session_id, expires_at_ms
+               );",
+        )?;
+        transaction.execute(
+            "INSERT INTO schema_migrations (version, applied_at_ms) VALUES (7, ?1)",
+            [now_ms()],
+        )?;
+    }
     transaction.commit()?;
     Ok(())
 }
@@ -1208,6 +1852,31 @@ fn to_i64(value: Option<u64>) -> Option<i64> {
     value.map(capped_i64)
 }
 
+/// ContextStore is private persistence.  Do not silently enable it on a
+/// platform where we have not implemented and verified an equivalent of the
+/// Unix owner-only permissions below.
+#[cfg(unix)]
+fn ensure_private_storage_platform_support() -> Result<()> {
+    Ok(())
+}
+
+#[cfg(windows)]
+fn ensure_private_storage_platform_support() -> Result<()> {
+    Ok(())
+}
+
+#[cfg(not(any(unix, windows)))]
+fn ensure_private_storage_platform_support() -> Result<()> {
+    bail!("context store private persistence is unavailable on this platform")
+}
+
+#[cfg(unix)]
+fn restrict_store_directory_permissions(path: &Path) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))?;
+    Ok(())
+}
+
 #[cfg(unix)]
 fn restrict_store_permissions(path: &Path) -> Result<()> {
     use std::os::unix::fs::PermissionsExt;
@@ -1215,7 +1884,125 @@ fn restrict_store_permissions(path: &Path) -> Result<()> {
     Ok(())
 }
 
+fn restrict_store_sidecar_permissions(path: &Path) -> Result<()> {
+    for suffix in ["-wal", "-shm"] {
+        let mut sidecar = OsString::from(path.as_os_str());
+        sidecar.push(suffix);
+        let sidecar = PathBuf::from(sidecar);
+        match std::fs::symlink_metadata(&sidecar) {
+            Ok(metadata) => {
+                if metadata.file_type().is_symlink() || !metadata.is_file() {
+                    bail!("context store SQLite sidecar must be a regular file");
+                }
+                restrict_store_permissions(&sidecar)?;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn restrict_store_directory_permissions(_path: &Path) -> Result<()> {
+    #[cfg(windows)]
+    {
+        return apply_private_directory_acl(_path);
+    }
+    #[cfg(not(windows))]
+    {
+        ensure_private_storage_platform_support()
+    }
+}
+
 #[cfg(not(unix))]
 fn restrict_store_permissions(_path: &Path) -> Result<()> {
-    Ok(())
+    #[cfg(windows)]
+    {
+        return apply_private_file_acl(_path);
+    }
+    #[cfg(not(windows))]
+    {
+        ensure_private_storage_platform_support()
+    }
+}
+
+#[cfg(all(test, unix))]
+mod permission_tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn open_restricts_parent_database_and_existing_sqlite_sidecars() {
+        let root = std::env::temp_dir().join(format!(
+            "dtoken-context-store-permissions-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let path = root.join("runtime-state.sqlite3");
+        let store = ContextStore::open(&path).expect("open private context store");
+
+        assert_eq!(
+            std::fs::metadata(&root).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        for suffix in ["-wal", "-shm"] {
+            let mut sidecar = OsString::from(path.as_os_str());
+            sidecar.push(suffix);
+            let sidecar = PathBuf::from(sidecar);
+            if sidecar.exists() {
+                assert_eq!(
+                    std::fs::metadata(sidecar).unwrap().permissions().mode() & 0o777,
+                    0o600
+                );
+            }
+        }
+
+        drop(store);
+        let _ = std::fs::remove_dir_all(root);
+    }
+}
+
+#[cfg(all(test, windows))]
+mod windows_permission_tests {
+    use super::*;
+    use std::{ffi::OsString, path::PathBuf};
+
+    #[test]
+    fn open_applies_protected_private_dacl_to_parent_database_and_sqlite_sidecars() {
+        let path = std::env::temp_dir()
+            .join(format!(
+                "dtoken-context-store-private-{}",
+                uuid::Uuid::new_v4()
+            ))
+            .join("runtime-state.sqlite3");
+        let store = ContextStore::open(&path).expect("open private context store");
+        store
+            .upsert_ccr_metadata(&CcrMetadataProjection {
+                recovery_ref: format!("ccr:{}", uuid::Uuid::new_v4()),
+                request_id: "req-private-acl".to_string(),
+                expires_at_ms: Some(123),
+                plaintext_bytes: Some(456),
+                state: "retained".to_string(),
+                updated_at_ms: 789,
+            })
+            .expect("write SQLite projection");
+
+        let parent = path.parent().expect("context store parent");
+        verify_private_directory_acl(parent).expect("verify parent DACL");
+        verify_private_file_acl(&path).expect("verify database DACL");
+        for suffix in ["-wal", "-shm"] {
+            let mut sidecar = OsString::from(path.as_os_str());
+            sidecar.push(suffix);
+            let sidecar = PathBuf::from(sidecar);
+            verify_private_file_acl(&sidecar)
+                .unwrap_or_else(|error| panic!("verify sidecar {}: {error:#}", sidecar.display()));
+        }
+
+        drop(store);
+        let _ = std::fs::remove_dir_all(parent);
+    }
 }
