@@ -1,8 +1,8 @@
 # d-token 文档导航
 
-更新时间：2026-07-16
+更新时间：2026-07-26
 
-本页是 `docs/` 的唯一导航入口。当前事实、执行计划、历史证据和归档材料必须分开理解。
+本页是 `docs/` 的唯一导航入口。当前事实、执行计划、历史证据和归档材料必须分开理解。当前 `0.2.0-beta.1` 仅是 macOS ARM64 / Windows x64 的未签名技术预览，不是已签名、公证或公开发布的安装包；系统安全警告、不可用能力与未完成的发布门禁均以 README、变更记录和实现状态为准。
 
 ## 1. 当前必读
 
@@ -13,6 +13,10 @@
 5. [`TECH_STACK.md`](TECH_STACK.md) — Windows/macOS 技术选型和平台边界。
 6. [`SECURITY_BOUNDARIES.md`](SECURITY_BOUNDARIES.md) — loopback、凭据、脱敏、配置写入和进程边界。
 7. [`APP_FUNCTIONS_AND_PAGES.md`](APP_FUNCTIONS_AND_PAGES.md) — 当前八个一级页面（含视觉压缩 Beta 与代码图谱实验页）与实际代码组件映射。
+8. [`../CHANGELOG.md`](../CHANGELOG.md) — 未签名技术预览的版本措辞、用户可见变化与已知限制。
+9. [`../SECURITY.md`](../SECURITY.md) — 漏洞报告、支持范围、系统安全警告与发布完整性策略。
+10. [`../THIRD_PARTY_NOTICES.md`](../THIRD_PARTY_NOTICES.md) — 面向源码与安装包分发的第三方声明。
+11. [`../LICENSE`](../LICENSE) — d-token 项目的 Apache License 2.0 授权文本。
 
 ## 2. 当前代码与产品专题
 
@@ -22,6 +26,7 @@
 - [`research/aimami-dtoken-deep-study-2026-07-12/README.md`](research/aimami-dtoken-deep-study-2026-07-12/README.md) — AiMaMi 源码、桌面产品、前端 UI/动画、Tauri/Rust、状态、算法、安全、差距与三轮审核的完整专题研究。
 - [`research/DESKTOP_UI_OPTIMIZATION_RESEARCH_2026-07-13.md`](research/DESKTOP_UI_OPTIMIZATION_RESEARCH_2026-07-13.md) — 2026-07-13 基于生产入口源码的桌面 UI 优化研究：UX、性能、Claude/神话感视觉、二级页与切页、侧栏 Tooltip/图标动画对照 AiMaMi。
 - [`research/FRONTEND_UI_PERFORMANCE_AUDIT_2026-07-15.md`](research/FRONTEND_UI_PERFORMANCE_AUDIT_2026-07-15.md) — 当前 React/Tauri 前端 UI、启动、渲染、IPC、长列表、动画与性能门禁的系统性审计。
+- [`research/AGENT_ONE_CLICK_AND_CCSWITCH_REPAIR_PLAN_2026-07-19.md`](research/AGENT_ONE_CLICK_AND_CCSWITCH_REPAIR_PLAN_2026-07-19.md) — Agent 一键配置、cc-switch 发现/同步、配置漂移与 runtime reload 的根因研究和分轮 TDD 修复计划。
 - [`research/BACKEND_PERFORMANCE_AUDIT_2026-07-15.md`](research/BACKEND_PERFORMANCE_AUDIT_2026-07-15.md) — 当前 Rust runtime、Dashboard、持久化、Tauri snapshot、智能学习和并发性能的系统性审计。
 - [`research/PERFORMANCE_REPORTS_MULTIDIMENSIONAL_REVIEW_2026-07-15.md`](research/PERFORMANCE_REPORTS_MULTIDIMENSIONAL_REVIEW_2026-07-15.md) — 对前后端性能报告的事实、优先级、安全、跨平台与实施依赖交叉复核。
 - [`research/RELEASE_READINESS_SYNTHESIS_2026-07-16.md`](research/RELEASE_READINESS_SYNTHESIS_2026-07-16.md) — 2026-07-16 发布前全面审查的**综合总览与统一迭代路线图**（三份子报告的交叉综合、把关与决策项）。
