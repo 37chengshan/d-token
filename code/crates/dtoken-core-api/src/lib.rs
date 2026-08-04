@@ -1,8 +1,11 @@
 pub mod ccr_store;
+pub mod mcp;
 
+use anyhow::Context as _;
+use axum::response::Response;
 use axum::{
     body::{Body, Bytes},
-    extract::{DefaultBodyLimit, Path as AxumPath, Query, State},
+    extract::{DefaultBodyLimit, Extension, Path as AxumPath, Query, State},
     http::header::{CACHE_CONTROL, CONTENT_TYPE},
     http::HeaderMap,
     middleware::{self, Next},
@@ -14,20 +17,34 @@ use dtoken_compress::optical::{
     HybridContextEngine, HybridPreparationKind, OpticalCapabilityRegistry, PreparedHybridRequest,
     RenderCancellation,
 };
+use dtoken_compress::output_shaper::{
+    shape_output_for_policy, OutputSafety, OutputShapingAccounting, OutputShapingDisposition,
+    OutputShapingResult,
+};
 use dtoken_compress::{CompressionEngine, ResolvedOptimizationContext};
 use dtoken_config::DtokenConfig;
 use dtoken_config_patcher::{
     agent::{scan_current_process_agents, AgentDiscoverySnapshot},
-    mock_patch_plan, stable_hash,
+    stable_hash, CONFIG_TRANSACTION_CAPABILITY_REVISION,
 };
-use dtoken_context_store::{CcrMetadataProjection, ContextStore, RequestProjection};
+use dtoken_context_store::{
+    CcrMetadataProjection, ContextStore, FailureClass, FailurePatternObservation,
+    MemoryAccessScope, MemoryCapabilityRouteBinding, MemoryCapabilityTransactionReceipt,
+    MemoryCapabilityTransactionRequest, MemoryExportEntry, MemoryRecord, MemoryWriteRequest,
+    PreparedMemoryCapabilityTransaction, RequestProjection, ResolvedMemoryCapability,
+};
 use dtoken_doctor::{run_basic_doctor, run_dev_no_touch_doctor};
 use dtoken_event_ledger::{EventLedger, JsonlEventLedger, JsonlStore};
 use dtoken_headroom_adapter::detect_headroom_status;
+use dtoken_learning::LEARNING_CAPABILITY_REVISION;
 use dtoken_preprocessor::{
-    detect_rtk_status, list_preprocessors, rtk_discover_report, rtk_gain_mock, rtk_session_report,
+    detect_rtk_status, inspect_managed_rtk_runtime, list_preprocessors, rtk_discover_report,
+    rtk_gain_mock, rtk_session_report, ManagedRtkRuntimeEvidence,
 };
-use dtoken_project_policy::{default_policy, RecommendationInput, RuleBasedRecommendationEngine};
+use dtoken_project_policy::{
+    default_policy, RecommendationInput, RuleBasedRecommendationEngine,
+    PROJECT_POLICY_CAPABILITY_REVISION,
+};
 use dtoken_runtime_pipeline::{
     PipelineInput, ReadyToSend, RecoveryPrepareReceipt, TransformArtifact,
 };
@@ -45,12 +62,14 @@ use dtoken_types::{
 };
 use futures_util::{Stream, TryStreamExt};
 use reqwest::StatusCode;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{
-    collections::{BTreeMap, HashMap, VecDeque},
+    collections::{BTreeMap, HashMap, HashSet, VecDeque},
     env,
-    path::Path as StdPath,
+    fs::OpenOptions,
+    io::{BufRead, BufReader},
+    path::{Path as StdPath, PathBuf},
     pin::Pin,
     sync::{Arc, Mutex, OnceLock},
     task::{Context, Poll},
@@ -58,12 +77,183 @@ use std::{
 };
 use uuid::Uuid;
 
-use ccr_store::{CcrStore, CcrStoreReceipt};
+use ccr_store::{CcrEntryInspection, CcrStore, CcrStoreReceipt};
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct PreparedCcr {
     receipt: Option<CcrStoreReceipt>,
     store_configured: bool,
+}
+
+const IN_MEMORY_JOURNAL_MAX_ENTRIES: usize = 10_000;
+const IN_MEMORY_JOURNAL_RETAIN_ENTRIES: usize = 7_500;
+
+fn push_bounded<T>(items: &mut Vec<T>, item: T) {
+    if items.len() >= IN_MEMORY_JOURNAL_MAX_ENTRIES {
+        let remove = items.len().saturating_sub(IN_MEMORY_JOURNAL_RETAIN_ENTRIES);
+        items.drain(..remove);
+    }
+    items.push(item);
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct CcrDeletionReceipt {
+    pub source: &'static str,
+    pub recovery_ref: String,
+    pub state: &'static str,
+    pub raw_available: bool,
+    pub raw_returned: bool,
+}
+
+pub const COMPRESSION_DECISION_CONTRACT_REVISION: &str = "dtoken-compression-decision-v1";
+pub const RUST_LIBRARY_IMPLEMENTATION_REVISION: &str = "dtoken-rust-library-v1";
+pub const TYPESCRIPT_SDK_IMPLEMENTATION_REVISION: &str = "dtoken-typescript-sdk-http-v1";
+
+/// A local, redacted request for a deterministic compression decision. The
+/// body is evaluated in memory only and is never retained by this contract.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct CompressionDecisionRequest {
+    pub route_id: String,
+    pub input_protocol: Protocol,
+    pub endpoint: OpticalEndpoint,
+    #[serde(default)]
+    pub requested_policy: Option<CompressionPolicy>,
+    pub body: Value,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CompressionDecisionState {
+    Resolved,
+    Unavailable,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CompressionArtifactState {
+    Transformed,
+    Passthrough,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct CompressionArtifactIdentity {
+    pub state: CompressionArtifactState,
+    pub identity: String,
+    pub transforms_applied: Vec<String>,
+}
+
+/// Stable, body-free output shared by the Rust API, local HTTP endpoint, MCP,
+/// and the TypeScript SDK. `artifact.identity` is an opaque SHA-256 digest of
+/// the evaluated candidate and selected route context, not a request-body
+/// export.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct CompressionDecision {
+    pub contract_revision: &'static str,
+    pub source: &'static str,
+    pub state: CompressionDecisionState,
+    pub reason_code: String,
+    pub route_id: String,
+    pub provider_id: String,
+    pub model: String,
+    pub input_protocol: Protocol,
+    pub output_protocol: Protocol,
+    pub endpoint: OpticalEndpoint,
+    pub compression_policy: CompressionPolicy,
+    pub artifact: CompressionArtifactIdentity,
+    pub original_tokens: u64,
+    pub compressed_tokens: u64,
+    pub tokens_saved: u64,
+    pub evidence: CompressionDecisionEvidence,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CompressionExecutionState {
+    Completed,
+    Passthrough,
+}
+
+/// Route-bound compression result for gateway, SDK, and MCP callers.
+///
+/// The supplied request body is evaluated in memory and returned as either the
+/// validated candidate or the exact passthrough body. It is not persisted by
+/// this surface and no upstream request is sent.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct CompressionExecution {
+    pub contract_revision: &'static str,
+    pub source: &'static str,
+    pub state: CompressionExecutionState,
+    pub body: Value,
+    pub original_tokens: u64,
+    pub compressed_tokens: u64,
+    pub tokens_saved: u64,
+    pub savings_percent: f64,
+    pub elapsed_us: u128,
+    pub transforms_applied: Vec<String>,
+    pub fallback_reason_code: Option<String>,
+    pub evidence: CompressionDecisionEvidence,
+    pub decision: CompressionDecision,
+    pub note: &'static str,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct CompressionDecisionEvidence {
+    pub route_identity: &'static str,
+    pub provider_identity: &'static str,
+    pub model_allowlist: &'static str,
+    pub endpoint_identity: &'static str,
+    pub request_body_persisted: bool,
+    pub credentials_returned: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CompressionDecisionError {
+    InvalidArguments,
+    RouteContextUnavailable,
+    RouteContextMismatch,
+    RoutePolicyMismatch,
+}
+
+#[derive(Debug, Clone)]
+struct EvaluatedCompressionDecision {
+    decision: CompressionDecision,
+    body: Value,
+    savings_percent: f64,
+    elapsed_us: u128,
+}
+
+impl EvaluatedCompressionDecision {
+    fn into_execution(self) -> CompressionExecution {
+        let transformed = matches!(
+            self.decision.artifact.state,
+            CompressionArtifactState::Transformed
+        );
+        CompressionExecution {
+            contract_revision: COMPRESSION_DECISION_CONTRACT_REVISION,
+            source: "dtoken-owned-runtime",
+            state: if transformed {
+                CompressionExecutionState::Completed
+            } else {
+                CompressionExecutionState::Passthrough
+            },
+            body: self.body,
+            original_tokens: self.decision.original_tokens,
+            compressed_tokens: self.decision.compressed_tokens,
+            tokens_saved: self.decision.tokens_saved,
+            savings_percent: self.savings_percent,
+            elapsed_us: self.elapsed_us,
+            transforms_applied: self.decision.artifact.transforms_applied.clone(),
+            fallback_reason_code: (!transformed).then(|| self.decision.reason_code.clone()),
+            evidence: self.decision.evidence.clone(),
+            decision: self.decision,
+            note: if transformed {
+                "A resolved d-token route produced a validated transform without forwarding the request."
+            } else {
+                "The resolved route did not permit a safe transform, so the exact body is returned unchanged without forwarding."
+            },
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -178,7 +368,7 @@ impl RuntimeSummaryReadModel {
         for log in logs {
             model.record_request(log);
         }
-        for metadata in ccr_metadata {
+        for metadata in latest_ccr_metadata_records(ccr_metadata) {
             model.record_ccr(metadata);
         }
         model
@@ -505,6 +695,30 @@ fn usize_to_u64(value: usize) -> u64 {
     u64::try_from(value).unwrap_or(u64::MAX)
 }
 
+fn latest_ccr_metadata_records(metadata: &[Value]) -> Vec<&Value> {
+    let mut latest_index_by_ref = HashMap::new();
+    for (index, item) in metadata.iter().enumerate() {
+        if let Some(recovery_ref) = item["recovery_ref"]
+            .as_str()
+            .filter(|value| !value.is_empty())
+        {
+            latest_index_by_ref.insert(recovery_ref, index);
+        }
+    }
+    metadata
+        .iter()
+        .enumerate()
+        .filter_map(|(index, item)| {
+            let recovery_ref = item["recovery_ref"].as_str();
+            let is_latest = recovery_ref
+                .and_then(|value| latest_index_by_ref.get(value))
+                .map(|latest| *latest == index)
+                .unwrap_or(true);
+            is_latest.then_some(item)
+        })
+        .collect()
+}
+
 fn percent(numerator: u64, denominator: u64) -> f64 {
     if denominator == 0 {
         0.0
@@ -522,13 +736,26 @@ fn prepare_json_pipeline_payload(
 ) -> anyhow::Result<PreparedPipelinePayload> {
     let baseline_bytes = serde_json::to_vec(baseline)?;
     let candidate_bytes = serde_json::to_vec(candidate)?;
-    let prepared = PipelineInput::new(scope, baseline_bytes, MAX_REQUEST_BODY_BYTES)
+    let prepared = PipelineInput::new(scope, baseline_bytes.clone(), MAX_REQUEST_BODY_BYTES)
         .map_err(|error| anyhow::anyhow!("invalid pipeline input: {error:?}"))?
         .prepare();
     if transforms.is_empty() {
         return Ok(PreparedPipelinePayload {
             ready: prepared.into_baseline_ready("no_transform_selected"),
             fallback_reason: None,
+        });
+    }
+    // Bare-marker persistence guard: a transformed candidate that carries a
+    // `<<ccr:...>>` retrieval marker must be backed by a durable receipt for
+    // that exact recovery ref.  Any mismatch falls back to the baseline.
+    if let Err(reason) = ccr_bare_marker_guard(
+        &baseline_bytes,
+        &candidate_bytes,
+        prepared_ccr.receipt.as_ref(),
+    ) {
+        return Ok(PreparedPipelinePayload {
+            ready: prepared.into_baseline_ready(reason),
+            fallback_reason: Some(reason),
         });
     }
     let recovery = prepared_ccr.receipt.as_ref().and_then(|receipt| {
@@ -582,9 +809,108 @@ fn valid_json_pipeline_transition(baseline: &[u8], candidate: &[u8]) -> bool {
             == candidate.get("model").and_then(Value::as_str)
 }
 
+/// CCR bare-marker persistence guard.
+///
+/// A `<<ccr:<ref>,...>>` marker (or the bracket retrieval forms) means the
+/// surrounding bytes were already compressed and the real content lives in
+/// the reversible private store.  Sending a candidate that contains a marker
+/// without a durable receipt for that exact recovery ref leaks a dangling
+/// handle that can never be resolved upstream.  d-token itself never emits
+/// these markers; the guard is the fail-closed backstop for a transformed
+/// candidate that somehow contains one:
+///
+/// * marker present but no durable receipt -> fail closed;
+/// * marker ref does not exactly match the durable receipt -> fail closed;
+/// * unverifiable bracket form (`Retrieve more/original: hash=`) -> fail
+///   closed, because the handle cannot be bound to any receipt.
+///
+/// The receipt is only produced after `CcrStore::store` has synced the
+/// envelope to disk, so a matching receipt proves durable persistence of the
+/// original bytes.
+fn ccr_bare_marker_guard(
+    baseline: &[u8],
+    candidate: &[u8],
+    receipt: Option<&CcrStoreReceipt>,
+) -> Result<(), &'static str> {
+    if !contains_ccr_marker(candidate) {
+        return Ok(());
+    }
+    // A marker already present in the baseline input is a passthrough case:
+    // the content router routes it to the passthrough codec and no transform
+    // may run.  Reaching this guard with a marker-bearing baseline means a
+    // transform kept compressed text as source, which is never safe.
+    if contains_ccr_marker(baseline) {
+        return Err("ccr_marker_in_baseline_requires_passthrough");
+    }
+    let Some(receipt) = receipt else {
+        return Err("ccr_marker_without_durable_receipt");
+    };
+    for marker_ref in ccr_marker_refs(candidate) {
+        let Some(marker_ref) = marker_ref else {
+            // Unverifiable bracket form: no recovery ref to bind to a receipt.
+            return Err("ccr_marker_recovery_ref_unverifiable");
+        };
+        if marker_ref != receipt.recovery_ref
+            && marker_ref
+                != receipt
+                    .recovery_ref
+                    .strip_prefix("ccr:")
+                    .unwrap_or_default()
+        {
+            return Err("ccr_marker_recovery_ref_mismatch");
+        }
+    }
+    Ok(())
+}
+
+/// True when the serialized body contains any CCR retrieval marker shape the
+/// runtime can emit (opaque `<<ccr:...>>` blob plus the bracket forms).
+fn contains_ccr_marker(bytes: &[u8]) -> bool {
+    !ccr_marker_refs(bytes).is_empty()
+}
+
+/// Extracts every marker recovery reference.  `<<ccr:<ref>,...>>` yields
+/// `Some(ref)`; the bracket retrieval forms yield `None` because they carry
+/// only a hash, not a recovery ref.
+fn ccr_marker_refs(bytes: &[u8]) -> Vec<Option<String>> {
+    let mut refs = Vec::new();
+    let mut start = 0;
+    while let Some(relative) = bytes[start..]
+        .windows(6)
+        .position(|window| window == b"<<ccr:")
+    {
+        let marker_start = start + relative + 6;
+        let tail = &bytes[marker_start..];
+        let end = tail
+            .iter()
+            .position(|byte| *byte == b',' || *byte == b'>')
+            .unwrap_or(tail.len());
+        let raw = String::from_utf8_lossy(&tail[..end]).into_owned();
+        refs.push((!raw.is_empty()).then_some(raw));
+        start = marker_start + end;
+    }
+    for needle in [
+        b"Retrieve more: hash=" as &[u8],
+        b"Retrieve original: hash=" as &[u8],
+    ] {
+        if bytes.windows(needle.len()).any(|window| window == needle) {
+            refs.push(None);
+        }
+    }
+    refs
+}
+
 /// Bounds all JSON extraction before LLM or Optical request parsing/allocation.
 pub const MAX_REQUEST_BODY_BYTES: usize = 16 * 1024 * 1024;
 const BACKEND_CAPABILITY_REVISION: &str = "headroom-backend-capabilities-v1";
+const SAFE_PIPELINE_EVIDENCE_REVISION: &str = "dtoken-safe-context-pipeline-v1";
+const OPTICAL_SHADOW_EVIDENCE_REVISION: &str = "dtoken-optical-shadow-pipeline-v1";
+const OUTPUT_SHAPING_EVIDENCE_REVISION: &str = "dtoken-output-shaping-v1";
+const CCR_PRE_SEND_EVIDENCE_REVISION: &str = "dtoken-ccr-pre-send-v1";
+const INTEGRATED_RTK_EVIDENCE_REVISION: &str = "dtoken-integrated-rtk-adapter-v1";
+const HEADROOM_AGGREGATE_EVIDENCE_REVISION: &str = "dtoken-headroom-aggregate-v1";
+const COMPRESSOR_REGISTRY_EVIDENCE_REVISION: &str = "dtoken-compressor-registry-v1";
+const FAILURE_PATTERN_TTL_MS: u64 = 30 * 24 * 60 * 60 * 1_000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ContextStoreCapabilityState {
@@ -593,40 +919,278 @@ enum ContextStoreCapabilityState {
     Failed,
 }
 
+fn managed_rtk_invocation_verified(evidence: &ManagedRtkRuntimeEvidence) -> bool {
+    evidence.installed
+        && evidence.verified
+        && evidence.usage_count > 0
+        && evidence.last_receipt.is_some()
+}
+
 fn backend_capability_registry(
     agent_discovery: Option<&AgentDiscoverySnapshot>,
     context_store: ContextStoreCapabilityState,
+    ccr_private_store_ready: bool,
+    managed_rtk: Option<&ManagedRtkRuntimeEvidence>,
 ) -> CapabilityRegistrySnapshot {
+    let verified_at_ms = dtoken_event_ledger::now_ms().max(1);
+    let verified =
+        |id: &str, state: AvailabilityState, evidence_revision: &str, reason_codes: &[&str]| {
+            CapabilityEvidence::new(
+                id,
+                state,
+                BACKEND_CAPABILITY_REVISION,
+                None,
+                Some(evidence_revision.to_string()),
+                EvidenceFreshness::Live,
+                reason_codes
+                    .iter()
+                    .map(|reason| (*reason).to_string())
+                    .collect(),
+                Some(verified_at_ms),
+            )
+            .expect("verified backend capability evidence must be valid")
+        };
     let mut capabilities = [
-        ("cache-aligner", "provider_cache_plan_not_implemented"),
-        ("ccr-pre-send", "pre_send_recovery_protocol_not_implemented"),
-        ("code-compressor", "language_quality_gates_incomplete"),
-        ("content-router", "full_codec_routing_incomplete"),
-        ("diff-codec", "diff_codec_not_implemented"),
-        ("html-codec", "html_codec_not_implemented"),
-        (
-            "input-image-compressor",
-            "input_image_codec_not_implemented",
-        ),
-        ("integrated-rtk", "native_rtk_pipeline_not_implemented"),
-        ("json-codec", "json_quality_gates_incomplete"),
-        ("log-codec", "log_quality_gates_incomplete"),
-        ("mcp", "mcp_transport_not_implemented"),
-        ("memory-store", "typed_project_memory_not_implemented"),
-        ("optical-active", "active_release_gates_incomplete"),
-        ("output-shaping", "output_quality_gates_not_implemented"),
-        ("rust-library", "public_runtime_library_not_implemented"),
-        ("search-codec", "search_codec_not_implemented"),
-        ("smart-learning", "learning_backend_contract_incomplete"),
-        ("text-codec", "text_quality_gates_incomplete"),
-        ("typescript-sdk", "typescript_sdk_not_implemented"),
+        ("cache-aligner", "safe_cache_alignment_pipeline_available"),
+        ("content-router", "safe_content_router_available"),
     ]
     .into_iter()
     .map(|(id, reason)| {
-        CapabilityEvidence::unavailable(id, BACKEND_CAPABILITY_REVISION, reason)
-            .expect("static capability evidence must be valid")
+        verified(
+            id,
+            AvailabilityState::Ready,
+            SAFE_PIPELINE_EVIDENCE_REVISION,
+            &[reason],
+        )
     })
     .collect::<Vec<_>>();
+    let codec_evidence = dtoken_compress::codec_evidence::production_codec_evidence();
+    for (id, reason) in [
+        ("code-compressor", "safe_code_codec_available"),
+        ("diff-codec", "safe_diff_codec_available"),
+        ("html-codec", "safe_html_codec_available"),
+        ("json-codec", "safe_json_codec_available"),
+        ("log-codec", "safe_log_codec_available"),
+        ("search-codec", "safe_search_codec_available"),
+        ("build-codec", "safe_build_codec_available"),
+        ("text-codec", "safe_text_codec_available"),
+    ] {
+        let active = codec_evidence.find(id).is_some_and(|evidence| {
+            evidence.state() == dtoken_compress::codec_evidence::CodecEvidenceState::Active
+                && evidence.failures() == 0
+        });
+        capabilities.push(verified(
+            id,
+            if active {
+                AvailabilityState::Ready
+            } else {
+                AvailabilityState::Unavailable
+            },
+            codec_evidence.evidence_revision(),
+            &[
+                reason,
+                if active {
+                    "runtime_codec_evidence_verified"
+                } else {
+                    "runtime_codec_evidence_failed"
+                },
+            ],
+        ));
+    }
+
+    capabilities.push(verified(
+        "output-shaping",
+        AvailabilityState::Ready,
+        OUTPUT_SHAPING_EVIDENCE_REVISION,
+        &["safe_output_shaping_pipeline_available"],
+    ));
+    capabilities.push(verified(
+        "ccr-pre-send",
+        if ccr_private_store_ready {
+            AvailabilityState::Ready
+        } else {
+            AvailabilityState::Degraded
+        },
+        CCR_PRE_SEND_EVIDENCE_REVISION,
+        &[if ccr_private_store_ready {
+            "durable_ccr_pre_send_pipeline_available"
+        } else {
+            "ccr_lifecycle_implemented_private_store_disabled_in_snapshot"
+        }],
+    ));
+    let (integrated_rtk_state, integrated_rtk_reason) = match managed_rtk {
+        Some(evidence) if managed_rtk_invocation_verified(evidence) => (
+            AvailabilityState::Ready,
+            "verified_managed_runtime_invocation",
+        ),
+        Some(evidence) if evidence.verified => (
+            AvailabilityState::Degraded,
+            "verified_managed_runtime_candidate_invocation_required",
+        ),
+        Some(evidence) if evidence.installed => (
+            AvailabilityState::Degraded,
+            "managed_runtime_evidence_unverified",
+        ),
+        Some(_) | None => (AvailabilityState::Degraded, "managed_runtime_not_installed"),
+    };
+    capabilities.push(verified(
+        "integrated-rtk",
+        integrated_rtk_state.clone(),
+        INTEGRATED_RTK_EVIDENCE_REVISION,
+        &[integrated_rtk_reason],
+    ));
+    capabilities.push(
+        CapabilityEvidence::unavailable(
+            "input-image-compressor",
+            BACKEND_CAPABILITY_REVISION,
+            "ordinary_input_image_compression_out_of_scope",
+        )
+        .expect("static capability evidence must be valid"),
+    );
+    let smart_learning_state = if matches!(context_store, ContextStoreCapabilityState::Ready { .. })
+    {
+        AvailabilityState::Degraded
+    } else {
+        AvailabilityState::Unavailable
+    };
+    capabilities.push(
+        CapabilityEvidence::new(
+            "smart-learning",
+            smart_learning_state,
+            LEARNING_CAPABILITY_REVISION,
+            None,
+            Some(LEARNING_CAPABILITY_REVISION.to_string()),
+            EvidenceFreshness::Live,
+            vec![
+                if matches!(context_store, ContextStoreCapabilityState::Ready { .. }) {
+                    "learning_scan_writer_ready_candidate_usage_required".to_string()
+                } else {
+                    "learning_requires_persistent_context_store".to_string()
+                },
+            ],
+            Some(verified_at_ms),
+        )
+        .expect("learning capability evidence must be valid"),
+    );
+
+    for (id, reason) in [
+        (
+            "optical-shadow-preview",
+            "shadow_preview_pipeline_available",
+        ),
+        (
+            "optical-renderer",
+            "deterministic_optical_renderer_available",
+        ),
+        ("optical-patcher", "shadow_artifact_patcher_available"),
+        (
+            "optical-post-validator",
+            "shadow_artifact_post_validator_available",
+        ),
+        (
+            "optical-signed-accounting",
+            "signed_multimodal_accounting_available",
+        ),
+        (
+            "optical-representation-plan",
+            "representation_plan_available",
+        ),
+        (
+            "optical-responses-shadow-inventory",
+            "responses_shadow_inventory_available",
+        ),
+        (
+            "optical-dynamic-page-accounting",
+            "dynamic_page_accounting_available",
+        ),
+        (
+            "optical-direct-anthropic-upstream",
+            "direct_anthropic_shadow_path_available",
+        ),
+        (
+            "optical-streaming-passthrough",
+            "streaming_fail_closed_passthrough_available",
+        ),
+        ("optical-fail-closed", "optical_fail_closed_policy_enforced"),
+        (
+            "optical-capability-attestation",
+            "signed_capability_attestation_enforced",
+        ),
+    ] {
+        capabilities.push(verified(
+            id,
+            AvailabilityState::Ready,
+            OPTICAL_SHADOW_EVIDENCE_REVISION,
+            &[reason],
+        ));
+    }
+    capabilities.push(verified(
+        "optical-active",
+        AvailabilityState::ImplementedDisabled,
+        OPTICAL_SHADOW_EVIDENCE_REVISION,
+        &["policy_shadow_only", "release_gate_disabled"],
+    ));
+
+    capabilities.push(
+        CapabilityEvidence::new(
+            "rust-library",
+            AvailabilityState::Ready,
+            RUST_LIBRARY_IMPLEMENTATION_REVISION,
+            None,
+            Some(COMPRESSION_DECISION_CONTRACT_REVISION.to_string()),
+            EvidenceFreshness::Live,
+            vec![
+                "public_compression_decision_contract_available".to_string(),
+                "route_bound_gateway_compress_available".to_string(),
+            ],
+            Some(verified_at_ms),
+        )
+        .expect("Rust library capability evidence must be valid"),
+    );
+
+    capabilities.push(
+        CapabilityEvidence::new(
+            "typescript-sdk",
+            AvailabilityState::Ready,
+            TYPESCRIPT_SDK_IMPLEMENTATION_REVISION,
+            None,
+            Some(COMPRESSION_DECISION_CONTRACT_REVISION.to_string()),
+            EvidenceFreshness::Live,
+            vec![
+                "typescript_sdk_http_binding_available".to_string(),
+                "typescript_sdk_gateway_compress_available".to_string(),
+            ],
+            Some(verified_at_ms),
+        )
+        .expect("TypeScript SDK capability evidence must be valid"),
+    );
+
+    capabilities.push(if let Some(transport) = mcp::McpServer::transport_name() {
+        CapabilityEvidence::new(
+            "mcp",
+            AvailabilityState::Ready,
+            BACKEND_CAPABILITY_REVISION,
+            None,
+            Some(mcp::MCP_IMPLEMENTATION_REVISION.to_string()),
+            EvidenceFreshness::Live,
+            vec![
+                format!("mcp_{}_transport_available", transport.replace('-', "_")),
+                "mcp_compress_handler_available".to_string(),
+                "mcp_stats_handler_available".to_string(),
+                "mcp_retrieve_requires_managed_capability".to_string(),
+                "mcp_shared_context_requires_managed_capability".to_string(),
+            ],
+            Some(verified_at_ms),
+        )
+        .expect("MCP handler evidence must be valid")
+    } else {
+        CapabilityEvidence::unavailable(
+            "mcp",
+            BACKEND_CAPABILITY_REVISION,
+            "mcp_transport_unavailable",
+        )
+        .expect("MCP unavailable evidence must be valid")
+    });
 
     capabilities.push(match agent_discovery {
         Some(snapshot) => CapabilityEvidence::new(
@@ -676,6 +1240,204 @@ fn backend_capability_registry(
         )
         .expect("static capability evidence must be valid"),
     });
+    capabilities.push(match context_store {
+        ContextStoreCapabilityState::Ready { schema_version } => CapabilityEvidence::new(
+            "memory-store",
+            AvailabilityState::Ready,
+            BACKEND_CAPABILITY_REVISION,
+            None,
+            Some(format!("context-store-schema-v{schema_version}")),
+            EvidenceFreshness::Live,
+            vec![
+                "context_store_open".to_string(),
+                "memory_http_summary_scope_required".to_string(),
+                "memory_write_requires_managed_mcp_scope".to_string(),
+                "memory_records_redacted".to_string(),
+            ],
+            Some(dtoken_event_ledger::now_ms().max(1)),
+        )
+        .expect("validated memory-store evidence must be valid"),
+        ContextStoreCapabilityState::NotConfigured => CapabilityEvidence::unavailable(
+            "memory-store",
+            BACKEND_CAPABILITY_REVISION,
+            "memory_store_requires_persistent_context_store",
+        )
+        .expect("static capability evidence must be valid"),
+        ContextStoreCapabilityState::Failed => CapabilityEvidence::unavailable(
+            "memory-store",
+            BACKEND_CAPABILITY_REVISION,
+            "context_store_open_failed",
+        )
+        .expect("static capability evidence must be valid"),
+    });
+    let compressor_registry =
+        dtoken_compress::compressor_registry::production_compressor_registry();
+    capabilities.push(verified(
+        "compressor-registry",
+        if compressor_registry.all_active() {
+            AvailabilityState::Ready
+        } else {
+            AvailabilityState::Unavailable
+        },
+        COMPRESSOR_REGISTRY_EVIDENCE_REVISION,
+        &[if compressor_registry.all_active() {
+            "rust_owned_builtin_compressor_registry_active"
+        } else {
+            "rust_owned_builtin_compressor_registry_incomplete"
+        }],
+    ));
+
+    let leaves_ready = |ids: &[&str]| {
+        ids.iter().all(|id| {
+            capabilities
+                .iter()
+                .find(|capability| capability.id == *id)
+                .is_some_and(|capability| capability.state == AvailabilityState::Ready)
+        })
+    };
+    let compression_ready = leaves_ready(&[
+        "cache-aligner",
+        "code-compressor",
+        "content-router",
+        "json-codec",
+        "log-codec",
+        "search-codec",
+        "build-codec",
+        "diff-codec",
+        "text-codec",
+        "html-codec",
+        "compressor-registry",
+    ]);
+    let output_shape_ready = leaves_ready(&["output-shaping"]);
+    let proxy_sdk_mcp_ready = leaves_ready(&["rust-library", "typescript-sdk", "mcp"]);
+    let memory_store_ready = leaves_ready(&["memory-store"]);
+    let ccr_ready = leaves_ready(&["ccr-pre-send", "context-store"]);
+    let smart_learning_available = capabilities
+        .iter()
+        .find(|capability| capability.id == "smart-learning")
+        .is_some_and(|capability| {
+            matches!(
+                capability.state,
+                AvailabilityState::Ready | AvailabilityState::Degraded
+            )
+        });
+
+    capabilities.push(verified(
+        "compression",
+        if compression_ready {
+            AvailabilityState::Ready
+        } else {
+            AvailabilityState::Unavailable
+        },
+        HEADROOM_AGGREGATE_EVIDENCE_REVISION,
+        &[if compression_ready {
+            "all_production_codecs_active"
+        } else {
+            "production_codec_leaf_unavailable"
+        }],
+    ));
+    capabilities.push(verified(
+        "ccr",
+        if ccr_ready {
+            AvailabilityState::Ready
+        } else if memory_store_ready {
+            AvailabilityState::Degraded
+        } else {
+            AvailabilityState::Unavailable
+        },
+        CCR_PRE_SEND_EVIDENCE_REVISION,
+        &[if ccr_ready {
+            "ccr_private_store_and_lifecycle_ready"
+        } else if memory_store_ready {
+            "ccr_lifecycle_ready_private_store_activation_required"
+        } else {
+            "ccr_persistent_projection_unavailable"
+        }],
+    ));
+    capabilities.push(verified(
+        "memory_learn",
+        if memory_store_ready && smart_learning_available {
+            AvailabilityState::Degraded
+        } else {
+            AvailabilityState::Unavailable
+        },
+        LEARNING_CAPABILITY_REVISION,
+        &[if memory_store_ready && smart_learning_available {
+            "memory_learning_ready_candidate_usage_required"
+        } else {
+            "memory_or_learning_store_unavailable"
+        }],
+    ));
+    capabilities.push(verified(
+        "output_shape",
+        if output_shape_ready {
+            AvailabilityState::Ready
+        } else {
+            AvailabilityState::Unavailable
+        },
+        HEADROOM_AGGREGATE_EVIDENCE_REVISION,
+        &[if output_shape_ready {
+            "route_bound_output_shaping_active"
+        } else {
+            "output_shaping_leaf_unavailable"
+        }],
+    ));
+    capabilities.push(verified(
+        "integrated_rtk",
+        integrated_rtk_state,
+        INTEGRATED_RTK_EVIDENCE_REVISION,
+        &[integrated_rtk_reason],
+    ));
+    capabilities.push(verified(
+        "proxy_sdk_mcp",
+        if proxy_sdk_mcp_ready {
+            AvailabilityState::Ready
+        } else {
+            AvailabilityState::Unavailable
+        },
+        HEADROOM_AGGREGATE_EVIDENCE_REVISION,
+        &[if proxy_sdk_mcp_ready {
+            "rust_http_mcp_typescript_surface_parity_ready"
+        } else {
+            "public_surface_leaf_unavailable"
+        }],
+    ));
+    capabilities.push(verified(
+        "stats_history_metrics",
+        AvailabilityState::Ready,
+        HEADROOM_AGGREGATE_EVIDENCE_REVISION,
+        &["ledger_stats_history_metrics_active"],
+    ));
+    capabilities.push(verified(
+        "routing_protocols",
+        AvailabilityState::Ready,
+        HEADROOM_AGGREGATE_EVIDENCE_REVISION,
+        &["openai_anthropic_route_adapters_active"],
+    ));
+    capabilities.push(verified(
+        "doctor_dashboard_logs_export",
+        AvailabilityState::Degraded,
+        HEADROOM_AGGREGATE_EVIDENCE_REVISION,
+        &["runtime_surfaces_ready_desktop_candidate_verification_required"],
+    ));
+    capabilities.push(verified(
+        "project_policy",
+        AvailabilityState::Degraded,
+        PROJECT_POLICY_CAPABILITY_REVISION,
+        &["project_policy_executor_available_candidate_apply_required"],
+    ));
+    capabilities.push(verified(
+        "backup_rollback",
+        AvailabilityState::Degraded,
+        CONFIG_TRANSACTION_CAPABILITY_REVISION,
+        &["config_transaction_executor_available_candidate_receipt_required"],
+    ));
+    capabilities.push(verified(
+        "optical_active_transform",
+        AvailabilityState::ImplementedDisabled,
+        HEADROOM_AGGREGATE_EVIDENCE_REVISION,
+        &["policy_shadow_only", "release_gate_disabled"],
+    ));
 
     CapabilityRegistrySnapshot::new(
         BACKEND_CAPABILITY_REVISION,
@@ -683,6 +1445,28 @@ fn backend_capability_registry(
         capabilities,
     )
     .expect("static backend capability registry must be valid")
+}
+
+fn capability_registry_semantically_equal(
+    left: &CapabilityRegistrySnapshot,
+    right: &CapabilityRegistrySnapshot,
+) -> bool {
+    left.schema_version == right.schema_version
+        && left.revision == right.revision
+        && left.capabilities.len() == right.capabilities.len()
+        && left
+            .capabilities
+            .iter()
+            .zip(&right.capabilities)
+            .all(|(left, right)| {
+                left.id == right.id
+                    && left.state == right.state
+                    && left.implementation_revision == right.implementation_revision
+                    && left.config_revision == right.config_revision
+                    && left.evidence_revision == right.evidence_revision
+                    && left.freshness == right.freshness
+                    && left.reason_codes == right.reason_codes
+            })
 }
 
 #[derive(Clone)]
@@ -694,17 +1478,25 @@ pub struct AppState {
     route_decisions: Arc<Mutex<Vec<Value>>>,
     request_logs: Arc<Mutex<Vec<RequestLog>>>,
     ccr_metadata: Arc<Mutex<Vec<Value>>>,
+    ccr_lifecycle_lock: Arc<Mutex<()>>,
     ccr_private_store: Option<Arc<CcrStore>>,
-    memory_records: Arc<Mutex<Vec<Value>>>,
     runtime_summary: Arc<Mutex<RuntimeSummaryReadModel>>,
     runtime_performance: Arc<Mutex<RuntimePerformanceState>>,
     runtime_store: Option<Arc<RuntimeStore>>,
+    /// Requests whose terminal commit recovery marked explicitly pending
+    /// (partial fan-out).  Their terminal records are excluded from the hot
+    /// read models and the SQLite projections until a later, complete
+    /// commit arrives; lifecycle CCR records for the same recovery refs are
+    /// still reconciled.  Populated only during persistent restart.
+    terminal_pending_commits: HashMap<Uuid, TerminalCommitMarker>,
     context_store: Option<Arc<Mutex<ContextStore>>>,
+    managed_rtk_root: Option<Arc<PathBuf>>,
     agent_discovery: Arc<Option<AgentDiscoverySnapshot>>,
     http_client: reqwest::Client,
     hybrid_engine: Arc<HybridContextEngine>,
     optical_config_issues: Arc<Vec<dtoken_config::OpticalConfigIssue>>,
     capabilities: Arc<CapabilityRegistrySnapshot>,
+    capability_read_model: Arc<Mutex<CapabilityRegistrySnapshot>>,
 }
 
 impl AppState {
@@ -722,7 +1514,10 @@ impl AppState {
         let capabilities = Arc::new(backend_capability_registry(
             agent_discovery.as_ref(),
             ContextStoreCapabilityState::NotConfigured,
+            false,
+            None,
         ));
+        let capability_read_model = Arc::new(Mutex::new((*capabilities).clone()));
         Self {
             config: Arc::new(config),
             config_status: Arc::new(config_status),
@@ -731,17 +1526,20 @@ impl AppState {
             route_decisions: Arc::new(Mutex::new(vec![])),
             request_logs: Arc::new(Mutex::new(vec![])),
             ccr_metadata: Arc::new(Mutex::new(vec![])),
+            ccr_lifecycle_lock: Arc::new(Mutex::new(())),
             ccr_private_store: None,
-            memory_records: Arc::new(Mutex::new(vec![])),
             runtime_summary: Arc::new(Mutex::new(RuntimeSummaryReadModel::default())),
             runtime_performance: Arc::new(Mutex::new(RuntimePerformanceState::default())),
             runtime_store: None,
+            terminal_pending_commits: HashMap::new(),
             context_store: None,
+            managed_rtk_root: None,
             agent_discovery: Arc::new(agent_discovery),
             http_client: reqwest::Client::new(),
             hybrid_engine,
             optical_config_issues,
             capabilities,
+            capability_read_model,
         }
     }
 
@@ -755,34 +1553,111 @@ impl AppState {
         dir: impl AsRef<StdPath>,
     ) -> Self {
         let runtime_dir = dir.as_ref();
+        let ccr_private_store = configured_ccr_private_store(runtime_dir);
+        Self::new_persistent_with_private_store(
+            config,
+            config_status,
+            runtime_dir,
+            ccr_private_store,
+        )
+    }
+
+    fn new_persistent_with_private_store(
+        config: DtokenConfig,
+        config_status: RuntimeConfigStatus,
+        runtime_dir: &StdPath,
+        ccr_private_store: Option<Arc<CcrStore>>,
+    ) -> Self {
         let store = Arc::new(RuntimeStore::new(runtime_dir));
         let mut state = Self::new_with_config_status(config, config_status);
-        state.ccr_private_store = configured_ccr_private_store(runtime_dir);
+        state.ccr_private_store = ccr_private_store;
+        // G3: the terminal-commit recovery sweep needs the journal installed
+        // before any load, and every subsequent load must filter the requests
+        // it explicitly left pending.
+        state.runtime_store = Some(Arc::clone(&store));
+        let recovery_started_at = Instant::now();
+        let recovery_result = state.recover_terminal_commits();
+        state.record_runtime_performance(
+            "terminal_recovery",
+            recovery_started_at,
+            recovery_result.is_ok(),
+            state.terminal_pending_commits.len() as u64,
+        );
+        if recovery_result.is_err() {
+            // Recovery could not classify dangling intents; fall back to the
+            // legacy unfiltered load so startup still converges from the raw
+            // journals, and surface the failure through the performance stage.
+            state.terminal_pending_commits.clear();
+        }
+        let pending_request_ids = state
+            .terminal_pending_commits
+            .keys()
+            .copied()
+            .collect::<HashSet<_>>();
+        let pending_event_ids = state
+            .terminal_pending_commits
+            .values()
+            .map(|marker| marker.event_id)
+            .collect::<HashSet<_>>();
+        let pending_ccr_refs = state
+            .terminal_pending_commits
+            .keys()
+            .map(|request_id| format!("ccr:{request_id}"))
+            .collect::<HashSet<_>>();
+        let managed_rtk_root = runtime_dir.join("managed-rtk");
+        let managed_rtk_evidence = inspect_managed_rtk_runtime(&managed_rtk_root);
+        state.managed_rtk_root = Some(Arc::new(managed_rtk_root));
         if let Ok(events) = store.recent_events(10_000) {
             if let Ok(mut ledger) = state.ledger.lock() {
                 for event in events.into_iter().rev() {
+                    if pending_event_ids.contains(&event.event_id) {
+                        continue;
+                    }
                     let _ = ledger.record(event);
                 }
             }
         }
         if let Ok(route_decisions) = store.recent_route_decisions(10_000) {
             if let Ok(mut items) = state.route_decisions.lock() {
-                *items = route_decisions.into_iter().rev().collect();
+                *items = route_decisions
+                    .into_iter()
+                    .rev()
+                    .filter(|value| {
+                        match value["request_id"]
+                            .as_str()
+                            .and_then(|value| Uuid::parse_str(value).ok())
+                        {
+                            Some(request_id) => !pending_request_ids.contains(&request_id),
+                            None => true,
+                        }
+                    })
+                    .collect();
             }
         }
         if let Ok(request_logs) = store.recent_request_logs(10_000) {
             if let Ok(mut logs) = state.request_logs.lock() {
-                *logs = request_logs.into_iter().rev().collect();
+                *logs = request_logs
+                    .into_iter()
+                    .rev()
+                    .filter(|log| !pending_request_ids.contains(&log.request_id))
+                    .collect();
             }
         }
-        if let Ok(ccr_metadata) = store.recent_ccr_metadata(10_000) {
+        // CCR lifecycle reconciliation must still scan the complete append-only
+        // journal, but keeping every historical lifecycle record resident
+        // makes startup memory grow without bound. Retaining only the latest
+        // entry for each recovery ref preserves restart semantics.  Records of
+        // explicitly pending terminal commits are skipped so the lifecycle
+        // state (retained / deleted) stays authoritative and the terminal
+        // record cannot masquerade as finalized.
+        if let Ok(ccr_metadata) = store.latest_ccr_metadata_by_recovery_ref(&|record: &Value| {
+            terminal_ccr_state_is_terminal(record["state"].as_str())
+                && record["recovery_ref"]
+                    .as_str()
+                    .is_some_and(|recovery_ref| pending_ccr_refs.contains(recovery_ref))
+        }) {
             if let Ok(mut items) = state.ccr_metadata.lock() {
-                *items = ccr_metadata.into_iter().rev().collect();
-            }
-        }
-        if let Ok(memory_records) = store.recent_memory_records(10_000) {
-            if let Ok(mut items) = state.memory_records.lock() {
-                *items = memory_records.into_iter().rev().collect();
+                *items = ccr_metadata;
             }
         }
         state.rebuild_runtime_summary();
@@ -792,6 +1667,8 @@ impl AppState {
                 let capabilities = Arc::new(backend_capability_registry(
                     state.agent_discovery.as_ref().as_ref(),
                     ContextStoreCapabilityState::Ready { schema_version },
+                    state.ccr_private_store.is_some(),
+                    Some(&managed_rtk_evidence),
                 ));
                 if persist_context_store_evidence(
                     &mut context_store,
@@ -806,6 +1683,8 @@ impl AppState {
                     state.capabilities = Arc::new(backend_capability_registry(
                         state.agent_discovery.as_ref().as_ref(),
                         ContextStoreCapabilityState::Failed,
+                        state.ccr_private_store.is_some(),
+                        Some(&managed_rtk_evidence),
                     ));
                 }
             }
@@ -813,10 +1692,38 @@ impl AppState {
                 state.capabilities = Arc::new(backend_capability_registry(
                     state.agent_discovery.as_ref().as_ref(),
                     ContextStoreCapabilityState::Failed,
+                    state.ccr_private_store.is_some(),
+                    Some(&managed_rtk_evidence),
                 ));
             }
         }
-        state.runtime_store = Some(store);
+        if let Ok(mut read_model) = state.capability_read_model.lock() {
+            *read_model = (*state.capabilities).clone();
+        }
+        // Reconciliation is deliberately last: both the final private store
+        // and the append-only journal are installed, while the SQLite views are
+        // still clearly rebuildable projections.  It never resends or deletes
+        // an encrypted original.
+        if state.reconcile_ccr_lifecycle_journal().is_err() {
+            state.record_ccr_reconciliation_unavailable();
+        }
+        // The SQLite request view is a disposable projection of the durable
+        // request/event journals: a crash between a JSONL append and the
+        // SQLite upsert is healed here, keeping the cross-store terminal
+        // commit recoverable.
+        if state.rebuild_request_projections_from_journal().is_err() {
+            if let Ok(mut read_model) = state.capability_read_model.lock() {
+                if let Some(capability) = read_model
+                    .capabilities
+                    .iter_mut()
+                    .find(|capability| capability.id == "context-store")
+                {
+                    capability
+                        .reason_codes
+                        .push("request_projection_rebuild_unavailable".to_string());
+                }
+            }
+        }
         state
     }
 
@@ -826,12 +1733,57 @@ impl AppState {
         key: [u8; 32],
     ) -> anyhow::Result<Self> {
         let runtime_dir = dir.as_ref();
-        let mut state = Self::new_persistent(config, runtime_dir);
-        state.ccr_private_store = Some(Arc::new(CcrStore::new(
-            runtime_dir.join("ccr-private"),
-            key,
-        )?));
+        let ccr_private_store = Arc::new(CcrStore::new(runtime_dir.join("ccr-private"), key)?);
+        let state = Self::new_persistent_with_private_store(
+            config,
+            RuntimeConfigStatus::empty(),
+            runtime_dir,
+            Some(ccr_private_store),
+        );
+        verify_windows_private_runtime_contract(runtime_dir, &state)?;
         Ok(state)
+    }
+
+    /// G3 cross-store terminal commit recovery.  Called once during
+    /// persistent startup, after `runtime_store` is installed and before any
+    /// journal load.  A dangling `Intent` marker is rolled forward to
+    /// `Committed` when the four fan-out journals already hold the complete
+    /// bundle (the crash landed after the last fan-out sync but before the
+    /// committed marker); otherwise it is marked `Pending` explicitly.
+    /// Fan-out records are never re-appended here, so recovery cannot
+    /// duplicate terminal records; the pending map then drives the hot-model
+    /// and SQLite filters.
+    fn recover_terminal_commits(&mut self) -> anyhow::Result<()> {
+        let Some(store) = self.runtime_store.as_ref() else {
+            return Ok(());
+        };
+        let mut pending = HashMap::<Uuid, TerminalCommitMarker>::new();
+        for (request_id, marker) in store.latest_terminal_commit_markers()? {
+            match marker.phase {
+                TerminalCommitPhase::Committed => {}
+                TerminalCommitPhase::Pending => {
+                    pending.insert(request_id, marker);
+                }
+                TerminalCommitPhase::Intent => {
+                    if store.terminal_bundle_complete(&marker)? {
+                        store.append_terminal_commit_marker(&TerminalCommitMarker {
+                            phase: TerminalCommitPhase::Committed,
+                            ..marker.clone()
+                        })?;
+                    } else {
+                        let pending_marker = TerminalCommitMarker {
+                            phase: TerminalCommitPhase::Pending,
+                            reason: Some("partial_fan_out_at_recovery".to_string()),
+                            ..marker.clone()
+                        };
+                        store.append_terminal_commit_marker(&pending_marker)?;
+                        pending.insert(request_id, pending_marker);
+                    }
+                }
+            }
+        }
+        self.terminal_pending_commits = pending;
+        Ok(())
     }
 
     fn recent_events(&self, limit: usize) -> Vec<DtokenEvent> {
@@ -862,6 +1814,60 @@ impl AppState {
             .unwrap_or_default()
     }
 
+    fn managed_rtk_runtime_evidence(&self) -> ManagedRtkRuntimeEvidence {
+        self.managed_rtk_root
+            .as_deref()
+            .map(|root| inspect_managed_rtk_runtime(root))
+            .unwrap_or_else(|| ManagedRtkRuntimeEvidence {
+                installed: false,
+                verified: false,
+                usage_count: 0,
+                saved_bytes: 0,
+                last_receipt: None,
+                reason: "persistent_runtime_not_configured".to_string(),
+            })
+    }
+
+    fn current_capability_registry(&self) -> CapabilityRegistrySnapshot {
+        let context_store = match self.context_store.as_ref() {
+            Some(store) => store
+                .lock()
+                .ok()
+                .and_then(|store| store.schema_version().ok())
+                .map_or(ContextStoreCapabilityState::Failed, |schema_version| {
+                    ContextStoreCapabilityState::Ready { schema_version }
+                }),
+            None if self
+                .capabilities
+                .find("context-store")
+                .is_some_and(|capability| {
+                    capability
+                        .reason_codes
+                        .iter()
+                        .any(|reason| reason == "context_store_open_failed")
+                }) =>
+            {
+                ContextStoreCapabilityState::Failed
+            }
+            None => ContextStoreCapabilityState::NotConfigured,
+        };
+        let managed_rtk = self.managed_rtk_runtime_evidence();
+        let candidate = backend_capability_registry(
+            self.agent_discovery.as_ref().as_ref(),
+            context_store,
+            self.ccr_private_store.is_some(),
+            Some(&managed_rtk),
+        );
+        let Ok(mut current) = self.capability_read_model.lock() else {
+            return candidate;
+        };
+        if capability_registry_semantically_equal(&current, &candidate) {
+            return current.clone();
+        }
+        *current = candidate.clone();
+        candidate
+    }
+
     fn retrieve_ccr_metadata(&self, recovery_ref: &str) -> Option<Value> {
         self.ccr_metadata.lock().ok().and_then(|items| {
             items
@@ -879,18 +1885,489 @@ impl AppState {
             .retrieve(recovery_ref)
     }
 
-    pub fn delete_ccr_original(&self, recovery_ref: &str) -> anyhow::Result<bool> {
-        self.ccr_private_store
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("CCR private storage is disabled"))?
-            .delete(recovery_ref)
+    /// Fail-closed authorized retrieval used by every capability-gated
+    /// surface (managed MCP tool-call retrieve, future tool-call recovery).
+    ///
+    /// Retrieval is only granted when all of the following hold:
+    ///
+    /// 1. the recovery ref has a durable lifecycle record;
+    /// 2. the record's terminal state still makes the original retrievable
+    ///    (`pending_retained`, `finalized`, `send_failed_retained`,
+    ///    `finalized_with_non_ok_terminal`, or `recovery_pending_retained`);
+    /// 3. the encrypted envelope is actually present.
+    ///
+    /// Deleted, delete-intent, interrupted, untracked or raw-missing refs
+    /// are rejected before any byte is decrypted, so a stale or forged
+    /// recovery handle can never pull an original back out of the private
+    /// store.  The caller still owns its capability gate (MCP authorization
+    /// or an in-process route binding); this function never substitutes for
+    /// it and never returns raw material on the error path.
+    pub fn retrieve_ccr_original_bound(&self, recovery_ref: &str) -> anyhow::Result<Vec<u8>> {
+        let metadata = self
+            .retrieve_ccr_metadata(recovery_ref)
+            .ok_or_else(|| anyhow::anyhow!("CCR metadata is unavailable for this recovery ref"))?;
+        if metadata["raw_available"].as_bool() != Some(true) {
+            return Err(anyhow::anyhow!(
+                "CCR original is not retrievable for this recovery ref"
+            ));
+        }
+        let state = metadata["state"].as_str().unwrap_or_default();
+        if !matches!(
+            state,
+            "pending_retained"
+                | "finalized"
+                | "send_failed_retained"
+                | "finalized_with_non_ok_terminal"
+                | "recovery_pending_retained"
+        ) {
+            return Err(anyhow::anyhow!(
+                "CCR original is not retrievable in lifecycle state {state}"
+            ));
+        }
+        self.retrieve_ccr_original(recovery_ref)
     }
 
-    fn recent_memory_records(&self, limit: usize) -> Vec<Value> {
-        self.memory_records
+    fn append_ccr_lifecycle_record(&self, record: Value) -> anyhow::Result<()> {
+        validate_ccr_lifecycle_record(&record)?;
+        if let Some(store) = &self.runtime_store {
+            store.append_ccr_metadata(&record)?;
+        }
+        let mut metadata = self
+            .ccr_metadata
             .lock()
-            .map(|items| items.iter().rev().take(limit).cloned().collect())
-            .unwrap_or_default()
+            .map_err(|_| anyhow::anyhow!("CCR metadata lock poisoned"))?;
+        push_bounded(&mut metadata, record);
+        drop(metadata);
+        self.rebuild_runtime_summary();
+        Ok(())
+    }
+
+    /// Converges redacted lifecycle records after restart.  This deliberately
+    /// has no `store`, `retrieve`, or `delete` call: a restart must never turn
+    /// an interrupted write/delete into an automatic resend or destructive
+    /// action.
+    fn reconcile_ccr_lifecycle_journal(&mut self) -> anyhow::Result<()> {
+        let lifecycle_lock = Arc::clone(&self.ccr_lifecycle_lock);
+        let _lifecycle_guard = lifecycle_lock
+            .lock()
+            .map_err(|_| anyhow::anyhow!("CCR lifecycle lock poisoned"))?;
+        let Some(private_store) = self.ccr_private_store.as_ref() else {
+            return Ok(());
+        };
+        let journal = self
+            .ccr_metadata
+            .lock()
+            .map_err(|_| anyhow::anyhow!("CCR metadata lock poisoned"))?
+            .clone();
+        let latest = latest_ccr_metadata_records(&journal)
+            .into_iter()
+            .cloned()
+            .collect::<Vec<_>>();
+        let now_ms = dtoken_event_ledger::now_ms().max(1);
+
+        for metadata in latest {
+            let Some(recovery_ref) = metadata["recovery_ref"].as_str() else {
+                continue;
+            };
+            let raw_state = private_store.inspect(recovery_ref)?;
+            let raw_present = raw_state == CcrEntryInspection::Available;
+            let state = metadata["state"].as_str().unwrap_or_default();
+            let next = match state {
+                "delete_intent" if raw_present => {
+                    Some(ccr_interrupted_retained(metadata.clone(), now_ms)?)
+                }
+                "delete_intent" if raw_state == CcrEntryInspection::Missing => {
+                    Some(ccr_deletion_tombstone(metadata.clone(), now_ms)?)
+                }
+                "delete_intent" => Some(ccr_raw_unavailable(metadata.clone(), now_ms, raw_state)?),
+                "write_intent" | "pending_retained" if raw_present => {
+                    Some(ccr_recovery_pending_retained(metadata.clone(), now_ms)?)
+                }
+                "write_intent" | "pending_retained" if raw_state == CcrEntryInspection::Missing => {
+                    Some(ccr_raw_missing(metadata.clone(), now_ms)?)
+                }
+                "write_intent" | "pending_retained" => {
+                    Some(ccr_raw_unavailable(metadata.clone(), now_ms, raw_state)?)
+                }
+                _ if ccr_terminal_metadata(&metadata)
+                    && raw_state == CcrEntryInspection::Missing =>
+                {
+                    Some(ccr_raw_missing(metadata.clone(), now_ms)?)
+                }
+                _ if ccr_terminal_metadata(&metadata) && !raw_present => {
+                    Some(ccr_raw_unavailable(metadata.clone(), now_ms, raw_state)?)
+                }
+                _ => None,
+            };
+            if let Some(next) = next {
+                self.append_ccr_lifecycle_record(next)?;
+            }
+        }
+        self.rebuild_ccr_metadata_projection_from_journal()
+    }
+
+    fn record_ccr_reconciliation_unavailable(&self) {
+        let _ = self.try_append_event(DtokenEvent {
+            event_id: Uuid::new_v4(),
+            timestamp_ms: dtoken_event_ledger::now_ms().max(1),
+            project_id: Some("dtoken-runtime".to_string()),
+            agent_id: Some("d-token".to_string()),
+            instance_id: Some("dtoken-runtime-local".to_string()),
+            command_id: None,
+            request_id: None,
+            stage: LayeredStage::HeadroomRetrieve,
+            source: EventSource::Dtoken,
+            status: EventStatus::Failed,
+            input_tokens: None,
+            output_tokens: None,
+            saved_tokens: None,
+            baseline_kind: Some(BaselineKind::HeadroomInput),
+            error_code: Some("ccr_reconciliation_unavailable".to_string()),
+            metadata: json!({
+                "action": "ccr_restart_reconciliation",
+                "state": "unavailable",
+                "raw_available": false,
+                "raw_returned": false
+            }),
+            context_accounting: None,
+        });
+    }
+
+    fn rebuild_ccr_metadata_projection_from_journal(&self) -> anyhow::Result<()> {
+        let Some(context_store) = self.context_store.as_ref() else {
+            return Ok(());
+        };
+        let journal = self
+            .ccr_metadata
+            .lock()
+            .map_err(|_| anyhow::anyhow!("CCR metadata lock poisoned"))?
+            .clone();
+        let projections = latest_ccr_metadata_records(&journal)
+            .into_iter()
+            .filter_map(ccr_metadata_projection_from_journal)
+            .collect::<Vec<_>>();
+        context_store
+            .lock()
+            .map_err(|_| anyhow::anyhow!("context-store lock poisoned"))?
+            .replace_ccr_metadata(&projections)
+    }
+
+    /// Rebuilds the disposable SQLite request view from the append-only
+    /// request/event journals.  The JSONL journal is the durable source of
+    /// truth for the cross-store terminal commit; this projection is always a
+    /// rebuildable view of it, so a crash between a JSONL append and the
+    /// SQLite upsert is healed on the next restart.
+    fn rebuild_request_projections_from_journal(&self) -> anyhow::Result<()> {
+        let Some(context_store) = self.context_store.as_ref() else {
+            return Ok(());
+        };
+        let runtime_store = self
+            .runtime_store
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("runtime journal is unavailable"))?;
+        let mut terminal_by_request = HashMap::<Uuid, DtokenEvent>::new();
+        runtime_store.visit_all_events(|event| {
+            if let Some(request_id) = event.request_id {
+                // Events of explicitly pending terminal commits are not
+                // terminal; they must not drive the projection.
+                if self.terminal_pending_commits.contains_key(&request_id) {
+                    return Ok(());
+                }
+                terminal_by_request.insert(request_id, event);
+            }
+            Ok(())
+        })?;
+        let mut latest_logs = HashMap::<Uuid, RequestLog>::new();
+        runtime_store.visit_all_request_logs(|log| {
+            if self.terminal_pending_commits.contains_key(&log.request_id) {
+                return Ok(());
+            }
+            latest_logs.insert(log.request_id, log);
+            Ok(())
+        })?;
+        let mut logs = latest_logs.into_values().collect::<Vec<_>>();
+        logs.sort_by(|left, right| {
+            left.timestamp_ms
+                .cmp(&right.timestamp_ms)
+                .then_with(|| left.request_id.cmp(&right.request_id))
+        });
+        let projections = logs
+            .into_iter()
+            .filter_map(|log| {
+                let event = terminal_by_request.get(&log.request_id)?;
+                Some(RequestProjection {
+                    request_id: log.request_id.to_string(),
+                    route_id: log.route_id.unwrap_or_default(),
+                    provider_id: log.provider_id.unwrap_or_default(),
+                    agent_id: log.agent,
+                    project_id: event.project_id.clone(),
+                    status: event_status_label(&event.status).to_string(),
+                    input_units: log
+                        .input_tokens_before
+                        .and_then(|value| u64::try_from(value).ok()),
+                    output_units: log
+                        .output_tokens
+                        .and_then(|value| u64::try_from(value).ok()),
+                    saved_units: log.tokens_saved.and_then(|value| u64::try_from(value).ok()),
+                    observed_at_ms: log.timestamp_ms,
+                })
+            })
+            .collect::<Vec<_>>();
+        context_store
+            .lock()
+            .map_err(|_| anyhow::anyhow!("context-store lock poisoned"))?
+            .replace_request_projections(&projections)
+    }
+
+    pub fn delete_ccr_original(&self, recovery_ref: &str) -> anyhow::Result<CcrDeletionReceipt> {
+        let _lifecycle_guard = self
+            .ccr_lifecycle_lock
+            .lock()
+            .map_err(|_| anyhow::anyhow!("CCR lifecycle lock poisoned"))?;
+        let now_ms = dtoken_event_ledger::now_ms().max(1);
+        let metadata = self
+            .retrieve_ccr_metadata(recovery_ref)
+            .ok_or_else(|| anyhow::anyhow!("CCR metadata is unavailable for this recovery ref"))?;
+
+        if metadata["state"].as_str() == Some("deleted") {
+            return Ok(CcrDeletionReceipt {
+                source: "dtoken-owned-runtime",
+                recovery_ref: recovery_ref.to_string(),
+                state: "already_deleted",
+                raw_available: false,
+                raw_returned: false,
+            });
+        }
+        if metadata["raw_available"].as_bool() != Some(true) {
+            return Err(anyhow::anyhow!(
+                "CCR metadata does not describe a deletable private original"
+            ));
+        }
+        let request_id = metadata["request_id"]
+            .as_str()
+            .filter(|value| !value.trim().is_empty())
+            .ok_or_else(|| anyhow::anyhow!("CCR metadata is missing request identity"))?
+            .to_string();
+        let private_store = self
+            .ccr_private_store
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("CCR private storage is disabled"))?;
+
+        // The intent is durable before a destructive operation.  If the
+        // process stops after it, restart reconciliation only reports whether
+        // the original was retained or is already absent; it never deletes it.
+        self.append_ccr_lifecycle_record(ccr_delete_intent(metadata.clone(), now_ms)?)?;
+        let _raw_deleted = private_store.delete(recovery_ref)?;
+        let tombstone = ccr_deletion_tombstone(metadata, now_ms)?;
+        self.append_ccr_lifecycle_record(tombstone.clone())?;
+        self.try_append_event(DtokenEvent {
+            event_id: Uuid::new_v4(),
+            timestamp_ms: now_ms,
+            project_id: Some("dtoken-runtime".to_string()),
+            agent_id: Some("d-token".to_string()),
+            instance_id: Some("dtoken-runtime-local".to_string()),
+            command_id: None,
+            request_id: Uuid::parse_str(&request_id).ok(),
+            stage: LayeredStage::HeadroomRetrieve,
+            source: EventSource::Dtoken,
+            status: EventStatus::Ok,
+            input_tokens: None,
+            output_tokens: None,
+            saved_tokens: None,
+            baseline_kind: Some(BaselineKind::HeadroomInput),
+            error_code: None,
+            metadata: json!({
+                "action": "ccr_delete",
+                "recovery_ref": recovery_ref,
+                "state": "deleted",
+                "raw_available": false,
+                "raw_returned": false
+            }),
+            context_accounting: None,
+        })?;
+        if let Some(store) = &self.context_store {
+            let store = store
+                .lock()
+                .map_err(|_| anyhow::anyhow!("context-store lock poisoned"))?;
+            store.upsert_ccr_metadata(&CcrMetadataProjection {
+                recovery_ref: recovery_ref.to_string(),
+                request_id,
+                expires_at_ms: None,
+                plaintext_bytes: None,
+                state: "deleted".to_string(),
+                updated_at_ms: now_ms,
+            })?;
+        }
+        Ok(CcrDeletionReceipt {
+            source: "dtoken-owned-runtime",
+            recovery_ref: recovery_ref.to_string(),
+            state: "deleted",
+            raw_available: false,
+            raw_returned: false,
+        })
+    }
+
+    pub(crate) fn mcp_compress(
+        &self,
+        requested_policy: Option<CompressionPolicy>,
+        route_ref: mcp::McpRouteReference,
+        body: Value,
+    ) -> Result<Value, mcp::McpToolError> {
+        let encoded = serde_json::to_vec(&body)
+            .map_err(|_| mcp::McpToolError::invalid_arguments("body must be JSON serializable"))?;
+        if encoded.len() > mcp::MAX_MCP_COMPRESS_BODY_BYTES {
+            return Err(mcp::McpToolError::request_too_large());
+        }
+        let execution = self
+            .compression_execution(CompressionDecisionRequest {
+                route_id: route_ref.route_id,
+                input_protocol: route_ref.input_protocol,
+                endpoint: route_ref.endpoint,
+                requested_policy,
+                body,
+            })
+            .map_err(mcp_tool_error_from_decision_error)?;
+        Ok(serde_json::to_value(execution).expect("compression execution must serialize"))
+    }
+
+    /// Returns a stable, body-free decision contract for the configured route.
+    /// This API performs no network I/O and does not persist the supplied body.
+    pub fn compression_decision(
+        &self,
+        request: CompressionDecisionRequest,
+    ) -> Result<CompressionDecision, CompressionDecisionError> {
+        self.evaluate_compression_decision(request)
+            .map(|evaluation| evaluation.decision)
+    }
+
+    /// Returns a route-bound candidate body without forwarding it upstream.
+    /// This is the shared Rust implementation for `/v1/compress`, MCP, and the
+    /// TypeScript SDK.
+    pub fn compression_execution(
+        &self,
+        request: CompressionDecisionRequest,
+    ) -> Result<CompressionExecution, CompressionDecisionError> {
+        self.evaluate_compression_decision(request)
+            .map(EvaluatedCompressionDecision::into_execution)
+    }
+
+    fn evaluate_compression_decision(
+        &self,
+        request: CompressionDecisionRequest,
+    ) -> Result<EvaluatedCompressionDecision, CompressionDecisionError> {
+        if !request.body.is_object() || request.route_id.trim().is_empty() {
+            return Err(CompressionDecisionError::InvalidArguments);
+        }
+        let route = self
+            .config
+            .find_route(&request.route_id)
+            .ok_or(CompressionDecisionError::RouteContextUnavailable)?;
+        let provider = self
+            .config
+            .find_provider(&route.target_provider_id)
+            .ok_or(CompressionDecisionError::RouteContextUnavailable)?;
+        if route.input_protocol != request.input_protocol {
+            return Err(CompressionDecisionError::RouteContextMismatch);
+        }
+        if request
+            .requested_policy
+            .as_ref()
+            .is_some_and(|policy| policy != &route.compression_policy)
+        {
+            return Err(CompressionDecisionError::RoutePolicyMismatch);
+        }
+        let model = request
+            .body
+            .get("model")
+            .and_then(Value::as_str)
+            .filter(|value| !value.trim().is_empty())
+            .ok_or(CompressionDecisionError::RouteContextUnavailable)?
+            .to_string();
+        if !provider.models.is_empty() && !provider.models.iter().any(|item| item == &model) {
+            return Err(CompressionDecisionError::RouteContextUnavailable);
+        }
+
+        let adapter = match (&route.input_protocol, &provider.protocol, &request.endpoint) {
+            (Protocol::OpenAi, Protocol::OpenAi, OpticalEndpoint::OpenAiChatCompletions) => {
+                RouteAdapterKind::OpenAiChatPassthrough
+            }
+            (Protocol::Anthropic, Protocol::Anthropic, OpticalEndpoint::AnthropicMessages) => {
+                RouteAdapterKind::AnthropicMessagesPassthrough
+            }
+            _ => return Err(CompressionDecisionError::RouteContextMismatch),
+        };
+        let configured_decision = build_configured_route_decision(Uuid::new_v4(), route, provider);
+        let context = resolve_optimization_context(
+            &configured_decision,
+            route,
+            provider,
+            adapter,
+            &request.body,
+            &request.body,
+        )
+        .map_err(|_| CompressionDecisionError::RouteContextUnavailable)?;
+        let summary = compress_for_route(
+            Some(&context),
+            route.compression_policy.clone(),
+            request.body,
+        );
+        let transformed = !summary.transforms_applied.is_empty();
+        let reason_code = if transformed {
+            "validated_transform".to_string()
+        } else {
+            summary
+                .fallback_reason_code
+                .clone()
+                .unwrap_or_else(|| "compression_not_applicable".to_string())
+        };
+        let artifact = CompressionArtifactIdentity {
+            state: if transformed {
+                CompressionArtifactState::Transformed
+            } else {
+                CompressionArtifactState::Passthrough
+            },
+            identity: compression_artifact_identity(
+                &context,
+                &summary.body,
+                &summary.transforms_applied,
+                &reason_code,
+            ),
+            transforms_applied: summary.transforms_applied.clone(),
+        };
+        Ok(EvaluatedCompressionDecision {
+            decision: CompressionDecision {
+                contract_revision: COMPRESSION_DECISION_CONTRACT_REVISION,
+                source: "dtoken-owned-runtime",
+                state: CompressionDecisionState::Resolved,
+                reason_code,
+                route_id: context.route_id,
+                provider_id: context.provider_id,
+                model: context.effective_model,
+                input_protocol: context.compression_context.input_protocol,
+                output_protocol: context.compression_context.output_protocol,
+                endpoint: context.compression_context.endpoint,
+                compression_policy: route.compression_policy.clone(),
+                artifact,
+                original_tokens: summary.original_tokens,
+                compressed_tokens: summary.compressed_tokens,
+                tokens_saved: summary.tokens_saved,
+                evidence: compression_decision_evidence(),
+            },
+            body: summary.body,
+            savings_percent: summary.savings_percent,
+            elapsed_us: summary.elapsed_us,
+        })
+    }
+
+    pub(crate) fn mcp_stats(&self) -> Value {
+        let logs = self.recent_request_logs(10_000);
+        json!({
+            "source": "dtoken-owned-runtime",
+            "state": "runtime",
+            "stats": runtime_stats_payload(&logs),
+            "cache_summary": runtime_cache_summary_for_state(self),
+            "raw_available": false,
+        })
     }
 
     fn rebuild_runtime_summary(&self) {
@@ -928,15 +2405,221 @@ impl AppState {
             .unwrap_or_else(|_| json!({}))
     }
 
-    fn record_memory(&self, record: Value) -> anyhow::Result<Value> {
-        let sanitized = sanitize_memory_record(record);
-        if let Ok(mut items) = self.memory_records.lock() {
-            items.push(sanitized.clone());
+    fn record_memory(&self, request: &MemoryWriteRequest) -> anyhow::Result<Value> {
+        let store = self
+            .context_store
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("typed memory store is unavailable"))?;
+        let store = store
+            .lock()
+            .map_err(|_| anyhow::anyhow!("typed memory store lock is unavailable"))?;
+        let record = store.upsert_memory(request)?;
+        Ok(memory_record_payload(&record))
+    }
+
+    pub fn prepare_memory_capability_transaction(
+        &self,
+        request: &MemoryCapabilityTransactionRequest,
+    ) -> anyhow::Result<PreparedMemoryCapabilityTransaction> {
+        let store = self
+            .context_store
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("typed memory store is unavailable"))?;
+        let store = store
+            .lock()
+            .map_err(|_| anyhow::anyhow!("typed memory store lock is unavailable"))?;
+        store.prepare_memory_capability_transaction(request)
+    }
+
+    pub fn apply_memory_capability_transaction(
+        &self,
+        prepared: PreparedMemoryCapabilityTransaction,
+        reviewed_digest: &str,
+    ) -> anyhow::Result<MemoryCapabilityTransactionReceipt> {
+        let store = self
+            .context_store
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("typed memory store is unavailable"))?;
+        let store = store
+            .lock()
+            .map_err(|_| anyhow::anyhow!("typed memory store lock is unavailable"))?;
+        store.apply_memory_capability_transaction(prepared, reviewed_digest)
+    }
+
+    pub fn revoke_memory_capability_transaction(
+        &self,
+        transaction_id: &str,
+        reviewed_document_sha256: &str,
+        revoked_at_ms: u64,
+    ) -> anyhow::Result<MemoryCapabilityTransactionReceipt> {
+        let store = self
+            .context_store
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("typed memory store is unavailable"))?;
+        let store = store
+            .lock()
+            .map_err(|_| anyhow::anyhow!("typed memory store lock is unavailable"))?;
+        store.revoke_memory_capability_transaction(
+            transaction_id,
+            reviewed_document_sha256,
+            revoked_at_ms,
+        )
+    }
+
+    pub fn resolve_memory_capability_file(
+        &self,
+        path: &StdPath,
+        expected_route_binding: &MemoryCapabilityRouteBinding,
+        observed_at_ms: u64,
+    ) -> anyhow::Result<ResolvedMemoryCapability> {
+        let store = self
+            .context_store
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("typed memory store is unavailable"))?;
+        let store = store
+            .lock()
+            .map_err(|_| anyhow::anyhow!("typed memory store lock is unavailable"))?;
+        store.resolve_memory_capability_file(path, expected_route_binding, observed_at_ms)
+    }
+
+    pub fn memory_capability_route_binding(
+        &self,
+        route_id: &str,
+        model: &str,
+    ) -> anyhow::Result<MemoryCapabilityRouteBinding> {
+        let route = self
+            .config
+            .find_route(route_id)
+            .ok_or_else(|| anyhow::anyhow!("memory capability route is unavailable"))?;
+        let provider = self
+            .config
+            .find_provider(&route.target_provider_id)
+            .ok_or_else(|| anyhow::anyhow!("memory capability provider is unavailable"))?;
+        let model = model.trim();
+        if model.is_empty()
+            || (!provider.models.is_empty()
+                && !provider.models.iter().any(|configured| configured == model))
+        {
+            anyhow::bail!("memory capability model is not allowed by the active route");
         }
-        if let Some(store) = &self.runtime_store {
-            store.append_memory_record(&sanitized)?;
+        let config_json = serde_json::to_string(self.config.as_ref())
+            .context("serialize active d-token config")?;
+        Ok(MemoryCapabilityRouteBinding {
+            route_id: route.id.clone(),
+            provider_id: provider.id.clone(),
+            model: model.to_string(),
+            config_revision: stable_hash(&config_json),
+        })
+    }
+
+    pub fn resolve_memory_capability_for_route(
+        &self,
+        path: &StdPath,
+        route_id: &str,
+        model: &str,
+        observed_at_ms: u64,
+    ) -> anyhow::Result<ResolvedMemoryCapability> {
+        let binding = self.memory_capability_route_binding(route_id, model)?;
+        self.resolve_memory_capability_file(path, &binding, observed_at_ms)
+    }
+
+    /// SharedContext is reachable only through a managed MCP capability which
+    /// already carries this exact scope.  These helpers deliberately accept no
+    /// caller-supplied project or Agent identity, and never return raw prompt
+    /// or response data.
+    pub(crate) fn mcp_list_memory(
+        &self,
+        scope: &MemoryAccessScope,
+    ) -> Result<Value, mcp::McpToolError> {
+        let store = self
+            .context_store
+            .as_ref()
+            .ok_or_else(mcp::McpToolError::memory_unavailable)?;
+        let store = store
+            .lock()
+            .map_err(|_| mcp::McpToolError::memory_unavailable())?;
+        let records = store
+            .list_visible_memory(scope)
+            .map_err(|_| mcp::McpToolError::memory_scope_denied())?;
+        Ok(json!({
+            "source": "dtoken-owned-runtime",
+            "state": "listed",
+            "entries": records.iter().map(memory_record_payload).collect::<Vec<_>>(),
+            "count": records.len(),
+            "raw_available": false,
+        }))
+    }
+
+    pub(crate) fn mcp_export_memory(
+        &self,
+        scope: &MemoryAccessScope,
+        include_tombstones: bool,
+    ) -> Result<Value, mcp::McpToolError> {
+        let store = self
+            .context_store
+            .as_ref()
+            .ok_or_else(mcp::McpToolError::memory_unavailable)?;
+        let store = store
+            .lock()
+            .map_err(|_| mcp::McpToolError::memory_unavailable())?;
+        let records = store
+            .export_project_memory(scope, include_tombstones)
+            .map_err(|_| mcp::McpToolError::memory_scope_denied())?;
+        Ok(json!({
+            "source": "dtoken-owned-runtime",
+            "state": "exported",
+            "entries": records.iter().map(memory_export_payload).collect::<Vec<_>>(),
+            "count": records.len(),
+            "raw_available": false,
+        }))
+    }
+
+    pub(crate) fn mcp_delete_memory(
+        &self,
+        scope: &MemoryAccessScope,
+        memory_id: &str,
+        expected_revision: &str,
+        tombstone_revision: &str,
+    ) -> Result<Value, mcp::McpToolError> {
+        let store = self
+            .context_store
+            .as_ref()
+            .ok_or_else(mcp::McpToolError::memory_unavailable)?;
+        let store = store
+            .lock()
+            .map_err(|_| mcp::McpToolError::memory_unavailable())?;
+        let tombstone = store
+            .tombstone_memory(
+                memory_id,
+                scope,
+                expected_revision,
+                tombstone_revision,
+                dtoken_event_ledger::now_ms(),
+            )
+            .map_err(|_| mcp::McpToolError::memory_scope_denied())?;
+        Ok(json!({
+            "source": "dtoken-owned-runtime",
+            "state": "deleted",
+            "memory_id": tombstone.memory_id,
+            "entry_revision": tombstone.entry_revision,
+            "deleted_at_ms": tombstone.deleted_at_ms,
+            "raw_available": false,
+        }))
+    }
+
+    pub(crate) fn mcp_write_memory(
+        &self,
+        scope: &MemoryAccessScope,
+        request: &MemoryWriteRequest,
+    ) -> Result<Value, mcp::McpToolError> {
+        if request.project_id != scope.project_id
+            || request.agent_id.as_deref() != Some(scope.agent_id.as_str())
+            || request.session_id != scope.session_id
+        {
+            return Err(mcp::McpToolError::memory_scope_denied());
         }
-        Ok(sanitized)
+        self.record_memory(request)
+            .map_err(|_| mcp::McpToolError::memory_unavailable())
     }
 
     fn try_append_event(&self, event: DtokenEvent) -> anyhow::Result<()> {
@@ -946,7 +2629,7 @@ impl AppState {
         self.ledger
             .lock()
             .map_err(|_| anyhow::anyhow!("event ledger lock poisoned"))?
-            .record(event)?;
+            .record_bounded(event, IN_MEMORY_JOURNAL_MAX_ENTRIES)?;
         Ok(())
     }
 
@@ -966,6 +2649,10 @@ impl AppState {
         request_log: &RequestLog,
         original_body: &[u8],
     ) -> anyhow::Result<PreparedCcr> {
+        let _lifecycle_guard = self
+            .ccr_lifecycle_lock
+            .lock()
+            .map_err(|_| anyhow::anyhow!("CCR lifecycle lock poisoned"))?;
         let store_configured = self.ccr_private_store.is_some();
         let required = !request_log.transforms_applied.is_empty();
         if !required {
@@ -978,7 +2665,14 @@ impl AppState {
             anyhow::anyhow!("CCR private storage is required before optimized send")
         })?;
         let recovery_ref = format!("ccr:{}", decision.request_id);
+        let now_ms = dtoken_event_ledger::now_ms().max(1);
+        self.append_ccr_lifecycle_record(ccr_write_intent(
+            &recovery_ref,
+            decision.request_id,
+            now_ms,
+        ))?;
         let receipt = store.store(&recovery_ref, original_body)?;
+        self.append_ccr_lifecycle_record(ccr_pending_retained(&receipt, now_ms)?)?;
         Ok(PreparedCcr {
             receipt: Some(receipt),
             store_configured,
@@ -1009,26 +2703,101 @@ impl AppState {
         ccr_receipt: Option<&CcrStoreReceipt>,
         ccr_store_configured: bool,
     ) {
+        let Ok(_lifecycle_guard) = self.ccr_lifecycle_lock.lock() else {
+            self.record_runtime_performance("terminal_commit_total", Instant::now(), false, 0);
+            return;
+        };
         let terminal_started_at = Instant::now();
-        let ccr = ccr_metadata_from_request(
+        let generated_ccr = ccr_metadata_from_request(
             decision,
             &request_log,
             &event,
             ccr_receipt,
             ccr_store_configured,
         );
+        let recovery_ref = format!("ccr:{}", decision.request_id);
+        let ccr = self
+            .retrieve_ccr_metadata(&recovery_ref)
+            .filter(|metadata| {
+                matches!(
+                    metadata["state"].as_str(),
+                    Some("delete_intent" | "deleted" | "interrupted_retained")
+                )
+            })
+            .unwrap_or(generated_ccr);
         let route_decision = route_decision_to_value(decision);
         let mut sync_count = 0_u64;
         if let Some(store) = &self.runtime_store {
-            let started_at = Instant::now();
-            let result = store.append_event(&event);
+            // G3 cross-store terminal commit: the durable intent marker is
+            // synced before any fan-out append, so a failure here aborts the
+            // commit with no partial durable state anywhere.
+            let marker_started_at = Instant::now();
+            let marker = TerminalCommitMarker {
+                request_id: decision.request_id,
+                phase: TerminalCommitPhase::Intent,
+                timestamp_ms: event.timestamp_ms.max(1),
+                event_id: event.event_id,
+                ccr_updated_at_ms: ccr["updated_at_ms"].as_u64().unwrap_or(event.timestamp_ms),
+                reason: None,
+            };
+            let intent_result = store.append_terminal_commit_marker(&marker);
             self.record_runtime_performance(
-                "terminal_event_sync",
-                started_at,
-                result.is_ok(),
-                u64::from(result.is_ok()),
+                "terminal_intent_sync",
+                marker_started_at,
+                intent_result.is_ok(),
+                u64::from(intent_result.is_ok()),
             );
-            if result.is_err() {
+            if intent_result.is_err() {
+                self.record_runtime_performance(
+                    "terminal_commit_total",
+                    terminal_started_at,
+                    false,
+                    0,
+                );
+                return;
+            }
+            // Fan-out appends, cheapest to verify last.  The first failure
+            // aborts the commit and durably marks the intent pending so a
+            // restart converges without guessing.
+            let mut append =
+                |stage: &'static str, result: anyhow::Result<()>| -> Option<&'static str> {
+                    let started_at = Instant::now();
+                    self.record_runtime_performance(
+                        stage,
+                        started_at,
+                        result.is_ok(),
+                        u64::from(result.is_ok()),
+                    );
+                    match result {
+                        Ok(()) => {
+                            sync_count += 1;
+                            None
+                        }
+                        Err(_) => Some(stage),
+                    }
+                };
+            let mut fan_out_failed = append("terminal_event_sync", store.append_event(&event));
+            if fan_out_failed.is_none() {
+                fan_out_failed = append(
+                    "terminal_route_sync",
+                    store.append_route_decision(&route_decision),
+                );
+            }
+            if fan_out_failed.is_none() {
+                fan_out_failed = append(
+                    "terminal_request_log_sync",
+                    store.append_request_log(&request_log),
+                );
+            }
+            if fan_out_failed.is_none() {
+                fan_out_failed = append("terminal_ccr_sync", store.append_ccr_metadata(&ccr));
+            }
+            if let Some(stage) = fan_out_failed {
+                let _ = store.append_terminal_commit_marker(&TerminalCommitMarker {
+                    phase: TerminalCommitPhase::Pending,
+                    reason: Some(format!("{stage}_failed")),
+                    ..marker.clone()
+                });
                 self.record_runtime_performance(
                     "terminal_commit_total",
                     terminal_started_at,
@@ -1037,17 +2806,34 @@ impl AppState {
                 );
                 return;
             }
-            sync_count += 1;
-
-            let started_at = Instant::now();
-            let result = store.append_route_decision(&route_decision);
+            // G3: the committed marker is synced only after all four fan-out
+            // appends are durable.  A crash before this point is healed by
+            // the restart recovery sweep; a crash after it is a normal
+            // committed request whose SQLite view is rebuilt from the
+            // journals.
+            let commit_started_at = Instant::now();
+            let commit_marker = TerminalCommitMarker {
+                phase: TerminalCommitPhase::Committed,
+                ..marker.clone()
+            };
+            let commit_result = store.append_terminal_commit_marker(&commit_marker);
             self.record_runtime_performance(
-                "terminal_route_sync",
-                started_at,
-                result.is_ok(),
-                u64::from(result.is_ok()),
+                "terminal_commit_sync",
+                commit_started_at,
+                commit_result.is_ok(),
+                u64::from(commit_result.is_ok()),
             );
-            if result.is_err() {
+            if commit_result.is_err() {
+                // The fan-out is complete but the commit marker could not be
+                // synced; mark the dangling intent explicitly pending so
+                // recovery leaves it untouched and never duplicates fan-out
+                // records.  The projection layer converges anyway via
+                // latest-wins rebuilds once a later commit lands.
+                let _ = store.append_terminal_commit_marker(&TerminalCommitMarker {
+                    phase: TerminalCommitPhase::Pending,
+                    reason: Some("commit_marker_write_failed".to_string()),
+                    ..marker.clone()
+                });
                 self.record_runtime_performance(
                     "terminal_commit_total",
                     terminal_started_at,
@@ -1056,57 +2842,18 @@ impl AppState {
                 );
                 return;
             }
-            sync_count += 1;
-
-            let started_at = Instant::now();
-            let result = store.append_request_log(&request_log);
-            self.record_runtime_performance(
-                "terminal_request_log_sync",
-                started_at,
-                result.is_ok(),
-                u64::from(result.is_ok()),
-            );
-            if result.is_err() {
-                self.record_runtime_performance(
-                    "terminal_commit_total",
-                    terminal_started_at,
-                    false,
-                    sync_count,
-                );
-                return;
-            }
-            sync_count += 1;
-
-            let started_at = Instant::now();
-            let result = store.append_ccr_metadata(&ccr);
-            self.record_runtime_performance(
-                "terminal_ccr_sync",
-                started_at,
-                result.is_ok(),
-                u64::from(result.is_ok()),
-            );
-            if result.is_err() {
-                self.record_runtime_performance(
-                    "terminal_commit_total",
-                    terminal_started_at,
-                    false,
-                    sync_count,
-                );
-                return;
-            }
-            sync_count += 1;
         }
         if let Ok(mut route_decisions) = self.route_decisions.lock() {
-            route_decisions.push(route_decision);
+            push_bounded(&mut route_decisions, route_decision);
         }
         if let Ok(mut request_logs) = self.request_logs.lock() {
-            request_logs.push(request_log.clone());
+            push_bounded(&mut request_logs, request_log.clone());
         }
         if let Ok(mut ledger) = self.ledger.lock() {
-            let _ = ledger.record(event.clone());
+            let _ = ledger.record_bounded(event.clone(), IN_MEMORY_JOURNAL_MAX_ENTRIES);
         }
         if let Ok(mut items) = self.ccr_metadata.lock() {
-            items.push(ccr.clone());
+            push_bounded(&mut items, ccr.clone());
         }
         if let Ok(mut summary) = self.runtime_summary.lock() {
             summary.record_request(&request_log);
@@ -1148,7 +2895,16 @@ impl AppState {
                     plaintext_bytes: ccr_receipt
                         .and_then(|receipt| u64::try_from(receipt.plaintext_bytes).ok()),
                     state: if ccr_receipt.is_some() {
-                        "prepared".to_string()
+                        // This projection is written only with the terminal
+                        // request record, after upstream completion/failure is
+                        // known.  Never leave a durable receipt labelled
+                        // `prepared`: that would make crash recovery and exact
+                        // delete semantics ambiguous.
+                        match &event.status {
+                            EventStatus::Ok => "finalized".to_string(),
+                            EventStatus::Failed => "send_failed_retained".to_string(),
+                            _ => "finalized_with_non_ok_terminal".to_string(),
+                        }
                     } else if request_log.transforms_applied.is_empty() {
                         "not_required".to_string()
                     } else {
@@ -1156,10 +2912,34 @@ impl AppState {
                     },
                     updated_at_ms: event.timestamp_ms,
                 });
+                let failure_pattern_result = if event.status == EventStatus::Failed {
+                    request_log
+                        .error
+                        .as_deref()
+                        .and_then(FailureClass::from_reason_code)
+                        .map(|failure_class| {
+                            store.record_failure_pattern(
+                                &FailurePatternObservation {
+                                    failure_class,
+                                    route_id: decision.route_id.clone(),
+                                    provider_id: decision.provider_id.clone(),
+                                    model: request_log.model.clone(),
+                                    agent_id: request_log.agent.clone(),
+                                    project_id: event.project_id.clone(),
+                                    observed_at_ms: event.timestamp_ms.max(1),
+                                    evidence_revision: format!("request-{}", decision.request_id),
+                                },
+                                FAILURE_PATTERN_TTL_MS,
+                            )
+                        })
+                        .transpose()
+                } else {
+                    Ok(None)
+                };
                 self.record_runtime_performance(
                     "context_store_projection",
                     projection_started_at,
-                    request_result.is_ok() && ccr_result.is_ok(),
+                    request_result.is_ok() && ccr_result.is_ok() && failure_pattern_result.is_ok(),
                     0,
                 );
             } else {
@@ -1178,6 +2958,54 @@ impl AppState {
             sync_count,
         );
     }
+}
+
+fn mcp_tool_error_from_decision_error(error: CompressionDecisionError) -> mcp::McpToolError {
+    match error {
+        CompressionDecisionError::InvalidArguments => {
+            mcp::McpToolError::invalid_arguments("invalid compression decision request")
+        }
+        CompressionDecisionError::RouteContextUnavailable => {
+            mcp::McpToolError::route_context_unavailable()
+        }
+        CompressionDecisionError::RouteContextMismatch => {
+            mcp::McpToolError::route_context_mismatch()
+        }
+        CompressionDecisionError::RoutePolicyMismatch => mcp::McpToolError::route_policy_mismatch(),
+    }
+}
+
+fn compression_decision_evidence() -> CompressionDecisionEvidence {
+    CompressionDecisionEvidence {
+        route_identity: "configured",
+        provider_identity: "configured",
+        model_allowlist: "validated",
+        endpoint_identity: "validated",
+        request_body_persisted: false,
+        credentials_returned: false,
+    }
+}
+
+fn compression_artifact_identity(
+    context: &ResolvedRouteOptimizationContext,
+    body: &Value,
+    transforms_applied: &[String],
+    reason_code: &str,
+) -> String {
+    let material = json!({
+        "contract_revision": COMPRESSION_DECISION_CONTRACT_REVISION,
+        "route_id": context.route_id,
+        "provider_id": context.provider_id,
+        "model": context.effective_model,
+        "input_protocol": context.compression_context.input_protocol,
+        "output_protocol": context.compression_context.output_protocol,
+        "endpoint": context.compression_context.endpoint,
+        "compression_policy": context.requested_policy,
+        "reason_code": reason_code,
+        "transforms_applied": transforms_applied,
+        "candidate": body,
+    });
+    stable_hash(&serde_json::to_string(&material).unwrap_or_default())
 }
 
 fn event_status_label(status: &EventStatus) -> &'static str {
@@ -1327,23 +3155,83 @@ impl RuntimeConfigStatus {
     }
 }
 
+/// Durable phases of a cross-store terminal commit.  One request may
+/// progress `Intent -> Committed` (rolled forward at recovery) or
+/// `Intent -> Pending` (explicitly incomplete).  Markers are the only
+/// records the recovery sweep ever appends; fan-out journal records are
+/// never re-appended, so restart recovery cannot duplicate terminal
+/// records.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum TerminalCommitPhase {
+    Intent,
+    Committed,
+    Pending,
+}
+
+/// One durable record in the terminal-commit marker journal
+/// (`terminal-commits.jsonl`).  The intent marker is synced before any of
+/// the four fan-out journals; the committed marker is synced only after
+/// all four fan-out appends succeeded.  A restart that observes a dangling
+/// intent checks the four journals and either rolls the commit forward
+/// (complete fan-out) or marks it explicitly pending (partial fan-out).
+/// The marker carries the exact identities needed for those checks:
+/// `events.jsonl` is not unique per request (stage events share a request
+/// id), so the terminal event is pinned by `event_id`; `ccr-metadata.jsonl`
+/// holds lifecycle records per recovery ref, so the terminal CCR record is
+/// pinned by its `updated_at_ms`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct TerminalCommitMarker {
+    request_id: Uuid,
+    phase: TerminalCommitPhase,
+    timestamp_ms: u64,
+    event_id: Uuid,
+    ccr_updated_at_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    reason: Option<String>,
+}
+
+/// Whether a CCR lifecycle state is written only by the terminal commit.
+/// These are the states hidden for explicitly pending terminal commits so
+/// the underlying lifecycle (write intent / retained / deleted) stays
+/// authoritative; `delete_intent` / `deleted` / `interrupted_retained` are
+/// lifecycle states and must keep reconciling.
+fn terminal_ccr_state_is_terminal(state: Option<&str>) -> bool {
+    matches!(
+        state,
+        Some(
+            "finalized"
+                | "send_failed_retained"
+                | "finalized_with_non_ok_terminal"
+                | "not_required"
+                | "unavailable"
+        )
+    )
+}
+
 #[derive(Debug)]
 struct RuntimeStore {
     events: JsonlEventLedger,
     route_decisions: JsonlStore,
     request_logs: JsonlStore,
     ccr_metadata: JsonlStore,
-    memory_records: JsonlStore,
+    ccr_metadata_path: PathBuf,
+    terminal_commits: JsonlStore,
+    terminal_commits_path: PathBuf,
 }
 
 impl RuntimeStore {
     fn new(dir: &StdPath) -> Self {
+        let ccr_metadata_path = dir.join("ccr-metadata.jsonl");
+        let terminal_commits_path = dir.join("terminal-commits.jsonl");
         Self {
             events: JsonlEventLedger::new(dir.join("events.jsonl")),
             route_decisions: JsonlStore::new(dir.join("route-decisions.jsonl")),
             request_logs: JsonlStore::new(dir.join("request-logs.jsonl")),
-            ccr_metadata: JsonlStore::new(dir.join("ccr-metadata.jsonl")),
-            memory_records: JsonlStore::new(dir.join("memory-records.jsonl")),
+            ccr_metadata: JsonlStore::new(&ccr_metadata_path),
+            ccr_metadata_path,
+            terminal_commits: JsonlStore::new(&terminal_commits_path),
+            terminal_commits_path,
         }
     }
 
@@ -1353,6 +3241,13 @@ impl RuntimeStore {
 
     fn recent_events(&self, limit: usize) -> anyhow::Result<Vec<DtokenEvent>> {
         self.events.recent(limit)
+    }
+
+    fn visit_all_events<F>(&self, visit: F) -> anyhow::Result<()>
+    where
+        F: FnMut(DtokenEvent) -> anyhow::Result<()>,
+    {
+        self.events.visit_all(visit)
     }
 
     fn append_route_decision(&self, decision: &Value) -> anyhow::Result<()> {
@@ -1371,20 +3266,181 @@ impl RuntimeStore {
         self.request_logs.recent(limit)
     }
 
+    fn visit_all_request_logs<F>(&self, visit: F) -> anyhow::Result<()>
+    where
+        F: FnMut(RequestLog) -> anyhow::Result<()>,
+    {
+        self.request_logs.visit_all(visit)
+    }
+
     fn append_ccr_metadata(&self, metadata: &Value) -> anyhow::Result<()> {
         self.ccr_metadata.append(metadata)
     }
 
+    #[cfg(test)]
     fn recent_ccr_metadata(&self, limit: usize) -> anyhow::Result<Vec<Value>> {
         self.ccr_metadata.recent(limit)
     }
 
-    fn append_memory_record(&self, record: &Value) -> anyhow::Result<()> {
-        self.memory_records.append(record)
+    /// Latest CCR lifecycle record per recovery ref, in journal order.
+    /// Records for which `skip` returns `true` are ignored during the scan,
+    /// so an earlier lifecycle record naturally becomes the latest for that
+    /// ref.  Restart recovery uses this to hide terminal-family records of
+    /// explicitly pending terminal commits while keeping the underlying
+    /// lifecycle (write intent / retention / deletion) reconcilable.
+    fn latest_ccr_metadata_by_recovery_ref(
+        &self,
+        skip: &dyn Fn(&Value) -> bool,
+    ) -> anyhow::Result<Vec<Value>> {
+        if !self.ccr_metadata_path.exists() {
+            return Ok(Vec::new());
+        }
+
+        let file = OpenOptions::new()
+            .read(true)
+            .open(&self.ccr_metadata_path)
+            .with_context(|| {
+                format!(
+                    "open CCR metadata journal {}",
+                    self.ccr_metadata_path.display()
+                )
+            })?;
+        let mut reader = BufReader::new(file);
+        let mut latest_by_ref = HashMap::<String, (usize, Value)>::new();
+        let mut line = Vec::new();
+        let mut sequence = 0_usize;
+
+        loop {
+            line.clear();
+            let bytes_read = reader.read_until(b'\n', &mut line).with_context(|| {
+                format!(
+                    "read CCR metadata journal {}",
+                    self.ccr_metadata_path.display()
+                )
+            })?;
+            if bytes_read == 0 {
+                break;
+            }
+            if !line.ends_with(b"\n") {
+                break;
+            }
+            let payload = &line[..line.len() - 1];
+            if payload.iter().all(u8::is_ascii_whitespace) {
+                continue;
+            }
+
+            match serde_json::from_slice::<Value>(payload) {
+                Ok(record) => {
+                    if skip(&record) {
+                        continue;
+                    }
+                    if let Some(recovery_ref) = record
+                        .get("recovery_ref")
+                        .and_then(Value::as_str)
+                        .filter(|value| !value.trim().is_empty())
+                    {
+                        latest_by_ref.insert(recovery_ref.to_string(), (sequence, record));
+                        sequence = sequence.saturating_add(1);
+                    }
+                }
+                Err(error) => {
+                    let is_tail = reader
+                        .fill_buf()
+                        .with_context(|| {
+                            format!(
+                                "inspect CCR metadata tail in {}",
+                                self.ccr_metadata_path.display()
+                            )
+                        })?
+                        .is_empty();
+                    if is_tail {
+                        break;
+                    }
+                    return Err(error).with_context(|| {
+                        format!(
+                            "parse non-tail CCR metadata record in {}",
+                            self.ccr_metadata_path.display()
+                        )
+                    });
+                }
+            }
+        }
+
+        let mut latest = latest_by_ref.into_values().collect::<Vec<_>>();
+        latest.sort_by_key(|(sequence, _)| *sequence);
+        Ok(latest.into_iter().map(|(_, record)| record).collect())
     }
 
-    fn recent_memory_records(&self, limit: usize) -> anyhow::Result<Vec<Value>> {
-        self.memory_records.recent(limit)
+    fn append_terminal_commit_marker(&self, marker: &TerminalCommitMarker) -> anyhow::Result<()> {
+        self.terminal_commits.append(marker)
+    }
+
+    /// Latest terminal-commit marker per request, in journal order.  Phases
+    /// are monotonic per request (intent, then at most one of committed /
+    /// pending), so the last record for a request is its current state.
+    fn latest_terminal_commit_markers(&self) -> anyhow::Result<Vec<(Uuid, TerminalCommitMarker)>> {
+        if !self.terminal_commits_path.exists() {
+            return Ok(Vec::new());
+        }
+        let mut latest = HashMap::<Uuid, TerminalCommitMarker>::new();
+        self.terminal_commits
+            .visit_all(|marker: TerminalCommitMarker| {
+                latest.insert(marker.request_id, marker);
+                Ok(())
+            })?;
+        let mut markers = latest.into_iter().collect::<Vec<_>>();
+        markers.sort_by_key(|(request_id, _)| *request_id);
+        Ok(markers)
+    }
+
+    /// Whether the four fan-out journals hold the complete terminal bundle
+    /// for a dangling intent.  Checks are cheapest-first and short-circuit:
+    /// route decisions and request logs are unique per request, the CCR
+    /// record is pinned by recovery ref + `updated_at_ms`, and the terminal
+    /// event is pinned by `event_id` (events are not unique per request).
+    fn terminal_bundle_complete(&self, marker: &TerminalCommitMarker) -> anyhow::Result<bool> {
+        let request_id = marker.request_id.to_string();
+        let recovery_ref = format!("ccr:{}", marker.request_id);
+        let mut route_present = false;
+        self.route_decisions.visit_all(|value: Value| {
+            if value["request_id"].as_str() == Some(request_id.as_str()) {
+                route_present = true;
+            }
+            Ok(())
+        })?;
+        if !route_present {
+            return Ok(false);
+        }
+        let mut request_present = false;
+        self.request_logs.visit_all(|log: RequestLog| {
+            if log.request_id == marker.request_id {
+                request_present = true;
+            }
+            Ok(())
+        })?;
+        if !request_present {
+            return Ok(false);
+        }
+        let mut ccr_present = false;
+        self.ccr_metadata.visit_all(|value: Value| {
+            if value["recovery_ref"].as_str() == Some(recovery_ref.as_str())
+                && value["updated_at_ms"].as_u64() == Some(marker.ccr_updated_at_ms)
+            {
+                ccr_present = true;
+            }
+            Ok(())
+        })?;
+        if !ccr_present {
+            return Ok(false);
+        }
+        let mut event_present = false;
+        self.events.visit_all(|event: DtokenEvent| {
+            if event.event_id == marker.event_id {
+                event_present = true;
+            }
+            Ok(())
+        })?;
+        Ok(event_present)
     }
 }
 
@@ -1396,6 +3452,55 @@ fn configured_ccr_private_store(runtime_dir: &StdPath) -> Option<Arc<CcrStore>> 
     CcrStore::new(runtime_dir.join("ccr-private"), key)
         .ok()
         .map(Arc::new)
+}
+
+#[cfg(windows)]
+fn verify_windows_private_runtime_contract(
+    runtime_dir: &StdPath,
+    state: &AppState,
+) -> anyhow::Result<()> {
+    use dtoken_context_store::{verify_private_directory_acl, verify_private_file_acl};
+    use std::{ffi::OsString, path::PathBuf};
+
+    let ccr_root = runtime_dir.join("ccr-private");
+    verify_private_directory_acl(runtime_dir)
+        .with_context(|| format!("verify private runtime directory {}", runtime_dir.display()))?;
+    verify_private_directory_acl(&ccr_root)
+        .with_context(|| format!("verify private CCR directory {}", ccr_root.display()))?;
+
+    if state.context_store.is_none() {
+        bail!(
+            "Windows private runtime-state.sqlite3 projection did not initialize; refusing CCR-enabled persistent startup"
+        );
+    }
+
+    let database = runtime_dir.join("runtime-state.sqlite3");
+    verify_private_file_acl(&database)
+        .with_context(|| format!("verify private runtime projection {}", database.display()))?;
+    for suffix in ["-wal", "-shm"] {
+        let mut sidecar = OsString::from(database.as_os_str());
+        sidecar.push(suffix);
+        let sidecar = PathBuf::from(sidecar);
+        match std::fs::symlink_metadata(&sidecar) {
+            Ok(_) => verify_private_file_acl(&sidecar)
+                .with_context(|| format!("verify private SQLite sidecar {}", sidecar.display()))?,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(error).with_context(|| {
+                    format!("inspect private SQLite sidecar {}", sidecar.display())
+                });
+            }
+        }
+    }
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn verify_windows_private_runtime_contract(
+    _runtime_dir: &StdPath,
+    _state: &AppState,
+) -> anyhow::Result<()> {
+    Ok(())
 }
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
@@ -1448,6 +3553,221 @@ fn decode_ccr_key(encoded: &str) -> anyhow::Result<[u8; 32]> {
     Ok(key)
 }
 
+fn ccr_deletion_tombstone(mut metadata: Value, deleted_at_ms: u64) -> anyhow::Result<Value> {
+    let fields = metadata
+        .as_object_mut()
+        .ok_or_else(|| anyhow::anyhow!("CCR metadata must be an object"))?;
+    fields.remove("raw_bytes");
+    fields.remove("expires_at_unix");
+    fields.insert("raw_available".to_string(), json!(false));
+    fields.insert("raw_storage".to_string(), json!("deleted"));
+    fields.insert("state".to_string(), json!("deleted"));
+    fields.insert("deleted_at_ms".to_string(), json!(deleted_at_ms));
+    fields.insert(
+        "note".to_string(),
+        json!("CCR original was deleted through the authorized in-process boundary; only redacted lifecycle metadata remains."),
+    );
+    Ok(metadata)
+}
+
+fn ccr_write_intent(recovery_ref: &str, request_id: Uuid, updated_at_ms: u64) -> Value {
+    json!({
+        "recovery_ref": recovery_ref,
+        "request_id": request_id,
+        "state": "write_intent",
+        "raw_available": false,
+        "raw_storage": "private-store-write-pending",
+        "updated_at_ms": updated_at_ms,
+        "note": "Redacted lifecycle intent recorded before the encrypted CCR original is written."
+    })
+}
+
+fn ccr_pending_retained(receipt: &CcrStoreReceipt, updated_at_ms: u64) -> anyhow::Result<Value> {
+    let request_id = receipt
+        .recovery_ref
+        .strip_prefix("ccr:")
+        .ok_or_else(|| anyhow::anyhow!("CCR receipt has an invalid recovery reference"))?;
+    Ok(json!({
+        "recovery_ref": receipt.recovery_ref.as_str(),
+        "request_id": request_id,
+        "state": "pending_retained",
+        "raw_available": true,
+        "raw_storage": "encrypted-private-store",
+        "raw_bytes": receipt.plaintext_bytes,
+        "expires_at_unix": receipt.expires_at_unix,
+        "updated_at_ms": updated_at_ms,
+        "note": "Encrypted CCR original is retained pending a terminal request record; no raw body is present in this journal."
+    }))
+}
+
+fn ccr_delete_intent(mut metadata: Value, updated_at_ms: u64) -> anyhow::Result<Value> {
+    let fields = metadata
+        .as_object_mut()
+        .ok_or_else(|| anyhow::anyhow!("CCR metadata must be an object"))?;
+    fields.remove("raw_bytes");
+    fields.remove("expires_at_unix");
+    fields.insert("state".to_string(), json!("delete_intent"));
+    fields.insert("raw_available".to_string(), json!(true));
+    fields.insert(
+        "raw_storage".to_string(),
+        json!("private-store-delete-pending"),
+    );
+    fields.insert("updated_at_ms".to_string(), json!(updated_at_ms));
+    fields.insert(
+        "note".to_string(),
+        json!("Redacted lifecycle intent recorded before authorized CCR original deletion."),
+    );
+    Ok(metadata)
+}
+
+fn ccr_interrupted_retained(mut metadata: Value, updated_at_ms: u64) -> anyhow::Result<Value> {
+    let fields = metadata
+        .as_object_mut()
+        .ok_or_else(|| anyhow::anyhow!("CCR metadata must be an object"))?;
+    fields.remove("raw_bytes");
+    fields.remove("expires_at_unix");
+    fields.insert("state".to_string(), json!("interrupted_retained"));
+    fields.insert("raw_available".to_string(), json!(true));
+    fields.insert("raw_storage".to_string(), json!("encrypted-private-store"));
+    fields.insert("updated_at_ms".to_string(), json!(updated_at_ms));
+    fields.insert(
+        "note".to_string(),
+        json!("Deletion was interrupted; encrypted CCR original was retained and requires an explicit authorized retry."),
+    );
+    Ok(metadata)
+}
+
+fn ccr_recovery_pending_retained(mut metadata: Value, updated_at_ms: u64) -> anyhow::Result<Value> {
+    let fields = metadata
+        .as_object_mut()
+        .ok_or_else(|| anyhow::anyhow!("CCR metadata must be an object"))?;
+    fields.insert("state".to_string(), json!("recovery_pending_retained"));
+    fields.insert("raw_available".to_string(), json!(true));
+    fields.insert("raw_storage".to_string(), json!("encrypted-private-store"));
+    fields.insert("updated_at_ms".to_string(), json!(updated_at_ms));
+    fields.insert(
+        "note".to_string(),
+        json!("Write completed before a terminal request record; encrypted CCR original was retained and was not resent."),
+    );
+    Ok(metadata)
+}
+
+fn ccr_raw_missing(mut metadata: Value, updated_at_ms: u64) -> anyhow::Result<Value> {
+    let fields = metadata
+        .as_object_mut()
+        .ok_or_else(|| anyhow::anyhow!("CCR metadata must be an object"))?;
+    fields.remove("raw_bytes");
+    fields.remove("expires_at_unix");
+    fields.insert("state".to_string(), json!("raw_missing"));
+    fields.insert("raw_available".to_string(), json!(false));
+    fields.insert("raw_storage".to_string(), json!("missing"));
+    fields.insert("updated_at_ms".to_string(), json!(updated_at_ms));
+    fields.insert(
+        "note".to_string(),
+        json!("Encrypted CCR original is absent without a completed deletion tombstone; it was not treated as deleted."),
+    );
+    Ok(metadata)
+}
+
+fn ccr_raw_unavailable(
+    mut metadata: Value,
+    updated_at_ms: u64,
+    inspection: CcrEntryInspection,
+) -> anyhow::Result<Value> {
+    let status = match inspection {
+        CcrEntryInspection::Expired => "expired",
+        CcrEntryInspection::Invalid => "invalid",
+        CcrEntryInspection::Missing => "missing",
+        CcrEntryInspection::Available => "available",
+    };
+    let fields = metadata
+        .as_object_mut()
+        .ok_or_else(|| anyhow::anyhow!("CCR metadata must be an object"))?;
+    fields.remove("raw_bytes");
+    fields.remove("expires_at_unix");
+    fields.insert("state".to_string(), json!("raw_unavailable"));
+    fields.insert("raw_available".to_string(), json!(false));
+    fields.insert(
+        "raw_storage".to_string(),
+        json!("private-store-unavailable"),
+    );
+    fields.insert("raw_inspection".to_string(), json!(status));
+    fields.insert("updated_at_ms".to_string(), json!(updated_at_ms));
+    fields.insert(
+        "note".to_string(),
+        json!("Encrypted CCR original failed non-destructive restart verification and was retained without being exposed, resent, or deleted."),
+    );
+    Ok(metadata)
+}
+
+fn ccr_terminal_metadata(metadata: &Value) -> bool {
+    matches!(
+        metadata["state"].as_str(),
+        Some("finalized" | "send_failed_retained" | "finalized_with_non_ok_terminal")
+    ) || (metadata.get("state").is_none() && metadata["raw_available"].as_bool() == Some(true))
+}
+
+fn ccr_metadata_projection_from_journal(metadata: &Value) -> Option<CcrMetadataProjection> {
+    let recovery_ref = metadata["recovery_ref"].as_str()?.trim();
+    let request_id = metadata["request_id"].as_str()?.trim();
+    let state = metadata["state"].as_str()?.trim();
+    if recovery_ref.is_empty() || request_id.is_empty() || state.is_empty() {
+        return None;
+    }
+    Some(CcrMetadataProjection {
+        recovery_ref: recovery_ref.to_string(),
+        request_id: request_id.to_string(),
+        expires_at_ms: metadata["expires_at_unix"]
+            .as_u64()
+            .map(|value| value.saturating_mul(1_000)),
+        plaintext_bytes: metadata["raw_bytes"].as_u64(),
+        state: state.to_string(),
+        updated_at_ms: metadata["updated_at_ms"].as_u64().unwrap_or_default(),
+    })
+}
+
+fn validate_ccr_lifecycle_record(record: &Value) -> anyhow::Result<()> {
+    let fields = record
+        .as_object()
+        .ok_or_else(|| anyhow::anyhow!("CCR lifecycle record must be an object"))?;
+    for required in ["recovery_ref", "request_id", "state"] {
+        if fields
+            .get(required)
+            .and_then(Value::as_str)
+            .is_none_or(str::is_empty)
+        {
+            return Err(anyhow::anyhow!(
+                "CCR lifecycle record is missing {required}"
+            ));
+        }
+    }
+    if ccr_record_contains_raw_material(record) {
+        return Err(anyhow::anyhow!(
+            "CCR lifecycle record contains prohibited raw material"
+        ));
+    }
+    Ok(())
+}
+
+fn ccr_record_contains_raw_material(value: &Value) -> bool {
+    const PROHIBITED: &[&str] = &[
+        "raw_prompt",
+        "raw_response",
+        "raw_body",
+        "plaintext",
+        "payload",
+        "messages",
+        "content",
+    ];
+    match value {
+        Value::Object(fields) => fields.iter().any(|(key, value)| {
+            PROHIBITED.contains(&key.as_str()) || ccr_record_contains_raw_material(value)
+        }),
+        Value::Array(values) => values.iter().any(ccr_record_contains_raw_material),
+        _ => false,
+    }
+}
+
 fn ccr_metadata_from_request(
     decision: &RouteDecision,
     request_log: &RequestLog,
@@ -1471,41 +3791,68 @@ fn ccr_metadata_from_request(
         "raw_storage": if receipt.is_some() { "encrypted-private-store" } else if private_store_configured { "not-stored-or-failed" } else { "disabled" },
         "raw_bytes": receipt.map(|item| item.plaintext_bytes),
         "expires_at_unix": receipt.map(|item| item.expires_at_unix),
+        "state": if receipt.is_some() {
+            match &event.status {
+                EventStatus::Ok => "finalized",
+                EventStatus::Failed => "send_failed_retained",
+                _ => "finalized_with_non_ok_terminal",
+            }
+        } else if request_log.transforms_applied.is_empty() {
+            "not_required"
+        } else {
+            "unavailable"
+        },
+        "updated_at_ms": event.timestamp_ms,
         "note": if receipt.is_some() { "Encrypted CCR original is available only through the in-process authorized retrieval boundary; it is excluded from ordinary HTTP responses, logs, Ledger, and exports." } else { "CCR metadata only; raw prompt/response/CCR body is not stored by default." }
     })
 }
 
-fn sanitize_memory_record(record: Value) -> Value {
-    let mut object = record.as_object().cloned().unwrap_or_default();
-    for key in [
-        "raw_prompt",
-        "raw_response",
-        "prompt",
-        "response",
-        "content",
-        "body",
-        "messages",
-    ] {
-        object.remove(key);
-    }
-    object.insert(
-        "memory_id".to_string(),
-        json!(format!("mem-{}", Uuid::new_v4())),
-    );
-    object.insert(
-        "timestamp_ms".to_string(),
-        json!(dtoken_event_ledger::now_ms()),
-    );
-    object.insert("source".to_string(), json!("dtoken-owned-runtime"));
-    object.insert("raw_available".to_string(), json!(false));
-    object.insert(
-        "note".to_string(),
-        json!("Memory/learn metadata only; raw prompt and response bodies are not stored."),
-    );
-    Value::Object(object)
+fn memory_record_payload(record: &MemoryRecord) -> Value {
+    json!({
+        "memory_id": record.memory_id,
+        "project_id": record.project_id,
+        "agent_id": record.agent_id,
+        "session_id": record.session_id,
+        "kind": record.kind,
+        "summary": record.summary,
+        "keywords": record.keywords,
+        "dedup_key": record.dedup_key,
+        "entry_revision": record.entry_revision,
+        "provenance": {
+            "source": record.provenance.source,
+            "source_revision": record.provenance.source_revision,
+            "observed_at_ms": record.provenance.observed_at_ms,
+        },
+        "created_at_ms": record.created_at_ms,
+        "updated_at_ms": record.updated_at_ms,
+        "raw_available": false,
+        "note": "Typed memory metadata only; raw prompt and response bodies are not stored."
+    })
+}
+
+fn memory_export_payload(record: &MemoryExportEntry) -> Value {
+    json!({
+        "memory_id": record.memory_id,
+        "project_id": record.project_id,
+        "agent_id": record.agent_id,
+        "session_id": record.session_id,
+        "kind": record.kind,
+        "summary": record.summary,
+        "keywords": record.keywords,
+        "entry_revision": record.entry_revision,
+        "provenance": {
+            "source": record.provenance.source,
+            "source_revision": record.provenance.source_revision,
+            "observed_at_ms": record.provenance.observed_at_ms,
+        },
+        "state": record.state,
+        "deleted_at_ms": record.deleted_at_ms,
+        "raw_available": false,
+    })
 }
 
 pub fn build_router(state: AppState) -> Router {
+    let mcp_server = Arc::new(mcp::McpServer::new(state.clone()));
     Router::new()
         .route("/health", get(health))
         .route("/dashboard/payload", get(dashboard_payload))
@@ -1513,6 +3860,8 @@ pub fn build_router(state: AppState) -> Router {
         .route("/v1/chat/completions", post(openai_chat_completions))
         .route("/v1/responses", post(openai_responses))
         .route("/v1/messages", post(anthropic_messages))
+        .route("/v1/compress", post(compression_execution))
+        .route("/v1/compression/decision", post(compression_decision))
         .route("/stats", get(stats))
         .route("/stats-history", get(stats_history))
         .route("/metrics", get(metrics))
@@ -1527,6 +3876,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/route-decisions/recent", get(recent_route_decisions))
         .route("/logs/recent", get(recent_logs))
         .route("/analytics/requests", get(analytics_requests))
+        .route("/learning/failure-patterns", get(learning_failure_patterns))
         .route("/doctor/run", post(doctor_run))
         .route("/preprocessors", get(preprocessors))
         .route("/rtk/status", get(rtk_status))
@@ -1536,6 +3886,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/headroom/status", get(headroom_status))
         .route("/headroom/proxy", get(headroom_proxy))
         .route("/headroom/mcp", get(headroom_mcp))
+        .route("/mcp", post(mcp_http))
         .route("/headroom/stats", get(headroom_stats))
         .route("/headroom/cache-summary", get(headroom_cache_summary))
         .route("/compression/optical/preview", post(optical_preview))
@@ -1564,12 +3915,12 @@ pub fn build_router(state: AppState) -> Router {
         .route("/ccr/summary", get(ccr_summary))
         .route("/ccr/retrieve/{*recovery_ref}", get(ccr_retrieve))
         .route("/memory/summary", get(memory_summary))
-        .route("/memory/learn", post(memory_learn))
         .route("/output-shape", get(output_shape))
         .route("/compatibility/agents", get(agent_compatibility))
         .route("/protocol-injection", get(protocol_injection))
         .layer(DefaultBodyLimit::max(MAX_REQUEST_BODY_BYTES))
         .layer(middleware::from_fn(loopback_request_guard))
+        .layer(Extension(mcp_server))
         .with_state(state)
 }
 
@@ -1634,19 +3985,40 @@ async fn optical_status(State(state): State<AppState>) -> Json<OpticalStatusPubl
         active_reachable: effective.active_reachable,
         active_execution_observed: effective.active_execution_observed,
         public_summary_only: effective.public_summary_only,
-        fail_closed: true,
-        renderer_ready: true,
-        patcher_ready: true,
-        post_validator_ready: true,
-        signed_accounting_ready: true,
-        representation_plan_ready: true,
-        responses_shadow_inventory_ready: true,
-        dynamic_page_accounting_ready: true,
+        fail_closed: backend_capability_ready(&state.capabilities, "optical-fail-closed"),
+        renderer_ready: backend_capability_ready(&state.capabilities, "optical-renderer"),
+        patcher_ready: backend_capability_ready(&state.capabilities, "optical-patcher"),
+        post_validator_ready: backend_capability_ready(
+            &state.capabilities,
+            "optical-post-validator",
+        ),
+        signed_accounting_ready: backend_capability_ready(
+            &state.capabilities,
+            "optical-signed-accounting",
+        ),
+        representation_plan_ready: backend_capability_ready(
+            &state.capabilities,
+            "optical-representation-plan",
+        ),
+        responses_shadow_inventory_ready: backend_capability_ready(
+            &state.capabilities,
+            "optical-responses-shadow-inventory",
+        ),
+        dynamic_page_accounting_ready: backend_capability_ready(
+            &state.capabilities,
+            "optical-dynamic-page-accounting",
+        ),
         active_direct_routes: effective.active_direct_routes,
         verified_attested_capabilities: effective.verified_attested_capabilities,
         rejected_capabilities: effective.rejected_capabilities,
         config_issue_count: effective.config_issue_count,
     })
+}
+
+fn backend_capability_ready(registry: &CapabilityRegistrySnapshot, id: &str) -> bool {
+    registry
+        .find(id)
+        .is_some_and(|capability| capability.state == AvailabilityState::Ready)
 }
 
 fn effective_optical_state(state: &AppState) -> EffectiveOpticalState {
@@ -1656,7 +4028,9 @@ fn effective_optical_state(state: &AppState) -> EffectiveOpticalState {
         dtoken_event_ledger::now_ms(),
     );
     let active_route_count = active_direct_anthropic_route_count(&state.config, &registry);
-    let active_reachable = policy.allow_active && active_route_count > 0;
+    let active_reachable = policy.allow_active
+        && active_route_count > 0
+        && backend_capability_ready(&state.capabilities, "optical-active");
     let effective_mode = if active_reachable {
         OpticalMode::ToolResultsOnly
     } else {
@@ -1690,7 +4064,10 @@ async fn optical_capabilities(
     let effective = effective_optical_state(&state);
     let active = effective.active_reachable;
     Json(OpticalCapabilitiesPublicSummary {
-        shadow_preview_supported: true,
+        shadow_preview_supported: backend_capability_ready(
+            &state.capabilities,
+            "optical-shadow-preview",
+        ),
         active_transform_enabled: active,
         max_mode: if active {
             OpticalMode::ToolResultsOnly
@@ -1705,13 +4082,31 @@ async fn optical_capabilities(
         unknown_model_status: dtoken_types::CapabilityStatus::ShadowOnly,
         unsupported_path_status: dtoken_types::CapabilityStatus::Blocked,
         public_summary_only: state.config.optical.global_policy.public_summary_only || !active,
-        fail_closed: true,
-        direct_anthropic_upstream_supported: true,
-        streaming_passthrough_supported: true,
-        deterministic_png_renderer: true,
-        artifact_post_validation: true,
-        signed_multimodal_accounting: true,
-        capability_attestation_required: true,
+        fail_closed: backend_capability_ready(&state.capabilities, "optical-fail-closed"),
+        direct_anthropic_upstream_supported: backend_capability_ready(
+            &state.capabilities,
+            "optical-direct-anthropic-upstream",
+        ),
+        streaming_passthrough_supported: backend_capability_ready(
+            &state.capabilities,
+            "optical-streaming-passthrough",
+        ),
+        deterministic_png_renderer: backend_capability_ready(
+            &state.capabilities,
+            "optical-renderer",
+        ),
+        artifact_post_validation: backend_capability_ready(
+            &state.capabilities,
+            "optical-post-validator",
+        ),
+        signed_multimodal_accounting: backend_capability_ready(
+            &state.capabilities,
+            "optical-signed-accounting",
+        ),
+        capability_attestation_required: backend_capability_ready(
+            &state.capabilities,
+            "optical-capability-attestation",
+        ),
     })
 }
 
@@ -2124,6 +4519,63 @@ async fn active_config(State(state): State<AppState>) -> Json<Value> {
     Json(active_config_payload(&state))
 }
 
+async fn compression_decision(
+    State(state): State<AppState>,
+    Json(request): Json<CompressionDecisionRequest>,
+) -> impl IntoResponse {
+    match state.compression_decision(request) {
+        Ok(decision) => (
+            StatusCode::OK,
+            Json(serde_json::to_value(decision).unwrap_or_default()),
+        )
+            .into_response(),
+        Err(error) => (
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "error": {
+                    "type": "compression_decision_unavailable",
+                    "code": compression_decision_error_code(error),
+                    "message": "The requested compression decision is unavailable."
+                }
+            })),
+        )
+            .into_response(),
+    }
+}
+
+async fn compression_execution(
+    State(state): State<AppState>,
+    Json(request): Json<CompressionDecisionRequest>,
+) -> impl IntoResponse {
+    match state.compression_execution(request) {
+        Ok(execution) => (
+            StatusCode::OK,
+            Json(serde_json::to_value(execution).unwrap_or_default()),
+        )
+            .into_response(),
+        Err(error) => (
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "error": {
+                    "type": "compression_execution_unavailable",
+                    "code": compression_decision_error_code(error),
+                    "message": "The requested route-bound compression is unavailable."
+                }
+            })),
+        )
+            .into_response(),
+    }
+}
+
+fn compression_decision_error_code(error: CompressionDecisionError) -> &'static str {
+    match error {
+        CompressionDecisionError::InvalidArguments => "invalid_arguments",
+        CompressionDecisionError::RouteContextUnavailable => "route_context_unavailable",
+        CompressionDecisionError::RouteContextMismatch => "route_context_mismatch",
+        CompressionDecisionError::RoutePolicyMismatch => "route_policy_mismatch",
+    }
+}
+
 fn active_config_payload(state: &AppState) -> Value {
     json!({
         "source": "dtoken-owned-runtime",
@@ -2280,6 +4732,10 @@ fn with_active_config(mut payload: Value, active_config: Value) -> Value {
 #[derive(Debug, Clone, Deserialize)]
 struct OpenAiChatRequest {
     model: Option<String>,
+    // Populated by Deserialize for Chat completions requests; the messages
+    // payload itself is forwarded as raw JSON and read by #[cfg(test)] helper
+    // `routed_openai_payload`, so no production read site exists for the field.
+    #[allow(dead_code)]
     messages: Option<Vec<Value>>,
     stream: Option<bool>,
 }
@@ -3146,6 +5602,254 @@ fn upstream_response_status(upstream: &UpstreamResult) -> StatusCode {
         .status
         .and_then(|status| StatusCode::from_u16(status).ok())
         .unwrap_or(StatusCode::OK)
+}
+
+fn output_shaping_policy_for_scope<'a>(
+    config: &'a DtokenConfig,
+    scope: &RequestScope,
+) -> Option<&'a dtoken_types::OutputShapingRoutePolicy> {
+    config.find_output_shaping_policy(&scope.route_id, &scope.provider_id, &scope.model)
+}
+
+fn output_safety_for_text(text: &str) -> OutputSafety {
+    if text.contains("```") {
+        OutputSafety::CodeOrOpaqueContent
+    } else {
+        OutputSafety::PlainText
+    }
+}
+
+fn output_shaping_evidence(
+    result: OutputShapingResult,
+    route_id: &str,
+    provider_id: &str,
+    model: &str,
+) -> Value {
+    let accounting = match result.accounting {
+        OutputShapingAccounting::Measured {
+            original_bytes,
+            shaped_bytes,
+            saved_bytes,
+        } => json!({
+            "measured": {
+                "unit": "outbound_utf8_bytes",
+                "original_bytes": original_bytes,
+                "shaped_bytes": shaped_bytes,
+                "saved_bytes": saved_bytes,
+            },
+            "holdout_estimated": null,
+            "unknown": false,
+        }),
+        OutputShapingAccounting::HoldoutEstimated {
+            original_bytes,
+            candidate_bytes,
+            estimated_saved_bytes,
+        } => json!({
+            "measured": null,
+            "holdout_estimated": {
+                "unit": "outbound_utf8_bytes",
+                "original_bytes": original_bytes,
+                "candidate_bytes": candidate_bytes,
+                "estimated_saved_bytes": estimated_saved_bytes,
+            },
+            "unknown": false,
+        }),
+        OutputShapingAccounting::Unknown => json!({
+            "measured": null,
+            "holdout_estimated": null,
+            "unknown": true,
+        }),
+    };
+    json!({
+        "state": result.disposition.as_str(),
+        "reason_code": result.reason_code,
+        "route_id": route_id,
+        "provider_id": provider_id,
+        "model": model,
+        "verbosity": result.verbosity,
+        "effort": result.effort.as_str(),
+        "transforms": result.transforms,
+        "accounting": accounting,
+        "raw_available": false,
+        "privacy": "aggregate output-shaping evidence only; response text is not persisted",
+    })
+}
+
+fn output_shaping_passthrough_evidence(
+    reason_code: &'static str,
+    route_id: &str,
+    provider_id: &str,
+    model: &str,
+) -> Value {
+    json!({
+        "state": OutputShapingDisposition::Passthrough.as_str(),
+        "reason_code": reason_code,
+        "route_id": route_id,
+        "provider_id": provider_id,
+        "model": model,
+        "accounting": {
+            "measured": null,
+            "holdout_estimated": null,
+            "unknown": true,
+        },
+        "raw_available": false,
+        "privacy": "aggregate output-shaping evidence only; response text is not persisted",
+    })
+}
+
+fn apply_openai_output_shaping(
+    response: &mut Value,
+    route: &dtoken_types::RouteProfile,
+    scope: &RequestScope,
+    policy: Option<&dtoken_types::OutputShapingRoutePolicy>,
+) -> Value {
+    let Some(policy) = policy else {
+        return output_shaping_passthrough_evidence(
+            "route_output_shaping_policy_unavailable",
+            &scope.route_id,
+            &scope.provider_id,
+            &scope.model,
+        );
+    };
+    let Some(choices) = response.get_mut("choices").and_then(Value::as_array_mut) else {
+        return output_shaping_passthrough_evidence(
+            "unknown_response_shape_passthrough",
+            &scope.route_id,
+            &scope.provider_id,
+            &scope.model,
+        );
+    };
+    if choices.len() != 1 {
+        return output_shaping_passthrough_evidence(
+            "multi_choice_response_passthrough",
+            &scope.route_id,
+            &scope.provider_id,
+            &scope.model,
+        );
+    }
+    let Some(message) = choices[0].get_mut("message").and_then(Value::as_object_mut) else {
+        return output_shaping_passthrough_evidence(
+            "unknown_response_shape_passthrough",
+            &scope.route_id,
+            &scope.provider_id,
+            &scope.model,
+        );
+    };
+    if message.contains_key("tool_calls")
+        || message.contains_key("function_call")
+        || message.get("role").and_then(Value::as_str) != Some("assistant")
+    {
+        return output_shaping_passthrough_evidence(
+            "tool_or_structured_response_passthrough",
+            &scope.route_id,
+            &scope.provider_id,
+            &scope.model,
+        );
+    }
+    let Some(text) = message.get("content").and_then(Value::as_str) else {
+        return output_shaping_passthrough_evidence(
+            "unknown_response_shape_passthrough",
+            &scope.route_id,
+            &scope.provider_id,
+            &scope.model,
+        );
+    };
+    let result = shape_output_for_policy(
+        route,
+        policy,
+        &scope.request_id.to_string(),
+        output_safety_for_text(text),
+        text,
+    );
+    if result.disposition == OutputShapingDisposition::Applied {
+        message.insert("content".to_string(), Value::String(result.body.clone()));
+    }
+    output_shaping_evidence(result, &scope.route_id, &scope.provider_id, &scope.model)
+}
+
+fn apply_anthropic_output_shaping(
+    response: &mut Value,
+    route: &dtoken_types::RouteProfile,
+    scope: &RequestScope,
+    policy: Option<&dtoken_types::OutputShapingRoutePolicy>,
+) -> Value {
+    let Some(policy) = policy else {
+        return output_shaping_passthrough_evidence(
+            "route_output_shaping_policy_unavailable",
+            &scope.route_id,
+            &scope.provider_id,
+            &scope.model,
+        );
+    };
+    let Some(content) = response.get_mut("content").and_then(Value::as_array_mut) else {
+        return output_shaping_passthrough_evidence(
+            "unknown_response_shape_passthrough",
+            &scope.route_id,
+            &scope.provider_id,
+            &scope.model,
+        );
+    };
+    if content.len() != 1 {
+        return output_shaping_passthrough_evidence(
+            "tool_or_structured_response_passthrough",
+            &scope.route_id,
+            &scope.provider_id,
+            &scope.model,
+        );
+    }
+    let Some(block) = content[0].as_object_mut() else {
+        return output_shaping_passthrough_evidence(
+            "unknown_response_shape_passthrough",
+            &scope.route_id,
+            &scope.provider_id,
+            &scope.model,
+        );
+    };
+    if block.get("type").and_then(Value::as_str) != Some("text")
+        || block.keys().any(|key| key != "type" && key != "text")
+    {
+        return output_shaping_passthrough_evidence(
+            "tool_or_structured_response_passthrough",
+            &scope.route_id,
+            &scope.provider_id,
+            &scope.model,
+        );
+    }
+    let Some(text) = block.get("text").and_then(Value::as_str) else {
+        return output_shaping_passthrough_evidence(
+            "unknown_response_shape_passthrough",
+            &scope.route_id,
+            &scope.provider_id,
+            &scope.model,
+        );
+    };
+    let result = shape_output_for_policy(
+        route,
+        policy,
+        &scope.request_id.to_string(),
+        output_safety_for_text(text),
+        text,
+    );
+    if result.disposition == OutputShapingDisposition::Applied {
+        block.insert("text".to_string(), Value::String(result.body.clone()));
+    }
+    output_shaping_evidence(result, &scope.route_id, &scope.provider_id, &scope.model)
+}
+
+fn attach_output_shaping_evidence(
+    request_log: &mut RequestLog,
+    event: &mut DtokenEvent,
+    evidence: Value,
+) {
+    let applied = evidence.get("state").and_then(Value::as_str) == Some("applied");
+    if applied {
+        request_log
+            .transforms_applied
+            .push("output_shaper_whitespace_only".to_string());
+    }
+    if let Some(metadata) = event.metadata.as_object_mut() {
+        metadata.insert("output_shaping".to_string(), evidence);
+    }
 }
 
 fn mark_upstream_outcome(
@@ -4510,26 +7214,248 @@ async fn forward_anthropic_messages(
 type UpstreamByteStream =
     Pin<Box<dyn Stream<Item = Result<Bytes, std::io::Error>> + Send + 'static>>;
 
+/// Bounded, transient extraction of Anthropic SSE usage counters.  The
+/// parser never stores event payloads outside this response body; it retains
+/// only the allowlisted numeric counters required for ledger/cache evidence.
+#[derive(Debug, Default)]
+struct AnthropicStreamUsageObserver {
+    pending_line: Vec<u8>,
+    usage: AnthropicStreamUsage,
+    message_stop: bool,
+    error_event: bool,
+}
+
+#[derive(Debug, Default)]
+struct AnthropicStreamUsage {
+    input_tokens: Option<u64>,
+    output_tokens: Option<u64>,
+    cache_read_input_tokens: Option<u64>,
+    cache_creation_input_tokens: Option<u64>,
+    cache_creation_5m_input_tokens: Option<u64>,
+    cache_creation_1h_input_tokens: Option<u64>,
+}
+
+impl AnthropicStreamUsage {
+    fn observe(&mut self, value: &Value) {
+        let usage = value
+            .get("usage")
+            .or_else(|| value.pointer("/message/usage"));
+        let Some(usage) = usage else {
+            return;
+        };
+        for (target, key) in [
+            (&mut self.input_tokens, "input_tokens"),
+            (&mut self.output_tokens, "output_tokens"),
+            (&mut self.cache_read_input_tokens, "cache_read_input_tokens"),
+            (
+                &mut self.cache_creation_input_tokens,
+                "cache_creation_input_tokens",
+            ),
+            (
+                &mut self.cache_creation_5m_input_tokens,
+                "cache_creation_5m_input_tokens",
+            ),
+            (
+                &mut self.cache_creation_1h_input_tokens,
+                "cache_creation_1h_input_tokens",
+            ),
+        ] {
+            if let Some(value) = usage.get(key).and_then(Value::as_u64) {
+                *target = Some(value);
+            }
+        }
+        if let Some(value) = usage
+            .pointer("/cache_creation/ephemeral_5m_input_tokens")
+            .and_then(Value::as_u64)
+        {
+            self.cache_creation_5m_input_tokens = Some(value);
+        }
+        if let Some(value) = usage
+            .pointer("/cache_creation/ephemeral_1h_input_tokens")
+            .and_then(Value::as_u64)
+        {
+            self.cache_creation_1h_input_tokens = Some(value);
+        }
+    }
+
+    fn has_observation(&self) -> bool {
+        self.input_tokens.is_some()
+            || self.output_tokens.is_some()
+            || self.cache_read_input_tokens.is_some()
+            || self.cache_creation_input_tokens.is_some()
+            || self.cache_creation_5m_input_tokens.is_some()
+            || self.cache_creation_1h_input_tokens.is_some()
+    }
+
+    fn as_response(&self) -> Value {
+        json!({
+            "usage": {
+                "input_tokens": self.input_tokens,
+                "output_tokens": self.output_tokens,
+                "cache_read_input_tokens": self.cache_read_input_tokens,
+                "cache_creation_input_tokens": self.cache_creation_input_tokens,
+                "cache_creation": {
+                    "ephemeral_5m_input_tokens": self.cache_creation_5m_input_tokens,
+                    "ephemeral_1h_input_tokens": self.cache_creation_1h_input_tokens,
+                }
+            }
+        })
+    }
+}
+
+impl AnthropicStreamUsageObserver {
+    // Anthropic emits one JSON object per SSE `data:` line.  This bound is far
+    // above a usage event yet prevents a malformed upstream from making the
+    // proxy retain unbounded response content.
+    const MAX_PENDING_LINE_BYTES: usize = 64 * 1024;
+
+    fn observe_chunk(&mut self, chunk: &Bytes) {
+        if self.pending_line.len().saturating_add(chunk.len()) > Self::MAX_PENDING_LINE_BYTES {
+            self.pending_line.clear();
+            return;
+        }
+        self.pending_line.extend_from_slice(chunk);
+        while let Some(newline) = self.pending_line.iter().position(|byte| *byte == b'\n') {
+            let remainder = self.pending_line.split_off(newline + 1);
+            let line = std::mem::replace(&mut self.pending_line, remainder);
+            self.observe_line(&line[..newline]);
+        }
+    }
+
+    fn observe_line(&mut self, line: &[u8]) {
+        let Some(payload) = line.strip_prefix(b"data:") else {
+            return;
+        };
+        let Ok(payload) = std::str::from_utf8(payload) else {
+            return;
+        };
+        let payload = payload.trim();
+        if payload.is_empty() || payload == "[DONE]" {
+            return;
+        }
+        if let Ok(value) = serde_json::from_str::<Value>(payload) {
+            match value.get("type").and_then(Value::as_str) {
+                Some("message_stop") => self.message_stop = true,
+                Some("error") => self.error_event = true,
+                _ => {}
+            }
+            self.usage.observe(&value);
+        }
+    }
+
+    fn terminal_error_code(&self) -> Option<&'static str> {
+        if self.error_event {
+            Some("provider_stream_error_event")
+        } else if !self.message_stop {
+            Some("provider_stream_incomplete")
+        } else {
+            None
+        }
+    }
+
+    fn take_usage(&mut self) -> AnthropicStreamUsage {
+        self.pending_line.clear();
+        std::mem::take(&mut self.usage)
+    }
+}
+
 struct StreamTerminalLedgerGuard {
     state: AppState,
+    scope: RequestScope,
     request_id: Uuid,
     provider_id: String,
     upstream_status: u16,
     kind: &'static str,
     accounting: Option<dtoken_types::HybridContextAccounting>,
+    usage_observer: AnthropicStreamUsageObserver,
+    /// A streaming request is not durable until its response reaches a
+    /// terminal state.  Keeping this record with the body guard prevents a
+    /// `stream_started` acknowledgement from being projected as a finalized
+    /// CCR receipt when the client disconnects or the upstream stream fails.
+    terminal_record: Option<StreamTerminalRequestRecord>,
     terminal: bool,
 }
 
+#[derive(Debug)]
+struct StreamTerminalRequestRecord {
+    decision: RouteDecision,
+    request_log: RequestLog,
+    event: DtokenEvent,
+    prepared_ccr: PreparedCcr,
+}
+
 impl StreamTerminalLedgerGuard {
+    fn finish_from_clean_eof(self) {
+        let error_code = self.usage_observer.terminal_error_code();
+        match error_code {
+            Some(error_code) => {
+                self.finish(EventStatus::Failed, "upstream_failed", Some(error_code))
+            }
+            None => self.finish(EventStatus::Ok, "upstream_completed", None),
+        }
+    }
+
+    fn apply_completed_stream_usage(&mut self) {
+        let usage = self.usage_observer.take_usage();
+        if !usage.has_observation() {
+            return;
+        }
+        let Some(record) = self.terminal_record.as_mut() else {
+            return;
+        };
+        let upstream = UpstreamResult {
+            response: usage.as_response(),
+            status: Some(self.upstream_status),
+            error_category: None,
+            send_state: UpstreamSendState::Completed,
+            quota_metadata: None,
+        };
+        mark_upstream_outcome(&upstream, &mut record.request_log, &mut record.event);
+        persist_provider_cache_observation(
+            &self.state,
+            &self.scope,
+            &upstream,
+            dtoken_types::ProviderCacheObservationKind::AnthropicUsage,
+        );
+    }
+
+    fn commit_terminal_record(&mut self, status: &EventStatus, send_state: UpstreamSendState) {
+        let Some(mut record) = self.terminal_record.take() else {
+            return;
+        };
+        if let Some(accounting) = record.request_log.context_accounting.as_mut() {
+            accounting.upstream_state = send_state;
+        }
+        record.event.context_accounting = record.request_log.context_accounting.clone();
+        record.event.status = status.clone();
+        if let Some(metadata) = record.event.metadata.as_object_mut() {
+            metadata.insert("send_state".to_string(), json!(send_state));
+            metadata.insert("stream_terminal".to_string(), json!(true));
+        }
+        self.state.record_routed_request_with_ccr_receipt(
+            &record.decision,
+            record.request_log,
+            record.event,
+            &record.prepared_ccr,
+        );
+    }
+
     fn finish(mut self, status: EventStatus, phase: &'static str, error_code: Option<&str>) {
         self.terminal = true;
+        let send_state = if status == EventStatus::Ok {
+            UpstreamSendState::Completed
+        } else {
+            UpstreamSendState::FailedAfterCommit
+        };
         if let Some(accounting) = self.accounting.as_mut() {
-            accounting.upstream_state = if status == EventStatus::Ok {
-                UpstreamSendState::Completed
-            } else {
-                UpstreamSendState::FailedAfterCommit
-            };
+            accounting.upstream_state = send_state;
         }
+        if status == EventStatus::Ok {
+            self.apply_completed_stream_usage();
+        } else {
+            self.usage_observer.take_usage();
+        }
+        self.commit_terminal_record(&status, send_state);
         append_stage_event(
             &self.state,
             self.request_id,
@@ -4562,6 +7488,8 @@ impl Drop for StreamTerminalLedgerGuard {
         if let Some(accounting) = self.accounting.as_mut() {
             accounting.upstream_state = UpstreamSendState::FailedAfterCommit;
         }
+        self.usage_observer.take_usage();
+        self.commit_terminal_record(&EventStatus::Failed, UpstreamSendState::FailedAfterCommit);
         append_stage_event(
             &self.state,
             self.request_id,
@@ -4607,7 +7535,7 @@ impl Stream for TerminalEventStream {
         match self.inner.as_mut().poll_next(context) {
             Poll::Ready(None) => {
                 if let Some(guard) = self.guard.take() {
-                    guard.finish(EventStatus::Ok, "upstream_completed", None);
+                    guard.finish_from_clean_eof();
                 }
                 Poll::Ready(None)
             }
@@ -4620,6 +7548,12 @@ impl Stream for TerminalEventStream {
                     );
                 }
                 Poll::Ready(Some(Err(error)))
+            }
+            Poll::Ready(Some(Ok(bytes))) => {
+                if let Some(guard) = self.guard.as_mut() {
+                    guard.usage_observer.observe_chunk(&bytes);
+                }
+                Poll::Ready(Some(Ok(bytes)))
             }
             other => other,
         }
@@ -4954,6 +7888,660 @@ fn openai_chat_to_anthropic_response(upstream: Value, model: Option<&str>) -> Va
             "output_tokens": upstream["usage"]["completion_tokens"].as_u64().unwrap_or_default()
         }
     })
+}
+
+// === OpenAI Responses API semantic bridge ===
+//
+// /v1/responses is converted to /v1/chat/completions for configured OpenAI
+// routes and converted back. The bridge is fail-closed: Responses features
+// that cannot be represented faithfully on the Chat surface (reasoning items,
+// item_reference, hosted tools, image content, ...) are rejected with an
+// explicit error instead of being silently dropped or guessed. Streaming is a
+// real Chat SSE -> Responses SSE event conversion, never a silent downgrade.
+
+/// Convert an OpenAI Responses request body into an OpenAI Chat completions
+/// body.
+///
+/// Supported Responses input: `instructions` (mapped to a system message),
+/// `input` as a string or as an array of `message` / `function_call` /
+/// `function_call_output` items, and `tools` as flat Responses function tools.
+/// `max_output_tokens` is mapped to `max_tokens`. Anything that cannot be
+/// bridged faithfully fails closed with a descriptive reason.
+pub fn responses_to_openai_chat_body(body: &Value) -> Result<Value, String> {
+    let messages = responses_input_to_chat_messages(body)?;
+    let mut converted = serde_json::Map::new();
+    converted.insert(
+        "model".to_string(),
+        body.get("model").cloned().unwrap_or(Value::Null),
+    );
+    converted.insert("messages".to_string(), json!(messages));
+    converted.insert(
+        "stream".to_string(),
+        body.get("stream").cloned().unwrap_or(json!(false)),
+    );
+    if let Some(max_output_tokens) = body.get("max_output_tokens") {
+        converted.insert("max_tokens".to_string(), max_output_tokens.clone());
+    }
+    for key in ["temperature", "top_p"] {
+        if let Some(value) = body.get(key) {
+            converted.insert(key.to_string(), value.clone());
+        }
+    }
+    if let Some(stop) = body.get("stop") {
+        converted.insert("stop".to_string(), stop.clone());
+    }
+    if let Some(tools) = body.get("tools") {
+        converted.insert("tools".to_string(), json!(responses_tools_to_chat(tools)?));
+    }
+    if let Some(choice) = responses_tool_choice_to_chat(body.get("tool_choice")) {
+        converted.insert("tool_choice".to_string(), choice);
+    }
+    Ok(Value::Object(converted))
+}
+
+fn responses_input_to_chat_messages(body: &Value) -> Result<Vec<Value>, String> {
+    let mut messages = Vec::new();
+    if let Some(instructions) = body.get("instructions") {
+        let text = responses_content_to_text(instructions)?;
+        if !text.is_empty() {
+            messages.push(json!({"role": "system", "content": text}));
+        }
+    }
+    let input = body
+        .get("input")
+        .ok_or_else(|| "Responses request is missing the required `input` field".to_string())?;
+    if let Some(text) = input.as_str() {
+        messages.push(json!({"role": "user", "content": text}));
+        return Ok(messages);
+    }
+    let items = input.as_array().ok_or_else(|| {
+        "Responses `input` must be a string or an array of input items".to_string()
+    })?;
+    for item in items {
+        responses_input_item_to_chat_messages(item, &mut messages)?;
+    }
+    Ok(messages)
+}
+
+fn responses_input_item_to_chat_messages(
+    item: &Value,
+    messages: &mut Vec<Value>,
+) -> Result<(), String> {
+    let Some(item_type) = item.get("type").and_then(Value::as_str) else {
+        return Err("Responses input item is missing a `type` field".to_string());
+    };
+    match item_type {
+        "message" => {
+            let role = item
+                .get("role")
+                .and_then(Value::as_str)
+                .unwrap_or("user")
+                .to_string();
+            let content = item.get("content").cloned().unwrap_or(Value::Null);
+            let text = responses_content_to_text(&content)?;
+            messages.push(json!({"role": role, "content": text}));
+            Ok(())
+        }
+        "function_call" => {
+            let call_id = item
+                .get("call_id")
+                .and_then(Value::as_str)
+                .or_else(|| item.get("id").and_then(Value::as_str))
+                .unwrap_or_default()
+                .to_string();
+            let name = item
+                .get("name")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+            let arguments = match item.get("arguments") {
+                None => "{}".to_string(),
+                Some(Value::String(arguments)) => arguments.clone(),
+                Some(_) => {
+                    return Err(
+                        "Responses `function_call` `arguments` must be a JSON-encoded string"
+                            .to_string(),
+                    )
+                }
+            };
+            messages.push(json!({
+                "role": "assistant",
+                "content": Value::Null,
+                "tool_calls": [{
+                    "id": call_id,
+                    "type": "function",
+                    "function": {"name": name, "arguments": arguments}
+                }]
+            }));
+            Ok(())
+        }
+        "function_call_output" => {
+            let call_id = item
+                .get("call_id")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+            let output = match item.get("output") {
+                None => String::new(),
+                Some(Value::String(output)) => output.clone(),
+                Some(_) => {
+                    return Err(
+                        "Responses `function_call_output` `output` must be a string".to_string(),
+                    )
+                }
+            };
+            messages.push(json!({
+                "role": "tool",
+                "tool_call_id": call_id,
+                "content": output
+            }));
+            Ok(())
+        }
+        "reasoning" => Err(
+            "Responses `reasoning` items are not supported by the Chat bridge; refusing to drop encrypted reasoning content"
+                .to_string(),
+        ),
+        "item_reference" => Err(
+            "Responses `item_reference` items cannot be resolved by the Chat bridge; refusing to guess"
+                .to_string(),
+        ),
+        other => Err(format!("unsupported Responses input item type `{other}`")),
+    }
+}
+
+fn responses_content_to_text(content: &Value) -> Result<String, String> {
+    match content {
+        Value::String(text) => Ok(text.clone()),
+        Value::Null => Ok(String::new()),
+        Value::Array(parts) => {
+            let mut texts = Vec::new();
+            for part in parts {
+                let Some(kind) = part.get("type").and_then(Value::as_str) else {
+                    return Err("Responses content part is missing a `type` field".to_string());
+                };
+                match kind {
+                    "input_text" | "output_text" => {
+                        let text = part.get("text").and_then(Value::as_str).ok_or_else(|| {
+                            format!("Responses `{kind}` content part is missing string `text`")
+                        })?;
+                        texts.push(text.to_string());
+                    }
+                    other => {
+                        return Err(format!(
+                            "unsupported Responses content part type `{other}`; refusing to drop it"
+                        ))
+                    }
+                }
+            }
+            Ok(texts.join("\n"))
+        }
+        _ => Err("Responses `content` must be a string or an array of content parts".to_string()),
+    }
+}
+
+fn responses_tools_to_chat(tools: &Value) -> Result<Vec<Value>, String> {
+    let Some(array) = tools.as_array() else {
+        return Err("Responses `tools` must be an array".to_string());
+    };
+    let mut converted = Vec::new();
+    for tool in array {
+        let Some(kind) = tool.get("type").and_then(Value::as_str) else {
+            return Err("Responses tool is missing a `type` field".to_string());
+        };
+        match kind {
+            "function" => {
+                let name = tool
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| "Responses function tool is missing string `name`".to_string())?;
+                let description = tool
+                    .get("description")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                let parameters = tool
+                    .get("parameters")
+                    .cloned()
+                    .unwrap_or_else(|| json!({"type": "object"}));
+                let mut function = serde_json::Map::new();
+                function.insert("name".to_string(), json!(name));
+                function.insert("description".to_string(), json!(description));
+                function.insert("parameters".to_string(), parameters);
+                if let Some(strict) = tool.get("strict") {
+                    function.insert("strict".to_string(), strict.clone());
+                }
+                converted.push(json!({"type": "function", "function": Value::Object(function)}));
+            }
+            "hosted" => {
+                return Err(
+                    "Responses `hosted` tools are not supported by the Chat bridge; refusing to substitute a local guess"
+                        .to_string(),
+                )
+            }
+            other => {
+                return Err(format!(
+                    "unsupported Responses tool type `{other}`; only `function` tools can be bridged"
+                ))
+            }
+        }
+    }
+    Ok(converted)
+}
+
+fn responses_tool_choice_to_chat(choice: Option<&Value>) -> Option<Value> {
+    let choice = choice?;
+    match choice.get("type").and_then(Value::as_str) {
+        Some("auto") => Some(json!("auto")),
+        Some("none") => Some(json!("none")),
+        Some("required") => Some(json!("required")),
+        Some("function") => Some(json!({
+            "type": "function",
+            "function": {
+                "name": choice.get("name").and_then(Value::as_str).unwrap_or_default()
+            }
+        })),
+        _ => None,
+    }
+}
+
+/// Convert an OpenAI Chat completions response into an OpenAI Responses
+/// response object. Text becomes a `message` output item with `output_text`;
+/// `tool_calls` become `function_call` output items. `finish_reason=length`
+/// maps to an incomplete response, everything else to completed.
+pub fn openai_chat_to_responses_response(
+    upstream: &Value,
+    model: Option<&str>,
+    response_id: &str,
+) -> Value {
+    let choice = upstream
+        .pointer("/choices/0")
+        .cloned()
+        .unwrap_or(Value::Null);
+    let message = choice.get("message").cloned().unwrap_or(Value::Null);
+    let text = message
+        .get("content")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let mut output = vec![json!({
+        "type": "message",
+        "id": format!("msg-{response_id}"),
+        "status": "completed",
+        "role": "assistant",
+        "content": [{
+            "type": "output_text",
+            "text": text,
+            "annotations": []
+        }]
+    })];
+    if let Some(calls) = message.get("tool_calls").and_then(Value::as_array) {
+        for (index, call) in calls.iter().enumerate() {
+            let call_id = call.get("id").and_then(Value::as_str).unwrap_or_default();
+            let name = call["function"]["name"].as_str().unwrap_or_default();
+            let arguments = call["function"]["arguments"].as_str().unwrap_or("{}");
+            output.push(json!({
+                "type": "function_call",
+                "id": format!("fc-{response_id}-{index}"),
+                "call_id": call_id,
+                "name": name,
+                "arguments": arguments
+            }));
+        }
+    }
+    let finish_reason = choice.get("finish_reason").and_then(Value::as_str);
+    let status = match finish_reason {
+        Some("length") => "incomplete",
+        _ => "completed",
+    };
+    json!({
+        "id": response_id,
+        "object": "response",
+        "status": status,
+        "model": model.unwrap_or_else(|| {
+            upstream
+                .get("model")
+                .and_then(Value::as_str)
+                .unwrap_or("dtoken-response-route")
+        }),
+        "output": output,
+        "usage": {
+            "input_tokens": upstream["usage"]["prompt_tokens"].as_u64().unwrap_or_default(),
+            "output_tokens": upstream["usage"]["completion_tokens"].as_u64().unwrap_or_default(),
+            "total_tokens": upstream["usage"]["total_tokens"].as_u64().unwrap_or_default()
+        }
+    })
+}
+
+fn unix_timestamp_seconds() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or_default()
+}
+
+/// Convert an OpenAI Chat completions SSE byte stream into an OpenAI
+/// Responses SSE event stream.
+///
+/// This is a real event conversion, never a silent downgrade: text deltas
+/// become `response.output_text.delta` events, the terminal Chat chunk emits
+/// `response.output_item.done` for the message and each `function_call`, and
+/// the stream closes with `response.completed` / `response.incomplete`. A
+/// clean EOF without a terminal `finish_reason` fails closed with
+/// `response.failed` instead of synthesizing success.
+fn responses_sse_from_chat_sse(body: Body, response_id: String, model: Option<String>) -> Body {
+    let inner: Pin<Box<dyn Stream<Item = Result<Bytes, std::io::Error>> + Send>> =
+        Box::pin(body.into_data_stream().map_err(std::io::Error::other));
+    Body::from_stream(ResponsesSseStream::new(inner, response_id, model))
+}
+
+struct ResponsesSseState {
+    response_id: String,
+    model: Option<String>,
+    buffer: Vec<u8>,
+    text: String,
+    /// Accumulated Chat tool_calls ordered by `index`: (index, call_id, name, arguments).
+    tool_calls: Vec<(usize, String, String, String)>,
+    usage: Option<Value>,
+    message_item_id: String,
+    output_index: u64,
+    content_index: u64,
+    created_emitted: bool,
+    terminal_emitted: bool,
+}
+
+impl ResponsesSseState {
+    fn new(response_id: String, model: Option<String>) -> Self {
+        Self {
+            message_item_id: format!("msg-{response_id}"),
+            response_id,
+            model,
+            buffer: Vec::new(),
+            text: String::new(),
+            tool_calls: Vec::new(),
+            usage: None,
+            output_index: 0,
+            content_index: 0,
+            created_emitted: false,
+            terminal_emitted: false,
+        }
+    }
+
+    fn sse_event(event_type: &str, data: Value) -> String {
+        let payload = serde_json::to_string(&data).unwrap_or_default();
+        format!("event: {event_type}\ndata: {payload}\n\n")
+    }
+
+    fn response_object(&self, status: &str, output: Vec<Value>) -> Value {
+        json!({
+            "id": self.response_id,
+            "object": "response",
+            "created_at": unix_timestamp_seconds(),
+            "status": status,
+            "model": self.model,
+            "output": output,
+            "usage": self.usage.clone().unwrap_or(Value::Null)
+        })
+    }
+
+    fn observe_chunk(&mut self, bytes: Bytes, pending: &mut VecDeque<String>) {
+        if !self.created_emitted {
+            self.created_emitted = true;
+            pending.push_back(Self::sse_event(
+                "response.created",
+                self.response_object("in_progress", Vec::new()),
+            ));
+        }
+        self.buffer.extend_from_slice(&bytes);
+        while let Some(separator) = self.buffer.windows(2).position(|window| window == b"\n\n") {
+            let event_bytes: Vec<u8> = self.buffer.drain(..separator).collect();
+            let _ = self.buffer.drain(..2);
+            if !event_bytes.is_empty() {
+                self.observe_sse_event(String::from_utf8_lossy(&event_bytes).to_string(), pending);
+            }
+        }
+    }
+
+    fn observe_sse_event(&mut self, event: String, pending: &mut VecDeque<String>) {
+        let payloads = event
+            .lines()
+            .filter_map(|line| {
+                line.strip_prefix("data:")
+                    .map(str::trim)
+                    .map(str::to_string)
+            })
+            .collect::<Vec<_>>();
+        for payload in payloads {
+            if payload == "[DONE]" {
+                if !self.terminal_emitted {
+                    self.fail_closed(
+                        pending,
+                        "provider_stream_incomplete",
+                        "Chat SSE ended with [DONE] without a terminal finish_reason chunk",
+                    );
+                }
+                continue;
+            }
+            if let Ok(chunk) = serde_json::from_str::<Value>(&payload) {
+                self.observe_chat_chunk(chunk, pending);
+            }
+        }
+    }
+
+    fn observe_chat_chunk(&mut self, chunk: Value, pending: &mut VecDeque<String>) {
+        if let Some(error) = chunk.get("error") {
+            let message = error
+                .get("message")
+                .and_then(Value::as_str)
+                .unwrap_or("upstream streaming error");
+            self.fail_closed(pending, "provider_stream_error", message);
+            return;
+        }
+        if let Some(usage) = chunk.get("usage") {
+            self.usage = Some(json!({
+                "input_tokens": usage["prompt_tokens"].as_u64().unwrap_or_default(),
+                "output_tokens": usage["completion_tokens"].as_u64().unwrap_or_default(),
+                "total_tokens": usage["total_tokens"].as_u64().unwrap_or_default()
+            }));
+        }
+        let Some(choice) = chunk.pointer("/choices/0") else {
+            return;
+        };
+        let delta = choice.get("delta").cloned().unwrap_or(Value::Null);
+        if let Some(text) = delta.get("content").and_then(Value::as_str) {
+            if !text.is_empty() {
+                self.text.push_str(text);
+                pending.push_back(Self::sse_event(
+                    "response.output_text.delta",
+                    json!({
+                        "type": "response.output_text.delta",
+                        "item_id": self.message_item_id,
+                        "output_index": self.output_index,
+                        "content_index": self.content_index,
+                        "delta": text
+                    }),
+                ));
+            }
+        }
+        if let Some(calls) = delta.get("tool_calls").and_then(Value::as_array) {
+            self.accumulate_tool_calls(calls);
+        }
+        if let Some(finish_reason) = choice.get("finish_reason").and_then(Value::as_str) {
+            if !finish_reason.is_empty() && !self.terminal_emitted {
+                self.finalize(finish_reason, pending);
+            }
+        }
+    }
+
+    fn accumulate_tool_calls(&mut self, calls: &[Value]) {
+        for call in calls {
+            let index = call
+                .get("index")
+                .and_then(Value::as_u64)
+                .unwrap_or_default() as usize;
+            let call_id = call
+                .get("id")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+            let name = call["function"]["name"]
+                .as_str()
+                .unwrap_or_default()
+                .to_string();
+            let arguments = call["function"]["arguments"]
+                .as_str()
+                .unwrap_or_default()
+                .to_string();
+            match self.tool_calls.iter_mut().find(|entry| entry.0 == index) {
+                Some(entry) => {
+                    if !call_id.is_empty() {
+                        entry.1 = call_id;
+                    }
+                    if !name.is_empty() {
+                        entry.2 = name;
+                    }
+                    entry.3.push_str(&arguments);
+                }
+                None => self.tool_calls.push((index, call_id, name, arguments)),
+            }
+        }
+        self.tool_calls.sort_by_key(|entry| entry.0);
+    }
+
+    fn finalize(&mut self, finish_reason: &str, pending: &mut VecDeque<String>) {
+        self.terminal_emitted = true;
+        let message_item = json!({
+            "type": "message",
+            "id": self.message_item_id,
+            "status": "completed",
+            "role": "assistant",
+            "content": [{
+                "type": "output_text",
+                "text": self.text,
+                "annotations": []
+            }]
+        });
+        pending.push_back(Self::sse_event(
+            "response.output_item.done",
+            json!({
+                "type": "response.output_item.done",
+                "output_index": self.output_index,
+                "item": message_item
+            }),
+        ));
+        let mut output = vec![message_item];
+        for (index, (_, call_id, name, arguments)) in self.tool_calls.iter().enumerate() {
+            let item = json!({
+                "type": "function_call",
+                "id": format!("fc-{}-{index}", self.response_id),
+                "call_id": call_id,
+                "name": name,
+                "arguments": arguments
+            });
+            pending.push_back(Self::sse_event(
+                "response.output_item.done",
+                json!({
+                    "type": "response.output_item.done",
+                    "output_index": self.output_index + 1 + index as u64,
+                    "item": item
+                }),
+            ));
+            output.push(item);
+        }
+        let (event_type, status) = match finish_reason {
+            "length" => ("response.incomplete", "incomplete"),
+            _ => ("response.completed", "completed"),
+        };
+        pending.push_back(Self::sse_event(
+            event_type,
+            json!({
+                "type": event_type,
+                "response": self.response_object(status, output)
+            }),
+        ));
+    }
+
+    fn fail_closed(&mut self, pending: &mut VecDeque<String>, code: &str, message: &str) {
+        if self.terminal_emitted {
+            return;
+        }
+        self.terminal_emitted = true;
+        if !self.created_emitted {
+            self.created_emitted = true;
+            pending.push_back(Self::sse_event(
+                "response.created",
+                self.response_object("in_progress", Vec::new()),
+            ));
+        }
+        pending.push_back(Self::sse_event(
+            "response.failed",
+            json!({
+                "type": "response.failed",
+                "response": self.response_object("failed", Vec::new()),
+                "error": {"code": code, "message": message}
+            }),
+        ));
+    }
+}
+
+struct ResponsesSseStream {
+    inner: Pin<Box<dyn Stream<Item = Result<Bytes, std::io::Error>> + Send>>,
+    state: ResponsesSseState,
+    pending: VecDeque<String>,
+    finished: bool,
+}
+
+impl ResponsesSseStream {
+    fn new(
+        inner: Pin<Box<dyn Stream<Item = Result<Bytes, std::io::Error>> + Send>>,
+        response_id: String,
+        model: Option<String>,
+    ) -> Self {
+        Self {
+            inner,
+            state: ResponsesSseState::new(response_id, model),
+            pending: VecDeque::new(),
+            finished: false,
+        }
+    }
+}
+
+impl Stream for ResponsesSseStream {
+    type Item = Result<Bytes, std::io::Error>;
+
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let Self {
+            inner,
+            state,
+            pending,
+            finished,
+        } = &mut *self;
+        loop {
+            if let Some(event) = pending.pop_front() {
+                return Poll::Ready(Some(Ok(Bytes::from(event))));
+            }
+            if *finished {
+                return Poll::Ready(None);
+            }
+            match inner.as_mut().poll_next(cx) {
+                Poll::Pending => return Poll::Pending,
+                Poll::Ready(None) => {
+                    *finished = true;
+                    if !state.terminal_emitted {
+                        state.fail_closed(
+                            pending,
+                            "provider_stream_incomplete",
+                            "Chat SSE ended without a terminal finish_reason chunk",
+                        );
+                    }
+                }
+                Poll::Ready(Some(Ok(bytes))) => {
+                    state.observe_chunk(bytes, pending);
+                }
+                Poll::Ready(Some(Err(error))) => {
+                    *finished = true;
+                    state.fail_closed(pending, "provider_stream_io_error", &error.to_string());
+                }
+            }
+        }
+    }
 }
 
 fn anthropic_route_payload(
@@ -5368,6 +8956,290 @@ fn apply_routed_pipeline_payload(
         );
     }
     Ok(variant)
+}
+
+#[derive(Debug, Clone, Copy)]
+struct DirectAnthropicCacheWire {
+    breakpoint_inserted: bool,
+    breakpoint_count: u8,
+    pointer_kind: &'static str,
+    reason_code: &'static str,
+    evidence_revision_present: bool,
+    rolled_back: bool,
+}
+
+const DIRECT_ANTHROPIC_CACHE_TRANSFORM: &str = "anthropic_explicit_cache_breakpoint";
+
+/// Adds a single Anthropic cache breakpoint only when the route has fresh,
+/// exact provider evidence and the context planner has kept a usable prefix.
+///
+/// This deliberately supports only the two unambiguous Anthropic request
+/// surfaces we can validate structurally: an entire tool definition or a
+/// typed system content block.  Message content and string-valued `system`
+/// fields are left alone rather than changing their representation.
+fn apply_direct_anthropic_cache_breakpoint(
+    payload: &mut RoutedBridgePayload,
+    evidence: Option<&dtoken_compress::context_pipeline::ProviderCacheEvidence>,
+) -> DirectAnthropicCacheWire {
+    let evidence_revision_present = evidence.is_some_and(|item| !item.source_revision.is_empty());
+    let unavailable = |reason_code| DirectAnthropicCacheWire {
+        breakpoint_inserted: false,
+        breakpoint_count: 0,
+        pointer_kind: "none",
+        reason_code,
+        evidence_revision_present,
+        rolled_back: false,
+    };
+    let Some(evidence) = evidence else {
+        return unavailable("provider_cache_evidence_unavailable");
+    };
+    if evidence.strategy
+        != dtoken_compress::context_pipeline::ProviderCacheStrategy::AnthropicExplicit
+    {
+        return unavailable("provider_cache_strategy_mismatch");
+    }
+    // An Anthropic-shaped compatibility endpoint must not inherit the official
+    // provider's breakpoint syntax merely because it shares the wire format.
+    if !is_anthropic_upstream(&payload.provider.base_url) {
+        return unavailable("anthropic_cache_upstream_unverified");
+    }
+    let Some(context) = payload.optimization_context.as_ref() else {
+        return unavailable("cache_alignment_context_unavailable");
+    };
+    let Ok(plan) = dtoken_compress::context_pipeline::plan_context_with_cache_evidence(
+        &context.compression_context,
+        &payload.upstream_body,
+        Some(evidence),
+    ) else {
+        return unavailable("cache_alignment_plan_unavailable");
+    };
+    let alignment = plan.cache_alignment();
+    if alignment.evidence_status()
+        != dtoken_compress::context_pipeline::CacheEvidenceStatus::VerifiedEligible
+    {
+        return unavailable("cache_alignment_not_eligible");
+    }
+    if alignment.provider_strategy()
+        != Some(dtoken_compress::context_pipeline::ProviderCacheStrategy::AnthropicExplicit)
+        || alignment.evidence_revision().is_none()
+    {
+        return unavailable("cache_alignment_evidence_mismatch");
+    }
+    if contains_cache_control(&payload.upstream_body) {
+        return unavailable("user_cache_control_preserved");
+    }
+    let Some((pointer, pointer_kind)) =
+        frozen_anthropic_cache_pointer(&payload.upstream_body, &plan)
+    else {
+        return unavailable("cache_alignment_no_safe_breakpoint");
+    };
+    let Some(target) = payload.upstream_body.pointer_mut(&pointer) else {
+        return unavailable("cache_alignment_pointer_unavailable");
+    };
+    let Some(target) = target.as_object_mut() else {
+        return unavailable("cache_alignment_pointer_incompatible");
+    };
+    if target.contains_key("cache_control") {
+        return unavailable("user_cache_control_preserved");
+    }
+    target.insert("cache_control".to_string(), json!({"type": "ephemeral"}));
+    append_direct_anthropic_cache_transform(payload);
+    DirectAnthropicCacheWire {
+        breakpoint_inserted: true,
+        breakpoint_count: 1,
+        pointer_kind,
+        reason_code: "anthropic_explicit_breakpoint_inserted",
+        evidence_revision_present: true,
+        rolled_back: false,
+    }
+}
+
+fn append_direct_anthropic_cache_transform(payload: &mut RoutedBridgePayload) {
+    let transform = DIRECT_ANTHROPIC_CACHE_TRANSFORM.to_string();
+    if !payload
+        .compression
+        .transforms_applied
+        .iter()
+        .any(|item| item == DIRECT_ANTHROPIC_CACHE_TRANSFORM)
+    {
+        payload
+            .compression
+            .transforms_applied
+            .push(transform.clone());
+    }
+    if !payload
+        .request_log
+        .transforms_applied
+        .iter()
+        .any(|item| item == DIRECT_ANTHROPIC_CACHE_TRANSFORM)
+    {
+        payload.request_log.transforms_applied.push(transform);
+    }
+    if let Some(metadata) = payload.event.metadata.as_object_mut() {
+        metadata.insert(
+            "transforms_applied".to_string(),
+            json!(payload.request_log.transforms_applied),
+        );
+    }
+}
+
+fn rolled_back_direct_anthropic_cache_wire(
+    wire: DirectAnthropicCacheWire,
+    reason_code: &'static str,
+) -> DirectAnthropicCacheWire {
+    if !wire.breakpoint_inserted {
+        return wire;
+    }
+    DirectAnthropicCacheWire {
+        breakpoint_inserted: false,
+        breakpoint_count: 0,
+        pointer_kind: wire.pointer_kind,
+        reason_code,
+        evidence_revision_present: wire.evidence_revision_present,
+        rolled_back: true,
+    }
+}
+
+fn contains_cache_control(value: &Value) -> bool {
+    match value {
+        Value::Object(fields) => {
+            fields.contains_key("cache_control") || fields.values().any(contains_cache_control)
+        }
+        Value::Array(values) => values.iter().any(contains_cache_control),
+        _ => false,
+    }
+}
+
+fn frozen_anthropic_cache_pointer(
+    body: &Value,
+    plan: &dtoken_compress::context_pipeline::ContextPlan,
+) -> Option<(String, &'static str)> {
+    let frozen = plan.cache_alignment().breakpoint_zone_index();
+    for zone in plan.zones().iter().take(frozen).rev() {
+        let pointer = zone.pointer();
+        if pointer.starts_with("/tools/")
+            && pointer.split('/').count() == 3
+            && body.pointer(pointer).is_some_and(Value::is_object)
+        {
+            return Some((pointer.to_string(), "tool_definition"));
+        }
+        if pointer == "/system" {
+            let Some(system) = body.pointer(pointer).and_then(Value::as_array) else {
+                continue;
+            };
+            let Some(index) = system.len().checked_sub(1) else {
+                continue;
+            };
+            let candidate = format!("/system/{index}");
+            if body.pointer(&candidate).is_some_and(|item| {
+                item.is_object() && item.get("type").and_then(Value::as_str) == Some("text")
+            }) {
+                return Some((candidate, "system_text_block"));
+            }
+        }
+    }
+    None
+}
+
+fn attach_direct_anthropic_cache_wire_metadata(
+    event: &mut DtokenEvent,
+    wire: DirectAnthropicCacheWire,
+    raw_wire: bool,
+) {
+    if let Some(metadata) = event.metadata.as_object_mut() {
+        let status = if wire.rolled_back {
+            "rolled_back"
+        } else if wire.breakpoint_inserted {
+            "inserted"
+        } else {
+            "not_inserted"
+        };
+        metadata.insert(
+            "provider_cache".to_string(),
+            json!({
+                "strategy": "anthropic_explicit",
+                "eligible": wire.breakpoint_inserted,
+                "status": status,
+                "breakpoint_count": wire.breakpoint_count,
+                "zone": "frozen_prefix",
+                "pointer_kind": wire.pointer_kind,
+                "wire_variant": if raw_wire { "raw_wire" } else { "serialized" },
+                "evidence_revision_present": wire.evidence_revision_present,
+                "reason_code": wire.reason_code,
+                "privacy": "cache evidence metadata only; request bodies, prompt-derived digests and credentials are not persisted"
+            }),
+        );
+    }
+}
+
+fn prepare_direct_anthropic_pipeline_for_send(
+    state: &AppState,
+    payload: &mut RoutedBridgePayload,
+    original_body: &Value,
+    ccr_original_body: &[u8],
+    cache_evidence: Option<&dtoken_compress::context_pipeline::ProviderCacheEvidence>,
+) -> (
+    PreparedCcr,
+    dtoken_types::SentPayloadVariant,
+    DirectAnthropicCacheWire,
+) {
+    let mut cache_wire = apply_direct_anthropic_cache_breakpoint(payload, cache_evidence);
+    let prepared_ccr = match state.prepare_ccr_for_request(
+        &payload.decision,
+        &payload.request_log,
+        ccr_original_body,
+    ) {
+        Ok(prepared) => prepared,
+        Err(_) => {
+            cache_wire = rolled_back_direct_anthropic_cache_wire(
+                cache_wire,
+                "cache_breakpoint_ccr_unavailable",
+            );
+            force_payload_ccr_pre_send_baseline(
+                payload,
+                original_body,
+                "baseline_fallback_store_unavailable",
+            );
+            state
+                .prepare_ccr_for_request(&payload.decision, &payload.request_log, ccr_original_body)
+                .expect("baseline request does not require CCR storage")
+        }
+    };
+    let pipeline_variant =
+        match apply_routed_pipeline_payload(payload, original_body, &prepared_ccr) {
+            Ok(variant) => variant,
+            Err(_) => {
+                force_payload_ccr_pre_send_baseline(
+                    payload,
+                    original_body,
+                    "pipeline_input_invalid",
+                );
+                if let Some(metadata) = payload.event.metadata.as_object_mut() {
+                    metadata.insert(
+                        "pipeline_fallback_reason".to_string(),
+                        json!("pipeline_input_invalid"),
+                    );
+                    metadata.insert(
+                        "pipeline_payload_variant".to_string(),
+                        json!(dtoken_types::SentPayloadVariant::Original),
+                    );
+                }
+                dtoken_types::SentPayloadVariant::Original
+            }
+        };
+    if cache_wire.breakpoint_inserted
+        && pipeline_variant == dtoken_types::SentPayloadVariant::Original
+    {
+        cache_wire = rolled_back_direct_anthropic_cache_wire(
+            cache_wire,
+            "cache_breakpoint_pipeline_fallback",
+        );
+    }
+    (prepared_ccr, pipeline_variant, cache_wire)
+}
+
+fn direct_anthropic_uses_raw_body(variant: dtoken_types::SentPayloadVariant) -> bool {
+    variant == dtoken_types::SentPayloadVariant::Original
 }
 
 #[cfg(test)]
@@ -5968,12 +9840,18 @@ fn runtime_cache_summary_payload() -> Value {
         "bytes": 0,
         "retrievals": 0,
         "raw_available": false,
+        "raw_returned": false,
         "note": "CCR metadata store is empty; raw prompt/response/CCR body is not stored by default."
     })
 }
 
 fn runtime_cache_summary_for_state(state: &AppState) -> Value {
-    let metadata = state.recent_ccr_metadata(10_000);
+    let chronological_metadata = state
+        .recent_ccr_metadata(10_000)
+        .into_iter()
+        .rev()
+        .collect::<Vec<_>>();
+    let metadata = latest_ccr_metadata_records(&chronological_metadata);
     let tokens_saved: u64 = metadata
         .iter()
         .filter_map(|item| item["tokens_saved"].as_u64())
@@ -6002,9 +9880,10 @@ fn runtime_cache_summary_for_state(state: &AppState) -> Value {
         "retrievals": 0,
         "tokens_saved": tokens_saved,
         "raw_available": private_entries > 0,
+        "raw_returned": false,
         "private_store_configured": private_store_configured,
         "raw_access": if private_store_configured { "in-process-authorized-only" } else { "disabled" },
-        "recent_refs": metadata.into_iter().take(10).collect::<Vec<_>>(),
+        "recent_refs": metadata.into_iter().rev().take(10).collect::<Vec<_>>(),
         "note": if private_store_configured {
             "CCR originals are encrypted with an OS-credential-store-backed key, expire automatically, and are excluded from ordinary HTTP responses, logs, Ledger, and exports."
         } else {
@@ -6041,6 +9920,7 @@ fn runtime_cache_summary_from_read_model(
         "retrievals": 0,
         "tokens_saved": model.ccr_tokens_saved,
         "raw_available": private_entries > 0,
+        "raw_returned": false,
         "private_store_configured": private_store_configured,
         "raw_access": if private_store_configured { "in-process-authorized-only" } else { "disabled" },
         "recent_refs": model.recent_ccr.iter().cloned().collect::<Vec<_>>(),
@@ -6053,19 +9933,68 @@ fn runtime_cache_summary_from_read_model(
 }
 
 fn memory_summary_for_state(state: &AppState) -> Value {
-    let records = state.recent_memory_records(10_000);
+    memory_summary_for_scope(state, None)
+}
+
+fn memory_summary_for_scope(state: &AppState, scope: Option<MemoryAccessScope>) -> Value {
+    let Some(scope) = scope else {
+        return json!({
+            "source": "dtoken-owned-runtime",
+            "runtime_kind": "headroom-derived",
+            "state": "scope_required",
+            "entries": 0,
+            "raw_available": false,
+            "recent": [],
+            "reason_code": "memory_summary_authorization_unavailable",
+            "note": "Typed memory summaries require an authorized project and Agent scope; this loopback endpoint does not establish one."
+        });
+    };
+    let Some(store) = state.context_store.as_ref() else {
+        return json!({
+            "source": "dtoken-owned-runtime",
+            "runtime_kind": "headroom-derived",
+            "state": "unavailable",
+            "entries": 0,
+            "raw_available": false,
+            "recent": [],
+            "reason_code": "memory_store_requires_persistent_context_store"
+        });
+    };
+    let Ok(store) = store.lock() else {
+        return json!({
+            "source": "dtoken-owned-runtime",
+            "runtime_kind": "headroom-derived",
+            "state": "unavailable",
+            "entries": 0,
+            "raw_available": false,
+            "recent": [],
+            "reason_code": "memory_store_lock_unavailable"
+        });
+    };
+    let records = match store.list_visible_memory(&scope) {
+        Ok(records) => records,
+        Err(_) => {
+            return json!({
+                "source": "dtoken-owned-runtime",
+                "runtime_kind": "headroom-derived",
+                "state": "invalid_scope",
+                "entries": 0,
+                "raw_available": false,
+                "recent": [],
+                "reason_code": "memory_access_scope_rejected"
+            });
+        }
+    };
     let mut by_project = serde_json::Map::new();
     let mut by_agent = serde_json::Map::new();
     for record in &records {
-        if let Some(project) = record.get("project_id").and_then(Value::as_str) {
-            let next = by_project
-                .get(project)
-                .and_then(Value::as_u64)
-                .unwrap_or_default()
-                + 1;
-            by_project.insert(project.to_string(), json!(next));
-        }
-        if let Some(agent) = record.get("agent").and_then(Value::as_str) {
+        let next = by_project
+            .get(&record.project_id)
+            .and_then(Value::as_u64)
+            .unwrap_or_default()
+            + 1;
+        by_project.insert(record.project_id.clone(), json!(next));
+        if let Some(agent) = record.agent_id.as_deref() {
             let next = by_agent
                 .get(agent)
                 .and_then(Value::as_u64)
@@ -6077,12 +10006,13 @@ fn memory_summary_for_state(state: &AppState) -> Value {
     json!({
         "source": "dtoken-owned-runtime",
         "runtime_kind": "headroom-derived",
+        "state": "ready",
         "entries": records.len(),
         "raw_available": false,
         "by_project": by_project,
         "by_agent": by_agent,
-        "recent": records.into_iter().take(20).collect::<Vec<_>>(),
-        "note": "Memory/learn metadata only; raw prompt and response bodies are not stored."
+        "recent": records.iter().take(20).map(memory_record_payload).collect::<Vec<_>>(),
+        "note": "Typed memory metadata only; raw prompt and response bodies are not stored."
     })
 }
 
@@ -6091,36 +10021,43 @@ fn output_shape_for_state(
     project_id: Option<&str>,
     agent: Option<&str>,
 ) -> Value {
-    let records = state.recent_memory_records(10_000);
-    let learned_rules: Vec<Value> = records
-        .into_iter()
-        .filter(|record| {
-            project_id
-                .map(|project| record["project_id"].as_str() == Some(project))
-                .unwrap_or(true)
-                && agent
-                    .map(|agent_name| record["agent"].as_str() == Some(agent_name))
-                    .unwrap_or(true)
-        })
-        .take(10)
-        .collect();
-    let output_verbosity = learned_rules
-        .iter()
-        .find_map(|record| record.get("output_verbosity").and_then(Value::as_str))
-        .unwrap_or("auto");
-    json!({
-        "source": "dtoken-owned-runtime",
-        "state": "metadata-only",
-        "active": false,
-        "project_id": project_id,
-        "agent": agent,
-        "output_verbosity": output_verbosity,
-        "learned_rules": learned_rules,
-        "applied_requests": 0,
-        "accounting_evidence": "none",
-        "raw_available": false,
-        "note": "Output shaping is not yet applied to outbound requests; this endpoint only reports explicit memory/learn metadata."
-    })
+    let Some(project_id) = project_id.filter(|value| !value.trim().is_empty()) else {
+        return json!({
+            "source": "dtoken-owned-runtime", "state": "unavailable", "active": false,
+            "project_id": project_id, "agent": agent, "output_verbosity": "auto",
+            "learned_rules": [], "applied_requests": 0, "accounting_evidence": "none",
+            "raw_available": false, "reason_code": "memory_output_shape_authorization_unavailable",
+            "note": "Output shaping requires an authorized typed-memory scope."
+        });
+    };
+    let Some(agent) = agent.filter(|value| !value.trim().is_empty()) else {
+        return json!({"source":"dtoken-owned-runtime","state":"unavailable","active":false,"project_id":project_id,"agent":agent,"learned_rules":[],"reason_code":"memory_output_shape_authorization_unavailable","raw_available":false});
+    };
+    let scope = MemoryAccessScope {
+        project_id: project_id.to_string(),
+        agent_id: agent.to_string(),
+        session_id: None,
+    };
+    let Some(store) = state.context_store.as_ref() else {
+        return json!({"source":"dtoken-owned-runtime","state":"unavailable","active":false,"project_id":project_id,"agent":agent,"learned_rules":[],"reason_code":"memory_store_requires_persistent_context_store","raw_available":false});
+    };
+    let Ok(store) = store.lock() else {
+        return json!({"source":"dtoken-owned-runtime","state":"unavailable","active":false,"project_id":project_id,"agent":agent,"learned_rules":[],"reason_code":"memory_store_lock_unavailable","raw_available":false});
+    };
+    let Ok(records) = store.list_visible_memory(&scope) else {
+        return json!({"source":"dtoken-owned-runtime","state":"unavailable","active":false,"project_id":project_id,"agent":agent,"learned_rules":[],"reason_code":"memory_access_scope_rejected","raw_available":false});
+    };
+    let rules = records.iter().filter(|record| record.kind == "preference" || record.kind == "output_style").take(8).map(|record| json!({"memory_id":record.memory_id,"revision":record.entry_revision,"kind":record.kind,"keywords":record.keywords})).collect::<Vec<_>>();
+    let verbosity = if rules.iter().any(|rule| {
+        rule["keywords"]
+            .as_array()
+            .is_some_and(|keys| keys.iter().any(|key| key.as_str() == Some("terse")))
+    }) {
+        "terse"
+    } else {
+        "auto"
+    };
+    json!({"source":"dtoken-owned-runtime","state":"planned","active":false,"project_id":project_id,"agent":agent,"output_verbosity":verbosity,"learned_rules":rules,"applied_requests":0,"accounting_evidence":"typed_memory_scope","raw_available":false,"reason_code":"output_shape_execution_not_yet_bound_to_route"})
 }
 
 pub fn dashboard_payload_for_config(config: &DtokenConfig) -> Value {
@@ -6652,6 +10589,16 @@ async fn openai_chat_completions(
                 Ok((status_code, response_headers, body, mut quota_metadata)) => {
                     attach_quota_account_ref(&mut quota_metadata, quota_account_ref.as_deref());
                     request_log.quota_metadata = quota_metadata;
+                    attach_output_shaping_evidence(
+                        &mut request_log,
+                        &mut event,
+                        output_shaping_passthrough_evidence(
+                            "stream_passthrough",
+                            &scope.route_id,
+                            &scope.provider_id,
+                            &scope.model,
+                        ),
+                    );
                     if let Some(accounting) = request_log.context_accounting.as_mut() {
                         accounting.upstream_state = UpstreamSendState::StreamStarted;
                         accounting.attribution_basis = dtoken_types::SavingsAttribution::None;
@@ -6751,6 +10698,22 @@ async fn openai_chat_completions(
             &mut upstream.quota_metadata,
             opaque_codex_account_ref(&headers).as_deref(),
         );
+        let output_shaping = if upstream.error_category.is_some() {
+            output_shaping_passthrough_evidence(
+                "error_response_passthrough",
+                &scope.route_id,
+                &scope.provider_id,
+                &scope.model,
+            )
+        } else {
+            apply_openai_output_shaping(
+                &mut upstream.response,
+                route,
+                &scope,
+                output_shaping_policy_for_scope(&state.config, &scope),
+            )
+        };
+        attach_output_shaping_evidence(&mut request_log, &mut event, output_shaping);
         mark_upstream_outcome(&upstream, &mut request_log, &mut event);
         persist_provider_cache_observation(
             &state,
@@ -6836,24 +10799,33 @@ async fn openai_responses(
         }
     };
     let ccr_original_body = body_bytes.to_vec();
-    let messages = body
-        .get("input")
-        .map(|input| {
-            vec![json!({
-                "role": "user",
-                "content": input
-            })]
-        })
-        .or_else(|| {
-            body.get("messages")
-                .and_then(|value| value.as_array().cloned())
-        });
+    // Fail-closed Responses -> Chat semantic bridge: unsupported input items,
+    // tools and generation controls are rejected before any route or upstream
+    // work instead of being silently dropped or guessed.
+    let original_body = match responses_to_openai_chat_body(&body) {
+        Ok(converted) => converted,
+        Err(reason) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({
+                    "error": {
+                        "type": "unsupported_responses_input",
+                        "message": reason
+                    }
+                })),
+            )
+                .into_response();
+        }
+    };
     let request = OpenAiChatRequest {
-        model: body
+        model: original_body
             .get("model")
             .and_then(Value::as_str)
             .map(ToString::to_string),
-        messages,
+        messages: original_body
+            .get("messages")
+            .and_then(Value::as_array)
+            .cloned(),
         stream: body.get("stream").and_then(Value::as_bool),
     };
 
@@ -6865,11 +10837,9 @@ async fn openai_responses(
     if let Ok((route, provider)) = route_selection {
         let request_id = Uuid::new_v4();
         let decision = build_configured_route_decision(request_id, route, provider);
-        let original_body = json!({
-            "model": request.model,
-            "messages": request.messages,
-            "stream": false
-        });
+        // `original_body` is the Responses -> Chat conversion computed above;
+        // it preserves the requested `stream` flag instead of silently
+        // downgrading Responses streaming to a non-streaming Chat call.
         let optimization_context = match resolve_optimization_context(
             &decision,
             route,
@@ -7069,6 +11039,138 @@ async fn openai_responses(
             );
         }
         drop(ccr_original_body);
+        if request.stream.unwrap_or(false) {
+            // Real Chat SSE -> Responses SSE event conversion; never a silent
+            // downgrade of stream:true to a non-streaming call.
+            let quota_account_ref = opaque_codex_account_ref(&headers);
+            let upstream = forward_openai_chat_stream(
+                &state.http_client,
+                provider,
+                upstream_body.clone(),
+                Some(&headers),
+            )
+            .await;
+            match upstream {
+                Ok((status_code, mut response_headers, body, mut quota_metadata)) => {
+                    attach_quota_account_ref(&mut quota_metadata, quota_account_ref.as_deref());
+                    request_log.quota_metadata = quota_metadata;
+                    attach_output_shaping_evidence(
+                        &mut request_log,
+                        &mut event,
+                        output_shaping_passthrough_evidence(
+                            "stream_passthrough",
+                            &scope.route_id,
+                            &scope.provider_id,
+                            &scope.model,
+                        ),
+                    );
+                    if let Some(accounting) = request_log.context_accounting.as_mut() {
+                        accounting.upstream_state = UpstreamSendState::StreamStarted;
+                        accounting.attribution_basis = dtoken_types::SavingsAttribution::None;
+                    }
+                    event.context_accounting = request_log.context_accounting.clone();
+                    event.status = EventStatus::Ok;
+                    event.saved_tokens = Some(0);
+                    if let Some(metadata) = event.metadata.as_object_mut() {
+                        metadata.insert("stream".to_string(), json!(true));
+                        metadata.insert(
+                            "stream_semantic_bridge".to_string(),
+                            json!("responses_sse_from_chat_sse"),
+                        );
+                        metadata.insert("upstream_status".to_string(), json!(status_code));
+                        metadata.insert(
+                            "privacy".to_string(),
+                            json!(
+                                "Responses SSE bridge converts Chat SSE events in memory; the converted stream is not stored by d-token."
+                            ),
+                        );
+                    }
+                    state.record_routed_request_with_ccr_receipt(
+                        &decision,
+                        request_log,
+                        event,
+                        &prepared_ccr,
+                    );
+                    append_stage_event(
+                        &state,
+                        request_id,
+                        LayeredStage::ProviderForward,
+                        EventStatus::Ok,
+                        json!({
+                            "route_id": decision.route_id,
+                            "provider_id": decision.provider_id,
+                            "input_protocol": "openai_responses",
+                            "output_protocol": "openai_responses_sse",
+                            "stream": true,
+                            "upstream_status": status_code,
+                            "fallback": "disabled",
+                            "raw_available": false,
+                            "privacy": "Responses SSE bridge emits converted events only; raw Chat SSE is not stored."
+                        }),
+                        None,
+                    );
+                    response_headers.insert(
+                        CONTENT_TYPE,
+                        axum::http::HeaderValue::from_static("text/event-stream"),
+                    );
+                    let converted = responses_sse_from_chat_sse(
+                        body,
+                        format!("resp-{request_id}"),
+                        request.model.clone(),
+                    );
+                    return (
+                        StatusCode::from_u16(status_code).unwrap_or(StatusCode::OK),
+                        response_headers,
+                        converted,
+                    )
+                        .into_response();
+                }
+                Err(upstream) => {
+                    mark_upstream_outcome(&upstream, &mut request_log, &mut event);
+                    let response_status = upstream_response_status(&upstream);
+                    let response = json!({
+                        "error": upstream.response["error"],
+                        "dtoken": {
+                            "source": "dtoken-owned-runtime",
+                            "runtime_kind": "headroom-derived",
+                            "external_headroom_dependency": false,
+                            "request_id": request_id,
+                            "route_decision": route_decision_to_value(&decision),
+                            "request_log": request_log,
+                            "ledger_event": event,
+                            "upstream_status": upstream.status,
+                            "upstream_error_category": upstream.error_category,
+                            "stream": true,
+                            "fallback": "disabled"
+                        }
+                    });
+                    state.record_routed_request_with_ccr_receipt(
+                        &decision,
+                        request_log,
+                        event,
+                        &prepared_ccr,
+                    );
+                    append_stage_event(
+                        &state,
+                        request_id,
+                        LayeredStage::ProviderForward,
+                        EventStatus::Failed,
+                        json!({
+                            "route_id": decision.route_id,
+                            "provider_id": decision.provider_id,
+                            "input_protocol": "openai_responses",
+                            "output_protocol": "openai_responses_sse",
+                            "stream": true,
+                            "upstream_status": upstream.status,
+                            "fallback": "disabled",
+                            "raw_available": false
+                        }),
+                        upstream.error_category.as_deref(),
+                    );
+                    return (response_status, Json(response)).into_response();
+                }
+            }
+        }
         let mut upstream = require_openai_message(
             forward_openai_chat(&state.http_client, provider, upstream_body, Some(&headers)).await,
             "OpenAI Responses",
@@ -7077,6 +11179,22 @@ async fn openai_responses(
             &mut upstream.quota_metadata,
             opaque_codex_account_ref(&headers).as_deref(),
         );
+        let output_shaping = if upstream.error_category.is_some() {
+            output_shaping_passthrough_evidence(
+                "error_response_passthrough",
+                &scope.route_id,
+                &scope.provider_id,
+                &scope.model,
+            )
+        } else {
+            apply_openai_output_shaping(
+                &mut upstream.response,
+                route,
+                &scope,
+                output_shaping_policy_for_scope(&state.config, &scope),
+            )
+        };
+        attach_output_shaping_evidence(&mut request_log, &mut event, output_shaping);
         mark_upstream_outcome(&upstream, &mut request_log, &mut event);
         persist_provider_cache_observation(
             &state,
@@ -7119,35 +11237,28 @@ async fn openai_responses(
                 }
             })
         } else {
-            let text = upstream
-                .response
-                .pointer("/choices/0/message/content")
-                .and_then(Value::as_str)
-                .expect("validated OpenAI message content");
-            json!({
-                "id": format!("resp-{request_id}"),
-                "object": "response",
-                "model": request.model.as_deref().unwrap_or("dtoken-response-route"),
-                "output": [{
-                    "type": "message",
-                    "role": "assistant",
-                    "content": [{
-                        "type": "output_text",
-                        "text": text
-                    }]
-                }],
-                "dtoken": {
-                    "source": "dtoken-owned-runtime",
-                    "runtime_kind": "headroom-derived",
-                    "external_headroom_dependency": false,
-                    "route_decision": route_decision_to_value(&decision),
-                    "request_log": request_log,
-                    "ledger_event": event,
-                    "upstream_status": upstream.status,
-                    "compression": compression_json,
-                    "fallback": "disabled"
-                }
-            })
+            let mut response = openai_chat_to_responses_response(
+                &upstream.response,
+                request.model.as_deref(),
+                &format!("resp-{request_id}"),
+            );
+            if let Some(object) = response.as_object_mut() {
+                object.insert(
+                    "dtoken".to_string(),
+                    json!({
+                        "source": "dtoken-owned-runtime",
+                        "runtime_kind": "headroom-derived",
+                        "external_headroom_dependency": false,
+                        "route_decision": route_decision_to_value(&decision),
+                        "request_log": request_log,
+                        "ledger_event": event,
+                        "upstream_status": upstream.status,
+                        "compression": compression_json,
+                        "fallback": "disabled"
+                    }),
+                );
+            }
+            response
         };
         state.record_routed_request_with_ccr_receipt(&decision, request_log, event, &prepared_ccr);
         append_stage_event(
@@ -7218,100 +11329,97 @@ async fn anthropic_messages(
 
     if payload.provider.protocol == Protocol::Anthropic {
         let original_body = body.clone();
+        let direct_cache_evidence = configured_provider_cache_evidence(&state, &payload.scope)
+            .filter(|evidence| {
+                evidence.strategy
+                    == dtoken_compress::context_pipeline::ProviderCacheStrategy::AnthropicExplicit
+            });
+        // Without fresh, exact provider evidence, Direct Anthropic must retain
+        // the inbound representation all the way to the wire.  In particular,
+        // do not let a JSON re-serialization or a Hybrid candidate turn an
+        // unverified cache optimization into an observable request mutation.
+        let raw_wire_required = direct_cache_evidence.is_none();
         // Active preparation owns the request-wide byte lease. Keep it alive
         // until the upstream operation reaches a terminal return.
         let mut _retained_hybrid_request = None;
-        if let Some(mut prepared) =
-            prepare_direct_anthropic_hybrid(&state, &payload, raw_body.clone()).await
-        {
-            let stage_recording =
-                record_hybrid_pre_send_stages(&state, payload.decision.request_id, &prepared);
-            if stage_recording.is_err()
-                && matches!(
-                    prepared.kind(),
-                    HybridPreparationKind::Active | HybridPreparationKind::Semantic
-                )
+        if !raw_wire_required {
+            if let Some(mut prepared) =
+                prepare_direct_anthropic_hybrid(&state, &payload, raw_body.clone()).await
             {
-                prepared = force_hybrid_pre_send_fallback(
-                    prepared,
-                    original_body,
-                    "ledger_pre_send_unavailable",
-                );
+                let stage_recording =
+                    record_hybrid_pre_send_stages(&state, payload.decision.request_id, &prepared);
+                if stage_recording.is_err()
+                    && matches!(
+                        prepared.kind(),
+                        HybridPreparationKind::Active | HybridPreparationKind::Semantic
+                    )
+                {
+                    prepared = force_hybrid_pre_send_fallback(
+                        prepared,
+                        original_body,
+                        "ledger_pre_send_unavailable",
+                    );
+                    append_stage_event(
+                        &state,
+                        payload.decision.request_id,
+                        LayeredStage::OpticalFallback,
+                        EventStatus::Failed,
+                        json!({
+                            "reason_code": "ledger_pre_send_unavailable",
+                            "raw_available": false,
+                            "privacy": "baseline selected before upstream send"
+                        }),
+                        Some("ledger_pre_send_unavailable"),
+                    );
+                }
+                apply_hybrid_preparation(&mut payload, &prepared);
+                _retained_hybrid_request = Some(prepared);
+            } else {
                 append_stage_event(
                     &state,
                     payload.decision.request_id,
                     LayeredStage::OpticalFallback,
                     EventStatus::Failed,
                     json!({
-                        "reason_code": "ledger_pre_send_unavailable",
+                        "reason_code": "hybrid_worker_unavailable",
                         "raw_available": false,
-                        "privacy": "baseline selected before upstream send"
+                        "baseline_selected": true,
+                        "automatic_retry": false
                     }),
-                    Some("ledger_pre_send_unavailable"),
+                    Some("hybrid_worker_unavailable"),
                 );
             }
-            apply_hybrid_preparation(&mut payload, &prepared);
-            _retained_hybrid_request = Some(prepared);
         } else {
+            force_payload_ccr_pre_send_baseline(
+                &mut payload,
+                &body,
+                "provider_cache_evidence_unavailable",
+            );
             append_stage_event(
                 &state,
                 payload.decision.request_id,
                 LayeredStage::OpticalFallback,
                 EventStatus::Failed,
                 json!({
-                    "reason_code": "hybrid_worker_unavailable",
+                    "reason_code": "provider_cache_evidence_unavailable",
                     "raw_available": false,
                     "baseline_selected": true,
                     "automatic_retry": false
                 }),
-                Some("hybrid_worker_unavailable"),
+                Some("provider_cache_evidence_unavailable"),
             );
         }
 
-        let prepared_ccr = match state.prepare_ccr_for_request(
-            &payload.decision,
-            &payload.request_log,
-            &ccr_original_body,
-        ) {
-            Ok(prepared) => prepared,
-            Err(_) => {
-                force_payload_ccr_pre_send_baseline(
-                    &mut payload,
-                    &body,
-                    "baseline_fallback_store_unavailable",
-                );
-                state
-                    .prepare_ccr_for_request(
-                        &payload.decision,
-                        &payload.request_log,
-                        &ccr_original_body,
-                    )
-                    .expect("baseline request does not require CCR storage")
-            }
-        };
-        let pipeline_variant =
-            match apply_routed_pipeline_payload(&mut payload, &body, &prepared_ccr) {
-                Ok(variant) => variant,
-                Err(_) => {
-                    force_payload_ccr_pre_send_baseline(
-                        &mut payload,
-                        &body,
-                        "pipeline_input_invalid",
-                    );
-                    if let Some(metadata) = payload.event.metadata.as_object_mut() {
-                        metadata.insert(
-                            "pipeline_fallback_reason".to_string(),
-                            json!("pipeline_input_invalid"),
-                        );
-                        metadata.insert(
-                            "pipeline_payload_variant".to_string(),
-                            json!(dtoken_types::SentPayloadVariant::Original),
-                        );
-                    }
-                    dtoken_types::SentPayloadVariant::Original
-                }
-            };
-        let send_raw_body = pipeline_variant == dtoken_types::SentPayloadVariant::Original;
+        let (prepared_ccr, pipeline_variant, cache_wire) =
+            prepare_direct_anthropic_pipeline_for_send(
+                &state,
+                &mut payload,
+                &body,
+                &ccr_original_body,
+                direct_cache_evidence.as_ref(),
+            );
+        let send_raw_body = direct_anthropic_uses_raw_body(pipeline_variant);
+        attach_direct_anthropic_cache_wire_metadata(&mut payload.event, cache_wire, send_raw_body);
         drop(ccr_original_body);
 
         let stream = payload
@@ -7330,6 +11438,16 @@ async fn anthropic_messages(
             .await
             {
                 Ok((status_code, response_headers, response_stream)) => {
+                    attach_output_shaping_evidence(
+                        &mut payload.request_log,
+                        &mut payload.event,
+                        output_shaping_passthrough_evidence(
+                            "stream_passthrough",
+                            &payload.scope.route_id,
+                            &payload.scope.provider_id,
+                            &payload.scope.model,
+                        ),
+                    );
                     if let Some(accounting) = payload.request_log.context_accounting.as_mut() {
                         accounting.upstream_state = UpstreamSendState::StreamStarted;
                         accounting.attribution_basis = dtoken_types::SavingsAttribution::None;
@@ -7361,12 +11479,6 @@ async fn anthropic_messages(
                         }
                         _ => "passthrough",
                     };
-                    state.record_routed_request_with_ccr_receipt(
-                        &payload.decision,
-                        payload.request_log,
-                        payload.event,
-                        &prepared_ccr,
-                    );
                     append_stage_event(
                         &state,
                         payload.decision.request_id,
@@ -7391,11 +11503,19 @@ async fn anthropic_messages(
                         response_stream,
                         StreamTerminalLedgerGuard {
                             state: state.clone(),
+                            scope: payload.scope.clone(),
                             request_id: payload.decision.request_id,
                             provider_id: payload.decision.provider_id.clone(),
                             upstream_status: status_code,
                             kind: stream_kind,
                             accounting: stream_accounting,
+                            usage_observer: AnthropicStreamUsageObserver::default(),
+                            terminal_record: Some(StreamTerminalRequestRecord {
+                                decision: payload.decision,
+                                request_log: payload.request_log,
+                                event: payload.event,
+                                prepared_ccr,
+                            }),
                             terminal: false,
                         },
                     ));
@@ -7449,7 +11569,7 @@ async fn anthropic_messages(
             }
         }
 
-        let upstream = require_anthropic_message(
+        let mut upstream = require_anthropic_message(
             forward_anthropic_messages(
                 &state.http_client,
                 &payload.provider,
@@ -7458,6 +11578,33 @@ async fn anthropic_messages(
                 &headers,
             )
             .await,
+        );
+        let output_shaping = if upstream.error_category.is_some() {
+            output_shaping_passthrough_evidence(
+                "error_response_passthrough",
+                &payload.scope.route_id,
+                &payload.scope.provider_id,
+                &payload.scope.model,
+            )
+        } else if let Some(route) = state.config.find_route(&payload.decision.route_id) {
+            apply_anthropic_output_shaping(
+                &mut upstream.response,
+                route,
+                &payload.scope,
+                output_shaping_policy_for_scope(&state.config, &payload.scope),
+            )
+        } else {
+            output_shaping_passthrough_evidence(
+                "route_output_shaping_policy_unavailable",
+                &payload.scope.route_id,
+                &payload.scope.provider_id,
+                &payload.scope.model,
+            )
+        };
+        attach_output_shaping_evidence(
+            &mut payload.request_log,
+            &mut payload.event,
+            output_shaping,
         );
         mark_upstream_outcome(&upstream, &mut payload.request_log, &mut payload.event);
         persist_provider_cache_observation(
@@ -7582,6 +11729,29 @@ async fn anthropic_messages(
         &mut upstream.quota_metadata,
         opaque_codex_account_ref(&headers).as_deref(),
     );
+    let output_shaping = if upstream.error_category.is_some() {
+        output_shaping_passthrough_evidence(
+            "error_response_passthrough",
+            &payload.scope.route_id,
+            &payload.scope.provider_id,
+            &payload.scope.model,
+        )
+    } else if let Some(route) = state.config.find_route(&payload.decision.route_id) {
+        apply_openai_output_shaping(
+            &mut upstream.response,
+            route,
+            &payload.scope,
+            output_shaping_policy_for_scope(&state.config, &payload.scope),
+        )
+    } else {
+        output_shaping_passthrough_evidence(
+            "route_output_shaping_policy_unavailable",
+            &payload.scope.route_id,
+            &payload.scope.provider_id,
+            &payload.scope.model,
+        )
+    };
+    attach_output_shaping_evidence(&mut payload.request_log, &mut payload.event, output_shaping);
     mark_upstream_outcome(&upstream, &mut payload.request_log, &mut payload.event);
     persist_provider_cache_observation(
         &state,
@@ -7725,6 +11895,61 @@ async fn recent_logs(State(state): State<AppState>) -> Json<Value> {
 struct AnalyticsRequestsQuery {
     cursor: Option<String>,
     limit: Option<usize>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct FailurePatternsQuery {
+    project_id: Option<String>,
+    agent_id: Option<String>,
+    limit: Option<usize>,
+}
+
+async fn learning_failure_patterns(
+    State(state): State<AppState>,
+    Query(query): Query<FailurePatternsQuery>,
+) -> Json<Value> {
+    let Some(store) = state.context_store.as_ref() else {
+        return Json(json!({
+            "source": "dtoken-owned-runtime",
+            "state": "unavailable",
+            "patterns": [],
+            "reason_code": "learning_store_requires_persistent_context_store",
+            "raw_available": false,
+        }));
+    };
+    let Ok(store) = store.lock() else {
+        return Json(json!({
+            "source": "dtoken-owned-runtime",
+            "state": "unavailable",
+            "patterns": [],
+            "reason_code": "learning_store_lock_unavailable",
+            "raw_available": false,
+        }));
+    };
+    let observed_at_ms = dtoken_event_ledger::now_ms().max(1);
+    match store.list_failure_patterns(
+        query.project_id.as_deref(),
+        query.agent_id.as_deref(),
+        observed_at_ms,
+        query.limit.unwrap_or(100),
+    ) {
+        Ok(patterns) => Json(json!({
+            "source": "dtoken-owned-runtime",
+            "state": "ready",
+            "freshness": "live",
+            "observed_at_ms": observed_at_ms,
+            "patterns": patterns,
+            "raw_available": false,
+            "privacy": "Allowlisted failure classes and opaque route scopes only; no error text, prompt, response, command output, or credential is stored.",
+        })),
+        Err(_) => Json(json!({
+            "source": "dtoken-owned-runtime",
+            "state": "blocked",
+            "patterns": [],
+            "reason_code": "failure_pattern_scope_rejected",
+            "raw_available": false,
+        })),
+    }
 }
 
 fn analytics_cursor(log: &RequestLog) -> String {
@@ -7877,8 +12102,23 @@ async fn preprocessors() -> Json<Value> {
     Json(json!(list_preprocessors().await))
 }
 
-async fn rtk_status() -> Json<Value> {
-    Json(json!(detect_rtk_status().await))
+async fn rtk_status(State(state): State<AppState>) -> Json<Value> {
+    let external = detect_rtk_status().await;
+    let managed = state.managed_rtk_runtime_evidence();
+    let mut payload = serde_json::to_value(external).unwrap_or_else(|_| json!({}));
+    if let Some(object) = payload.as_object_mut() {
+        object.insert("source".to_string(), json!("dtoken-owned-runtime"));
+        object.insert("managed_runtime".to_string(), json!(managed));
+        object.insert(
+            "integrated".to_string(),
+            json!(managed_rtk_invocation_verified(&managed)),
+        );
+        object.insert(
+            "privacy".to_string(),
+            json!("Managed RTK evidence excludes argv, command output, paths, and digests."),
+        );
+    }
+    Json(payload)
 }
 
 async fn rtk_gain() -> Json<Value> {
@@ -7893,17 +12133,24 @@ async fn rtk_session() -> Json<Value> {
     Json(json!(rtk_session_report().await))
 }
 
-async fn headroom_status() -> Json<Value> {
+async fn headroom_status(State(state): State<AppState>) -> Json<Value> {
     let reference = detect_headroom_status().await;
+    let managed_rtk = state.managed_rtk_runtime_evidence();
+    let integrated_rtk = managed_rtk_invocation_verified(&managed_rtk);
     Json(json!({
         "source": "dtoken-owned-runtime",
         "runtime_kind": "headroom-derived",
         "external_headroom_dependency": false,
         "status": "owned_runtime_active",
-        "integrated_rtk": false,
-        "integrated_rtk_state": "partial-external-path-adapter",
+        "integrated_rtk": integrated_rtk,
+        "integrated_rtk_state": if integrated_rtk {
+            "verified_runtime_invocation"
+        } else {
+            managed_rtk.reason.as_str()
+        },
+        "integrated_rtk_evidence": managed_rtk,
         "reference_headroom": reference,
-        "note": "External Headroom detection is reference-only; d-token runtime is the product data source. Integrated RTK binary management and invocation evidence are not complete."
+        "note": "External Headroom detection is reference-only; d-token runtime is the product data source. Integrated RTK is active only after a verified d-token-owned invocation receipt."
     }))
 }
 
@@ -7925,8 +12172,9 @@ async fn headroom_proxy(State(state): State<AppState>) -> Json<Value> {
 async fn headroom_mcp(State(state): State<AppState>) -> Json<Value> {
     let ccr = runtime_cache_summary_for_state(&state);
     let memory = memory_summary_for_state(&state);
-    let capability = state
-        .capabilities
+    let transport = mcp::McpServer::transport_name();
+    let capabilities = state.current_capability_registry();
+    let capability = capabilities
         .find("mcp")
         .expect("backend capability registry must contain MCP");
     Json(json!({
@@ -7935,25 +12183,88 @@ async fn headroom_mcp(State(state): State<AppState>) -> Json<Value> {
         "external_headroom_dependency": false,
         "state": capability.state,
         "configured": capability.is_available(),
-        "capability_revision": state.capabilities.revision,
-        "capability_collected_at_ms": state.capabilities.collected_at_ms,
+        "capability_revision": capabilities.revision,
+        "capability_collected_at_ms": capabilities.collected_at_ms,
         "implementation_revision": capability.implementation_revision,
         "evidence_revision": capability.evidence_revision,
         "freshness": capability.freshness,
         "reason_codes": capability.reason_codes,
-        "transport": null,
-        "tools": [],
-        "planned_tools": ["headroom_compress", "headroom_retrieve", "headroom_stats"],
-        "implemented_as": [],
+        "transport": transport.map_or(Value::Null, Value::from),
+        "http_transport": "http-json-rpc",
+        "tools": mcp::McpServer::new(state.clone()).available_tool_names(),
+        "unavailable_tools": [
+            {
+                "name": "headroom_retrieve",
+                "reason": "retrieve_requires_managed_capability"
+            },
+            {
+                "name": "headroom_memory_list",
+                "reason": "shared_context_requires_managed_scope_capability"
+            }
+        ],
+        "implemented_as": ["dtoken-core-api::mcp::McpServer"],
         "ccr_entries": ccr["entries"],
         "memory_entries": memory["entries"],
         "raw_available": false,
-        "reason": "MCP transport and tool handlers have not been implemented; HTTP metadata endpoints are not MCP tools."
+        "reason": transport.map_or_else(
+            || "MCP transport is unavailable.".to_string(),
+            |name| format!("MCP {name} is d-token-owned, plus a JSON-only HTTP POST transport at /mcp for the streamable-HTTP `Accept: application/json` mode. CCR retrieval is registered only when the managed launcher supplies its memory-only capability; this HTTP status surface never exposes that capability."),
+        )
     }))
 }
 
+/// Streamable-HTTP MCP JSON mode.
+///
+/// The MCP streamable-HTTP spec lets a client request JSON-only delivery by
+/// sending `Accept: application/json`; the server then answers with a single
+/// JSON-RPC response instead of an SSE stream.  d-token implements exactly
+/// that reliable subset: the request is parsed with the same bounded-frame
+/// limits as the stdio transport and handled by the same `McpServer`, so the
+/// decision/reason/artifact contract is byte-identical across transports.
+///
+/// No SSE session endpoint is registered (the axum build has no `sse`
+/// feature). The router owns one bounded `McpServer`, preserving JSON-RPC
+/// cancellation bookkeeping across POSTs while keeping retrieval and memory
+/// capabilities unavailable on the public loopback HTTP surface.
+async fn mcp_http(
+    Extension(server): Extension<Arc<mcp::McpServer>>,
+    body_bytes: Bytes,
+) -> Response {
+    if body_bytes.len() > mcp::MAX_MCP_MESSAGE_BYTES {
+        return (
+            StatusCode::PAYLOAD_TOO_LARGE,
+            Json(json!({
+                "jsonrpc": "2.0",
+                "id": Value::Null,
+                "error": {"code": -32600, "message": "Request too large"}
+            })),
+        )
+            .into_response();
+    }
+    let request: Value = match serde_json::from_slice(&body_bytes) {
+        Ok(request) => request,
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({
+                    "jsonrpc": "2.0",
+                    "id": Value::Null,
+                    "error": {"code": -32700, "message": "Parse error"}
+                })),
+            )
+                .into_response();
+        }
+    };
+    let Some(response) = server.handle_jsonrpc(request) else {
+        // Notifications have no response; Streamable-HTTP still answers with a
+        // 202 Accepted and an empty body per the spec.
+        return (StatusCode::ACCEPTED, ()).into_response();
+    };
+    (StatusCode::OK, Json(response)).into_response()
+}
+
 async fn backend_capabilities(State(state): State<AppState>) -> Json<CapabilityRegistrySnapshot> {
-    Json((*state.capabilities).clone())
+    Json(state.current_capability_registry())
 }
 
 async fn headroom_stats(State(state): State<AppState>) -> Json<Value> {
@@ -8076,21 +12387,29 @@ fn validated_project_id(value: Option<&str>) -> Option<&str> {
 }
 
 async fn config_patch_plan(State(state): State<AppState>) -> Json<Value> {
-    let plan = json!(mock_patch_plan());
     append_stage_event(
         &state,
         Uuid::new_v4(),
         LayeredStage::ConfigPatch,
-        EventStatus::Ok,
+        EventStatus::Passthrough,
         json!({
             "source": "dtoken-owned-runtime",
             "action": "preview_config_patch_plan",
+            "reason_code": "desktop_transaction_executor_required",
             "raw_available": false,
-            "privacy": "Diff preview contains route metadata only; credentials and full agent configs are not returned."
+            "privacy": "The core runtime does not fabricate a patch plan. Config diff, backup, apply, verify, and rollback are owned by the desktop transaction executor."
         }),
         None,
     );
-    Json(plan)
+    Json(json!({
+        "source": "dtoken-owned-runtime",
+        "state": "unavailable",
+        "reason_code": "desktop_transaction_executor_required",
+        "writes_performed": false,
+        "raw_available": false,
+        "next_action": "use_desktop_config_transaction",
+        "privacy": "No config file, diff, credential, or backup content was read or returned."
+    }))
 }
 
 async fn config_rollback_points() -> Json<Value> {
@@ -8136,24 +12455,6 @@ async fn ccr_retrieve(
 
 async fn memory_summary(State(state): State<AppState>) -> Json<Value> {
     Json(memory_summary_for_state(&state))
-}
-
-async fn memory_learn(State(state): State<AppState>, Json(record): Json<Value>) -> Json<Value> {
-    match state.record_memory(record) {
-        Ok(saved) => Json(json!({
-            "ok": true,
-            "source": "dtoken-owned-runtime",
-            "record": saved
-        })),
-        Err(err) => Json(json!({
-            "ok": false,
-            "source": "dtoken-owned-runtime",
-            "error": {
-                "type": "memory_record_failed",
-                "message": err.to_string()
-            }
-        })),
-    }
 }
 
 async fn output_shape(State(state): State<AppState>) -> Json<Value> {
@@ -8542,6 +12843,49 @@ mod tests {
     }
 
     #[test]
+    fn anthropic_stream_usage_observer_extracts_only_allowlisted_counters() {
+        const SECRET: &str = "ANTHROPIC_STREAM_SECRET_MUST_NOT_ESCAPE";
+        let mut observer = AnthropicStreamUsageObserver::default();
+        observer.observe_chunk(&Bytes::from_static(
+            b"event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":101,\"cache_read_input_tokens\":25,\"cache_creation_input_tokens\":3,\"private\":\"ANTHROPIC_STREAM_SECRET_MUST_NOT_ESCAPE\"}}}\n\n",
+        ));
+        observer.observe_chunk(&Bytes::from_static(
+            b"data: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":17,\"cache_creation\":{\"ephemeral_5m_input_tokens\":4}}}\n",
+        ));
+        observer.observe_chunk(&Bytes::from_static(b"data: {\"type\":\"message_stop\"}\n"));
+
+        assert_eq!(observer.terminal_error_code(), None);
+        let usage = observer.take_usage();
+        assert_eq!(usage.input_tokens, Some(101));
+        assert_eq!(usage.output_tokens, Some(17));
+        assert_eq!(usage.cache_read_input_tokens, Some(25));
+        assert_eq!(usage.cache_creation_input_tokens, Some(3));
+        assert_eq!(usage.cache_creation_5m_input_tokens, Some(4));
+        assert!(!usage.as_response().to_string().contains(SECRET));
+    }
+
+    #[test]
+    fn anthropic_stream_usage_observer_fails_closed_without_message_stop_or_on_error() {
+        let mut incomplete = AnthropicStreamUsageObserver::default();
+        incomplete.observe_chunk(&Bytes::from_static(
+            b"data: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":2}}\n",
+        ));
+        assert_eq!(
+            incomplete.terminal_error_code(),
+            Some("provider_stream_incomplete")
+        );
+
+        let mut upstream_error = AnthropicStreamUsageObserver::default();
+        upstream_error.observe_chunk(&Bytes::from_static(
+            b"data: {\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\"}}\ndata: {\"type\":\"message_stop\"}\n",
+        ));
+        assert_eq!(
+            upstream_error.terminal_error_code(),
+            Some("provider_stream_error_event")
+        );
+    }
+
+    #[test]
     fn provider_terminal_event_survives_missing_optical_complete_append() {
         let event = optical_test_event(
             LayeredStage::ProviderForward,
@@ -8663,6 +13007,14 @@ mod tests {
     }
 
     fn configured_openai_test_state(base_url: String, timeout_ms: u64) -> AppState {
+        configured_openai_test_state_with_output_policies(base_url, timeout_ms, vec![])
+    }
+
+    fn configured_openai_test_state_with_output_policies(
+        base_url: String,
+        timeout_ms: u64,
+        output_shaping_policies: Vec<dtoken_types::OutputShapingRoutePolicy>,
+    ) -> AppState {
         AppState::new(DtokenConfig {
             providers: vec![dtoken_types::ProviderProfile {
                 id: "local-mock-provider".to_string(),
@@ -8689,8 +13041,74 @@ mod tests {
             }],
             instances: vec![],
             provider_cache_policies: vec![],
+            output_shaping_policies,
             optical: Default::default(),
         })
+    }
+
+    fn direct_anthropic_cache_test_config(base_url: String) -> DtokenConfig {
+        DtokenConfig {
+            providers: vec![dtoken_types::ProviderProfile {
+                id: "anthropic-direct".to_string(),
+                name: "Direct Anthropic".to_string(),
+                kind: dtoken_types::ProviderKind::Custom,
+                protocol: Protocol::Anthropic,
+                base_url,
+                api_key_ref: None,
+                models: vec!["claude-cache-test".to_string()],
+                timeout_ms: 30_000,
+                healthcheck_path: None,
+            }],
+            routes: vec![dtoken_types::RouteProfile {
+                id: "anthropic-direct-route".to_string(),
+                name: "Direct Anthropic route".to_string(),
+                input_protocol: Protocol::Anthropic,
+                instance_id: "anthropic-direct-instance".to_string(),
+                target_provider_id: "anthropic-direct".to_string(),
+                fallback_provider_id: None,
+                chain_mode: ChainMode::Direct,
+                compression_policy: CompressionPolicy::Balanced,
+                bind_host: "127.0.0.1".to_string(),
+                local_port: 18002,
+            }],
+            instances: vec![],
+            provider_cache_policies: vec![dtoken_types::ProviderCachePolicy {
+                route_id: "anthropic-direct-route".to_string(),
+                provider_id: "anthropic-direct".to_string(),
+                model: "claude-cache-test".to_string(),
+                strategy: dtoken_types::ProviderCachePolicyStrategy::AnthropicExplicit,
+                ttl_seconds: 300,
+                min_prefix_bytes: 1,
+            }],
+            output_shaping_policies: vec![],
+            optical: Default::default(),
+        }
+    }
+
+    fn persist_anthropic_cache_evidence(state: &AppState, scope: &RequestScope) {
+        let observation = dtoken_types::ProviderCacheObservation::new(
+            &scope.route_id,
+            &scope.provider_id,
+            &scope.model,
+            scope.output_protocol.clone(),
+            &scope.config_revision,
+            dtoken_types::ProviderCacheObservationKind::AnthropicUsage,
+            Some(0),
+            None,
+            None,
+            None,
+            "provider-cache-observation-v1",
+            dtoken_event_ledger::now_ms().max(1),
+        )
+        .expect("valid Anthropic cache observation");
+        state
+            .context_store
+            .as_ref()
+            .expect("persistent context store")
+            .lock()
+            .unwrap()
+            .upsert_provider_cache_observation(&observation)
+            .expect("store Anthropic cache observation");
     }
 
     fn route_test_config() -> DtokenConfig {
@@ -8728,6 +13146,7 @@ mod tests {
             ],
             instances: vec![],
             provider_cache_policies: vec![],
+            output_shaping_policies: vec![],
             optical: Default::default(),
         }
     }
@@ -8906,6 +13325,84 @@ mod tests {
             .is_none());
         drop(state);
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn compression_execution_normalizes_tool_schemas_on_the_public_surface() {
+        let state = configured_openai_test_state("http://127.0.0.1:9/v1".to_string(), 100);
+        let repeated_log = ["same"; 12].join("\n");
+        let mut messages = vec![
+            json!({
+                "role": "assistant",
+                "content": null,
+                "tool_calls": [{
+                    "id": "old-call",
+                    "type": "function",
+                    "function": {"name": "build", "arguments": "{}"}
+                }]
+            }),
+            json!({"role": "tool", "tool_call_id": "old-call", "content": repeated_log}),
+        ];
+        for index in 0..6 {
+            let call_id = format!("recent-{index}");
+            messages.push(json!({
+                "role": "assistant",
+                "content": null,
+                "tool_calls": [{
+                    "id": call_id,
+                    "type": "function",
+                    "function": {"name": "recent", "arguments": "{}"}
+                }]
+            }));
+            messages.push(json!({
+                "role": "tool",
+                "tool_call_id": call_id,
+                "content": "recent result"
+            }));
+        }
+        messages.push(json!({"role": "user", "content": "current request"}));
+        let request = CompressionDecisionRequest {
+            route_id: "local-mock-route".to_string(),
+            input_protocol: Protocol::OpenAi,
+            endpoint: OpticalEndpoint::OpenAiChatCompletions,
+            requested_policy: Some(CompressionPolicy::Balanced),
+            body: json!({
+                "model": "mock/model",
+                "messages": messages,
+                "tools": [
+                    {"type": "function", "function": {"name": "zeta", "parameters": {"type": "object"}}},
+                    {"type": "function", "function": {"name": "alpha", "parameters": {"type": "object"}}}
+                ]
+            }),
+        };
+
+        let execution = state
+            .compression_execution(request)
+            .expect("surface compression should resolve");
+        assert!(execution
+            .transforms_applied
+            .iter()
+            .any(|item| item == "tool_schema:normalize"));
+        assert!(execution
+            .transforms_applied
+            .iter()
+            .any(|item| item == "tool_def_normalize_v1"));
+        // The tool section survives the transform sorted by function name.
+        assert_eq!(
+            execution.body["tools"][0]["function"]["name"]
+                .as_str()
+                .unwrap(),
+            "alpha"
+        );
+        assert_eq!(
+            execution.body["tools"][1]["function"]["name"]
+                .as_str()
+                .unwrap(),
+            "zeta"
+        );
+        // The public contract stays body-free and credential-free.
+        assert!(!execution.decision.evidence.request_body_persisted);
+        assert!(!execution.decision.evidence.credentials_returned);
     }
 
     #[test]
@@ -9317,6 +13814,74 @@ mod tests {
         assert_eq!(payload["active_direct_routes"], 0);
     }
 
+    #[tokio::test]
+    async fn optical_public_readiness_is_false_when_registry_evidence_is_unavailable() {
+        let mut state = AppState::new(DtokenConfig::empty());
+        state.capabilities = Arc::new(
+            CapabilityRegistrySnapshot::new(
+                "test-optical-unavailable",
+                1,
+                vec![CapabilityEvidence::unavailable(
+                    "optical-renderer",
+                    "test-optical-unavailable",
+                    "renderer_evidence_unavailable",
+                )
+                .expect("unavailable renderer evidence")],
+            )
+            .expect("test capability registry"),
+        );
+
+        let Json(status) = optical_status(State(state.clone())).await;
+        assert!(!status.fail_closed);
+        assert!(!status.renderer_ready);
+        assert!(!status.patcher_ready);
+        assert!(!status.post_validator_ready);
+        assert!(!status.signed_accounting_ready);
+        assert!(!status.representation_plan_ready);
+        assert!(!status.responses_shadow_inventory_ready);
+        assert!(!status.dynamic_page_accounting_ready);
+        assert!(!status.active_reachable);
+
+        let Json(capabilities) = optical_capabilities(State(state)).await;
+        assert!(!capabilities.shadow_preview_supported);
+        assert!(!capabilities.active_transform_enabled);
+        assert!(!capabilities.fail_closed);
+        assert!(!capabilities.direct_anthropic_upstream_supported);
+        assert!(!capabilities.streaming_passthrough_supported);
+        assert!(!capabilities.deterministic_png_renderer);
+        assert!(!capabilities.artifact_post_validation);
+        assert!(!capabilities.signed_multimodal_accounting);
+        assert!(!capabilities.capability_attestation_required);
+    }
+
+    #[tokio::test]
+    async fn optical_shadow_readiness_does_not_enable_active_transform() {
+        let state = AppState::new(DtokenConfig::empty());
+        let shadow = state
+            .capabilities
+            .find("optical-shadow-preview")
+            .expect("shadow capability");
+        let active = state
+            .capabilities
+            .find("optical-active")
+            .expect("active capability");
+        assert_eq!(shadow.state, AvailabilityState::Ready);
+        assert_eq!(active.state, AvailabilityState::ImplementedDisabled);
+        assert_eq!(
+            active.reason_codes,
+            vec!["policy_shadow_only", "release_gate_disabled"]
+        );
+
+        let Json(status) = optical_status(State(state.clone())).await;
+        let Json(capabilities) = optical_capabilities(State(state)).await;
+        assert!(status.renderer_ready);
+        assert!(!status.allow_active);
+        assert!(!status.active_reachable);
+        assert!(capabilities.shadow_preview_supported);
+        assert!(!capabilities.active_transform_enabled);
+        assert_eq!(capabilities.max_mode, OpticalMode::ShadowPreview);
+    }
+
     #[test]
     fn runtime_metadata_streams_repair_corrupt_tails_consistently() {
         use std::io::Write as _;
@@ -9354,19 +13919,15 @@ mod tests {
         );
         let route_value = route_decision_to_value(&decision);
         let metadata = json!({"recovery_ref": "ccr:route-a:test", "raw_available": false});
-        let memory = json!({"memory_id": "mem-test", "raw_available": false});
-
         store
             .append_route_decision(&route_value)
             .expect("seed route");
         store.append_request_log(&log).expect("seed request log");
         store.append_ccr_metadata(&metadata).expect("seed CCR");
-        store.append_memory_record(&memory).expect("seed memory");
         for name in [
             "route-decisions.jsonl",
             "request-logs.jsonl",
             "ccr-metadata.jsonl",
-            "memory-records.jsonl",
         ] {
             let mut file = std::fs::OpenOptions::new()
                 .append(true)
@@ -9380,12 +13941,10 @@ mod tests {
             .expect("repair route");
         store.append_request_log(&log).expect("repair request log");
         store.append_ccr_metadata(&metadata).expect("repair CCR");
-        store.append_memory_record(&memory).expect("repair memory");
 
         assert_eq!(store.recent_route_decisions(10).unwrap().len(), 2);
         assert_eq!(store.recent_request_logs(10).unwrap().len(), 2);
         assert_eq!(store.recent_ccr_metadata(10).unwrap().len(), 2);
-        assert_eq!(store.recent_memory_records(10).unwrap().len(), 2);
         let _ = std::fs::remove_dir_all(dir);
     }
 
@@ -9453,8 +14012,13 @@ mod tests {
                     .expect("local request headers are UTF-8");
                 let content_length = headers
                     .lines()
-                    .find_map(|line| line.strip_prefix("content-length: "))
-                    .and_then(|value| value.parse::<usize>().ok())
+                    .find_map(|line| {
+                        let (name, value) = line.split_once(':')?;
+                        if !name.trim().eq_ignore_ascii_case("content-length") {
+                            return None;
+                        }
+                        value.trim().parse::<usize>().ok()
+                    })
                     .expect("local request content length");
                 break header_end + 4 + content_length;
             };
@@ -9610,6 +14174,173 @@ mod tests {
         assert_eq!(scope["agent"]["value"], Value::Null);
         assert_eq!(scope["agent"]["reason_code"], "agent_identity_unavailable");
         assert_eq!(scope["config_revision"].as_str().map(str::len), Some(64));
+        server.await.expect("local mock upstream task");
+    }
+
+    #[tokio::test]
+    async fn configured_chat_applies_route_bound_output_shaping_with_redacted_measurement() {
+        let (addr, server) = spawn_json_upstream(
+            "200 OK",
+            r#"{"id":"chatcmpl-local","choices":[{"message":{"role":"assistant","content":"alpha\n\n\n\nbeta\n\n"}}]}"#,
+            0,
+        )
+        .await;
+        let state = configured_openai_test_state_with_output_policies(
+            format!("http://{addr}/v1"),
+            1_000,
+            vec![dtoken_types::OutputShapingRoutePolicy {
+                route_id: "local-mock-route".to_string(),
+                provider_id: "local-mock-provider".to_string(),
+                model: "mock/model".to_string(),
+                enabled: true,
+                output_verbosity: dtoken_types::OutputVerbosity::Terse,
+                holdout_ratio: Some(0.0),
+            }],
+        );
+
+        let response = openai_chat_completions(
+            State(state.clone()),
+            HeaderMap::new(),
+            request_bytes(json!({
+                "model": "mock/model",
+                "messages": [{"role": "user", "content": "hello"}],
+                "stream": false
+            })),
+        )
+        .await
+        .into_response();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let payload = response_json(response).await;
+        assert_eq!(
+            payload["choices"][0]["message"]["content"],
+            "alpha\n\nbeta\n"
+        );
+        let event = state
+            .recent_events(20)
+            .into_iter()
+            .find(|event| {
+                event.request_id.is_some() && event.metadata.get("output_shaping").is_some()
+            })
+            .expect("routed response must persist output-shaping evidence");
+        let evidence = &event.metadata["output_shaping"];
+        assert_eq!(evidence["state"], "applied");
+        assert_eq!(
+            evidence["accounting"]["measured"]["unit"],
+            "outbound_utf8_bytes"
+        );
+        assert!(evidence["accounting"]["measured"]["saved_bytes"]
+            .as_u64()
+            .is_some_and(|value| value > 0));
+        assert_eq!(evidence["accounting"]["holdout_estimated"], Value::Null);
+        assert_eq!(evidence["raw_available"], false);
+        assert!(!event.metadata.to_string().contains("alpha"));
+        server.await.expect("local mock upstream task");
+    }
+
+    #[tokio::test]
+    async fn configured_chat_keeps_error_response_and_records_unknown_shaping() {
+        let (addr, server) = spawn_json_upstream(
+            "401 Unauthorized",
+            r#"{"error":{"message":"invalid local test credential"}}"#,
+            0,
+        )
+        .await;
+        let state = configured_openai_test_state_with_output_policies(
+            format!("http://{addr}/v1"),
+            1_000,
+            vec![dtoken_types::OutputShapingRoutePolicy {
+                route_id: "local-mock-route".to_string(),
+                provider_id: "local-mock-provider".to_string(),
+                model: "mock/model".to_string(),
+                enabled: true,
+                output_verbosity: dtoken_types::OutputVerbosity::Terse,
+                holdout_ratio: Some(0.0),
+            }],
+        );
+
+        let response = openai_chat_completions(
+            State(state.clone()),
+            HeaderMap::new(),
+            request_bytes(json!({
+                "model": "mock/model",
+                "messages": [{"role": "user", "content": "hello"}],
+                "stream": false
+            })),
+        )
+        .await
+        .into_response();
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        let payload = response_json(response).await;
+        assert_eq!(payload["error"]["type"], "provider_auth");
+        let event = state
+            .recent_events(20)
+            .into_iter()
+            .find(|event| event.metadata.get("output_shaping").is_some())
+            .expect("failed routed response must persist passthrough evidence");
+        assert_eq!(
+            event.metadata["output_shaping"]["reason_code"],
+            "error_response_passthrough"
+        );
+        assert_eq!(
+            event.metadata["output_shaping"]["accounting"]["unknown"],
+            true
+        );
+        server.await.expect("local mock upstream task");
+    }
+
+    #[tokio::test]
+    async fn configured_chat_holdout_keeps_response_verbatim_and_records_estimate_only() {
+        let (addr, server) = spawn_json_upstream(
+            "200 OK",
+            r#"{"id":"chatcmpl-local","choices":[{"message":{"role":"assistant","content":"alpha\n\n\n\nbeta\n\n"}}]}"#,
+            0,
+        )
+        .await;
+        let state = configured_openai_test_state_with_output_policies(
+            format!("http://{addr}/v1"),
+            1_000,
+            vec![dtoken_types::OutputShapingRoutePolicy {
+                route_id: "local-mock-route".to_string(),
+                provider_id: "local-mock-provider".to_string(),
+                model: "mock/model".to_string(),
+                enabled: true,
+                output_verbosity: dtoken_types::OutputVerbosity::Terse,
+                holdout_ratio: Some(1.0),
+            }],
+        );
+
+        let response = openai_chat_completions(
+            State(state.clone()),
+            HeaderMap::new(),
+            request_bytes(json!({
+                "model": "mock/model",
+                "messages": [{"role": "user", "content": "hello"}],
+                "stream": false
+            })),
+        )
+        .await
+        .into_response();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let payload = response_json(response).await;
+        assert_eq!(
+            payload["choices"][0]["message"]["content"],
+            "alpha\n\n\n\nbeta\n\n"
+        );
+        let event = state
+            .recent_events(20)
+            .into_iter()
+            .find(|event| event.metadata.get("output_shaping").is_some())
+            .expect("holdout must persist output-shaping evidence");
+        let accounting = &event.metadata["output_shaping"]["accounting"];
+        assert_eq!(event.metadata["output_shaping"]["state"], "holdout");
+        assert_eq!(accounting["measured"], Value::Null);
+        assert!(accounting["holdout_estimated"]["estimated_saved_bytes"]
+            .as_u64()
+            .is_some_and(|value| value > 0));
+        assert_eq!(accounting["unknown"], false);
         server.await.expect("local mock upstream task");
     }
 
@@ -10322,6 +15053,7 @@ mod tests {
             }],
             instances: vec![],
             provider_cache_policies: vec![],
+            output_shaping_policies: vec![],
             optical: Default::default(),
         };
         let status = RuntimeConfigStatus::from_config(
@@ -10377,6 +15109,7 @@ mod tests {
             }],
             instances: vec![],
             provider_cache_policies: vec![],
+            output_shaping_policies: vec![],
             optical: Default::default(),
         };
         let status = RuntimeConfigStatus::from_config(
@@ -10491,6 +15224,7 @@ mod tests {
             routes: vec![],
             instances: vec![],
             provider_cache_policies: vec![],
+            output_shaping_policies: vec![],
             optical: Default::default(),
         };
         let state = AppState::new(config);
@@ -10917,27 +15651,24 @@ mod tests {
         assert_eq!(attributed_before, 101);
     }
 
-    #[test]
-    fn config_patch_plan_records_ledger_event_without_raw_config() {
+    #[tokio::test]
+    async fn config_patch_plan_fails_closed_without_desktop_transaction_executor() {
         let state = AppState::new(DtokenConfig::empty());
-        append_stage_event(
-            &state,
-            Uuid::new_v4(),
-            LayeredStage::ConfigPatch,
-            EventStatus::Ok,
-            json!({
-                "source": "dtoken-owned-runtime",
-                "action": "preview_config_patch_plan",
-                "raw_available": false,
-                "privacy": "Diff preview contains route metadata only; credentials and full agent configs are not returned."
-            }),
-            None,
-        );
+        let Json(plan) = config_patch_plan(State(state.clone())).await;
 
         let event = state.recent_events(1).remove(0);
+        assert_eq!(plan["source"], "dtoken-owned-runtime");
+        assert_eq!(plan["state"], "unavailable");
+        assert_eq!(plan["reason_code"], "desktop_transaction_executor_required");
+        assert_eq!(plan["writes_performed"], false);
+        assert!(plan.get("diff").is_none());
         assert_eq!(event.stage, LayeredStage::ConfigPatch);
-        assert_eq!(event.status, EventStatus::Ok);
+        assert_eq!(event.status, EventStatus::Passthrough);
         assert_eq!(event.metadata["raw_available"], false);
+        assert_eq!(
+            event.metadata["reason_code"],
+            "desktop_transaction_executor_required"
+        );
         assert!(event.metadata.get("api_key").is_none());
         assert!(event.metadata.get("raw_config").is_none());
     }
@@ -11005,6 +15736,162 @@ mod tests {
     }
 
     #[test]
+    fn ccr_restart_keeps_only_latest_record_per_recovery_ref_in_memory() {
+        let dir = std::env::temp_dir().join(format!("dtoken-ccr-latest-{}", Uuid::new_v4()));
+        let key = [43_u8; 32];
+        let state = AppState::new_persistent_with_ccr_key(DtokenConfig::empty(), &dir, key)
+            .expect("private CCR state");
+        let first_ref = format!("ccr:{}", Uuid::new_v4());
+        let second_ref = format!("ccr:{}", Uuid::new_v4());
+        let now_ms = dtoken_event_ledger::now_ms().max(1);
+
+        for index in 0..64_u64 {
+            state
+                .append_ccr_lifecycle_record(json!({
+                    "recovery_ref": first_ref.clone(),
+                    "request_id": "request-a",
+                    "state": if index == 63 { "recovery_pending_retained" } else { "pending_retained" },
+                    "raw_available": true,
+                    "raw_storage": "encrypted-private-store",
+                    "updated_at_ms": now_ms.saturating_add(index),
+                }))
+                .expect("append first recovery ref journal record");
+        }
+        for index in 0..32_u64 {
+            state
+                .append_ccr_lifecycle_record(json!({
+                    "recovery_ref": second_ref.clone(),
+                    "request_id": "request-b",
+                    "state": if index == 31 { "deleted" } else { "delete_intent" },
+                    "raw_available": index != 31,
+                    "raw_storage": if index == 31 { "deleted" } else { "private-store-delete-pending" },
+                    "updated_at_ms": now_ms.saturating_add(1_000 + index),
+                }))
+                .expect("append second recovery ref journal record");
+        }
+        drop(state);
+
+        let restarted = AppState::new_persistent_with_ccr_key(DtokenConfig::empty(), &dir, key)
+            .expect("restarted private CCR state");
+        let metadata = restarted.recent_ccr_metadata(10);
+
+        assert_eq!(metadata.len(), 2);
+        assert_eq!(
+            restarted
+                .retrieve_ccr_metadata(&first_ref)
+                .expect("latest first ref state")["state"],
+            "recovery_pending_retained"
+        );
+        assert_eq!(
+            restarted
+                .retrieve_ccr_metadata(&second_ref)
+                .expect("latest second ref state")["state"],
+            "deleted"
+        );
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn ccr_bare_marker_guard_fails_closed_without_a_matching_durable_receipt() {
+        let scope = cache_test_scope(Protocol::OpenAi);
+        let baseline =
+            json!({"model": "model-a", "messages": [{"role": "user", "content": "original"}]});
+        let candidate = json!({"model": "model-a", "messages": [{"role": "user", "content": "<<ccr:11111111-1111-4111-8111-111111111111,string,64>>"}]});
+        let transforms = vec!["content_router:json".to_string()];
+        let prepared_without_receipt = PreparedCcr {
+            receipt: None,
+            store_configured: true,
+        };
+
+        // Marker in the candidate with no durable receipt -> baseline fallback.
+        let payload = prepare_json_pipeline_payload(
+            scope.clone(),
+            &baseline,
+            &candidate,
+            &transforms,
+            &prepared_without_receipt,
+        )
+        .expect("guard returns a baseline fallback");
+        assert_eq!(
+            payload.fallback_reason,
+            Some("ccr_marker_without_durable_receipt")
+        );
+        assert_eq!(
+            payload.ready.reason_code(),
+            "ccr_marker_without_durable_receipt"
+        );
+        assert_eq!(
+            payload.ready.body(),
+            serde_json::to_vec(&baseline).unwrap().as_slice()
+        );
+
+        // Matching receipt -> candidate passes and becomes sendable.
+        let receipt = CcrStoreReceipt {
+            recovery_ref: "ccr:11111111-1111-4111-8111-111111111111".to_string(),
+            expires_at_unix: 9_999,
+            plaintext_bytes: 64,
+        };
+        let prepared_with_receipt = PreparedCcr {
+            receipt: Some(receipt.clone()),
+            store_configured: true,
+        };
+        let payload = prepare_json_pipeline_payload(
+            scope.clone(),
+            &baseline,
+            &candidate,
+            &transforms,
+            &prepared_with_receipt,
+        )
+        .expect("guard passes a receipt-bound marker");
+        assert_eq!(payload.fallback_reason, None);
+        assert_eq!(payload.ready.reason_code(), "validated_optimized_candidate");
+        assert_eq!(
+            payload.ready.body(),
+            serde_json::to_vec(&candidate).unwrap().as_slice()
+        );
+
+        // Mismatched recovery ref -> baseline fallback.
+        let wrong_receipt = CcrStoreReceipt {
+            recovery_ref: "ccr:22222222-2222-4222-8222-222222222222".to_string(),
+            ..receipt
+        };
+        let payload = prepare_json_pipeline_payload(
+            scope.clone(),
+            &baseline,
+            &candidate,
+            &transforms,
+            &PreparedCcr {
+                receipt: Some(wrong_receipt),
+                store_configured: true,
+            },
+        )
+        .expect("guard rejects a mismatched receipt");
+        assert_eq!(
+            payload.fallback_reason,
+            Some("ccr_marker_recovery_ref_mismatch")
+        );
+
+        // Unverifiable bracket form -> baseline fallback even with a receipt.
+        let bracket_candidate = json!({"model": "model-a", "messages": [{"role": "user", "content": "Retrieve original: hash=deadbeef"}]});
+        let payload = prepare_json_pipeline_payload(
+            scope.clone(),
+            &baseline,
+            &bracket_candidate,
+            &transforms,
+            &PreparedCcr {
+                receipt: Some(receipt),
+                store_configured: true,
+            },
+        )
+        .expect("guard rejects an unverifiable bracket form");
+        assert_eq!(
+            payload.fallback_reason,
+            Some("ccr_marker_recovery_ref_unverifiable")
+        );
+    }
+
+    #[test]
     fn ccr_private_store_recovers_exact_original_without_leaking_to_metadata_or_export() {
         let dir = std::env::temp_dir().join(format!("dtoken-ccr-private-{}", Uuid::new_v4()));
         let key = [31_u8; 32];
@@ -11059,69 +15946,842 @@ mod tests {
                 .expect("exact CCR original"),
             original
         );
-        assert!(restarted
+        let receipt = restarted
             .delete_ccr_original(&recovery_ref)
-            .expect("delete private CCR original"));
+            .expect("delete private CCR original");
+        assert_eq!(receipt.state, "deleted");
+        assert!(!receipt.raw_available);
+        assert!(!receipt.raw_returned);
+        assert!(restarted.retrieve_ccr_original(&recovery_ref).is_err());
+        let deleted_metadata = restarted
+            .retrieve_ccr_metadata(&recovery_ref)
+            .expect("deleted CCR metadata");
+        assert_eq!(deleted_metadata["state"], "deleted");
+        assert_eq!(deleted_metadata["raw_available"], false);
+        assert_eq!(deleted_metadata["raw_storage"], "deleted");
+        assert!(deleted_metadata.get("raw_bytes").is_none());
+        assert!(deleted_metadata.get("expires_at_unix").is_none());
+        assert!(!deleted_metadata.to_string().contains("CCR_PRIVATE_SECRET"));
+        let deleted_projection = ContextStore::open(dir.join("runtime-state.sqlite3"))
+            .expect("open deleted CCR projection");
+        assert_eq!(
+            deleted_projection
+                .ccr_metadata_state(&recovery_ref)
+                .expect("deleted CCR projection state")
+                .as_deref(),
+            Some("deleted")
+        );
+        assert!(restarted.recent_events(20).iter().any(|event| {
+            event.stage == LayeredStage::HeadroomRetrieve
+                && event.metadata["action"] == "ccr_delete"
+                && event.metadata["raw_available"] == false
+        }));
+        let already_deleted = restarted
+            .delete_ccr_original(&recovery_ref)
+            .expect("repeated deletion is idempotent");
+        assert_eq!(already_deleted.state, "already_deleted");
+        drop(restarted);
+
+        let restarted_after_delete =
+            AppState::new_persistent_with_ccr_key(DtokenConfig::empty(), &dir, key)
+                .expect("restart after CCR deletion");
+        let after_restart = restarted_after_delete
+            .retrieve_ccr_metadata(&recovery_ref)
+            .expect("deleted CCR metadata survives restart");
+        assert_eq!(after_restart["state"], "deleted");
+        assert_eq!(after_restart["raw_storage"], "deleted");
+        assert!(restarted_after_delete
+            .retrieve_ccr_original(&recovery_ref)
+            .is_err());
+        assert_eq!(
+            runtime_cache_summary_for_state(&restarted_after_delete)["entries"],
+            1
+        );
+
+        let untracked_ref = format!("ccr:{}", Uuid::new_v4());
+        restarted_after_delete
+            .ccr_private_store
+            .as_ref()
+            .expect("private CCR store")
+            .store(&untracked_ref, br#"{"content":"CCR_UNTRACKED_SECRET"}"#)
+            .expect("seed untracked private CCR");
+        assert!(restarted_after_delete
+            .delete_ccr_original(&untracked_ref)
+            .is_err());
+        assert_eq!(
+            restarted_after_delete
+                .retrieve_ccr_original(&untracked_ref)
+                .expect("missing metadata must not delete raw CCR"),
+            br#"{"content":"CCR_UNTRACKED_SECRET"}"#
+        );
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn sqlite_projection_missing_after_crash_is_rebuilt_from_the_durable_journal() {
+        let dir = std::env::temp_dir().join(format!("dtoken-cross-store-{}", Uuid::new_v4()));
+        let key = [33_u8; 32];
+        let state = AppState::new_persistent_with_ccr_key(DtokenConfig::empty(), &dir, key)
+            .expect("persistent state");
+        let request = OpenAiChatRequest {
+            model: Some("cross-store-model".to_string()),
+            messages: Some(vec![json!({
+                "role": "user",
+                "content": "CROSS_STORE_SECRET must be recoverable from the journal"
+            })]),
+            stream: Some(false),
+        };
+        let (_response, decision, mut request_log, mut event) = routed_openai_payload(&request);
+        request_log.transforms_applied = vec!["content_router:json".to_string()];
+        event.status = EventStatus::Ok;
+        let original = br#"{"model":"cross-store-model","messages":[{"role":"user","content":"CROSS_STORE_SECRET"}]}"#;
+        let prepared = state
+            .prepare_ccr_for_request(&decision, &request_log, original)
+            .expect("durable CCR prepare");
+        state.record_routed_request_with_ccr_receipt(&decision, request_log, event, &prepared);
+
+        // The durable journals are on disk and synced.  Simulate the crash
+        // gap where the SQLite projection was never written (or was lost):
+        // drop the database file before restarting.
+        drop(state);
+        let sqlite_path = dir.join("runtime-state.sqlite3");
+        assert!(sqlite_path.exists());
+        std::fs::remove_file(&sqlite_path).expect("remove SQLite projection to simulate crash gap");
+
+        let restarted = AppState::new_persistent_with_ccr_key(DtokenConfig::empty(), &dir, key)
+            .expect("restarted state");
+        // Both projections are healed from the append-only journal.
+        let projections = ContextStore::open(&sqlite_path).expect("rebuilt projection store");
+        let (requests, ccr) = projections.projection_counts().expect("projection counts");
+        assert_eq!(
+            requests, 1,
+            "request projection must be rebuilt from the journal"
+        );
+        assert_eq!(ccr, 1, "CCR projection must be rebuilt from the journal");
+        assert_eq!(
+            projections
+                .ccr_metadata_state(&format!("ccr:{}", decision.request_id))
+                .expect("rebuilt CCR state")
+                .as_deref(),
+            Some("finalized")
+        );
+        // The encrypted original is still intact in the private store.
+        assert_eq!(
+            restarted
+                .retrieve_ccr_original(&format!("ccr:{}", decision.request_id))
+                .expect("original survives the crash"),
+            original
+        );
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn terminal_commit_recovery_marks_partial_intent_explicitly_pending() {
+        let dir = std::env::temp_dir().join(format!("dtoken-marker-recovery-{}", Uuid::new_v4()));
+        let key = [77_u8; 32];
+        // A dangling intent with none of the four fan-out records on disk:
+        // restart recovery must mark it explicitly pending, never guess.
+        let intent_dir = dir.join("intent-only");
+        std::fs::create_dir_all(&intent_dir).expect("create intent-only dir");
+        let store = RuntimeStore::new(&intent_dir);
+        let request_id = Uuid::new_v4();
+        let marker = TerminalCommitMarker {
+            request_id,
+            phase: TerminalCommitPhase::Intent,
+            timestamp_ms: 100,
+            event_id: Uuid::new_v4(),
+            ccr_updated_at_ms: 100,
+            reason: None,
+        };
+        store
+            .append_terminal_commit_marker(&marker)
+            .expect("write dangling intent");
+        // The intent is partial: none of the four fan-out records exist.
+        let restarted =
+            AppState::new_persistent_with_ccr_key(DtokenConfig::empty(), &intent_dir, key)
+                .expect("restart around dangling intent");
+        let latest = restarted
+            .runtime_store
+            .as_ref()
+            .expect("runtime store")
+            .latest_terminal_commit_markers()
+            .expect("latest markers");
+        let (_, recovered) = latest
+            .iter()
+            .find(|(id, _)| *id == request_id)
+            .expect("recovered marker");
+        assert_eq!(recovered.phase, TerminalCommitPhase::Pending);
+        assert_eq!(
+            recovered.reason.as_deref(),
+            Some("partial_fan_out_at_recovery")
+        );
+        assert!(
+            restarted.terminal_pending_commits.contains_key(&request_id),
+            "pending request is tracked for projection filtering"
+        );
+        // The pending request must be absent from the hot read models and the
+        // SQLite projection: it is explicitly incomplete, not finalized.
+        assert!(
+            restarted
+                .recent_request_logs(100)
+                .iter()
+                .all(|log| log.request_id != request_id),
+            "pending request must not surface in hot request logs"
+        );
+        let projections =
+            ContextStore::open(intent_dir.join("runtime-state.sqlite3")).expect("open projection");
+        assert_eq!(
+            projections
+                .projection_counts()
+                .expect("projection counts")
+                .0,
+            0,
+            "pending request must not surface in the SQLite projection"
+        );
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn terminal_commit_recovery_rolls_complete_fan_out_forward_without_duplicates() {
+        let dir =
+            std::env::temp_dir().join(format!("dtoken-marker-rollforward-{}", Uuid::new_v4()));
+        let key = [78_u8; 32];
+        let request = OpenAiChatRequest {
+            model: Some("rollforward-model".to_string()),
+            messages: Some(vec![json!({
+                "role": "user",
+                "content": "ROLLFORWARD_SECRET"
+            })]),
+            stream: Some(false),
+        };
+        let (_response, decision, request_log, event) = routed_openai_payload(&request);
+        // Append all four fan-out records but leave the committed marker off
+        // disk, simulating the crash window after the last fan-out sync and
+        // before the committed marker sync.
+        let store = RuntimeStore::new(&dir);
+        let marker = TerminalCommitMarker {
+            request_id: decision.request_id,
+            phase: TerminalCommitPhase::Intent,
+            timestamp_ms: event.timestamp_ms.max(1),
+            event_id: event.event_id,
+            ccr_updated_at_ms: event.timestamp_ms.max(1),
+            reason: None,
+        };
+        store
+            .append_terminal_commit_marker(&marker)
+            .expect("write intent marker");
+        let ccr = ccr_metadata_from_request(&decision, &request_log, &event, None, false);
+        store.append_event(&event).expect("append event");
+        store
+            .append_route_decision(&route_decision_to_value(&decision))
+            .expect("append route");
+        store.append_request_log(&request_log).expect("append log");
+        store.append_ccr_metadata(&ccr).expect("append ccr");
+
+        let restarted = AppState::new_persistent_with_ccr_key(DtokenConfig::empty(), &dir, key)
+            .expect("restart around complete-but-unmarked fan-out");
+        let markers = restarted
+            .runtime_store
+            .as_ref()
+            .expect("runtime store")
+            .latest_terminal_commit_markers()
+            .expect("latest markers");
+        let (_, final_marker) = markers
+            .iter()
+            .find(|(id, _)| *id == decision.request_id)
+            .expect("final marker");
+        assert_eq!(final_marker.phase, TerminalCommitPhase::Committed);
+        assert!(
+            !restarted
+                .terminal_pending_commits
+                .contains_key(&decision.request_id),
+            "complete fan-out is not left pending"
+        );
+        // No duplicates: the fan-out journals hold exactly one record per
+        // request and recovery never re-appended them (the restart appended
+        // only the committed marker).
+        let routes = restarted
+            .runtime_store
+            .as_ref()
+            .expect("runtime store")
+            .recent_route_decisions(100)
+            .expect("route decisions");
+        let request_id_str = decision.request_id.to_string();
+        assert_eq!(
+            routes
+                .iter()
+                .filter(|value| value["request_id"].as_str() == Some(request_id_str.as_str()))
+                .count(),
+            1
+        );
+        let logs = restarted
+            .runtime_store
+            .as_ref()
+            .expect("runtime store")
+            .recent_request_logs(100)
+            .expect("request logs");
+        assert_eq!(
+            logs.iter()
+                .filter(|log| log.request_id == decision.request_id)
+                .count(),
+            1
+        );
+        let events = restarted
+            .runtime_store
+            .as_ref()
+            .expect("runtime store")
+            .recent_events(100)
+            .expect("events");
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| event.event_id == marker.event_id)
+                .count(),
+            1
+        );
+        // The SQLite projection converged with exactly one request row.
+        let projections =
+            ContextStore::open(dir.join("runtime-state.sqlite3")).expect("open projection");
+        assert_eq!(projections.projection_counts().unwrap().0, 1);
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn sqlite_projection_rebuild_is_not_truncated_to_the_hot_memory_window() {
+        const RECORDS: usize = 10_001;
+        let dir =
+            std::env::temp_dir().join(format!("dtoken-full-journal-rebuild-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).expect("create runtime directory");
+        let request = OpenAiChatRequest {
+            model: Some("projection-model".to_string()),
+            messages: Some(vec![
+                json!({"role": "user", "content": "projection fixture"}),
+            ]),
+            stream: Some(false),
+        };
+        let (_response, _decision, base_log, base_event) = routed_openai_payload(&request);
+        let mut request_journal = Vec::new();
+        let mut event_journal = Vec::new();
+        for index in 0..RECORDS {
+            let request_id = Uuid::new_v4();
+            let mut log = base_log.clone();
+            log.request_id = request_id;
+            log.timestamp_ms = index as u64 + 1;
+            serde_json::to_writer(&mut request_journal, &log).expect("serialize request log");
+            request_journal.push(b'\n');
+
+            let mut event = base_event.clone();
+            event.event_id = Uuid::new_v4();
+            event.request_id = Some(request_id);
+            event.timestamp_ms = index as u64 + 1;
+            serde_json::to_writer(&mut event_journal, &event).expect("serialize event");
+            event_journal.push(b'\n');
+        }
+        std::fs::write(dir.join("request-logs.jsonl"), request_journal)
+            .expect("write request journal");
+        std::fs::write(dir.join("events.jsonl"), event_journal).expect("write event journal");
+
+        let state = AppState::new_persistent(DtokenConfig::empty(), &dir);
+        assert_eq!(
+            state.recent_request_logs(RECORDS + 1).len(),
+            IN_MEMORY_JOURNAL_MAX_ENTRIES,
+            "the hot read model stays bounded"
+        );
+        let projections =
+            ContextStore::open(dir.join("runtime-state.sqlite3")).expect("open projection");
+        assert_eq!(
+            projections
+                .projection_counts()
+                .expect("projection counts")
+                .0,
+            RECORDS as u64,
+            "the durable projection must include records outside the hot window"
+        );
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_ccr_enabled_persistent_state_verifies_private_runtime_and_ccr_dacls() {
+        use dtoken_context_store::{
+            verify_private_directory_acl, verify_private_file_acl, CcrMetadataProjection,
+        };
+        use std::{ffi::OsString, path::PathBuf};
+
+        let dir = std::env::temp_dir().join(format!("dtoken-windows-private-{}", Uuid::new_v4()));
+        let key = [41_u8; 32];
+        let state = AppState::new_persistent_with_ccr_key(DtokenConfig::empty(), &dir, key)
+            .expect("Windows CCR-enabled persistent state");
+
+        let recovery_ref = format!("ccr:{}", Uuid::new_v4());
+        state
+            .ccr_private_store
+            .as_ref()
+            .expect("private CCR store")
+            .store(&recovery_ref, br#"{"content":"WINDOWS_DACL_SECRET"}"#)
+            .expect("store private CCR entry");
+
+        state
+            .context_store
+            .as_ref()
+            .expect("runtime projection store")
+            .lock()
+            .expect("context store lock")
+            .upsert_ccr_metadata(&CcrMetadataProjection {
+                recovery_ref: recovery_ref.clone(),
+                request_id: "windows-private-dacl".to_string(),
+                expires_at_ms: Some(123),
+                plaintext_bytes: Some(456),
+                state: "retained".to_string(),
+                updated_at_ms: 789,
+            })
+            .expect("materialize SQLite WAL/SHM");
+
+        let ccr_root = dir.join("ccr-private");
+        let final_entry = ccr_root.join(format!("{}.ccr", recovery_ref.replace(':', "_")));
+        let database = dir.join("runtime-state.sqlite3");
+
+        verify_private_directory_acl(&dir).expect("verify runtime directory DACL");
+        verify_private_directory_acl(&ccr_root).expect("verify CCR root DACL");
+        verify_private_file_acl(&final_entry).expect("verify CCR final entry DACL");
+        verify_private_file_acl(&database).expect("verify runtime projection DACL");
+
+        for suffix in ["-wal", "-shm"] {
+            let mut sidecar = OsString::from(database.as_os_str());
+            sidecar.push(suffix);
+            let sidecar = PathBuf::from(sidecar);
+            assert!(
+                sidecar.exists(),
+                "expected SQLite sidecar {} to exist for DACL verification",
+                sidecar.display()
+            );
+            verify_private_file_acl(&sidecar)
+                .unwrap_or_else(|error| panic!("verify sidecar {}: {error:#}", sidecar.display()));
+        }
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_ccr_enabled_persistent_state_fails_closed_without_private_sqlite_projection() {
+        let dir =
+            std::env::temp_dir().join(format!("dtoken-windows-private-blocked-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).expect("create runtime dir");
+        std::fs::create_dir_all(dir.join("runtime-state.sqlite3"))
+            .expect("block projection path with directory");
+
+        let error = AppState::new_persistent_with_ccr_key(DtokenConfig::empty(), &dir, [42_u8; 32])
+            .expect_err("Windows private projection failure must be fatal");
+        assert!(
+            format!("{error:#}").contains("runtime-state.sqlite3 projection did not initialize"),
+            "unexpected error: {error:#}"
+        );
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn ccr_restart_retains_pending_original_without_resending_it() {
+        let dir = std::env::temp_dir().join(format!("dtoken-ccr-pending-{}", Uuid::new_v4()));
+        let key = [32_u8; 32];
+        let state = AppState::new_persistent_with_ccr_key(DtokenConfig::empty(), &dir, key)
+            .expect("private CCR state");
+        let request = OpenAiChatRequest {
+            model: Some("opencode/deepseek-v4-flash-free".to_string()),
+            messages: Some(vec![
+                json!({"role": "user", "content": "pending CCR secret"}),
+            ]),
+            stream: Some(false),
+        };
+        let (_response, decision, mut request_log, _event) = routed_openai_payload(&request);
+        request_log.transforms_applied = vec!["content_router:json".to_string()];
+        let original = br#"{"messages":[{"content":"pending CCR secret"}]}"#;
+        let prepared = state
+            .prepare_ccr_for_request(&decision, &request_log, original)
+            .expect("pre-send CCR lifecycle");
+        assert!(prepared.receipt.is_some());
+        let recovery_ref = format!("ccr:{}", decision.request_id);
+        assert_eq!(
+            state
+                .retrieve_ccr_metadata(&recovery_ref)
+                .expect("pending journal record")["state"],
+            "pending_retained"
+        );
+        drop(state);
+
+        let restarted = AppState::new_persistent_with_ccr_key(DtokenConfig::empty(), &dir, key)
+            .expect("restarted private CCR state");
+        let metadata = restarted
+            .retrieve_ccr_metadata(&recovery_ref)
+            .expect("reconciled journal record");
+        assert_eq!(metadata["state"], "recovery_pending_retained");
+        assert_eq!(
+            restarted
+                .retrieve_ccr_original(&recovery_ref)
+                .expect("restart must retain rather than resend or delete"),
+            original
+        );
+        assert!(restarted.recent_request_logs(1).is_empty());
+        let projection =
+            ContextStore::open(dir.join("runtime-state.sqlite3")).expect("open rebuilt projection");
+        assert_eq!(
+            projection
+                .ccr_metadata_state(&recovery_ref)
+                .expect("read rebuilt projection")
+                .as_deref(),
+            Some("recovery_pending_retained")
+        );
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn ccr_restart_marks_missing_terminal_raw_without_calling_it_deleted() {
+        let dir = std::env::temp_dir().join(format!("dtoken-ccr-missing-{}", Uuid::new_v4()));
+        let key = [33_u8; 32];
+        let state = AppState::new_persistent_with_ccr_key(DtokenConfig::empty(), &dir, key)
+            .expect("private CCR state");
+        let request = OpenAiChatRequest {
+            model: Some("opencode/deepseek-v4-flash-free".to_string()),
+            messages: Some(vec![
+                json!({"role": "user", "content": "missing CCR secret"}),
+            ]),
+            stream: Some(false),
+        };
+        let (_response, decision, mut request_log, event) = routed_openai_payload(&request);
+        request_log.transforms_applied = vec!["content_router:json".to_string()];
+        let recovery_ref = format!("ccr:{}", decision.request_id);
+        let prepared = state
+            .prepare_ccr_for_request(
+                &decision,
+                &request_log,
+                br#"{"content":"missing CCR secret"}"#,
+            )
+            .expect("pre-send CCR lifecycle");
+        state.record_routed_request_with_ccr_receipt(&decision, request_log, event, &prepared);
+        state
+            .ccr_private_store
+            .as_ref()
+            .expect("private store")
+            .delete(&recovery_ref)
+            .expect("test-only missing raw setup");
+        drop(state);
+
+        let restarted = AppState::new_persistent_with_ccr_key(DtokenConfig::empty(), &dir, key)
+            .expect("restarted private CCR state");
+        let metadata = restarted
+            .retrieve_ccr_metadata(&recovery_ref)
+            .expect("reconciled metadata");
+        assert_eq!(metadata["state"], "raw_missing");
+        assert_eq!(metadata["raw_available"], false);
+        assert_ne!(metadata["state"], "deleted");
         assert!(restarted.retrieve_ccr_original(&recovery_ref).is_err());
 
         let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
-    fn memory_learn_summary_survives_restart_without_raw_prompt() {
-        let dir = std::env::temp_dir().join(format!("dtoken-memory-{}", Uuid::new_v4()));
-        let state = AppState::new_persistent(DtokenConfig::empty(), &dir);
-        let record = json!({
-            "project_id": "demo-project",
-            "agent": "OpenCode",
-            "kind": "verbosity",
-            "summary": "Prefer terse command output unless tests fail.",
-            "output_verbosity": "terse",
-            "raw_prompt": "must not be stored"
-        });
+    fn ccr_restart_retains_raw_after_interrupted_delete_intent() {
+        let dir = std::env::temp_dir().join(format!("dtoken-ccr-delete-intent-{}", Uuid::new_v4()));
+        let key = [34_u8; 32];
+        let state = AppState::new_persistent_with_ccr_key(DtokenConfig::empty(), &dir, key)
+            .expect("private CCR state");
+        let request = OpenAiChatRequest {
+            model: Some("opencode/deepseek-v4-flash-free".to_string()),
+            messages: Some(vec![
+                json!({"role": "user", "content": "delete intent secret"}),
+            ]),
+            stream: Some(false),
+        };
+        let (_response, decision, mut request_log, event) = routed_openai_payload(&request);
+        request_log.transforms_applied = vec!["content_router:json".to_string()];
+        let recovery_ref = format!("ccr:{}", decision.request_id);
+        let original = br#"{"content":"delete intent secret"}"#;
+        let prepared = state
+            .prepare_ccr_for_request(&decision, &request_log, original)
+            .expect("pre-send CCR lifecycle");
+        state.record_routed_request_with_ccr_receipt(&decision, request_log, event, &prepared);
+        let terminal = state
+            .retrieve_ccr_metadata(&recovery_ref)
+            .expect("terminal metadata");
+        state
+            .append_ccr_lifecycle_record(
+                ccr_delete_intent(terminal, dtoken_event_ledger::now_ms().max(1))
+                    .expect("delete intent"),
+            )
+            .expect("durable delete intent");
+        drop(state);
 
-        state.record_memory(record).expect("record memory");
-        let restarted = AppState::new_persistent(DtokenConfig::empty(), &dir);
-        let summary = memory_summary_for_state(&restarted);
-        let shape = output_shape_for_state(&restarted, Some("demo-project"), Some("OpenCode"));
-
-        assert_eq!(summary["source"], "dtoken-owned-runtime");
-        assert_eq!(summary["entries"], 1);
-        assert_eq!(summary["raw_available"], false);
-        assert_eq!(summary["by_project"]["demo-project"], 1);
-        assert_eq!(shape["output_verbosity"], "terse");
-        assert_eq!(shape["state"], "metadata-only");
-        assert_eq!(shape["active"], false);
-        assert_eq!(shape["applied_requests"], 0);
-        assert_eq!(shape["accounting_evidence"], "none");
+        let restarted = AppState::new_persistent_with_ccr_key(DtokenConfig::empty(), &dir, key)
+            .expect("restarted private CCR state");
+        let metadata = restarted
+            .retrieve_ccr_metadata(&recovery_ref)
+            .expect("reconciled metadata");
+        assert_eq!(metadata["state"], "interrupted_retained");
         assert_eq!(
-            shape["learned_rules"][0]["summary"],
-            "Prefer terse command output unless tests fail."
+            restarted
+                .retrieve_ccr_original(&recovery_ref)
+                .expect("restart must not auto-delete"),
+            original
         );
-        assert!(summary.get("raw_prompt").is_none());
-        assert!(!summary.to_string().contains("must not be stored"));
+        let receipt = restarted
+            .delete_ccr_original(&recovery_ref)
+            .expect("explicit retry deletes after reconciliation");
+        assert_eq!(receipt.state, "deleted");
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn ccr_restart_turns_delete_intent_with_missing_raw_into_tombstone() {
+        let dir =
+            std::env::temp_dir().join(format!("dtoken-ccr-delete-tombstone-{}", Uuid::new_v4()));
+        let key = [35_u8; 32];
+        let state = AppState::new_persistent_with_ccr_key(DtokenConfig::empty(), &dir, key)
+            .expect("private CCR state");
+        let request = OpenAiChatRequest {
+            model: Some("opencode/deepseek-v4-flash-free".to_string()),
+            messages: Some(vec![
+                json!({"role": "user", "content": "tombstone CCR secret"}),
+            ]),
+            stream: Some(false),
+        };
+        let (_response, decision, mut request_log, event) = routed_openai_payload(&request);
+        request_log.transforms_applied = vec!["content_router:json".to_string()];
+        let recovery_ref = format!("ccr:{}", decision.request_id);
+        let prepared = state
+            .prepare_ccr_for_request(
+                &decision,
+                &request_log,
+                br#"{"content":"tombstone CCR secret"}"#,
+            )
+            .expect("pre-send CCR lifecycle");
+        state.record_routed_request_with_ccr_receipt(&decision, request_log, event, &prepared);
+        let terminal = state
+            .retrieve_ccr_metadata(&recovery_ref)
+            .expect("terminal metadata");
+        state
+            .append_ccr_lifecycle_record(
+                ccr_delete_intent(terminal, dtoken_event_ledger::now_ms().max(1))
+                    .expect("delete intent"),
+            )
+            .expect("durable delete intent");
+        state
+            .ccr_private_store
+            .as_ref()
+            .expect("private store")
+            .delete(&recovery_ref)
+            .expect("test-only interrupted delete setup");
+        drop(state);
+
+        let restarted = AppState::new_persistent_with_ccr_key(DtokenConfig::empty(), &dir, key)
+            .expect("restarted private CCR state");
+        let metadata = restarted
+            .retrieve_ccr_metadata(&recovery_ref)
+            .expect("reconciled tombstone");
+        assert_eq!(metadata["state"], "deleted");
+        assert_eq!(metadata["raw_available"], false);
+        assert_eq!(metadata["raw_storage"], "deleted");
+        assert!(restarted.retrieve_ccr_original(&recovery_ref).is_err());
 
         let _ = std::fs::remove_dir_all(dir);
     }
 
     #[tokio::test]
-    async fn headroom_mcp_status_fails_closed_until_transport_and_handlers_exist() {
+    async fn shared_context_http_writes_are_absent_and_typed_store_remains_scope_bound() {
+        let dir = std::env::temp_dir().join(format!("dtoken-memory-{}", Uuid::new_v4()));
+        let state = AppState::new_persistent(DtokenConfig::empty(), &dir);
+        let record = json!({
+            "project_id": "demo-project",
+            "agent_id": "opencode",
+            "session_id": "session-a",
+            "kind": "preference",
+            "summary": "Prefer terse command output unless tests fail.",
+            "keywords": ["terse", "verification"],
+            "dedup_key": "preference-output-verbosity",
+            "entry_revision": "memory-rev-1",
+            "provenance": {
+                "source": "dtoken-runtime",
+                "source_revision": "runtime-rev-1",
+                "observed_at_ms": 1
+            }
+        });
+
+        let response = build_router(state.clone())
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/memory/learn")
+                    .header(CONTENT_TYPE, "application/json")
+                    .body(Body::from(record.to_string()))
+                    .expect("unauthorized memory request should build"),
+            )
+            .await
+            .expect("unauthorized memory request should respond");
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        let request = dtoken_context_store::parse_memory_write_request(&record)
+            .expect("typed record should parse");
+        let saved = state
+            .record_memory(&request)
+            .expect("managed writer fixture");
+        assert_eq!(saved["agent_id"], "opencode");
+        assert_eq!(saved["raw_available"], false);
+
+        let restarted = AppState::new_persistent(DtokenConfig::empty(), &dir);
+        let summary_response = build_router(restarted.clone())
+            .oneshot(
+                Request::builder()
+                    .uri("/memory/summary")
+                    .body(Body::empty())
+                    .expect("memory summary request should build"),
+            )
+            .await
+            .expect("memory summary should respond");
+        let public_summary = response_json(summary_response).await;
+        assert_eq!(public_summary["state"], "scope_required");
+        assert_eq!(
+            public_summary["reason_code"],
+            "memory_summary_authorization_unavailable"
+        );
+        assert_eq!(public_summary["entries"], 0);
+
+        let owner_scope = MemoryAccessScope {
+            project_id: "demo-project".to_string(),
+            agent_id: "opencode".to_string(),
+            session_id: Some("session-a".to_string()),
+        };
+        let summary = memory_summary_for_scope(&restarted, Some(owner_scope.clone()));
+
+        assert_eq!(summary["source"], "dtoken-owned-runtime");
+        assert_eq!(summary["state"], "ready");
+        assert_eq!(summary["entries"], 1);
+        assert_eq!(summary["raw_available"], false);
+        assert_eq!(summary["by_project"]["demo-project"], 1);
+        assert_eq!(
+            summary["recent"][0]["summary"],
+            "Prefer terse command output unless tests fail."
+        );
+        assert!(summary.get("raw_prompt").is_none());
+
+        let output_plan =
+            output_shape_for_state(&restarted, Some("demo-project"), Some("opencode"));
+        assert_eq!(output_plan["state"], "planned");
+        // Session-bound memory is intentionally excluded from a project-wide
+        // plan until a route supplies the exact session identity.
+        assert_eq!(output_plan["output_verbosity"], "auto");
+        assert_eq!(output_plan["raw_available"], false);
+        assert!(!output_plan
+            .to_string()
+            .contains("MEMORY_RAW_PROMPT_MUST_NOT_BE_STORED"));
+        assert_eq!(
+            output_shape_for_state(&restarted, Some("demo-project"), Some("claude-code"))["state"],
+            "planned"
+        );
+
+        let other_agent = memory_summary_for_scope(
+            &restarted,
+            Some(MemoryAccessScope {
+                agent_id: "claude-code".to_string(),
+                ..owner_scope.clone()
+            }),
+        );
+        assert_eq!(other_agent["entries"], 0);
+
+        let other_project = memory_summary_for_scope(
+            &restarted,
+            Some(MemoryAccessScope {
+                project_id: "other-project".to_string(),
+                ..owner_scope.clone()
+            }),
+        );
+        assert_eq!(other_project["entries"], 0);
+
+        let rejected = json!({
+            "project_id": "demo-project",
+            "agent_id": "opencode",
+            "session_id": "session-a",
+            "kind": "preference",
+            "summary": "This must be rejected.",
+            "keywords": ["invalid"],
+            "dedup_key": "invalid-raw-prompt",
+            "entry_revision": "memory-rev-2",
+            "provenance": {
+                "source": "dtoken-runtime",
+                "source_revision": "runtime-rev-2",
+                "observed_at_ms": 2
+            },
+            "raw_prompt": "MEMORY_RAW_PROMPT_MUST_NOT_BE_STORED"
+        });
+        assert!(dtoken_context_store::parse_memory_write_request(&rejected).is_err());
+        let stored_records = restarted
+            .context_store
+            .as_ref()
+            .expect("persistent state must keep the context store")
+            .lock()
+            .expect("context store lock")
+            .list_visible_memory(&owner_scope)
+            .expect("typed memory records should remain readable");
+        assert_eq!(stored_records.len(), 1);
+        assert!(!stored_records[0]
+            .summary
+            .contains("MEMORY_RAW_PROMPT_MUST_NOT_BE_STORED"));
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn headroom_mcp_status_reports_owned_transport_and_withholds_retrieve() {
         let state = AppState::new(DtokenConfig::empty());
         let Json(payload) = headroom_mcp(State(state)).await;
 
-        assert_eq!(payload["state"], "unavailable");
-        assert_eq!(payload["configured"], false);
-        assert_eq!(payload["freshness"], "unknown");
+        assert_eq!(payload["state"], "ready");
+        assert_eq!(payload["configured"], true);
+        assert_eq!(payload["freshness"], "live");
         assert_eq!(payload["capability_revision"], BACKEND_CAPABILITY_REVISION);
         assert_eq!(
             payload["reason_codes"],
-            json!(["mcp_transport_not_implemented"])
+            json!([
+                "mcp_stdio_json_rpc_transport_available",
+                "mcp_compress_handler_available",
+                "mcp_stats_handler_available",
+                "mcp_retrieve_requires_managed_capability",
+                "mcp_shared_context_requires_managed_capability"
+            ])
         );
-        assert_eq!(payload["transport"], Value::Null);
-        assert_eq!(payload["tools"], json!([]));
+        assert_eq!(payload["transport"], "stdio-json-rpc");
+        let transport = payload["transport"].as_str().expect("MCP transport name");
+        let transport_reason = format!("mcp_{}_transport_available", transport.replace('-', "_"));
+        assert!(payload["reason_codes"]
+            .as_array()
+            .expect("MCP reason codes")
+            .iter()
+            .any(|reason| reason == &transport_reason));
+        assert!(payload["reason"]
+            .as_str()
+            .expect("MCP status reason")
+            .contains(transport));
         assert_eq!(
-            payload["planned_tools"],
-            json!(["headroom_compress", "headroom_retrieve", "headroom_stats"])
+            payload["tools"],
+            json!(["headroom_compress", "headroom_stats"])
+        );
+        assert_eq!(
+            payload["unavailable_tools"],
+            json!([
+                {
+                    "name": "headroom_retrieve",
+                    "reason": "retrieve_requires_managed_capability"
+                },
+                {
+                    "name": "headroom_memory_list",
+                    "reason": "shared_context_requires_managed_scope_capability"
+                }
+            ])
         );
     }
 
@@ -11132,14 +16792,239 @@ mod tests {
         let Json(mcp) = headroom_mcp(State(state)).await;
         let capability = registry.find("mcp").expect("MCP registry entry");
 
-        assert_eq!(
-            capability.state,
-            dtoken_types::AvailabilityState::Unavailable
-        );
+        assert_eq!(capability.state, dtoken_types::AvailabilityState::Ready);
         assert_eq!(mcp["state"], json!(capability.state));
         assert_eq!(mcp["freshness"], json!(capability.freshness));
         assert_eq!(mcp["reason_codes"], json!(capability.reason_codes));
         assert_eq!(mcp["capability_revision"], registry.revision);
+    }
+
+    #[test]
+    fn capability_read_model_is_stable_until_evidence_semantics_change() {
+        let state = AppState::new(DtokenConfig::empty());
+        let first = state.current_capability_registry();
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        let second = state.current_capability_registry();
+
+        assert_eq!(second, first);
+
+        let mut later_collection = first.clone();
+        later_collection.collected_at_ms += 1;
+        for capability in &mut later_collection.capabilities {
+            capability.last_verified_at_ms = capability
+                .last_verified_at_ms
+                .map(|timestamp| timestamp + 1);
+        }
+        assert!(capability_registry_semantically_equal(
+            &first,
+            &later_collection
+        ));
+        later_collection
+            .capabilities
+            .iter_mut()
+            .find(|capability| capability.id == "mcp")
+            .expect("MCP capability")
+            .reason_codes
+            .push("semantic-change".to_string());
+        assert!(!capability_registry_semantically_equal(
+            &first,
+            &later_collection
+        ));
+    }
+
+    #[test]
+    fn backend_registry_reports_safe_pipeline_and_disabled_boundaries_truthfully() {
+        let registry = backend_capability_registry(
+            None,
+            ContextStoreCapabilityState::NotConfigured,
+            false,
+            None,
+        );
+        for id in [
+            "cache-aligner",
+            "code-compressor",
+            "content-router",
+            "json-codec",
+            "log-codec",
+            "search-codec",
+            "build-codec",
+            "diff-codec",
+            "text-codec",
+            "html-codec",
+            "compressor-registry",
+            "output-shaping",
+            "rust-library",
+            "typescript-sdk",
+            "mcp",
+        ] {
+            assert_eq!(
+                registry.find(id).expect("registered capability").state,
+                AvailabilityState::Ready,
+                "{id} must reflect its active implementation"
+            );
+        }
+        let codec_evidence = dtoken_compress::codec_evidence::production_codec_evidence();
+        for id in [
+            "code-compressor",
+            "json-codec",
+            "log-codec",
+            "search-codec",
+            "build-codec",
+            "diff-codec",
+            "text-codec",
+            "html-codec",
+        ] {
+            let capability = registry.find(id).expect("codec capability");
+            assert_eq!(
+                capability.evidence_revision.as_deref(),
+                Some(codec_evidence.evidence_revision()),
+                "{id}"
+            );
+            assert!(
+                capability
+                    .reason_codes
+                    .contains(&"runtime_codec_evidence_verified".to_string()),
+                "{id}"
+            );
+        }
+        assert_eq!(
+            registry
+                .find("ccr-pre-send")
+                .expect("CCR pre-send capability")
+                .state,
+            AvailabilityState::Degraded
+        );
+        assert_eq!(
+            registry
+                .find("integrated-rtk")
+                .expect("integrated RTK capability")
+                .state,
+            AvailabilityState::Degraded
+        );
+        assert_eq!(
+            registry
+                .find("input-image-compressor")
+                .expect("ordinary image capability boundary")
+                .state,
+            AvailabilityState::Unavailable
+        );
+
+        let ccr_ready = backend_capability_registry(
+            None,
+            ContextStoreCapabilityState::NotConfigured,
+            true,
+            None,
+        );
+        assert_eq!(
+            ccr_ready
+                .find("ccr-pre-send")
+                .expect("configured CCR pre-send capability")
+                .state,
+            AvailabilityState::Ready
+        );
+    }
+
+    #[test]
+    fn backend_registry_exposes_release_aggregate_capabilities_without_claiming_optical_active() {
+        let registry = backend_capability_registry(
+            None,
+            ContextStoreCapabilityState::Ready { schema_version: 6 },
+            true,
+            None,
+        );
+        let expected = [
+            ("compression", AvailabilityState::Ready),
+            ("ccr", AvailabilityState::Ready),
+            ("memory_learn", AvailabilityState::Degraded),
+            ("output_shape", AvailabilityState::Ready),
+            ("integrated_rtk", AvailabilityState::Degraded),
+            ("proxy_sdk_mcp", AvailabilityState::Ready),
+            ("stats_history_metrics", AvailabilityState::Ready),
+            ("routing_protocols", AvailabilityState::Ready),
+            ("doctor_dashboard_logs_export", AvailabilityState::Degraded),
+            ("project_policy", AvailabilityState::Degraded),
+            ("backup_rollback", AvailabilityState::Degraded),
+            (
+                "optical_active_transform",
+                AvailabilityState::ImplementedDisabled,
+            ),
+        ];
+
+        for (id, state) in expected {
+            let capability = registry.find(id).expect("release aggregate capability");
+            assert_eq!(capability.state, state, "{id}");
+            assert_eq!(capability.freshness, EvidenceFreshness::Live, "{id}");
+            assert!(
+                capability.evidence_revision.is_some(),
+                "{id} requires source evidence"
+            );
+            assert!(!capability.reason_codes.is_empty(), "{id}");
+        }
+        assert!(registry
+            .find("optical_active_transform")
+            .expect("Optical aggregate")
+            .reason_codes
+            .contains(&"policy_shadow_only".to_string()));
+    }
+
+    #[test]
+    fn integrated_rtk_requires_verified_install_and_real_invocation_receipt() {
+        let installed_only = ManagedRtkRuntimeEvidence {
+            installed: true,
+            verified: true,
+            usage_count: 0,
+            saved_bytes: 0,
+            last_receipt: None,
+            reason: "verified_no_usage_evidence".to_string(),
+        };
+        let installed_registry = backend_capability_registry(
+            None,
+            ContextStoreCapabilityState::NotConfigured,
+            false,
+            Some(&installed_only),
+        );
+        assert_eq!(
+            installed_registry
+                .find("integrated_rtk")
+                .expect("aggregate integrated RTK")
+                .state,
+            AvailabilityState::Degraded
+        );
+
+        let invoked = ManagedRtkRuntimeEvidence {
+            installed: true,
+            verified: true,
+            usage_count: 1,
+            saved_bytes: 24,
+            last_receipt: Some(dtoken_preprocessor::ManagedRtkUsageReceipt {
+                recorded_at_ms: 42,
+                exit_code: Some(0),
+                input_bytes: 100,
+                output_bytes: 76,
+                saved_bytes: 24,
+            }),
+            reason: "verified_usage_evidence".to_string(),
+        };
+        let invoked_registry = backend_capability_registry(
+            None,
+            ContextStoreCapabilityState::NotConfigured,
+            false,
+            Some(&invoked),
+        );
+        assert_eq!(
+            invoked_registry
+                .find("integrated-rtk")
+                .expect("leaf integrated RTK")
+                .state,
+            AvailabilityState::Ready
+        );
+        assert_eq!(
+            invoked_registry
+                .find("integrated_rtk")
+                .expect("aggregate integrated RTK")
+                .state,
+            AvailabilityState::Ready
+        );
     }
 
     #[test]
@@ -11153,6 +17038,8 @@ mod tests {
         let registry = backend_capability_registry(
             Some(&snapshot),
             ContextStoreCapabilityState::NotConfigured,
+            false,
+            None,
         );
         let capability = registry
             .find("agent-registry")
@@ -11245,6 +17132,8 @@ mod tests {
         let registry = backend_capability_registry(
             Some(&snapshot),
             ContextStoreCapabilityState::Ready { schema_version: 2 },
+            false,
+            None,
         );
         let mut store =
             ContextStore::open(dir.join("runtime-state.sqlite3")).expect("open context store");
@@ -11280,8 +17169,19 @@ mod tests {
         assert_eq!(ready_capability.state, AvailabilityState::Ready);
         assert_eq!(
             ready_capability.evidence_revision.as_deref(),
-            Some("context-store-schema-v4")
+            Some("context-store-schema-v7")
         );
+        let ready_memory = ready
+            .capabilities
+            .find("memory-store")
+            .expect("memory-store capability");
+        assert_eq!(ready_memory.state, AvailabilityState::Ready);
+        assert!(ready_memory
+            .reason_codes
+            .contains(&"memory_http_summary_scope_required".to_string()));
+        assert!(ready_memory
+            .reason_codes
+            .contains(&"memory_write_requires_managed_mcp_scope".to_string()));
 
         let blocked_root =
             std::env::temp_dir().join(format!("dtoken-context-blocked-{}", Uuid::new_v4()));
@@ -11297,9 +17197,79 @@ mod tests {
             vec!["context_store_open_failed"]
         );
         assert!(failed.context_store.is_none());
+        let failed_memory = failed
+            .capabilities
+            .find("memory-store")
+            .expect("failed memory-store capability");
+        assert_eq!(failed_memory.state, AvailabilityState::Unavailable);
+        assert_eq!(
+            failed_memory.reason_codes,
+            vec!["context_store_open_failed"]
+        );
 
         let _ = std::fs::remove_dir_all(ready_dir);
         let _ = std::fs::remove_file(blocked_root);
+    }
+
+    #[test]
+    fn failed_terminal_request_records_only_a_typed_learning_pattern() {
+        let dir = std::env::temp_dir().join(format!("dtoken-failure-pattern-{}", Uuid::new_v4()));
+        let state = AppState::new_persistent(DtokenConfig::empty(), &dir);
+        let request_id = Uuid::new_v4();
+        let decision = build_route_decision(request_id, Some("model-a"));
+        let compression = compress_for_route(
+            None,
+            CompressionPolicy::Off,
+            json!({"model":"model-a","messages":[]}),
+        );
+        let attribution = RequestAttribution {
+            agent: Some("opencode".to_string()),
+            instance_id: Some("instance-a".to_string()),
+            project_id: Some("project-a".to_string()),
+        };
+        let mut request_log = build_request_log(
+            request_id,
+            &decision,
+            Some("model-a".to_string()),
+            Protocol::OpenAi,
+            &compression,
+            &attribution,
+        );
+        request_log.error = Some("provider_timeout".to_string());
+        let mut event = build_ledger_event(
+            request_id,
+            &decision,
+            Protocol::OpenAi,
+            Protocol::OpenAi,
+            &compression,
+            &attribution,
+        );
+        event.status = EventStatus::Failed;
+        state.record_routed_request(&decision, request_log, event);
+
+        let patterns = state
+            .context_store
+            .as_ref()
+            .expect("persistent context store")
+            .lock()
+            .expect("context store lock")
+            .list_failure_patterns(
+                Some("project-a"),
+                Some("opencode"),
+                dtoken_event_ledger::now_ms().max(1),
+                10,
+            )
+            .expect("typed failure patterns");
+        assert_eq!(patterns.len(), 1);
+        assert_eq!(patterns[0].failure_class, FailureClass::ProviderTimeout);
+        assert_eq!(patterns[0].occurrences, 1);
+        let encoded = serde_json::to_string(&patterns).expect("serialize patterns");
+        assert!(!encoded.contains("configured upstream"));
+        assert!(!encoded.contains("messages"));
+        assert!(!encoded.contains("content"));
+
+        drop(state);
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
@@ -11399,6 +17369,7 @@ mod tests {
             }],
             instances: vec![],
             provider_cache_policies: vec![],
+            output_shaping_policies: vec![],
             optical: Default::default(),
         };
         let state = AppState::new(config);
@@ -11660,6 +17631,382 @@ mod tests {
         server.await.expect("mock upstream task");
     }
 
+    #[test]
+    fn direct_anthropic_verified_evidence_inserts_one_frozen_tool_breakpoint() {
+        let dir = std::env::temp_dir().join(format!("dtoken-anthropic-cache-{}", Uuid::new_v4()));
+        let state = AppState::new_persistent(
+            direct_anthropic_cache_test_config("https://api.anthropic.com".to_string()),
+            &dir,
+        );
+        let body = json!({
+            "model": "claude-cache-test",
+            "system": [{"type": "text", "text": "stable system instructions"}],
+            "tools": [{"name": "lookup", "description": "stable tool", "input_schema": {"type": "object"}}],
+            "messages": [{"role": "user", "content": "continue"}]
+        });
+        let mut payload = anthropic_route_payload(&state, body, RouteEvidence::default())
+            .expect("direct Anthropic route payload");
+        persist_anthropic_cache_evidence(&state, &payload.scope);
+        let evidence = configured_provider_cache_evidence(&state, &payload.scope)
+            .expect("fresh exact Anthropic evidence");
+
+        let wire = apply_direct_anthropic_cache_breakpoint(&mut payload, Some(&evidence));
+
+        assert!(wire.breakpoint_inserted);
+        assert_eq!(wire.breakpoint_count, 1);
+        assert_eq!(wire.pointer_kind, "tool_definition");
+        assert_eq!(
+            payload.upstream_body["tools"][0]["cache_control"]["type"],
+            "ephemeral"
+        );
+        attach_direct_anthropic_cache_wire_metadata(&mut payload.event, wire, false);
+        let metadata = &payload.event.metadata["provider_cache"];
+        assert_eq!(metadata["wire_variant"], "serialized");
+        assert_eq!(metadata["evidence_revision_present"], true);
+        assert!(!metadata.to_string().contains("stable system instructions"));
+        drop(state);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn direct_anthropic_cache_marker_preserves_existing_control_and_fails_closed() {
+        let dir = std::env::temp_dir().join(format!("dtoken-anthropic-cache-{}", Uuid::new_v4()));
+        let state = AppState::new_persistent(
+            direct_anthropic_cache_test_config("https://api.anthropic.com".to_string()),
+            &dir,
+        );
+        let body = json!({
+            "model": "claude-cache-test",
+            "tools": [{
+                "name": "lookup",
+                "input_schema": {"type": "object"},
+                "cache_control": {"type": "ephemeral", "ttl": "5m"}
+            }],
+            "messages": [{"role": "user", "content": "continue"}]
+        });
+        let mut payload = anthropic_route_payload(&state, body.clone(), RouteEvidence::default())
+            .expect("direct Anthropic route payload");
+        persist_anthropic_cache_evidence(&state, &payload.scope);
+        let evidence = configured_provider_cache_evidence(&state, &payload.scope)
+            .expect("fresh exact Anthropic evidence");
+
+        let wire = apply_direct_anthropic_cache_breakpoint(&mut payload, Some(&evidence));
+
+        assert!(!wire.breakpoint_inserted);
+        assert_eq!(wire.reason_code, "user_cache_control_preserved");
+        assert_eq!(payload.upstream_body, body);
+        drop(state);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn direct_anthropic_cache_marker_rejects_missing_or_mismatched_evidence() {
+        let dir = std::env::temp_dir().join(format!("dtoken-anthropic-cache-{}", Uuid::new_v4()));
+        let state = AppState::new_persistent(
+            direct_anthropic_cache_test_config("https://api.anthropic.com".to_string()),
+            &dir,
+        );
+        let body = json!({
+            "model": "claude-cache-test",
+            "tools": [{"name": "lookup", "input_schema": {"type": "object"}}],
+            "messages": [{"role": "user", "content": "continue"}]
+        });
+        let mut payload = anthropic_route_payload(&state, body.clone(), RouteEvidence::default())
+            .expect("direct Anthropic route payload");
+        let wire = apply_direct_anthropic_cache_breakpoint(&mut payload, None);
+        assert!(!wire.breakpoint_inserted);
+        assert_eq!(wire.reason_code, "provider_cache_evidence_unavailable");
+        assert_eq!(payload.upstream_body, body);
+        drop(state);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn direct_anthropic_cache_marker_requires_durable_ccr_before_optimized_send() {
+        let dir =
+            std::env::temp_dir().join(format!("dtoken-anthropic-cache-ccr-{}", Uuid::new_v4()));
+        let mut state = AppState::new_persistent(
+            direct_anthropic_cache_test_config("https://api.anthropic.com".to_string()),
+            &dir,
+        );
+        state.ccr_private_store = Some(Arc::new(
+            CcrStore::new(dir.join("ccr-private"), [41_u8; 32]).expect("CCR store"),
+        ));
+        let body = json!({
+            "model": "claude-cache-test",
+            "tools": [{"name": "lookup", "description": "stable tool", "input_schema": {"type": "object"}}],
+            "messages": [{"role": "user", "content": "continue"}]
+        });
+        let original = serde_json::to_vec(&body).expect("serialize original request");
+        let mut payload = anthropic_route_payload(&state, body.clone(), RouteEvidence::default())
+            .expect("direct Anthropic route payload");
+        persist_anthropic_cache_evidence(&state, &payload.scope);
+        let evidence = configured_provider_cache_evidence(&state, &payload.scope)
+            .expect("fresh exact Anthropic evidence");
+
+        let (prepared_ccr, variant, wire) = prepare_direct_anthropic_pipeline_for_send(
+            &state,
+            &mut payload,
+            &body,
+            &original,
+            Some(&evidence),
+        );
+
+        assert!(prepared_ccr.receipt.is_some());
+        assert_eq!(variant, dtoken_types::SentPayloadVariant::Optimized);
+        assert!(wire.breakpoint_inserted);
+        assert!(!wire.rolled_back);
+        assert_eq!(
+            payload.upstream_body["tools"][0]["cache_control"]["type"],
+            "ephemeral"
+        );
+        assert!(payload
+            .request_log
+            .transforms_applied
+            .iter()
+            .any(|item| item == "anthropic_explicit_cache_breakpoint"));
+        assert_eq!(
+            payload.event.metadata["transforms_applied"],
+            json!(["anthropic_explicit_cache_breakpoint"])
+        );
+        drop(state);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn direct_anthropic_cache_marker_without_ccr_restores_exact_baseline() {
+        let dir =
+            std::env::temp_dir().join(format!("dtoken-anthropic-cache-no-ccr-{}", Uuid::new_v4()));
+        let mut state = AppState::new_persistent(
+            direct_anthropic_cache_test_config("https://api.anthropic.com".to_string()),
+            &dir,
+        );
+        state.ccr_private_store = None;
+        let body = json!({
+            "model": "claude-cache-test",
+            "tools": [{"name": "lookup", "description": "stable tool", "input_schema": {"type": "object"}}],
+            "messages": [{"role": "user", "content": "continue"}]
+        });
+        let original = serde_json::to_vec(&body).expect("serialize original request");
+        let mut payload = anthropic_route_payload(&state, body.clone(), RouteEvidence::default())
+            .expect("direct Anthropic route payload");
+        persist_anthropic_cache_evidence(&state, &payload.scope);
+        let evidence = configured_provider_cache_evidence(&state, &payload.scope)
+            .expect("fresh exact Anthropic evidence");
+
+        let (prepared_ccr, variant, wire) = prepare_direct_anthropic_pipeline_for_send(
+            &state,
+            &mut payload,
+            &body,
+            &original,
+            Some(&evidence),
+        );
+
+        assert!(prepared_ccr.receipt.is_none());
+        assert_eq!(variant, dtoken_types::SentPayloadVariant::Original);
+        assert!(!wire.breakpoint_inserted);
+        assert!(wire.rolled_back);
+        assert_eq!(wire.reason_code, "cache_breakpoint_ccr_unavailable");
+        assert_eq!(payload.upstream_body, body);
+        assert!(payload.request_log.transforms_applied.is_empty());
+        assert_eq!(payload.event.metadata["transforms_applied"], json!([]));
+        assert!(direct_anthropic_uses_raw_body(variant));
+        drop(state);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn direct_anthropic_without_verified_evidence_raw_wires_exact_body_and_ledger_metadata() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+        use tokio::sync::oneshot;
+
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind direct Anthropic mock upstream");
+        let addr = listener.local_addr().expect("mock upstream address");
+        let (captured_tx, captured_rx) = oneshot::channel();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.expect("accept direct request");
+            let mut request = Vec::new();
+            let mut buffer = [0_u8; 4096];
+            let (header_end, content_length) = loop {
+                let read = socket.read(&mut buffer).await.expect("read direct request");
+                assert!(read > 0, "request closed before headers completed");
+                request.extend_from_slice(&buffer[..read]);
+                if let Some(index) = request.windows(4).position(|window| window == b"\r\n\r\n") {
+                    let header_end = index + 4;
+                    let headers = String::from_utf8_lossy(&request[..header_end]);
+                    let content_length = headers
+                        .lines()
+                        .find_map(|line| {
+                            let (name, value) = line.split_once(':')?;
+                            name.eq_ignore_ascii_case("content-length")
+                                .then(|| value.trim().parse::<usize>().ok())
+                                .flatten()
+                        })
+                        .expect("fixed raw body has a content length");
+                    break (header_end, content_length);
+                }
+            };
+            while request.len() < header_end + content_length {
+                let read = socket.read(&mut buffer).await.expect("read request body");
+                assert!(read > 0, "request closed before body completed");
+                request.extend_from_slice(&buffer[..read]);
+            }
+            captured_tx
+                .send(request[header_end..header_end + content_length].to_vec())
+                .expect("capture raw body");
+            socket
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\ncontent-type: application/json\r\nconnection: close\r\n\r\n{\"type\":\"message\",\"content\":[],\"usage\":{\"input_tokens\":1}}",
+                )
+                .await
+                .expect("write Anthropic response");
+        });
+
+        let state = AppState::new(direct_anthropic_cache_test_config(format!("http://{addr}")));
+        let raw = br#"{ "model" : "claude-cache-test", "messages" : [ { "role":"user", "content":"keep these bytes" } ] }"#;
+        let response = anthropic_messages(
+            State(state.clone()),
+            HeaderMap::new(),
+            Bytes::from_static(raw),
+        )
+        .await
+        .into_response();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(captured_rx.await.expect("captured request body"), raw);
+        let event = state
+            .recent_events(10)
+            .into_iter()
+            .find(|event| event.metadata.get("provider_cache").is_some())
+            .expect("routed ledger event");
+        assert_eq!(event.metadata["provider_cache"]["wire_variant"], "raw_wire");
+        assert_eq!(
+            event.metadata["provider_cache"]["reason_code"],
+            "provider_cache_evidence_unavailable"
+        );
+        assert!(!event.metadata.to_string().contains("keep these bytes"));
+        server.await.expect("mock upstream task");
+    }
+
+    #[tokio::test]
+    async fn direct_anthropic_compatibility_upstream_withholds_breakpoint_and_preserves_wire() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+        use tokio::sync::oneshot;
+
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind direct Anthropic mock upstream");
+        let addr = listener.local_addr().expect("mock upstream address");
+        let (captured_tx, captured_rx) = oneshot::channel();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.expect("accept direct request");
+            let mut request = Vec::new();
+            let mut buffer = [0_u8; 4096];
+            let (header_end, content_length) = loop {
+                let read = socket.read(&mut buffer).await.expect("read direct request");
+                assert!(read > 0, "request closed before headers completed");
+                request.extend_from_slice(&buffer[..read]);
+                if let Some(index) = request.windows(4).position(|window| window == b"\r\n\r\n") {
+                    let header_end = index + 4;
+                    let headers = String::from_utf8_lossy(&request[..header_end]);
+                    let content_length = headers
+                        .lines()
+                        .find_map(|line| {
+                            let (name, value) = line.split_once(':')?;
+                            name.eq_ignore_ascii_case("content-length")
+                                .then(|| value.trim().parse::<usize>().ok())
+                                .flatten()
+                        })
+                        .expect("serialized body has a content length");
+                    break (header_end, content_length);
+                }
+            };
+            while request.len() < header_end + content_length {
+                let read = socket.read(&mut buffer).await.expect("read request body");
+                assert!(read > 0, "request closed before body completed");
+                request.extend_from_slice(&buffer[..read]);
+            }
+            captured_tx
+                .send(request[header_end..header_end + content_length].to_vec())
+                .expect("capture serialized body");
+            socket
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\ncontent-type: application/json\r\nconnection: close\r\n\r\n{\"type\":\"message\",\"content\":[],\"usage\":{\"input_tokens\":1}}",
+                )
+                .await
+                .expect("write Anthropic response");
+        });
+
+        let dir =
+            std::env::temp_dir().join(format!("dtoken-anthropic-pipeline-{}", Uuid::new_v4()));
+        let mut state = AppState::new_persistent(
+            direct_anthropic_cache_test_config(format!("http://{addr}")),
+            &dir,
+        );
+        state.ccr_private_store = Some(Arc::new(
+            CcrStore::new(dir.join("ccr-private"), [31_u8; 32]).expect("CCR store"),
+        ));
+        let log = "INFO stable build route healthy tests passed\n".repeat(420);
+        let mut messages = Vec::new();
+        for index in 0..8 {
+            let tool_id = format!("tool-{index}");
+            messages.push(json!({
+                "role": "assistant",
+                "content": [{"type": "tool_use", "id": tool_id, "name": "bash", "input": {}}]
+            }));
+            messages.push(json!({
+                "role": "user",
+                "content": [{"type": "tool_result", "tool_use_id": tool_id, "content": log}]
+            }));
+        }
+        messages.push(json!({"role": "user", "content": "Summarize verified state."}));
+        let raw = serde_json::to_vec(&json!({
+            "model": "claude-cache-test",
+            "messages": messages
+        }))
+        .expect("serialize Anthropic request");
+        let payload = anthropic_route_payload(
+            &state,
+            serde_json::from_slice(&raw).expect("parse Anthropic request"),
+            RouteEvidence::default(),
+        )
+        .expect("route payload");
+        persist_anthropic_cache_evidence(&state, &payload.scope);
+
+        let response = anthropic_messages(
+            State(state.clone()),
+            HeaderMap::new(),
+            Bytes::from(raw.clone()),
+        )
+        .await
+        .into_response();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let captured = captured_rx.await.expect("captured request body");
+        assert_eq!(captured, raw);
+        assert!(state.recent_request_logs(1)[0]
+            .transforms_applied
+            .is_empty());
+        let event = state
+            .recent_events(20)
+            .into_iter()
+            .find(|event| event.metadata.get("pipeline_payload_variant").is_some())
+            .expect("routed ledger event");
+        assert_eq!(event.metadata["pipeline_payload_variant"], "original");
+        assert_eq!(event.metadata["provider_cache"]["wire_variant"], "raw_wire");
+        assert_eq!(
+            event.metadata["provider_cache"]["reason_code"],
+            "anthropic_cache_upstream_unverified"
+        );
+        server.await.expect("mock upstream task");
+        drop(state);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
     #[tokio::test]
     async fn terminal_event_stream_records_completed_and_failed_terminal_events() {
         use axum::body::to_bytes;
@@ -11668,17 +18015,20 @@ mod tests {
         let completed_state = AppState::new(DtokenConfig::default());
         let completed_request_id = Uuid::new_v4();
         let completed_stream: UpstreamByteStream = Box::pin(stream::iter(vec![Ok(
-            Bytes::from_static(b"event: message_stop\n\n"),
+            Bytes::from_static(b"event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"),
         )]));
         let completed_body = Body::from_stream(TerminalEventStream::new(
             completed_stream,
             StreamTerminalLedgerGuard {
                 state: completed_state.clone(),
+                scope: cache_test_scope(Protocol::Anthropic),
                 request_id: completed_request_id,
                 provider_id: "fixture-provider".to_string(),
                 upstream_status: 200,
                 kind: "passthrough",
                 accounting: None,
+                usage_observer: AnthropicStreamUsageObserver::default(),
+                terminal_record: None,
                 terminal: false,
             },
         ));
@@ -11703,11 +18053,14 @@ mod tests {
             failed_stream,
             StreamTerminalLedgerGuard {
                 state: failed_state.clone(),
+                scope: cache_test_scope(Protocol::Anthropic),
                 request_id: failed_request_id,
                 provider_id: "fixture-provider".to_string(),
                 upstream_status: 200,
                 kind: "semantic",
                 accounting: None,
+                usage_observer: AnthropicStreamUsageObserver::default(),
+                terminal_record: None,
                 terminal: false,
             },
         ));
@@ -11722,5 +18075,233 @@ mod tests {
         assert_eq!(failed.metadata["terminal"], true);
         assert_eq!(failed.metadata["kind"], "semantic");
         assert_eq!(failed.error_code.as_deref(), Some("provider_stream_error"));
+    }
+
+    #[tokio::test]
+    async fn terminal_stream_clean_eof_without_anthropic_message_stop_fails_closed() {
+        use axum::body::to_bytes;
+        use futures_util::stream;
+
+        let state = AppState::new(DtokenConfig::default());
+        let request_id = Uuid::new_v4();
+        let stream: UpstreamByteStream = Box::pin(stream::iter(vec![Ok(Bytes::from_static(
+            b"data: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":2}}\n\n",
+        ))]));
+        let body = Body::from_stream(TerminalEventStream::new(
+            stream,
+            StreamTerminalLedgerGuard {
+                state: state.clone(),
+                scope: cache_test_scope(Protocol::Anthropic),
+                request_id,
+                provider_id: "fixture-provider".to_string(),
+                upstream_status: 200,
+                kind: "passthrough",
+                accounting: None,
+                usage_observer: AnthropicStreamUsageObserver::default(),
+                terminal_record: None,
+                terminal: false,
+            },
+        ));
+        to_bytes(body, usize::MAX)
+            .await
+            .expect("transparent incomplete stream body");
+
+        let terminal = state
+            .recent_events(10)
+            .into_iter()
+            .find(|event| event.request_id == Some(request_id))
+            .expect("terminal failure event");
+        assert_eq!(terminal.status, EventStatus::Failed);
+        assert_eq!(
+            terminal.error_code.as_deref(),
+            Some("provider_stream_incomplete")
+        );
+    }
+
+    #[tokio::test]
+    async fn terminal_stream_defers_ccr_projection_until_stream_completion() {
+        use axum::body::to_bytes;
+        use futures_util::stream;
+
+        let dir = std::env::temp_dir().join(format!("dtoken-stream-ccr-{}", Uuid::new_v4()));
+        let state = AppState::new_persistent_with_ccr_key(DtokenConfig::empty(), &dir, [7_u8; 32])
+            .expect("persistent CCR state");
+        let request = OpenAiChatRequest {
+            model: Some("fixture-model".to_string()),
+            messages: Some(vec![json!({"role":"user","content":"stream input"})]),
+            stream: Some(true),
+        };
+        let (_response, decision, mut request_log, event) = routed_openai_payload(&request);
+        request_log.transforms_applied = vec!["semantic_closed_tool_result".to_string()];
+        let original = br#"{"model":"fixture-model","messages":[{"role":"user","content":"STREAM_CCR_SECRET"}]}"#;
+        let prepared = state
+            .prepare_ccr_for_request(&decision, &request_log, original)
+            .expect("CCR must be durable before stream send");
+        let recovery_ref = format!("ccr:{}", decision.request_id);
+        let scope = cache_test_scope(Protocol::Anthropic);
+        let stream: UpstreamByteStream = Box::pin(stream::iter(vec![
+            Ok(Bytes::from_static(
+                b"data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":101,\"cache_read_input_tokens\":25,\"cache_creation_input_tokens\":3,\"private\":\"STREAM_USAGE_SECRET\"}}}\n\n",
+            )),
+            Ok(Bytes::from_static(
+                b"data: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":17,\"cache_creation\":{\"ephemeral_5m_input_tokens\":4}}}\n\n",
+            )),
+            Ok(Bytes::from_static(
+                b"event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n",
+            )),
+        ]));
+        let body = Body::from_stream(TerminalEventStream::new(
+            stream,
+            StreamTerminalLedgerGuard {
+                state: state.clone(),
+                scope: scope.clone(),
+                request_id: decision.request_id,
+                provider_id: decision.provider_id.clone(),
+                upstream_status: 200,
+                kind: "semantic",
+                accounting: None,
+                usage_observer: AnthropicStreamUsageObserver::default(),
+                terminal_record: Some(StreamTerminalRequestRecord {
+                    decision,
+                    request_log,
+                    event,
+                    prepared_ccr: prepared,
+                }),
+                terminal: false,
+            },
+        ));
+
+        // Creating the response body is only an upstream acceptance. The
+        // redacted pre-send journal is durable, but no terminal request/CCR
+        // projection may exist yet.
+        assert!(state.recent_request_logs(10).is_empty());
+        assert_eq!(
+            state
+                .retrieve_ccr_metadata(&recovery_ref)
+                .expect("pending CCR lifecycle")["state"],
+            "pending_retained"
+        );
+        to_bytes(body, usize::MAX)
+            .await
+            .expect("consume completed stream");
+
+        assert_eq!(state.recent_request_logs(10).len(), 1);
+        let request_log = state
+            .recent_request_logs(10)
+            .into_iter()
+            .next()
+            .expect("terminal request log");
+        assert_eq!(request_log.output_tokens, Some(17));
+        assert!(!serde_json::to_string(&request_log)
+            .expect("request log JSON")
+            .contains("STREAM_USAGE_SECRET"));
+        let metadata = state
+            .retrieve_ccr_metadata(&recovery_ref)
+            .expect("terminal CCR metadata");
+        assert_eq!(metadata["state"], "finalized");
+        assert_eq!(metadata["raw_available"], true);
+        assert!(!metadata.to_string().contains("STREAM_CCR_SECRET"));
+        let terminal = state
+            .recent_events(10)
+            .into_iter()
+            .find(|entry| {
+                entry.request_id == Some(uuid::Uuid::parse_str(&recovery_ref[4..]).unwrap())
+                    && entry.metadata["stream_terminal"] == true
+            })
+            .expect("terminal request event");
+        assert_eq!(terminal.status, EventStatus::Ok);
+        assert_eq!(terminal.metadata["stream_terminal"], true);
+
+        let projections = ContextStore::open(dir.join("runtime-state.sqlite3"))
+            .expect("open context-store projection");
+        assert_eq!(
+            projections.projection_counts().expect("projection counts"),
+            (1, 1)
+        );
+        let observation = projections
+            .provider_cache_observation(
+                &scope.route_id,
+                &scope.provider_id,
+                &scope.model,
+                &scope.output_protocol,
+                &scope.config_revision,
+            )
+            .expect("cache observation lookup")
+            .expect("Anthropic stream usage observation");
+        assert_eq!(observation.read_units, Some(25));
+        assert_eq!(observation.creation_units, Some(3));
+        assert_eq!(observation.creation_5m_units, Some(4));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn dropped_stream_marks_ccr_receipt_as_send_failed_retained() {
+        use futures_util::stream;
+
+        let dir = std::env::temp_dir().join(format!("dtoken-stream-drop-{}", Uuid::new_v4()));
+        let state = AppState::new_persistent_with_ccr_key(DtokenConfig::empty(), &dir, [8_u8; 32])
+            .expect("persistent CCR state");
+        let request = OpenAiChatRequest {
+            model: Some("fixture-model".to_string()),
+            messages: Some(vec![json!({"role":"user","content":"stream input"})]),
+            stream: Some(true),
+        };
+        let (_response, decision, mut request_log, event) = routed_openai_payload(&request);
+        request_log.transforms_applied = vec!["semantic_closed_tool_result".to_string()];
+        let prepared = state
+            .prepare_ccr_for_request(
+                &decision,
+                &request_log,
+                br#"{"model":"fixture-model","messages":[]}"#,
+            )
+            .expect("CCR must be durable before stream send");
+        let recovery_ref = format!("ccr:{}", decision.request_id);
+        let stream: UpstreamByteStream = Box::pin(stream::pending());
+        let body = Body::from_stream(TerminalEventStream::new(
+            stream,
+            StreamTerminalLedgerGuard {
+                state: state.clone(),
+                scope: cache_test_scope(Protocol::Anthropic),
+                request_id: decision.request_id,
+                provider_id: decision.provider_id.clone(),
+                upstream_status: 200,
+                kind: "semantic",
+                accounting: None,
+                usage_observer: AnthropicStreamUsageObserver::default(),
+                terminal_record: Some(StreamTerminalRequestRecord {
+                    decision,
+                    request_log,
+                    event,
+                    prepared_ccr: prepared,
+                }),
+                terminal: false,
+            },
+        ));
+
+        // A client that abandons the response must not leave a prepared or
+        // finalized receipt behind.  Dropping the body is the terminal
+        // failure signal for this request.
+        assert!(state.recent_request_logs(10).is_empty());
+        drop(body);
+        assert_eq!(state.recent_request_logs(10).len(), 1);
+        let projections = ContextStore::open(dir.join("runtime-state.sqlite3"))
+            .expect("open context-store projection");
+        assert_eq!(
+            projections
+                .ccr_metadata_state(&recovery_ref)
+                .expect("read CCR state")
+                .as_deref(),
+            Some("send_failed_retained")
+        );
+        let terminal = state
+            .recent_events(10)
+            .into_iter()
+            .find(|entry| {
+                entry.request_id == Some(uuid::Uuid::parse_str(&recovery_ref[4..]).unwrap())
+                    && entry.metadata["stream_terminal"] == true
+            })
+            .expect("dropped stream terminal event");
+        assert_eq!(terminal.status, EventStatus::Failed);
+        let _ = std::fs::remove_dir_all(dir);
     }
 }
