@@ -1,0 +1,373 @@
+name: windows-x64-unsigned-technical-preview
+
+on:
+  workflow_call:
+    inputs:
+      artifact_suffix:
+        description: Optional suffix for the uploaded artifact name.
+        required: false
+        type: string
+        default: ""
+      release_tag:
+        description: Optional release tag to verify with check_release_version.py.
+        required: false
+        type: string
+        default: ""
+      previous_release_tag:
+        description: Optional tag of an older public release whose x64 NSIS installer is the previous version for the old-version -> new-version -> rollback test. Auto-detected (newest release other than the current ref) when empty.
+        required: false
+        type: string
+        default: ""
+    outputs:
+      artifact_name:
+        description: Uploaded Windows artifact bundle name.
+        value: ${{ jobs.build-windows.outputs.artifact_name }}
+  workflow_dispatch:
+    inputs:
+      artifact_suffix:
+        description: Optional suffix for the uploaded artifact name.
+        required: false
+        type: string
+        default: ""
+      release_tag:
+        description: Optional release tag to verify with check_release_version.py.
+        required: false
+        type: string
+        default: ""
+      previous_release_tag:
+        description: Optional tag of an older public release whose x64 NSIS installer is the previous version for the old-version -> new-version -> rollback test. Auto-detected (newest release other than the current ref) when empty.
+        required: false
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  build-windows:
+    runs-on: windows-2022
+    permissions:
+      contents: read
+    outputs:
+      artifact_name: ${{ steps.resolve_artifact.outputs.artifact_name }}
+    env:
+      CARGO_TERM_COLOR: always
+      RUST_BACKTRACE: "1"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve artifact names
+        id: resolve_artifact
+        shell: pwsh
+        env:
+          INPUT_ARTIFACT_SUFFIX: ${{ inputs.artifact_suffix }}
+        run: |
+          $suffix = $env:INPUT_ARTIFACT_SUFFIX
+          if ([string]::IsNullOrWhiteSpace($suffix)) {
+            if ([string]::IsNullOrWhiteSpace($env:GITHUB_REF_NAME)) {
+              $suffix = "manual-$($env:GITHUB_RUN_ID)"
+            } else {
+              $suffix = $env:GITHUB_REF_NAME
+            }
+          }
+          $safeSuffix = [regex]::Replace($suffix, '[^A-Za-z0-9._-]+', '-')
+          "artifact_name=d-token-windows-x64-unsigned-technical-preview-$safeSuffix" >> $env:GITHUB_OUTPUT
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+          targets: x86_64-pc-windows-msvc
+
+      - name: Install Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: code/apps/desktop/package-lock.json
+
+      - name: Verify repository structure and release scope
+        run: |
+          python support/scripts/check_structure.py
+          python support/scripts/check_release_scope.py
+
+      - name: Verify candidate version
+        shell: pwsh
+        env:
+          INPUT_RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          if (-not [string]::IsNullOrWhiteSpace($env:INPUT_RELEASE_TAG)) {
+            python support/scripts/check_release_version.py --tag $env:INPUT_RELEASE_TAG
+          } elseif ($env:GITHUB_REF_TYPE -eq "tag") {
+            python support/scripts/check_release_version.py --tag $env:GITHUB_REF_NAME
+          } else {
+            python support/scripts/check_release_version.py
+          }
+
+      - name: Install frontend dependencies
+        working-directory: code/apps/desktop
+        run: npm ci
+
+      - name: Install Playwright browsers
+        working-directory: code/apps/desktop
+        run: npx playwright install chromium webkit
+
+      - name: Release gate contract
+        shell: pwsh
+        run: ./support/scripts/run_release_gate_contract_test.ps1
+
+      - name: Release candidate provenance
+        shell: pwsh
+        run: ./support/scripts/run_release_candidate_provenance_test.ps1
+
+      - name: Frontend Vitest
+        working-directory: code/apps/desktop
+        run: npm run test:run
+
+      - name: Frontend TypeScript
+        working-directory: code/apps/desktop
+        run: npx tsc --noEmit
+
+      - name: Build frontend
+        working-directory: code/apps/desktop
+        run: npm run build
+
+      - name: Frontend E2E
+        working-directory: code/apps/desktop
+        run: npm run test:e2e
+
+      - name: Rust formatting
+        working-directory: code
+        run: cargo fmt --all -- --check
+
+      - name: Prepare Windows d-token runtime sidecar for workspace checks
+        shell: pwsh
+        run: ./support/scripts/prepare_desktop_sidecars.ps1
+
+      - name: Rust Clippy
+        working-directory: code
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Rust workspace tests
+        working-directory: code
+        run: cargo test --workspace
+
+      - name: Windows DACL/ACL tests (real MSVC runner)
+        shell: pwsh
+        run: ./support/scripts/run_windows_dacl_acl_tests.ps1
+
+      - name: Generate SBOM and unsigned technical-preview metadata
+        shell: pwsh
+        env:
+          INPUT_RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          cargo install cargo-audit --locked
+          $args = @(
+            "support/scripts/generate_release_metadata.py",
+            "--output-dir", "code/target/release/metadata",
+            "--require-cargo-audit",
+            "--fail-on-high",
+            "--source-revision", $env:GITHUB_SHA
+          )
+          if (-not [string]::IsNullOrWhiteSpace($env:INPUT_RELEASE_TAG)) {
+            $args += @("--tag", $env:INPUT_RELEASE_TAG)
+          } elseif ($env:GITHUB_REF_TYPE -eq "tag") {
+            $args += @("--tag", $env:GITHUB_REF_NAME)
+          }
+          python @args
+          . ./support/scripts/release_candidate_provenance.ps1
+          Write-ReleaseCandidateStamp -Root . -Path code/target/release/d-token-release-candidate.json | Out-Null
+
+      - name: Production codec candidate evidence
+        shell: pwsh
+        run: ./support/scripts/run_codec_candidate_evidence.ps1
+
+      - name: Candidate capability registry and Headroom coverage
+        shell: pwsh
+        run: |
+          $candidate = Get-Content -LiteralPath "code/target/release/d-token-release-candidate.json" -Raw | ConvertFrom-Json
+          $metadata = "code/target/release/metadata"
+          $registry = Join-Path $metadata "candidate-capability-registry.json"
+          $snapshot = Join-Path $metadata "headroom-capability-snapshot.json"
+          ./support/scripts/run_candidate_capability_registry_snapshot.ps1 `
+            -CandidateId $candidate.candidate_id `
+            -OutputDir $metadata `
+            -RegistryPath $registry
+          python support/scripts/generate_headroom_capability_snapshot.py `
+            --registry $registry `
+            --candidate-id $candidate.candidate_id `
+            --output $snapshot
+          ./support/scripts/run_headroom_capability_coverage_audit.ps1 `
+            -CapabilitySnapshot $snapshot `
+            -ExpectedCandidateId $candidate.candidate_id `
+            -OutputDir $metadata
+
+      - name: Release performance and stability gate
+        shell: pwsh
+        run: ./support/scripts/run_release_performance_gate.ps1
+
+      - name: Build unsigned Windows x64 NSIS technical-preview bundle
+        working-directory: code/apps/desktop
+        shell: pwsh
+        run: |
+          npm run tauri:with-sidecar -- build --target x86_64-pc-windows-msvc
+          if ($null -eq (Get-ChildItem "../../target/x86_64-pc-windows-msvc/release/bundle/nsis/d-token_*_x64-setup.exe" -ErrorAction SilentlyContinue | Select-Object -First 1)) { throw "Expected x64 NSIS installer is missing." }
+          Set-Content -LiteralPath "../../target/x86_64-pc-windows-msvc/release/UNSIGNED-TECHNICAL-PREVIEW.txt" -Value "PUBLIC UNSIGNED PRERELEASE: GitHub public prerelease artifact only. No Authenticode signature, SmartScreen reputation, or production certification." -Encoding utf8NoBOM
+
+      - name: Mirror explicit x64 candidate for existing functional audits
+        shell: pwsh
+        run: |
+          $source = "code/target/x86_64-pc-windows-msvc/release"
+          $destination = "code/target/release"
+          Get-ChildItem -LiteralPath $source -Force | Where-Object { $_.Name -ne "metadata" } | ForEach-Object {
+            Copy-Item -LiteralPath $_.FullName -Destination $destination -Recurse -Force
+          }
+
+      - name: Audit packaging and bundle provenance
+        shell: pwsh
+        run: |
+          ./support/scripts/run_desktop_packaging_audit.ps1
+          ./support/scripts/run_desktop_bundle_artifact_audit.ps1
+          ./support/scripts/run_release_distribution_audit.ps1
+          ./support/scripts/run_windows_signing_readiness_audit.ps1 -UnsignedTechnicalPreview
+
+      - name: Install and launch current NSIS candidate
+        shell: pwsh
+        run: ./support/scripts/run_installed_desktop_startup_audit.ps1 -SilentInstallLatest
+
+      - name: Prepare pinned user-imported Code Graph component for smoke only
+        shell: pwsh
+        run: |
+          $importDir = Join-Path $env:LOCALAPPDATA "d-token\codebase-memory\upstream"
+          New-Item -ItemType Directory -Force -Path $importDir | Out-Null
+          python support/scripts/prepare_codebase_memory_artifact.py `
+            --manifest code/runtimes/codebase-memory/artifact-manifest.json `
+            --target x86_64-pc-windows-msvc `
+            --artifact-dir code/target/codebase-memory-smoke-artifacts `
+            --binary-output (Join-Path $importDir "codebase-memory-mcp.exe") `
+            --license-output (Join-Path $importDir "LICENSE") `
+            --notices-output (Join-Path $importDir "THIRD_PARTY_NOTICES.md") `
+            --download --require-attestation
+
+      - name: Exercise installed Codebase Memory MCP, index, and graph surface
+        shell: pwsh
+        run: ./support/scripts/run_installed_codebase_memory_smoke.ps1 -OpenBrowser
+
+      - name: Uninstall test installation
+        if: always()
+        shell: pwsh
+        run: |
+          $uninstaller = Join-Path $env:LOCALAPPDATA "d-token/uninstall.exe"
+          if (Test-Path -LiteralPath $uninstaller) {
+            $process = Start-Process -FilePath $uninstaller -ArgumentList @("/S") -PassThru -Wait
+            if ($process.ExitCode -ne 0) {
+              throw "Silent uninstall failed with exit code $($process.ExitCode)."
+            }
+          }
+
+      - name: Resolve previous public NSIS installer for upgrade/rollback test
+        id: resolve_previous_installer
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INPUT_PREVIOUS_TAG: ${{ inputs.previous_release_tag }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $previousDir = Join-Path $env:RUNNER_TEMP "d-token-previous-installer"
+          New-Item -ItemType Directory -Force -Path $previousDir | Out-Null
+          $tag = $env:INPUT_PREVIOUS_TAG
+          if ([string]::IsNullOrWhiteSpace($tag)) {
+            $current = $env:GITHUB_REF_NAME
+            $releases = @(gh release list --limit 100 --json tagName,isDraft,isPrerelease | ConvertFrom-Json)
+            $candidates = @($releases | Where-Object { -not $_.isDraft -and $_.tagName -ne $current } |
+              Sort-Object { $v = $_.tagName -replace '^v', '' -replace '-.*$', ''; try { [version]$v } catch { [version]'0.0.0' } } -Descending)
+            if ($candidates.Count -eq 0) {
+              throw "No previous public release found to roll back to. The NSIS old-version -> new-version -> rollback gate is blocked until an older tagged release exists (or pass previous_release_tag)."
+            }
+            $tag = $candidates[0].tagName
+          }
+          gh release download $tag --pattern "d-token_*_x64-setup.exe" --dir $previousDir --clobber
+          $installer = Get-ChildItem -LiteralPath $previousDir -Filter "d-token_*_x64-setup.exe" | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+          if ($null -eq $installer) {
+            throw "Release $tag has no d-token_*_x64-setup.exe asset to use as the previous version."
+          }
+          "previous_installer=$($installer.FullName)" >> $env:GITHUB_OUTPUT
+
+      - name: Build managed RTK candidate probe example
+        working-directory: code
+        run: cargo build --target x86_64-pc-windows-msvc -p dtoken-agent-bridge --example managed_rtk_candidate_probe
+
+      - name: Prepare active config fixture for WSL RTK tests
+        shell: pwsh
+        run: |
+          $fixture = Join-Path $env:RUNNER_TEMP "d-token-active-config-fixture.json"
+          '{"active": true, "fixture": "wsl-rtk-integrity-test"}' | Set-Content -LiteralPath $fixture -Encoding utf8NoBOM
+          "DTOKEN_ACTIVE_CONFIG_PATH=$fixture" >> $env:GITHUB_ENV
+
+      - name: NSIS upgrade/rollback test
+        shell: pwsh
+        run: |
+          $previous = "${{ steps.resolve_previous_installer.outputs.previous_installer }}"
+          if ([string]::IsNullOrWhiteSpace($previous)) {
+            throw "Previous NSIS installer was not resolved; the old-version -> new-version -> rollback gate cannot be verified."
+          }
+          ./support/scripts/run_nsis_upgrade_rollback_test.ps1 -SilentInstallLatest -PreviousInstaller $previous
+
+      - name: WSL RTK integrity test
+        shell: pwsh
+        run: ./support/scripts/run_wsl_rtk_integrity_test.ps1
+
+      - name: WSL managed RTK candidate test
+        shell: pwsh
+        run: ./support/scripts/run_managed_rtk_candidate_test_windows.ps1
+
+      - name: Audit release cleanup and metadata redaction
+        shell: pwsh
+        run: |
+          ./support/scripts/run_release_cleanup_audit.ps1 -OutputDir code/target/release/metadata
+          ./support/scripts/run_release_artifact_redaction_audit.ps1 `
+            -OutputDir code/target/release/metadata `
+            -AdditionalPath @("code/target/release/d-token-release-candidate.json", "support/artifacts") `
+            -All
+
+      - name: Write SHA-256 manifest
+        shell: pwsh
+        run: |
+          $target = "code/target/x86_64-pc-windows-msvc/release"
+          $installer = (Get-ChildItem "$target/bundle/nsis/d-token_*_x64-setup.exe" | Sort-Object LastWriteTime -Descending | Select-Object -First 1).FullName
+          $artifacts = @(
+            "$target/d-token-desktop.exe",
+            "$target/dtoken-proxy.exe",
+            "$target/dtoken-agent-bridge.exe",
+            "$target/dtoken-codebase-memory-launcher.exe",
+            "$target/WebView2Loader.dll",
+            $installer,
+            "code/target/release/d-token-release-candidate.json",
+            "$target/UNSIGNED-TECHNICAL-PREVIEW.txt"
+          )
+          $metadataArtifacts = Get-ChildItem "code/target/release/metadata" -File
+          $artifacts += $metadataArtifacts.FullName
+          $lines = foreach ($artifact in $artifacts) {
+            $hash = (Get-FileHash -LiteralPath $artifact -Algorithm SHA256).Hash.ToLowerInvariant()
+            "$hash  $([System.IO.Path]::GetFileName($artifact))"
+          }
+          $lines | Set-Content -LiteralPath "$target/SHA256SUMS-windows-x64-unsigned-technical-preview.txt" -Encoding utf8NoBOM
+
+      - name: Upload Windows artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.resolve_artifact.outputs.artifact_name }}
+          if-no-files-found: error
+          path: |
+            code/target/x86_64-pc-windows-msvc/release/d-token-desktop.exe
+            code/target/x86_64-pc-windows-msvc/release/dtoken-proxy.exe
+            code/target/x86_64-pc-windows-msvc/release/dtoken-agent-bridge.exe
+            code/target/x86_64-pc-windows-msvc/release/dtoken-codebase-memory-launcher.exe
+            code/target/x86_64-pc-windows-msvc/release/WebView2Loader.dll
+            code/target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe
+            code/target/release/d-token-release-candidate.json
+            code/target/x86_64-pc-windows-msvc/release/SHA256SUMS-windows-x64-unsigned-technical-preview.txt
+            code/target/x86_64-pc-windows-msvc/release/UNSIGNED-TECHNICAL-PREVIEW.txt
+            code/target/release/metadata/*
+            support/artifacts/*.json

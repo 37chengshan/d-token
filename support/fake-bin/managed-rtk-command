@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+mode="${1:-0}"
+if [[ "$mode" == "large" ]]; then
+  for ((index = 0; index < 512; index++)); do
+    printf 'stdout-%04d-abcdefghijklmnopqrstuvwxyz\n' "$index"
+    printf 'stderr-%04d-abcdefghijklmnopqrstuvwxyz\n' "$index" >&2
+  done
+  exit 0
+fi
+if [[ "$mode" == "sleep" ]]; then
+  sleep "${2:-1}"
+  exit 0
+fi
+
+printf '\033[31merror\033[0m\n\nerror\nerror\n'
+printf 'SECRET=must-not-persist\n' >&2
+exit "$mode"

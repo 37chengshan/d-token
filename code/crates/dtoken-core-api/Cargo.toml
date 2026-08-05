@@ -1,18 +1,39 @@
 [package]
 name = "dtoken-core-api"
-version = "0.1.0"
+version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
 
 [dependencies]
+anyhow.workspace = true
 axum.workspace = true
 dtoken-config = { path = "../dtoken-config" }
 dtoken-config-patcher = { path = "../dtoken-config-patcher" }
+dtoken-compress = { path = "../dtoken-compress" }
+dtoken-context-store = { path = "../dtoken-context-store" }
 dtoken-doctor = { path = "../dtoken-doctor" }
 dtoken-event-ledger = { path = "../dtoken-event-ledger" }
 dtoken-headroom-adapter = { path = "../dtoken-headroom-adapter" }
+dtoken-learning = { path = "../dtoken-learning" }
 dtoken-preprocessor = { path = "../dtoken-preprocessor" }
 dtoken-project-policy = { path = "../dtoken-project-policy" }
+dtoken-runtime-pipeline = { path = "../dtoken-runtime-pipeline" }
 dtoken-types = { path = "../dtoken-types" }
+futures-util.workspace = true
+reqwest.workspace = true
+ring = "0.17"
+serde.workspace = true
 serde_json.workspace = true
+tokio.workspace = true
+uuid.workspace = true
+url = "2"
+
+[target.'cfg(target_os = "windows")'.dependencies]
+keyring = { version = "3", default-features = false, features = ["windows-native"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+keyring = { version = "3", default-features = false, features = ["apple-native"] }
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }

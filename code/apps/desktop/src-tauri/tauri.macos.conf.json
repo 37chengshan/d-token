@@ -1,0 +1,16 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "bundle": {
+    "targets": ["app", "dmg"],
+    "icon": ["icons/icon.icns", "icons/icon.png"],
+    "macOS": {
+      "minimumSystemVersion": "10.14"
+    },
+    "resources": {
+      "../../../../LICENSE": "legal/LICENSE",
+      "../../../../THIRD_PARTY_NOTICES.md": "legal/THIRD_PARTY_NOTICES.md",
+      "binaries/codebase-memory/LICENSE": "codebase-memory/LICENSE",
+      "binaries/codebase-memory/THIRD_PARTY_NOTICES.md": "codebase-memory/THIRD_PARTY_NOTICES.md"
+    }
+  }
+}

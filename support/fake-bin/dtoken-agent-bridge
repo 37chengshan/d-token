@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ "${1:-}" == "identity" ]]; then
+  printf '{"component":"dtoken-agent-bridge","protocol_version":1,"version":"0.2.0-beta.1","arch":"fixture","os":"fixture"}\n'
+  exit 0
+fi
+
+echo "fake dtoken-agent-bridge: unsupported command: $*" >&2
+exit 2

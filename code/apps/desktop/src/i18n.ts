@@ -198,8 +198,8 @@ export const dict = {
   "setup.action.diff": { zh: "查看 diff", en: "View Diff" },
   "setup.action.doctor": { zh: "运行 Doctor", en: "Run Doctor" },
   "setup.m3note": {
-    zh: "安装向导依托真实流程：扫描、计划、diff、备份、应用、校验、Doctor。测试端口只接管 OpenCode，其它 Agent 排除。",
-    en: "The installer follows the real flow: scan, plan, diff, backup, apply, verify, Doctor. The test port only takes over OpenCode; other agents are excluded.",
+    zh: "安装向导依托真实流程：扫描、计划、diff、备份、应用、校验、Doctor。OpenCode 连接只作用于 d-token 托管路由，其它 Agent 不会被改动。",
+    en: "The installer follows the real flow: scan, plan, diff, backup, apply, verify, Doctor. The OpenCode connection only uses the d-token managed route; other agents are not changed.",
   },
 
   /* ---- RTK config ---- */
@@ -269,8 +269,8 @@ export const dict = {
   "agents.win": { zh: "Windows 原生", en: "Windows" },
   "agents.wsl": { zh: "Windows WSL", en: "WSL" },
   "agents.matrixNote": {
-    zh: "以下兼容性矩阵由桌面后端结合本机工具状态生成。测试模式只接管 OpenCode，其它 Agent 排除。",
-    en: "This compatibility matrix is produced by the desktop backend from local tool state. Test mode only takes over OpenCode; other agents are excluded.",
+    zh: "以下兼容性矩阵由桌面后端结合本机工具状态生成。当前 OpenCode 连接范围限定在 d-token 托管路由，其它 Agent 只显示兼容状态。",
+    en: "This compatibility matrix is produced by the desktop backend from local tool state. The current OpenCode connection is scoped to the d-token managed route; other agents only show compatibility state.",
   },
 
   /* ---- projects ---- */

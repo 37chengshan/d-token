@@ -4,13 +4,18 @@ members = [
   "crates/dtoken-config",
   "crates/dtoken-router",
   "crates/dtoken-compress",
+  "crates/dtoken-context-store",
   "crates/dtoken-process",
   "crates/dtoken-doctor",
   "crates/dtoken-event-ledger",
   "crates/dtoken-preprocessor",
   "crates/dtoken-headroom-adapter",
   "crates/dtoken-project-policy",
+  "crates/dtoken-runtime-pipeline",
+  "crates/dtoken-learning",
   "crates/dtoken-config-patcher",
+  "crates/dtoken-agent-bridge",
+  "crates/dtoken-codebase-memory",
   "crates/dtoken-core-api",
   "crates/dtoken-proxy",
   "apps/desktop/src-tauri",
@@ -18,6 +23,7 @@ members = [
 resolver = "2"
 
 [workspace.package]
+version = "0.2.0-beta.1"
 edition = "2021"
 license = "Apache-2.0"
 repository = "https://github.com/37chengshan/d-token"
@@ -28,9 +34,18 @@ axum = "0.8"
 clap = { version = "4", features = ["derive", "env"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+json5 = "1.3.1"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
+futures-util = "0.3"
 thiserror = "2"
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "signal", "process", "fs"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "signal", "process", "fs", "io-std", "io-util"] }
 tower-http = { version = "0.6", features = ["trace", "cors"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 uuid = { version = "1", features = ["v4", "serde"] }
+
+# Large pinned sidecars are verified in desktop debug builds as well. Keep the
+# cryptographic implementation optimized so a 261 MB integrity check does not
+# monopolize a developer machine for tens of seconds.
+[profile.dev.package.sha2]
+opt-level = 3

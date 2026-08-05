@@ -1,6 +1,6 @@
 [package]
 name = "dtoken-proxy"
-version = "0.1.0"
+version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
@@ -16,3 +16,7 @@ serde_json.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
+
+[dev-dependencies]
+dtoken-context-store = { path = "../dtoken-context-store" }
+tempfile = "3"

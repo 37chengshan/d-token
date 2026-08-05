@@ -1,0 +1,360 @@
+name: public-unsigned-prerelease
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      artifact_suffix:
+        description: Optional suffix for uploaded candidate artifacts during manual validation runs.
+        required: false
+        type: string
+        default: ""
+      publish_public:
+        description: Publish the immutable public prerelease after local Agent, cc-switch, OpenCode, and candidate evidence gates have passed.
+        required: true
+        type: boolean
+        default: false
+
+concurrency:
+  group: public-unsigned-prerelease-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  build-macos:
+    permissions:
+      contents: read
+    uses: ./.github/workflows/macos-release.yml
+    with:
+      artifact_suffix: ${{ inputs.artifact_suffix }}
+      release_tag: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || '' }}
+
+  build-windows:
+    permissions:
+      contents: read
+    uses: ./.github/workflows/windows-release.yml
+    with:
+      artifact_suffix: ${{ inputs.artifact_suffix }}
+      release_tag: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || '' }}
+
+  publish-public-prerelease:
+    if: ${{ startsWith(github.ref, 'refs/tags/v') && github.event_name == 'workflow_dispatch' && inputs.publish_public }}
+    needs:
+      - build-macos
+      - build-windows
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download macOS release artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.build-macos.outputs.artifact_name }}
+          path: release-inputs/macos
+
+      - name: Download Windows release artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.build-windows.outputs.artifact_name }}
+          path: release-inputs/windows
+
+      - name: Checkout tagged source for independent source-digest anchor
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+
+      - name: Stage public prerelease assets
+        id: stage
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          stage_dir="release-public"
+          mkdir -p "$stage_dir"
+
+          mac_dmg="$(find release-inputs/macos -type f -name '*_aarch64.dmg' -print -quit)"
+          mac_sha="$(find release-inputs/macos -type f -name 'SHA256SUMS-macos-arm64-unsigned-technical-preview.txt' -print -quit)"
+          mac_notice="$(find release-inputs/macos -type f -name 'UNSIGNED-TECHNICAL-PREVIEW.txt' -print -quit)"
+          mac_audit="$(find release-inputs/macos -type f -name 'macos-arm64-unsigned-technical-preview-package-audit.md' -print -quit)"
+          mac_candidate="$(find release-inputs/macos -type f -name 'd-token-release-candidate.json' -print -quit)"
+          mac_sbom="$(find release-inputs/macos -type f -name "d-token-${version}.cdx.json" -print -quit)"
+          mac_licenses="$(find release-inputs/macos -type f -name 'dependency-licenses.csv' -print -quit)"
+          mac_security="$(find release-inputs/macos -type f -name 'security-scan.md' -print -quit)"
+          mac_notes="$(find release-inputs/macos -type f -name 'release-notes.md' -print -quit)"
+          mac_build_info="$(find release-inputs/macos -type f -name 'build-info.json' -print -quit)"
+          mac_codec_evidence="$(find release-inputs/macos -type f -name 'production-codec-candidate-evidence.json' -print -quit)"
+          mac_capability_snapshot="$(find release-inputs/macos -type f -name 'headroom-capability-snapshot.json' -print -quit)"
+          mac_capability_coverage="$(find release-inputs/macos -type f -name 'headroom-capability-coverage-*.json' -print -quit)"
+
+          win_installer="$(find release-inputs/windows -type f -name 'd-token_*_x64-setup.exe' -print -quit)"
+          win_sha="$(find release-inputs/windows -type f -name 'SHA256SUMS-windows-x64-unsigned-technical-preview.txt' -print -quit)"
+          win_notice="$(find release-inputs/windows -type f -name 'UNSIGNED-TECHNICAL-PREVIEW.txt' -print -quit)"
+          win_candidate="$(find release-inputs/windows -type f -name 'd-token-release-candidate.json' -print -quit)"
+          win_sbom="$(find release-inputs/windows -type f -name "d-token-${version}.cdx.json" -print -quit)"
+          win_licenses="$(find release-inputs/windows -type f -name 'dependency-licenses.csv' -print -quit)"
+          win_security="$(find release-inputs/windows -type f -name 'security-scan.md' -print -quit)"
+          win_build_info="$(find release-inputs/windows -type f -name 'build-info.json' -print -quit)"
+          win_codec_evidence="$(find release-inputs/windows -type f -name 'production-codec-candidate-evidence.json' -print -quit)"
+          win_capability_snapshot="$(find release-inputs/windows -type f -name 'headroom-capability-snapshot.json' -print -quit)"
+          win_capability_coverage="$(find release-inputs/windows -type f -name 'headroom-capability-coverage-*.json' -print -quit)"
+
+          test -n "$mac_dmg"
+          test -n "$mac_sha"
+          test -n "$mac_notice"
+          test -n "$mac_audit"
+          test -n "$mac_candidate"
+          test -n "$mac_sbom"
+          test -n "$mac_licenses"
+          test -n "$mac_security"
+          test -n "$mac_notes"
+          test -n "$mac_build_info"
+          test -n "$mac_codec_evidence"
+          test -n "$mac_capability_snapshot"
+          test -n "$mac_capability_coverage"
+          test -n "$win_installer"
+          test -n "$win_sha"
+          test -n "$win_notice"
+          test -n "$win_candidate"
+          test -n "$win_sbom"
+          test -n "$win_licenses"
+          test -n "$win_security"
+          test -n "$win_build_info"
+          test -n "$win_codec_evidence"
+          test -n "$win_capability_snapshot"
+          test -n "$win_capability_coverage"
+
+          python3 - \
+            "$GITHUB_SHA" \
+            "$GITHUB_REF_NAME" \
+            "$mac_candidate" \
+            "$win_candidate" \
+            "$mac_build_info" \
+            "$win_build_info" \
+            "$mac_codec_evidence" \
+            "$win_codec_evidence" \
+            "$mac_capability_snapshot" \
+            "$win_capability_snapshot" \
+            "$mac_capability_coverage" \
+            "$win_capability_coverage" \
+            "$mac_sbom" \
+            "$mac_licenses" \
+            "$mac_security" \
+            "$win_sbom" \
+            "$win_licenses" \
+            "$win_security" \
+            "$mac_sha" \
+            "$mac_dmg" \
+            "$win_sha" \
+            "$win_installer" <<'PY'
+          import hashlib
+          import json
+          import pathlib
+          import subprocess
+          import sys
+
+          (
+              expected_sha,
+              expected_tag,
+              mac_candidate_path,
+              win_candidate_path,
+              mac_build_path,
+              win_build_path,
+              mac_codec_path,
+              win_codec_path,
+              mac_capability_snapshot_path,
+              win_capability_snapshot_path,
+              mac_capability_coverage_path,
+              win_capability_coverage_path,
+              mac_sbom_path,
+              mac_licenses_path,
+              mac_security_path,
+              win_sbom_path,
+              win_licenses_path,
+              win_security_path,
+              mac_manifest_path,
+              mac_artifact_path,
+              win_manifest_path,
+              win_artifact_path,
+          ) = sys.argv[1:]
+
+          def verify_manifest_artifact(manifest_path: str, artifact_path: str) -> None:
+              artifact = pathlib.Path(artifact_path)
+              expected = None
+              for raw_line in pathlib.Path(manifest_path).read_text(encoding="utf-8-sig").splitlines():
+                  fields = raw_line.strip().split(maxsplit=1)
+                  if len(fields) != 2:
+                      continue
+                  if pathlib.Path(fields[1].lstrip("*")).name == artifact.name:
+                      expected = fields[0].lower()
+                      break
+              assert expected is not None, f"{artifact.name} is absent from {manifest_path}"
+              digest = hashlib.sha256(artifact.read_bytes()).hexdigest()
+              assert digest == expected, f"{artifact.name} does not match its SHA-256 manifest"
+
+          mac_candidate = json.loads(pathlib.Path(mac_candidate_path).read_text(encoding="utf-8-sig"))
+          win_candidate = json.loads(pathlib.Path(win_candidate_path).read_text(encoding="utf-8-sig"))
+          for label, value in (
+              ("macOS candidate", mac_candidate),
+              ("Windows candidate", win_candidate),
+          ):
+              assert value.get("git_head") == expected_sha, f"{label} is not bound to {expected_sha}"
+              assert value.get("candidate_dirty") is False, f"{label} was produced from a dirty tree"
+              assert value.get("git_dirty") is False, f"{label} reports a dirty checkout"
+              assert isinstance(value.get("candidate_id"), str) and value["candidate_id"], f"{label} has no candidate id"
+
+          # Independent source-digest anchor: recompute the tracked_diff_sha256
+          # the candidate stamps report, from a fresh checkout of the exact
+          # commit.  Two self-reported digests that merely equal each other are
+          # not proof — each stamp must also match an independently computed value.
+          diff = subprocess.run(
+              ["git", "diff", "--binary", "HEAD", "--", "."],
+              cwd=".",
+              capture_output=True,
+              text=True,
+              check=True,
+          )
+          independent_digest = hashlib.sha256(
+              "\n".join(diff.stdout.splitlines()).strip().encode("utf-8")
+          ).hexdigest()
+          for label, candidate in (
+              ("macOS candidate", mac_candidate),
+              ("Windows candidate", win_candidate),
+          ):
+              reported = candidate.get("tracked_diff_sha256")
+              assert isinstance(reported, str) and reported, f"{label} has no tracked_diff_sha256"
+              assert reported == independent_digest, (
+                  f"{label} source digest does not match an independent checkout at {expected_sha}"
+              )
+
+          mac_codec = json.loads(pathlib.Path(mac_codec_path).read_text(encoding="utf-8-sig"))
+          win_codec = json.loads(pathlib.Path(win_codec_path).read_text(encoding="utf-8-sig"))
+
+          def codec_ids(label: str, codec: dict) -> list[str]:
+              entries = codec.get("codecs")
+              assert isinstance(entries, list) and entries, f"{label} has no codec evidence"
+              ids = [entry.get("id") for entry in entries if isinstance(entry, dict)]
+              assert len(ids) == len(entries), f"{label} contains a non-object codec entry"
+              assert all(isinstance(value, str) and value for value in ids), f"{label} contains an empty codec id"
+              assert len(ids) == len(set(ids)), f"{label} contains duplicate codec ids"
+              return ids
+
+          for label, codec, candidate in (
+              ("macOS codec evidence", mac_codec, mac_candidate),
+              ("Windows codec evidence", win_codec, win_candidate),
+          ):
+              assert codec.get("candidate", {}).get("candidate_id") == candidate.get("candidate_id"), f"{label} candidate id mismatch"
+              assert codec.get("candidate", {}).get("git_head") == expected_sha, f"{label} git head mismatch"
+              assert codec.get("gate", {}).get("ok") is True, f"{label} gate failed"
+              assert codec.get("privacy", {}).get("metadata_only") is True, f"{label} is not metadata-only"
+              assert codec.get("privacy", {}).get("raw_corpus_stored") is False, f"{label} stored corpus"
+          assert codec_ids("macOS codec evidence", mac_codec) == codec_ids("Windows codec evidence", win_codec), "codec registry ids differ across release platforms"
+          assert mac_codec.get("evidence_revision") == win_codec.get("evidence_revision"), "codec evidence differs across release platforms"
+
+          for label, snapshot_path, coverage_path, candidate in (
+              ("macOS", mac_capability_snapshot_path, mac_capability_coverage_path, mac_candidate),
+              ("Windows", win_capability_snapshot_path, win_capability_coverage_path, win_candidate),
+          ):
+              snapshot = json.loads(pathlib.Path(snapshot_path).read_text(encoding="utf-8-sig"))
+              coverage = json.loads(pathlib.Path(coverage_path).read_text(encoding="utf-8-sig"))
+              assert snapshot.get("source") == "dtoken-owned-runtime", f"{label} capability snapshot source mismatch"
+              assert snapshot.get("revision") == candidate.get("candidate_id"), f"{label} capability snapshot candidate mismatch"
+              assert coverage.get("ok") is True, f"{label} Headroom capability coverage failed"
+              assert coverage.get("headroom_active_complete") is True, f"{label} Headroom active coverage incomplete"
+              assert coverage.get("candidate_revision") == candidate.get("candidate_id"), f"{label} coverage candidate mismatch"
+              assert coverage.get("active_complete") == coverage.get("active_required_total"), f"{label} capability count mismatch"
+
+          for label, path in (
+              ("macOS build info", mac_build_path),
+              ("Windows build info", win_build_path),
+          ):
+              value = json.loads(pathlib.Path(path).read_text(encoding="utf-8-sig"))
+              assert value.get("source_revision") == expected_sha, f"{label} is not bound to {expected_sha}"
+              assert value.get("tag") == expected_tag, f"{label} is not bound to {expected_tag}"
+
+          verify_manifest_artifact(mac_manifest_path, mac_artifact_path)
+          verify_manifest_artifact(mac_manifest_path, mac_codec_path)
+          verify_manifest_artifact(mac_manifest_path, mac_sbom_path)
+          verify_manifest_artifact(mac_manifest_path, mac_licenses_path)
+          verify_manifest_artifact(mac_manifest_path, mac_security_path)
+          verify_manifest_artifact(win_manifest_path, win_artifact_path)
+          verify_manifest_artifact(win_manifest_path, win_codec_path)
+          verify_manifest_artifact(win_manifest_path, win_sbom_path)
+          verify_manifest_artifact(win_manifest_path, win_licenses_path)
+          verify_manifest_artifact(win_manifest_path, win_security_path)
+          PY
+
+          cp "$mac_dmg" "$stage_dir/"
+          cp "$win_installer" "$stage_dir/"
+          cp "$mac_sha" "$stage_dir/"
+          cp "$win_sha" "$stage_dir/"
+          cp "$mac_notice" "$stage_dir/macos-arm64-UNSIGNED-TECHNICAL-PREVIEW.txt"
+          cp "$win_notice" "$stage_dir/windows-x64-UNSIGNED-TECHNICAL-PREVIEW.txt"
+          cp "$mac_audit" "$stage_dir/"
+          cp "$mac_candidate" "$stage_dir/macos-arm64-d-token-release-candidate.json"
+          cp "$win_candidate" "$stage_dir/windows-x64-d-token-release-candidate.json"
+          cp "$mac_sbom" "$stage_dir/macos-arm64-d-token-${version}.cdx.json"
+          cp "$mac_licenses" "$stage_dir/macos-arm64-dependency-licenses.csv"
+          cp "$mac_security" "$stage_dir/macos-arm64-security-scan.md"
+          cp "$win_sbom" "$stage_dir/windows-x64-d-token-${version}.cdx.json"
+          cp "$win_licenses" "$stage_dir/windows-x64-dependency-licenses.csv"
+          cp "$win_security" "$stage_dir/windows-x64-security-scan.md"
+          cp "$mac_build_info" "$stage_dir/macos-arm64-build-info.json"
+          cp "$win_build_info" "$stage_dir/windows-x64-build-info.json"
+          cp "$mac_codec_evidence" "$stage_dir/macos-arm64-production-codec-candidate-evidence.json"
+          cp "$win_codec_evidence" "$stage_dir/windows-x64-production-codec-candidate-evidence.json"
+          cp "$mac_capability_snapshot" "$stage_dir/macos-arm64-headroom-capability-snapshot.json"
+          cp "$win_capability_snapshot" "$stage_dir/windows-x64-headroom-capability-snapshot.json"
+          cp "$mac_capability_coverage" "$stage_dir/macos-arm64-headroom-capability-coverage.json"
+          cp "$win_capability_coverage" "$stage_dir/windows-x64-headroom-capability-coverage.json"
+          cp "$mac_notes" "$stage_dir/d-token-${version}-release-notes.md"
+
+          body_path="release-body.md"
+          {
+            echo "# d-token ${version} public unsigned prerelease"
+            echo
+            echo "- Git tag: \`${GITHUB_REF_NAME}\`"
+            echo "- Commit: \`${GITHUB_SHA}\`"
+            echo "- This prerelease is public, but it is intentionally unsigned."
+            echo "- macOS ARM64 DMG is **not** Developer ID signed, notarized, stapled, or Gatekeeper-approved."
+            echo "- Windows x64 NSIS installer is **not** Authenticode-signed and does not claim SmartScreen reputation."
+            echo "- Release creation is gated on both macOS ARM64 and Windows x64 reusable jobs succeeding in this same workflow run, with SHA-256 manifests, SBOM, dependency license inventory, security summary, candidate provenance, and matching active-codec evidence present."
+            echo
+            cat "$mac_notes"
+          } > "$body_path"
+
+          printf 'body_path=%s\n' "$body_path" >> "$GITHUB_OUTPUT"
+
+      - name: Fan-in artifact contract verification
+        shell: pwsh
+        env:
+          EXPECTED_COMMIT: ${{ github.sha }}
+        run: |
+          ./support/scripts/run_fan_in_artifact_contract.ps1 `
+            -MacDir release-inputs/macos `
+            -WinDir release-inputs/windows `
+            -ExpectedCommit "$env:EXPECTED_COMMIT" `
+            -OutputDir support/artifacts
+
+      - name: Create immutable public prerelease
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BODY_PATH: ${{ steps.stage.outputs.body_path }}
+        run: |
+          set -euo pipefail
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            echo "Release $GITHUB_REF_NAME already exists; immutable prereleases must use a new beta tag." >&2
+            exit 1
+          fi
+          gh release create "$GITHUB_REF_NAME" \
+            --verify-tag \
+            --prerelease \
+            --latest=false \
+            --title "d-token $GITHUB_REF_NAME public unsigned prerelease" \
+            --notes-file "$BODY_PATH" \
+            release-public/*

@@ -1,0 +1,77 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200" width="200" height="200">
+  <!-- 圆角方框背景 -->
+  <rect x="10" y="10" width="180" height="180" rx="28" ry="28" fill="#ffffff" stroke="#e6e6e6" stroke-width="1.5"/>
+
+  <!-- 尾巴 -->
+  <path d="M 158 130 Q 178 120 172 92 Q 167 70 152 78 Q 158 100 152 130 Z"
+        fill="#f29a4a" stroke="#1f1f1f" stroke-width="3" stroke-linejoin="round"/>
+  <path d="M 165 88 Q 168 96 166 102" fill="none" stroke="#ffffff" stroke-width="5" stroke-linecap="round"/>
+
+  <!-- 身体（坐姿） -->
+  <path d="M 70 165 Q 60 130 80 110 L 130 110 Q 152 120 145 165 Z"
+        fill="#f29a4a" stroke="#1f1f1f" stroke-width="3" stroke-linejoin="round"/>
+
+  <!-- 头 -->
+  <ellipse cx="100" cy="80" rx="50" ry="46" fill="#f29a4a" stroke="#1f1f1f" stroke-width="3"/>
+
+  <!-- 脸部白色 -->
+  <path d="M 78 80 Q 82 100 100 105 Q 118 100 122 80 Q 118 70 100 68 Q 82 70 78 80 Z"
+        fill="#ffffff" stroke="#1f1f1f" stroke-width="2.5" stroke-linejoin="round"/>
+
+  <!-- 左耳 -->
+  <path d="M 62 52 L 72 18 L 92 44 Z" fill="#f29a4a" stroke="#1f1f1f" stroke-width="3" stroke-linejoin="round"/>
+  <path d="M 73 40 L 78 26 L 85 40 Z" fill="#ffc6b3"/>
+
+  <!-- 右耳 -->
+  <path d="M 138 52 L 128 18 L 108 44 Z" fill="#f29a4a" stroke="#1f1f1f" stroke-width="3" stroke-linejoin="round"/>
+  <path d="M 127 40 L 122 26 L 115 40 Z" fill="#ffc6b3"/>
+
+  <!-- 头顶M纹 -->
+  <path d="M 80 40 L 92 52 L 100 44 L 108 52 L 120 40"
+        fill="none" stroke="#1f1f1f" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+
+  <!-- 眼睛（生气的斜眼） -->
+  <path d="M 82 78 L 90 84" stroke="#1f1f1f" stroke-width="3.5" stroke-linecap="round"/>
+  <path d="M 88 78 L 84 84" stroke="#1f1f1f" stroke-width="3.5" stroke-linecap="round"/>
+  <ellipse cx="86" cy="82" rx="3.5" ry="4" fill="#1f1f1f"/>
+
+  <path d="M 118 78 L 110 84" stroke="#1f1f1f" stroke-width="3.5" stroke-linecap="round"/>
+  <path d="M 112 78 L 116 84" stroke="#1f1f1f" stroke-width="3.5" stroke-linecap="round"/>
+  <ellipse cx="114" cy="82" rx="3.5" ry="4" fill="#1f1f1f"/>
+
+  <!-- 鼻子 -->
+  <path d="M 97 92 L 103 92 L 100 95 Z" fill="#1f1f1f"/>
+
+  <!-- 嘴（倒八字 小猫嘴） -->
+  <path d="M 100 95 Q 96 100 93 97" fill="none" stroke="#1f1f1f" stroke-width="1.8" stroke-linecap="round"/>
+  <path d="M 100 95 Q 104 100 107 97" fill="none" stroke="#1f1f1f" stroke-width="1.8" stroke-linecap="round"/>
+
+  <!-- 腮红 -->
+  <ellipse cx="76" cy="95" rx="5" ry="2.5" fill="#ffb59a" opacity="0.7"/>
+  <ellipse cx="124" cy="95" rx="5" ry="2.5" fill="#ffb59a" opacity="0.7"/>
+
+  <!-- 笔记本（屏幕） -->
+  <path d="M 45 130 L 130 130 L 135 160 L 50 160 Z"
+        fill="#2a2a2a" stroke="#1f1f1f" stroke-width="3" stroke-linejoin="round"/>
+  <!-- 屏幕内框 -->
+  <path d="M 56 137 L 122 137 L 126 153 L 52 153 Z" fill="#1a1a1a"/>
+
+  <!-- 终端符号 > _ -->
+  <path d="M 64 143 L 72 148 L 64 153" fill="none" stroke="#f29a4a" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+  <line x1="76" y1="153" x2="88" y2="153" stroke="#f29a4a" stroke-width="2.5" stroke-linecap="round"/>
+
+  <!-- 笔记本底座 -->
+  <path d="M 38 160 L 142 160 L 148 168 L 32 168 Z"
+        fill="#3a3a3a" stroke="#1f1f1f" stroke-width="3" stroke-linejoin="round"/>
+  <ellipse cx="90" cy="164" rx="6" ry="1.5" fill="#2a2a2a"/>
+
+  <!-- 爪子（放笔记本上） -->
+  <path d="M 70 122 Q 78 118 80 128 Q 78 134 70 132 Z"
+        fill="#ffffff" stroke="#1f1f1f" stroke-width="3" stroke-linejoin="round"/>
+  <path d="M 130 122 Q 122 118 120 128 Q 122 134 130 132 Z"
+        fill="#ffffff" stroke="#1f1f1f" stroke-width="3" stroke-linejoin="round"/>
+
+  <!-- 闪光 -->
+  <path d="M 40 65 L 46 70 L 40 75 L 34 70 Z" fill="#f5b04a"/>
+  <path d="M 38 67 L 42 70 L 38 73 L 34 70 Z" fill="#ffd97a"/>
+</svg>

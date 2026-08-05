@@ -1,0 +1,686 @@
+@custom-variant dark (&:is(.dark *));
+
+/* ============================================================
+   d-token Design System — CSS Variables
+   ============================================================ */
+
+:root {
+  --font-size: 13px;
+  --background: #ffffff;
+  --foreground: oklch(0.145 0 0);
+  --card: #ffffff;
+  --card-foreground: oklch(0.145 0 0);
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.145 0 0);
+  --primary: #030213;
+  --primary-foreground: oklch(1 0 0);
+  --secondary: oklch(0.95 0.0058 264.53);
+  --secondary-foreground: #030213;
+  --muted: #ececf0;
+  --muted-foreground: #717182;
+  --accent: #e9ebef;
+  --accent-foreground: #030213;
+  --destructive: #d4183d;
+  --destructive-foreground: #ffffff;
+  --border: rgba(0, 0, 0, 0.1);
+  --input: transparent;
+  --input-background: #f3f3f5;
+  --switch-background: #cbced4;
+  --font-weight-medium: 500;
+  --font-weight-normal: 400;
+  --ring: oklch(0.708 0 0);
+  --chart-1: oklch(0.646 0.222 41.116);
+  --chart-2: oklch(0.6 0.118 184.704);
+  --chart-3: oklch(0.398 0.07 227.392);
+  --chart-4: oklch(0.828 0.189 84.429);
+  --chart-5: oklch(0.769 0.188 70.08);
+  --radius: 0.625rem;
+  --sidebar: oklch(0.985 0 0);
+  --sidebar-foreground: oklch(0.145 0 0);
+  --sidebar-primary: #030213;
+  --sidebar-primary-foreground: oklch(0.985 0 0);
+  --sidebar-accent: oklch(0.97 0 0);
+  --sidebar-accent-foreground: oklch(0.205 0 0);
+  --sidebar-border: oklch(0.922 0 0);
+  --sidebar-ring: oklch(0.708 0 0);
+
+  /* Semantic status colors - domain-specific for token compression */
+  --success: oklch(0.55 0.18 155);
+  --success-foreground: oklch(0.95 0.02 155);
+  --warning: oklch(0.65 0.18 75);
+  --warning-foreground: oklch(0.20 0.05 75);
+  --info: oklch(0.60 0.14 230);
+  --info-foreground: oklch(0.95 0.02 230);
+}
+
+/* ============================================================
+   Dark Mode — Cool Slate Palette (深青灰基调)
+   Replace pure-black gray with cool cyan-slate tones.
+   ============================================================ */
+.dark {
+  --background: oklch(0.21 0.02 250);
+  --foreground: oklch(0.92 0.01 250);
+  --card: oklch(0.23 0.02 250);
+  --card-foreground: oklch(0.92 0.01 250);
+  --popover: oklch(0.23 0.02 250);
+  --popover-foreground: oklch(0.92 0.01 250);
+  --primary: var(--accent-500);
+  --primary-foreground: #ffffff;
+  --secondary: oklch(0.27 0.02 250);
+  --secondary-foreground: oklch(0.92 0.01 250);
+  --muted: oklch(0.27 0.02 250);
+  --muted-foreground: oklch(0.60 0.02 250);
+  --accent: oklch(0.27 0.02 250);
+  --accent-foreground: oklch(0.92 0.01 250);
+  --destructive: oklch(0.40 0.14 25);
+  --destructive-foreground: oklch(0.65 0.23 25);
+  --border: oklch(0.30 0.02 250);
+  --input: oklch(0.27 0.02 250);
+  --input-background: oklch(0.25 0.02 250);
+  --switch-background: oklch(0.35 0.02 250);
+  --ring: var(--accent-600);
+  --font-weight-medium: 500;
+  --font-weight-normal: 400;
+  --chart-1: oklch(0.55 0.22 264);
+  --chart-2: oklch(0.65 0.16 162);
+  --chart-3: oklch(0.72 0.18 70);
+  --chart-4: oklch(0.60 0.24 303);
+  --chart-5: oklch(0.62 0.22 16);
+  --sidebar: oklch(0.19 0.02 250);
+  --sidebar-foreground: oklch(0.92 0.01 250);
+  --sidebar-primary: var(--accent-500);
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-accent: oklch(0.24 0.02 250);
+  --sidebar-accent-foreground: oklch(0.92 0.01 250);
+  --sidebar-border: oklch(0.28 0.02 250);
+  --sidebar-ring: var(--accent-600);
+
+  /* Semantic status colors - dark mode */
+  --success: oklch(0.60 0.18 155);
+  --success-foreground: oklch(0.30 0.05 155);
+  --warning: oklch(0.70 0.18 75);
+  --warning-foreground: oklch(0.30 0.05 75);
+  --info: oklch(0.65 0.14 230);
+  --info-foreground: oklch(0.30 0.05 230);
+}
+
+/* ============================================================
+   Accent Theme Colors (data-accent on <html>)
+   ============================================================ */
+:root[data-accent="blue"]   { --accent-500: #2563eb; --accent-600: #1d4ed8; --accent-soft: rgba(37,99,235,0.14); }
+:root[data-accent="green"]  { --accent-500: #16a34a; --accent-600: #15803d; --accent-soft: rgba(22,163,74,0.14); }
+:root[data-accent="orange"] { --accent-500: #ea580c; --accent-600: #c2410c; --accent-soft: rgba(234,88,12,0.14); }
+:root[data-accent="purple"] { --accent-500: #7c3aed; --accent-600: #6d28d9; --accent-soft: rgba(124,58,237,0.14); }
+:root[data-accent="slate"]  { --accent-500: #475569; --accent-600: #334155; --accent-soft: rgba(71,85,105,0.14); }
+
+:root[data-accent] {
+  --primary: var(--accent-500);
+  --primary-foreground: #ffffff;
+  --ring: var(--accent-500);
+  --sidebar-primary: var(--accent-500);
+  --sidebar-primary-foreground: #ffffff;
+}
+.dark[data-accent] {
+  --primary: var(--accent-500);
+  --primary-foreground: #ffffff;
+  --ring: var(--accent-600);
+  --sidebar-primary: var(--accent-500);
+}
+
+/* Analytics panel primary color */
+:root[data-chart-accent="green"]  { --chart-accent: #10b981; }
+:root[data-chart-accent="blue"]   { --chart-accent: #38bdf8; }
+:root[data-chart-accent="amber"]  { --chart-accent: #f59e0b; }
+:root[data-chart-accent="rose"]   { --chart-accent: #fb7185; }
+:root[data-chart-accent="violet"] { --chart-accent: #a78bfa; }
+:root[data-chart-accent="orange"] { --chart-accent: #f97316; }
+:root { --chart-accent: #f97316; }
+
+/* ============================================================
+   Liquid Glass Token Matrix
+   Six surface tiers × light/dark. Based on Josh Comeau's
+   extended backdrop + mask technique, MDN backdrop-filter spec,
+   and Apple HIG material hierarchy.
+   ============================================================ */
+
+/* --- Light Mode Glass --- */
+:root {
+  /* Glass — standard card/panel (克制专业：通透利落，不奶白) */
+  --glass-bg: rgba(255, 255, 255, 0.48);
+  --glass-border: rgba(255, 255, 255, 0.60);
+  --glass-highlight: rgba(255, 255, 255, 0.55);
+  --glass-shadow: 0 4px 24px rgba(0, 0, 0, 0.08), 0 1px 3px rgba(0, 0, 0, 0.04);
+  --glass-blur: 20px;
+  --glass-saturate: 160%;
+  --glass-brightness: 100%;
+
+  /* Glass Strong — sidebar / sheet / popover */
+  --glass-strong-bg: rgba(255, 255, 255, 0.56);
+  --glass-strong-blur: 26px;
+  --glass-strong-saturate: 170%;
+
+  /* Glass Light — topbar / statusbar */
+  --glass-light-bg: rgba(255, 255, 255, 0.30);
+  --glass-light-blur: 14px;
+  --glass-light-saturate: 140%;
+
+  /* Glass Inset — inner containers within cards (NO blur) */
+  --glass-inset-bg: rgba(0, 0, 0, 0.025);
+  --glass-inset-border: rgba(0, 0, 0, 0.06);
+
+  /* Chip — unified toggle/segment/pill */
+  --chip-bg: transparent;
+  --chip-hover-bg: rgba(255, 255, 255, 0.32);
+  --chip-active-bg: color-mix(in srgb, var(--accent-500, #2563eb) 12%, transparent);
+  --chip-active-border: color-mix(in srgb, var(--accent-500, #2563eb) 30%, transparent);
+  --chip-blur: 9px;
+  --chip-saturate: 125%;
+
+  /* 3D Glass Edge */
+  --glass-edge-blur: 8px;
+  --glass-edge-brightness: 112%;
+  --glass-edge-thickness: 4px;
+
+  /* Sheen (diagonal specular highlight) — subdued for professional look */
+  --glass-sheen-opacity: 0.10;
+  --glass-sheen-speed: 14s;
+
+  /* Background flow — near-neutral, barely perceptible */
+  --bg-flow-accent-1-pct: 5%;
+  --bg-flow-accent-2-pct: 5%;
+  --bg-flow-speed: 30s;
+}
+
+/* --- Dark Mode Glass — Slate base, clean & crisp --- */
+.dark {
+  --glass-bg: oklch(0.24 0.02 250 / 0.45);
+  --glass-border: rgba(255, 255, 255, 0.08);
+  --glass-highlight: rgba(255, 255, 255, 0.08);
+  --glass-shadow: 0 4px 24px rgba(0, 0, 0, 0.45), 0 1px 3px rgba(0, 0, 0, 0.20);
+  --glass-blur: 20px;
+  --glass-saturate: 140%;
+  --glass-brightness: 95%;
+
+  --glass-strong-bg: oklch(0.24 0.02 250 / 0.58);
+  --glass-strong-blur: 28px;
+  --glass-strong-saturate: 145%;
+
+  --glass-light-bg: oklch(0.23 0.02 250 / 0.32);
+  --glass-light-blur: 14px;
+  --glass-light-saturate: 125%;
+
+  --glass-inset-bg: rgba(255, 255, 255, 0.06);
+  --glass-inset-border: rgba(255, 255, 255, 0.08);
+
+  --chip-hover-bg: rgba(255, 255, 255, 0.07);
+  --chip-active-bg: color-mix(in srgb, var(--accent-500, #2563eb) 16%, transparent);
+  --chip-active-border: color-mix(in srgb, var(--accent-500, #2563eb) 28%, transparent);
+
+  --glass-edge-blur: 8px;
+  --glass-edge-brightness: 108%;
+
+  --glass-sheen-opacity: 0.05;
+
+  --bg-flow-accent-1-pct: 4%;
+  --bg-flow-accent-2-pct: 4%;
+}
+
+/* ============================================================
+   Core Glass Classes — Extended Backdrop + Mask Technique
+
+   Key insight (Josh Comeau): backdrop-filter: blur() only sees
+   pixels DIRECTLY behind the element. Nearby content (even 1px
+   away) does NOT contribute to the blur.
+
+   Fix: use a child .glass-backdrop with height: 200% so the blur
+   algorithm can "see" nearby elements, then use mask-image to
+   trim the excess back to the visual size.
+   ============================================================ */
+
+/* --- Glass Container (outer shell) --- */
+.glass {
+  position: relative;
+  background: var(--glass-bg);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius);
+  box-shadow:
+    inset 0 1px 0 var(--glass-highlight),
+    var(--glass-shadow);
+  overflow: hidden;
+  isolation: isolate;
+}
+
+/* --- Extended Backdrop Child --- */
+.glass .glass-backdrop {
+  position: absolute;
+  inset: 0;
+  height: 200%;
+  border-radius: inherit;
+  pointer-events: none;
+  z-index: 0;
+
+  -webkit-backdrop-filter:
+    blur(var(--glass-blur))
+    saturate(var(--glass-saturate))
+    brightness(var(--glass-brightness));
+  backdrop-filter:
+    blur(var(--glass-blur))
+    saturate(var(--glass-saturate))
+    brightness(var(--glass-brightness));
+
+  /* Top gradient: prevents flicker when content scrolls out of viewport */
+  background: linear-gradient(
+    to bottom,
+    var(--background) 0%,
+    transparent 15%
+  );
+
+  /* Mask: opaque for original size (0%–50% of 2x height), transparent beyond */
+  -webkit-mask-image: linear-gradient(
+    to bottom,
+    black 0% 50%,
+    transparent 50% 100%
+  );
+  mask-image: linear-gradient(
+    to bottom,
+    black 0% 50%,
+    transparent 50% 100%
+  );
+}
+
+/* --- Glass Strong (sidebar, sheets, popovers) --- */
+.glass-strong {
+  position: relative;
+  background: var(--glass-strong-bg);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius);
+  box-shadow:
+    inset 0 1px 0 var(--glass-highlight),
+    var(--glass-shadow);
+  overflow: hidden;
+  isolation: isolate;
+}
+
+.glass-strong .glass-backdrop {
+  position: absolute;
+  inset: 0;
+  height: 200%;
+  border-radius: inherit;
+  pointer-events: none;
+  z-index: 0;
+
+  -webkit-backdrop-filter:
+    blur(var(--glass-strong-blur))
+    saturate(var(--glass-strong-saturate))
+    brightness(var(--glass-brightness));
+  backdrop-filter:
+    blur(var(--glass-strong-blur))
+    saturate(var(--glass-strong-saturate))
+    brightness(var(--glass-brightness));
+
+  background: linear-gradient(
+    to bottom,
+    var(--background) 0%,
+    transparent 12%
+  );
+
+  -webkit-mask-image: linear-gradient(
+    to bottom,
+    black 0% 50%,
+    transparent 50% 100%
+  );
+  mask-image: linear-gradient(
+    to bottom,
+    black 0% 50%,
+    transparent 50% 100%
+  );
+}
+
+/* --- Glass Light (topbar, statusbar) --- */
+.glass-light {
+  position: relative;
+  background: var(--glass-light-bg);
+  border-bottom: 1px solid var(--glass-border);
+  overflow: hidden;
+  isolation: isolate;
+}
+
+.glass-light .glass-backdrop {
+  position: absolute;
+  inset: 0;
+  height: 200%;
+  pointer-events: none;
+  z-index: 0;
+
+  -webkit-backdrop-filter:
+    blur(var(--glass-light-blur))
+    saturate(var(--glass-light-saturate))
+    brightness(var(--glass-brightness));
+  backdrop-filter:
+    blur(var(--glass-light-blur))
+    saturate(var(--glass-light-saturate))
+    brightness(var(--glass-brightness));
+
+  background: linear-gradient(
+    to bottom,
+    var(--background) 0%,
+    transparent 20%
+  );
+
+  -webkit-mask-image: linear-gradient(
+    to bottom,
+    black 0% 50%,
+    transparent 50% 100%
+  );
+  mask-image: linear-gradient(
+    to bottom,
+    black 0% 50%,
+    transparent 50% 100%
+  );
+}
+
+/* --- Diagonal Sheen Animation --- */
+.glass .glass-backdrop::after,
+.glass-strong .glass-backdrop::after,
+.glass-light .glass-backdrop::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  z-index: 1;
+  background: linear-gradient(
+    115deg,
+    transparent 35%,
+    rgba(255, 255, 255, var(--glass-sheen-opacity)) 48%,
+    transparent 61%
+  );
+  background-size: 280% 280%;
+  animation: glass-sheen var(--glass-sheen-speed) ease-in-out infinite;
+}
+
+@keyframes glass-sheen {
+  0%   { background-position: 140% 0%; }
+  100% { background-position: -60% 0%; }
+}
+
+/* --- Content Layer (above backdrop) --- */
+.glass > *:not(.glass-backdrop):not(.glass-edge),
+.glass-strong > *:not(.glass-backdrop):not(.glass-edge),
+.glass-light > *:not(.glass-backdrop):not(.glass-edge) {
+  position: relative;
+  z-index: 1;
+}
+
+/* ============================================================
+   3D Glass Edge
+   A secondary blurred element at the bottom that simulates
+   light refracting through the thickness of real glass.
+   Technique from Josh Comeau / Artur Bien.
+   ============================================================ */
+.glass .glass-edge {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: var(--glass-edge-thickness);
+  border-radius: 0 0 inherit inherit;
+  pointer-events: none;
+  z-index: 2;
+
+  background: rgba(255, 255, 255, 0.06);
+  -webkit-backdrop-filter:
+    blur(var(--glass-edge-blur))
+    brightness(var(--glass-edge-brightness));
+  backdrop-filter:
+    blur(var(--glass-edge-blur))
+    brightness(var(--glass-edge-brightness));
+
+  -webkit-mask-image: linear-gradient(
+    to bottom,
+    transparent 0%,
+    black 100%
+  );
+  mask-image: linear-gradient(
+    to bottom,
+    transparent 0%,
+    black 100%
+  );
+}
+
+/* ============================================================
+   GlassEffectContainer
+   Establishes a shared glass context within a page section.
+   Does NOT set backdrop-filter itself (would become a backdrop
+   root and cut off children's blur).
+   ============================================================ */
+.glass-stage {
+  position: relative;
+  background: var(--background);
+}
+
+/* ============================================================
+   Chip — Unified Toggle / Segmented Control / Filter Pill
+   ============================================================ */
+.chip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.375rem;
+  background: var(--chip-bg);
+  border: 1px solid transparent;
+  border-radius: 999px;
+  color: var(--muted-foreground);
+  font-size: var(--text-sm);
+  transition: all 0.2s ease;
+  cursor: pointer;
+  user-select: none;
+}
+
+.chip:hover {
+  background: var(--chip-hover-bg);
+  border-color: var(--glass-border);
+  backdrop-filter: blur(var(--chip-blur)) saturate(var(--chip-saturate));
+}
+
+/* --- Chip Active — Glass frame with accent tint --- */
+.chip-active {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.375rem;
+  background: var(--chip-active-bg);
+  border: 1px solid var(--chip-active-border);
+  border-radius: 999px;
+  color: var(--accent-500);
+  font-size: var(--text-sm);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.30);
+  backdrop-filter: blur(var(--chip-blur)) saturate(var(--chip-saturate));
+  cursor: default;
+  user-select: none;
+}
+
+/* ============================================================
+   Glass Inset — Inner container within a glass card
+   No backdrop-filter (doubled blur inside already-blurred card
+   looks muddy). Just a subtle tint + border to group content.
+   ============================================================ */
+.glass-inset {
+  background: var(--glass-inset-bg);
+  border: 1px solid var(--glass-inset-border);
+  border-radius: calc(var(--radius) - 2px);
+}
+
+/* ============================================================
+   Radix/Shadcn Bridge — map data-state="active" to chip-active
+   ============================================================ */
+[data-slot="tabs-trigger"][data-state="active"] {
+  background: var(--chip-active-bg) !important;
+  border-color: var(--chip-active-border) !important;
+  color: var(--accent-500) !important;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.30) !important;
+  backdrop-filter: blur(var(--chip-blur)) saturate(var(--chip-saturate)) !important;
+  -webkit-backdrop-filter: blur(var(--chip-blur)) saturate(var(--chip-saturate)) !important;
+}
+
+/* ============================================================
+   Glass Off — Solid Fallback (accessibility / performance)
+   ============================================================ */
+:root[data-glass="off"] .glass,
+:root[data-glass="off"] .glass-strong,
+:root[data-glass="off"] .glass-light {
+  background: var(--card);
+  border: 1px solid var(--border);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+}
+
+:root[data-glass="off"] .glass-backdrop,
+:root[data-glass="off"] .glass-edge {
+  display: none;
+}
+
+:root[data-glass="off"] .glass .glass-backdrop::after,
+:root[data-glass="off"] .glass-strong .glass-backdrop::after,
+:root[data-glass="off"] .glass-light .glass-backdrop::after {
+  display: none;
+}
+
+:root[data-glass="off"] .chip:hover,
+:root[data-glass="off"] .chip-active {
+  backdrop-filter: none;
+}
+
+/* ============================================================
+   App Background — Subtle flowing accent gradient
+   Kept intentionally soft so glass surfaces read clearly.
+   ============================================================ */
+.app-bg {
+  background:
+    linear-gradient(
+      120deg,
+      var(--background) 0%,
+      color-mix(in srgb, var(--accent-500, #f97316) var(--bg-flow-accent-1-pct), var(--background)) 25%,
+      var(--background) 50%,
+      color-mix(in srgb, var(--accent-600, #7c3aed) var(--bg-flow-accent-2-pct), var(--background)) 75%,
+      var(--background) 100%
+    );
+  background-size: 300% 300%;
+  animation: bg-flow var(--bg-flow-speed) ease-in-out infinite;
+}
+
+@keyframes bg-flow {
+  0%   { background-position: 0% 50%; }
+  50%  { background-position: 100% 50%; }
+  100% { background-position: 0% 50%; }
+}
+
+/* ============================================================
+   Tailwind v4 @theme — CSS variable → Tailwind token bridge
+   ============================================================ */
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-input-background: var(--input-background);
+  --color-switch-background: var(--switch-background);
+  --color-ring: var(--ring);
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-ring: var(--sidebar-ring);
+
+  /* Semantic status colors for Tailwind */
+  --color-success: var(--success);
+  --color-success-foreground: var(--success-foreground);
+  --color-warning: var(--warning);
+  --color-warning-foreground: var(--warning-foreground);
+  --color-info: var(--info);
+  --color-info-foreground: var(--info-foreground);
+}
+
+/* ============================================================
+   Base Layer — Typography defaults
+   ============================================================ */
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+
+  body {
+    @apply bg-background text-foreground;
+  }
+
+  html {
+    font-size: var(--font-size);
+  }
+
+  h1 {
+    font-size: var(--text-2xl);
+    font-weight: var(--font-weight-medium);
+    line-height: 1.5;
+  }
+
+  h2 {
+    font-size: var(--text-xl);
+    font-weight: var(--font-weight-medium);
+    line-height: 1.5;
+  }
+
+  h3 {
+    font-size: var(--text-lg);
+    font-weight: var(--font-weight-medium);
+    line-height: 1.5;
+  }
+
+  h4 {
+    font-size: var(--text-base);
+    font-weight: var(--font-weight-medium);
+    line-height: 1.5;
+  }
+
+  label {
+    font-size: var(--text-base);
+    font-weight: var(--font-weight-medium);
+    line-height: 1.5;
+  }
+
+  button {
+    font-size: var(--text-base);
+    font-weight: var(--font-weight-medium);
+    line-height: 1.5;
+  }
+
+  input {
+    font-size: var(--text-base);
+    font-weight: var(--font-weight-normal);
+    line-height: 1.5;
+  }
+}

@@ -29,6 +29,9 @@ impl HeadroomAdapter {
         if mode == RuntimeMode::Fixture {
             return fixture_status();
         }
+        if mode == RuntimeMode::Native {
+            return native_unavailable_status();
+        }
 
         let adapter = Self::default();
         let proxy_running = read_headroom_http("/health").is_some();
@@ -61,6 +64,16 @@ impl HeadroomAdapter {
         if mode == RuntimeMode::Fixture {
             return fixture_stats();
         }
+        if mode == RuntimeMode::Native {
+            return HeadroomStats {
+                available: false,
+                compressions: 0,
+                retrievals: 0,
+                tokens_saved: 0,
+                savings_percent: 0.0,
+                source: "native_unavailable".to_string(),
+            };
+        }
 
         if let Some(raw) = read_headroom_http("/stats") {
             if let Ok(stats) = serde_json::from_str::<HeadroomStats>(&raw) {
@@ -84,7 +97,8 @@ impl HeadroomAdapter {
     }
 
     pub fn cache_summary_mock() -> CcrCacheSummary {
-        if runtime_mode_from_env() == RuntimeMode::Fixture {
+        let mode = runtime_mode_from_env();
+        if mode == RuntimeMode::Fixture {
             return CcrCacheSummary {
                 available: true,
                 entries: 24,
@@ -99,16 +113,28 @@ impl HeadroomAdapter {
             entries: 0,
             bytes: 0,
             retrievals: 0,
-            note: "M1 does not read Headroom CCR raw cache; summary only".to_string(),
+            note: if mode == RuntimeMode::Native {
+                "external Headroom CCR is unavailable in native mode".to_string()
+            } else {
+                "external Headroom CCR raw cache is not read; summary only".to_string()
+            },
         }
     }
 
     pub async fn metrics_report(&self) -> HeadroomMetricsReport {
-        if runtime_mode_from_env() == RuntimeMode::Fixture {
+        let mode = runtime_mode_from_env();
+        if mode == RuntimeMode::Fixture {
             return HeadroomMetricsReport {
                 available: true,
                 source: "fixture".to_string(),
                 prometheus_text: read_fixture_text("headroom/metrics.txt").unwrap_or_default(),
+            };
+        }
+        if mode == RuntimeMode::Native {
+            return HeadroomMetricsReport {
+                available: false,
+                source: "native_unavailable".to_string(),
+                prometheus_text: String::new(),
             };
         }
 
@@ -120,7 +146,15 @@ impl HeadroomAdapter {
     }
 
     pub fn stats_history_json() -> serde_json::Value {
-        if runtime_mode_from_env() != RuntimeMode::Fixture {
+        let mode = runtime_mode_from_env();
+        if mode == RuntimeMode::Native {
+            return serde_json::json!({
+                "status": "unavailable",
+                "history": [],
+                "series": { "hourly": [], "daily": [], "weekly": [], "monthly": [] }
+            });
+        }
+        if mode != RuntimeMode::Fixture {
             if let Some(raw) = read_headroom_http("/stats-history") {
                 if let Ok(value) = serde_json::from_str(&raw) {
                     return value;
@@ -184,13 +218,22 @@ pub fn headroom_stats_history_json() -> serde_json::Value {
 }
 
 fn runtime_mode_from_env() -> RuntimeMode {
-    match env::var("DTOKEN_PROFILE").ok().as_deref() {
-        Some("fake-binary") | Some("fake_binary") => RuntimeMode::FakeBinary,
-        Some("shadow") => RuntimeMode::Shadow,
-        Some("external") => RuntimeMode::External,
-        Some("managed") => RuntimeMode::Managed,
-        Some("builtin-fallback") | Some("builtin_fallback") => RuntimeMode::BuiltinFallback,
-        _ => RuntimeMode::Fixture,
+    let profile = env::var("DTOKEN_PROFILE").ok();
+    RuntimeMode::from_profile(profile.as_deref(), cfg!(debug_assertions))
+}
+
+fn native_unavailable_status() -> HeadroomStatus {
+    HeadroomStatus {
+        status: ToolStatus::Missing,
+        binary_path: None,
+        version: None,
+        python_runtime: None,
+        proxy_running: false,
+        mcp_configured: false,
+        warnings: vec![
+            "external Headroom is unavailable in native mode and is not a d-token runtime dependency"
+                .to_string(),
+        ],
     }
 }
 
@@ -249,32 +292,6 @@ fn fixture_status() -> HeadroomStatus {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn unknown_profile_defaults_to_fixture_for_no_touch_development() {
-        env::remove_var("DTOKEN_PROFILE");
-        assert_eq!(runtime_mode_from_env(), RuntimeMode::Fixture);
-    }
-
-    #[test]
-    fn fixture_history_has_required_top_level_shape() {
-        let value = HeadroomAdapter::stats_history_json();
-        assert!(value.get("history").is_some());
-        assert!(value.get("series").is_some());
-    }
-
-    #[test]
-    fn http_url_parser_accepts_localhost_base_url_without_touching_service() {
-        let parsed = parse_http_url("http://127.0.0.1:8787", "/stats").expect("valid url");
-        assert_eq!(parsed.host, "127.0.0.1");
-        assert_eq!(parsed.port, 8787);
-        assert_eq!(parsed.path, "/stats");
-    }
-}
-
 fn fixture_stats() -> HeadroomStats {
     read_fixture_text("headroom/stats.json")
         .and_then(|raw| serde_json::from_str::<HeadroomStats>(&raw).ok())
@@ -303,4 +320,65 @@ fn fixture_candidates(relative: &str) -> Vec<PathBuf> {
     candidates.push(PathBuf::from("../support/fixtures").join(relative));
     candidates.push(PathBuf::from("support/fixtures").join(relative));
     candidates
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::{Mutex, OnceLock};
+
+    fn environment_lock() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+            .lock()
+            .expect("Headroom test environment lock")
+    }
+
+    #[test]
+    fn missing_or_unknown_profile_defaults_to_native_and_fixture_is_explicit() {
+        let _guard = environment_lock();
+        env::remove_var("DTOKEN_PROFILE");
+        assert_eq!(runtime_mode_from_env(), RuntimeMode::Native);
+
+        env::set_var("DTOKEN_PROFILE", "fixture");
+        assert_eq!(
+            runtime_mode_from_env(),
+            if cfg!(debug_assertions) {
+                RuntimeMode::Fixture
+            } else {
+                RuntimeMode::Native
+            }
+        );
+
+        env::set_var("DTOKEN_PROFILE", "unexpected-profile");
+        assert_eq!(runtime_mode_from_env(), RuntimeMode::Native);
+        env::remove_var("DTOKEN_PROFILE");
+    }
+
+    #[test]
+    fn native_history_is_unavailable_instead_of_falling_back_to_fixture() {
+        let _guard = environment_lock();
+        env::remove_var("DTOKEN_PROFILE");
+        let value = HeadroomAdapter::stats_history_json();
+        assert_eq!(value["status"], "unavailable");
+        assert_eq!(value["history"], serde_json::json!([]));
+    }
+
+    #[test]
+    fn fixture_history_has_required_top_level_shape() {
+        let _guard = environment_lock();
+        env::set_var("DTOKEN_PROFILE", "fixture");
+        let value = HeadroomAdapter::stats_history_json();
+        assert!(value.get("history").is_some());
+        assert!(value.get("series").is_some());
+        env::remove_var("DTOKEN_PROFILE");
+    }
+
+    #[test]
+    fn http_url_parser_accepts_localhost_base_url_without_touching_service() {
+        let parsed = parse_http_url("http://127.0.0.1:8787", "/stats").expect("valid url");
+        assert_eq!(parsed.host, "127.0.0.1");
+        assert_eq!(parsed.port, 8787);
+        assert_eq!(parsed.path, "/stats");
+    }
 }

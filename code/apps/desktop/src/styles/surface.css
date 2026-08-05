@@ -1,0 +1,123 @@
+.surface {
+  position: relative;
+  min-width: 0;
+  color: var(--foreground);
+}
+
+.surface-primary,
+.metric-strip {
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--border) 82%, transparent);
+  border-radius: 12px;
+  background: var(--card);
+  box-shadow: 0 1px 2px rgb(31 27 20 / 0.04);
+}
+
+.dark .surface-primary,
+.dark .metric-strip {
+  background: var(--card);
+  box-shadow: 0 1px 2px rgb(0 0 0 / 0.15);
+}
+
+.surface-section {
+  border-top: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
+  border-radius: 0;
+  background: transparent;
+}
+
+.surface-section:first-child,
+section:first-child > .surface-section {
+  border-top-color: transparent;
+}
+
+.surface-row,
+.flat-row {
+  border-radius: 0;
+  background: transparent;
+}
+
+.surface-interactive,
+.flat-row {
+  transition: background-color 160ms ease, color 160ms ease;
+}
+
+.surface-interactive:hover,
+.flat-row:hover {
+  background: color-mix(in srgb, var(--muted) 42%, transparent);
+}
+
+.metric-strip {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.metric-strip > * {
+  min-width: 0;
+  padding: 14px 16px;
+}
+
+.metric-strip > * + * {
+  border-left: 1px solid color-mix(in srgb, var(--border) 65%, transparent);
+}
+
+.flat-rows {
+  min-width: 0;
+}
+
+.flat-rows > .flat-row + .flat-row,
+.flat-rows > [data-flat-row] + [data-flat-row] {
+  border-top: 1px solid color-mix(in srgb, var(--border) 65%, transparent);
+}
+
+/* Transitional page utility: replaces the old glass inset without creating a card. */
+.flat-inset {
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--muted) 42%, transparent);
+}
+
+.flat-status-cell {
+  background: color-mix(in srgb, var(--muted) 35%, transparent);
+}
+
+@media (min-width: 880px) {
+  .metric-strip {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+
+  .metric-strip.metric-strip-6 {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+@media (min-width: 1180px) {
+  .metric-strip.metric-strip-6 {
+    grid-template-columns: repeat(6, minmax(0, 1fr));
+  }
+}
+
+@media (min-width: 880px) and (max-width: 1179px) {
+  .metric-strip.metric-strip-6 > :nth-child(3n + 1) {
+    border-left: 0;
+  }
+
+  .metric-strip.metric-strip-6 > :nth-child(n + 4) {
+    border-top: 1px solid color-mix(in srgb, var(--border) 65%, transparent);
+  }
+}
+
+@media (max-width: 879px) {
+  .metric-strip > :nth-child(odd) {
+    border-left: 0;
+  }
+
+  .metric-strip > :nth-child(n + 3) {
+    border-top: 1px solid color-mix(in srgb, var(--border) 65%, transparent);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .surface-interactive,
+  .flat-row {
+    transition: none;
+  }
+}
