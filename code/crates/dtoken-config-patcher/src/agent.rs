@@ -295,7 +295,7 @@ const PI_CONFIG: &[AgentPathSpec] = &[
     path(None, AgentPathBase::Home, ".pi/agent/settings.json"),
     path(None, AgentPathBase::Home, ".pi/agent/models.json"),
 ];
-home_config!(CORTEX_CODE_CONFIG, ".cortex/connections.toml");
+home_config!(CORTEX_CODE_CONFIG, ".snowflake/cortex/hooks.json");
 home_config!(
     WINDSURF_CONFIG,
     ".codeium/windsurf/memories/global_rules.md"

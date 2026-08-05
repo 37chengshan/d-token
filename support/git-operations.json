@@ -756,6 +756,15 @@
       "summary": "docs: record c124d9f macOS package audit evidence — G7 macOS DMG/app launch/quit/cleanup verified, G6 .ps1 gates unexecuted, G8 blocked",
       "head_before": "c124d9f",
       "remote": null
+    },
+    {
+      "id": "80cb5cf3-5f2e-45ad-a34a-515cc95bfef3",
+      "timestamp": "2026-08-05T14:26:47+08:00",
+      "operation": "commit",
+      "branch": "codex/code-graph-mcp-integration",
+      "summary": "feat: add managed Agent MCP configuration (Install MCP/Hook branch, agent_mcp/agent_kind modules, Hermes/OpenHands/Pi/MistralVibe/Cortex adapters, cc-switch sync error states, docs sync with copy verification)",
+      "head_before": "141d77d62632262b8f021465a2cee857aacdf780",
+      "remote": null
     }
   ]
 }

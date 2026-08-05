@@ -22,6 +22,8 @@ use std::process::{Command, Stdio};
 
 pub mod agent;
 pub mod agent_integration;
+pub mod agent_kind;
+pub mod agent_mcp;
 pub mod agent_transport;
 pub mod codebase_memory_integration;
 

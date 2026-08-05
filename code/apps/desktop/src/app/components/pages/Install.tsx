@@ -758,6 +758,11 @@ export function Install(_props: { onOpenAdvanced?: () => void } = {}) {
   };
 
   const runManagedTransport = async (binding: AgentUpstreamBinding, operation: "configure" | "clear") => {
+    // Dispatch to MCP integration for MCP/Hook agents.
+    if (binding.integration_kind === "mcp" || binding.integration_kind === "hook") {
+      await runManagedMcpIntegration(binding, operation);
+      return;
+    }
     const canOperate = operation === "configure"
       ? binding.can_configure === true
       : binding.can_clear === true;
@@ -823,16 +828,72 @@ export function Install(_props: { onOpenAdvanced?: () => void } = {}) {
       const verification = result.verification as Record<string, unknown> | undefined;
       const ok = result.ok !== false && result.state !== "failed" && verification?.ok !== false;
       const changed = result.changed !== false;
-      setNotice(ok && (operation !== "clear" || changed)
+      const outcomeNotice = ok && (operation !== "clear" || changed)
         ? (operation === "configure"
           ? (lang === "zh" ? `${binding.agent_name} 已完成 d-token 传输配置并验证。` : `${binding.agent_name} now uses a verified d-token transport.`)
           : (lang === "zh" ? `${binding.agent_name} 的 d-token 托管传输已清除。` : `The d-token-owned transport for ${binding.agent_name} was cleared.`))
         : (operation === "clear" && !changed
           ? (lang === "zh" ? "未发现可安全清除的 d-token 托管标记，未修改用户配置。" : "No d-token-owned marker was found; user configuration was not changed.")
-          : (lang === "zh" ? "操作未完成，用户配置未被修改；请重新扫描后重试。" : "The operation did not complete and user configuration was not changed. Rescan and try again.")));
+          : (lang === "zh" ? "操作未完成，用户配置未被修改；请重新扫描后重试。" : "The operation did not complete and user configuration was not changed. Rescan and try again."));
       await refreshAll();
+      setNotice(outcomeNotice);
     } catch (error) {
       setNotice(lang === "zh" ? "操作未完成，用户配置未被修改；请重新扫描后重试。" : "The operation did not complete and user configuration was not changed. Rescan and try again.");
+    } finally {
+      setTransportBusyAgent(null);
+    }
+  };
+
+  const runManagedMcpIntegration = async (binding: AgentUpstreamBinding, operation: "configure" | "clear") => {
+    const configPath = binding.mcp_config_path;
+    if (!configPath || configPath.startsWith("<local>/")) {
+      setNotice(lang === "zh"
+        ? `${binding.agent_name} 的 MCP 配置路径不可安全定位，未写入任何文件。`
+        : `${binding.agent_name} MCP config path is not safely resolvable; no file was written.`);
+      return;
+    }
+    if (operation === "configure" && !serviceEndpoint.startsWith("http://127.0.0.1:") && !serviceEndpoint.startsWith("http://localhost:")) {
+      setNotice(lang === "zh" ? "请先启动并验证 d-token 本地服务，再配置 MCP。" : "Start and verify the d-token local service before configuring MCP.");
+      return;
+    }
+    setTransportBusyAgent(binding.agent_id);
+    try {
+      const request = {
+        agent_id: binding.agent_id,
+        config_path: configPath,
+        operation,
+      };
+      const preview = await invokeNative<Record<string, unknown>>("preview_managed_agent_mcp_integration", { request });
+      const review = preview.review as Record<string, unknown> | undefined;
+      if (preview.ok !== true || !review || typeof review.before_sha256 !== "string" || typeof review.after_sha256 !== "string") {
+        throw new Error("mcp_preview_failed");
+      }
+      const confirmed = typeof window === "undefined" || window.confirm(
+        operation === "configure"
+          ? (lang === "zh"
+            ? `将在 ${configPath} 注册 d-token-agent-bridge MCP 工具。此集成仅提供 MCP 工具，不改变模型上游。是否应用？`
+            : `Register the d-token-agent-bridge MCP tool in ${configPath}. This integration provides MCP tools only and does not change the model upstream. Apply it?`)
+          : (lang === "zh"
+            ? `将清除 ${configPath} 中的 d-token MCP 条目。仅移除 MCP 工具，不影响上游配置。是否应用？`
+            : `Remove the d-token MCP entry from ${configPath}. Only the MCP tool is removed; upstream configuration is unaffected. Apply it?`),
+      );
+      if (!confirmed) return;
+      const result = await invokeNative<Record<string, unknown>>("apply_managed_agent_mcp_integration", {
+        request,
+        reviewed_before_sha256: review.before_sha256,
+        reviewed_after_sha256: review.after_sha256,
+      });
+      const verify = result.verification as Record<string, unknown> | undefined;
+      const ok = result.ok !== false && result.state !== "failed" && verify?.ok !== false;
+      const outcomeNotice = ok
+        ? (operation === "configure"
+          ? (lang === "zh" ? `${binding.agent_name} MCP 工具已配置并验证。` : `${binding.agent_name} MCP tool configured and verified.`)
+          : (lang === "zh" ? `${binding.agent_name} MCP 条目已清除。` : `${binding.agent_name} MCP entry cleared.`))
+        : (lang === "zh" ? "MCP 操作未完成，用户配置未被修改。" : "MCP operation did not complete; user configuration was not changed.");
+      await refreshAll();
+      setNotice(outcomeNotice);
+    } catch (error) {
+      setNotice(lang === "zh" ? "MCP 操作未完成，用户配置未被修改。" : "MCP operation did not complete; user configuration was not changed.");
     } finally {
       setTransportBusyAgent(null);
     }

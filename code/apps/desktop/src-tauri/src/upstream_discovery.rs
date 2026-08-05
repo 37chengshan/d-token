@@ -5,6 +5,7 @@ use crate::agent_registry::{
     AgentInstallCapability,
 };
 use dtoken_config_patcher::agent::{allowed_agent_config_paths, current_process_scan_context};
+use dtoken_config_patcher::agent_mcp::resolve_mcp_config_path;
 use dtoken_config_patcher::agent_transport::{agent_transport_adapter, can_clear_agent_transport};
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 use rusqlite::{Connection, OpenFlags};
@@ -471,6 +472,22 @@ pub struct AgentUpstreamBinding {
     pub transport_status: String,
     pub transport_reason: Option<String>,
     pub already_connected: bool,
+    /// The kind of integration this adapter provides: "route", "mcp", or "hook".
+    /// Populated from the transport adapter descriptor. Agents without a
+    /// verified transport adapter get "unsupported".
+    pub integration_kind: String,
+    /// Truthful, credential-free description of limitations, or null for Route
+    /// adapters that provide full route evidence.
+    pub truthful_limitation: Option<String>,
+    /// Whether this integration provides transparent compression and route
+    /// evidence. Always false for MCP and Hook integrations.
+    pub provides_route_evidence: bool,
+    /// Whether a verified MCP config path exists for this agent. When true,
+    /// the agent supports MCP-level configure/clear through the d-token-agent-bridge
+    /// even if the transport adapter cannot configure a Route integration.
+    pub mcp_available: bool,
+    /// The resolved absolute path to the MCP configuration file, if known.
+    pub mcp_config_path: Option<String>,
 }
 
 pub fn discover() -> Value {
@@ -2219,6 +2236,22 @@ fn resolve_agent_bindings(
                 .collect::<Vec<_>>();
             let transport = agent_transport_adapter(spec.id);
             let can_configure = transport.is_some_and(|adapter| adapter.can_configure);
+            let (integration_kind, truthful_limitation, provides_route_evidence) = transport
+                .map(|adapter| {
+                    let kind = match adapter.integration_kind {
+                        dtoken_config_patcher::agent_kind::AgentIntegrationKind::Route => "route",
+                        dtoken_config_patcher::agent_kind::AgentIntegrationKind::Mcp => "mcp",
+                        dtoken_config_patcher::agent_kind::AgentIntegrationKind::Hook => "hook",
+                    }
+                    .to_string();
+                    let limitation = adapter.truthful_limitation.map(|tl| tl.description);
+                    let provides_evidence = adapter
+                        .truthful_limitation
+                        .map(|tl| tl.provides_route_evidence)
+                        .unwrap_or(true);
+                    (kind, limitation, provides_evidence)
+                })
+                .unwrap_or_else(|| ("unsupported".to_string(), None, false));
             let allowed_paths = scan_context
                 .as_ref()
                 .and_then(|context| allowed_agent_config_paths(spec.id, context).ok())
@@ -2294,12 +2327,36 @@ fn resolve_agent_bindings(
             let can_clear = config_path
                 .as_ref()
                 .is_some_and(|path| can_clear_agent_transport(spec.id, path));
-            let transport_supported = can_configure || can_clear;
-            let transport_status = match transport {
-                Some(adapter) if adapter.can_configure && can_clear => "supported",
-                Some(adapter) if adapter.can_configure => "configure_only",
-                Some(_) => "advanced_required",
-                None => "schema_unverified",
+            // For MCP and Hook agents, check if a verified MCP config path
+            // exists. The transport adapter cannot configure these agents
+            // (it needs the resolved bridge path), but the agent_integration
+            // module can write MCP entries using the resolved bridge path.
+            let mcp_path = scan_context
+                .as_ref()
+                .and_then(|context| resolve_mcp_config_path(spec.id, &context.home_dir));
+            let mcp_available = mcp_path.is_some();
+            let mcp_config_path = mcp_path.as_ref().map(|p| display_path(p));
+            // Override can_configure/can_clear for MCP/Hook agents when a
+            // verified MCP config path exists. The transport adapter reports
+            // false because it cannot write MCP entries, but the MCP config
+            // path is a valid write target for the agent_integration module.
+            let is_mcp_or_hook = matches!(
+                transport.map(|a| a.integration_kind),
+                Some(dtoken_config_patcher::agent_kind::AgentIntegrationKind::Mcp)
+                    | Some(dtoken_config_patcher::agent_kind::AgentIntegrationKind::Hook)
+            );
+            let mcp_can_configure = is_mcp_or_hook && mcp_available;
+            let mcp_can_clear = is_mcp_or_hook && mcp_available;
+            let transport_supported = can_configure || can_clear || mcp_can_configure;
+            let transport_status = if is_mcp_or_hook && mcp_available {
+                "mcp_available"
+            } else {
+                match transport {
+                    Some(adapter) if adapter.can_configure && can_clear => "supported",
+                    Some(adapter) if adapter.can_configure => "configure_only",
+                    Some(_) => "advanced_required",
+                    None => "schema_unverified",
+                }
             }
             .to_string();
             let transport_reason = transport
@@ -2335,12 +2392,21 @@ fn resolve_agent_bindings(
                 confidence,
                 reasons,
                 capability: spec.install_capability.as_str().to_string(),
-                can_configure,
-                can_clear,
+                can_configure: if mcp_can_configure {
+                    true
+                } else {
+                    can_configure
+                },
+                can_clear: if mcp_can_clear { true } else { can_clear },
                 transport_supported,
                 transport_status,
                 transport_reason,
                 already_connected,
+                integration_kind,
+                truthful_limitation: truthful_limitation.map(|s| s.to_string()),
+                provides_route_evidence,
+                mcp_available,
+                mcp_config_path,
             })
         })
         .collect()
@@ -2616,14 +2682,16 @@ fn cc_switch_sync_state(sources: &[Value], candidates: &[UpstreamCandidate]) -> 
     let source = sources
         .iter()
         .find(|source| source.get("id").and_then(Value::as_str) == Some("cc-switch-sqlite"));
-    let detected = source
-        .and_then(|source| source.get("state"))
-        .and_then(Value::as_str)
-        == Some("loaded");
     let source_state = source
         .and_then(|source| source.get("state"))
         .and_then(Value::as_str)
         .unwrap_or("missing");
+    let detected = source_state == "loaded";
+    // Error states: locked/corrupt, unsupported schema, or metadata-unavailable
+    let error_state = matches!(
+        source_state,
+        "locked_or_corrupt" | "unsupported_schema" | "invalid_schema" | "metadata_unavailable"
+    );
     let active_upstreams = candidates
         .iter()
         .filter(|candidate| {
@@ -2645,10 +2713,39 @@ fn cc_switch_sync_state(sources: &[Value], candidates: &[UpstreamCandidate]) -> 
         })
         .collect::<Vec<_>>();
     let current = active_upstreams.first();
+    // Derive provisional status. The final synced/out-of-sync decision is
+    // made by `derive_cc_switch_status` in main.rs after comparing against
+    // d-token's own active route; here we only set the pre-enrichment state.
+    let status = if !detected && error_state {
+        "error"
+    } else if !detected {
+        "unavailable"
+    } else if active_upstreams.len() > 1 {
+        "needs-selection"
+    } else if active_upstreams.is_empty() {
+        "detected"
+    } else {
+        // One active upstream: enrichment will decide synced vs out-of-sync
+        // vs needs-confirmation by comparing against d-token's active route.
+        // Keep needs-confirmation as the pre-enrichment placeholder.
+        "needs-confirmation"
+    };
+    // Compute a stable fingerprint for the sync state itself, used for
+    // change detection independent of the full CcSwitchSnapshot fingerprint.
+    let sync_stable = json!({
+        "source_state": source_state,
+        "active_upstreams": active_upstreams,
+    });
+    let sync_fingerprint = metadata_fingerprint("cc-switch-sync", &sync_stable);
     json!({
         "detected": detected,
         "source_state": source_state,
-        "status": if !detected { "unavailable" } else if active_upstreams.len() == 1 { "needs-confirmation" } else if active_upstreams.is_empty() { "detected" } else { "needs-selection" },
+        "status": status,
+        "error": if error_state {
+            Value::String(source_state.to_string())
+        } else {
+            Value::Null
+        },
         // The provider candidate name is not a profile name. Keep the profile
         // reference opaque until the schema exposes a safe current-profile
         // relation; never display a provider name as a profile.
@@ -2658,7 +2755,13 @@ fn cc_switch_sync_state(sources: &[Value], candidates: &[UpstreamCandidate]) -> 
         "active_upstreams": active_upstreams,
         "connection_path": current.and_then(|candidate| candidate.get("provider_id").and_then(Value::as_str)).map(|provider_id| format!("Agent -> d-token -> {provider_id}")),
         "source": "cc-switch-read-only",
-        "writes_performed": false
+        "writes_performed": false,
+        // Evidence-bound source identity for change detection.
+        "source_fingerprint": sync_fingerprint,
+        "source_revision": format!("cc-switch-sync-{sync_fingerprint}"),
+        // Populated by enrich_upstream_discovery in main.rs.
+        "route_snapshot_identity": Value::Null,
+        "last_receipt": Value::Null,
     })
 }
 
@@ -4257,5 +4360,152 @@ wire_api = "responses"
                 "snapshot leaked {forbidden}"
             );
         }
+    }
+
+    #[test]
+    fn cc_switch_sync_state_returns_error_for_locked_corrupt_source() {
+        let sources = vec![json!({"id":"cc-switch-sqlite","state":"locked_or_corrupt"})];
+        let candidates = vec![];
+        let result = cc_switch_sync_state(&sources, &candidates);
+        assert_eq!(result["status"], "error");
+        assert_eq!(result["error"], "locked_or_corrupt");
+        assert_eq!(result["detected"], false);
+        assert!(result["source_fingerprint"]
+            .as_str()
+            .is_some_and(|fp| fp.starts_with("cc-switch-sync-")));
+        assert!(result["route_snapshot_identity"].is_null());
+        assert!(result["last_receipt"].is_null());
+    }
+
+    #[test]
+    fn cc_switch_sync_state_returns_error_for_unsupported_schema() {
+        let sources = vec![json!({"id":"cc-switch-sqlite","state":"unsupported_schema"})];
+        let candidates = vec![];
+        let result = cc_switch_sync_state(&sources, &candidates);
+        assert_eq!(result["status"], "error");
+        assert_eq!(result["error"], "unsupported_schema");
+        assert_eq!(result["detected"], false);
+    }
+
+    #[test]
+    fn cc_switch_sync_state_returns_unavailable_for_missing_source() {
+        let sources = vec![];
+        let candidates = vec![];
+        let result = cc_switch_sync_state(&sources, &candidates);
+        assert_eq!(result["status"], "unavailable");
+        assert_eq!(result["error"], Value::Null);
+        assert_eq!(result["detected"], false);
+    }
+
+    fn cc_switch_active_candidate(id: &str, models: &[&str]) -> UpstreamCandidate {
+        UpstreamCandidate {
+            id: id.to_string(),
+            name: id.to_string(),
+            protocol: "open_ai".to_string(),
+            base_url: Some(format!("http://127.0.0.1:19{id}")),
+            models: models.iter().map(|model| model.to_string()).collect(),
+            source: "cc-switch:claude".to_string(),
+            freshness: "unix:1".to_string(),
+            auth_mode: "none".to_string(),
+            active: true,
+            port: None,
+            state: "discovered".to_string(),
+            agent_ids: vec!["claude-code".to_string()],
+            confidence: 96,
+            reasons: vec!["cc-switch marks this provider as current".to_string()],
+        }
+    }
+
+    #[test]
+    fn cc_switch_sync_state_requires_selection_for_multiple_active_upstreams() {
+        let sources = vec![json!({"id":"cc-switch-sqlite","state":"loaded"})];
+        let candidates = vec![
+            cc_switch_active_candidate("prod-a", &["model-a"]),
+            cc_switch_active_candidate("prod-b", &["model-b"]),
+        ];
+        let result = cc_switch_sync_state(&sources, &candidates);
+        assert_eq!(result["status"], "needs-selection");
+        assert_eq!(result["detected"], true);
+        assert_eq!(result["error"], Value::Null);
+        assert_eq!(result["active_upstreams"].as_array().map(Vec::len), Some(2));
+        assert!(result["writes_performed"] == false);
+    }
+
+    #[test]
+    fn cc_switch_sync_state_reports_detected_without_active_upstream() {
+        let sources = vec![json!({"id":"cc-switch-sqlite","state":"loaded"})];
+        let result = cc_switch_sync_state(&sources, &[]);
+        assert_eq!(result["status"], "detected");
+        assert_eq!(result["detected"], true);
+        assert!(result["upstream"].is_null());
+        assert!(result["active_upstreams"]
+            .as_array()
+            .is_some_and(|items| items.is_empty()));
+    }
+
+    #[test]
+    fn cc_switch_sync_state_single_active_upstream_is_confirmation_placeholder() {
+        let sources = vec![json!({"id":"cc-switch-sqlite","state":"loaded"})];
+        let candidates = vec![cc_switch_active_candidate("prod-a", &["model-a"])];
+        let result = cc_switch_sync_state(&sources, &candidates);
+        // The pre-enrichment placeholder; main.rs enrichment decides
+        // synced/out-of-sync/needs-confirmation against the active route.
+        assert_eq!(result["status"], "needs-confirmation");
+        assert_eq!(result["upstream"], "http://127.0.0.1:19prod-a");
+        assert_eq!(result["source"], "cc-switch-read-only");
+        assert_eq!(result["writes_performed"], false);
+        assert!(result["connection_path"]
+            .as_str()
+            .is_some_and(|path| path.contains("prod-a")));
+    }
+
+    #[test]
+    fn cc_switch_sync_state_fingerprint_is_stable_and_tracks_active_upstreams() {
+        let sources = vec![json!({"id":"cc-switch-sqlite","state":"loaded"})];
+        let candidates = vec![cc_switch_active_candidate("prod-a", &["model-a"])];
+        let first = cc_switch_sync_state(&sources, &candidates);
+        let second = cc_switch_sync_state(&sources, &candidates);
+        let fingerprint = first["source_fingerprint"]
+            .as_str()
+            .expect("sync fingerprint");
+        assert!(fingerprint.starts_with("cc-switch-sync-"));
+        assert_eq!(fingerprint, second["source_fingerprint"].as_str().unwrap());
+        assert_eq!(
+            first["source_revision"].as_str().unwrap(),
+            &format!("cc-switch-sync-{fingerprint}")
+        );
+
+        let changed = cc_switch_sync_state(
+            &sources,
+            &[cc_switch_active_candidate("prod-b", &["model-b"])],
+        );
+        assert_ne!(fingerprint, changed["source_fingerprint"].as_str().unwrap());
+    }
+
+    #[test]
+    fn refresh_coordinator_enforces_poll_interval_and_clamps_bounds() {
+        let initial = test_external_snapshot("snapshot-a", "cc-a", Vec::new());
+        let mut coordinator = ExternalConfigRefreshCoordinator::with_intervals(1_000, 100);
+        assert!(coordinator.poll_due(0));
+        coordinator.observe(0, initial.clone());
+        // The poll deadline advances by the interval after every observe.
+        assert!(!coordinator.poll_due(999));
+        assert!(coordinator.poll_due(1_000));
+        coordinator.observe(1_000, initial.clone());
+        assert!(!coordinator.poll_due(1_999));
+        assert!(coordinator.poll_due(2_000));
+
+        // Intervals are clamped to the documented bounds: below the minimum,
+        // above the maximum, and the debounce window cannot collapse to zero.
+        let mut clamped_low = ExternalConfigRefreshCoordinator::with_intervals(50, 50);
+        clamped_low.observe(0, initial.clone());
+        assert!(!clamped_low.poll_due(999));
+        assert!(clamped_low.poll_due(1_000));
+
+        let mut clamped_high =
+            ExternalConfigRefreshCoordinator::with_intervals(1_000_000, 1_000_000);
+        clamped_high.observe(0, initial);
+        assert!(!clamped_high.poll_due(299_999));
+        assert!(clamped_high.poll_due(300_000));
     }
 }
