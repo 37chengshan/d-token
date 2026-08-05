@@ -1,11 +1,13 @@
 # d-token 当前实现状态
 
-更新时间：2026-08-04
+更新时间：2026-08-05
 状态类型：代码事实快照，不替代 `docs/PRD.md` 与 `docs/PLAN.md`
 
 ## 1. 当前结论
 
 d-token 当前已形成可运行的 Rust-owned 本地 runtime、Tauri 2 桌面控制面、React 18/TypeScript UI 与薄 TypeScript SDK。当前工作树已补齐九类 production codec release evidence（id 列表由 compressor registry 编译期投影）、CCR lifecycle/reconciliation 与 Windows DACL 实现、Rust/HTTP/MCP/TS surface parity、23 项 Agent 检测/transport capability matrix、Claude/Codex/Cline 真实临时配置精确恢复、cc-switch A→B→A 只读静态识别以及 macOS managed RTK lifecycle probe；G4 Responses bridge 现已对非法 tool choice/消息角色/函数字段 fail-closed，并将流式 Ledger/CCR finalize 延迟到完整终态。G7 当前候选真实 OpenCode 已于 2026-08-04 通过（candidate_id=G7，报告 `support/artifacts/opencode-real-routed/real-routed-20260804T112429Z-76558.json`）。它仍不是可发布候选：G6 仅 macOS 本机可执行门通过（PowerShell 门 fail-closed 未执行）、最新全仓门禁复证、Windows MSVC runner、同 commit 双平台安装包以及 G8 尚未完成。公开未签名 prerelease 只有在这些硬门全绿后才允许创建。
+
+新增（2026-08-05，codex/final-leanctx-release）：`dtoken-context-store` 新增 d-token-owned Context Bus/Relay 存储模块（provenance 边界 `dtoken-context-bus-v1`，不引入外部 LeanCTX 代码）：Relay 按 project+session 分区、agent_id 仅作身份/自命中/provenance（不参与 Relay 分区，同项目同 session 的不同 Agent 可共享命中，不同 session/project 隔离）、provenance/freshness/content digest、内容大小边界、普通 Session Cache（agent 本地）隔离、文件变化失效与 Relay 失败回退，并新增区分压缩收益与 Relay 避免重复传输的 delivery receipt（estimated/actual/claimable 分离）。Relay/Session 分区与条目键使用类型化 HashMap key（project_id、Option<session_id>、key；session cache 再含 agent_id），不再用 ':'/'*' 字符串拼接命名空间，用户可控 id 含 ':'/'*' 也不会跨 scope 串读；Relay 条目实际存储受限 payload（256KiB/条、16MiB 总量），命中返回 `RelayResolved { payload, receipt }`，payload 不进入 Debug/日志/summary，失败回退不暴露内容；`RelayDeliveryReceipt::served` 只保留 measured relay_avoided_transfer_bytes，claimable 默认 false，仅在上层显式 Provider usage attribution contract（`with_provider_usage_attribution`）后才可升级，compression savings 不双计；store receipt 为 in-memory accepted/store receipt（非 durable）。`dtoken-core-api` CCR store 的 precise delete 现同时清理同 ref owned interrupted temporary（崩溃一致）；capability registry 对 `context-bus`（外部 LeanCTX 来源/许可证/commit 缺失）与 `windows`（MSVC runner 证据缺失）fail-closed，不得静态 green。Context Bus 尚未接入 runtime/HTTP/MCP surface，运行时接线是后续缺口。
 
 ## 2. 代码所有权
 

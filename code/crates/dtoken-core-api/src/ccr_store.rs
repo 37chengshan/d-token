@@ -268,11 +268,33 @@ impl CcrStore {
     pub fn delete(&self, recovery_ref: &str) -> Result<bool> {
         validate_recovery_ref(recovery_ref)?;
         let path = self.entry_path(recovery_ref)?;
-        match fs::remove_file(path) {
-            Ok(()) => Ok(true),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
-            Err(error) => Err(error.into()),
+        let removed = match fs::remove_file(&path) {
+            Ok(()) => true,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+            Err(error) => return Err(error.into()),
+        };
+        // Precise delete is also crash-consistent: a previous process may
+        // have stopped between writing an owned temporary envelope and
+        // renaming it.  Removing that temporary keeps the deleted ref fully
+        // absent so a later store of the same ref starts from a clean slate.
+        let temporary = self.owned_temporary_path(recovery_ref)?;
+        match fs::remove_file(&temporary) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
         }
+        Ok(removed)
+    }
+
+    fn owned_temporary_path(&self, recovery_ref: &str) -> Result<PathBuf> {
+        validate_recovery_ref(recovery_ref)?;
+        let temporary = self
+            .root
+            .join(format!(".{}.tmp", recovery_ref.replace(':', "_")));
+        if !is_owned_temporary_entry(&temporary) {
+            bail!("CCR temporary entry is not owned by this store");
+        }
+        Ok(temporary)
     }
 
     /// Checks only whether the encrypted envelope is still present.  Recovery
@@ -1058,6 +1080,97 @@ mod tests {
                 .expect("migrated v1 keeps its original deadline"),
             CcrEntryInspection::Expired
         );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn precise_delete_removes_only_the_target_ref_and_frees_it_for_reuse() {
+        let root = fixture_root("precise-delete");
+        let store = CcrStore::with_limits(root.clone(), [24_u8; 32], 3_600, 7_200, 8, 64 * 1024)
+            .expect("store");
+        let first_ref = format!("ccr:{}", uuid::Uuid::new_v4());
+        let second_ref = format!("ccr:{}", uuid::Uuid::new_v4());
+        store
+            .store_at(&first_ref, b"first payload", 100)
+            .expect("store first");
+        store
+            .store_at(&second_ref, b"second payload", 100)
+            .expect("store second");
+
+        // Deleting the first ref leaves the second untouched.
+        assert!(store.delete(&first_ref).expect("delete first"));
+        assert!(!store.contains(&first_ref).expect("first absent"));
+        assert!(store.contains(&second_ref).expect("second present"));
+        assert_eq!(
+            store
+                .retrieve_at(&second_ref, 200)
+                .expect("second still retrievable"),
+            b"second payload"
+        );
+        // A second delete of the same ref is a precise no-op.
+        assert!(!store.delete(&first_ref).expect("second delete is absent"));
+        // The freed ref can be stored again from a clean slate.
+        store
+            .store_at(&first_ref, b"reused payload", 300)
+            .expect("re-store freed ref");
+        assert_eq!(
+            store
+                .retrieve_at(&first_ref, 400)
+                .expect("reused ref retrievable"),
+            b"reused payload"
+        );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn delete_cleans_an_owned_interrupted_temporary_for_the_same_ref() {
+        let root = fixture_root("delete-clears-temp");
+        let store = CcrStore::with_limits(root.clone(), [25_u8; 32], 3_600, 7_200, 8, 64 * 1024)
+            .expect("store");
+        let recovery_ref = format!("ccr:{}", uuid::Uuid::new_v4());
+        store
+            .store_at(&recovery_ref, b"payload", 100)
+            .expect("store");
+        // Simulate a crash between writing the temporary envelope and the
+        // final rename by planting an owned temporary for the same ref.
+        let temporary = store
+            .owned_temporary_path(&recovery_ref)
+            .expect("owned temporary path");
+        fs::write(&temporary, b"interrupted-temporary").expect("plant temporary");
+
+        assert!(store.delete(&recovery_ref).expect("delete"));
+        assert!(!store.contains(&recovery_ref).expect("ref absent"));
+        assert!(
+            !temporary.exists(),
+            "precise delete must also remove the owned interrupted temporary"
+        );
+        // The ref can be stored again without a stale temporary in the way.
+        store
+            .store_at(&recovery_ref, b"clean reuse", 200)
+            .expect("re-store");
+        assert_eq!(
+            store
+                .retrieve_at(&recovery_ref, 300)
+                .expect("retrieve reused"),
+            b"clean reuse"
+        );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn delete_rejects_unowned_or_malformed_temporary_paths() {
+        let root = fixture_root("delete-temp-guard");
+        let store = CcrStore::with_limits(root.clone(), [26_u8; 32], 60, 3600, 8, 64 * 1024)
+            .expect("store");
+        // A temp name that is not a UUID suffix is not owned by the store.
+        assert!(store.owned_temporary_path("ccr:not-a-uuid").is_err());
+        // A valid-format temp for an un-stored ref is simply absent.
+        let recovery_ref = format!("ccr:{}", uuid::Uuid::new_v4());
+        assert!(store.owned_temporary_path(&recovery_ref).is_ok());
+        assert!(!store.delete(&recovery_ref).expect("delete absent ref"));
 
         let _ = fs::remove_dir_all(root);
     }

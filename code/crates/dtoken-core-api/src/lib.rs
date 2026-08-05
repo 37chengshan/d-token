@@ -1287,6 +1287,41 @@ fn backend_capability_registry(
         }],
     ));
 
+    // LeanCTX / Context Bus is fail-closed by design.  The d-token-owned
+    // store-side relay exists, but no external LeanCTX source, license or
+    // commit is present (provenance boundary `dtoken-context-bus-v1`), and
+    // the runtime is not wired to the relay yet.  Until the evidence
+    // contract (source + license + commit + runtime verification) is
+    // satisfied, the capability must stay Unavailable and must never be
+    // projected as statically green.
+    capabilities.push(
+        CapabilityEvidence::new(
+            "context-bus",
+            AvailabilityState::Unavailable,
+            BACKEND_CAPABILITY_REVISION,
+            None,
+            None,
+            EvidenceFreshness::Unknown,
+            vec![
+                "external_leanctx_source_license_commit_missing".to_string(),
+                "context_bus_runtime_wiring_required".to_string(),
+            ],
+            None,
+        )
+        .expect("context-bus fail-closed evidence must be valid"),
+    );
+    // Windows release evidence is also fail-closed: the MSVC runner and
+    // dual-platform build evidence are not recorded in this environment, so
+    // Windows readiness must never be projected as available.
+    capabilities.push(
+        CapabilityEvidence::unavailable(
+            "windows",
+            BACKEND_CAPABILITY_REVISION,
+            "windows_msvc_runner_evidence_required",
+        )
+        .expect("static capability evidence must be valid"),
+    );
+
     let leaves_ready = |ids: &[&str]| {
         ids.iter().all(|id| {
             capabilities
@@ -17160,6 +17195,47 @@ mod tests {
                 .state,
             AvailabilityState::Ready
         );
+    }
+
+    #[test]
+    fn backend_registry_is_fail_closed_for_leanctx_context_bus_and_windows_evidence() {
+        for store_state in [
+            ContextStoreCapabilityState::NotConfigured,
+            ContextStoreCapabilityState::Ready { schema_version: 6 },
+        ] {
+            let registry = backend_capability_registry(None, store_state, true, None);
+            // LeanCTX/Context Bus: no external source/license/commit and no
+            // runtime wiring -> must be Unavailable, never statically green.
+            let context_bus = registry
+                .find("context-bus")
+                .expect("context-bus capability must be registered");
+            assert_eq!(
+                context_bus.state,
+                AvailabilityState::Unavailable,
+                "context-bus must fail closed while LeanCTX provenance evidence is missing"
+            );
+            assert!(!context_bus.is_available());
+            assert!(context_bus
+                .reason_codes
+                .contains(&"external_leanctx_source_license_commit_missing".to_string()));
+            assert!(context_bus
+                .reason_codes
+                .contains(&"context_bus_runtime_wiring_required".to_string()));
+            // Windows: MSVC runner evidence is not recorded here -> must be
+            // Unavailable, never projected as ready.
+            let windows = registry
+                .find("windows")
+                .expect("windows capability must be registered");
+            assert_eq!(
+                windows.state,
+                AvailabilityState::Unavailable,
+                "windows readiness must fail closed without runner evidence"
+            );
+            assert!(!windows.is_available());
+            assert!(windows
+                .reason_codes
+                .contains(&"windows_msvc_runner_evidence_required".to_string()));
+        }
     }
 
     #[test]
