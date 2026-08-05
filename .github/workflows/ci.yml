@@ -119,3 +119,7 @@ jobs:
       - name: Rust workspace tests
         working-directory: code
         run: cargo test --workspace
+
+      - name: Windows DACL/ACL tests
+        shell: pwsh
+        run: ./support/scripts/run_windows_dacl_acl_tests.ps1

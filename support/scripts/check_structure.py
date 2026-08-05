@@ -73,6 +73,17 @@ REQUIRED = [
     "support/scripts/run_fixture_tests.sh",
     "support/scripts/run_fixture_tests.ps1",
     "support/scripts/run_fake_binary_tests.sh",
+    "support/scripts/run_windows_dacl_acl_tests.ps1",
+    "support/scripts/run_nsis_upgrade_rollback_test.ps1",
+    "support/scripts/run_wsl_rtk_integrity_test.ps1",
+    "support/scripts/run_fan_in_artifact_contract.ps1",
+    "support/scripts/generate_release_gate_status.py",
+    "support/scripts/run_release_gate_contract_test.ps1",
+    "support/tests/test_windows_dacl_acl_tests.py",
+    "support/tests/test_nsis_upgrade_rollback.py",
+    "support/tests/test_wsl_rtk_integrity.py",
+    "support/tests/test_fan_in_artifact_contract.py",
+    "support/tests/test_release_gate_status_aggregation.py",
 ]
 
 FORBIDDEN = [

@@ -195,6 +195,7 @@ fn verified_cache_evidence_is_carried_into_the_pre_send_transform_plan() {
         CompressionPolicy::Balanced,
         body,
         Some(&evidence),
+        None,
     )
     .expect("prepare")
     .expect("candidate");
@@ -915,4 +916,85 @@ fn mixed_tool_result_uses_the_section_router_in_production_path() {
         result.body["system"].as_str().unwrap(),
         "system remains exact"
     );
+}
+
+#[test]
+fn frozen_message_count_override_wins_over_marker_floor_and_none_falls_back() {
+    use dtoken_compress::context_pipeline::resolve_frozen_message_count;
+
+    // Marker on messages[2] bumps the marker-derived floor to 3.
+    let marked = json!({
+        "model": "model-exact-revision",
+        "messages": [
+            {"role": "user", "content": "first"},
+            {"role": "user", "content": "second"},
+            {"role": "user", "content": [{"type": "text", "text": "third", "cache_control": {"type": "ephemeral"}}]},
+            {"role": "user", "content": "fourth"}
+        ]
+    });
+    assert_eq!(resolve_frozen_message_count(&marked, None), 3);
+    // A request-level override wins over the marker-derived floor: the
+    // caller owns the cache-prefix contract for this request.
+    assert_eq!(resolve_frozen_message_count(&marked, Some(1)), 1);
+    assert_eq!(resolve_frozen_message_count(&marked, Some(0)), 0);
+    assert_eq!(resolve_frozen_message_count(&marked, Some(4)), 4);
+
+    // Marker in `system` must NOT bump the message-index floor.
+    let system_marked = json!({
+        "model": "model-exact-revision",
+        "system": [{"type": "text", "text": "sys", "cache_control": {"type": "ephemeral"}}],
+        "messages": [{"role": "user", "content": "only"}]
+    });
+    assert_eq!(resolve_frozen_message_count(&system_marked, None), 0);
+
+    // No messages / no markers -> 0; an override still applies.
+    assert_eq!(resolve_frozen_message_count(&json!({}), None), 0);
+    assert_eq!(resolve_frozen_message_count(&json!({}), Some(2)), 2);
+}
+
+#[test]
+fn frozen_override_flows_into_prepared_plan_floor() {
+    // Use `request()` as-is (proven to produce a candidate). Add cache_control
+    // to messages[0] (assistant tool_use "old-call") → marker-derived floor = 1.
+    // The first tool result (index 1, turn_index=1) is NOT frozen at floor 1,
+    // so the pipeline can still produce a candidate.
+    let mut body = request();
+    if let Some(messages) = body.get_mut("messages").and_then(Value::as_array_mut) {
+        if !messages.is_empty() {
+            if let Some(content) = messages[0].get_mut("content").and_then(Value::as_array_mut) {
+                if let Some(first) = content.first_mut() {
+                    if let Some(obj) = first.as_object_mut() {
+                        obj.insert("cache_control".to_string(), json!({"type": "ephemeral"}));
+                    }
+                }
+            }
+        }
+    }
+    // Marker-derived floor is 1 (index 0 + 1).  A request-level override of 0
+    // wins: no frozen prefix.
+    let overridden = prepare_context_transform_with_cache_evidence(
+        &context(),
+        CompressionPolicy::Balanced,
+        body.clone(),
+        None,
+        Some(0),
+    )
+    .expect("prepare")
+    .expect("candidate: override=Some(0) should produce a candidate");
+    assert_eq!(
+        overridden.plan().cache_alignment().frozen_message_floor(),
+        0
+    );
+
+    // `None` keeps the marker-derived floor (upstream #2718 parity).
+    let fallback = prepare_context_transform_with_cache_evidence(
+        &context(),
+        CompressionPolicy::Balanced,
+        body,
+        None,
+        None,
+    )
+    .expect("prepare")
+    .expect("candidate: override=None should produce a candidate");
+    assert_eq!(fallback.plan().cache_alignment().frozen_message_floor(), 1);
 }

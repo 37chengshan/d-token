@@ -13,6 +13,11 @@ on:
         required: false
         type: string
         default: ""
+      previous_release_tag:
+        description: Optional tag of an older public release whose x64 NSIS installer is the previous version for the old-version -> new-version -> rollback test. Auto-detected (newest release other than the current ref) when empty.
+        required: false
+        type: string
+        default: ""
     outputs:
       artifact_name:
         description: Uploaded Windows artifact bundle name.
@@ -26,6 +31,11 @@ on:
         default: ""
       release_tag:
         description: Optional release tag to verify with check_release_version.py.
+        required: false
+        type: string
+        default: ""
+      previous_release_tag:
+        description: Optional tag of an older public release whose x64 NSIS installer is the previous version for the old-version -> new-version -> rollback test. Auto-detected (newest release other than the current ref) when empty.
         required: false
         type: string
         default: ""
@@ -143,6 +153,10 @@ jobs:
         working-directory: code
         run: cargo test --workspace
 
+      - name: Windows DACL/ACL tests (real MSVC runner)
+        shell: pwsh
+        run: ./support/scripts/run_windows_dacl_acl_tests.ps1
+
       - name: Generate SBOM and unsigned technical-preview metadata
         shell: pwsh
         env:
@@ -251,6 +265,62 @@ jobs:
               throw "Silent uninstall failed with exit code $($process.ExitCode)."
             }
           }
+
+      - name: Resolve previous public NSIS installer for upgrade/rollback test
+        id: resolve_previous_installer
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INPUT_PREVIOUS_TAG: ${{ inputs.previous_release_tag }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $previousDir = Join-Path $env:RUNNER_TEMP "d-token-previous-installer"
+          New-Item -ItemType Directory -Force -Path $previousDir | Out-Null
+          $tag = $env:INPUT_PREVIOUS_TAG
+          if ([string]::IsNullOrWhiteSpace($tag)) {
+            $current = $env:GITHUB_REF_NAME
+            $releases = @(gh release list --limit 100 --json tagName,isDraft,isPrerelease | ConvertFrom-Json)
+            $candidates = @($releases | Where-Object { -not $_.isDraft -and $_.tagName -ne $current } |
+              Sort-Object { $v = $_.tagName -replace '^v', '' -replace '-.*$', ''; try { [version]$v } catch { [version]'0.0.0' } } -Descending)
+            if ($candidates.Count -eq 0) {
+              throw "No previous public release found to roll back to. The NSIS old-version -> new-version -> rollback gate is blocked until an older tagged release exists (or pass previous_release_tag)."
+            }
+            $tag = $candidates[0].tagName
+          }
+          gh release download $tag --pattern "d-token_*_x64-setup.exe" --dir $previousDir --clobber
+          $installer = Get-ChildItem -LiteralPath $previousDir -Filter "d-token_*_x64-setup.exe" | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+          if ($null -eq $installer) {
+            throw "Release $tag has no d-token_*_x64-setup.exe asset to use as the previous version."
+          }
+          "previous_installer=$($installer.FullName)" >> $env:GITHUB_OUTPUT
+
+      - name: Build managed RTK candidate probe example
+        working-directory: code
+        run: cargo build --target x86_64-pc-windows-msvc -p dtoken-agent-bridge --example managed_rtk_candidate_probe
+
+      - name: Prepare active config fixture for WSL RTK tests
+        shell: pwsh
+        run: |
+          $fixture = Join-Path $env:RUNNER_TEMP "d-token-active-config-fixture.json"
+          '{"active": true, "fixture": "wsl-rtk-integrity-test"}' | Set-Content -LiteralPath $fixture -Encoding utf8NoBOM
+          "DTOKEN_ACTIVE_CONFIG_PATH=$fixture" >> $env:GITHUB_ENV
+
+      - name: NSIS upgrade/rollback test
+        shell: pwsh
+        run: |
+          $previous = "${{ steps.resolve_previous_installer.outputs.previous_installer }}"
+          if ([string]::IsNullOrWhiteSpace($previous)) {
+            throw "Previous NSIS installer was not resolved; the old-version -> new-version -> rollback gate cannot be verified."
+          }
+          ./support/scripts/run_nsis_upgrade_rollback_test.ps1 -SilentInstallLatest -PreviousInstaller $previous
+
+      - name: WSL RTK integrity test
+        shell: pwsh
+        run: ./support/scripts/run_wsl_rtk_integrity_test.ps1
+
+      - name: WSL managed RTK candidate test
+        shell: pwsh
+        run: ./support/scripts/run_managed_rtk_candidate_test_windows.ps1
 
       - name: Audit release cleanup and metadata redaction
         shell: pwsh

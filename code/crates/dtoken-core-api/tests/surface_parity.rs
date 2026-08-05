@@ -140,14 +140,46 @@ async fn http_json_rpc_mcp_matches_stdio_and_library_surfaces() {
         strip_timing(library_json)
     );
 
-    // Streamable-HTTP JSON mode answers with the identical payload.
-    let http_response = build_router(state.clone())
+    // Streamable-HTTP JSON mode answers with the identical payload once a
+    // session is bound: `initialize` creates the session and every later
+    // request must carry the returned session id (fail-closed otherwise).
+    let app = build_router(state.clone());
+    let session = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/mcp")
+                .header(CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(&json!({
+                        "jsonrpc": "2.0",
+                        "id": 0,
+                        "method": "initialize",
+                        "params": {"protocolVersion": "2024-11-05"}
+                    }))
+                    .expect("initialize JSON"),
+                ))
+                .expect("initialize request"),
+        )
+        .await
+        .expect("initialize response");
+    assert_eq!(session.status(), StatusCode::OK);
+    let session_id = session
+        .headers()
+        .get("mcp-session-id")
+        .expect("Mcp-Session-Id header")
+        .to_str()
+        .expect("session id is utf-8")
+        .to_string();
+    let http_response = app
         .oneshot(
             Request::builder()
                 .method("POST")
                 .uri("/mcp")
                 .header(CONTENT_TYPE, "application/json")
                 .header("accept", "application/json")
+                .header("mcp-session-id", &session_id)
                 .body(Body::from(
                     serde_json::to_vec(&mcp_body).expect("MCP body JSON"),
                 ))
@@ -213,6 +245,36 @@ async fn http_json_rpc_mcp_rejects_oversized_frames_and_parse_errors_without_ech
 #[tokio::test]
 async fn http_json_rpc_mcp_preserves_cancellation_state_across_posts() {
     let app = build_router(AppState::new(surface_test_config()));
+    // Bind a session first: cancellation bookkeeping is session-scoped and
+    // requests without a session id fail closed.
+    let session = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/mcp")
+                .header(CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(&json!({
+                        "jsonrpc": "2.0",
+                        "id": 0,
+                        "method": "initialize",
+                        "params": {"protocolVersion": "2024-11-05"}
+                    }))
+                    .expect("initialize JSON"),
+                ))
+                .expect("initialize request"),
+        )
+        .await
+        .expect("initialize response");
+    assert_eq!(session.status(), StatusCode::OK);
+    let session_id = session
+        .headers()
+        .get("mcp-session-id")
+        .expect("Mcp-Session-Id header")
+        .to_str()
+        .expect("session id is utf-8")
+        .to_string();
     let cancellation = app
         .clone()
         .oneshot(
@@ -220,6 +282,7 @@ async fn http_json_rpc_mcp_preserves_cancellation_state_across_posts() {
                 .method("POST")
                 .uri("/mcp")
                 .header(CONTENT_TYPE, "application/json")
+                .header("mcp-session-id", &session_id)
                 .body(Body::from(
                     serde_json::to_vec(&json!({
                         "jsonrpc": "2.0",
@@ -240,6 +303,7 @@ async fn http_json_rpc_mcp_preserves_cancellation_state_across_posts() {
                 .method("POST")
                 .uri("/mcp")
                 .header(CONTENT_TYPE, "application/json")
+                .header("mcp-session-id", &session_id)
                 .body(Body::from(
                     serde_json::to_vec(&json!({
                         "jsonrpc": "2.0",
@@ -261,7 +325,7 @@ async fn http_json_rpc_mcp_preserves_cancellation_state_across_posts() {
 #[tokio::test]
 async fn route_context_mismatch_uses_stable_error_codes_across_surfaces() {
     let mut payload = fixture_value();
-    payload["endpoint"] = json!("open_ai_responses");
+    payload["endpoint"] = json!("anthropic_messages");
     let request: CompressionDecisionRequest =
         serde_json::from_value(payload.clone()).expect("request fixture");
     let state = AppState::new(surface_test_config());
@@ -302,7 +366,7 @@ async fn route_context_mismatch_uses_stable_error_codes_across_surfaces() {
                     "route_ref": {
                         "route_id": "surface-route",
                         "input_protocol": "open_ai",
-                        "endpoint": "open_ai_responses"
+                        "endpoint": "anthropic_messages"
                     },
                     "body": fixture_request().body
                 }

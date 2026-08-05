@@ -3437,17 +3437,14 @@ fn verify_cline_transport(request: &AgentTransportRequest) -> Result<AgentTransp
             })
         }
     };
-    let root = parse_cline_root(&text)?;
-    let Some(manifest) = parse_cline_manifest(&cline_manifest_path(&request.target_path)?)? else {
-        return Ok(AgentTransportVerification {
-            agent_id: request.agent_id.clone(),
-            kind: AgentTransportAdapterKind::ClineCli,
-            ok: false,
-            detail: "Cline transport manifest is absent".into(),
-            current_upstream: None,
-        });
-    };
     let result: Result<()> = (|| {
+        // A mismatched Cline schema (for example a non-object document) must
+        // fail closed into a verification result, never propagate as an error.
+        let root = parse_cline_root(&text)?;
+        let Some(manifest) = parse_cline_manifest(&cline_manifest_path(&request.target_path)?)?
+        else {
+            bail!("Cline transport manifest is absent");
+        };
         if manifest.endpoint != request.endpoint
             || request.model.as_deref() != Some(manifest.model.as_str())
         {

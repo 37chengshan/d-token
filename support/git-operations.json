@@ -765,6 +765,15 @@
       "summary": "feat: add managed Agent MCP configuration (Install MCP/Hook branch, agent_mcp/agent_kind modules, Hermes/OpenHands/Pi/MistralVibe/Cortex adapters, cc-switch sync error states, docs sync with copy verification)",
       "head_before": "141d77d62632262b8f021465a2cee857aacdf780",
       "remote": null
+    },
+    {
+      "id": "60923cbf-de77-4191-a986-da5b2c33cad8",
+      "timestamp": "2026-08-05T21:26:05+08:00",
+      "operation": "commit",
+      "branch": "codex/code-graph-mcp-integration",
+      "summary": "Complete CCR/MCP/cc-switch dynamic route gates and fail-closed release aggregation",
+      "head_before": "82fc3c5aa5b9ecd7dcba5ff28d13cd617b82f5fb",
+      "remote": null
     }
   ]
 }

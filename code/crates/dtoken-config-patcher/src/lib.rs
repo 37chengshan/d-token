@@ -25,6 +25,7 @@ pub mod agent_integration;
 pub mod agent_kind;
 pub mod agent_mcp;
 pub mod agent_transport;
+pub mod cc_switch;
 pub mod codebase_memory_integration;
 
 pub const CONFIG_TRANSACTION_CAPABILITY_REVISION: &str = "dtoken-config-transaction-v1";

@@ -209,18 +209,18 @@ fn verified_transport_matrix_matches_the_release_contract() {
         ("gemini-cli", true, true),
         ("commandcode", false, false),
         ("claude-desktop", false, false),
-        ("hermes", false, false),
+        ("hermes", true, true),
         ("roo-code", true, true),
         ("continue", true, true),
         ("aider", true, true),
-        ("openhands", false, false),
+        ("openhands", true, true),
         ("copilot-cli", false, false),
         ("vscode-copilot-chat", false, false),
-        ("pi", false, false),
+        ("pi", true, true),
         ("cortex-code", false, false),
         ("windsurf", false, false),
         ("antigravity", false, false),
-        ("mistral-vibe", false, false),
+        ("mistral-vibe", true, true),
     ];
     for (id, can_configure, can_clear) in expected {
         let adapter =

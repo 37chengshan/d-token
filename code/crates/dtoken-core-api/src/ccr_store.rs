@@ -7,9 +7,11 @@ use ring::{
     aead::{Aad, LessSafeKey, Nonce, UnboundKey, AES_256_GCM, NONCE_LEN},
     rand::{SecureRandom, SystemRandom},
 };
+use serde_json::{json, Value};
 use std::{
+    collections::HashSet,
     fs::{self, OpenOptions},
-    io::Write,
+    io::{BufRead, BufReader, Write},
     path::{Path, PathBuf},
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -34,6 +36,26 @@ const DEFAULT_MAX_LIFETIME_SECONDS: u64 = 7 * 24 * 60 * 60;
 const DEFAULT_MAX_ENTRIES: usize = 128;
 const DEFAULT_MAX_BYTES: u64 = 32 * 1024 * 1024;
 
+/// Bounded raw-level transaction journal.  Every mutating operation is
+/// journaled with a write-ahead intent (`begin_*`) before the envelope is
+/// touched and a completion (`commit_*` / `abort_*`) after, so a crash at
+/// any point leaves an unambiguous intent for conservative reconciliation.
+/// The journal holds redacted op/ref/timestamp records only: plaintext never
+/// enters it.
+const JOURNAL_FILE: &str = "journal.jsonl";
+const MAX_JOURNAL_RECORDS: usize = 1024;
+const JOURNAL_TEMPORARY: &str = ".journal.tmp";
+const JOP_BEGIN_WRITE: &str = "begin_write";
+const JOP_COMMIT_WRITE: &str = "commit_write";
+const JOP_ABORT_WRITE: &str = "abort_write";
+const JOP_BEGIN_DELETE: &str = "begin_delete";
+const JOP_COMMIT_DELETE: &str = "commit_delete";
+const JOP_INTERRUPTED_DELETE: &str = "interrupted_delete";
+const JOP_ABORT_DELETE: &str = "abort_delete";
+const JOP_ACCESS: &str = "access";
+const JOP_PRUNE_EXPIRED: &str = "prune_expired";
+const JOP_PRUNE_QUOTA: &str = "prune_quota";
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CcrStoreReceipt {
     pub recovery_ref: String,
@@ -45,6 +67,28 @@ pub struct CcrStoreReceipt {
 pub struct CcrStoreSummary {
     pub entries: usize,
     pub encrypted_bytes: u64,
+}
+
+/// One redacted journal record, as exposed for diagnostics and export
+/// evidence.  It carries only the op name, the recovery reference and the
+/// unix timestamp; no plaintext, key material or envelope bytes.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CcrJournalRecord {
+    pub op: String,
+    pub recovery_ref: String,
+    pub at_unix: u64,
+}
+
+/// Redacted inventory entry for export evidence: envelope metadata and a
+/// non-destructive availability state, never the decrypted payload.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CcrInventoryEntry {
+    pub recovery_ref: String,
+    pub encrypted_bytes: u64,
+    pub created_at_unix: u64,
+    pub last_access_unix: u64,
+    pub expires_at_unix: u64,
+    pub state: CcrEntryInspection,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -117,14 +161,22 @@ impl CcrStore {
         let last_access = now;
         let expires_at = self.sliding_expiry(created_at, last_access);
         let path = self.entry_path(recovery_ref)?;
-        self.write_v2_entry(
+        // Write-ahead intent: a crash before the commit record leaves a
+        // dangling `begin_write` that restart reconciliation converges to the
+        // observable filesystem state (never a guessed outcome).
+        self.append_journal_record(JOP_BEGIN_WRITE, recovery_ref, now)?;
+        if let Err(error) = self.write_v2_entry(
             recovery_ref,
             &path,
             plaintext,
             created_at,
             last_access,
             expires_at,
-        )?;
+        ) {
+            let _ = self.append_journal_record(JOP_ABORT_WRITE, recovery_ref, now);
+            return Err(error);
+        }
+        self.append_journal_record(JOP_COMMIT_WRITE, recovery_ref, now)?;
         self.prune_at(now)?;
         Ok(CcrStoreReceipt {
             recovery_ref: recovery_ref.to_string(),
@@ -185,6 +237,10 @@ impl CcrStore {
             envelope.legacy.then_some(envelope.expires_at),
             now,
         )?;
+        // Durable access evidence: the lifecycle journal records that the
+        // original was returned through an authorized retrieve, with the TTL
+        // slide that the access granted.  It carries no payload bytes.
+        self.append_journal_record(JOP_ACCESS, recovery_ref, now)?;
         Ok(plaintext)
     }
 
@@ -261,6 +317,10 @@ impl CcrStore {
         file.sync_all()?;
         fs::rename(&temporary, path)
             .with_context(|| format!("commit CCR entry {}", path.display()))?;
+        // The rename is the commit point; syncing the parent directory makes
+        // the new name durable so a crash cannot resurrect a stale envelope
+        // or leave the entry unnameable after restart.
+        sync_directory(&self.root)?;
         restrict_file_path_permissions(path)?;
         Ok(())
     }
@@ -268,10 +328,29 @@ impl CcrStore {
     pub fn delete(&self, recovery_ref: &str) -> Result<bool> {
         validate_recovery_ref(recovery_ref)?;
         let path = self.entry_path(recovery_ref)?;
-        match fs::remove_file(path) {
-            Ok(()) => Ok(true),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
-            Err(error) => Err(error.into()),
+        if fs::symlink_metadata(&path).is_err() {
+            // Nothing to delete: no intent is journaled, so an idempotent
+            // retry stays evidence-quiet.
+            return Ok(false);
+        }
+        let now = unix_seconds();
+        // Write-ahead delete intent: restart recovery reports an interrupted
+        // delete as retained (never re-deletes) when the envelope survives.
+        self.append_journal_record(JOP_BEGIN_DELETE, recovery_ref, now)?;
+        match fs::remove_file(&path) {
+            Ok(()) => {
+                sync_directory(&self.root)?;
+                self.append_journal_record(JOP_COMMIT_DELETE, recovery_ref, now)?;
+                Ok(true)
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                self.append_journal_record(JOP_ABORT_DELETE, recovery_ref, now)?;
+                Ok(false)
+            }
+            Err(error) => {
+                let _ = self.append_journal_record(JOP_ABORT_DELETE, recovery_ref, now);
+                Err(error.into())
+            }
         }
     }
 
@@ -359,17 +438,35 @@ impl CcrStore {
             bail!("CCR private store root is not a regular directory");
         }
         restrict_directory_permissions(&self.root)?;
-        self.recover_interrupted_writes()?;
+        self.reconcile_after_interruption()?;
         Ok(())
     }
 
-    /// A crash after durable write but before rename leaves an owned temporary
-    /// envelope.  Remove only names we can prove belong to this store; never
-    /// sweep arbitrary dot-files from the private directory.
-    fn recover_interrupted_writes(&self) -> Result<()> {
+    /// Crash recovery is deliberately conservative: a crash between a
+    /// journaled intent and its completion is converged to the *observable*
+    /// filesystem state, never to a guessed outcome, and never through an
+    /// automatic resend or automatic re-delete.
+    ///
+    /// 1. owned temporary envelopes (and a half-written journal) are removed;
+    /// 2. a dangling `begin_write` with a durable envelope is committed, one
+    ///    without an envelope is aborted;
+    /// 3. a dangling `begin_delete` whose envelope survived is reported as
+    ///    `interrupted_delete` and the original is left untouched; one whose
+    ///    envelope is already absent is committed.
+    fn reconcile_after_interruption(&self) -> Result<()> {
         for entry in fs::read_dir(&self.root)? {
             let entry = entry?;
             let path = entry.path();
+            let name = path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or_default();
+            if name == JOURNAL_TEMPORARY {
+                fs::remove_file(&path).with_context(|| {
+                    format!("remove interrupted CCR journal write {}", path.display())
+                })?;
+                continue;
+            }
             if !is_owned_temporary_entry(&path) {
                 continue;
             }
@@ -379,6 +476,28 @@ impl CcrStore {
             }
             fs::remove_file(&path)
                 .with_context(|| format!("remove interrupted CCR write {}", path.display()))?;
+        }
+
+        let records = self.read_journal_records()?;
+        let (write_open, delete_open) = dangling_intents(&records);
+        let now = unix_seconds();
+        for recovery_ref in &write_open {
+            if self.contains_quiet(recovery_ref)? {
+                self.append_journal_record(JOP_COMMIT_WRITE, recovery_ref, now)?;
+            } else {
+                self.append_journal_record(JOP_ABORT_WRITE, recovery_ref, now)?;
+            }
+        }
+        for recovery_ref in &delete_open {
+            if self.contains_quiet(recovery_ref)? {
+                self.append_journal_record(JOP_INTERRUPTED_DELETE, recovery_ref, now)?;
+            } else {
+                self.append_journal_record(JOP_COMMIT_DELETE, recovery_ref, now)?;
+            }
+        }
+        if !write_open.is_empty() || !delete_open.is_empty() || records.len() >= MAX_JOURNAL_RECORDS
+        {
+            self.compact_journal()?;
         }
         Ok(())
     }
@@ -419,7 +538,12 @@ impl CcrStore {
                 .map(|envelope| envelope.expired(self, now))
                 .unwrap_or(true);
             if expired {
-                let _ = fs::remove_file(path);
+                let _ = fs::remove_file(&path);
+                // Best-effort evidence: prune is observational, not a
+                // transactional op, so a journal failure never fails a store.
+                if let Some(recovery_ref) = recovery_ref_from_path(&path) {
+                    let _ = self.append_journal_record(JOP_PRUNE_EXPIRED, &recovery_ref, now);
+                }
                 continue;
             }
             let modified = metadata.modified().unwrap_or(UNIX_EPOCH);
@@ -429,10 +553,267 @@ impl CcrStore {
         let mut total_bytes = retained.iter().map(|(_, _, bytes)| *bytes).sum::<u64>();
         while retained.len() > self.max_entries || total_bytes > self.max_bytes {
             let (path, _, bytes) = retained.remove(0);
-            let _ = fs::remove_file(path);
+            let _ = fs::remove_file(&path);
+            if let Some(recovery_ref) = recovery_ref_from_path(&path) {
+                let _ = self.append_journal_record(JOP_PRUNE_QUOTA, &recovery_ref, now);
+            }
             total_bytes = total_bytes.saturating_sub(bytes);
         }
         Ok(())
+    }
+
+    /// Redacted lifecycle evidence for diagnostics and export: every journal
+    /// record is returned as op / recovery ref / timestamp.  The journal
+    /// never holds plaintext, keys or envelope bytes, so this surface cannot
+    /// leak raw content.
+    pub fn journal_evidence(&self) -> Result<Vec<CcrJournalRecord>> {
+        let records = self.read_journal_records()?;
+        let mut evidence = Vec::with_capacity(records.len());
+        for record in records {
+            let Some(op) = record["op"].as_str() else {
+                continue;
+            };
+            let Some(recovery_ref) = record["recovery_ref"].as_str() else {
+                continue;
+            };
+            evidence.push(CcrJournalRecord {
+                op: op.to_string(),
+                recovery_ref: recovery_ref.to_string(),
+                at_unix: record["at_unix"].as_u64().unwrap_or_default(),
+            });
+        }
+        Ok(evidence)
+    }
+
+    /// Redacted inventory for export evidence.  Each entry carries envelope
+    /// metadata plus a non-destructive availability state; plaintext is
+    /// decrypted only in memory for AEAD verification and never returned.
+    pub fn inventory(&self) -> Result<Vec<CcrInventoryEntry>> {
+        let now = unix_seconds();
+        let key = LessSafeKey::new(
+            UnboundKey::new(&AES_256_GCM, &self.key)
+                .map_err(|_| anyhow!("CCR encryption key is invalid"))?,
+        );
+        let mut entries = Vec::new();
+        for path in self.entry_paths()? {
+            let Some(recovery_ref) = recovery_ref_from_path(&path) else {
+                continue;
+            };
+            let metadata = match fs::symlink_metadata(&path) {
+                Ok(metadata) if metadata.is_file() && !metadata.file_type().is_symlink() => {
+                    metadata
+                }
+                _ => continue,
+            };
+            let encrypted_bytes = metadata.len();
+            let Ok(bytes) = fs::read(&path) else {
+                continue;
+            };
+            let Ok(envelope) = decode_envelope(&bytes, self.idle_ttl_seconds) else {
+                entries.push(CcrInventoryEntry {
+                    recovery_ref,
+                    encrypted_bytes,
+                    created_at_unix: 0,
+                    last_access_unix: 0,
+                    expires_at_unix: 0,
+                    state: CcrEntryInspection::Invalid,
+                });
+                continue;
+            };
+            let mut ciphertext = envelope.ciphertext.clone();
+            let aad = envelope.aad(&recovery_ref);
+            let authenticated = key
+                .open_in_place(
+                    Nonce::assume_unique_for_key(envelope.nonce),
+                    Aad::from(aad),
+                    &mut ciphertext,
+                )
+                .is_ok();
+            entries.push(CcrInventoryEntry {
+                recovery_ref,
+                encrypted_bytes,
+                created_at_unix: envelope.created_at,
+                last_access_unix: envelope.last_access,
+                expires_at_unix: envelope.expires_at,
+                state: if envelope.expired(self, now) {
+                    CcrEntryInspection::Expired
+                } else if authenticated {
+                    CcrEntryInspection::Available
+                } else {
+                    CcrEntryInspection::Invalid
+                },
+            });
+        }
+        entries.sort_by(|left, right| left.recovery_ref.cmp(&right.recovery_ref));
+        Ok(entries)
+    }
+
+    fn journal_path(&self) -> PathBuf {
+        self.root.join(JOURNAL_FILE)
+    }
+
+    /// Appends one redacted record to the transaction journal and syncs it.
+    /// The journal is the write-ahead intent for `begin_*` records, so a
+    /// failed append fails the surrounding mutation closed.
+    fn append_journal_record(&self, op: &str, recovery_ref: &str, at_unix: u64) -> Result<()> {
+        let record = json!({
+            "op": op,
+            "recovery_ref": recovery_ref,
+            "at_unix": at_unix,
+        });
+        let mut line = serde_json::to_vec(&record)?;
+        line.push(b'\n');
+        let path = self.journal_path();
+        let mut file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .with_context(|| format!("open CCR journal {}", path.display()))?;
+        restrict_file_permissions(&path, &file)?;
+        file.write_all(&line)?;
+        file.sync_all()?;
+        if self.read_journal_records()?.len() >= MAX_JOURNAL_RECORDS {
+            self.compact_journal()?;
+        }
+        Ok(())
+    }
+
+    /// Parses the journal in order.  A truncated final line (no newline) is
+    /// ignored; a corrupt non-tail record fails closed so recovery never
+    /// guesses on tampered evidence.
+    fn read_journal_records(&self) -> Result<Vec<Value>> {
+        let path = self.journal_path();
+        let mut records = Vec::new();
+        let file = match fs::File::open(&path) {
+            Ok(file) => file,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(records),
+            Err(error) => {
+                return Err(error).with_context(|| format!("open CCR journal {}", path.display()));
+            }
+        };
+        let mut reader = BufReader::new(file);
+        let mut line = Vec::new();
+        loop {
+            line.clear();
+            let bytes_read = reader
+                .read_until(b'\n', &mut line)
+                .with_context(|| format!("read CCR journal {}", path.display()))?;
+            if bytes_read == 0 {
+                break;
+            }
+            if !line.ends_with(b"\n") {
+                break;
+            }
+            let payload = &line[..line.len() - 1];
+            if payload.iter().all(u8::is_ascii_whitespace) {
+                continue;
+            }
+            match serde_json::from_slice::<Value>(payload) {
+                Ok(record) => records.push(record),
+                Err(error) => {
+                    let is_tail = reader
+                        .fill_buf()
+                        .with_context(|| format!("inspect CCR journal tail in {}", path.display()))?
+                        .is_empty();
+                    if is_tail {
+                        break;
+                    }
+                    return Err(error).with_context(|| {
+                        format!("parse non-tail CCR journal record in {}", path.display())
+                    });
+                }
+            }
+        }
+        Ok(records)
+    }
+
+    /// Bounded journal: keeps the latest record per recovery ref, plus the
+    /// latest dangling `begin_*` record for refs whose write/delete never
+    /// completed, so recovery still has the intent it needs after a crash
+    /// during compaction itself.  Rewrites atomically (temp + rename).
+    fn compact_journal(&self) -> Result<()> {
+        let records = self.read_journal_records()?;
+        if records.is_empty() {
+            return Ok(());
+        }
+        let (write_open, delete_open) = dangling_intents(&records);
+        let mut latest_by_ref = std::collections::HashMap::<String, Value>::new();
+        let mut latest_begin_write = std::collections::HashMap::<String, Value>::new();
+        let mut latest_begin_delete = std::collections::HashMap::<String, Value>::new();
+        let mut ref_order = Vec::<String>::new();
+        for record in &records {
+            let Some(recovery_ref) = record["recovery_ref"].as_str() else {
+                continue;
+            };
+            match record["op"].as_str() {
+                Some(JOP_BEGIN_WRITE) => {
+                    latest_begin_write.insert(recovery_ref.to_string(), record.clone());
+                }
+                Some(JOP_BEGIN_DELETE) => {
+                    latest_begin_delete.insert(recovery_ref.to_string(), record.clone());
+                }
+                _ => {}
+            }
+            if !latest_by_ref.contains_key(recovery_ref) {
+                ref_order.push(recovery_ref.to_string());
+            }
+            latest_by_ref.insert(recovery_ref.to_string(), record.clone());
+        }
+        let mut kept = Vec::<Value>::new();
+        for recovery_ref in ref_order {
+            if write_open.contains(&recovery_ref) {
+                if let Some(begin) = latest_begin_write.get(&recovery_ref) {
+                    kept.push(begin.clone());
+                }
+            }
+            if delete_open.contains(&recovery_ref) {
+                if let Some(begin) = latest_begin_delete.get(&recovery_ref) {
+                    kept.push(begin.clone());
+                }
+            }
+            let latest = latest_by_ref
+                .get(&recovery_ref)
+                .expect("latest journal record must exist");
+            if !kept.contains(latest) {
+                kept.push(latest.clone());
+            }
+        }
+        let temporary = self.root.join(JOURNAL_TEMPORARY);
+        if let Ok(metadata) = fs::symlink_metadata(&temporary) {
+            if metadata.file_type().is_symlink() || !metadata.is_file() {
+                bail!("CCR journal temporary is not a regular private-store file");
+            }
+            fs::remove_file(&temporary)
+                .with_context(|| format!("remove stale CCR journal {}", temporary.display()))?;
+        }
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temporary)
+            .with_context(|| format!("create CCR journal {}", temporary.display()))?;
+        restrict_file_permissions(&temporary, &file)?;
+        for record in &kept {
+            let mut line = serde_json::to_vec(record)?;
+            line.push(b'\n');
+            file.write_all(&line)?;
+        }
+        file.sync_all()?;
+        fs::rename(&temporary, self.journal_path())
+            .with_context(|| format!("commit CCR journal {}", self.journal_path().display()))?;
+        sync_directory(&self.root)?;
+        Ok(())
+    }
+
+    /// Like `contains` but treats any non-regular or absent path as absent,
+    /// which is what reconciliation needs to converge intents.
+    fn contains_quiet(&self, recovery_ref: &str) -> Result<bool> {
+        let path = self.entry_path(recovery_ref)?;
+        match fs::symlink_metadata(path) {
+            Ok(metadata) if metadata.is_file() && !metadata.file_type().is_symlink() => Ok(true),
+            Ok(_) => Ok(false),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+            Err(error) => Err(error.into()),
+        }
     }
 }
 
@@ -455,6 +836,68 @@ fn is_owned_temporary_entry(path: &Path) -> bool {
         return false;
     };
     uuid::Uuid::parse_str(recovery_id).is_ok()
+}
+
+/// Which recovery refs still have an in-flight write or delete intent, in
+/// journal order.  A `begin_*` is open until its matching completion
+/// (`commit_*`, `abort_*` or, for deletes, `interrupted_*`) appears later.
+fn dangling_intents(records: &[Value]) -> (Vec<String>, Vec<String>) {
+    let mut write_open = HashSet::<String>::new();
+    let mut delete_open = HashSet::<String>::new();
+    for record in records {
+        let Some(recovery_ref) = record["recovery_ref"].as_str() else {
+            continue;
+        };
+        match record["op"].as_str() {
+            Some(JOP_BEGIN_WRITE) => {
+                write_open.insert(recovery_ref.to_string());
+            }
+            Some(JOP_COMMIT_WRITE) | Some(JOP_ABORT_WRITE) => {
+                write_open.remove(recovery_ref);
+            }
+            Some(JOP_BEGIN_DELETE) => {
+                delete_open.insert(recovery_ref.to_string());
+            }
+            Some(JOP_COMMIT_DELETE) | Some(JOP_INTERRUPTED_DELETE) | Some(JOP_ABORT_DELETE) => {
+                delete_open.remove(recovery_ref);
+            }
+            _ => {}
+        }
+    }
+    let mut write_open = write_open.into_iter().collect::<Vec<_>>();
+    let mut delete_open = delete_open.into_iter().collect::<Vec<_>>();
+    write_open.sort();
+    delete_open.sort();
+    (write_open, delete_open)
+}
+
+/// Reverse of `entry_path`: `<uuid>.ccr` -> `ccr:<uuid>`, validated.
+fn recovery_ref_from_path(path: &Path) -> Option<String> {
+    let name = path.file_name()?.to_str()?;
+    let uuid_part = name.strip_suffix(".ccr")?;
+    // `entry_path` writes `ccr_<uuid>.ccr`; restoring the `:` separator
+    // already yields the full `ccr:<uuid>` reference — the prefix must not
+    // be prepended a second time.
+    let recovery_ref = uuid_part.replace('_', ":");
+    validate_recovery_ref(&recovery_ref).ok()?;
+    Some(recovery_ref)
+}
+
+/// Syncing the parent directory after a rename or removal makes the commit
+/// durable.  Windows does not expose directory fsync through std, so there
+/// the OS-default flush semantics apply; the envelope file itself is always
+/// `sync_all`-ed before the rename on every platform.
+#[cfg(unix)]
+fn sync_directory(path: &Path) -> Result<()> {
+    fs::File::open(path)
+        .with_context(|| format!("open directory for sync {}", path.display()))?
+        .sync_all()
+        .with_context(|| format!("sync directory {}", path.display()))
+}
+
+#[cfg(not(unix))]
+fn sync_directory(_path: &Path) -> Result<()> {
+    Ok(())
 }
 
 fn encode_v2_authenticated_header(created_at: u64, last_access: u64, expires_at: u64) -> Vec<u8> {
@@ -1058,6 +1501,340 @@ mod tests {
                 .expect("migrated v1 keeps its original deadline"),
             CcrEntryInspection::Expired
         );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    fn ops_of(evidence: &[CcrJournalRecord]) -> Vec<String> {
+        evidence.iter().map(|record| record.op.clone()).collect()
+    }
+
+    #[test]
+    fn journal_orders_write_before_commit_and_never_persists_plaintext() {
+        let root = fixture_root("journal-order");
+        let store = CcrStore::with_limits(root.clone(), [41_u8; 32], 60, 3600, 8, 64 * 1024)
+            .expect("store");
+        let recovery_ref = format!("ccr:{}", uuid::Uuid::new_v4());
+        let plaintext = b"JOURNAL_SECRET_PROMPT_BODY";
+        store
+            .store_at(&recovery_ref, plaintext, 100)
+            .expect("store entry");
+
+        let evidence = store.journal_evidence().expect("journal evidence");
+        assert_eq!(
+            ops_of(&evidence),
+            vec![JOP_BEGIN_WRITE.to_string(), JOP_COMMIT_WRITE.to_string()]
+        );
+        let journal = fs::read(store.journal_path()).expect("journal bytes");
+        assert!(!journal
+            .windows(plaintext.len())
+            .any(|window| window == plaintext));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn interrupted_write_without_envelope_records_abort_and_fails_closed() {
+        let root = fixture_root("journal-aborted-write");
+        let store = CcrStore::with_limits(root.clone(), [42_u8; 32], 60, 3600, 8, 64 * 1024)
+            .expect("store");
+        let recovery_ref = format!("ccr:{}", uuid::Uuid::new_v4());
+        // Crash after the write intent was journaled but before any envelope
+        // byte was committed.
+        store
+            .append_journal_record(JOP_BEGIN_WRITE, &recovery_ref, 100)
+            .expect("journal write intent");
+
+        store.reconcile_after_interruption().expect("reconcile");
+        let evidence = store.journal_evidence().expect("journal evidence");
+        assert_eq!(
+            ops_of(&evidence).last().map(String::as_str),
+            Some(JOP_ABORT_WRITE)
+        );
+        assert!(!store.contains(&recovery_ref).expect("contains"));
+        assert!(store.retrieve_at(&recovery_ref, 101).is_err());
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn interrupted_write_with_durable_envelope_records_commit() {
+        let root = fixture_root("journal-committed-write");
+        let store = CcrStore::with_limits(root.clone(), [43_u8; 32], 60, 3600, 8, 64 * 1024)
+            .expect("store");
+        let recovery_ref = format!("ccr:{}", uuid::Uuid::new_v4());
+        // Crash between the durable rename and the commit record: the rename
+        // already made the envelope durable, so recovery must converge to
+        // `commit_write` and never fabricate an abort.
+        store
+            .append_journal_record(JOP_BEGIN_WRITE, &recovery_ref, 100)
+            .expect("journal write intent");
+        let path = store.entry_path(&recovery_ref).expect("entry path");
+        store
+            .write_v2_entry(&recovery_ref, &path, b"durable-envelope", 100, 100, 160)
+            .expect("durable envelope");
+
+        store.reconcile_after_interruption().expect("reconcile");
+        let evidence = store.journal_evidence().expect("journal evidence");
+        assert_eq!(
+            ops_of(&evidence).last().map(String::as_str),
+            Some(JOP_COMMIT_WRITE)
+        );
+        assert_eq!(
+            store.retrieve_at(&recovery_ref, 101).expect("retrieve"),
+            b"durable-envelope"
+        );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn interrupted_delete_never_auto_deletes_a_retained_envelope() {
+        let root = fixture_root("journal-interrupted-delete");
+        let store = CcrStore::with_limits(root.clone(), [44_u8; 32], 60, 3600, 8, 64 * 1024)
+            .expect("store");
+        let recovery_ref = format!("ccr:{}", uuid::Uuid::new_v4());
+        store
+            .store_at(&recovery_ref, b"keep-me", 100)
+            .expect("store entry");
+        // Crash after the delete intent but before the removal: reconciliation
+        // must report the interruption and keep the original untouched.
+        store
+            .append_journal_record(JOP_BEGIN_DELETE, &recovery_ref, 105)
+            .expect("journal delete intent");
+
+        store.reconcile_after_interruption().expect("reconcile");
+        let evidence = store.journal_evidence().expect("journal evidence");
+        assert_eq!(
+            ops_of(&evidence).last().map(String::as_str),
+            Some(JOP_INTERRUPTED_DELETE)
+        );
+        assert!(store.contains(&recovery_ref).expect("contains"));
+        assert_eq!(
+            store.retrieve_at(&recovery_ref, 106).expect("retrieve"),
+            b"keep-me"
+        );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn interrupted_delete_with_absent_envelope_records_commit() {
+        let root = fixture_root("journal-committed-delete");
+        let store = CcrStore::with_limits(root.clone(), [45_u8; 32], 60, 3600, 8, 64 * 1024)
+            .expect("store");
+        let recovery_ref = format!("ccr:{}", uuid::Uuid::new_v4());
+        store
+            .store_at(&recovery_ref, b"gone", 100)
+            .expect("store entry");
+        // Crash between the durable removal and the delete commit record: the
+        // removal observably happened, so recovery converges to `commit_delete`
+        // without trying to restore or re-delete anything.
+        store
+            .append_journal_record(JOP_BEGIN_DELETE, &recovery_ref, 105)
+            .expect("journal delete intent");
+        fs::remove_file(store.entry_path(&recovery_ref).expect("entry path")).expect("remove");
+
+        store.reconcile_after_interruption().expect("reconcile");
+        let evidence = store.journal_evidence().expect("journal evidence");
+        assert_eq!(
+            ops_of(&evidence).last().map(String::as_str),
+            Some(JOP_COMMIT_DELETE)
+        );
+        assert!(!store.contains(&recovery_ref).expect("contains"));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn delete_records_begin_and_commit_evidence_and_idempotent_delete_is_quiet() {
+        let root = fixture_root("journal-delete-evidence");
+        let store = CcrStore::with_limits(root.clone(), [46_u8; 32], 60, 3600, 8, 64 * 1024)
+            .expect("store");
+        let recovery_ref = format!("ccr:{}", uuid::Uuid::new_v4());
+        store
+            .store_at(&recovery_ref, b"bye", 100)
+            .expect("store entry");
+        store.delete(&recovery_ref).expect("delete");
+
+        let evidence = store.journal_evidence().expect("journal evidence");
+        let ops = ops_of(&evidence);
+        assert!(ops.contains(&JOP_BEGIN_DELETE.to_string()));
+        assert!(ops.contains(&JOP_COMMIT_DELETE.to_string()));
+        let before = evidence.len();
+        assert!(!store.delete(&recovery_ref).expect("idempotent delete"));
+        assert_eq!(
+            store.journal_evidence().expect("journal evidence").len(),
+            before
+        );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn retrieve_records_access_evidence_and_slides_last_access() {
+        let root = fixture_root("journal-access-evidence");
+        let store = CcrStore::with_limits(root.clone(), [47_u8; 32], 60, 3600, 8, 64 * 1024)
+            .expect("store");
+        let recovery_ref = format!("ccr:{}", uuid::Uuid::new_v4());
+        store
+            .store_at(&recovery_ref, b"body", 100)
+            .expect("store entry");
+        store.retrieve_at(&recovery_ref, 110).expect("retrieve");
+
+        let evidence = store.journal_evidence().expect("journal evidence");
+        assert!(evidence
+            .iter()
+            .any(|record| record.op == JOP_ACCESS && record.recovery_ref == recovery_ref));
+        let envelope = decode_envelope(
+            &fs::read(store.entry_path(&recovery_ref).expect("entry path"))
+                .expect("envelope bytes"),
+            60,
+        )
+        .expect("decode envelope");
+        assert_eq!(envelope.last_access, 110);
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn quota_prune_records_evidence() {
+        let root = fixture_root("journal-quota-evidence");
+        let store = CcrStore::with_limits(root.clone(), [48_u8; 32], 60, 3600, 2, 64 * 1024)
+            .expect("store");
+        let refs = (0..3)
+            .map(|_| format!("ccr:{}", uuid::Uuid::new_v4()))
+            .collect::<Vec<_>>();
+        let now = unix_seconds();
+        for (index, recovery_ref) in refs.iter().enumerate() {
+            store
+                .store_at(recovery_ref, &[index as u8; 64], now + index as u64)
+                .expect("store entry");
+        }
+        let evidence = store.journal_evidence().expect("journal evidence");
+        assert!(evidence
+            .iter()
+            .any(|record| record.op == JOP_PRUNE_QUOTA && record.recovery_ref == refs[0]));
+        assert_eq!(store.summary().expect("summary").entries, 2);
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn ttl_prune_records_evidence() {
+        let root = fixture_root("journal-ttl-evidence");
+        let store =
+            CcrStore::with_limits(root.clone(), [49_u8; 32], 2, 3600, 8, 64 * 1024).expect("store");
+        let short_lived = format!("ccr:{}", uuid::Uuid::new_v4());
+        let fresh = format!("ccr:{}", uuid::Uuid::new_v4());
+        store
+            .store_at(&short_lived, b"short-lived", 100)
+            .expect("store short-lived");
+        store.store_at(&fresh, b"fresh", 110).expect("store fresh");
+
+        let evidence = store.journal_evidence().expect("journal evidence");
+        assert!(evidence
+            .iter()
+            .any(|record| record.op == JOP_PRUNE_EXPIRED && record.recovery_ref == short_lived));
+        assert!(!store.contains(&short_lived).expect("expired removed"));
+        assert!(store.contains(&fresh).expect("fresh retained"));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn journal_compacts_keeping_latest_evidence_and_dangling_begins() {
+        let root = fixture_root("journal-compaction");
+        let store = CcrStore::with_limits(root.clone(), [50_u8; 32], 60, 3600, 8, 64 * 1024)
+            .expect("store");
+        let tracked = format!("ccr:{}", uuid::Uuid::new_v4());
+        for index in 0..1100 {
+            store
+                .append_journal_record(JOP_ACCESS, &tracked, 1000 + index)
+                .expect("journal access");
+        }
+        let evidence = store.journal_evidence().expect("journal evidence");
+        assert!(evidence.len() <= MAX_JOURNAL_RECORDS);
+        assert_eq!(evidence.last().expect("last record").at_unix, 1000 + 1099);
+        assert_eq!(evidence.last().expect("last record").op, JOP_ACCESS);
+
+        // A dangling begin must survive compaction: recovery needs it to
+        // reconcile a write that may have crashed mid-flight.
+        let pending = format!("ccr:{}", uuid::Uuid::new_v4());
+        store
+            .append_journal_record(JOP_BEGIN_WRITE, &pending, 1)
+            .expect("journal dangling begin");
+        for index in 0..1100 {
+            store
+                .append_journal_record(JOP_ACCESS, &tracked, 2000 + index)
+                .expect("journal access");
+        }
+        let evidence = store.journal_evidence().expect("journal evidence");
+        assert!(evidence
+            .iter()
+            .any(|record| { record.op == JOP_BEGIN_WRITE && record.recovery_ref == pending }));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn journal_corrupt_middle_fails_closed_and_truncated_tail_is_ignored() {
+        let root = fixture_root("journal-corruption");
+        let store = CcrStore::with_limits(root.clone(), [51_u8; 32], 60, 3600, 8, 64 * 1024)
+            .expect("store");
+        let recovery_ref = format!("ccr:{}", uuid::Uuid::new_v4());
+        let path = store.journal_path();
+
+        fs::write(
+            &path,
+            format!(
+                "{{\"op\":\"access\",\"recovery_ref\":\"{recovery_ref}\",\"at_unix\":1}}\nnot-json\n{{\"op\":\"access\",\"recovery_ref\":\"{recovery_ref}\",\"at_unix\":2}}\n"
+            ),
+        )
+        .expect("corrupt middle journal");
+        assert!(store.read_journal_records().is_err());
+
+        fs::write(
+            &path,
+            format!(
+                "{{\"op\":\"access\",\"recovery_ref\":\"{recovery_ref}\",\"at_unix\":1}}\n{{\"op\":\"acce"
+            ),
+        )
+        .expect("truncated tail journal");
+        let records = store
+            .read_journal_records()
+            .expect("truncated tail must be tolerated");
+        assert_eq!(records.len(), 1);
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn inventory_is_redacted_and_reflects_store_state() {
+        let root = fixture_root("journal-inventory");
+        let store = CcrStore::with_limits(root.clone(), [52_u8; 32], 60, 3600, 8, 64 * 1024)
+            .expect("store");
+        let recovery_ref = format!("ccr:{}", uuid::Uuid::new_v4());
+        let secret = b"INVENTORY_SECRET_BODY";
+        store
+            .store_at(&recovery_ref, secret, unix_seconds())
+            .expect("store entry");
+
+        let inventory = store.inventory().expect("inventory");
+        assert_eq!(inventory.len(), 1);
+        assert_eq!(inventory[0].recovery_ref, recovery_ref);
+        assert_eq!(inventory[0].state, CcrEntryInspection::Available);
+        assert_eq!(
+            inventory[0].encrypted_bytes,
+            fs::metadata(store.entry_path(&recovery_ref).expect("entry path"))
+                .expect("metadata")
+                .len()
+        );
+        let rendered = format!("{inventory:?}");
+        assert!(!rendered.contains("INVENTORY_SECRET_BODY"));
+
+        store.delete(&recovery_ref).expect("delete");
+        assert!(store.inventory().expect("empty inventory").is_empty());
 
         let _ = fs::remove_dir_all(root);
     }

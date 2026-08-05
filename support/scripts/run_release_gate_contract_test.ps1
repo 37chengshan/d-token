@@ -44,6 +44,7 @@ $CleanupAudit = Read-RequiredText "support\scripts\run_release_cleanup_audit.ps1
 $RuntimePerformanceGate = Read-RequiredText "support\scripts\run_runtime_performance_gate.py"
 $RuntimePerformanceContract = Join-Path $Root "support\scripts\test_runtime_performance_gate.py"
 $CodecEvidenceContract = Join-Path $Root "support\scripts\test_codec_candidate_evidence_contract.py"
+$GateStatusContract = Join-Path $Root "support\tests\test_release_gate_status_aggregation.py"
 $BundleBudget = Read-RequiredText "code\apps\desktop\scripts\check-bundle-budget.mjs"
 $BundleAudit = Read-RequiredText "support\scripts\run_desktop_bundle_artifact_audit.ps1"
 $SidecarPreparation = Read-RequiredText "support\scripts\prepare_desktop_sidecars.ps1"
@@ -62,8 +63,13 @@ $Provenance = if (Test-Path -LiteralPath $ProvenancePath) {
 } else {
   ""
 }
+$DaclAclTest = Read-RequiredText "support\scripts\run_windows_dacl_acl_tests.ps1"
+$NsisUpgradeRollbackTest = Read-RequiredText "support\scripts\run_nsis_upgrade_rollback_test.ps1"
+$WslRtkIntegrityTest = Read-RequiredText "support\scripts\run_wsl_rtk_integrity_test.ps1"
+$FanInArtifactContract = Read-RequiredText "support\scripts\run_fan_in_artifact_contract.ps1"
+$GateStatusAggregator = Read-RequiredText "support\scripts\generate_release_gate_status.py"
 $ScriptsParse = $true
-foreach ($ScriptText in @($Verification, $Handoff, $PerformanceGate, $CodecEvidenceGate, $RedactionAudit, $CleanupAudit, $BundleAudit, $SidecarPreparation, $SidecarSigning, $Provenance, $ProvenanceTest, $StartupAudit, $DistributionAudit, $SigningAudit)) {
+foreach ($ScriptText in @($Verification, $Handoff, $PerformanceGate, $CodecEvidenceGate, $RedactionAudit, $CleanupAudit, $BundleAudit, $SidecarPreparation, $SidecarSigning, $Provenance, $ProvenanceTest, $StartupAudit, $DistributionAudit, $SigningAudit, $DaclAclTest, $NsisUpgradeRollbackTest, $WslRtkIntegrityTest, $FanInArtifactContract)) {
   try {
     [void][scriptblock]::Create($ScriptText)
   } catch {
@@ -82,6 +88,11 @@ if ($null -ne $Python -and (Test-Path -LiteralPath $RuntimePerformanceContract -
 if ($null -ne $Python -and (Test-Path -LiteralPath $CodecEvidenceContract -PathType Leaf)) {
   & $Python.Source $CodecEvidenceContract 2>&1 | Out-Null
   $CodecEvidenceContractOk = ($LASTEXITCODE -eq 0)
+}
+$GateStatusContractOk = $false
+if ($null -ne $Python -and (Test-Path -LiteralPath $GateStatusContract -PathType Leaf)) {
+  & $Python.Source $GateStatusContract 2>&1 | Out-Null
+  $GateStatusContractOk = ($LASTEXITCODE -eq 0)
 }
 
 $Checks = @(
@@ -160,6 +171,40 @@ $Checks = @(
   New-ContractCheck "distribution_rejects_stale_candidate" (($DistributionAudit -match "candidate_stamp_matches_worktree") -and ($DistributionAudit -match "artifact_built_after_candidate_stamp")) "Standalone distribution audit cannot mark an old bundle as the current release candidate"
   New-ContractCheck "signing_readiness_binds_candidate" (($SigningAudit -match "candidate_stamp_matches_worktree") -and ($SigningAudit -match "artifact_built_after_candidate_stamp")) "Signing readiness cannot promote artifacts from a different candidate"
   New-ContractCheck "startup_audit_binds_current_bundle" (($StartupAudit -match "candidate_stamp_matches_worktree") -and ($StartupAudit -match "installed_files_match_current_bundle")) "Installed startup evidence is bound to the current candidate and release bundle"
+     New-ContractCheck "dacl_acl_test_script_exists" (Test-Path -LiteralPath (Join-Path $PSScriptRoot "run_windows_dacl_acl_tests.ps1")) "A Windows DACL/ACL test runner script exists"
+  New-ContractCheck "dacl_acl_test_script_has_platform_gate" ($DaclAclTest -match "IsWindowsHost") -and ($DaclAclTest -match "exit 2") "The DACL/ACL test runner skips on non-Windows"
+  New-ContractCheck "dacl_acl_test_script_has_all_test_groups" (($DaclAclTest -match "directory_acl_is_protected_and_limited_to_current_user_and_system") -and ($DaclAclTest -match "open_applies_protected_private_dacl") -and ($DaclAclTest -match "dacl")) "The DACL/ACL test runner targets real crate test names (module paths or test names), not function names that match zero tests"
+  New-ContractCheck "dacl_acl_test_script_fails_on_zero_tests" ($DaclAclTest -match "test result:") -and ($DaclAclTest -match "0 tests run") "The DACL/ACL test runner treats a zero-test cargo result as a failure instead of a false pass"
+  New-ContractCheck "dacl_acl_test_ci_windows_workflow" ($Ci -match "run_windows_dacl_acl_tests.ps1") "The CI windows workflow invokes the DACL/ACL test runner"
+  New-ContractCheck "nsis_upgrade_rollback_script_exists" (Test-Path -LiteralPath (Join-Path $PSScriptRoot "run_nsis_upgrade_rollback_test.ps1")) "An NSIS upgrade/rollback test script exists"
+  New-ContractCheck "nsis_upgrade_rollback_script_has_platform_gate" ($NsisUpgradeRollbackTest -match "IsWindowsHost") -and ($NsisUpgradeRollbackTest -match "exit 2") "The NSIS upgrade/rollback test skips on non-Windows"
+  New-ContractCheck "nsis_upgrade_rollback_has_all_steps" ($NsisUpgradeRollbackTest -match "clean_install" -and $NsisUpgradeRollbackTest -match "verify_installed_files" -and $NsisUpgradeRollbackTest -match "upgrade_reinstall" -and $NsisUpgradeRollbackTest -match "verify_after_reinstall" -and $NsisUpgradeRollbackTest -match "launch_installed_app" -and $NsisUpgradeRollbackTest -match "clean_uninstall" -and $NsisUpgradeRollbackTest -match "rollback_restore") "The NSIS upgrade/rollback test covers clean install, file verification, upgrade, post-upgrade verification, app launch, uninstall, and rollback — all 7 steps"
+  New-ContractCheck "nsis_upgrade_rollback_has_previous_installer" (($NsisUpgradeRollbackTest -match "PreviousInstaller") -and ($WindowsRelease -match "resolve_previous_installer") -and ($WindowsRelease -match "previous_release_tag")) "The NSIS test installs an older public installer first, then the new candidate, then restores — a real old-version -> new-version -> rollback contract, not a same-candidate reinstall"
+  New-ContractCheck "nsis_upgrade_rollback_ci_windows_release" ($WindowsRelease -match "run_nsis_upgrade_rollback_test.ps1") "The Windows release workflow invokes the NSIS upgrade/rollback test"
+  New-ContractCheck "windows_release_gates_are_fail_closed" ((-not ($WindowsRelease -match "continue-on-error")) -and ($WindowsRelease -match "run_wsl_rtk_integrity_test.ps1") -and ($WindowsRelease -match "run_nsis_upgrade_rollback_test.ps1") -and ($WindowsRelease -match "run_managed_rtk_candidate_test_windows.ps1")) "NSIS, WSL RTK, and managed RTK candidate gates are not neutralized by continue-on-error; a failed gate blocks the Windows release"
+  New-ContractCheck "wsl_rtk_integrity_script_exists" (Test-Path -LiteralPath (Join-Path $PSScriptRoot "run_wsl_rtk_integrity_test.ps1")) "A WSL RTK integrity test script exists"
+  New-ContractCheck "wsl_rtk_integrity_script_has_platform_gate" ($WslRtkIntegrityTest -match "IsWindowsHost") -and ($WslRtkIntegrityTest -match "exit 2") "The WSL RTK integrity test skips on non-Windows"
+  New-ContractCheck "wsl_rtk_integrity_checks_fixture_contract" ($WslRtkIntegrityTest -match "SECRET=must-not-persist" -and $WslRtkIntegrityTest -match "4096") "The WSL RTK integrity test validates the fixture byte contract"
+  New-ContractCheck "wsl_rtk_integrity_fails_closed_when_wsl_missing" (($WslRtkIntegrityTest -match "wsl_available") -and ($WslRtkIntegrityTest -match "exit 1")) "The WSL RTK integrity test fails when wsl.exe is absent on a Windows host instead of reporting a false pass"
+  New-ContractCheck "wsl_rtk_integrity_ci_windows_release" ($WindowsRelease -match "run_wsl_rtk_integrity_test.ps1") "The Windows release workflow invokes the WSL RTK integrity test"
+  New-ContractCheck "fan_in_artifact_contract_script_exists" (Test-Path -LiteralPath (Join-Path $PSScriptRoot "run_fan_in_artifact_contract.ps1")) "A fan-in artifact contract verification script exists"
+  New-ContractCheck "fan_in_artifact_contract_checks_commit_and_digest" ($FanInArtifactContract -match "same_commit_across_platforms" -and $FanInArtifactContract -match "same_source_digest" -and $FanInArtifactContract -match "commit_matches_expected") "The fan-in contract verifies same commit and source digest across platforms"
+  New-ContractCheck "fan_in_artifact_contract_checks_shasum_sbom_security_receipts" ($FanInArtifactContract -match "mac_sha256_manifest" -and $FanInArtifactContract -match "win_sbom" -and $FanInArtifactContract -match "mac_security_scan" -and $FanInArtifactContract -match "win_test_receipts") "The fan-in contract verifies SHA-256, SBOM, security scan, and test receipts per platform"
+  New-ContractCheck "fan_in_artifact_contract_secret_scanning" ($FanInArtifactContract -match "no_secrets_in_candidate_jsons" -and $FanInArtifactContract -match "sk-[A-Za-z0-9]") "The fan-in contract scans for secrets in candidate JSONs"
+  New-ContractCheck "fan_in_artifact_contract_fail_closed" ($FanInArtifactContract -match "exit 1" -and $FanInArtifactContract -match "exit 2") "The fan-in contract is fail-closed on missing platform or critical mismatch"
+  New-ContractCheck "fan_in_artifact_contract_single_platform_exits_2" ($FanInArtifactContract -match "Only one platform directory found") -and ($FanInArtifactContract -match "exit 2") "A single-platform host exits 2 (not a fan-in staging environment) instead of failing the platform build job"
+  New-ContractCheck "fan_in_artifact_contract_public_prerelease" ($PublicPrerelease -match "run_fan_in_artifact_contract.ps1") "The public prerelease workflow invokes the fan-in contract verification"
+  New-ContractCheck "fan_in_artifact_contract_ci_windows_not_invoked" (-not ($Ci -match "run_fan_in_artifact_contract.ps1")) "CI does not run the dual-platform fan-in on a single Windows runner (a step that cannot pass)"
+  New-ContractCheck "fan_in_artifact_contract_independent_digest_anchor" (($PublicPrerelease -match "independent_digest") -and ($PublicPrerelease -match 'git", "diff", "--binary", "HEAD"') -and ($FanInArtifactContract -match "publish-job-independent-checkout-git-diff")) "The source digest is anchored by an independent checkout in the publish job, not merely by two self-reported values being equal"
+  New-ContractCheck "release_gate_status_aggregator_exists" (Test-Path -LiteralPath (Join-Path $PSScriptRoot "generate_release_gate_status.py")) "A cross-platform G0-G8 release gate status aggregator exists"
+  New-ContractCheck "release_gate_status_aggregator_contract" $GateStatusContractOk "Dynamic contract tests prove the aggregator is fail-closed and never counts parse/unexecuted evidence as pass"
+  New-ContractCheck "release_gate_status_aggregator_fail_closed_default" (($GateStatusAggregator -match "--report-only") -and ($GateStatusAggregator -match "return 1") -and ($GateStatusAggregator -match "blocked") -and ($GateStatusAggregator -match "unavailable")) "The gate status aggregator is fail-closed by default (non-zero exit on blocked/unavailable) and only --report-only relaxes the exit code for diagnostics"
+  New-ContractCheck "release_gate_status_aggregator_never_counts_parse_as_pass" ((-not ($GateStatusAggregator -match "release_scripts_parse")) -and ($GateStatusAggregator -match "release-verification-") -and ($GateStatusAggregator -match "fan-in-artifact-contract-")) "G6/G8 evidence is aggregated from executed report artifacts, never from 'scripts parse', metadata-only presence, or unsigned notices"
+  New-ContractCheck "release_gate_status_g6_requires_powershell_report" (($GateStatusAggregator -match "G6") -and ($GateStatusAggregator -match "release-verification") -and ($GateStatusAggregator -match "NOT executed")) "G6 PowerShell Ops gates cannot pass without an executed release-verification report; unexecuted PowerShell is recorded as unavailable/blocked"
+  New-ContractCheck "release_gate_status_g8_requires_fan_in" (($GateStatusAggregator -match "G8") -and ($GateStatusAggregator -match "fan-in-artifact-contract") -and ($GateStatusAggregator -match "双平台同 commit")) "G8 cannot pass without fan-in evidence binding both platforms to the same non-empty commit and source digest"
+  New-ContractCheck "fan_in_report_critical_counts_bound_to_critical_list" (($FanInArtifactContract -match "critical_total") -and ($FanInArtifactContract -match 'RequiredCritical\.Count - \$CriticalFailed\.Count')) "The fan-in report computes critical passed counts from the critical list, not from the full check total"
+  New-ContractCheck "fan_in_same_commit_requires_nonempty_heads" ($FanInArtifactContract -match 'IsNullOrWhiteSpace\(\$MacHead\)') "Fan-in same-commit evidence rejects empty git_head values instead of treating two missing values as equal"
+  New-ContractCheck "dacl_acl_test_windows_release_workflow" ($WindowsRelease -match "run_windows_dacl_acl_tests.ps1") "The real Windows release runner (windows-2022) executes the DACL/ACL tests; an ubuntu skip cannot be Windows MSVC evidence"
 )
 
 $Failed = @($Checks | Where-Object { -not $_.ok })

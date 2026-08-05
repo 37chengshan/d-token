@@ -116,6 +116,7 @@ fn request() -> CompressionDecisionRequest {
         route_id: "relay-route".to_string(),
         input_protocol: Protocol::OpenAi,
         endpoint: OpticalEndpoint::OpenAiChatCompletions,
+        frozen_message_count: None,
         requested_policy: Some(CompressionPolicy::Balanced),
         body: json!({
             "model": "relay-model",

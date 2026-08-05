@@ -380,7 +380,7 @@ pub fn prepare_context_transform(
     policy: CompressionPolicy,
     original_body: Value,
 ) -> Result<Option<PreparedContextTransform>, ContextTransformError> {
-    prepare_context_transform_with_cache_evidence(context, policy, original_body, None)
+    prepare_context_transform_with_cache_evidence(context, policy, original_body, None, None)
 }
 
 pub fn prepare_context_transform_with_cache_evidence(
@@ -388,15 +388,23 @@ pub fn prepare_context_transform_with_cache_evidence(
     policy: CompressionPolicy,
     original_body: Value,
     evidence: Option<&ProviderCacheEvidence>,
+    frozen_message_count: Option<usize>,
 ) -> Result<Option<PreparedContextTransform>, ContextTransformError> {
     if policy == CompressionPolicy::Off || !context.supports_safe_text_codec() {
         return Ok(None);
     }
     let ir = lower_hybrid_context(context, &original_body)
         .ok_or(ContextTransformError::UnsupportedContext)?;
-    let plan = apply_cache_evidence(context, build_context_plan(&ir, &original_body), evidence)?;
+    // A request-level `frozen_message_count` override wins over marker-derived
+    // floor detection: the caller owns the cache prefix contract for this
+    // request. `None` falls back to `compute_frozen_message_count`.
+    let frozen_message_floor = resolve_frozen_message_count(&original_body, frozen_message_count);
+    let plan = apply_cache_evidence(
+        context,
+        build_context_plan_with_frozen_floor(&ir, &original_body, frozen_message_floor),
+        evidence,
+    )?;
     let mut transforms = Vec::new();
-    let frozen_message_floor = compute_frozen_message_count(&original_body);
     let candidate_body = crate::hybrid::apply_safe_text_codec(
         context,
         policy,
@@ -484,7 +492,14 @@ pub fn validate_context_transform(
 }
 
 fn build_context_plan(ir: &HybridContextIr, body: &Value) -> ContextPlan {
-    let frozen_message_floor = compute_frozen_message_count(body);
+    build_context_plan_with_frozen_floor(ir, body, compute_frozen_message_count(body))
+}
+
+fn build_context_plan_with_frozen_floor(
+    ir: &HybridContextIr,
+    body: &Value,
+    frozen_message_floor: usize,
+) -> ContextPlan {
     let first_transformable = ir
         .nodes()
         .iter()
@@ -589,6 +604,15 @@ fn build_context_plan(ir: &HybridContextIr, body: &Value) -> ContextPlan {
             min_prefix_bytes: None,
         },
     }
+}
+
+/// Resolve the effective frozen-message floor for a request.
+///
+/// A request-level override (when `Some(n)`) wins over the marker-derived
+/// floor: the caller explicitly owns the cache-prefix contract for this
+/// request. `None` keeps upstream #2718 parity behavior.
+pub fn resolve_frozen_message_count(body: &Value, override_count: Option<usize>) -> usize {
+    override_count.unwrap_or_else(|| compute_frozen_message_count(body))
 }
 
 /// Compute the smallest `N` such that `messages[i]` is in the cache hot
