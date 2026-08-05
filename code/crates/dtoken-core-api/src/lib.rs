@@ -2,6 +2,8 @@ pub mod ccr_store;
 pub mod mcp;
 
 use anyhow::Context as _;
+#[cfg(windows)]
+use anyhow::bail;
 use axum::response::Response;
 use axum::{
     body::{Body, Bytes},
