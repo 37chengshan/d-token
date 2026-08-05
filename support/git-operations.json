@@ -729,6 +729,24 @@
       "summary": "chore: per-directory AGENTS.md, tauri-specta scaffolding, worktree scripts",
       "head_before": "1bf9ad514e6a1b1809f0e744a75dc572038a2581",
       "remote": null
+    },
+    {
+      "id": "8479222e-c244-40d3-ab02-1aa8ff52ca9b",
+      "timestamp": "2026-08-06T00:05:16+08:00",
+      "operation": "commit",
+      "branch": "codex/final-leanctx-release",
+      "summary": "提交 Context Bus 作用域隔离、真实 payload、CCR 精确删除与 fail-closed 能力证据",
+      "head_before": "76fe883",
+      "remote": null
+    },
+    {
+      "id": "c88734c3-3c7d-4fbe-bbef-8c6f5fb84a28",
+      "timestamp": "2026-08-06T00:05:38+08:00",
+      "operation": "commit",
+      "branch": "codex/final-leanctx-release",
+      "summary": "补交 Context Bus 提交后的 Git 审计记录",
+      "head_before": "0d21adb",
+      "remote": null
     }
   ]
 }
