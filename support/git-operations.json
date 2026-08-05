@@ -783,6 +783,51 @@
       "summary": "Push dynamic route and release gate candidate for CI and Windows validation",
       "head_before": "f707114473d268c5dec15bdd83416ef943aa4038",
       "remote": "origin"
+    },
+    {
+      "id": "18457dfc-53bd-4670-93db-0a03b4eebff7",
+      "timestamp": "2026-08-05T22:18:38+08:00",
+      "operation": "push",
+      "branch": "codex/code-graph-mcp-integration",
+      "summary": "push 6 commits (922b866..5cfe1f2) to origin/codex/code-graph-mcp-integration",
+      "head_before": "5cfe1f2c4b58",
+      "remote": "origin"
+    },
+    {
+      "id": "46e7f980-62b7-499a-b380-cb4e25ecad65",
+      "timestamp": "2026-08-05T23:11:09+08:00",
+      "operation": "branch-create",
+      "branch": "main",
+      "summary": "create isolated worktree branch for Agent and cc-switch closure",
+      "head_before": "76fe8838fa290514c13a20514e5c7d63c8ae75f3",
+      "remote": null
+    },
+    {
+      "id": "4795bcc3-6e5a-45ae-a674-a12d860ba602",
+      "timestamp": "2026-08-05T23:11:23+08:00",
+      "operation": "branch-create",
+      "branch": "main",
+      "summary": "create isolated worktree branch for Headroom compression and MCP closure",
+      "head_before": "76fe8838fa290514c13a20514e5c7d63c8ae75f3",
+      "remote": null
+    },
+    {
+      "id": "73dceb26-c646-4687-aea3-7d5f4af8362e",
+      "timestamp": "2026-08-05T23:11:35+08:00",
+      "operation": "branch-create",
+      "branch": "main",
+      "summary": "create isolated worktree branch for LeanCTX CCR and release evidence closure",
+      "head_before": "76fe8838fa290514c13a20514e5c7d63c8ae75f3",
+      "remote": null
+    },
+    {
+      "id": "c44becfe-d583-41e5-bec1-580ffe744a38",
+      "timestamp": "2026-08-06T00:04:25+08:00",
+      "operation": "commit",
+      "branch": "codex/code-graph-mcp-integration",
+      "summary": "提交发布前 PRD、MCP 会话、release gate 与测试合同收口改动",
+      "head_before": "5cfe1f2",
+      "remote": null
     }
   ]
 }

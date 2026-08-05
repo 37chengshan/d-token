@@ -67,6 +67,12 @@ jobs:
         with:
           ref: ${{ github.sha }}
           fetch-depth: 0
+          # clean: false — the download steps above already placed the macOS
+          # and Windows release artifacts under release-inputs/. A clean
+          # checkout (default clean: true) would delete that directory and
+          # the stage step below would fail. This checkout only anchors the
+          # source digest against the exact tagged commit.
+          clean: false
 
       - name: Stage public prerelease assets
         id: stage

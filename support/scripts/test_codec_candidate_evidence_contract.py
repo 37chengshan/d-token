@@ -72,6 +72,17 @@ class CodecCandidateEvidenceContractTests(unittest.TestCase):
         ):
             self.assertIn(required, self.public_release)
 
+    def test_public_prerelease_checkout_preserves_downloaded_artifacts(self) -> None:
+        # The publish job downloads macOS/Windows artifacts into release-inputs/
+        # and only then checks out the tagged source for the independent
+        # source-digest anchor. That checkout must set clean: false: the
+        # actions/checkout@v4 default (clean: true) deletes untracked files
+        # such as release-inputs/, which would break the stage step.
+        downloads = self.public_release.index("release-inputs/macos")
+        checkout = self.public_release.index("actions/checkout@v4")
+        self.assertLess(downloads, checkout)
+        self.assertIn("clean: false", self.public_release)
+
 
 if __name__ == "__main__":
     unittest.main()

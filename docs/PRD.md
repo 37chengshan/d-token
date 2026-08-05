@@ -1,8 +1,217 @@
 # d-token Living PRD
 
+## P0.0 发布前最终收口：产品目标规格 v2.1
+
+状态：2026-08-05 发布前最终迭代基线。
+本节吸收 `d-token-product-target-spec` v2.1 的产品目标与执行约束；它是本 PRD 的补充输入，不是实现完成证明。若本节与后文历史草案冲突，以本节、当前代码证据和 `docs/PLAN.md` 的最新状态为准。
+
+### P0.0.1 版本语义
+
+后续产品、实现和验收文档统一使用以下优先级：
+
+- **MUST**：目标版本的发布阻断条件，未满足不得称为可发布；
+- **SHOULD**：目标版本优先交付，但可以在明确记录风险后延期；
+- **MAY**：可选能力，不得阻塞核心发布。
+
+未被当前候选的真实运行证据、正式入口、错误路径、安全降级、回滚和文档同时证明的能力，只能标记为 `preview`、`partial`、`unavailable`、`unknown` 或 `not_verified`。不得因为存在类型、接口、静态页面、metadata-only 事件、passthrough 或单元测试而标记为完成。
+
+### P0.0.2 产品定义与用户闭环
+
+d-token 是面向 AI 编码 Agent 的本地上下文控制面：
+
+```text
+发现 Agent / 项目配置 / 用户配置 / cc-switch
+  → 建立带来源、时间、新鲜度和修订号的状态快照
+  → 用户授权接入策略
+  → 预览配置变更与风险
+  → 备份、应用、验证、必要时回滚
+  → 真实 Agent 请求进入 d-token-owned runtime
+  → Context Relay / 可信压缩 / post-validation
+  → 显式解析 Provider、模型、协议和 endpoint
+  → 转发并采集 Provider 用量
+  → 写入 Optimization Receipt 与 Event Ledger
+  → Dashboard / Analytics / Doctor 展示同一事实投影
+  → 外部配置变化后按授权策略重新发现、同步或请求用户决策
+```
+
+用户安装并授权一次后可以继续正常使用 Agent；只有在存在风险、冲突、低置信识别、新凭据或需要选择时才打扰用户。所有后台自动行为必须可在 Event Ledger 中追踪。
+
+### P0.0.3 Agent 与配置闭环
+
+所有被支持或被发现的 Agent 都必须进入统一配置模型，正式 UI 不得只因为 capability 字段相似就猜测“已配置”。每个 Agent 卡片必须能够显示：
+
+- 当前上游、Provider、模型、协议、脱敏 endpoint、来源、更新时间和验证状态；
+- `配置` 与 `清除` 两个独立动作；
+- 最近一次配置/清除 receipt 和下一步动作；
+- 配置格式未知、候选多义或 schema 未验证时的 `advanced-required` / `needs-selection` 状态。
+
+配置与清除均遵循：
+
+```text
+detect → parse current upstream → plan → redacted diff
+→ backup → user confirm → apply → reread/verify
+→ receipt；失败则精确回滚原始字节
+```
+
+配置只写 d-token-owned 字段、provider 或 profile；清除只删除带 manifest/hash ownership 证据的内容，保留用户已有 Provider、模型和凭据，且必须幂等。OpenCode、OpenClaw 等多供应商 Agent 使用专用 multi-provider adapter；未知格式不得套用其他 Agent 的字段。
+
+Rust-owned 合同必须是前后端唯一事实源：
+
+```text
+AgentConfigSnapshot
+  agent_id, config_targets, current_upstream, provider_id, model,
+  protocol, endpoint, config_fingerprint, credential_state, source_revision
+
+UpstreamSignature
+  provider, model, protocol, normalized_endpoint, profile_or_app_scope
+  （禁止 token、cookie、Authorization 和完整 auth 配置）
+
+AgentConfigPlan
+  operation(configure|clear), target_files, redacted_diff,
+  before_sha256, after_sha256, backup_or_rollback_id,
+  runtime_reload_requirement
+
+AgentConfigReceipt
+  planned|applied|verified|rolled_back|failed,
+  per-agent result, source revision, verification evidence, next action
+```
+
+前端只消费这些合同和 receipt，不根据 `capability`、文件存在或静态 `configured=true` 自行推断已接入。任何 plan 在 review 期间发现 source revision 或 fingerprint 变化，必须立即失效并重新发现。
+
+状态语义固定为：
+
+| 状态 | 允许表达的事实 |
+| --- | --- |
+| `detected` | 发现了文件、进程或配置 |
+| `configured` | 配置中存在 d-token-owned 设置，尚未证明真实流量 |
+| `connected` | 至少一条真实请求成功经过 d-token |
+| `verified` | 当前连接、路由或能力具有有效证据 |
+| `healthy` | 对应 Doctor 检查项在当前 revision 通过 |
+| `active` | 当前 Runtime 正在使用该 route/capability |
+| `supported` | 代码声明支持，不代表当前环境已验证 |
+
+任何 Agent 卡片、Doctor 和 Dashboard 都不得把 `detected`、`configured` 或 `supported` 直接显示成 `connected`、`verified` 或 `healthy`。
+
+### P0.0.4 cc-switch 与动态路由
+
+`cc-switch` 永远是只读外部观察源，d-token 不写其数据库、配置或凭据。必须支持多 app type、profile/provider 关系、多 active candidate、schema 状态、脱敏 endpoint、credential-present、fingerprint 和 revision；无法高置信识别 profile 时保留 `unknown`，不得把 provider 名冒充 profile。
+
+首次连接时用户明确选择 `follow`、`lock` 或 `observe`：
+
+- `follow`：检测到 Provider、模型、协议、endpoint 或 profile 变化后，先以 `source_fingerprint + source_revision + runtime_identity` 绑定 route sync plan；高置信、无新凭据且只更新 d-token-owned route 时可自动同步；
+- `lock`：只记录外部变化并提醒，不静默覆盖 d-token route；
+- `observe`：只检测和展示，不写入 Agent、cc-switch 或 Runtime。
+
+版本边界：`v0.2.0-beta.1` 默认只交付只读发现、`observe` 和明确冲突提示；`follow` 的自动 route sync 是 `v0.3` MUST，除非另有当前版本的真实证据、显式授权和回滚验证，不得把实现中存在的 watcher 误写成 Beta 已交付。
+
+监听必须覆盖已确认的数据库、WAL/SHM、profile metadata 和父目录，采用 750ms debounce、单飞刷新和 5–15 秒 polling fallback；SQLite 锁定、损坏、未来 schema、缺失和 watcher 不可用都要留下明确证据。Runtime 采用可验证的原子 route snapshot：旧请求继续使用旧快照，新请求使用新快照；reload 失败保留 last-known-good，并记录 `external_config_detected`、`external_config_changed`、`route_sync_*`、`runtime_reloaded` 或 `runtime_reload_required`。
+
+### P0.0.5 LeanCTX / Context Bus 独立能力域
+
+LeanCTX（以及与其行为对齐的开源 Context Bus / Context Relay 能力）不是 Headroom codec 的别名，也不是可以被“Headroom 已迁移”一项吞掉的附属实现。它负责跨 Agent、跨会话和项目作用域的结构化上下文复用；Headroom 负责请求内的可信压缩与转发。两者必须分别记录来源、许可证、参考版本、变更范围、能力矩阵和发布证据。
+
+LeanCTX 对齐的 d-token-owned 能力边界：
+
+1. `Context Bus`：以用户、项目、Agent、Session 为隔离边界，传递脱敏的结构化上下文；
+2. `Session Cache`：保存文件 hash、版本、修改时间、符号表、signatures、code map 和已验证结论，不保存 secret、凭据或未脱敏原文；
+3. `Context Relay`：在 Agent B 请求同一项目同一版本内容时复用允许的结果，并记录来源、命中、节省和新鲜度；
+4. `Query-aware Retrieval`：按当前任务选择相关上下文，保留恢复引用，不把 Relay 命中冒充压缩收益；
+5. `Recovery Pointer / Manifest`：允许用户在授权边界内定位被省略内容，文件变化、TTL 到期、权限变化或来源不可信时立即失效；
+6. `Stale / Superseded Context`：显式区分新鲜、过期和被替代上下文，禁止用旧 cache 继续回答；
+7. `SharedContext / memory`：结构化、可审计、可导出/删除，不能把整段 prompt/response 当作普通记忆。
+8. 同 Agent 自命中防护、Relay 内容大小边界和 Relay/普通 Session Cache 隔离；
+9. 每次命中必须在 Receipt 中区分“压缩节省”和“Relay 避免的重复传输”，不得双计。
+
+LeanCTX 与 CCR 的职责也必须分开：
+
+| 能力 | 责任 |
+| --- | --- |
+| LeanCTX / Context Bus / Relay | 复用已验证的结构化项目上下文，强调 scope、freshness、provenance 和失效 |
+| CCR | 为一次压缩请求提供可逆恢复的私有原文存储，强调加密、TTL、配额、权限、retrieve/delete |
+
+当前仓库的 Headroom provenance 记录了上游移除 `RTK/lean-ctx` 的历史决策，但没有因此形成可发布的 LeanCTX 迁移证据。LeanCTX 的来源事实仍是开放决策：实现前必须登记上游仓库、固定参考 commit、许可证、NOTICE、行为差异和 d-token-owned 替代边界。除非另有独立的正式入口、隔离/失效/回退测试和真实跨 Agent 证据，否则 LeanCTX 状态必须是 `unavailable` 或 `partial`，不得宣称“已完成”。
+
+版本边界：
+
+- `v0.2.0-beta.1`：MUST 保留 Context/Relay/Memory 的安全接口、scope 和 fail-closed 合同；不把未完成的跨 Agent 复用包装成发布能力；
+- `v0.3`：MUST 完成 Context Bus、Session Cache、Context Relay、Map/Signatures 复用、Query-aware Retrieval、Recovery Pointer、Stale/Superseded Context 和 CCR crash recovery；
+- `v0.4`：SHOULD 完成多 Agent 长期运行、低风险自动修复和项目/团队策略。
+
+任何 Relay 失败都必须回退正常读取；文件变化、项目变化、Agent/session 不匹配、权限不足、来源不明或无法验证新鲜度时必须拒绝命中并留下证据。
+
+### P0.0.6 Headroom 完整迁移发布阻断矩阵与 Optical 边界
+
+Headroom 只有在固定参考版本的能力矩阵逐项具备真实请求、错误路径、安全降级和回滚证据后，才允许在产品状态中标记“完整迁移”。发布阻断矩阵至少包括：
+
+| 能力域 | 发布要求 |
+| --- | --- |
+| Library/SDK、proxy、wrap/unwrap、MCP | 正式入口可达，真实请求和错误传播可验证 |
+| ContentRouter、JSON/log/search/build/diff/text/HTML/code codec | active 路径、语义/结构校验、负收益拒绝、超时/取消、secret redaction 和 rollback 证据 |
+| CacheAligner、live-zone、缓存前缀 | 稳定前缀、失效、TTL 和 cache evidence 可验证 |
+| CCR / retrieval / delete | 加密、TTL、配额、权限边界、崩溃恢复和精确删除证据 |
+| memory / SharedContext / learn / output shaping | 授权隔离、provenance、失效、回退和 route-aware 真实使用证据 |
+| ledger / stats / history / export / Doctor | 与同一 request id、route revision 和 receipt 对账 |
+| integrated RTK | d-token-owned provenance、命令改写/过滤、tee/tracking、fail-safe、卸载和跨平台证据 |
+
+`passthrough-only`、`metadata-only`、`preview-only`、测试专用实现或依赖外部 Headroom `8787` 的路径均不计为迁移完成。Optical 仅指“代码与上下文 → PNG → 多模态模型输入”的上下文优化链；普通图片 resize、re-encode、tile、ONNX 等不属于本产品范围。Optical active 默认关闭，只有签名 capability、确定性 renderer、post-validator、资源上限和目标模型质量/成本/延迟评估全部通过后才可达；此前只能是 shadow/preview。
+
+本矩阵是“Headroom 完整迁移”长期发布阻断门，不等同于 `v0.2.0-beta.1` 的全部 MUST；Beta 只允许交付 P0.0.7 明确列出的 Headroom 核心可信压缩子集，其余能力保持 `partial`/`unavailable` 并进入后续版本门。
+
+### P0.0.7 `v0.2.0-beta.1` 发布门
+
+当前公开试用候选的 MUST 范围是：首次引导、Agent/cc-switch 发现、配置事务与恢复、OpenAI Chat/Responses 和 Anthropic Messages 路由、Headroom 核心可信压缩、Optimization Receipt、Local Token 与 Provider Token 分离、Doctor、OpenCode 与 Codex 各至少一条真实 routed-flow、macOS/Windows 候选安装包及安装/升级/卸载恢复证据。
+
+其中 Codex routed-flow 不能由“配置事务已精确恢复”替代，必须有独立的真实请求报告，至少绑定 `agent_id=codex`、当前 provider/model/protocol、route verified、请求匹配数、Event Ledger/metrics 计数、失败分类和恢复状态；未有该报告时 Codex 只能显示 `configured`/`not_verified`。
+
+发布前必须同时满足：
+
+1. 所有正式 UI 动作接通 d-token-owned runtime、Tauri command 或 Event Ledger；禁止 mock 成功状态；
+2. 同一候选 revision 绑定双平台构建、哈希、安装启动、运行链路、配置恢复和已知限制；
+3. 压缩失败、Relay 失败、Receipt/Analytics 失败、Provider 失败和 reload 失败都安全降级或明确阻断；
+4. `G0–G8` 全部通过，且每个能力域拥有当前 revision 的真实证据；否则 `release_ready=false`；
+5. 当前状态快照必须诚实反映证据：Headroom 尚未完整迁移，任何未通过门不得在 App、README、发布说明或 PRD 中写成“已完成”。
+
+物理 Token 变化、Local Token 估算和可声明收益必须分开：`estimated` 只能作为估算展示；`claimable` 只有在 Provider 计费/usage 证据和归因链完整时才可为 true；Relay 避免的重复传输不得计入压缩收益，shadow、fallback、Provider 失败不得计入 actual savings。
+
+`v0.3` 发布门除能力实现外，还必须证明：两个 Agent 复用同一项目允许上下文；文件变化后旧 Relay 失效；跨项目污染为零；Relay 失败安全回退；Receipt 区分压缩节省和 Relay 避免的重复传输；cc-switch 切换后状态一致或明确提示冲突。
+
+`v0.4` 发布门还必须证明：常见 Agent 与 cc-switch 长期稳定、Doctor 可修复大部分低风险问题、Token 节省和任务质量有公开可复现证据、隐私安全会话报告、企业代理/证书适配、稳定签名和签名自动更新。
+
+### P0.0.8 信息架构对照与 Context 入口
+
+规格中的 `Context` 不是新增工程化一级页面。为保持产品固定的八页 IA，Context Bus、LeanCTX Relay、Code Map、Signatures、Memory、Stale/Superseded Context 和 Recovery Pointer 按用户任务落位：
+
+| 用户任务 | 正式入口 |
+| --- | --- |
+| 当前上下文、Relay 命中、新鲜度和节省摘要 | 总体概览、分析 |
+| Agent/项目发现、上下文扫描和授权策略 | 安装与连接工作台的智能学习/高级安装上栏 |
+| Code Map、Signatures 和索引状态 | 代码图谱（实验性） |
+| Memory、SharedContext、失效和授权 | 分析详情、Doctor |
+| Recovery Pointer、CCR retrieve/delete、变更证据 | 变更与回退、请求/Receipt 详情 |
+
+不得为 Headroom、LeanCTX、CCR 或 Context Bus 另建用户级独立页面；新增页面若不能对应一个用户任务，发布验收不通过。
+
+### P0.0.9 未决产品决策登记
+
+以下决策在具体版本实现前必须显式落档，不得由临时代码默认值替代：
+
+| 决策项 | 当前状态 |
+| --- | --- |
+| 默认配置模式 | `open`：首次使用必须明确选择 `observe`/`lock`；`follow` 需单独授权 |
+| 默认压缩策略 | `resolved`：安全、可降级为默认；增强/有损必须显式确认 |
+| Context Relay 持久化 | `open`：先满足项目隔离、TTL/quota、失效和删除，再确定默认存储 |
+| 数据保留周期 | `resolved`：用户可配置，默认值需在隐私/诊断证据中标明 |
+| Telemetry 默认状态 | `open`：必须可关闭，默认值随正式隐私说明一并决定 |
+| 自动修复范围 | `resolved`：仅低风险、可逆、可验证动作可自动化 |
+| Provider 回退策略 | `resolved`：禁止静默跨 Provider；任何 fallback 需用户策略与 receipt |
+| 云端能力 | `resolved`：不是本地核心运行依赖，默认不上传代码、Prompt 或凭据 |
+| LeanCTX 上游来源 | `open`：在实现前登记仓库、固定 commit、许可证、NOTICE 和差异说明 |
+
+本规格未覆盖 Optical 的协议、安全和 UI 细节；该能力按本 PRD P0.0.6、§8、`AGENTS.md` 安全边界执行，默认 shadow/preview，不能以规格文本缺失为由扩大为普通图片压缩。
+
 ## P0 发布版产品决策：从当前版本到稳定发布
 
-状态：2026-07-13 用户已确认的最新产品口径。本节优先级高于旧页面草案；旧技术链路、runtime 契约、测试契约继续作为实现约束保留。
+状态：2026-08-05 用户确认的发布前产品口径。本节优先级低于 `P0.0` 的最终收口条款、高于旧页面草案；旧技术链路、runtime 契约、测试契约继续作为实现约束保留。
 
 ### P0.1 产品形态
 
@@ -929,11 +1138,24 @@ d-token 将直接吸收和修改 Headroom 能力，形成 Headroom-derived runti
 3. CCR reversible compression 与 local retrieval。
 4. Local proxy / SDK / MCP server。
 5. Agent wrap / unwrap。
-6. Cross-agent memory、per-project memory、SharedContext。
+6. memory / SharedContext 的请求内授权接口与 provenance 记录；跨 Agent 复用的 Context Bus 由独立的 LeanCTX 对齐层负责。
 7. learn / verbosity / output shaper。
 8. Metrics、stats、history、dashboard primitives。
 9. Integrated RTK install / hook / wrap-side metrics bridge。
 10. Windows/macOS 兼容性补丁：UTF-8、路径、shim、端口、进程身份。
+
+### 4.1.1 LeanCTX / Context Bus-derived owns
+
+LeanCTX 对齐层不是外部 Python sidecar，也不是 Headroom proxy 的隐式依赖。它必须由 d-token-owned service 以独立 capability 和证据域提供：
+
+1. Context Bus、Session Cache、Context Relay 和 Query-aware Retrieval；
+2. map、signatures、code map、脱敏摘要和已验证结论的项目级复用；
+3. 用户、项目、Agent、Session scope、freshness、provenance、deduplication 和失效；
+4. Recovery Pointer/Manifest、Stale/Superseded Context 和文件变化后的安全拒绝；
+5. 跨 Agent 命中与压缩收益分离计量，Relay 失败回退正常读取；
+6. export/delete、TTL/quota、崩溃恢复和授权审计。
+
+该层的上游来源、许可证、参考 commit、修改边界和行为差异必须独立登记。没有真实跨 Agent 证据时，只能显示 `partial`/`unavailable`，不得因为 Headroom codec 或 CCR 通过而自动变绿。
 
 ### 4.2 Integrated RTK owns
 
@@ -1106,7 +1328,9 @@ Standalone RTK 不作为用户路径保留。d-token 必须适配 integrated RTK
 
 ## 8. Headroom-derived runtime 适配范围
 
-当前公开试用候选必须完整保留、吸收并实现：Library / SDK、Local proxy、Agent wrap / unwrap、MCP server、Content-aware compression pipeline、ContentRouter、CacheAligner、SmartCrusher、CodeCompressor、Kompress/text compressor、image compression、live-zone compression、CCR reversible compression、local retrieval、Cross-agent memory、Per-project memory、SharedContext、learn、output shaper、verbosity steering、effort routing、durable savings ledger、metrics endpoints、Historical stats、JSON/CSV export、Cost tracking、Per-model/per-agent/per-project breakdown、Doctor/perf/benchmark/troubleshooting、integrated RTK。
+当前公开试用候选必须完整保留、吸收并实现：Library / SDK、Local proxy、Agent wrap / unwrap、MCP server、Content-aware compression pipeline、ContentRouter、CacheAligner、SmartCrusher、CodeCompressor、Kompress/text compressor、**Optical context compression（代码/上下文 → PNG → 多模态模型输入）**、live-zone compression、CCR reversible compression、local retrieval、Cross-agent memory、Per-project memory、SharedContext、learn、output shaper、verbosity steering、effort routing、durable savings ledger、metrics endpoints、Historical stats、JSON/CSV export、Cost tracking、Per-model/per-agent/per-project breakdown、Doctor/performance/troubleshooting、integrated RTK。
+
+普通图片文件的 resize、re-encode、tile、ONNX 推理或通用图片上传压缩不属于 d-token 范围，也不得被当作 Optical 迁移完成条件。
 
 完成判定必须逐能力同时满足：真实 Rust-owned 执行路径、公开/内部接口、正常与失败路径测试、隐私与资源上限、Event Ledger/metrics 证据，以及至少一条实际 Agent routed flow。只有路由定义、Tauri command、metadata summary、preview、fixture smoke 或 UI 入口不算迁移完成。对上游实现只做行为参考时必须记录参考 commit 与许可证；复制或修改代码时必须额外记录 NOTICE、文件范围与变更说明。
 
