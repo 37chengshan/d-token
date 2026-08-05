@@ -306,6 +306,19 @@ def cargo_security_summary() -> tuple[dict[str, int], dict[str, Any]]:
     }
 
 
+def resolve_source_revision(explicit: str | None) -> str:
+    """Commit-bound source digest: explicit value, CI SHA, then checked-out HEAD."""
+    if explicit:
+        return explicit
+    if os.environ.get("GITHUB_SHA"):
+        return os.environ["GITHUB_SHA"]
+    commit = run_command(["git", "rev-parse", "HEAD"], ROOT)
+    revision = str(commit.get("stdout", "")).strip()
+    if commit.get("status") == "completed" and len(revision) == 40:
+        return revision
+    return "local-uncommitted"
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Generate d-token release SBOM, license, security, notes and build metadata."
@@ -318,9 +331,14 @@ def main() -> int:
     parser.add_argument("--skip-audits", action="store_true")
     parser.add_argument("--require-cargo-audit", action="store_true")
     parser.add_argument("--fail-on-high", action="store_true")
-    parser.add_argument("--source-revision", default=os.environ.get("GITHUB_SHA", "local-uncommitted"))
+    parser.add_argument(
+        "--source-revision",
+        default=None,
+        help="Commit-bound source digest; defaults to GITHUB_SHA, then the checked-out HEAD commit.",
+    )
     parser.add_argument("--tag", default=os.environ.get("GITHUB_REF_NAME", ""))
     args = parser.parse_args()
+    source_revision = resolve_source_revision(args.source_revision)
 
     package_json = json.loads((DESKTOP / "package.json").read_text(encoding="utf-8"))
     version = package_json["version"]
@@ -361,7 +379,7 @@ def main() -> int:
                 "licenses": [{"license": {"id": "Apache-2.0"}}],
             },
             "properties": [
-                {"name": "d-token:source-revision", "value": args.source_revision},
+                {"name": "d-token:source-revision", "value": source_revision},
                 {"name": "d-token:tag", "value": args.tag or "unassigned"},
             ],
         },
@@ -397,7 +415,7 @@ def main() -> int:
                 "",
                 f"- Candidate: `d-token {version}`",
                 f"- Generated: `{generated_at}`",
-                f"- Source revision: `{args.source_revision}`",
+                f"- Source revision: `{source_revision}`",
                 f"- Tag: `{args.tag or 'unassigned'}`",
                 "",
                 "## npm audit",
@@ -434,7 +452,7 @@ def main() -> int:
         "product": "d-token",
         "version": version,
         "tag": args.tag or None,
-        "source_revision": args.source_revision,
+        "source_revision": source_revision,
         "generated_at": generated_at,
         "platform": platform.platform(),
         "architecture": platform.machine(),

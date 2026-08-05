@@ -1,6 +1,7 @@
 use axum::{
     body::Body,
     http::{header::CONTENT_TYPE, Request, StatusCode},
+    Router,
 };
 use dtoken_config::DtokenConfig;
 use dtoken_context_store::{
@@ -17,6 +18,39 @@ use dtoken_types::{
 };
 use serde_json::{json, Value};
 use tower::util::ServiceExt;
+
+/// Opens a Streamable-HTTP session over POST /mcp and returns the
+/// `Mcp-Session-Id` header that later requests must carry.
+async fn initialize_http_session(app: &Router) -> String {
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/mcp")
+                .header(CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(&json!({
+                        "jsonrpc": "2.0",
+                        "id": 1,
+                        "method": "initialize",
+                        "params": {"protocolVersion": "2024-11-05"}
+                    }))
+                    .expect("initialize JSON"),
+                ))
+                .expect("initialize request"),
+        )
+        .await
+        .expect("initialize response");
+    assert_eq!(response.status(), StatusCode::OK);
+    response
+        .headers()
+        .get(dtoken_core_api::mcp::MCP_SESSION_HEADER)
+        .expect("Mcp-Session-Id header")
+        .to_str()
+        .expect("session id is utf-8")
+        .to_string()
+}
 
 #[tokio::test]
 async fn compression_decision_matches_http_and_mcp_surfaces() {
@@ -140,13 +174,22 @@ async fn http_json_rpc_mcp_matches_stdio_and_library_surfaces() {
         strip_timing(library_json)
     );
 
-    // Streamable-HTTP JSON mode answers with the identical payload.
-    let http_response = build_router(state.clone())
+    // Streamable-HTTP JSON mode answers with the identical payload. The
+    // session is opened by `initialize`; the tools/call request must carry
+    // the returned `Mcp-Session-Id` header.
+    let app = build_router(state.clone());
+    let session_id = initialize_http_session(&app).await;
+    let http_response = app
+        .clone()
         .oneshot(
             Request::builder()
                 .method("POST")
                 .uri("/mcp")
                 .header(CONTENT_TYPE, "application/json")
+                .header(
+                    dtoken_core_api::mcp::MCP_SESSION_HEADER,
+                    session_id.as_str(),
+                )
                 .header("accept", "application/json")
                 .body(Body::from(
                     serde_json::to_vec(&mcp_body).expect("MCP body JSON"),
@@ -213,6 +256,7 @@ async fn http_json_rpc_mcp_rejects_oversized_frames_and_parse_errors_without_ech
 #[tokio::test]
 async fn http_json_rpc_mcp_preserves_cancellation_state_across_posts() {
     let app = build_router(AppState::new(surface_test_config()));
+    let session_id = initialize_http_session(&app).await;
     let cancellation = app
         .clone()
         .oneshot(
@@ -220,6 +264,10 @@ async fn http_json_rpc_mcp_preserves_cancellation_state_across_posts() {
                 .method("POST")
                 .uri("/mcp")
                 .header(CONTENT_TYPE, "application/json")
+                .header(
+                    dtoken_core_api::mcp::MCP_SESSION_HEADER,
+                    session_id.as_str(),
+                )
                 .body(Body::from(
                     serde_json::to_vec(&json!({
                         "jsonrpc": "2.0",
@@ -240,6 +288,10 @@ async fn http_json_rpc_mcp_preserves_cancellation_state_across_posts() {
                 .method("POST")
                 .uri("/mcp")
                 .header(CONTENT_TYPE, "application/json")
+                .header(
+                    dtoken_core_api::mcp::MCP_SESSION_HEADER,
+                    session_id.as_str(),
+                )
                 .body(Body::from(
                     serde_json::to_vec(&json!({
                         "jsonrpc": "2.0",

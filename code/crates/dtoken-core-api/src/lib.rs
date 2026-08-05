@@ -6,7 +6,7 @@ use axum::response::Response;
 use axum::{
     body::{Body, Bytes},
     extract::{DefaultBodyLimit, Extension, Path as AxumPath, Query, State},
-    http::header::{CACHE_CONTROL, CONTENT_TYPE},
+    http::header::{HeaderValue, CACHE_CONTROL, CONTENT_TYPE},
     http::HeaderMap,
     middleware::{self, Next},
     response::IntoResponse,
@@ -3886,7 +3886,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/headroom/status", get(headroom_status))
         .route("/headroom/proxy", get(headroom_proxy))
         .route("/headroom/mcp", get(headroom_mcp))
-        .route("/mcp", post(mcp_http))
+        .route("/mcp", post(mcp_http).delete(mcp_http_delete))
         .route("/headroom/stats", get(headroom_stats))
         .route("/headroom/cache-summary", get(headroom_cache_summary))
         .route("/compression/optical/preview", post(optical_preview))
@@ -12451,7 +12451,7 @@ async fn headroom_mcp(State(state): State<AppState>) -> Json<Value> {
     }))
 }
 
-/// Streamable-HTTP MCP JSON mode.
+/// Streamable-HTTP MCP JSON mode with a bounded session lifecycle.
 ///
 /// The MCP streamable-HTTP spec lets a client request JSON-only delivery by
 /// sending `Accept: application/json`; the server then answers with a single
@@ -12460,45 +12460,494 @@ async fn headroom_mcp(State(state): State<AppState>) -> Json<Value> {
 /// limits as the stdio transport and handled by the same `McpServer`, so the
 /// decision/reason/artifact contract is byte-identical across transports.
 ///
+/// Sessions are implicit and bounded: `initialize` creates a session whose
+/// id is returned in the `Mcp-Session-Id` header, and every subsequent
+/// request must carry that header.  The session layer records request and
+/// terminal state without persisting request bodies.  Any request without a
+/// session id other than `initialize` is rejected fail-closed instead of
+/// guessing a session.  Idle sessions are reaped lazily at this boundary, so
+/// clients that exit without DELETE /mcp release their capacity slot within
+/// `mcp::MCP_SESSION_IDLE_TTL`; DELETE /mcp removes a session immediately.
 /// No SSE session endpoint is registered (the axum build has no `sse`
-/// feature). The router owns one bounded `McpServer`, preserving JSON-RPC
-/// cancellation bookkeeping across POSTs while keeping retrieval and memory
-/// capabilities unavailable on the public loopback HTTP surface.
+/// feature), so sessions answer JSON only.
 async fn mcp_http(
     Extension(server): Extension<Arc<mcp::McpServer>>,
+    headers: HeaderMap,
     body_bytes: Bytes,
 ) -> Response {
+    server.reap_idle_sessions();
+    // Fail-closed content-type gate: only JSON is accepted. Anything else is
+    // rejected with a JSON-RPC error receipt instead of being guessed at.
+    let content_type = headers
+        .get(CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default();
+    if !content_type
+        .split(';')
+        .next()
+        .unwrap_or_default()
+        .trim()
+        .eq_ignore_ascii_case("application/json")
+    {
+        return jsonrpc_http_error(
+            StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            Value::Null,
+            -32600,
+            "Content-Type must be application/json",
+        );
+    }
     if body_bytes.len() > mcp::MAX_MCP_MESSAGE_BYTES {
-        return (
+        return jsonrpc_http_error(
             StatusCode::PAYLOAD_TOO_LARGE,
-            Json(json!({
-                "jsonrpc": "2.0",
-                "id": Value::Null,
-                "error": {"code": -32600, "message": "Request too large"}
-            })),
-        )
-            .into_response();
+            Value::Null,
+            -32600,
+            "Request too large",
+        );
     }
     let request: Value = match serde_json::from_slice(&body_bytes) {
         Ok(request) => request,
         Err(_) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(json!({
-                    "jsonrpc": "2.0",
-                    "id": Value::Null,
-                    "error": {"code": -32700, "message": "Parse error"}
-                })),
-            )
-                .into_response();
+            return jsonrpc_http_error(StatusCode::BAD_REQUEST, Value::Null, -32700, "Parse error");
         }
     };
-    let Some(response) = server.handle_jsonrpc(request) else {
-        // Notifications have no response; Streamable-HTTP still answers with a
-        // 202 Accepted and an empty body per the spec.
-        return (StatusCode::ACCEPTED, ()).into_response();
+    let session_id = headers
+        .get(mcp::MCP_SESSION_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string);
+    let Some(session_id) = session_id else {
+        if request.get("method").and_then(Value::as_str) == Some("initialize") {
+            return initialize_session(server, request).await;
+        }
+        // Fail-closed: a session is created only by `initialize`; any other
+        // request without a session id is rejected, never guessed.
+        return jsonrpc_http_error(
+            StatusCode::BAD_REQUEST,
+            request.get("id").cloned().unwrap_or(Value::Null),
+            mcp::McpSessionError::SessionUnknown.code(),
+            mcp::McpSessionError::SessionUnknown.message(),
+        );
     };
-    (StatusCode::OK, Json(response)).into_response()
+    match server.session_state(&session_id) {
+        Ok(state) if state.status == mcp::McpSessionStatus::Active => {}
+        Ok(_) => {
+            return jsonrpc_http_error(
+                StatusCode::BAD_REQUEST,
+                request.get("id").cloned().unwrap_or(Value::Null),
+                mcp::McpSessionError::SessionTerminated.code(),
+                mcp::McpSessionError::SessionTerminated.message(),
+            );
+        }
+        Err(mcp::McpSessionError::SessionUnknown) => {
+            return jsonrpc_http_error(
+                StatusCode::BAD_REQUEST,
+                request.get("id").cloned().unwrap_or(Value::Null),
+                mcp::McpSessionError::SessionUnknown.code(),
+                mcp::McpSessionError::SessionUnknown.message(),
+            );
+        }
+        Err(_) => {
+            return jsonrpc_http_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                request.get("id").cloned().unwrap_or(Value::Null),
+                -32603,
+                "Internal error",
+            );
+        }
+    }
+    match server.submit_session_jsonrpc(&session_id, request).await {
+        Ok(Some(response)) => (StatusCode::OK, Json(response)).into_response(),
+        Ok(None) => {
+            // Notifications have no response; Streamable-HTTP still answers
+            // with a 202 Accepted and an empty body per the spec.
+            (StatusCode::ACCEPTED, ()).into_response()
+        }
+        Err(error) => {
+            let status = match error {
+                mcp::McpSessionError::SessionBusy => StatusCode::CONFLICT,
+                _ => StatusCode::BAD_REQUEST,
+            };
+            jsonrpc_http_error(status, Value::Null, error.code(), error.message())
+        }
+    }
+}
+
+/// Terminate one Streamable-HTTP MCP session over DELETE /mcp, identified by
+/// the `Mcp-Session-Id` header. The in-flight request (if any) is cancelled
+/// and the session's capacity slot is reclaimed immediately, so a client that
+/// finishes normally can release capacity without waiting for the idle TTL.
+/// Fail-closed: a missing header and an unknown session id are both rejected.
+async fn mcp_http_delete(
+    Extension(server): Extension<Arc<mcp::McpServer>>,
+    headers: HeaderMap,
+) -> Response {
+    let Some(session_id) = headers
+        .get(mcp::MCP_SESSION_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string)
+    else {
+        return jsonrpc_http_error(
+            StatusCode::BAD_REQUEST,
+            Value::Null,
+            mcp::McpSessionError::SessionUnknown.code(),
+            mcp::McpSessionError::SessionUnknown.message(),
+        );
+    };
+    match server.remove_session(&session_id) {
+        Ok(_) => (StatusCode::NO_CONTENT, ()).into_response(),
+        Err(mcp::McpSessionError::SessionUnknown) => jsonrpc_http_error(
+            StatusCode::NOT_FOUND,
+            Value::Null,
+            mcp::McpSessionError::SessionUnknown.code(),
+            mcp::McpSessionError::SessionUnknown.message(),
+        ),
+        Err(_) => jsonrpc_http_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Value::Null,
+            -32603,
+            "Internal error",
+        ),
+    }
+}
+
+/// Creates the session for an `initialize` request and answers with the
+/// `Mcp-Session-Id` header, so the client can bind subsequent requests.
+async fn initialize_session(server: Arc<mcp::McpServer>, request: Value) -> Response {
+    let state = match server.create_session() {
+        Ok(state) => state,
+        Err(mcp::McpSessionError::SessionCapacityExhausted) => {
+            return jsonrpc_http_error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                request.get("id").cloned().unwrap_or(Value::Null),
+                mcp::McpSessionError::SessionCapacityExhausted.code(),
+                mcp::McpSessionError::SessionCapacityExhausted.message(),
+            );
+        }
+        Err(_) => {
+            return jsonrpc_http_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                request.get("id").cloned().unwrap_or(Value::Null),
+                -32603,
+                "Internal error",
+            );
+        }
+    };
+    match server
+        .submit_session_jsonrpc(&state.session_id, request)
+        .await
+    {
+        Ok(Some(response)) => {
+            let mut headers = HeaderMap::new();
+            if let Ok(value) = HeaderValue::from_str(&state.session_id) {
+                headers.insert(mcp::MCP_SESSION_HEADER, value);
+            }
+            (StatusCode::OK, headers, Json(response)).into_response()
+        }
+        Ok(None) => (StatusCode::ACCEPTED, ()).into_response(),
+        Err(error) => {
+            let _ = server.terminate_session(&state.session_id);
+            jsonrpc_http_error(
+                StatusCode::BAD_REQUEST,
+                Value::Null,
+                error.code(),
+                error.message(),
+            )
+        }
+    }
+}
+
+fn jsonrpc_http_error(status: StatusCode, id: Value, code: i64, message: &str) -> Response {
+    (
+        status,
+        Json(json!({"jsonrpc": "2.0", "id": id, "error": {"code": code, "message": message}})),
+    )
+        .into_response()
+}
+
+#[cfg(test)]
+mod mcp_http_tests {
+    use super::*;
+    use dtoken_config::DtokenConfig;
+
+    fn rpc_request(id: u64, method: &str, params: Value) -> Value {
+        json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params})
+    }
+
+    async fn http_response(response: Response) -> (StatusCode, HeaderMap, Value) {
+        let status = response.status();
+        let headers = response.headers().clone();
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("read response body");
+        let body: Value = if bytes.is_empty() {
+            Value::Null
+        } else {
+            serde_json::from_slice(&bytes).expect("JSON response body")
+        };
+        (status, headers, body)
+    }
+
+    fn initialize_request() -> Value {
+        rpc_request(1, "initialize", json!({"protocolVersion": "2024-11-05"}))
+    }
+
+    fn session_header(session_id: &str) -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            mcp::MCP_SESSION_HEADER,
+            HeaderValue::from_str(session_id).expect("valid session header value"),
+        );
+        headers
+    }
+
+    /// Headers for a JSON POST to /mcp: the fail-closed content-type gate
+    /// accepts only `application/json`.
+    fn json_post_headers() -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+        headers
+    }
+
+    fn session_json_post_headers(session_id: &str) -> HeaderMap {
+        let mut headers = json_post_headers();
+        headers.insert(
+            mcp::MCP_SESSION_HEADER,
+            HeaderValue::from_str(session_id).expect("valid session header value"),
+        );
+        headers
+    }
+
+    async fn initialize_http_session(server: &Arc<mcp::McpServer>) -> String {
+        let (_, headers, _) = http_response(
+            mcp_http(
+                Extension(server.clone()),
+                json_post_headers(),
+                Bytes::from(initialize_request().to_string()),
+            )
+            .await,
+        )
+        .await;
+        headers
+            .get(mcp::MCP_SESSION_HEADER)
+            .expect("Mcp-Session-Id header")
+            .to_str()
+            .expect("session id is utf-8")
+            .to_string()
+    }
+
+    #[tokio::test]
+    async fn initialize_creates_a_session_and_answers_with_session_header() {
+        let server = Arc::new(mcp::McpServer::new(AppState::new(DtokenConfig::empty())));
+        let (status, headers, body) = http_response(
+            mcp_http(
+                Extension(server.clone()),
+                json_post_headers(),
+                Bytes::from(initialize_request().to_string()),
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["result"]["protocolVersion"], "2024-11-05");
+        let session_id = headers
+            .get(mcp::MCP_SESSION_HEADER)
+            .expect("Mcp-Session-Id header")
+            .to_str()
+            .expect("session id is utf-8")
+            .to_string();
+        assert!(!session_id.is_empty());
+        assert_eq!(
+            server
+                .session_state(&session_id)
+                .expect("created session")
+                .status,
+            mcp::McpSessionStatus::Active
+        );
+    }
+
+    #[tokio::test]
+    async fn request_without_session_is_fail_closed_except_initialize() {
+        let server = Arc::new(mcp::McpServer::new(AppState::new(DtokenConfig::empty())));
+        // A non-initialize request without a session id is rejected; the
+        // server never guesses a session.
+        let (status, _, body) = http_response(
+            mcp_http(
+                Extension(server.clone()),
+                json_post_headers(),
+                Bytes::from(rpc_request(5, "ping", json!({})).to_string()),
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(
+            body["error"]["code"],
+            mcp::McpSessionError::SessionUnknown.code()
+        );
+    }
+
+    #[tokio::test]
+    async fn unknown_session_id_is_rejected_fail_closed() {
+        let server = Arc::new(mcp::McpServer::new(AppState::new(DtokenConfig::empty())));
+        let (status, _, body) = http_response(
+            mcp_http(
+                Extension(server),
+                session_json_post_headers("missing-session"),
+                Bytes::from(rpc_request(5, "ping", json!({})).to_string()),
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(
+            body["error"]["code"],
+            mcp::McpSessionError::SessionUnknown.code()
+        );
+    }
+
+    #[tokio::test]
+    async fn non_json_content_type_is_rejected_fail_closed() {
+        let server = Arc::new(mcp::McpServer::new(AppState::new(DtokenConfig::empty())));
+        let mut headers = HeaderMap::new();
+        headers.insert(CONTENT_TYPE, HeaderValue::from_static("text/plain"));
+        let (status, _, body) = http_response(
+            mcp_http(
+                Extension(server),
+                headers,
+                Bytes::from(initialize_request().to_string()),
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNSUPPORTED_MEDIA_TYPE);
+        assert_eq!(body["error"]["code"], -32600);
+    }
+
+    #[tokio::test]
+    async fn delete_unknown_session_and_missing_header_are_rejected() {
+        let server = Arc::new(mcp::McpServer::new(AppState::new(DtokenConfig::empty())));
+        let (status, _, body) = http_response(
+            mcp_http_delete(Extension(server.clone()), session_header("missing-session")).await,
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(
+            body["error"]["code"],
+            mcp::McpSessionError::SessionUnknown.code()
+        );
+
+        let (status, _, _) =
+            http_response(mcp_http_delete(Extension(server), HeaderMap::new()).await).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn delete_frees_session_capacity_after_initialize_exhaustion() {
+        let server = Arc::new(mcp::McpServer::new(AppState::new(DtokenConfig::empty())));
+        let mut session_ids = Vec::new();
+        for _ in 0..mcp::MAX_MCP_SESSIONS {
+            session_ids.push(initialize_http_session(&server).await);
+        }
+        // Capacity exhausted: the next initialize is rejected 503.
+        let (status, _, body) = http_response(
+            mcp_http(
+                Extension(server.clone()),
+                json_post_headers(),
+                Bytes::from(initialize_request().to_string()),
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(
+            body["error"]["code"],
+            mcp::McpSessionError::SessionCapacityExhausted.code()
+        );
+
+        // DELETE one session: the slot is reclaimed immediately.
+        let (status, _, _) = http_response(
+            mcp_http_delete(Extension(server.clone()), session_header(&session_ids[0])).await,
+        )
+        .await;
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        let (status, headers, _) = http_response(
+            mcp_http(
+                Extension(server.clone()),
+                json_post_headers(),
+                Bytes::from(initialize_request().to_string()),
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let replacement = headers
+            .get(mcp::MCP_SESSION_HEADER)
+            .expect("Mcp-Session-Id header")
+            .to_str()
+            .expect("session id is utf-8")
+            .to_string();
+        assert_ne!(replacement, session_ids[0]);
+
+        // The deleted session id is no longer routable: POST fails fail-closed.
+        let (status, _, _) = http_response(
+            mcp_http(
+                Extension(server),
+                session_json_post_headers(&session_ids[0]),
+                Bytes::from(rpc_request(5, "ping", json!({})).to_string()),
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn session_notification_returns_202_accepted() {
+        let server = Arc::new(mcp::McpServer::new(AppState::new(DtokenConfig::empty())));
+        let session_id = initialize_http_session(&server).await;
+        let (status, _, body) = http_response(
+            mcp_http(
+                Extension(server),
+                session_json_post_headers(&session_id),
+                Bytes::from(
+                    json!({
+                        "jsonrpc": "2.0",
+                        "method": "notifications/initialized",
+                        "params": {}
+                    })
+                    .to_string(),
+                ),
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(status, StatusCode::ACCEPTED);
+        assert_eq!(body, Value::Null);
+    }
+
+    #[tokio::test]
+    async fn session_request_roundtrip_guards_single_in_flight() {
+        let server = Arc::new(mcp::McpServer::new(AppState::new(DtokenConfig::empty())));
+        let session_id = initialize_http_session(&server).await;
+        let (status, _, body) = http_response(
+            mcp_http(
+                Extension(server.clone()),
+                session_json_post_headers(&session_id),
+                Bytes::from(rpc_request(5, "ping", json!({})).to_string()),
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["result"], json!({}));
+        assert_eq!(
+            server
+                .session_state(&session_id)
+                .expect("session state")
+                .last_terminal
+                .map(|terminal| terminal.kind),
+            Some(mcp::McpSessionTerminalKind::Completed)
+        );
+    }
 }
 
 async fn backend_capabilities(State(state): State<AppState>) -> Json<CapabilityRegistrySnapshot> {
