@@ -5229,8 +5229,72 @@ fn install_or_verify(id: &str) -> ActionResult {
     }
 }
 
+/// Validates a `model-pricing` settings payload and normalizes it in place.
+///
+/// Contract (stored under `settings/model-pricing.json`):
+/// - `prices`: array of entries; an empty array is the user-maintained default
+///   empty state. Fee calculation must treat a missing entry as "price unknown"
+///   and never as zero.
+/// - Each entry: `model` (non-empty, trimmed, ≤128 chars), `currency`
+///   (USD/CNY), `inputPerMillion` / `outputPerMillion` (finite, ≥ 0).
+/// - The backend stamps `source` (`"user"`) and `updatedAt` so the local table
+///   always carries its own provenance; negative/NaN/Inf values, empty or
+///   overlong model ids, unsupported currencies and duplicate model+currency
+///   pairs are rejected before anything is written.
+fn validate_model_pricing_payload(payload: &mut Value) -> Result<(), String> {
+    let prices = payload
+        .get_mut("prices")
+        .and_then(Value::as_array_mut)
+        .ok_or_else(|| "model-pricing payload must contain a prices array".to_string())?;
+    let mut seen: std::collections::HashSet<(String, String)> = std::collections::HashSet::new();
+    let updated_at = now_timestamp();
+    for (index, entry) in prices.iter_mut().enumerate() {
+        let object = entry
+            .as_object_mut()
+            .ok_or_else(|| format!("prices[{index}] must be an object"))?;
+        let model = object
+            .get("model")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .unwrap_or("")
+            .to_string();
+        if model.is_empty() {
+            return Err(format!("prices[{index}].model must not be empty"));
+        }
+        if model.chars().count() > 128 {
+            return Err(format!("prices[{index}].model is too long"));
+        }
+        let currency = object
+            .get("currency")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
+        if currency != "USD" && currency != "CNY" {
+            return Err(format!("prices[{index}].currency is not supported"));
+        }
+        for field in ["inputPerMillion", "outputPerMillion"] {
+            match object.get(field).and_then(Value::as_f64) {
+                Some(value) if value.is_finite() && value >= 0.0 => {}
+                _ => {
+                    return Err(format!(
+                        "prices[{index}].{field} must be a finite non-negative number"
+                    ));
+                }
+            }
+        }
+        if !seen.insert((model.clone(), currency.clone())) {
+            return Err(format!("duplicate pricing for model {model}"));
+        }
+        object.insert("model".to_string(), json!(model));
+        object.insert("currency".to_string(), json!(currency));
+        object.insert("source".to_string(), json!("user"));
+        object.insert("updatedAt".to_string(), json!(updated_at));
+    }
+    Ok(())
+}
+
 #[tauri::command]
-fn save_app_settings(section: String, payload: Value) -> ActionResult {
+fn save_app_settings(section: String, mut payload: Value) -> ActionResult {
     let allowed = [
         "rtk",
         "headroom",
@@ -5239,6 +5303,7 @@ fn save_app_settings(section: String, payload: Value) -> ActionResult {
         "routing",
         "preferences",
         "smart-learning",
+        "model-pricing",
     ];
     let mut logs = vec![log(
         "info",
@@ -5255,6 +5320,22 @@ fn save_app_settings(section: String, payload: Value) -> ActionResult {
             logs,
             tools: all_checks(),
         };
+    }
+
+    if section == "model-pricing" {
+        if let Err(err) = validate_model_pricing_payload(&mut payload) {
+            logs.push(log(
+                "error",
+                format!("Model pricing validation failed: {err}"),
+            ));
+            return ActionResult {
+                ok: false,
+                summary: format!("Model pricing is invalid: {err}"),
+                logs,
+                tools: all_checks(),
+            };
+        }
+        logs.push(log("info", "Model pricing payload validated"));
     }
 
     let existing = read_app_state(&["settings", &format!("{section}.json")])
@@ -5307,6 +5388,7 @@ fn get_app_settings(section: String) -> Value {
         "routing",
         "preferences",
         "smart-learning",
+        "model-pricing",
     ];
     if !allowed.contains(&section.as_str()) {
         return json!({
@@ -18637,6 +18719,106 @@ mod tests {
             assert_eq!(saved["payload"]["policy"]["enable_output_shaper"], true);
             assert_eq!(saved["payload"]["policy"]["holdout_ratio"], 0.1);
             assert_eq!(saved["payload"]["source"], "dtoken-project-policy");
+        });
+    }
+
+    #[test]
+    fn model_pricing_settings_round_trip_stamps_user_provenance() {
+        with_isolated_app_state("model-pricing", || {
+            let first = save_app_settings(
+                "model-pricing".to_string(),
+                json!({
+                    "prices": [
+                        {
+                            "model": "  claude-sonnet-4-5 ",
+                            "currency": "USD",
+                            "inputPerMillion": 3.0,
+                            "outputPerMillion": 15.0
+                        },
+                        {
+                            "model": "gpt-4o",
+                            "currency": "USD",
+                            "inputPerMillion": 2.5,
+                            "outputPerMillion": 10.0
+                        }
+                    ],
+                    "unit": "per_1m_tokens"
+                }),
+            );
+            assert!(first.ok, "{}", first.summary);
+
+            let saved = get_app_settings("model-pricing".to_string());
+            assert_eq!(saved["state"], "loaded");
+            let prices = saved["payload"]["prices"].as_array().expect("prices array");
+            assert_eq!(prices.len(), 2);
+            // model ids are trimmed, and source/updatedAt are stamped by the backend.
+            assert_eq!(prices[0]["model"], "claude-sonnet-4-5");
+            assert_eq!(prices[0]["source"], "user");
+            assert!(prices[0]["updatedAt"].as_str().is_some());
+            assert_eq!(prices[0]["inputPerMillion"], 3.0);
+            assert_eq!(prices[0]["outputPerMillion"], 15.0);
+            assert_eq!(prices[1]["model"], "gpt-4o");
+            assert_eq!(prices[1]["source"], "user");
+        });
+    }
+
+    #[test]
+    fn model_pricing_settings_rejects_invalid_entries_without_writing() {
+        with_isolated_app_state("model-pricing-invalid", || {
+            let cases: Vec<Value> = vec![
+                // Empty model id.
+                json!({ "prices": [{ "model": "   ", "currency": "USD", "inputPerMillion": 1.0, "outputPerMillion": 2.0 }] }),
+                // Overlong model id (129 chars).
+                json!({ "prices": [{ "model": "m".repeat(129), "currency": "USD", "inputPerMillion": 1.0, "outputPerMillion": 2.0 }] }),
+                // Unsupported currency.
+                json!({ "prices": [{ "model": "claude-sonnet-4-5", "currency": "EUR", "inputPerMillion": 1.0, "outputPerMillion": 2.0 }] }),
+                // Negative price.
+                json!({ "prices": [{ "model": "claude-sonnet-4-5", "currency": "USD", "inputPerMillion": -1.0, "outputPerMillion": 2.0 }] }),
+                // Non-numeric price.
+                json!({ "prices": [{ "model": "claude-sonnet-4-5", "currency": "USD", "inputPerMillion": "three", "outputPerMillion": 2.0 }] }),
+                // Duplicate model+currency pair.
+                json!({ "prices": [
+                    { "model": "claude-sonnet-4-5", "currency": "USD", "inputPerMillion": 1.0, "outputPerMillion": 2.0 },
+                    { "model": "claude-sonnet-4-5", "currency": "USD", "inputPerMillion": 3.0, "outputPerMillion": 4.0 }
+                ] }),
+                // Missing prices array entirely.
+                json!({ "unit": "per_1m_tokens" }),
+            ];
+            for (index, case) in cases.iter().enumerate() {
+                let result = save_app_settings("model-pricing".to_string(), case.clone());
+                assert!(
+                    !result.ok,
+                    "case {index} should be rejected: {}",
+                    result.summary
+                );
+            }
+
+            // Nothing was written: the section is still missing.
+            let saved = get_app_settings("model-pricing".to_string());
+            assert_eq!(saved["state"], "missing");
+        });
+    }
+
+    #[test]
+    fn model_pricing_settings_empty_array_restores_default_empty_state() {
+        with_isolated_app_state("model-pricing-empty", || {
+            let first = save_app_settings(
+                "model-pricing".to_string(),
+                json!({
+                    "prices": [
+                        { "model": "gpt-4o", "currency": "USD", "inputPerMillion": 2.5, "outputPerMillion": 10.0 }
+                    ]
+                }),
+            );
+            assert!(first.ok);
+
+            // Empty prices array is the verified empty state (not "missing").
+            let cleared = save_app_settings("model-pricing".to_string(), json!({ "prices": [] }));
+            assert!(cleared.ok, "{}", cleared.summary);
+            let saved = get_app_settings("model-pricing".to_string());
+            assert_eq!(saved["state"], "loaded");
+            let prices = saved["payload"]["prices"].as_array().expect("prices array");
+            assert!(prices.is_empty());
         });
     }
 
