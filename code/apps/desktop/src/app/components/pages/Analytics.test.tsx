@@ -2,6 +2,8 @@ import "@testing-library/jest-dom/vitest";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { protocolId, protocolLabel } from "../../lib/protocol";
+
 
 const dashboard = vi.hoisted(() => ({
   state: {
@@ -671,6 +673,24 @@ describe("Analytics log subpage (日志)", () => {
     expect(screen.queryByText("变换证据")).not.toBeInTheDocument();
   });
 
+  it("marks the receipt unavailable when runtime accounting is absent", async () => {
+    dashboard.state = {
+      payload: {
+        ...runtimeIdentity,
+        request_logs: [{ request_id: "request-no-receipt", timestamp_ms: Date.UTC(2026, 6, 3), agent: "Codex", input_tokens_before: 100, input_tokens_after: 80 }],
+      },
+      status: "runtime",
+      updatedAt: new Date("2026-07-10T12:00:00Z"),
+      error: "",
+      refresh: vi.fn(),
+    };
+
+    await openLogsTab();
+    fireEvent.click(screen.getByRole("button", { name: "查看详情" }));
+    expect(screen.getByText("Optimization Receipt（runtime 未合并 · 暂不可用）")).toBeInTheDocument();
+    expect(screen.getAllByText("—").length).toBeGreaterThan(0);
+  });
+
   it("paginates the log list with the same bounded request pages", async () => {
     dashboard.state = {
       payload: {
@@ -732,6 +752,19 @@ describe("Analytics log subpage (日志)", () => {
     await openLogsTab();
 
     expect(screen.getByText("暂无请求日志")).toBeInTheDocument();
+  });
+});
+describe("Analytics protocol adapter", () => {
+  it("maps wire and legacy OpenAI plus Anthropic to canonical labels", () => {
+    expect(protocolId("open_ai")).toBe("openai");
+    expect(protocolId("openai")).toBe("openai");
+    expect(protocolLabel("anthropic")).toBe("anthropic");
+  });
+
+  it("fails closed for unknown and missing protocol values", () => {
+    expect(protocolLabel("vendor-secret")).toBe("unknown");
+    expect(protocolId("vendor-secret")).toBeNull();
+    expect(protocolLabel(undefined)).toBeNull();
   });
 });
 

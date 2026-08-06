@@ -31,6 +31,7 @@ import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../ui/tabs";
 import { useI18n, useT } from "../../lib/i18n";
+import { protocolLabel } from "../../lib/protocol";
 import {
   buildAnalyticsSnapshot,
   type AnalyticsSnapshot,
@@ -769,7 +770,7 @@ export function applyRuntimeAggregate(
       : snapshot.estimatedSavingsRate,
     agentBreakdown: runtimeBreakdown(analytics.agents) ?? snapshot.agentBreakdown,
     modelBreakdown: runtimeBreakdown(analytics.models) ?? snapshot.modelBreakdown,
-    protocolBreakdown: runtimeBreakdown(analytics.protocols) ?? snapshot.protocolBreakdown,
+    protocolBreakdown: runtimeBreakdown(analytics.protocols, (name) => protocolLabel(name, lang)) ?? snapshot.protocolBreakdown,
     chainBreakdown: runtimeBreakdown(analytics.chains) ?? snapshot.chainBreakdown,
     errorBreakdown: runtimeBreakdown(analytics.errors) ?? snapshot.errorBreakdown,
     routeBreakdown: runtimeBreakdown(routePerformance.routes) ?? snapshot.routeBreakdown,
@@ -780,11 +781,14 @@ export function applyRuntimeAggregate(
   };
 }
 
-function runtimeBreakdown(value: unknown): BreakdownItem[] | null {
+function runtimeBreakdown(value: unknown, normalizeLabel?: (label: string) => string | null): BreakdownItem[] | null {
   if (!Array.isArray(value)) return null;
   return value.flatMap((item) => {
     const row = recordValue(item);
-    const label = typeof row.name === "string" && row.name.trim() ? redactString(row.name.trim()).slice(0, 96) : null;
+    const raw = typeof row.name === "string" && row.name.trim() ? row.name.trim() : null;
+    const label = raw === null
+      ? null
+      : (normalizeLabel ? normalizeLabel(raw) : redactString(raw).slice(0, 96));
     const count = nonNegativeMetric(row.requests);
     if (!label || count === null) return [];
     return [{ label, count, tokensSaved: nonNegativeMetric(row.tokens_saved) }];
@@ -990,9 +994,9 @@ function RequestLogRowView({
                 </div>
               </div>
             )}
-            {receipt.length > 0 && (
-              <div className="mt-3">
-                <div className="mb-1.5 text-[11px] font-medium text-muted-foreground">{lang === "zh" ? "Optimization Receipt（脱敏白名单）" : "Optimization Receipt (redacted whitelist)"}</div>
+            <div className="mt-3">
+              <div className="mb-1.5 text-[11px] font-medium text-muted-foreground">{receipt.length > 0 ? (lang === "zh" ? "Optimization Receipt（脱敏白名单）" : "Optimization Receipt (redacted whitelist)") : (lang === "zh" ? "Optimization Receipt（runtime 未合并 · 暂不可用）" : "Optimization Receipt (runtime unavailable)")}</div>
+              {receipt.length > 0 ? (
                 <div className="grid gap-x-6 gap-y-1.5 sm:grid-cols-2 lg:grid-cols-3">
                   {receipt.map((item) => (
                     <div key={item.label}>
@@ -1001,8 +1005,10 @@ function RequestLogRowView({
                     </div>
                   ))}
                 </div>
-              </div>
-            )}
+              ) : (
+                <div className="text-xs text-muted-foreground">—</div>
+              )}
+            </div>
           </td>
         </tr>
       )}
@@ -1028,8 +1034,8 @@ function logDetailRows(row: RequestLogRow, lang: "zh" | "en"): Array<{ label: st
   push(zh ? "模型" : "Model", row.model_id ?? row.model);
   push("Provider", row.provider_id ?? row.provider);
   push(zh ? "路由" : "Route", row.route_id ?? row.route);
-  push(zh ? "输入协议" : "Input protocol", row.input_protocol ?? row.protocol);
-  push(zh ? "输出协议" : "Output protocol", row.output_protocol);
+  push(zh ? "输入协议" : "Input protocol", protocolLabel(row.input_protocol ?? row.protocol, lang));
+  push(zh ? "输出协议" : "Output protocol", protocolLabel(row.output_protocol, lang));
   push(zh ? "中转链模式" : "Relay chain mode", row.chain_mode);
   push(zh ? "项目" : "Project", row.project_id ?? row.project);
   push(zh ? "终态状态" : "Terminal status", row.status);
