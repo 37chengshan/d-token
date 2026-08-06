@@ -2,6 +2,7 @@
 // 关联计划：release-plan-2026-07/phase-02 §4 同步状态机、§7 UI 模块拆解。
 // 注意：cc-switch 默认只读；不启动、不停止、不写第三方配置。
 import { CCSWITCH_CONFIG_ROOTS, emptyCcSwitchState, type CcSwitchState } from "./types";
+import { protocolId } from "../protocol";
 import { computeSyncStatus } from "./upstream";
 import type { UpstreamDescriptor } from "../agents/registry";
 
@@ -18,7 +19,7 @@ export function parseCcSwitchConfig(
     if (profile) {
       activeUpstream = {
         source: "cc-switch",
-        protocol: profile.protocol === "anthropic" ? "anthropic-compatible" : "openai-compatible",
+        protocol: protocolId(profile.protocol) === "anthropic" ? "anthropic-compatible" : protocolId(profile.protocol) === "openai" ? "openai-compatible" : "unknown",
         baseUrl: typeof profile.baseUrl === "string" ? profile.baseUrl : undefined,
         port: typeof profile.port === "number" ? profile.port : undefined,
         profileName: activeProfile,

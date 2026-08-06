@@ -1,6 +1,6 @@
+import { protocolLabel } from "../protocol";
 import { redactString } from "../security/redaction";
 import { deriveTokenMetrics } from "./metrics";
-
 export type BreakdownItem = {
   label: string;
   count: number;
@@ -197,7 +197,7 @@ export function buildAnalyticsSnapshot(
     bump(upstreamMap, safeLabel(log.provider_id) ?? safeLabel(log.provider), saved);
     bump(routeMap, safeLabel(log.route_id) ?? safeLabel(log.route), saved);
     bump(modelMap, safeLabel(log.model_id) ?? safeLabel(log.model), saved);
-    bump(protocolMap, safeLabel(log.input_protocol) ?? safeLabel(log.protocol), saved);
+    bump(protocolMap, protocolLabel(log.input_protocol ?? log.protocol, zh ? "zh" : "en"), saved);
     bump(projectMap, safeLabel(log.project_id), saved);
     bump(chainMap, safeLabel(log.chain_mode), saved);
 
@@ -211,7 +211,6 @@ export function buildAnalyticsSnapshot(
       ["compressionMs", "compression_ms"],
       ["routeMs", "route_ms"],
       ["upstreamTtfbMs", "upstream_ttfb_ms"],
-      ["endToEndMs", "end_to_end_ms"],
     ];
     for (const [summaryKey, logKey] of timingKeys) {
       const value = nonNegativeNumber(log[logKey]);

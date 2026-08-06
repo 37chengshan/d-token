@@ -4,6 +4,7 @@ import { StatusBadge } from "../../components/common/StatusBadge";
 import { Button } from "../../components/ui/button";
 import { bindingOptions, selectedCandidate, type InstallPhase } from "../installMachine";
 import type { AgentUpstreamBinding, ConnectionSetupSnapshot, UpstreamCandidate } from "../connectionSetup";
+import { protocolLabel } from "../protocol";
 
 function AgentBindingRow({
   binding,
@@ -98,7 +99,7 @@ function AgentBindingRow({
           >
             <option value="">{lang === "zh" ? "选择已发现的上游 / 模型" : "Select a discovered upstream / model"}</option>
             {options.map((option) => (
-              <option key={option.key} value={option.key}>{option.candidate.name} · {option.model || (lang === "zh" ? "模型待确认" : "model required")} · {option.candidate.protocol}</option>
+              <option key={option.key} value={option.key}>{option.candidate.name} · {option.model || (lang === "zh" ? "模型待确认" : "model required")} · {protocolLabel(option.candidate.protocol, lang) ?? (lang === "zh" ? "未知" : "Unknown")}</option>
             ))}
           </select>
         ) : (
@@ -221,7 +222,7 @@ function presentBindingSummary(
   model: string | undefined,
   lang: "zh" | "en",
 ) {
-  if (resolved) return `${resolved.name}${model ? ` · ${model}` : ""} · ${resolved.protocol}`;
+  if (resolved) return `${resolved.name}${model ? ` · ${model}` : ""} · ${protocolLabel(resolved.protocol, lang) ?? (lang === "zh" ? "未知" : "Unknown")}`;
   if (lang === "en") return binding.reasons[0] || "No reusable upstream configuration was found";
   if (!binding.installed || binding.resolution === "unavailable") return `未检测到可用的 ${binding.agent_name} 配置`;
   if (binding.resolution === "needs-credential") return "已发现上游，需要补充凭据";
