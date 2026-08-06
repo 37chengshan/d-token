@@ -945,6 +945,24 @@
       "summary": "保存主工作树已有宣传素材与产品目标规格改动，作为发布迭代合并前基线",
       "head_before": "f1b89dc",
       "remote": null
+    },
+    {
+      "id": "a58fb8e1-6ab6-434c-91e1-a9469d85798e",
+      "timestamp": "2026-08-06T23:56:32+08:00",
+      "operation": "merge",
+      "branch": "codex/code-graph-mcp-integration",
+      "summary": "合并已审查的开源 provenance 修正分支",
+      "head_before": "190e1e5",
+      "remote": null
+    },
+    {
+      "id": "ea4270ea-593b-4c50-be4d-e4e3afdf7711",
+      "timestamp": "2026-08-06T23:58:39+08:00",
+      "operation": "commit",
+      "branch": "codex/code-graph-mcp-integration",
+      "summary": "记录开源 provenance 合并操作审计",
+      "head_before": "190e1e5",
+      "remote": null
     }
   ]
 }
