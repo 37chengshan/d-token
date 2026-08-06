@@ -72,6 +72,8 @@ export type RequestLogRow = {
   request_id?: string;
   timestamp_ms?: number;
   agent?: string;
+  /** 运行实例标识（界面）。仅当 runtime 提供时展示。 */
+  instance_id?: string;
   provider_id?: string;
   route_id?: string;
   /** 兼容旧版已持久化请求日志；新运行时使用 provider_id。 */
@@ -102,6 +104,8 @@ export type RequestLogRow = {
   transforms_applied?: string[];
   latency_ms?: number;
   error?: string | null;
+  /** Optimization Receipt 证据（runtime 提供时）。前端只渲染白名单字段，不转储原始对象。 */
+  context_accounting?: unknown;
 };
 
 type ProcessedLog = {

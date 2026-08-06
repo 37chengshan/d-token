@@ -1,5 +1,6 @@
 import "@testing-library/jest-dom/vitest";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const dashboard = vi.hoisted(() => ({
@@ -444,6 +445,217 @@ describe("Analytics runtime data truthfulness", () => {
     expect(await screen.findByText("RecoveredAgent")).toBeInTheDocument();
     await waitFor(() => expect(native.invoke).toHaveBeenCalledTimes(3));
     expect(native.invoke).toHaveBeenLastCalledWith("get_analytics_request_page", { cursor: null, limit: 10 });
+  });
+});
+
+describe("Analytics log subpage (日志)", () => {
+  async function openLogsTab() {
+    const user = userEvent.setup();
+    render(<Analytics />);
+    await user.click(screen.getByRole("tab", { name: "日志" }));
+  }
+
+  it("renders one log line per real request with all required columns", async () => {
+    dashboard.state = {
+      payload: {
+        ...runtimeIdentity,
+        request_logs: [
+          {
+            request_id: "request-abc-123",
+            timestamp_ms: Date.UTC(2026, 6, 1),
+            agent: "OpenCode",
+            provider_id: "provider-main",
+            route_id: "route-main",
+            model: "gpt-5",
+            input_protocol: "openai",
+            input_tokens_before: 1_000,
+            input_tokens_after: 800,
+            output_tokens: 80,
+            tokens_saved: 200,
+            transforms_applied: ["compact_json"],
+            latency_ms: 100,
+          },
+        ],
+      },
+      status: "runtime",
+      updatedAt: new Date("2026-07-10T12:00:00Z"),
+      error: "",
+      refresh: vi.fn(),
+    };
+
+    await openLogsTab();
+
+    expect(screen.getByText("请求日志")).toBeInTheDocument();
+    expect(screen.getAllByText("OpenCode").length).toBeGreaterThan(0);
+    expect(screen.getByText("1,000")).toBeInTheDocument();
+    expect(screen.getByText("800")).toBeInTheDocument();
+    expect(screen.getByText("1,000 → 800")).toBeInTheDocument();
+    expect(screen.getByText("200")).toBeInTheDocument();
+    expect(screen.getByText("100ms")).toBeInTheDocument();
+    expect(screen.getByText("gpt-5")).toBeInTheDocument();
+    expect(screen.getByText("provider-main")).toBeInTheDocument();
+    expect(screen.getByText("完成")).toBeInTheDocument();
+    expect(screen.getByText("request-abc-123")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "查看详情" })).toHaveAttribute("aria-expanded", "false");
+  });
+
+  it("keeps missing token evidence as em-dash instead of zero-filling", async () => {
+    dashboard.state = {
+      payload: {
+        ...runtimeIdentity,
+        request_logs: [
+          {
+            request_id: "request-no-tokens",
+            timestamp_ms: Date.UTC(2026, 6, 2),
+            agent: "Codex",
+            provider_id: "provider-main",
+            route_id: "route-main",
+            model: "gpt-5",
+            error: "provider_timeout",
+          },
+        ],
+      },
+      status: "runtime",
+      updatedAt: new Date("2026-07-10T12:00:00Z"),
+      error: "",
+      refresh: vi.fn(),
+    };
+
+    await openLogsTab();
+
+    expect(screen.getAllByText("—").length).toBeGreaterThanOrEqual(5);
+    expect(screen.queryByText("0")).not.toBeInTheDocument();
+    expect(screen.getByText("失败")).toBeInTheDocument();
+    expect(screen.queryByText("完成")).not.toBeInTheDocument();
+  });
+
+  it("expands a row to redacted route evidence and receipt whitelist only", async () => {
+    dashboard.state = {
+      payload: {
+        ...runtimeIdentity,
+        request_logs: [
+          {
+            request_id: "request-detail",
+            timestamp_ms: Date.UTC(2026, 6, 3),
+            agent: "OpenCode",
+            instance_id: "interface-main",
+            provider_id: "provider-main",
+            route_id: "route-main",
+            model: "gpt-5",
+            input_protocol: "openai",
+            chain_mode: "direct",
+            output_tokens: 80,
+            compression_ms: 5,
+            route_ms: 3,
+            upstream_ttfb_ms: 40,
+            end_to_end_ms: 90,
+            cache_alignment: "aligned",
+            transforms_applied: ["compact_json", "drop_redundant_context"],
+            error_type: "provider_timeout",
+            context_accounting: {
+              disposition: "active",
+              sent_payload: "optimized",
+              upstream_state: "completed",
+              attribution_basis: "provider_reconciled_actual",
+              provider_reconciled_input_savings: 200,
+              estimated: { signed_savings: { input_tokens: 200, total_tokens: 210 } },
+              api_key: "sk-secret-must-not-appear",
+              prompt: "full prompt must not appear",
+            },
+          },
+        ],
+      },
+      status: "runtime",
+      updatedAt: new Date("2026-07-10T12:00:00Z"),
+      error: "",
+      refresh: vi.fn(),
+    };
+
+    await openLogsTab();
+
+    const detailButton = screen.getByRole("button", { name: "查看详情" });
+    fireEvent.click(detailButton);
+
+    expect(detailButton).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByText("界面（实例）")).toBeInTheDocument();
+    expect(screen.getByText("interface-main")).toBeInTheDocument();
+    expect(screen.getByText("route-main")).toBeInTheDocument();
+    expect(screen.getByText("变换证据")).toBeInTheDocument();
+    expect(screen.getByText("compact_json")).toBeInTheDocument();
+    expect(screen.getByText("drop_redundant_context")).toBeInTheDocument();
+    expect(screen.getByText("Optimization Receipt（脱敏白名单）")).toBeInTheDocument();
+    expect(screen.getByText("active")).toBeInTheDocument();
+    expect(screen.getByText("optimized")).toBeInTheDocument();
+    expect(screen.getByText("provider_reconciled_actual")).toBeInTheDocument();
+    expect(screen.getByText("provider_timeout")).toBeInTheDocument();
+    expect(screen.queryByText("sk-secret-must-not-appear")).not.toBeInTheDocument();
+    expect(screen.queryByText("full prompt must not appear")).not.toBeInTheDocument();
+
+    fireEvent.click(detailButton);
+    expect(screen.queryByText("变换证据")).not.toBeInTheDocument();
+  });
+
+  it("paginates the log list with the same bounded request pages", async () => {
+    dashboard.state = {
+      payload: {
+        ...runtimeIdentity,
+        request_logs: Array.from({ length: 11 }, (_, index) => ({
+          request_id: `request-log-${index}`,
+          timestamp_ms: Date.UTC(2026, 6, index + 1),
+          agent: "Codex",
+          provider_id: "provider-main",
+          route_id: "route-main",
+          model: "gpt-5",
+          input_tokens_before: 100,
+          input_tokens_after: 80,
+          tokens_saved: 20,
+          latency_ms: 12,
+        })),
+      },
+      status: "runtime",
+      updatedAt: new Date("2026-07-15T12:00:00Z"),
+      error: "",
+      refresh: vi.fn(),
+    };
+
+    await openLogsTab();
+
+    expect(screen.getByText("第 1 / 2 页")).toBeInTheDocument();
+    expect(screen.getByText("request-log-0")).toBeInTheDocument();
+    expect(screen.queryByText("request-log-10")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "下一页" }));
+    expect(screen.getByText("第 2 / 2 页")).toBeInTheDocument();
+    expect(screen.getByText("request-log-10")).toBeInTheDocument();
+  });
+
+  it("shows native loading before the first bounded page arrives", async () => {
+    native.enabled = true;
+    native.invoke.mockImplementation(() => new Promise(() => {}));
+    dashboard.state = {
+      payload: { ...runtimeIdentity, desktop_revision: "revision-log-loading", slice_revisions: { runtime_summary: 8 }, request_logs: [] },
+      status: "runtime",
+      updatedAt: new Date("2026-07-16T12:00:00Z"),
+      error: "",
+      refresh: vi.fn(),
+    };
+
+    await openLogsTab();
+
+    expect(await screen.findByText("正在加载有界请求明细…")).toBeInTheDocument();
+  });
+
+  it("renders an explicit empty state when the runtime has no request logs", async () => {
+    dashboard.state = {
+      payload: { ...runtimeIdentity, request_logs: [] },
+      status: "runtime",
+      updatedAt: new Date("2026-07-10T12:00:00Z"),
+      error: "",
+      refresh: vi.fn(),
+    };
+
+    await openLogsTab();
+
+    expect(screen.getByText("暂无请求日志")).toBeInTheDocument();
   });
 });
 
