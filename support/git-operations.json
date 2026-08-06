@@ -999,6 +999,8 @@
       "summary": "合并 Codebase Memory v0.9.1-rc.1 分支，待主树测试",
       "head_before": "facad18",
       "remote": null
+    },
+    {
       "id": "cecfcf5c-7f30-428b-b7fe-b7b6e3aa4bc9",
       "timestamp": "2026-08-06T21:03:35+08:00",
       "operation": "commit",
