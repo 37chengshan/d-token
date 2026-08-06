@@ -956,11 +956,6 @@
       "remote": null
     },
     {
-      "id": "ae36a99f-cedb-41bb-9311-afc73ebbf2a6",
-      "timestamp": "2026-08-06T23:20:48+08:00",
-      "operation": "commit",
-      "branch": "codex/release-protocol-normalization",
-      "summary": "protocol normalization adapter, consumer migration, tests, and report",
       "id": "1dcb5ecb-e71c-4a9b-9a2a-db7e760896c8",
       "timestamp": "2026-08-06T21:14:28+08:00",
       "operation": "commit",
@@ -1105,18 +1100,21 @@
       "remote": null
     },
     {
-      "id": "6f72065a-df8a-49ec-b5f8-1bce2b15cfd0",
-      "timestamp": "2026-08-07T00:42:10+08:00",
-      "operation": "merge",
-      "branch": "codex/code-graph-mcp-integration",
-      "summary": "合并 macOS 侧栏打磨分支，真实 Tauri 仍待验证",
-      "head_before": "4b5a0d3",
       "id": "7deeb248-ff24-4a63-9d81-5a1eee3b51b1",
       "timestamp": "2026-08-06T23:22:04+08:00",
       "operation": "commit",
       "branch": "codex/release-macos-sidebar",
       "summary": "Fix sidebar tooltip refs, CSS hit rect, local pulse rendering, canonical cat-face mark",
       "head_before": "4015a75",
+      "remote": null
+    },
+    {
+      "id": "e7192f84-4320-469c-afa0-d53fdf5a567e",
+      "timestamp": "2026-08-07T00:42:48+08:00",
+      "operation": "merge",
+      "branch": "codex/code-graph-mcp-integration",
+      "summary": "合并 Optical Beta 小范围打磨分支，保持 shadow/preview only",
+      "head_before": "adaf98b",
       "remote": null
     }
   ]
