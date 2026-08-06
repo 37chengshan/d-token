@@ -837,6 +837,15 @@
       "summary": "merge origin/main（用户手动 README 改动不保留，以应用真实图标版本为准）",
       "head_before": "7acf7fd",
       "remote": null
+    },
+    {
+      "id": "bf132f51-905a-4e67-a31a-210164124bcc",
+      "timestamp": "2026-08-06T23:58:13+08:00",
+      "operation": "push",
+      "branch": "main",
+      "summary": "push README 图标替换（app-icon.png，采用应用真实图标版本）到 main",
+      "head_before": "89b2546",
+      "remote": "origin"
     }
   ]
 }
