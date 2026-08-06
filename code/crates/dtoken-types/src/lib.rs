@@ -1461,6 +1461,8 @@ pub struct RequestLog {
     pub agent: Option<String>,
     pub instance_id: Option<String>,
     pub input_protocol: Protocol,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_protocol: Option<Protocol>,
     pub provider_id: Option<String>,
     pub route_id: Option<String>,
     pub chain_mode: Option<ChainMode>,
@@ -1468,9 +1470,29 @@ pub struct RequestLog {
     pub input_tokens_before: Option<usize>,
     pub input_tokens_after: Option<usize>,
     pub output_tokens: Option<usize>,
+    /// Provider-reported input tokens, only when the upstream response carries
+    /// usage evidence; `null` (never a fabricated `0`) when usage is absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_input_tokens: Option<usize>,
     pub tokens_saved: Option<usize>,
     pub transforms_applied: Vec<String>,
+    /// Compression pipeline latency only; see `end_to_end_ms` for the full
+    /// request observability window.
     pub latency_ms: Option<u64>,
+    /// Terminal status classification aligned with the Event Ledger; `null`
+    /// while the request is in flight or for legacy rows without a terminal.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<EventStatus>,
+    /// Wall-clock receipt of the request by the d-token runtime (handler entry).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub received_at_ms: Option<u64>,
+    /// Wall-clock terminal outcome (success or failure classification).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completed_at_ms: Option<u64>,
+    /// End-to-end observability window: `completed_at_ms - received_at_ms`
+    /// when both are available, otherwise `null`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub end_to_end_ms: Option<u64>,
     pub error: Option<String>,
     pub config_source: Option<String>,
     /// Allowlisted numeric quota metadata captured from an upstream response; never raw headers.
@@ -1478,6 +1500,18 @@ pub struct RequestLog {
     pub quota_metadata: Option<serde_json::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_accounting: Option<HybridContextAccounting>,
+}
+
+impl RequestLog {
+    /// End-to-end observability window when both wall-clock anchors exist.
+    pub fn end_to_end(&self) -> Option<u64> {
+        match (self.received_at_ms, self.completed_at_ms) {
+            (Some(received), Some(completed)) if completed >= received => {
+                Some(completed - received)
+            }
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

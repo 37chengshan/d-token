@@ -142,4 +142,67 @@ describe("analytics runtime snapshot truthfulness", () => {
     expect(snapshot.estimatedSavingsRate).toBe(0.2);
     expect(snapshot.warnings).toContain("1 条请求的节省量与输入前后值不一致，已按输入前后值重新计算。");
   });
+
+  it("consumes the extended request-log contract fields (status, protocols, provider usage, end-to-end timing)", () => {
+    const snapshot = buildAnalyticsSnapshot([
+      {
+        request_id: "req-1",
+        timestamp_ms: Date.UTC(2026, 6, 1),
+        agent: "OpenCode",
+        input_protocol: "openai",
+        output_protocol: "openai",
+        provider_id: "provider-main",
+        route_id: "route-main",
+        status: "ok",
+        input_tokens_before: 1_000,
+        input_tokens_after: 800,
+        output_tokens: 80,
+        provider_input_tokens: 800,
+        tokens_saved: 200,
+        transforms_applied: ["compact_json"],
+        compression_ms: 12,
+        received_at_ms: 1_000,
+        completed_at_ms: 1_250,
+        end_to_end_ms: 250,
+        latency_ms: 12,
+      },
+      {
+        request_id: "req-2",
+        timestamp_ms: Date.UTC(2026, 6, 2),
+        agent: "OpenCode",
+        input_protocol: "openai",
+        output_protocol: "openai",
+        provider_id: "provider-main",
+        route_id: "route-main",
+        status: "failed",
+        error_type: "provider_timeout",
+        input_tokens_before: 500,
+        input_tokens_after: 500,
+        output_tokens: undefined,
+        provider_input_tokens: undefined,
+        tokens_saved: undefined,
+        transforms_applied: [],
+        compression_ms: 8,
+        received_at_ms: 2_000,
+        completed_at_ms: 2_100,
+        end_to_end_ms: 100,
+      },
+    ]);
+
+    expect(snapshot.requestCount).toBe(2);
+    expect(snapshot.errorCount).toBe(1);
+    // Provider input tokens never fabricate a 0; output aggregate covers the
+    // one request with evidence only.
+    expect(snapshot.estimatedOutputTokens).toBe(80);
+    expect(snapshot.estimatedInputTokens).toBe(1_500);
+    expect(snapshot.estimatedSavedTokens).toBe(200);
+    expect(snapshot.pipeline).toEqual({
+      compressionMs: 10,
+      routeMs: null,
+      upstreamTtfbMs: null,
+      endToEndMs: 175,
+    });
+    expect(snapshot.warnings).toContain("部分请求缺少输出 Token 字段，输出总量仅覆盖有记录的请求。");
+    expect(JSON.stringify(snapshot)).not.toContain("provider_input_tokens");
+  });
 });

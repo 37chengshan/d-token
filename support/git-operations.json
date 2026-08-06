@@ -828,6 +828,15 @@
       "summary": "提交发布前 PRD、MCP 会话、release gate 与测试合同收口改动",
       "head_before": "5cfe1f2",
       "remote": null
+    },
+    {
+      "id": "5d235a6c-365f-416a-8c24-e6375001167e",
+      "timestamp": "2026-08-06T20:42:38+08:00",
+      "operation": "commit",
+      "branch": "codex/release-runtime-logs",
+      "summary": "runtime 逐请求日志数据合同：RequestLog 新增 output_protocol/status/provider_input_tokens/端到端计时，修正 error 路径伪值，扩展 analytics 投影与前端合同类型并补齐契约测试。",
+      "head_before": "f1b89dc",
+      "remote": null
     }
   ]
 }

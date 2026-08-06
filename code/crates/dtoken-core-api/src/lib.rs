@@ -5563,12 +5563,14 @@ fn build_request_log(
     compression: &CompressionSummary,
     attribution: &RequestAttribution,
 ) -> RequestLog {
+    let received_at_ms = dtoken_event_ledger::now_ms();
     RequestLog {
         request_id,
-        timestamp_ms: dtoken_event_ledger::now_ms(),
+        timestamp_ms: received_at_ms,
         agent: attribution.agent.clone(),
         instance_id: attribution.instance_id.clone(),
         input_protocol,
+        output_protocol: decision.output_protocol.clone(),
         provider_id: Some(decision.provider_id.clone()),
         route_id: Some(decision.route_id.clone()),
         chain_mode: Some(decision.chain_mode.clone()),
@@ -5576,6 +5578,7 @@ fn build_request_log(
         input_tokens_before: Some(compression.original_tokens as usize),
         input_tokens_after: Some(compression.compressed_tokens as usize),
         output_tokens: None,
+        provider_input_tokens: None,
         tokens_saved: Some(if compression.context_accounting.is_some() {
             0
         } else {
@@ -5583,6 +5586,10 @@ fn build_request_log(
         }),
         transforms_applied: compression.transforms_applied.clone(),
         latency_ms: Some((compression.elapsed_us / 1000).max(1) as u64),
+        status: None,
+        received_at_ms: Some(received_at_ms),
+        completed_at_ms: None,
+        end_to_end_ms: None,
         error: None,
         config_source: Some("dtoken-owned-runtime".to_string()),
         quota_metadata: None,
@@ -5640,7 +5647,9 @@ fn mark_streaming_unsupported(
     mut event: DtokenEvent,
 ) -> (RequestLog, DtokenEvent) {
     request_log.error = Some("streaming_not_supported_yet".to_string());
-    request_log.output_tokens = Some(0);
+    request_log.output_tokens = None;
+    request_log.provider_input_tokens = None;
+    request_log.status = Some(EventStatus::Failed);
     event.status = EventStatus::Failed;
     event.error_code = Some("streaming_not_supported_yet".to_string());
     if let Some(metadata) = event.metadata.as_object_mut() {
@@ -6108,7 +6117,14 @@ fn mark_upstream_outcome(
         .as_ref()
         .and_then(|measurement| measurement.usage.output_tokens)
         .and_then(|tokens| usize::try_from(tokens).ok());
+    let provider_input_tokens = provider_usage
+        .as_ref()
+        .and_then(|measurement| measurement.usage.input.normalized_total)
+        .and_then(|tokens| usize::try_from(tokens).ok());
     request_log.quota_metadata = upstream.quota_metadata.clone();
+    let completed_at_ms = dtoken_event_ledger::now_ms();
+    request_log.completed_at_ms = Some(completed_at_ms);
+    request_log.end_to_end_ms = request_log.end_to_end();
 
     if let Some(accounting) = request_log.context_accounting.as_mut() {
         accounting.upstream_state = upstream.send_state;
@@ -6176,12 +6192,17 @@ fn mark_upstream_outcome(
 
     if let Some(category) = upstream.error_category.as_ref() {
         request_log.error = Some(category.clone());
-        request_log.output_tokens = Some(0);
+        request_log.output_tokens = None;
+        request_log.provider_input_tokens = None;
+        request_log.tokens_saved = None;
+        request_log.status = Some(EventStatus::Failed);
         event.status = EventStatus::Failed;
         event.error_code = Some(category.clone());
         event.saved_tokens = Some(0);
     } else {
         request_log.output_tokens = output_tokens;
+        request_log.provider_input_tokens = provider_input_tokens;
+        request_log.status = Some(EventStatus::Ok);
         event.status = EventStatus::Ok;
         event.output_tokens = output_tokens.and_then(|tokens| u64::try_from(tokens).ok());
         if let Some(measurement) = provider_usage {
@@ -11133,6 +11154,7 @@ async fn openai_chat_completions(
                         accounting.attribution_basis = dtoken_types::SavingsAttribution::None;
                     }
                     event.context_accounting = request_log.context_accounting.clone();
+                    request_log.status = Some(EventStatus::Ok);
                     event.status = EventStatus::Ok;
                     event.saved_tokens = Some(0);
                     if let Some(metadata) = event.metadata.as_object_mut() {
@@ -11633,6 +11655,7 @@ async fn openai_responses(
                         accounting.attribution_basis = dtoken_types::SavingsAttribution::None;
                     }
                     event.context_accounting = request_log.context_accounting.clone();
+                    request_log.status = Some(EventStatus::Ok);
                     event.status = EventStatus::Ok;
                     event.saved_tokens = Some(0);
                     if let Some(metadata) = event.metadata.as_object_mut() {
@@ -12044,6 +12067,7 @@ async fn anthropic_messages(
                     }
                     payload.event.context_accounting =
                         payload.request_log.context_accounting.clone();
+                    payload.request_log.status = Some(EventStatus::Ok);
                     payload.event.status = EventStatus::Ok;
                     if let Some(metadata) = payload.event.metadata.as_object_mut() {
                         metadata.insert("stream".to_string(), json!(true));
@@ -12580,6 +12604,7 @@ fn analytics_request_row(log: &RequestLog) -> Value {
         "agent": log.agent,
         "instance_id": log.instance_id,
         "input_protocol": log.input_protocol,
+        "output_protocol": log.output_protocol,
         "provider_id": log.provider_id,
         "route_id": log.route_id,
         "chain_mode": log.chain_mode,
@@ -12587,9 +12612,14 @@ fn analytics_request_row(log: &RequestLog) -> Value {
         "input_tokens_before": log.input_tokens_before,
         "input_tokens_after": log.input_tokens_after,
         "output_tokens": log.output_tokens,
+        "provider_input_tokens": log.provider_input_tokens,
         "tokens_saved": log.tokens_saved,
         "transforms_applied": log.transforms_applied,
         "compression_ms": log.latency_ms,
+        "received_at_ms": log.received_at_ms,
+        "completed_at_ms": log.completed_at_ms,
+        "end_to_end_ms": log.end_to_end(),
+        "status": log.status,
         "error_type": analytics_error_type(log.error.as_deref()),
         "config_source": log.config_source,
     })
@@ -13260,9 +13290,10 @@ mod mcp_http_tests {
         assert_eq!(body["error"]["code"], -32005);
 
         // DELETE one session: the slot is reclaimed immediately.
-        let (status, _, _) =
-            http_response(mcp_http_delete(Extension(server.clone()), session_header(&session_ids[0])).await)
-                .await;
+        let (status, _, _) = http_response(
+            mcp_http_delete(Extension(server.clone()), session_header(&session_ids[0])).await,
+        )
+        .await;
         assert_eq!(status, StatusCode::NO_CONTENT);
         let (status, headers, _) = http_response(
             mcp_http(
@@ -16239,6 +16270,191 @@ mod tests {
         assert_eq!(event.source, EventSource::Dtoken);
         assert_eq!(event.status, EventStatus::Passthrough);
         assert!(event.metadata.get("full_prompt").is_none());
+    }
+
+    #[test]
+    fn request_log_contract_carries_terminal_evidence_fields() {
+        let request = OpenAiChatRequest {
+            model: Some("opencode/deepseek-v4-flash-free".to_string()),
+            messages: Some(vec![json!({"role": "user", "content": "contract input"})]),
+            stream: Some(false),
+        };
+        let (_, _decision, mut request_log, mut event) = routed_openai_payload(&request);
+
+        // build_request_log contract: output protocol + wall-clock receipt anchor,
+        // in-flight status stays null.
+        assert_eq!(request_log.output_protocol, Some(Protocol::OpenAi));
+        assert!(request_log.received_at_ms.is_some());
+        assert_eq!(
+            request_log.timestamp_ms,
+            request_log.received_at_ms.unwrap()
+        );
+        assert_eq!(request_log.status, None);
+        assert_eq!(request_log.completed_at_ms, None);
+        assert_eq!(request_log.end_to_end_ms, None);
+        assert_eq!(request_log.end_to_end(), None);
+        assert_eq!(request_log.provider_input_tokens, None);
+        assert_eq!(request_log.output_tokens, None);
+
+        // Terminal outcome with provider usage evidence.
+        let upstream = UpstreamResult {
+            response: json!({
+                "usage": {"prompt_tokens": 101, "completion_tokens": 17, "total_tokens": 118}
+            }),
+            status: Some(200),
+            error_category: None,
+            send_state: UpstreamSendState::Completed,
+            quota_metadata: None,
+        };
+        mark_upstream_outcome(&upstream, &mut request_log, &mut event);
+
+        assert_eq!(request_log.status, Some(EventStatus::Ok));
+        assert_eq!(request_log.output_tokens, Some(17));
+        assert_eq!(request_log.provider_input_tokens, Some(101));
+        assert!(request_log.completed_at_ms.is_some());
+        assert_eq!(request_log.end_to_end_ms, request_log.end_to_end());
+        assert!(request_log.end_to_end_ms.is_some());
+        assert_eq!(event.status, EventStatus::Ok);
+        assert_eq!(event.input_tokens, Some(101));
+        assert_eq!(event.output_tokens, Some(17));
+    }
+
+    #[test]
+    fn request_log_missing_provider_usage_keeps_tokens_null() {
+        let request = OpenAiChatRequest {
+            model: Some("opencode/deepseek-v4-flash-free".to_string()),
+            messages: Some(vec![json!({"role": "user", "content": "no usage"})]),
+            stream: Some(false),
+        };
+        let (_, _decision, mut request_log, mut event) = routed_openai_payload(&request);
+        let upstream = UpstreamResult {
+            response: json!({"choices": [{"message": {"role": "assistant", "content": "ok"}}]}),
+            status: Some(200),
+            error_category: None,
+            send_state: UpstreamSendState::Completed,
+            quota_metadata: None,
+        };
+        mark_upstream_outcome(&upstream, &mut request_log, &mut event);
+
+        assert_eq!(request_log.status, Some(EventStatus::Ok));
+        assert_eq!(request_log.output_tokens, None);
+        assert_eq!(request_log.provider_input_tokens, None);
+        assert_eq!(request_log.tokens_saved, Some(0));
+        assert_eq!(event.status, EventStatus::Ok);
+        // Local compression baseline is always carried; provider output usage
+        // has no evidence and must stay null.
+        assert!(event.input_tokens.is_some());
+        assert_eq!(event.output_tokens, None);
+    }
+
+    #[test]
+    fn request_log_error_never_fabricates_usage_or_savings() {
+        let request = OpenAiChatRequest {
+            model: Some("opencode/deepseek-v4-flash-free".to_string()),
+            messages: Some(vec![json!({"role": "user", "content": "error input"})]),
+            stream: Some(false),
+        };
+        let (_, _decision, mut request_log, mut event) = routed_openai_payload(&request);
+        let upstream = UpstreamResult {
+            response: json!({
+                "error": {"type": "provider_timeout", "message": "upstream timed out"}
+            }),
+            status: Some(504),
+            error_category: Some("provider_timeout".to_string()),
+            send_state: UpstreamSendState::FailedBeforeCommit,
+            quota_metadata: None,
+        };
+        mark_upstream_outcome(&upstream, &mut request_log, &mut event);
+
+        assert_eq!(request_log.status, Some(EventStatus::Failed));
+        assert_eq!(request_log.error.as_deref(), Some("provider_timeout"));
+        assert_eq!(request_log.output_tokens, None);
+        assert_eq!(request_log.provider_input_tokens, None);
+        assert_eq!(request_log.tokens_saved, None);
+        assert!(request_log.completed_at_ms.is_some());
+        assert_eq!(request_log.end_to_end(), request_log.end_to_end_ms);
+        assert_eq!(event.status, EventStatus::Failed);
+        assert_eq!(event.error_code.as_deref(), Some("provider_timeout"));
+        assert_eq!(event.saved_tokens, Some(0));
+    }
+
+    #[test]
+    fn request_log_compression_fallback_degrades_safely() {
+        let request = OpenAiChatRequest {
+            model: Some("opencode/deepseek-v4-flash-free".to_string()),
+            messages: Some(vec![json!({"role": "user", "content": "fallback input"})]),
+            stream: Some(false),
+        };
+        // No transforms applied (compression policy did not fire): the log must
+        // report an honest zero saved rather than a fabricated savings claim.
+        let (_, _decision, request_log, _event) = routed_openai_payload(&request);
+        assert!(request_log.transforms_applied.is_empty());
+        assert_eq!(request_log.tokens_saved, Some(0));
+        assert_eq!(
+            request_log.input_tokens_before,
+            request_log.input_tokens_after
+        );
+        assert!(request_log.latency_ms.is_some());
+    }
+
+    #[test]
+    fn analytics_request_row_projects_contract_fields() {
+        let request = OpenAiChatRequest {
+            model: Some("opencode/deepseek-v4-flash-free".to_string()),
+            messages: Some(vec![json!({"role": "user", "content": "projection input"})]),
+            stream: Some(false),
+        };
+        let (_, _decision, mut request_log, mut event) = routed_openai_payload(&request);
+        let upstream = UpstreamResult {
+            response: json!({
+                "usage": {"prompt_tokens": 7, "completion_tokens": 3, "total_tokens": 10}
+            }),
+            status: Some(200),
+            error_category: None,
+            send_state: UpstreamSendState::Completed,
+            quota_metadata: None,
+        };
+        mark_upstream_outcome(&upstream, &mut request_log, &mut event);
+
+        let row = analytics_request_row(&request_log);
+        assert_eq!(row["request_id"], request_log.request_id.to_string());
+        assert_eq!(row["output_protocol"], "open_ai");
+        assert_eq!(row["status"], "ok");
+        assert_eq!(row["output_tokens"], 3);
+        assert_eq!(row["provider_input_tokens"], 7);
+        assert!(row["received_at_ms"].is_number());
+        assert!(row["completed_at_ms"].is_number());
+        assert!(row["end_to_end_ms"].is_number());
+        assert_eq!(row["error_type"], Value::Null);
+    }
+
+    #[test]
+    fn request_log_serialization_redacts_raw_prompt_and_response() {
+        let request = OpenAiChatRequest {
+            model: Some("opencode/deepseek-v4-flash-free".to_string()),
+            messages: Some(vec![json!({
+                "role": "user",
+                "content": "RAW_PROMPT_SECRET_7f2c"
+            })]),
+            stream: Some(false),
+        };
+        let (_, _decision, mut request_log, mut event) = routed_openai_payload(&request);
+        let upstream = UpstreamResult {
+            response: json!({
+                "usage": {"prompt_tokens": 2, "completion_tokens": 1, "total_tokens": 3},
+                "choices": [{"message": {"content": "RAW_RESPONSE_SECRET_9d41"}}]
+            }),
+            status: Some(200),
+            error_category: None,
+            send_state: UpstreamSendState::Completed,
+            quota_metadata: None,
+        };
+        mark_upstream_outcome(&upstream, &mut request_log, &mut event);
+
+        let serialized = serde_json::to_string(&request_log).expect("request log JSON");
+        assert!(!serialized.contains("RAW_PROMPT_SECRET_7f2c"));
+        assert!(!serialized.contains("RAW_RESPONSE_SECRET_9d41"));
+        assert!(serialized.contains("\"status\":\"ok\""));
     }
 
     #[test]

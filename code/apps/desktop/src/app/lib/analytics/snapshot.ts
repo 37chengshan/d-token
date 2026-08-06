@@ -81,11 +81,15 @@ export type RequestLogRow = {
   model?: string;
   model_id?: string;
   input_protocol?: string;
+  /** 上游实际请求协议（route adapter 输出侧）。 */
+  output_protocol?: string;
   protocol?: string;
   project_id?: string;
   project?: string;
   chain_mode?: string;
   error_type?: string;
+  /** 与 Event Ledger 对齐的终态分类：ok / passthrough / failed / disabled / skipped。 */
+  status?: string | null;
   cache_alignment?: string;
   cache_read?: boolean;
   cache_write?: boolean;
@@ -95,9 +99,15 @@ export type RequestLogRow = {
   route_ms?: number;
   upstream_ttfb_ms?: number;
   end_to_end_ms?: number;
+  /** d-token runtime 接收请求的墙钟时间（毫秒）。 */
+  received_at_ms?: number;
+  /** 终态墙钟时间（毫秒）。 */
+  completed_at_ms?: number;
   input_tokens_before?: number;
   input_tokens_after?: number;
   output_tokens?: number;
+  /** 仅当上游 usage 有证据时出现；缺失为 undefined，不得伪造 0。 */
+  provider_input_tokens?: number;
   tokens_saved?: number;
   transforms_applied?: string[];
   latency_ms?: number;
