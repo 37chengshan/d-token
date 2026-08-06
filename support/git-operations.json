@@ -846,6 +846,24 @@
       "summary": "P0 fix: Analytics log Provider Token column reads provider_input_tokens only; RequestLogRow contract + tests + report update",
       "head_before": "192935f",
       "remote": null
+    },
+    {
+      "id": "97d9e50d-23a7-4f80-92be-baa041c43dea",
+      "timestamp": "2026-08-06T23:24:25+08:00",
+      "operation": "commit",
+      "branch": "codex/release-log-view",
+      "summary": "Complete Analytics Provider Token evidence and protocol adapter display safeguards",
+      "head_before": "774e07fc5447f1aae0fea94a6abe08fd6108a732",
+      "remote": null
+    },
+    {
+      "id": "af074ad4-7990-4055-8c92-6165488c1731",
+      "timestamp": "2026-08-06T23:25:38+08:00",
+      "operation": "commit",
+      "branch": "codex/release-log-view",
+      "summary": "Commit git operation audit ledger for Analytics evidence fix",
+      "head_before": "315f314",
+      "remote": null
     }
   ]
 }
