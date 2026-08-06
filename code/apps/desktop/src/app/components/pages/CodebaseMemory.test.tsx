@@ -148,6 +148,27 @@ describe("CodebaseMemory", () => {
     }));
   });
 
+  it("truthfully explains an untrusted imported component instead of asking the user to import again", async () => {
+    native.invokeNative.mockResolvedValue(status({
+      package: {
+        ...dimension("untrusted", "SHA-256 does not match the pinned v0.9.0 manifest"),
+        reason_code: "upstream_untrusted",
+      },
+    }));
+    renderPage();
+
+    await screen.findByRole("heading", { level: 1, name: "代码图谱（实验性）" });
+    const configure = screen.getByRole("button", { name: "查看并连接 Agent" });
+    expect(configure).toBeDisabled();
+    // The blocked reason must be truthful about the version mismatch, not ask
+    // the user to import again when a component was already detected.
+    expect(screen.queryByText("请先导入并通过校验图谱组件。")).not.toBeInTheDocument();
+    expect(screen.getByText(/未通过固定版本校验/)).toBeVisible();
+    const packageRow = screen.getByRole("heading", { level: 3, name: "图谱组件" }).closest("[data-flat-row]");
+    expect(within(packageRow as HTMLElement).getByText("未受信任")).toBeVisible();
+    expect(within(packageRow as HTMLElement).getByText(/与固定 v0.9.0 不匹配/)).toBeVisible();
+  });
+
   it("fails closed when native status and project approval are unavailable", async () => {
     native.invokeNative.mockRejectedValue(new Error("native_unavailable"));
     renderPage();

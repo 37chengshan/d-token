@@ -828,6 +828,15 @@
       "summary": "提交发布前 PRD、MCP 会话、release gate 与测试合同收口改动",
       "head_before": "5cfe1f2",
       "remote": null
+    },
+    {
+      "id": "cecfcf5c-7f30-428b-b7fe-b7b6e3aa4bc9",
+      "timestamp": "2026-08-06T21:03:35+08:00",
+      "operation": "commit",
+      "branch": "codex/release-codebase-memory",
+      "summary": "fix: truthful Codebase Memory untrusted reason and block v0.9.1-rc.1 pin drift",
+      "head_before": "f1b89dc",
+      "remote": "null"
     }
   ]
 }
