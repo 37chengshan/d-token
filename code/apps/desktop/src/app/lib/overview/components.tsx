@@ -1,7 +1,16 @@
-import { CircleAlert, Clock3, RefreshCw, type LucideIcon } from "lucide-react";
+import { CircleAlert, Clock3, Coins, RefreshCw, type LucideIcon } from "lucide-react";
 import { useT, type Lang } from "../i18n";
 import { Badge } from "../../components/ui/badge";
+import { AnimatedSegmentedControl } from "../../components/shell/AnimatedSegmentedControl";
 import type { AccountQuotaSummary, CcSwitchStatus, OperationalStatus, OperationalTone } from "./derivations";
+import type { SavingsDerivation, SavingsWindowKey } from "./savings";
+
+/** 与 Overview.tsx 共用：1.2k / 2.3M 风格。 */
+export function formatTokenCount(n: number) {
+  if (n >= 1_000_000) return (n / 1_000_000).toFixed(2) + "M";
+  if (n >= 1_000) return (n / 1_000).toFixed(1) + "k";
+  return String(n);
+}
 
 export function OverviewTrendChart({ data, lang }: { data: Array<{ day: string; saved: number }>; lang: Lang }) {
   const width = 720;
@@ -29,6 +38,44 @@ export function OverviewTrendChart({ data, lang }: { data: Array<{ day: string; 
 export function OverviewKpi({ label, value, detail, icon: Icon, tone = "neutral" }: { label: string; value: string; detail: string; icon: LucideIcon; tone?: OperationalTone }) {
   const iconTone = tone === "negative" ? "text-red-600 dark:text-red-400" : tone === "positive" ? "text-emerald-600 dark:text-emerald-400" : "text-muted-foreground";
   return <div className="overview-kpi min-w-0"><div className="flex items-center justify-between gap-2 text-xs text-muted-foreground"><span className="min-w-0 break-words">{label}</span><Icon className={`size-4 shrink-0 ${iconTone}`} /></div><div className="mt-2 text-2xl font-semibold tracking-tight tabular-nums">{value}</div><div className="overview-kpi-detail mt-1 text-[11px] text-muted-foreground" title={detail}>{detail}</div></div>;
+}
+
+/** 节省区间卡：累计 / 当周 / 当月 / 当天 切换，展示该窗口的物理节省 Token 与诚实状态。 */
+export function SavingsWindowCard({
+  derivation,
+  selected,
+  onSelect,
+  reducedMotion,
+  lang,
+}: {
+  derivation: SavingsDerivation;
+  selected: SavingsWindowKey;
+  onSelect: (key: SavingsWindowKey) => void;
+  reducedMotion: boolean;
+  lang: Lang;
+}) {
+  const t = useT();
+  const window = derivation.windows.find((item) => item.key === selected) ?? derivation.windows[0];
+  const tone = window.state === "partial" ? "warning" : window.state === "verified" ? "positive" : "neutral";
+  const stateLabel =
+    window.state === "verified"
+      ? lang === "zh" ? "已验证" : "Verified"
+      : window.state === "partial"
+        ? lang === "zh" ? "部分可用" : "Partial"
+        : lang === "zh" ? "不可用" : "Unavailable";
+  return <div className="overview-kpi min-w-0" data-overview-savings-window="true" data-savings-window={window.key} data-savings-state={window.state} data-testid="overview-savings-window">
+    <div className="flex items-center justify-between gap-2 text-xs text-muted-foreground"><span className="min-w-0 break-words">{t("ov.savingsTokens")}</span><Coins className={`size-4 shrink-0 ${tone === "positive" ? "text-emerald-600 dark:text-emerald-400" : "text-muted-foreground"}`} /></div>
+    <div className="mt-2 text-2xl font-semibold tracking-tight tabular-nums">{window.tokensSaved === null ? "—" : formatTokenCount(window.tokensSaved)}</div>
+    <div className="mt-1 flex flex-wrap items-center gap-1.5 text-[11px] text-muted-foreground" title={window.note}><Badge variant={window.state === "verified" ? "default" : "secondary"}>{stateLabel}</Badge><span>{window.note}</span></div>
+    <div className="mt-2"><AnimatedSegmentedControl
+      ariaLabel={t("ov.savingsWindowAria")}
+      reducedMotion={reducedMotion}
+      value={window.key}
+      onValueChange={onSelect}
+      items={derivation.windows.map((item) => ({ value: item.key, label: item.label }))}
+    /></div>
+    <div className="overview-kpi-detail mt-1 text-[11px] text-muted-foreground" title={derivation.cost.detail}>{lang === "zh" ? "费用差额" : "Cost delta"}: —{!derivation.cost.available ? ` · ${lang === "zh" ? "价格证据缺失" : "no pricing evidence"}` : ""}</div>
+  </div>;
 }
 
 export function OperationalItem({ icon: Icon, title, label, detail, tone }: { icon: LucideIcon; title: string; label: string; detail: string; tone: OperationalTone }) {

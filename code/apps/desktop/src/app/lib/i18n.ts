@@ -318,6 +318,8 @@ export const DICT: Dict = {
   "ov.layerRtk": { zh: "RTK 输出", en: "RTK Output" },
   "ov.layerRuntime": { zh: "运行时上下文", en: "Runtime Context" },
   "ov.layerRoute": { zh: "路由开销", en: "Route Overhead" },
+  "ov.savingsTokens": { zh: "节省 Token", en: "Tokens Saved" },
+  "ov.savingsWindowAria": { zh: "节省时间区间", en: "Savings window" },
 
   // install
   "in.title": { zh: "安装与连接", en: "Install & Connect" },
