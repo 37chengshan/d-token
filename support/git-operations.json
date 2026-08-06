@@ -1089,6 +1089,13 @@
       "summary": "合并首页节省区间分支",
       "head_before": "3064b0b",
       "remote": null
+      "id": "567ccbce-c6a9-4b1e-837e-91ce9c1d9962",
+      "timestamp": "2026-08-06T21:04:15+08:00",
+      "operation": "commit",
+      "branch": "codex/release-overview-savings",
+      "summary": "feat(overview): 首页累计/当周/当月/当天节省区间，本地时区窗口与费用 unavailable 诚实口径",
+      "head_before": "f1b89dcc8db810b6d2373e9d1d4b5f57f1c6f40e",
+      "remote": null
     }
   ]
 }
