@@ -819,6 +819,15 @@
       "summary": "docs: README 顶部图标替换为应用真实图标（app-icon.png，替换错误的 icons/logo.svg）",
       "head_before": "c88c8e91b186bac804a0137523ab1c5b9b3e53e2",
       "remote": null
+    },
+    {
+      "id": "9cb966ef-1d6e-4f2f-b7fa-5209ce34ed65",
+      "timestamp": "2026-08-06T23:52:36+08:00",
+      "operation": "push",
+      "branch": "main",
+      "summary": "push README 图标替换（app-icon.png）到 main",
+      "head_before": "e7fb6a0",
+      "remote": "origin"
     }
   ]
 }
