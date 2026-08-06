@@ -738,6 +738,15 @@
       "summary": "docs: v2.1 README 文案与宣传图更新（hero 横幅 + 社交预览图 + 01-06 SVG 横幅）",
       "head_before": "76fe8838fa290514c13a20514e5c7d63c8ae75f3",
       "remote": null
+    },
+    {
+      "id": "9f8d2c54-a794-467f-82d2-b644d1446c2a",
+      "timestamp": "2026-08-06T21:19:54+08:00",
+      "operation": "push",
+      "branch": "main",
+      "summary": "push README v2.1 文案与宣传图更新到 main",
+      "head_before": "d7b8ca1",
+      "remote": "origin"
     }
   ]
 }
