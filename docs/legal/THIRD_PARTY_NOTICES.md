@@ -8,7 +8,7 @@
 
 - 项目：[`headroomlabs-ai/headroom`](https://github.com/headroomlabs-ai/headroom)
 - 当前固定对照：[`main`](https://github.com/headroomlabs-ai/headroom/tree/main) / [`01df2452529a86c689cf226fecd5918cc5d19676`](https://github.com/headroomlabs-ai/headroom/commit/01df2452529a86c689cf226fecd5918cc5d19676)（2026-08-02 获取；截至 2026-08-06 仍为本仓库评估基线）
-- 最新稳定 tag：[`v0.34.0`](https://github.com/headroomlabs-ai/headroom/releases/tag/v0.34.0) / [`9fd5ae3d530b5d9eb9e9127e413235a5a3b2faf6`](https://github.com/headroomlabs-ai/headroom/commit/9fd5ae3d530b5d9eb9e9127e413235a5a3b2faf6)（2026-08-06 已发布，晚于当前固定对照；其增量尚未评估，未纳入能力矩阵，不作为完成口径）
+- 最新稳定 tag：[`v0.34.0`](https://github.com/headroomlabs-ai/headroom/releases/tag/v0.34.0) / [`9fd5ae3d530b5d9eb9e9127e413235a5a3b2faf6`](https://github.com/headroomlabs-ai/headroom/commit/9fd5ae3d530b5d9eb9e9127e413235a5a3b2faf6)（2026-08-05 已发布，晚于当前固定对照；其增量尚未评估，未纳入能力矩阵，不作为完成口径）
 - 前一发布对照：[`v0.33.0`](https://github.com/headroomlabs-ai/headroom/releases/tag/v0.33.0) / [`28aa53dc7ca51e687cc719c3fe160f3be50c6570`](https://github.com/headroomlabs-ai/headroom/commit/28aa53dc7ca51e687cc719c3fe160f3be50c6570)
 - 历史对照：[`1725cd1f8376828849c0e48fd9008afa25d24fff`](https://github.com/headroomlabs-ai/headroom/commit/1725cd1f8376828849c0e48fd9008afa25d24fff)，仅用于解释 2026-07 的旧证据
 - 上游许可证：Apache License 2.0；固定 commit 包含根目录 `NOTICE`
@@ -20,7 +20,8 @@
 - 项目：[`yvgude/lean-ctx`](https://github.com/yvgude/lean-ctx)（独立开源项目，非 Headroom 附属实现）
 - 当前固定对照：[`v3.9.17`](https://github.com/yvgude/lean-ctx/releases/tag/v3.9.17) / [`cf8fce6bb1759a845088988cca189beaf70b05a9`](https://github.com/yvgude/lean-ctx/commit/cf8fce6bb1759a845088988cca189beaf70b05a9)（2026-08-04 发布）
 - 上游版权声明：`NOTICE` 记录 `lean-ctx`，Copyright 2026 Yves Gugger，含第三方贡献者列表
-- 上游许可证：MIT + Apache-2.0 双许可（仓库 `LICENSE` 为 Apache-2.0，README/文档声明 dual-licensed）
+- 上游许可证：Apache-2.0（项目总许可；根 `LICENSE`、README、Rust `Cargo.toml` 与 Claude plugin `manifest.json` 均声明 Apache-2.0）
+- 子包例外（声明 MIT，单独列出，不并入项目总许可）：`clients/python`（`pyproject.toml`）、`rust/crates/grammar-addons/lua`（`Cargo.toml`）
 - 本地只读研究副本：`/Users/cc/Documents/d-token-external/lean-ctx/`（git clone，HEAD 固定 v3.9.17 / `cf8fce6b`；官方 source archive SHA-256 `a1178c682afcc4cbea3021338ac878761d8e8df4da03bf40bdd6f807bbdeac25` 已核验）
 - 与 Headroom 的关系：headroom 上游 [`#2677`](https://github.com/headroomlabs-ai/headroom/pull/2677)（2026-07-31 合并）已移除对 rtk/lean-ctx 的下载、安装与配置，二者不再有集成关系；d-token 的 LeanCTX 对齐层按 `docs/PRD.md` P0.0.5/§4.1.1 由 d-token-owned Rust service 提供
 - 当前使用边界：仅公开行为/接口对照，不复制源码、不引入运行依赖；未实现前状态必须为 `unavailable` 或 `partial`，不得宣称完成

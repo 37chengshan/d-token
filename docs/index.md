@@ -35,6 +35,7 @@
 - [`research/claude report/UX_FLOW_AND_PERFORMANCE_REVIEW_2026-07-16.md`](<research/claude report/UX_FLOW_AND_PERFORMANCE_REVIEW_2026-07-16.md>) — 2026-07-16 用户流程与整体性能审查（七页旅程贯通度、一键安装状态机、性能预算达成度、release 实测缺口）。
 - [`research/CODEBASE_MEMORY_MCP_INTEGRATION_RESEARCH_2026-07-16.md`](research/CODEBASE_MEMORY_MCP_INTEGRATION_RESEARCH_2026-07-16.md) — `codebase-memory-mcp` 作为 d-token 实验性受管 sidecar 的上游能力、生命周期、安全、许可证、产品边界与实施前门槛研究。
 - [`legal/THIRD_PARTY_NOTICES.md`](legal/THIRD_PARTY_NOTICES.md) — 直接适配第三方实现的版权、固定来源、许可证与修改声明唯一入口。
+- [`agent-mcp-parallel-dev-prompts.md`](agent-mcp-parallel-dev-prompts.md) — Codex 主 agent → Agent-MCP → AtomCode worker 的并行开发提示词模板（工作流参考，不是产品功能）。
 
 2026-07-01 的 Headroom Dashboard Draft 清单/迁移矩阵已归入 `archive/product-matrices/2026-07-01/`；当前页面与数据合同以 PRD、App 页面文档和实际代码为准。
 

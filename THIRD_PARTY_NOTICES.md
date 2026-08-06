@@ -1,6 +1,6 @@
 # d-token Third-Party Notices
 
-Last updated: 2026-08-06  
+Last updated: 2026-08-06
 Applies to: d-token `0.2.0-beta.1` source and desktop distribution candidates
 
 This file is the distribution-facing third-party notice for d-token. The project itself is licensed under the Apache License 2.0; see [`LICENSE`](LICENSE). Release installers must include both `LICENSE` and this file under their legal resources.
@@ -66,7 +66,7 @@ The projects below informed behavior studies or evaluation design. Their source 
 - Upstream: `headroomlabs-ai/headroom`
 - Pinned comparison tag/commit: `v0.33.0` / `28aa53dc7ca51e687cc719c3fe160f3be50c6570`
 - Current comparison baseline (main HEAD, fetched 2026-08-02): `01df2452529a86c689cf226fecd5918cc5d19676`
-- Latest stable tag (released after the current baseline, not yet evaluated): `v0.34.0` / `9fd5ae3d530b5d9eb9e9127e413235a5a3b2faf6`
+- Latest stable tag (released 2026-08-05, after the current baseline, not yet evaluated): `v0.34.0` / `9fd5ae3d530b5d9eb9e9127e413235a5a3b2faf6`
 - Historical comparison commit: `1725cd1f8376828849c0e48fd9008afa25d24fff`
 - License: Apache License 2.0
 
@@ -76,7 +76,8 @@ Versioned `headroom-*/` directories are local reference workspaces and are exclu
 
 - Upstream: `yvgude/lean-ctx`
 - Pinned release/commit: `v3.9.17` / `cf8fce6bb1759a845088988cca189beaf70b05a9`
-- License: MIT + Apache-2.0 dual-licensed (repo `LICENSE` is Apache-2.0; includes `NOTICE`)
+- License: Apache License 2.0 (project-wide; root `LICENSE`, `README`, Rust `Cargo.toml` manifests and the Claude plugin `manifest.json` all declare Apache-2.0; `NOTICE` present)
+- Subpackage exceptions (licensed MIT, listed separately, not part of the project-wide license): `clients/python` (`pyproject.toml`) and `rust/crates/grammar-addons/lua` (`Cargo.toml`)
 - Local read-only research copy: `/Users/cc/Documents/d-token-external/lean-ctx/` (not distributed)
 
 lean-ctx informed behavior studies for the LeanCTX / Context Bus / Context Relay capability domain (`docs/PRD.md` P0.0.5). Its source code and binaries are not distributed as part of d-token. Headroom upstream removed its lean-ctx integration in `#2677` (merged 2026-07-31); d-token's LeanCTX alignment layer must be implemented as a d-token-owned Rust service and remains `unavailable`/`partial` until real cross-agent evidence exists.

@@ -837,6 +837,15 @@
       "summary": "provenance: register LeanCTX/CCR open-source sources and headroom v0.34.0",
       "head_before": "f1b89dcc8db810b6d2373e9d1d4b5f57f1c6f40e",
       "remote": null
+    },
+    {
+      "id": "b30c2c18-3ecb-450d-a8fd-d31008adc557",
+      "timestamp": "2026-08-06T21:21:55+08:00",
+      "operation": "commit",
+      "branch": "codex/release-open-source",
+      "summary": "fix: correct LeanCTX license to Apache-2.0 and headroom v0.34.0 release date",
+      "head_before": "378261c",
+      "remote": null
     }
   ]
 }
