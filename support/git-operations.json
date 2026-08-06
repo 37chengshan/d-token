@@ -938,11 +938,6 @@
       "remote": null
     },
     {
-      "id": "81c0e5b6-5b99-4311-8636-c393af1e21b6",
-      "timestamp": "2026-08-06T23:56:13+08:00",
-      "operation": "commit",
-      "branch": "codex/code-graph-mcp-integration",
-      "summary": "保存主工作树已有宣传素材与产品目标规格改动，作为发布迭代合并前基线",
       "id": "a941de28-c2b2-437e-9192-48163054dfff",
       "timestamp": "2026-08-06T20:38:46+08:00",
       "operation": "commit",
@@ -1060,12 +1055,6 @@
       "remote": null
     },
     {
-      "id": "55749f3a-3aa4-4bcd-9f76-17257dba759f",
-      "timestamp": "2026-08-07T00:39:03+08:00",
-      "operation": "merge",
-      "branch": "codex/code-graph-mcp-integration",
-      "summary": "合并分析日志分支，待主树测试",
-      "head_before": "ab4495a",
       "id": "2a9db348-d7b0-4d87-b284-8cf618591f50",
       "timestamp": "2026-08-06T21:09:56+08:00",
       "operation": "commit",
@@ -1090,6 +1079,15 @@
       "branch": "codex/release-log-view",
       "summary": "Commit git operation audit ledger for Analytics evidence fix",
       "head_before": "315f314",
+      "remote": null
+    },
+    {
+      "id": "60cba030-76d1-4415-8956-29170ca898f5",
+      "timestamp": "2026-08-07T00:41:05+08:00",
+      "operation": "merge",
+      "branch": "codex/code-graph-mcp-integration",
+      "summary": "合并首页节省区间分支",
+      "head_before": "3064b0b",
       "remote": null
     }
   ]
