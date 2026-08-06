@@ -956,12 +956,6 @@
       "remote": null
     },
     {
-      "id": "ea4270ea-593b-4c50-be4d-e4e3afdf7711",
-      "timestamp": "2026-08-06T23:58:39+08:00",
-      "operation": "commit",
-      "branch": "codex/code-graph-mcp-integration",
-      "summary": "记录开源 provenance 合并操作审计",
-      "head_before": "190e1e5",
       "id": "f4a7a3e3-8b59-44de-b04f-287fca60c17b",
       "timestamp": "2026-08-06T20:57:00+08:00",
       "operation": "commit",
@@ -977,6 +971,15 @@
       "branch": "codex/release-open-source",
       "summary": "fix: correct LeanCTX license to Apache-2.0 and headroom v0.34.0 release date",
       "head_before": "378261c",
+      "remote": null
+    },
+    {
+      "id": "4dba9d74-0407-49fb-97d9-d58cddedd458",
+      "timestamp": "2026-08-07T00:04:28+08:00",
+      "operation": "merge",
+      "branch": "codex/code-graph-mcp-integration",
+      "summary": "合并首次配置引导分支，待主树验证",
+      "head_before": "11552f2",
       "remote": null
     }
   ]
