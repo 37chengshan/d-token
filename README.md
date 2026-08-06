@@ -2,7 +2,7 @@
   <img src="assets/marketing/hero-banner.png" width="100%" alt="d-token — Less context. Same intent. Full control." />
 </p>
 
-              # d-token
+#                                                          d-token
 
 **Less context. Same intent. Full control.**
 
