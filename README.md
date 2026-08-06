@@ -2,9 +2,6 @@
   <img src="assets/marketing/hero-banner.png" width="100%" alt="d-token — Less context. Same intent. Full control." />
 </p>
 
-<div align="center">
-  <img src="icons/logo.svg" width="112" alt="d-token logo" />
-
 # d-token
 
 **Less context. Same intent. Full control.**
