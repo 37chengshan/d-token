@@ -828,6 +828,15 @@
       "summary": "提交发布前 PRD、MCP 会话、release gate 与测试合同收口改动",
       "head_before": "5cfe1f2",
       "remote": null
+    },
+    {
+      "id": "6ab26f63-b73d-417d-8a49-b9b90c670131",
+      "timestamp": "2026-08-06T20:25:25+08:00",
+      "operation": "commit",
+      "branch": "codex/release-prd-logs-pricing",
+      "summary": "PRD 收口：分析页日志子页、逐请求真实日志字段、模型价格可配置、压缩前后费用计算、首页节省切换与诚实证据发布门",
+      "head_before": "f1b89dc",
+      "remote": null
     }
   ]
 }

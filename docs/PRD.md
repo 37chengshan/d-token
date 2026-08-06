@@ -173,6 +173,8 @@ Headroom 只有在固定参考版本的能力矩阵逐项具备真实请求、�
 
 物理 Token 变化、Local Token 估算和可声明收益必须分开：`estimated` 只能作为估算展示；`claimable` 只有在 Provider 计费/usage 证据和归因链完整时才可为 true；Relay 避免的重复传输不得计入压缩收益，shadow、fallback、Provider 失败不得计入 actual savings。
 
+费用与日志的诚实证据要求：分析页日志子页的逐请求字段必须来自 d-token-owned runtime、Tauri command 或 Event Ledger，并可按 `request_id` 与 Receipt/metrics 关联；模型价格表未配置或 Provider 计费证据缺失时，费用只能显示 `estimated` / `not_verified` / `unavailable`，禁止内置假想单价、第三方默认价目表或示例数字伪造账单；只有 Provider 计费/usage 证据和归因链完整时才可为 `claimable`。
+
 `v0.3` 发布门除能力实现外，还必须证明：两个 Agent 复用同一项目允许上下文；文件变化后旧 Relay 失效；跨项目污染为零；Relay 失败安全回退；Receipt 区分压缩节省和 Relay 避免的重复传输；cc-switch 切换后状态一致或明确提示冲突。
 
 `v0.4` 发布门还必须证明：常见 Agent 与 cc-switch 长期稳定、Doctor 可修复大部分低风险问题、Token 节省和任务质量有公开可复现证据、隐私安全会话报告、企业代理/证书适配、稳定签名和签名自动更新。
@@ -206,6 +208,7 @@ Headroom 只有在固定参考版本的能力矩阵逐项具备真实请求、�
 | Provider 回退策略 | `resolved`：禁止静默跨 Provider；任何 fallback 需用户策略与 receipt |
 | 云端能力 | `resolved`：不是本地核心运行依赖，默认不上传代码、Prompt 或凭据 |
 | LeanCTX 上游来源 | `open`：在实现前登记仓库、固定 commit、许可证、NOTICE 和差异说明 |
+| 模型价格来源 | `open`：费用基于用户本地价格表估算（P0.8.3）；Provider 计费/usage 证据齐全前不得标为账单或 claimable |
 
 本规格未覆盖 Optical 的协议、安全和 UI 细节；该能力按本 PRD P0.0.6、§8、`AGENTS.md` 安全边界执行，默认 shadow/preview，不能以规格文本缺失为由扩大为普通图片压缩。
 
@@ -401,7 +404,7 @@ Agent 接入合同：
 2. 已连接哪些 Agent。
 3. 当前请求是否经过 d-token。
 4. cc-switch 或自定义上游是否被检测到。
-5. 今日/近 7 日估算节省了多少 token。
+5. 估算节省（Token 与费用），提供「累计 / 当周 / 当月 / 当天」四个时间窗口切换，默认「累计」。
 6. 最近是否有错误、断连、端口冲突、配置异常。
 7. 当前状态对用户意味着什么。
 
@@ -418,6 +421,8 @@ Agent 接入合同：
 3. 本年：按约 53 周 × 7 日展示连续小方格热力图，顶部标注月份，底部提供 Less/More 强度图例；不得拆成 12 张大月历卡。
 4. 没有请求时仍显示完整时间范围的零强度方格和“暂无活动”；所有日期按用户本地时区构造，避免 UTC 偏移。
 5. 每个数据格必须具备日期、活动等级、当天语义、tooltip 和可访问名称；状态不能只靠颜色表达，但不要求在每个小方格中永久印出日期数字。
+
+节省 KPI 的「累计 / 当周 / 当月 / 当天」是独立于活动趋势热力图的数据窗口切换：活动趋势保持「本周 / 本月 / 本年」三种排布不变，节省窗口按用户选择聚合同一份运行证据快照。四个窗口语义必须明确：当天按用户本地时区当天 0 点起，当周按周一 0 点起，当月按自然月 1 日 0 点起，累计为全部可验证记录之和；切换只改变聚合窗口，不改变数据来源与估算口径。任何窗口若本地请求记录、压缩记录或路由记录缺失、过期或不可用，该窗口显示 `—` / partial / stale / unavailable，禁止用其他窗口数字或示例数字补齐；节省同时展示 Token 与费用两项时，费用必须遵守 P0.8.2 的价格与账单边界。
 
 概览与分析、Doctor、日志、变更和状态栏必须消费同一份运行证据快照。已验证的空请求列表是“真实零数据”，可以显示 `0`；数据源未返回、过期或不可用时显示 `—`、partial、stale 或 unavailable，二者不得混淆。
 
@@ -646,11 +651,18 @@ Agent 检测要求：
 
 ### P0.8 第三页：分析页面
 
-分析页面负责展示 d-token 的价值结果，而不是工程指标堆砌。
+分析页面负责展示 d-token 的价值结果，而不是工程指标堆砌。页面使用上栏组织为两个子页：
+
+1. 总览：价值结果与趋势聚合。
+2. 日志：逐请求真实日志明细。
+
+日志是分析页内的子页，不是新增一级导航；它与安装与连接工作台的 P0.7.4 过程日志职责不同：P0.7.4 负责「安装、连接、配置、智能学习、高级安装」过程日志，本子页负责真实请求的逐请求 usage 明细。
+
+#### P0.8.1 分析总览
 
 核心信息：
 
-1. 估算节省 token。
+1. 估算节省 token（支持「累计 / 当周 / 当月 / 当天」切换，与总体概览同源同口径）。
 2. 请求数量。
 3. 压缩前后对比。
 4. 最近 7 日 / 30 日趋势。
@@ -661,6 +673,39 @@ Agent 检测要求：
 9. 智能学习带来的项目文档覆盖情况。
 
 当节省数据不是精确计费数据时，必须写“估算节省”，并说明基于本地请求记录、压缩记录和路由记录计算。
+
+#### P0.8.2 分析日志子页：逐请求真实日志
+
+日志子页展示 d-token 转发的逐请求真实记录，数据只来自 d-token-owned runtime、Tauri command 或 Event Ledger，禁止 mock、fixture 或示例补齐。每一条请求记录至少包含以下脱敏字段：
+
+1. `request_id` 与关联的 Event Ledger / Receipt 标识。
+2. 时间戳（本地时区）与耗时。
+3. `agent_id` 与 `project_id`（脱敏）。
+4. provider / route / model / protocol / 脱敏 endpoint。
+5. 压缩前输入 token 与压缩后输入 token（必须标注 baseline 口径）。
+6. 输出 token（Provider 返回 usage 时）。
+7. 压缩策略与压缩率（估算）。
+8. 估算费用（压缩前后对比，按 P0.8.3 价格表计算；价格缺失时 not_verified）。
+9. 状态（成功 / 失败 / passthrough / fallback / shadow）与错误分类。
+10. 关联的 Receipt / Doctor / 回退入口（按需）。
+
+要求：
+
+1. 同一 `request_id` 在 Event Ledger、metrics、Receipt 中必须一致可关联；任何字段缺失、过期或不可用时显示 `—` / partial / stale / unavailable，不得用估算值冒充真实记录。
+2. 列表按需分页或增量读取，超过阈值必须分页/虚拟化，不得全量 payload 携带全部详情。
+3. 逐请求详情必须脱敏：不得显示完整 prompt、完整 response、密钥、token、cookie、认证头或用户未授权展示的代码内容；导出遵循全局脱敏策略。
+4. 日志子页必须支持按时间范围、Agent、项目、provider/model、状态筛选与导出，并遵守 P0.2.1 统一状态切片与 freshness 语义。
+
+#### P0.8.3 压缩前后费用计算与模型价格
+
+费用是估算价值展示，不是 Provider 账单，必须遵守以下边界：
+
+1. **模型价格可配置**：设置页（P0.11）维护本地价格表，按 provider/model 配置每百万 Token 输入/输出单价与币种；价格表默认不内置假想单价，未配置价格的模型费用显示 not_verified。
+2. **压缩前后费用计算**：压缩前费用 = 压缩前输入 token × 输入单价；压缩后费用 = 压缩后输入 token × 输入单价；输出 token 费用单独计算并在页面标注；节省费用 = 压缩前费用 − 压缩后费用。
+3. **estimated / actual / claimable 必须分开**：本地价格表计算的是 `estimated`；只有 Provider 计费/usage 证据和归因链完整时才可为 `actual`/`claimable`。不得把估算费用写成“已省下金额”或“账单金额”。
+4. 价格表变更后必须按 revision 重算相关切片并刷新 freshness，不得沿用旧价格数字。
+5. 费用计算遵循 §10 统一 denominator：禁止把 `rtk_savings + runtime_savings` 直接相加；Relay 避免的重复传输、shadow、fallback、Provider 失败不得计入 actual savings。
+6. 费用缺失、价格未配置或数据过期时，页面显示 unavailable / not_verified / `—`，不得用第三方默认价目表、示例单价或旧 `char/4` 估算伪造账单。
 
 ### P0.9 第五页：Doctor 问题诊断与修复
 
@@ -774,6 +819,7 @@ Doctor 还必须能生成“修复提示词”，让用户复制给 Claude/Codex
 8. 自动启动 d-token 服务。
 9. 更新通道。
 10. 高级/开发模式开关。
+11. 模型价格表：按 provider/model 配置每百万 Token 输入/输出单价与币种，供分析页 P0.8.3 与总体概览做估算费用展示；价格表为本地用户配置，默认不内置假想单价，未配置价格时费用显示 not_verified，价格表本身不是 Provider 账单。
 
 ### P0.12 文案总规范
 
@@ -1954,3 +2000,6 @@ PRD 只保留产品真理源：目标、边界、技术契约与验收标准。�
 39. 正式 App 只能有一个 App 级运行证据调度器；页面级重复固定轮询、全量 payload 携带全部详情、长列表完整 DOM 渲染或退出动画阻塞导航均不通过性能验收。
 40. 发布候选必须提供同一 commit、同一 release build 的启动、导航、runtime 刷新、空闲 CPU/内存、Native command p95、长列表和智能学习压力测试证据，并满足 P0.2.2 性能预算；未达标不得宣称“流畅”“低占用”或“高性能”。
 41. Headroom 全能力验收必须使用固定上游参考 commit 的能力矩阵逐项证明 Library/SDK、proxy、wrap/unwrap、MCP、ContentRouter 与各类 compressor、CacheAligner/live-zone、CCR retrieval、memory/SharedContext、learn、output shaping、ledger/stats/export、Doctor 与 integrated RTK；任何 passthrough、metadata-only、preview-only、测试专用或外部 8787 依赖项均判定未完成。
+42. 分析页日志子页验收：必须是分析页内子页而非新增一级导航；逐请求记录必须来自 d-token-owned runtime、Tauri command 或 Event Ledger，按 `request_id` 可与 Receipt/metrics 关联，字段缺失、过期或不可用时显示 `—` / partial / stale / unavailable；任何 mock、fixture、示例补齐或估算值冒充真实记录均不通过。
+43. 首页节省切换验收：总体概览必须提供「累计 / 当周 / 当月 / 当天」四个节省窗口，默认「累计」，与活动趋势热力图的「本周 / 本月 / 本年」窗口并存且互不替代；四个窗口必须聚合同一份运行证据快照，窗口内数据缺失时不得用其他窗口或示例数字补齐。
+44. 费用与价格诚实验收：模型价格只能来自设置页本地价格表（P0.11），默认不内置假想单价；未配置价格或 Provider 计费证据缺失时费用只能显示 `estimated` / `not_verified` / `unavailable`，禁止第三方默认价目表、示例单价、旧 `char/4` 估算或任何形式伪造账单；`claimable` 只有在 Provider 计费/usage 证据和归因链完整时才可为 true。
