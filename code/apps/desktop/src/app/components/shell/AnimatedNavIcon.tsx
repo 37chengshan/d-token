@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { memo, useEffect, useState } from "react";
 import type { PageId } from "../../lib/nav";
 import { cn } from "../ui/utils";
 
@@ -38,11 +38,13 @@ export type AnimatedNavIconProps = {
 };
 
 /**
- * Product-owned icon set. Parts are plain SVG; motion is CSS-driven via
- * `.nav-motion-item:hover` / `:focus-visible` / `[data-motion-play]` so leave
- * reverses through transitions. No AiMaMi brand assets.
+ * Product-owned icon set with the d-token cat-ear brand mark. Parts are plain
+ * SVG (currentColor strokes); motion is CSS-driven via `.nav-motion-item:hover`
+ * / `:focus-visible` / `[data-motion-play]` so leave reverses through
+ * transitions. `aria-hidden` and focusable=false keep the glyphs decorative;
+ * reduced motion disables part transforms globally. No AiMaMi brand assets.
  */
-export function AnimatedNavIcon({
+export const AnimatedNavIcon = memo(function AnimatedNavIcon({
   id,
   active,
   reducedMotion,
@@ -93,26 +95,39 @@ export function AnimatedNavIcon({
       : {}),
   };
 
+  // d-token cat-ear brand mark shared by every primary navigation icon.
+  // Two closed triangles; static position, currentColor, safe under reduced motion.
+  const catEars = (
+    <path className="icon-part icon-cat-ears" d="M8.8 6 7.2 2.2 10 3.8Z M15.2 6 16.8 2.2 14 3.8Z" />
+  );
+
   switch (id) {
     case "overview":
       return (
         <svg {...common}>
-          <rect className="icon-part icon-grid-1" x="3.5" y="3.5" width="7" height="7" rx="1.4" />
-          <rect className="icon-part icon-grid-2" x="13.5" y="3.5" width="7" height="7" rx="1.4" />
-          <rect className="icon-part icon-grid-3" x="3.5" y="13.5" width="7" height="7" rx="1.4" />
-          <rect className="icon-part icon-grid-4" x="13.5" y="13.5" width="7" height="7" rx="1.4" />
+          {catEars}
+          <g transform="translate(0 3)">
+            <rect className="icon-part icon-grid-1" x="3.5" y="3.5" width="7" height="7" rx="1.4" />
+            <rect className="icon-part icon-grid-2" x="13.5" y="3.5" width="7" height="7" rx="1.4" />
+            <rect className="icon-part icon-grid-3" x="3.5" y="13.5" width="7" height="7" rx="1.4" />
+            <rect className="icon-part icon-grid-4" x="13.5" y="13.5" width="7" height="7" rx="1.4" />
+          </g>
         </svg>
       );
     case "install":
       return (
         <svg {...common}>
-          <path className="icon-part icon-download-arrow" d="M12 3.5v10m-3.5-3 3.5 3.5 3.5-3.5" />
-          <path className="icon-part icon-download-tray" d="M4.5 15.5v3.2c0 1 .8 1.8 1.8 1.8h11.4c1 0 1.8-.8 1.8-1.8v-3.2" />
+          {catEars}
+          <g transform="translate(0 3)">
+            <path className="icon-part icon-download-arrow" d="M12 3.5v10m-3.5-3 3.5 3.5 3.5-3.5" />
+            <path className="icon-part icon-download-tray" d="M4.5 15.5v3.2c0 1 .8 1.8 1.8 1.8h11.4c1 0 1.8-.8 1.8-1.8v-3.2" />
+          </g>
         </svg>
       );
     case "codebase-memory":
       return (
         <svg {...common}>
+          {catEars}
           <path className="icon-part icon-memory-edge" d="M7.2 7.2 12 4.7l4.8 2.5M7.2 7.2v5.6L12 16m4.8-8.8v5.6L12 16m0 0v3.3" />
           <circle className="icon-part icon-memory-node-1" cx="12" cy="4.5" r="2" />
           <circle className="icon-part icon-memory-node-2" cx="6.8" cy="8" r="2" />
@@ -123,6 +138,7 @@ export function AnimatedNavIcon({
     case "analytics":
       return (
         <svg {...common}>
+          {catEars}
           <path d="M3.5 20.5h17" />
           <path className="icon-part icon-bar-1" d="M6.5 18v-5" />
           <path className="icon-part icon-bar-2" d="M12 18V7" />
@@ -132,22 +148,29 @@ export function AnimatedNavIcon({
     case "visual":
       return (
         <svg {...common}>
-          <rect className="icon-part icon-frame" x="3.5" y="5" width="17" height="14" rx="2" />
-          <circle className="icon-part icon-lens" cx="9" cy="10.5" r="1.6" />
-          <path className="icon-part icon-landscape" d="m5.5 16.5 3.2-3.4 2.4 2.1 3.1-3.8 4.3 5.1" />
+          {catEars}
+          <g transform="translate(0 1.5)">
+            <rect className="icon-part icon-frame" x="3.5" y="5" width="17" height="14" rx="2" />
+            <circle className="icon-part icon-lens" cx="9" cy="10.5" r="1.6" />
+            <path className="icon-part icon-landscape" d="m5.5 16.5 3.2-3.4 2.4 2.1 3.1-3.8 4.3 5.1" />
+          </g>
         </svg>
       );
     case "doctor":
       return (
         <svg {...common}>
-          <path className="icon-part icon-doctor-path" d="M6 4.5v5a6 6 0 0 0 12 0v-5M4 4.5h4M16 4.5h4" />
-          <path d="M12 15.5v1.2a3.8 3.8 0 0 0 3.8 3.8" />
-          <circle className="icon-part icon-doctor-dot" cx="18.4" cy="20.2" r="1.6" />
+          {catEars}
+          <g transform="translate(0 2)">
+            <path className="icon-part icon-doctor-path" d="M6 4.5v5a6 6 0 0 0 12 0v-5M4 4.5h4M16 4.5h4" />
+            <path d="M12 15.5v1.2a3.8 3.8 0 0 0 3.8 3.8" />
+            <circle className="icon-part icon-doctor-dot" cx="18.4" cy="20.2" r="1.6" />
+          </g>
         </svg>
       );
     case "changes":
       return (
         <svg {...common}>
+          {catEars}
           <path className="icon-part icon-change-top" d="M4 8h14m-3-3 3 3-3 3" />
           <path className="icon-part icon-change-bottom" d="M20 16H6m3 3-3-3 3-3" />
         </svg>
@@ -155,11 +178,14 @@ export function AnimatedNavIcon({
     case "settings":
       return (
         <svg {...common}>
-          <path
-            className="icon-part icon-gear"
-            d="M9.5 3.7h5l.7 2.3 2 .9 2.1-1.1 2.5 4.3-1.7 1.6v2.4l1.7 1.6-2.5 4.3-2.1-1.1-2 .9-.7 2.3h-5l-.7-2.3-2-.9L4.7 20l-2.5-4.3 1.7-1.6v-2.4l-1.7-1.6 2.5-4.3 2.1 1.1 2-.9.7-2.3Z"
-          />
-          <circle className="icon-part icon-gear-hub" cx="12" cy="12.9" r="2.8" />
+          {catEars}
+          <g transform="translate(0 2.8)">
+            <path
+              className="icon-part icon-gear"
+              d="M9.5 3.7h5l.7 2.3 2 .9 2.1-1.1 2.5 4.3-1.7 1.6v2.4l1.7 1.6-2.5 4.3-2.1-1.1-2 .9-.7 2.3h-5l-.7-2.3-2-.9L4.7 20l-2.5-4.3 1.7-1.6v-2.4l-1.7-1.6 2.5-4.3 2.1 1.1 2-.9.7-2.3Z"
+            />
+            <circle className="icon-part icon-gear-hub" cx="12" cy="12.9" r="2.8" />
+          </g>
         </svg>
       );
     case "theme":
@@ -187,4 +213,4 @@ export function AnimatedNavIcon({
     default:
       return null;
   }
-}
+});

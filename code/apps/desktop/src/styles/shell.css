@@ -183,14 +183,27 @@
   will-change: transform;
 }
 
+/* d-token cat-ear brand mark: gentle perk on engage, settles back on leave.
+ * Shared by every primary navigation icon; reduced-motion rules below strip
+ * the transform so only the color state remains. */
+.nav-motion-item:hover [data-motion-id] .icon-cat-ears,
+.nav-motion-item:focus-visible [data-motion-id] .icon-cat-ears,
+.nav-motion-item [data-motion-id][data-motion-play="true"] .icon-cat-ears {
+  transform: translateY(-1.5px) scale(1.06);
+}
+
 .animated-nav-icon .icon-bar-1,
 .animated-nav-icon .icon-bar-2,
 .animated-nav-icon .icon-bar-3 {
   transform-origin: center bottom;
 }
 
-/* Click scale on the whole control (instant band). */
-.nav-motion-item:active {
+/* Click scale on the control content (instant band). The scale applies to
+ * the inner content, not the button box, so the hit target never shrinks
+ * under the pointer while pressed: PRD 12.5.7.5 keeps the light press
+ * feedback while 12.5.2.6/12.5.10 demand the hit area match the visuals. */
+.nav-motion-item:active > svg,
+.nav-motion-item:active > span {
   transform: scale(0.92);
   transition: transform var(--duration-instant) var(--ease-spring);
 }
@@ -423,7 +436,8 @@
   }
 
   .animated-nav-icon .icon-part,
-  .nav-motion-item:active {
+  .nav-motion-item:active > svg,
+  .nav-motion-item:active > span {
     transition: none !important;
     transform: none !important;
   }

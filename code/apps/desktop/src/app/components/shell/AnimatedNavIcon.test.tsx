@@ -76,6 +76,43 @@ describe("AnimatedNavIcon", () => {
     expect(icon).toHaveAttribute("data-motion-engaged", "false");
   });
 
+  it("applies the d-token cat-ear brand mark to every primary navigation icon", () => {
+    const primaryIds: AnimatedNavIconId[] = [
+      "overview",
+      "install",
+      "codebase-memory",
+      "analytics",
+      "visual",
+      "doctor",
+      "changes",
+      "settings",
+    ];
+
+    for (const id of primaryIds) {
+      const { container, unmount } = render(
+        <AnimatedNavIcon id={id} active={false} reducedMotion={false} />,
+      );
+      const icon = container.querySelector(`[data-motion-id="${id}"]`);
+      expect(icon?.querySelector(".icon-cat-ears"), `${id} should carry the cat-ear brand mark`).toBeInTheDocument();
+      // The brand mark must stay a plain currentColor stroke inherited from
+      // the svg (no fixed color/fill override on the path itself).
+      expect(icon).toHaveAttribute("stroke", "currentColor");
+      const ears = icon?.querySelector(".icon-cat-ears");
+      expect(ears?.getAttribute("stroke")).toBeNull();
+      expect(ears?.getAttribute("fill")).toBeNull();
+      unmount();
+    }
+  });
+
+  it("keeps utility controls (theme, collapse) free of the navigation cat ears", () => {
+    const { container, unmount } = render(<AnimatedNavIcon id="theme" active={false} reducedMotion={false} />);
+    expect(container.querySelector(`[data-motion-id="theme"]`)?.querySelector(".icon-cat-ears")).not.toBeInTheDocument();
+    unmount();
+    const { container: container2, unmount: unmount2 } = render(<AnimatedNavIcon id="collapse" active={false} reducedMotion={false} />);
+    expect(container2.querySelector(`[data-motion-id="collapse"]`)?.querySelector(".icon-cat-ears")).not.toBeInTheDocument();
+    unmount2();
+  });
+
   it("sets data-motion-engaged when parent reports hover/focus for enter/leave", () => {
     const { container, rerender } = render(
       <AnimatedNavIcon id="settings" active={false} reducedMotion={false} engaged={false} />,

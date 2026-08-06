@@ -6,7 +6,7 @@ import { cn } from "../ui/utils";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "../ui/tooltip";
 import { AnimatedNavIcon } from "./AnimatedNavIcon";
 import { AnimatedSegmentedControl } from "./AnimatedSegmentedControl";
-import { useState, type ReactNode } from "react";
+import { memo, useState, type ReactNode } from "react";
 
 const ITEM_GAP = 6;
 
@@ -26,11 +26,6 @@ export function Sidebar({
   const t = useT();
   const { theme, resolvedTheme, setTheme } = useAppearance();
   const isDark = (resolvedTheme ?? theme) === "dark";
-  const [motionPulse, setMotionPulse] = useState<{ id: string; token: number }>({ id: "", token: 0 });
-  const [engagedId, setEngagedId] = useState<string | null>(null);
-  const triggerMotion = (id: string) => setMotionPulse((current) => ({ id, token: current.token + 1 }));
-  const engage = (id: string) => setEngagedId(id);
-  const disengage = (id: string) => setEngagedId((current) => (current === id ? null : current));
 
   return (
     <TooltipProvider delayDuration={0}>
@@ -53,15 +48,10 @@ export function Sidebar({
               id={item.id}
               labelKey={item.labelKey}
               badge={item.badge}
-              page={page}
+              active={page === item.id}
               setPage={setPage}
               collapsed={collapsed}
               reducedMotion={reducedMotion}
-              engaged={engagedId === item.id}
-              onEngage={() => engage(item.id)}
-              onDisengage={() => disengage(item.id)}
-              motionToken={motionPulse.id === item.id ? motionPulse.token : 0}
-              triggerMotion={triggerMotion}
             />
           ))}
         </nav>
@@ -71,44 +61,20 @@ export function Sidebar({
             id={SETTINGS_NAV.id}
             labelKey={SETTINGS_NAV.labelKey}
             badge={SETTINGS_NAV.badge}
-            page={page}
+            active={page === SETTINGS_NAV.id}
             setPage={setPage}
             collapsed={collapsed}
             reducedMotion={reducedMotion}
-            engaged={engagedId === SETTINGS_NAV.id}
-            onEngage={() => engage(SETTINGS_NAV.id)}
-            onDisengage={() => disengage(SETTINGS_NAV.id)}
-            motionToken={motionPulse.id === SETTINGS_NAV.id ? motionPulse.token : 0}
-            triggerMotion={triggerMotion}
           />
 
           <div className={cn("mt-1 flex items-center gap-1", collapsed && "flex-col")}>
             {collapsed ? (
               <CollapsedTip label={isDark ? t("set.themeLight") : t("set.themeDark")}>
-                <button
-                  type="button"
-                  onClick={() => {
-                    triggerMotion("theme");
-                    setTheme(isDark ? "light" : "dark");
-                  }}
-                  onPointerEnter={() => engage("theme")}
-                  onPointerLeave={() => disengage("theme")}
-                  onFocus={() => engage("theme")}
-                  onBlur={() => disengage("theme")}
-                  aria-label={isDark ? t("set.themeLight") : t("set.themeDark")}
-                  className="nav-motion-item shell-theme-icon-button group flex h-[40px] w-[40px] items-center justify-center rounded-lg text-muted-foreground"
-                  data-nav-engaged={engagedId === "theme" ? "true" : "false"}
-                >
-                  <AnimatedNavIcon
-                    id="theme"
-                    active={false}
-                    reducedMotion={reducedMotion}
-                    dark={isDark}
-                    engaged={engagedId === "theme"}
-                    motionToken={motionPulse.id === "theme" ? motionPulse.token : 0}
-                    className="size-[18px]"
-                  />
-                </button>
+                <ThemeToggleButton
+                  isDark={isDark}
+                  reducedMotion={reducedMotion}
+                  onToggle={() => setTheme(isDark ? "light" : "dark")}
+                />
               </CollapsedTip>
             ) : (
               <AnimatedSegmentedControl
@@ -122,7 +88,6 @@ export function Sidebar({
                         id="theme"
                         active={!isDark}
                         reducedMotion={reducedMotion}
-                        engaged={engagedId === "theme-light"}
                         className="size-[14px]"
                       />
                     ),
@@ -136,7 +101,6 @@ export function Sidebar({
                         active={isDark}
                         reducedMotion={reducedMotion}
                         dark
-                        engaged={engagedId === "theme-dark"}
                         className="size-[14px]"
                       />
                     ),
@@ -150,33 +114,7 @@ export function Sidebar({
             )}
 
             <CollapsedTip label={collapsed ? t("app.expandSidebar") : t("app.collapseSidebar")} enabled={collapsed}>
-              <button
-                type="button"
-                onClick={() => {
-                  triggerMotion("collapse");
-                  setCollapsed(!collapsed);
-                }}
-                onPointerEnter={() => engage("collapse")}
-                onPointerLeave={() => disengage("collapse")}
-                onFocus={() => engage("collapse")}
-                onBlur={() => disengage("collapse")}
-                aria-label={collapsed ? t("app.expandSidebar") : t("app.collapseSidebar")}
-                className={cn(
-                  "nav-motion-item group flex items-center justify-center rounded-md text-muted-foreground hover:bg-[var(--chip-hover-bg)]",
-                  collapsed ? "h-[40px] w-[40px]" : "size-7",
-                )}
-                data-nav-engaged={engagedId === "collapse" ? "true" : "false"}
-              >
-                <AnimatedNavIcon
-                  id="collapse"
-                  active={false}
-                  reducedMotion={reducedMotion}
-                  expanded={!collapsed}
-                  engaged={engagedId === "collapse"}
-                  motionToken={motionPulse.id === "collapse" ? motionPulse.token : 0}
-                  className="size-[17px]"
-                />
-              </button>
+              <CollapseButton collapsed={collapsed} reducedMotion={reducedMotion} onToggle={() => setCollapsed(!collapsed)} />
             </CollapsedTip>
           </div>
         </div>
@@ -205,48 +143,43 @@ function CollapsedTip({
   );
 }
 
-function SidebarItem({
+/**
+ * Engagement and click-pulse state live inside each item so hovering or
+ * clicking one nav entry never re-renders the rest of the sidebar.
+ */
+const SidebarItem = memo(function SidebarItem({
   id,
   labelKey,
   badge,
-  page,
+  active,
   setPage,
   collapsed,
   reducedMotion,
-  engaged,
-  onEngage,
-  onDisengage,
-  motionToken,
-  triggerMotion,
 }: {
   id: PageId;
   labelKey: string;
   badge?: "beta";
-  page: PageId;
+  active: boolean;
   setPage: (page: PageId) => void;
   collapsed: boolean;
   reducedMotion: boolean;
-  engaged: boolean;
-  onEngage: () => void;
-  onDisengage: () => void;
-  motionToken: number;
-  triggerMotion: (id: string) => void;
 }) {
   const t = useT();
-  const active = page === id;
+  const [engaged, setEngaged] = useState(false);
+  const [motionToken, setMotionToken] = useState(0);
   const label = t(labelKey);
   const accessibleLabel = badge === "beta" ? `${label} Beta` : label;
   const button = (
     <button
       type="button"
       onClick={() => {
-        triggerMotion(id);
+        setMotionToken((token) => token + 1);
         setPage(id);
       }}
-      onPointerEnter={onEngage}
-      onPointerLeave={onDisengage}
-      onFocus={onEngage}
-      onBlur={onDisengage}
+      onPointerEnter={() => setEngaged(true)}
+      onPointerLeave={() => setEngaged(false)}
+      onFocus={() => setEngaged(true)}
+      onBlur={() => setEngaged(false)}
       aria-label={accessibleLabel}
       aria-current={active ? "page" : undefined}
       data-nav-engaged={engaged ? "true" : "false"}
@@ -289,4 +222,87 @@ function SidebarItem({
     </button>
   );
   return <CollapsedTip label={accessibleLabel} enabled={collapsed}>{button}</CollapsedTip>;
+});
+
+function ThemeToggleButton({
+  isDark,
+  reducedMotion,
+  onToggle,
+}: {
+  isDark: boolean;
+  reducedMotion: boolean;
+  onToggle: () => void;
+}) {
+  const t = useT();
+  const [engaged, setEngaged] = useState(false);
+  const [motionToken, setMotionToken] = useState(0);
+  return (
+    <button
+      type="button"
+      onClick={() => {
+        setMotionToken((token) => token + 1);
+        onToggle();
+      }}
+      onPointerEnter={() => setEngaged(true)}
+      onPointerLeave={() => setEngaged(false)}
+      onFocus={() => setEngaged(true)}
+      onBlur={() => setEngaged(false)}
+      aria-label={isDark ? t("set.themeLight") : t("set.themeDark")}
+      className="nav-motion-item shell-theme-icon-button group flex h-[40px] w-[40px] items-center justify-center rounded-lg text-muted-foreground"
+      data-nav-engaged={engaged ? "true" : "false"}
+    >
+      <AnimatedNavIcon
+        id="theme"
+        active={false}
+        reducedMotion={reducedMotion}
+        dark={isDark}
+        engaged={engaged}
+        motionToken={motionToken}
+        className="size-[18px]"
+      />
+    </button>
+  );
+}
+
+function CollapseButton({
+  collapsed,
+  reducedMotion,
+  onToggle,
+}: {
+  collapsed: boolean;
+  reducedMotion: boolean;
+  onToggle: () => void;
+}) {
+  const t = useT();
+  const [engaged, setEngaged] = useState(false);
+  const [motionToken, setMotionToken] = useState(0);
+  return (
+    <button
+      type="button"
+      onClick={() => {
+        setMotionToken((token) => token + 1);
+        onToggle();
+      }}
+      onPointerEnter={() => setEngaged(true)}
+      onPointerLeave={() => setEngaged(false)}
+      onFocus={() => setEngaged(true)}
+      onBlur={() => setEngaged(false)}
+      aria-label={collapsed ? t("app.expandSidebar") : t("app.collapseSidebar")}
+      className={cn(
+        "nav-motion-item group flex shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-[var(--chip-hover-bg)]",
+        collapsed ? "h-[40px] w-[40px]" : "size-7",
+      )}
+      data-nav-engaged={engaged ? "true" : "false"}
+    >
+      <AnimatedNavIcon
+        id="collapse"
+        active={false}
+        reducedMotion={reducedMotion}
+        expanded={!collapsed}
+        engaged={engaged}
+        motionToken={motionToken}
+        className="size-[17px]"
+      />
+    </button>
+  );
 }
