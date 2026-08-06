@@ -3,7 +3,7 @@
 </p>
 
 <div align="center">
-  <img src="icons/logo.svg" width="112" alt="d-token logo" />
+  <img src="assets/marketing/app-icon.png" width="112" alt="d-token logo" />
 
 # d-token
 

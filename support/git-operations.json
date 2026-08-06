@@ -810,6 +810,15 @@
       "summary": "Push dynamic route and release gate candidate for CI and Windows validation",
       "head_before": "f707114473d268c5dec15bdd83416ef943aa4038",
       "remote": "origin"
+    },
+    {
+      "id": "5d7053df-a6f9-4882-ad6d-08dd1386a078",
+      "timestamp": "2026-08-06T23:52:30+08:00",
+      "operation": "commit",
+      "branch": "main",
+      "summary": "docs: README 顶部图标替换为应用真实图标（app-icon.png，替换错误的 icons/logo.svg）",
+      "head_before": "c88c8e91b186bac804a0137523ab1c5b9b3e53e2",
+      "remote": null
     }
   ]
 }
