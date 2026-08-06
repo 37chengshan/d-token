@@ -828,6 +828,15 @@
       "summary": "push README 图标替换（app-icon.png）到 main",
       "head_before": "e7fb6a0",
       "remote": "origin"
+    },
+    {
+      "id": "7d53f8e1-95b3-4c9c-980c-a7f8f17cbdd0",
+      "timestamp": "2026-08-06T23:57:24+08:00",
+      "operation": "merge",
+      "branch": "main",
+      "summary": "merge origin/main（用户手动 README 改动不保留，以应用真实图标版本为准）",
+      "head_before": "7acf7fd",
+      "remote": null
     }
   ]
 }
