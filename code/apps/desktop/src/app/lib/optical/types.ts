@@ -104,7 +104,7 @@ export type OpticalPlanSummary = {
   plan_id?: string;
   mode?: string;
   final_status?: string;
-  gates?: Array<{ passed?: boolean; reason?: string }>;
+  gates?: Array<{ name?: string; passed?: boolean; reason?: string }>;
   counters?: {
     candidate_blocks?: number;
     preserved_blocks?: number;
@@ -124,6 +124,15 @@ export type OpticalPreviewResult = {
   source: string;
   error: string;
   data: OpticalPlanSummary | null;
+};
+
+/**
+ * Optional shadow-preview request routing. Only an opaque route_id is passed
+ * through — provider/model stay null so the request never carries credential
+ * or model-sensitive values beyond what the public summary contract allows.
+ */
+export type OpticalPreviewRequestOptions = {
+  route_id?: string;
 };
 
 export type OpticalConfigDraft = {

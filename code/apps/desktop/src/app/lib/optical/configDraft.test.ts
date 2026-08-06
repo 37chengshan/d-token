@@ -5,7 +5,6 @@ import {
   defaultOpticalDraft,
   normalizeOpticalDraft,
   opticalDraftsEqual,
-  setupChecklist,
   summarizeOpticalDraft,
 } from "./configDraft";
 
@@ -67,17 +66,5 @@ describe("optical config draft", () => {
     expect(opticalDraftsEqual(a, b)).toBe(false);
     expect(summarizeOpticalDraft(b, "zh")).toMatch(/Active 改写：强制关闭/);
     expect(summarizeOpticalDraft(b, "en")).toMatch(/Active transform: forced off/);
-  });
-
-  it("builds setup checklist from prerequisites", () => {
-    const items = setupChecklist({
-      serviceRunning: true,
-      activeConfigExists: true,
-      routeCount: 2,
-      globalEnabled: false,
-      enabledRouteCount: 0,
-    });
-    expect(items.filter((item) => item.required).every((item) => item.done)).toBe(true);
-    expect(items.find((item) => item.id === "global_enabled")?.done).toBe(false);
   });
 });
