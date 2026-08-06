@@ -1098,6 +1098,15 @@
       "summary": "feat(overview): 首页累计/当周/当月/当天节省区间，本地时区窗口与费用 unavailable 诚实口径",
       "head_before": "f1b89dcc8db810b6d2373e9d1d4b5f57f1c6f40e",
       "remote": null
+    },
+    {
+      "id": "6f72065a-df8a-49ec-b5f8-1bce2b15cfd0",
+      "timestamp": "2026-08-07T00:42:10+08:00",
+      "operation": "merge",
+      "branch": "codex/code-graph-mcp-integration",
+      "summary": "合并 macOS 侧栏打磨分支，真实 Tauri 仍待验证",
+      "head_before": "4b5a0d3",
+      "remote": null
     }
   ]
 }
