@@ -837,6 +837,24 @@
       "summary": "完成模型价格表与本地费用设置",
       "head_before": "f1b89dcc8db8",
       "remote": null
+    },
+    {
+      "id": "7035aad1-eb61-4ad7-8610-5263af06a8ff",
+      "timestamp": "2026-08-06T23:06:48+08:00",
+      "operation": "commit",
+      "branch": "codex/release-model-pricing",
+      "summary": "恢复 discovery.ts 到 f1b89dc，保留模型价格实现并修正交付报告口径",
+      "head_before": "2962093",
+      "remote": null
+    },
+    {
+      "id": "b9bf713d-0c67-42fa-8d85-093ccf7c0b2c",
+      "timestamp": "2026-08-06T23:07:31+08:00",
+      "operation": "commit",
+      "branch": "codex/release-model-pricing",
+      "summary": "提交 git 操作审计账本追加记录，保持工作树整洁",
+      "head_before": "a79110a",
+      "remote": null
     }
   ]
 }
