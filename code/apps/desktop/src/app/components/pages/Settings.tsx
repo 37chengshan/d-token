@@ -1,5 +1,6 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
+  Banknote,
   BrainCircuit,
   Check,
   Globe,
@@ -12,13 +13,14 @@ import {
   Server,
   ShieldCheck,
   Sun,
+  Trash2,
 } from "lucide-react";
 import desktopPackage from "../../../../package.json";
 import { Surface } from "../common/Surface";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { Switch } from "../ui/switch";
-import { useI18n, useT } from "../../lib/i18n";
+import { useI18n, useT, translateCopy } from "../../lib/i18n";
 import {
   ACCENTS,
   CHART_ACCENTS,
@@ -68,6 +70,31 @@ const DEFAULT_PRODUCT_PREFERENCES: ProductPreferences = {
   autoUpdateCheck: false,
 };
 
+/** One user-maintained price row in the local model pricing table. */
+type ModelPriceEntry = {
+  model: string;
+  currency: "USD" | "CNY";
+  inputPerMillion: number;
+  outputPerMillion: number;
+  source: string;
+  updatedAt: string;
+};
+
+const MODEL_PRICING_CURRENCIES = ["USD", "CNY"] as const;
+const MODEL_PRICING_UNIT = "per_1m_tokens";
+const MODEL_PRICING_MAX_MODEL_LENGTH = 128;
+
+function createEmptyPriceRow(): ModelPriceEntry {
+  return {
+    model: "",
+    currency: "USD",
+    inputPerMillion: 0,
+    outputPerMillion: 0,
+    source: "user",
+    updatedAt: "",
+  };
+}
+
 /** Settings reads service evidence only; payload changes must not repaint it. */
 type SettingsRuntimeSlice = {
   operational: RuntimeDashboardState["operational"];
@@ -111,6 +138,13 @@ export function Settings() {
   const [preferencesSaving, setPreferencesSaving] = useState(false);
   const [preferencesAvailable, setPreferencesAvailable] = useState(false);
   const [preferencesLoadError, setPreferencesLoadError] = useState("");
+  const [pricingRows, setPricingRows] = useState<ModelPriceEntry[]>([]);
+  const pricingPersisted = useRef<ModelPriceEntry[]>([]);
+  const [pricingLoaded, setPricingLoaded] = useState(false);
+  const [pricingMissing, setPricingMissing] = useState(false);
+  const [pricingSaving, setPricingSaving] = useState(false);
+  const [pricingLoadError, setPricingLoadError] = useState("");
+  const [pricingInvalid, setPricingInvalid] = useState("");
   const [updateCheck, setUpdateCheck] = useState<UpdateCheckResult | null>(null);
   const [checkingUpdates, setCheckingUpdates] = useState(false);
   const [reducedMotion, setReducedMotion] = useState(
@@ -144,6 +178,28 @@ export function Settings() {
         setPreferencesLoadError(message);
         const failure = presentOperationFailure("settings", error, lang);
         addNotification({ dedupeKey: "settings-preferences-load-failed", level: "warning", title: lang === "zh" ? "设置暂不可用" : "Settings unavailable", message, details: failure.details });
+      });
+  }, [addNotification, lang]);
+
+  useEffect(() => {
+    void invokeNative<{ state: string; payload?: Record<string, any> }>("get_app_settings", { section: "model-pricing" })
+      .then((saved) => {
+        const rows = normalizeModelPriceRows(saved.payload?.prices);
+        setPricingRows(rows);
+        pricingPersisted.current = rows;
+        setPricingLoaded(true);
+        setPricingMissing(saved.state === "missing");
+        setPricingLoadError("");
+      })
+      .catch((error) => {
+        const message = error instanceof Error && error.message === "native_unavailable"
+          ? translateCopy("set.pricingPreviewMsg", lang)
+          : translateCopy("set.pricingLoadFailedMsg", lang);
+        setPricingLoaded(false);
+        setPricingMissing(false);
+        setPricingLoadError(message);
+        const failure = presentOperationFailure("settings", error, lang);
+        addNotification({ dedupeKey: "settings-pricing-load-failed", level: "warning", title: translateCopy("set.pricingUnavailable", lang), message, details: failure.details });
       });
   }, [addNotification, lang]);
 
@@ -185,6 +241,87 @@ export function Settings() {
     } finally {
       setPreferencesSaving(false);
     }
+  };
+
+  const pricingAvailable = pricingLoaded || pricingMissing;
+
+  const validatePricingRows = (rows: ModelPriceEntry[]): string => {
+    const seen = new Set<string>();
+    for (let index = 0; index < rows.length; index += 1) {
+      const row = rows[index];
+      const model = row.model.trim();
+      if (!model) {
+        return translateCopy("set.pricingErrorEmptyModel", lang, { row: index + 1 });
+      }
+      if (model.length > MODEL_PRICING_MAX_MODEL_LENGTH) {
+        return translateCopy("set.pricingErrorLongModel", lang, { row: index + 1, max: MODEL_PRICING_MAX_MODEL_LENGTH });
+      }
+      const key = `${model}|${row.currency}`;
+      if (seen.has(key)) {
+        return translateCopy("set.pricingErrorDuplicate", lang, { model });
+      }
+      seen.add(key);
+      for (const field of ["inputPerMillion", "outputPerMillion"] as const) {
+        const value = row[field];
+        if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
+          return translateCopy("set.pricingErrorPrice", lang, { row: index + 1 });
+        }
+      }
+    }
+    return "";
+  };
+
+  const savePricing = async (rows: ModelPriceEntry[]) => {
+    if (!pricingAvailable) return;
+    const invalid = validatePricingRows(rows);
+    if (invalid) {
+      setPricingInvalid(invalid);
+      addNotification({ dedupeKey: "settings-pricing-invalid", level: "warning", title: translateCopy("set.pricingInvalidTitle", lang), message: invalid, persistent: true });
+      return;
+    }
+    setPricingInvalid("");
+    const next = rows.map((row) => ({ ...row, model: row.model.trim() }));
+    setPricingRows(next);
+    setPricingMissing(false);
+    setPricingSaving(true);
+    const requestId = createOperationRequestId("settings-pricing");
+    try {
+      const result = await invokeNative<NativeActionResult>("save_app_settings", {
+        section: "model-pricing",
+        payload: { prices: next, unit: MODEL_PRICING_UNIT, scope: "d-token-local-settings", no_external_agent_write: true },
+      });
+      if (!result.ok) throw new Error(result.summary || "settings_save_failed");
+      pricingPersisted.current = next;
+      addNotification({ dedupeKey: "settings-pricing-saved", level: "success", title: translateCopy("set.pricingSavedTitle", lang), message: translateCopy("set.pricingSavedMsg", lang), persistent: true, receipt: { requestId, targetId: "model-pricing" } });
+    } catch (error) {
+      // Roll back to the last successfully persisted table, not to the
+      // current (possibly edited) rows.
+      setPricingRows(pricingPersisted.current);
+      setPricingInvalid(translateCopy("set.pricingSaveRestored", lang));
+      const failure = presentOperationFailure("settings", error, lang);
+      addNotification({ dedupeKey: "settings-pricing-failed", level: "error", title: failure.title, message: failure.message, details: failure.details, receipt: { requestId, targetId: "model-pricing" } });
+    } finally {
+      setPricingSaving(false);
+    }
+  };
+
+  const updatePricingRow = (index: number, patch: Partial<ModelPriceEntry>) => {
+    setPricingRows((rows) => rows.map((row, rowIndex) => (rowIndex === index ? { ...row, ...patch } : row)));
+    if (pricingInvalid) setPricingInvalid("");
+  };
+
+  const removePricingRow = (index: number) => {
+    setPricingRows((rows) => rows.filter((_, rowIndex) => rowIndex !== index));
+    if (pricingInvalid) setPricingInvalid("");
+  };
+
+  const addPricingRow = () => {
+    setPricingRows((rows) => [...rows, createEmptyPriceRow()]);
+    if (pricingInvalid) setPricingInvalid("");
+  };
+
+  const restorePricingDefault = () => {
+    void savePricing([]);
   };
 
   const checkUpdates = async () => {
@@ -557,6 +694,113 @@ export function Settings() {
       </Section>
 
       <Section
+        id="modelPricing"
+        title={t("set.pricing")}
+        description={t("set.pricingDesc")}
+        icon={Banknote}
+      >
+        {pricingLoadError ? (
+          <div className="mx-5 mt-4 rounded-lg border border-amber-500/25 bg-amber-500/[0.06] p-3 text-sm text-amber-800 dark:text-amber-200" role="status">
+            <strong>{t("set.pricingUnavailable")}</strong>
+            <p className="mt-1 text-xs text-muted-foreground">{pricingLoadError}</p>
+          </div>
+        ) : null}
+        <div className="p-5">
+          {pricingRows.length === 0 ? (
+            <p className="text-sm text-muted-foreground">
+              {pricingMissing ? t("set.pricingEmpty") : t("set.pricingEmptySaved")}
+            </p>
+          ) : (
+            <div className="space-y-3">
+              {pricingRows.map((row, index) => (
+                <div key={index} className="grid grid-cols-2 gap-2 sm:grid-cols-[minmax(0,1.6fr)_minmax(0,1fr)_minmax(0,1fr)_minmax(0,1fr)_auto]">
+                  <label className="flex flex-col gap-1 text-xs text-muted-foreground">
+                    <span>{t("set.pricingModel")}</span>
+                    <input
+                      className="h-9 rounded-md border border-border/70 bg-background px-2.5 text-sm text-foreground outline-none focus:border-primary/60"
+                      value={row.model}
+                      maxLength={MODEL_PRICING_MAX_MODEL_LENGTH}
+                      aria-label={t("set.pricingRowModelAria", { row: index + 1 })}
+                      placeholder="gpt-4o"
+                      onChange={(event) => updatePricingRow(index, { model: event.target.value })}
+                    />
+                  </label>
+                  <label className="flex flex-col gap-1 text-xs text-muted-foreground">
+                    <span>{t("set.pricingCurrency")}</span>
+                    <select
+                      className="h-9 rounded-md border border-border/70 bg-background px-2.5 text-sm text-foreground outline-none focus:border-primary/60"
+                      value={row.currency}
+                      aria-label={t("set.pricingRowCurrencyAria", { row: index + 1 })}
+                      onChange={(event) => updatePricingRow(index, { currency: event.target.value as "USD" | "CNY" })}
+                    >
+                      {MODEL_PRICING_CURRENCIES.map((currency) => (
+                        <option key={currency} value={currency}>{currency}</option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="flex flex-col gap-1 text-xs text-muted-foreground">
+                    <span>{t("set.pricingInput")}</span>
+                    <input
+                      className="h-9 rounded-md border border-border/70 bg-background px-2.5 text-sm text-foreground outline-none focus:border-primary/60"
+                      type="number"
+                      min="0"
+                      step="0.01"
+                      value={Number.isFinite(row.inputPerMillion) ? String(row.inputPerMillion) : ""}
+                      aria-label={t("set.pricingRowInputAria", { row: index + 1 })}
+                      onChange={(event) => updatePricingRow(index, { inputPerMillion: Number(event.target.value) })}
+                    />
+                  </label>
+                  <label className="flex flex-col gap-1 text-xs text-muted-foreground">
+                    <span>{t("set.pricingOutput")}</span>
+                    <input
+                      className="h-9 rounded-md border border-border/70 bg-background px-2.5 text-sm text-foreground outline-none focus:border-primary/60"
+                      type="number"
+                      min="0"
+                      step="0.01"
+                      value={Number.isFinite(row.outputPerMillion) ? String(row.outputPerMillion) : ""}
+                      aria-label={t("set.pricingRowOutputAria", { row: index + 1 })}
+                      onChange={(event) => updatePricingRow(index, { outputPerMillion: Number(event.target.value) })}
+                    />
+                  </label>
+                  <button
+                    type="button"
+                    className="self-end rounded-md p-2 text-muted-foreground hover:text-destructive"
+                    aria-label={t("set.pricingRowRemoveAria", { row: index + 1 })}
+                    onClick={() => removePricingRow(index)}
+                  >
+                    <Trash2 className="size-4" />
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+          {pricingInvalid ? (
+            <p className="mt-3 text-sm text-destructive" role="status">{pricingInvalid}</p>
+          ) : null}
+          <div className="mt-4 flex flex-wrap items-center gap-2">
+            <Button size="sm" variant="outline" disabled={pricingSaving || !pricingAvailable} onClick={addPricingRow}>
+              {t("set.pricingAdd")}
+            </Button>
+            <Button size="sm" disabled={pricingSaving || !pricingAvailable} onClick={() => void savePricing(pricingRows)}>
+              {pricingSaving ? <RefreshCw className="size-4 animate-spin" /> : <Check className="size-4" />}
+              {pricingSaving ? t("set.pricingSaving") : t("set.pricingSave")}
+            </Button>
+            <Button
+              size="sm"
+              variant="ghost"
+              disabled={pricingSaving || !pricingAvailable || (pricingRows.length === 0 && !pricingMissing)}
+              onClick={restorePricingDefault}
+            >
+              {t("set.pricingRestore")}
+            </Button>
+          </div>
+          <p className="mt-3 text-xs text-muted-foreground">
+            {t("set.pricingUnitNote")}
+          </p>
+        </div>
+      </Section>
+
+      <Section
         id="about"
         title={t("set.about")}
         description={lang === "zh" ? "版本信息；设置仅保存在 d-token 本地。" : "Version info; settings stay in d-token local state only."}
@@ -605,7 +849,7 @@ function Section({
   icon: Icon,
   children,
 }: {
-  id: "runtime" | "privacy" | "learning" | "updates" | "appearance" | "about";
+  id: "runtime" | "privacy" | "learning" | "updates" | "appearance" | "modelPricing" | "about";
   title: string;
   description: string;
   icon: typeof Server;
@@ -779,4 +1023,37 @@ function normalizeProductPreferences(value: unknown): ProductPreferences {
     updateChannel: item.updateChannel === "preview" ? "preview" : "stable",
     autoUpdateCheck: item.autoUpdateCheck === true,
   };
+}
+
+/**
+ * Normalizes a `model-pricing` payload from the native settings contract into
+ * editable rows. Unknown entries are dropped; malformed prices stay "unknown"
+ * (never coerced to zero) by falling back to a fresh empty row for the model
+ * id, so the user sees exactly what was persisted instead of a fabricated 0.
+ */
+function normalizeModelPriceRows(value: unknown): ModelPriceEntry[] {
+  if (!Array.isArray(value)) return [];
+  const rows: ModelPriceEntry[] = [];
+  for (const raw of value) {
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) continue;
+    const entry = raw as Record<string, unknown>;
+    const model = typeof entry.model === "string" ? entry.model.trim() : "";
+    if (!model) continue;
+    const currency = entry.currency === "CNY" ? "CNY" : "USD";
+    const inputPerMillion = typeof entry.inputPerMillion === "number" && Number.isFinite(entry.inputPerMillion) && entry.inputPerMillion >= 0
+      ? entry.inputPerMillion
+      : Number.NaN;
+    const outputPerMillion = typeof entry.outputPerMillion === "number" && Number.isFinite(entry.outputPerMillion) && entry.outputPerMillion >= 0
+      ? entry.outputPerMillion
+      : Number.NaN;
+    rows.push({
+      model,
+      currency,
+      inputPerMillion,
+      outputPerMillion,
+      source: typeof entry.source === "string" ? entry.source : "user",
+      updatedAt: typeof entry.updatedAt === "string" ? entry.updatedAt : "",
+    });
+  }
+  return rows;
 }

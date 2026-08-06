@@ -853,6 +853,11 @@
       "operation": "branch-create",
       "branch": "codex/release-model-pricing",
       "summary": "为模型价格设置持久化创建隔离分支",
+      "id": "5001c0b7-4f1c-46bb-a8ed-7cb611071e22",
+      "timestamp": "2026-08-06T21:13:12+08:00",
+      "operation": "commit",
+      "branch": "codex/release-model-pricing",
+      "summary": "完成模型价格表与本地费用设置",
       "head_before": "f1b89dcc8db8",
       "remote": null
     },
@@ -1025,6 +1030,21 @@
       "branch": "codex/code-graph-mcp-integration",
       "summary": "合并模型价格设置分支，待主树测试",
       "head_before": "cf3aa22",
+      "id": "7035aad1-eb61-4ad7-8610-5263af06a8ff",
+      "timestamp": "2026-08-06T23:06:48+08:00",
+      "operation": "commit",
+      "branch": "codex/release-model-pricing",
+      "summary": "恢复 discovery.ts 到 f1b89dc，保留模型价格实现并修正交付报告口径",
+      "head_before": "2962093",
+      "remote": null
+    },
+    {
+      "id": "b9bf713d-0c67-42fa-8d85-093ccf7c0b2c",
+      "timestamp": "2026-08-06T23:07:31+08:00",
+      "operation": "commit",
+      "branch": "codex/release-model-pricing",
+      "summary": "提交 git 操作审计账本追加记录，保持工作树整洁",
+      "head_before": "a79110a",
       "remote": null
     }
   ]
