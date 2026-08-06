@@ -828,6 +828,15 @@
       "summary": "提交发布前 PRD、MCP 会话、release gate 与测试合同收口改动",
       "head_before": "5cfe1f2",
       "remote": null
+    },
+    {
+      "id": "dc773217-f36b-4efb-b31d-e9811f105f78",
+      "timestamp": "2026-08-06T20:55:33+08:00",
+      "operation": "commit",
+      "branch": "codex/release-onboarding",
+      "summary": "feat: 首次使用配置向导（onboarding gate + 页面 + Topbar 重入）",
+      "head_before": "f1b89dcc8db810b6d2373e9d1d4b5f57f1c6f40e",
+      "remote": null
     }
   ]
 }
