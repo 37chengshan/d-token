@@ -154,6 +154,8 @@ DOCS_ROOT_MARKDOWN_ALLOWED = {
     "SECURITY_BOUNDARIES.md",
     "TECH_STACK.md",
     "index.md",
+    "agent-mcp-parallel-dev-prompts.md",
+    "d-token_AI_product_target_spec_v2.md",
 }
 
 ACTIVE_MARKDOWN_ROOTS = [

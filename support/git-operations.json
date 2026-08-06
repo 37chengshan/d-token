@@ -828,6 +828,123 @@
       "summary": "提交发布前 PRD、MCP 会话、release gate 与测试合同收口改动",
       "head_before": "5cfe1f2",
       "remote": null
+    },
+    {
+      "id": "fbf1920b-a386-46d4-812c-b9ffc05bf738",
+      "timestamp": "2026-08-06T20:17:15+08:00",
+      "operation": "branch-create",
+      "branch": "codex/release-prd-logs-pricing",
+      "summary": "为发布前日志费用产品契约创建隔离分支",
+      "head_before": "f1b89dcc8db8",
+      "remote": null
+    },
+    {
+      "id": "3a734567-0b6a-406a-bc1c-aeb4010dd329",
+      "timestamp": "2026-08-06T20:17:16+08:00",
+      "operation": "branch-create",
+      "branch": "codex/release-runtime-logs",
+      "summary": "为真实请求日志费用数据合同创建隔离分支",
+      "head_before": "f1b89dcc8db8",
+      "remote": null
+    },
+    {
+      "id": "c16ba9d7-4970-4162-baa2-427183573b8a",
+      "timestamp": "2026-08-06T20:17:16+08:00",
+      "operation": "branch-create",
+      "branch": "codex/release-model-pricing",
+      "summary": "为模型价格设置持久化创建隔离分支",
+      "head_before": "f1b89dcc8db8",
+      "remote": null
+    },
+    {
+      "id": "e3794de4-0d5e-4a7e-85ad-5f1826334280",
+      "timestamp": "2026-08-06T20:17:16+08:00",
+      "operation": "branch-create",
+      "branch": "codex/release-overview-savings",
+      "summary": "为首页节省区间切换创建隔离分支",
+      "head_before": "f1b89dcc8db8",
+      "remote": null
+    },
+    {
+      "id": "6f4b9e4c-86e3-4d82-b5cd-0971ef928cec",
+      "timestamp": "2026-08-06T20:17:17+08:00",
+      "operation": "branch-create",
+      "branch": "codex/release-log-view",
+      "summary": "为分析日志子页创建隔离分支",
+      "head_before": "f1b89dcc8db8",
+      "remote": null
+    },
+    {
+      "id": "368bb2fd-313b-4406-b2d7-97a39e7db1b7",
+      "timestamp": "2026-08-06T20:17:17+08:00",
+      "operation": "branch-create",
+      "branch": "codex/release-onboarding",
+      "summary": "为首次使用配置入口创建隔离分支",
+      "head_before": "f1b89dcc8db8",
+      "remote": null
+    },
+    {
+      "id": "2b3ab7c3-456d-4b4e-be8c-0872914b0807",
+      "timestamp": "2026-08-06T20:22:06+08:00",
+      "operation": "branch-create",
+      "branch": "codex/release-codebase-memory",
+      "summary": "为 Codebase Memory 配置阻塞修复创建隔离分支",
+      "head_before": "f1b89dcc8db8",
+      "remote": null
+    },
+    {
+      "id": "9574ecd6-363c-4b11-8121-f6d7602b155b",
+      "timestamp": "2026-08-06T20:22:06+08:00",
+      "operation": "branch-create",
+      "branch": "codex/release-optical-review",
+      "summary": "为视觉压缩发布打磨研究创建隔离分支",
+      "head_before": "f1b89dcc8db8",
+      "remote": null
+    },
+    {
+      "id": "79e5c658-50ee-4347-880c-7683a42ae5ba",
+      "timestamp": "2026-08-06T20:22:06+08:00",
+      "operation": "branch-create",
+      "branch": "codex/release-open-source",
+      "summary": "为开源来源固定与本地镜像计划创建隔离分支",
+      "head_before": "f1b89dcc8db8",
+      "remote": null
+    },
+    {
+      "id": "b9baf808-04f2-440d-a2de-2a5ab1648f43",
+      "timestamp": "2026-08-06T20:31:22+08:00",
+      "operation": "branch-create",
+      "branch": "codex/release-macos-sidebar",
+      "summary": "为 macOS 侧栏命中性能与小猫图标创建隔离分支",
+      "head_before": "f1b89dcc8db8",
+      "remote": null
+    },
+    {
+      "id": "dc766120-55b1-4d5f-9a53-9ba5bb3553b5",
+      "timestamp": "2026-08-06T20:53:06+08:00",
+      "operation": "branch-create",
+      "branch": "codex/release-optical-implementation",
+      "summary": "为视觉压缩 Beta 状态与预览打磨创建隔离分支",
+      "head_before": "f1b89dcc8db8",
+      "remote": null
+    },
+    {
+      "id": "0fd82147-6b04-41ac-99c5-d0cab3912cf3",
+      "timestamp": "2026-08-06T21:17:08+08:00",
+      "operation": "branch-create",
+      "branch": "codex/release-protocol-normalization",
+      "summary": "为运行时协议 wire 与 UI 展示正规化创建隔离分支",
+      "head_before": "f1b89dcc8db8",
+      "remote": null
+    },
+    {
+      "id": "81c0e5b6-5b99-4311-8636-c393af1e21b6",
+      "timestamp": "2026-08-06T23:56:13+08:00",
+      "operation": "commit",
+      "branch": "codex/code-graph-mcp-integration",
+      "summary": "保存主工作树已有宣传素材与产品目标规格改动，作为发布迭代合并前基线",
+      "head_before": "f1b89dc",
+      "remote": null
     }
   ]
 }

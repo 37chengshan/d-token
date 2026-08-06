@@ -35,6 +35,7 @@
 - [`research/claude report/UX_FLOW_AND_PERFORMANCE_REVIEW_2026-07-16.md`](<research/claude report/UX_FLOW_AND_PERFORMANCE_REVIEW_2026-07-16.md>) — 2026-07-16 用户流程与整体性能审查（七页旅程贯通度、一键安装状态机、性能预算达成度、release 实测缺口）。
 - [`research/CODEBASE_MEMORY_MCP_INTEGRATION_RESEARCH_2026-07-16.md`](research/CODEBASE_MEMORY_MCP_INTEGRATION_RESEARCH_2026-07-16.md) — `codebase-memory-mcp` 作为 d-token 实验性受管 sidecar 的上游能力、生命周期、安全、许可证、产品边界与实施前门槛研究。
 - [`legal/THIRD_PARTY_NOTICES.md`](legal/THIRD_PARTY_NOTICES.md) — 直接适配第三方实现的版权、固定来源、许可证与修改声明唯一入口。
+- [`media/promo/README.md`](media/promo/README.md) — v2.1 README 宣传图需求说明：横幅素材现状、og:image 生成提示词与产品实拍截图需求。
 
 2026-07-01 的 Headroom Dashboard Draft 清单/迁移矩阵已归入 `archive/product-matrices/2026-07-01/`；当前页面与数据合同以 PRD、App 页面文档和实际代码为准。
 
@@ -64,6 +65,7 @@
 - [`history/FRONTEND_UI_AUDIT_AND_ITERATION_2026-07-10.md`](history/FRONTEND_UI_AUDIT_AND_ITERATION_2026-07-10.md) — 2026-07-10 前端审查输入。
 - [`history/FINAL_REVIEW.md`](history/FINAL_REVIEW.md) — 更早的总体审查，包含已过期架构描述。
 - `history/M1_*`、`M2_*`、`M3_*`、`M4_*` — 阶段交付和测试记录。
+- [`history/OPTICAL_RELEASE_ITERATION_REPORT_2026-08-06.md`](history/OPTICAL_RELEASE_ITERATION_REPORT_2026-08-06.md) — 本轮桌面 Optical 研究报告切片的实现与验证证据。
 
 ## 6. 归档
 

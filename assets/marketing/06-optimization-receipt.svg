@@ -1,0 +1,135 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="900" viewBox="0 0 1600 900" role="img" aria-labelledby="title desc">
+  <title id="title">d-token optimization receipt</title>
+  <desc id="desc">A dark promotional banner showing a per-request Optimization Receipt: source agent, explicit route, transformations, protected content, measured token reduction and recovery status.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#111827"/>
+      <stop offset="0.5" stop-color="#172033"/>
+      <stop offset="1" stop-color="#0f172a"/>
+    </linearGradient>
+    <linearGradient id="orange" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#fdba74"/>
+      <stop offset="1" stop-color="#ea580c"/>
+    </linearGradient>
+    <linearGradient id="cyan" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#67e8f9"/>
+      <stop offset="1" stop-color="#0284c7"/>
+    </linearGradient>
+    <linearGradient id="green" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#34d399"/>
+      <stop offset="1" stop-color="#059669"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="160%">
+      <feDropShadow dx="0" dy="18" stdDeviation="22" flood-color="#020617" flood-opacity="0.42"/>
+    </filter>
+    <pattern id="grid" width="44" height="44" patternUnits="userSpaceOnUse">
+      <path d="M44 0H0V44" fill="none" stroke="#cbd5e1" stroke-opacity="0.045"/>
+    </pattern>
+  </defs>
+
+  <rect width="1600" height="900" fill="url(#bg)"/>
+  <rect width="1600" height="900" fill="url(#grid)"/>
+  <ellipse cx="790" cy="940" rx="760" ry="320" fill="#ea580c" opacity="0.055"/>
+
+  <g transform="translate(82 68)">
+    <rect width="58" height="58" rx="17" fill="url(#orange)"/>
+    <text x="29" y="40" text-anchor="middle" fill="#fff" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="34" font-weight="800">d</text>
+    <text x="76" y="39" fill="#f8fafc" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="34" font-weight="780">d-token</text>
+  </g>
+
+  <g transform="translate(82 178)">
+    <text x="0" y="0" fill="#f8fafc" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="64" font-weight="820" letter-spacing="-2">Every request leaves a receipt.</text>
+    <text x="0" y="56" fill="#cbd5e1" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="25">每条请求都生成一份 Optimization Receipt：来源、路由、变换、保护内容与恢复证据</text>
+  </g>
+
+  <!-- Receipt card -->
+  <g transform="translate(140 330)" filter="url(#shadow)">
+    <rect width="1320" height="560" rx="36" fill="#0f172a" stroke="#1e293b"/>
+
+    <!-- Header -->
+    <g transform="translate(40 30)">
+      <text x="0" y="20" fill="#f8fafc" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="26" font-weight="760">Optimization Receipt</text>
+      <text x="0" y="46" fill="#64748b" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="15">request #r-20260804-1142 · 2026-08-04 11:24 UTC</text>
+      <g transform="translate(1120 0)">
+        <rect width="140" height="40" rx="20" fill="#059669" fill-opacity="0.16" stroke="#34d399" stroke-opacity="0.5"/>
+        <circle cx="26" cy="20" r="6" fill="#34d399"/>
+        <text x="42" y="26" fill="#6ee7b7" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="16" font-weight="650">verified</text>
+      </g>
+    </g>
+    <line x1="40" y1="96" x2="1280" y2="96" stroke="#ffffff" stroke-opacity="0.07"/>
+
+    <!-- Left column: fields -->
+    <g transform="translate(40 128)">
+      <g>
+        <text x="0" y="0" fill="#64748b" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="13" font-weight="750" letter-spacing="1.1">SOURCE AGENT</text>
+        <circle cx="0" cy="26" r="7" fill="#10b981"/>
+        <text x="20" y="33" fill="#f1f5f9" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="22" font-weight="650">OpenCode</text>
+      </g>
+      <g transform="translate(0 70)">
+        <text x="0" y="0" fill="#64748b" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="13" font-weight="750" letter-spacing="1.1">ROUTE</text>
+        <text x="0" y="30" fill="#f1f5f9" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="21" font-weight="600">explicit → configured upstream</text>
+        <text x="0" y="54" fill="#94a3b8" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="14">127.0.0.1:18001 · no silent fallback</text>
+      </g>
+      <g transform="translate(0 140)">
+        <text x="0" y="0" fill="#64748b" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="13" font-weight="750" letter-spacing="1.1">TRANSFORMATIONS</text>
+        <g transform="translate(0 20)">
+          <rect width="150" height="36" rx="18" fill="#ffffff" fill-opacity="0.05" stroke="#ffffff" stroke-opacity="0.1"/>
+          <text x="18" y="24" fill="#e2e8f0" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="15" font-weight="600">dedupe</text>
+        </g>
+        <g transform="translate(162 20)">
+          <rect width="166" height="36" rx="18" fill="#ffffff" fill-opacity="0.05" stroke="#ffffff" stroke-opacity="0.1"/>
+          <text x="18" y="24" fill="#e2e8f0" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="15" font-weight="600">log collapse</text>
+        </g>
+        <g transform="translate(340 20)">
+          <rect width="156" height="36" rx="18" fill="#ffffff" fill-opacity="0.05" stroke="#ffffff" stroke-opacity="0.1"/>
+          <text x="18" y="24" fill="#e2e8f0" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="15" font-weight="600">tail protect</text>
+        </g>
+      </g>
+      <g transform="translate(0 240)">
+        <text x="0" y="0" fill="#64748b" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="13" font-weight="750" letter-spacing="1.1">PROTECTED CONTENT</text>
+        <text x="0" y="30" fill="#f1f5f9" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="20" font-weight="600">code blocks · identifiers · error tail</text>
+      </g>
+      <g transform="translate(0 310)">
+        <text x="0" y="0" fill="#64748b" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="13" font-weight="750" letter-spacing="1.1">RECOVERY</text>
+        <circle cx="0" cy="26" r="7" fill="#38bdf8"/>
+        <text x="20" y="33" fill="#f1f5f9" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="20" font-weight="600">recovery pointer available</text>
+      </g>
+    </g>
+
+    <!-- Right column: token accounting -->
+    <g transform="translate(760 128)">
+      <rect width="500" height="300" rx="22" fill="#ffffff" fill-opacity="0.045" stroke="#ffffff" stroke-opacity="0.09"/>
+      <text x="26" y="34" fill="#94a3b8" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="13" font-weight="750" letter-spacing="1.1">TOKEN ACCOUNTING</text>
+
+      <g transform="translate(26 64)">
+        <text x="0" y="0" fill="#94a3b8" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="14">Physical reduction</text>
+        <text x="230" y="0" fill="#34d399" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="20" font-weight="700">−33,705</text>
+        <text x="400" y="0" fill="#34d399" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="13" font-weight="650">measured</text>
+      </g>
+      <g transform="translate(26 110)">
+        <text x="0" y="0" fill="#94a3b8" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="14">Claimable savings</text>
+        <text x="230" y="0" fill="#f1f5f9" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="20" font-weight="700">0</text>
+        <text x="400" y="0" fill="#cbd5e1" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="13">traceable</text>
+      </g>
+      <line x1="26" y1="148" x2="474" y2="148" stroke="#ffffff" stroke-opacity="0.07"/>
+      <g transform="translate(26 168)">
+        <text x="0" y="0" fill="#94a3b8" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="14">Local tokens (local tokenizer)</text>
+        <text x="300" y="0" fill="#f1f5f9" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="17" font-weight="650">separate</text>
+      </g>
+      <g transform="translate(26 206)">
+        <text x="0" y="0" fill="#94a3b8" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="14">Provider tokens (billing)</text>
+        <text x="300" y="0" fill="#f1f5f9" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="17" font-weight="650">never mixed</text>
+      </g>
+      <g transform="translate(26 258)">
+        <rect width="448" height="34" rx="17" fill="#0284c7" fill-opacity="0.14" stroke="#38bdf8" stroke-opacity="0.4"/>
+        <text x="18" y="22" fill="#7dd3fc" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="14" font-weight="600">Estimates are labeled as estimates.</text>
+      </g>
+    </g>
+
+    <!-- Footer -->
+    <g transform="translate(40 490)">
+      <line x1="0" y1="0" x2="1240" y2="0" stroke="#ffffff" stroke-opacity="0.07"/>
+      <text x="0" y="26" fill="#64748b" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="14">redacted · Event Ledger · no secrets in logs · no full prompt/response stored</text>
+    </g>
+  </g>
+</svg>
