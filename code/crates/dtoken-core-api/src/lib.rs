@@ -13260,9 +13260,10 @@ mod mcp_http_tests {
         assert_eq!(body["error"]["code"], -32005);
 
         // DELETE one session: the slot is reclaimed immediately.
-        let (status, _, _) =
-            http_response(mcp_http_delete(Extension(server.clone()), session_header(&session_ids[0])).await)
-                .await;
+        let (status, _, _) = http_response(
+            mcp_http_delete(Extension(server.clone()), session_header(&session_ids[0])).await,
+        )
+        .await;
         assert_eq!(status, StatusCode::NO_CONTENT);
         let (status, headers, _) = http_response(
             mcp_http(

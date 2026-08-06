@@ -110,8 +110,8 @@ POSSIBILITY OF SUCH DAMAGE.
 # codebase-memory-mcp
 
 d-token integrates an explicit user-import flow for the pinned headless
-`DeusData/codebase-memory-mcp` v0.9.0 binary (commit
-`b637e3330c96cfe452da623db068c241aaa3ec01`) under the MIT License. Platform
+`DeusData/codebase-memory-mcp` v0.9.1-rc.1 binary (commit
+`ee9833df2c72b750378273897ffec9410fc2c4f2`) under the MIT License. Platform
 archive and extracted-binary hashes are recorded in
 `code/runtimes/codebase-memory/artifact-manifest.json`. The d-token installer
 contains the restricted launcher and upstream legal text, but not the upstream

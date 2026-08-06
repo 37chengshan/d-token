@@ -269,7 +269,11 @@ export function CodebaseMemory() {
     surface === "hook" ? id !== "claude-code" : id === "claude-code" && scope === "global");
   const unsupportedSelection = unsupportedAgentIds.length > 0;
   const integrationBlockedReason = !packageReady
-    ? t("cbm.packageRequired")
+    ? status?.package.reason_code === "upstream_untrusted"
+      ? t("cbm.packageUntrusted")
+      : status?.package.reason_code === "launcher_unavailable"
+        ? t("cbm.launcherRequired")
+        : t("cbm.packageRequired")
     : !projectRoot
       ? t("cbm.projectRequired")
       : selectedAgents.length === 0

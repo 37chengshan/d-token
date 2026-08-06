@@ -48,7 +48,7 @@ const MAX_INTEGRATION_STATE_RECORDS: usize = 128;
 const INDEX_STATE_PATH: &[&str] = &["codebase-memory", "index.json"];
 const PACKAGE_LOCATION_STATE_PATH: &[&str] = &["codebase-memory", "package-location.json"];
 const UPSTREAM_RELEASE_URL: &str =
-    "https://github.com/DeusData/codebase-memory-mcp/releases/tag/v0.9.0";
+    "https://github.com/DeusData/codebase-memory-mcp/releases/tag/v0.9.1-rc.1";
 
 static CONTROLLER: OnceLock<Mutex<ControllerState>> = OnceLock::new();
 static STATUS_MONITOR: OnceLock<()> = OnceLock::new();
@@ -3038,7 +3038,7 @@ mod tests {
     #[test]
     fn package_directory_candidates_cover_common_extract_layouts() {
         let root = env::temp_dir().join(format!("dtoken-cbm-package-test-{}", Uuid::new_v4()));
-        let nested = root.join("codebase-memory-mcp-v0.9.0").join("bin");
+        let nested = root.join("codebase-memory-mcp-v0.9.1-rc.1").join("bin");
         fs::create_dir_all(&nested).expect("create package layout");
         let binary = nested.join(upstream_names()[0]);
         fs::write(&binary, b"fixture").expect("write package fixture");

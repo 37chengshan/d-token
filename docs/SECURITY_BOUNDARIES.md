@@ -130,7 +130,7 @@ Dashboard 中永远不明文展示：
 
 ### 7.1 Codebase Memory 额外边界
 
-1. `codebase-memory-mcp` 不进入 d-token App bundle。App 只可打开固定官方 `v0.9.0` release，由用户自行下载并解压到默认或自定义目录；d-token 不代为联网下载、安装或更新，也不接受可控下载 URL。只有固定 manifest 中的平台、架构和 SHA-256 全部通过才可执行；目录内任意其他 binary 必须 fail closed。版本升级必须先更新 d-token manifest/allowlist。
+1. `codebase-memory-mcp` 不进入 d-token App bundle。App 只可打开固定官方 `v0.9.1-rc.1`（pre-release）release，由用户自行下载并解压到默认或自定义目录；d-token 不代为联网下载、安装或更新，也不接受可控下载 URL。只有固定 manifest 中的平台、架构和 SHA-256 全部通过才可执行；目录内任意其他 binary 必须 fail closed。版本升级必须先更新 d-token manifest/allowlist。
 2. Agent-owned MCP 会话与 d-token-owned index/UI host 必须是两类独立实例；d-token 不得接管 Agent 的 stdio、PID 或停止权限。
 3. launcher 必须强制 `persistence=false`、项目 canonical root allowlist、私有 cache namespace、受限 tool allowlist，并拒绝跨项目查询、ADR write、artifact export 与任意路径访问。
 4. d-token 只允许打开自己生成并复检过的短期授权 loopback graph URL；不得直接暴露 upstream 原生 HTTP UI。
