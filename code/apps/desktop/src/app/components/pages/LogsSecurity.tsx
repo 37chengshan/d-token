@@ -16,7 +16,7 @@ import { useRuntimeDashboardDetail } from "../../lib/useRuntimeDashboard";
 import { useNotifications } from "../../lib/notifications";
 import { AnimatedSegmentedControl } from "../shell/AnimatedSegmentedControl";
 import { presentOperationFailure } from "../../lib/userCopy";
-
+import { protocolLabel } from "../../lib/protocol";
 const LOGS_TABS = ["logs", "ledger", "secrets"] as const;
 const LOG_FILTERS = ["all", "route", "compression", "provider", "error"] as const;
 const LOG_PAGE_SIZE = 80;
@@ -677,7 +677,7 @@ function runtimePayloadToLedgerRows(
       time: timeFromUnknown(decision.timestamp_ms),
       sortTime: sortTimeFromUnknown(decision.timestamp_ms),
       title: lang === "zh" ? `路由决策 ${route} -> ${provider}` : `Route decision ${route} -> ${provider}`,
-      detail: `chain=${chain} · fallback=${fallback} · input=${safeText(decision.input_protocol, "—")} · output=${safeText(decision.output_protocol, "—")}`,
+      detail: `chain=${chain} · fallback=${fallback} · input=${protocolLabel(decision.input_protocol, lang) ?? "—"} · output=${protocolLabel(decision.output_protocol, lang) ?? "—"}`,
       status: fallback === "disabled" ? "ok" : "warning",
       tokens: "route",
     });
@@ -704,8 +704,8 @@ function runtimePayloadToLedgerRows(
       detail: [
         `route=${safeText(log.route_id, "—")}`,
         `provider=${safeText(log.provider_id, "—")}`,
+        `protocol=${protocolLabel(log.input_protocol ?? log.protocol, lang) ?? "—"}`,
         `latency=${finiteNumber(log.latency_ms) === null ? "—" : `${finiteNumber(log.latency_ms)}ms`}`,
-        error ? "needs_attention=true" : "redacted=true",
       ].join(" · "),
       status: error ? "failed" : "ok",
       tokens: pendingAttribution

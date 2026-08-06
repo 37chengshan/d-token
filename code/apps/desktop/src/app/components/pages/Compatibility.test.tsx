@@ -106,7 +106,7 @@ describe("Compatibility evidence boundaries", () => {
 
     expect(await screen.findByText(/^本机实时数据/)).toBeInTheDocument();
     expect(screen.getAllByText("OpenCode")).not.toHaveLength(0);
-    expect(screen.getAllByText("open_ai")).not.toHaveLength(0);
+    expect(screen.getAllByText("OpenAI")).not.toHaveLength(0);
     expect(screen.getAllByText("主路由")).not.toHaveLength(0);
     expect(screen.getByText("provider-main")).toBeInTheDocument();
     expect(screen.getByText("/workspace/project")).toBeInTheDocument();

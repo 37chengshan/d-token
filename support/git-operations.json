@@ -961,6 +961,11 @@
       "operation": "commit",
       "branch": "codex/release-onboarding",
       "summary": "feat: 首次使用配置向导（onboarding gate + 页面 + Topbar 重入）",
+      "id": "ae36a99f-cedb-41bb-9311-afc73ebbf2a6",
+      "timestamp": "2026-08-06T23:20:48+08:00",
+      "operation": "commit",
+      "branch": "codex/release-protocol-normalization",
+      "summary": "protocol normalization adapter, consumer migration, tests, and report",
       "head_before": "f1b89dcc8db810b6d2373e9d1d4b5f57f1c6f40e",
       "remote": null
     },
@@ -1043,6 +1048,21 @@
       "branch": "codex/code-graph-mcp-integration",
       "summary": "合并协议正规化分支，待主树测试",
       "head_before": "a5b72bd",
+      "id": "5e23772d-0b5e-432c-8d07-6afa2b7bf02a",
+      "timestamp": "2026-08-06T23:21:49+08:00",
+      "operation": "commit",
+      "branch": "codex/release-protocol-normalization",
+      "summary": "record protocol normalization commit audit entry",
+      "head_before": "86ffa900e50e1aa362332ccb6f368de8c941265a",
+      "remote": null
+    },
+    {
+      "id": "6c236a37-5091-4ab2-9137-1a3f1b409634",
+      "timestamp": "2026-08-06T23:22:08+08:00",
+      "operation": "commit",
+      "branch": "codex/release-protocol-normalization",
+      "summary": "commit final protocol normalization audit ledger",
+      "head_before": "86ffa900e50e1aa362332ccb6f368de8c941265a",
       "remote": null
     }
   ]

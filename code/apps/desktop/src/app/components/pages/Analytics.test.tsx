@@ -208,7 +208,7 @@ describe("Analytics runtime data truthfulness", () => {
     expect(metric("请求错误")).toHaveTextContent("11");
     expect(screen.getByText(/分布、耗时和趋势只覆盖当前返回的最近请求窗口/)).toBeInTheDocument();
     expect(screen.getByText("gpt-5")).toBeInTheDocument();
-    expect(screen.getByText("openai")).toBeInTheDocument();
+    expect(screen.getByText("OpenAI")).toBeInTheDocument();
     expect(screen.getByText("provider_timeout")).toBeInTheDocument();
   });
 

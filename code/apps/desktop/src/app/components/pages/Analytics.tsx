@@ -28,6 +28,7 @@ import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../ui/tabs";
 import { useI18n, useT } from "../../lib/i18n";
+import { protocolLabel } from "../../lib/protocol";
 import {
   buildAnalyticsSnapshot,
   type AnalyticsSnapshot,
@@ -709,7 +710,7 @@ export function applyRuntimeAggregate(
       : snapshot.estimatedSavingsRate,
     agentBreakdown: runtimeBreakdown(analytics.agents) ?? snapshot.agentBreakdown,
     modelBreakdown: runtimeBreakdown(analytics.models) ?? snapshot.modelBreakdown,
-    protocolBreakdown: runtimeBreakdown(analytics.protocols) ?? snapshot.protocolBreakdown,
+    protocolBreakdown: runtimeBreakdown(analytics.protocols, (name) => protocolLabel(name, lang)) ?? snapshot.protocolBreakdown,
     chainBreakdown: runtimeBreakdown(analytics.chains) ?? snapshot.chainBreakdown,
     errorBreakdown: runtimeBreakdown(analytics.errors) ?? snapshot.errorBreakdown,
     routeBreakdown: runtimeBreakdown(routePerformance.routes) ?? snapshot.routeBreakdown,
@@ -720,11 +721,12 @@ export function applyRuntimeAggregate(
   };
 }
 
-function runtimeBreakdown(value: unknown): BreakdownItem[] | null {
+function runtimeBreakdown(value: unknown, normalizeLabel?: (label: string) => string | null): BreakdownItem[] | null {
   if (!Array.isArray(value)) return null;
   return value.flatMap((item) => {
     const row = recordValue(item);
-    const label = typeof row.name === "string" && row.name.trim() ? redactString(row.name.trim()).slice(0, 96) : null;
+    const raw = typeof row.name === "string" && row.name.trim() ? row.name.trim() : null;
+    const label = raw === null ? null : (normalizeLabel ? normalizeLabel(raw) : redactString(raw).slice(0, 96));
     const count = nonNegativeMetric(row.requests);
     if (!label || count === null) return [];
     return [{ label, count, tokensSaved: nonNegativeMetric(row.tokens_saved) }];
