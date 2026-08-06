@@ -1,11 +1,15 @@
+<p align="center">
+  <img src="assets/marketing/hero-banner.png" width="100%" alt="d-token — Less context. Same intent. Full control." />
+</p>
+
 <div align="center">
   <img src="icons/logo.svg" width="112" alt="d-token logo" />
 
 # d-token
 
-**Save tokens, understand every request, and keep your AI coding workflow under control.**
+**Less context. Same intent. Full control.**
 
-A local desktop app for connecting AI coding agents, tracking token usage, previewing optimization strategies, and safely managing changes from one place.
+A local context control plane for AI coding agents — connect your agents, see where every request and every token goes, compress what's redundant, keep routing explicit, and roll back any change.
 
 English · [简体中文](README-cn.md)
 
@@ -21,32 +25,33 @@ English · [简体中文](README-cn.md)
 
 > **Public unsigned prerelease, not a signed installer release.** `0.2.0-beta.1` may be published as a GitHub public prerelease for **macOS ARM64** and **Windows x64** only after the tagged aggregate release workflow succeeds for both platforms in the same run and uploads the matching SHA-256, SBOM, license, security, and provenance evidence. That public prerelease is still unsigned: macOS assets are not Developer ID signed or notarized, and Windows assets are not Authenticode-signed. An unsigned or ad-hoc macOS build may trigger an operating-system security warning. Treat that warning as expected, verify the repository and supplied hashes, and do not bypass security controls for packages from untrusted sources.
 
-## Overview
+## Why d-token
 
-AI coding tools can consume large amounts of context without making it clear where those tokens went, which route handled the request, or whether an optimization actually helped.
+AI coding agents are powerful — and quiet about what they consume:
 
-d-token brings those daily tasks into one desktop app. Connect supported agents, route requests through your chosen provider, review token reduction and errors, preview compression before applying it, and recover configuration changes when something goes wrong.
+- Your agent keeps re-sending the same files, logs, and tool output, and the token bill grows without a story.
+- You can rarely tell which provider or route handled a request, or whether an optimization actually helped.
+- One wrong config edit can break a working setup, with no obvious way back.
 
-The goal is simple: **use fewer tokens without turning your workflow into a collection of scripts, config files, and guesswork.**
+d-token runs locally between your agent and the provider you chose. It shows where the tokens go, keeps the route explicit, previews optimization before it is applied, and keeps every configuration change recoverable.
 
-## Core capabilities
+The goal is simple: **use fewer tokens without turning your workflow into a pile of scripts, config files, and guesswork.**
 
-| Capability | What it gives you |
+## Who it's for
+
+| You are… | d-token gives you… |
 |---|---|
-| **Token savings you can see** | Review processed requests, estimated or measured token reduction, compression ratios, trends, and errors in one place. |
-| **One place for AI coding agents** | Detect and connect supported agents through a consistent desktop workflow instead of editing each configuration by hand. |
-| **Clear request routing** | See which route and upstream handled a request, then adjust the path without silently switching providers. |
-| **Preview before changing anything** | Use Shadow previews to inspect compression strategies and expected impact before enabling a configuration change. |
-| **Codebase understanding with less context** | Build a project index and code graph so agents can focus on relevant files and relationships instead of repeatedly receiving unnecessary context. |
-| **Safer local changes** | Preview differences, create backups, verify the result, and roll back supported configuration changes from the app. |
-| **Local diagnostics** | Check service state, ports, agent connections, configuration health, and problems that need attention. |
-| **Comfortable daily use** | Switch between light, dark, and system themes, and choose separate colors for the interface and analytics. |
+| A **heavy token user** burning context on every session | One place to see what your requests cost, what got compressed, and what actually helped |
+| Running **cc-switch or multiple providers** | Explicit, observable routing — never a silent provider swap behind your back |
+| **Cautious about touching config** | Every write with a preview, a redacted diff, a backup, a confirmation, and a verified rollback path |
+| **New to agent configuration** | Agent auto-discovery and a guided connect flow instead of hand-editing config files |
+| On **Windows or macOS** | One shared desktop app with the same information architecture on both platforms |
 
 ## Product tour
 
-### 1. Local-first control plane for AI coding
+### 1. A local-first control plane for AI coding
 
-Use one local desktop control plane to inspect local runtime state, supported Agent connections, route evidence, token measurements, and diagnostics. Availability is evidence-based: unavailable or partial surfaces stay labeled instead of being filled with example success data.
+Inspect local runtime state, supported Agent connections, route evidence, token measurements, and diagnostics in one desktop control plane. Availability is evidence-based: unavailable or partial surfaces stay labeled instead of being filled with example success data.
 
 <p align="center">
   <img src="assets/marketing/01-local-first-control-plane.svg" width="100%" alt="d-token local-first control plane" />
@@ -70,7 +75,15 @@ Review redacted Event Ledger evidence, analytics, diagnostics, and supported cod
 
 > Estimated savings are guidance, not a billing statement. Metadata-only, preview-only, disabled, blocked, and unavailable capabilities are not equivalents of production-ready functionality.
 
-### 4. Configure safely: review, back up, verify, and roll back
+### 4. Every request leaves a receipt
+
+Each routed request produces an Optimization Receipt: source agent, route, transformations, protected content, Local vs Provider tokens, recovery status, and skip-or-failure reasons. Measured and estimated values are never mixed.
+
+<p align="center">
+  <img src="assets/marketing/06-optimization-receipt.svg" width="100%" alt="d-token optimization receipt" />
+</p>
+
+### 5. Configure safely: review, back up, verify, and roll back
 
 For supported configuration actions, d-token presents a user-readable summary and redacted diff, creates a backup, requires confirmation, verifies the result, and retains rollback evidence. Unsupported Agent, repair, route, or transform operations remain unavailable rather than writing guessed configuration.
 
@@ -79,6 +92,29 @@ For supported configuration actions, d-token presents a user-readable summary an
 </p>
 
 > OpenCode currently has the strongest verified configure and rollback path. Other Agent and platform paths may be partial, disabled, or unavailable.
+
+## What d-token refuses to do
+
+The product boundaries are as deliberate as the features:
+
+- **No silent provider switching.** The route is always explicit, explainable, and under your control.
+- **No fabricated savings.** Estimates are labeled as estimates; measured numbers come from evidence.
+- **No guessed configuration writes.** If a change can't be previewed, backed up, and rolled back, it isn't made.
+- **No example data posing as real status.** Unavailable, partial, and unverified surfaces are labeled as such.
+- **No secrets in ordinary logs.** API keys, tokens, and full prompts/responses stay out of logs, exports, and commits.
+
+## Measured
+
+Real routed flows, not projections. Latest evidence from a real `OpenCode → d-token → upstream` run on 2026-08-04:
+
+| Signal | Value | Source |
+|---|---|---|
+| Tokens physically reduced on a single request | 33,705 | real routed flow (claimable = 0) |
+| Routed requests persisted | 89 | runtime summary |
+| Total physical token reduction | 279,270 (~4.0%) | runtime summary |
+| Verified configure & rollback path | OpenCode | same-candidate acceptance |
+
+Full acceptance evidence and release gates are maintained in [`docs/product/IMPLEMENTATION_STATUS.md`](docs/product/IMPLEMENTATION_STATUS.md).
 
 ## How it fits into your workflow
 
@@ -129,6 +165,20 @@ npm run tauri:build
 
 A successful local build is not the same as an officially signed release.
 
+## Roadmap
+
+| Version | Focus | Status |
+|---|---|---|
+| `0.2.0-beta.1` | Trusted connect & trusted compression: agent discovery, cc-switch scanning, preview → diff → backup → apply → verify → rollback, Optimization Receipts, Doctor | current candidate |
+| `v0.3` | Context continuity: cross-agent Context Relay, Session Cache, Code Map/Signatures reuse, Recovery Pointer, stale/superseded handling, cc-switch follow / lock / observe modes | planned |
+| `v0.4` | Automated local control plane: multi-agent adaptation, low-risk auto-repair, project & team policies, reproducible real-task evidence, stable signing, auto-update | planned |
+
+Context Relay (v0.3) is a planned capability. The current candidate does not yet reuse context across agents.
+
+<p align="center">
+  <img src="assets/marketing/05-context-relay.svg" width="100%" alt="d-token context relay across agents (planned for v0.3)" />
+</p>
+
 ## Beta notes
 
 - This is a public unsigned prerelease, not a signed production release. It is not Developer ID signed, notarized, Gatekeeper-approved, or Authenticode-signed.
@@ -153,6 +203,7 @@ Tauri 2 · React 18 · TypeScript · Vite · Rust · SQLite
 ## Development and documentation
 
 - [Product contract](docs/PRD.md)
+- [Product direction (v2.1)](docs/d-token_AI_product_target_spec_v2.md)
 - [Current implementation status](docs/product/IMPLEMENTATION_STATUS.md)
 - [Architecture](docs/ARCHITECTURE.md)
 - [Security boundaries](docs/SECURITY_BOUNDARIES.md)
@@ -170,5 +221,5 @@ Licensed under the [Apache License 2.0](LICENSE). See [THIRD_PARTY_NOTICES.md](T
 
 <div align="center">
   <strong>d-token</strong><br />
-  Save tokens. See what changed. Stay in control.
+  Less context. Same intent. Full control.
 </div>

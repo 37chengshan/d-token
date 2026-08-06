@@ -729,6 +729,15 @@
       "summary": "chore: per-directory AGENTS.md, tauri-specta scaffolding, worktree scripts",
       "head_before": "1bf9ad514e6a1b1809f0e744a75dc572038a2581",
       "remote": null
+    },
+    {
+      "id": "68f18cfa-3a6e-4bbc-89aa-2313f2cf4ede",
+      "timestamp": "2026-08-06T21:19:26+08:00",
+      "operation": "commit",
+      "branch": "main",
+      "summary": "docs: v2.1 README 文案与宣传图更新（hero 横幅 + 社交预览图 + 01-06 SVG 横幅）",
+      "head_before": "76fe8838fa290514c13a20514e5c7d63c8ae75f3",
+      "remote": null
     }
   ]
 }

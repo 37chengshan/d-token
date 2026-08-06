@@ -1,11 +1,15 @@
+<p align="center">
+  <img src="assets/marketing/hero-banner.png" width="100%" alt="d-token — 更少上下文。同样意图。完全掌控。" />
+</p>
+
 <div align="center">
   <img src="icons/logo.svg" width="112" alt="d-token 图标" />
 
 # d-token
 
-**让 AI Coding 更省 token，让每一次请求都看得见、可理解、可控制。**
+**更少上下文。同样意图。完全掌控。**
 
-一个本地桌面应用：统一连接 AI 编程 Agent、查看 token 消耗、预览优化策略，并在一个界面里安全管理配置变更。
+一个面向 AI 编码 Agent 的本地上下文控制面：统一连接你的 Agent，看清每一次请求与每一枚 token 的去向，压缩冗余内容，保持路由显式，并且任何配置变更都可回退。
 
 [English](README.md) · 简体中文
 
@@ -21,26 +25,27 @@
 
 > **公开未签名预发布，不是正式签名安装包发布。** `0.2.0-beta.1` 只有在同一 tag 的聚合发布 workflow 中同时完成 **macOS ARM64** 与 **Windows x64** 两个平台构建，并产出匹配的 SHA-256、SBOM、license、安全扫描与 provenance 证据后，才会作为 GitHub 公开预发布资产出现。该预发布仍然是未签名的：macOS 资产没有 Developer ID 签名或 notarization，Windows 资产没有 Authenticode 签名。未签名或 ad-hoc 签名的 macOS 构建可能出现系统安全警告；这属于预期行为。请核对仓库来源与已提供的哈希，不要为来自未知来源的安装包绕过系统安全保护。
 
-## 概述
+## 为什么选择 d-token
 
-AI 编程工具会不断消耗上下文，但用户往往很难看清：token 到底花在了哪里、请求走了哪条路径、一次优化是否真的有效，以及配置出错后应该如何恢复。
+AI 编码 Agent 很强大——但对消耗情况却保持沉默：
 
-d-token 把这些日常操作集中到一个桌面应用中。你可以连接受支持的 Agent，选择自己的模型服务，查看 token 减少与请求错误，在应用策略前先预览压缩效果，并在配置出现问题时恢复到之前的状态。
+- 你的 Agent 不断重复发送相同的文件、日志和工具输出，token 账单在悄悄增长，却说不清花在了哪里。
+- 你很难判断某次请求到底走了哪个 Provider 或 Route，也很难知道一次优化是否真的有效。
+- 一次错误的配置修改就可能破坏原本可用的环境，而且往往没有明显的回头路。
+
+d-token 在本机运行于你的 Agent 与你选择的模型服务之间。它展示 token 的去向、保持路由显式、在应用优化前先预览，并让每一次配置变更都可恢复。
 
 目标很简单：**在不打乱原有 AI Coding 工作流的前提下，使用更少的 token，并减少手动修改配置文件带来的麻烦。**
 
-## 核心能力
+## 适合谁使用
 
-| 能力 | 能为你带来什么 |
+| 你属于… | d-token 能给你… |
 |---|---|
-| **看得见的 token 节省** | 在一个页面查看请求量、估算或实测的 token 减少、压缩比例、趋势与错误。 |
-| **统一连接 AI 编程 Agent** | 从一致的桌面流程检测并连接受支持的 Agent，不再分别手动修改多份配置。 |
-| **清晰的请求路径** | 看清请求经过哪条 Route、连接到哪个上游，并主动调整路径，避免不透明的自动切换。 |
-| **先预览，再决定是否调整** | 通过 Shadow 预览查看压缩策略和预期影响，再决定是否应用受支持的配置变化。 |
-| **用更少上下文理解代码库** | 建立项目索引与代码图谱，让 Agent 更聚焦相关文件和依赖关系，减少反复传入无关上下文。 |
-| **更安心的本地配置变更** | 在应用前查看差异、创建备份、验证结果，并对受支持的配置执行回退。 |
-| **本地问题诊断** | 检查服务状态、端口、Agent 连接、配置健康度以及需要处理的问题。 |
-| **适合长期使用的界面** | 支持浅色、深色和跟随系统主题，并可分别设置界面强调色与分析图表主色。 |
+| **重度 token 用户**，每次会话都在消耗大量上下文 | 一个地方看清请求的成本、被压缩的内容，以及哪些优化真正有效 |
+| **使用 cc-switch 或多个 Provider** 的用户 | 显式、可观测的路由——绝不背着你静默切换服务商 |
+| **对修改配置很谨慎**的用户 | 每一次写入都有预览、脱敏 Diff、备份、确认，以及经过验证的回退路径 |
+| **刚接触 Agent 配置**的新用户 | Agent 自动发现和引导式连接流程，不再需要手改配置文件 |
+| **Windows 或 macOS** 用户 | 同一套桌面应用，两个平台共享相同的信息架构 |
 
 ## 产品预览
 
@@ -70,7 +75,15 @@ d-token 会为受支持链路记录已选择的 Route 与上游。Route 不可�
 
 > 页面中的估算节省用于帮助判断策略，不等于模型服务商账单。metadata-only、仅预览、disabled、blocked 或 unavailable 的能力，都不等价于生产可用功能。
 
-### 4. 安全配置：审阅、备份、验证与回退
+### 4. 每一次请求都留下一张回执
+
+每条已路由请求都会生成一份 Optimization Receipt：请求来源 Agent、路由、变换类型、受保护内容、Local Token 与 Provider Token、恢复状态，以及跳过或失败原因。实测值与估算值从不混用。
+
+<p align="center">
+  <img src="assets/marketing/06-optimization-receipt.svg" width="100%" alt="d-token 优化回执" />
+</p>
+
+### 5. 安全配置：审阅、备份、验证与回退
 
 对受支持的配置操作，d-token 会展示用户可读摘要与脱敏 Diff，创建备份，要求确认，验证结果并保留回退证据。对不受支持的 Agent、修复、路由或变换操作，应用会保持 unavailable，而不是猜测写入配置。
 
@@ -79,6 +92,29 @@ d-token 会为受支持链路记录已选择的 Route 与上游。Route 不可�
 </p>
 
 > OpenCode 当前拥有最强的已验证配置与回退路径。其它 Agent 与平台路径可能是 partial、disabled 或 unavailable。
+
+## d-token 拒绝做的事
+
+产品边界与功能本身同样重要：
+
+- **不静默切换服务商。** 路由始终显式、可解释，并且由你掌控。
+- **不伪造节省数据。** 估算会标注为估算；实测数字必须来自证据。
+- **不猜测写入配置。** 如果一次变更无法预览、备份和回退，就不执行。
+- **不让示例数据冒充真实状态。** unavailable、partial 与未验证的页面都会如实标注。
+- **不把秘密写进普通日志。** API key、token、完整 prompt/response 不会进入日志、导出或提交。
+
+## 实测数据
+
+真实路由流量的结果，而非预测。最新证据来自 2026-08-04 的真实 `OpenCode → d-token → upstream` 运行：
+
+| 信号 | 数值 | 来源 |
+|---|---|---|
+| 单次请求物理减少的 token | 33,705 | 真实路由流（claimable = 0） |
+| 持久化的已路由请求 | 89 | runtime 汇总 |
+| 物理 token 总减少量 | 279,270（约 4.0%） | runtime 汇总 |
+| 已验证的配置与回退路径 | OpenCode | 同一候选验收 |
+
+完整的验收证据与发布门禁见 [`docs/product/IMPLEMENTATION_STATUS.md`](docs/product/IMPLEMENTATION_STATUS.md)。
 
 ## 如何融入你的工作流
 
@@ -129,6 +165,20 @@ npm run tauri:build
 
 本地构建成功不代表安装包已经完成正式签名或具备公开分发条件。
 
+## 路线图
+
+| 版本 | 重点 | 状态 |
+|---|---|---|
+| `0.2.0-beta.1` | 可信连接与可信压缩：Agent 自动发现、cc-switch 配置扫描、预览 → Diff → 备份 → 应用 → 验证 → 回退、Optimization Receipt、Doctor | 当前候选 |
+| `v0.3` | 上下文连续性：跨 Agent Context Relay、Session Cache、Code Map/Signatures 复用、Recovery Pointer、Stale/Superseded 处理、cc-switch 跟随 / 锁定 / 观察模式 | 规划中 |
+| `v0.4` | 自动化本地控制面：多 Agent 适配、低风险自动修复、项目与团队策略、可复现的真实任务证据、稳定签名、自动更新 | 规划中 |
+
+Context Relay（v0.3）是规划中的能力。当前候选版本尚未实现跨 Agent 上下文复用。
+
+<p align="center">
+  <img src="assets/marketing/05-context-relay.svg" width="100%" alt="d-token 跨 Agent 上下文复用（v0.3 规划中）" />
+</p>
+
 ## Beta 使用说明
 
 - 这是公开未签名预发布，不代表已完成 Developer ID 签名、公证、Gatekeeper 验证或 Authenticode 签名。
@@ -153,6 +203,7 @@ Tauri 2 · React 18 · TypeScript · Vite · Rust · SQLite
 ## 开发与文档
 
 - [产品契约](docs/PRD.md)
+- [产品方向（v2.1）](docs/d-token_AI_product_target_spec_v2.md)
 - [当前实现状态](docs/product/IMPLEMENTATION_STATUS.md)
 - [总体架构](docs/ARCHITECTURE.md)
 - [安全边界](docs/SECURITY_BOUNDARIES.md)
@@ -170,5 +221,5 @@ Tauri 2 · React 18 · TypeScript · Vite · Rust · SQLite
 
 <div align="center">
   <strong>d-token</strong><br />
-  省下 token，看清变化，保持掌控。
+  更少上下文。同样意图。完全掌控。
 </div>
