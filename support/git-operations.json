@@ -756,6 +756,60 @@
       "summary": "merge origin/main（含 CI 修复与 Code Graph MCP 合入）后推送 README 更新",
       "head_before": "1963913",
       "remote": null
+    },
+    {
+      "id": "dfc9e193-5a76-4a27-b0dd-eeef8b59fd6c",
+      "timestamp": "2026-08-04T21:51:01+08:00",
+      "operation": "commit",
+      "branch": "codex/code-graph-mcp-integration",
+      "summary": "cherry-pick a0720cd from isolated worktree: fix specta scaffolding regression — single invoke_handler, fail-closed bindings",
+      "head_before": "922b866",
+      "remote": null
+    },
+    {
+      "id": "6a3c7964-004c-49ee-bada-4e338867536c",
+      "timestamp": "2026-08-04T21:46:32+08:00",
+      "operation": "commit",
+      "branch": "detached",
+      "summary": "fix: tauri-specta single invoke_handler regression, bindings fail-closed, AGENTS.md corrections, sidecar CI",
+      "head_before": "922b86632c0d",
+      "remote": null
+    },
+    {
+      "id": "bc62f314-21f5-4833-bd60-0cb3b2225aea",
+      "timestamp": "2026-08-04T22:38:40+08:00",
+      "operation": "commit",
+      "branch": "codex/code-graph-mcp-integration",
+      "summary": "docs: record c124d9f macOS package audit evidence — G7 macOS DMG/app launch/quit/cleanup verified, G6 .ps1 gates unexecuted, G8 blocked",
+      "head_before": "c124d9f",
+      "remote": null
+    },
+    {
+      "id": "80cb5cf3-5f2e-45ad-a34a-515cc95bfef3",
+      "timestamp": "2026-08-05T14:26:47+08:00",
+      "operation": "commit",
+      "branch": "codex/code-graph-mcp-integration",
+      "summary": "feat: add managed Agent MCP configuration (Install MCP/Hook branch, agent_mcp/agent_kind modules, Hermes/OpenHands/Pi/MistralVibe/Cortex adapters, cc-switch sync error states, docs sync with copy verification)",
+      "head_before": "141d77d62632262b8f021465a2cee857aacdf780",
+      "remote": null
+    },
+    {
+      "id": "60923cbf-de77-4191-a986-da5b2c33cad8",
+      "timestamp": "2026-08-05T21:26:05+08:00",
+      "operation": "commit",
+      "branch": "codex/code-graph-mcp-integration",
+      "summary": "Complete CCR/MCP/cc-switch dynamic route gates and fail-closed release aggregation",
+      "head_before": "82fc3c5aa5b9ecd7dcba5ff28d13cd617b82f5fb",
+      "remote": null
+    },
+    {
+      "id": "2764a0a8-2158-43b5-bb96-f612fd5a21f3",
+      "timestamp": "2026-08-05T21:26:28+08:00",
+      "operation": "push",
+      "branch": "codex/code-graph-mcp-integration",
+      "summary": "Push dynamic route and release gate candidate for CI and Windows validation",
+      "head_before": "f707114473d268c5dec15bdd83416ef943aa4038",
+      "remote": "origin"
     }
   ]
 }

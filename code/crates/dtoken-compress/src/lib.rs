@@ -49,7 +49,7 @@ impl CompressionEngine {
         policy: CompressionPolicy,
         body: Value,
     ) -> Result<CompressionResult> {
-        self.compress_resolved_with_cache_evidence(context, policy, body, None)
+        self.compress_resolved_with_cache_evidence(context, policy, body, None, None)
     }
 
     pub fn compress_resolved_with_cache_evidence(
@@ -58,6 +58,7 @@ impl CompressionEngine {
         policy: CompressionPolicy,
         body: Value,
         cache_evidence: Option<&context_pipeline::ProviderCacheEvidence>,
+        frozen_message_count: Option<usize>,
     ) -> Result<CompressionResult> {
         let started = Instant::now();
         let original_tokens = estimate_tokens(&body);
@@ -101,6 +102,7 @@ impl CompressionEngine {
                 policy,
                 body,
                 cache_evidence,
+                frozen_message_count,
             ) {
                 Ok(Some(prepared)) => match prepared.validate() {
                     Ok(validated) => {

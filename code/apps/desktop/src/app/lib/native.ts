@@ -4,17 +4,51 @@ import { performanceNow, recordPerformanceDuration } from "./performance";
 // changing #[specta::specta] commands in src-tauri/src/main.rs to regenerate.
 // This file is gitignored until the first tauri:dev run; type-checking falls
 // back to `unknown` when bindings are absent.
+//
+// Loading strategy (P2 fix):
+// - No bare `require()`: that pulls in Node globals and breaks Vite/tsc when
+//   the gitignored `bindings.ts` is absent.
+// - No static `import("./bindings")`: with `moduleResolution: "Node"` and
+//   Rollup bundling, a static literal dynamic import errors on missing file.
+// - Instead we use a non-literal specifier (`BINDINGS_MODULE` variable) so
+//   tsc does not attempt module resolution (no TS2307) and Vite/Rollup leaves
+//   the import as a runtime dynamic import (no build error). At runtime, a
+//   404 or missing module is caught by the try/catch → `null` (fail-closed).
+// - We deliberately avoid `import.meta.glob` to keep the surface generic
+//   across Vite and vitest environments.
 type SpectaBindings = {
   commands: Record<string, (...args: unknown[]) => Promise<unknown>>;
 };
-const spectaBindings: SpectaBindings | null = (() => {
+
+let spectaBindings: SpectaBindings | null = null;
+
+/** Non-literal specifier so tsc/Rollup skip static resolution. */
+const BINDINGS_MODULE = "./bindings";
+
+/**
+ * Lazily load the tauri-specta bindings. Returns `null` when the bindings
+ * module is absent (e.g. `npm run dev` without a prior `tauri:dev`), which
+ * makes `spectaCommands` fail closed via the Proxy below.
+ *
+ * This must be called inside the Tauri runtime only; in plain Vite dev the
+ * dynamic import is expected to fail and return `null`.
+ */
+async function loadSpectaBindings(): Promise<SpectaBindings | null> {
+  if (spectaBindings) {
+    return spectaBindings;
+  }
   try {
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
-    return require("./bindings") as SpectaBindings;
+    // Non-literal specifier: tsc does not resolve the module (no TS2307).
+    // Vite/Rollup leaves this as a runtime dynamic import (no build error).
+    // At runtime in the Tauri WebView the module should exist; outside Tauri
+    // the 404 is caught by the try/catch and returns null.
+    const mod = (await import(BINDINGS_MODULE)) as SpectaBindings;
+    spectaBindings = mod;
+    return mod;
   } catch {
     return null;
   }
-})();
+}
 
 export type NativeToolCheck = {
   id: string;
@@ -146,18 +180,36 @@ export async function invokeNative<T>(command: string, args?: Record<string, unk
 //   3. Re-run `npm run tauri:dev` to regenerate `bindings.ts`.
 //   4. Call it via `spectaCommands.myCommand(...)`.
 
+/**
+ * Type-safe access to the tauri-specta command surface.
+ *
+ * Because the bindings module is gitignored and may be absent, each call
+ * lazily loads the bindings via `loadSpectaBindings`. When the bindings are
+ * missing the returned promise rejects with `native_unavailable`, which is the
+ * same sentinel `invokeNative` uses for a non-Tauri environment. Callers can
+ * therefore branch on `native_unavailable` to fall back to mock data.
+ *
+ * This surface is async (returns `Promise<unknown>` per command) to match the
+ * tauri-specta generated bindings, which always return promises.
+ */
 export const spectaCommands = new Proxy(
-  spectaBindings?.commands ?? {},
+  {} as Record<string, (...args: unknown[]) => Promise<unknown>>,
   {
-    get(target, prop: string) {
-      const fn = (target as Record<string, (...args: unknown[]) => Promise<unknown>>)[prop];
-      if (typeof fn !== "function") {
-        throw new Error(`specta command not found: ${prop}`);
-      }
-      return fn;
+    get(_target, prop: string) {
+      return async (...args: unknown[]): Promise<unknown> => {
+        const bindings = await loadSpectaBindings();
+        if (!bindings) {
+          throw new Error("native_unavailable");
+        }
+        const fn = bindings.commands[prop];
+        if (typeof fn !== "function") {
+          throw new Error(`specta command not found: ${prop}`);
+        }
+        return fn(...args);
+      };
     },
   },
-) as SpectaBindings extends { commands: infer C } ? C : never;
+) as unknown as SpectaBindings extends { commands: infer C } ? C : never;
 
 // Re-export the bindings module type for consumers that want the raw types.
 export type SpectaIpcStatus = {

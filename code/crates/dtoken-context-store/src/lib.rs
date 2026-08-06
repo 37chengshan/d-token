@@ -652,6 +652,20 @@ impl ContextStore {
             .map_err(Into::into)
     }
 
+    /// Removes disposable CCR projections whose authenticated expiry has
+    /// passed, returning how many were removed.  The encrypted original's TTL
+    /// authority stays in the private store (the envelope carries the
+    /// authenticated expiry); this only keeps the SQLite view from
+    /// advertising expired availability between journal-driven rebuilds.
+    pub fn prune_expired_ccr_metadata(&self, now_ms: u64) -> Result<usize> {
+        let changed = self.connection.execute(
+            "DELETE FROM ccr_metadata
+             WHERE expires_at_ms IS NOT NULL AND expires_at_ms <= ?1",
+            [capped_i64(now_ms)],
+        )?;
+        Ok(changed)
+    }
+
     pub fn upsert_provider_cache_observation(
         &self,
         observation: &ProviderCacheObservation,
@@ -2004,5 +2018,100 @@ mod windows_permission_tests {
 
         drop(store);
         let _ = std::fs::remove_dir_all(parent);
+    }
+}
+
+#[cfg(test)]
+mod ccr_metadata_projection_tests {
+    use super::*;
+
+    fn fixture_store(name: &str) -> (PathBuf, ContextStore) {
+        let root = std::env::temp_dir().join(format!(
+            "dtoken-context-store-{name}-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let path = root.join("runtime-state.sqlite3");
+        let store = ContextStore::open(&path).expect("open private context store");
+        (root, store)
+    }
+
+    fn projection(recovery_ref: &str, state: &str, updated_at_ms: u64) -> CcrMetadataProjection {
+        CcrMetadataProjection {
+            recovery_ref: recovery_ref.to_string(),
+            request_id: format!("req-{recovery_ref}"),
+            expires_at_ms: Some(10_000),
+            plaintext_bytes: Some(64),
+            state: state.to_string(),
+            updated_at_ms,
+        }
+    }
+
+    #[test]
+    fn replace_ccr_metadata_rolls_back_atomically_on_partial_failure() {
+        let (root, mut store) = fixture_store("replace-rollback");
+        store
+            .upsert_ccr_metadata(&projection("ccr:a", "finalized", 1))
+            .expect("seed projection");
+
+        // A duplicate primary key in the replacement batch must fail the
+        // whole transaction: the disposable view is only ever swapped
+        // atomically, so a partial replace can never hide the previous truth.
+        let duplicate_batch = [
+            projection("ccr:b", "pending_retained", 2),
+            projection("ccr:b", "finalized", 3),
+        ];
+        assert!(store.replace_ccr_metadata(&duplicate_batch).is_err());
+        assert_eq!(
+            store
+                .ccr_metadata_state("ccr:a")
+                .expect("read projection")
+                .as_deref(),
+            Some("finalized")
+        );
+        assert_eq!(
+            store.ccr_metadata_state("ccr:b").expect("read projection"),
+            None
+        );
+
+        drop(store);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn prune_expired_ccr_metadata_removes_only_expired_rows() {
+        let (root, store) = fixture_store("prune-expired");
+        store
+            .upsert_ccr_metadata(&CcrMetadataProjection {
+                expires_at_ms: Some(1_000),
+                ..projection("ccr:expired", "finalized", 1)
+            })
+            .expect("seed expired projection");
+        store
+            .upsert_ccr_metadata(&CcrMetadataProjection {
+                expires_at_ms: Some(3_000),
+                ..projection("ccr:alive", "pending_retained", 2)
+            })
+            .expect("seed live projection");
+
+        let pruned = store
+            .prune_expired_ccr_metadata(1_500)
+            .expect("prune expired projections");
+        assert_eq!(pruned, 1);
+        assert_eq!(
+            store
+                .ccr_metadata_state("ccr:expired")
+                .expect("read projection"),
+            None
+        );
+        assert_eq!(
+            store
+                .ccr_metadata_state("ccr:alive")
+                .expect("read projection")
+                .as_deref(),
+            Some("pending_retained")
+        );
+
+        drop(store);
+        let _ = std::fs::remove_dir_all(root);
     }
 }

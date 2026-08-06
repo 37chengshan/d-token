@@ -21,6 +21,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use crate::agent_kind::{AgentIntegrationKind, TruthfulLimitation};
 use crate::{ApplyReceipt, ConfigPatcher, ExpectedFileState, TransactionReceipt};
 
 pub const DTOKEN_MANAGED_KEY: &str = "dtoken";
@@ -71,6 +72,26 @@ const AIDER_PROVIDER_ID: &str = "openai";
 const AIDER_MANIFEST_FILE: &str = "dtoken-agent-transport-aider.json";
 const AIDER_PUBLIC_API_KEY_MARKER: &str = "dtoken-loopback";
 
+// Hermes: ~/.hermes/config.yaml — model.provider/custom/base_url/default
+const HERMES_PROVIDER_ID: &str = "dtoken-local-route";
+const HERMES_MANIFEST_FILE: &str = "dtoken-agent-transport-hermes.json";
+const HERMES_PUBLIC_API_KEY_MARKER: &str = "dtoken-loopback";
+
+// OpenHands V0: CWD config.toml [llm]
+const OPENHANDS_PROVIDER_ID: &str = "dtoken-local-route";
+const OPENHANDS_MANIFEST_FILE: &str = "dtoken-agent-transport-openhands.json";
+const OPENHANDS_PUBLIC_API_KEY_MARKER: &str = "dtoken-loopback";
+
+// Pi: ~/.pi/agent/models.json — providers.dtoken + settings
+const PI_PROVIDER_ID: &str = "dtoken";
+const PI_MANIFEST_FILE: &str = "dtoken-agent-transport-pi.json";
+const PI_PUBLIC_API_KEY_MARKER: &str = "dtoken-loopback";
+
+// Mistral Vibe: ~/.vibe/config.toml — providers/models/active_model
+const MISTRAL_VIBE_PROVIDER_ID: &str = "dtoken-local-route";
+const MISTRAL_VIBE_MANIFEST_FILE: &str = "dtoken-agent-transport-mistral-vibe.json";
+const MISTRAL_VIBE_PUBLIC_API_KEY_MARKER: &str = "dtoken-loopback";
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum AgentTransportAdapterKind {
@@ -88,6 +109,32 @@ pub enum AgentTransportAdapterKind {
     Toml,
     ExtensionSetting,
     OpenCodeProvider,
+    /// Hermes Route adapter: ~/.hermes/config.yaml model.provider/custom/base_url/default.
+    /// Does NOT read .env files.
+    Hermes,
+    /// OpenHands Route adapter (V0): CWD config.toml [llm] section. V1 env-only
+    /// fails closed with no file to write.
+    OpenHands,
+    /// Pi Route adapter: ~/.pi/agent/models.json providers.dtoken + settings
+    /// defaultProvider/defaultModel. Does NOT touch auth.json/apiKey.
+    Pi,
+    /// Mistral Vibe Route adapter: ~/.vibe/config.toml (or project .vibe/config.toml)
+    /// providers/models/active_model. Does NOT touch .env.
+    MistralVibe,
+    /// Cortex Code Hook adapter: ~/.snowflake/cortex/hooks.json hooks.SessionStart
+    /// with verified dtoken-agent-bridge mcp stdio hook session-start.
+    /// Does NOT touch ~/.snowflake/config.toml or connections.toml.
+    CortexCodeHook,
+    /// MCP-based integration: adds d-token as an MCP server in the agent's
+    /// MCP configuration file. Does NOT provide route evidence or transparent
+    /// compression. Model requests continue to use the agent's existing upstream.
+    CursorMcp,
+    ClaudeDesktopMcp,
+    WindsurfMcp,
+    CommandCodeMcp,
+    CopilotCliMcp,
+    VscodeCopilotChatMcp,
+    AntigravityMcp,
     DedicatedUnavailable,
 }
 
@@ -105,6 +152,11 @@ pub struct AgentTransportAdapterDescriptor {
     /// refuses automatic configuration. `None` means the adapter schema is
     /// verified for the version-independent surface it writes.
     pub advanced_required_reason: Option<&'static str>,
+    /// The kind of integration this adapter provides (Route, MCP, or Hook).
+    pub integration_kind: AgentIntegrationKind,
+    /// Truthful limitation describing what this integration can and cannot do.
+    /// `None` for Route adapters that provide full route evidence.
+    pub truthful_limitation: Option<TruthfulLimitation>,
 }
 
 const ADAPTERS: &[AgentTransportAdapterDescriptor] = &[
@@ -114,6 +166,8 @@ const ADAPTERS: &[AgentTransportAdapterDescriptor] = &[
         can_configure: true,
         can_clear: true,
         advanced_required_reason: None,
+        integration_kind: AgentIntegrationKind::Route,
+        truthful_limitation: None,
     },
     AgentTransportAdapterDescriptor {
         id: "codex",
@@ -121,6 +175,8 @@ const ADAPTERS: &[AgentTransportAdapterDescriptor] = &[
         can_configure: true,
         can_clear: true,
         advanced_required_reason: None,
+        integration_kind: AgentIntegrationKind::Route,
+        truthful_limitation: None,
     },
     AgentTransportAdapterDescriptor {
         id: "goose",
@@ -128,6 +184,8 @@ const ADAPTERS: &[AgentTransportAdapterDescriptor] = &[
         can_configure: true,
         can_clear: true,
         advanced_required_reason: None,
+        integration_kind: AgentIntegrationKind::Route,
+        truthful_limitation: None,
     },
     AgentTransportAdapterDescriptor {
         id: "kilo-code",
@@ -135,15 +193,17 @@ const ADAPTERS: &[AgentTransportAdapterDescriptor] = &[
         can_configure: true,
         can_clear: true,
         advanced_required_reason: None,
+        integration_kind: AgentIntegrationKind::Route,
+        truthful_limitation: None,
     },
     AgentTransportAdapterDescriptor {
         id: "cursor",
-        kind: AgentTransportAdapterKind::DedicatedUnavailable,
+        kind: AgentTransportAdapterKind::CursorMcp,
         can_configure: false,
         can_clear: false,
-        advanced_required_reason: Some(
-            "Cursor routes every request through its own servers and exposes no verified local upstream override; d-token will not write a generic metadata block as routing",
-        ),
+        advanced_required_reason: Some(MCP_VERIFIED_SCHEMA_NO_COMMAND),
+        integration_kind: AgentIntegrationKind::Mcp,
+        truthful_limitation: Some(TruthfulLimitation::mcp()),
     },
     AgentTransportAdapterDescriptor {
         id: "cline",
@@ -151,6 +211,8 @@ const ADAPTERS: &[AgentTransportAdapterDescriptor] = &[
         can_configure: true,
         can_clear: true,
         advanced_required_reason: None,
+        integration_kind: AgentIntegrationKind::Route,
+        truthful_limitation: None,
     },
     AgentTransportAdapterDescriptor {
         id: "gemini-cli",
@@ -158,6 +220,8 @@ const ADAPTERS: &[AgentTransportAdapterDescriptor] = &[
         can_configure: true,
         can_clear: true,
         advanced_required_reason: None,
+        integration_kind: AgentIntegrationKind::Route,
+        truthful_limitation: None,
     },
     AgentTransportAdapterDescriptor {
         id: "opencode",
@@ -165,6 +229,8 @@ const ADAPTERS: &[AgentTransportAdapterDescriptor] = &[
         can_configure: true,
         can_clear: true,
         advanced_required_reason: None,
+        integration_kind: AgentIntegrationKind::Route,
+        truthful_limitation: None,
     },
     AgentTransportAdapterDescriptor {
         id: "openclaw",
@@ -172,33 +238,35 @@ const ADAPTERS: &[AgentTransportAdapterDescriptor] = &[
         can_configure: true,
         can_clear: true,
         advanced_required_reason: None,
+        integration_kind: AgentIntegrationKind::Route,
+        truthful_limitation: None,
     },
     AgentTransportAdapterDescriptor {
         id: "commandcode",
-        kind: AgentTransportAdapterKind::DedicatedUnavailable,
+        kind: AgentTransportAdapterKind::CommandCodeMcp,
         can_configure: false,
         can_clear: false,
-        advanced_required_reason: Some(
-            "CommandCode has no verified versioned provider schema for a credential-free d-token route",
-        ),
+        advanced_required_reason: Some(MCP_VERIFIED_SCHEMA_NO_COMMAND),
+        integration_kind: AgentIntegrationKind::Mcp,
+        truthful_limitation: Some(TruthfulLimitation::mcp()),
     },
     AgentTransportAdapterDescriptor {
         id: "claude-desktop",
-        kind: AgentTransportAdapterKind::DedicatedUnavailable,
+        kind: AgentTransportAdapterKind::ClaudeDesktopMcp,
         can_configure: false,
         can_clear: false,
-        advanced_required_reason: Some(
-            "Claude Desktop's verified configuration surface is MCP-oriented and does not provide a safe model-upstream transport override",
-        ),
+        advanced_required_reason: Some(MCP_VERIFIED_SCHEMA_NO_COMMAND),
+        integration_kind: AgentIntegrationKind::Mcp,
+        truthful_limitation: Some(TruthfulLimitation::mcp()),
     },
     AgentTransportAdapterDescriptor {
         id: "hermes",
-        kind: AgentTransportAdapterKind::DedicatedUnavailable,
-        can_configure: false,
-        can_clear: false,
-        advanced_required_reason: Some(
-            "Hermes has no verified versioned upstream schema and ownership-safe clear contract in this candidate",
-        ),
+        kind: AgentTransportAdapterKind::Hermes,
+        can_configure: true,
+        can_clear: true,
+        advanced_required_reason: None,
+        integration_kind: AgentIntegrationKind::Route,
+        truthful_limitation: None,
     },
     AgentTransportAdapterDescriptor {
         id: "roo-code",
@@ -206,6 +274,8 @@ const ADAPTERS: &[AgentTransportAdapterDescriptor] = &[
         can_configure: true,
         can_clear: true,
         advanced_required_reason: None,
+        integration_kind: AgentIntegrationKind::Route,
+        truthful_limitation: None,
     },
     AgentTransportAdapterDescriptor {
         id: "continue",
@@ -213,6 +283,8 @@ const ADAPTERS: &[AgentTransportAdapterDescriptor] = &[
         can_configure: true,
         can_clear: true,
         advanced_required_reason: None,
+        integration_kind: AgentIntegrationKind::Route,
+        truthful_limitation: None,
     },
     AgentTransportAdapterDescriptor {
         id: "aider",
@@ -220,78 +292,86 @@ const ADAPTERS: &[AgentTransportAdapterDescriptor] = &[
         can_configure: true,
         can_clear: true,
         advanced_required_reason: None,
+        integration_kind: AgentIntegrationKind::Route,
+        truthful_limitation: None,
     },
     AgentTransportAdapterDescriptor {
         id: "openhands",
-        kind: AgentTransportAdapterKind::DedicatedUnavailable,
-        can_configure: false,
-        can_clear: false,
-        advanced_required_reason: Some(
-            "OpenHands has no verified versioned local provider schema for a reversible d-token transport change",
-        ),
+        kind: AgentTransportAdapterKind::OpenHands,
+        can_configure: true,
+        can_clear: true,
+        advanced_required_reason: None,
+        integration_kind: AgentIntegrationKind::Route,
+        truthful_limitation: None,
     },
     AgentTransportAdapterDescriptor {
         id: "copilot-cli",
-        kind: AgentTransportAdapterKind::DedicatedUnavailable,
+        kind: AgentTransportAdapterKind::CopilotCliMcp,
         can_configure: false,
         can_clear: false,
-        advanced_required_reason: Some(
-            "Copilot CLI does not expose a verified custom upstream transport surface for this candidate",
-        ),
+        advanced_required_reason: Some(MCP_VERIFIED_SCHEMA_NO_COMMAND),
+        integration_kind: AgentIntegrationKind::Mcp,
+        truthful_limitation: Some(TruthfulLimitation::mcp()),
     },
     AgentTransportAdapterDescriptor {
         id: "vscode-copilot-chat",
-        kind: AgentTransportAdapterKind::DedicatedUnavailable,
+        kind: AgentTransportAdapterKind::VscodeCopilotChatMcp,
         can_configure: false,
         can_clear: false,
         advanced_required_reason: Some(
-            "VS Code Copilot Chat exposes network-proxy debug settings, but d-token is not an HTTP CONNECT/forward proxy; writing those settings would not prove a routed compression flow",
+            "VS Code Copilot Chat's MCP config is VS Code's mcp.json (`servers` key), which is not a verified write surface in this candidate; detection remains metadata-only",
         ),
+        integration_kind: AgentIntegrationKind::Mcp,
+        truthful_limitation: Some(TruthfulLimitation::mcp()),
     },
     AgentTransportAdapterDescriptor {
         id: "pi",
-        kind: AgentTransportAdapterKind::DedicatedUnavailable,
-        can_configure: false,
-        can_clear: false,
-        advanced_required_reason: Some(
-            "Pi has no verified versioned custom upstream override and ownership-safe clear contract in this candidate",
-        ),
+        kind: AgentTransportAdapterKind::Pi,
+        can_configure: true,
+        can_clear: true,
+        advanced_required_reason: None,
+        integration_kind: AgentIntegrationKind::Route,
+        truthful_limitation: None,
     },
     AgentTransportAdapterDescriptor {
         id: "cortex-code",
-        kind: AgentTransportAdapterKind::DedicatedUnavailable,
+        kind: AgentTransportAdapterKind::CortexCodeHook,
         can_configure: false,
         can_clear: false,
         advanced_required_reason: Some(
-            "Cortex Code connections.toml is credential-bearing metadata with no verified credential-free d-token route schema; detection remains metadata-only",
+            "Cortex Code hooks.json SessionStart requires the desktop-resolved dtoken-agent-bridge mcp stdio hook session-start executable path; the transport adapter does not guess paths",
         ),
+        integration_kind: AgentIntegrationKind::Hook,
+        truthful_limitation: Some(TruthfulLimitation::hook()),
     },
     AgentTransportAdapterDescriptor {
         id: "windsurf",
-        kind: AgentTransportAdapterKind::DedicatedUnavailable,
+        kind: AgentTransportAdapterKind::WindsurfMcp,
         can_configure: false,
         can_clear: false,
-        advanced_required_reason: Some(
-            "Windsurf's detected rules file is not an upstream transport configuration and must not be rewritten as one",
-        ),
+        advanced_required_reason: Some(MCP_VERIFIED_SCHEMA_NO_COMMAND),
+        integration_kind: AgentIntegrationKind::Mcp,
+        truthful_limitation: Some(TruthfulLimitation::mcp()),
     },
     AgentTransportAdapterDescriptor {
         id: "antigravity",
-        kind: AgentTransportAdapterKind::DedicatedUnavailable,
+        kind: AgentTransportAdapterKind::AntigravityMcp,
         can_configure: false,
         can_clear: false,
         advanced_required_reason: Some(
-            "Google Antigravity has no verified local upstream override and rollback schema in this candidate",
+            "Antigravity has no verified MCP config path/schema in this candidate (reported paths conflict); detection remains metadata-only",
         ),
+        integration_kind: AgentIntegrationKind::Mcp,
+        truthful_limitation: Some(TruthfulLimitation::mcp()),
     },
     AgentTransportAdapterDescriptor {
         id: "mistral-vibe",
-        kind: AgentTransportAdapterKind::DedicatedUnavailable,
-        can_configure: false,
-        can_clear: false,
-        advanced_required_reason: Some(
-            "Mistral Vibe has no verified versioned provider schema and ownership-safe clear contract in this candidate",
-        ),
+        kind: AgentTransportAdapterKind::MistralVibe,
+        can_configure: true,
+        can_clear: true,
+        advanced_required_reason: None,
+        integration_kind: AgentIntegrationKind::Route,
+        truthful_limitation: None,
     },
 ];
 
@@ -380,7 +460,52 @@ pub fn clear_agent_transport(
     request: &AgentTransportRequest,
     backup_root: &Path,
 ) -> Result<AgentTransportReceipt> {
+    if !can_clear_agent_transport(&request.agent_id, &request.target_path) {
+        let descriptor = agent_transport_adapter(&request.agent_id);
+        if descriptor.map(|d| d.can_clear).unwrap_or(false) {
+            // For manifest-based adapters, a missing manifest means "never
+            // configured or already cleared" — let apply_agent_transport
+            // handle it as a no-op. A present manifest with mismatched
+            // selection means external edit → fail-closed.
+            if !manifest_artifact_exists(&request.agent_id, &request.target_path) {
+                // No artifact → let apply_agent_transport handle it (no-op)
+            } else {
+                bail!(
+                    "{} selection changed outside d-token; automatic clear is unsafe",
+                    request.agent_id
+                );
+            }
+        }
+        // For unsupported adapters (can_clear=false), fall through to
+        // apply_agent_transport which calls prepare_request and gives the
+        // proper error message.
+    }
     apply_agent_transport(request, AgentTransportOperation::Clear, backup_root)
+}
+
+/// Returns true when a manifest-based adapter has a d-token ownership
+/// manifest file on disk.  Non-manifest adapters always return false
+/// (they cannot distinguish "no artifact" from "external edit" at the
+/// manifest level, so can_clear_agent_transport alone governs them).
+fn manifest_artifact_exists(agent_id: &str, target_path: &Path) -> bool {
+    let Some(descriptor) = agent_transport_adapter(agent_id) else {
+        return false;
+    };
+    match descriptor.kind {
+        AgentTransportAdapterKind::Pi => pi_manifest_path(target_path)
+            .map(|p| p.is_file())
+            .unwrap_or(false),
+        AgentTransportAdapterKind::Hermes => hermes_manifest_path(target_path)
+            .map(|p| p.is_file())
+            .unwrap_or(false),
+        AgentTransportAdapterKind::OpenHands => openhands_manifest_path(target_path)
+            .map(|p| p.is_file())
+            .unwrap_or(false),
+        AgentTransportAdapterKind::MistralVibe => mistral_vibe_manifest_path(target_path)
+            .map(|p| p.is_file())
+            .unwrap_or(false),
+        _ => false,
+    }
 }
 
 /// Produces a hash-bound, no-write review for a configure operation.
@@ -447,6 +572,18 @@ pub fn verify_agent_transport(
         AgentTransportAdapterKind::Aider => {
             return verify_aider_transport(request);
         }
+        AgentTransportAdapterKind::Hermes => {
+            return verify_hermes_transport(request);
+        }
+        AgentTransportAdapterKind::OpenHands => {
+            return verify_openhands_transport(request);
+        }
+        AgentTransportAdapterKind::Pi => {
+            return verify_pi_transport(request);
+        }
+        AgentTransportAdapterKind::MistralVibe => {
+            return verify_mistral_vibe_transport(request);
+        }
         _ => {}
     }
     let text = match fs::read_to_string(&request.target_path) {
@@ -506,6 +643,18 @@ pub fn can_clear_agent_transport(agent_id: &str, target_path: &Path) -> bool {
         }
         AgentTransportAdapterKind::Aider => {
             return aider_can_clear(target_path);
+        }
+        AgentTransportAdapterKind::Hermes => {
+            return hermes_can_clear(target_path);
+        }
+        AgentTransportAdapterKind::OpenHands => {
+            return openhands_can_clear(target_path);
+        }
+        AgentTransportAdapterKind::Pi => {
+            return pi_can_clear(target_path);
+        }
+        AgentTransportAdapterKind::MistralVibe => {
+            return mistral_vibe_can_clear(target_path);
         }
         _ => {}
     }
@@ -669,6 +818,18 @@ fn apply_agent_transport(
         AgentTransportAdapterKind::Aider => {
             return apply_aider_transport(request, operation, backup_root);
         }
+        AgentTransportAdapterKind::Hermes => {
+            return apply_hermes_transport(request, operation, backup_root);
+        }
+        AgentTransportAdapterKind::OpenHands => {
+            return apply_openhands_transport(request, operation, backup_root);
+        }
+        AgentTransportAdapterKind::Pi => {
+            return apply_pi_transport(request, operation, backup_root);
+        }
+        AgentTransportAdapterKind::MistralVibe => {
+            return apply_mistral_vibe_transport(request, operation, backup_root);
+        }
         _ => {}
     }
     let before = match fs::read_to_string(&request.target_path) {
@@ -769,6 +930,18 @@ fn preview_agent_transport(
         AgentTransportAdapterKind::Aider => {
             return preview_aider_transport(request, operation);
         }
+        AgentTransportAdapterKind::Hermes => {
+            return preview_hermes_transport(request, operation);
+        }
+        AgentTransportAdapterKind::OpenHands => {
+            return preview_openhands_transport(request, operation);
+        }
+        AgentTransportAdapterKind::Pi => {
+            return preview_pi_transport(request, operation);
+        }
+        AgentTransportAdapterKind::MistralVibe => {
+            return preview_mistral_vibe_transport(request, operation);
+        }
         _ => {}
     }
     let before = match fs::read_to_string(&request.target_path) {
@@ -859,6 +1032,10 @@ fn prepare_request(
                 | AgentTransportAdapterKind::Continue
                 | AgentTransportAdapterKind::Aider
                 | AgentTransportAdapterKind::OpenCodeProvider
+                | AgentTransportAdapterKind::Hermes
+                | AgentTransportAdapterKind::OpenHands
+                | AgentTransportAdapterKind::Pi
+                | AgentTransportAdapterKind::MistralVibe
         ) {
             validate_model(request.model.as_deref())?;
         }
@@ -926,6 +1103,27 @@ fn transform_document(
         AgentTransportAdapterKind::OpenCodeProvider => {
             transform_opencode(text, operation, endpoint, enabled, model)
         }
+        AgentTransportAdapterKind::Hermes => {
+            let model = model.context("Hermes transport requires an explicit model")?;
+            transform_hermes(text, operation, endpoint, model)
+        }
+        AgentTransportAdapterKind::OpenHands => {
+            bail!("OpenHands provider schema requires filesystem context")
+        }
+        AgentTransportAdapterKind::Pi => {
+            bail!("Pi provider schema requires filesystem context")
+        }
+        AgentTransportAdapterKind::MistralVibe => {
+            bail!("Mistral Vibe provider schema requires filesystem context")
+        }
+        AgentTransportAdapterKind::CortexCodeHook => bail!(MCP_TRANSPORT_FAIL_CLOSED),
+        AgentTransportAdapterKind::CursorMcp
+        | AgentTransportAdapterKind::ClaudeDesktopMcp
+        | AgentTransportAdapterKind::WindsurfMcp
+        | AgentTransportAdapterKind::CommandCodeMcp
+        | AgentTransportAdapterKind::CopilotCliMcp
+        | AgentTransportAdapterKind::VscodeCopilotChatMcp
+        | AgentTransportAdapterKind::AntigravityMcp => bail!(MCP_TRANSPORT_FAIL_CLOSED),
         AgentTransportAdapterKind::DedicatedUnavailable => {
             bail!("Agent provider schema is unavailable")
         }
@@ -3239,17 +3437,14 @@ fn verify_cline_transport(request: &AgentTransportRequest) -> Result<AgentTransp
             })
         }
     };
-    let root = parse_cline_root(&text)?;
-    let Some(manifest) = parse_cline_manifest(&cline_manifest_path(&request.target_path)?)? else {
-        return Ok(AgentTransportVerification {
-            agent_id: request.agent_id.clone(),
-            kind: AgentTransportAdapterKind::ClineCli,
-            ok: false,
-            detail: "Cline transport manifest is absent".into(),
-            current_upstream: None,
-        });
-    };
     let result: Result<()> = (|| {
+        // A mismatched Cline schema (for example a non-object document) must
+        // fail closed into a verification result, never propagate as an error.
+        let root = parse_cline_root(&text)?;
+        let Some(manifest) = parse_cline_manifest(&cline_manifest_path(&request.target_path)?)?
+        else {
+            bail!("Cline transport manifest is absent");
+        };
         if manifest.endpoint != request.endpoint
             || request.model.as_deref() != Some(manifest.model.as_str())
         {
@@ -3578,6 +3773,23 @@ fn verify_kilo_cleared(config_path: &Path) -> Result<AgentTransportVerification>
     })
 }
 
+/// MCP agents are deliberately fail-closed in the transport adapter: the
+/// d-token MCP entry is not a fabricated `d-token --mcp-stdio` shape (no such
+/// executable exists), and the real metadata-only `dtoken-agent-bridge mcp
+/// stdio` entry requires a desktop-resolved absolute executable path plus
+/// managed launch context that the transport request does not carry. The
+/// desktop-managed flow owns the verified write path.
+const MCP_TRANSPORT_FAIL_CLOSED: &str =
+    "Agent MCP configuration is fail-closed in the transport adapter: the d-token MCP entry requires the desktop-resolved metadata-only bridge executable and managed launch context";
+
+/// Fail-closed reason for agents whose MCP config schema is verified (JSON
+/// `mcpServers` in a known file) but whose d-token MCP entry cannot be built
+/// truthfully by the transport adapter: no `d-token` executable exists, and
+/// the real metadata-only `dtoken-agent-bridge mcp stdio` entry needs the
+/// desktop-resolved absolute executable path plus managed launch context.
+/// Automatic configure would fabricate a broken entry.
+const MCP_VERIFIED_SCHEMA_NO_COMMAND: &str = "The agent exposes a verified MCP config schema, but the transport adapter cannot write a runnable d-token MCP entry: no `d-token` executable exists, and the metadata-only `dtoken-agent-bridge mcp stdio` entry requires the desktop-resolved absolute executable path and managed launch context. Automatic configure would fabricate a broken entry; the desktop-managed flow is the verified write path";
+
 const TRANSPORT_SCHEMA_VERSION: i64 = 1;
 const CLAUDE_ENV: &str = "env";
 const CLAUDE_BASE_URL: &str = "ANTHROPIC_BASE_URL";
@@ -3720,6 +3932,74 @@ struct AiderTransportManifest {
     previous_model: Option<String>,
     previous_base_present: bool,
     previous_base: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+struct HermesTransportManifest {
+    schema_version: i64,
+    managed_by: String,
+    agent_id: String,
+    transport: String,
+    endpoint: String,
+    model: String,
+    provider_id: String,
+    previous_base_url_present: bool,
+    previous_base_url: Option<String>,
+    previous_model_present: bool,
+    previous_model: Option<String>,
+    previous_default_present: bool,
+    previous_default: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+struct OpenHandsTransportManifest {
+    schema_version: i64,
+    managed_by: String,
+    agent_id: String,
+    transport: String,
+    endpoint: String,
+    model: String,
+    provider_id: String,
+    previous_llm_model_present: bool,
+    previous_llm_model: Option<String>,
+    previous_llm_base_url_present: bool,
+    previous_llm_base_url: Option<String>,
+    previous_llm_api_key_present: bool,
+    previous_llm_api_key: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+struct PiTransportManifest {
+    schema_version: i64,
+    managed_by: String,
+    agent_id: String,
+    transport: String,
+    endpoint: String,
+    model: String,
+    provider_id: String,
+    previous_default_provider_present: bool,
+    previous_default_provider: Option<String>,
+    previous_default_model_present: bool,
+    previous_default_model: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+struct MistralVibeTransportManifest {
+    schema_version: i64,
+    managed_by: String,
+    agent_id: String,
+    transport: String,
+    endpoint: String,
+    model: String,
+    provider_id: String,
+    previous_active_model_present: bool,
+    previous_active_model: Option<String>,
+    previous_provider_present: bool,
+    previous_provider: Option<String>,
 }
 
 fn gemini_auth_type(root: &Map<String, Value>) -> Option<String> {
@@ -5998,6 +6278,2023 @@ fn aider_can_clear(config_path: &Path) -> bool {
             == Some(AIDER_PUBLIC_API_KEY_MARKER)
 }
 
+// ---------- Hermes (~/.hermes/config.yaml) ----------
+// Schema: model.provider/custom/base_url/default
+// Does NOT read .env files.
+
+const HERMES_API_KEY: &str = "apiKey";
+
+fn hermes_manifest_path(config_path: &Path) -> Result<PathBuf> {
+    Ok(config_path
+        .parent()
+        .context("Hermes configuration path has no parent directory")?
+        .join(HERMES_MANIFEST_FILE))
+}
+
+fn hermes_selection(text: &str) -> Result<PriorSelection> {
+    let doc: serde_yaml::Value =
+        serde_yaml::from_str(text).context("Hermes config must be valid YAML")?;
+    let provider = doc
+        .get("model")
+        .and_then(|m| m.get("provider"))
+        .and_then(|p| p.as_mapping())
+        .and_then(|p| p.get("custom"))
+        .and_then(|c| c.as_mapping())
+        .and_then(|c| c.get("base_url"))
+        .and_then(|v| v.as_str())
+        .map(str::to_owned);
+    let model = doc
+        .get("model")
+        .and_then(|m| m.get("default"))
+        .and_then(|v| v.as_str())
+        .map(str::to_owned);
+    validate_prior_selection(provider.as_deref(), model.as_deref())?;
+    Ok(PriorSelection {
+        provider_present: provider.is_some(),
+        provider,
+        model_present: model.is_some(),
+        model,
+    })
+}
+
+fn hermes_default_present(text: &str) -> bool {
+    serde_yaml::from_str::<serde_yaml::Value>(text)
+        .ok()
+        .and_then(|doc| doc.get("model").map(|m| m.get("default").is_some()))
+        .unwrap_or(false)
+}
+
+fn transform_hermes(
+    text: &str,
+    operation: AgentTransportOperation,
+    endpoint: &str,
+    model: &str,
+) -> Result<String> {
+    if operation == AgentTransportOperation::Clear && text.trim().is_empty() {
+        return Ok(text.to_string());
+    }
+    let mut doc: serde_yaml::Value = if text.trim().is_empty() {
+        serde_yaml::Value::Mapping(serde_yaml::Mapping::new())
+    } else {
+        serde_yaml::from_str(text).context("Hermes config must be valid YAML")?
+    };
+    let root = doc
+        .as_mapping_mut()
+        .context("Hermes config must be a mapping")?;
+    match operation {
+        AgentTransportOperation::Configure => {
+            let model_entry = root
+                .entry("model".into())
+                .or_insert_with(|| serde_yaml::Value::Mapping(serde_yaml::Mapping::new()));
+            let model_map = model_entry
+                .as_mapping_mut()
+                .context("Hermes model must be a mapping")?;
+            let provider = model_map
+                .entry("provider".into())
+                .or_insert_with(|| serde_yaml::Value::Mapping(serde_yaml::Mapping::new()));
+            let provider_map = provider
+                .as_mapping_mut()
+                .context("Hermes model.provider must be a mapping")?;
+            let custom = provider_map
+                .entry("custom".into())
+                .or_insert_with(|| serde_yaml::Value::Mapping(serde_yaml::Mapping::new()));
+            let custom_map = custom
+                .as_mapping_mut()
+                .context("Hermes model.provider.custom must be a mapping")?;
+            custom_map.insert(
+                "base_url".into(),
+                serde_yaml::Value::String(opencode_base_url(endpoint)),
+            );
+            custom_map.insert(
+                HERMES_API_KEY.into(),
+                serde_yaml::Value::String(HERMES_PUBLIC_API_KEY_MARKER.into()),
+            );
+            model_map.insert("default".into(), serde_yaml::Value::String(model.into()));
+        }
+        AgentTransportOperation::Clear => {
+            if let Some(model_map) = root.get_mut("model").and_then(|m| m.as_mapping_mut()) {
+                // Remove the d-token apiKey marker
+                if let Some(provider) = model_map.get_mut("provider") {
+                    if let Some(provider_map) = provider.as_mapping_mut() {
+                        if let Some(custom) = provider_map.get_mut("custom") {
+                            if let Some(custom_map) = custom.as_mapping_mut() {
+                                custom_map.remove(HERMES_API_KEY);
+                            }
+                        }
+                    }
+                }
+                // Restore previous base_url if provided
+                if !endpoint.is_empty() {
+                    if let Some(provider) = model_map.get_mut("provider") {
+                        if let Some(provider_map) = provider.as_mapping_mut() {
+                            let custom = provider_map.entry("custom".into()).or_insert_with(|| {
+                                serde_yaml::Value::Mapping(serde_yaml::Mapping::new())
+                            });
+                            if let Some(custom_map) = custom.as_mapping_mut() {
+                                custom_map.insert(
+                                    "base_url".into(),
+                                    serde_yaml::Value::String(endpoint.into()),
+                                );
+                            }
+                        }
+                    }
+                } else {
+                    model_map.remove("provider");
+                }
+                // Restore previous model if provided
+                if !model.is_empty() {
+                    model_map.insert("default".into(), serde_yaml::Value::String(model.into()));
+                } else {
+                    model_map.remove("default");
+                }
+                if model_map.is_empty() {
+                    root.remove("model");
+                }
+            }
+        }
+    }
+    let mut out = Vec::new();
+    serde_yaml::to_writer(&mut out, &doc).context("failed to serialize Hermes YAML")?;
+    Ok(String::from_utf8(out)?)
+}
+
+fn hermes_current_upstream_signature(
+    config_path: &Path,
+) -> Result<Option<AgentTransportUpstreamSignature>> {
+    let manifest_path = hermes_manifest_path(config_path)?;
+    let Some(manifest) = parse_hermes_manifest(&manifest_path)? else {
+        return Ok(None);
+    };
+    let text = optional_text(config_path)?.unwrap_or_default();
+    let selection = hermes_selection(&text)?;
+    let expected_base = opencode_base_url(&manifest.endpoint);
+    if selection.provider.as_deref() != Some(&expected_base)
+        || selection.model.as_deref() != Some(manifest.model.as_str())
+    {
+        return Ok(None);
+    }
+    Ok(Some(AgentTransportUpstreamSignature {
+        provider_id: HERMES_PROVIDER_ID.to_string(),
+        signature_sha256: crate::stable_hash(&format!(
+            "agent-upstream-v1\n{}\n{}\n{}",
+            "hermes", manifest.endpoint, manifest.model
+        )),
+        endpoint: manifest.endpoint,
+        model: Some(manifest.model),
+        enabled: true,
+    }))
+}
+
+fn parse_hermes_manifest(path: &Path) -> Result<Option<HermesTransportManifest>> {
+    let text = match optional_text(path)? {
+        Some(text) => text,
+        None => return Ok(None),
+    };
+    let manifest: HermesTransportManifest =
+        serde_json::from_str(&text).context("Hermes transport manifest is invalid JSON")?;
+    if manifest.managed_by != DTOKEN_MANAGED_BY || manifest.transport != DTOKEN_TRANSPORT {
+        return Ok(None);
+    }
+    Ok(Some(manifest))
+}
+
+fn preview_hermes_transport(
+    request: &AgentTransportRequest,
+    operation: AgentTransportOperation,
+) -> Result<AgentTransportReview> {
+    let config_before = optional_text(&request.target_path)?.unwrap_or_default();
+    let manifest_path = hermes_manifest_path(&request.target_path)?;
+    let manifest_before = optional_text(&manifest_path)?.unwrap_or_default();
+    let current_upstream = hermes_current_upstream_signature(&request.target_path)?;
+    let existing_manifest = parse_hermes_manifest(&manifest_path)?;
+
+    let (config_after, manifest_after) = match operation {
+        AgentTransportOperation::Configure => {
+            let model = request
+                .model
+                .as_deref()
+                .context("Hermes transport requires an explicit model")?;
+            if let Some(manifest) = existing_manifest.as_ref() {
+                if current_upstream.is_none() {
+                    bail!("Hermes selection changed outside d-token; automatic update is unsafe");
+                }
+                ensure_hermes_current_matches(manifest, &config_before)?;
+            }
+            let previous = existing_manifest
+                .as_ref()
+                .map(|item| PriorSelection {
+                    provider_present: item.previous_base_url_present,
+                    provider: item.previous_base_url.clone(),
+                    model_present: item.previous_model_present,
+                    model: item.previous_model.clone(),
+                })
+                .unwrap_or(hermes_selection(&config_before)?);
+            (
+                transform_hermes(&config_before, operation, &request.endpoint, model)?,
+                manifest_json(&HermesTransportManifest {
+                    schema_version: TRANSPORT_SCHEMA_VERSION,
+                    managed_by: DTOKEN_MANAGED_BY.into(),
+                    agent_id: "hermes".into(),
+                    transport: DTOKEN_TRANSPORT.into(),
+                    endpoint: request.endpoint.clone(),
+                    model: model.to_string(),
+                    provider_id: HERMES_PROVIDER_ID.into(),
+                    previous_base_url_present: previous.provider_present,
+                    previous_base_url: previous.provider,
+                    previous_model_present: previous.model_present,
+                    previous_model: previous.model,
+                    previous_default_present: hermes_default_present(&config_before),
+                    previous_default: None,
+                })?,
+            )
+        }
+        AgentTransportOperation::Clear => {
+            let Some(manifest) = existing_manifest.as_ref() else {
+                if hermes_selection(&config_before)?.provider.is_some() {
+                    bail!("Hermes has unowned d-token-shaped routing state; automatic clear is unsafe");
+                }
+                return Ok(AgentTransportReview {
+                    operation,
+                    agent_id: request.agent_id.clone(),
+                    target_path: request.target_path.clone(),
+                    revision: revision_for_hashes(
+                        &request.agent_id,
+                        operation,
+                        &[(
+                            "config",
+                            crate::stable_hash(&config_before),
+                            crate::stable_hash(&config_before),
+                        )],
+                    ),
+                    changed: false,
+                    before_sha256: crate::stable_hash(&config_before),
+                    after_sha256: crate::stable_hash(&config_before),
+                    redacted_diff: String::new(),
+                    current_upstream: None,
+                });
+            };
+            if current_upstream.is_none() {
+                bail!("Hermes selection changed outside d-token; automatic clear is unsafe");
+            }
+            (
+                transform_hermes(
+                    &config_before,
+                    operation,
+                    manifest.previous_base_url.as_deref().unwrap_or(""),
+                    manifest.previous_model.as_deref().unwrap_or(""),
+                )?,
+                String::new(),
+            )
+        }
+    };
+
+    let before_sha256 = crate::stable_hash(&config_before);
+    let after_sha256 = crate::stable_hash(&config_after);
+    Ok(AgentTransportReview {
+        operation,
+        agent_id: request.agent_id.clone(),
+        target_path: request.target_path.clone(),
+        revision: revision_for_hashes(
+            &request.agent_id,
+            operation,
+            &[
+                ("config", before_sha256.clone(), after_sha256.clone()),
+                (
+                    "manifest",
+                    crate::stable_hash(&manifest_before),
+                    crate::stable_hash(&manifest_after),
+                ),
+            ],
+        ),
+        changed: config_before != config_after || manifest_before != manifest_after,
+        before_sha256,
+        after_sha256,
+        redacted_diff: redacted_diff_sections(&[
+            ("config", &config_before, &config_after),
+            ("ownership manifest", &manifest_before, &manifest_after),
+        ]),
+        current_upstream,
+    })
+}
+
+fn ensure_hermes_current_matches(
+    manifest: &HermesTransportManifest,
+    config_text: &str,
+) -> Result<()> {
+    let selection = hermes_selection(config_text)?;
+    let expected_base = opencode_base_url(&manifest.endpoint);
+    if selection.provider.as_deref() != Some(&expected_base)
+        || selection.model.as_deref() != Some(manifest.model.as_str())
+    {
+        bail!("Hermes selection changed outside d-token; automatic update is unsafe");
+    }
+    Ok(())
+}
+
+fn apply_hermes_transport(
+    request: &AgentTransportRequest,
+    operation: AgentTransportOperation,
+    backup_root: &Path,
+) -> Result<AgentTransportReceipt> {
+    let model = request
+        .model
+        .as_deref()
+        .context("Hermes transport requires an explicit model")?;
+    let config_before = optional_text(&request.target_path)?.unwrap_or_default();
+    let manifest_path = hermes_manifest_path(&request.target_path)?;
+    let manifest_before = optional_text(&manifest_path)?.unwrap_or_default();
+
+    let (config_after, manifest_after) = match operation {
+        AgentTransportOperation::Configure => {
+            let prior = hermes_selection(&config_before)?;
+            let out = transform_hermes(&config_before, operation, &request.endpoint, model)?;
+            let manifest = manifest_json(&HermesTransportManifest {
+                schema_version: TRANSPORT_SCHEMA_VERSION,
+                managed_by: DTOKEN_MANAGED_BY.into(),
+                agent_id: "hermes".into(),
+                transport: DTOKEN_TRANSPORT.into(),
+                endpoint: request.endpoint.clone(),
+                model: model.to_string(),
+                provider_id: HERMES_PROVIDER_ID.into(),
+                previous_base_url_present: prior.provider_present,
+                previous_base_url: prior.provider,
+                previous_model_present: prior.model_present,
+                previous_model: prior.model,
+                previous_default_present: hermes_default_present(&config_before),
+                previous_default: None,
+            })?;
+            (out, manifest)
+        }
+        AgentTransportOperation::Clear => {
+            let Some(manifest) = parse_hermes_manifest(&manifest_path)? else {
+                // No ownership manifest → no-op
+                return Ok(AgentTransportReceipt {
+                    operation,
+                    agent_id: request.agent_id.clone(),
+                    target_path: request.target_path.clone(),
+                    before_sha256: crate::stable_hash(&config_before),
+                    after_sha256: crate::stable_hash(&config_before),
+                    changed: false,
+                    transaction: None,
+                    verification: verify_hermes_cleared(&request.target_path)?,
+                });
+            };
+            let out = transform_hermes(
+                &config_before,
+                operation,
+                manifest.previous_base_url.as_deref().unwrap_or(""),
+                manifest.previous_model.as_deref().unwrap_or(""),
+            )?;
+            (out, manifest_before.clone())
+        }
+    };
+
+    let patcher = ConfigPatcher::new(backup_root);
+    let mut transactions: Vec<TransactionReceipt> = Vec::new();
+
+    if operation == AgentTransportOperation::Configure {
+        let mut changes = Vec::new();
+        if config_before != config_after {
+            changes.push(patcher.prepare_change(
+                &request.target_path,
+                &config_after,
+                dtoken_types::ConfigToolKind::Agent,
+                Some(request.agent_id.clone()),
+                dtoken_types::RiskLevel::Medium,
+            )?);
+        }
+        if !changes.is_empty() {
+            transactions.push(patcher.apply_transaction(&changes)?);
+        }
+        match apply_manifest_change(
+            &manifest_path,
+            &manifest_after,
+            &request.agent_id,
+            backup_root,
+        ) {
+            Ok(Some(tx)) => transactions.push(tx),
+            Ok(None) => {}
+            Err(error) => {
+                for tx in transactions.iter().rev() {
+                    let _ = rollback_apply_receipts(&tx.changes, backup_root);
+                }
+                return Err(error);
+            }
+        }
+    } else {
+        let mut changes = Vec::new();
+        if config_before != config_after {
+            changes.push(patcher.prepare_change(
+                &request.target_path,
+                &config_after,
+                dtoken_types::ConfigToolKind::Agent,
+                Some(request.agent_id.clone()),
+                dtoken_types::RiskLevel::Medium,
+            )?);
+        }
+        if !changes.is_empty() {
+            transactions.push(patcher.apply_transaction(&changes)?);
+        }
+        if let Err(error) = remove_owned_file(&manifest_path) {
+            for tx in transactions.iter().rev() {
+                let _ = rollback_apply_receipts(&tx.changes, backup_root);
+            }
+            return Err(error).context("failed to remove Hermes ownership manifest");
+        }
+    }
+
+    let verification = if operation == AgentTransportOperation::Clear {
+        verify_hermes_cleared(&request.target_path)?
+    } else {
+        verify_hermes_transport(request)?
+    };
+    if !verification.ok {
+        for tx in transactions.iter().rev() {
+            let _ = rollback_apply_receipts(&tx.changes, backup_root);
+        }
+        return Err(anyhow::anyhow!(
+            "post-write Agent transport verification failed: {}",
+            verification.detail
+        ));
+    }
+
+    Ok(AgentTransportReceipt {
+        operation,
+        agent_id: request.agent_id.clone(),
+        target_path: request.target_path.clone(),
+        before_sha256: crate::stable_hash(&config_before),
+        after_sha256: crate::stable_hash(&config_after),
+        changed: !transactions.is_empty(),
+        transaction: transactions.into_iter().reduce(|mut a, b| {
+            a.changes.extend(b.changes);
+            a
+        }),
+        verification,
+    })
+}
+
+fn verify_hermes_transport(request: &AgentTransportRequest) -> Result<AgentTransportVerification> {
+    let result: Result<()> = (|| {
+        let manifest = parse_hermes_manifest(&hermes_manifest_path(&request.target_path)?)?
+            .context("Hermes ownership manifest is absent")?;
+        if manifest.endpoint != request.endpoint
+            || Some(manifest.model.as_str()) != request.model.as_deref()
+        {
+            bail!("Hermes manifest does not match the reviewed request");
+        }
+        let text = optional_text(&request.target_path)?.unwrap_or_default();
+        let selection = hermes_selection(&text)?;
+        let expected_base = opencode_base_url(&manifest.endpoint);
+        if selection.provider.as_deref() != Some(&expected_base)
+            || selection.model.as_deref() != Some(manifest.model.as_str())
+        {
+            bail!("Hermes routing keys do not match the d-token manifest");
+        }
+        Ok(())
+    })();
+    Ok(AgentTransportVerification {
+        agent_id: request.agent_id.clone(),
+        kind: AgentTransportAdapterKind::Hermes,
+        ok: result.is_ok(),
+        detail: result
+            .err()
+            .map(|e| e.to_string())
+            .unwrap_or_else(|| "d-token managed Hermes transport verified".into()),
+        current_upstream: hermes_current_upstream_signature(&request.target_path)
+            .ok()
+            .flatten(),
+    })
+}
+
+fn verify_hermes_cleared(config_path: &Path) -> Result<AgentTransportVerification> {
+    let result: Result<()> = (|| {
+        if parse_hermes_manifest(&hermes_manifest_path(config_path)?)?.is_some() {
+            bail!("Hermes ownership manifest is still present");
+        }
+        let text = optional_text(config_path)?.unwrap_or_default();
+        if !text.trim().is_empty() {
+            let doc: serde_yaml::Value = serde_yaml::from_str(&text)?;
+            // A restored prior base_url / model is legitimate user state;
+            // only the d-token loopback API key marker must be gone.
+            let has_dtoken_key = doc
+                .get("model")
+                .and_then(|m| m.get("provider"))
+                .and_then(|p| p.get("custom"))
+                .and_then(|c| c.get("apiKey"))
+                .and_then(|v| v.as_str())
+                == Some(HERMES_PUBLIC_API_KEY_MARKER);
+            if has_dtoken_key {
+                bail!("Hermes still contains a d-token routing API key marker");
+            }
+        }
+        Ok(())
+    })();
+    Ok(AgentTransportVerification {
+        agent_id: "hermes".into(),
+        kind: AgentTransportAdapterKind::Hermes,
+        ok: result.is_ok(),
+        detail: result
+            .err()
+            .map(|e| e.to_string())
+            .unwrap_or_else(|| "d-token managed Hermes transport is clear".into()),
+        current_upstream: None,
+    })
+}
+
+fn hermes_can_clear(config_path: &Path) -> bool {
+    let manifest_path = match hermes_manifest_path(config_path) {
+        Ok(p) => p,
+        Err(_) => return false,
+    };
+    let Ok(manifest) = parse_hermes_manifest(&manifest_path) else {
+        return false;
+    };
+    let Some(manifest) = manifest else {
+        return false;
+    };
+    let Ok(text) = optional_text(config_path) else {
+        return false;
+    };
+    let text = text.unwrap_or_default();
+    let Ok(selection) = hermes_selection(&text) else {
+        return false;
+    };
+    let expected_base = opencode_base_url(&manifest.endpoint);
+    selection.provider.as_deref() == Some(&expected_base)
+        && selection.model.as_deref() == Some(manifest.model.as_str())
+}
+
+// ---------- OpenHands (V0: CWD config.toml [llm]; V1: env-only fail closed) ----------
+
+fn openhands_manifest_path(config_path: &Path) -> Result<PathBuf> {
+    Ok(config_path
+        .parent()
+        .context("OpenHands configuration path has no parent directory")?
+        .join(OPENHANDS_MANIFEST_FILE))
+}
+
+fn openhands_is_v1_environment() -> bool {
+    std::env::var("OPENHANDS_LLM_API_KEY").is_ok()
+        || std::env::var("LLM_API_KEY").is_ok()
+        || std::env::var("OPENHANDS_MODEL").is_ok()
+}
+
+fn openhands_llm_selection(text: &str) -> Result<PriorSelection> {
+    let doc = text
+        .parse::<toml_edit::DocumentMut>()
+        .context("OpenHands config must be valid TOML")?;
+    let llm = doc.get("llm").and_then(|v| v.as_table());
+    let model = llm
+        .and_then(|t| t.get("model"))
+        .and_then(|v| v.as_str())
+        .map(str::to_owned);
+    let base_url = llm
+        .and_then(|t| t.get("base_url"))
+        .and_then(|v| v.as_str())
+        .map(str::to_owned);
+    if let Some(ref url) = base_url {
+        if contains_secret_like(url) || url.contains(['@', '?', '#']) {
+            bail!("OpenHands llm.base_url may contain credential material; automatic configuration is unsafe");
+        }
+    }
+    validate_prior_selection(base_url.as_deref(), model.as_deref())?;
+    Ok(PriorSelection {
+        provider_present: base_url.is_some(),
+        provider: base_url,
+        model_present: model.is_some(),
+        model,
+    })
+}
+
+fn transform_openhands(
+    text: &str,
+    operation: AgentTransportOperation,
+    endpoint: &str,
+    model: &str,
+) -> Result<String> {
+    if operation == AgentTransportOperation::Clear && text.trim().is_empty() {
+        return Ok(text.to_string());
+    }
+    let mut doc: toml_edit::DocumentMut = if text.trim().is_empty() {
+        toml_edit::DocumentMut::new()
+    } else {
+        text.parse::<toml_edit::DocumentMut>()
+            .context("OpenHands config must be valid TOML")?
+    };
+    match operation {
+        AgentTransportOperation::Configure => {
+            let llm = doc
+                .entry("llm")
+                .or_insert(toml_edit::Item::Table(toml_edit::Table::new()))
+                .as_table_mut()
+                .context("OpenHands llm is not a table")?;
+            llm["model"] = toml_edit::value(model);
+            llm["base_url"] = toml_edit::value(endpoint);
+            llm["api_key"] = toml_edit::value(OPENHANDS_PUBLIC_API_KEY_MARKER);
+        }
+        AgentTransportOperation::Clear => {
+            if let Some(llm) = doc.get_mut("llm").and_then(|v| v.as_table_mut()) {
+                llm.remove("api_key");
+                if !model.is_empty() {
+                    llm["model"] = toml_edit::value(model);
+                } else {
+                    llm.remove("model");
+                }
+                if !endpoint.is_empty() {
+                    llm["base_url"] = toml_edit::value(endpoint);
+                } else {
+                    llm.remove("base_url");
+                }
+                if llm.is_empty() {
+                    doc.remove("llm");
+                }
+            }
+        }
+    }
+    Ok(doc.to_string())
+}
+
+fn openhands_current_upstream_signature(
+    config_path: &Path,
+) -> Result<Option<AgentTransportUpstreamSignature>> {
+    let manifest_path = openhands_manifest_path(config_path)?;
+    let Some(manifest) = parse_openhands_manifest(&manifest_path)? else {
+        return Ok(None);
+    };
+    let text = optional_text(config_path)?.unwrap_or_default();
+    let selection = openhands_llm_selection(&text)?;
+    if selection.provider.as_deref() != Some(&manifest.endpoint)
+        || selection.model.as_deref() != Some(manifest.model.as_str())
+    {
+        return Ok(None);
+    }
+    Ok(Some(AgentTransportUpstreamSignature {
+        provider_id: OPENHANDS_PROVIDER_ID.to_string(),
+        signature_sha256: crate::stable_hash(&format!(
+            "agent-upstream-v1\n{}\n{}\n{}",
+            "openhands", manifest.endpoint, manifest.model
+        )),
+        endpoint: manifest.endpoint,
+        model: Some(manifest.model),
+        enabled: true,
+    }))
+}
+
+fn parse_openhands_manifest(path: &Path) -> Result<Option<OpenHandsTransportManifest>> {
+    let text = match optional_text(path)? {
+        Some(text) => text,
+        None => return Ok(None),
+    };
+    let manifest: OpenHandsTransportManifest =
+        serde_json::from_str(&text).context("OpenHands transport manifest is invalid JSON")?;
+    if manifest.managed_by != DTOKEN_MANAGED_BY || manifest.transport != DTOKEN_TRANSPORT {
+        return Ok(None);
+    }
+    Ok(Some(manifest))
+}
+
+fn preview_openhands_transport(
+    request: &AgentTransportRequest,
+    operation: AgentTransportOperation,
+) -> Result<AgentTransportReview> {
+    // V1 environment: fail closed
+    if openhands_is_v1_environment() {
+        bail!("OpenHands V1 uses environment variables for LLM configuration; the transport adapter cannot safely modify environment variables. Use the desktop-managed flow instead");
+    }
+    let config_before = optional_text(&request.target_path)?.unwrap_or_default();
+    let manifest_path = openhands_manifest_path(&request.target_path)?;
+    let manifest_before = optional_text(&manifest_path)?.unwrap_or_default();
+    let current_upstream = openhands_current_upstream_signature(&request.target_path)?;
+    let existing_manifest = parse_openhands_manifest(&manifest_path)?;
+
+    let (config_after, manifest_after) = match operation {
+        AgentTransportOperation::Configure => {
+            let model = request
+                .model
+                .as_deref()
+                .context("OpenHands transport requires an explicit model")?;
+            if existing_manifest.is_some() && current_upstream.is_none() {
+                bail!("OpenHands selection changed outside d-token; automatic update is unsafe");
+            }
+            let previous = existing_manifest
+                .as_ref()
+                .map(|item| PriorSelection {
+                    provider_present: item.previous_llm_base_url_present,
+                    provider: item.previous_llm_base_url.clone(),
+                    model_present: item.previous_llm_model_present,
+                    model: item.previous_llm_model.clone(),
+                })
+                .unwrap_or(openhands_llm_selection(&config_before)?);
+            (
+                transform_openhands(&config_before, operation, &request.endpoint, model)?,
+                manifest_json(&OpenHandsTransportManifest {
+                    schema_version: TRANSPORT_SCHEMA_VERSION,
+                    managed_by: DTOKEN_MANAGED_BY.into(),
+                    agent_id: "openhands".into(),
+                    transport: DTOKEN_TRANSPORT.into(),
+                    endpoint: request.endpoint.clone(),
+                    model: model.to_string(),
+                    provider_id: OPENHANDS_PROVIDER_ID.into(),
+                    previous_llm_model_present: previous.model_present,
+                    previous_llm_model: previous.model,
+                    previous_llm_base_url_present: previous.provider_present,
+                    previous_llm_base_url: previous.provider,
+                    previous_llm_api_key_present: false,
+                    previous_llm_api_key: None,
+                })?,
+            )
+        }
+        AgentTransportOperation::Clear => {
+            let Some(manifest) = existing_manifest.as_ref() else {
+                return Ok(AgentTransportReview {
+                    operation,
+                    agent_id: request.agent_id.clone(),
+                    target_path: request.target_path.clone(),
+                    revision: revision_for_hashes(
+                        &request.agent_id,
+                        operation,
+                        &[(
+                            "config",
+                            crate::stable_hash(&config_before),
+                            crate::stable_hash(&config_before),
+                        )],
+                    ),
+                    changed: false,
+                    before_sha256: crate::stable_hash(&config_before),
+                    after_sha256: crate::stable_hash(&config_before),
+                    redacted_diff: String::new(),
+                    current_upstream: None,
+                });
+            };
+            if current_upstream.is_none() {
+                bail!("OpenHands selection changed outside d-token; automatic clear is unsafe");
+            }
+            (
+                transform_openhands(
+                    &config_before,
+                    operation,
+                    manifest.previous_llm_base_url.as_deref().unwrap_or(""),
+                    manifest.previous_llm_model.as_deref().unwrap_or(""),
+                )?,
+                String::new(),
+            )
+        }
+    };
+
+    let before_sha256 = crate::stable_hash(&config_before);
+    let after_sha256 = crate::stable_hash(&config_after);
+    Ok(AgentTransportReview {
+        operation,
+        agent_id: request.agent_id.clone(),
+        target_path: request.target_path.clone(),
+        revision: revision_for_hashes(
+            &request.agent_id,
+            operation,
+            &[
+                ("config", before_sha256.clone(), after_sha256.clone()),
+                (
+                    "manifest",
+                    crate::stable_hash(&manifest_before),
+                    crate::stable_hash(&manifest_after),
+                ),
+            ],
+        ),
+        changed: config_before != config_after || manifest_before != manifest_after,
+        before_sha256,
+        after_sha256,
+        redacted_diff: redacted_diff_sections(&[
+            ("config", &config_before, &config_after),
+            ("ownership manifest", &manifest_before, &manifest_after),
+        ]),
+        current_upstream,
+    })
+}
+
+fn apply_openhands_transport(
+    request: &AgentTransportRequest,
+    operation: AgentTransportOperation,
+    backup_root: &Path,
+) -> Result<AgentTransportReceipt> {
+    if operation == AgentTransportOperation::Configure && openhands_is_v1_environment() {
+        bail!("OpenHands V1 uses environment variables for LLM configuration; the transport adapter cannot safely modify environment variables");
+    }
+    let model = request
+        .model
+        .as_deref()
+        .context("OpenHands transport requires an explicit model")?;
+    let config_before = optional_text(&request.target_path)?.unwrap_or_default();
+    let manifest_path = openhands_manifest_path(&request.target_path)?;
+    let manifest_before = optional_text(&manifest_path)?.unwrap_or_default();
+
+    let (config_after, manifest_after) = match operation {
+        AgentTransportOperation::Configure => {
+            let prior = openhands_llm_selection(&config_before)?;
+            let out = transform_openhands(&config_before, operation, &request.endpoint, model)?;
+            let manifest = manifest_json(&OpenHandsTransportManifest {
+                schema_version: TRANSPORT_SCHEMA_VERSION,
+                managed_by: DTOKEN_MANAGED_BY.into(),
+                agent_id: "openhands".into(),
+                transport: DTOKEN_TRANSPORT.into(),
+                endpoint: request.endpoint.clone(),
+                model: model.to_string(),
+                provider_id: OPENHANDS_PROVIDER_ID.into(),
+                previous_llm_model_present: prior.model_present,
+                previous_llm_model: prior.model,
+                previous_llm_base_url_present: prior.provider_present,
+                previous_llm_base_url: prior.provider,
+                previous_llm_api_key_present: false,
+                previous_llm_api_key: None,
+            })?;
+            (out, manifest)
+        }
+        AgentTransportOperation::Clear => {
+            let Some(manifest) = parse_openhands_manifest(&manifest_path)? else {
+                // No ownership manifest → no-op
+                return Ok(AgentTransportReceipt {
+                    operation,
+                    agent_id: request.agent_id.clone(),
+                    target_path: request.target_path.clone(),
+                    before_sha256: crate::stable_hash(&config_before),
+                    after_sha256: crate::stable_hash(&config_before),
+                    changed: false,
+                    transaction: None,
+                    verification: verify_openhands_cleared(&request.target_path)?,
+                });
+            };
+            let out = transform_openhands(
+                &config_before,
+                operation,
+                manifest.previous_llm_base_url.as_deref().unwrap_or(""),
+                manifest.previous_llm_model.as_deref().unwrap_or(""),
+            )?;
+            (out, manifest_before.clone())
+        }
+    };
+
+    let patcher = ConfigPatcher::new(backup_root);
+    let mut transactions: Vec<TransactionReceipt> = Vec::new();
+
+    if operation == AgentTransportOperation::Configure {
+        let mut changes = Vec::new();
+        if config_before != config_after {
+            changes.push(patcher.prepare_change(
+                &request.target_path,
+                &config_after,
+                dtoken_types::ConfigToolKind::Agent,
+                Some(request.agent_id.clone()),
+                dtoken_types::RiskLevel::Medium,
+            )?);
+        }
+        if !changes.is_empty() {
+            transactions.push(patcher.apply_transaction(&changes)?);
+        }
+        match apply_manifest_change(
+            &manifest_path,
+            &manifest_after,
+            &request.agent_id,
+            backup_root,
+        ) {
+            Ok(Some(tx)) => transactions.push(tx),
+            Ok(None) => {}
+            Err(error) => {
+                for tx in transactions.iter().rev() {
+                    let _ = rollback_apply_receipts(&tx.changes, backup_root);
+                }
+                return Err(error);
+            }
+        }
+    } else {
+        let mut changes = Vec::new();
+        if config_before != config_after {
+            changes.push(patcher.prepare_change(
+                &request.target_path,
+                &config_after,
+                dtoken_types::ConfigToolKind::Agent,
+                Some(request.agent_id.clone()),
+                dtoken_types::RiskLevel::Medium,
+            )?);
+        }
+        if !changes.is_empty() {
+            transactions.push(patcher.apply_transaction(&changes)?);
+        }
+        if let Err(error) = remove_owned_file(&manifest_path) {
+            for tx in transactions.iter().rev() {
+                let _ = rollback_apply_receipts(&tx.changes, backup_root);
+            }
+            return Err(error).context("failed to remove OpenHands ownership manifest");
+        }
+    }
+
+    let verification = if operation == AgentTransportOperation::Clear {
+        verify_openhands_cleared(&request.target_path)?
+    } else {
+        verify_openhands_transport(request)?
+    };
+    if !verification.ok {
+        for tx in transactions.iter().rev() {
+            let _ = rollback_apply_receipts(&tx.changes, backup_root);
+        }
+        return Err(anyhow::anyhow!(
+            "post-write Agent transport verification failed: {}",
+            verification.detail
+        ));
+    }
+
+    Ok(AgentTransportReceipt {
+        operation,
+        agent_id: request.agent_id.clone(),
+        target_path: request.target_path.clone(),
+        before_sha256: crate::stable_hash(&config_before),
+        after_sha256: crate::stable_hash(&config_after),
+        changed: !transactions.is_empty(),
+        transaction: transactions.into_iter().reduce(|mut a, b| {
+            a.changes.extend(b.changes);
+            a
+        }),
+        verification,
+    })
+}
+
+fn verify_openhands_transport(
+    request: &AgentTransportRequest,
+) -> Result<AgentTransportVerification> {
+    let result: Result<()> = (|| {
+        let manifest = parse_openhands_manifest(&openhands_manifest_path(&request.target_path)?)?
+            .context("OpenHands ownership manifest is absent")?;
+        if manifest.endpoint != request.endpoint
+            || Some(manifest.model.as_str()) != request.model.as_deref()
+        {
+            bail!("OpenHands manifest does not match the reviewed request");
+        }
+        let text = optional_text(&request.target_path)?.unwrap_or_default();
+        let selection = openhands_llm_selection(&text)?;
+        if selection.provider.as_deref() != Some(&manifest.endpoint)
+            || selection.model.as_deref() != Some(manifest.model.as_str())
+        {
+            bail!("OpenHands routing keys do not match the d-token manifest");
+        }
+        Ok(())
+    })();
+    Ok(AgentTransportVerification {
+        agent_id: request.agent_id.clone(),
+        kind: AgentTransportAdapterKind::OpenHands,
+        ok: result.is_ok(),
+        detail: result
+            .err()
+            .map(|e| e.to_string())
+            .unwrap_or_else(|| "d-token managed OpenHands transport verified".into()),
+        current_upstream: openhands_current_upstream_signature(&request.target_path)
+            .ok()
+            .flatten(),
+    })
+}
+
+fn verify_openhands_cleared(config_path: &Path) -> Result<AgentTransportVerification> {
+    let result: Result<()> = (|| {
+        if parse_openhands_manifest(&openhands_manifest_path(config_path)?)?.is_some() {
+            bail!("OpenHands ownership manifest is still present");
+        }
+        let text = optional_text(config_path)?.unwrap_or_default();
+        if !text.trim().is_empty() {
+            let doc = text
+                .parse::<toml_edit::DocumentMut>()
+                .context("OpenHands config must be valid TOML")?;
+            // A restored prior model/base_url is legitimate user state;
+            // only the d-token loopback API key marker must be gone.
+            let has_dtoken_key = doc
+                .get("llm")
+                .and_then(|v| v.get("api_key"))
+                .and_then(|v| v.as_str())
+                == Some(OPENHANDS_PUBLIC_API_KEY_MARKER);
+            if has_dtoken_key {
+                bail!("OpenHands still contains a d-token routing API key marker");
+            }
+        }
+        Ok(())
+    })();
+    Ok(AgentTransportVerification {
+        agent_id: "openhands".into(),
+        kind: AgentTransportAdapterKind::OpenHands,
+        ok: result.is_ok(),
+        detail: result
+            .err()
+            .map(|e| e.to_string())
+            .unwrap_or_else(|| "d-token managed OpenHands transport is clear".into()),
+        current_upstream: None,
+    })
+}
+
+fn openhands_can_clear(config_path: &Path) -> bool {
+    let manifest_path = match openhands_manifest_path(config_path) {
+        Ok(p) => p,
+        Err(_) => return false,
+    };
+    let Ok(manifest) = parse_openhands_manifest(&manifest_path) else {
+        return false;
+    };
+    let Some(manifest) = manifest else {
+        return false;
+    };
+    let Ok(text) = optional_text(config_path) else {
+        return false;
+    };
+    let text = text.unwrap_or_default();
+    let Ok(selection) = openhands_llm_selection(&text) else {
+        return false;
+    };
+    selection.provider.as_deref() == Some(&manifest.endpoint)
+        && selection.model.as_deref() == Some(manifest.model.as_str())
+}
+
+// ---------- Pi (~/.pi/agent/models.json) ----------
+// Schema: providers.dtoken + settings.defaultProvider/defaultModel
+// Does NOT touch auth.json/apiKey.
+
+fn pi_manifest_path(config_path: &Path) -> Result<PathBuf> {
+    Ok(config_path
+        .parent()
+        .context("Pi configuration path has no parent directory")?
+        .join(PI_MANIFEST_FILE))
+}
+
+fn pi_selection(root: &Map<String, Value>) -> Result<PriorSelection> {
+    let default_provider = root
+        .get("settings")
+        .and_then(|s| s.as_object())
+        .and_then(|s| s.get("defaultProvider"))
+        .and_then(|v| v.as_str())
+        .map(str::to_owned);
+    let default_model = root
+        .get("settings")
+        .and_then(|s| s.as_object())
+        .and_then(|s| s.get("defaultModel"))
+        .and_then(|v| v.as_str())
+        .map(str::to_owned);
+    validate_prior_selection(None, default_model.as_deref())?;
+    Ok(PriorSelection {
+        provider_present: default_provider.is_some(),
+        provider: default_provider,
+        model_present: default_model.is_some(),
+        model: default_model,
+    })
+}
+
+fn transform_pi(
+    text: &str,
+    operation: AgentTransportOperation,
+    endpoint: &str,
+    model: &str,
+) -> Result<String> {
+    if operation == AgentTransportOperation::Clear && text.trim().is_empty() {
+        return Ok(text.to_string());
+    }
+    let mut root: Map<String, Value> = if text.trim().is_empty() {
+        Map::new()
+    } else {
+        serde_json::from_str(text).context("Pi models.json must be strict JSON")?
+    };
+    match operation {
+        AgentTransportOperation::Configure => {
+            let providers = root
+                .entry("providers")
+                .or_insert_with(|| Value::Object(Map::new()))
+                .as_object_mut()
+                .context("Pi providers must be an object")?;
+            let dtoken = providers
+                .entry(PI_PROVIDER_ID)
+                .or_insert_with(|| Value::Object(Map::new()))
+                .as_object_mut()
+                .context("Pi dtoken provider must be an object")?;
+            dtoken.insert("type".into(), Value::String("openai".into()));
+            dtoken.insert("baseUrl".into(), Value::String(endpoint.into()));
+            dtoken.insert(
+                "apiKey".into(),
+                Value::String(PI_PUBLIC_API_KEY_MARKER.into()),
+            );
+            dtoken.insert(
+                "models".into(),
+                Value::Array(vec![Value::String(model.into())]),
+            );
+
+            let settings = root
+                .entry("settings")
+                .or_insert_with(|| Value::Object(Map::new()))
+                .as_object_mut()
+                .context("Pi settings must be an object")?;
+            settings.insert(
+                "defaultProvider".into(),
+                Value::String(PI_PROVIDER_ID.into()),
+            );
+            settings.insert("defaultModel".into(), Value::String(model.into()));
+        }
+        AgentTransportOperation::Clear => {
+            if let Some(providers) = root.get_mut("providers").and_then(|v| v.as_object_mut()) {
+                providers.remove(PI_PROVIDER_ID);
+                if providers.is_empty() {
+                    root.remove("providers");
+                }
+            }
+            if let Some(settings) = root.get_mut("settings").and_then(|v| v.as_object_mut()) {
+                settings.remove("defaultProvider");
+                settings.remove("defaultModel");
+                if settings.is_empty() {
+                    root.remove("settings");
+                }
+            }
+            // Restore previous provider and model if provided
+            let settings = root
+                .entry("settings")
+                .or_insert_with(|| Value::Object(Map::new()))
+                .as_object_mut()
+                .context("Pi settings must be an object")?;
+            if !endpoint.is_empty() {
+                settings.insert("defaultProvider".into(), Value::String(endpoint.into()));
+            }
+            if !model.is_empty() {
+                settings.insert("defaultModel".into(), Value::String(model.into()));
+            }
+            if settings.is_empty() {
+                root.remove("settings");
+            }
+        }
+    }
+    Ok(serde_json::to_string_pretty(&Value::Object(root))? + "\n")
+}
+
+fn pi_current_upstream_signature(
+    config_path: &Path,
+) -> Result<Option<AgentTransportUpstreamSignature>> {
+    let manifest_path = pi_manifest_path(config_path)?;
+    let Some(manifest) = parse_pi_manifest(&manifest_path)? else {
+        return Ok(None);
+    };
+    let text = optional_text(config_path)?.unwrap_or_default();
+    let root: Map<String, Value> = serde_json::from_str(&text).unwrap_or_default();
+    let selection = pi_selection(&root)?;
+    if selection.provider.as_deref() != Some(PI_PROVIDER_ID)
+        || selection.model.as_deref() != Some(manifest.model.as_str())
+    {
+        return Ok(None);
+    }
+    Ok(Some(AgentTransportUpstreamSignature {
+        provider_id: PI_PROVIDER_ID.to_string(),
+        signature_sha256: crate::stable_hash(&format!(
+            "agent-upstream-v1\n{}\n{}\n{}",
+            "pi", manifest.endpoint, manifest.model
+        )),
+        endpoint: manifest.endpoint,
+        model: Some(manifest.model),
+        enabled: true,
+    }))
+}
+
+fn parse_pi_manifest(path: &Path) -> Result<Option<PiTransportManifest>> {
+    let text = match optional_text(path)? {
+        Some(text) => text,
+        None => return Ok(None),
+    };
+    let manifest: PiTransportManifest =
+        serde_json::from_str(&text).context("Pi transport manifest is invalid JSON")?;
+    if manifest.managed_by != DTOKEN_MANAGED_BY || manifest.transport != DTOKEN_TRANSPORT {
+        return Ok(None);
+    }
+    Ok(Some(manifest))
+}
+
+fn preview_pi_transport(
+    request: &AgentTransportRequest,
+    operation: AgentTransportOperation,
+) -> Result<AgentTransportReview> {
+    let config_before = optional_text(&request.target_path)?.unwrap_or_default();
+    let manifest_path = pi_manifest_path(&request.target_path)?;
+    let manifest_before = optional_text(&manifest_path)?.unwrap_or_default();
+    let current_upstream = pi_current_upstream_signature(&request.target_path)?;
+    let existing_manifest = parse_pi_manifest(&manifest_path)?;
+    let root: Map<String, Value> = serde_json::from_str(&config_before).unwrap_or_default();
+
+    let (config_after, manifest_after) = match operation {
+        AgentTransportOperation::Configure => {
+            let model = request
+                .model
+                .as_deref()
+                .context("Pi transport requires an explicit model")?;
+            if existing_manifest.is_some() && current_upstream.is_none() {
+                bail!("Pi selection changed outside d-token; automatic update is unsafe");
+            }
+            let previous = existing_manifest
+                .as_ref()
+                .map(|item| PriorSelection {
+                    provider_present: item.previous_default_provider_present,
+                    provider: item.previous_default_provider.clone(),
+                    model_present: item.previous_default_model_present,
+                    model: item.previous_default_model.clone(),
+                })
+                .unwrap_or(pi_selection(&root)?);
+            (
+                transform_pi(&config_before, operation, &request.endpoint, model)?,
+                manifest_json(&PiTransportManifest {
+                    schema_version: TRANSPORT_SCHEMA_VERSION,
+                    managed_by: DTOKEN_MANAGED_BY.into(),
+                    agent_id: "pi".into(),
+                    transport: DTOKEN_TRANSPORT.into(),
+                    endpoint: request.endpoint.clone(),
+                    model: model.to_string(),
+                    provider_id: PI_PROVIDER_ID.into(),
+                    previous_default_provider_present: previous.provider_present,
+                    previous_default_provider: previous.provider,
+                    previous_default_model_present: previous.model_present,
+                    previous_default_model: previous.model,
+                })?,
+            )
+        }
+        AgentTransportOperation::Clear => {
+            let Some(manifest) = existing_manifest.as_ref() else {
+                if pi_selection(&root)
+                    .ok()
+                    .map(|s| s.provider_present)
+                    .unwrap_or(false)
+                {
+                    bail!(
+                        "Pi has unowned d-token-shaped provider state; automatic clear is unsafe"
+                    );
+                }
+                return Ok(AgentTransportReview {
+                    operation,
+                    agent_id: request.agent_id.clone(),
+                    target_path: request.target_path.clone(),
+                    revision: revision_for_hashes(
+                        &request.agent_id,
+                        operation,
+                        &[(
+                            "config",
+                            crate::stable_hash(&config_before),
+                            crate::stable_hash(&config_before),
+                        )],
+                    ),
+                    changed: false,
+                    before_sha256: crate::stable_hash(&config_before),
+                    after_sha256: crate::stable_hash(&config_before),
+                    redacted_diff: String::new(),
+                    current_upstream: None,
+                });
+            };
+            if current_upstream.is_none() {
+                bail!("Pi selection changed outside d-token; automatic clear is unsafe");
+            }
+            (
+                transform_pi(
+                    &config_before,
+                    operation,
+                    manifest.previous_default_provider.as_deref().unwrap_or(""),
+                    manifest.previous_default_model.as_deref().unwrap_or(""),
+                )?,
+                String::new(),
+            )
+        }
+    };
+
+    let before_sha256 = crate::stable_hash(&config_before);
+    let after_sha256 = crate::stable_hash(&config_after);
+    Ok(AgentTransportReview {
+        operation,
+        agent_id: request.agent_id.clone(),
+        target_path: request.target_path.clone(),
+        revision: revision_for_hashes(
+            &request.agent_id,
+            operation,
+            &[
+                ("config", before_sha256.clone(), after_sha256.clone()),
+                (
+                    "manifest",
+                    crate::stable_hash(&manifest_before),
+                    crate::stable_hash(&manifest_after),
+                ),
+            ],
+        ),
+        changed: config_before != config_after || manifest_before != manifest_after,
+        before_sha256,
+        after_sha256,
+        redacted_diff: redacted_diff_sections(&[
+            ("config", &config_before, &config_after),
+            ("ownership manifest", &manifest_before, &manifest_after),
+        ]),
+        current_upstream,
+    })
+}
+
+fn apply_pi_transport(
+    request: &AgentTransportRequest,
+    operation: AgentTransportOperation,
+    backup_root: &Path,
+) -> Result<AgentTransportReceipt> {
+    let model = request
+        .model
+        .as_deref()
+        .context("Pi transport requires an explicit model")?;
+    let config_before = optional_text(&request.target_path)?.unwrap_or_default();
+    let manifest_path = pi_manifest_path(&request.target_path)?;
+    let manifest_before = optional_text(&manifest_path)?.unwrap_or_default();
+
+    let (config_after, manifest_after) = match operation {
+        AgentTransportOperation::Configure => {
+            let root: Map<String, Value> = serde_json::from_str(&config_before).unwrap_or_default();
+            let prior = pi_selection(&root)?;
+            let out = transform_pi(&config_before, operation, &request.endpoint, model)?;
+            let manifest = manifest_json(&PiTransportManifest {
+                schema_version: TRANSPORT_SCHEMA_VERSION,
+                managed_by: DTOKEN_MANAGED_BY.into(),
+                agent_id: "pi".into(),
+                transport: DTOKEN_TRANSPORT.into(),
+                endpoint: request.endpoint.clone(),
+                model: model.to_string(),
+                provider_id: PI_PROVIDER_ID.into(),
+                previous_default_provider_present: prior.provider_present,
+                previous_default_provider: prior.provider,
+                previous_default_model_present: prior.model_present,
+                previous_default_model: prior.model,
+            })?;
+            (out, manifest)
+        }
+        AgentTransportOperation::Clear => {
+            let Some(manifest) = parse_pi_manifest(&manifest_path)? else {
+                // No ownership manifest → no-op
+                return Ok(AgentTransportReceipt {
+                    operation,
+                    agent_id: request.agent_id.clone(),
+                    target_path: request.target_path.clone(),
+                    before_sha256: crate::stable_hash(&config_before),
+                    after_sha256: crate::stable_hash(&config_before),
+                    changed: false,
+                    transaction: None,
+                    verification: verify_pi_cleared(&request.target_path)?,
+                });
+            };
+            let out = transform_pi(
+                &config_before,
+                operation,
+                manifest.previous_default_provider.as_deref().unwrap_or(""),
+                manifest.previous_default_model.as_deref().unwrap_or(""),
+            )?;
+            (out, manifest_before.clone())
+        }
+    };
+
+    let patcher = ConfigPatcher::new(backup_root);
+    let mut transactions: Vec<TransactionReceipt> = Vec::new();
+
+    if operation == AgentTransportOperation::Configure {
+        let mut changes = Vec::new();
+        if config_before != config_after {
+            changes.push(patcher.prepare_change(
+                &request.target_path,
+                &config_after,
+                dtoken_types::ConfigToolKind::Agent,
+                Some(request.agent_id.clone()),
+                dtoken_types::RiskLevel::Medium,
+            )?);
+        }
+        if !changes.is_empty() {
+            transactions.push(patcher.apply_transaction(&changes)?);
+        }
+        match apply_manifest_change(
+            &manifest_path,
+            &manifest_after,
+            &request.agent_id,
+            backup_root,
+        ) {
+            Ok(Some(tx)) => transactions.push(tx),
+            Ok(None) => {}
+            Err(error) => {
+                for tx in transactions.iter().rev() {
+                    let _ = rollback_apply_receipts(&tx.changes, backup_root);
+                }
+                return Err(error);
+            }
+        }
+    } else {
+        let mut changes = Vec::new();
+        if config_before != config_after {
+            changes.push(patcher.prepare_change(
+                &request.target_path,
+                &config_after,
+                dtoken_types::ConfigToolKind::Agent,
+                Some(request.agent_id.clone()),
+                dtoken_types::RiskLevel::Medium,
+            )?);
+        }
+        if !changes.is_empty() {
+            transactions.push(patcher.apply_transaction(&changes)?);
+        }
+        if let Err(error) = remove_owned_file(&manifest_path) {
+            for tx in transactions.iter().rev() {
+                let _ = rollback_apply_receipts(&tx.changes, backup_root);
+            }
+            return Err(error).context("failed to remove Pi ownership manifest");
+        }
+    }
+
+    let verification = if operation == AgentTransportOperation::Clear {
+        verify_pi_cleared(&request.target_path)?
+    } else {
+        verify_pi_transport(request)?
+    };
+    if !verification.ok {
+        for tx in transactions.iter().rev() {
+            let _ = rollback_apply_receipts(&tx.changes, backup_root);
+        }
+        return Err(anyhow::anyhow!(
+            "post-write Agent transport verification failed: {}",
+            verification.detail
+        ));
+    }
+
+    Ok(AgentTransportReceipt {
+        operation,
+        agent_id: request.agent_id.clone(),
+        target_path: request.target_path.clone(),
+        before_sha256: crate::stable_hash(&config_before),
+        after_sha256: crate::stable_hash(&config_after),
+        changed: !transactions.is_empty(),
+        transaction: transactions.into_iter().reduce(|mut a, b| {
+            a.changes.extend(b.changes);
+            a
+        }),
+        verification,
+    })
+}
+
+fn verify_pi_transport(request: &AgentTransportRequest) -> Result<AgentTransportVerification> {
+    let result: Result<()> = (|| {
+        let manifest = parse_pi_manifest(&pi_manifest_path(&request.target_path)?)?
+            .context("Pi ownership manifest is absent")?;
+        if manifest.endpoint != request.endpoint
+            || Some(manifest.model.as_str()) != request.model.as_deref()
+        {
+            bail!("Pi manifest does not match the reviewed request");
+        }
+        let text = optional_text(&request.target_path)?.unwrap_or_default();
+        let root: Map<String, Value> = serde_json::from_str(&text).unwrap_or_default();
+        let selection = pi_selection(&root)?;
+        if selection.provider.as_deref() != Some(PI_PROVIDER_ID)
+            || selection.model.as_deref() != Some(manifest.model.as_str())
+        {
+            bail!("Pi routing keys do not match the d-token manifest");
+        }
+        Ok(())
+    })();
+    Ok(AgentTransportVerification {
+        agent_id: request.agent_id.clone(),
+        kind: AgentTransportAdapterKind::Pi,
+        ok: result.is_ok(),
+        detail: result
+            .err()
+            .map(|e| e.to_string())
+            .unwrap_or_else(|| "d-token managed Pi transport verified".into()),
+        current_upstream: pi_current_upstream_signature(&request.target_path)
+            .ok()
+            .flatten(),
+    })
+}
+
+fn verify_pi_cleared(config_path: &Path) -> Result<AgentTransportVerification> {
+    let result: Result<()> = (|| {
+        if parse_pi_manifest(&pi_manifest_path(config_path)?)?.is_some() {
+            bail!("Pi ownership manifest is still present");
+        }
+        let text = optional_text(config_path)?.unwrap_or_default();
+        if !text.trim().is_empty() {
+            let root: Map<String, Value> = serde_json::from_str(&text).unwrap_or_default();
+            // A restored prior provider/model is legitimate user state;
+            // only the d-token loopback API key marker must be gone.
+            let has_dtoken_key = root
+                .get("providers")
+                .and_then(|v| v.as_object())
+                .and_then(|p| p.get(PI_PROVIDER_ID))
+                .and_then(|v| v.as_object())
+                .and_then(|p| p.get("apiKey"))
+                .and_then(|v| v.as_str())
+                == Some(PI_PUBLIC_API_KEY_MARKER);
+            if has_dtoken_key {
+                bail!("Pi still contains a d-token routing API key marker");
+            }
+        }
+        Ok(())
+    })();
+    Ok(AgentTransportVerification {
+        agent_id: "pi".into(),
+        kind: AgentTransportAdapterKind::Pi,
+        ok: result.is_ok(),
+        detail: result
+            .err()
+            .map(|e| e.to_string())
+            .unwrap_or_else(|| "d-token managed Pi transport is clear".into()),
+        current_upstream: None,
+    })
+}
+
+fn pi_can_clear(config_path: &Path) -> bool {
+    let manifest_path = match pi_manifest_path(config_path) {
+        Ok(p) => p,
+        Err(_) => return false,
+    };
+    let Ok(manifest) = parse_pi_manifest(&manifest_path) else {
+        return false;
+    };
+    let Some(manifest) = manifest else {
+        return false;
+    };
+    let Ok(text) = optional_text(config_path) else {
+        return false;
+    };
+    let text = text.unwrap_or_default();
+    let Ok(root) = serde_json::from_str::<Map<String, Value>>(&text) else {
+        return false;
+    };
+    let Ok(selection) = pi_selection(&root) else {
+        return false;
+    };
+    selection.provider.as_deref() == Some(PI_PROVIDER_ID)
+        && selection.model.as_deref() == Some(manifest.model.as_str())
+}
+
+// ---------- Mistral Vibe (~/.vibe/config.toml) ----------
+// Schema: providers/models/active_model. Does NOT touch .env.
+
+fn mistral_vibe_manifest_path(config_path: &Path) -> Result<PathBuf> {
+    Ok(config_path
+        .parent()
+        .context("Mistral Vibe configuration path has no parent directory")?
+        .join(MISTRAL_VIBE_MANIFEST_FILE))
+}
+
+fn mistral_vibe_selection(text: &str) -> Result<PriorSelection> {
+    let doc = text
+        .parse::<toml_edit::DocumentMut>()
+        .context("Mistral Vibe config must be valid TOML")?;
+    let active_model = doc
+        .get("active_model")
+        .and_then(|v| v.as_str())
+        .map(str::to_owned);
+    let provider = doc
+        .get("providers")
+        .and_then(|v| v.as_table())
+        .and_then(|t| t.get(MISTRAL_VIBE_PROVIDER_ID))
+        .map(|_| MISTRAL_VIBE_PROVIDER_ID.to_string());
+    let provider_present = doc
+        .get("providers")
+        .and_then(|v| v.as_table())
+        .is_some_and(|t| t.contains_key(MISTRAL_VIBE_PROVIDER_ID));
+    validate_prior_selection(None, active_model.as_deref())?;
+    Ok(PriorSelection {
+        provider_present,
+        provider,
+        model_present: active_model.is_some(),
+        model: active_model,
+    })
+}
+
+fn transform_mistral_vibe(
+    text: &str,
+    operation: AgentTransportOperation,
+    endpoint: &str,
+    model: &str,
+) -> Result<String> {
+    if operation == AgentTransportOperation::Clear && text.trim().is_empty() {
+        return Ok(text.to_string());
+    }
+    let mut doc: toml_edit::DocumentMut = if text.trim().is_empty() {
+        toml_edit::DocumentMut::new()
+    } else {
+        text.parse::<toml_edit::DocumentMut>()
+            .context("Mistral Vibe config must be valid TOML")?
+    };
+    match operation {
+        AgentTransportOperation::Configure => {
+            let providers = doc
+                .entry("providers")
+                .or_insert(toml_edit::Item::Table(toml_edit::Table::new()))
+                .as_table_mut()
+                .context("Mistral Vibe providers must be a table")?;
+            let mut dtoken = toml_edit::Table::new();
+            dtoken["type"] = toml_edit::value("openai-compatible");
+            dtoken["base_url"] = toml_edit::value(endpoint);
+            dtoken["api_key"] = toml_edit::value(MISTRAL_VIBE_PUBLIC_API_KEY_MARKER);
+            dtoken["models"] = toml_edit::value(model);
+            providers.insert(MISTRAL_VIBE_PROVIDER_ID, toml_edit::Item::Table(dtoken));
+            doc["active_model"] =
+                toml_edit::value(format!("{}/{}", MISTRAL_VIBE_PROVIDER_ID, model));
+        }
+        AgentTransportOperation::Clear => {
+            if let Some(providers) = doc.get_mut("providers").and_then(|v| v.as_table_mut()) {
+                providers.remove(MISTRAL_VIBE_PROVIDER_ID);
+                if !endpoint.is_empty() {
+                    let mut restored = toml_edit::Table::new();
+                    restored["type"] = toml_edit::value("openai-compatible");
+                    restored["base_url"] = toml_edit::value(endpoint);
+                    if !model.is_empty() {
+                        restored["models"] = toml_edit::value(model);
+                    }
+                    providers.insert(MISTRAL_VIBE_PROVIDER_ID, toml_edit::Item::Table(restored));
+                }
+                if providers.is_empty() {
+                    doc.remove("providers");
+                }
+            }
+            if !model.is_empty() {
+                doc["active_model"] = toml_edit::value(model);
+            } else {
+                doc.remove("active_model");
+            }
+        }
+    }
+    Ok(doc.to_string())
+}
+
+fn mistral_vibe_current_upstream_signature(
+    config_path: &Path,
+) -> Result<Option<AgentTransportUpstreamSignature>> {
+    let manifest_path = mistral_vibe_manifest_path(config_path)?;
+    let Some(manifest) = parse_mistral_vibe_manifest(&manifest_path)? else {
+        return Ok(None);
+    };
+    let text = optional_text(config_path)?.unwrap_or_default();
+    let selection = mistral_vibe_selection(&text)?;
+    let expected_active = format!("{}/{}", MISTRAL_VIBE_PROVIDER_ID, manifest.model);
+    if selection.model.as_deref() != Some(&expected_active) {
+        return Ok(None);
+    }
+    Ok(Some(AgentTransportUpstreamSignature {
+        provider_id: MISTRAL_VIBE_PROVIDER_ID.to_string(),
+        signature_sha256: crate::stable_hash(&format!(
+            "agent-upstream-v1\n{}\n{}\n{}",
+            "mistral-vibe", manifest.endpoint, manifest.model
+        )),
+        endpoint: manifest.endpoint,
+        model: Some(manifest.model),
+        enabled: true,
+    }))
+}
+
+fn parse_mistral_vibe_manifest(path: &Path) -> Result<Option<MistralVibeTransportManifest>> {
+    let text = match optional_text(path)? {
+        Some(text) => text,
+        None => return Ok(None),
+    };
+    let manifest: MistralVibeTransportManifest =
+        serde_json::from_str(&text).context("Mistral Vibe transport manifest is invalid JSON")?;
+    if manifest.managed_by != DTOKEN_MANAGED_BY || manifest.transport != DTOKEN_TRANSPORT {
+        return Ok(None);
+    }
+    Ok(Some(manifest))
+}
+
+fn preview_mistral_vibe_transport(
+    request: &AgentTransportRequest,
+    operation: AgentTransportOperation,
+) -> Result<AgentTransportReview> {
+    let config_before = optional_text(&request.target_path)?.unwrap_or_default();
+    let manifest_path = mistral_vibe_manifest_path(&request.target_path)?;
+    let manifest_before = optional_text(&manifest_path)?.unwrap_or_default();
+    let current_upstream = mistral_vibe_current_upstream_signature(&request.target_path)?;
+    let existing_manifest = parse_mistral_vibe_manifest(&manifest_path)?;
+
+    let (config_after, manifest_after) = match operation {
+        AgentTransportOperation::Configure => {
+            let model = request
+                .model
+                .as_deref()
+                .context("Mistral Vibe transport requires an explicit model")?;
+            if existing_manifest.is_some() && current_upstream.is_none() {
+                bail!("Mistral Vibe selection changed outside d-token; automatic update is unsafe");
+            }
+            let previous = existing_manifest
+                .as_ref()
+                .map(|item| PriorSelection {
+                    provider_present: item.previous_provider_present,
+                    provider: item.previous_provider.clone(),
+                    model_present: item.previous_active_model_present,
+                    model: item.previous_active_model.clone(),
+                })
+                .unwrap_or(mistral_vibe_selection(&config_before)?);
+            (
+                transform_mistral_vibe(&config_before, operation, &request.endpoint, model)?,
+                manifest_json(&MistralVibeTransportManifest {
+                    schema_version: TRANSPORT_SCHEMA_VERSION,
+                    managed_by: DTOKEN_MANAGED_BY.into(),
+                    agent_id: "mistral-vibe".into(),
+                    transport: DTOKEN_TRANSPORT.into(),
+                    endpoint: request.endpoint.clone(),
+                    model: model.to_string(),
+                    provider_id: MISTRAL_VIBE_PROVIDER_ID.into(),
+                    previous_active_model_present: previous.model_present,
+                    previous_active_model: previous.model,
+                    previous_provider_present: previous.provider_present,
+                    previous_provider: previous.provider,
+                })?,
+            )
+        }
+        AgentTransportOperation::Clear => {
+            let Some(manifest) = existing_manifest.as_ref() else {
+                let selection = mistral_vibe_selection(&config_before)?;
+                if selection.provider_present {
+                    bail!("Mistral Vibe has unowned d-token-shaped provider state; automatic clear is unsafe");
+                }
+                return Ok(AgentTransportReview {
+                    operation,
+                    agent_id: request.agent_id.clone(),
+                    target_path: request.target_path.clone(),
+                    revision: revision_for_hashes(
+                        &request.agent_id,
+                        operation,
+                        &[(
+                            "config",
+                            crate::stable_hash(&config_before),
+                            crate::stable_hash(&config_before),
+                        )],
+                    ),
+                    changed: false,
+                    before_sha256: crate::stable_hash(&config_before),
+                    after_sha256: crate::stable_hash(&config_before),
+                    redacted_diff: String::new(),
+                    current_upstream: None,
+                });
+            };
+            if current_upstream.is_none() {
+                bail!("Mistral Vibe selection changed outside d-token; automatic clear is unsafe");
+            }
+            (
+                transform_mistral_vibe(
+                    &config_before,
+                    operation,
+                    "",
+                    manifest.previous_active_model.as_deref().unwrap_or(""),
+                )?,
+                String::new(),
+            )
+        }
+    };
+
+    let before_sha256 = crate::stable_hash(&config_before);
+    let after_sha256 = crate::stable_hash(&config_after);
+    Ok(AgentTransportReview {
+        operation,
+        agent_id: request.agent_id.clone(),
+        target_path: request.target_path.clone(),
+        revision: revision_for_hashes(
+            &request.agent_id,
+            operation,
+            &[
+                ("config", before_sha256.clone(), after_sha256.clone()),
+                (
+                    "manifest",
+                    crate::stable_hash(&manifest_before),
+                    crate::stable_hash(&manifest_after),
+                ),
+            ],
+        ),
+        changed: config_before != config_after || manifest_before != manifest_after,
+        before_sha256,
+        after_sha256,
+        redacted_diff: redacted_diff_sections(&[
+            ("config", &config_before, &config_after),
+            ("ownership manifest", &manifest_before, &manifest_after),
+        ]),
+        current_upstream,
+    })
+}
+
+fn apply_mistral_vibe_transport(
+    request: &AgentTransportRequest,
+    operation: AgentTransportOperation,
+    backup_root: &Path,
+) -> Result<AgentTransportReceipt> {
+    let model = request
+        .model
+        .as_deref()
+        .context("Mistral Vibe transport requires an explicit model")?;
+    let config_before = optional_text(&request.target_path)?.unwrap_or_default();
+    let manifest_path = mistral_vibe_manifest_path(&request.target_path)?;
+    let manifest_before = optional_text(&manifest_path)?.unwrap_or_default();
+
+    let (config_after, manifest_after) = match operation {
+        AgentTransportOperation::Configure => {
+            let prior = mistral_vibe_selection(&config_before)?;
+            let out = transform_mistral_vibe(&config_before, operation, &request.endpoint, model)?;
+            let manifest = manifest_json(&MistralVibeTransportManifest {
+                schema_version: TRANSPORT_SCHEMA_VERSION,
+                managed_by: DTOKEN_MANAGED_BY.into(),
+                agent_id: "mistral-vibe".into(),
+                transport: DTOKEN_TRANSPORT.into(),
+                endpoint: request.endpoint.clone(),
+                model: model.to_string(),
+                provider_id: MISTRAL_VIBE_PROVIDER_ID.into(),
+                previous_active_model_present: prior.model_present,
+                previous_active_model: prior.model,
+                previous_provider_present: prior.provider_present,
+                previous_provider: prior.provider,
+            })?;
+            (out, manifest)
+        }
+        AgentTransportOperation::Clear => {
+            let Some(manifest) = parse_mistral_vibe_manifest(&manifest_path)? else {
+                // No ownership manifest → no-op
+                return Ok(AgentTransportReceipt {
+                    operation,
+                    agent_id: request.agent_id.clone(),
+                    target_path: request.target_path.clone(),
+                    before_sha256: crate::stable_hash(&config_before),
+                    after_sha256: crate::stable_hash(&config_before),
+                    changed: false,
+                    transaction: None,
+                    verification: verify_mistral_vibe_cleared(&request.target_path)?,
+                });
+            };
+            let out = transform_mistral_vibe(
+                &config_before,
+                operation,
+                "",
+                manifest.previous_active_model.as_deref().unwrap_or(""),
+            )?;
+            (out, manifest_before.clone())
+        }
+    };
+
+    let patcher = ConfigPatcher::new(backup_root);
+    let mut transactions: Vec<TransactionReceipt> = Vec::new();
+
+    if operation == AgentTransportOperation::Configure {
+        let mut changes = Vec::new();
+        if config_before != config_after {
+            changes.push(patcher.prepare_change(
+                &request.target_path,
+                &config_after,
+                dtoken_types::ConfigToolKind::Agent,
+                Some(request.agent_id.clone()),
+                dtoken_types::RiskLevel::Medium,
+            )?);
+        }
+        if !changes.is_empty() {
+            transactions.push(patcher.apply_transaction(&changes)?);
+        }
+        match apply_manifest_change(
+            &manifest_path,
+            &manifest_after,
+            &request.agent_id,
+            backup_root,
+        ) {
+            Ok(Some(tx)) => transactions.push(tx),
+            Ok(None) => {}
+            Err(error) => {
+                for tx in transactions.iter().rev() {
+                    let _ = rollback_apply_receipts(&tx.changes, backup_root);
+                }
+                return Err(error);
+            }
+        }
+    } else {
+        let mut changes = Vec::new();
+        if config_before != config_after {
+            changes.push(patcher.prepare_change(
+                &request.target_path,
+                &config_after,
+                dtoken_types::ConfigToolKind::Agent,
+                Some(request.agent_id.clone()),
+                dtoken_types::RiskLevel::Medium,
+            )?);
+        }
+        if !changes.is_empty() {
+            transactions.push(patcher.apply_transaction(&changes)?);
+        }
+        if let Err(error) = remove_owned_file(&manifest_path) {
+            for tx in transactions.iter().rev() {
+                let _ = rollback_apply_receipts(&tx.changes, backup_root);
+            }
+            return Err(error).context("failed to remove Mistral Vibe ownership manifest");
+        }
+    }
+
+    let verification = if operation == AgentTransportOperation::Clear {
+        verify_mistral_vibe_cleared(&request.target_path)?
+    } else {
+        verify_mistral_vibe_transport(request)?
+    };
+    if !verification.ok {
+        for tx in transactions.iter().rev() {
+            let _ = rollback_apply_receipts(&tx.changes, backup_root);
+        }
+        return Err(anyhow::anyhow!(
+            "post-write Agent transport verification failed: {}",
+            verification.detail
+        ));
+    }
+
+    Ok(AgentTransportReceipt {
+        operation,
+        agent_id: request.agent_id.clone(),
+        target_path: request.target_path.clone(),
+        before_sha256: crate::stable_hash(&config_before),
+        after_sha256: crate::stable_hash(&config_after),
+        changed: !transactions.is_empty(),
+        transaction: transactions.into_iter().reduce(|mut a, b| {
+            a.changes.extend(b.changes);
+            a
+        }),
+        verification,
+    })
+}
+
+fn verify_mistral_vibe_transport(
+    request: &AgentTransportRequest,
+) -> Result<AgentTransportVerification> {
+    let result: Result<()> = (|| {
+        let manifest =
+            parse_mistral_vibe_manifest(&mistral_vibe_manifest_path(&request.target_path)?)?
+                .context("Mistral Vibe ownership manifest is absent")?;
+        if manifest.endpoint != request.endpoint
+            || Some(manifest.model.as_str()) != request.model.as_deref()
+        {
+            bail!("Mistral Vibe manifest does not match the reviewed request");
+        }
+        let text = optional_text(&request.target_path)?.unwrap_or_default();
+        let selection = mistral_vibe_selection(&text)?;
+        let expected_active = format!("{}/{}", MISTRAL_VIBE_PROVIDER_ID, manifest.model);
+        if selection.model.as_deref() != Some(&expected_active) {
+            bail!("Mistral Vibe routing keys do not match the d-token manifest");
+        }
+        Ok(())
+    })();
+    Ok(AgentTransportVerification {
+        agent_id: request.agent_id.clone(),
+        kind: AgentTransportAdapterKind::MistralVibe,
+        ok: result.is_ok(),
+        detail: result
+            .err()
+            .map(|e| e.to_string())
+            .unwrap_or_else(|| "d-token managed Mistral Vibe transport verified".into()),
+        current_upstream: mistral_vibe_current_upstream_signature(&request.target_path)
+            .ok()
+            .flatten(),
+    })
+}
+
+fn verify_mistral_vibe_cleared(config_path: &Path) -> Result<AgentTransportVerification> {
+    let result: Result<()> = (|| {
+        if parse_mistral_vibe_manifest(&mistral_vibe_manifest_path(config_path)?)?.is_some() {
+            bail!("Mistral Vibe ownership manifest is still present");
+        }
+        let text = optional_text(config_path)?.unwrap_or_default();
+        if !text.trim().is_empty() {
+            let doc = text
+                .parse::<toml_edit::DocumentMut>()
+                .context("Mistral Vibe config must be valid TOML")?;
+            // A restored prior provider/model is legitimate user state;
+            // only the d-token loopback API key marker must be gone.
+            let has_dtoken_key = doc
+                .get("providers")
+                .and_then(|v| v.get(MISTRAL_VIBE_PROVIDER_ID))
+                .and_then(|v| v.get("api_key"))
+                .and_then(|v| v.as_str())
+                == Some(MISTRAL_VIBE_PUBLIC_API_KEY_MARKER);
+            if has_dtoken_key {
+                bail!("Mistral Vibe still contains a d-token routing API key marker");
+            }
+        }
+        Ok(())
+    })();
+    Ok(AgentTransportVerification {
+        agent_id: "mistral-vibe".into(),
+        kind: AgentTransportAdapterKind::MistralVibe,
+        ok: result.is_ok(),
+        detail: result
+            .err()
+            .map(|e| e.to_string())
+            .unwrap_or_else(|| "d-token managed Mistral Vibe transport is clear".into()),
+        current_upstream: None,
+    })
+}
+
+fn mistral_vibe_can_clear(config_path: &Path) -> bool {
+    let manifest_path = match mistral_vibe_manifest_path(config_path) {
+        Ok(p) => p,
+        Err(_) => return false,
+    };
+    let Ok(manifest) = parse_mistral_vibe_manifest(&manifest_path) else {
+        return false;
+    };
+    let Some(manifest) = manifest else {
+        return false;
+    };
+    let Ok(text) = optional_text(config_path) else {
+        return false;
+    };
+    let text = text.unwrap_or_default();
+    let Ok(selection) = mistral_vibe_selection(&text) else {
+        return false;
+    };
+    let expected_active = format!("{}/{}", MISTRAL_VIBE_PROVIDER_ID, manifest.model);
+    selection.model.as_deref() == Some(&expected_active)
+}
+
 fn transform_claude(
     text: &str,
     operation: AgentTransportOperation,
@@ -6758,7 +9055,11 @@ fn verify_cleared(
         | AgentTransportAdapterKind::GeminiCli
         | AgentTransportAdapterKind::RooCode
         | AgentTransportAdapterKind::Continue
-        | AgentTransportAdapterKind::Aider => {
+        | AgentTransportAdapterKind::Aider
+        | AgentTransportAdapterKind::Hermes
+        | AgentTransportAdapterKind::OpenHands
+        | AgentTransportAdapterKind::Pi
+        | AgentTransportAdapterKind::MistralVibe => {
             bail!("Agent provider schema requires filesystem context")
         }
         AgentTransportAdapterKind::JsonEnv
@@ -6767,6 +9068,14 @@ fn verify_cleared(
             bail!("Agent provider schema is unavailable")
         }
         AgentTransportAdapterKind::OpenCodeProvider => verify_opencode_cleared(text),
+        AgentTransportAdapterKind::CortexCodeHook
+        | AgentTransportAdapterKind::CursorMcp
+        | AgentTransportAdapterKind::ClaudeDesktopMcp
+        | AgentTransportAdapterKind::WindsurfMcp
+        | AgentTransportAdapterKind::CommandCodeMcp
+        | AgentTransportAdapterKind::CopilotCliMcp
+        | AgentTransportAdapterKind::VscodeCopilotChatMcp
+        | AgentTransportAdapterKind::AntigravityMcp => bail!(MCP_TRANSPORT_FAIL_CLOSED),
         AgentTransportAdapterKind::DedicatedUnavailable => {
             bail!("Agent provider schema is unavailable")
         }
@@ -6800,7 +9109,11 @@ fn verify_document(
         | AgentTransportAdapterKind::GeminiCli
         | AgentTransportAdapterKind::RooCode
         | AgentTransportAdapterKind::Continue
-        | AgentTransportAdapterKind::Aider => Err(anyhow::anyhow!(
+        | AgentTransportAdapterKind::Aider
+        | AgentTransportAdapterKind::Hermes
+        | AgentTransportAdapterKind::OpenHands
+        | AgentTransportAdapterKind::Pi
+        | AgentTransportAdapterKind::MistralVibe => Err(anyhow::anyhow!(
             "Agent provider schema requires filesystem context"
         )),
         AgentTransportAdapterKind::JsonEnv
@@ -6810,6 +9123,16 @@ fn verify_document(
         }
         AgentTransportAdapterKind::OpenCodeProvider => {
             verify_opencode(text, endpoint, enabled, model)
+        }
+        AgentTransportAdapterKind::CortexCodeHook
+        | AgentTransportAdapterKind::CursorMcp
+        | AgentTransportAdapterKind::ClaudeDesktopMcp
+        | AgentTransportAdapterKind::WindsurfMcp
+        | AgentTransportAdapterKind::CommandCodeMcp
+        | AgentTransportAdapterKind::CopilotCliMcp
+        | AgentTransportAdapterKind::VscodeCopilotChatMcp
+        | AgentTransportAdapterKind::AntigravityMcp => {
+            Err(anyhow::anyhow!(MCP_TRANSPORT_FAIL_CLOSED))
         }
         AgentTransportAdapterKind::DedicatedUnavailable => {
             Err(anyhow::anyhow!("Agent provider schema is unavailable"))
@@ -7008,10 +9331,22 @@ fn current_upstream_signature(
         | AgentTransportAdapterKind::GeminiCli
         | AgentTransportAdapterKind::RooCode
         | AgentTransportAdapterKind::Continue
-        | AgentTransportAdapterKind::Aider => return Ok(None),
+        | AgentTransportAdapterKind::Aider
+        | AgentTransportAdapterKind::Hermes
+        | AgentTransportAdapterKind::OpenHands
+        | AgentTransportAdapterKind::Pi
+        | AgentTransportAdapterKind::MistralVibe => return Ok(None),
         AgentTransportAdapterKind::JsonEnv
         | AgentTransportAdapterKind::Toml
         | AgentTransportAdapterKind::ExtensionSetting
+        | AgentTransportAdapterKind::CortexCodeHook
+        | AgentTransportAdapterKind::CursorMcp
+        | AgentTransportAdapterKind::ClaudeDesktopMcp
+        | AgentTransportAdapterKind::WindsurfMcp
+        | AgentTransportAdapterKind::CommandCodeMcp
+        | AgentTransportAdapterKind::CopilotCliMcp
+        | AgentTransportAdapterKind::VscodeCopilotChatMcp
+        | AgentTransportAdapterKind::AntigravityMcp
         | AgentTransportAdapterKind::DedicatedUnavailable => return Ok(None),
     };
     Ok(Some(AgentTransportUpstreamSignature {
@@ -7252,18 +9587,18 @@ mod tests {
             ("openclaw", true, true),
             ("commandcode", false, false),
             ("claude-desktop", false, false),
-            ("hermes", false, false),
+            ("hermes", true, true),
             ("roo-code", true, true),
             ("continue", true, true),
             ("aider", true, true),
-            ("openhands", false, false),
+            ("openhands", true, true),
             ("copilot-cli", false, false),
             ("vscode-copilot-chat", false, false),
-            ("pi", false, false),
+            ("pi", true, true),
             ("cortex-code", false, false),
             ("windsurf", false, false),
             ("antigravity", false, false),
-            ("mistral-vibe", false, false),
+            ("mistral-vibe", true, true),
         ];
         for (id, can_configure, can_clear) in expected {
             let adapter = agent_transport_adapter(id).expect("known Agent adapter");
@@ -7302,15 +9637,11 @@ mod tests {
             "cursor",
             "commandcode",
             "claude-desktop",
-            "hermes",
-            "openhands",
             "copilot-cli",
             "vscode-copilot-chat",
-            "pi",
             "cortex-code",
             "windsurf",
             "antigravity",
-            "mistral-vibe",
         ] {
             let req = request(agent_id, path.clone());
             for result in [
@@ -8091,5 +10422,354 @@ mod tests {
         assert!(openclaw.can_clear);
         let error = clear_agent_transport_document("openclaw", "{}").unwrap_err();
         assert!(error.to_string().contains("filesystem context"));
+    }
+
+    #[test]
+    fn hermes_configure_clear_restores_previous_model_and_base_url() {
+        let root = workspace_tempdir();
+        let config_dir = root.path().join(".hermes");
+        fs::create_dir_all(&config_dir).unwrap();
+        let config_path = config_dir.join("config.yaml");
+        let prior = r#"model:
+  provider:
+    custom:
+      base_url: https://prior.example/v1
+      apiKey: prior-key
+  default: hermes-prior-model
+"#;
+        fs::write(&config_path, prior).unwrap();
+        let req = request("hermes", config_path.clone());
+        reviewed_apply(
+            &req,
+            AgentTransportOperation::Configure,
+            &root.path().join("backups"),
+        );
+        assert!(verify_agent_transport(&req).unwrap().ok);
+        assert!(can_clear_agent_transport("hermes", &config_path));
+
+        let configured = fs::read_to_string(&config_path).unwrap();
+        assert!(configured.contains("http://127.0.0.1:8787"));
+        assert!(configured.contains("claude-sonnet-test"));
+        assert!(configured.contains("dtoken-loopback"));
+        assert!(!configured.contains("prior-key"));
+
+        reviewed_apply(
+            &req,
+            AgentTransportOperation::Clear,
+            &root.path().join("backups"),
+        );
+        let restored = fs::read_to_string(&config_path).unwrap();
+        assert!(restored.contains("https://prior.example/v1"));
+        assert!(restored.contains("hermes-prior-model"));
+        assert!(!restored.contains("dtoken-loopback"));
+        assert!(!can_clear_agent_transport("hermes", &config_path));
+        assert!(!config_dir
+            .join("dtoken-agent-transport-hermes.json")
+            .exists());
+    }
+
+    #[test]
+    fn hermes_refuses_credential_collision_and_external_edit() {
+        let root = workspace_tempdir();
+        let config_dir = root.path().join(".hermes");
+        fs::create_dir_all(&config_dir).unwrap();
+        let config_path = config_dir.join("config.yaml");
+        fs::write(&config_path, "model:\n  default: hermes-model\n").unwrap();
+        let req = request("hermes", config_path.clone());
+        reviewed_apply(
+            &req,
+            AgentTransportOperation::Configure,
+            &root.path().join("backups"),
+        );
+        fs::write(&config_path, "model:\n  default: tampered-model\n").unwrap();
+        assert!(!can_clear_agent_transport("hermes", &config_path));
+        assert!(clear_agent_transport(&req, &root.path().join("backups"))
+            .unwrap_err()
+            .to_string()
+            .contains("changed outside d-token"));
+    }
+
+    #[test]
+    fn hermes_clear_is_idempotent_when_no_dtoken_transport() {
+        let root = workspace_tempdir();
+        let config_dir = root.path().join(".hermes");
+        fs::create_dir_all(&config_dir).unwrap();
+        let config_path = config_dir.join("config.yaml");
+        fs::write(&config_path, "model:\n  default: hermes-model\n").unwrap();
+        let receipt = clear_agent_transport(
+            &request("hermes", config_path),
+            &root.path().join("backups"),
+        )
+        .unwrap();
+        assert!(!receipt.changed);
+    }
+
+    #[test]
+    fn openhands_configure_clear_restores_previous_llm_section() {
+        let root = workspace_tempdir();
+        let config_path = root.path().join("config.toml");
+        let prior = r#"[llm]
+model = "openhands-prior"
+base_url = "https://prior.example/v1"
+api_key = "prior-key"
+"#;
+        fs::write(&config_path, prior).unwrap();
+        let req = request("openhands", config_path.clone());
+        reviewed_apply(
+            &req,
+            AgentTransportOperation::Configure,
+            &root.path().join("backups"),
+        );
+        assert!(verify_agent_transport(&req).unwrap().ok);
+        assert!(can_clear_agent_transport("openhands", &config_path));
+
+        let configured = fs::read_to_string(&config_path).unwrap();
+        assert!(configured.contains("http://127.0.0.1:8787"));
+        assert!(configured.contains("claude-sonnet-test"));
+        assert!(configured.contains("dtoken-loopback"));
+
+        reviewed_apply(
+            &req,
+            AgentTransportOperation::Clear,
+            &root.path().join("backups"),
+        );
+        let restored = fs::read_to_string(&config_path).unwrap();
+        assert!(restored.contains("openhands-prior"));
+        assert!(restored.contains("https://prior.example/v1"));
+        assert!(!restored.contains("dtoken-loopback"));
+        assert!(!config_path
+            .parent()
+            .unwrap()
+            .join("dtoken-agent-transport-openhands.json")
+            .exists());
+    }
+
+    #[test]
+    fn openhands_v1_environment_fails_closed() {
+        let root = workspace_tempdir();
+        let config_path = root.path().join("config.toml");
+        fs::write(&config_path, "[llm]\nmodel = \"test\"\n").unwrap();
+        let req = request("openhands", config_path.clone());
+        std::env::set_var("OPENHANDS_LLM_API_KEY", "test");
+        let result = configure_agent_transport(&req, &root.path().join("backups"));
+        std::env::remove_var("OPENHANDS_LLM_API_KEY");
+        assert!(result.unwrap_err().to_string().contains("V1"));
+    }
+
+    #[test]
+    fn openhands_clear_is_idempotent_when_no_dtoken_transport() {
+        let root = workspace_tempdir();
+        let config_path = root.path().join("config.toml");
+        fs::write(&config_path, "[llm]\nmodel = \"test\"\n").unwrap();
+        let receipt = clear_agent_transport(
+            &request("openhands", config_path),
+            &root.path().join("backups"),
+        )
+        .unwrap();
+        assert!(!receipt.changed);
+    }
+
+    #[test]
+    fn pi_configure_clear_restores_previous_provider_and_model() {
+        let root = workspace_tempdir();
+        let config_dir = root.path().join(".pi/agent");
+        fs::create_dir_all(&config_dir).unwrap();
+        let config_path = config_dir.join("models.json");
+        let prior = r#"{
+    "settings": {
+        "defaultProvider": "user-provider",
+        "defaultModel": "user-model"
+    }
+}"#;
+        fs::write(&config_path, prior).unwrap();
+        let req = request("pi", config_path.clone());
+        reviewed_apply(
+            &req,
+            AgentTransportOperation::Configure,
+            &root.path().join("backups"),
+        );
+        assert!(verify_agent_transport(&req).unwrap().ok);
+        assert!(can_clear_agent_transport("pi", &config_path));
+
+        let configured: Value = serde_json::from_slice(&fs::read(&config_path).unwrap()).unwrap();
+        assert_eq!(
+            configured
+                .pointer("/settings/defaultProvider")
+                .and_then(Value::as_str),
+            Some("dtoken")
+        );
+        assert_eq!(
+            configured
+                .pointer("/settings/defaultModel")
+                .and_then(Value::as_str),
+            Some("claude-sonnet-test")
+        );
+        assert!(configured.pointer("/providers/dtoken").is_some());
+
+        reviewed_apply(
+            &req,
+            AgentTransportOperation::Clear,
+            &root.path().join("backups"),
+        );
+        let restored: Value = serde_json::from_slice(&fs::read(&config_path).unwrap()).unwrap();
+        assert_eq!(
+            restored
+                .pointer("/settings/defaultProvider")
+                .and_then(Value::as_str),
+            Some("user-provider")
+        );
+        assert_eq!(
+            restored
+                .pointer("/settings/defaultModel")
+                .and_then(Value::as_str),
+            Some("user-model")
+        );
+        assert!(restored.pointer("/providers").is_none());
+        assert!(!can_clear_agent_transport("pi", &config_path));
+    }
+
+    #[test]
+    fn pi_refuses_external_edit() {
+        let root = workspace_tempdir();
+        let config_dir = root.path().join(".pi/agent");
+        fs::create_dir_all(&config_dir).unwrap();
+        let config_path = config_dir.join("models.json");
+        fs::write(&config_path, "{}").unwrap();
+        let req = request("pi", config_path.clone());
+        reviewed_apply(
+            &req,
+            AgentTransportOperation::Configure,
+            &root.path().join("backups"),
+        );
+        fs::write(
+            &config_path,
+            r#"{"settings":{"defaultProvider":"tampered"}}"#,
+        )
+        .unwrap();
+        assert!(!can_clear_agent_transport("pi", &config_path));
+        assert!(clear_agent_transport(&req, &root.path().join("backups"))
+            .unwrap_err()
+            .to_string()
+            .contains("changed outside d-token"));
+    }
+
+    #[test]
+    fn pi_clear_is_idempotent_after_full_cycle() {
+        // configure → clear → clear again → changed=false
+        let root = workspace_tempdir();
+        let config_dir = root.path().join(".pi/agent");
+        fs::create_dir_all(&config_dir).unwrap();
+        let config_path = config_dir.join("models.json");
+        let prior = r#"{
+    "settings": {
+        "defaultProvider": "user-provider",
+        "defaultModel": "user-model"
+    }
+}"#;
+        fs::write(&config_path, prior).unwrap();
+        let req = request("pi", config_path.clone());
+        let backups = root.path().join("backups");
+
+        // Configure
+        reviewed_apply(&req, AgentTransportOperation::Configure, &backups);
+        assert!(can_clear_agent_transport("pi", &config_path));
+        let configured: Value = serde_json::from_slice(&fs::read(&config_path).unwrap()).unwrap();
+        assert_eq!(
+            configured
+                .pointer("/settings/defaultProvider")
+                .and_then(Value::as_str),
+            Some("dtoken")
+        );
+
+        // First clear → actually changed
+        let receipt1 = clear_agent_transport(&req, &backups).unwrap();
+        assert!(receipt1.changed);
+        let restored: Value = serde_json::from_slice(&fs::read(&config_path).unwrap()).unwrap();
+        assert_eq!(
+            restored
+                .pointer("/settings/defaultProvider")
+                .and_then(Value::as_str),
+            Some("user-provider")
+        );
+        assert!(!can_clear_agent_transport("pi", &config_path));
+
+        // Second clear → no-op (no d-token transport to clear)
+        let receipt2 = clear_agent_transport(&req, &backups).unwrap();
+        assert!(!receipt2.changed);
+    }
+
+    #[test]
+    fn mistral_vibe_configure_clear_restores_active_model() {
+        let root = workspace_tempdir();
+        let config_dir = root.path().join(".vibe");
+        fs::create_dir_all(&config_dir).unwrap();
+        let config_path = config_dir.join("config.toml");
+        let prior = r#"active_model = "user-provider/user-model"
+
+[providers]
+user-provider = { type = "openai", base_url = "https://prior.example/v1" }
+"#;
+        fs::write(&config_path, prior).unwrap();
+        let req = request("mistral-vibe", config_path.clone());
+        reviewed_apply(
+            &req,
+            AgentTransportOperation::Configure,
+            &root.path().join("backups"),
+        );
+        assert!(verify_agent_transport(&req).unwrap().ok);
+        assert!(can_clear_agent_transport("mistral-vibe", &config_path));
+
+        let configured = fs::read_to_string(&config_path).unwrap();
+        assert!(configured.contains("http://127.0.0.1:8787"));
+        assert!(configured.contains("dtoken-local-route/claude-sonnet-test"));
+        assert!(configured.contains("dtoken-loopback"));
+
+        reviewed_apply(
+            &req,
+            AgentTransportOperation::Clear,
+            &root.path().join("backups"),
+        );
+        let restored = fs::read_to_string(&config_path).unwrap();
+        assert!(restored.contains("user-provider/user-model"));
+        assert!(!restored.contains("dtoken-local-route"));
+        assert!(!config_dir
+            .join("dtoken-agent-transport-mistral-vibe.json")
+            .exists());
+    }
+
+    #[test]
+    fn mistral_vibe_refuses_external_edit() {
+        let root = workspace_tempdir();
+        let config_dir = root.path().join(".vibe");
+        fs::create_dir_all(&config_dir).unwrap();
+        let config_path = config_dir.join("config.toml");
+        fs::write(&config_path, "active_model = \"test\"\n").unwrap();
+        let req = request("mistral-vibe", config_path.clone());
+        reviewed_apply(
+            &req,
+            AgentTransportOperation::Configure,
+            &root.path().join("backups"),
+        );
+        fs::write(&config_path, "active_model = \"tampered\"\n").unwrap();
+        assert!(!can_clear_agent_transport("mistral-vibe", &config_path));
+        assert!(clear_agent_transport(&req, &root.path().join("backups"))
+            .unwrap_err()
+            .to_string()
+            .contains("changed outside d-token"));
+    }
+
+    #[test]
+    fn new_adapter_verify_cleared_returns_proper_errors() {
+        let root = workspace_tempdir();
+        let config_dir = root.path().join(".hermes");
+        fs::create_dir_all(&config_dir).unwrap();
+        let config_path = config_dir.join("config.yaml");
+        fs::write(&config_path, "model:\n  default: test\n").unwrap();
+        let req = request("hermes", config_path.clone());
+        let receipt = configure_agent_transport(&req, &root.path().join("backups")).unwrap();
+        assert!(receipt.verification.ok);
+        let cleared = clear_agent_transport(&req, &root.path().join("backups")).unwrap();
+        assert!(cleared.verification.ok);
+        assert!(cleared.changed);
     }
 }

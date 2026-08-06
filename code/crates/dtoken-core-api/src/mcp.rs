@@ -2,6 +2,11 @@
 //!
 //! The transport is intentionally stdio-only and does not persist MCP request bodies.  Tool
 //! errors are stable, redacted codes so malformed inputs cannot leak prompts or credentials.
+//! A bounded Streamable-HTTP JSON session registry layers terminal-state bookkeeping on top of
+//! the same `McpServer`: sessions are created over POST /mcp, in-flight requests can be
+//! cancelled by `notifications/cancelled`, every request reaches a recorded terminal state
+//! (completed / cancelled / failed), and termination is explicit.  No SSE session endpoint is
+//! registered: the axum build has no `sse` feature, so sessions answer JSON only.
 
 use crate::AppState;
 use dtoken_context_store::{
@@ -9,20 +14,30 @@ use dtoken_context_store::{
     ResolvedMemoryCapability,
 };
 use dtoken_types::{CompressionPolicy, OpticalEndpoint, Protocol};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{
-    collections::{HashSet, VecDeque},
+    collections::{HashMap, HashSet, VecDeque},
     io,
     sync::{Arc, Mutex},
 };
-use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
+use tokio::{
+    io::{AsyncBufRead, AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader},
+    sync::{oneshot, Notify},
+};
+use uuid::Uuid;
 
 pub const MCP_IMPLEMENTATION_REVISION: &str = "dtoken-mcp-stdio-v1";
 pub const MAX_MCP_COMPRESS_BODY_BYTES: usize = 1024 * 1024;
 pub const MAX_MCP_MESSAGE_BYTES: usize = MAX_MCP_COMPRESS_BODY_BYTES + 16 * 1024;
 const MAX_CANCELLED_REQUESTS: usize = 128;
+const MAX_MCP_SESSIONS: usize = 16;
 const STDIO_JSONRPC_TRANSPORT: &str = "stdio-json-rpc";
+
+/// Streamable-HTTP session header name used by POST /mcp, GET /mcp and
+/// DELETE /mcp (spec name `Mcp-Session-Id`; HTTP header names are
+/// case-insensitive).
+pub const MCP_SESSION_HEADER: &str = "mcp-session-id";
 
 const PROTOCOL_VERSION: &str = "2024-11-05";
 const TOOL_COMPRESS: &str = "headroom_compress";
@@ -110,6 +125,12 @@ pub struct McpServer {
     retrieve_capability: Option<String>,
     memory_capability: Option<ManagedMemoryCapability>,
     cancelled_request_ids: Arc<Mutex<CancellationBookkeeping>>,
+    sessions: Arc<Mutex<McpSessionRegistry>>,
+    /// Test-only dispatch gate. Production constructors leave this `None`, so
+    /// request dispatch is never artificially delayed; the gated constructor
+    /// lets session tests hold a request deterministically in-flight before
+    /// delivering `notifications/cancelled`.
+    session_gate: Option<Arc<Notify>>,
 }
 
 /// This grant is injected by a d-token-owned managed MCP transaction, not by
@@ -134,6 +155,107 @@ impl ManagedMemoryCapability {
 struct CancellationBookkeeping {
     ids: HashSet<String>,
     arrival_order: VecDeque<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum McpSessionStatus {
+    Active,
+    Terminated,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum McpSessionTerminalKind {
+    Completed,
+    Cancelled,
+    Failed,
+    Terminated,
+}
+
+/// The recorded terminal state of the last session request. Tool-level
+/// `isError` results are still `Completed`: the JSON-RPC request reached its
+/// terminal state; only protocol-level errors are `Failed`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct McpSessionTerminal {
+    pub kind: McpSessionTerminalKind,
+    pub request_id: Option<String>,
+    pub code: Option<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct McpSessionState {
+    pub session_id: String,
+    pub status: McpSessionStatus,
+    pub in_flight_request_id: Option<String>,
+    pub request_count: u64,
+    pub last_terminal: Option<McpSessionTerminal>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum McpSessionError {
+    SessionUnknown,
+    SessionTerminated,
+    SessionBusy,
+    SessionCapacityExhausted,
+    RequestCancelled,
+    InvalidRequest,
+}
+
+impl McpSessionError {
+    pub fn code(self) -> i64 {
+        match self {
+            Self::SessionUnknown => -32002,
+            Self::SessionTerminated => -32003,
+            Self::SessionBusy => -32004,
+            Self::SessionCapacityExhausted => -32005,
+            Self::RequestCancelled => -32800,
+            Self::InvalidRequest => -32602,
+        }
+    }
+
+    pub fn message(self) -> &'static str {
+        match self {
+            Self::SessionUnknown => "The MCP session is unknown.",
+            Self::SessionTerminated => "The MCP session has been terminated.",
+            Self::SessionBusy => "The MCP session already has an in-flight request.",
+            Self::SessionCapacityExhausted => "The MCP session registry is at capacity.",
+            Self::RequestCancelled => "Request cancelled",
+            Self::InvalidRequest => "The MCP session request is invalid.",
+        }
+    }
+}
+
+struct InFlightRequest {
+    request_id: String,
+    cancel: oneshot::Sender<()>,
+}
+
+struct McpSessionEntry {
+    status: McpSessionStatus,
+    request_count: u64,
+    last_terminal: Option<McpSessionTerminal>,
+    in_flight: Option<InFlightRequest>,
+}
+
+impl McpSessionEntry {
+    fn state(&self, session_id: &str) -> McpSessionState {
+        McpSessionState {
+            session_id: session_id.to_string(),
+            status: self.status,
+            in_flight_request_id: self
+                .in_flight
+                .as_ref()
+                .map(|in_flight| in_flight.request_id.clone()),
+            request_count: self.request_count,
+            last_terminal: self.last_terminal.clone(),
+        }
+    }
+}
+
+#[derive(Default)]
+struct McpSessionRegistry {
+    sessions: HashMap<String, McpSessionEntry>,
 }
 
 impl McpServer {
@@ -195,6 +317,24 @@ impl McpServer {
             retrieve_capability: retrieve_capability.filter(|value| valid_capability(value)),
             memory_capability,
             cancelled_request_ids: Arc::new(Mutex::new(CancellationBookkeeping::default())),
+            sessions: Arc::new(Mutex::new(McpSessionRegistry::default())),
+            session_gate: None,
+        }
+    }
+
+    /// Builds a server whose in-flight session dispatch waits on the given
+    /// gate. Production never uses this: the gate exists so session tests can
+    /// hold a request deterministically in-flight before delivering
+    /// `notifications/cancelled` and proving the terminal-state closed loop.
+    #[doc(hidden)]
+    pub fn new_with_session_gate_for_test(state: AppState, gate: Arc<Notify>) -> Self {
+        Self {
+            state,
+            retrieve_capability: None,
+            memory_capability: None,
+            cancelled_request_ids: Arc::new(Mutex::new(CancellationBookkeeping::default())),
+            sessions: Arc::new(Mutex::new(McpSessionRegistry::default())),
+            session_gate: Some(gate),
         }
     }
 
@@ -300,6 +440,202 @@ impl McpServer {
             .unwrap_or(false)
     }
 
+    /// Create a bounded Streamable-HTTP JSON session. Sessions never persist
+    /// request bodies; they only bookkeep request/terminal state.
+    pub fn create_session(&self) -> Result<McpSessionState, McpSessionError> {
+        let mut registry = self
+            .sessions
+            .lock()
+            .map_err(|_| McpSessionError::InvalidRequest)?;
+        if registry.sessions.len() >= MAX_MCP_SESSIONS {
+            return Err(McpSessionError::SessionCapacityExhausted);
+        }
+        let session_id = Uuid::new_v4().to_string();
+        registry.sessions.insert(
+            session_id.clone(),
+            McpSessionEntry {
+                status: McpSessionStatus::Active,
+                request_count: 0,
+                last_terminal: None,
+                in_flight: None,
+            },
+        );
+        Ok(McpSessionState {
+            session_id,
+            status: McpSessionStatus::Active,
+            in_flight_request_id: None,
+            request_count: 0,
+            last_terminal: None,
+        })
+    }
+
+    /// Read-only terminal/status view of one session.
+    pub fn session_state(&self, session_id: &str) -> Result<McpSessionState, McpSessionError> {
+        let registry = self
+            .sessions
+            .lock()
+            .map_err(|_| McpSessionError::InvalidRequest)?;
+        registry
+            .sessions
+            .get(session_id)
+            .map(|entry| entry.state(session_id))
+            .ok_or(McpSessionError::SessionUnknown)
+    }
+
+    /// Explicitly terminate a session: the in-flight request (if any) is
+    /// cancelled and no further request is accepted.
+    pub fn terminate_session(&self, session_id: &str) -> Result<McpSessionState, McpSessionError> {
+        let mut registry = self
+            .sessions
+            .lock()
+            .map_err(|_| McpSessionError::InvalidRequest)?;
+        let entry = registry
+            .sessions
+            .get_mut(session_id)
+            .ok_or(McpSessionError::SessionUnknown)?;
+        if let Some(in_flight) = entry.in_flight.take() {
+            let _ = in_flight.cancel.send(());
+        }
+        entry.status = McpSessionStatus::Terminated;
+        entry.last_terminal = Some(McpSessionTerminal {
+            kind: McpSessionTerminalKind::Terminated,
+            request_id: None,
+            code: None,
+        });
+        Ok(entry.state(session_id))
+    }
+
+    /// Submit one JSON-RPC message into a session and await its terminal
+    /// state. Notifications (no `id`) never register in-flight work and never
+    /// produce a response; `notifications/cancelled` cancels the matching
+    /// in-flight request so its submitter receives `RequestCancelled`.
+    pub async fn submit_session_jsonrpc(
+        &self,
+        session_id: &str,
+        request: Value,
+    ) -> Result<Option<Value>, McpSessionError> {
+        let Some(object) = request.as_object() else {
+            return Err(McpSessionError::InvalidRequest);
+        };
+        if object.get("id").is_none() {
+            return self.submit_session_notification(session_id, request);
+        }
+        let request_id = request_id_key(object.get("id").expect("validated request id"));
+        let (cancel_tx, cancel_rx) = oneshot::channel();
+        let (done_tx, done_rx) = oneshot::channel();
+        {
+            let mut registry = self
+                .sessions
+                .lock()
+                .map_err(|_| McpSessionError::InvalidRequest)?;
+            let entry = registry
+                .sessions
+                .get_mut(session_id)
+                .ok_or(McpSessionError::SessionUnknown)?;
+            if entry.status == McpSessionStatus::Terminated {
+                return Err(McpSessionError::SessionTerminated);
+            }
+            if entry.in_flight.is_some() {
+                return Err(McpSessionError::SessionBusy);
+            }
+            entry.request_count += 1;
+            entry.in_flight = Some(InFlightRequest {
+                request_id: request_id.clone(),
+                cancel: cancel_tx,
+            });
+        }
+        let server = self.clone();
+        let gate = self.session_gate.clone();
+        tokio::spawn(async move {
+            let outcome: Result<Option<Value>, McpSessionError> = tokio::select! {
+                _ = cancel_rx => Err(McpSessionError::RequestCancelled),
+                response = async {
+                    if let Some(gate) = gate {
+                        gate.notified().await;
+                    }
+                    Ok(server.handle_jsonrpc(request))
+                } => response,
+            };
+            let _ = done_tx.send(outcome);
+        });
+        let outcome = done_rx.await.map_err(|_| McpSessionError::InvalidRequest)?;
+        let terminal = match &outcome {
+            Err(McpSessionError::RequestCancelled) => Some(McpSessionTerminal {
+                kind: McpSessionTerminalKind::Cancelled,
+                request_id: Some(request_id.clone()),
+                code: None,
+            }),
+            Err(error) => Some(McpSessionTerminal {
+                kind: McpSessionTerminalKind::Failed,
+                request_id: Some(request_id.clone()),
+                code: Some(error.code()),
+            }),
+            Ok(Some(response)) => match response.get("error") {
+                Some(error) => Some(McpSessionTerminal {
+                    kind: McpSessionTerminalKind::Failed,
+                    request_id: Some(request_id.clone()),
+                    code: error.get("code").and_then(Value::as_i64),
+                }),
+                None => Some(McpSessionTerminal {
+                    kind: McpSessionTerminalKind::Completed,
+                    request_id: Some(request_id.clone()),
+                    code: None,
+                }),
+            },
+            Ok(None) => Some(McpSessionTerminal {
+                kind: McpSessionTerminalKind::Completed,
+                request_id: Some(request_id.clone()),
+                code: None,
+            }),
+        };
+        let mut registry = self
+            .sessions
+            .lock()
+            .map_err(|_| McpSessionError::InvalidRequest)?;
+        if let Some(entry) = registry.sessions.get_mut(session_id) {
+            entry.in_flight = None;
+            if entry.status == McpSessionStatus::Active {
+                entry.last_terminal = terminal;
+            }
+        }
+        drop(registry);
+        outcome.map(|response| response.filter(|value| !value.is_null()))
+    }
+
+    fn submit_session_notification(
+        &self,
+        session_id: &str,
+        request: Value,
+    ) -> Result<Option<Value>, McpSessionError> {
+        if request.get("method").and_then(Value::as_str) == Some("notifications/cancelled") {
+            if let Some(cancelled_id) = request
+                .get("params")
+                .and_then(Value::as_object)
+                .and_then(|params| params.get("requestId"))
+                .filter(|id| valid_id(id))
+            {
+                let request_id = request_id_key(cancelled_id);
+                let mut registry = self
+                    .sessions
+                    .lock()
+                    .map_err(|_| McpSessionError::InvalidRequest)?;
+                if let Some(entry) = registry.sessions.get_mut(session_id) {
+                    if entry
+                        .in_flight
+                        .as_ref()
+                        .is_some_and(|in_flight| in_flight.request_id == request_id)
+                    {
+                        if let Some(in_flight) = entry.in_flight.take() {
+                            let _ = in_flight.cancel.send(());
+                        }
+                    }
+                }
+            }
+        }
+        self.record_cancellation(request.get("params"));
+        Ok(None)
+    }
+
     fn call_tool(&self, params: Option<&Value>) -> Result<Value, RpcFailure> {
         let request: ToolCall = serde_json::from_value(params.cloned().unwrap_or(Value::Null))
             .map_err(|_| RpcFailure::InvalidParams)?;
@@ -324,7 +660,12 @@ impl McpServer {
                     })
                     .transpose()?;
                 self.state
-                    .mcp_compress(requested_policy, arguments.route_ref, arguments.body)
+                    .mcp_compress(
+                        requested_policy,
+                        arguments.frozen_message_count,
+                        arguments.route_ref,
+                        arguments.body,
+                    )
                     .map(tool_success)
                     .map_err(RpcFailure::Tool)
             }
@@ -615,6 +956,8 @@ struct CompressArguments {
     body: Value,
     #[serde(default)]
     policy: Option<String>,
+    #[serde(default)]
+    frozen_message_count: Option<usize>,
     route_ref: McpRouteReference,
 }
 
@@ -723,6 +1066,7 @@ fn tool_definitions(retrieve_available: bool, memory_available: bool) -> Vec<Val
                 "properties": {
                     "body": {"type": "object"},
                     "policy": {"type": "string", "enum": ["off", "safe", "balanced", "aggressive", "max"]},
+                    "frozen_message_count": {"type": "integer", "minimum": 0},
                     "route_ref": {
                         "type": "object",
                         "additionalProperties": false,
@@ -948,6 +1292,56 @@ mod tests {
     }
 
     #[test]
+    fn compress_accepts_request_level_frozen_message_count() {
+        let server = McpServer::new(AppState::new(mcp_route_config()));
+        // `CompressArguments` is deny_unknown_fields: an unrecognized field
+        // would be rejected as invalid_arguments. Accepting the override
+        // proves the frozen-message floor is plumbed through the MCP surface.
+        let compressed = server
+            .handle_jsonrpc(request(1, "tools/call", json!({
+                "name": TOOL_COMPRESS,
+                "arguments": {
+                    "policy": "balanced",
+                    "frozen_message_count": 2,
+                    "route_ref": mcp_route_ref(),
+                    "body": {
+                        "model": "mcp-model",
+                        "messages": [
+                            {"role": "user", "content": [{"type": "text", "text": "hot", "cache_control": {"type": "ephemeral"}}]},
+                            {"role": "user", "content": "plain"}
+                        ]
+                    }
+                }
+            })))
+            .expect("compress response");
+        assert_ne!(compressed["result"]["isError"], true);
+        let parsed: Value =
+            serde_json::from_str(&tool_text(compressed)).expect("compress result JSON");
+        assert_eq!(parsed["state"], "passthrough");
+        assert_eq!(parsed["decision"]["state"], "resolved");
+        assert_eq!(parsed["decision"]["route_id"], "mcp-route");
+        assert_eq!(parsed["decision"]["provider_id"], "mcp-provider");
+        assert_eq!(parsed["decision"]["model"], "mcp-model");
+
+        // Invalid values are rejected by the integer schema, never echoed.
+        let invalid = server
+            .handle_jsonrpc(request(
+                2,
+                "tools/call",
+                json!({
+                    "name": TOOL_COMPRESS,
+                    "arguments": {
+                        "frozen_message_count": -1,
+                        "route_ref": mcp_route_ref(),
+                        "body": {"model": "mcp-model", "messages": []}
+                    }
+                }),
+            ))
+            .expect("invalid frozen count response");
+        assert_eq!(invalid["result"]["isError"], true);
+    }
+
+    #[test]
     fn retrieval_and_invalid_arguments_fail_closed_without_echoing_input() {
         let server = McpServer::new(AppState::new(DtokenConfig::empty()));
         let secret = "MCP_TEST_SECRET_MUST_NOT_ECHO";
@@ -1038,7 +1432,7 @@ mod tests {
             .handle_jsonrpc(request(3, "tools/call", json!({
                 "name": TOOL_COMPRESS,
                 "arguments": {
-                    "route_ref": {"route_id": "mcp-route", "input_protocol": "open_ai", "endpoint": "open_ai_responses"},
+                    "route_ref": {"route_id": "mcp-route", "input_protocol": "open_ai", "endpoint": "anthropic_messages"},
                     "body": body
                 }
             })))

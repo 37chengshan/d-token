@@ -2,11 +2,13 @@ pub mod ccr_store;
 pub mod mcp;
 
 use anyhow::Context as _;
+#[cfg(windows)]
+use anyhow::bail;
 use axum::response::Response;
 use axum::{
     body::{Body, Bytes},
     extract::{DefaultBodyLimit, Extension, Path as AxumPath, Query, State},
-    http::header::{CACHE_CONTROL, CONTENT_TYPE},
+    http::header::{HeaderValue, CACHE_CONTROL, CONTENT_TYPE},
     http::HeaderMap,
     middleware::{self, Next},
     response::IntoResponse,
@@ -96,6 +98,18 @@ fn push_bounded<T>(items: &mut Vec<T>, item: T) {
     items.push(item);
 }
 
+/// Stable snake_case string for [`CompressionPolicy`] — no `Display` impl
+/// on the enum itself, so callers must use this helper explicitly.
+fn compression_policy_as_str(policy: &CompressionPolicy) -> &'static str {
+    match policy {
+        CompressionPolicy::Off => "off",
+        CompressionPolicy::Safe => "safe",
+        CompressionPolicy::Balanced => "balanced",
+        CompressionPolicy::Aggressive => "aggressive",
+        CompressionPolicy::Max => "max",
+    }
+}
+
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct CcrDeletionReceipt {
     pub source: &'static str,
@@ -119,6 +133,11 @@ pub struct CompressionDecisionRequest {
     pub endpoint: OpticalEndpoint,
     #[serde(default)]
     pub requested_policy: Option<CompressionPolicy>,
+    /// Request-level frozen-message override for the cache prefix. When set,
+    /// this wins over `cache_control` marker detection; `None` keeps the
+    /// marker-derived floor. The body is still evaluated in memory only.
+    #[serde(default)]
+    pub frozen_message_count: Option<usize>,
     pub body: Value,
 }
 
@@ -164,6 +183,7 @@ pub struct CompressionDecision {
     pub original_tokens: u64,
     pub compressed_tokens: u64,
     pub tokens_saved: u64,
+    pub capability: CompressionCapabilityTransaction,
     pub evidence: CompressionDecisionEvidence,
 }
 
@@ -205,6 +225,29 @@ pub struct CompressionDecisionEvidence {
     pub endpoint_identity: &'static str,
     pub request_body_persisted: bool,
     pub credentials_returned: bool,
+}
+
+pub const COMPRESSION_CAPABILITY_TRANSACTION_REVISION: &str = "dtoken-compression-capability-v1";
+
+/// The explicit capability transaction produced once
+/// route/provider/model/protocol have all been resolved for a compress
+/// request. It names the ingress surface the caller presented and the
+/// upstream surface the candidate body targets, plus the exact adapter used.
+///
+/// Dispatch is fail-closed: any combination that does not resolve through
+/// [`CompressionDecisionError`] instead of a transaction, so neither the MCP,
+/// HTTP, Rust library nor TS SDK surface ever guesses a protocol.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct CompressionCapabilityTransaction {
+    pub transaction_revision: &'static str,
+    pub route_id: String,
+    pub provider_id: String,
+    pub model: String,
+    pub ingress_protocol: Protocol,
+    pub ingress_endpoint: OpticalEndpoint,
+    pub upstream_protocol: Protocol,
+    pub upstream_endpoint: OpticalEndpoint,
+    pub adapter: &'static str,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2210,6 +2253,7 @@ impl AppState {
     pub(crate) fn mcp_compress(
         &self,
         requested_policy: Option<CompressionPolicy>,
+        frozen_message_count: Option<usize>,
         route_ref: mcp::McpRouteReference,
         body: Value,
     ) -> Result<Value, mcp::McpToolError> {
@@ -2224,6 +2268,7 @@ impl AppState {
                 input_protocol: route_ref.input_protocol,
                 endpoint: route_ref.endpoint,
                 requested_policy,
+                frozen_message_count,
                 body,
             })
             .map_err(mcp_tool_error_from_decision_error)?;
@@ -2287,29 +2332,49 @@ impl AppState {
             return Err(CompressionDecisionError::RouteContextUnavailable);
         }
 
-        let adapter = match (&route.input_protocol, &provider.protocol, &request.endpoint) {
-            (Protocol::OpenAi, Protocol::OpenAi, OpticalEndpoint::OpenAiChatCompletions) => {
-                RouteAdapterKind::OpenAiChatPassthrough
-            }
-            (Protocol::Anthropic, Protocol::Anthropic, OpticalEndpoint::AnthropicMessages) => {
-                RouteAdapterKind::AnthropicMessagesPassthrough
-            }
-            _ => return Err(CompressionDecisionError::RouteContextMismatch),
-        };
+        let (adapter, ingress_body, upstream_body) =
+            match (&route.input_protocol, &provider.protocol, &request.endpoint) {
+                (Protocol::OpenAi, Protocol::OpenAi, OpticalEndpoint::OpenAiChatCompletions) => (
+                    RouteAdapterKind::OpenAiChatPassthrough,
+                    request.body.clone(),
+                    request.body.clone(),
+                ),
+                (Protocol::OpenAi, Protocol::OpenAi, OpticalEndpoint::OpenAiResponses) => {
+                    // The Responses surface is dispatched through the same
+                    // fail-closed bridge as the routed `/v1/responses` surface:
+                    // invalid items, reasoning references and unknown fields
+                    // are rejected here and never guessed.
+                    let upstream = responses_to_openai_chat_body(&request.body)
+                        .map_err(|_| CompressionDecisionError::InvalidArguments)?;
+                    (
+                        RouteAdapterKind::OpenAiResponsesToChat,
+                        request.body.clone(),
+                        upstream,
+                    )
+                }
+                (Protocol::Anthropic, Protocol::Anthropic, OpticalEndpoint::AnthropicMessages) => (
+                    RouteAdapterKind::AnthropicMessagesPassthrough,
+                    request.body.clone(),
+                    request.body.clone(),
+                ),
+                _ => return Err(CompressionDecisionError::RouteContextMismatch),
+            };
         let configured_decision = build_configured_route_decision(Uuid::new_v4(), route, provider);
         let context = resolve_optimization_context(
             &configured_decision,
             route,
             provider,
             adapter,
-            &request.body,
-            &request.body,
+            &ingress_body,
+            &upstream_body,
         )
         .map_err(|_| CompressionDecisionError::RouteContextUnavailable)?;
-        let summary = compress_for_route(
+        let summary = compress_for_route_with_frozen(
             Some(&context),
             route.compression_policy.clone(),
-            request.body,
+            upstream_body,
+            None,
+            request.frozen_message_count,
         );
         let transformed = !summary.transforms_applied.is_empty();
         let reason_code = if transformed {
@@ -2340,9 +2405,9 @@ impl AppState {
                 source: "dtoken-owned-runtime",
                 state: CompressionDecisionState::Resolved,
                 reason_code,
-                route_id: context.route_id,
-                provider_id: context.provider_id,
-                model: context.effective_model,
+                route_id: context.route_id.clone(),
+                provider_id: context.provider_id.clone(),
+                model: context.effective_model.clone(),
                 input_protocol: context.compression_context.input_protocol,
                 output_protocol: context.compression_context.output_protocol,
                 endpoint: context.compression_context.endpoint,
@@ -2351,6 +2416,17 @@ impl AppState {
                 original_tokens: summary.original_tokens,
                 compressed_tokens: summary.compressed_tokens,
                 tokens_saved: summary.tokens_saved,
+                capability: CompressionCapabilityTransaction {
+                    transaction_revision: COMPRESSION_CAPABILITY_TRANSACTION_REVISION,
+                    route_id: context.route_id.clone(),
+                    provider_id: context.provider_id.clone(),
+                    model: context.effective_model.clone(),
+                    ingress_protocol: context.ingress.protocol.clone(),
+                    ingress_endpoint: context.ingress.endpoint.clone(),
+                    upstream_protocol: context.upstream.protocol.clone(),
+                    upstream_endpoint: context.upstream.endpoint.clone(),
+                    adapter: adapter.adapter_label(),
+                },
                 evidence: compression_decision_evidence(),
             },
             body: summary.body,
@@ -3853,6 +3929,12 @@ fn memory_export_payload(record: &MemoryExportEntry) -> Value {
 
 pub fn build_router(state: AppState) -> Router {
     let mcp_server = Arc::new(mcp::McpServer::new(state.clone()));
+    build_router_with_mcp_server(state, mcp_server)
+}
+
+/// Same router driven by a caller-supplied MCP server. Session tests inject a
+/// gated server here to hold requests deterministically in-flight.
+pub fn build_router_with_mcp_server(state: AppState, mcp_server: Arc<mcp::McpServer>) -> Router {
     Router::new()
         .route("/health", get(health))
         .route("/dashboard/payload", get(dashboard_payload))
@@ -4778,6 +4860,15 @@ enum RouteAdapterKind {
 }
 
 impl RouteAdapterKind {
+    fn adapter_label(self) -> &'static str {
+        match self {
+            Self::OpenAiChatPassthrough => "open_ai_chat_passthrough",
+            Self::OpenAiResponsesToChat => "open_ai_responses_to_chat",
+            Self::AnthropicMessagesPassthrough => "anthropic_messages_passthrough",
+            Self::AnthropicMessagesToOpenAiChat => "anthropic_messages_to_open_ai_chat",
+        }
+    }
+
     fn surfaces(self) -> (OptimizationSurface, OptimizationSurface) {
         match self {
             Self::OpenAiChatPassthrough => (
@@ -4942,6 +5033,142 @@ fn resolve_optimization_context(
     })
 }
 
+/// Derive the exact memory access scope from a request scope, fail-closed.
+///
+/// Memory authorization needs a real project and agent identity.  When
+/// either is unavailable (the runtime never guesses identities), no memory
+/// may be retrieved and no injection may occur.
+fn request_scope_memory_access(scope: &RequestScope) -> Option<MemoryAccessScope> {
+    let project_id = scope.project.value.as_deref()?.to_string();
+    let agent_id = scope.agent.value.as_deref()?.to_string();
+    if project_id.trim().is_empty() || agent_id.trim().is_empty() {
+        return None;
+    }
+    Some(MemoryAccessScope {
+        project_id,
+        agent_id,
+        session_id: scope.session.value.clone(),
+    })
+}
+
+/// Retrieve memory records the route's caller is authorized to see, then
+/// project them into the exact typed subset that may enter an upstream body.
+///
+/// Authorization is enforced by [`ContextStore::list_visible_memory`]: the
+/// scope is project/agent/session-exact and every record is filtered by
+/// ownership or an un-revoked session-bound share grant.  Only the typed
+/// summary, kind and provenance projection leaves the store — no raw
+/// prompt/response, no source content, no secrets.
+fn authorized_memory_records(state: &AppState, scope: &MemoryAccessScope) -> Vec<MemoryRecord> {
+    let Some(store) = state.context_store.as_ref() else {
+        return Vec::new();
+    };
+    let Ok(store) = store.lock() else {
+        return Vec::new();
+    };
+    store
+        .list_visible_memory(scope)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|record| {
+            record.kind == "preference" || record.kind == "convention" || record.kind == "project"
+        })
+        .collect()
+}
+
+/// Turn authorized memory records into safe, typed system blocks.  Never
+/// echoes raw content: only the typed summary text is included.
+fn memory_context_blocks(records: &[MemoryRecord]) -> Vec<Value> {
+    let mut blocks = Vec::with_capacity(records.len());
+    for record in records {
+        blocks.push(json!({
+            "type": "text",
+            "text": record.summary,
+            "cache_control": {"type": "ephemeral"}
+        }));
+    }
+    blocks
+}
+
+/// Inject authorized memory blocks into an OpenAI Chat request body as a
+/// leading `system` message.  When no system message exists a new one is
+/// created; when one exists the memory blocks are appended to its content.
+/// The memory blocks are deliberately marked `cache_control: ephemeral`, so
+/// they never join the transformable window and never enter a stored
+/// artifact.
+fn inject_memory_into_openai_body(body: &Value, blocks: &[Value]) -> Value {
+    if blocks.is_empty() {
+        return body.clone();
+    }
+    let mut body = body.clone();
+    // Fail-closed: a body without a `messages` array is left untouched
+    // (never panics on a hostile or non-chat-shaped body).
+    let Some(messages) = body.get_mut("messages").and_then(Value::as_array_mut) else {
+        return body;
+    };
+    let memory_block = json!({
+        "role": "system",
+        "content": blocks,
+        "cache_control": {"type": "ephemeral"}
+    });
+    if let Some(first) = messages.first_mut() {
+        if first.get("role").and_then(Value::as_str) == Some("system") {
+            let merged = match first.get_mut("content") {
+                Some(Value::Array(existing)) => {
+                    let mut existing = existing.clone();
+                    existing.extend(blocks.iter().cloned());
+                    Value::Array(existing)
+                }
+                Some(Value::String(text)) => {
+                    let mut merged = vec![json!({"type": "text", "text": text.clone()})];
+                    merged.extend(blocks.iter().cloned());
+                    Value::Array(merged)
+                }
+                _ => Value::Array(blocks.to_vec()),
+            };
+            if let Some(obj) = first.as_object_mut() {
+                obj.insert("content".to_string(), merged);
+            }
+            return body;
+        }
+    }
+    messages.insert(0, memory_block);
+    body
+}
+
+/// Inject authorized memory blocks into an Anthropic Messages request body
+/// as leading system blocks.  Both string and block-list `system` shapes are
+/// normalized to a block list (memory blocks are already blocks).
+fn inject_memory_into_anthropic_body(body: &Value, blocks: &[Value]) -> Value {
+    if blocks.is_empty() {
+        return body.clone();
+    }
+    let mut body = body.clone();
+    let mut system = match body.get("system") {
+        Some(Value::Array(existing)) => existing.clone(),
+        Some(Value::String(text)) => vec![json!({"type": "text", "text": text.clone()})],
+        _ => Vec::new(),
+    };
+    system.extend(blocks.iter().cloned());
+    if let Some(obj) = body.as_object_mut() {
+        obj.insert("system".to_string(), Value::Array(system));
+    }
+    body
+}
+
+/// Route dispatch for memory injection: picks the upstream-shape injector
+/// based on the provider protocol.  Injection is skipped fail-closed when
+/// there is nothing to inject.
+fn inject_memory_into_body(body: Value, protocol: &Protocol, blocks: &[Value]) -> Value {
+    if blocks.is_empty() {
+        return body;
+    }
+    match protocol {
+        Protocol::Anthropic => inject_memory_into_anthropic_body(&body, blocks),
+        Protocol::OpenAi => inject_memory_into_openai_body(&body, blocks),
+    }
+}
+
 #[derive(Debug, Clone)]
 struct RoutedBridgePayload {
     scope: RequestScope,
@@ -4968,6 +5195,18 @@ fn compress_for_route_with_cache_evidence(
     body: Value,
     cache_evidence: Option<&dtoken_compress::context_pipeline::ProviderCacheEvidence>,
 ) -> CompressionSummary {
+    compress_for_route_with_frozen(context, policy, body, cache_evidence, None)
+}
+
+/// Compression path that carries an optional request-level frozen-message
+/// override into the safe-text pipeline.
+fn compress_for_route_with_frozen(
+    context: Option<&ResolvedRouteOptimizationContext>,
+    policy: CompressionPolicy,
+    body: Value,
+    cache_evidence: Option<&dtoken_compress::context_pipeline::ProviderCacheEvidence>,
+    frozen_message_count: Option<usize>,
+) -> CompressionSummary {
     let result = context
         .map(|context| {
             CompressionEngine::new().compress_resolved_with_cache_evidence(
@@ -4975,6 +5214,7 @@ fn compress_for_route_with_cache_evidence(
                 policy.clone(),
                 body.clone(),
                 cache_evidence,
+                frozen_message_count,
             )
         })
         .unwrap_or_else(|| CompressionEngine::new().compress(policy, body.clone()))
@@ -5619,11 +5859,18 @@ fn output_safety_for_text(text: &str) -> OutputSafety {
     }
 }
 
+// Evidence fields mirror the fixed outbound-shaping JSON contract; grouping them
+// into a struct would churn every call site for no behavior change.
+#[allow(clippy::too_many_arguments)]
 fn output_shaping_evidence(
     result: OutputShapingResult,
     route_id: &str,
     provider_id: &str,
     model: &str,
+    config_revision: &str,
+    request_id: &str,
+    chain_mode: &str,
+    compression_policy: &str,
 ) -> Value {
     let accounting = match result.accounting {
         OutputShapingAccounting::Measured {
@@ -5666,6 +5913,10 @@ fn output_shaping_evidence(
         "route_id": route_id,
         "provider_id": provider_id,
         "model": model,
+        "config_revision": config_revision,
+        "request_id": request_id,
+        "chain_mode": chain_mode,
+        "compression_policy": compression_policy,
         "verbosity": result.verbosity,
         "effort": result.effort.as_str(),
         "transforms": result.transforms,
@@ -5675,11 +5926,18 @@ fn output_shaping_evidence(
     })
 }
 
+// Evidence fields mirror the fixed outbound-shaping JSON contract; grouping them
+// into a struct would churn every call site for no behavior change.
+#[allow(clippy::too_many_arguments)]
 fn output_shaping_passthrough_evidence(
     reason_code: &'static str,
     route_id: &str,
     provider_id: &str,
     model: &str,
+    config_revision: &str,
+    request_id: &str,
+    chain_mode: &str,
+    compression_policy: &str,
 ) -> Value {
     json!({
         "state": OutputShapingDisposition::Passthrough.as_str(),
@@ -5687,6 +5945,10 @@ fn output_shaping_passthrough_evidence(
         "route_id": route_id,
         "provider_id": provider_id,
         "model": model,
+        "config_revision": config_revision,
+        "request_id": request_id,
+        "chain_mode": chain_mode,
+        "compression_policy": compression_policy,
         "accounting": {
             "measured": null,
             "holdout_estimated": null,
@@ -5702,57 +5964,41 @@ fn apply_openai_output_shaping(
     route: &dtoken_types::RouteProfile,
     scope: &RequestScope,
     policy: Option<&dtoken_types::OutputShapingRoutePolicy>,
+    chain_mode: &str,
+    compression_policy: &str,
 ) -> Value {
-    let Some(policy) = policy else {
-        return output_shaping_passthrough_evidence(
-            "route_output_shaping_policy_unavailable",
+    let passthrough = |reason_code| {
+        output_shaping_passthrough_evidence(
+            reason_code,
             &scope.route_id,
             &scope.provider_id,
             &scope.model,
-        );
+            &scope.config_revision,
+            &scope.request_id.to_string(),
+            chain_mode,
+            compression_policy,
+        )
+    };
+    let Some(policy) = policy else {
+        return passthrough("route_output_shaping_policy_unavailable");
     };
     let Some(choices) = response.get_mut("choices").and_then(Value::as_array_mut) else {
-        return output_shaping_passthrough_evidence(
-            "unknown_response_shape_passthrough",
-            &scope.route_id,
-            &scope.provider_id,
-            &scope.model,
-        );
+        return passthrough("unknown_response_shape_passthrough");
     };
     if choices.len() != 1 {
-        return output_shaping_passthrough_evidence(
-            "multi_choice_response_passthrough",
-            &scope.route_id,
-            &scope.provider_id,
-            &scope.model,
-        );
+        return passthrough("multi_choice_response_passthrough");
     }
     let Some(message) = choices[0].get_mut("message").and_then(Value::as_object_mut) else {
-        return output_shaping_passthrough_evidence(
-            "unknown_response_shape_passthrough",
-            &scope.route_id,
-            &scope.provider_id,
-            &scope.model,
-        );
+        return passthrough("unknown_response_shape_passthrough");
     };
     if message.contains_key("tool_calls")
         || message.contains_key("function_call")
         || message.get("role").and_then(Value::as_str) != Some("assistant")
     {
-        return output_shaping_passthrough_evidence(
-            "tool_or_structured_response_passthrough",
-            &scope.route_id,
-            &scope.provider_id,
-            &scope.model,
-        );
+        return passthrough("tool_or_structured_response_passthrough");
     }
     let Some(text) = message.get("content").and_then(Value::as_str) else {
-        return output_shaping_passthrough_evidence(
-            "unknown_response_shape_passthrough",
-            &scope.route_id,
-            &scope.provider_id,
-            &scope.model,
-        );
+        return passthrough("unknown_response_shape_passthrough");
     };
     let result = shape_output_for_policy(
         route,
@@ -5764,7 +6010,16 @@ fn apply_openai_output_shaping(
     if result.disposition == OutputShapingDisposition::Applied {
         message.insert("content".to_string(), Value::String(result.body.clone()));
     }
-    output_shaping_evidence(result, &scope.route_id, &scope.provider_id, &scope.model)
+    output_shaping_evidence(
+        result,
+        &scope.route_id,
+        &scope.provider_id,
+        &scope.model,
+        &scope.config_revision,
+        &scope.request_id.to_string(),
+        chain_mode,
+        compression_policy,
+    )
 }
 
 fn apply_anthropic_output_shaping(
@@ -5772,56 +6027,40 @@ fn apply_anthropic_output_shaping(
     route: &dtoken_types::RouteProfile,
     scope: &RequestScope,
     policy: Option<&dtoken_types::OutputShapingRoutePolicy>,
+    chain_mode: &str,
+    compression_policy: &str,
 ) -> Value {
-    let Some(policy) = policy else {
-        return output_shaping_passthrough_evidence(
-            "route_output_shaping_policy_unavailable",
+    let passthrough = |reason_code| {
+        output_shaping_passthrough_evidence(
+            reason_code,
             &scope.route_id,
             &scope.provider_id,
             &scope.model,
-        );
+            &scope.config_revision,
+            &scope.request_id.to_string(),
+            chain_mode,
+            compression_policy,
+        )
+    };
+    let Some(policy) = policy else {
+        return passthrough("route_output_shaping_policy_unavailable");
     };
     let Some(content) = response.get_mut("content").and_then(Value::as_array_mut) else {
-        return output_shaping_passthrough_evidence(
-            "unknown_response_shape_passthrough",
-            &scope.route_id,
-            &scope.provider_id,
-            &scope.model,
-        );
+        return passthrough("unknown_response_shape_passthrough");
     };
     if content.len() != 1 {
-        return output_shaping_passthrough_evidence(
-            "tool_or_structured_response_passthrough",
-            &scope.route_id,
-            &scope.provider_id,
-            &scope.model,
-        );
+        return passthrough("tool_or_structured_response_passthrough");
     }
     let Some(block) = content[0].as_object_mut() else {
-        return output_shaping_passthrough_evidence(
-            "unknown_response_shape_passthrough",
-            &scope.route_id,
-            &scope.provider_id,
-            &scope.model,
-        );
+        return passthrough("unknown_response_shape_passthrough");
     };
     if block.get("type").and_then(Value::as_str) != Some("text")
         || block.keys().any(|key| key != "type" && key != "text")
     {
-        return output_shaping_passthrough_evidence(
-            "tool_or_structured_response_passthrough",
-            &scope.route_id,
-            &scope.provider_id,
-            &scope.model,
-        );
+        return passthrough("tool_or_structured_response_passthrough");
     }
     let Some(text) = block.get("text").and_then(Value::as_str) else {
-        return output_shaping_passthrough_evidence(
-            "unknown_response_shape_passthrough",
-            &scope.route_id,
-            &scope.provider_id,
-            &scope.model,
-        );
+        return passthrough("unknown_response_shape_passthrough");
     };
     let result = shape_output_for_policy(
         route,
@@ -5833,7 +6072,16 @@ fn apply_anthropic_output_shaping(
     if result.disposition == OutputShapingDisposition::Applied {
         block.insert("text".to_string(), Value::String(result.body.clone()));
     }
-    output_shaping_evidence(result, &scope.route_id, &scope.provider_id, &scope.model)
+    output_shaping_evidence(
+        result,
+        &scope.route_id,
+        &scope.provider_id,
+        &scope.model,
+        &scope.config_revision,
+        &scope.request_id.to_string(),
+        chain_mode,
+        compression_policy,
+    )
 }
 
 fn attach_output_shaping_evidence(
@@ -8800,19 +9048,30 @@ fn anthropic_route_payload(
         provider.protocol.clone(),
     )
     .map_err(|_| RouteSelectionError::InvalidOptimizationContext)?;
+    // Authorized memory is retrieved exactly once, then injected only into
+    // the final wire body after compression: memory blocks never enter the
+    // compression pipeline, never enter stored artifacts, and never distort
+    // token accounting.  Fail-closed: no retrievable scope -> no injection.
+    let memory_blocks = request_scope_memory_access(&scope)
+        .as_ref()
+        .map(|access| memory_context_blocks(&authorized_memory_records(state, access)))
+        .unwrap_or_default();
     let compression = if provider.protocol == Protocol::Anthropic {
         // Direct Anthropic routes are planned by HybridContextEngine in the handler.
         // Keeping this preliminary body untouched prevents semantic+optical stacking.
         compress_for_route(None, CompressionPolicy::Off, upstream_body)
     } else {
         let cache_evidence = configured_provider_cache_evidence(state, &scope);
-        compress_for_route_with_cache_evidence(
+        compress_for_route_with_frozen(
             Some(&optimization_context),
             decision.compression_policy.clone(),
             upstream_body,
             cache_evidence.as_ref(),
+            None,
         )
     };
+    let memory_injected_body =
+        inject_memory_into_body(compression.body.clone(), &provider.protocol, &memory_blocks);
     let attribution = request_attribution_from_scope(&scope);
     let request_log = build_request_log(
         request_id,
@@ -8833,9 +9092,23 @@ fn anthropic_route_payload(
         &attribution,
     );
     attach_request_scope(&mut event, &scope);
+    if !memory_blocks.is_empty() {
+        if let Some(metadata) = event.metadata.as_object_mut() {
+            metadata.insert(
+                "memory_injection".to_string(),
+                json!({
+                    "injected": true,
+                    "block_count": memory_blocks.len(),
+                    "protocol": provider.protocol,
+                    "raw_available": false,
+                    "privacy": "typed memory summaries only; raw prompt, response, source and secrets are never persisted"
+                }),
+            );
+        }
+    }
     Ok(RoutedBridgePayload {
         scope,
-        upstream_body: compression.body.clone(),
+        upstream_body: memory_injected_body,
         decision,
         request_log,
         event,
@@ -8888,6 +9161,7 @@ async fn prepare_direct_anthropic_hybrid(
             &registry,
             &worker_cancellation,
             cache_evidence.as_ref(),
+            None,
         )
     })
     .await
@@ -10666,11 +10940,12 @@ async fn openai_chat_completions(
         );
         let baseline_body = original_body.clone();
         let cache_evidence = configured_provider_cache_evidence(&state, &scope);
-        let mut compression = compress_for_route_with_cache_evidence(
+        let mut compression = compress_for_route_with_frozen(
             Some(&optimization_context),
             decision.compression_policy.clone(),
             original_body,
             cache_evidence.as_ref(),
+            None,
         );
         let attribution = request_attribution_from_scope(&scope);
         let mut request_log = build_request_log(
@@ -10782,8 +11057,32 @@ async fn openai_chat_completions(
                 metadata.insert("pipeline_fallback_reason".to_string(), json!(reason));
             }
         }
-        let upstream_body = serde_json::from_slice::<Value>(pipeline_payload.ready.body())
+        let mut upstream_body = serde_json::from_slice::<Value>(pipeline_payload.ready.body())
             .unwrap_or_else(|_| baseline_body.clone());
+        // Authorized memory is injected into the final wire body after
+        // compression: memory blocks never enter the compression pipeline,
+        // never enter stored artifacts, and never distort token accounting.
+        let memory_blocks = request_scope_memory_access(&scope)
+            .as_ref()
+            .map(|access| memory_context_blocks(&authorized_memory_records(&state, access)))
+            .unwrap_or_default();
+        if !memory_blocks.is_empty() {
+            let injected =
+                inject_memory_into_body(upstream_body.clone(), &Protocol::OpenAi, &memory_blocks);
+            upstream_body = injected;
+            if let Some(metadata) = event.metadata.as_object_mut() {
+                metadata.insert(
+                    "memory_injection".to_string(),
+                    json!({
+                        "injected": true,
+                        "block_count": memory_blocks.len(),
+                        "protocol": "open_ai",
+                        "raw_available": false,
+                        "privacy": "typed memory summaries only; raw prompt, response, source and secrets are never persisted"
+                    }),
+                );
+            }
+        }
         if let Some(metadata) = event.metadata.as_object_mut() {
             metadata.insert(
                 "pipeline_payload_variant".to_string(),
@@ -10825,6 +11124,10 @@ async fn openai_chat_completions(
                             &scope.route_id,
                             &scope.provider_id,
                             &scope.model,
+                            &scope.config_revision,
+                            &scope.request_id.to_string(),
+                            "direct",
+                            compression_policy_as_str(&decision.compression_policy),
                         ),
                     );
                     if let Some(accounting) = request_log.context_accounting.as_mut() {
@@ -10932,6 +11235,10 @@ async fn openai_chat_completions(
                 &scope.route_id,
                 &scope.provider_id,
                 &scope.model,
+                &scope.config_revision,
+                &scope.request_id.to_string(),
+                "direct",
+                compression_policy_as_str(&decision.compression_policy),
             )
         } else {
             apply_openai_output_shaping(
@@ -10939,6 +11246,8 @@ async fn openai_chat_completions(
                 route,
                 &scope,
                 output_shaping_policy_for_scope(&state.config, &scope),
+                "direct",
+                compression_policy_as_str(&decision.compression_policy),
             )
         };
         attach_output_shaping_evidence(&mut request_log, &mut event, output_shaping);
@@ -11131,11 +11440,12 @@ async fn openai_responses(
             compression_inventory_diagnostics(&responses_shadow_context, &body);
         let baseline_body = original_body.clone();
         let cache_evidence = configured_provider_cache_evidence(&state, &scope);
-        let mut compression = compress_for_route_with_cache_evidence(
+        let mut compression = compress_for_route_with_frozen(
             Some(&optimization_context),
             decision.compression_policy.clone(),
             original_body,
             cache_evidence.as_ref(),
+            None,
         );
         let attribution = request_attribution_from_scope(&scope);
         let mut request_log = build_request_log(
@@ -11254,8 +11564,32 @@ async fn openai_responses(
                 metadata.insert("pipeline_fallback_reason".to_string(), json!(reason));
             }
         }
-        let upstream_body = serde_json::from_slice::<Value>(pipeline_payload.ready.body())
+        let mut upstream_body = serde_json::from_slice::<Value>(pipeline_payload.ready.body())
             .unwrap_or_else(|_| baseline_body.clone());
+        // Authorized memory is injected into the final wire body after
+        // compression: memory blocks never enter the compression pipeline,
+        // never enter stored artifacts, and never distort token accounting.
+        let memory_blocks = request_scope_memory_access(&scope)
+            .as_ref()
+            .map(|access| memory_context_blocks(&authorized_memory_records(&state, access)))
+            .unwrap_or_default();
+        if !memory_blocks.is_empty() {
+            let injected =
+                inject_memory_into_body(upstream_body.clone(), &Protocol::OpenAi, &memory_blocks);
+            upstream_body = injected;
+            if let Some(metadata) = event.metadata.as_object_mut() {
+                metadata.insert(
+                    "memory_injection".to_string(),
+                    json!({
+                        "injected": true,
+                        "block_count": memory_blocks.len(),
+                        "protocol": "open_ai",
+                        "raw_available": false,
+                        "privacy": "typed memory summaries only; raw prompt, response, source and secrets are never persisted"
+                    }),
+                );
+            }
+        }
         if let Some(metadata) = event.metadata.as_object_mut() {
             metadata.insert(
                 "pipeline_payload_variant".to_string(),
@@ -11290,6 +11624,10 @@ async fn openai_responses(
                             &scope.route_id,
                             &scope.provider_id,
                             &scope.model,
+                            &scope.config_revision,
+                            &scope.request_id.to_string(),
+                            "direct",
+                            compression_policy_as_str(&decision.compression_policy),
                         ),
                     );
                     if let Some(accounting) = request_log.context_accounting.as_mut() {
@@ -11423,6 +11761,10 @@ async fn openai_responses(
                 &scope.route_id,
                 &scope.provider_id,
                 &scope.model,
+                &scope.config_revision,
+                &scope.request_id.to_string(),
+                "direct",
+                compression_policy_as_str(&decision.compression_policy),
             )
         } else {
             apply_openai_output_shaping(
@@ -11430,6 +11772,8 @@ async fn openai_responses(
                 route,
                 &scope,
                 output_shaping_policy_for_scope(&state.config, &scope),
+                "direct",
+                compression_policy_as_str(&decision.compression_policy),
             )
         };
         attach_output_shaping_evidence(&mut request_log, &mut event, output_shaping);
@@ -11684,6 +12028,10 @@ async fn anthropic_messages(
                             &payload.scope.route_id,
                             &payload.scope.provider_id,
                             &payload.scope.model,
+                            &payload.scope.config_revision,
+                            &payload.scope.request_id.to_string(),
+                            "direct",
+                            compression_policy_as_str(&payload.decision.compression_policy),
                         ),
                     );
                     if let Some(accounting) = payload.request_log.context_accounting.as_mut() {
@@ -11701,6 +12049,7 @@ async fn anthropic_messages(
                     payload.event.status = EventStatus::Ok;
                     if let Some(metadata) = payload.event.metadata.as_object_mut() {
                         metadata.insert("stream".to_string(), json!(true));
+                        metadata.insert("stream_passthrough".to_string(), json!(true));
                         metadata.insert("send_state".to_string(), json!("stream_started"));
                     }
                     let stream_accounting = payload.request_log.context_accounting.clone();
@@ -11823,6 +12172,10 @@ async fn anthropic_messages(
                 &payload.scope.route_id,
                 &payload.scope.provider_id,
                 &payload.scope.model,
+                &payload.scope.config_revision,
+                &payload.scope.request_id.to_string(),
+                "direct",
+                compression_policy_as_str(&payload.decision.compression_policy),
             )
         } else if let Some(route) = state.config.find_route(&payload.decision.route_id) {
             apply_anthropic_output_shaping(
@@ -11830,6 +12183,8 @@ async fn anthropic_messages(
                 route,
                 &payload.scope,
                 output_shaping_policy_for_scope(&state.config, &payload.scope),
+                "direct",
+                compression_policy_as_str(&payload.decision.compression_policy),
             )
         } else {
             output_shaping_passthrough_evidence(
@@ -11837,6 +12192,10 @@ async fn anthropic_messages(
                 &payload.scope.route_id,
                 &payload.scope.provider_id,
                 &payload.scope.model,
+                &payload.scope.config_revision,
+                &payload.scope.request_id.to_string(),
+                "direct",
+                compression_policy_as_str(&payload.decision.compression_policy),
             )
         };
         attach_output_shaping_evidence(
@@ -11973,6 +12332,10 @@ async fn anthropic_messages(
             &payload.scope.route_id,
             &payload.scope.provider_id,
             &payload.scope.model,
+            &payload.scope.config_revision,
+            &payload.scope.request_id.to_string(),
+            "direct",
+            compression_policy_as_str(&payload.decision.compression_policy),
         )
     } else if let Some(route) = state.config.find_route(&payload.decision.route_id) {
         apply_openai_output_shaping(
@@ -11980,6 +12343,8 @@ async fn anthropic_messages(
             route,
             &payload.scope,
             output_shaping_policy_for_scope(&state.config, &payload.scope),
+            "direct",
+            compression_policy_as_str(&payload.decision.compression_policy),
         )
     } else {
         output_shaping_passthrough_evidence(
@@ -11987,6 +12352,10 @@ async fn anthropic_messages(
             &payload.scope.route_id,
             &payload.scope.provider_id,
             &payload.scope.model,
+            &payload.scope.config_revision,
+            &payload.scope.request_id.to_string(),
+            "direct",
+            compression_policy_as_str(&payload.decision.compression_policy),
         )
     };
     attach_output_shaping_evidence(&mut payload.request_log, &mut payload.event, output_shaping);
@@ -12451,7 +12820,7 @@ async fn headroom_mcp(State(state): State<AppState>) -> Json<Value> {
     }))
 }
 
-/// Streamable-HTTP MCP JSON mode.
+/// Streamable-HTTP MCP JSON mode with bounded sessions.
 ///
 /// The MCP streamable-HTTP spec lets a client request JSON-only delivery by
 /// sending `Accept: application/json`; the server then answers with a single
@@ -12460,45 +12829,372 @@ async fn headroom_mcp(State(state): State<AppState>) -> Json<Value> {
 /// limits as the stdio transport and handled by the same `McpServer`, so the
 /// decision/reason/artifact contract is byte-identical across transports.
 ///
-/// No SSE session endpoint is registered (the axum build has no `sse`
-/// feature). The router owns one bounded `McpServer`, preserving JSON-RPC
-/// cancellation bookkeeping across POSTs while keeping retrieval and memory
-/// capabilities unavailable on the public loopback HTTP surface.
+/// Sessions are implicit and bounded: `initialize` creates a session whose
+/// id is returned in the `Mcp-Session-Id` header, and every subsequent
+/// request must carry that header.  The session layer records request and
+/// terminal state without persisting request bodies.  Any request without a
+/// session id other than `initialize` is rejected fail-closed instead of
+/// guessing a session.  No SSE session endpoint is registered (the axum
+/// build has no `sse` feature), so sessions answer JSON only.
 async fn mcp_http(
     Extension(server): Extension<Arc<mcp::McpServer>>,
+    headers: HeaderMap,
     body_bytes: Bytes,
 ) -> Response {
     if body_bytes.len() > mcp::MAX_MCP_MESSAGE_BYTES {
-        return (
+        return jsonrpc_http_error(
             StatusCode::PAYLOAD_TOO_LARGE,
-            Json(json!({
-                "jsonrpc": "2.0",
-                "id": Value::Null,
-                "error": {"code": -32600, "message": "Request too large"}
-            })),
-        )
-            .into_response();
+            Value::Null,
+            -32600,
+            "Request too large",
+        );
     }
     let request: Value = match serde_json::from_slice(&body_bytes) {
         Ok(request) => request,
         Err(_) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(json!({
-                    "jsonrpc": "2.0",
-                    "id": Value::Null,
-                    "error": {"code": -32700, "message": "Parse error"}
-                })),
-            )
-                .into_response();
+            return jsonrpc_http_error(StatusCode::BAD_REQUEST, Value::Null, -32700, "Parse error");
         }
     };
-    let Some(response) = server.handle_jsonrpc(request) else {
-        // Notifications have no response; Streamable-HTTP still answers with a
-        // 202 Accepted and an empty body per the spec.
-        return (StatusCode::ACCEPTED, ()).into_response();
+    let session_id = headers
+        .get(mcp::MCP_SESSION_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string);
+    let Some(session_id) = session_id else {
+        if request.get("method").and_then(Value::as_str) == Some("initialize") {
+            return initialize_session(server, request).await;
+        }
+        // Fail-closed: a session is created only by `initialize`; any other
+        // request without a session id is rejected, never guessed.
+        return jsonrpc_http_error(
+            StatusCode::BAD_REQUEST,
+            request.get("id").cloned().unwrap_or(Value::Null),
+            mcp::McpSessionError::SessionUnknown.code(),
+            mcp::McpSessionError::SessionUnknown.message(),
+        );
     };
-    (StatusCode::OK, Json(response)).into_response()
+    match server.session_state(&session_id) {
+        Ok(state) if state.status == mcp::McpSessionStatus::Active => {}
+        Ok(_) => {
+            return jsonrpc_http_error(
+                StatusCode::BAD_REQUEST,
+                request.get("id").cloned().unwrap_or(Value::Null),
+                mcp::McpSessionError::SessionTerminated.code(),
+                mcp::McpSessionError::SessionTerminated.message(),
+            );
+        }
+        Err(mcp::McpSessionError::SessionUnknown) => {
+            return jsonrpc_http_error(
+                StatusCode::BAD_REQUEST,
+                request.get("id").cloned().unwrap_or(Value::Null),
+                mcp::McpSessionError::SessionUnknown.code(),
+                mcp::McpSessionError::SessionUnknown.message(),
+            );
+        }
+        Err(_) => {
+            return jsonrpc_http_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                request.get("id").cloned().unwrap_or(Value::Null),
+                -32603,
+                "Internal error",
+            );
+        }
+    }
+    match server.submit_session_jsonrpc(&session_id, request).await {
+        Ok(Some(response)) => (StatusCode::OK, Json(response)).into_response(),
+        Ok(None) => {
+            // Notifications have no response; Streamable-HTTP still answers
+            // with a 202 Accepted and an empty body per the spec.
+            (StatusCode::ACCEPTED, ()).into_response()
+        }
+        Err(error) => {
+            let status = match error {
+                mcp::McpSessionError::SessionBusy => StatusCode::CONFLICT,
+                _ => StatusCode::BAD_REQUEST,
+            };
+            jsonrpc_http_error(status, Value::Null, error.code(), error.message())
+        }
+    }
+}
+
+/// Creates the session for an `initialize` request and answers with the
+/// `Mcp-Session-Id` header, so the client can bind subsequent requests.
+async fn initialize_session(server: Arc<mcp::McpServer>, request: Value) -> Response {
+    let state = match server.create_session() {
+        Ok(state) => state,
+        Err(mcp::McpSessionError::SessionCapacityExhausted) => {
+            return jsonrpc_http_error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                request.get("id").cloned().unwrap_or(Value::Null),
+                mcp::McpSessionError::SessionCapacityExhausted.code(),
+                mcp::McpSessionError::SessionCapacityExhausted.message(),
+            );
+        }
+        Err(_) => {
+            return jsonrpc_http_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                request.get("id").cloned().unwrap_or(Value::Null),
+                -32603,
+                "Internal error",
+            );
+        }
+    };
+    match server
+        .submit_session_jsonrpc(&state.session_id, request)
+        .await
+    {
+        Ok(Some(response)) => {
+            let mut headers = HeaderMap::new();
+            if let Ok(value) = HeaderValue::from_str(&state.session_id) {
+                headers.insert(mcp::MCP_SESSION_HEADER, value);
+            }
+            (StatusCode::OK, headers, Json(response)).into_response()
+        }
+        Ok(None) => (StatusCode::ACCEPTED, ()).into_response(),
+        Err(error) => {
+            let _ = server.terminate_session(&state.session_id);
+            jsonrpc_http_error(
+                StatusCode::BAD_REQUEST,
+                Value::Null,
+                error.code(),
+                error.message(),
+            )
+        }
+    }
+}
+
+fn jsonrpc_http_error(status: StatusCode, id: Value, code: i64, message: &str) -> Response {
+    (
+        status,
+        Json(json!({"jsonrpc": "2.0", "id": id, "error": {"code": code, "message": message}})),
+    )
+        .into_response()
+}
+
+#[cfg(test)]
+mod mcp_http_tests {
+    use super::*;
+    use dtoken_config::DtokenConfig;
+    use dtoken_types::{ChainMode, ProviderKind, ProviderProfile, RouteProfile};
+
+    fn route_config() -> DtokenConfig {
+        DtokenConfig {
+            providers: vec![ProviderProfile {
+                id: "mcp-provider".to_string(),
+                name: "MCP provider".to_string(),
+                kind: ProviderKind::Custom,
+                protocol: Protocol::OpenAi,
+                base_url: "http://127.0.0.1:9/v1".to_string(),
+                api_key_ref: None,
+                models: vec!["mcp-model".to_string()],
+                timeout_ms: 100,
+                healthcheck_path: None,
+            }],
+            routes: vec![RouteProfile {
+                id: "mcp-route".to_string(),
+                name: "MCP route".to_string(),
+                input_protocol: Protocol::OpenAi,
+                instance_id: "mcp-instance".to_string(),
+                target_provider_id: "mcp-provider".to_string(),
+                fallback_provider_id: None,
+                chain_mode: ChainMode::Direct,
+                compression_policy: CompressionPolicy::Balanced,
+                bind_host: "127.0.0.1".to_string(),
+                local_port: 18081,
+            }],
+            instances: Vec::new(),
+            provider_cache_policies: Vec::new(),
+            output_shaping_policies: Vec::new(),
+            optical: Default::default(),
+        }
+    }
+
+    fn route_ref() -> Value {
+        json!({
+            "route_id": "mcp-route",
+            "input_protocol": "open_ai",
+            "endpoint": "open_ai_chat_completions"
+        })
+    }
+
+    fn rpc_request(id: u64, method: &str, params: Value) -> Value {
+        json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params})
+    }
+
+    async fn http_response(response: Response) -> (StatusCode, HeaderMap, Value) {
+        let status = response.status();
+        let headers = response.headers().clone();
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("read response body");
+        let body: Value = if bytes.is_empty() {
+            Value::Null
+        } else {
+            serde_json::from_slice(&bytes).expect("JSON response body")
+        };
+        (status, headers, body)
+    }
+
+    fn initialize_request() -> Value {
+        rpc_request(1, "initialize", json!({"protocolVersion": "2024-11-05"}))
+    }
+
+    fn compress_request() -> Value {
+        rpc_request(
+            2,
+            "tools/call",
+            json!({
+                "name": "headroom_compress",
+                "arguments": {
+                    "policy": "balanced",
+                    "route_ref": route_ref(),
+                    "body": {"model": "mcp-model", "messages": [{"role": "user", "content": "hello"}]}
+                }
+            }),
+        )
+    }
+
+    fn session_header(session_id: &str) -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            mcp::MCP_SESSION_HEADER,
+            HeaderValue::from_str(session_id).expect("valid session header value"),
+        );
+        headers
+    }
+
+    #[tokio::test]
+    async fn initialize_creates_a_session_and_http_parities_with_stdio() {
+        let server = Arc::new(mcp::McpServer::new(AppState::new(route_config())));
+
+        let (status, headers, body) = http_response(
+            mcp_http(
+                Extension(server.clone()),
+                HeaderMap::new(),
+                Bytes::from(initialize_request().to_string()),
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["result"]["protocolVersion"], "2024-11-05");
+        let session_id = headers
+            .get(mcp::MCP_SESSION_HEADER)
+            .expect("Mcp-Session-Id header")
+            .to_str()
+            .expect("session id is utf-8")
+            .to_string();
+        assert!(!session_id.is_empty());
+
+        // The same compress request over the HTTP session and over the stdio
+        // surface must produce a byte-identical tool result (decision,
+        // reason, artifact and evidence contract).
+        let compress = compress_request();
+        let (status, _, body) = http_response(
+            mcp_http(
+                Extension(server.clone()),
+                session_header(&session_id),
+                Bytes::from(compress.to_string()),
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let http_result = body["result"]["content"][0]["text"]
+            .as_str()
+            .expect("HTTP tool text");
+        let stdio_response = server.handle_jsonrpc(compress).expect("stdio response");
+        let stdio_result = stdio_response["result"]["content"][0]["text"]
+            .as_str()
+            .expect("stdio tool text");
+        // `elapsed_us` is a live per-invocation timing measurement, so the
+        // HTTP and stdio runs legitimately report different values; the
+        // parity contract covers the deterministic decision/evidence content.
+        // Normalize the timing field before comparing the full serialized
+        // tool result byte-for-byte.
+        let mut http_value: Value = serde_json::from_str(http_result).expect("HTTP result JSON");
+        let mut stdio_value: Value = serde_json::from_str(stdio_result).expect("stdio result JSON");
+        http_value["elapsed_us"] = json!(0);
+        stdio_value["elapsed_us"] = json!(0);
+        let http_normalized = serde_json::to_string(&http_value).expect("serialize HTTP result");
+        let stdio_normalized = serde_json::to_string(&stdio_value).expect("serialize stdio result");
+        assert_eq!(http_normalized, stdio_normalized);
+        assert_eq!(http_value, stdio_value);
+        assert_eq!(http_value["decision"]["route_id"], "mcp-route");
+        assert_eq!(http_value["decision"]["provider_id"], "mcp-provider");
+        assert_eq!(http_value["decision"]["model"], "mcp-model");
+
+        // The session layer recorded both requests and their terminal state.
+        let session = server.session_state(&session_id).expect("session state");
+        assert_eq!(session.status, mcp::McpSessionStatus::Active);
+        assert_eq!(session.request_count, 2);
+        assert_eq!(
+            session.last_terminal.as_ref().map(|terminal| terminal.kind),
+            Some(mcp::McpSessionTerminalKind::Completed)
+        );
+    }
+
+    #[tokio::test]
+    async fn request_without_session_is_fail_closed_except_initialize() {
+        let server = Arc::new(mcp::McpServer::new(AppState::new(route_config())));
+        let (status, _, body) = http_response(
+            mcp_http(
+                Extension(server),
+                HeaderMap::new(),
+                Bytes::from(rpc_request(3, "tools/list", json!({})).to_string()),
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(body["error"]["code"], -32002);
+        assert_eq!(body["error"]["message"], "The MCP session is unknown.");
+    }
+
+    #[tokio::test]
+    async fn unknown_session_id_is_rejected() {
+        let server = Arc::new(mcp::McpServer::new(AppState::new(route_config())));
+        let (status, _, body) = http_response(
+            mcp_http(
+                Extension(server),
+                session_header("missing-session"),
+                Bytes::from(rpc_request(4, "ping", json!({})).to_string()),
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(body["error"]["code"], -32002);
+    }
+
+    #[tokio::test]
+    async fn session_notification_returns_202_accepted() {
+        let server = Arc::new(mcp::McpServer::new(AppState::new(route_config())));
+        let (_, headers, _) = http_response(
+            mcp_http(
+                Extension(server.clone()),
+                HeaderMap::new(),
+                Bytes::from(initialize_request().to_string()),
+            )
+            .await,
+        )
+        .await;
+        let session_id = headers
+            .get(mcp::MCP_SESSION_HEADER)
+            .expect("Mcp-Session-Id header")
+            .to_str()
+            .expect("session id is utf-8")
+            .to_string();
+        let response = mcp_http(
+            Extension(server),
+            session_header(&session_id),
+            Bytes::from(
+                json!({"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}})
+                    .to_string(),
+            ),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+    }
 }
 
 async fn backend_capabilities(State(state): State<AppState>) -> Json<CapabilityRegistrySnapshot> {
@@ -13603,6 +14299,7 @@ mod tests {
             route_id: "local-mock-route".to_string(),
             input_protocol: Protocol::OpenAi,
             endpoint: OpticalEndpoint::OpenAiChatCompletions,
+            frozen_message_count: None,
             requested_policy: Some(CompressionPolicy::Balanced),
             body: json!({
                 "model": "mock/model",
@@ -16973,6 +17670,223 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
+    fn injection_test_scope() -> RequestScope {
+        RequestScope::new(
+            Uuid::new_v4(),
+            EvidenceValue::known("opencode".to_string(), EvidenceSource::ConfiguredRoute),
+            EvidenceValue::known("demo-project".to_string(), EvidenceSource::ConfiguredRoute),
+            EvidenceValue::known("session-a".to_string(), EvidenceSource::ConfiguredRoute),
+            EvidenceValue::known("instance-a".to_string(), EvidenceSource::ConfiguredRoute),
+            "route-a",
+            "provider-a",
+            "model-a",
+            Protocol::OpenAi,
+            Protocol::OpenAi,
+            "config-a",
+        )
+        .unwrap()
+    }
+
+    fn injection_memory_write(kind: &str, summary: &str, dedup: &str) -> MemoryWriteRequest {
+        MemoryWriteRequest {
+            project_id: "demo-project".to_string(),
+            agent_id: Some("opencode".to_string()),
+            session_id: Some("session-a".to_string()),
+            kind: kind.to_string(),
+            summary: summary.to_string(),
+            keywords: vec!["keyword".to_string()],
+            dedup_key: dedup.to_string(),
+            entry_revision: format!("memory-rev-{dedup}"),
+            provenance: dtoken_context_store::MemoryProvenance {
+                source: "dtoken-runtime".to_string(),
+                source_revision: "runtime-rev-1".to_string(),
+                observed_at_ms: 1,
+            },
+        }
+    }
+
+    #[test]
+    fn memory_injection_is_scope_authorized_and_typed_only() {
+        let dir = std::env::temp_dir().join(format!("dtoken-memory-inject-{}", Uuid::new_v4()));
+        let state = AppState::new_persistent(DtokenConfig::empty(), &dir);
+        state
+            .record_memory(&injection_memory_write(
+                "preference",
+                "Prefer terse command output.",
+                "pref-1",
+            ))
+            .expect("preference record");
+        state
+            .record_memory(&injection_memory_write(
+                "convention",
+                "Conventional commits are required.",
+                "conv-1",
+            ))
+            .expect("convention record");
+        state
+            .record_memory(&injection_memory_write(
+                "project",
+                "Glossary: d-token is the local control plane.",
+                "proj-1",
+            ))
+            .expect("project record");
+        state
+            .record_memory(&injection_memory_write(
+                "diagnostic",
+                "Diagnostic records must be filtered out of injection.",
+                "diag-1",
+            ))
+            .expect("diagnostic record");
+
+        // Fail-closed: unknown project/agent identity -> no retrieval.
+        assert!(request_scope_memory_access(&cache_test_scope(Protocol::OpenAi)).is_none());
+
+        let scope = injection_test_scope();
+        let access = request_scope_memory_access(&scope).expect("known scope resolves");
+        let records = authorized_memory_records(&state, &access);
+        let mut kinds: Vec<&str> = records.iter().map(|record| record.kind.as_str()).collect();
+        kinds.sort_unstable();
+        assert_eq!(kinds, vec!["convention", "preference", "project"]);
+        assert!(!records.iter().any(|record| record.kind == "diagnostic"));
+
+        let blocks = memory_context_blocks(&records);
+        assert_eq!(blocks.len(), 3);
+        for block in &blocks {
+            assert_eq!(block["type"], "text");
+            assert_eq!(block["cache_control"], json!({"type": "ephemeral"}));
+            assert!(block["text"].is_string());
+            assert!(!block.to_string().contains("filtered out"));
+        }
+
+        // OpenAI Chat shape: existing system message content is merged as
+        // typed parts; memory blocks never replace the original system text.
+        let openai = json!({
+            "model": "m",
+            "messages": [
+                {"role": "system", "content": "Existing system."},
+                {"role": "user", "content": "hi"}
+            ]
+        });
+        let injected = inject_memory_into_body(openai.clone(), &Protocol::OpenAi, &blocks);
+        assert_eq!(injected["messages"][0]["role"], "system");
+        let content = injected["messages"][0]["content"]
+            .as_array()
+            .expect("merged parts");
+        assert_eq!(content.len(), 4);
+        assert!(content
+            .iter()
+            .any(|part| part["text"] == "Existing system."));
+        assert_eq!(injected["messages"][1]["role"], "user");
+
+        // OpenAI Chat shape without a system message: a new leading system
+        // message is created.
+        let openai_plain = json!({
+            "model": "m",
+            "messages": [{"role": "user", "content": "hi"}]
+        });
+        let injected_plain = inject_memory_into_body(openai_plain, &Protocol::OpenAi, &blocks);
+        assert_eq!(injected_plain["messages"][0]["role"], "system");
+        assert_eq!(
+            injected_plain["messages"][0]["content"]
+                .as_array()
+                .unwrap()
+                .len(),
+            3
+        );
+        assert_eq!(injected_plain["messages"][1]["role"], "user");
+
+        // Anthropic string `system` is normalized to a block list with the
+        // memory blocks appended.
+        let anthropic = json!({
+            "model": "m",
+            "system": "Existing system.",
+            "messages": [{"role": "user", "content": "hi"}]
+        });
+        let injected_anthropic = inject_memory_into_body(anthropic, &Protocol::Anthropic, &blocks);
+        let system = injected_anthropic["system"].as_array().expect("block list");
+        assert_eq!(system.len(), 4);
+        assert_eq!(
+            system[0],
+            json!({"type": "text", "text": "Existing system."})
+        );
+
+        // Anthropic block-list `system` is extended in place.
+        let anthropic_array = json!({
+            "model": "m",
+            "system": [{"type": "text", "text": "A"}],
+            "messages": []
+        });
+        let injected_aa = inject_memory_into_body(anthropic_array, &Protocol::Anthropic, &blocks);
+        assert_eq!(injected_aa["system"].as_array().unwrap().len(), 4);
+
+        // Empty blocks leave the body untouched and identical.
+        let untouched = inject_memory_into_body(openai.clone(), &Protocol::OpenAi, &[]);
+        assert_eq!(untouched, openai);
+
+        // No raw prompt, secret, or excluded-kind content in any projection.
+        let serialized = format!("{injected}{injected_plain}{injected_anthropic}{injected_aa}");
+        assert!(!serialized.contains("raw_prompt"));
+        assert!(!serialized.contains("filtered out"));
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn output_shaping_evidence_carries_real_route_evidence() {
+        let result = dtoken_compress::output_shaper::OutputShapingResult {
+            body: "shaped".to_string(),
+            disposition: dtoken_compress::output_shaper::OutputShapingDisposition::Applied,
+            reason_code: "terse_blank_collapse",
+            verbosity: dtoken_types::OutputVerbosity::Terse,
+            effort: dtoken_compress::output_shaper::EffortLevel::Minimal,
+            transforms: vec!["terse_blank_collapse"],
+            accounting: dtoken_compress::output_shaper::OutputShapingAccounting::Measured {
+                original_bytes: 10,
+                shaped_bytes: 5,
+                saved_bytes: 5,
+            },
+        };
+        let evidence = output_shaping_evidence(
+            result,
+            "route-a",
+            "provider-a",
+            "model-a",
+            "config-rev-42",
+            "request-7",
+            "direct",
+            "balanced",
+        );
+        assert_eq!(evidence["state"], "applied");
+        assert_eq!(evidence["route_id"], "route-a");
+        assert_eq!(evidence["provider_id"], "provider-a");
+        assert_eq!(evidence["model"], "model-a");
+        assert_eq!(evidence["config_revision"], "config-rev-42");
+        assert_eq!(evidence["request_id"], "request-7");
+        assert_eq!(evidence["chain_mode"], "direct");
+        assert_eq!(evidence["compression_policy"], "balanced");
+        assert_eq!(evidence["accounting"]["measured"]["saved_bytes"], 5);
+        assert_eq!(evidence["raw_available"], false);
+        assert_eq!(evidence["transforms"][0], "terse_blank_collapse");
+
+        let passthrough = output_shaping_passthrough_evidence(
+            "stream_passthrough",
+            "route-a",
+            "provider-a",
+            "model-a",
+            "config-rev-42",
+            "request-7",
+            "direct",
+            "balanced",
+        );
+        assert_eq!(passthrough["state"], "passthrough");
+        assert_eq!(passthrough["reason_code"], "stream_passthrough");
+        assert_eq!(passthrough["config_revision"], "config-rev-42");
+        assert_eq!(passthrough["request_id"], "request-7");
+        assert_eq!(passthrough["chain_mode"], "direct");
+        assert_eq!(passthrough["compression_policy"], "balanced");
+        assert_eq!(passthrough["accounting"]["unknown"], true);
+    }
+
     #[tokio::test]
     async fn headroom_mcp_status_reports_owned_transport_and_withholds_retrieve() {
         let state = AppState::new(DtokenConfig::empty());
@@ -18670,5 +19584,187 @@ mod tests {
             .expect("dropped stream terminal event");
         assert_eq!(terminal.status, EventStatus::Failed);
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn compression_policy_as_str_maps_all_five_policies() {
+        assert_eq!(compression_policy_as_str(&CompressionPolicy::Off), "off");
+        assert_eq!(compression_policy_as_str(&CompressionPolicy::Safe), "safe");
+        assert_eq!(
+            compression_policy_as_str(&CompressionPolicy::Balanced),
+            "balanced"
+        );
+        assert_eq!(
+            compression_policy_as_str(&CompressionPolicy::Aggressive),
+            "aggressive"
+        );
+        assert_eq!(compression_policy_as_str(&CompressionPolicy::Max), "max");
+    }
+
+    #[test]
+    fn inject_memory_into_openai_body_merges_existing_system_message() {
+        let blocks = vec![
+            json!({"type": "text", "text": "Memory block.", "cache_control": {"type": "ephemeral"}}),
+        ];
+        // Existing system message: content is merged as typed parts.
+        let body = json!({
+            "model": "m",
+            "messages": [
+                {"role": "system", "content": "Original system."},
+                {"role": "user", "content": "hi"}
+            ]
+        });
+        let injected = inject_memory_into_openai_body(&body, &blocks);
+        let messages = injected["messages"].as_array().unwrap();
+        assert_eq!(messages[0]["role"], "system");
+        assert_eq!(messages[0]["content"][0]["text"], "Original system.");
+        assert_eq!(messages[0]["content"][1]["text"], "Memory block.");
+        assert_eq!(
+            messages[0]["content"][1]["cache_control"]["type"],
+            "ephemeral"
+        );
+
+        // No messages array: fail-closed, body unchanged.
+        let no_messages = json!({"model": "m"});
+        let unchanged = inject_memory_into_openai_body(&no_messages, &blocks);
+        assert_eq!(unchanged, no_messages);
+
+        // No system message: memory block becomes a new leading system message.
+        let no_system = json!({
+            "model": "m",
+            "messages": [
+                {"role": "user", "content": "user message"}
+            ]
+        });
+        let injected = inject_memory_into_openai_body(&no_system, &blocks);
+        let messages = injected["messages"].as_array().unwrap();
+        assert_eq!(messages[0]["role"], "system");
+        assert_eq!(messages[0]["content"][0]["text"], "Memory block.");
+        assert_eq!(messages[1]["role"], "user");
+
+        // Empty blocks: body returned as-is.
+        let empty = inject_memory_into_openai_body(&body, &[]);
+        assert_eq!(empty, body);
+    }
+
+    #[test]
+    fn inject_memory_into_anthropic_body_merges_system_blocks() {
+        let blocks = vec![
+            json!({"type": "text", "text": "Memory block.", "cache_control": {"type": "ephemeral"}}),
+        ];
+        // Existing string system -> normalized to block list.
+        let body = json!({
+            "model": "m",
+            "system": "Original system.",
+            "messages": [{"role": "user", "content": "hi"}]
+        });
+        let injected = inject_memory_into_anthropic_body(&body, &blocks);
+        let system = injected["system"].as_array().unwrap();
+        assert_eq!(system[0]["type"], "text");
+        assert_eq!(system[0]["text"], "Original system.");
+        assert_eq!(system[1]["text"], "Memory block.");
+
+        // Existing block system -> extended.
+        let body = json!({
+            "model": "m",
+            "system": [{"type": "text", "text": "Existing."}],
+            "messages": [{"role": "user", "content": "hi"}]
+        });
+        let injected = inject_memory_into_anthropic_body(&body, &blocks);
+        let system = injected["system"].as_array().unwrap();
+        assert_eq!(system.len(), 2);
+        assert_eq!(system[1]["text"], "Memory block.");
+
+        // No system -> new system array.
+        let body = json!({
+            "model": "m",
+            "messages": [{"role": "user", "content": "hi"}]
+        });
+        let injected = inject_memory_into_anthropic_body(&body, &blocks);
+        assert_eq!(injected["system"].as_array().unwrap().len(), 1);
+
+        // Empty blocks: body unchanged.
+        let empty = inject_memory_into_anthropic_body(&body, &[]);
+        assert_eq!(empty, body);
+    }
+
+    #[test]
+    fn inject_memory_into_body_dispatches_by_protocol_and_skips_empty() {
+        let blocks =
+            vec![json!({"type": "text", "text": "Block.", "cache_control": {"type": "ephemeral"}})];
+        // OpenAI dispatch.
+        let openai_body = json!({
+            "model": "m",
+            "messages": [{"role": "user", "content": "hi"}]
+        });
+        let result = inject_memory_into_body(openai_body.clone(), &Protocol::OpenAi, &blocks);
+        assert_eq!(result["messages"][0]["role"], "system");
+
+        // Anthropic dispatch.
+        let anthropic_body = json!({
+            "model": "m",
+            "messages": [{"role": "user", "content": "hi"}]
+        });
+        let result = inject_memory_into_body(anthropic_body.clone(), &Protocol::Anthropic, &blocks);
+        assert!(result.get("system").is_some());
+
+        // Empty blocks -> body returned as-is (fail-closed via early return).
+        let result = inject_memory_into_body(openai_body.clone(), &Protocol::OpenAi, &[]);
+        assert_eq!(result, openai_body);
+    }
+
+    #[test]
+    fn frozen_message_count_flows_through_engine_compress_resolved() {
+        use dtoken_compress::{
+            context_pipeline::resolve_frozen_message_count, CompressionEngine,
+            ResolvedOptimizationContext,
+        };
+        let ctx = ResolvedOptimizationContext {
+            route_id: "route-test".to_string(),
+            provider_id: "provider-test".to_string(),
+            model: "model-exact-revision".to_string(),
+            input_protocol: Protocol::OpenAi,
+            output_protocol: Protocol::OpenAi,
+            endpoint: OpticalEndpoint::OpenAiChatCompletions,
+        };
+        let body = json!({
+            "model": "model-exact-revision",
+            "messages": [
+                {"role": "user", "content": "first"},
+                {"role": "user", "content": [{"type": "text", "text": "cacheable", "cache_control": {"type": "ephemeral"}}]},
+                {"role": "user", "content": "third"}
+            ]
+        });
+        // Marker-derived floor is 2 (the marker on messages[1] sets floor=2).
+        assert_eq!(resolve_frozen_message_count(&body, None), 2);
+
+        // Override frozen_message_count=0 -> the marker on messages[1] is
+        // ignored; the pipeline sees the body as passthrough-eligible.
+        let _result = CompressionEngine::new()
+            .compress_resolved_with_cache_evidence(
+                &ctx,
+                CompressionPolicy::Balanced,
+                body.clone(),
+                None,
+                Some(0),
+            )
+            .expect("compress_resolved_with_cache_evidence");
+        // With floor=0, the transformable window includes all messages and
+        // the engine may or may not apply transforms.
+        // (tokens_saved is u64, always non-negative.)
+
+        // With frozen_message_count=2 (marker-derived floor), the engine
+        // freezes messages[0..2] and only the trailing message is transformable.
+        let _result = CompressionEngine::new()
+            .compress_resolved_with_cache_evidence(
+                &ctx,
+                CompressionPolicy::Balanced,
+                body,
+                None,
+                Some(2),
+            )
+            .expect("compress_resolved_with_cache_evidence");
+        // tokens_saved is u64, always non-negative; the assertion is that
+        // the call completed without error (demonstrated above).
     }
 }

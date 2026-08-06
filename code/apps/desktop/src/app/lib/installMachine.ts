@@ -235,6 +235,11 @@ function selectableBindings(snapshot: ConnectionSetupSnapshot) {
 }
 
 export function canJoinInstallBatch(binding: AgentUpstreamBinding) {
+  // MCP/Hook agents provide only tool-level integration, not route evidence.
+  // They are not selectable for the batch route install plan.
+  if (binding.integration_kind === "mcp" || binding.integration_kind === "hook") {
+    return false;
+  }
   return binding.installed
     && (binding.already_connected || binding.can_configure === true);
 }

@@ -32,6 +32,10 @@ use dtoken_config_patcher::{
         AgentIntegrationTransactionManifest, AgentIntegrationTransactionState, ManagedMcpLaunch,
         PreparedAgentIntegration,
     },
+    agent_mcp::{
+        resolve_mcp_config_path, transform_mcp_json_document, verify_mcp_json_cleared,
+        verify_mcp_json_document,
+    },
     stable_hash, ConfigPatcher, ExpectedFileState,
 };
 use dtoken_context_store::{
@@ -86,6 +90,7 @@ use std::{
     thread,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
+#[cfg(any(debug_assertions, test))]
 use tauri_specta::collect_commands;
 use uuid::Uuid;
 
@@ -7545,6 +7550,28 @@ fn execute_agent_auto_follow() -> Value {
 /// provider. cc-switch remains read-only: the resulting plan changes only the
 /// d-token active config and is still subject to the normal review/apply
 /// transaction.
+///
+/// Stable, reproducible target list for a cc-switch sync plan, derived from
+/// the plan bindings sorted by agent id. Both Doctor preview and apply
+/// compute it from the same plan shape so the review digest is reproducible;
+/// any cc-switch change between preview and apply changes the bindings and
+/// therefore the digest, which is the stale-rejection signal.
+fn cc_switch_plan_targets(plan: &ConnectionRoutePlanRequest) -> Vec<Value> {
+    let mut bindings = plan.bindings.clone();
+    bindings.sort_by(|left, right| left.agent_id.cmp(&right.agent_id));
+    bindings
+        .into_iter()
+        .map(|binding| {
+            json!({
+                "agent_id": binding.agent_id,
+                "candidate_id": binding.candidate_id,
+                "candidate_source": binding.candidate_source,
+                "model": binding.model,
+            })
+        })
+        .collect()
+}
+
 fn prepare_cc_switch_sync_plan(
     request: &CcSwitchSyncPlanRequest,
 ) -> Result<ConnectionRoutePlanRequest, String> {
@@ -7955,6 +7982,12 @@ fn save_cc_switch_route_sync_receipt(receipt: &CcSwitchRouteSyncReceipt) {
     if let Ok(value) = serde_json::to_value(receipt) {
         let _ = write_json_app_state(&["routing", "cc-switch-auto-follow-receipt.json"], &value);
     }
+}
+
+fn load_cc_switch_route_sync_receipt() -> Option<CcSwitchRouteSyncReceipt> {
+    read_app_state(&["routing", "cc-switch-auto-follow-receipt.json"])
+        .ok()
+        .and_then(|value| serde_json::from_value(value).ok())
 }
 
 fn record_cc_switch_auto_follow_receipt(
@@ -10195,6 +10228,375 @@ fn verify_managed_agent_transport(request: ManagedAgentTransportRequest) -> Valu
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct ManagedAgentMcpRequest {
+    agent_id: String,
+    /// The absolute path to the MCP config file (resolved from the discovery).
+    config_path: PathBuf,
+    /// "configure" or "clear"
+    operation: String,
+}
+
+fn resolve_managed_agent_mcp_request(
+    request: ManagedAgentMcpRequest,
+) -> Result<ManagedAgentMcpRequest, String> {
+    let context = current_process_scan_context(epoch_ms())
+        .map_err(|error| format!("Agent configuration roots are unavailable: {error}"))?;
+    resolve_managed_agent_mcp_request_with_home(request, &context.home_dir)
+}
+
+fn resolve_managed_agent_mcp_request_with_home(
+    mut request: ManagedAgentMcpRequest,
+    home_dir: &Path,
+) -> Result<ManagedAgentMcpRequest, String> {
+    if !matches!(request.operation.as_str(), "configure" | "clear") {
+        return Err("Unsupported managed MCP operation".to_string());
+    }
+    let raw = request.config_path.to_string_lossy();
+    if let Some(relative) = raw.strip_prefix("~/") {
+        request.config_path = home_dir.join(relative);
+    } else if !request.config_path.is_absolute() {
+        return Err("MCP config path is not absolute or home-relative".to_string());
+    }
+    request.config_path = normalize_managed_agent_target(&request.config_path)?;
+    let expected = resolve_mcp_config_path(&request.agent_id, home_dir)
+        .ok_or_else(|| "Agent has no verified MCP configuration target".to_string())?;
+    let expected = normalize_managed_agent_target(&expected)?;
+    if request.config_path != expected {
+        return Err("MCP config path is outside the registered Agent target".to_string());
+    }
+    reject_symlink_components(&request.config_path)?;
+    if request.config_path.exists() {
+        let metadata = fs::symlink_metadata(&request.config_path)
+            .map_err(|error| format!("MCP config metadata is unavailable: {error}"))?;
+        if !metadata.is_file() {
+            return Err("MCP config target must be a regular file".to_string());
+        }
+        let resolved = fs::canonicalize(&request.config_path)
+            .map_err(|error| format!("MCP config path cannot be canonicalized: {error}"))?;
+        let resolved_expected = fs::canonicalize(&expected)
+            .map_err(|error| format!("Registered MCP config cannot be canonicalized: {error}"))?;
+        if resolved != resolved_expected {
+            return Err("MCP config does not resolve to the registered target".to_string());
+        }
+    } else {
+        // Clear is idempotent. Once the requested path exactly matches the
+        // registered target and all existing path components are non-symlink,
+        // an absent file (including an absent Agent config directory) already
+        // satisfies the operation and must not require directory creation.
+        if request.operation == "clear" {
+            return Ok(request);
+        }
+        let parent = request
+            .config_path
+            .parent()
+            .ok_or_else(|| "MCP config target has no parent directory".to_string())?;
+        let expected_parent = expected
+            .parent()
+            .ok_or_else(|| "Registered MCP config target has no parent directory".to_string())?;
+        let resolved_parent = fs::canonicalize(parent)
+            .map_err(|_| "MCP config parent directory must already exist".to_string())?;
+        let resolved_expected_parent = fs::canonicalize(expected_parent)
+            .map_err(|_| "Registered MCP config parent directory must already exist".to_string())?;
+        if resolved_parent != resolved_expected_parent || !resolved_parent.is_dir() {
+            return Err("MCP config parent is outside the registered Agent target".to_string());
+        }
+    }
+    Ok(request)
+}
+
+fn redacted_mcp_diff(request: &ManagedAgentMcpRequest, changed: bool) -> String {
+    if !changed {
+        return String::new();
+    }
+    format!(
+        "{} the d-token-owned MCP entry in {}. Existing MCP providers and document contents are redacted.",
+        if request.operation == "configure" {
+            "Add"
+        } else {
+            "Remove"
+        },
+        request.config_path.display()
+    )
+}
+
+/// Preview a d-token MCP entry add/remove for an MCP-capable agent.
+/// Uses the resolved absolute dtoken-agent-bridge path to build the
+/// exact MCP entry. No write occurs; returns a hash-bound diff.
+#[tauri::command]
+fn preview_managed_agent_mcp_integration(request: ManagedAgentMcpRequest) -> Value {
+    let request = match resolve_managed_agent_mcp_request(request) {
+        Ok(request) => request,
+        Err(error) => return json!({ "ok": false, "state": "failed", "summary": error }),
+    };
+    let bridge = match resolve_dtoken_agent_bridge_exe() {
+        Ok(path) => path,
+        Err(error) => {
+            return json!({
+                "ok": false,
+                "state": "failed",
+                "summary": format!("dtoken-agent-bridge is unavailable: {error}")
+            })
+        }
+    };
+    let entry = json!({
+        "command": bridge.to_string_lossy(),
+        "args": ["mcp", "stdio"]
+    });
+    let config_text = match fs::read_to_string(&request.config_path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(error) => {
+            return json!({
+                "ok": false,
+                "state": "failed",
+                "summary": format!("Failed to read MCP config: {error}")
+            })
+        }
+    };
+    let add = request.operation == "configure";
+    let result = transform_mcp_json_document(&request.agent_id, &config_text, &entry, add);
+    match result {
+        Ok(next_text) => {
+            use sha2::{Digest, Sha256};
+            let before_sha256 = format!("{:x}", Sha256::digest(config_text.as_bytes()));
+            let after_sha256 = format!("{:x}", Sha256::digest(next_text.as_bytes()));
+            let changed = before_sha256 != after_sha256;
+            let diff = redacted_mcp_diff(&request, changed);
+            json!({
+                "ok": true,
+                "state": "review",
+                "review": {
+                    "agent_id": request.agent_id,
+                    "target_path": request.config_path.to_string_lossy(),
+                    "revision": format!("mcp-review-{}", &before_sha256[..12]),
+                    "before_sha256": before_sha256,
+                    "after_sha256": after_sha256,
+                    "changed": changed,
+                    "redacted_diff": diff,
+                    "bridge_path": bridge.to_string_lossy(),
+                    "provides_route_evidence": false,
+                    "integration_kind": "mcp",
+                }
+            })
+        }
+        Err(error) => json!({
+            "ok": false,
+            "state": "failed",
+            "summary": error.to_string()
+        }),
+    }
+}
+
+/// Apply a reviewed MCP integration change. The caller must pass the
+/// exact before/after SHA256 from the preview. Fails on mismatch.
+#[tauri::command]
+fn apply_managed_agent_mcp_integration(
+    request: ManagedAgentMcpRequest,
+    reviewed_before_sha256: String,
+    reviewed_after_sha256: String,
+) -> Value {
+    let request = match resolve_managed_agent_mcp_request(request) {
+        Ok(request) => request,
+        Err(error) => return json!({ "ok": false, "state": "failed", "summary": error }),
+    };
+    let bridge = match resolve_dtoken_agent_bridge_exe() {
+        Ok(path) => path,
+        Err(error) => {
+            return json!({
+                "ok": false,
+                "state": "failed",
+                "summary": format!("dtoken-agent-bridge is unavailable: {error}")
+            })
+        }
+    };
+    let entry = json!({
+        "command": bridge.to_string_lossy(),
+        "args": ["mcp", "stdio"]
+    });
+    let config_text = match fs::read_to_string(&request.config_path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(error) => {
+            return json!({
+                "ok": false,
+                "state": "failed",
+                "summary": format!("Failed to read MCP config: {error}")
+            })
+        }
+    };
+    use sha2::{Digest, Sha256};
+    let before_sha256 = format!("{:x}", Sha256::digest(config_text.as_bytes()));
+    if before_sha256 != reviewed_before_sha256 {
+        return json!({
+            "ok": false,
+            "state": "blocked",
+            "summary": "MCP config changed after review; generate a new preview"
+        });
+    }
+    let add = request.operation == "configure";
+    let next_text = match transform_mcp_json_document(&request.agent_id, &config_text, &entry, add)
+    {
+        Ok(text) => text,
+        Err(error) => {
+            return json!({
+                "ok": false,
+                "state": "failed",
+                "summary": error.to_string()
+            })
+        }
+    };
+    let after_sha256 = format!("{:x}", Sha256::digest(next_text.as_bytes()));
+    if after_sha256 != reviewed_after_sha256 {
+        return json!({
+            "ok": false,
+            "state": "blocked",
+            "summary": "MCP config after_sha256 does not match the reviewed value"
+        });
+    }
+    if config_text == next_text {
+        let verification =
+            verify_managed_agent_mcp_integration(request.agent_id, request.config_path, add);
+        return json!({
+            "ok": verification.get("ok").and_then(Value::as_bool).unwrap_or(false),
+            "state": "verified",
+            "changed": false,
+            "before_sha256": before_sha256,
+            "after_sha256": after_sha256,
+            "verification": verification,
+            "provides_route_evidence": false,
+        });
+    }
+    let patcher = config_patcher();
+    let prepared = match patcher.prepare_change(
+        &request.config_path,
+        &next_text,
+        ConfigToolKind::Agent,
+        Some(request.agent_id.clone()),
+        RiskLevel::Medium,
+    ) {
+        Ok(prepared) => prepared,
+        Err(error) => {
+            return json!({
+                "ok": false,
+                "state": "failed",
+                "summary": format!("Failed to prepare MCP config transaction: {error}"),
+            })
+        }
+    };
+    let transaction = match patcher.apply_transaction(&[prepared]) {
+        Ok(transaction) => transaction,
+        Err(error) => {
+            return json!({
+                "ok": false,
+                "state": "failed",
+                "summary": format!("Failed to apply MCP config transaction: {error}"),
+            })
+        }
+    };
+    let Some(change) = transaction.changes.first() else {
+        return json!({
+            "ok": false,
+            "state": "failed",
+            "summary": "MCP config transaction returned no change receipt",
+        });
+    };
+    let transaction_id = transaction.transaction_id.clone();
+    let rollback_id = change.backup.rollback_id.clone();
+    let verification =
+        verify_managed_agent_mcp_integration(request.agent_id, request.config_path, add);
+    if verification.get("ok").and_then(Value::as_bool) != Some(true) {
+        let rollback = patcher.restore_backup(
+            &change.backup,
+            &ExpectedFileState::Hash(after_sha256.clone()),
+        );
+        return json!({
+            "ok": false,
+            "state": if rollback.is_ok() { "rolled_back" } else { "rollback_failed" },
+            "summary": "MCP config verification failed after apply",
+            "rollback_id": rollback_id,
+            "restored": rollback.is_ok(),
+            "verification": verification,
+            "provides_route_evidence": false,
+        });
+    }
+    json!({
+        "ok": true,
+        "state": "verified",
+        "changed": true,
+        "transaction_id": transaction_id,
+        "rollback_id": rollback_id,
+        "before_sha256": before_sha256,
+        "after_sha256": after_sha256,
+        "verification": verification,
+        "provides_route_evidence": false,
+    })
+}
+
+/// Verify a managed MCP integration by checking the config file.
+#[tauri::command]
+fn verify_managed_agent_mcp_integration(
+    agent_id: String,
+    config_path: PathBuf,
+    configured: bool,
+) -> Value {
+    let request = match resolve_managed_agent_mcp_request(ManagedAgentMcpRequest {
+        agent_id: agent_id.clone(),
+        config_path: config_path.clone(),
+        operation: if configured {
+            "configure".to_string()
+        } else {
+            "clear".to_string()
+        },
+    }) {
+        Ok(request) => request,
+        Err(error) => return json!({ "ok": false, "detail": error }),
+    };
+    let bridge = match resolve_dtoken_agent_bridge_exe() {
+        Ok(path) => path,
+        Err(error) => {
+            return json!({
+                "ok": false,
+                "detail": format!("dtoken-agent-bridge is unavailable: {error}")
+            })
+        }
+    };
+    let entry = json!({
+        "command": bridge.to_string_lossy(),
+        "args": ["mcp", "stdio"]
+    });
+    let config_text = match fs::read_to_string(&request.config_path) {
+        Ok(text) => text,
+        Err(error) if !configured && error.kind() == std::io::ErrorKind::NotFound => {
+            return json!({
+                "ok": true,
+                "detail": "d-token MCP entry is absent because the MCP config file does not exist"
+            })
+        }
+        Err(error) => {
+            return json!({
+                "ok": false,
+                "detail": format!("Failed to read MCP config: {error}")
+            })
+        }
+    };
+    let result = if configured {
+        verify_mcp_json_document(&request.agent_id, &config_text, &entry)
+    } else {
+        verify_mcp_json_cleared(&request.agent_id, &config_text, &entry)
+    };
+    match result {
+        Ok(()) => json!({
+            "ok": true,
+            "detail": if configured { "d-token MCP entry is present and valid" } else { "d-token MCP entry has been removed" }
+        }),
+        Err(error) => json!({
+            "ok": false,
+            "detail": error.to_string()
+        }),
+    }
+}
+
 fn resolve_managed_agent_path(
     request: ManagedAgentTransportRequest,
 ) -> Result<ManagedAgentTransportRequest, String> {
@@ -10353,6 +10755,49 @@ fn enrich_upstream_discovery(mut discovery: Value) -> Value {
             .unwrap_or(false);
         let status = derive_cc_switch_status(detected, sync, &active_providers, active_state);
         sync.insert("status".to_string(), Value::String(status.to_string()));
+
+        // Inject the route_snapshot_identity: the active upstream identity
+        // that d-token is currently synced to, derived from the auto-follow
+        // authorization's last-synced route signature. Populated regardless
+        // of current detection state so the last-known-good identity is
+        // visible when cc-switch becomes unavailable.
+        let authorization = load_cc_switch_auto_follow_authorization();
+        if let Some(route_sig) = authorization.last_synced_route_signature.as_deref() {
+            sync.insert(
+                "route_snapshot_identity".to_string(),
+                json!({
+                    "route_signature": route_sig,
+                    "source_fingerprint": authorization.last_synced_source_fingerprint,
+                }),
+            );
+        } else if let Some(route_sig) = authorization.last_observed_route_signature.as_deref() {
+            // Fallback to the last observed (but not yet synced) identity
+            // when no sync has completed yet.
+            sync.insert(
+                "route_snapshot_identity".to_string(),
+                json!({
+                    "route_signature": route_sig,
+                    "source_fingerprint": authorization.last_observed_source_fingerprint,
+                }),
+            );
+        }
+        // Inject the last receipt from persistent storage, available
+        // regardless of current detection so the UI always sees the last
+        // sync outcome even when cc-switch is offline.
+        if let Some(receipt) = load_cc_switch_route_sync_receipt() {
+            sync.insert(
+                "last_receipt".to_string(),
+                json!({
+                    "state": receipt.state,
+                    "source_fingerprint": receipt.source_fingerprint,
+                    "route_before_sha256": receipt.route_before_sha256,
+                    "route_after_sha256": receipt.route_after_sha256,
+                    "rollback_id": receipt.rollback_id,
+                    "runtime_state": receipt.runtime_state,
+                    "occurred_at_ms": receipt.occurred_at_ms,
+                }),
+            );
+        }
     }
     let agent_follow_authorization = load_agent_auto_follow_authorization();
     let agent_follow_receipt = load_agent_route_sync_receipt();
@@ -10542,6 +10987,20 @@ fn derive_cc_switch_status(
     active_state: &str,
 ) -> &'static str {
     if !detected {
+        // Check if the source state indicates an error condition
+        // (locked/corrupt/unsupported schema) rather than simply missing.
+        if sync
+            .get("error")
+            .and_then(Value::as_str)
+            .is_some_and(|error| {
+                error.starts_with("locked")
+                    || error.starts_with("unsupported")
+                    || error == "invalid_schema"
+                    || error == "metadata_unavailable"
+            })
+        {
+            return "error";
+        }
         "unavailable"
     } else if sync
         .get("active_upstreams")
@@ -11820,14 +12279,28 @@ fn run_doctor_scan_value() -> Value {
         Some("synced") => "healthy",
         Some("out-of-sync") => "repairable",
         Some("needs-selection" | "needs-confirmation") => "manual",
+        Some("error") => "manual",
         Some("unavailable") => "unknown",
         _ => "unknown",
     };
-    let cc_switch_summary = match cc_switch_state {
-        "healthy" => "cc-switch 当前上游与 d-token route 的 endpoint、协议和模型一致",
-        "repairable" => "cc-switch 当前上游已变化；可预览并同步 d-token 自有 route",
-        "manual" => "cc-switch 有多个或不完整的活动上游，需要选择后才能生成同步计划",
-        _ => "未检测到可安全验证的 cc-switch 同步证据",
+    let cc_switch_summary = match cc_switch_sync.get("status").and_then(Value::as_str) {
+        Some("synced") => {
+            "cc-switch 当前上游与 d-token route 的 endpoint、协议和模型一致".to_string()
+        }
+        Some("out-of-sync") => {
+            "cc-switch 当前上游已变化；可预览并同步 d-token 自有 route".to_string()
+        }
+        Some("error") => {
+            "cc-switch 数据库无法安全读取（锁定/损坏/schema 不兼容）；d-token 保持只读并停止同步"
+                .to_string()
+        }
+        Some("needs-selection") => {
+            "cc-switch 有多个活动上游，需要先选择唯一目标才能生成同步计划".to_string()
+        }
+        Some("needs-confirmation") => {
+            "cc-switch 当前上游需要确认后才会写入 d-token route".to_string()
+        }
+        _ => "未检测到可安全验证的 cc-switch 同步证据".to_string(),
     };
     let core_state = match service_state {
         "running" if active_ready && route_verified => "healthy",
@@ -12466,6 +12939,7 @@ fn doctor_domain_module_id(module_id: &str) -> Option<DoctorModuleId> {
         "agent_hook_plugin" => Some(DoctorModuleId::AgentHookPlugin),
         "agent_skill" => Some(DoctorModuleId::AgentSkill),
         "agent_metadata_mcp" => Some(DoctorModuleId::AgentMetadataMcp),
+        "agent_cc_switch_sync" => Some(DoctorModuleId::AgentCcSwitchSync),
         "optical" | "optical_shadow_policy" => Some(DoctorModuleId::OpticalShadowPolicy),
         "platform" | "platform_autostart" => Some(DoctorModuleId::PlatformAutostart),
         "recovery" | "recovery_rollback_evidence" => Some(DoctorModuleId::RecoveryRollbackEvidence),
@@ -12489,14 +12963,25 @@ fn doctor_domain_selection(
             | DoctorModuleId::AgentSkill
             | DoctorModuleId::AgentMetadataMcp
     );
+    // AgentCcSwitchSync acts on the whole cc-switch-derived route, not on a
+    // per-Agent selection. The Doctor selection contract requires both an
+    // agent and a route id, so a fixed documented identity is used; the UI
+    // round-trips the synthesized selection returned by preview.
+    let cc_switch_module = matches!(module_id, DoctorModuleId::AgentCcSwitchSync);
     Ok(DoctorRepairSelection {
         scope,
-        agent_ids: if agent_module {
+        agent_ids: if cc_switch_module {
+            vec!["cc-switch".to_string()]
+        } else if agent_module {
             selection.agent_ids.clone()
         } else {
             Vec::new()
         },
-        route_ids: Vec::new(),
+        route_ids: if cc_switch_module {
+            vec!["cc-switch".to_string()]
+        } else {
+            Vec::new()
+        },
     })
 }
 
@@ -12606,7 +13091,57 @@ fn preview_doctor_repair(request: PreviewDoctorModuleRepairRequest) -> Value {
 
     let mut agent_review_digests = HashMap::new();
     let mut agent_plans = Vec::new();
-    if matches!(
+    if matches!(domain_module_id, DoctorModuleId::AgentCcSwitchSync) {
+        // For AgentCcSwitchSync, generate a cc-switch sync plan preview.
+        let discovery = enrich_upstream_discovery(upstream_discovery::discover());
+        match cc_switch_sync_request_from_discovery(&discovery) {
+            Ok(request) => match prepare_cc_switch_sync_plan(&request) {
+                Ok(plan) => {
+                    let targets = cc_switch_plan_targets(&plan);
+                    let review_digest = stable_hash(
+                        &json!({
+                            "source_fingerprint": request.source_fingerprint,
+                            "targets": targets,
+                        })
+                        .to_string(),
+                    );
+                    agent_review_digests.insert("cc-switch".to_string(), review_digest.clone());
+                    agent_plans.push(json!({
+                            "agent_id": "cc-switch",
+                            "state": "review",
+                            "summary": "cc-switch route sync plan: d-token route will follow cc-switch active upstream",
+                            "review_digest": review_digest,
+                            "targets": targets,
+                            "source_fingerprint": request.source_fingerprint,
+                        }));
+                }
+                Err(error) => {
+                    agent_plans.push(json!({
+                        "agent_id": "cc-switch",
+                        "state": "blocked",
+                        "summary": sanitize_command_output(&error),
+                        "targets": [],
+                    }));
+                }
+            },
+            Err(error) => {
+                agent_plans.push(json!({
+                    "agent_id": "cc-switch",
+                    "state": "blocked",
+                    "summary": sanitize_command_output(&error),
+                    "targets": [],
+                }));
+            }
+        }
+        if agent_review_digests.is_empty() {
+            return json!({
+                "ok": false,
+                "schema_version": 3,
+                "error": "cc-switch sync plan is not available; ensure cc-switch is detected and has one active upstream",
+                "agents": agent_plans,
+            });
+        }
+    } else if matches!(
         domain_module_id,
         DoctorModuleId::AgentInstructions
             | DoctorModuleId::AgentHookPlugin
@@ -12678,6 +13213,18 @@ fn preview_doctor_repair(request: PreviewDoctorModuleRepairRequest) -> Value {
         }
     }
 
+    // The selection persisted and echoed back to the UI must be the one the
+    // domain plan was built with. AgentCcSwitchSync uses a fixed synthetic
+    // identity so the Doctor selection contract (agent + route) is satisfied
+    // without implying a per-Agent cc-switch write.
+    let stored_selection = if matches!(domain_module_id, DoctorModuleId::AgentCcSwitchSync) {
+        let mut synthesized = request.selection.clone();
+        synthesized.agent_ids = vec!["cc-switch".to_string()];
+        synthesized.route_ids = vec!["cc-switch".to_string()];
+        synthesized
+    } else {
+        request.selection.clone()
+    };
     let mut digest_entries = agent_review_digests.iter().collect::<Vec<_>>();
     digest_entries.sort_by(|left, right| left.0.cmp(right.0));
     let review_digest = format!(
@@ -12686,7 +13233,7 @@ fn preview_doctor_repair(request: PreviewDoctorModuleRepairRequest) -> Value {
             &json!({
                 "domain": domain_plan.review_digest,
                 "module_id": request.module_id,
-                "selection": request.selection,
+                "selection": stored_selection,
                 "agents": digest_entries,
             })
             .to_string(),
@@ -12697,7 +13244,7 @@ fn preview_doctor_repair(request: PreviewDoctorModuleRepairRequest) -> Value {
         plan_id: plan_id.clone(),
         snapshot_revision: request.snapshot_revision.clone(),
         module_id: request.module_id.clone(),
-        selection: request.selection.clone(),
+        selection: stored_selection.clone(),
         created_at_ms,
         expires_at_ms,
         review_digest: review_digest.clone(),
@@ -12713,7 +13260,7 @@ fn preview_doctor_repair(request: PreviewDoctorModuleRepairRequest) -> Value {
         "plan_id": plan_id,
         "snapshot_revision": request.snapshot_revision,
         "module_id": request.module_id,
-        "selection": request.selection,
+        "selection": stored_selection,
         "risk": if agent_plans.is_empty() { "low" } else { "medium" },
         "created_at_ms": created_at_ms,
         "expires_at_ms": expires_at_ms,
@@ -12774,6 +13321,159 @@ fn apply_doctor_repair(request: ApplyDoctorModuleRepairRequest) -> Value {
             restart_dtoken_service_impl()
         };
         core_ok = Some(action.ok);
+    } else if stored.module_id == "agent_cc_switch_sync" {
+        // AgentCcSwitchSync repair: sync d-token route to match cc-switch
+        // without writing to cc-switch itself. The plan is re-derived fresh
+        // from the current discovery and must reproduce the exact review
+        // digest that was stored at preview time; any cc-switch state change
+        // between preview and apply is rejected as stale.
+        let discovery = enrich_upstream_discovery(upstream_discovery::discover());
+        match cc_switch_sync_request_from_discovery(&discovery) {
+            Ok(request) => match prepare_cc_switch_sync_plan(&request) {
+                Ok(plan) => {
+                    let targets = cc_switch_plan_targets(&plan);
+                    let recomputed = stable_hash(
+                        &json!({
+                            "source_fingerprint": request.source_fingerprint,
+                            "targets": targets,
+                        })
+                        .to_string(),
+                    );
+                    let reviewed = stored.agent_review_digests.get("cc-switch");
+                    if reviewed != Some(&recomputed) {
+                        agent_receipts.push(json!({
+                            "agent_id": "cc-switch",
+                            "outcome": "blocked",
+                            "summary": "cc-switch discovery changed after review; scan and review again",
+                        }));
+                    } else {
+                        // Compute the reviewed hashes from the current
+                        // discovery so the apply transaction verifies against
+                        // exactly what the preview digest bound.
+                        let prepared =
+                            match prepare_connection_route_plan_from_discovery(&plan, &discovery) {
+                                Ok((_, prepared, _)) => Some(prepared),
+                                Err(error) => {
+                                    agent_receipts.push(json!({
+                                        "agent_id": "cc-switch",
+                                        "outcome": "blocked",
+                                        "summary": sanitize_command_output(&error),
+                                    }));
+                                    None
+                                }
+                            };
+                        if let Some(prepared) = prepared {
+                            let result = apply_connection_route_plan_value(
+                                ApplyConnectionRoutePlanRequest {
+                                    plan: plan.clone(),
+                                    reviewed_before_sha256: Some(prepared.plan.before_hash),
+                                    reviewed_after_sha256: Some(prepared.plan.after_hash),
+                                    enable_auto_follow: false,
+                                },
+                            );
+                            let ok = result.get("ok").and_then(Value::as_bool).unwrap_or(false);
+                            if ok {
+                                verified += 1;
+                                // Attempt runtime reload; on failure the applied
+                                // route stays last-known-good and the rollback
+                                // receipt is preserved for a safe revert.
+                                let reload = reload_managed_runtime_after_route_sync();
+                                let reload_ok =
+                                    reload.get("ok").and_then(Value::as_bool).unwrap_or(false);
+                                let runtime_state = reload
+                                    .get("state")
+                                    .and_then(Value::as_str)
+                                    .unwrap_or(if reload_ok {
+                                        "runtime_reloaded"
+                                    } else {
+                                        "runtime_reload_failed"
+                                    });
+                                if !reload_ok {
+                                    let _ = append_desktop_event(
+                                        "route_sync_failed",
+                                        "runtime_reload_failed",
+                                        json!({"summary": "Route applied but runtime reload failed; last-known-good preserved"}),
+                                    );
+                                }
+                                // Bind the applied route as the current cc-switch
+                                // route snapshot so enrichment exposes it as
+                                // route_snapshot_identity.
+                                let mut authorization = load_cc_switch_auto_follow_authorization();
+                                if let Ok(identity) = cc_switch_active_route_identity(&discovery) {
+                                    authorization.last_observed_route_signature =
+                                        Some(identity.route_signature.clone());
+                                    authorization.last_synced_route_signature =
+                                        Some(identity.route_signature);
+                                    authorization.last_observed_source_fingerprint =
+                                        Some(request.source_fingerprint.clone());
+                                    authorization.last_synced_source_fingerprint =
+                                        Some(request.source_fingerprint.clone());
+                                    authorization.last_sync_state = if reload_ok {
+                                        "applied_verified".to_string()
+                                    } else {
+                                        "applied_reload_failed".to_string()
+                                    };
+                                    let _ =
+                                        save_cc_switch_auto_follow_authorization(&authorization);
+                                }
+                                // Record a cc-switch auto-follow receipt for the enrichment.
+                                let after_sha256 = result
+                                    .get("after_sha256")
+                                    .and_then(Value::as_str)
+                                    .map(str::to_string);
+                                let rollback_id = result
+                                    .get("rollback_id")
+                                    .and_then(Value::as_str)
+                                    .map(str::to_string);
+                                record_cc_switch_auto_follow_receipt(
+                                    if reload_ok {
+                                        "applied_verified"
+                                    } else {
+                                        "applied_reload_failed"
+                                    },
+                                    &request.source_fingerprint,
+                                    result
+                                        .get("before_sha256")
+                                        .and_then(Value::as_str)
+                                        .map(str::to_string),
+                                    after_sha256,
+                                    rollback_id.clone(),
+                                    runtime_state,
+                                );
+                                agent_receipts.push(json!({
+                                    "agent_id": "cc-switch",
+                                    "outcome": if reload_ok { "verified" } else { "partial" },
+                                    "summary": if reload_ok { "cc-switch route synced and runtime reloaded" } else { "Route applied but runtime reload failed; last-known-good route preserved" },
+                                    "transaction_id": result.get("transaction_id"),
+                                    "rollback_ids": [rollback_id],
+                                }));
+                            } else {
+                                agent_receipts.push(json!({
+                                    "agent_id": "cc-switch",
+                                    "outcome": "failed",
+                                    "summary": sanitize_command_output(result.get("summary").and_then(Value::as_str).unwrap_or("apply failed")),
+                                }));
+                            }
+                        }
+                    }
+                }
+                Err(error) => {
+                    agent_receipts.push(json!({
+                        "agent_id": "cc-switch",
+                        "outcome": "blocked",
+                        "summary": sanitize_command_output(&error),
+                    }));
+                }
+            },
+            Err(error) => {
+                agent_receipts.push(json!({
+                    "agent_id": "cc-switch",
+                    "outcome": "blocked",
+                    "summary": sanitize_command_output(&error),
+                }));
+            }
+        }
+        attempted += 1;
     } else {
         for agent_id in &stored.selection.agent_ids {
             let Some(expected_digest) = stored.agent_review_digests.get(agent_id) else {
@@ -14477,26 +15177,22 @@ macro_rules! specta_commands {
     };
 }
 
-/// Builds the tauri-specta command registry shared by debug and release runs.
-/// In debug builds this also exports `bindings.ts` to the frontend so the
-/// React layer gets compile-time type checking against the Rust IPC surface.
-fn build_specta_command_registry(
-) -> Box<dyn Fn(tauri::ipc::Invoke<tauri::Wry>) -> bool + Send + Sync> {
+/// Exports the tauri-specta TypeScript bindings to the frontend in debug
+/// builds. This is the only side-effect of the specta scaffolding at runtime:
+/// the type-safe commands themselves are registered through the normal
+/// `tauri::generate_handler!` macro (see `desktop_release_handlers!`) so they
+/// share the same invoke handler as the rest of the IPC surface.
+///
+/// Failure to export bindings is logged but does not panic, so a missing
+/// export path or filesystem error cannot break the desktop app.
+#[cfg(debug_assertions)]
+fn export_specta_bindings() {
     let builder = tauri_specta::Builder::<tauri::Wry>::new().commands(specta_commands!());
-
-    #[cfg(debug_assertions)]
-    {
-        let export_path =
-            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../src/app/lib/bindings.ts");
-        builder
-            .export(specta_typescript::Typescript::default(), export_path)
-            .expect("failed to export tauri-specta bindings");
+    let export_path =
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../src/app/lib/bindings.ts");
+    if let Err(error) = builder.export(specta_typescript::Typescript::default(), export_path) {
+        eprintln!("warn: failed to export tauri-specta bindings: {error}");
     }
-
-    // `invoke_handler` clones the command registry into the returned closure,
-    // so `builder` can be dropped immediately after this call.
-    let handler = builder.invoke_handler();
-    Box::new(handler)
 }
 
 macro_rules! desktop_release_handlers {
@@ -14546,6 +15242,9 @@ macro_rules! desktop_release_handlers {
             verify_managed_agent_transport,
             preview_managed_agent_transport,
             apply_reviewed_managed_agent_transport,
+            preview_managed_agent_mcp_integration,
+            apply_managed_agent_mcp_integration,
+            verify_managed_agent_mcp_integration,
             discover_upstream_candidates,
             get_dtoken_service_status,
             get_autostart_status,
@@ -14601,6 +15300,7 @@ macro_rules! desktop_release_handlers {
             delete_codebase_memory_index,
             open_codebase_memory_graph,
             show_control_plane,
+            get_specta_ipc_status,
         ])
     };
 }
@@ -14636,7 +15336,6 @@ macro_rules! run_desktop_app_with_handlers {
             $($release_command,)*
             $($debug_command,)*
             ])
-            .invoke_handler(build_specta_command_registry())
             .run(tauri::generate_context!())
             .expect("error while running d-token desktop");
     };
@@ -14644,6 +15343,7 @@ macro_rules! run_desktop_app_with_handlers {
 
 #[cfg(debug_assertions)]
 fn main() {
+    export_specta_bindings();
     debug_desktop_handlers!(run_desktop_app_with_handlers);
 }
 
@@ -14698,6 +15398,29 @@ mod tests {
         LOCK.get_or_init(|| Mutex::new(()))
     }
 
+    #[test]
+    fn managed_mcp_clear_accepts_absent_registered_parent_without_creating_it() {
+        let canonical_temp_root =
+            fs::canonicalize(env::temp_dir()).expect("canonical temporary root");
+        let home = tempfile::tempdir_in(canonical_temp_root).expect("temporary home");
+        let expected = home.path().join(".cursor/mcp.json");
+        assert!(!expected.exists());
+        assert!(!expected.parent().expect("mcp parent").exists());
+
+        let resolved = resolve_managed_agent_mcp_request_with_home(
+            ManagedAgentMcpRequest {
+                agent_id: "cursor".to_string(),
+                config_path: PathBuf::from("~/.cursor/mcp.json"),
+                operation: "clear".to_string(),
+            },
+            home.path(),
+        )
+        .expect("absent registered MCP target is already clear");
+
+        assert_eq!(resolved.config_path, expected);
+        assert!(!expected.parent().expect("mcp parent").exists());
+    }
+
     fn clear_native_performance_observations() {
         NATIVE_PERF_OBSERVATIONS
             .get_or_init(|| Mutex::new(VecDeque::with_capacity(MAX_NATIVE_PERF_OBSERVATIONS)))
@@ -14735,6 +15458,51 @@ mod tests {
             debug, expected_debug,
             "debug registration must contain every release command plus only debug-only commands"
         );
+    }
+
+    /// P1 回归防护：get_specta_ipc_status 必须在 release 和 debug handler
+    /// 列表中可达，且 specta_commands! 也注册了它。这锁定「specta 命令与
+    /// 既有命令共用单一 generate_handler!」的不变量，防止未来有人重新引入
+    /// 第二个 invoke_handler 调用。
+    #[test]
+    fn specta_ipc_status_command_is_reachable_in_all_modes() {
+        const COMMAND_NAME: &str = "get_specta_ipc_status";
+
+        assert!(
+            RELEASE_HANDLER_NAMES.contains(&COMMAND_NAME),
+            "get_specta_ipc_status must be reachable in release builds"
+        );
+        assert!(
+            DEBUG_HANDLER_NAMES.contains(&COMMAND_NAME),
+            "get_specta_ipc_status must be reachable in debug builds"
+        );
+    }
+
+    /// P1 回归防护：一组既有命令必须在 release 和 debug 模式下都可达，
+    /// 防止未来误把核心命令从 handler 列表删除或被第二个 invoke_handler 覆盖。
+    #[test]
+    fn existing_core_commands_remain_reachable() {
+        const CORE_COMMANDS: &[&str] = &[
+            "get_desktop_summary",
+            "get_desktop_data",
+            "run_doctor",
+            "apply_rollback",
+            "get_dtoken_dashboard_payload",
+            "save_app_settings",
+            "start_dtoken_service",
+            "stop_dtoken_service",
+        ];
+
+        for command in CORE_COMMANDS {
+            assert!(
+                RELEASE_HANDLER_NAMES.contains(command),
+                "existing command '{command}' must remain reachable in release builds"
+            );
+            assert!(
+                DEBUG_HANDLER_NAMES.contains(command),
+                "existing command '{command}' must remain reachable in debug builds"
+            );
+        }
     }
 
     fn serve_one_http_response(body: &str) -> (u16, thread::JoinHandle<()>) {
@@ -18343,6 +19111,176 @@ mod tests {
             derive_cc_switch_status(true, &sync, &[], "missing"),
             "needs-confirmation"
         );
+    }
+
+    #[test]
+    fn derive_cc_switch_status_handles_error_state() {
+        // Error state: locked_or_corrupt source with error field set
+        let mut sync = serde_json::Map::from_iter([("active_upstreams".to_string(), json!([]))]);
+        sync.insert("error".to_string(), json!("locked_or_corrupt"));
+        assert_eq!(
+            derive_cc_switch_status(false, &sync, &[], "unknown"),
+            "error"
+        );
+
+        // Error state: unsupported_schema
+        sync.insert("error".to_string(), json!("unsupported_schema"));
+        assert_eq!(
+            derive_cc_switch_status(false, &sync, &[], "unknown"),
+            "error"
+        );
+
+        // Error state: metadata_unavailable
+        sync.insert("error".to_string(), json!("metadata_unavailable"));
+        assert_eq!(
+            derive_cc_switch_status(false, &sync, &[], "unknown"),
+            "error"
+        );
+
+        // Missing state: no error field, not detected
+        sync.remove("error");
+        assert_eq!(
+            derive_cc_switch_status(false, &sync, &[], "unknown"),
+            "unavailable"
+        );
+    }
+
+    #[test]
+    fn enrich_cc_switch_sync_injects_identity_and_receipt_even_when_not_detected() {
+        with_isolated_app_state("enrich-cc-switch-undetected", || {
+            // Set up a previous sync receipt and authorization so the
+            // enrichment picks them up regardless of cc-switch detection.
+            let authorization = CcSwitchAutoFollowAuthorization {
+                schema_version: CC_SWITCH_AUTO_FOLLOW_SCHEMA_VERSION,
+                enabled: true,
+                authorized_at_ms: 1000,
+                authorized_source_fingerprint: "prev-source".to_string(),
+                authorized_upstream_signatures: vec!["sig-v1".to_string()],
+                last_observed_source_fingerprint: Some("prev-source".to_string()),
+                last_synced_source_fingerprint: Some("prev-source".to_string()),
+                last_observed_route_signature: Some("route-prev".to_string()),
+                last_synced_route_signature: Some("route-prev".to_string()),
+                last_sync_state: "applied_verified".to_string(),
+            };
+            save_cc_switch_auto_follow_authorization(&authorization).expect("save auth");
+            let receipt = CcSwitchRouteSyncReceipt {
+                schema_version: CC_SWITCH_AUTO_FOLLOW_SCHEMA_VERSION,
+                state: "applied_verified".to_string(),
+                source_fingerprint: "prev-source".to_string(),
+                route_before_sha256: Some("before-hash".to_string()),
+                route_after_sha256: Some("after-hash".to_string()),
+                rollback_id: Some("rollback-1".to_string()),
+                runtime_state: "runtime_reloaded".to_string(),
+                occurred_at_ms: 1000,
+            };
+            save_cc_switch_route_sync_receipt(&receipt);
+
+            // Build a discovery where cc-switch is NOT detected (unavailable).
+            let discovery = json!({
+                "cc_switch_sync": {
+                    "detected": false,
+                    "source_state": "missing",
+                    "status": "unavailable",
+                    "error": Value::Null,
+                    "profile": Value::Null,
+                    "profile_source": "not_exposed_by_safe_schema",
+                    "upstream": Value::Null,
+                    "active_upstreams": [],
+                    "connection_path": Value::Null,
+                    "source": "cc-switch-read-only",
+                    "writes_performed": false,
+                    "source_fingerprint": "cc-switch-sync-abc",
+                    "source_revision": "cc-switch-sync-cc-switch-sync-abc",
+                    "route_snapshot_identity": Value::Null,
+                    "last_receipt": Value::Null,
+                },
+                "agent_bindings": [],
+            });
+            let enriched = enrich_upstream_discovery(discovery);
+            let sync = enriched
+                .get("cc_switch_sync")
+                .expect("cc_switch_sync present");
+
+            // route_snapshot_identity must be populated from the last synced
+            // authorization even though cc-switch is not currently detected.
+            let identity = sync
+                .get("route_snapshot_identity")
+                .expect("route_snapshot_identity present");
+            assert_eq!(
+                identity["route_signature"].as_str(),
+                Some("route-prev"),
+                "last synced route signature visible even when cc-switch is unavailable"
+            );
+            assert_eq!(
+                identity["source_fingerprint"].as_str(),
+                Some("prev-source"),
+                "source_fingerprint in route_snapshot_identity"
+            );
+
+            // last_receipt must be populated from persistent storage.
+            let receipt_field = sync.get("last_receipt").expect("last_receipt present");
+            assert_eq!(receipt_field["state"].as_str(), Some("applied_verified"));
+            assert_eq!(
+                receipt_field["source_fingerprint"].as_str(),
+                Some("prev-source")
+            );
+            assert_eq!(receipt_field["rollback_id"].as_str(), Some("rollback-1"));
+            assert!(receipt_field["occurred_at_ms"].as_u64() == Some(1000));
+        });
+    }
+
+    #[test]
+    fn enrich_cc_switch_sync_falls_back_to_observed_identity_when_no_sync_completed() {
+        with_isolated_app_state("enrich-cc-switch-observed-fallback", || {
+            // Authorization with observed but not synced route signature.
+            let authorization = CcSwitchAutoFollowAuthorization {
+                schema_version: CC_SWITCH_AUTO_FOLLOW_SCHEMA_VERSION,
+                enabled: true,
+                authorized_at_ms: 2000,
+                authorized_source_fingerprint: "observed-source".to_string(),
+                authorized_upstream_signatures: vec!["sig-v2".to_string()],
+                last_observed_source_fingerprint: Some("observed-source".to_string()),
+                last_synced_source_fingerprint: None,
+                last_observed_route_signature: Some("route-observed".to_string()),
+                last_synced_route_signature: None,
+                last_sync_state: "authorized_waiting_for_change".to_string(),
+            };
+            save_cc_switch_auto_follow_authorization(&authorization).expect("save auth");
+
+            let discovery = json!({
+                "cc_switch_sync": {
+                    "detected": false,
+                    "source_state": "missing",
+                    "status": "unavailable",
+                    "error": Value::Null,
+                    "active_upstreams": [],
+                    "source": "cc-switch-read-only",
+                    "writes_performed": false,
+                    "source_fingerprint": "cc-switch-sync-def",
+                    "source_revision": "cc-switch-sync-cc-switch-sync-def",
+                    "route_snapshot_identity": Value::Null,
+                    "last_receipt": Value::Null,
+                },
+                "agent_bindings": [],
+            });
+            let enriched = enrich_upstream_discovery(discovery);
+            let sync = enriched
+                .get("cc_switch_sync")
+                .expect("cc_switch_sync present");
+            let identity = sync
+                .get("route_snapshot_identity")
+                .expect("route_snapshot_identity present");
+            assert_eq!(
+                identity["route_signature"].as_str(),
+                Some("route-observed"),
+                "fallback to observed route signature when no sync completed"
+            );
+            assert_eq!(
+                identity["source_fingerprint"].as_str(),
+                Some("observed-source"),
+                "observed source_fingerprint in fallback identity"
+            );
+        });
     }
 
     #[cfg(not(windows))]

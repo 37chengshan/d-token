@@ -365,6 +365,7 @@ impl HybridContextEngine {
             registry,
             cancellation,
             None,
+            None,
         )
     }
 
@@ -381,6 +382,7 @@ impl HybridContextEngine {
         registry: &OpticalCapabilityRegistry,
         cancellation: &RenderCancellation,
         cache_evidence: Option<&crate::context_pipeline::ProviderCacheEvidence>,
+        frozen_message_count: Option<usize>,
     ) -> PreparedHybridRequest {
         let prepare_started = Instant::now();
         let raw_available = raw_body_bytes.is_some();
@@ -431,6 +433,7 @@ impl HybridContextEngine {
                 baseline_tokens,
                 baseline_bytes,
                 cache_evidence,
+                frozen_message_count,
             );
         }
 
@@ -976,9 +979,16 @@ fn semantic_or_passthrough(
     baseline_tokens: u64,
     baseline_bytes: usize,
     cache_evidence: Option<&crate::context_pipeline::ProviderCacheEvidence>,
+    frozen_message_count: Option<usize>,
 ) -> PreparedHybridRequest {
     let result = crate::CompressionEngine::new()
-        .compress_resolved_with_cache_evidence(context, policy, body.clone(), cache_evidence)
+        .compress_resolved_with_cache_evidence(
+            context,
+            policy,
+            body.clone(),
+            cache_evidence,
+            frozen_message_count,
+        )
         .ok();
     let Some(result) = result.filter(|result| {
         result.compressed_tokens < result.original_tokens && !result.transforms_applied.is_empty()

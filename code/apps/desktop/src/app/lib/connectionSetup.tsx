@@ -87,6 +87,16 @@ export type AgentUpstreamBinding = {
   transport_reason?: string | null;
   already_connected: boolean;
   follow?: AgentRouteFollowStatus;
+  /** "route", "mcp", "hook", or "unsupported" */
+  integration_kind?: string;
+  /** Truthful limitation description (null for route adapters). */
+  truthful_limitation?: string | null;
+  /** Whether this integration provides transparent compression/route evidence. */
+  provides_route_evidence?: boolean;
+  /** Whether a verified MCP config path exists. */
+  mcp_available?: boolean;
+  /** The resolved absolute path to the MCP config file, if known. */
+  mcp_config_path?: string | null;
 };
 
 export type ConnectionSetupSnapshot = {

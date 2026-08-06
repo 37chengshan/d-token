@@ -38,6 +38,9 @@ function AgentBindingRow({
   const resolved = selected?.candidate ?? binding.resolved_candidate;
   const model = selected?.model || resolved?.models?.[0];
   const follow = presentAgentFollow(binding, lang);
+  // Truthful labels for MCP/Hook — these integrations provide only
+  // tool-level access, never route evidence or compression.
+  const isMcpOrHook = binding.integration_kind === "mcp" || binding.integration_kind === "hook";
   return (
     <div className="grid gap-3 py-3 md:grid-cols-[28px_minmax(0,1fr)_minmax(220px,0.8fr)_auto_auto] md:items-center">
       <div className="flex items-center justify-center">
@@ -55,11 +58,23 @@ function AgentBindingRow({
           <span className="font-medium">{binding.agent_name}</span>
           <Badge variant="secondary">{capabilityLabel(binding, lang)}</Badge>
           {binding.follow && <Badge variant="outline">{follow.label}</Badge>}
+          {isMcpOrHook && (
+            <Badge variant="outline" className="text-amber-700 dark:text-amber-300 border-amber-500/30">
+              {binding.integration_kind === "mcp"
+                ? (lang === "zh" ? "仅 MCP" : "MCP only")
+                : (lang === "zh" ? "仅 Hook" : "Hook only")}
+            </Badge>
+          )}
         </div>
         <div className="mt-1 truncate text-xs text-muted-foreground">
           {presentAgentLocation(binding, lang)}
         </div>
-        {binding.follow && (
+        {isMcpOrHook && binding.truthful_limitation && (
+          <div className="mt-1 text-xs text-amber-700 dark:text-amber-300">
+            {binding.truthful_limitation}
+          </div>
+        )}
+        {!isMcpOrHook && binding.follow && (
           <div
             className={binding.follow.transport_out_of_sync
               ? "mt-1 text-xs text-amber-700 dark:text-amber-300"

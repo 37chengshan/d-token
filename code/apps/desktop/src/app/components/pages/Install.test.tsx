@@ -761,4 +761,142 @@ describe("Install", () => {
     expect(await screen.findByText("正在验证")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "正在处理" })).toBeDisabled();
   });
+
+  it("passes nested review hashes from MCP preview to apply", async () => {
+    const mcpBinding = {
+      agent_id: "agent-mcp",
+      agent_name: "Agent MCP",
+      installed: true,
+      mcp_config_path: "~/.config/agent-mcp/mcp.json",
+      current_config_source: "agent-config:agent-mcp",
+      candidates: [] as never[],
+      resolved_candidate: null,
+      resolution: "already-connected" as const,
+      confidence: 100,
+      reasons: ["connected"],
+      capability: "one-click" as const,
+      integration_kind: "mcp" as const,
+      can_configure: true,
+      can_clear: false,
+      already_connected: false,
+    };
+    const mcpSnapshot = {
+      ...connectedSnapshot,
+      revision: "mcp-review-1",
+      agent_bindings: [mcpBinding],
+    };
+    mocks.runtime.status = "runtime";
+    mocks.runtime.operational = {
+      service: {
+        data: {
+          state: "running",
+          managed: true,
+          pid: 90123,
+          pid_running: true,
+          manifest_stale: false,
+          service_url: "http://127.0.0.1:18001",
+        },
+      },
+    };
+    mocks.invokeNative.mockReset();
+    mocks.invokeNative.mockImplementation(async (command: string) => {
+      if (command === "discover_upstream_candidates") return mcpSnapshot;
+      if (command === "preview_managed_agent_mcp_integration") {
+        return {
+          ok: true,
+          state: "review",
+          review: {
+            before_sha256: "mcp-before-hash",
+            after_sha256: "mcp-after-hash",
+            revision: "mcp-revision",
+          },
+        };
+      }
+      if (command === "apply_managed_agent_mcp_integration") {
+        return { ok: true, state: "applied", verification: { ok: true } };
+      }
+      throw new Error(`unexpected command: ${command}`);
+    });
+    vi.spyOn(window, "confirm").mockReturnValueOnce(true);
+
+    render(<Install />);
+    expect(await screen.findByText("Agent MCP")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "配置" }));
+
+    await waitFor(() => {
+      expect(mocks.invokeNative).toHaveBeenCalledWith(
+        "apply_managed_agent_mcp_integration",
+        expect.objectContaining({
+          reviewed_before_sha256: "mcp-before-hash",
+          reviewed_after_sha256: "mcp-after-hash",
+        }),
+      );
+    });
+    expect(screen.getByRole("status")).toHaveTextContent("Agent MCP MCP 工具已配置并验证。");
+  });
+
+  it("rejects MCP preview when review is missing required hashes", async () => {
+    const mcpBinding = {
+      agent_id: "agent-mcp",
+      agent_name: "Agent MCP",
+      installed: true,
+      mcp_config_path: "~/.config/agent-mcp/mcp.json",
+      current_config_source: "agent-config:agent-mcp",
+      candidates: [] as never[],
+      resolved_candidate: null,
+      resolution: "already-connected" as const,
+      confidence: 100,
+      reasons: ["connected"],
+      capability: "one-click" as const,
+      integration_kind: "mcp" as const,
+      can_configure: true,
+      can_clear: false,
+      already_connected: false,
+    };
+    const mcpSnapshot = {
+      ...connectedSnapshot,
+      revision: "mcp-review-2",
+      agent_bindings: [mcpBinding],
+    };
+    mocks.runtime.status = "runtime";
+    mocks.runtime.operational = {
+      service: {
+        data: {
+          state: "running",
+          managed: true,
+          pid: 90124,
+          pid_running: true,
+          manifest_stale: false,
+          service_url: "http://127.0.0.1:18001",
+        },
+      },
+    };
+    mocks.invokeNative.mockReset();
+    mocks.invokeNative.mockImplementation(async (command: string) => {
+      if (command === "discover_upstream_candidates") return mcpSnapshot;
+      if (command === "preview_managed_agent_mcp_integration") {
+        return {
+          ok: true,
+          state: "review",
+          review: {
+            revision: "mcp-revision",
+          },
+        };
+      }
+      throw new Error(`unexpected command: ${command}`);
+    });
+    vi.spyOn(window, "confirm").mockReturnValueOnce(true);
+
+    render(<Install />);
+    expect(await screen.findByText("Agent MCP")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "配置" }));
+
+    await waitFor(() => {
+      expect(mocks.invokeNative).not.toHaveBeenCalledWith(
+        "apply_managed_agent_mcp_integration",
+        expect.anything(),
+      );
+    });
+    expect(screen.getByRole("status")).toHaveTextContent("MCP 操作未完成");
+  });
 });
