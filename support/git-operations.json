@@ -1017,6 +1017,15 @@
       "summary": "upgrade Codebase Memory pin to v0.9.1-rc.1 and fix launcher_unavailable blocked reason",
       "head_before": "902930c",
       "remote": "null"
+    },
+    {
+      "id": "024b3a04-4bf0-46b4-ba6c-5754f0fc2dcf",
+      "timestamp": "2026-08-07T00:34:01+08:00",
+      "operation": "merge",
+      "branch": "codex/code-graph-mcp-integration",
+      "summary": "合并模型价格设置分支，待主树测试",
+      "head_before": "cf3aa22",
+      "remote": null
     }
   ]
 }
