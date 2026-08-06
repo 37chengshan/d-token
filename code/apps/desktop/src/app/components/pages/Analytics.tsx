@@ -6,10 +6,13 @@ import {
   ArrowDownWideNarrow,
   Bot,
   Boxes,
+  ChevronDown,
+  ChevronUp,
   Coins,
   Gauge,
   GitBranch,
   Route,
+  ScrollText,
   Timer,
   Database,
   Layers3,
@@ -43,7 +46,7 @@ import { invokeNative, isTauriRuntime } from "../../lib/native";
 
 const nf = (value: number) => value.toLocaleString("en-US");
 const unavailableValue = "—";
-const ANALYTICS_TABS = ["live", "history", "parity"] as const;
+const ANALYTICS_TABS = ["live", "history", "parity", "logs"] as const;
 const REQUEST_PAGE_SIZE = 10;
 
 type AnalyticsRequestPage = {
@@ -78,6 +81,7 @@ export function Analytics() {
   const { lang } = useI18n();
   const [tab, setTab] = useSessionTab("d-token.analytics.tab", ANALYTICS_TABS, "live");
   const [requestPage, setRequestPage] = useState(0);
+  const [expandedRequestId, setExpandedRequestId] = useState<string | null>(null);
   const [nativePageIndex, setNativePageIndex] = useState(0);
   const [nativePendingPageIndex, setNativePendingPageIndex] = useState<number | null>(null);
   const [nativeCursors, setNativeCursors] = useState<Array<string | null>>([null]);
@@ -224,6 +228,7 @@ export function Analytics() {
           <TabsTrigger value="live">{lang === "zh" ? "价值概览" : "Value overview"}</TabsTrigger>
           <TabsTrigger value="history">{lang === "zh" ? "历史趋势" : "Trend history"}</TabsTrigger>
           <TabsTrigger value="parity">{lang === "zh" ? "数据范围" : "Data scope"}</TabsTrigger>
+          <TabsTrigger value="logs">{lang === "zh" ? "日志" : "Logs"}</TabsTrigger>
         </TabsList>
 
         <TabsContent value="live" className="mt-3 space-y-4">
@@ -425,7 +430,7 @@ export function Analytics() {
                 </table>
               </div>
               {nativeRequestPage?.coverage?.complete === false && <div className="mt-2 text-xs text-muted-foreground">{lang === "zh" ? `明细最多覆盖最近 ${nf(nativeRequestPage.coverage.loaded_limit ?? 10_000)} 条 runtime 记录。` : `Detail coverage is limited to the latest ${nf(nativeRequestPage.coverage.loaded_limit ?? 10_000)} runtime records.`}</div>}
-              {requestTotal > REQUEST_PAGE_SIZE && <div className="mt-3 flex items-center justify-between"><span className="text-xs text-muted-foreground">{lang === "zh" ? `第 ${currentRequestPage + 1} / ${requestPageCount} 页` : `Page ${currentRequestPage + 1} / ${requestPageCount}`}</span><div className="flex gap-2"><Button size="sm" variant="outline" disabled={currentRequestPage === 0 || nativePageStatus === "loading"} onClick={() => nativePagination ? setNativePendingPageIndex(Math.max(0, currentRequestPage - 1)) : setRequestPage(Math.max(0, currentRequestPage - 1))}>{lang === "zh" ? "上一页" : "Previous"}</Button><Button size="sm" variant="outline" disabled={!requestHasMore || nativePageStatus === "loading"} onClick={() => { if (nativePagination) { const next = nativeRequestPage.next_cursor; if (!next) return; setNativeCursors((cursors) => [...cursors.slice(0, nativePageIndex + 1), next]); setNativePendingPageIndex(nativePageIndex + 1); } else { setRequestPage(Math.min(requestPageCount - 1, currentRequestPage + 1)); } }}>{nativePageStatus === "loading" ? (lang === "zh" ? "加载中…" : "Loading…") : (lang === "zh" ? "下一页" : "Next")}</Button></div></div>}
+              {requestTotal > REQUEST_PAGE_SIZE && <RequestPaginationBar lang={lang} currentRequestPage={currentRequestPage} requestPageCount={requestPageCount} requestHasMore={requestHasMore} nativePageStatus={nativePageStatus} onPrevious={() => nativePagination ? setNativePendingPageIndex(Math.max(0, currentRequestPage - 1)) : setRequestPage(Math.max(0, currentRequestPage - 1))} onNext={() => { if (nativePagination) { const next = nativeRequestPage.next_cursor; if (!next) return; setNativeCursors((cursors) => [...cursors.slice(0, nativePageIndex + 1), next]); setNativePendingPageIndex(nativePageIndex + 1); } else { setRequestPage(Math.min(requestPageCount - 1, currentRequestPage + 1)); } }} />}
             </> : requestRows.length > 0 ? <div className="rounded-lg border border-dashed border-border/60 bg-muted/15 px-3 py-2 text-xs text-muted-foreground">{lang === "zh" ? "当前快照少于一页；请求维度已在上方分布中展示。" : "The current snapshot fits on one page; request dimensions are shown in the breakdowns above."}</div> : <NoData title={lang === "zh" ? "暂无请求明细" : "No request detail"} detail={lang === "zh" ? "此列表只展示 runtime 提供的有界快照，不代表全量历史" : "This table shows only the bounded runtime snapshot, not full history"} />}
           </Surface>
         </TabsContent>
@@ -526,6 +531,61 @@ export function Analytics() {
                 </div>
               ))}
             </div>
+          </Surface>
+        </TabsContent>
+
+        <TabsContent value="logs" className="mt-3">
+          <Surface className="p-4" hover={false}>
+            <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <h3 className="flex items-center gap-2 text-sm">
+                  <ScrollText className="size-4" />
+                  {lang === "zh" ? "请求日志" : "Request log"}
+                </h3>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  {lang === "zh"
+                    ? "逐条展示 runtime 真实请求记录；缺失字段保持为空，不估算、不补 0。"
+                    : "One real runtime request record per line; missing fields stay empty, never estimated or zero-filled."}
+                </p>
+              </div>
+              <span className="text-xs text-muted-foreground">
+                {requestTotal > 0
+                  ? `${requestTotal} ${lang === "zh" ? (nativePagination ? "条 runtime 记录" : "条当前快照") : (nativePagination ? "runtime records" : "in current snapshot")}`
+                  : sourceLabel}
+              </span>
+            </div>
+            {nativePageError && <div role="status" className="mb-2 text-xs text-amber-600 dark:text-amber-400">{nativePageError === "invalid_cursor" ? (lang === "zh" ? "分页游标已失效，已显示第一页数据。" : "The page cursor expired. First-page data is shown.") : nativePageError === "invalid_evidence" ? (lang === "zh" ? "分页结果缺少可信的来源与时效标记，已显示当前摘要快照。" : "The page result lacks trusted source and freshness markers. The current summary snapshot is shown.") : (lang === "zh" ? "请求分页暂不可用，已显示当前摘要快照。" : "Request pagination is unavailable. The current summary snapshot is shown.")}</div>}
+            {nativeRequestPage && <div className="mb-2 text-xs text-muted-foreground">{lang === "zh" ? `明细源 d-token runtime · fresh · r${requestRevision}${summaryRevision === null ? "" : `；摘要 r${summaryRevision}`}${requestRevisionAligned === false ? "。runtime 在两次读取间已更新，明细与摘要需分别解读。" : ""}` : `Detail source d-token runtime · fresh · r${requestRevision}${summaryRevision === null ? "" : `; summary r${summaryRevision}`}${requestRevisionAligned === false ? ". The runtime changed between reads; interpret detail and summary as separate snapshots." : ""}`}</div>}
+            {nativeInitialLoading ? <div role="status" className="rounded-lg border border-dashed border-border/60 bg-muted/15 px-3 py-3 text-xs text-muted-foreground">{lang === "zh" ? "正在加载有界请求明细…" : "Loading bounded request detail…"}</div> : visibleRequestRows.length > 0 ? <>
+              <div className="overflow-x-auto">
+                <table className="min-w-[1160px] w-full text-sm">
+                  <thead>
+                    <tr className="border-b border-border/50 text-left text-xs text-muted-foreground">
+                      {[lang === "zh" ? "时间" : "Time", lang === "zh" ? "Agent / 界面" : "Agent / Interface", lang === "zh" ? "Local Token" : "Local tokens", lang === "zh" ? "Provider Token" : "Provider tokens", lang === "zh" ? "压缩前后" : "Before → after", lang === "zh" ? "节省 Token" : "Saved tokens", lang === "zh" ? "耗时" : "Latency", lang === "zh" ? "模型 / Provider" : "Model / Provider", lang === "zh" ? "状态" : "Status", lang === "zh" ? "请求标识" : "Request id", ""].map((label, index) => <th key={index} className="whitespace-nowrap pb-2 font-normal">{label}</th>)}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {visibleRequestRows.map((row, index) => {
+                      const rowKey = `${row.request_id ?? "row"}-${row.timestamp_ms ?? index}`;
+                      const expanded = expandedRequestId === rowKey;
+                      return (
+                        <RequestLogRowView
+                          key={rowKey}
+                          row={row}
+                          rowKey={rowKey}
+                          index={index}
+                          lang={lang}
+                          expanded={expanded}
+                          onToggle={() => setExpandedRequestId(expanded ? null : rowKey)}
+                        />
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+              {nativeRequestPage?.coverage?.complete === false && <div className="mt-2 text-xs text-muted-foreground">{lang === "zh" ? `明细最多覆盖最近 ${nf(nativeRequestPage.coverage.loaded_limit ?? 10_000)} 条 runtime 记录。` : `Detail coverage is limited to the latest ${nf(nativeRequestPage.coverage.loaded_limit ?? 10_000)} runtime records.`}</div>}
+              {requestTotal > REQUEST_PAGE_SIZE && <RequestPaginationBar lang={lang} currentRequestPage={currentRequestPage} requestPageCount={requestPageCount} requestHasMore={requestHasMore} nativePageStatus={nativePageStatus} onPrevious={() => nativePagination ? setNativePendingPageIndex(Math.max(0, currentRequestPage - 1)) : setRequestPage(Math.max(0, currentRequestPage - 1))} onNext={() => { if (nativePagination) { const next = nativeRequestPage.next_cursor; if (!next) return; setNativeCursors((cursors) => [...cursors.slice(0, nativePageIndex + 1), next]); setNativePendingPageIndex(nativePageIndex + 1); } else { setRequestPage(Math.min(requestPageCount - 1, currentRequestPage + 1)); } }} />}
+            </> : requestRows.length > 0 ? <div className="rounded-lg border border-dashed border-border/60 bg-muted/15 px-3 py-2 text-xs text-muted-foreground">{lang === "zh" ? "当前快照少于一页；请求日志与上方明细一致。" : "The current snapshot fits on one page; the request log matches the detail above."}</div> : <NoData title={lang === "zh" ? "暂无请求日志" : "No request logs"} detail={lang === "zh" ? "此列表只展示 runtime 提供的有界快照，不代表全量历史" : "This table shows only the bounded runtime snapshot, not full history"} />}
           </Surface>
         </TabsContent>
       </Tabs>
@@ -726,7 +786,9 @@ function runtimeBreakdown(value: unknown, normalizeLabel?: (label: string) => st
   return value.flatMap((item) => {
     const row = recordValue(item);
     const raw = typeof row.name === "string" && row.name.trim() ? row.name.trim() : null;
-    const label = raw === null ? null : (normalizeLabel ? normalizeLabel(raw) : redactString(raw).slice(0, 96));
+    const label = raw === null
+      ? null
+      : (normalizeLabel ? normalizeLabel(raw) : redactString(raw).slice(0, 96));
     const count = nonNegativeMetric(row.requests);
     if (!label || count === null) return [];
     return [{ label, count, tokensSaved: nonNegativeMetric(row.tokens_saved) }];
@@ -816,4 +878,208 @@ function coverageRows(snapshot: AnalyticsSnapshot, lang: "zh" | "en") {
     { label: lang === "zh" ? "工具定义压缩节省" : "Tool definition savings", available: false },
     { label: lang === "zh" ? "Checkpoint / 周 / 月历史" : "Checkpoint / weekly / monthly history", available: false },
   ];
+}
+
+// ---------------------------------------------------------------------------
+// Analytics → 日志 子页：逐条展示 runtime 真实请求记录
+// ---------------------------------------------------------------------------
+
+function tokenEvidenceCell(value: unknown) {
+  return typeof value === "number" && Number.isFinite(value) ? nf(value) : unavailableValue;
+}
+
+function durationCell(value: unknown) {
+  return typeof value === "number" && Number.isFinite(value) ? `${value}ms` : unavailableValue;
+}
+
+function beforeAfterCell(row: RequestLogRow) {
+  const before = row.input_tokens_before;
+  const after = row.input_tokens_after;
+  if (typeof before === "number" && Number.isFinite(before) && typeof after === "number" && Number.isFinite(after)) {
+    return `${nf(before)} → ${nf(after)}`;
+  }
+  return unavailableValue;
+}
+
+function RequestPaginationBar({
+  lang,
+  currentRequestPage,
+  requestPageCount,
+  requestHasMore,
+  nativePageStatus,
+  onPrevious,
+  onNext,
+}: {
+  lang: "zh" | "en";
+  currentRequestPage: number;
+  requestPageCount: number;
+  requestHasMore: boolean;
+  nativePageStatus: "idle" | "loading" | "ready" | "error";
+  onPrevious: () => void;
+  onNext: () => void;
+}) {
+  return (
+    <div className="mt-3 flex items-center justify-between">
+      <span className="text-xs text-muted-foreground">{lang === "zh" ? `第 ${currentRequestPage + 1} / ${requestPageCount} 页` : `Page ${currentRequestPage + 1} / ${requestPageCount}`}</span>
+      <div className="flex gap-2">
+        <Button size="sm" variant="outline" disabled={currentRequestPage === 0 || nativePageStatus === "loading"} onClick={onPrevious}>{lang === "zh" ? "上一页" : "Previous"}</Button>
+        <Button size="sm" variant="outline" disabled={!requestHasMore || nativePageStatus === "loading"} onClick={onNext}>{nativePageStatus === "loading" ? (lang === "zh" ? "加载中…" : "Loading…") : (lang === "zh" ? "下一页" : "Next")}</Button>
+      </div>
+    </div>
+  );
+}
+
+function RequestLogRowView({
+  row,
+  rowKey,
+  index,
+  lang,
+  expanded,
+  onToggle,
+}: {
+  row: RequestLogRow;
+  rowKey: string;
+  index: number;
+  lang: "zh" | "en";
+  expanded: boolean;
+  onToggle: () => void;
+}) {
+  // 状态优先 runtime 终态合同 status（fbe69a6）；旧日志/in-flight 缺失时才回退 error 分类。
+  const status = typeof row.status === "string" && row.status.trim() ? row.status.trim() : null;
+  const failed = status === "failed" || (status === null && Boolean(row.error || row.error_type));
+  const detailId = `log-detail-${rowKey}`;
+  const detailRows = logDetailRows(row, lang);
+  const receipt = receiptRows(row.context_accounting, lang);
+  return (
+    <>
+      <tr className="border-b border-border/30 text-xs last:border-0">
+        <td className="whitespace-nowrap py-2 font-mono">{formatTimestamp(row.timestamp_ms)}</td>
+        <td className="max-w-36 truncate py-2">{safeCell(row.agent)}</td>
+        <td className="whitespace-nowrap py-2 tabular-nums">{tokenEvidenceCell(row.input_tokens_before)}</td>
+        <td className="whitespace-nowrap py-2 tabular-nums">{tokenEvidenceCell(row.provider_input_tokens)}</td>
+        <td className="whitespace-nowrap py-2 tabular-nums">{beforeAfterCell(row)}</td>
+        <td className="whitespace-nowrap py-2 tabular-nums">{tokenEvidenceCell(row.tokens_saved)}</td>
+        <td className="whitespace-nowrap py-2 tabular-nums">{durationCell(row.latency_ms ?? row.end_to_end_ms ?? row.compression_ms)}</td>
+        <td className="max-w-44 py-2">
+          <div className="truncate">{safeCell(row.model_id ?? row.model)}</div>
+          <div className="truncate text-[11px] text-muted-foreground">{safeCell(row.provider_id ?? row.provider)}</div>
+        </td>
+        <td className="whitespace-nowrap py-2">{failed ? <Badge variant="destructive">{lang === "zh" ? "失败" : "Error"}</Badge> : <Badge variant="secondary">{lang === "zh" ? "完成" : "OK"}</Badge>}</td>
+        <td className="max-w-40 py-2">
+          <code className="block truncate font-mono text-[11px]" title={typeof row.request_id === "string" ? row.request_id : undefined}>{typeof row.request_id === "string" ? redactString(row.request_id) : unavailableValue}</code>
+        </td>
+        <td className="whitespace-nowrap py-2 text-right">
+          <Button size="sm" variant="ghost" aria-expanded={expanded} aria-controls={detailId} onClick={onToggle} className="gap-1 px-2 text-xs">
+            {expanded ? <ChevronUp className="size-3.5" /> : <ChevronDown className="size-3.5" />}
+            {expanded ? (lang === "zh" ? "收起" : "Collapse") : (lang === "zh" ? "查看详情" : "Details")}
+          </Button>
+        </td>
+      </tr>
+      {expanded && (
+        <tr id={detailId} className="border-b border-border/30 bg-muted/20 last:border-0">
+          <td colSpan={11} className="px-3 py-3">
+            <div className="grid gap-x-6 gap-y-1.5 sm:grid-cols-2 lg:grid-cols-3">
+              {detailRows.map((detail) => (
+                <div key={detail.label} className="min-w-0">
+                  <div className="text-[11px] text-muted-foreground">{detail.label}</div>
+                  <div className="mt-0.5 break-all text-xs">{detail.value}</div>
+                </div>
+              ))}
+            </div>
+            {row.transforms_applied && row.transforms_applied.length > 0 && (
+              <div className="mt-3">
+                <div className="mb-1.5 text-[11px] font-medium text-muted-foreground">{lang === "zh" ? "变换证据" : "Transform evidence"}</div>
+                <div className="flex flex-wrap gap-1.5">
+                  {row.transforms_applied.map((transform) => <Badge key={transform} variant="secondary" className="text-[11px]">{safeCell(transform)}</Badge>)}
+                </div>
+              </div>
+            )}
+            <div className="mt-3">
+              <div className="mb-1.5 text-[11px] font-medium text-muted-foreground">{receipt.length > 0 ? (lang === "zh" ? "Optimization Receipt（脱敏白名单）" : "Optimization Receipt (redacted whitelist)") : (lang === "zh" ? "Optimization Receipt（runtime 未合并 · 暂不可用）" : "Optimization Receipt (runtime unavailable)")}</div>
+              {receipt.length > 0 ? (
+                <div className="grid gap-x-6 gap-y-1.5 sm:grid-cols-2 lg:grid-cols-3">
+                  {receipt.map((item) => (
+                    <div key={item.label}>
+                      <div className="text-[11px] text-muted-foreground">{item.label}</div>
+                      <div className="mt-0.5 break-all font-mono text-xs">{item.value}</div>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="text-xs text-muted-foreground">—</div>
+              )}
+            </div>
+          </td>
+        </tr>
+      )}
+    </>
+  );
+}
+
+function logDetailRows(row: RequestLogRow, lang: "zh" | "en"): Array<{ label: string; value: string }> {
+  const zh = lang === "zh";
+  const rows: Array<{ label: string; value: string }> = [];
+  const push = (label: string, value: unknown) => {
+    if (typeof value === "number" && Number.isFinite(value)) {
+      rows.push({ label, value: nf(value) });
+    } else if (typeof value === "string" && value.trim()) {
+      rows.push({ label, value: redactString(value.trim()).slice(0, 200) });
+    }
+  };
+  const ms = (value: unknown) => typeof value === "number" && Number.isFinite(value) ? `${value}ms` : null;
+  push(zh ? "请求标识" : "Request id", row.request_id);
+  push(zh ? "时间" : "Time", typeof row.timestamp_ms === "number" ? formatTimestamp(row.timestamp_ms) : null);
+  push("Agent", row.agent);
+  push(zh ? "界面（实例）" : "Interface (instance)", row.instance_id);
+  push(zh ? "模型" : "Model", row.model_id ?? row.model);
+  push("Provider", row.provider_id ?? row.provider);
+  push(zh ? "路由" : "Route", row.route_id ?? row.route);
+  push(zh ? "输入协议" : "Input protocol", protocolLabel(row.input_protocol ?? row.protocol, lang));
+  push(zh ? "输出协议" : "Output protocol", protocolLabel(row.output_protocol, lang));
+  push(zh ? "中转链模式" : "Relay chain mode", row.chain_mode);
+  push(zh ? "项目" : "Project", row.project_id ?? row.project);
+  push(zh ? "终态状态" : "Terminal status", row.status);
+  push(zh ? "Provider 输入 Token" : "Provider input tokens", row.provider_input_tokens);
+  push(zh ? "输出 Token" : "Output tokens", row.output_tokens);
+  push(zh ? "压缩耗时" : "Compression latency", ms(row.compression_ms));
+  push(zh ? "路由耗时" : "Route latency", ms(row.route_ms));
+  push(zh ? "上游 TTFB" : "Upstream TTFB", ms(row.upstream_ttfb_ms));
+  push(zh ? "端到端耗时" : "End-to-end latency", ms(row.end_to_end_ms));
+  push(zh ? "缓存对齐" : "Cache alignment", row.cache_alignment);
+  push(zh ? "失败类型" : "Failure type", row.error_type);
+  if (row.error) push(zh ? "错误详情（脱敏）" : "Error detail (redacted)", redactString(row.error).slice(0, 200));
+  return rows;
+}
+
+/** context_accounting 白名单：只取标量字段，不转储嵌套对象或原始载荷。 */
+function receiptRows(value: unknown, lang: "zh" | "en"): Array<{ label: string; value: string }> {
+  if (!value || typeof value !== "object") return [];
+  const source = value as Record<string, unknown>;
+  const rows: Array<{ label: string; value: string }> = [];
+  const zh = lang === "zh";
+  const flat: Array<[string, string]> = [
+    ["disposition", zh ? "优化决策" : "Disposition"],
+    ["sent_payload", zh ? "发送载荷" : "Sent payload"],
+    ["upstream_state", zh ? "上游状态" : "Upstream state"],
+    ["attribution_basis", zh ? "归因依据" : "Attribution basis"],
+    ["provider_reconciled_input_savings", zh ? "Provider 对账节省" : "Provider reconciled savings"],
+    ["fallback_reason_code", zh ? "回退原因" : "Fallback reason"],
+  ];
+  for (const [key, label] of flat) {
+    const raw = source[key];
+    if (typeof raw === "string" && raw.trim()) rows.push({ label, value: raw });
+    else if (typeof raw === "number" && Number.isFinite(raw)) rows.push({ label, value: String(raw) });
+  }
+  const estimated = source["estimated"];
+  if (estimated && typeof estimated === "object") {
+    const savings = (estimated as Record<string, unknown>)["signed_savings"];
+    if (savings && typeof savings === "object") {
+      const signed = savings as Record<string, unknown>;
+      for (const [key, label] of [["input_tokens", zh ? "估算节省输入 Token" : "Estimated saved input tokens"], ["total_tokens", zh ? "估算节省总 Token" : "Estimated saved total tokens"]] as Array<[string, string]>) {
+        const raw = signed[key];
+        if (typeof raw === "number" && Number.isFinite(raw)) rows.push({ label, value: String(raw) });
+      }
+    }
+  }
+  return rows;
 }

@@ -72,6 +72,8 @@ export type RequestLogRow = {
   request_id?: string;
   timestamp_ms?: number;
   agent?: string;
+  /** 运行实例标识（界面）。仅当 runtime 提供时展示。 */
+  instance_id?: string;
   provider_id?: string;
   route_id?: string;
   /** 兼容旧版已持久化请求日志；新运行时使用 provider_id。 */
@@ -81,11 +83,15 @@ export type RequestLogRow = {
   model?: string;
   model_id?: string;
   input_protocol?: string;
+  /** 输出协议（fbe69a6 runtime 合同）；旧日志缺失时为 undefined。 */
+  output_protocol?: string;
   protocol?: string;
   project_id?: string;
   project?: string;
   chain_mode?: string;
   error_type?: string;
+  /** 终态分类（fbe69a6 合同，snake_case：ok/failed/passthrough…）；in-flight 或旧日志缺失。 */
+  status?: string;
   cache_alignment?: string;
   cache_read?: boolean;
   cache_write?: boolean;
@@ -94,14 +100,21 @@ export type RequestLogRow = {
   compression_ms?: number;
   route_ms?: number;
   upstream_ttfb_ms?: number;
+  received_at_ms?: number;
+  completed_at_ms?: number;
   end_to_end_ms?: number;
   input_tokens_before?: number;
+  /** d-token Local Token 压缩后值；仅用于「压缩前后」与 Local 列，绝不可冒充 Provider usage。 */
   input_tokens_after?: number;
+  /** Provider 上报的 input usage，仅上游 usage 有证据时提供（fbe69a6 合同）；缺失必须显示 —，不可回退 input_tokens_after。 */
+  provider_input_tokens?: number;
   output_tokens?: number;
   tokens_saved?: number;
   transforms_applied?: string[];
   latency_ms?: number;
   error?: string | null;
+  /** Optimization Receipt 证据（runtime 提供时）。前端只渲染白名单字段，不转储原始对象。 */
+  context_accounting?: unknown;
 };
 
 type ProcessedLog = {

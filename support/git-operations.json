@@ -943,6 +943,11 @@
       "operation": "commit",
       "branch": "codex/code-graph-mcp-integration",
       "summary": "保存主工作树已有宣传素材与产品目标规格改动，作为发布迭代合并前基线",
+      "id": "a941de28-c2b2-437e-9192-48163054dfff",
+      "timestamp": "2026-08-06T20:38:46+08:00",
+      "operation": "commit",
+      "branch": "codex/release-log-view",
+      "summary": "提交 Analytics 日志子页：逐条请求日志、脱敏详情与 Optimization Receipt 白名单",
       "head_before": "f1b89dc",
       "remote": null
     },
@@ -1061,6 +1066,30 @@
       "branch": "codex/code-graph-mcp-integration",
       "summary": "合并分析日志分支，待主树测试",
       "head_before": "ab4495a",
+      "id": "2a9db348-d7b0-4d87-b284-8cf618591f50",
+      "timestamp": "2026-08-06T21:09:56+08:00",
+      "operation": "commit",
+      "branch": "codex/release-log-view",
+      "summary": "P0 fix: Analytics log Provider Token column reads provider_input_tokens only; RequestLogRow contract + tests + report update",
+      "head_before": "192935f",
+      "remote": null
+    },
+    {
+      "id": "97d9e50d-23a7-4f80-92be-baa041c43dea",
+      "timestamp": "2026-08-06T23:24:25+08:00",
+      "operation": "commit",
+      "branch": "codex/release-log-view",
+      "summary": "Complete Analytics Provider Token evidence and protocol adapter display safeguards",
+      "head_before": "774e07fc5447f1aae0fea94a6abe08fd6108a732",
+      "remote": null
+    },
+    {
+      "id": "af074ad4-7990-4055-8c92-6165488c1731",
+      "timestamp": "2026-08-06T23:25:38+08:00",
+      "operation": "commit",
+      "branch": "codex/release-log-view",
+      "summary": "Commit git operation audit ledger for Analytics evidence fix",
+      "head_before": "315f314",
       "remote": null
     }
   ]
