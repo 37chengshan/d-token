@@ -9,9 +9,9 @@ vi.mock("./native", () => ({
 }));
 
 import {
-  deriveOnboardingEvidence,
   parseOnboardingMarker,
   readOnboardingMarker,
+  summarizeOnboardingDiscovery,
   useOnboardingGate,
   writeOnboardingMarker,
 } from "./onboarding";
@@ -75,8 +75,8 @@ describe("writeOnboardingMarker", () => {
   });
 });
 
-describe("deriveOnboardingEvidence", () => {
-  it("reports connected evidence only from native connected-state claims", () => {
+describe("summarizeOnboardingDiscovery", () => {
+  it("reports connection claims only from native connected-state claims", () => {
     const snapshot = {
       agent_bindings: [
         { agent_id: "opencode", already_connected: true },
@@ -84,14 +84,14 @@ describe("deriveOnboardingEvidence", () => {
       ],
       agent_route_follow: { enabled: false },
     };
-    expect(deriveOnboardingEvidence(snapshot)).toEqual({
-      connectedAgents: ["opencode"],
+    expect(summarizeOnboardingDiscovery(snapshot)).toEqual({
+      connectionClaimedAgents: ["opencode"],
       routeFollowEnabled: false,
-      hasConnectedEvidence: true,
+      hasConnectionClaims: true,
     });
   });
 
-  it("never treats mere detection as connection", () => {
+  it("never treats mere detection as a connection claim", () => {
     const snapshot = {
       agent_bindings: [
         { agent_id: "opencode", already_connected: false },
@@ -99,17 +99,31 @@ describe("deriveOnboardingEvidence", () => {
       ],
       agent_route_follow: undefined,
     };
-    expect(deriveOnboardingEvidence(snapshot).hasConnectedEvidence).toBe(false);
-    expect(deriveOnboardingEvidence(snapshot).connectedAgents).toEqual([]);
+    expect(summarizeOnboardingDiscovery(snapshot).hasConnectionClaims).toBe(false);
+    expect(summarizeOnboardingDiscovery(snapshot).connectionClaimedAgents).toEqual([]);
   });
 
-  it("accepts an enabled agent route follow as connected evidence", () => {
+  it("accepts an enabled agent route follow as a connection claim", () => {
     const snapshot = { agent_bindings: [], agent_route_follow: { enabled: true } };
-    expect(deriveOnboardingEvidence(snapshot).hasConnectedEvidence).toBe(true);
+    expect(summarizeOnboardingDiscovery(snapshot).hasConnectionClaims).toBe(true);
   });
 
   it("handles a null snapshot (discovery unavailable)", () => {
-    expect(deriveOnboardingEvidence(null).hasConnectedEvidence).toBe(false);
+    expect(summarizeOnboardingDiscovery(null).hasConnectionClaims).toBe(false);
+  });
+
+  it("never exposes a verified field: claims are not PRD P0.7.1 #5 evidence", () => {
+    const snapshot = {
+      agent_bindings: [{ agent_id: "opencode", already_connected: true }],
+      agent_route_follow: { enabled: true },
+    };
+    const summary = summarizeOnboardingDiscovery(snapshot) as Record<string, unknown>;
+    // The summary only describes native claims; it must not look like
+    // verified evidence (config reread + service health + route evidence),
+    // and the completion marker must never be derived from it.
+    expect("verified" in summary).toBe(false);
+    expect("verifiedAgents" in summary).toBe(false);
+    expect(summary.hasConnectionClaims).toBe(true);
   });
 });
 

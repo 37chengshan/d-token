@@ -45,15 +45,15 @@ export const DICT: Dict = {
     zh: "应用前会先显示配置预览与备份摘要，确认后才写入；所有变更都有备份与回退。",
     en: "Changes are previewed and backed up before they are applied; nothing is written until you confirm, and every change can be rolled back.",
   },
-  "onb.detectedConnected": {
-    zh: "检测到已接入的 Agent 或连接路径（来自本机状态）。",
-    en: "Connected agents or connection paths were detected from local state.",
+  "onb.claimsNote": {
+    zh: "本机状态显示已接入声明（未验证）。完成按钮仅标记引导完成，不代表连接已验证；真实接入请通过「开始配置」。",
+    en: "Local state reports connection claims (unverified). Completing only acknowledges the wizard — it does not verify any connection; use Start setup for real onboarding.",
   },
   "onb.notConfigured": { zh: "尚未完成配置", en: "Setup is not complete yet" },
   "onb.complete": { zh: "完成首次配置", en: "Complete first-run setup" },
   "onb.completeDesc": {
-    zh: "标记首次配置完成并进入总体概览。",
-    en: "Mark first-run setup complete and go to Overview.",
+    zh: "标记首次配置完成，仅表示已了解引导；不代表连接或验证。真实接入请通过「开始配置」。",
+    en: "Mark first-run setup complete — an acknowledgement only, not a connection or verification. Use Start setup for real onboarding.",
   },
   "onb.startSetup": { zh: "开始配置", en: "Start setup" },
   "onb.startSetupDesc": {

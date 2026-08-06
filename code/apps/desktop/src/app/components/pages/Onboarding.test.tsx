@@ -118,7 +118,7 @@ afterEach(() => {
 });
 
 describe("OnboardingPage first-run states", () => {
-  it("shows discovery summary and blocked completion when nothing is configured yet", async () => {
+  it("shows discovery summary and keeps completion available as an explicit preference", async () => {
     mocks.connectionSetup.mockReturnValue({ snapshot: detectedSnapshot, status: "ready", error: "", refresh: vi.fn().mockResolvedValue(null) });
     renderPage();
 
@@ -129,17 +129,24 @@ describe("OnboardingPage first-run states", () => {
     expect(screen.getByText("已检测到，待确认")).toBeInTheDocument();
     expect(screen.getByText("需要凭据")).toBeInTheDocument();
 
+    // Completion is an explicit user acknowledgement of the wizard, not a
+    // connection/verified claim: it stays available without any connection
+    // evidence and the copy never claims connected/verified.
     const complete = screen.getByRole("button", { name: "完成首次配置" });
-    expect(complete).toBeDisabled();
+    expect(complete).toBeEnabled();
     expect(screen.getByRole("button", { name: "开始配置" })).toBeEnabled();
     expect(screen.getByRole("button", { name: "稍后再说" })).toBeEnabled();
   });
 
-  it("enables completion and reports connected state only from native connected evidence", async () => {
+  it("shows unverified claim note instead of a connected success banner", async () => {
     mocks.connectionSetup.mockReturnValue({ snapshot: connectedSnapshot, status: "ready", error: "", refresh: vi.fn().mockResolvedValue(null) });
     renderPage();
 
-    expect(screen.getByText("检测到已接入的 Agent 或连接路径（来自本机状态）。")).toBeInTheDocument();
+    expect(screen.getByText(/本机状态显示已接入声明（未验证）/)).toBeInTheDocument();
+    // No success banner claims a positive connected/verified outcome; the note
+    // itself only states an unverified claim and explicitly disclaims it.
+    expect(screen.queryByText("已连接")).not.toBeInTheDocument();
+    expect(screen.queryByText("连接已验证")).not.toBeInTheDocument();
     const complete = screen.getByRole("button", { name: "完成首次配置" });
     expect(complete).toBeEnabled();
   });
@@ -154,8 +161,10 @@ describe("OnboardingPage first-run states", () => {
     renderPage();
 
     expect(screen.getByText("尚未完成配置")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "完成首次配置" })).toBeDisabled();
-    expect(screen.queryByText(/已接入/)).not.toBeInTheDocument();
+    // Completion stays available as a user preference, but the UI never claims
+    // a verified/connected outcome from mere detection.
+    expect(screen.getByRole("button", { name: "完成首次配置" })).toBeEnabled();
+    expect(screen.queryByText(/已接入|已连接|连接已验证/)).not.toBeInTheDocument();
   });
 
   it("reports discovery unavailable honestly instead of fabricating zeros", async () => {
@@ -164,7 +173,9 @@ describe("OnboardingPage first-run states", () => {
 
     expect(screen.getByText("状态不可用")).toBeInTheDocument();
     expect(screen.getByText("配置状态暂不可用")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "完成首次配置" })).toBeDisabled();
+    // The native settings store is reachable, so the user can still explicitly
+    // acknowledge the wizard; the marker is a preference, not a connection fact.
+    expect(screen.getByRole("button", { name: "完成首次配置" })).toBeEnabled();
   });
 
   it("shows the browser-preview banner and blocks writes when native is unavailable", async () => {

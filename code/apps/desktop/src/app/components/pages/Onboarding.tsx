@@ -5,7 +5,7 @@ import { useConnectionSetup, type AgentUpstreamBinding } from "../../lib/connect
 import { useRuntimeDashboardSelector, shallowEqualSlice, type RuntimeDashboardState } from "../../lib/useRuntimeDashboard";
 import { connectionDiscoveryCounts, presentServiceInstance, safeText } from "../../lib/install/presentation";
 import type { DtokenServiceStatus } from "../../lib/install/presentation";
-import { deriveOnboardingEvidence, type OnboardingGateState } from "../../lib/onboarding";
+import { summarizeOnboardingDiscovery, type OnboardingGateState } from "../../lib/onboarding";
 import { Surface, FlatRows, FlatRow } from "../common/Surface";
 import { StatusBadge } from "../common/StatusBadge";
 import { Button } from "../ui/button";
@@ -93,7 +93,7 @@ export function OnboardingPage({
   );
 
   const counts = useMemo(() => connectionDiscoveryCounts(snapshot), [snapshot]);
-  const evidence = useMemo(() => deriveOnboardingEvidence(snapshot), [snapshot]);
+  const discoverySummary = useMemo(() => summarizeOnboardingDiscovery(snapshot), [snapshot]);
   const visibleBindings = useMemo(
     () => (snapshot?.agent_bindings ?? []).filter((binding) => binding.installed || binding.already_connected),
     [snapshot?.agent_bindings],
@@ -113,7 +113,13 @@ export function OnboardingPage({
         ? { label: t("onb.checking"), health: "warning" as const }
         : { label: t("onb.service.stopped"), health: "error" as const };
 
-  const completeDisabled = nativeUnavailable || !evidence.hasConnectedEvidence;
+  // Completion is an explicit user acknowledgement of the first-run wizard,
+  // NOT a connection/verified claim: the ConnectionSetup contract has no
+  // PRD P0.7.1 #5 verified field, so the marker must never be gated on (or
+  // derived from) `already_connected` / route-follow state. The button stays
+  // enabled whenever the native settings store is reachable so the user can
+  // explicitly mark the wizard acknowledged as a preference.
+  const completeDisabled = nativeUnavailable;
 
   return (
     <div
@@ -215,9 +221,9 @@ export function OnboardingPage({
         <div role="status" className="mb-6 rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-700 dark:text-emerald-300">
           {t("onb.completedDetail")}
         </div>
-      ) : evidence.hasConnectedEvidence ? (
-        <div role="status" className="mb-6 rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-700 dark:text-emerald-300">
-          {t("onb.detectedConnected")}
+      ) : discoverySummary.hasConnectionClaims ? (
+        <div role="status" className="mb-6 rounded-lg border border-border/70 bg-card/60 px-4 py-3 text-sm text-muted-foreground">
+          {t("onb.claimsNote")}
         </div>
       ) : (
         <div role="status" className="mb-6 rounded-lg border border-border/70 bg-card/60 px-4 py-3 text-sm text-muted-foreground">
@@ -235,7 +241,7 @@ export function OnboardingPage({
               onClick={() => void onComplete()}
               disabled={completeDisabled}
               aria-disabled={completeDisabled}
-              title={completeDisabled ? (nativeUnavailable ? t("onb.preview.unavailable") : t("onb.completeDesc")) : undefined}
+              title={nativeUnavailable ? t("onb.preview.unavailable") : undefined}
             >
               {t("onb.complete")}
             </Button>

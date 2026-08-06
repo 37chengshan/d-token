@@ -21,10 +21,23 @@ export type OnboardingMarker = {
   mode?: string;
 };
 
-export type OnboardingEvidence = {
-  connectedAgents: string[];
+/**
+ * Summary of native connected-state *claims* from the discovery snapshot.
+ *
+ * These are NOT PRD P0.7.1 #5 `verified` evidence (config reread + service
+ * health + real route evidence). The ConnectionSetup contract currently has no
+ * verified-evidence field, so `already_connected` and an enabled route follow
+ * are only claims about local state. The onboarding completion marker is
+ * therefore only a user "acknowledged first-run setup" preference and is never
+ * a connection/verified fact source.
+ */
+export type OnboardingDiscoverySummary = {
+  /** Agents whose binding claims `already_connected` (unverified claim). */
+  connectionClaimedAgents: string[];
+  /** Whether agent route follow reports enabled (unverified claim). */
   routeFollowEnabled: boolean;
-  hasConnectedEvidence: boolean;
+  /** Whether the snapshot contains any connected-state claim at all. */
+  hasConnectionClaims: boolean;
 };
 
 /** Reads `payload.onboarding` from a native settings payload; null when absent or malformed. */
@@ -66,25 +79,29 @@ export async function writeOnboardingMarker(mode: string): Promise<void> {
 }
 
 /**
- * Derives connected evidence from the real discovery snapshot. Only native
- * connected-state claims count: `already_connected` bindings and an enabled
- * agent route follow. Detection without connection is never reported here.
+ * Summarizes connected-state claims from the real discovery snapshot. Only
+ * native connected-state claims are listed: `already_connected` bindings and
+ * an enabled agent route follow. Detection without a claim is never reported.
+ *
+ * This is deliberately named a "claim" summary, never "evidence"/"verified":
+ * the contract has no PRD P0.7.1 #5 verified field, so these must not be used
+ * to prove connection, gate real verification, or seed the completion marker.
  */
-export function deriveOnboardingEvidence(
+export function summarizeOnboardingDiscovery(
   snapshot: {
     agent_bindings?: Array<{ agent_id: string; already_connected?: boolean }>;
     agent_route_follow?: { enabled?: boolean };
   } | null,
-): OnboardingEvidence {
+): OnboardingDiscoverySummary {
   const bindings = snapshot?.agent_bindings ?? [];
-  const connectedAgents = bindings
+  const connectionClaimedAgents = bindings
     .filter((binding) => binding.already_connected === true)
     .map((binding) => binding.agent_id);
   const routeFollowEnabled = snapshot?.agent_route_follow?.enabled === true;
   return {
-    connectedAgents,
+    connectionClaimedAgents,
     routeFollowEnabled,
-    hasConnectedEvidence: connectedAgents.length > 0 || routeFollowEnabled,
+    hasConnectionClaims: connectionClaimedAgents.length > 0 || routeFollowEnabled,
   };
 }
 
