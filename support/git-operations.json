@@ -837,6 +837,15 @@
       "summary": "fix: truthful Codebase Memory untrusted reason and block v0.9.1-rc.1 pin drift",
       "head_before": "f1b89dc",
       "remote": "null"
+    },
+    {
+      "id": "e045f5f2-68c6-4527-9e0f-6429513ff174",
+      "timestamp": "2026-08-06T23:24:02+08:00",
+      "operation": "commit",
+      "branch": "codex/release-codebase-memory",
+      "summary": "upgrade Codebase Memory pin to v0.9.1-rc.1 and fix launcher_unavailable blocked reason",
+      "head_before": "902930c",
+      "remote": "null"
     }
   ]
 }

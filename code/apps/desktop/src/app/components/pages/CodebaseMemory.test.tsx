@@ -136,8 +136,8 @@ describe("CodebaseMemory", () => {
     });
     renderPage();
 
-    expect(await screen.findByText(/导入图谱组件 v0.9.0：打开官方下载页/)).toBeVisible();
-    await user.click(screen.getByRole("button", { name: "打开 v0.9.0 官方下载页" }));
+    expect(await screen.findByText(/导入图谱组件 v0.9.1-rc.1（预发布）：打开官方下载页/)).toBeVisible();
+    await user.click(screen.getByRole("button", { name: "打开 v0.9.1-rc.1 官方下载页" }));
     expect(native.invokeNative).toHaveBeenCalledWith("open_codebase_memory_download_page");
     const directory = screen.getByRole("textbox", { name: "已解压组件的位置" });
     await user.clear(directory);
@@ -151,7 +151,7 @@ describe("CodebaseMemory", () => {
   it("truthfully explains an untrusted imported component instead of asking the user to import again", async () => {
     native.invokeNative.mockResolvedValue(status({
       package: {
-        ...dimension("untrusted", "SHA-256 does not match the pinned v0.9.0 manifest"),
+        ...dimension("untrusted", "SHA-256 does not match the pinned v0.9.1-rc.1 manifest"),
         reason_code: "upstream_untrusted",
       },
     }));
@@ -166,7 +166,27 @@ describe("CodebaseMemory", () => {
     expect(screen.getByText(/未通过固定版本校验/)).toBeVisible();
     const packageRow = screen.getByRole("heading", { level: 3, name: "图谱组件" }).closest("[data-flat-row]");
     expect(within(packageRow as HTMLElement).getByText("未受信任")).toBeVisible();
-    expect(within(packageRow as HTMLElement).getByText(/与固定 v0.9.0 不匹配/)).toBeVisible();
+    expect(within(packageRow as HTMLElement).getByText(/与固定 v0.9.1-rc.1 不匹配/)).toBeVisible();
+  });
+
+  it("truthfully explains a missing launcher when the pinned upstream is verified instead of asking the user to import again", async () => {
+    native.invokeNative.mockResolvedValue(status({
+      package: {
+        ...dimension("unavailable", "dtoken-codebase-memory-launcher was not found or did not satisfy identity verification"),
+        reason_code: "launcher_unavailable",
+      },
+    }));
+    renderPage();
+
+    await screen.findByRole("heading", { level: 1, name: "代码图谱（实验性）" });
+    const configure = screen.getByRole("button", { name: "查看并连接 Agent" });
+    expect(configure).toBeDisabled();
+    // The upstream is verified; the real blocker is the missing launcher, so
+    // the page must not claim the component was never imported.
+    expect(screen.queryByText("请先导入并通过校验图谱组件。")).not.toBeInTheDocument();
+    expect(screen.getAllByText(/受限 launcher 未找到/).length).toBeGreaterThanOrEqual(1);
+    const packageRow = screen.getByRole("heading", { level: 3, name: "图谱组件" }).closest("[data-flat-row]");
+    expect(within(packageRow as HTMLElement).getByText("不可用")).toBeVisible();
   });
 
   it("fails closed when native status and project approval are unavailable", async () => {

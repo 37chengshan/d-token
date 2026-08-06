@@ -82,7 +82,7 @@ Electron 仅是重大技术阻断时的备选，不是并行主路线。Python �
 
 ## 6. Rust external binary 管理
 
-`dtoken-proxy`、metadata-only `dtoken-agent-bridge` 与受限 `dtoken-codebase-memory-launcher` 是 d-token 自有 Rust external binaries，不是外部 Headroom/RTK 服务。Codebase Memory 大型 headless upstream 不进入 App bundle；用户从页面固定的官方 `v0.9.0` release 自行下载并解压到默认或自定义目录，App 自动发现后由 launcher 在批准项目、私有 cache 和零仓库写入策略下启动：
+`dtoken-proxy`、metadata-only `dtoken-agent-bridge` 与受限 `dtoken-codebase-memory-launcher` 是 d-token 自有 Rust external binaries，不是外部 Headroom/RTK 服务。Codebase Memory 大型 headless upstream 不进入 App bundle；用户从页面固定的官方 `v0.9.1-rc.1`（pre-release）release 自行下载并解压到默认或自定义目录，App 自动发现后由 launcher 在批准项目、私有 cache 和零仓库写入策略下启动：
 
 1. 按 target triple 生成并由 Tauri `externalBin` 打包。
 2. 必须有受管 identity、固定 loopback bind、healthcheck、日志和生命周期证据。

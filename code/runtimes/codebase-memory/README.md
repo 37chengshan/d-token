@@ -5,21 +5,23 @@ the optional d-token Codebase Memory integration. The upstream C sources are
 not copied into the d-token runtime and the upstream installer is never run.
 
 - Upstream: `DeusData/codebase-memory-mcp`
-- Release: immutable `v0.9.0`
-- Commit: `b637e3330c96cfe452da623db068c241aaa3ec01`
+- Release: immutable prerelease `v0.9.1-rc.1`
+- Commit: `ee9833df2c72b750378273897ffec9410fc2c4f2`
+- Published: `2026-07-30T03:15:15Z` (GitHub immutable pre-release)
 - License: MIT
 - Distribution: build/release preparation only; no runtime downloader or updater
 
-### Version pin check (2026-08-06)
+### Version pin (2026-08-06)
 
-Checked against the upstream GitHub release list: the newest available release is
-`v0.9.1-rc.1` (pre-release, commit `ee9833df2c72b750378273897ffec9410fc2c4f2`).
-Per the pinned-stable + Sigstore attestation provenance mode, pre-releases are
-explicitly blocked and are not imported: their platform archives and extracted
-binary SHA-256 values do not match this manifest, so the fail-closed verification
-rejects them and the desktop page truthfully reports "untrusted (v0.9.0 required)".
-The pin remains on the immutable `v0.9.0` release; no hash/signature/platform check
-is bypassed.
+The pin tracks the upstream's newest immutable release `v0.9.1-rc.1` (pre-release,
+commit `ee9833df2c72b750378273897ffec9410fc2c4f2`, published `2026-07-30T03:15:15Z`).
+Its platform archives and extracted binary SHA-256 values were measured from the
+official GitHub release assets and match the manifest below. The UI labels the
+component as a pre-release and the page requires exactly this pinned tag/commit;
+any other archive or binary is rejected by the fail-closed verification and the
+desktop page truthfully reports "untrusted (v0.9.1-rc.1 required)". The previous
+pin (immutable `v0.9.0`) was replaced only after the user confirmed real v0.9.0
+usage and the upgrade decision; no hash/signature/platform check is bypassed.
 
 `artifact-manifest.json` is the machine-readable source of archive and extracted
 binary SHA-256 values for the supported Windows/macOS targets. Release

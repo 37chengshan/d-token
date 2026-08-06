@@ -2021,7 +2021,7 @@ mod tests {
 
         gate.notify_one();
         let outcome = submitter.await.expect("submitter join").expect("submit ok");
-        assert!(matches!(outcome, Some(_)), "in-flight request completed");
+        assert!(outcome.is_some(), "in-flight request completed");
     }
 
     #[test]
@@ -2080,10 +2080,7 @@ mod tests {
         }
         assert!(server.remove_session(&session_id).is_ok());
         let outcome = submitter.await.expect("submitter join");
-        assert!(matches!(
-            outcome,
-            Err(McpSessionError::RequestCancelled)
-        ));
+        assert!(matches!(outcome, Err(McpSessionError::RequestCancelled)));
     }
 
     #[tokio::test]
