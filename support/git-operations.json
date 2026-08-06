@@ -837,6 +837,15 @@
       "summary": "提交 Analytics 日志子页：逐条请求日志、脱敏详情与 Optimization Receipt 白名单",
       "head_before": "f1b89dc",
       "remote": null
+    },
+    {
+      "id": "2a9db348-d7b0-4d87-b284-8cf618591f50",
+      "timestamp": "2026-08-06T21:09:56+08:00",
+      "operation": "commit",
+      "branch": "codex/release-log-view",
+      "summary": "P0 fix: Analytics log Provider Token column reads provider_input_tokens only; RequestLogRow contract + tests + report update",
+      "head_before": "192935f",
+      "remote": null
     }
   ]
 }

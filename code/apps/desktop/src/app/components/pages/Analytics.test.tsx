@@ -470,6 +470,7 @@ describe("Analytics log subpage (日志)", () => {
             input_protocol: "openai",
             input_tokens_before: 1_000,
             input_tokens_after: 800,
+            provider_input_tokens: 750,
             output_tokens: 80,
             tokens_saved: 200,
             transforms_applied: ["compact_json"],
@@ -488,7 +489,7 @@ describe("Analytics log subpage (日志)", () => {
     expect(screen.getByText("请求日志")).toBeInTheDocument();
     expect(screen.getAllByText("OpenCode").length).toBeGreaterThan(0);
     expect(screen.getByText("1,000")).toBeInTheDocument();
-    expect(screen.getByText("800")).toBeInTheDocument();
+    expect(screen.getByText("750")).toBeInTheDocument();
     expect(screen.getByText("1,000 → 800")).toBeInTheDocument();
     expect(screen.getByText("200")).toBeInTheDocument();
     expect(screen.getByText("100ms")).toBeInTheDocument();
@@ -497,6 +498,81 @@ describe("Analytics log subpage (日志)", () => {
     expect(screen.getByText("完成")).toBeInTheDocument();
     expect(screen.getByText("request-abc-123")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "查看详情" })).toHaveAttribute("aria-expanded", "false");
+  });
+
+  it("shows Local before, compressed after, and provider usage separately", async () => {
+    dashboard.state = {
+      payload: {
+        ...runtimeIdentity,
+        request_logs: [
+          {
+            request_id: "request-three-values",
+            timestamp_ms: Date.UTC(2026, 6, 2),
+            agent: "OpenCode",
+            provider_id: "provider-main",
+            route_id: "route-main",
+            model: "gpt-5",
+            status: "ok",
+            input_tokens_before: 100,
+            input_tokens_after: 80,
+            provider_input_tokens: 77,
+            output_tokens: 10,
+            tokens_saved: 20,
+            latency_ms: 12,
+          },
+        ],
+      },
+      status: "runtime",
+      updatedAt: new Date("2026-07-10T12:00:00Z"),
+      error: "",
+      refresh: vi.fn(),
+    };
+
+    await openLogsTab();
+
+    // Local Token 列读 input_tokens_before
+    expect(screen.getByText("100")).toBeInTheDocument();
+    // 压缩前后列仍用 input_tokens_after
+    expect(screen.getByText("100 → 80")).toBeInTheDocument();
+    // Provider Token 列读 provider_input_tokens，而非回退 input_tokens_after
+    expect(screen.getByText("77")).toBeInTheDocument();
+    expect(screen.queryByText("80")).not.toBeInTheDocument();
+    expect(screen.getByText("完成")).toBeInTheDocument();
+  });
+
+  it("never falls back to input_tokens_after when provider usage is missing", async () => {
+    dashboard.state = {
+      payload: {
+        ...runtimeIdentity,
+        request_logs: [
+          {
+            request_id: "request-no-provider-usage",
+            timestamp_ms: Date.UTC(2026, 6, 2),
+            agent: "Codex",
+            provider_id: "provider-main",
+            route_id: "route-main",
+            model: "gpt-5",
+            status: "ok",
+            input_tokens_before: 100,
+            input_tokens_after: 80,
+            tokens_saved: 20,
+            latency_ms: 12,
+          },
+        ],
+      },
+      status: "runtime",
+      updatedAt: new Date("2026-07-10T12:00:00Z"),
+      error: "",
+      refresh: vi.fn(),
+    };
+
+    await openLogsTab();
+
+    // 压缩前后列仍显示 Local 压缩后值
+    expect(screen.getByText("100 → 80")).toBeInTheDocument();
+    // Provider Token 列缺 provider_input_tokens 时必须显示 —，绝不显示 80
+    expect(screen.getAllByText("—").length).toBeGreaterThanOrEqual(1);
+    expect(screen.queryByText("80")).not.toBeInTheDocument();
   });
 
   it("keeps missing token evidence as em-dash instead of zero-filling", async () => {

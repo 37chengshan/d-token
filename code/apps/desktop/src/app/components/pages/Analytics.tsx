@@ -940,7 +940,9 @@ function RequestLogRowView({
   expanded: boolean;
   onToggle: () => void;
 }) {
-  const failed = Boolean(row.error || row.error_type);
+  // 状态优先 runtime 终态合同 status（fbe69a6）；旧日志/in-flight 缺失时才回退 error 分类。
+  const status = typeof row.status === "string" && row.status.trim() ? row.status.trim() : null;
+  const failed = status === "failed" || (status === null && Boolean(row.error || row.error_type));
   const detailId = `log-detail-${rowKey}`;
   const detailRows = logDetailRows(row, lang);
   const receipt = receiptRows(row.context_accounting, lang);
@@ -950,7 +952,7 @@ function RequestLogRowView({
         <td className="whitespace-nowrap py-2 font-mono">{formatTimestamp(row.timestamp_ms)}</td>
         <td className="max-w-36 truncate py-2">{safeCell(row.agent)}</td>
         <td className="whitespace-nowrap py-2 tabular-nums">{tokenEvidenceCell(row.input_tokens_before)}</td>
-        <td className="whitespace-nowrap py-2 tabular-nums">{tokenEvidenceCell(row.input_tokens_after)}</td>
+        <td className="whitespace-nowrap py-2 tabular-nums">{tokenEvidenceCell(row.provider_input_tokens)}</td>
         <td className="whitespace-nowrap py-2 tabular-nums">{beforeAfterCell(row)}</td>
         <td className="whitespace-nowrap py-2 tabular-nums">{tokenEvidenceCell(row.tokens_saved)}</td>
         <td className="whitespace-nowrap py-2 tabular-nums">{durationCell(row.latency_ms ?? row.end_to_end_ms ?? row.compression_ms)}</td>
@@ -1027,8 +1029,11 @@ function logDetailRows(row: RequestLogRow, lang: "zh" | "en"): Array<{ label: st
   push("Provider", row.provider_id ?? row.provider);
   push(zh ? "路由" : "Route", row.route_id ?? row.route);
   push(zh ? "输入协议" : "Input protocol", row.input_protocol ?? row.protocol);
+  push(zh ? "输出协议" : "Output protocol", row.output_protocol);
   push(zh ? "中转链模式" : "Relay chain mode", row.chain_mode);
   push(zh ? "项目" : "Project", row.project_id ?? row.project);
+  push(zh ? "终态状态" : "Terminal status", row.status);
+  push(zh ? "Provider 输入 Token" : "Provider input tokens", row.provider_input_tokens);
   push(zh ? "输出 Token" : "Output tokens", row.output_tokens);
   push(zh ? "压缩耗时" : "Compression latency", ms(row.compression_ms));
   push(zh ? "路由耗时" : "Route latency", ms(row.route_ms));
