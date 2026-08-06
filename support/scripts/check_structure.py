@@ -153,6 +153,7 @@ DOCS_ROOT_MARKDOWN_ALLOWED = {
     "PRD.md",
     "SECURITY_BOUNDARIES.md",
     "TECH_STACK.md",
+    "agent-mcp-parallel-dev-prompts.md",
     "index.md",
     "agent-mcp-parallel-dev-prompts.md",
     "d-token_AI_product_target_spec_v2.md",
