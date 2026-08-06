@@ -747,6 +747,15 @@
       "summary": "push README v2.1 文案与宣传图更新到 main",
       "head_before": "d7b8ca1",
       "remote": "origin"
+    },
+    {
+      "id": "bf2b5a2a-e172-4860-949a-2d6f27804689",
+      "timestamp": "2026-08-06T21:22:50+08:00",
+      "operation": "merge",
+      "branch": "main",
+      "summary": "merge origin/main（含 CI 修复与 Code Graph MCP 合入）后推送 README 更新",
+      "head_before": "1963913",
+      "remote": null
     }
   ]
 }
