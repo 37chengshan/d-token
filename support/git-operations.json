@@ -837,6 +837,15 @@
       "summary": "fix(sidebar): stable press hit rect, per-item render isolation, cat-ear nav icons + report",
       "head_before": "f1b89dcc8db810b6d2373e9d1d4b5f57f1c6f40e",
       "remote": null
+    },
+    {
+      "id": "7deeb248-ff24-4a63-9d81-5a1eee3b51b1",
+      "timestamp": "2026-08-06T23:22:04+08:00",
+      "operation": "commit",
+      "branch": "codex/release-macos-sidebar",
+      "summary": "Fix sidebar tooltip refs, CSS hit rect, local pulse rendering, canonical cat-face mark",
+      "head_before": "4015a75",
+      "remote": null
     }
   ]
 }
