@@ -961,6 +961,11 @@
       "operation": "commit",
       "branch": "codex/release-open-source",
       "summary": "provenance: register LeanCTX/CCR open-source sources and headroom v0.34.0",
+      "id": "dc773217-f36b-4efb-b31d-e9811f105f78",
+      "timestamp": "2026-08-06T20:55:33+08:00",
+      "operation": "commit",
+      "branch": "codex/release-onboarding",
+      "summary": "feat: 首次使用配置向导（onboarding gate + 页面 + Topbar 重入）",
       "head_before": "f1b89dcc8db810b6d2373e9d1d4b5f57f1c6f40e",
       "remote": null
     },
@@ -980,6 +985,21 @@
       "branch": "codex/code-graph-mcp-integration",
       "summary": "合并首次配置引导分支，待主树验证",
       "head_before": "11552f2",
+      "id": "52564730-d013-4ca1-b13a-e1fd66cb58ab",
+      "timestamp": "2026-08-06T21:16:39+08:00",
+      "operation": "commit",
+      "branch": "codex/release-onboarding",
+      "summary": "fix: 收窄首次引导完成资格为显式用户偏好（非连接/verified 声明），summarizeOnboardingDiscovery 仅输出声明摘要",
+      "head_before": "853ac93",
+      "remote": null
+    },
+    {
+      "id": "a9a1c408-26a3-47e1-8e30-529a3640c097",
+      "timestamp": "2026-08-06T21:17:07+08:00",
+      "operation": "commit",
+      "branch": "codex/release-onboarding",
+      "summary": "chore: 提交 fix 追加 commit 的 git-operations.json audit 记录",
+      "head_before": "db3b081",
       "remote": null
     }
   ]

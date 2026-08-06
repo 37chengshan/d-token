@@ -14,6 +14,78 @@ export const DICT: Dict = {
   "app.expandSidebar": { zh: "展开侧栏", en: "Expand sidebar" },
   "app.collapseSidebar": { zh: "收起侧栏", en: "Collapse sidebar" },
 
+  // first-run onboarding wizard
+  "onb.title": { zh: "欢迎使用 d-token", en: "Welcome to d-token" },
+  "onb.subtitle": {
+    zh: "首次使用需要完成基础配置：连接本地服务、选择 AI Agent 与模型服务商。每一步都会先预览、再应用。",
+    en: "First-run setup connects your local service, AI agents, and model providers. Every step is previewed before it is applied.",
+  },
+  "onb.entry": { zh: "首次配置", en: "Setup" },
+  "onb.checking": { zh: "正在检查首次配置状态…", en: "Checking first-run setup status…" },
+  "onb.section.service": { zh: "本地服务", en: "Local service" },
+  "onb.section.agents": { zh: "Agent 发现", en: "Agent discovery" },
+  "onb.section.upstream": { zh: "上游与模型服务商", en: "Upstreams & model providers" },
+  "onb.service.running": { zh: "服务运行中", en: "Service running" },
+  "onb.service.stopped": { zh: "服务未运行", en: "Service not running" },
+  "onb.service.restartRequired": { zh: "需要重启", en: "Restart required" },
+  "onb.service.unavailable": { zh: "服务状态不可用", en: "Service status unavailable" },
+  "onb.agents.none": { zh: "未检测到已安装的 Agent", en: "No installed agents detected" },
+  "onb.agents.detected": { zh: "已检测到 {count} 个 Agent", en: "{count} agents detected" },
+  "onb.agents.connected": { zh: "已接入", en: "Connected" },
+  "onb.agents.needsChoice": { zh: "已检测到，待确认", en: "Detected, needs confirmation" },
+  "onb.agents.needsCredential": { zh: "需要凭据", en: "Credential needed" },
+  "onb.agents.unsupported": { zh: "当前仅检测", en: "Detection only" },
+  "onb.agents.unavailable": { zh: "状态不可用", en: "Unavailable" },
+  "onb.upstream.none": { zh: "未检测到可用上游", en: "No usable upstreams detected" },
+  "onb.upstream.detected": { zh: "已检测到 {count} 个上游候选", en: "{count} upstream candidates detected" },
+  "onb.upstream.ccSwitch": { zh: "cc-switch：{status}", en: "cc-switch: {status}" },
+  "onb.upstream.ccSwitchDetected": { zh: "已检测到", en: "Detected" },
+  "onb.upstream.ccSwitchNone": { zh: "未检测到", en: "Not detected" },
+  "onb.previewNote": {
+    zh: "应用前会先显示配置预览与备份摘要，确认后才写入；所有变更都有备份与回退。",
+    en: "Changes are previewed and backed up before they are applied; nothing is written until you confirm, and every change can be rolled back.",
+  },
+  "onb.claimsNote": {
+    zh: "本机状态显示已接入声明（未验证）。完成按钮仅标记引导完成，不代表连接已验证；真实接入请通过「开始配置」。",
+    en: "Local state reports connection claims (unverified). Completing only acknowledges the wizard — it does not verify any connection; use Start setup for real onboarding.",
+  },
+  "onb.notConfigured": { zh: "尚未完成配置", en: "Setup is not complete yet" },
+  "onb.complete": { zh: "完成首次配置", en: "Complete first-run setup" },
+  "onb.completeDesc": {
+    zh: "标记首次配置完成，仅表示已了解引导；不代表连接或验证。真实接入请通过「开始配置」。",
+    en: "Mark first-run setup complete — an acknowledgement only, not a connection or verification. Use Start setup for real onboarding.",
+  },
+  "onb.startSetup": { zh: "开始配置", en: "Start setup" },
+  "onb.startSetupDesc": {
+    zh: "前往安装与连接：选择 Agent 与模型服务商，先预览、再应用。",
+    en: "Go to Install & Connect: choose agents and providers, then preview and apply.",
+  },
+  "onb.later": { zh: "稍后再说", en: "Maybe later" },
+  "onb.laterDesc": {
+    zh: "本次先跳过；完成配置前，下次启动仍会提示。",
+    en: "Skip for now; you will be reminded on next launch until setup is complete.",
+  },
+  "onb.preview.unavailable": {
+    zh: "当前为浏览器预览，不会读取或修改本机配置。请在 d-token 桌面窗口中继续。",
+    en: "Browser preview does not read or modify local configuration. Continue in the d-token desktop window.",
+  },
+  "onb.status.unavailable": { zh: "配置状态暂不可用", en: "Configuration status unavailable" },
+  "onb.completed": { zh: "首次配置已完成", en: "First-run setup complete" },
+  "onb.completedDetail": {
+    zh: "首次配置已完成。你可以随时从右上角再次打开配置向导。",
+    en: "First-run setup complete. You can reopen the setup wizard anytime from the top-right.",
+  },
+  "onb.completeFailed": {
+    zh: "首次配置完成标记保存失败，请重试；配置本身未被修改。",
+    en: "The setup-complete marker could not be saved. Try again; your configuration was not changed.",
+  },
+  "onb.completedHint": {
+    zh: "你可以随时从右上角再次打开配置向导。",
+    en: "You can reopen the setup wizard anytime from the top-right.",
+  },
+  "onb.backOverview": { zh: "返回总体概览", en: "Back to Overview" },
+  "onb.entryTitle": { zh: "打开首次配置向导", en: "Open first-run setup" },
+
   // operation results and safe failure presentation
   "operation.connection": { zh: "连接", en: "Connection" },
   "operation.route": { zh: "连接路径配置", en: "Connection path configuration" },
