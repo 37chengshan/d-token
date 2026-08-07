@@ -12,7 +12,7 @@
 | 代码 | 18 个 Rust 业务 crate + 1 个 Tauri app crate + React 18/TypeScript/Vite 桌面 UI + 薄 TypeScript SDK |
 | 已交付里程碑 | M1（no-touch 基础）、M2（Headroom 只读集成）、M3（GUI MVP） |
 | 交付证据 | `docs/history/M1_NO_TOUCH_DEV_FOUNDATION_REPORT.md`、`docs/history/M2_EXTERNAL_READ_ONLY_INTEGRATION_REPORT.md`、`docs/history/M3_GUI_CONTROL_PLANE_MVP_REPORT.md`、`docs/history/M1_M3_DELIVERY_AUDIT.md` |
-| 当前 Node | `v0.2.0-beta.1` 发布收口：G2 codec、G3 CCR/ACL 实现、G4 surface parity（含 Responses fail-closed/stream terminal）、G5 Agent/cc-switch/RTK 本机候选证据已推进，G7 当前候选真实 OpenCode 已通过（candidate_id=G7，2026-08-04），G7 macOS package audit 已通过（c124d9f，2026-08-04：DMG 挂载/安装/启动/退出/卸载全链路验证通过，无 immediate crash，Window 可见）；仍须完成最新全仓复证、G6 剩余 PowerShell 门（.ps1 未执行）、Windows MSVC runner、同 commit 双平台产物与 G8 后才能发布 |
+| 当前 Node | `v0.2.0-beta.1` 发布收口：G2 codec、G3 CCR/ACL 实现、G4 surface parity（含 Responses fail-closed/stream terminal）、G5 Agent/cc-switch/RTK 本机候选证据已推进，G7 当前候选真实 OpenCode 已通过（candidate_id=G7，2026-08-04），G7 macOS package audit 已通过（c124d9f，2026-08-04：DMG 挂载/安装/启动/退出/卸载全链路验证通过，无 immediate crash，Window 可见）；2026-08-07 最新全仓复证已通过（`cargo test --workspace` 936 pass/5 ignored、workspace clippy strict pass、前端 Vitest 634 pass、`tsc --noEmit`/build pass、Chromium+WebKit E2E 各 13 pass），macOS rebuilt app+DMG 审计 ad-hoc 通过（SHA-256 60f7d063…，未签名/未公证）；本轮新增 Codex ocxlocal openai-responses 自动发现（`ProviderWireApi::OpenAiResponses`、`models=[]` 允许请求 model 动态透传、core native Responses 非流/SSE body 原样透传且仅终态 finalize、Chat-wire 仍桥接 fail-closed）、Overview/Analytics 价格估算与 tray 物理坐标 placement（多显示器/DPI 单测 8/8）；仍阻断：unsigned/unnotarized、Windows 实机与 G8、新 ocxlocal 路径真实 Codex routed acceptance 缺失，不宣称 release-ready |
 | 历史路线图 | `docs/archive/ROADMAP_M0_M6_HISTORICAL.md`（M0–M6 原文快照） |
 
 当前 M4 历史设计输入：
@@ -51,6 +51,7 @@ support/fixtures/ support/fake-bin/   no-touch 测试资产
 11. managed RTK macOS candidate probe 已通过安装/验证、命令过滤、成功/失败 exit propagation、usage metadata、精确卸载与私有根目录清理；最新 metadata-only receipt 为 `support/artifacts/managed-rtk-candidate/candidate-20260731T223754Z-7536.json`。Windows/WSL runner 证据仍待补齐。
 12. **G7 真实 OpenCode 已在当前候选通过（2026-08-04）**：报告为 `support/artifacts/opencode-real-routed/real-routed-20260804T112429Z-76558.json`（schema v2，candidate_id=G7，status=pass/exit 0）。OpenCode 1.14.51 以本机正常配置（`normal_user_state_used=true`、`credential_mode=explicit_none`）使用 `opencode/deepseek-v4-flash-free` 免费模型，route/provider 均 verified，10 条匹配请求全部成功；compression 输入 139116→137858 tokens、physical_delta=1258、`claimable=false`（attribution_basis=none，物理节省不冒充可声明收益）。Ledger 4 类（events 20 / route_decisions 10 / request_logs 10 / ccr_metadata 14）；CCR retrieve→delete→repeat-delete 全生命周期通过，delete 后 raw 不可恢复且 keychain 清理为 deleted；配置事务 `change_required=false`、前后 SHA-256 一致（restore_status=not_required_identical）；privacy 六项全 false；runtime 已停止。报告未读取或输出任何 secret。
 13. **Agent MCP/Hook 的桌面配置入口已接线但仍须复证**：Install 已按 `integration_kind` 分流 MCP/Hook，执行 preview → confirm → hash-bound apply → reread verify → refresh；Rust command 只接受注册表中对应 Agent 的精确 MCP 目标，拒绝相对路径、symlink、非普通文件和未知 operation。preview 只返回脱敏摘要，apply 使用 `ConfigPatcher` 备份/事务 receipt，写后验证失败自动回退；clear 在 d-token-owned entry 不存在时保持原始字节且缺失文件视为已清除。该入口只证明 MCP 工具接入，不提供模型上游 route evidence。同一候选已于 2026-08-05 在普通副本 `/tmp/dtoken-verify-head.iV1MPo` 完成全量复证：`cargo fmt --all -- --check` 通过，`cargo check -p dtoken-config-patcher` 通过，`cargo test -p dtoken-config-patcher` 全部通过（74+2+7+6+11+19=119 passed，1 ignored 为需真实授权的 OpenCode 验收），`cargo check -p d-token-desktop` 通过，Install.test.tsx 23 项通过，`tsc --noEmit` 通过，`npm run build` 通过。主工作区 File Provider `dataless` 阻塞仍在；MCP/Hook 仅证明工具接入，不得把“命令已注册/页面已接线”写成候选门通过或发布结论。
+14. **Codex ocxlocal 自动发现与 native Responses 透传、价格估算、tray placement（2026-08-07 本轮）**：自动发现支持 `model_provider=ocxlocal` + `wire_api=responses`（OpenCodex local `127.0.0.1:10100`），`ProviderWireApi::OpenAiResponses` 将 `/v1/responses` 表面原样路由到上游、不做 Chat 转换；Codex 排除显式 model 要求（preserve_request/passthrough），`models=[]` 允许请求 model 动态透传、不把模型固定为安装时值；core native Responses 非流返回上游 body 原样、流 SSE body 原样且仅终态 finalize；Chat-wire（OpenAiChat）仍保留 Responses→Chat 桥接并 fail-closed。Overview/Analytics 已从 Settings `model-pricing` 价格表（input/output 每百万 token 单价）估算 input cost before/after/delta，unknown/mixed/过期 fail-closed，`provider_cost_usd` 作为上游账单费用单独呈现。tray 面板 placement 统一在单一物理坐标空间（`monitor_from_point`/`work_area`/`scale_factor`，覆盖 mixed-DPI 与负原点多显示器），placement 单测 8/8 通过；macOS rebuilt app+DMG audit ad-hoc 已启动并通过（SHA-256 60f7d063…，未签名/未公证），Windows 仅 source/CI 合同、无当前实机。新 ocxlocal 路径的真实 Codex routed acceptance 仍未完成，不得宣称为已验收。
 
 当前发布边界：当前 `0.2.0-beta.1` 只允许作为 macOS ARM64 / Windows x64 的**公开未签名 prerelease**，不得写成已签名、公证、已通过系统安全检查或 production-certified 的安装包；未签名/ad-hoc macOS 构建出现系统安全警告属于预期，不能据此绕过系统安全保护。
 
@@ -61,7 +62,7 @@ support/fixtures/ support/fake-bin/   no-touch 测试资产
 5. 真实认证 Provider 的 macOS Keychain/Windows Credential Manager 出站读取仍缺不暴露凭据的候选版实证。
 6. Headroom §8 能力尚未完整迁移：当前多个同名端点仍是 metadata-only、preview-only、静态兼容声明或透传；在逐能力 runtime/eval/Agent 证据闭环前不得进入公开试用候选。
 7. 截至 2026-08-04 当前 working tree，G0/G1 仍以最新全仓复证为准。G2 的本地 release probe 已将 JSON、log、search、build、diff、text、HTML 与覆盖 Rust/TS/JS/Python/Go/Java/C/C++ 的 code-compressor 全部标记 active；每类至少 128 个 property/semantic/rollback cases，negative/budget/cancellation 门通过，零失败，evidence revision 为 `d0cb2e0346339d8985ea949b1c6dbdb25fc7b347d3440e04e5584cfce9233b69`。G3 已实现 CCR lifecycle journal/reconciliation、Unix 权限与 Windows current-user+SYSTEM protected DACL；Windows GNU cross-check 通过，但 MSVC runner 仍须实际运行 ACL tests。G4 的 Rust/HTTP/MCP/TS SDK parity 与 Responses 输入/流式终态 fail-closed 回归已通过。G7 当前候选真实 OpenCode 已于 2026-08-04 通过（见上文第 12 条）。以上证据尚未绑定最终 clean candidate；G6 仅本机可执行门通过（PowerShell 门 fail-closed 未执行），G8 与双平台产物未全绿前不得发布。
-8. 当前工作区的 Git 缺失 tree object 与空 index 已通过只读远端对象补全和 `read-tree HEAD` 重建恢复；未执行 reset/checkout，工作区文件未被覆盖。主工作区 Git 状态、structure、Cargo 与前端全量门仍会被部分 macOS File Provider `dataless` 文件阻塞；同一候选已于 2026-08-05 在普通副本 `/tmp/dtoken-verify-head.iV1MPo` 完成 Cargo 与前端全量复证（见上文第 13 条）且全部通过，但主工作区实体化复证、真实 provider/raw-wire、Windows/MSVC、同 commit 双平台产物与 G8 仍未完成，发布结论不得更新。
+8. 当前工作区的 Git 缺失 tree object 与空 index 已通过只读远端对象补全和 `read-tree HEAD` 重建恢复；未执行 reset/checkout，工作区文件未被覆盖。主工作区 Git 状态、structure、Cargo 与前端全量门仍会被部分 macOS File Provider `dataless` 文件阻塞；同一候选已于 2026-08-05 在普通副本 `/tmp/dtoken-verify-head.iV1MPo` 完成 Cargo 与前端全量复证（见上文第 13 条）且全部通过；2026-08-07 当前工作树已完成最新全仓复证并全部通过（`cargo test --workspace` 936 pass/5 ignored、workspace clippy strict pass、前端 Vitest 634 pass、`tsc --noEmit`/build pass、Chromium+WebKit E2E 各 13 pass），macOS rebuilt app+DMG 审计 ad-hoc 通过（SHA-256 60f7d063…，未签名/未公证）。仍阻断：unsigned/unnotarized、Windows 实机/MSVC、G8 与新 ocxlocal 路径的真实 Codex routed acceptance，发布结论不得更新。
 
 ## 1. 计划原则
 
@@ -75,6 +76,8 @@ support/fixtures/ support/fake-bin/   no-touch 测试资产
 ## 1A. 当前最高优先级：自动上游解析与智能学习全面扫描（待实施）
 
 状态：2026-07-13 已完成多维度审查并同步 PRD P0.7.1–P0.7.3、§19 验收契约；业务代码尚未开工。
+
+> 2026-08-07 更新：本节早期设计中的 `needs-choice`、用户选择 Agent/provider/model 候选等口径，已被 `docs/PRD.md` P0.0.10 的自动配置硬合同取代。当前实现与后续任务一律采用 `needs-source-fix` fail-closed：展示冲突来源与「修复来源配置 / 重新扫描」，不提供 chooser。
 
 本节用于落实 PRD P0.7.1–P0.7.3 与 §19 的产品契约，纠正当前“安装与连接”实现的关键偏差：
 
@@ -92,7 +95,7 @@ support/fixtures/ support/fake-bin/   no-touch 测试资产
   -> 自动检测本机 Agent、Agent 当前配置、OpenCode provider/model、cc-switch、d-token 已保存连接资料
   -> 自动识别每个 Agent 当前实际使用的上游和协议
   -> 自动生成“Agent -> d-token -> 原上游/cc-switch”的连接计划
-  -> 只有存在多个同等有效候选或字段无法确认时，要求用户在已发现候选中选择/确认
+  -> 多候选、字段不足或 schema 未知时 fail-closed，展示冲突来源并引导修复来源配置 / 重新扫描
   -> 用户审阅 diff、备份和连接路径后应用
   -> 验证真实连接并生成回退点
 ```
@@ -100,8 +103,8 @@ support/fixtures/ support/fake-bin/   no-touch 测试资产
 “自动读取”与“静默写入”必须严格区分：
 
 1. 读取、识别、排序、生成连接计划可以自动执行。
-2. 已有唯一且高置信度的当前上游时，UI 自动选中并直接进入连接计划，不要求用户手填 URL、协议或模型。
-3. 多个有效 provider/upstream 并存时，完整展示来源、协议、模型、脱敏地址和当前激活状态，由用户显式选择；禁止静默猜测。
+2. 已有唯一且高置信度的当前上游时，UI 直接展示自动解析结果并进入连接计划，不要求用户手填 URL、协议或模型。
+3. 多个有效 provider/upstream 并存时，完整展示来源、协议、模型、脱敏地址和当前激活状态，进入 `needs-source-fix` 并引导修复来源配置 / 重新扫描；不得提供 chooser，也不得静默猜测。
 4. 任何 Agent 配置、d-token active config 或第三方配置写入仍必须经过摘要、diff、backup、确认、verify、rollback。
 5. 高级安装只处理自动发现失败、未知协议、自定义链路或用户主动覆盖，不得成为默认入口。
 
@@ -113,7 +116,7 @@ type AgentUpstreamBinding = {
   currentConfigSource: 'agent-config' | 'cc-switch' | 'dtoken-saved' | 'catalog' | 'unknown';
   candidates: UpstreamCandidate[];
   resolvedCandidate?: UpstreamCandidate;
-  resolution: 'auto-resolved' | 'needs-choice' | 'needs-credential' | 'unsupported' | 'unavailable';
+  resolution: 'auto-resolved' | 'needs-source-fix' | 'needs-credential' | 'unsupported' | 'unavailable';
   confidence: number;
   reasons: string[];
 };
@@ -223,7 +226,7 @@ struct UpstreamCandidate {
 1. 当前 Agent 配置明确指向 cc-switch 本地代理，且 cc-switch 当前 profile 可安全解析：自动解析为该 profile/upstream。
 2. 当前 Agent 配置存在唯一的 active provider/model，且协议、地址和认证方式可安全复用：自动解析。
 3. d-token 已有与当前 Agent 配置完全一致的 active route：状态为 `synced`，不重新要求配置。
-4. 多个 active 或同置信度候选：状态为 `needs-choice`，仅让用户从已发现项中选择，不显示手填 URL 为主操作。
+4. 多个 active 或同置信度候选：状态为 `needs-source-fix`，完整展示冲突来源与影响，并提供「修复来源配置 / 重新扫描」；不提供候选 chooser。
 5. 只有地址已知但凭据无法安全复用：状态为 `needs-credential`；保留自动识别出的 URL/协议/model，只请求必要凭据，不让用户重复填写连接资料。
 6. 未知协议或不支持格式：状态为 `unsupported`，提供高级安装或生成诊断提示词。
 7. 不存在候选：状态为 `unavailable`，此时高级安装才成为回退路径。
@@ -535,7 +538,7 @@ UI 至少显示前三条排序依据，例如“最近有 Codex 会话”“同�
 | 自定义能力 | PRD 字段完整，但从空白高级表单开始会让用户重复配置 | 高级安装必须从自动方案预填进入，并支持恢复自动推荐 |
 | 状态逻辑 | 服务状态、上游状态、Agent 状态和验证状态容易在 UI 中互相覆盖 | 建立单一安装状态机；内部保留分层证据，主界面只展示当前阻塞点和下一动作 |
 | 幂等性 | 已连接状态仍可能生成重复操作或无意义 diff | `already-connected` 必须为一等状态；相同 hash/route/config 不写入、不重启 |
-| 多 Agent 事务 | 多个 Agent 同时配置时可能形成难以解释的部分成功 | runtime 安装与 Agent 配置分层事务；所选 Agent 配置批次默认原子回退 |
+| 多 Agent 事务 | 多个 Agent 同时配置时可能形成难以解释的部分成功 | runtime 安装与 Agent 配置分层事务；自动纳入 Agent 配置批次默认原子回退 |
 | 安全与隐私 | 原计划边界基本正确 | 保持只读自动发现、显式写入确认、凭据引用、双 hash、备份和精确回退 |
 | App 性能 | 原计划只细化了智能学习扫描性能 | 新增 §1B 全 App 性能治理，覆盖启动、导航、状态刷新、Native IPC、日志、图表和后台任务 |
 
@@ -566,7 +569,7 @@ idle
 5. `needs-credential` 只请求必要凭据，并写入操作系统凭据库；不要求重新填写 URL、协议和模型。
 6. `review` 默认显示人话摘要，技术连接路径、文件 diff、hash 和备份位置按需展开。
 7. `applying-runtime` 仅在 runtime 缺失、版本不兼容或未运行时执行；已正常运行时必须跳过。
-8. `applying-agent-configs` 只修改用户已选择且可安全配置的 Agent；不支持项不进入批次。
+8. `applying-agent-configs` 只修改自动纳入且可安全配置的 Agent；不支持项不进入批次。
 9. `verified` 必须来自配置复读、服务健康和真实 route evidence，不能仅凭写文件成功。
 10. `partial/blocked` 必须说明保留了什么、回退了什么、用户下一步做什么。
 
@@ -575,10 +578,10 @@ idle
 为兼顾简单性和可恢复性，安装不应把所有动作塞进一个不可解释的大事务：
 
 1. **Runtime 事务**：负责 d-token runtime 安装/升级/启动、端口和进程身份验证。它独立幂等、独立回退。
-2. **连接计划事务**：负责 d-token active route、cc-switch 同步计划和所选 Agent 配置。
-3. **Agent 配置批次**：先为所有选中 Agent 完成 plan、diff 和 backup，再逐个应用与验证；任一选中 Agent 失败时，默认回退本批次已修改的 Agent 配置，避免用户得到无法理解的半连接状态。
+2. **连接计划事务**：负责 d-token active route、cc-switch 同步计划和自动纳入 Agent 的配置。
+3. **Agent 配置批次**：先为所有自动纳入 Agent 完成 plan、diff 和 backup，再逐个应用与验证；任一 Agent 失败时，默认回退本批次已修改的 Agent 配置，避免用户得到无法理解的半连接状态。
 4. Runtime 已安全安装但 Agent 批次失败时，保留 runtime，不伪装为全部失败；UI 明确显示“服务已安装，Agent 配置已回退”。
-5. 用户可以在失败后缩小 Agent 选择重新执行，不需要重新安装 runtime。
+5. 批次失败后修复来源配置并重新扫描可重试，不需要重新安装 runtime。
 6. review 期间任何源配置 hash 变化都必须使计划失效并重新扫描，防止 TOCTOU 覆盖。
 
 #### 自定义能力的逻辑边界
@@ -904,9 +907,9 @@ dtoken-preprocessor         integrated RTK internal capability
 - [x] CBM-0 provenance 与 artifact：固定 `v0.9.0`/commit、平台 archive、SHA-256、许可证与 NOTICE 已进入 manifest；运行时只接受当前平台的 pinned binary SHA-256 或明确登记的 macOS universal 派生 SHA-256，同签名者/同证书不替代内容身份；正式 sidecar 准备脚本不下载或打包 upstream，release smoke 另行准备用户导入样本做验证。
 - [x] CBM-1 领域合同与 launcher：`dtoken-codebase-memory` crate、受限 launcher、bounded MCP envelope、tool allowlist、metadata-only receipt 已实现。
 - [x] CBM-2 项目/缓存/零写入边界：canonical root、私有 cache namespace、quota/TTL、repo write deny、`persistence=false` 与敏感路径拒绝已实现。
-- [x] CBM-3 Agent MCP/Hook 事务：自动扫描 OpenCode/Codex/Claude，默认选中全部已安装且受支持 Agent；MCP 支持多选批量 preview/apply/read-back verify，并在任一失败时逆序 rollback；批量 transaction set 持久化并可在刷新/重启后恢复整批回退入口，verify/rollback 从各自 manifest 恢复 Agent/scope/surface 上下文；配置写入后的控制面状态落盘失败会立即补偿回退，回退不完整时返回 durable recovery handle。Hook 当前仅对 Claude Code 暴露并保留独立 consent/rollback。
+- [x] CBM-3 Agent MCP/Hook 事务：自动扫描 OpenCode/Codex/Claude 并自动纳入全部已安装且受支持 Agent；MCP 支持整批 preview/apply/read-back verify，并在任一失败时逆序 rollback；批量 transaction set 持久化并可在刷新/重启后恢复整批回退入口，verify/rollback 从各自 manifest 恢复 Agent/scope/surface 上下文；配置写入后的控制面状态落盘失败会立即补偿回退，回退不完整时返回 durable recovery handle。Hook 当前仅对 Claude Code 暴露并保留独立 consent/rollback。
 - [x] CBM-4 d-token-owned index/UI host：独立 index/UI host、短期授权 loopback、只读 graph projection、open-before-recheck 与 stop validation 已实现。
-- [x] CBM-5 Desktop 状态与 UX：独立一级“代码图谱（实验性）”页面、五维状态、固定 `Codebase Memory MCP v0.9.0` 官方下载入口和可见版本文案、默认/自定义组件目录、自动识别、Agent 多选批量事务、明确的按钮阻塞原因、index/UI start-stop-open/delete 已接入。批量配置在 Native 返回前即显示 Agent、阶段和 current/total 进度，逐 Agent 串行调度以避免并发 hash storm；artifact 校验、状态构建、配置事务、进程和 loopback 操作移入 blocking worker。261 MB upstream 的 debug 冷校验由约 41.00 秒降至 866 ms，30 秒 single-flight 缓存命中约 25 us，文件 identity 改变时 fail-closed 失效。Shell 横幅只呈现本次运行最新事件、历史保留通知中心；页面切换不再主动聚焦标题。
+- [x] CBM-5 Desktop 状态与 UX：独立一级“代码图谱（实验性）”页面、五维状态、固定 `Codebase Memory MCP v0.9.0` 官方下载入口和可见版本文案、默认/自定义组件目录、自动识别、Agent 自动纳入整批事务、明确的按钮阻塞原因、index/UI start-stop-open/delete 已接入。批量配置在 Native 返回前即显示 Agent、阶段和 current/total 进度，逐 Agent 串行调度以避免并发 hash storm；artifact 校验、状态构建、配置事务、进程和 loopback 操作移入 blocking worker。261 MB upstream 的 debug 冷校验由约 41.00 秒降至 866 ms，30 秒 single-flight 缓存命中约 25 us，文件 identity 改变时 fail-closed 失效。Shell 横幅只呈现本次运行最新事件、历史保留通知中心；页面切换不再主动聚焦标题。
 - [ ] CBM-6 双平台候选：macOS ARM/x64 与 Windows ARM64/x64 四个官方 artifact 的 hash+Cosign 验证、Windows target check、release `.app`/DMG 实构建与真实 OpenCode MCP 验收已有证据。最新 macOS 候选已通过 `build_and_run.sh --verify` 构建并启动；真实 OpenCode 1.14.51 回执为 initialize 1 次、tools/list 1 次、允许 tool call 1 次、拒绝 0 次，随后配置与仓库写入边界精确回退。双平台 workflow 已改为证明安装包不含 upstream；Windows 安装后从独立用户目录导入 pinned artifact，再执行 launcher MCP initialize/tools/list/tool-call、受控索引、只读图页、安全端点、浏览器分发和仓库零写入门禁。仍缺 Windows 远程 runner 报告，因此继续标记 experimental。
 
 CBM-0–6 不进入 §1C G0–G8 的完成计算；即使本节实现完成，也不能替代 Headroom 主线发布 gate。
@@ -937,7 +940,7 @@ DoD：macOS/Windows fixture 覆盖 Unicode/盘符、symlink/junction、目录替
 ### 1D.4 Agent MCP 与 Hook 事务
 
 - [x] 扩展 `dtoken-config-patcher`，新增独立 `CodebaseMemoryIntegrationRequest`，目标 command 是 launcher，不混淆现有 Hybrid/metadata MCP。
-- [x] 自动扫描本机受支持 Agent，默认多选全部检测结果；为每个选中 Agent/scope 分别生成最小 MCP entry、脱敏 diff、backup 与 review digest，逐目标验证，任一失败逆序回退且不静默跳过。global 配置仍绑定显式批准 root，不随 cwd 静默变化。
+- [x] 自动扫描本机受支持 Agent 并自动纳入全部检测结果；为每个 Agent/scope 分别生成最小 MCP entry、脱敏 diff、backup 与 review digest，逐目标验证，任一失败逆序回退且不静默跳过。global 配置仍绑定显式批准 root，不随 cwd 静默变化。
 - [x] launcher 从已审阅的固定 argv 解析 canonical project 与 cache scope；不接受 Agent 通过 env 覆盖安全边界。
 - [x] Hook 独立于 MCP：默认 off，展示 trigger、命令摘要、trust/restart 要求，并产生独立 consent 与 receipt；当前仅 Claude Code 支持。
 - [x] 复用 redacted diff、双 hash、durable backup、confirm、atomic write、parse/semantic verify、transaction lock 和 exact rollback；真实 Claude/Codex 配置继续需要单独授权。

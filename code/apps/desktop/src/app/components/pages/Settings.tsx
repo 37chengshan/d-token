@@ -446,7 +446,7 @@ export function Settings() {
   return (
     <div className="space-y-8">
       <div className="flex flex-wrap items-center gap-3">
-        <h1>{t("set.title")}</h1>
+        <h1 className="sr-only">{t("set.title")}</h1>
         <Badge variant={saving ? "secondary" : settingsState === "loaded" ? "default" : "outline"}>
           {settingsBadge(settingsState, saving, lang)}
         </Badge>

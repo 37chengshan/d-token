@@ -839,7 +839,7 @@ export function VisualCompression() {
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0 space-y-1">
           <div className="flex flex-wrap items-center gap-2">
-            <h1>{t("visual.title")}</h1>
+            <h1 className="sr-only">{t("visual.title")}</h1>
             <Badge variant="secondary" className="rounded-full px-2 py-0.5 text-[11px] font-medium">
               Beta
             </Badge>

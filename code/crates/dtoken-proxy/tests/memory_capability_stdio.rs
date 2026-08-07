@@ -30,6 +30,7 @@ fn config() -> DtokenConfig {
             models: vec!["memory-model".to_string()],
             timeout_ms: 100,
             healthcheck_path: None,
+            wire_api: dtoken_types::ProviderWireApi::OpenAiChat,
         }],
         routes: vec![RouteProfile {
             id: "memory-route".to_string(),

@@ -1,5 +1,11 @@
 import type { Lang } from "../i18n";
 import type { EvidenceState } from "../state/evidence";
+import {
+  estimateSavingsCost,
+  type ModelCurrency,
+  type ModelPriceCache,
+  type PriceCacheFreshness,
+} from "../analytics/pricing";
 
 /**
  * Overview 节省区间派生：累计 / 当周 / 当月 / 当天。
@@ -34,10 +40,21 @@ export type SavingsWindowSummary = {
   note: string;
 };
 
-export type SavingsCostSummary = {
-  available: false;
-  detail: string;
-};
+export type SavingsCostSummary =
+  | { available: false; detail: string }
+  | {
+      available: true;
+      /** 估算币种（仅当所有计入请求同币种时才可用）。 */
+      currency: ModelCurrency;
+      /** 成本差额估算（节省 Token × 输入价格）。 */
+      estimatedCost: number;
+      /** 价格缓存来源，例如 "user-settings"。 */
+      source: string;
+      freshness: PriceCacheFreshness;
+      /** 价格缓存检查时间；未提供时为 null。 */
+      checkedAt: string | null;
+      detail: string;
+    };
 
 export type SavingsDerivation = {
   /** 是否存在任何可展示的节省证据（任一窗口可用）。 */
@@ -48,7 +65,7 @@ export type SavingsDerivation = {
   cost: SavingsCostSummary;
 };
 
-type ParsedLog = { timestamp: number | null; before: number | null; after: number | null };
+type ParsedLog = { timestamp: number | null; before: number | null; after: number | null; model: string | null };
 
 const WINDOW_KEYS: readonly SavingsWindowKey[] = ["total", "week", "month", "day"];
 
@@ -57,6 +74,7 @@ export function deriveSavingsWindows(
   evidence: EvidenceState,
   lang: Lang = "zh",
   now: Date = new Date(),
+  pricing: ModelPriceCache | null = null,
 ): SavingsDerivation {
   const zh = lang === "zh";
   const lastVerified = evidence === "verified" || evidence === "stale";
@@ -91,7 +109,8 @@ export function deriveSavingsWindows(
     const timestamp = timestampEvidence(log?.timestamp_ms);
     const before = numberEvidence(log.input_tokens_before);
     const after = numberEvidence(log.input_tokens_after);
-    return { timestamp, before, after };
+    const model = typeof log.model === "string" && log.model.trim() ? log.model : null;
+    return { timestamp, before, after, model };
   });
   const timestampedLogs = parsedLogs.filter((log) => log.timestamp !== null);
   const totalPairs = parsedLogs.filter((log) => log.before !== null && log.after !== null);
@@ -113,7 +132,46 @@ export function deriveSavingsWindows(
           ? (zh ? "本地服务在线 · 请求缺少时间戳" : "Local service online · requests lack timestamps")
           : (zh ? "d-token 本地请求记录" : "Local d-token request records");
 
-  return { available: anyEvidence, source, windows, cost: missingCost(lang) };
+  return { available: anyEvidence, source, windows, cost: deriveCost(parsedLogs, pricing, lang) };
+}
+
+/**
+ * 依据价格缓存估算成本差额。没有价格缓存时保持 unavailable（禁止自造价格）；
+ * 部分模型无价格或币种混合时同样不可用，绝不用 0 或部分值冒充账单节省。
+ */
+function deriveCost(
+  parsedLogs: ParsedLog[],
+  pricing: ModelPriceCache | null,
+  lang: Lang,
+): SavingsCostSummary {
+  const zh = lang === "zh";
+  if (!pricing) return missingCost(lang);
+  const estimate = estimateSavingsCost(parsedLogs, pricing);
+  if (!estimate.available) {
+    const detail =
+      estimate.reason === "unknown-models"
+        ? zh
+          ? `部分模型缺少显式价格（${estimate.unknownModels.join("、")}），无法可靠估算账单节省。`
+          : `Some models lack explicit prices (${estimate.unknownModels.join(", ")}); billing savings cannot be estimated reliably.`
+        : estimate.reason === "mixed-currency"
+          ? zh
+            ? "请求涉及多种币种，无法合并估算账单节省。"
+            : "Requests span multiple currencies; billing savings cannot be merged."
+          : missingCost(lang).detail;
+    return { available: false, detail };
+  }
+  return {
+    available: true,
+    currency: estimate.currency,
+    estimatedCost: estimate.estimatedCost,
+    source: pricing.source,
+    freshness: pricing.freshness,
+    checkedAt: pricing.checkedAt,
+    detail:
+      zh
+        ? `基于本机价格表（${estimate.currency}）估算；Token 差额不等于账单节省。`
+        : `Estimated from the local pricing table (${estimate.currency}); token deltas are not billing savings.`,
+  };
 }
 
 function buildTotalWindow(

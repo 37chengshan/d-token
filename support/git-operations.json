@@ -938,11 +938,6 @@
       "remote": null
     },
     {
-      "id": "a941de28-c2b2-437e-9192-48163054dfff",
-      "timestamp": "2026-08-06T20:38:46+08:00",
-      "operation": "commit",
-      "branch": "codex/release-log-view",
-      "summary": "提交 Analytics 日志子页：逐条请求日志、脱敏详情与 Optimization Receipt 白名单",
       "id": "65d368fe-199d-4d2c-8a73-4287a3c61969",
       "timestamp": "2026-08-06T23:26:41+08:00",
       "operation": "commit",
@@ -1114,18 +1109,21 @@
       "remote": null
     },
     {
-      "id": "e7192f84-4320-469c-afa0-d53fdf5a567e",
-      "timestamp": "2026-08-07T00:42:48+08:00",
-      "operation": "merge",
-      "branch": "codex/code-graph-mcp-integration",
-      "summary": "合并 Optical Beta 小范围打磨分支，保持 shadow/preview only",
-      "head_before": "adaf98b",
       "id": "b5471771-154c-494b-8693-52bc9bed67c8",
       "timestamp": "2026-08-06T23:27:11+08:00",
       "operation": "commit",
       "branch": "codex/release-optical-implementation",
       "summary": "Commit audit ledger entry for Optical release slice",
       "head_before": "2fa1b92",
+      "remote": null
+    },
+    {
+      "id": "f908ef0c-d998-476c-8f9c-5d3d84f88b48",
+      "timestamp": "2026-08-07T20:18:09+08:00",
+      "operation": "commit",
+      "branch": "codex/code-graph-mcp-integration",
+      "summary": "Finalize PRD-aligned release iteration: automatic Agent onboarding, native Codex Responses routing, truthful analytics pricing, tray and Code Graph polish",
+      "head_before": "c4ebc2509a96",
       "remote": null
     }
   ]

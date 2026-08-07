@@ -1,4 +1,8 @@
 import "@testing-library/jest-dom/vitest";
+// @ts-ignore Node runtime module
+import fs from "node:fs";
+// @ts-ignore Node runtime module
+import path from "node:path";
 import { act, cleanup, render } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
@@ -7,6 +11,8 @@ import {
   type AnimatedNavIconId,
   type VisibleAnimatedNavIconId,
 } from "./AnimatedNavIcon";
+
+declare const process: { cwd(): string };
 
 afterEach(cleanup);
 
@@ -64,15 +70,56 @@ describe("AnimatedNavIcon", () => {
     ).toBe(10);
   });
 
-  it("defines finite 200–280ms one-shot recipes", () => {
+  it("defines one-shot recipes whose duration covers the full CSS play window", () => {
+    // shell.css drives the icon-part transition at var(--duration-slow) = 280ms
+    // with leading transition-delays per part. durationMs is the full play
+    // window the pulse timer must stay on, so it must cover max(delay + 280).
+    // Overview staggers 0/40/80/120ms (400), analytics 0/40/80ms (360); every
+    // other recipe has no leading delay and needs at least the 280ms transition.
+    const maxDelayMs: Partial<Record<VisibleAnimatedNavIconId, number>> = {
+      overview: 120,
+      analytics: 80,
+    };
+    const iconPartTransitionMs = 280;
+
     for (const [id, recipe] of Object.entries(NAV_MOTION_RECIPES) as [
       VisibleAnimatedNavIconId,
       (typeof NAV_MOTION_RECIPES)[VisibleAnimatedNavIconId],
     ][]) {
-      expect(recipe.durationMs, id).toBeGreaterThanOrEqual(200);
-      expect(recipe.durationMs, id).toBeLessThanOrEqual(280);
+      expect(recipe.durationMs, id).toBeGreaterThanOrEqual(
+        (maxDelayMs[id] ?? 0) + iconPartTransitionMs,
+      );
       expect(recipe.iterationCount, id).toBe(1);
     }
+    expect(NAV_MOTION_RECIPES.overview.durationMs).toBe(400);
+    expect(NAV_MOTION_RECIPES.analytics.durationMs).toBe(360);
+  });
+
+  it("exposes a deterministic CSS color-only override for prop-level reduced motion", () => {
+    // The data-reduced-motion state alone must be backed by a CSS selector so
+    // hover/focus/pressed icon transforms and the parent press scale are
+    // disabled even when the OS prefers-reduced-motion media query does not
+    // match. The icon-part rule must win over the recipe selectors. The parent
+    // .nav-motion-item mirrors the flag on its own data-reduced-motion attribute
+    // so the press-scale kill uses a plain attribute selector — no :has(), which
+    // macOS 10.14 WKWebView does not support.
+    const css = fs.readFileSync(
+      path.resolve(process.cwd(), "src/styles/shell.css"),
+      "utf8",
+    );
+    expect(css).toContain(
+      '.animated-nav-icon[data-reduced-motion="true"] .icon-part',
+    );
+    expect(css).toMatch(
+      /\.animated-nav-icon\[data-reduced-motion="true"\] \.icon-part\s*\{[^}]*transform: none !important;[^}]*transition: none !important;[^}]*animation: none !important;/,
+    );
+    expect(css).toContain(
+      '.nav-motion-item[data-reduced-motion="true"]:active > svg',
+    );
+    expect(css).toContain(
+      '.nav-motion-item[data-reduced-motion="true"]:active > span',
+    );
+    expect(css).not.toContain(".nav-motion-item:has(");
   });
 
   it("marks active and reduced-motion state without exposing decorative SVGs", () => {
@@ -90,8 +137,8 @@ describe("AnimatedNavIcon", () => {
     expect(icon).toHaveAttribute("data-motion-engaged", "false");
   });
 
-  it("applies the canonical d-token cat-face mark to every primary navigation icon", () => {
-    const primaryIds: AnimatedNavIconId[] = [
+  it("keeps every navigation icon free of the duplicate cat-face mark", () => {
+    const allIds: AnimatedNavIconId[] = [
       "overview",
       "install",
       "codebase-memory",
@@ -100,49 +147,29 @@ describe("AnimatedNavIcon", () => {
       "doctor",
       "changes",
       "settings",
+      "theme",
+      "collapse",
     ];
 
-    for (const id of primaryIds) {
+    for (const id of allIds) {
       const { container, unmount } = render(
         <AnimatedNavIcon id={id} active={false} reducedMotion={false} />,
       );
       const icon = container.querySelector(`[data-motion-id="${id}"]`);
-      const face = icon?.querySelector(".icon-cat-face");
-      expect(
-        face,
-        `${id} should carry the canonical cat-face mark`,
-      ).toBeInTheDocument();
-      expect(face?.querySelector(".icon-cat-face-outline")).toBeInTheDocument();
-      expect(face?.querySelectorAll(".icon-cat-face-eye")).toHaveLength(2);
-      expect(face?.querySelector(".icon-cat-face-mouth")).toBeInTheDocument();
       expect(icon).toHaveAttribute("stroke", "currentColor");
-      expect(face?.querySelector(".icon-cat-face-outline")).not.toHaveAttribute(
-        "fill",
-        "currentColor",
-      );
+      // The cat-face mark belongs only to the brand; per-item nav icons must
+      // render their own distinct semantic glyph without a duplicated face.
+      expect(
+        icon?.querySelector(".icon-cat-face"),
+        `${id} must not carry the per-item cat-face mark`,
+      ).not.toBeInTheDocument();
+      // Each nav still exposes its own independent semantic glyph class.
+      expect(
+        icon?.querySelector(`.${recipes[id]}`),
+        `${id} must render its own semantic glyph class`,
+      ).toBeInTheDocument();
       unmount();
     }
-  });
-
-  it("keeps utility controls free of the navigation cat-face mark", () => {
-    const { container, unmount } = render(
-      <AnimatedNavIcon id="theme" active={false} reducedMotion={false} />,
-    );
-    expect(
-      container
-        .querySelector(`[data-motion-id="theme"]`)
-        ?.querySelector(".icon-cat-face"),
-    ).not.toBeInTheDocument();
-    unmount();
-    const { container: container2, unmount: unmount2 } = render(
-      <AnimatedNavIcon id="collapse" active={false} reducedMotion={false} />,
-    );
-    expect(
-      container2
-        .querySelector(`[data-motion-id="collapse"]`)
-        ?.querySelector(".icon-cat-face"),
-    ).not.toBeInTheDocument();
-    unmount2();
   });
 
   it("sets data-motion-engaged when parent reports hover/focus for enter/leave", () => {

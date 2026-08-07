@@ -1,5 +1,7 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Activity, Bot, CircleAlert, Gauge, Route, Server } from "lucide-react";
+import { loadModelPriceCache, type ModelPriceCache } from "../../lib/analytics/pricing";
+import { isTauriRuntime } from "../../lib/native";
 import { MetricStrip, Surface } from "../common/Surface";
 import { DataSourceBadge } from "../common/DataSourceBadge";
 import { Heatmap } from "../common/Heatmap";
@@ -82,7 +84,20 @@ export function Overview(_props: { setPage: (p: PageId) => void }) {
     () => deriveAccountQuotaSummary(payload, evidenceState, lang),
     [evidenceState, lang, payload],
   );
-  const savings = useMemo(() => deriveSavingsWindows(payload, evidenceState, lang), [evidenceState, lang, payload]);
+  const [priceCache, setPriceCache] = useState<ModelPriceCache | null>(null);
+  useEffect(() => {
+    // 仅在 native 环境异步读取 Settings model-pricing；错误/预览保持 null（不猜测）。
+    // 挂载时读取一次即可：设置保存后重新进入页面会刷新，无需实时广播。
+    if (!isTauriRuntime()) return;
+    let cancelled = false;
+    loadModelPriceCache().then((cache) => {
+      if (!cancelled) setPriceCache(cache);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+  const savings = useMemo(() => deriveSavingsWindows(payload, evidenceState, lang, undefined, priceCache), [evidenceState, lang, payload, priceCache]);
   const [savingsWindow, setSavingsWindow] = useState<SavingsWindowKey>("total");
   const [reducedMotion] = useState(
     () =>
@@ -93,8 +108,8 @@ export function Overview(_props: { setPage: (p: PageId) => void }) {
   const { stats, compressionAvailable, trafficAvailable, sourceLabel: unavailableDetail } = runtime;
 
   return <div className="overview-page space-y-4">
-    <div className="flex flex-wrap items-center justify-between gap-2">
-      <h1>{t("ov.title")}</h1>
+    <div className="flex flex-wrap items-center justify-end gap-2">
+      <h1 className="sr-only">{t("ov.title")}</h1>
       <div className="flex flex-wrap items-center justify-end gap-2">
         <DataSourceBadge mode={evidenceState === "verified" ? "runtime" : evidenceState === "preview" || evidenceState === "loading" ? "preview" : "unavailable"} label={overviewEvidenceLabel(evidenceState, lang)} />
         <Badge variant={evidenceState === "verified" ? "default" : "secondary"}>{runtime.sourceLabel}{(evidenceState === "verified" || evidenceState === "stale") && updatedAt ? ` · ${updatedAt.toLocaleTimeString()}` : ""}</Badge>

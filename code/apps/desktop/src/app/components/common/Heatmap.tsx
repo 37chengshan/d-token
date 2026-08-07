@@ -27,7 +27,7 @@ function rangeLabel(range: Range, lang: string) {
 
 function viewLabel(view: View, lang: string) {
   const labels: Record<View, { zh: string; en: string }> = {
-    activity: { zh: "活跃趋势", en: "Activity" },
+    activity: { zh: "活动趋势", en: "Activity trend" },
     tokens: { zh: "Token", en: "Token" },
     tools: { zh: "处理步骤", en: "Processing Steps" },
   };

@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
 import {
-  candidateKey,
   dispatchInstallMachine,
   getInstallMachineState,
   initialInstallMachineState,
@@ -91,32 +90,46 @@ describe("installMachine", () => {
     expect(state.selections.opencode.model).toBe("model-a");
   });
 
-  it("requires a choice only for a genuinely ambiguous Agent", () => {
+  it("blocks the whole plan when an installed Agent's upstream/model is ambiguous", () => {
     const first = candidate({ id: "one", active: false });
     const second = candidate({ id: "two", active: false, models: ["model-b"] });
     const ambiguous = binding({ candidates: [first, second], resolved_candidate: null, resolution: "needs-choice" });
-    let state = installMachineReducer(initialInstallMachineState, { type: "DISCOVERED", snapshot: snapshot("r1", ambiguous) });
-    expect(state.phase).toBe("partial");
-    state = installMachineReducer(state, { type: "TOGGLE_AGENT", agentId: "opencode", selected: true });
-    expect(state.phase).toBe("needs-choice");
-    state = installMachineReducer(state, {
-      type: "SELECT_UPSTREAM",
-      agentId: "opencode",
-      selection: { candidateKey: candidateKey(second, "model-b"), model: "model-b" },
+    const state = installMachineReducer(initialInstallMachineState, { type: "DISCOVERED", snapshot: snapshot("r1", ambiguous) });
+    // The ambiguous Agent joins the automatic batch and fails closed; no
+    // chooser is offered.
+    expect(state.selectedAgentIds).toEqual(["opencode"]);
+    expect(state.phase).toBe("blocked");
+  });
+
+  it("fails closed on a resolved candidate with two models instead of locking the first model", () => {
+    const multiModel = binding({ resolved_candidate: candidate({ models: ["model-a", "model-b"] }) });
+    const state = installMachineReducer(initialInstallMachineState, { type: "DISCOVERED", snapshot: snapshot("r1", multiModel) });
+    expect(state.selectedAgentIds).toEqual(["opencode"]);
+    expect(state.selections.opencode).toBeUndefined();
+    expect(state.phase).toBe("blocked");
+  });
+
+  it("keeps Codex Responses empty models ready with an empty passthrough selection", () => {
+    const codex = binding({
+      agent_id: "codex",
+      agent_name: "Codex",
+      resolved_candidate: candidate({ id: "ocxlocal", protocol: "responses", models: [], agent_ids: ["codex"] }),
     });
+    const state = installMachineReducer(initialInstallMachineState, { type: "DISCOVERED", snapshot: snapshot("r1", codex) });
     expect(state.phase).toBe("ready");
+    expect(state.selections.codex?.model).toBe("");
+    expect(state.selectedAgentIds).toEqual(["codex"]);
   });
 
   it("keeps credential gaps and already-connected state distinct", () => {
-    let credential = installMachineReducer(initialInstallMachineState, {
+    // Credential-gated Agents are part of the automatic batch and surface the
+    // credential requirement without any user opt-in.
+    const credential = installMachineReducer(initialInstallMachineState, {
       type: "DISCOVERED",
       snapshot: snapshot("r1", binding({ resolution: "needs-credential", resolved_candidate: candidate({ auth_mode: "unavailable" }) })),
     });
-    // Credential-gated Agents are not selected by default; selecting one is
-    // an explicit user action and then surfaces the credential requirement.
-    expect(credential.phase).toBe("partial");
-    credential = installMachineReducer(credential, { type: "TOGGLE_AGENT", agentId: "opencode", selected: true });
     expect(credential.phase).toBe("needs-credential");
+    expect(credential.selectedAgentIds).toEqual(["opencode"]);
 
     const connected = installMachineReducer(initialInstallMachineState, {
       type: "DISCOVERED",
@@ -125,24 +138,19 @@ describe("installMachine", () => {
     expect(connected.phase).toBe("already-connected");
   });
 
-  it("pre-selects an auto-resolved confirm-required Agent together with one-click Agents", () => {
+  it("auto-includes an auto-resolved confirm-required Agent together with one-click Agents", () => {
     const current = snapshot("r1");
     current.agent_bindings.push(binding({
       agent_id: "claude-code",
       agent_name: "Claude Code",
       capability: "confirm-required",
       resolution: "auto-resolved",
-      resolved_candidate: candidate({ id: "claude", models: ["claude-sonnet", "claude-opus"], agent_ids: ["claude-code"] }),
+      resolved_candidate: candidate({ id: "claude", models: ["claude-sonnet"], agent_ids: ["claude-code"] }),
     }));
-    let state = installMachineReducer(initialInstallMachineState, { type: "DISCOVERED", snapshot: current });
+    const state = installMachineReducer(initialInstallMachineState, { type: "DISCOVERED", snapshot: current });
     expect(state.phase).toBe("ready");
-    // confirm-required + auto-resolved is pre-selected alongside one-click agents
     expect(state.selectedAgentIds).toEqual(["opencode", "claude-code"]);
     expect(state.selections["claude-code"].model).toBe("claude-sonnet");
-    // unselecting confirm-required leaves the one-click agent still ready
-    state = installMachineReducer(state, { type: "TOGGLE_AGENT", agentId: "claude-code", selected: false });
-    expect(state.phase).toBe("ready");
-    expect(state.selectedAgentIds).toEqual(["opencode"]);
   });
 
   it("treats a verified transport adapter as actionable despite an older prompt-only label", () => {
@@ -170,15 +178,14 @@ describe("installMachine", () => {
     expect(state.selections.cline.model).toBe("model-a");
   });
 
-  it("lets the user exclude a one-click Agent without losing discovered evidence", () => {
-    let state = installMachineReducer(initialInstallMachineState, { type: "DISCOVERED", snapshot: snapshot("r1") });
-    state = installMachineReducer(state, { type: "TOGGLE_AGENT", agentId: "opencode", selected: false });
-    expect(state.phase).toBe("partial");
-    expect(state.selectedAgentIds).toEqual([]);
+  it("auto-includes every installed Agent with a verified write action", () => {
+    const state = installMachineReducer(initialInstallMachineState, { type: "DISCOVERED", snapshot: snapshot("r1") });
+    expect(state.phase).toBe("ready");
+    expect(state.selectedAgentIds).toEqual(["opencode"]);
     expect(state.snapshot?.agent_bindings).toHaveLength(1);
   });
 
-  it("recomputes readiness from the selected batch instead of all default one-click Agents", () => {
+  it("auto-includes a credential-gated Agent and blocks readiness until the credential is added", () => {
     const current = snapshot("r1");
     current.agent_bindings.push(binding({
       agent_id: "second-agent",
@@ -187,16 +194,11 @@ describe("installMachine", () => {
       resolved_candidate: candidate({ id: "second", auth_mode: "unavailable", agent_ids: ["second-agent"] }),
     }));
     let state = installMachineReducer(initialInstallMachineState, { type: "DISCOVERED", snapshot: current });
-    expect(state.phase).toBe("ready");
-    expect(state.selectedAgentIds).toEqual(["opencode"]);
-    state = installMachineReducer(state, { type: "TOGGLE_AGENT", agentId: "second-agent", selected: true });
     expect(state.phase).toBe("needs-credential");
+    expect(state.selectedAgentIds).toEqual(["opencode", "second-agent"]);
     state = installMachineReducer(state, { type: "DISCOVERED", snapshot: current });
     expect(state.phase).toBe("needs-credential");
     expect(state.selectedAgentIds).toEqual(["opencode", "second-agent"]);
-    state = installMachineReducer(state, { type: "TOGGLE_AGENT", agentId: "second-agent", selected: false });
-    expect(state.phase).toBe("ready");
-    expect(state.selectedAgentIds).toEqual(["opencode"]);
   });
 
   it("keeps a non-one-click Agent in the already-connected state across refreshes", () => {

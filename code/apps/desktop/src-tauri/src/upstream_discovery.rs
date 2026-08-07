@@ -5,7 +5,9 @@ use crate::agent_registry::{
     AgentInstallCapability,
 };
 use dtoken_config_patcher::agent::{allowed_agent_config_paths, current_process_scan_context};
-use dtoken_config_patcher::agent_mcp::resolve_mcp_config_path;
+use dtoken_config_patcher::agent_mcp::{
+    is_verified_hook_agent, resolve_hook_config_path, resolve_mcp_config_path_for,
+};
 use dtoken_config_patcher::agent_transport::{agent_transport_adapter, can_clear_agent_transport};
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 use rusqlite::{Connection, OpenFlags};
@@ -486,6 +488,10 @@ pub struct AgentUpstreamBinding {
     /// the agent supports MCP-level configure/clear through the d-token-agent-bridge
     /// even if the transport adapter cannot configure a Route integration.
     pub mcp_available: bool,
+    /// Whether a verified Hook config path exists for this agent (e.g.
+    /// cortex-code hooks.json). Distinct from `mcp_available`: a Hook agent
+    /// has no MCP config target.
+    pub hook_available: bool,
     /// The resolved absolute path to the MCP configuration file, if known.
     pub mcp_config_path: Option<String>,
 }
@@ -1918,24 +1924,74 @@ struct OpenClawDefaultModelMetadata {
     primary: Option<String>,
 }
 
+/// Outcome of resolving the active Codex profile.
+enum CodexProfileResolution<'a> {
+    /// No profiles (or an empty table): use the root-level selection.
+    InheritRoot,
+    /// An unambiguous active profile: `[profiles.default]` or the only profile.
+    Profile(&'a toml::Value),
+    /// Multiple profiles without an explicit default: ambiguous, fail closed.
+    Ambiguous,
+}
+
+/// Resolves the effective Codex profile without reading auth: `default` wins
+/// when present, otherwise a single profile is unambiguous and treated as
+/// active; multiple profiles with no explicit default are ambiguous because
+/// Codex may select one externally (e.g. `codex --profile <name>`).
+fn resolve_codex_profile<'a>(value: &'a toml::Value) -> CodexProfileResolution<'a> {
+    let Some(profiles) = value.get("profiles").and_then(toml::Value::as_table) else {
+        return CodexProfileResolution::InheritRoot;
+    };
+    if let Some(default) = profiles.get("default") {
+        return CodexProfileResolution::Profile(default);
+    }
+    if profiles.len() == 1 {
+        return CodexProfileResolution::Profile(profiles.values().next().expect("non-empty"));
+    }
+    if profiles.is_empty() {
+        return CodexProfileResolution::InheritRoot;
+    }
+    CodexProfileResolution::Ambiguous
+}
+
 fn candidate_from_codex_toml(path: &Path) -> Result<Option<UpstreamCandidate>, &'static str> {
     let raw = fs::read_to_string(path).map_err(|_| "unavailable")?;
     if raw.len() > 2 * 1024 * 1024 {
         return Err("too_large");
     }
     let value: toml::Value = toml::from_str(&raw).map_err(|_| "invalid")?;
-    let provider_id = value
+    // Root-level selection: preserved as the fallback for profiles that do
+    // not declare their own provider/model.
+    let root_provider_id = value
         .get("model_provider")
         .and_then(toml::Value::as_str)
         .unwrap_or("openai");
-    let model = value
+    let root_model = value
         .get("model")
         .and_then(toml::Value::as_str)
         .map(str::to_string);
+    // Real configs put the active selection under [profiles.default] or a
+    // single active profile. A profile's model_provider/model overrides the
+    // root selection; keys it does not declare inherit the root. Multiple
+    // profiles without an explicit default are ambiguous, so discovery fails
+    // closed and reports no candidate instead of guessing the active provider.
+    let active_profile = match resolve_codex_profile(&value) {
+        CodexProfileResolution::Ambiguous => return Ok(None),
+        CodexProfileResolution::Profile(profile) => Some(profile),
+        CodexProfileResolution::InheritRoot => None,
+    };
+    let provider_id = active_profile
+        .and_then(|profile| profile.get("model_provider").and_then(toml::Value::as_str))
+        .unwrap_or(root_provider_id)
+        .to_string();
+    let model = active_profile
+        .and_then(|profile| profile.get("model").and_then(toml::Value::as_str))
+        .map(str::to_string)
+        .or(root_model);
     let provider = value
         .get("model_providers")
         .and_then(toml::Value::as_table)
-        .and_then(|providers| providers.get(provider_id));
+        .and_then(|providers| providers.get(&provider_id));
     let base_url = provider
         .and_then(|provider| provider.get("base_url"))
         .and_then(toml::Value::as_str)
@@ -1949,6 +2005,13 @@ fn candidate_from_codex_toml(path: &Path) -> Result<Option<UpstreamCandidate>, &
         .and_then(|provider| provider.get("env_key"))
         .and_then(toml::Value::as_str)
         .is_some();
+    // Real Codex providers declare requires_openai_auth explicitly; when true
+    // the OpenAI credential cannot be reused by d-token, so report a credential
+    // gap even without an env_key (fail-closed).
+    let requires_openai_auth = provider
+        .and_then(|provider| provider.get("requires_openai_auth"))
+        .and_then(toml::Value::as_bool)
+        .unwrap_or(false);
     if base_url.is_none() && model.is_none() {
         return Ok(None);
     }
@@ -1960,7 +2023,12 @@ fn candidate_from_codex_toml(path: &Path) -> Result<Option<UpstreamCandidate>, &
         models: model.into_iter().collect(),
         source: "agent-config:codex".to_string(),
         freshness: now_timestamp(),
-        auth_mode: if has_env_key { "unavailable" } else { "none" }.to_string(),
+        auth_mode: if has_env_key || requires_openai_auth {
+            "unavailable"
+        } else {
+            "none"
+        }
+        .to_string(),
         active: true,
         port: None,
         state: "discovered".to_string(),
@@ -2331,25 +2399,44 @@ fn resolve_agent_bindings(
             // exists. The transport adapter cannot configure these agents
             // (it needs the resolved bridge path), but the agent_integration
             // module can write MCP entries using the resolved bridge path.
-            let mcp_path = scan_context
-                .as_ref()
-                .and_then(|context| resolve_mcp_config_path(spec.id, &context.home_dir));
-            let mcp_available = mcp_path.is_some();
-            let mcp_config_path = mcp_path.as_ref().map(|p| display_path(p));
-            // Override can_configure/can_clear for MCP/Hook agents when a
-            // verified MCP config path exists. The transport adapter reports
-            // false because it cannot write MCP entries, but the MCP config
-            // path is a valid write target for the agent_integration module.
+            // MCP agents resolve their config path platform-aware so Windows
+            // agents (VS Code, Claude Desktop) land on %APPDATA% roaming
+            // instead of the macOS home-relative layout. Hook agents (e.g.
+            // cortex-code) resolve their verified hooks.json target instead.
+            let hook_agent = is_verified_hook_agent(spec.id);
+            let managed_tool_path = scan_context.as_ref().and_then(|context| {
+                if hook_agent {
+                    resolve_hook_config_path(spec.id, &context.home_dir)
+                } else {
+                    resolve_mcp_config_path_for(
+                        spec.id,
+                        context.platform,
+                        &context.home_dir,
+                        context.roaming_app_data.as_deref(),
+                    )
+                }
+            });
+            let mcp_available = !hook_agent && managed_tool_path.is_some();
+            let hook_available = hook_agent && managed_tool_path.is_some();
+            let managed_tool_available = mcp_available || hook_available;
+            let mcp_config_path = managed_tool_path.as_ref().map(|p| display_path(p));
+            // Override can_configure for MCP/Hook agents when a verified write
+            // target exists. The transport adapter reports false because it
+            // cannot write MCP entries, but the resolved config path is a
+            // valid write target for the agent_integration module.
             let is_mcp_or_hook = matches!(
                 transport.map(|a| a.integration_kind),
                 Some(dtoken_config_patcher::agent_kind::AgentIntegrationKind::Mcp)
                     | Some(dtoken_config_patcher::agent_kind::AgentIntegrationKind::Hook)
             );
-            let mcp_can_configure = is_mcp_or_hook && mcp_available;
-            let mcp_can_clear = is_mcp_or_hook && mcp_available;
+            let mcp_can_configure = is_mcp_or_hook && managed_tool_available;
+            // can_clear must stay fail-closed without exact d-token-owned
+            // entry evidence. Discovery cannot build the desktop-resolved
+            // bridge command, so it never asserts an owned entry exists; the
+            // desktop-managed integration flow performs exact verification.
             let transport_supported = can_configure || can_clear || mcp_can_configure;
-            let transport_status = if is_mcp_or_hook && mcp_available {
-                "mcp_available"
+            let transport_status = if is_mcp_or_hook && managed_tool_available {
+                "managed_tool_available"
             } else {
                 match transport {
                     Some(adapter) if adapter.can_configure && can_clear => "supported",
@@ -2359,9 +2446,17 @@ fn resolve_agent_bindings(
                 }
             }
             .to_string();
-            let transport_reason = transport
+            let mut transport_reason = transport
                 .and_then(|adapter| adapter.advanced_required_reason)
                 .map(str::to_string);
+            if is_mcp_or_hook && managed_tool_available && transport_reason.is_none() {
+                transport_reason = Some(
+                    "A verified write target exists. Clear requires exact d-token-owned entry \
+                     evidence, which discovery cannot verify without the resolved bridge \
+                     executable; use the desktop-managed integration flow."
+                        .to_string(),
+                );
+            }
             let current_config_source = selected
                 .as_ref()
                 .map(|candidate| candidate.source.clone())
@@ -2397,7 +2492,7 @@ fn resolve_agent_bindings(
                 } else {
                     can_configure
                 },
-                can_clear: if mcp_can_clear { true } else { can_clear },
+                can_clear,
                 transport_supported,
                 transport_status,
                 transport_reason,
@@ -2406,6 +2501,7 @@ fn resolve_agent_bindings(
                 truthful_limitation: truthful_limitation.map(|s| s.to_string()),
                 provides_route_evidence,
                 mcp_available,
+                hook_available,
                 mcp_config_path,
             })
         })
@@ -2783,6 +2879,9 @@ fn discovery_revision(bindings: &[AgentUpstreamBinding], cc_switch_sync: &Value)
             "can_configure": binding.can_configure,
             "can_clear": binding.can_clear,
             "transport_status": binding.transport_status,
+            "mcp_available": binding.mcp_available,
+            "hook_available": binding.hook_available,
+            "mcp_config_path": binding.mcp_config_path,
             "already_connected": binding.already_connected
         })).collect::<Vec<_>>(),
         "cc_switch": cc_switch_sync
@@ -3554,6 +3653,195 @@ mod tests {
     }
 
     #[test]
+    fn codex_toml_parser_reads_local_responses_proxy_and_requires_openai_auth() {
+        // Real fixture: Codex selects a local OpenAI-compatible Responses proxy
+        // (ocxlocal on 127.0.0.1:10100) with requires_openai_auth=false. Discovery
+        // must expose the provider identity, the redacted local base URL, the
+        // Responses wire protocol, and the explicit no-auth credential state.
+        const FIXTURE: &str = include_str!(
+            "../../../../crates/dtoken-config-patcher/tests/fixtures/codex-ocxlocal.toml"
+        );
+        let root = tempfile::tempdir().expect("temporary directory");
+        let path = root.path().join("config.toml");
+        fs::write(&path, FIXTURE).expect("Codex config");
+
+        let candidate = candidate_from_codex_toml(&path)
+            .expect("parse")
+            .expect("candidate");
+        assert_eq!(candidate.id, "codex-ocxlocal");
+        assert_eq!(candidate.name, "Codex ocxlocal");
+        assert_eq!(
+            candidate.base_url.as_deref(),
+            Some("http://127.0.0.1:10100/v1")
+        );
+        assert_eq!(candidate.protocol, "responses");
+        assert_eq!(candidate.auth_mode, "none");
+        assert!(candidate.active);
+        assert!(candidate.models.is_empty());
+        assert_eq!(candidate.agent_ids, ["codex"]);
+
+        // When the provider declares requires_openai_auth=true, discovery must
+        // report a credential gap even without an env_key (fail-closed: the
+        // OpenAI credential cannot be reused by d-token).
+        let auth_path = root.path().join("config-auth.toml");
+        fs::write(
+            &auth_path,
+            FIXTURE.replace(
+                "requires_openai_auth = false",
+                "requires_openai_auth = true",
+            ),
+        )
+        .expect("Codex auth config");
+        let candidate = candidate_from_codex_toml(&auth_path)
+            .expect("parse")
+            .expect("candidate");
+        assert_eq!(candidate.auth_mode, "unavailable");
+    }
+
+    #[test]
+    fn codex_toml_root_selection_behavior_is_preserved() {
+        // Root-only config keeps the original behavior: the top-level
+        // model_provider, model and model_providers table define the candidate.
+        let root = tempfile::tempdir().expect("temporary directory");
+        let path = root.path().join("config.toml");
+        fs::write(
+            &path,
+            r#"
+model_provider = "custom"
+model = "gpt-root"
+
+[model_providers.custom]
+base_url = "https://custom.example/v1"
+wire_api = "responses"
+"#,
+        )
+        .expect("Codex config");
+
+        let candidate = candidate_from_codex_toml(&path)
+            .expect("parse")
+            .expect("candidate");
+        assert_eq!(candidate.id, "codex-custom");
+        assert_eq!(
+            candidate.base_url.as_deref(),
+            Some("https://custom.example/v1")
+        );
+        assert_eq!(candidate.models, ["gpt-root"]);
+        assert_eq!(candidate.protocol, "responses");
+        assert_eq!(candidate.auth_mode, "none");
+        assert!(candidate.active);
+    }
+
+    #[test]
+    fn codex_toml_profiles_default_overrides_root_selection() {
+        // [profiles.default] is the explicit active profile; its
+        // model_provider and model override the root selection while other
+        // profiles exist but are not selected.
+        let root = tempfile::tempdir().expect("temporary directory");
+        let path = root.path().join("config.toml");
+        fs::write(
+            &path,
+            r#"
+model_provider = "root-provider"
+model = "gpt-root"
+
+[model_providers.root-provider]
+base_url = "https://root.example/v1"
+wire_api = "responses"
+
+[model_providers.profile-provider]
+base_url = "https://profile.example/v1"
+wire_api = "responses"
+
+[profiles.default]
+model_provider = "profile-provider"
+model = "gpt-profile"
+
+[profiles.work]
+model_provider = "root-provider"
+"#,
+        )
+        .expect("Codex config");
+
+        let candidate = candidate_from_codex_toml(&path)
+            .expect("parse")
+            .expect("candidate");
+        assert_eq!(candidate.id, "codex-profile-provider");
+        assert_eq!(
+            candidate.base_url.as_deref(),
+            Some("https://profile.example/v1")
+        );
+        assert_eq!(candidate.models, ["gpt-profile"]);
+    }
+
+    #[test]
+    fn codex_toml_single_profile_is_active_and_inherits_root_provider() {
+        // A lone profile with no explicit default is unambiguous and treated
+        // as active; keys it does not declare (model_provider) inherit the
+        // root selection.
+        let root = tempfile::tempdir().expect("temporary directory");
+        let path = root.path().join("config.toml");
+        fs::write(
+            &path,
+            r#"
+model_provider = "root-provider"
+model = "gpt-root"
+
+[model_providers.root-provider]
+base_url = "https://root.example/v1"
+wire_api = "responses"
+
+[profiles.solo]
+model = "gpt-solo"
+"#,
+        )
+        .expect("Codex config");
+
+        let candidate = candidate_from_codex_toml(&path)
+            .expect("parse")
+            .expect("candidate");
+        assert_eq!(candidate.id, "codex-root-provider");
+        assert_eq!(
+            candidate.base_url.as_deref(),
+            Some("https://root.example/v1")
+        );
+        assert_eq!(candidate.models, ["gpt-solo"]);
+    }
+
+    #[test]
+    fn codex_toml_ambiguous_multiple_profiles_fail_closed() {
+        // Multiple profiles without [profiles.default] are ambiguous: Codex
+        // may be invoked with --profile <name>, so discovery must fail closed
+        // and report no candidate instead of guessing the active provider.
+        let root = tempfile::tempdir().expect("temporary directory");
+        let path = root.path().join("config.toml");
+        fs::write(
+            &path,
+            r#"
+model_provider = "root-provider"
+
+[model_providers.root-provider]
+base_url = "https://root.example/v1"
+
+[model_providers.alpha-provider]
+base_url = "https://alpha.example/v1"
+
+[model_providers.beta-provider]
+base_url = "https://beta.example/v1"
+
+[profiles.alpha]
+model_provider = "alpha-provider"
+
+[profiles.beta]
+model_provider = "beta-provider"
+"#,
+        )
+        .expect("Codex config");
+
+        let candidate = candidate_from_codex_toml(&path).expect("parse");
+        assert!(candidate.is_none());
+    }
+
+    #[test]
     fn unverified_json_agent_is_not_recursively_guessed_as_an_upstream() {
         let root = tempfile::tempdir().expect("temporary directory");
         let path = root.path().join("config.json");
@@ -3753,6 +4041,106 @@ mod tests {
         assert_eq!(bindings.len(), 1);
         assert_eq!(bindings[0].agent_id, "codex");
         assert!(bindings[0].installed);
+    }
+
+    #[test]
+    fn verified_mcp_and_hook_agents_report_configuration_capability() {
+        use dtoken_config_patcher::agent::{
+            AgentDetectionEvidence, AgentInstallCapability, AgentSessionCapability, DetectedAgent,
+        };
+
+        let detected = vec![
+            DetectedAgent {
+                id: "vscode-copilot-chat".to_string(),
+                name: "VS Code Copilot Chat".to_string(),
+                install_capability: AgentInstallCapability::ManualOnly,
+                session_capability: AgentSessionCapability::Unsupported,
+                evidence: vec![AgentDetectionEvidence {
+                    kind: AgentEvidenceKind::Extension,
+                    path: PathBuf::from("/tmp/vscode-extension"),
+                }],
+            },
+            DetectedAgent {
+                id: "cortex-code".to_string(),
+                name: "Cortex Code".to_string(),
+                install_capability: AgentInstallCapability::ManualOnly,
+                session_capability: AgentSessionCapability::Unsupported,
+                evidence: vec![AgentDetectionEvidence {
+                    kind: AgentEvidenceKind::Config,
+                    path: PathBuf::from("/tmp/hooks.json"),
+                }],
+            },
+        ];
+
+        let bindings = resolve_agent_bindings(&[], &detected);
+        let vscode = bindings
+            .iter()
+            .find(|binding| binding.agent_id == "vscode-copilot-chat")
+            .expect("VS Code Copilot Chat binding");
+        assert!(
+            vscode.can_configure,
+            "vscode-copilot-chat has a verified mcp.json `servers` write target"
+        );
+        assert!(
+            !vscode.can_clear,
+            "discovery cannot verify an exact d-token-owned MCP entry without the resolved bridge, so clear must stay fail-closed"
+        );
+        assert!(
+            vscode.mcp_available,
+            "vscode-copilot-chat MCP config path must be resolvable"
+        );
+        assert!(
+            vscode.mcp_config_path.is_some(),
+            "vscode-copilot-chat binding must expose the resolved mcp.json path"
+        );
+
+        let cortex = bindings
+            .iter()
+            .find(|binding| binding.agent_id == "cortex-code")
+            .expect("Cortex Code binding");
+        assert!(
+            cortex.can_configure,
+            "cortex-code has a verified desktop-resolved hooks.json write target"
+        );
+        assert!(
+            !cortex.can_clear,
+            "cortex-code clear requires exact d-token-owned SessionStart entry evidence, which discovery cannot produce"
+        );
+        assert!(
+            cortex.hook_available,
+            "cortex-code hook config path must be resolvable via the hook resolver"
+        );
+        assert!(
+            !cortex.mcp_available,
+            "cortex-code has no MCP config target; only hook_available is truthful"
+        );
+    }
+
+    #[test]
+    fn vscode_copilot_chat_mcp_path_resolves_platform_aware() {
+        let context = current_process_scan_context(1).expect("scan context");
+        // The platform-aware resolver must return the macOS home-relative
+        // mcp.json on macOS and the %APPDATA% path shape on Windows.
+        let path = dtoken_config_patcher::agent_mcp::resolve_mcp_config_path_for(
+            "vscode-copilot-chat",
+            context.platform,
+            &context.home_dir,
+            context.roaming_app_data.as_deref(),
+        );
+        let path = path.expect("platform-aware vscode-copilot-chat MCP path");
+        let rendered = path.to_string_lossy().replace('\\', "/");
+        assert!(
+            rendered.contains("Code/User/mcp.json"),
+            "resolved path must be VS Code's user mcp.json, got {rendered}"
+        );
+        assert!(
+            dtoken_config_patcher::agent_mcp::resolve_mcp_config_path(
+                "vscode-copilot-chat",
+                &context.home_dir,
+            )
+            .is_some(),
+            "home-relative resolution must also work"
+        );
     }
 
     #[test]

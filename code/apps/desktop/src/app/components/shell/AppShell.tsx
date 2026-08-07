@@ -8,7 +8,11 @@ import { PageStage } from "./PageStage";
 import { NotificationBanner, NotificationLiveRegion } from "../common/NotificationCenter";
 import { useNotifications } from "../../lib/notifications";
 import { useOnboardingGate } from "../../lib/onboarding";
-import { OnboardingPage } from "../pages/Onboarding";
+import { invokeNative, type NativeActionResult } from "../../lib/native";
+import { useConnectionSetup } from "../../lib/connectionSetup";
+import { useRuntimeDashboardSelector } from "../../lib/useRuntimeDashboard";
+import { desktopInstallRoot } from "../../lib/install/presentation";
+import { OnboardingPage, type OnboardingServiceStartResult } from "../pages/Onboarding";
 
 const OverviewPage = lazy(() => import("../pages/Overview").then((module) => ({ default: module.Overview })));
 const InstallWorkbenchPage = lazy(() => import("../pages/InstallWorkbench").then((module) => ({ default: module.InstallWorkbench })));
@@ -60,6 +64,8 @@ export function AppShell() {
   const gate = useOnboardingGate();
   const { lang } = useI18n();
   const { addNotification } = useNotifications();
+  const { refresh: refreshDiscovery } = useConnectionSetup();
+  const runtimeRefresh = useRuntimeDashboardSelector((state) => state.refresh, Object.is);
   const [onboardingOpen, setOnboardingOpen] = useState(false);
   const [onboardingDismissed, setOnboardingDismissed] = useState(false);
 
@@ -147,6 +153,8 @@ export function AppShell() {
     setOnboardingDismissed(true);
   }, [closeOnboarding]);
 
+  // The wizard hands the whole automatic batch to Install & Connect: no Agent
+  // preselection, no per-Agent choice carried over from onboarding.
   const handleStartSetup = useCallback(() => {
     closeOnboarding();
     setOnboardingDismissed(true);
@@ -157,6 +165,33 @@ export function AppShell() {
     closeOnboarding();
     setPage("overview");
   }, [closeOnboarding, setPage]);
+
+  // The shell owns the real service-start transaction (target dtoken on
+  // 127.0.0.1:18001) so the wizard never re-implements install business.
+  // Success reports both the native receipt and the post-transaction
+  // discovery/runtime refresh evidence; either missing ⇒ failure.
+  const handleStartService = useCallback(async (): Promise<OnboardingServiceStartResult> => {
+    try {
+      const result = await invokeNative<NativeActionResult>("run_install_transaction", {
+        request: {
+          target: "dtoken",
+          install_root: desktopInstallRoot(typeof navigator === "undefined" ? "" : navigator.userAgent),
+          proxy_port: 18001,
+          auto_backup: true,
+          run_doctor_after: true,
+          rollback_point: true,
+          mode: "connect",
+        },
+      });
+      if (!result?.ok) {
+        return { ok: false, summary: result?.summary || "install_transaction_failed", refreshed: false };
+      }
+      const [discovery] = await Promise.all([refreshDiscovery(), runtimeRefresh()]);
+      return { ok: true, summary: result.summary, refreshed: discovery !== null };
+    } catch (reason) {
+      return { ok: false, summary: reason instanceof Error ? reason.message : String(reason), refreshed: false };
+    }
+  }, [refreshDiscovery, runtimeRefresh]);
 
   const render = () => {
     switch (page) {
@@ -192,6 +227,7 @@ export function AppShell() {
                     onDismiss={handleDismissOnboarding}
                     onStartSetup={handleStartSetup}
                     onOpenOverview={handleOpenOverview}
+                    onStartService={handleStartService}
                   />
                 </PageStage>
               ) : (

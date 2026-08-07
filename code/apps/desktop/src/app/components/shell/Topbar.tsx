@@ -43,6 +43,7 @@ export function Topbar({
         onBlur={() => setEngaged(false)}
         aria-label={collapsed ? t("app.expandSidebar") : t("app.collapseSidebar")}
         title={collapsed ? t("app.expandSidebar") : t("app.collapseSidebar")}
+        data-reduced-motion={reducedMotion ? "true" : "false"}
         className="shell-window-control nav-motion-item flex size-8 shrink-0 items-center justify-center rounded-lg text-muted-foreground hover:bg-[var(--chip-hover-bg)] hover:text-foreground"
       >
         <AnimatedNavIcon
@@ -65,13 +66,14 @@ export function Topbar({
           <button
             type="button"
             onClick={onOpenOnboarding}
-            aria-label={t("onb.entry")}
+            aria-label={t("onb.entryTitle")}
             title={t("onb.entryTitle")}
             aria-pressed={onboardingActive}
             data-onboarding-active={onboardingActive ? "true" : "false"}
-            className="flex size-8 shrink-0 items-center justify-center rounded-lg text-muted-foreground hover:bg-[var(--chip-hover-bg)] hover:text-foreground"
+            className="flex h-8 shrink-0 items-center gap-1.5 rounded-lg px-2 text-muted-foreground hover:bg-[var(--chip-hover-bg)] hover:text-foreground"
           >
-            <Wand2 aria-hidden="true" className="size-4" />
+            <Wand2 aria-hidden="true" className="size-4 shrink-0" />
+            <span className="hidden whitespace-nowrap text-[12px] font-medium min-[420px]:inline">{t("onb.entry")}</span>
           </button>
         )}
         <NotificationCenter />

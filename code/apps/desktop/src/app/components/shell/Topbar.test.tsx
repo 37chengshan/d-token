@@ -32,7 +32,7 @@ describe("Topbar", () => {
     render(<Topbar collapsed={false} setCollapsed={vi.fn()} onOpenOnboarding={onOpenOnboarding} onboardingActive />);
 
     const entry = screen.getByRole("button", { name: "首次配置" });
-    expect(entry).toHaveAttribute("aria-pressed", "true");
+    expect(entry).toHaveTextContent("配置");
     expect(entry).toHaveAttribute("data-onboarding-active", "true");
     expect(screen.getByRole("button", { name: "通知" })).toBeVisible();
 

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState, type ReactNode } from "react"
 import {
   Bot,
   Boxes,
+  CheckCircle2,
   DatabaseZap,
   Download,
   ExternalLink,
@@ -21,7 +22,6 @@ import { OperationDialog } from "../common/OperationDialog";
 import { FlatRow, FlatRows, Surface } from "../common/Surface";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
-import { Checkbox } from "../ui/checkbox";
 import { Input } from "../ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../ui/select";
 import { cn } from "../ui/utils";
@@ -141,7 +141,6 @@ export function CodebaseMemory() {
   const [manualProjectRoot, setManualProjectRoot] = useState("");
   const [packageDirectoryDraft, setPackageDirectoryDraft] = useState("");
   const [agents, setAgents] = useState<CodebaseMemoryDetectedAgent[]>([]);
-  const [selectedAgentIds, setSelectedAgentIds] = useState<CodebaseMemoryIntegrationDraft["agent_id"][]>([]);
   const [scope, setScope] = useState<CodebaseMemoryIntegrationDraft["scope"]>("project");
   const [surface, setSurface] = useState<CodebaseMemoryIntegrationDraft["surface"]>("mcp");
   const [operationProgress, setOperationProgress] = useState<OperationProgress | null>(null);
@@ -198,39 +197,35 @@ export function CodebaseMemory() {
   }, [addNotification, lang, status, t]);
   refreshRef.current = refresh;
 
-  const scanAgents = useCallback(async (selectAll = false) => {
-    if (selectAll) {
-      setBusy("agents");
-      await yieldToPaint();
-    }
+  const scanAgents = useCallback(async () => {
+    setBusy("agents");
+    await yieldToPaint();
     try {
       const detected = await detectCodebaseMemoryAgents();
       if (!mountedRef.current) return;
       setAgents(detected);
-      const supported = detected
-        .filter((agent) => agent.installed && agent.integration_supported)
-        .map((agent) => agent.id as CodebaseMemoryIntegrationDraft["agent_id"]);
-      setSelectedAgentIds((current) => selectAll
-        ? supported
-        : current.filter((id) => supported.includes(id)));
+      // Every locally detected and writer-supported Agent is included
+      // automatically; the page never lets the user pick Agents, providers,
+      // or models. Previews are cleared so a rescan never reuses a stale batch.
+      setPreviews([]);
+      setOperationProgress(null);
     } catch (reason) {
       if (!mountedRef.current) return;
       const failure = presentOperationFailure("codebaseMemory", reason, lang);
       setAgents([]);
-      setSelectedAgentIds([]);
-      if (selectAll) {
-        addNotification({
-          dedupeKey: "codebase-memory-agent-scan-failed",
-          level: "error",
-          title: t("cbm.scanAgentsFailed"),
-          message: failure.message,
-          details: failure.details,
-        });
-      }
+      setPreviews([]);
+      setOperationProgress(null);
+      addNotification({
+        dedupeKey: "codebase-memory-agent-scan-failed",
+        level: "error",
+        title: t("cbm.scanAgentsFailed"),
+        message: failure.message,
+        details: failure.details,
+      });
     } finally {
-      if (mountedRef.current && selectAll) setBusy("");
+      if (mountedRef.current) setBusy("");
     }
-  }, [addNotification, t]);
+  }, [addNotification, lang, t]);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -246,7 +241,7 @@ export function CodebaseMemory() {
       })
       .catch(() => undefined);
     void refresh();
-    void scanAgents(true);
+    void scanAgents();
     return () => {
       disposed = true;
       mountedRef.current = false;
@@ -264,7 +259,11 @@ export function CodebaseMemory() {
   const visibleProgress = actionPending && !["preview", "apply", "rollback"].includes(busy)
     ? { state: "working", message: t("cbm.progressGeneric") } as OperationProgress
     : operationProgress;
-  const selectedAgents = selectedAgentIds.filter((id) => agents.some((agent) => agent.id === id && agent.installed && agent.integration_supported));
+  // The batch is automatic: every locally detected and writer-supported Agent
+  // is included. There is no per-Agent/provider/model selection on this page.
+  const selectedAgents = agents
+    .filter((agent) => agent.installed && agent.integration_supported)
+    .map((agent) => agent.id as CodebaseMemoryIntegrationDraft["agent_id"]);
   const unsupportedAgentIds = selectedAgents.filter((id) =>
     surface === "hook" ? id !== "claude-code" : id === "claude-code" && scope === "global");
   const unsupportedSelection = unsupportedAgentIds.length > 0;
@@ -533,15 +532,6 @@ export function CodebaseMemory() {
     }
   };
 
-  const toggleAgent = (id: string, checked: boolean | "indeterminate") => {
-    if (!isCodebaseMemoryAgentId(id)) return;
-    setSelectedAgentIds((current) => checked === true
-      ? current.includes(id) ? current : [...current, id]
-      : current.filter((item) => item !== id));
-    setPreviews([]);
-    setOperationProgress(null);
-  };
-
   const dimensions = [
     { id: "package", label: t("cbm.dimension.package"), icon: PackageCheck, value: status?.package ?? UNAVAILABLE_DIMENSION },
     { id: "integration", label: t("cbm.dimension.integration"), icon: Boxes, value: status?.integration ?? UNAVAILABLE_DIMENSION },
@@ -557,7 +547,7 @@ export function CodebaseMemory() {
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0 space-y-1">
           <div className="flex flex-wrap items-center gap-2">
-            <h1>{t("cbm.title")}</h1>
+            <h1 className="sr-only">{t("cbm.title")}</h1>
             <DataSourceBadge mode={dataMode} />
           </div>
           <p className="max-w-3xl text-sm text-muted-foreground">{t("cbm.subtitle")}</p>
@@ -648,29 +638,26 @@ export function CodebaseMemory() {
           <div className="mt-3 rounded-xl border border-border/70 p-3">
             <div className="flex items-center justify-between gap-3">
               <span className="text-xs font-medium">{t("cbm.agentLabel")}</span>
-              <Button type="button" size="sm" variant="ghost" disabled={actionPending} onClick={() => void scanAgents(true)}>
+              <Button type="button" size="sm" variant="ghost" disabled={actionPending} onClick={() => void scanAgents()}>
                 <Search className={cn("size-3.5", busy === "agents" && "animate-pulse")} aria-hidden />{t("cbm.scanAgents")}
               </Button>
             </div>
             {agents.length ? (
               <div className="mt-2 grid gap-2 sm:grid-cols-3">
                 {agents.map((agent) => {
-                  const supported = Boolean(agent.installed && agent.integration_supported);
+                  const included = Boolean(agent.installed && agent.integration_supported);
                   return (
-                    <label key={agent.id} className="flex items-center justify-between gap-3 rounded-lg border border-border/60 px-3 py-2 text-sm">
+                    <div key={agent.id} className="flex items-center justify-between gap-3 rounded-lg border border-border/60 px-3 py-2 text-sm" aria-label={`${agent.name} ${t("cbm.agentLabel")}`}>
                       <span className="min-w-0">
                         <span className="block truncate font-medium">{agent.name}</span>
                         <span className="block text-[11px] text-muted-foreground">
                           {!agent.installed ? t("cbm.agentNotDetected") : agent.integration_supported === false ? t("cbm.agentUnsupported") : t("cbm.agentDetected")}
                         </span>
                       </span>
-                      <Checkbox
-                        checked={selectedAgentIds.includes(agent.id as CodebaseMemoryIntegrationDraft["agent_id"])}
-                        disabled={!supported || actionPending}
-                        onCheckedChange={(checked) => toggleAgent(agent.id, checked)}
-                        aria-label={`${agent.name} ${t("cbm.agentLabel")}`}
-                      />
-                    </label>
+                      {included ? (
+                        <CheckCircle2 className="size-4 shrink-0 text-emerald-600" aria-label={t("cbm.agentDetected")} />
+                      ) : null}
+                    </div>
                   );
                 })}
               </div>

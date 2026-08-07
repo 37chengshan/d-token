@@ -120,6 +120,29 @@ describe("Sidebar", () => {
       "data-reduced-motion",
       "true",
     );
+    // The .nav-motion-item parent mirrors the flag so the press scale is
+    // disabled without :has() (unsupported on macOS 10.14 WKWebView).
+    expect(document.querySelector(".nav-motion-item")).toHaveAttribute(
+      "data-reduced-motion",
+      "true",
+    );
+  });
+
+  it("marks nav-motion-item parents with data-reduced-motion=false when motion is enabled", () => {
+    render(
+      <Sidebar
+        page="overview"
+        setPage={vi.fn()}
+        collapsed={false}
+        setCollapsed={vi.fn()}
+        reducedMotion={false}
+      />,
+    );
+
+    expect(document.querySelector(".nav-motion-item")).toHaveAttribute(
+      "data-reduced-motion",
+      "false",
+    );
   });
 
   it("shows collapsed navigation names through tooltips instead of native title only", async () => {
@@ -169,7 +192,7 @@ describe("Sidebar", () => {
     expect(iconAfterClick).toHaveAttribute("data-motion-play", "true");
     expect(setPage).toHaveBeenCalledWith("analytics");
   });
-  it("keeps hover and focus in CSS without React engaged attributes", () => {
+  it("reports pointer hover and keyboard focus as icon engagement", () => {
     render(
       <Sidebar
         page="overview"
@@ -180,12 +203,21 @@ describe("Sidebar", () => {
       />,
     );
     const settings = screen.getByRole("button", { name: "设置" });
+    const icon = () =>
+      settings.querySelector('[data-motion-id="settings"]');
+    expect(icon()).toHaveAttribute("data-motion-engaged", "false");
+    expect(icon()).toHaveAttribute("data-motion-play", "false");
+
     fireEvent.pointerEnter(settings);
+    expect(icon()).toHaveAttribute("data-motion-engaged", "true");
+    expect(icon()).toHaveAttribute("data-motion-play", "true");
+    fireEvent.pointerLeave(settings);
+    expect(icon()).toHaveAttribute("data-motion-engaged", "false");
+
     fireEvent.focus(settings);
-    expect(settings).not.toHaveAttribute("data-nav-engaged");
-    expect(
-      settings.querySelector('[data-motion-id="settings"]'),
-    ).toHaveAttribute("data-motion-engaged", "false");
+    expect(icon()).toHaveAttribute("data-motion-engaged", "true");
+    fireEvent.blur(settings);
+    expect(icon()).toHaveAttribute("data-motion-engaged", "false");
   });
 
   it("uses the shared English product labels without changing the navigation model", () => {

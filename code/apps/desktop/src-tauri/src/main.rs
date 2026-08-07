@@ -33,8 +33,9 @@ use dtoken_config_patcher::{
         PreparedAgentIntegration,
     },
     agent_mcp::{
-        resolve_mcp_config_path, transform_mcp_json_document, verify_mcp_json_cleared,
-        verify_mcp_json_document,
+        is_verified_hook_agent, resolve_hook_config_path, resolve_mcp_config_path_for,
+        transform_hook_json_document, transform_mcp_json_document, verify_hook_json_cleared,
+        verify_hook_json_document, verify_mcp_json_cleared, verify_mcp_json_document,
     },
     stable_hash, ConfigPatcher, ExpectedFileState,
 };
@@ -5476,6 +5477,24 @@ fn parse_protocol(value: &str) -> &'static str {
     }
 }
 
+/// Codex's local OpenAI Responses proxy may advertise no static model list.
+/// With an empty reviewed request model the provider keeps an empty `models`
+/// array so the request model is passed through dynamically.
+fn is_codex_responses_dynamic_passthrough(
+    agent_id: &str,
+    candidate: &Value,
+    request_model: &str,
+) -> bool {
+    agent_id == "codex"
+        && request_model.trim().is_empty()
+        && candidate.get("protocol").and_then(Value::as_str) == Some("responses")
+        && candidate.get("auth_mode").and_then(Value::as_str) == Some("none")
+        && candidate
+            .get("models")
+            .and_then(Value::as_array)
+            .is_some_and(|models| models.is_empty())
+}
+
 fn parse_provider_kind(value: &str) -> &'static str {
     match value.trim().to_ascii_lowercase().as_str() {
         "official" => "official",
@@ -6302,7 +6321,7 @@ fn prepare_connection_route_plan_from_discovery(
                     == Some(binding_request.candidate_id.as_str())
                     && candidate.get("source").and_then(Value::as_str)
                         == Some(binding_request.candidate_source.as_str())
-                    && candidate
+                    && (candidate
                         .get("models")
                         .and_then(Value::as_array)
                         .is_some_and(|models| {
@@ -6310,6 +6329,11 @@ fn prepare_connection_route_plan_from_discovery(
                                 .iter()
                                 .any(|model| model.as_str() == Some(binding_request.model.as_str()))
                         })
+                        || is_codex_responses_dynamic_passthrough(
+                            &agent_id,
+                            candidate,
+                            &binding_request.model,
+                        ))
             })
             .ok_or_else(|| {
                 format!(
@@ -6340,7 +6364,12 @@ fn prepare_connection_route_plan_from_discovery(
         )
         .to_string();
         let model = binding_request.model.trim().to_string();
-        if model.is_empty() || model.len() > 256 || model.contains(['\n', '\r', '\0']) {
+        let dynamic_passthrough =
+            is_codex_responses_dynamic_passthrough(&agent_id, candidate, &binding_request.model);
+        if (!dynamic_passthrough && model.is_empty())
+            || model.len() > 256
+            || model.contains(['\n', '\r', '\0'])
+        {
             return Err(format!("The model selected for {agent_id} is invalid"));
         }
 
@@ -6392,7 +6421,16 @@ fn prepare_connection_route_plan_from_discovery(
             "protocol": protocol,
             "base_url": base_url,
             "api_key_ref": Value::Null,
-            "models": [model],
+            "models": if dynamic_passthrough {
+                Vec::<String>::new()
+            } else {
+                vec![model]
+            },
+            "wire_api": if dynamic_passthrough {
+                "open_ai_responses"
+            } else {
+                "open_ai_chat"
+            },
             "timeout_ms": 120000,
             "healthcheck_path": "/health"
         }));
@@ -10324,25 +10362,49 @@ fn resolve_managed_agent_mcp_request(
 ) -> Result<ManagedAgentMcpRequest, String> {
     let context = current_process_scan_context(epoch_ms())
         .map_err(|error| format!("Agent configuration roots are unavailable: {error}"))?;
-    resolve_managed_agent_mcp_request_with_home(request, &context.home_dir)
+    resolve_managed_agent_mcp_request_with_context(request, &context)
 }
 
+#[cfg(test)]
 fn resolve_managed_agent_mcp_request_with_home(
-    mut request: ManagedAgentMcpRequest,
+    request: ManagedAgentMcpRequest,
     home_dir: &Path,
+) -> Result<ManagedAgentMcpRequest, String> {
+    let mut context = current_process_scan_context(epoch_ms())
+        .map_err(|error| format!("Agent configuration roots are unavailable: {error}"))?;
+    context.home_dir = home_dir.to_path_buf();
+    resolve_managed_agent_mcp_request_with_context(request, &context)
+}
+
+/// Resolve a managed MCP request against the full platform scan context so
+/// Windows agents (VS Code, Claude Desktop) resolve their `%APPDATA%` roaming
+/// targets instead of the macOS home-relative layout, and Hook agents resolve
+/// their verified hooks.json target.
+fn resolve_managed_agent_mcp_request_with_context(
+    mut request: ManagedAgentMcpRequest,
+    context: &AgentScanContext,
 ) -> Result<ManagedAgentMcpRequest, String> {
     if !matches!(request.operation.as_str(), "configure" | "clear") {
         return Err("Unsupported managed MCP operation".to_string());
     }
     let raw = request.config_path.to_string_lossy();
     if let Some(relative) = raw.strip_prefix("~/") {
-        request.config_path = home_dir.join(relative);
+        request.config_path = context.home_dir.join(relative);
     } else if !request.config_path.is_absolute() {
         return Err("MCP config path is not absolute or home-relative".to_string());
     }
     request.config_path = normalize_managed_agent_target(&request.config_path)?;
-    let expected = resolve_mcp_config_path(&request.agent_id, home_dir)
-        .ok_or_else(|| "Agent has no verified MCP configuration target".to_string())?;
+    let expected = if is_verified_hook_agent(&request.agent_id) {
+        resolve_hook_config_path(&request.agent_id, &context.home_dir)
+    } else {
+        resolve_mcp_config_path_for(
+            &request.agent_id,
+            context.platform,
+            &context.home_dir,
+            context.roaming_app_data.as_deref(),
+        )
+    }
+    .ok_or_else(|| "Agent has no verified MCP configuration target".to_string())?;
     let expected = normalize_managed_agent_target(&expected)?;
     if request.config_path != expected {
         return Err("MCP config path is outside the registered Agent target".to_string());
@@ -10437,7 +10499,12 @@ fn preview_managed_agent_mcp_integration(request: ManagedAgentMcpRequest) -> Val
         }
     };
     let add = request.operation == "configure";
-    let result = transform_mcp_json_document(&request.agent_id, &config_text, &entry, add);
+    let hook_agent = is_verified_hook_agent(&request.agent_id);
+    let result = if hook_agent {
+        transform_hook_json_document(&request.agent_id, &config_text, &bridge, add)
+    } else {
+        transform_mcp_json_document(&request.agent_id, &config_text, &entry, add)
+    };
     match result {
         Ok(next_text) => {
             use sha2::{Digest, Sha256};
@@ -10458,7 +10525,7 @@ fn preview_managed_agent_mcp_integration(request: ManagedAgentMcpRequest) -> Val
                     "redacted_diff": diff,
                     "bridge_path": bridge.to_string_lossy(),
                     "provides_route_evidence": false,
-                    "integration_kind": "mcp",
+                    "integration_kind": if hook_agent { "hook" } else { "mcp" },
                 }
             })
         }
@@ -10517,8 +10584,13 @@ fn apply_managed_agent_mcp_integration(
         });
     }
     let add = request.operation == "configure";
-    let next_text = match transform_mcp_json_document(&request.agent_id, &config_text, &entry, add)
-    {
+    let hook_agent = is_verified_hook_agent(&request.agent_id);
+    let next_text = if hook_agent {
+        transform_hook_json_document(&request.agent_id, &config_text, &bridge, add)
+    } else {
+        transform_mcp_json_document(&request.agent_id, &config_text, &entry, add)
+    };
+    let next_text = match next_text {
         Ok(text) => text,
         Err(error) => {
             return json!({
@@ -10663,7 +10735,13 @@ fn verify_managed_agent_mcp_integration(
         }
     };
     let result = if configured {
-        verify_mcp_json_document(&request.agent_id, &config_text, &entry)
+        if is_verified_hook_agent(&request.agent_id) {
+            verify_hook_json_document(&request.agent_id, &config_text, &bridge)
+        } else {
+            verify_mcp_json_document(&request.agent_id, &config_text, &entry)
+        }
+    } else if is_verified_hook_agent(&request.agent_id) {
+        verify_hook_json_cleared(&request.agent_id, &config_text, &bridge)
     } else {
         verify_mcp_json_cleared(&request.agent_id, &config_text, &entry)
     };
@@ -15503,6 +15581,43 @@ mod tests {
         assert!(!expected.parent().expect("mcp parent").exists());
     }
 
+    #[test]
+    fn managed_mcp_clear_resolves_windows_claude_desktop_via_roaming_app_data() {
+        use dtoken_config_patcher::agent::{AgentEvidenceOverride, HostPlatform};
+        let canonical_temp_root =
+            fs::canonicalize(env::temp_dir()).expect("canonical temporary root");
+        let temp = tempfile::tempdir_in(canonical_temp_root).expect("temporary root");
+        let home = temp.path().join("home");
+        let roaming = temp.path().join("roaming");
+        fs::create_dir_all(&roaming).expect("roaming app data");
+        let context = AgentScanContext {
+            platform: HostPlatform::Windows,
+            home_dir: home.clone(),
+            path_dirs: Vec::new(),
+            applications_dir: None,
+            roaming_app_data: Some(roaming.clone()),
+            local_app_data: None,
+            additional_evidence: Vec::<AgentEvidenceOverride>::new(),
+            observed_at_ms: 1,
+        };
+        let resolved = resolve_managed_agent_mcp_request_with_context(
+            ManagedAgentMcpRequest {
+                agent_id: "claude-desktop".to_string(),
+                config_path: roaming.join("Claude").join("claude_desktop_config.json"),
+                operation: "clear".to_string(),
+            },
+            &context,
+        )
+        .expect("Windows Claude Desktop clear must resolve to the roaming AppData target");
+
+        assert_eq!(
+            resolved.config_path,
+            roaming.join("Claude").join("claude_desktop_config.json"),
+            "expected the Windows %APPDATA% target, not the macOS home-relative layout"
+        );
+        assert!(!resolved.config_path.exists());
+    }
+
     fn clear_native_performance_observations() {
         NATIVE_PERF_OBSERVATIONS
             .get_or_init(|| Mutex::new(VecDeque::with_capacity(MAX_NATIVE_PERF_OBSERVATIONS)))
@@ -16671,6 +16786,10 @@ mod tests {
             assert_eq!(agents, vec!["opencode"]);
             assert!(prepared.plan.diff.contains("deepseek-v4-flash-free"));
             assert!(prepared.plan.diff.contains("https://opencode.ai/zen/v1"));
+            assert!(prepared
+                .plan
+                .diff
+                .contains("\"wire_api\": \"open_ai_chat\""));
             assert!(!prepared.plan.diff.contains("sk-"));
             assert!(!prepared.plan.diff.contains("secret-value"));
 
@@ -16685,6 +16804,63 @@ mod tests {
             let error = prepare_connection_route_plan_from_discovery(&external_stale, &discovery)
                 .expect_err("external source drift must fail");
             assert!(error.contains("External Agent or cc-switch configuration changed"));
+        });
+    }
+
+    #[test]
+    fn codex_responses_upstream_forwarding_uses_dynamic_model_passthrough() {
+        with_isolated_app_state("codex-local-responses-route", || {
+            let discovery = json!({
+                "revision": "setup-reviewed",
+                "external_config_snapshot": { "fingerprint": "external-a" },
+                "agent_bindings": [{
+                    "agent_id": "codex",
+                    "installed": true,
+                    "capability": "one-click",
+                    "candidates": [{
+                        "id": "codex-ocxlocal",
+                        "name": "Codex ocxlocal",
+                        "source": "agent-config:codex",
+                        "protocol": "responses",
+                        "base_url": "http://127.0.0.1:10100/v1",
+                        "models": [],
+                        "auth_mode": "none"
+                    }]
+                }]
+            });
+            // Codex's local OpenAI Responses proxy advertises no static model
+            // list: with an empty reviewed request model the provider keeps an
+            // empty models array so the request model is passed through.
+            let request = ConnectionRoutePlanRequest {
+                discovery_revision: "setup-reviewed".to_string(),
+                source_fingerprint: None,
+                source_fingerprint_scope: None,
+                bindings: vec![ConnectionRouteBindingRequest {
+                    agent_id: "codex".to_string(),
+                    candidate_id: "codex-ocxlocal".to_string(),
+                    candidate_source: "agent-config:codex".to_string(),
+                    model: String::new(),
+                }],
+            };
+
+            let (revision, prepared, agents) =
+                prepare_connection_route_plan_from_discovery(&request, &discovery)
+                    .expect("Codex Responses upstream must be routable");
+            assert_eq!(revision, "setup-reviewed");
+            assert_eq!(agents, vec!["codex"]);
+            assert!(prepared.plan.diff.contains("http://127.0.0.1:10100/v1"));
+            assert!(prepared.plan.diff.contains("\"protocol\": \"open_ai\""));
+            assert!(prepared.plan.diff.contains("\"kind\": \"local_chain\""));
+            assert!(prepared.plan.diff.contains("\"models\": []"));
+            assert!(prepared
+                .plan
+                .diff
+                .contains("\"wire_api\": \"open_ai_responses\""));
+            assert!(prepared
+                .plan
+                .diff
+                .contains("\"input_protocol\": \"open_ai\""));
+            assert!(prepared.plan.diff.contains("\"local_port\": 18001"));
         });
     }
 

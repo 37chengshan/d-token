@@ -5,7 +5,6 @@ export type InstallPhase =
   | "discovering"
   | "already-connected"
   | "ready"
-  | "needs-choice"
   | "needs-credential"
   | "review"
   | "applying-runtime"
@@ -34,8 +33,6 @@ export type InstallMachineEvent =
   | { type: "DISCOVER_START" }
   | { type: "DISCOVERED"; snapshot: ConnectionSetupSnapshot }
   | { type: "DISCOVERY_FAILED"; message: string }
-  | { type: "SELECT_UPSTREAM"; agentId: string; selection: AgentSelection }
-  | { type: "TOGGLE_AGENT"; agentId: string; selected: boolean }
   | { type: "OPEN_REVIEW" }
   | { type: "SET_PHASE"; phase: InstallPhase; message?: string }
   | { type: "RESET" };
@@ -112,13 +109,10 @@ export function installMachineReducer(state: InstallMachineState, event: Install
         : state;
     case "DISCOVERED": {
       const revisionChanged = state.snapshot !== null && state.snapshot.revision !== event.snapshot.revision;
-      const defaults = defaultSelectedAgentIds(event.snapshot);
-      // Preserve explicit opt-ins across same-revision polling. Defaults are a
-      // safe subset; they must not redefine which discovered Agents are
-      // selectable after the user has deliberately included one.
-      const selectable = new Set(selectableBindings(event.snapshot).map((binding) => binding.agent_id));
-      const preserved = state.selectedAgentIds.filter((agentId) => selectable.has(agentId));
-      const selectedAgentIds = state.snapshot !== null && !revisionChanged ? preserved : defaults;
+      // The batch is automatic: every installed Agent with a verified write
+      // action joins. There is no user opt-in, so selection always follows
+      // discovery and never needs to be preserved across polling.
+      const selectedAgentIds = defaultSelectedAgentIds(event.snapshot);
       const selections = mergeSelections(event.snapshot, revisionChanged ? {} : state.selections);
       const nextPhase = deriveInstallPhase(event.snapshot, selections, selectedAgentIds);
       if (!revisionChanged && ["review", "applying-runtime", "applying-agent-configs", "verifying", "verified"].includes(state.phase)) {
@@ -139,28 +133,6 @@ export function installMachineReducer(state: InstallMachineState, event: Install
     case "DISCOVERY_FAILED":
       if (["applying-runtime", "applying-agent-configs", "verifying"].includes(state.phase)) return state;
       return { ...state, phase: "blocked", message: event.message, reviewDiscoveryRevision: null };
-    case "SELECT_UPSTREAM": {
-      const selections = { ...state.selections, [event.agentId]: event.selection };
-      return {
-        ...state,
-        selections,
-        phase: state.snapshot ? deriveInstallPhase(state.snapshot, selections, state.selectedAgentIds) : "blocked",
-        reviewDiscoveryRevision: null,
-      };
-    }
-    case "TOGGLE_AGENT": {
-      if (!state.snapshot || !selectableBindings(state.snapshot).some((binding) => binding.agent_id === event.agentId)) return state;
-      const selectedAgentIds = event.selected
-        ? Array.from(new Set([...state.selectedAgentIds, event.agentId]))
-        : state.selectedAgentIds.filter((agentId) => agentId !== event.agentId);
-      return {
-        ...state,
-        selectedAgentIds,
-        phase: deriveInstallPhase(state.snapshot, state.selections, selectedAgentIds),
-        reviewDiscoveryRevision: null,
-        message: selectedAgentIds.length === 0 ? "select-at-least-one-agent" : "",
-      };
-    }
     case "OPEN_REVIEW":
       return state.snapshot && canReviewInstall(state.snapshot, state.selections, state.selectedAgentIds)
         ? { ...state, phase: "review", reviewDiscoveryRevision: state.snapshot.revision, message: "" }
@@ -192,14 +164,42 @@ export function selectedCandidate(binding: AgentUpstreamBinding, selection?: Age
   return bindingOptions(binding).find((option) => option.key === selection.candidateKey) ?? null;
 }
 
+export type ResolvedAgentBinding = {
+  candidate: UpstreamCandidate;
+  /** The unique auto-resolved model; "" means request-model passthrough. */
+  model: string;
+};
+
+/**
+ * The only model d-token may ever write is the uniquely auto-resolved one
+ * (PRD P0.0.10.2/.5): exactly one model on the resolved candidate, or the
+ * empty passthrough marker for the Codex Responses proxy. Every other shape
+ * (multiple models, or none outside the passthrough) is ambiguous and fails
+ * closed to null — callers must block, never guess or pick models[0].
+ */
+export function resolveAgentBinding(binding: AgentUpstreamBinding, selection?: AgentSelection): ResolvedAgentBinding | null {
+  const chosen = selection ? selectedCandidate(binding, selection) : null;
+  const candidate = chosen?.candidate ?? binding.resolved_candidate;
+  if (!candidate) return null;
+  if (candidate.models.length === 1) return { candidate, model: candidate.models[0] };
+  if (candidate.models.length === 0 && binding.agent_id === "codex" && candidate.protocol === "responses") {
+    return { candidate, model: "" };
+  }
+  return null;
+}
+
 export function canReviewInstall(snapshot: ConnectionSetupSnapshot, selections: Record<string, AgentSelection>, selectedAgentIds = defaultSelectedAgentIds(snapshot)) {
   const actionable = selectedBindings(snapshot, selectedAgentIds);
   if (actionable.length === 0) return false;
   return actionable.every((binding) => {
     if (binding.already_connected) return true;
     if (binding.resolution === "needs-credential") return false;
-    if (binding.resolution === "auto-resolved") return Boolean(selections[binding.agent_id]);
-    if (binding.resolution === "needs-choice") return Boolean(selectedCandidate(binding, selections[binding.agent_id]));
+    // Ambiguity is never resolvable by the user; the plan fails closed.
+    if (binding.resolution === "needs-choice") return false;
+    // A selection exists only when the resolved candidate exposes exactly one
+    // model (or the Codex Responses passthrough marker). Multi-model or
+    // unresolvable bindings have no selection and block the plan.
+    if (binding.resolution === "auto-resolved") return resolveAgentBinding(binding, selections[binding.agent_id]) !== null;
     return false;
   });
 }
@@ -214,9 +214,9 @@ export function deriveInstallPhase(snapshot: ConnectionSetupSnapshot, selections
   if (actionable.length === 0) return "partial";
   if (actionable.every((binding) => binding.already_connected)) return "already-connected";
   if (actionable.some((binding) => binding.resolution === "needs-credential")) return "needs-credential";
-  if (actionable.some((binding) => binding.resolution === "needs-choice" && !selectedCandidate(binding, selections[binding.agent_id]))) {
-    return "needs-choice";
-  }
+  // A genuinely ambiguous upstream/model blocks the whole plan until the
+  // source is fixed and rescanned; no chooser is offered.
+  if (actionable.some((binding) => binding.resolution === "needs-choice")) return "blocked";
   return canReviewInstall(snapshot, selections, selectedAgentIds) ? "ready" : "blocked";
 }
 
@@ -224,13 +224,6 @@ export function deriveInstallPhase(snapshot: ConnectionSetupSnapshot, selections
 /// prompt/manual registry label must not override a verified native transport
 /// adapter; only Agents without such an adapter stay suggestion-only.
 function actionableBindings(snapshot: ConnectionSetupSnapshot) {
-  return snapshot.agent_bindings.filter(canJoinInstallBatch);
-}
-
-/// Selection means "include in this verified connection batch". Detection-only
-/// rows remain visible with Configure/Clear controls but do not get a checkbox
-/// that would be silently ignored.
-function selectableBindings(snapshot: ConnectionSetupSnapshot) {
   return snapshot.agent_bindings.filter(canJoinInstallBatch);
 }
 
@@ -250,34 +243,31 @@ function selectedBindings(snapshot: ConnectionSetupSnapshot, selectedAgentIds: s
 }
 
 function defaultSelectedAgentIds(snapshot: ConnectionSetupSnapshot) {
-  // Pre-select agents that are ready for one-shot confirmation:
-  //   - already connected
-  //   - one-click + auto-resolved
-  //   - confirm-required + auto-resolved (the plan is ready, just needs user ok)
-  return actionableBindings(snapshot)
-    .filter((binding) => binding.already_connected
-      || ((binding.capability === "one-click"
-            || binding.capability === "confirm-required"
-            || binding.can_configure === true)
-          && binding.resolution === "auto-resolved"))
-    .map((binding) => binding.agent_id);
+  // The whole batch is automatic: every installed Agent with a verified write
+  // action joins the plan. Resolution gaps (credential/ambiguity) then decide
+  // whether the batch is ready, needs a credential, or is blocked.
+  return actionableBindings(snapshot).map((binding) => binding.agent_id);
 }
 
 function mergeSelections(snapshot: ConnectionSetupSnapshot, current: Record<string, AgentSelection>) {
   const selections: Record<string, AgentSelection> = {};
   for (const binding of actionableBindings(snapshot)) {
     const existing = current[binding.agent_id];
-    if (existing && selectedCandidate(binding, existing)) {
-      selections[binding.agent_id] = existing;
-      continue;
+    if (existing) {
+      // Preserve a previous selection only while it still matches the current
+      // unique auto-resolution; a changed source invalidates it.
+      const resolved = resolveAgentBinding(binding, existing);
+      if (resolved && resolved.model === existing.model) {
+        selections[binding.agent_id] = existing;
+        continue;
+      }
     }
-    const candidate = binding.resolved_candidate;
-    if (candidate && candidate.models.length > 0) {
-      selections[binding.agent_id] = {
-        candidateKey: candidateKey(candidate, candidate.models[0]),
-        model: candidate.models[0],
-      };
-    }
+    const resolved = resolveAgentBinding(binding);
+    if (!resolved) continue;
+    selections[binding.agent_id] = {
+      candidateKey: candidateKey(resolved.candidate, resolved.model),
+      model: resolved.model,
+    };
   }
   return selections;
 }

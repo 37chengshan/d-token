@@ -3,7 +3,7 @@ import { useT, type Lang } from "../i18n";
 import { Badge } from "../../components/ui/badge";
 import { AnimatedSegmentedControl } from "../../components/shell/AnimatedSegmentedControl";
 import type { AccountQuotaSummary, CcSwitchStatus, OperationalStatus, OperationalTone } from "./derivations";
-import type { SavingsDerivation, SavingsWindowKey } from "./savings";
+import type { SavingsCostSummary, SavingsDerivation, SavingsWindowKey } from "./savings";
 
 /** 与 Overview.tsx 共用：1.2k / 2.3M 风格。 */
 export function formatTokenCount(n: number) {
@@ -74,7 +74,7 @@ export function SavingsWindowCard({
       onValueChange={onSelect}
       items={derivation.windows.map((item) => ({ value: item.key, label: item.label }))}
     /></div>
-    <div className="overview-kpi-detail mt-1 text-[11px] text-muted-foreground" title={derivation.cost.detail}>{lang === "zh" ? "费用差额" : "Cost delta"}: —{!derivation.cost.available ? ` · ${lang === "zh" ? "价格证据缺失" : "no pricing evidence"}` : ""}</div>
+    <div className="overview-kpi-detail mt-1 text-[11px] text-muted-foreground" title={derivation.cost.detail}>{lang === "zh" ? "费用差额" : "Cost delta"}: {costDeltaText(derivation.cost, lang)}</div>
   </div>;
 }
 
@@ -102,3 +102,18 @@ export function AccountQuotaCard({ quota, lang }: { quota: AccountQuotaSummary; 
 }
 
 function formatQuotaReset(value: string) { const date = new Date(value); return Number.isFinite(date.getTime()) ? date.toLocaleString() : value; }
+
+/** 费用差额文案：有价格证据时显示币种+估算费用（明确标注估算），否则 — + 缺证据。 */
+function costDeltaText(cost: SavingsCostSummary, lang: Lang): string {
+  if (!cost.available) return `—${lang === "zh" ? " 价格证据缺失" : " no pricing evidence"}`;
+  const symbol = cost.currency === "CNY" ? "¥" : "$";
+  const estimate = formatCostEstimate(cost.estimatedCost);
+  return lang === "zh" ? `${symbol}${estimate}（估算）` : `${symbol}${estimate} (est.)`;
+}
+
+function formatCostEstimate(value: number): string {
+  if (value >= 1000) return value.toFixed(0);
+  if (value >= 1) return value.toFixed(2);
+  if (value === 0) return "0";
+  return value >= 0.01 ? value.toFixed(2) : value.toFixed(4);
+}

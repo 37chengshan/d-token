@@ -14,6 +14,9 @@ import { AnimatedSegmentedControl } from "./AnimatedSegmentedControl";
 import {
   forwardRef,
   memo,
+  useCallback,
+  useEffect,
+  useRef,
   useState,
   type ButtonHTMLAttributes,
   type ReactNode,
@@ -216,17 +219,59 @@ const SidebarItem = memo(function SidebarItem({
 }) {
   const t = useT();
   const [motionToken, setMotionToken] = useState(0);
+  // Hover/focus engagement is written imperatively onto the icon element
+  // (data-motion-engaged / data-motion-play) instead of React state, so
+  // hovering one item never re-renders it or its siblings. Only the click
+  // pulse uses state (motionToken), and it is local to this item.
+  const buttonRef = useRef<HTMLButtonElement>(null);
+  const engagedRef = useRef(false);
+
+  const applyEngagement = useCallback(() => {
+    const icon = buttonRef.current?.querySelector("[data-motion-id]");
+    if (!icon) return;
+    const engaged = engagedRef.current && !reducedMotion;
+    icon.setAttribute("data-motion-engaged", engaged ? "true" : "false");
+    // Only override play while engaged — the click-pulse timer owns it otherwise.
+    if (engaged) icon.setAttribute("data-motion-play", "true");
+  }, [reducedMotion]);
+
+  // Click-token bumps and active flips re-render this item and reconcile the
+  // icon's data attributes from props, so re-apply the imperative engagement
+  // after every commit to keep data-motion-engaged true while the
+  // pointer/keyboard is still on the item.
+  useEffect(() => {
+    applyEngagement();
+  });
+
   const label = t(labelKey);
   const accessibleLabel = badge === "beta" ? `${label} Beta` : label;
   const button = (
     <button
+      ref={buttonRef}
       type="button"
       onClick={() => {
         setMotionToken((token) => token + 1);
         setPage(id);
       }}
+      onPointerEnter={() => {
+        engagedRef.current = true;
+        applyEngagement();
+      }}
+      onPointerLeave={() => {
+        engagedRef.current = false;
+        applyEngagement();
+      }}
+      onFocus={() => {
+        engagedRef.current = true;
+        applyEngagement();
+      }}
+      onBlur={() => {
+        engagedRef.current = false;
+        applyEngagement();
+      }}
       aria-label={accessibleLabel}
       aria-current={active ? "page" : undefined}
+      data-reduced-motion={reducedMotion ? "true" : "false"}
       className={cn(
         "nav-motion-item group relative z-10 flex items-center text-[13px] transition-colors duration-200",
         collapsed
@@ -305,6 +350,7 @@ const ThemeToggleButton = forwardRef<
         props["aria-label"] ??
         (isDark ? t("set.themeLight") : t("set.themeDark"))
       }
+      data-reduced-motion={reducedMotion ? "true" : "false"}
       className={cn(
         "nav-motion-item shell-theme-icon-button group flex h-[40px] w-[40px] items-center justify-center rounded-lg text-muted-foreground",
         className,
@@ -349,6 +395,7 @@ const CollapseButton = forwardRef<
         props["aria-label"] ??
         (collapsed ? t("app.expandSidebar") : t("app.collapseSidebar"))
       }
+      data-reduced-motion={reducedMotion ? "true" : "false"}
       className={cn(
         "nav-motion-item group flex shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-[var(--chip-hover-bg)]",
         collapsed ? "h-[40px] w-[40px]" : "size-7",

@@ -5,7 +5,6 @@ import { useRuntimeDashboardSelector, shallowEqualSlice, type RuntimeDashboardSt
 import { createOperationRequestId, useNotifications } from "../../lib/notifications";
 import { presentOperationFailure } from "../../lib/userCopy";
 import {
-  bindingOptions,
   canReviewInstall,
   deriveInstallPhase,
   dispatchInstallMachine,
@@ -18,9 +17,10 @@ import {
 } from "../../lib/installMachine";
 import { useConnectionSetup, type AgentUpstreamBinding, type ConnectionSetupSnapshot, type UpstreamCandidate } from "../../lib/connectionSetup";
 import { InstallView } from "../../lib/install/InstallView";
-import { buildConnectionRoutePlanRequest, connectionDiscoveryCounts, derivePrimaryAction, desktopInstallRoot, hybridAgentIntegrationDraft, presentCcSwitch, presentInstallPhase, presentRouteVerificationSummary, presentServiceInstance, safeText, supportsAutomaticAgentIntegration } from "../../lib/install/presentation";
+import { buildConnectionRoutePlanRequest, connectionDiscoveryCounts, derivePrimaryAction, desktopInstallRoot, hasRealAgentAction, hybridAgentIntegrationDraft, presentCcSwitch, presentInstallPhase, presentRouteVerificationSummary, presentServiceInstance, safeText, supportsAutomaticAgentIntegration } from "../../lib/install/presentation";
 import type { ConnectionRoutePlanReceipt, ConnectionRoutePlanReview, DtokenServiceStatus, HybridAgentIntegrationApply, HybridAgentIntegrationReview, HybridAgentIntegrationVerification, ManagedAgentTransportReceipt, ManagedAgentTransportReview, OpenCodeConnectionReceipt, OpenCodeConnectionReview, RouteVerification } from "../../lib/install/presentation";
 export { connectionDiscoveryCounts, desktopInstallRoot, presentConnectionPrivacy, presentRouteVerificationSummary, presentServiceInstance } from "../../lib/install/presentation";
+export { buildConnectionRoutePlanRequest } from "../../lib/install/presentation";
 
 export function assertNativeActionSucceeded(result: NativeActionResult): void {
   if (!result.ok) throw new Error(result.summary || "native_action_failed");
@@ -51,7 +51,7 @@ const selectInstallRuntime = (state: RuntimeDashboardState): InstallRuntimeSlice
   refresh: state.refresh,
 });
 
-export function Install(_props: { onOpenAdvanced?: () => void } = {}) {
+export function Install({ onOpenAdvanced }: { onOpenAdvanced?: () => void; initialAgentId?: string } = {}) {
   const t = useT();
   const { lang } = useI18n();
   const { addNotification } = useNotifications();
@@ -127,7 +127,10 @@ export function Install(_props: { onOpenAdvanced?: () => void } = {}) {
     : null;
   const reviewReady = snapshot ? canReviewInstall(snapshot, machine.selections, machine.selectedAgentIds) : false;
   const primaryBindings = useMemo(
-    () => visibleBindings,
+    // Only Agents with a real, verified backend write action are shown as
+    // configurable rows. Detected-but-not-writable Agents stay in the counts
+    // and technical evidence instead of getting fake buttons.
+    () => visibleBindings.filter(hasRealAgentAction),
     [visibleBindings],
   );
   const secondaryBindings = useMemo(
@@ -264,7 +267,7 @@ export function Install(_props: { onOpenAdvanced?: () => void } = {}) {
             })
           : Promise.resolve(null),
         Promise.all(managedTransportBindings.map(async (binding) => {
-          const model = machine.selections[binding.agent_id]?.model || binding.resolved_candidate?.models?.[0];
+          const model = machine.selections[binding.agent_id]?.model;
           if (!binding.config_path || !model) {
             return [binding.agent_id, {
               ok: false,
@@ -380,7 +383,7 @@ export function Install(_props: { onOpenAdvanced?: () => void } = {}) {
       );
       for (const binding of managedTransportBindings) {
         const review = managedTransportReviews[binding.agent_id]?.review;
-        const model = machine.selections[binding.agent_id]?.model || binding.resolved_candidate?.models?.[0];
+        const model = machine.selections[binding.agent_id]?.model;
         if (!binding.config_path || !model || !review) {
           throw new Error("managed_transport_preview_incomplete");
         }
@@ -768,8 +771,8 @@ export function Install(_props: { onOpenAdvanced?: () => void } = {}) {
       : binding.can_clear === true;
     if (!canOperate) {
       setNotice(lang === "zh"
-        ? `${binding.agent_name} 当前版本暂未开放可验证的自动${operation === "configure" ? "配置" : "清除"}；未写入任何文件。`
-        : `${binding.agent_name} does not yet expose a verified automatic ${operation === "configure" ? "configure" : "clear"} operation in this version; no file was written.`);
+        ? `${binding.agent_name} 未提供可执行的 d-token 写入动作；未修改任何配置。`
+        : `${binding.agent_name} exposes no executable d-token write action; no configuration was modified.`);
       return;
     }
     const targetPath = binding.config_path;
@@ -785,11 +788,17 @@ export function Install(_props: { onOpenAdvanced?: () => void } = {}) {
     try {
       let result: Record<string, unknown>;
       {
+        // Model comes only from the uniquely auto-resolved model stored in the
+        // machine selection, or the Codex Responses passthrough marker ("").
+        // Multi-model or unresolvable Agents block the whole batch; the plan
+        // fails closed rather than guessing a first model.
         const model = operation === "configure"
-          ? machine.selections[binding.agent_id]?.model || binding.resolved_candidate?.models?.[0]
+          ? machine.selections[binding.agent_id]?.model
           : undefined;
         if (operation === "configure" && !model) {
-          setNotice(lang === "zh" ? "请先选择该 Agent 当前要使用的模型，再生成配置计划。" : "Choose this Agent's current model before generating a configuration plan.");
+          setNotice(lang === "zh"
+            ? `${binding.agent_name} 的上游/模型无法唯一解析，连接计划已被阻断；请修复来源配置后重新扫描。`
+            : `${binding.agent_name}'s upstream/model cannot be uniquely resolved, so the plan is blocked. Fix the source configuration and rescan.`);
           return;
         }
         const request = {

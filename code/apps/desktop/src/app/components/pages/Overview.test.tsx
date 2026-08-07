@@ -1,5 +1,5 @@
 import "@testing-library/jest-dom/vitest";
-import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const dashboard = vi.hoisted(() => ({
@@ -43,7 +43,17 @@ vi.mock("recharts", () => ({
   XAxis: () => null,
 }));
 
+const pricingMock = vi.hoisted(() => ({
+  loadModelPriceCache: vi.fn(),
+}));
+
+vi.mock("../../lib/analytics/pricing", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../lib/analytics/pricing")>();
+  return { ...actual, loadModelPriceCache: pricingMock.loadModelPriceCache };
+});
+
 import { Overview, deriveAccountQuotaSummary, deriveOverviewOperationalSummary, overviewFromPayload, deriveSavingsWindows } from "./Overview";
+import { buildPriceCache } from "../../lib/analytics/pricing";
 
 const runtimePayload = {
   source: "dtoken-owned-runtime",
@@ -73,6 +83,8 @@ beforeEach(() => {
     error: "",
     refresh: vi.fn(),
   };
+  pricingMock.loadModelPriceCache.mockReset();
+  pricingMock.loadModelPriceCache.mockResolvedValue(null);
 });
 
 afterEach(cleanup);
@@ -699,5 +711,56 @@ describe("Overview savings windows", () => {
     } finally {
       vi.unstubAllGlobals();
     }
+  });
+
+  it("shows an estimated cost delta when a pricing cache is loaded", async () => {
+    vi.stubGlobal("__TAURI_INTERNALS__", {});
+    pricingMock.loadModelPriceCache.mockResolvedValue(
+      buildPriceCache(
+        [
+          { model: "gpt-4o", currency: "USD", inputPerMillion: 2.5, outputPerMillion: 10, source: "user", updatedAt: "unix:1" },
+        ],
+        { source: "user-settings", freshness: "fresh", checkedAt: "unix:9" },
+      ),
+    );
+    dashboard.state = {
+      payload: {
+        ...runtimePayload,
+        request_logs: [{ agent: "OpenCode", route_id: "route-main", model: "gpt-4o", input_tokens_before: 1_000_000, input_tokens_after: 800_000 }],
+        stats: { tokens: { input: 1_000_000, input_after: 800_000 } },
+      },
+      status: "runtime",
+      updatedAt: new Date(),
+      error: "",
+      refresh: vi.fn(),
+    };
+    try {
+      render(<Overview setPage={vi.fn()} />);
+      const card = screen.getByTestId("overview-savings-window");
+      await waitFor(() => expect(card.textContent).toContain("$0.50（估算）"));
+      expect(pricingMock.loadModelPriceCache).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("keeps the em-dash cost delta when no pricing cache is available", async () => {
+    vi.stubGlobal("__TAURI_INTERNALS__", {});
+    try {
+      render(<Overview setPage={vi.fn()} />);
+      const card = screen.getByTestId("overview-savings-window");
+      await waitFor(() => expect(pricingMock.loadModelPriceCache).toHaveBeenCalled());
+      expect(card.textContent).toContain("价格证据缺失");
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("keeps the em-dash cost delta when the native pricing read is unavailable", () => {
+    // 不 stub __TAURI_INTERNALS__：native 不可用，异步读取不会发起。
+    render(<Overview setPage={vi.fn()} />);
+    const card = screen.getByTestId("overview-savings-window");
+    expect(pricingMock.loadModelPriceCache).not.toHaveBeenCalled();
+    expect(card.textContent).toContain("价格证据缺失");
   });
 });

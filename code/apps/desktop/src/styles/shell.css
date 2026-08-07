@@ -160,8 +160,7 @@
   max-width: 1200px;
   min-height: 100%;
   margin-inline: auto;
-  padding: 16px;
-  padding-bottom: calc(24px + env(safe-area-inset-bottom, 0px));
+  padding: 8px 16px calc(24px + env(safe-area-inset-bottom, 0px));
 }
 
 .shell-segmented {
@@ -247,21 +246,6 @@
     transform var(--duration-slow) var(--ease-spring),
     opacity var(--duration-base) var(--ease-standard);
   will-change: transform;
-}
-
-/* The project-owned cat-face mark is a complete recognizable glyph at 18px;
- * its face stays static while the semantic icon recipe animates around it. */
-.animated-nav-icon .icon-cat-face-outline,
-.animated-nav-icon .icon-cat-face-mouth {
-  fill: none;
-}
-.animated-nav-icon .icon-cat-face-eye {
-  stroke: none;
-}
-.nav-motion-item:hover [data-motion-id] .icon-cat-face,
-.nav-motion-item:focus-visible [data-motion-id] .icon-cat-face,
-.nav-motion-item [data-motion-id][data-motion-play="true"] .icon-cat-face {
-  transform: translateY(-0.5px);
 }
 
 /* Keep the button's layout/hit rectangle fixed; global theme.css applies
@@ -563,8 +547,32 @@
 
 @media (min-width: 1080px) {
   .shell-page-stage {
-    padding: 24px;
+    padding: 12px 24px calc(24px + env(safe-area-inset-bottom, 0px));
   }
+}
+
+/* Prop-level reduced motion: the SVG and its direct .nav-motion-item parent
+ * button both carry data-reduced-motion=true whenever the app's reducedMotion
+ * flag is on, independent of OS media. The parent mirrors the flag so the press
+ * scale can be disabled with a plain attribute selector — no :has(), which
+ * macOS 10.14 WKWebView does not support. This is a deterministic color-only
+ * override — hover/focus/pressed icon-part transforms, the parent button's
+ * press scale and all transition/animation are disabled; only currentColor
+ * shifts (button hover color) may change. */
+.animated-nav-icon[data-reduced-motion="true"] {
+  transform: none !important;
+  transition: none !important;
+}
+.animated-nav-icon[data-reduced-motion="true"] .icon-part {
+  transform: none !important;
+  opacity: 1 !important;
+  transition: none !important;
+  animation: none !important;
+  will-change: auto;
+}
+.nav-motion-item[data-reduced-motion="true"]:active > svg,
+.nav-motion-item[data-reduced-motion="true"]:active > span {
+  transform: none !important;
 }
 
 @media (prefers-reduced-motion: reduce) {

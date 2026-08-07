@@ -1,6 +1,8 @@
 pub mod ccr_store;
 pub mod mcp;
 
+#[cfg(windows)]
+use anyhow::bail;
 use anyhow::Context as _;
 use axum::response::Response;
 use axum::{
@@ -5699,6 +5701,20 @@ fn upstream_chat_url(base_url: &str) -> String {
     }
 }
 
+/// Build the native Responses wire URL for a provider. Used only by the
+/// explicit `ProviderWireApi::OpenAiResponses` passthrough branch; ordinary
+/// Chat providers keep `upstream_chat_url`.
+fn upstream_responses_url(base_url: &str) -> String {
+    let trimmed = base_url.trim_end_matches('/');
+    if trimmed.ends_with("/v1/responses") {
+        trimmed.to_string()
+    } else if trimmed.ends_with("/v1") {
+        format!("{trimmed}/responses")
+    } else {
+        format!("{trimmed}/v1/responses")
+    }
+}
+
 fn upstream_anthropic_messages_url(base_url: &str) -> String {
     let trimmed = base_url.trim_end_matches('/');
     if trimmed.ends_with("/v1/messages") {
@@ -7083,9 +7099,14 @@ fn anthropic_oauth_token<'a>(
         })
 }
 
-async fn forward_openai_chat(
+/// POST a JSON body to an arbitrary upstream URL with the provider's
+/// credential and Codex/chatgpt metadata handling. Shared by the Chat wire
+/// (`forward_openai_chat`) and the native Responses passthrough
+/// (`forward_openai_responses`); the caller picks the explicit wire URL.
+async fn forward_openai_url(
     client: &reqwest::Client,
     provider: &dtoken_types::ProviderProfile,
+    url: String,
     original_body: Value,
     inbound_headers: Option<&HeaderMap>,
 ) -> UpstreamResult {
@@ -7108,7 +7129,6 @@ async fn forward_openai_chat(
             )
         })
         .flatten();
-    let url = upstream_chat_url(&provider.base_url);
     let mut request = client
         .post(url)
         .timeout(std::time::Duration::from_millis(provider.timeout_ms.max(1)))
@@ -7202,9 +7222,49 @@ async fn forward_openai_chat(
     }
 }
 
-async fn forward_openai_chat_stream(
+async fn forward_openai_chat(
     client: &reqwest::Client,
     provider: &dtoken_types::ProviderProfile,
+    original_body: Value,
+    inbound_headers: Option<&HeaderMap>,
+) -> UpstreamResult {
+    forward_openai_url(
+        client,
+        provider,
+        upstream_chat_url(&provider.base_url),
+        original_body,
+        inbound_headers,
+    )
+    .await
+}
+
+/// Native OpenAI Responses passthrough: forwards the inbound body verbatim to
+/// the provider's `/v1/responses` wire endpoint. No Chat conversion happens
+/// here; the caller must only use this for `ProviderWireApi::OpenAiResponses`.
+async fn forward_openai_responses(
+    client: &reqwest::Client,
+    provider: &dtoken_types::ProviderProfile,
+    original_body: Value,
+    inbound_headers: Option<&HeaderMap>,
+) -> UpstreamResult {
+    forward_openai_url(
+        client,
+        provider,
+        upstream_responses_url(&provider.base_url),
+        original_body,
+        inbound_headers,
+    )
+    .await
+}
+
+/// Stream a JSON request to an arbitrary upstream URL, returning the raw SSE
+/// body. Shared by the Chat wire (`forward_openai_chat_stream`) and the native
+/// Responses passthrough (`forward_openai_responses_stream`); the caller picks
+/// the explicit wire URL and must not convert the returned event stream.
+async fn forward_openai_url_stream(
+    client: &reqwest::Client,
+    provider: &dtoken_types::ProviderProfile,
+    url: String,
     original_body: Value,
     inbound_headers: Option<&HeaderMap>,
 ) -> Result<(u16, axum::http::HeaderMap, Body, Option<Value>), UpstreamResult> {
@@ -7224,7 +7284,6 @@ async fn forward_openai_chat_stream(
             )
         })
         .flatten();
-    let url = upstream_chat_url(&provider.base_url);
     let mut request = client
         .post(url)
         .timeout(std::time::Duration::from_millis(provider.timeout_ms.max(1)))
@@ -7331,6 +7390,42 @@ async fn forward_openai_chat_stream(
             })
         }
     }
+}
+
+async fn forward_openai_chat_stream(
+    client: &reqwest::Client,
+    provider: &dtoken_types::ProviderProfile,
+    original_body: Value,
+    inbound_headers: Option<&HeaderMap>,
+) -> Result<(u16, axum::http::HeaderMap, Body, Option<Value>), UpstreamResult> {
+    forward_openai_url_stream(
+        client,
+        provider,
+        upstream_chat_url(&provider.base_url),
+        original_body,
+        inbound_headers,
+    )
+    .await
+}
+
+/// Native OpenAI Responses SSE passthrough: forwards the inbound body
+/// verbatim to `/v1/responses` and returns the upstream event stream untouched.
+/// No Chat SSE conversion happens here; the caller must only use this for
+/// `ProviderWireApi::OpenAiResponses`.
+async fn forward_openai_responses_stream(
+    client: &reqwest::Client,
+    provider: &dtoken_types::ProviderProfile,
+    original_body: Value,
+    inbound_headers: Option<&HeaderMap>,
+) -> Result<(u16, axum::http::HeaderMap, Body, Option<Value>), UpstreamResult> {
+    forward_openai_url_stream(
+        client,
+        provider,
+        upstream_responses_url(&provider.base_url),
+        original_body,
+        inbound_headers,
+    )
+    .await
 }
 
 fn anthropic_header_value(
@@ -8857,6 +8952,17 @@ impl ResponsesStreamTerminalLedgerGuard {
         );
     }
 
+    /// Passthrough terminal finalization: the observer already determined the
+    /// terminal outcome from the native Responses SSE event stream without
+    /// rewriting any bytes. Shares the same ledger/CCR commit path as the
+    /// conversion stream (`finish_from_state`).
+    fn finish_from_passthrough(self, terminal_error_code: Option<String>, usage: Option<Value>) {
+        let mut stream_state = ResponsesSseState::new(format!("resp-{}", self.request_id), None);
+        stream_state.terminal_error_code = terminal_error_code;
+        stream_state.usage = usage;
+        self.finish_from_state(&stream_state);
+    }
+
     fn commit_terminal_record(
         &mut self,
         stream_state: &ResponsesSseState,
@@ -9014,6 +9120,132 @@ impl Stream for ResponsesSseStream {
                     state.fail_closed(pending, "provider_stream_io_error", &error.to_string());
                 }
             }
+        }
+    }
+}
+
+/// Native Responses SSE passthrough terminal observer. Forwards every upstream
+/// byte unchanged while watching for the terminal event (`response.completed` /
+/// `response.incomplete` / `response.failed` / error payload) so the ledger
+/// event and CCR receipt are finalized only when the stream reaches a terminal
+/// state (G4). A clean EOF without a terminal event fails closed instead of
+/// synthesizing success; a dropped body records `provider_stream_dropped` via
+/// the guard's `Drop` impl. Bytes are never rewritten.
+struct ResponsesPassthroughStream {
+    inner: UpstreamByteStream,
+    buffer: Vec<u8>,
+    terminal_seen: bool,
+    terminal_error_code: Option<String>,
+    usage: Option<Value>,
+    guard: Option<ResponsesStreamTerminalLedgerGuard>,
+}
+
+impl ResponsesPassthroughStream {
+    fn new(inner: UpstreamByteStream, guard: ResponsesStreamTerminalLedgerGuard) -> Self {
+        Self {
+            inner,
+            buffer: Vec::new(),
+            terminal_seen: false,
+            terminal_error_code: None,
+            usage: None,
+            guard: Some(guard),
+        }
+    }
+
+    fn observe_bytes(&mut self, bytes: &Bytes) {
+        if self.terminal_seen {
+            return;
+        }
+        self.buffer.extend_from_slice(bytes);
+        while let Some(separator) = self.buffer.windows(2).position(|window| window == b"\n\n") {
+            let event_bytes: Vec<u8> = self.buffer.drain(..separator).collect();
+            let _ = self.buffer.drain(..2);
+            if !event_bytes.is_empty() {
+                self.observe_event(&event_bytes);
+            }
+            if self.terminal_seen {
+                self.buffer.clear();
+                return;
+            }
+        }
+    }
+
+    fn observe_event(&mut self, event_bytes: &[u8]) {
+        let payloads = String::from_utf8_lossy(event_bytes)
+            .lines()
+            .filter_map(|line| {
+                line.strip_prefix("data:")
+                    .map(str::trim)
+                    .map(str::to_string)
+            })
+            .collect::<Vec<_>>();
+        for payload in payloads {
+            if payload == "[DONE]" {
+                continue;
+            }
+            let Ok(chunk) = serde_json::from_str::<Value>(&payload) else {
+                continue;
+            };
+            match chunk.get("type").and_then(Value::as_str) {
+                Some("response.completed") | Some("response.incomplete") => {
+                    self.terminal_seen = true;
+                    self.terminal_error_code = None;
+                    self.usage = chunk
+                        .pointer("/response/usage")
+                        .cloned()
+                        .or_else(|| chunk.get("usage").cloned());
+                }
+                Some("response.failed") => {
+                    self.terminal_seen = true;
+                    self.terminal_error_code = Some(
+                        chunk
+                            .pointer("/error/code")
+                            .and_then(Value::as_str)
+                            .unwrap_or("provider_stream_failed")
+                            .to_string(),
+                    );
+                }
+                _ => {
+                    if chunk.get("error").is_some() {
+                        self.terminal_seen = true;
+                        self.terminal_error_code = Some("provider_stream_error".to_string());
+                    }
+                }
+            }
+            if self.terminal_seen {
+                return;
+            }
+        }
+    }
+}
+
+impl Stream for ResponsesPassthroughStream {
+    type Item = Result<Bytes, std::io::Error>;
+
+    fn poll_next(mut self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        match self.inner.as_mut().poll_next(context) {
+            Poll::Ready(None) => {
+                if let Some(guard) = self.guard.take() {
+                    let terminal_error_code = if self.terminal_seen {
+                        self.terminal_error_code.take()
+                    } else {
+                        Some("provider_stream_incomplete".to_string())
+                    };
+                    guard.finish_from_passthrough(terminal_error_code, self.usage.take());
+                }
+                Poll::Ready(None)
+            }
+            Poll::Ready(Some(Err(error))) => {
+                if let Some(guard) = self.guard.take() {
+                    guard.finish_from_passthrough(Some("provider_stream_error".to_string()), None);
+                }
+                Poll::Ready(Some(Err(error)))
+            }
+            Poll::Ready(Some(Ok(bytes))) => {
+                self.observe_bytes(&bytes);
+                Poll::Ready(Some(Ok(bytes)))
+            }
+            other => other,
         }
     }
 }
@@ -11334,44 +11566,313 @@ async fn openai_responses(
         }
     };
     let ccr_original_body = body_bytes.to_vec();
-    // Fail-closed Responses -> Chat semantic bridge: unsupported input items,
-    // tools and generation controls are rejected before any route or upstream
-    // work instead of being silently dropped or guessed.
-    let original_body = match responses_to_openai_chat_body(&body) {
-        Ok(converted) => converted,
-        Err(reason) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(json!({
-                    "error": {
-                        "type": "unsupported_responses_input",
-                        "message": reason
-                    }
-                })),
-            )
-                .into_response();
-        }
-    };
-    let request = OpenAiChatRequest {
-        model: original_body
-            .get("model")
-            .and_then(Value::as_str)
-            .map(ToString::to_string),
-        messages: original_body
-            .get("messages")
-            .and_then(Value::as_array)
-            .cloned(),
-        stream: body.get("stream").and_then(Value::as_bool),
-    };
-
     let route_selection = configured_route(
         &state.config,
         Protocol::OpenAi,
-        header_evidence(&headers, request.model.as_deref()),
+        header_evidence(&headers, body.get("model").and_then(Value::as_str)),
     );
     if let Ok((route, provider)) = route_selection {
         let request_id = Uuid::new_v4();
         let decision = build_configured_route_decision(request_id, route, provider);
+        if provider.wire_api == dtoken_types::ProviderWireApi::OpenAiResponses {
+            // Native Responses passthrough: forward the inbound Responses body
+            // verbatim to the provider's /v1/responses wire endpoint, bypassing
+            // the Responses -> Chat semantic bridge and all compression
+            // transforms. The route decision, request log and ledger event are
+            // still recorded with CompressionPolicy::Off over the original
+            // request so Dashboard/Doctor/Event Ledger stay consistent.
+            let scope = match resolve_configured_request_scope(
+                &state.config,
+                route,
+                provider,
+                request_id,
+                body.get("model").and_then(Value::as_str),
+                Protocol::OpenAi,
+                Protocol::OpenAi,
+            ) {
+                Ok(scope) => scope,
+                Err(_) => {
+                    record_route_selection_error(
+                        &state,
+                        request_id,
+                        "openai_responses",
+                        RouteSelectionError::InvalidOptimizationContext,
+                    );
+                    let (status, response) = route_selection_error_response(
+                        request_id,
+                        "openai_responses",
+                        RouteSelectionError::InvalidOptimizationContext,
+                        &state.config_status,
+                    );
+                    return (status, Json(response)).into_response();
+                }
+            };
+            let compression = compress_for_route(None, CompressionPolicy::Off, body.clone());
+            let attribution = request_attribution_from_scope(&scope);
+            let mut request_log = build_request_log(
+                request_id,
+                &decision,
+                body.get("model")
+                    .and_then(Value::as_str)
+                    .map(ToString::to_string),
+                Protocol::OpenAi,
+                &compression,
+                &attribution,
+            );
+            let mut event = build_ledger_event(
+                request_id,
+                &decision,
+                Protocol::OpenAi,
+                Protocol::OpenAi,
+                &compression,
+                &attribution,
+            );
+            attach_request_scope(&mut event, &scope);
+            if let Some(metadata) = event.metadata.as_object_mut() {
+                metadata.insert(
+                    "native_responses_passthrough".to_string(),
+                    json!({
+                        "conversion": "none",
+                        "compression": "off",
+                        "original_request_preserved": true,
+                        "raw_available": false,
+                        "privacy": "native Responses body is forwarded verbatim and never stored"
+                    }),
+                );
+            }
+            let prepared_ccr =
+                match state.prepare_ccr_for_request(&decision, &request_log, &ccr_original_body) {
+                    Ok(prepared) => prepared,
+                    Err(_) => {
+                        let (status, response) = route_selection_error_response(
+                            request_id,
+                            "openai_responses",
+                            RouteSelectionError::InvalidOptimizationContext,
+                            &state.config_status,
+                        );
+                        return (status, Json(response)).into_response();
+                    }
+                };
+            if body.get("stream").and_then(Value::as_bool).unwrap_or(false) {
+                let quota_account_ref = opaque_codex_account_ref(&headers);
+                let upstream = forward_openai_responses_stream(
+                    &state.http_client,
+                    provider,
+                    body,
+                    Some(&headers),
+                )
+                .await;
+                match upstream {
+                    Ok((status_code, response_headers, stream_body, mut quota_metadata)) => {
+                        attach_quota_account_ref(&mut quota_metadata, quota_account_ref.as_deref());
+                        request_log.quota_metadata = quota_metadata;
+                        event.saved_tokens = Some(0);
+                        if let Some(metadata) = event.metadata.as_object_mut() {
+                            metadata.insert("stream".to_string(), json!(true));
+                            metadata.insert("upstream_status".to_string(), json!(status_code));
+                        }
+                        // G4: the terminal ledger event and CCR receipt are
+                        // finalized only when the passthrough stream reaches a
+                        // terminal state (completed / failed / dropped). The
+                        // body guard observes native Responses SSE events
+                        // without changing any bytes; nothing is recorded here.
+                        append_stage_event(
+                            &state,
+                            request_id,
+                            LayeredStage::ProviderForward,
+                            EventStatus::Ok,
+                            json!({
+                                "route_id": decision.route_id,
+                                "provider_id": decision.provider_id,
+                                "input_protocol": "openai_responses",
+                                "output_protocol": "openai_responses_sse",
+                                "stream": true,
+                                "upstream_status": status_code,
+                                "terminal": false,
+                                "send_state": "stream_started",
+                                "fallback": "disabled",
+                                "raw_available": false,
+                                "privacy": "native Responses SSE is passed through untouched and is not stored."
+                            }),
+                            None,
+                        );
+                        let inner: UpstreamByteStream = Box::pin(
+                            stream_body
+                                .into_data_stream()
+                                .map_err(std::io::Error::other),
+                        );
+                        let guarded = Body::from_stream(ResponsesPassthroughStream::new(
+                            inner,
+                            ResponsesStreamTerminalLedgerGuard {
+                                state: state.clone(),
+                                scope: scope.clone(),
+                                request_id,
+                                provider_id: decision.provider_id.clone(),
+                                upstream_status: status_code,
+                                terminal_record: Some(StreamTerminalRequestRecord {
+                                    decision,
+                                    request_log,
+                                    event,
+                                    prepared_ccr,
+                                }),
+                                terminal: false,
+                            },
+                        ));
+                        return (
+                            StatusCode::from_u16(status_code).unwrap_or(StatusCode::OK),
+                            response_headers,
+                            guarded,
+                        )
+                            .into_response();
+                    }
+                    Err(upstream) => {
+                        mark_upstream_outcome(&upstream, &mut request_log, &mut event);
+                        let response_status = upstream_response_status(&upstream);
+                        let response = json!({
+                            "error": upstream.response["error"],
+                            "dtoken": {
+                                "source": "dtoken-owned-runtime",
+                                "runtime_kind": "headroom-derived",
+                                "external_headroom_dependency": false,
+                                "request_id": request_id,
+                                "route_decision": route_decision_to_value(&decision),
+                                "request_log": request_log,
+                                "ledger_event": event,
+                                "upstream_status": upstream.status,
+                                "upstream_error_category": upstream.error_category,
+                                "stream": true,
+                                "fallback": "disabled"
+                            }
+                        });
+                        state.record_routed_request_with_ccr_receipt(
+                            &decision,
+                            request_log,
+                            event,
+                            &prepared_ccr,
+                        );
+                        append_stage_event(
+                            &state,
+                            request_id,
+                            LayeredStage::ProviderForward,
+                            EventStatus::Failed,
+                            json!({
+                                "route_id": decision.route_id,
+                                "provider_id": decision.provider_id,
+                                "input_protocol": "openai_responses",
+                                "output_protocol": "openai_responses_sse",
+                                "stream": true,
+                                "upstream_status": upstream.status,
+                                "fallback": "disabled",
+                                "raw_available": false
+                            }),
+                            upstream.error_category.as_deref(),
+                        );
+                        return (response_status, Json(response)).into_response();
+                    }
+                }
+            }
+            let mut upstream =
+                forward_openai_responses(&state.http_client, provider, body, Some(&headers)).await;
+            attach_quota_account_ref(
+                &mut upstream.quota_metadata,
+                opaque_codex_account_ref(&headers).as_deref(),
+            );
+            mark_upstream_outcome(&upstream, &mut request_log, &mut event);
+            let response_status = upstream_response_status(&upstream);
+            let provider_status = if upstream.error_category.is_some() {
+                EventStatus::Failed
+            } else {
+                EventStatus::Ok
+            };
+            let provider_error = upstream.error_category.clone();
+            let provider_http_status = upstream.status;
+            let compression_json = json!({
+                "input_tokens_before": compression.original_tokens,
+                "input_tokens_after": compression.compressed_tokens,
+                "saved_tokens": if compression.context_accounting.is_some() { 0 } else { compression.tokens_saved },
+                "estimated_saved_tokens": compression.tokens_saved,
+                "savings_percent": compression.savings_percent,
+                "elapsed_us": compression.elapsed_us,
+                "transforms_applied": compression.transforms_applied,
+            });
+            let response = if upstream.error_category.is_some() {
+                json!({
+                    "error": upstream.response["error"],
+                    "dtoken": {
+                        "source": "dtoken-owned-runtime",
+                        "runtime_kind": "headroom-derived",
+                        "external_headroom_dependency": false,
+                        "request_id": request_id,
+                        "route_decision": route_decision_to_value(&decision),
+                        "request_log": request_log,
+                        "ledger_event": event,
+                        "upstream_status": upstream.status,
+                        "upstream_error_category": upstream.error_category,
+                        "compression": compression_json,
+                        "fallback": "disabled"
+                    }
+                })
+            } else {
+                // Native Responses passthrough: the successful upstream JSON is
+                // returned byte-for-byte (Codex schema contract). Evidence stays
+                // in the internal request log and Event Ledger only, never in
+                // the upstream response body.
+                upstream.response
+            };
+            state.record_routed_request_with_ccr_receipt(
+                &decision,
+                request_log,
+                event,
+                &prepared_ccr,
+            );
+            append_stage_event(
+                &state,
+                request_id,
+                LayeredStage::ProviderForward,
+                provider_status,
+                json!({
+                    "route_id": decision.route_id,
+                    "provider_id": decision.provider_id,
+                    "input_protocol": "openai_responses",
+                    "output_protocol": "openai_responses",
+                    "upstream_status": provider_http_status,
+                    "fallback": "disabled",
+                    "raw_available": false,
+                    "privacy": "native Responses passthrough records route/provider metadata only; input and output bodies are not stored."
+                }),
+                provider_error.as_deref(),
+            );
+            return (response_status, Json(response)).into_response();
+        }
+        // Fail-closed Responses -> Chat semantic bridge: unsupported input items,
+        // tools and generation controls are rejected before any route or upstream
+        // work instead of being silently dropped or guessed.
+        let original_body = match responses_to_openai_chat_body(&body) {
+            Ok(converted) => converted,
+            Err(reason) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({
+                        "error": {
+                            "type": "unsupported_responses_input",
+                            "message": reason
+                        }
+                    })),
+                )
+                    .into_response();
+            }
+        };
+        let request = OpenAiChatRequest {
+            model: original_body
+                .get("model")
+                .and_then(Value::as_str)
+                .map(ToString::to_string),
+            messages: original_body
+                .get("messages")
+                .and_then(Value::as_array)
+                .cloned(),
+            stream: body.get("stream").and_then(Value::as_bool),
+        };
         // `original_body` is the Responses -> Chat conversion computed above;
         // it preserves the requested `stream` flag instead of silently
         // downgrading Responses streaming to a non-streaming Chat call.
@@ -11861,6 +12362,24 @@ async fn openai_responses(
         return (response_status, Json(response)).into_response();
     }
 
+    // Route selection failed. The wire API is unknowable without a selected
+    // route, so the fail-closed Responses -> Chat semantic validation still
+    // runs first: unsupported Responses input (e.g. reasoning items) must be
+    // rejected before the route error, matching the historical pre-route
+    // behavior. A selected native Responses provider bypasses validation
+    // (above); a selected Chat-wire provider validates before side effects.
+    if let Err(reason) = responses_to_openai_chat_body(&body) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "error": {
+                    "type": "unsupported_responses_input",
+                    "message": reason
+                }
+            })),
+        )
+            .into_response();
+    }
     let request_id = Uuid::new_v4();
     let error = route_selection.expect_err("successful selection returned above");
     record_route_selection_error(&state, request_id, "openai_responses", error);
@@ -13028,6 +13547,7 @@ mod mcp_http_tests {
                 models: vec!["mcp-model".to_string()],
                 timeout_ms: 100,
                 healthcheck_path: None,
+                wire_api: dtoken_types::ProviderWireApi::OpenAiChat,
             }],
             routes: vec![RouteProfile {
                 id: "mcp-route".to_string(),
@@ -14090,6 +14610,7 @@ mod tests {
                 models: vec!["mock/model".to_string()],
                 timeout_ms,
                 healthcheck_path: None,
+                wire_api: dtoken_types::ProviderWireApi::OpenAiChat,
             }],
             routes: vec![dtoken_types::RouteProfile {
                 id: "local-mock-route".to_string(),
@@ -14122,6 +14643,7 @@ mod tests {
                 models: vec!["claude-cache-test".to_string()],
                 timeout_ms: 30_000,
                 healthcheck_path: None,
+                wire_api: dtoken_types::ProviderWireApi::OpenAiChat,
             }],
             routes: vec![dtoken_types::RouteProfile {
                 id: "anthropic-direct-route".to_string(),
@@ -14186,6 +14708,7 @@ mod tests {
             models: vec![model.to_string()],
             timeout_ms: 100,
             healthcheck_path: None,
+            wire_api: dtoken_types::ProviderWireApi::OpenAiChat,
         };
         let route = |id: &str, instance_id: &str, provider_id: &str| dtoken_types::RouteProfile {
             id: id.to_string(),
@@ -16103,6 +16626,7 @@ mod tests {
                 models: vec!["model-a".to_string()],
                 timeout_ms: 30_000,
                 healthcheck_path: None,
+                wire_api: dtoken_types::ProviderWireApi::OpenAiChat,
             }],
             routes: vec![dtoken_types::RouteProfile {
                 id: "active-route".to_string(),
@@ -16159,6 +16683,7 @@ mod tests {
                 models: vec!["model-a".to_string()],
                 timeout_ms: 30_000,
                 healthcheck_path: None,
+                wire_api: dtoken_types::ProviderWireApi::OpenAiChat,
             }],
             routes: vec![dtoken_types::RouteProfile {
                 id: "export-route".to_string(),
@@ -16285,6 +16810,7 @@ mod tests {
                 models: vec!["model".to_string()],
                 timeout_ms: 30_000,
                 healthcheck_path: None,
+                wire_api: dtoken_types::ProviderWireApi::OpenAiChat,
             }],
             routes: vec![],
             instances: vec![],
@@ -16507,6 +17033,7 @@ mod tests {
             models: vec!["mock/model".to_string()],
             timeout_ms: 30_000,
             healthcheck_path: None,
+            wire_api: dtoken_types::ProviderWireApi::OpenAiChat,
         };
 
         let result = forward_openai_chat_stream(
@@ -18636,6 +19163,7 @@ mod tests {
                 models: vec!["mock/model".to_string()],
                 timeout_ms: 30_000,
                 healthcheck_path: Some("/health".to_string()),
+                wire_api: dtoken_types::ProviderWireApi::OpenAiChat,
             }],
             routes: vec![dtoken_types::RouteProfile {
                 id: "anthropic-to-cc-switch".to_string(),
@@ -18700,6 +19228,7 @@ mod tests {
             models: vec!["mock/model".to_string()],
             timeout_ms: 30_000,
             healthcheck_path: None,
+            wire_api: dtoken_types::ProviderWireApi::OpenAiChat,
         };
         let body = json!({
             "model": "claude-model",
@@ -18883,6 +19412,7 @@ mod tests {
             models: vec!["claude-fable-5".to_string()],
             timeout_ms: 30_000,
             healthcheck_path: None,
+            wire_api: dtoken_types::ProviderWireApi::OpenAiChat,
         };
         let raw = br#"{ "model" : "claude-fable-5", "stream" : true, "messages" : [] }"#;
         let parsed: Value = serde_json::from_slice(raw).expect("fixture JSON");
@@ -19473,6 +20003,226 @@ mod tests {
             assert_eq!(terminal.status, expected_status);
             assert_eq!(terminal.metadata["stream_terminal"], true);
         }
+    }
+
+    #[tokio::test]
+    async fn native_responses_non_stream_passthrough_returns_upstream_body_verbatim() {
+        use axum::body::to_bytes;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        // Keys are pre-sorted so the handler's `Json(...)` re-serialization is
+        // byte-identical to the upstream document (exact passthrough contract).
+        const UPSTREAM_BODY: &str = r#"{"id":"resp_123","object":"response","output":[{"content":[{"annotations":[],"text":"hello","type":"output_text"}],"id":"msg_1","role":"assistant","status":"completed","type":"message"}],"status":"completed","usage":{"input_tokens":2,"output_tokens":1,"total_tokens":3}}"#;
+
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind mock upstream");
+        let addr = listener.local_addr().expect("mock addr");
+        let upstream_body = UPSTREAM_BODY.to_string();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.expect("accept request");
+            let mut buffer = [0_u8; 8192];
+            let _ = socket.read(&mut buffer).await.expect("read request");
+            let response = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                upstream_body.len(),
+                upstream_body
+            );
+            socket
+                .write_all(response.as_bytes())
+                .await
+                .expect("write json");
+        });
+
+        let provider = dtoken_types::ProviderProfile {
+            id: "responses-upstream".to_string(),
+            name: "Responses upstream".to_string(),
+            kind: dtoken_types::ProviderKind::Custom,
+            protocol: Protocol::OpenAi,
+            base_url: format!("http://{addr}/v1"),
+            api_key_ref: None,
+            models: vec!["mock/model".to_string()],
+            timeout_ms: 30_000,
+            healthcheck_path: None,
+            wire_api: dtoken_types::ProviderWireApi::OpenAiResponses,
+        };
+        let route = dtoken_types::RouteProfile {
+            id: "route-responses".to_string(),
+            name: "route-responses".to_string(),
+            input_protocol: Protocol::OpenAi,
+            instance_id: "instance-responses".to_string(),
+            target_provider_id: "responses-upstream".to_string(),
+            fallback_provider_id: None,
+            chain_mode: ChainMode::Direct,
+            compression_policy: CompressionPolicy::Off,
+            bind_host: "127.0.0.1".to_string(),
+            local_port: 18001,
+        };
+        let config = DtokenConfig {
+            providers: vec![provider],
+            routes: vec![route],
+            instances: vec![],
+            provider_cache_policies: vec![],
+            output_shaping_policies: vec![],
+            optical: Default::default(),
+        };
+        let state = AppState::new(config);
+        let app = build_router(state.clone());
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/responses")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"model":"mock/model","input":"hello"}"#))
+                    .expect("request"),
+            )
+            .await
+            .expect("router response");
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body bytes");
+        let body = String::from_utf8(bytes.to_vec()).expect("UTF-8 JSON");
+        // Native passthrough must preserve the upstream Responses JSON exactly:
+        // no dtoken envelope, no evidence keys inserted (Codex schema contract).
+        assert_eq!(body, UPSTREAM_BODY, "body={body}");
+        assert!(!body.contains("\"dtoken\""), "no dtoken key: body={body}");
+        // Evidence stays in the internal ledger only.
+        assert_eq!(state.recent_request_logs(10).len(), 1);
+        let events = state.recent_events(20);
+        assert!(
+            events.iter().any(|event| event.status == EventStatus::Ok),
+            "evidence recorded in ledger"
+        );
+        server.await.expect("mock upstream task");
+    }
+
+    #[tokio::test]
+    async fn responses_passthrough_stream_defers_terminal_record_until_terminal_event() {
+        use futures_util::stream;
+        use futures_util::StreamExt;
+
+        let state = AppState::new(DtokenConfig::default());
+        let request = OpenAiChatRequest {
+            model: Some("fixture-model".to_string()),
+            messages: Some(vec![json!({"role":"user","content":"stream input"})]),
+            stream: Some(true),
+        };
+        let (_response, decision, request_log, event) = routed_openai_payload(&request);
+        let prepared = state
+            .prepare_ccr_for_request(&decision, &request_log, b"{}")
+            .expect("prepare metadata-only CCR");
+        let request_id = decision.request_id;
+        let delta_chunk = Bytes::from_static(
+            b"data: {\"type\":\"response.output_text.delta\",\"delta\":\"hi\"}\n\n",
+        );
+        let terminal_chunk = Bytes::from_static(
+            b"data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":2,\"output_tokens\":1,\"total_tokens\":3}}}\n\n",
+        );
+        let inner: UpstreamByteStream = Box::pin(stream::iter(vec![
+            Ok(delta_chunk.clone()),
+            Ok(terminal_chunk.clone()),
+        ]));
+        let passthrough = ResponsesPassthroughStream::new(
+            inner,
+            ResponsesStreamTerminalLedgerGuard {
+                state: state.clone(),
+                scope: cache_test_scope(Protocol::OpenAi),
+                request_id,
+                provider_id: decision.provider_id.clone(),
+                upstream_status: 200,
+                terminal_record: Some(StreamTerminalRequestRecord {
+                    decision,
+                    request_log,
+                    event,
+                    prepared_ccr: prepared,
+                }),
+                terminal: false,
+            },
+        );
+        let mut passthrough = std::pin::pin!(passthrough);
+
+        // Non-terminal delta arrives first: bytes pass through unchanged and
+        // nothing is committed yet (G4 defers the terminal record).
+        let first = passthrough.next().await.expect("first chunk");
+        assert_eq!(first.expect("ok chunk"), delta_chunk);
+        assert!(
+            state.recent_request_logs(10).is_empty(),
+            "no terminal record before terminal event"
+        );
+
+        // Terminal event arrives, then EOF: ledger/CCR commit only now.
+        let second = passthrough.next().await.expect("terminal chunk");
+        assert_eq!(second.expect("ok chunk"), terminal_chunk);
+        assert!(passthrough.next().await.is_none());
+        assert_eq!(state.recent_request_logs(10).len(), 1);
+        let terminal = state
+            .recent_events(20)
+            .into_iter()
+            .find(|entry| {
+                entry.request_id == Some(request_id) && entry.metadata["stream_terminal"] == true
+            })
+            .expect("Responses passthrough terminal event");
+        assert_eq!(terminal.status, EventStatus::Ok);
+        assert_eq!(terminal.metadata["stream_terminal"], true);
+        assert_eq!(terminal.metadata["send_state"], "completed");
+    }
+
+    #[tokio::test]
+    async fn responses_passthrough_stream_clean_eof_without_terminal_fails_closed() {
+        use axum::body::to_bytes;
+        use futures_util::stream;
+
+        let state = AppState::new(DtokenConfig::default());
+        let request = OpenAiChatRequest {
+            model: Some("fixture-model".to_string()),
+            messages: Some(vec![json!({"role":"user","content":"stream input"})]),
+            stream: Some(true),
+        };
+        let (_response, decision, request_log, event) = routed_openai_payload(&request);
+        let prepared = state
+            .prepare_ccr_for_request(&decision, &request_log, b"{}")
+            .expect("prepare metadata-only CCR");
+        let request_id = decision.request_id;
+        let delta_chunk = Bytes::from_static(
+            b"data: {\"type\":\"response.output_text.delta\",\"delta\":\"partial\"}\n\n",
+        );
+        let inner: UpstreamByteStream = Box::pin(stream::iter(vec![Ok(delta_chunk.clone())]));
+        let body = Body::from_stream(ResponsesPassthroughStream::new(
+            inner,
+            ResponsesStreamTerminalLedgerGuard {
+                state: state.clone(),
+                scope: cache_test_scope(Protocol::OpenAi),
+                request_id,
+                provider_id: decision.provider_id.clone(),
+                upstream_status: 200,
+                terminal_record: Some(StreamTerminalRequestRecord {
+                    decision,
+                    request_log,
+                    event,
+                    prepared_ccr: prepared,
+                }),
+                terminal: false,
+            },
+        ));
+        let bytes = to_bytes(body, usize::MAX)
+            .await
+            .expect("transparent incomplete stream body");
+        assert_eq!(bytes, delta_chunk, "bytes pass through unchanged");
+        let terminal = state
+            .recent_events(20)
+            .into_iter()
+            .find(|entry| {
+                entry.request_id == Some(request_id) && entry.metadata["stream_terminal"] == true
+            })
+            .expect("terminal failure event");
+        assert_eq!(terminal.status, EventStatus::Failed);
+        assert_eq!(
+            terminal.error_code.as_deref(),
+            Some("provider_stream_incomplete")
+        );
     }
 
     #[tokio::test]

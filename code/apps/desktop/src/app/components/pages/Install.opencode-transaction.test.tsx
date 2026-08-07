@@ -216,7 +216,7 @@ describe("Install OpenCode guarded transaction", () => {
     render(<Install />);
     expect(await screen.findByText("OpenCode")).toBeInTheDocument();
     expect(screen.queryByText("Cline")).not.toBeInTheDocument();
-    fireEvent.click(await screen.findByRole("button", { name: "查看连接方案" }));
+    fireEvent.click(await screen.findByRole("button", { name: "查看变更" }));
     expect(await screen.findByText(/before before-hash/)).toBeInTheDocument();
     expect(screen.getByText(/before route-befo/)).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "确认并连接" }));
