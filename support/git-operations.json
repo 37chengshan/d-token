@@ -864,6 +864,15 @@
       "summary": "push README 发布宣传文案重写（证据前置）到 main",
       "head_before": "c0f50b8",
       "remote": "origin"
+    },
+    {
+      "id": "c2750bc9-b19e-443c-962b-ae436ebdc076",
+      "timestamp": "2026-08-07T10:05:21+08:00",
+      "operation": "commit",
+      "branch": "main",
+      "summary": "docs: README 改为开源项目范式（首屏定位 + Highlights + Quick start，未签名声明压缩为 NOTE）",
+      "head_before": "5a0fa0fcef646daa099b44478cad459274d28780",
+      "remote": null
     }
   ]
 }
