@@ -9,7 +9,7 @@
 
 **更少上下文。同样意图。完全掌控。**
 
-一个面向 AI 编码 Agent 的本地上下文控制面：统一连接你的 Agent，看清每一次请求与每一枚 token 的去向，压缩冗余内容，保持路由显式，并且任何配置变更都可回退。
+一个面向 AI 编码 Agent 的本地上下文控制面。看清每一枚 token 的去向，保持路由显式，压缩冗余内容，任何配置变更都可回退。
 
 [English](README.md) · 简体中文
 
@@ -23,19 +23,33 @@
 
 ---
 
-> **公开未签名预发布，不是正式签名安装包发布。** `0.2.0-beta.1` 只有在同一 tag 的聚合发布 workflow 中同时完成 **macOS ARM64** 与 **Windows x64** 两个平台构建，并产出匹配的 SHA-256、SBOM、license、安全扫描与 provenance 证据后，才会作为 GitHub 公开预发布资产出现。该预发布仍然是未签名的：macOS 资产没有 Developer ID 签名或 notarization，Windows 资产没有 Authenticode 签名。未签名或 ad-hoc 签名的 macOS 构建可能出现系统安全警告；这属于预期行为。请核对仓库来源与已提供的哈希，不要为来自未知来源的安装包绕过系统安全保护。
+> **公开未签名预发布，不是正式签名安装包发布。** `0.2.0-beta.1` 只有在同一 tag 的聚合发布 workflow 中同时完成 **macOS ARM64** 与 **Windows x64** 两个平台构建，并产出匹配的 SHA-256、SBOM、license、安全扫描与 provenance 证据后，才会作为 GitHub 公开预发布资产出现。该预发布仍然是未签名的：macOS 资产没有 Developer ID 签名或 notarization，Windows 资产没有 Authenticode 签名。未签名或 ad-hoc 签名的 macOS 构建可能出现系统安全警告——这属于预期行为。请核对仓库来源与已提供的哈希，不要为来自未知来源的安装包绕过系统安全保护。
 
-## 为什么选择 d-token
+## 你的 Agent 话很多，花得更多
 
-AI 编码 Agent 很强大——但对消耗情况却保持沉默：
+AI 编码 Agent 会一遍又一遍重发相同的文件、日志和工具输出。token 账单在悄悄增长，但没人能说清楚：这些 token 到底花在了哪里、哪个 Provider 处理了请求、所谓的"优化"是否真的有效。
 
-- 你的 Agent 不断重复发送相同的文件、日志和工具输出，token 账单在悄悄增长，却说不清花在了哪里。
-- 你很难判断某次请求到底走了哪个 Provider 或 Route，也很难知道一次优化是否真的有效。
-- 一次错误的配置修改就可能破坏原本可用的环境，而且往往没有明显的回头路。
+d-token 在本机运行于你的 Agent 与你选择的模型服务之间，做四件事：
 
-d-token 在本机运行于你的 Agent 与你选择的模型服务之间。它展示 token 的去向、保持路由显式、在应用优化前先预览，并让每一次配置变更都可恢复。
+1. **连接** — 在一个桌面应用里发现并接入你的编码 Agent。
+2. **优化** — 在请求离开本机之前，压缩冗余上下文。
+3. **路由** — 每一次请求都走一条显式、可解释的路径到达你配置的上游。
+4. **观察** — 每条请求都留下一张回执：来源 Agent、路由、token、变换与恢复状态。
 
-目标很简单：**在不打乱原有 AI Coding 工作流的前提下，使用更少的 token，并减少手动修改配置文件带来的麻烦。**
+工作流不变，工具不变。更少的 token，更多的可见性。配置改坏了，得到的是回头路，而不是一团谜。
+
+## 实测数据，而非承诺
+
+2026-08-04 的一次真实 `OpenCode → d-token → upstream` 运行：
+
+| 信号 | 数值 | 来源 |
+|---|---|---|
+| 单次请求物理减少的 token | **33,705** | 真实路由流（claimable = 0） |
+| 持久化的已路由请求 | 89 | runtime 汇总 |
+| 物理 token 总减少量 | **279,270（约 4.0%）** | runtime 汇总 |
+| 已验证的配置与回退路径 | OpenCode | 同一候选验收 |
+
+实测数字来自证据；估算数字会明确标注为估算。完整证据与发布门禁见 [`docs/product/IMPLEMENTATION_STATUS.md`](docs/product/IMPLEMENTATION_STATUS.md)。
 
 ## 适合谁使用
 
@@ -49,17 +63,17 @@ d-token 在本机运行于你的 Agent 与你选择的模型服务之间。它�
 
 ## 产品预览
 
-### 1. 面向 AI Coding 的本地优先控制面
+### 1. 本地优先的控制面
 
-在一个本地桌面控制面查看 runtime 状态、受支持 Agent 的连接、Route 证据、token 测量与诊断。可用性以证据为准：不可用或部分完成的页面会如实标注，不会用示例成功数据填充。
+在一个桌面控制面中查看 runtime 状态、受支持 Agent 的连接、Route 证据、token 测量与诊断。可用性以证据为准：不可用或部分完成的页面会如实标注，不会用示例成功数据填充。
 
 <p align="center">
   <img src="assets/marketing/01-local-first-control-plane.svg" width="100%" alt="d-token 本地优先控制面" />
 </p>
 
-### 2. 显式路由，不静默切换服务商
+### 2. 显式路由，不静默切换
 
-d-token 会为受支持链路记录已选择的 Route 与上游。Route 不可用时不会静默回退到其它服务商；未完成的集成会保持 blocked，或要求用户明确操作。
+d-token 会为受支持链路记录已选择的 Route 与上游。Route 不可用时，要么保持 blocked，要么请你明确操作——绝不会静默回退到其它服务商。
 
 <p align="center">
   <img src="assets/marketing/02-explicit-routing-pipeline.svg" width="100%" alt="d-token 显式路由链路" />
@@ -73,7 +87,7 @@ d-token 会为受支持链路记录已选择的 Route 与上游。Route 不可�
   <img src="assets/marketing/03-observability-and-code-intelligence.svg" width="100%" alt="d-token 可观测性与代码智能" />
 </p>
 
-> 页面中的估算节省用于帮助判断策略，不等于模型服务商账单。metadata-only、仅预览、disabled、blocked 或 unavailable 的能力，都不等价于生产可用功能。
+> 页面中的估算节省用于帮助判断策略，不等于模型服务商账单。仅预览、disabled、blocked 或 unavailable 的能力，都不等价于生产可用功能。
 
 ### 4. 每一次请求都留下一张回执
 
@@ -83,9 +97,9 @@ d-token 会为受支持链路记录已选择的 Route 与上游。Route 不可�
   <img src="assets/marketing/06-optimization-receipt.svg" width="100%" alt="d-token 优化回执" />
 </p>
 
-### 5. 安全配置：审阅、备份、验证与回退
+### 5. 安全配置：预览、备份、验证、回退
 
-对受支持的配置操作，d-token 会展示用户可读摘要与脱敏 Diff，创建备份，要求确认，验证结果并保留回退证据。对不受支持的 Agent、修复、路由或变换操作，应用会保持 unavailable，而不是猜测写入配置。
+受支持的配置操作会展示用户可读摘要与脱敏 Diff，创建备份，要求确认，验证结果并保留回退证据。不受支持的操作保持 unavailable，而不是猜测写入配置。
 
 <p align="center">
   <img src="assets/marketing/04-safe-config-and-rollback.svg" width="100%" alt="d-token 安全配置与回退" />
@@ -103,47 +117,7 @@ d-token 会为受支持链路记录已选择的 Route 与上游。Route 不可�
 - **不让示例数据冒充真实状态。** unavailable、partial 与未验证的页面都会如实标注。
 - **不把秘密写进普通日志。** API key、token、完整 prompt/response 不会进入日志、导出或提交。
 
-## 实测数据
-
-真实路由流量的结果，而非预测。最新证据来自 2026-08-04 的真实 `OpenCode → d-token → upstream` 运行：
-
-| 信号 | 数值 | 来源 |
-|---|---|---|
-| 单次请求物理减少的 token | 33,705 | 真实路由流（claimable = 0） |
-| 持久化的已路由请求 | 89 | runtime 汇总 |
-| 物理 token 总减少量 | 279,270（约 4.0%） | runtime 汇总 |
-| 已验证的配置与回退路径 | OpenCode | 同一候选验收 |
-
-完整的验收证据与发布门禁见 [`docs/product/IMPLEMENTATION_STATUS.md`](docs/product/IMPLEMENTATION_STATUS.md)。
-
-## 如何融入你的工作流
-
-```text
-你正在使用的 AI 编程 Agent
-              ↓
-            d-token
-     连接 · 优化 · 路由 · 观察
-              ↓
-      你配置的模型服务商
-```
-
-你仍然使用自己熟悉的 AI 编程工具。d-token 在本机连接 Agent 与你选择的模型服务，并在桌面应用中展示请求记录、token 数据、连接路径、诊断结果与受支持的恢复操作。
-
 ## 快速开始
-
-### 当前可用状态
-
-`0.2.0-beta.1` 只有在匹配 tag 的 GitHub 公开预发布中出现时，才算**公开未签名预发布**。它仍不是已签名、已公证的正式安装包发布。请不要把聊天附件、网盘、未知镜像或任意未签名本机构建当作官方预发布资产。
-
-预发布目标覆盖 macOS ARM64 与 Windows x64。macOS 可能因未签名或 ad-hoc 签名出现安全警告。Windows 资产同样保持未签名，不宣称 Authenticode 或 SmartScreen reputation。正式签名、公证与更广泛的平台验收仍是发布阻断项。
-
-### 环境要求
-
-- Node.js 24 与 npm
-- Rust stable 工具链
-- macOS ARM64 或 Windows x64 桌面开发环境
-- macOS 需要 Xcode Command Line Tools
-- Windows 需要 Tauri 与 WebView2 对应环境
 
 ### 启动桌面应用
 
@@ -156,6 +130,14 @@ npm run tauri:dev
 
 `npm run tauri:dev` 会先准备本地运行组件，再启动桌面应用。单独运行前端只能预览界面，不能连接本机 Agent、服务或配置。
 
+### 环境要求
+
+- Node.js 24 与 npm
+- Rust stable 工具链
+- macOS ARM64 或 Windows x64 桌面开发环境
+- macOS 需要 Xcode Command Line Tools
+- Windows 需要 Tauri 与 WebView2 对应环境
+
 ### 构建本地候选
 
 ```bash
@@ -165,28 +147,32 @@ npm run tauri:build
 
 本地构建成功不代表安装包已经完成正式签名或具备公开分发条件。
 
+### 当前可用状态
+
+`0.2.0-beta.1` 只有在匹配 tag 的 GitHub 公开预发布中出现时，才算**公开未签名预发布**。它仍不是已签名、已公证的正式安装包发布。预发布目标覆盖 macOS ARM64 与 Windows x64；正式签名、公证与更广泛的平台验收仍是发布阻断项。
+
 ## 路线图
 
 | 版本 | 重点 | 状态 |
 |---|---|---|
 | `0.2.0-beta.1` | 可信连接与可信压缩：Agent 自动发现、cc-switch 配置扫描、预览 → Diff → 备份 → 应用 → 验证 → 回退、Optimization Receipt、Doctor | 当前候选 |
-| `v0.3` | 上下文连续性：跨 Agent Context Relay、Session Cache、Code Map/Signatures 复用、Recovery Pointer、Stale/Superseded 处理、cc-switch 跟随 / 锁定 / 观察模式 | 规划中 |
+| `v0.3` | 上下文连续性：跨 Agent Context Relay、Session Cache、Code Map/Signatures 复用、Recovery Pointer、cc-switch 跟随 / 锁定 / 观察模式 | 规划中 |
 | `v0.4` | 自动化本地控制面：多 Agent 适配、低风险自动修复、项目与团队策略、可复现的真实任务证据、稳定签名、自动更新 | 规划中 |
 
-Context Relay（v0.3）是规划中的能力。当前候选版本尚未实现跨 Agent 上下文复用。
+Context Relay（v0.3）是规划中的能力，尚未实现——当前候选版本尚未实现跨 Agent 上下文复用。
 
 <p align="center">
   <img src="assets/marketing/05-context-relay.svg" width="100%" alt="d-token 跨 Agent 上下文复用（v0.3 规划中）" />
 </p>
 
-## Beta 使用说明
+## 如实说明的边界
 
-- 这是公开未签名预发布，不代表已完成 Developer ID 签名、公证、Gatekeeper 验证或 Authenticode 签名。
-- OpenCode 当前拥有最完整的真实连接、请求路由与配置回退验证。Claude Code 与 Codex 已具备接入流程，但仍在进行同一候选版本的真实用户验收。
+- 这是公开未签名预发布——没有 Developer ID 签名、没有公证、没有 Authenticode 签名。
+- OpenCode 当前拥有最完整的真实连接与回退验证。Claude Code 与 Codex 已具备接入流程，但仍在进行同一候选版本的真实用户验收。
 - 视觉压缩以 Shadow 预览为主，生产 Active 变换关闭；代码图谱为实验性能力，不会直接打包大型上游组件。
 - 一部分 Headroom-derived 与 Agent 相关状态仍是 metadata-only、仅预览、静态兼容声明、partial、blocked 或 unavailable，不能据此宣称已完成完整 Headroom 能力迁移。
 - token 减少可能来自实测数据，也可能来自当前证据下的估算；估算不能当作模型服务商账单。
-- 受支持的配置写入遵循“预览 → 脱敏 Diff → 备份 → 确认 → 应用 → 验证 → 回退”。没有该事务能力的路径不应自动写入配置。
+- 受支持的配置写入遵循"预览 → 脱敏 Diff → 备份 → 确认 → 应用 → 验证 → 回退"。没有该事务能力的路径不应自动写入配置。
 
 最新实现事实与发布阻断项以 [`docs/product/IMPLEMENTATION_STATUS.md`](docs/product/IMPLEMENTATION_STATUS.md) 为准。
 

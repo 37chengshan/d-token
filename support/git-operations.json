@@ -846,6 +846,15 @@
       "summary": "push README 图标替换（app-icon.png，采用应用真实图标版本）到 main",
       "head_before": "89b2546",
       "remote": "origin"
+    },
+    {
+      "id": "73fbf4e6-54b2-422a-8889-ef870346087c",
+      "timestamp": "2026-08-07T09:06:58+08:00",
+      "operation": "commit",
+      "branch": "main",
+      "summary": "docs: 重写 README 为发布宣传文案（证据前置、冲突开场、去汇报腔）",
+      "head_before": "2e3fe53c3987363a105fc417dda3e38e27444e59",
+      "remote": null
     }
   ]
 }
