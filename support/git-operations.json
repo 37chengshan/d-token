@@ -1368,6 +1368,15 @@
       "summary": "Push clean-checkout desktop CI fixes for PR #6.",
       "head_before": "a427d61acf3b",
       "remote": "origin"
+    },
+    {
+      "id": "61c1b045-495a-442b-bd83-55dba6f29f2e",
+      "timestamp": "2026-08-08T01:21:34+08:00",
+      "operation": "commit",
+      "branch": "codex/final-release-iteration",
+      "summary": "Gate the non-Windows Claude mapping visit limit to its implementation.",
+      "head_before": "1bfe7e648517",
+      "remote": null
     }
   ]
 }
