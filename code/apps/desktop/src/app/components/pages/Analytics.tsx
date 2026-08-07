@@ -6,10 +6,13 @@ import {
   ArrowDownWideNarrow,
   Bot,
   Boxes,
+  ChevronDown,
+  ChevronUp,
   Coins,
   Gauge,
   GitBranch,
   Route,
+  ScrollText,
   Timer,
   Database,
   Layers3,
@@ -28,12 +31,18 @@ import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../ui/tabs";
 import { useI18n, useT } from "../../lib/i18n";
+import { protocolLabel } from "../../lib/protocol";
 import {
   buildAnalyticsSnapshot,
   type AnalyticsSnapshot,
   type BreakdownItem,
   type RequestLogRow,
 } from "../../lib/analytics/snapshot";
+import {
+  estimateRequestInputCost,
+  loadModelPriceCache,
+  type ModelPriceCache,
+} from "../../lib/analytics/pricing";
 import { useSessionTab } from "../../lib/sessionTab";
 import { useRuntimeDashboardSelector, shallowEqualSlice, type RuntimeDashboardState } from "../../lib/useRuntimeDashboard";
 import { classifyEvidence } from "../../lib/state/evidence";
@@ -42,7 +51,7 @@ import { invokeNative, isTauriRuntime } from "../../lib/native";
 
 const nf = (value: number) => value.toLocaleString("en-US");
 const unavailableValue = "—";
-const ANALYTICS_TABS = ["live", "history", "parity"] as const;
+const ANALYTICS_TABS = ["live", "history", "parity", "logs"] as const;
 const REQUEST_PAGE_SIZE = 10;
 
 type AnalyticsRequestPage = {
@@ -77,12 +86,27 @@ export function Analytics() {
   const { lang } = useI18n();
   const [tab, setTab] = useSessionTab("d-token.analytics.tab", ANALYTICS_TABS, "live");
   const [requestPage, setRequestPage] = useState(0);
+  const [expandedRequestId, setExpandedRequestId] = useState<string | null>(null);
   const [nativePageIndex, setNativePageIndex] = useState(0);
   const [nativePendingPageIndex, setNativePendingPageIndex] = useState<number | null>(null);
   const [nativeCursors, setNativeCursors] = useState<Array<string | null>>([null]);
   const [nativeRequestPage, setNativeRequestPage] = useState<AnalyticsRequestPage | null>(null);
   const [nativePageStatus, setNativePageStatus] = useState<"idle" | "loading" | "ready" | "error">("idle");
   const [nativePageError, setNativePageError] = useState<"invalid_cursor" | "invalid_evidence" | "unavailable" | null>(null);
+  const [logSearch, setLogSearch] = useState("");
+  const [logStatusFilter, setLogStatusFilter] = useState<"all" | "ok" | "failed" | "unknown">("all");
+  const [logProviderFilter, setLogProviderFilter] = useState("all");
+  const [priceCache, setPriceCache] = useState<ModelPriceCache | null>(null);
+  const [priceCacheStatus, setPriceCacheStatus] = useState<"loading" | "ready" | "unavailable">("loading");
+  useEffect(() => {
+    let cancelled = false;
+    void loadModelPriceCache().then((cache) => {
+      if (cancelled) return;
+      setPriceCache(cache);
+      setPriceCacheStatus(cache ? "ready" : "unavailable");
+    });
+    return () => { cancelled = true; };
+  }, []);
   const { payload, status: payloadStatus, updatedAt } = useRuntimeDashboardSelector(
     selectSummaryRuntime,
     shallowEqualSlice,
@@ -172,6 +196,36 @@ export function Analytics() {
   const currentRequestPage = nativePagination ? nativePageIndex : Math.min(requestPage, requestPageCount - 1);
   const visibleRequestRows = nativePagination ? requestRows : requestRows.slice(currentRequestPage * REQUEST_PAGE_SIZE, (currentRequestPage + 1) * REQUEST_PAGE_SIZE);
   const requestHasMore = nativePagination ? nativeRequestPage.has_more : currentRequestPage < requestPageCount - 1;
+  const logProviders = useMemo(() => Array.from(new Set(requestRows.flatMap((row) => {
+    const provider = row.provider_id ?? row.provider;
+    return typeof provider === "string" && provider.trim() ? [provider.trim()] : [];
+  }))).sort((left, right) => left.localeCompare(right)), [requestRows]);
+  const filteredLogRows = useMemo(() => {
+    const query = logSearch.trim().toLocaleLowerCase();
+    return requestRows.filter((row) => {
+      const status = requestLogStatus(row);
+      const provider = row.provider_id ?? row.provider;
+      if (logStatusFilter !== "all" && status !== logStatusFilter) return false;
+      if (logProviderFilter !== "all" && provider !== logProviderFilter) return false;
+      if (!query) return true;
+      return [
+        row.request_id,
+        provider,
+        row.model_id ?? row.model,
+        row.input_protocol ?? row.protocol,
+        row.output_protocol,
+        status,
+        row.error_type,
+        row.error,
+      ].some((value) => typeof value === "string" && value.toLocaleLowerCase().includes(query));
+    });
+  }, [logProviderFilter, logSearch, logStatusFilter, requestRows]);
+  const logPageCount = nativePagination ? requestPageCount : Math.max(1, Math.ceil(filteredLogRows.length / REQUEST_PAGE_SIZE));
+  const currentLogPage = nativePagination ? currentRequestPage : Math.min(requestPage, logPageCount - 1);
+  const visibleLogRows = nativePagination
+    ? filteredLogRows
+    : filteredLogRows.slice(currentLogPage * REQUEST_PAGE_SIZE, (currentLogPage + 1) * REQUEST_PAGE_SIZE);
+  const logHasMore = nativePagination ? requestHasMore : currentLogPage < logPageCount - 1;
   const nativeInitialLoading = nativePageStatus === "loading" && nativeRequestPage === null;
   const sliceRevisions = payload?.slice_revisions as { runtime_summary?: unknown } | undefined;
   const summaryRevision = typeof sliceRevisions?.runtime_summary === "number"
@@ -196,14 +250,12 @@ export function Analytics() {
 
   return (
     <div className="space-y-4">
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <h1>{t("an.title")}</h1>
-        <div className="flex flex-wrap items-center gap-2">
-          <DataSourceBadge mode={dataSourceMode} label={sourceLabel} />
-          <Badge variant={evidenceState === "verified" ? "default" : "secondary"}>
-            {sourceLabel}{hasLastVerifiedEvidence && updatedAt ? ` · ${updatedAt.toLocaleTimeString()}` : ""}
-          </Badge>
-        </div>
+      <div className="flex flex-wrap items-center gap-2">
+        <h1 className="sr-only">{t("an.title")}</h1>
+        <DataSourceBadge mode={dataSourceMode} label={sourceLabel} />
+        <Badge variant={evidenceState === "verified" ? "default" : "secondary"}>
+          {sourceLabel}{hasLastVerifiedEvidence && updatedAt ? ` · ${updatedAt.toLocaleTimeString()}` : ""}
+        </Badge>
       </div>
 
       <Surface className="p-3" hover={false}>
@@ -223,6 +275,7 @@ export function Analytics() {
           <TabsTrigger value="live">{lang === "zh" ? "价值概览" : "Value overview"}</TabsTrigger>
           <TabsTrigger value="history">{lang === "zh" ? "历史趋势" : "Trend history"}</TabsTrigger>
           <TabsTrigger value="parity">{lang === "zh" ? "数据范围" : "Data scope"}</TabsTrigger>
+          <TabsTrigger value="logs">{lang === "zh" ? "日志" : "Logs"}</TabsTrigger>
         </TabsList>
 
         <TabsContent value="live" className="mt-3 space-y-4">
@@ -424,7 +477,7 @@ export function Analytics() {
                 </table>
               </div>
               {nativeRequestPage?.coverage?.complete === false && <div className="mt-2 text-xs text-muted-foreground">{lang === "zh" ? `明细最多覆盖最近 ${nf(nativeRequestPage.coverage.loaded_limit ?? 10_000)} 条 runtime 记录。` : `Detail coverage is limited to the latest ${nf(nativeRequestPage.coverage.loaded_limit ?? 10_000)} runtime records.`}</div>}
-              {requestTotal > REQUEST_PAGE_SIZE && <div className="mt-3 flex items-center justify-between"><span className="text-xs text-muted-foreground">{lang === "zh" ? `第 ${currentRequestPage + 1} / ${requestPageCount} 页` : `Page ${currentRequestPage + 1} / ${requestPageCount}`}</span><div className="flex gap-2"><Button size="sm" variant="outline" disabled={currentRequestPage === 0 || nativePageStatus === "loading"} onClick={() => nativePagination ? setNativePendingPageIndex(Math.max(0, currentRequestPage - 1)) : setRequestPage(Math.max(0, currentRequestPage - 1))}>{lang === "zh" ? "上一页" : "Previous"}</Button><Button size="sm" variant="outline" disabled={!requestHasMore || nativePageStatus === "loading"} onClick={() => { if (nativePagination) { const next = nativeRequestPage.next_cursor; if (!next) return; setNativeCursors((cursors) => [...cursors.slice(0, nativePageIndex + 1), next]); setNativePendingPageIndex(nativePageIndex + 1); } else { setRequestPage(Math.min(requestPageCount - 1, currentRequestPage + 1)); } }}>{nativePageStatus === "loading" ? (lang === "zh" ? "加载中…" : "Loading…") : (lang === "zh" ? "下一页" : "Next")}</Button></div></div>}
+              {requestTotal > REQUEST_PAGE_SIZE && <RequestPaginationBar lang={lang} currentRequestPage={currentRequestPage} requestPageCount={requestPageCount} requestHasMore={requestHasMore} nativePageStatus={nativePageStatus} onPrevious={() => nativePagination ? setNativePendingPageIndex(Math.max(0, currentRequestPage - 1)) : setRequestPage(Math.max(0, currentRequestPage - 1))} onNext={() => { if (nativePagination) { const next = nativeRequestPage.next_cursor; if (!next) return; setNativeCursors((cursors) => [...cursors.slice(0, nativePageIndex + 1), next]); setNativePendingPageIndex(nativePageIndex + 1); } else { setRequestPage(Math.min(requestPageCount - 1, currentRequestPage + 1)); } }} />}
             </> : requestRows.length > 0 ? <div className="rounded-lg border border-dashed border-border/60 bg-muted/15 px-3 py-2 text-xs text-muted-foreground">{lang === "zh" ? "当前快照少于一页；请求维度已在上方分布中展示。" : "The current snapshot fits on one page; request dimensions are shown in the breakdowns above."}</div> : <NoData title={lang === "zh" ? "暂无请求明细" : "No request detail"} detail={lang === "zh" ? "此列表只展示 runtime 提供的有界快照，不代表全量历史" : "This table shows only the bounded runtime snapshot, not full history"} />}
           </Surface>
         </TabsContent>
@@ -514,7 +567,7 @@ export function Analytics() {
                 : "Data scope: metrics verifiable from the current local d-token request snapshot. Missing metrics remain empty."}
             </p>
             <div className="grid gap-2 sm:grid-cols-2">
-              {coverageRows(snapshot, lang).map((item) => (
+              {coverageRows(snapshot, lang, priceCacheStatus).map((item) => (
                 <div key={item.label} className="flat-inset flex items-center justify-between gap-2 p-2 text-sm">
                   <span>{item.label}</span>
                   <Badge variant={item.available ? "default" : "secondary"}>
@@ -525,6 +578,68 @@ export function Analytics() {
                 </div>
               ))}
             </div>
+          </Surface>
+        </TabsContent>
+
+        <TabsContent value="logs" className="mt-3">
+          <Surface className="p-4" hover={false}>
+            <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <h3 className="flex items-center gap-2 text-sm">
+                  <ScrollText className="size-4" />
+                  {lang === "zh" ? "请求日志" : "Request log"}
+                </h3>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  {lang === "zh"
+                    ? "逐条展示 runtime 真实请求记录；缺失字段保持为空，不估算、不补 0。"
+                    : "One real runtime request record per line; missing fields stay empty, never estimated or zero-filled."}
+                </p>
+              </div>
+              <span className="text-xs text-muted-foreground">
+                {requestTotal > 0
+                  ? `${requestTotal} ${lang === "zh" ? (nativePagination ? "条 runtime 记录" : "条当前快照") : (nativePagination ? "runtime records" : "in current snapshot")}`
+                  : sourceLabel}
+              </span>
+            </div>
+            <div className="mb-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-[minmax(0,1fr)_10rem_12rem_auto]">
+              <label className="min-w-0">
+                <span className="sr-only">{lang === "zh" ? "搜索请求日志" : "Search request logs"}</span>
+                <input
+                  type="search"
+                  aria-label={lang === "zh" ? "搜索请求日志" : "Search request logs"}
+                  value={logSearch}
+                  onChange={(event) => { setLogSearch(event.target.value); if (!nativePagination) setRequestPage(0); }}
+                  placeholder={lang === "zh" ? "搜索 request_id / Provider / 模型 / 协议 / 状态" : "Search request id, provider, model, protocol, or status"}
+                  className="h-9 w-full min-w-0 rounded-md border border-input bg-background px-3 text-xs outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                />
+              </label>
+              <select aria-label={lang === "zh" ? "状态筛选" : "Status filter"} value={logStatusFilter} onChange={(event) => { setLogStatusFilter(event.target.value as typeof logStatusFilter); if (!nativePagination) setRequestPage(0); }} className="h-9 min-w-0 rounded-md border border-input bg-background px-2 text-xs outline-none focus-visible:ring-2 focus-visible:ring-ring">
+                <option value="all">{lang === "zh" ? "全部状态" : "All statuses"}</option>
+                <option value="ok">{lang === "zh" ? "完成" : "Completed"}</option>
+                <option value="failed">{lang === "zh" ? "失败" : "Failed"}</option>
+                <option value="unknown">{lang === "zh" ? "未知" : "Unknown"}</option>
+              </select>
+              <select aria-label={lang === "zh" ? "Provider 筛选" : "Provider filter"} value={logProviderFilter} onChange={(event) => { setLogProviderFilter(event.target.value); if (!nativePagination) setRequestPage(0); }} className="h-9 min-w-0 rounded-md border border-input bg-background px-2 text-xs outline-none focus-visible:ring-2 focus-visible:ring-ring">
+                <option value="all">{lang === "zh" ? "全部 Provider" : "All providers"}</option>
+                {logProviders.map((provider) => <option key={provider} value={provider}>{provider}</option>)}
+              </select>
+              <div className="flex h-9 items-center justify-end whitespace-nowrap text-xs text-muted-foreground">
+                {lang === "zh" ? `显示 ${filteredLogRows.length} / ${requestRows.length}` : `Showing ${filteredLogRows.length} / ${requestRows.length}`}
+              </div>
+            </div>
+            {nativePageError && <div role="status" className="mb-2 text-xs text-amber-600 dark:text-amber-400">{nativePageError === "invalid_cursor" ? (lang === "zh" ? "分页游标已失效，已显示第一页数据。" : "The page cursor expired. First-page data is shown.") : nativePageError === "invalid_evidence" ? (lang === "zh" ? "分页结果缺少可信的来源与时效标记，已显示当前摘要快照。" : "The page result lacks trusted source and freshness markers. The current summary snapshot is shown.") : (lang === "zh" ? "请求分页暂不可用，已显示当前摘要快照。" : "Request pagination is unavailable. The current summary snapshot is shown.")}</div>}
+            {nativeRequestPage && <div className="mb-2 text-xs text-muted-foreground">{lang === "zh" ? `明细源 d-token runtime · fresh · r${requestRevision}${summaryRevision === null ? "" : `；摘要 r${summaryRevision}`}${requestRevisionAligned === false ? "。runtime 在两次读取间已更新，明细与摘要需分别解读。" : ""}` : `Detail source d-token runtime · fresh · r${requestRevision}${summaryRevision === null ? "" : `; summary r${summaryRevision}`}${requestRevisionAligned === false ? ". The runtime changed between reads; interpret detail and summary as separate snapshots." : ""}`}</div>}
+            {nativeInitialLoading ? <div role="status" className="rounded-lg border border-dashed border-border/60 bg-muted/15 px-3 py-3 text-xs text-muted-foreground">{lang === "zh" ? "正在加载有界请求明细…" : "Loading bounded request detail…"}</div> : visibleLogRows.length > 0 ? <>
+              <div data-testid="analytics-log-grid" className="grid min-w-0 gap-2">
+                {visibleLogRows.map((row, index) => {
+                  const rowKey = `${row.request_id ?? "row"}-${row.timestamp_ms ?? index}`;
+                  const expanded = expandedRequestId === rowKey;
+                  return <RequestLogRowView key={rowKey} row={row} rowKey={rowKey} index={index} lang={lang} expanded={expanded} priceCache={priceCache} onToggle={() => setExpandedRequestId(expanded ? null : rowKey)} />;
+                })}
+              </div>
+              {nativeRequestPage?.coverage?.complete === false && <div className="mt-2 text-xs text-muted-foreground">{lang === "zh" ? `明细最多覆盖最近 ${nf(nativeRequestPage.coverage.loaded_limit ?? 10_000)} 条 runtime 记录。` : `Detail coverage is limited to the latest ${nf(nativeRequestPage.coverage.loaded_limit ?? 10_000)} runtime records.`}</div>}
+            </> : requestRows.length > 0 ? <NoData title={lang === "zh" ? "没有匹配的请求日志" : "No matching request logs"} detail={lang === "zh" ? "筛选只作用于当前有界页；可继续翻页查看其他 runtime 记录。" : "Filters apply only to the current bounded page; continue paging to inspect other runtime records."} /> : <NoData title={lang === "zh" ? "暂无请求日志" : "No request logs"} detail={lang === "zh" ? "此列表只展示 runtime 提供的有界快照，不代表全量历史" : "This list shows only the bounded runtime snapshot, not full history"} />}
+            {(requestTotal > REQUEST_PAGE_SIZE || (nativePagination && (requestHasMore || currentRequestPage > 0))) && <RequestPaginationBar lang={lang} currentRequestPage={currentLogPage} requestPageCount={logPageCount} requestHasMore={logHasMore} nativePageStatus={nativePageStatus} onPrevious={() => nativePagination ? setNativePendingPageIndex(Math.max(0, currentLogPage - 1)) : setRequestPage(Math.max(0, currentLogPage - 1))} onNext={() => { if (nativePagination) { const next = nativeRequestPage.next_cursor; if (!next) return; setNativeCursors((cursors) => [...cursors.slice(0, nativePageIndex + 1), next]); setNativePendingPageIndex(nativePageIndex + 1); } else { setRequestPage(Math.min(logPageCount - 1, currentLogPage + 1)); } }} />}
           </Surface>
         </TabsContent>
       </Tabs>
@@ -709,7 +824,7 @@ export function applyRuntimeAggregate(
       : snapshot.estimatedSavingsRate,
     agentBreakdown: runtimeBreakdown(analytics.agents) ?? snapshot.agentBreakdown,
     modelBreakdown: runtimeBreakdown(analytics.models) ?? snapshot.modelBreakdown,
-    protocolBreakdown: runtimeBreakdown(analytics.protocols) ?? snapshot.protocolBreakdown,
+    protocolBreakdown: runtimeBreakdown(analytics.protocols, (name) => protocolLabel(name, lang)) ?? snapshot.protocolBreakdown,
     chainBreakdown: runtimeBreakdown(analytics.chains) ?? snapshot.chainBreakdown,
     errorBreakdown: runtimeBreakdown(analytics.errors) ?? snapshot.errorBreakdown,
     routeBreakdown: runtimeBreakdown(routePerformance.routes) ?? snapshot.routeBreakdown,
@@ -720,11 +835,14 @@ export function applyRuntimeAggregate(
   };
 }
 
-function runtimeBreakdown(value: unknown): BreakdownItem[] | null {
+function runtimeBreakdown(value: unknown, normalizeLabel?: (label: string) => string | null): BreakdownItem[] | null {
   if (!Array.isArray(value)) return null;
   return value.flatMap((item) => {
     const row = recordValue(item);
-    const label = typeof row.name === "string" && row.name.trim() ? redactString(row.name.trim()).slice(0, 96) : null;
+    const raw = typeof row.name === "string" && row.name.trim() ? row.name.trim() : null;
+    const label = raw === null
+      ? null
+      : (normalizeLabel ? normalizeLabel(raw) : redactString(raw).slice(0, 96));
     const count = nonNegativeMetric(row.requests);
     if (!label || count === null) return [];
     return [{ label, count, tokensSaved: nonNegativeMetric(row.tokens_saved) }];
@@ -788,7 +906,7 @@ function analyticsStatusDetail(state: string, hasRequests: boolean, lang: "zh" |
     : "No verifiable live request data is available; missing metrics remain empty.";
 }
 
-function coverageRows(snapshot: AnalyticsSnapshot, lang: "zh" | "en") {
+function coverageRows(snapshot: AnalyticsSnapshot, lang: "zh" | "en", priceCacheStatus: "loading" | "ready" | "unavailable") {
   return [
     { label: lang === "zh" ? "请求记录" : "Request records", available: snapshot.hasRequests },
     { label: lang === "zh" ? "输入 Token 估算" : "Estimated input tokens", available: snapshot.estimatedInputTokens !== null },
@@ -809,9 +927,247 @@ function coverageRows(snapshot: AnalyticsSnapshot, lang: "zh" | "en") {
     { label: lang === "zh" ? "流水线分段耗时" : "Pipeline stage timing", available: snapshot.pipeline !== null },
     { label: lang === "zh" ? "TTFB 与吞吐" : "TTFB and throughput", available: snapshot.pipeline?.upstreamTtfbMs !== null && snapshot.pipeline?.upstreamTtfbMs !== undefined },
     { label: lang === "zh" ? "缓存失效与未命中归因" : "Cache expiry and miss attribution", available: snapshot.cache !== null && (snapshot.cache.busts > 0 || snapshot.cache.misses > 0) },
-    { label: lang === "zh" ? "成本与定价来源" : "Cost and pricing source", available: false },
+    { label: lang === "zh" ? "成本与定价来源" : "Cost and pricing source", available: priceCacheStatus === "ready" },
     { label: lang === "zh" ? "输出整形反事实" : "Output-shaping counterfactual", available: false },
     { label: lang === "zh" ? "工具定义压缩节省" : "Tool definition savings", available: false },
     { label: lang === "zh" ? "Checkpoint / 周 / 月历史" : "Checkpoint / weekly / monthly history", available: false },
   ];
+}
+
+// ---------------------------------------------------------------------------
+// Analytics → 日志 子页：逐条展示 runtime 真实请求记录
+// ---------------------------------------------------------------------------
+
+function tokenEvidenceCell(value: unknown) {
+  return typeof value === "number" && Number.isFinite(value) ? nf(value) : unavailableValue;
+}
+
+function durationCell(value: unknown) {
+  return typeof value === "number" && Number.isFinite(value) ? `${value}ms` : unavailableValue;
+}
+
+function beforeAfterCell(row: RequestLogRow) {
+  const before = row.input_tokens_before;
+  const after = row.input_tokens_after;
+  if (typeof before === "number" && Number.isFinite(before) && typeof after === "number" && Number.isFinite(after)) {
+    return `${nf(before)} → ${nf(after)}`;
+  }
+  return unavailableValue;
+}
+
+function RequestPaginationBar({
+  lang,
+  currentRequestPage,
+  requestPageCount,
+  requestHasMore,
+  nativePageStatus,
+  onPrevious,
+  onNext,
+}: {
+  lang: "zh" | "en";
+  currentRequestPage: number;
+  requestPageCount: number;
+  requestHasMore: boolean;
+  nativePageStatus: "idle" | "loading" | "ready" | "error";
+  onPrevious: () => void;
+  onNext: () => void;
+}) {
+  return (
+    <div className="mt-3 flex items-center justify-between">
+      <span className="text-xs text-muted-foreground">{lang === "zh" ? `第 ${currentRequestPage + 1} / ${requestPageCount} 页` : `Page ${currentRequestPage + 1} / ${requestPageCount}`}</span>
+      <div className="flex gap-2">
+        <Button size="sm" variant="outline" disabled={currentRequestPage === 0 || nativePageStatus === "loading"} onClick={onPrevious}>{lang === "zh" ? "上一页" : "Previous"}</Button>
+        <Button size="sm" variant="outline" disabled={!requestHasMore || nativePageStatus === "loading"} onClick={onNext}>{nativePageStatus === "loading" ? (lang === "zh" ? "加载中…" : "Loading…") : (lang === "zh" ? "下一页" : "Next")}</Button>
+      </div>
+    </div>
+  );
+}
+
+type LogEvidenceRow = { label: string; value: string };
+
+function requestLogStatus(row: RequestLogRow): "ok" | "failed" | "unknown" {
+  const status = typeof row.status === "string" ? row.status.trim().toLocaleLowerCase() : "";
+  if (status === "failed" || status === "error" || row.error || row.error_type) return "failed";
+  if (status === "ok" || status === "completed" || status === "success") return "ok";
+  return "unknown";
+}
+
+function RequestLogRowView({
+  row,
+  rowKey,
+  lang,
+  expanded,
+  priceCache,
+  onToggle,
+}: {
+  row: RequestLogRow;
+  rowKey: string;
+  index: number;
+  lang: "zh" | "en";
+  expanded: boolean;
+  priceCache: ModelPriceCache | null;
+  onToggle: () => void;
+}) {
+  const status = requestLogStatus(row);
+  const detailId = `log-detail-${rowKey}`;
+  const receipt = receiptRows(row.context_accounting, lang);
+  const protocol = displayProtocol(row.input_protocol ?? row.protocol);
+  return (
+    <article className="min-w-0 rounded-lg border border-border/60 bg-background/70 p-3 text-xs">
+      <div className="flex min-w-0 flex-wrap items-start justify-between gap-2">
+        <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-muted-foreground">
+          <code className="min-w-0 max-w-full truncate font-mono text-[11px]" title={typeof row.request_id === "string" ? row.request_id : undefined}>{typeof row.request_id === "string" ? redactString(row.request_id) : unavailableValue}</code>
+          {status === "failed" ? <Badge variant="destructive">{lang === "zh" ? "失败" : "Error"}</Badge> : status === "ok" ? <Badge variant="secondary">{lang === "zh" ? "完成" : "OK"}</Badge> : <Badge variant="outline">{lang === "zh" ? "未知" : "Unknown"}</Badge>}
+          <span className="whitespace-nowrap font-mono">{formatTimestamp(row.timestamp_ms)}</span>
+          <span className="min-w-0 truncate">{safeCell(row.agent)}</span>
+          <span className="min-w-0 truncate">{safeCell(row.model_id ?? row.model)}</span>
+          <span className="min-w-0 truncate">{safeCell(row.provider_id ?? row.provider)}</span>
+          <span className="whitespace-nowrap">{protocol}</span>
+        </div>
+        <Button size="sm" variant="ghost" aria-expanded={expanded} aria-controls={detailId} onClick={onToggle} className="shrink-0 gap-1 px-2 text-xs">
+          {expanded ? <ChevronUp className="size-3.5" /> : <ChevronDown className="size-3.5" />}
+          {expanded ? (lang === "zh" ? "收起" : "Collapse") : (lang === "zh" ? "查看详情" : "Details")}
+        </Button>
+      </div>
+
+      <div className="mt-3 grid min-w-0 grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-6">
+        <LogValue label="Local Token" value={tokenEvidenceCell(row.input_tokens_before)} />
+        <LogValue label="Provider Token" value={tokenEvidenceCell(row.provider_input_tokens)} />
+        <LogValue label={lang === "zh" ? "压缩前后" : "Before → after"} value={beforeAfterCell(row)} />
+        <LogValue label={lang === "zh" ? "节省 Token" : "Saved tokens"} value={tokenEvidenceCell(row.tokens_saved)} />
+        <LogValue label={lang === "zh" ? "耗时" : "Latency"} value={durationCell(row.latency_ms ?? row.end_to_end_ms ?? row.compression_ms)} />
+        <LogValue label={lang === "zh" ? "路由" : "Route"} value={safeCell(row.route_id ?? row.route)} />
+      </div>
+
+      {expanded && (
+        <div id={detailId} className="mt-3 grid min-w-0 gap-3 border-t border-border/50 pt-3 sm:grid-cols-2">
+          <LogDetailSection title={lang === "zh" ? "路由身份" : "Route identity"} rows={routeIdentityRows(row, lang)} />
+          <LogDetailSection title={lang === "zh" ? "Token 证据" : "Token evidence"} rows={tokenDetailRows(row, lang)} />
+          <LogDetailSection title={lang === "zh" ? "性能与费用" : "Performance and cost"} rows={performanceCostRows(row, lang, priceCache)} />
+          <section className="min-w-0 rounded-md bg-muted/20 p-3">
+            <h4 className="text-[11px] font-semibold">{lang === "zh" ? "证据 Receipt" : "Evidence receipt"}</h4>
+            {row.transforms_applied && row.transforms_applied.length > 0 && (
+              <div className="mt-2">
+                <div className="mb-1.5 text-[11px] text-muted-foreground">{lang === "zh" ? "变换证据" : "Transform evidence"}</div>
+                <div className="flex flex-wrap gap-1.5">
+                  {row.transforms_applied.map((transform) => <Badge key={transform} variant="secondary" className="text-[11px]">{safeCell(transform)}</Badge>)}
+                </div>
+              </div>
+            )}
+            <div className="mt-2 text-[11px] text-muted-foreground">{receipt.length > 0 ? (lang === "zh" ? "Optimization Receipt（脱敏白名单）" : "Optimization Receipt (redacted whitelist)") : (lang === "zh" ? "Optimization Receipt（runtime 未合并 · 暂不可用）" : "Optimization Receipt (runtime unavailable)")}</div>
+            {receipt.length > 0 ? <div className="mt-1.5 grid min-w-0 gap-2 sm:grid-cols-2">{receipt.map((item) => <LogValue key={item.label} label={item.label} value={item.value} mono />)}</div> : <div className="mt-1 text-xs text-muted-foreground">—</div>}
+          </section>
+        </div>
+      )}
+    </article>
+  );
+}
+
+function LogValue({ label, value, mono = false }: { label: string; value: string; mono?: boolean }) {
+  return <div className="min-w-0"><div className="text-[11px] text-muted-foreground">{label}</div><div className={`mt-0.5 min-w-0 break-all text-xs tabular-nums${mono ? " font-mono" : ""}`}>{value}</div></div>;
+}
+
+function LogDetailSection({ title, rows }: { title: string; rows: LogEvidenceRow[] }) {
+  return <section className="min-w-0 rounded-md bg-muted/20 p-3"><h4 className="text-[11px] font-semibold">{title}</h4><div className="mt-2 grid min-w-0 gap-2 sm:grid-cols-2">{rows.map((item) => <LogValue key={item.label} label={item.label} value={item.value} />)}</div></section>;
+}
+
+function evidenceValue(value: unknown, formatter?: (value: number) => string): string {
+  if (typeof value === "number" && Number.isFinite(value)) return formatter ? formatter(value) : nf(value);
+  if (typeof value === "string" && value.trim()) return redactString(value.trim()).slice(0, 200);
+  return unavailableValue;
+}
+
+function routeIdentityRows(row: RequestLogRow, lang: "zh" | "en"): LogEvidenceRow[] {
+  const zh = lang === "zh";
+  return [
+    { label: zh ? "请求标识" : "Request id", value: evidenceValue(row.request_id) },
+    { label: zh ? "时间" : "Time", value: typeof row.timestamp_ms === "number" ? formatTimestamp(row.timestamp_ms) : unavailableValue },
+    { label: "Agent", value: evidenceValue(row.agent) },
+    { label: zh ? "界面（实例）" : "Interface (instance)", value: evidenceValue(row.instance_id) },
+    { label: zh ? "模型" : "Model", value: evidenceValue(row.model_id ?? row.model) },
+    { label: "Provider", value: evidenceValue(row.provider_id ?? row.provider) },
+    { label: zh ? "路由" : "Route", value: evidenceValue(row.route_id ?? row.route) },
+    { label: zh ? "输入协议" : "Input protocol", value: displayProtocol(row.input_protocol ?? row.protocol) },
+    { label: zh ? "输出协议" : "Output protocol", value: displayProtocol(row.output_protocol) },
+    { label: zh ? "中转链模式" : "Relay chain mode", value: evidenceValue(row.chain_mode) },
+  ];
+}
+
+function tokenDetailRows(row: RequestLogRow, lang: "zh" | "en"): LogEvidenceRow[] {
+  return [
+    { label: "Local Token", value: tokenEvidenceCell(row.input_tokens_before) },
+    { label: lang === "zh" ? "Local 压缩后 Token" : "Local compressed tokens", value: tokenEvidenceCell(row.input_tokens_after) },
+    { label: "Provider Token", value: tokenEvidenceCell(row.provider_input_tokens) },
+    { label: lang === "zh" ? "输出 Token" : "Output tokens", value: tokenEvidenceCell(row.output_tokens) },
+    { label: lang === "zh" ? "节省 Token" : "Saved tokens", value: tokenEvidenceCell(row.tokens_saved) },
+  ];
+}
+
+function performanceCostRows(row: RequestLogRow, lang: "zh" | "en", priceCache: ModelPriceCache | null): LogEvidenceRow[] {
+  const zh = lang === "zh";
+  const source = row as RequestLogRow & { cost_usd?: unknown; provider_cost_usd?: unknown };
+  const estimate = estimateRequestInputCost(priceCache, row.model_id ?? row.model, row.input_tokens_before, row.input_tokens_after);
+  const rows: LogEvidenceRow[] = [
+    { label: zh ? "压缩耗时" : "Compression latency", value: durationCell(row.compression_ms) },
+    { label: zh ? "路由耗时" : "Route latency", value: durationCell(row.route_ms) },
+    { label: zh ? "上游 TTFB" : "Upstream TTFB", value: durationCell(row.upstream_ttfb_ms) },
+    { label: zh ? "端到端耗时" : "End-to-end latency", value: durationCell(row.end_to_end_ms ?? row.latency_ms) },
+    { label: zh ? "上游账单费用" : "Upstream billed cost", value: evidenceValue(source.provider_cost_usd ?? source.cost_usd, (value) => `$${value.toFixed(6)}`) },
+  ];
+  if (estimate.available) {
+    const symbol = estimate.currency === "CNY" ? "¥" : "$";
+    const money = (value: number) => `${symbol}${value.toFixed(6)}`;
+    rows.push(
+      { label: zh ? "估算压缩前输入成本" : "Est. pre-compression input cost", value: money(estimate.preCost) },
+      { label: zh ? "估算压缩后输入成本" : "Est. post-compression input cost", value: money(estimate.postCost) },
+      { label: zh ? "估算费用差额" : "Est. cost difference", value: money(estimate.savedCost) },
+      { label: zh ? "定价依据" : "Pricing basis", value: `${estimate.currency} ${estimate.source} ${estimate.freshness}` },
+    );
+  } else {
+    rows.push(
+      { label: zh ? "估算压缩前输入成本" : "Est. pre-compression input cost", value: unavailableValue },
+      { label: zh ? "估算压缩后输入成本" : "Est. post-compression input cost", value: unavailableValue },
+      { label: zh ? "估算费用差额" : "Est. cost difference", value: unavailableValue },
+      { label: zh ? "定价依据" : "Pricing basis", value: zh ? "价格未知" : "price unknown" },
+    );
+  }
+  rows.push({ label: zh ? "失败类型" : "Failure type", value: evidenceValue(row.error_type ?? row.error) });
+  return rows;
+}
+
+function displayProtocol(value: unknown): string {
+  return protocolLabel(value) ?? unavailableValue;
+}
+
+/** context_accounting 白名单：只取标量字段，不转储嵌套对象或原始载荷。 */
+function receiptRows(value: unknown, lang: "zh" | "en"): Array<{ label: string; value: string }> {
+  if (!value || typeof value !== "object") return [];
+  const source = value as Record<string, unknown>;
+  const rows: Array<{ label: string; value: string }> = [];
+  const zh = lang === "zh";
+  const flat: Array<[string, string]> = [
+    ["disposition", zh ? "优化决策" : "Disposition"],
+    ["sent_payload", zh ? "发送载荷" : "Sent payload"],
+    ["upstream_state", zh ? "上游状态" : "Upstream state"],
+    ["attribution_basis", zh ? "归因依据" : "Attribution basis"],
+    ["provider_reconciled_input_savings", zh ? "Provider 对账节省" : "Provider reconciled savings"],
+    ["fallback_reason_code", zh ? "回退原因" : "Fallback reason"],
+  ];
+  for (const [key, label] of flat) {
+    const raw = source[key];
+    if (typeof raw === "string" && raw.trim()) rows.push({ label, value: raw });
+    else if (typeof raw === "number" && Number.isFinite(raw)) rows.push({ label, value: String(raw) });
+  }
+  const estimated = source["estimated"];
+  if (estimated && typeof estimated === "object") {
+    const savings = (estimated as Record<string, unknown>)["signed_savings"];
+    if (savings && typeof savings === "object") {
+      const signed = savings as Record<string, unknown>;
+      for (const [key, label] of [["input_tokens", zh ? "估算节省输入 Token" : "Estimated saved input tokens"], ["total_tokens", zh ? "估算节省总 Token" : "Estimated saved total tokens"]] as Array<[string, string]>) {
+        const raw = signed[key];
+        if (typeof raw === "number" && Number.isFinite(raw)) rows.push({ label, value: String(raw) });
+      }
+    }
+  }
+  return rows;
 }

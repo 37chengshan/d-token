@@ -137,6 +137,7 @@ fn config() -> DtokenConfig {
             models: vec!["relay-model".to_string()],
             timeout_ms: 500,
             healthcheck_path: None,
+            wire_api: dtoken_types::ProviderWireApi::OpenAiChat,
         }],
         routes: vec![RouteProfile {
             id: "relay-route".to_string(),

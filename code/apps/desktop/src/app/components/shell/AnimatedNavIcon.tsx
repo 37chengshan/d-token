@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { memo, useEffect, useState } from "react";
 import type { PageId } from "../../lib/nav";
 import { cn } from "../ui/utils";
 
@@ -8,20 +8,29 @@ export type VisibleAnimatedNavIconId = Extract<
   "overview" | "install" | "codebase-memory" | "analytics" | "visual" | "doctor" | "changes" | "settings" | "theme" | "collapse"
 >;
 
+/**
+ * Per-icon recipes. `durationMs` is the FULL play window the click pulse must
+ * stay on: it must cover max(leading transition-delay) + the icon-part
+ * transition length in shell.css (var(--duration-slow) = 280ms). The pulse
+ * timer uses durationMs + a small margin, so a value shorter than the real
+ * total would flip data-motion-play off mid-transition and reverse the icon.
+ * Overview staggers 0/40/80/120ms (total 400), analytics 0/40/80ms (total
+ * 360); every other recipe has no leading delay (total 280ms).
+ */
 export const NAV_MOTION_RECIPES: Record<
   VisibleAnimatedNavIconId,
   { durationMs: number; iterationCount: 1; recipe: string }
 > = {
-  overview: { durationMs: 240, iterationCount: 1, recipe: "staggered-grid-lift" },
-  install: { durationMs: 260, iterationCount: 1, recipe: "arrow-land-tray-bounce" },
-  "codebase-memory": { durationMs: 260, iterationCount: 1, recipe: "graph-nodes-connect" },
-  analytics: { durationMs: 240, iterationCount: 1, recipe: "staggered-bar-grow" },
-  visual: { durationMs: 250, iterationCount: 1, recipe: "image-frame-focus" },
+  overview: { durationMs: 400, iterationCount: 1, recipe: "staggered-grid-lift" },
+  install: { durationMs: 280, iterationCount: 1, recipe: "arrow-land-tray-bounce" },
+  "codebase-memory": { durationMs: 280, iterationCount: 1, recipe: "graph-nodes-connect" },
+  analytics: { durationMs: 360, iterationCount: 1, recipe: "staggered-bar-grow" },
+  visual: { durationMs: 280, iterationCount: 1, recipe: "image-frame-focus" },
   doctor: { durationMs: 280, iterationCount: 1, recipe: "path-trace-status-pulse" },
-  changes: { durationMs: 240, iterationCount: 1, recipe: "paired-arrow-converge" },
-  settings: { durationMs: 260, iterationCount: 1, recipe: "gear-quarter-turn" },
-  theme: { durationMs: 240, iterationCount: 1, recipe: "sun-rays-or-moon-arc" },
-  collapse: { durationMs: 220, iterationCount: 1, recipe: "panel-fold" },
+  changes: { durationMs: 280, iterationCount: 1, recipe: "paired-arrow-converge" },
+  settings: { durationMs: 280, iterationCount: 1, recipe: "gear-quarter-turn" },
+  theme: { durationMs: 280, iterationCount: 1, recipe: "sun-rays-or-moon-arc" },
+  collapse: { durationMs: 280, iterationCount: 1, recipe: "panel-fold" },
 };
 
 export type AnimatedNavIconProps = {
@@ -38,11 +47,14 @@ export type AnimatedNavIconProps = {
 };
 
 /**
- * Product-owned icon set. Parts are plain SVG; motion is CSS-driven via
- * `.nav-motion-item:hover` / `:focus-visible` / `[data-motion-play]` so leave
- * reverses through transitions. No AiMaMi brand assets.
+ * Product-owned semantic icon set. Each navigation action has its own
+ * independent, recognizable glyph. Parts are plain SVG currentColor strokes;
+ * motion is CSS-driven via `.nav-motion-item` hover/focus and
+ * `[data-motion-play]` click pulses. Decorative SVGs stay aria-hidden and
+ * focusable=false while button labels provide semantics. The d-token cat-face
+ * mark lives only in the brand mark, not in per-item nav icons.
  */
-export function AnimatedNavIcon({
+export const AnimatedNavIcon = memo(function AnimatedNavIcon({
   id,
   active,
   reducedMotion,
@@ -187,4 +199,4 @@ export function AnimatedNavIcon({
     default:
       return null;
   }
-}
+});

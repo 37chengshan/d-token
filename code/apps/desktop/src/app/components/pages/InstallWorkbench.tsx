@@ -30,7 +30,7 @@ function WorkbenchPanelFallback() {
   return <div className="rounded-lg border border-border/60 bg-card/60 p-6 text-sm text-muted-foreground">{t("app.loading")}</div>;
 }
 
-export function InstallWorkbench() {
+export function InstallWorkbench({ initialAgentId }: { initialAgentId?: string } = {}) {
   const t = useT();
   const [activeTab, setActiveTabState] = useState<WorkbenchTab>(readWorkbenchTab);
   const setActiveTab = (value: string) => {
@@ -73,7 +73,7 @@ export function InstallWorkbench() {
 
   return (
     <div>
-      <h1 className="mb-4">{t("in.title")}</h1>
+      <h1 className="sr-only">{t("in.title")}</h1>
       <Tabs value={activeTab} onValueChange={setActiveTab} className="gap-5">
         <TabsList className="install-workbench-nav grid h-20 w-full grid-cols-4 overflow-hidden rounded-lg border border-border/70 bg-card/80 p-0 shadow-sm">
           {workbenchTabs.map((item) => {
@@ -98,7 +98,7 @@ export function InstallWorkbench() {
           })}
         </TabsList>
         <TabsContent value="one-click">
-          <Install onOpenAdvanced={() => setActiveTab("advanced")} />
+          <Install onOpenAdvanced={() => setActiveTab("advanced")} initialAgentId={initialAgentId} />
         </TabsContent>
         <TabsContent value="smart-learning">
           <Suspense fallback={<WorkbenchPanelFallback />}>

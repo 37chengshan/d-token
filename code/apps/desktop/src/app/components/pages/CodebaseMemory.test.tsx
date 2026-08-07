@@ -77,7 +77,7 @@ describe("CodebaseMemory", () => {
     }));
     renderPage();
 
-    expect(await screen.findByRole("heading", { level: 1, name: "代码图谱（实验性）" })).toBeVisible();
+    expect(await screen.findByRole("heading", { level: 1, name: "代码图谱（实验性）" })).toBeInTheDocument();
     expect(screen.getByText("正在读取代码图谱状态…")).toBeVisible();
     expect(screen.getByRole("button", { name: "刷新" })).toBeDisabled();
 
@@ -126,18 +126,22 @@ describe("CodebaseMemory", () => {
     const user = userEvent.setup();
     native.invokeNative.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
       if (command === "get_codebase_memory_status") return status({
-        package: dimension("unavailable", "Download and extract the pinned component"),
+        package: dimension("unavailable", "Download and extract the currently supported component"),
       });
       if (command === "get_hybrid_agent_integrations") return agentDiscovery;
-      if (command === "open_codebase_memory_download_page") return { ok: true, summary: "Opened pinned release" };
+      if (command === "open_codebase_memory_download_page") return { ok: true, summary: "Opened current official release" };
       if (command === "open_codebase_memory_package_directory") return { ok: true, summary: "Opened import directory" };
       if (command === "set_codebase_memory_package_directory") return { ok: true, summary: "Directory saved" };
       throw new Error(`unexpected command ${command} ${JSON.stringify(args)}`);
     });
     renderPage();
 
-    expect(await screen.findByText(/导入图谱组件 v0.9.0：打开官方下载页/)).toBeVisible();
-    await user.click(screen.getByRole("button", { name: "打开 v0.9.0 官方下载页" }));
+    // The supported release is pinned by the supply-chain manifest/allowlist,
+    // not by a hard-coded version number in the UI.
+    expect(await screen.findByRole("heading", { level: 2, name: "导入当前受支持的图谱组件" })).toBeVisible();
+    expect(screen.getByText(/按当前 manifest\/allowlist 校验来源、平台、架构和 SHA-256/)).toBeVisible();
+    expect(screen.queryByText(/v0\.9\.1/)).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "打开当前官方下载页" }));
     expect(native.invokeNative).toHaveBeenCalledWith("open_codebase_memory_download_page");
     const directory = screen.getByRole("textbox", { name: "已解压组件的位置" });
     await user.clear(directory);
@@ -146,6 +150,47 @@ describe("CodebaseMemory", () => {
     await waitFor(() => expect(native.invokeNative).toHaveBeenCalledWith("set_codebase_memory_package_directory", {
       request: { directory: "/custom/code-graph" },
     }));
+  });
+
+  it("truthfully explains an untrusted imported component instead of asking the user to import again", async () => {
+    native.invokeNative.mockResolvedValue(status({
+      package: {
+        ...dimension("untrusted", "SHA-256 does not match the current manifest/allowlist"),
+        reason_code: "upstream_untrusted",
+      },
+    }));
+    renderPage();
+
+    await screen.findByRole("heading", { level: 1, name: "代码图谱（实验性）" });
+    const configure = screen.getByRole("button", { name: "查看并连接 Agent" });
+    expect(configure).toBeDisabled();
+    // The blocked reason must be truthful about the failed manifest/allowlist
+    // check, not ask the user to import again when a component was already detected.
+    expect(screen.queryByText("请先导入并通过校验图谱组件。")).not.toBeInTheDocument();
+    expect(screen.getAllByText(/未通过当前 manifest\/allowlist 校验/).length).toBeGreaterThanOrEqual(1);
+    const packageRow = screen.getByRole("heading", { level: 3, name: "图谱组件" }).closest("[data-flat-row]");
+    expect(within(packageRow as HTMLElement).getByText("未受信任")).toBeVisible();
+    expect(within(packageRow as HTMLElement).getByText(/未通过当前 manifest\/allowlist 校验/)).toBeVisible();
+  });
+
+  it("truthfully explains a missing launcher when the pinned upstream is verified instead of asking the user to import again", async () => {
+    native.invokeNative.mockResolvedValue(status({
+      package: {
+        ...dimension("unavailable", "dtoken-codebase-memory-launcher was not found or did not satisfy identity verification"),
+        reason_code: "launcher_unavailable",
+      },
+    }));
+    renderPage();
+
+    await screen.findByRole("heading", { level: 1, name: "代码图谱（实验性）" });
+    const configure = screen.getByRole("button", { name: "查看并连接 Agent" });
+    expect(configure).toBeDisabled();
+    // The upstream is verified; the real blocker is the missing launcher, so
+    // the page must not claim the component was never imported.
+    expect(screen.queryByText("请先导入并通过校验图谱组件。")).not.toBeInTheDocument();
+    expect(screen.getAllByText(/受限 launcher 未找到/).length).toBeGreaterThanOrEqual(1);
+    const packageRow = screen.getByRole("heading", { level: 3, name: "图谱组件" }).closest("[data-flat-row]");
+    expect(within(packageRow as HTMLElement).getByText("不可用")).toBeVisible();
   });
 
   it("fails closed when native status and project approval are unavailable", async () => {

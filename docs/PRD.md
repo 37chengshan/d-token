@@ -1,8 +1,231 @@
 # d-token Living PRD
 
+## P0.0 发布前最终收口：产品目标规格 v2.1
+
+状态：2026-08-05 发布前最终迭代基线。
+本节吸收 `d-token-product-target-spec` v2.1 的产品目标与执行约束；它是本 PRD 的补充输入，不是实现完成证明。若本节与后文历史草案冲突，以本节、当前代码证据和 `docs/PLAN.md` 的最新状态为准。
+
+### P0.0.1 版本语义
+
+后续产品、实现和验收文档统一使用以下优先级：
+
+- **MUST**：目标版本的发布阻断条件，未满足不得称为可发布；
+- **SHOULD**：目标版本优先交付，但可以在明确记录风险后延期；
+- **MAY**：可选能力，不得阻塞核心发布。
+
+未被当前候选的真实运行证据、正式入口、错误路径、安全降级、回滚和文档同时证明的能力，只能标记为 `preview`、`partial`、`unavailable`、`unknown` 或 `not_verified`。不得因为存在类型、接口、静态页面、metadata-only 事件、passthrough 或单元测试而标记为完成。
+
+### P0.0.2 产品定义与用户闭环
+
+d-token 是面向 AI 编码 Agent 的本地上下文控制面：
+
+```text
+发现 Agent / 项目配置 / 用户配置 / cc-switch
+  → 建立带来源、时间、新鲜度和修订号的状态快照
+  → 用户授权接入策略
+  → 预览配置变更与风险
+  → 备份、应用、验证、必要时回滚
+  → 真实 Agent 请求进入 d-token-owned runtime
+  → Context Relay / 可信压缩 / post-validation
+  → 显式解析 Provider、模型、协议和 endpoint
+  → 转发并采集 Provider 用量
+  → 写入 Optimization Receipt 与 Event Ledger
+  → Dashboard / Analytics / Doctor 展示同一事实投影
+  → 外部配置变化后按授权策略重新发现、同步或请求用户决策
+```
+
+用户安装并授权一次后可以继续正常使用 Agent；只有在存在风险、冲突、低置信识别或新凭据时才打扰用户；配置歧义不通过用户选择解决，而是 fail-closed 展示来源与修复入口（见 P0.0.10）。所有后台自动行为必须可在 Event Ledger 中追踪。
+
+### P0.0.3 Agent 与配置闭环
+
+所有被支持或被发现的 Agent 都必须进入统一配置模型，正式 UI 不得只因为 capability 字段相似就猜测“已配置”。每个 Agent 卡片必须能够显示：
+
+- 当前上游、Provider、模型、协议、脱敏 endpoint、来源、更新时间和验证状态；
+- `配置` 与 `清除` 两个独立动作；
+- 最近一次配置/清除 receipt 和下一步动作；
+- 配置格式未知、候选多义或 schema 未验证时进入 `needs-source-fix` 状态：只展示冲突来源、影响与「修复来源配置 / 重新扫描」，不提供 chooser，也不猜测（见 P0.0.10）。
+
+配置与清除均遵循：
+
+```text
+detect → parse current upstream → plan → redacted diff
+→ backup → user confirm → apply → reread/verify
+→ receipt；失败则精确回滚原始字节
+```
+
+配置只写 d-token-owned 字段、provider 或 profile；清除只删除带 manifest/hash ownership 证据的内容，保留用户已有 Provider、模型和凭据，且必须幂等。OpenCode、OpenClaw 等多供应商 Agent 使用专用 multi-provider adapter；未知格式不得套用其他 Agent 的字段。
+
+Rust-owned 合同必须是前后端唯一事实源：
+
+```text
+AgentConfigSnapshot
+  agent_id, config_targets, current_upstream, provider_id, model,
+  protocol, endpoint, config_fingerprint, credential_state, source_revision
+
+UpstreamSignature
+  provider, model, protocol, normalized_endpoint, profile_or_app_scope
+  （禁止 token、cookie、Authorization 和完整 auth 配置）
+
+AgentConfigPlan
+  operation(configure|clear), target_files, redacted_diff,
+  before_sha256, after_sha256, backup_or_rollback_id,
+  runtime_reload_requirement
+
+AgentConfigReceipt
+  planned|applied|verified|rolled_back|failed,
+  per-agent result, source revision, verification evidence, next action
+```
+
+前端只消费这些合同和 receipt，不根据 `capability`、文件存在或静态 `configured=true` 自行推断已接入。任何 plan 在 review 期间发现 source revision 或 fingerprint 变化，必须立即失效并重新发现。
+
+状态语义固定为：
+
+| 状态 | 允许表达的事实 |
+| --- | --- |
+| `detected` | 发现了文件、进程或配置 |
+| `configured` | 配置中存在 d-token-owned 设置，尚未证明真实流量 |
+| `connected` | 至少一条真实请求成功经过 d-token |
+| `verified` | 当前连接、路由或能力具有有效证据 |
+| `healthy` | 对应 Doctor 检查项在当前 revision 通过 |
+| `active` | 当前 Runtime 正在使用该 route/capability |
+| `supported` | 代码声明支持，不代表当前环境已验证 |
+
+任何 Agent 卡片、Doctor 和 Dashboard 都不得把 `detected`、`configured` 或 `supported` 直接显示成 `connected`、`verified` 或 `healthy`。
+
+### P0.0.4 cc-switch 与动态路由
+
+`cc-switch` 永远是只读外部观察源，d-token 不写其数据库、配置或凭据。必须支持多 app type、profile/provider 关系、多 active candidate、schema 状态、脱敏 endpoint、credential-present、fingerprint 和 revision；无法高置信识别 profile 时保留 `unknown`，不得把 provider 名冒充 profile。
+
+首次连接时用户明确选择 `follow`、`lock` 或 `observe`：
+
+- `follow`：检测到 Provider、模型、协议、endpoint 或 profile 变化后，先以 `source_fingerprint + source_revision + runtime_identity` 绑定 route sync plan；高置信、无新凭据且只更新 d-token-owned route 时可自动同步；
+- `lock`：只记录外部变化并提醒，不静默覆盖 d-token route；
+- `observe`：只检测和展示，不写入 Agent、cc-switch 或 Runtime。
+
+版本边界：`v0.2.0-beta.1` 默认只交付只读发现、`observe` 和明确冲突提示；`follow` 的自动 route sync 是 `v0.3` MUST，除非另有当前版本的真实证据、显式授权和回滚验证，不得把实现中存在的 watcher 误写成 Beta 已交付。
+
+监听必须覆盖已确认的数据库、WAL/SHM、profile metadata 和父目录，采用 750ms debounce、单飞刷新和 5–15 秒 polling fallback；SQLite 锁定、损坏、未来 schema、缺失和 watcher 不可用都要留下明确证据。Runtime 采用可验证的原子 route snapshot：旧请求继续使用旧快照，新请求使用新快照；reload 失败保留 last-known-good，并记录 `external_config_detected`、`external_config_changed`、`route_sync_*`、`runtime_reloaded` 或 `runtime_reload_required`。
+
+### P0.0.5 LeanCTX / Context Bus 独立能力域
+
+LeanCTX（以及与其行为对齐的开源 Context Bus / Context Relay 能力）不是 Headroom codec 的别名，也不是可以被“Headroom 已迁移”一项吞掉的附属实现。它负责跨 Agent、跨会话和项目作用域的结构化上下文复用；Headroom 负责请求内的可信压缩与转发。两者必须分别记录来源、许可证、参考版本、变更范围、能力矩阵和发布证据。
+
+LeanCTX 对齐的 d-token-owned 能力边界：
+
+1. `Context Bus`：以用户、项目、Agent、Session 为隔离边界，传递脱敏的结构化上下文；
+2. `Session Cache`：保存文件 hash、版本、修改时间、符号表、signatures、code map 和已验证结论，不保存 secret、凭据或未脱敏原文；
+3. `Context Relay`：在 Agent B 请求同一项目同一版本内容时复用允许的结果，并记录来源、命中、节省和新鲜度；
+4. `Query-aware Retrieval`：按当前任务选择相关上下文，保留恢复引用，不把 Relay 命中冒充压缩收益；
+5. `Recovery Pointer / Manifest`：允许用户在授权边界内定位被省略内容，文件变化、TTL 到期、权限变化或来源不可信时立即失效；
+6. `Stale / Superseded Context`：显式区分新鲜、过期和被替代上下文，禁止用旧 cache 继续回答；
+7. `SharedContext / memory`：结构化、可审计、可导出/删除，不能把整段 prompt/response 当作普通记忆。
+8. 同 Agent 自命中防护、Relay 内容大小边界和 Relay/普通 Session Cache 隔离；
+9. 每次命中必须在 Receipt 中区分“压缩节省”和“Relay 避免的重复传输”，不得双计。
+
+LeanCTX 与 CCR 的职责也必须分开：
+
+| 能力 | 责任 |
+| --- | --- |
+| LeanCTX / Context Bus / Relay | 复用已验证的结构化项目上下文，强调 scope、freshness、provenance 和失效 |
+| CCR | 为一次压缩请求提供可逆恢复的私有原文存储，强调加密、TTL、配额、权限、retrieve/delete |
+
+当前仓库的 Headroom provenance 记录了上游移除 `RTK/lean-ctx` 的历史决策，但没有因此形成可发布的 LeanCTX 迁移证据。LeanCTX 的来源事实仍是开放决策：实现前必须登记上游仓库、固定参考 commit、许可证、NOTICE、行为差异和 d-token-owned 替代边界。除非另有独立的正式入口、隔离/失效/回退测试和真实跨 Agent 证据，否则 LeanCTX 状态必须是 `unavailable` 或 `partial`，不得宣称“已完成”。
+
+版本边界：
+
+- `v0.2.0-beta.1`：MUST 保留 Context/Relay/Memory 的安全接口、scope 和 fail-closed 合同；不把未完成的跨 Agent 复用包装成发布能力；
+- `v0.3`：MUST 完成 Context Bus、Session Cache、Context Relay、Map/Signatures 复用、Query-aware Retrieval、Recovery Pointer、Stale/Superseded Context 和 CCR crash recovery；
+- `v0.4`：SHOULD 完成多 Agent 长期运行、低风险自动修复和项目/团队策略。
+
+任何 Relay 失败都必须回退正常读取；文件变化、项目变化、Agent/session 不匹配、权限不足、来源不明或无法验证新鲜度时必须拒绝命中并留下证据。
+
+### P0.0.6 Headroom 完整迁移发布阻断矩阵与 Optical 边界
+
+Headroom 只有在固定参考版本的能力矩阵逐项具备真实请求、错误路径、安全降级和回滚证据后，才允许在产品状态中标记“完整迁移”。发布阻断矩阵至少包括：
+
+| 能力域 | 发布要求 |
+| --- | --- |
+| Library/SDK、proxy、wrap/unwrap、MCP | 正式入口可达，真实请求和错误传播可验证 |
+| ContentRouter、JSON/log/search/build/diff/text/HTML/code codec | active 路径、语义/结构校验、负收益拒绝、超时/取消、secret redaction 和 rollback 证据 |
+| CacheAligner、live-zone、缓存前缀 | 稳定前缀、失效、TTL 和 cache evidence 可验证 |
+| CCR / retrieval / delete | 加密、TTL、配额、权限边界、崩溃恢复和精确删除证据 |
+| memory / SharedContext / learn / output shaping | 授权隔离、provenance、失效、回退和 route-aware 真实使用证据 |
+| ledger / stats / history / export / Doctor | 与同一 request id、route revision 和 receipt 对账 |
+| integrated RTK | d-token-owned provenance、命令改写/过滤、tee/tracking、fail-safe、卸载和跨平台证据 |
+
+`passthrough-only`、`metadata-only`、`preview-only`、测试专用实现或依赖外部 Headroom `8787` 的路径均不计为迁移完成。Optical 仅指“代码与上下文 → PNG → 多模态模型输入”的上下文优化链；普通图片 resize、re-encode、tile、ONNX 等不属于本产品范围。Optical active 默认关闭，只有签名 capability、确定性 renderer、post-validator、资源上限和目标模型质量/成本/延迟评估全部通过后才可达；此前只能是 shadow/preview。
+
+本矩阵是“Headroom 完整迁移”长期发布阻断门，不等同于 `v0.2.0-beta.1` 的全部 MUST；Beta 只允许交付 P0.0.7 明确列出的 Headroom 核心可信压缩子集，其余能力保持 `partial`/`unavailable` 并进入后续版本门。
+
+### P0.0.7 `v0.2.0-beta.1` 发布门
+
+当前公开试用候选的 MUST 范围是：首次引导、Agent/cc-switch 发现、配置事务与恢复、OpenAI Chat/Responses 和 Anthropic Messages 路由、Headroom 核心可信压缩、Optimization Receipt、Local Token 与 Provider Token 分离、Doctor、OpenCode 与 Codex 各至少一条真实 routed-flow（Codex 首要正式场景为 OpenCodex local proxy，见 P0.0.10.5）、macOS/Windows 候选安装包及安装/升级/卸载恢复证据。
+
+其中 Codex routed-flow 不能由“配置事务已精确恢复”替代，必须有独立的真实请求报告，至少绑定 `agent_id=codex`、当前 provider/model/protocol、route verified、请求匹配数、Event Ledger/metrics 计数、失败分类和恢复状态；未有该报告时 Codex 只能显示 `configured`/`not_verified`。Codex 首要正式场景的链路为 `Codex → d-token:18001/v1 → ocxlocal:10100/v1 → 动态模型上游`，插入 d-token 前后必须保持 Responses 协议、无 OpenAI 认证语义和请求 model 透传，不得把模型固定为安装时值（见 P0.0.10.5）。
+
+发布前必须同时满足：
+
+1. 所有正式 UI 动作接通 d-token-owned runtime、Tauri command 或 Event Ledger；禁止 mock 成功状态；
+2. 同一候选 revision 绑定双平台构建、哈希、安装启动、运行链路、配置恢复和已知限制；
+3. 压缩失败、Relay 失败、Receipt/Analytics 失败、Provider 失败和 reload 失败都安全降级或明确阻断；
+4. `G0–G8` 全部通过，且每个能力域拥有当前 revision 的真实证据；否则 `release_ready=false`；
+5. 当前状态快照必须诚实反映证据：Headroom 尚未完整迁移，任何未通过门不得在 App、README、发布说明或 PRD 中写成“已完成”。
+
+物理 Token 变化、Local Token 估算和可声明收益必须分开：`estimated` 只能作为估算展示；`claimable` 只有在 Provider 计费/usage 证据和归因链完整时才可为 true；Relay 避免的重复传输不得计入压缩收益，shadow、fallback、Provider 失败不得计入 actual savings。
+
+`v0.3` 发布门除能力实现外，还必须证明：两个 Agent 复用同一项目允许上下文；文件变化后旧 Relay 失效；跨项目污染为零；Relay 失败安全回退；Receipt 区分压缩节省和 Relay 避免的重复传输；cc-switch 切换后状态一致或明确提示冲突。
+
+`v0.4` 发布门还必须证明：常见 Agent 与 cc-switch 长期稳定、Doctor 可修复大部分低风险问题、Token 节省和任务质量有公开可复现证据、隐私安全会话报告、企业代理/证书适配、稳定签名和签名自动更新。
+
+### P0.0.8 信息架构对照与 Context 入口
+
+规格中的 `Context` 不是新增工程化一级页面。为保持产品固定的八页 IA，Context Bus、LeanCTX Relay、Code Map、Signatures、Memory、Stale/Superseded Context 和 Recovery Pointer 按用户任务落位：
+
+| 用户任务 | 正式入口 |
+| --- | --- |
+| 当前上下文、Relay 命中、新鲜度和节省摘要 | 总体概览、分析 |
+| Agent/项目发现、上下文扫描和授权策略 | 安装与连接工作台的智能学习/高级安装上栏 |
+| Code Map、Signatures 和索引状态 | 代码图谱（实验性） |
+| Memory、SharedContext、失效和授权 | 分析详情、Doctor |
+| Recovery Pointer、CCR retrieve/delete、变更证据 | 变更与回退、请求/Receipt 详情 |
+
+不得为 Headroom、LeanCTX、CCR 或 Context Bus 另建用户级独立页面；新增页面若不能对应一个用户任务，发布验收不通过。
+
+### P0.0.9 未决产品决策登记
+
+以下决策在具体版本实现前必须显式落档，不得由临时代码默认值替代：
+
+| 决策项 | 当前状态 |
+| --- | --- |
+| 默认配置模式 | `open`：首次使用必须明确选择 `observe`/`lock`；`follow` 需单独授权 |
+| 默认压缩策略 | `resolved`：安全、可降级为默认；增强/有损必须显式确认 |
+| Context Relay 持久化 | `open`：先满足项目隔离、TTL/quota、失效和删除，再确定默认存储 |
+| 数据保留周期 | `resolved`：用户可配置，默认值需在隐私/诊断证据中标明 |
+| Telemetry 默认状态 | `open`：必须可关闭，默认值随正式隐私说明一并决定 |
+| 自动修复范围 | `resolved`：仅低风险、可逆、可验证动作可自动化 |
+| Provider 回退策略 | `resolved`：禁止静默跨 Provider；任何 fallback 需用户策略与 receipt |
+| 云端能力 | `resolved`：不是本地核心运行依赖，默认不上传代码、Prompt 或凭据 |
+| LeanCTX 上游来源 | `open`：在实现前登记仓库、固定 commit、许可证、NOTICE 和差异说明 |
+
+本规格未覆盖 Optical 的协议、安全和 UI 细节；该能力按本 PRD P0.0.6、§8、`AGENTS.md` 安全边界执行，默认 shadow/preview，不能以规格文本缺失为由扩大为普通图片压缩。
+
+### P0.0.10 自动配置硬合同（用户最新硬要求）
+
+本节吸收用户 2026-08-07 最新硬要求，是 Agent / Provider / Route 配置交互的最高优先级契约；与本 PRD 其他章节冲突时以本节为准，其他章节中的相反旧口径必须同步清除。
+
+1. **无 Agent 选择器**：所有 Agent 不允许用户在 d-token 内手动选择、勾选或取消。d-token 自动扫描全部已安装且正式支持的 Agent，自动纳入同一配置批次；UI 不得提供 Agent chooser、勾选或取消入口，只允许只读展示 `detected / missing / unsupported / error` 与批次预览。
+2. **无 Provider / 上游 / 模型 / 协议 / endpoint 选择器**：用户不选择 Provider、上游、模型、协议或 endpoint。每个 Agent 独立从当前生效配置、cc-switch current profile、已验证本地代理链或唯一可信 d-token-owned route 自动解析；不同 Agent 保留各自链路，禁止用单个全局选择覆盖所有 Agent，也禁止在普通或高级 UI 提供对应 chooser。
+3. **fail-closed 来源修复**：多候选、字段不足、schema 未知或凭据不可复用时一律 fail-closed：展示冲突来源、影响和「修复来源配置 / 重新扫描」，不得在普通或高级 UI 提供 chooser，也不得猜测。用户唯一必要动作是查看脱敏 diff / 风险 / 备份并确认整个自动批次；凭据输入仅在确实缺失且不能复用时保留。
+4. **自动配置闭环**：`scan → resolve current route → build per-Agent plan → aggregate redacted diff → one confirmation → backup → atomic/ordered apply → readback verify → real routed evidence → receipt/ledger → whole-batch reverse rollback on failure`。批次内任一 Agent 失败时逆序回退本批次已写入目标，不得静默跳过或部分保留。
+5. **Codex / OpenCodex local proxy 是首要正式场景**：现有 Codex 配置为 `model_provider=ocxlocal`、provider `base_url=http://127.0.0.1:10100/v1`、`wire_api=responses`、`requires_openai_auth=false`。插入 d-token 后链路为 `Codex → d-token:18001/v1 → ocxlocal:10100/v1 → 动态模型上游`；必须保持 Responses 协议、无 OpenAI 认证语义和请求 model 透传，不能把模型固定为安装时值，继续允许用户在原 Agent/代理中无缝切换模型。
+6. **Agent / MCP / Hook 诚实区分**：Route 自动配置真实转发；MCP / Hook 自动配置工具能力，但不得冒充模型流量经过 d-token。Hook / MCP 可用不得显示为 Active 路由已启用。
+7. **首次引导**：必须有真实启动服务和「开始一键配置」按钮，但不得出现 Agent / provider / model chooser。「不选择」不等于静默写入：写入前仍必须展示脱敏 diff / 风险 / 备份并获得一次明确确认。
+
+边界澄清：本合同的「用户不选择」只禁止 Agent / Provider / 上游 / 模型 / 协议 / endpoint 的 chooser 与猜测；写入前最终确认、凭据输入（仅确实缺失且不能复用时）和 `follow` / `lock` / `observe` 策略授权（见 P0.0.4）继续保留。任何「自动纳入」都不是静默写入，必须有 diff、确认、备份、verify、rollback 与 receipt。
+
 ## P0 发布版产品决策：从当前版本到稳定发布
 
-状态：2026-07-13 用户已确认的最新产品口径。本节优先级高于旧页面草案；旧技术链路、runtime 契约、测试契约继续作为实现约束保留。
+状态：2026-08-05 用户确认的发布前产品口径。本节优先级低于 `P0.0` 的最终收口条款、高于旧页面草案；旧技术链路、runtime 契约、测试契约继续作为实现约束保留。
 
 ### P0.1 产品形态
 
@@ -159,7 +382,7 @@ Agent 接入合同：
 
 1. 首批完整目标为 Claude Code、Codex、OpenCode；支持全局或明确绝对路径的项目作用域。
 2. Transport 路由仍归「安装与连接」所有；Agent 接入事务不得读取或修改 Provider 凭据。
-3. 静态规则、SessionStart Hook/OpenCode compaction Plugin 与恢复 Skill 默认勾选；metadata-only MCP 默认关闭。
+3. 静态规则、SessionStart Hook/OpenCode compaction Plugin 与恢复 Skill 自动纳入同一配置批次（不提供勾选/取消入口）；metadata-only MCP 默认关闭。
 4. Hook/Skill/MCP 只负责状态说明、诊断和恢复，不参与实际请求压缩；Hook 或 MCP 可用不得显示为 Active 已启用。
 5. Codex Hook 写入后必须明确提示用户在 `/hooks` 中完成信任；不得绕过 hash trust。全局 Claude MCP 若需要读取或重写私有 client state 必须 fail closed，改用项目 `.mcp.json`。
 6. 所有目标文件必须经过 before/after hash、redacted diff、明确确认、事务备份、写后校验和整笔回退；新会话要求必须可见。
@@ -225,20 +448,20 @@ Agent 接入合同：
 
 #### P0.7.1 一键安装
 
-一键安装区域负责把 d-token 从“未配置”推进到“真实可用”。普通用户只面对结果和必要决策，不需要依次理解本地服务、provider、route、model、cc-switch、协议和端口。正常路径最多要求用户处理一次歧义/凭据和一次最终确认。
+一键安装区域负责把 d-token 从“未配置”推进到“真实可用”。普通用户只面对结果和必要决策，不需要依次理解本地服务、provider、route、model、cc-switch、协议和端口。正常路径用户唯一必要动作是查看脱敏 diff / 风险 / 备份并确认整个自动批次；多候选、字段不足、schema 未知或凭据不可复用一律 fail-closed 展示冲突来源与「修复来源配置 / 重新扫描」（见 P0.0.10），不提供 chooser，也不猜测。
 
 用户侧核心流程：
 
 ```text
 自动读取本机 Agent、现有上游、cc-switch 和 d-token 状态
   ↓
-唯一高置信度方案：直接显示“已为你准备好”
+自动解析每个 Agent 的唯一当前链路：直接显示“已为你准备好”
   ↓
-存在歧义或凭据缺口：只让用户选择候选或补充必要凭据
+多候选 / 字段不足 / schema 未知 / 凭据不可复用：fail-closed 展示冲突来源与影响，提供「修复来源配置 / 重新扫描」，不提供 chooser；凭据确实缺失且不能复用时才请求输入
   ↓
 展示人话连接摘要；技术路径、diff 和备份信息按需展开
   ↓
-用户确认连接
+用户查看脱敏 diff / 风险 / 备份并确认整个自动批次
   ↓
 自动安装/启动 d-token runtime、应用配置并验证
   ↓
@@ -254,7 +477,7 @@ idle
   -> discovering
   -> already-connected
   -> ready
-  -> needs-choice / needs-credential
+  -> needs-source-fix / needs-credential
   -> review
   -> applying-runtime
   -> applying-agent-configs
@@ -266,9 +489,9 @@ idle
 1. `discovering` 自动开始，不要求用户先点击“检测”；手动刷新只是重新扫描。
 2. `already-connected` 是一等状态：配置一致时不得重复写入、重启或生成无意义 diff，只显示当前连接路径和重新验证。
 3. d-token runtime 安装/启动是“连接 Agent”的内部阶段；只有端口冲突、权限错误、版本不兼容或进程身份异常时才要求用户处理。
-4. `needs-choice` 只展开存在歧义的 Agent/上游，其他已识别字段保持自动结果；`needs-credential` 只请求缺失凭据，不要求重复填写已识别 URL、协议和模型。
+4. `needs-source-fix` 只展示多候选 / 字段不足 / schema 未知 / 凭据不可复用的冲突来源与影响，提供「修复来源配置 / 重新扫描」，其他已识别字段保持自动结果；`needs-credential` 仅在凭据确实缺失且不能复用时请求输入，不要求重复填写已识别 URL、协议和模型。
 5. `verified` 必须来自配置复读、服务健康和真实 route evidence，不能仅凭写文件成功。
-6. 多 Agent 同时配置时，runtime 事务与 Agent 配置批次分层处理；某个选中 Agent 失败时，默认回退本批次已经修改的 Agent 配置。runtime 已安全安装时可以保留，但 UI 必须明确说明“服务已安装，Agent 配置已回退”。
+6. 多 Agent 同时配置时，runtime 事务与 Agent 配置批次分层处理；批次内任一 Agent 失败时，按 whole-batch reverse rollback 逆序回退本批次已经修改的 Agent 配置，不得静默跳过或部分保留。runtime 已安全安装时可以保留，但 UI 必须明确说明“服务已安装，Agent 配置已回退”。
 7. review 后任一源配置 hash 变化都必须使计划失效并重新扫描，防止并发修改被覆盖。
 
 cc-switch 检测要求：
@@ -279,23 +502,23 @@ cc-switch 检测要求：
 4. 检查 cc-switch 是否已经运行、需要启动、是否存在端口冲突。
 5. 检查当前 Agent 是否需要先转发到 d-token，再由 d-token 转发到 cc-switch。
 6. 检查是否需要端口转发、协议转换或 chain bridge。
-7. 对无法确认的配置显示“需要用户确认”，不能静默猜测。
+7. 对无法确认的配置 fail-closed：展示冲突来源、影响和「修复来源配置 / 重新扫描」，不能静默猜测，也不要求用户选择候选。
 8. d-token 对 cc-switch 默认只读：只读取用户配置文件、profile、provider、upstream、端口和运行状态，不自动安装 cc-switch，不静默改写 cc-switch 配置。
 9. 如果某个 Agent 当前不是官方上游配置，而是通过 cc-switch 或用户自定义配置走第三方上游，d-token 必须读取 cc-switch 中对应用户配置文件，并据此配置 d-token 的上游与连接路径。
 10. 用户在 cc-switch 中切换配置/profile 时，d-token 必须能自动感知或在刷新后同步切换对应上游，避免 d-token 仍然指向旧上游。
 11. cc-switch 自动同步是关键功能：UI 必须明确显示“当前 cc-switch profile / 当前上游 / d-token 当前连接路径 / 是否已同步”。
-12. 上游选择默认来自自动发现：合并 Agent 自身配置、OpenCode provider/model catalog、cc-switch 只读配置和 d-token 已保存的非敏感连接资料；已有可发现候选时不得要求用户先手填 URL。
-13. OpenCode 可以同时存在多个 provider/upstream；发现多个有效候选时必须完整列出来源、协议、模型和脱敏地址，让用户显式选择，禁止静默猜测或静默覆盖。
+12. 上游解析默认来自自动发现：合并 Agent 自身配置、OpenCode provider/model catalog、cc-switch 只读配置和 d-token 已保存的非敏感连接资料；已有可解析来源时不得要求用户手填 URL，也不提供上游 chooser。
+13. OpenCode 可以同时存在多个 provider/upstream；发现多个有效候选时不得提供 chooser，必须 fail-closed 完整列出来源、协议、模型和脱敏地址，展示冲突与影响，提供「修复来源配置 / 重新扫描」，禁止静默猜测或静默覆盖。
 14. cc-switch 数据库与配置只读扫描必须版本化、字段白名单化并 fail closed；不得读取、返回或记录完整 profile blob、密钥、token、cookie 和私有 metadata。
 15. 上游解析必须按 Agent 分别完成；Claude Code、Codex、OpenCode、Cursor、Cline 等可以保留各自原有 provider/model，不允许用单个全局模型覆盖所有 Agent。
-16. 唯一且高置信度的当前上游必须自动解析并预选；只有多个同等候选、字段不足、凭据不可复用或格式未知时才要求用户介入。
+16. 唯一且高置信度的当前上游必须自动解析并直接采用；多个同等候选、字段不足、凭据不可复用或格式未知时一律 fail-closed 展示冲突来源与「修复来源配置 / 重新扫描」，不提供 chooser，也不猜测。
 17. cc-switch profile 变化后必须重新比较 d-token active route；不一致时显示 `out-of-sync`，禁止继续静默使用旧上游。
 
 Agent 检测要求：
 
 1. 检测本机已安装 Agent。
 2. 检测每个 Agent 的配置文件位置、hook 能力、环境变量、可用命令、版本、当前上游。
-3. 显示“可一键配置 / 可生成配置建议 / 仅高级手动配置 / 暂不可配置”。
+3. 显示“可自动配置 / 需来源修复后配置 / 暂不可配置”等能力分级，不提供 Agent chooser。
 4. 配置前必须备份，配置后必须验证。
 5. 不允许在 UI 或日志中显示完整 API Key、认证 token、cookie、完整 prompt、完整 response。
 6. 已识别 Agent 和当前上游必须先形成自动连接方案；高级安装不能成为可一键配置 Agent 的默认前置步骤。
@@ -326,7 +549,7 @@ Agent 检测要求：
   ↓
 生成项目理解、约定、架构摘要、常用命令、风险点、Agent 协作建议
   ↓
-用户选择执行方式：直接委托 Claude/Codex 写入，或生成提示词交给自己的 Agent 执行
+用户确认执行方式：自动委托已验证接入且唯一可委托的 Agent，或生成提示词交给自己的 Agent 执行
   ↓
 直接写入项目或全局 Agent 文档的受控追加块 / 插入块，不重写、不删除、不改动文档原有内容
   ↓
@@ -335,7 +558,7 @@ Agent 检测要求：
 
 智能学习必须支持两种执行模式：
 
-1. 直接委托模式：用户选择 Claude 或 Codex，由 d-token 注入提示词并委托其理解项目，随后只以受控追加块 / 插入块方式写入项目或全局文档。
+1. 直接委托模式：d-token 自动选择已验证接入且唯一可委托的 Agent，由 d-token 注入提示词并委托其理解项目，随后只以受控追加块 / 插入块方式写入项目或全局文档；无唯一可委托目标时降级为提示词模式，不提供 Agent chooser。
 2. 提示词模式：d-token 只生成高质量提示词，用户复制给自己的 Agent 执行配置或文档补充。
 3. 无论哪种模式，智能学习都不允许重写整份文档，不允许删除用户原有内容，不允许改动无关段落。
 
@@ -377,12 +600,12 @@ Agent 检测要求：
 
 代码智能图谱通过独立一级页面「代码图谱（实验性）」提供可选本地工具接入，用于让已授权的 Agent 查询项目结构、调用路径与索引状态，并在满足运行证据时打开本地图谱网页。它不是 d-token 路由/压缩热路径，也不替代 Dashboard、Doctor 或 Event Ledger。
 
-首期用户任务固定为：**打开固定官方下载页 → 下载并解压图谱组件 → 放入默认目录或选择自定义目录 → 自动识别与固定校验 → 自动扫描本机 Agent → 多选目标 Agent 与一个项目 → 预览批量接入 → 确认配置 → 由 Agent 启动 MCP 会话或由 d-token 单独启动图谱会话 → 查看分离状态 → 打开安全图谱页 → 停止 d-token-owned 会话、批量回退配置或删除索引**。工具名称、上游版本、许可证、二进制校验状态、项目范围、进程所有者和限制必须可见。
+首期用户任务固定为：**打开当前官方下载页 → 下载并解压图谱组件 → 放入默认目录或选择自定义目录 → 按当前 d-token manifest/allowlist 自动识别与校验 → 自动扫描本机全部已安装且正式支持的 Agent → 自动纳入统一批次并与一个项目关联 → 预览批量接入 → 确认配置 → 由 Agent 启动 MCP 会话或由 d-token 单独启动图谱会话 → 查看分离状态 → 打开安全图谱页 → 停止 d-token-owned 会话、批量回退配置或删除索引**。工具名称、当前受支持版本/来源、许可证、二进制校验状态、项目范围、进程所有者和限制必须可见。
 
 1. 代码智能图谱默认关闭，按显式用户授权启用；它是可选、实验性的外部本地 sidecar，不能成为 d-token runtime、路由、Dashboard 或发布启动所必需的依赖。
-2. 页面进入时必须自动扫描本机 OpenCode、Codex 与 Claude Code，显示 `detected / missing / unsupported / error`，默认勾选全部已检测且受支持的 Agent，并允许多选、取消与重新扫描。「一键批量配置」必须为每个所选 Agent 分别生成脱敏 diff、backup、review digest、apply、复读 verify 与 receipt；任一目标失败时逆序回退本批次已写入目标，不得静默跳过。默认只添加最小 MCP entry；Hook 必须单独显示触发器、命令、匹配范围、Agent 信任/重启要求并二次确认，不得把不同 Agent 的 Hook 能力伪装成统一开关。
+2. 页面进入时必须自动扫描本机 OpenCode、Codex 与 Claude Code，显示 `detected / missing / unsupported / error`，自动纳入全部已检测且受支持的 Agent 到统一批次，不允许用户勾选、多选或取消；重新扫描只是重扫。「一键批量配置」必须为每个自动纳入的 Agent 分别生成脱敏 diff、backup、review digest、apply、复读 verify 与 receipt；任一目标失败时逆序回退本批次已写入目标，不得静默跳过。默认只添加最小 MCP entry；Hook 必须单独显示触发器、命令、匹配范围、Agent 信任/重启要求并二次确认，不得把不同 Agent 的 Hook 能力伪装成统一开关。
 3. 所有 MCP、Hook、instruction 或项目配置写入必须复用 Agent Integration 的 `scan → diff → backup → confirm → atomic apply → parse/semantic verify → receipt → exact rollback` 事务。上游安装器和卸载器不得由 d-token 调用；未知、并发变化、验证失败或非受管目标必须 fail closed。
-4. 首期发行选择是轻量分发：d-token App 只携带自有受限 launcher、管理 UI 与许可证/NOTICE，**不携带大型 headless upstream artifact**，也不代用户联网下载。页面只打开固定的官方 `v0.9.0` GitHub release；用户自行下载对应平台压缩包并解压到 App 展示的默认目录，或选择一个已存在的自定义绝对目录。App 必须自动识别目录根、`bin/` 或单层解压子目录中的目标文件，但只有固定 tag/commit、平台/arch、SHA-256 与允许的参数全部通过后才显示 verified 并开放配置、索引与图谱按钮。任意新版本必须先由 d-token 更新 manifest/allowlist；禁止信任任意 binary、调用上游 `install`/`update`/自更新或接受用户可控下载 URL。上游 UI variant 不进入正式 bundle。
+4. 首期发行选择是轻量分发：d-token App 只携带自有受限 launcher、管理 UI 与许可证/NOTICE，**不携带大型 headless upstream artifact**，也不代用户联网下载。页面打开当前 d-token manifest 指向的官方 release；用户自行下载对应平台压缩包并解压到 App 展示的默认目录，或选择一个已存在的自定义绝对目录。App 必须自动识别目录根、`bin/` 或单层解压子目录中的目标文件，但只有当前 manifest/allowlist 绑定的官方来源、版本、commit、平台/arch、SHA-256 与允许的参数全部通过后才显示 verified 并开放配置、索引与图谱按钮。应用更新时同步更新 manifest/allowlist，以纳入新的兼容版本；非常老或协议/配置能力不兼容的版本继续 fail closed。禁止信任任意 binary、调用上游 `install`/`update`/自更新或接受用户可控下载 URL。上游 UI variant 不进入正式 bundle。
 5. 必须区分两类实例：`agent_mcp` 由选定 Agent 按 MCP stdio 配置启动，父进程和 stdio 归 Agent；`ui_host` 由 d-token 启动并拥有，用于受控索引和安全图谱页。两者不得用同一 PID、同一 stop 权限或一个泛化的 `running` 状态冒充；也不得在没有并发与锁证据时同时写同一缓存。`agent_mcp` 只有在专用 launcher 记录了 PID/birth token、exe hash、project/cache scope 和 MCP initialize/tool evidence 后才能显示 observed/verified，d-token 不得把 Agent-owned 子进程当成自己可停止的服务。launcher 必须执行版本化 MCP tool allowlist：只读工具可转发，索引必须绑定已授权项目并强制 `persistence=false`，cross-repo、ADR write、artifact export、任意路径覆盖与未知工具默认拒绝；请求/响应 payload 不得落日志或 receipt。
 6. 上游的 MCP transport 是 stdio，原生 HTTP UI 生命周期也绑定该 MCP 事件循环；当前版本没有独立 daemon 或 generic `/health`。首期图形网页必须由 d-token-owned、带不可猜测会话授权且只读的 loopback host 提供，或等待上游提供等价的认证、allowed-root 与端点裁剪能力。不得直接发布当前原生 UI：其 `/api/browse` 可浏览项目根之外的目录，`/api/repo-info` 暴露根路径/remote，且存在 index、ADR、delete、RPC、logs 与 process-kill 等端点。打开前必须复检 host、端口所有权、实例身份和短期授权，只允许字面 `http://127.0.0.1:<managed-port>/`。
 7. 索引与持续监测默认关闭。用户必须分别确认「立即索引」和「持续监测」；当前上游对 Git 工作区使用轮询监测，产品文案必须写作“Git 变更监测”，不得承诺文件系统级实时监控或非 Git 工作区持续监测。每个项目必须有可见的文件数、CPU/worker、内存、时间与缓存配额，并支持取消、停止与删除该项目索引。
@@ -391,32 +614,26 @@ Agent 检测要求：
 10. 普通日志、Event Ledger、导出和 Dashboard 只能记录版本/hash、范围摘要、状态转换、资源桶、计数和事务 receipt，不得记录源码、snippet、完整路径/remote、ADR、MCP payload、原始 stderr 或图谱内容。`CBM_DIAGNOSTICS` 必须关闭，环境变量采用显式 allowlist；`CBM_ALLOWED_ROOT`、私有 `CBM_CACHE_DIR`、受限 `CBM_WORKERS` 和必要日志级别由 launcher 固定。
 11. 「停止」只能停止具有完整 d-token 管理证据的 `ui_host` 或其他 d-token-owned 实例；Agent-owned `agent_mcp`、用户自行启动或已有的上游实例只读展示，禁止 kill/restart。Hook/配置回退、索引删除和缓存清理必须分别提供影响说明、确认、验证和 receipt；删除索引不得删除用户源码或非 d-token-owned 文件。
 
-首期验收：在 macOS 与 Windows 各自的隔离测试配置中，证明安装包不含 upstream 大文件、默认/自定义目录导入可自动从 unavailable 变为 verified、坏 hash/平台/arch fail closed、全量 Agent 扫描与多选批量 MCP transaction、批次失败逆序回退、一个明确同意的 Hook transaction、`agent_mcp`/`ui_host` 所有权分离、项目范围与 repo-write 拒绝、安全网页授权与端点 allowlist、索引取消/删除和完整配置回退。真实用户 Claude/Codex 配置写入、原生 upstream UI 直出、常驻 daemon、跨项目图谱、ADR 写入与任意上游更新均不属于首期默认行为。
+首期验收：在 macOS 与 Windows 各自的隔离测试配置中，证明安装包不含 upstream 大文件、默认/自定义目录导入可自动从 unavailable 变为 verified、坏 hash/平台/arch fail closed、全量 Agent 扫描与自动纳入批量 MCP transaction、批次失败逆序回退、一个明确同意的 Hook transaction、`agent_mcp`/`ui_host` 所有权分离、项目范围与 repo-write 拒绝、安全网页授权与端点 allowlist、索引取消/删除和完整配置回退。真实用户 Claude/Codex 配置写入、原生 upstream UI 直出、常驻 daemon、跨项目图谱、ADR 写入与任意上游更新均不属于首期默认行为。
 
 详细研究与实施分解见 `docs/research/CODEBASE_MEMORY_MCP_INTEGRATION_RESEARCH_2026-07-16.md` 与 `docs/PLAN.md` §1D。
 
 #### P0.7.3 高级安装
 
-高级安装面向熟悉 Agent、上游、端口和路由的用户。它不能替代一键安装，但必须允许用户完全自定义：
+高级安装面向熟悉 Agent、上游、端口和路由的用户。它不能替代一键安装；按 P0.0.10 硬合同，高级 UI 同样不提供 Agent / Provider / 上游 / 模型 / 协议 / endpoint / cc-switch profile 的 chooser，这些一律由自动解析决定。高级安装只允许：
 
-1. Agent 使用哪个上游。
-2. Agent 是否先经过 d-token。
-3. d-token 是否再转发到 cc-switch。
-4. cc-switch 使用哪个 profile/config。
-5. d-token 本地服务端口。
-6. cc-switch 端口。
-7. provider 协议：OpenAI-compatible、Anthropic-compatible、本地 provider、未知/自定义。
-8. 是否启用端口转发或 chain bridge。
-9. fallback 策略。
-10. 超时、重试、健康检查、日志级别。
+1. 查看每个 Agent 自动解析的当前链路（上游、是否先经过 d-token、是否再转发到 cc-switch、cc-switch current profile、provider 协议、chain mode），只读展示并标注来源。
+2. 编辑 d-token 侧运行参数：d-token 本地服务端口、cc-switch 端口、超时、重试、健康检查、日志级别。
+3. 明确授权 fallback 策略（仍禁止静默跨 Provider，见 P0.0.9）。
+4. 多候选 / 字段不足 / schema 未知 / 凭据不可复用时，与一键安装相同 fail-closed：展示冲突来源与影响，提供「修复来源配置 / 重新扫描」，不提供 chooser、不猜测。
 
-高级安装必须从自动发现和自动连接方案渐进展开，不能让用户从空白表单重新配置已经识别的内容。用户从“自定义此方案”进入时必须预填：Agent、当前配置来源、provider、协议、base URL、模型、凭据引用状态、d-token/cc-switch 路径、端口、chain mode 以及可靠性默认值。
+高级安装必须从自动发现和自动连接方案渐进展开，不能让用户从空白表单重新配置已经识别的内容。用户进入时必须只读展示自动解析结果：Agent、当前配置来源、provider、协议、base URL、模型、凭据引用状态、d-token/cc-switch 路径、端口、chain mode 以及可靠性默认值；可编辑字段仅限上述 d-token 侧运行参数与 fallback 策略授权。
 
 1. 高级安装按“基础连接 → 网络与协议 → 可靠性 → 诊断”渐进组织，普通用户无需展开全部字段。
-2. 自动模式和高级模式必须共享同一数据模型、校验器和事务引擎；高级模式只增加 override，不能复制第二套 route/provider 写入逻辑。
-3. override 支持全局默认和 Agent 级覆盖；未覆盖字段继续继承自动发现结果。
+2. 自动模式和高级模式必须共享同一数据模型、校验器和事务引擎；高级模式只增加运行参数 override，不能复制第二套 route/provider 写入逻辑，也不能覆盖 Agent/Provider/模型/协议/endpoint 的自动解析结果。
+3. override 支持全局默认和运行参数级覆盖；未覆盖字段继续继承自动解析结果。
 4. 必须提供“恢复自动推荐”，它只清除 override，不删除或重写用户原有第三方配置。
-5. 自定义方案仍必须通过 diff、backup、confirm、verify 和 rollback；源配置变化时必须重新审阅。
+5. 自定义方案仍必须通过 diff、backup、confirm、verify 和 rollback；源配置变化时必须重新审阅并使计划失效。
 6. 高级安装必须自动显示检测到的端口、上游、配置文件和风险，但不能在用户未确认时自动修改。
 
 #### P0.7.4 日志
@@ -502,17 +719,17 @@ Doctor 预制模块目录至少包括：
 13. cc-switch 同步检查：只读发现 cc-switch，只修复 d-token 侧 Route，不写其 profile 或数据库。
 14. 备份与回退链路复检：验证完整性、事务归属和当前可恢复性；损坏证据只报告并引导到“变更与回退”。
 
-低风险候选可以默认勾选，但实际动作仍必须由用户点击确认。服务启停前必须重新验证 PID 出生标识、可执行文件路径/hash、端口所有权、精确 runtime identity/version/instance nonce；legacy manifest 或任一身份字段缺失时禁止自动重启。外部进程占用端口时必须保护性阻止，禁止自动停止或替换；仅跳转到其他页面不得标记为“已修复”。
+低风险修复自动纳入批次，实际动作仍必须由用户一次确认，不提供勾选/多选入口。服务启停前必须重新验证 PID 出生标识、可执行文件路径/hash、端口所有权、精确 runtime identity/version/instance nonce；legacy manifest 或任一身份字段缺失时禁止自动重启。外部进程占用端口时必须保护性阻止，禁止自动停止或替换；仅跳转到其他页面不得标记为“已修复”。
 
-Agent 类模块使用统一弹窗，流程为“选择 Agent → 选择作用域 → 审阅 → 执行结果”。Agent 与 executor 来自动态 registry；只允许选择已有 d-token 接入证据且该模块存在 executor 的 global/project 目标，用户勾选最终作用域，禁止遍历或修改无接入证据的任意项目。审阅必须按 Agent 分页展示异常、影响文件、脱敏逐文件 Diff、before/after SHA-256、备份/回退策略、服务重启、信任和新会话要求。
+Agent 类模块使用统一弹窗，流程为“自动纳入批次 → 审阅作用域 → 执行结果”。Agent 与 executor 来自动态 registry；只允许修复已有 d-token 接入证据且该模块存在 executor 的 global/project 目标，目标由自动扫描纳入，用户只审阅并确认整批作用域，不提供 Agent 勾选/多选，禁止遍历或修改无接入证据的任意项目。审阅必须按 Agent 分页展示异常、影响文件、脱敏逐文件 Diff、before/after SHA-256、备份/回退策略、服务重启、信任和新会话要求。
 
-多选 Agent 后只确认一次，但按 Agent 顺序执行，避免文件锁与配置竞争；同一 Agent 的多个 surface 合并成一个事务。每个 Agent 必须拥有独立 plan、transaction、backup、verify、rollback 和 receipt；单个 Agent 失败后继续其他 Agent，成功 Agent 不自动回退。最终逐 Agent 显示 `verified / partial / failed / blocked`，并提供 Diff、日志和精确回退入口。
+批次内全部 Agent 自动纳入，用户只确认一次，但按 Agent 顺序执行，避免文件锁与配置竞争；同一 Agent 的多个 surface 合并成一个事务。每个 Agent 必须拥有独立 plan、transaction、backup、verify、rollback 和 receipt；批次内任一 Agent 失败时，按 whole-batch reverse rollback 逆序回退本批次已写入目标，不得静默跳过或部分保留。最终逐 Agent 显示 `verified / partial / failed / blocked`，并提供 Diff、日志和精确回退入口。
 
 Doctor v3 的模块注册、扫描模型、修复规划和回执归 `dtoken-doctor` 所有；Tauri 只采集平台证据并调用现有 Service、Route、Agent Integration、Optical 执行器，禁止在 Doctor 内重写第二套配置 patcher。核心合同为 `DoctorSnapshotV3`、`DoctorRepairModule`、`DoctorRepairPlan` 和 `DoctorRepairReceipt`。桌面窄命令为 `get_doctor_snapshot`、`run_doctor_scan`、`get_doctor_repair_modules`、`preview_doctor_repair`、`apply_doctor_repair`、`verify_doctor_repair`；兼容期内部适配命令不得扩大前端写入权限。执行前必须重新校验 snapshot revision、plan digest、文件哈希、服务身份和短 TTL 确认凭证；前端不得提交任意路径、命令或配置正文。
 
 Doctor 还必须能生成“修复提示词”，让用户复制给 Claude/Codex/OpenCode 等 Agent 协助修复项目配置或解释错误。
 
-验收：无 Agent 时不得全绿；一次点击只生成一个统一快照；外部端口占用不得自动杀进程；修复必须经过预览、确认和自动复检；多 Agent 允许部分成功且逐 Agent 有独立回执/回退；Optical Active、cc-switch 写入、无管理证据 Agent 和无专用 executor 操作全部阻止；浏览器 preview、stale、partial 与无完整回执场景全部 fail closed。
+验收：无 Agent 时不得全绿；一次点击只生成一个统一快照；外部端口占用不得自动杀进程；修复必须经过预览、确认和自动复检；批次内任一 Agent 失败必须逆序回退本批次已写入目标，且逐 Agent 有独立回执/回退证据；Optical Active、cc-switch 写入、无管理证据 Agent 和无专用 executor 操作全部阻止；浏览器 preview、stale、partial 与无完整回执场景全部 fail closed。
 
 ### P0.10 第六页：变更与回退
 
@@ -694,15 +911,15 @@ d-token Event Ledger / Dashboard / Doctor / Logs / App
 2. 已存在的外部 Headroom 服务，例如 `http://127.0.0.1:8787/dashboard`，只能作为迁移对照和 no-touch 只读参考；不能作为成品 App Dashboard 的依赖。
 3. d-token 必须拥有自己的本地服务、端口、stats/history/metrics、Event Ledger、ProviderProfile、RouteProfile、InstanceProfile 和 Dashboard 数据模型。
 4. Headroom Dashboard 的所有数据与页面能力要迁移到 d-token App，但数据应来自 d-token-owned runtime，而不是直接轮询外部 Headroom Dashboard。
-5. OpenCode 是第一条真实测试入口：测试请求必须从 OpenCode 打到 d-token，再由 d-token 完成压缩、路由和上游转发；发布验收优先使用 OpenCode 官方目录中当时可用的免费模型，并在执行前显式展示所选 provider/model，不消耗或静默切换用户的付费上游。
+5. OpenCode 是第一条真实测试入口：测试请求必须从 OpenCode 打到 d-token，再由 d-token 完成压缩、路由和上游转发；发布验收优先使用 OpenCode 官方目录中当时可用的免费模型，并在执行前显式展示自动解析的 provider/model，不消耗或静默切换用户的付费上游。
 6. 正确测试链路是 `OpenCode -> d-token local service -> d-token Headroom-derived runtime -> d-token route adapter -> official/custom/cc-switch upstream`。
 7. 任何实现如果把链路写成 `App -> external Headroom 8787 -> Dashboard data`，都是错误方向。
 8. 开发期可用 external Headroom 做只读对照，但不得启动、停止、重启、改配置、占端口或依赖其作为产品主路径。
-9. OpenCode 真实测试使用本机正常 OpenCode 环境和真实配置文件位置，不用 fake HOME 或 fake config；测试候选由自动发现结果显式选取，发布验收默认选择 OpenCode 官方免费 provider/model。测试目标是证明真实 OpenCode 流量经过 d-token local service，而不是证明 OpenCode 可直连官方模型。
+9. OpenCode 真实测试使用本机正常 OpenCode 环境和真实配置文件位置，不用 fake HOME 或 fake config；测试链路由自动发现结果自动解析，发布验收默认自动解析 OpenCode 官方免费 provider/model，无法唯一解析时 fail-closed 展示来源冲突。测试目标是证明真实 OpenCode 流量经过 d-token local service，而不是证明 OpenCode 可直连官方模型。
 10. OpenCode 是当前阶段唯一允许使用真实用户 agent 配置进行测试的入口；该例外不得扩展到 Claude Code、Codex、Cursor、Cline、Roo、Continue、Windsurf、系统代理或 shell profile。
 11. 若为了验证真实 routed path 需要给 OpenCode 配置增加 d-token provider/route，必须先备份原配置，只做最小变更，记录 backup 路径和 diff 摘要；禁止读取、打印、持久化或提交 OpenCode 密钥和会话凭据。
-12. 开发测试不能产品化成正式 UI：真实测试、workload benchmark、smoke test、fixture/mock/fake-bin 结果属于开发脚本、CI gate、测试报告和内部诊断证据，不能作为最终用户主界面里的“测试卡片”或“测试中心”长期保留。正式 App UI 只面向用户任务：安装/启用 d-token 服务、选择 agent、配置 provider/route/cc-switch、查看运行状态、Doctor 诊断修复、Dashboard/Logs/Export。
-13. 最终 App 必须兼容所有目标 agent；OpenCode 只是当前第一条真实验收入口，不代表产品只服务 OpenCode，也不能把 OpenCode 测试逻辑硬编码成最终信息架构。当前阶段的真实验收口径应是：安装/启动 d-token-owned 服务后，在正式安装/配置流程中选择 OpenCode，点击 OpenCode 的安装/配置/连接动作，随后由开发侧脚本或 CI 证明请求确实经过 d-token。
+12. 开发测试不能产品化成正式 UI：真实测试、workload benchmark、smoke test、fixture/mock/fake-bin 结果属于开发脚本、CI gate、测试报告和内部诊断证据，不能作为最终用户主界面里的“测试卡片”或“测试中心”长期保留。正式 App UI 只面向用户任务：安装/启用 d-token 服务、自动扫描并接入 Agent、自动解析 provider/route/cc-switch、查看运行状态、Doctor 诊断修复、Dashboard/Logs/Export。
+13. 最终 App 必须兼容所有目标 agent；OpenCode 只是当前第一条真实验收入口，不代表产品只服务 OpenCode，也不能把 OpenCode 测试逻辑硬编码成最终信息架构。当前阶段的真实验收口径应是：安装/启动 d-token-owned 服务后，在正式安装/配置流程中启动一键配置，OpenCode 自动纳入批次并执行其安装/配置/连接动作，随后由开发侧脚本或 CI 证明请求确实经过 d-token。
 14. 任何 UI、安装流、Dashboard、Doctor 或测试入口设计前，必须先按产品经理视角判断用户任务：用户是在“安装/连接/配置/诊断/查看状态”，不是在“跑测试”。只有完成这个产品语义翻译后，才能落到代码实现。
 15. 新增或重做 App 流程时，必须先参考成熟桌面控制面产品的应用逻辑，例如连接状态、配置入口、诊断分区、日志导出、备份回滚，而不是把开发脚本、benchmark 或 smoke test 直接搬进正式 UI。
 16. 浏览器、桌面窗口或截图验收只能证明界面显示正常；不得用它替代真实功能接入证明。真实功能接入必须同时看到 d-token-owned local service、route adapter、Event Ledger、metrics/export 和 OpenCode routed flow 等证据。
@@ -720,10 +937,10 @@ d-token Event Ledger / Dashboard / Doctor / Logs / App
 9. 当前 d-token runtime 必须支持 Anthropic-shaped `/v1/messages` 输入显式桥接到已配置的 OpenAI-compatible / cc-switch-style provider；禁止在 route 缺失时自动回退到官方 Anthropic。
 10. d-token runtime 必须提供真实可逆 CCR：压缩时生成不可猜测 recovery reference，原文只进入有 TTL、容量上限、加密静态存储与精确删除语义的本地隔离区；普通日志、Dashboard、Event Ledger 与 export 仍只保存 metadata。默认关闭原文存储；启用后 retrieval 必须经过本机权限边界、引用校验、审计和过期检查，禁止把 CCR 原文混入普通 API、错误或导出。
 11. d-token runtime 必须提供真实 local/cross-agent/per-project memory、SharedContext、learn 与 output shaping。memory 只保存用户允许的结构化/脱敏学习内容与 provenance，不把整段 raw prompt/response 当记忆；learn 必须支持 preview、managed block、backup、verify、rollback；output shaping 必须实际参与 route-resolved 请求，并将 measured、holdout-estimated 与 unknown 严格区分。
-12. 当前 OpenCode 验证以真实 routed path 为主：`OpenCode 正常配置位置 -> 经用户确认的 d-token provider/baseURL 最小变更 -> d-token :18001 -> 用户显式选择的官方免费或已发现 upstream`。OpenCode routed test 不使用隔离 HOME、fake config 或 fake provider；任何临时路由都必须走产品的 preview/confirm/apply/verify/rollback 事务。早期 direct command / fake-bin 测试只能作为诊断辅助，不能作为真实接入完成证据。
+12. 当前 OpenCode 验证以真实 routed path 为主：`OpenCode 正常配置位置 -> 经用户确认的 d-token provider/baseURL 最小变更 -> d-token :18001 -> 自动解析的唯一高置信官方免费或已发现 upstream`。OpenCode routed test 不使用隔离 HOME、fake config 或 fake provider；任何临时路由都必须走产品的 preview/confirm/apply/verify/rollback 事务。早期 direct command / fake-bin 测试只能作为诊断辅助，不能作为真实接入完成证据。
 13. 当前 UI 实现契约：安装页可以有 OpenCode 的正式安装/配置入口，但不得以“运行真实链路测试”“workload benchmark”“能力自检测试”作为面向最终用户的主操作。开发验收可以通过隐藏 dev mode、脚本、CI 或测试报告触发同一后端能力；正式 UI 文案必须转换为用户可理解的“连接 OpenCode”“配置路由”“验证配置”“查看诊断结果”。
 14. 当前前端所有真实运行数据来源必须指向 d-token 自己的服务或 Tauri command 汇总结果；普通 browser preview 使用诚实空态，不加载 Fixture/mock。Fixture/mock 与外部 Headroom 对照只能存在于 `support/`、自动化测试、隐藏 dev harness 或报告，不能进入生产 UI，也不能成为“已接入真实能力”的判定依据。
-15. 当前 OpenCode 安装/配置验收必须模拟真实用户路径：选择 OpenCode agent，应用经过备份的最小配置 diff，验证请求进入 d-token Event Ledger，再回到 Dashboard/Logs/Doctor 展示脱敏状态。不得把该验收设计成面向最终用户的“OpenCode 测试页”。
+15. 当前 OpenCode 安装/配置验收必须模拟真实用户路径：OpenCode 自动纳入批次，应用经过备份的最小配置 diff，验证请求进入 d-token Event Ledger，再回到 Dashboard/Logs/Doctor 展示脱敏状态。不得把该验收设计成面向最终用户的“OpenCode 测试页”。
 
 ### 0.0.2 Hybrid Context Optimization Engine 后端合同
 
@@ -773,7 +990,7 @@ RTK                      = runtime 内部命令执行层能力，不作为用户
   ↓
 打开图形化安装向导
   ↓
-选择 agent / provider / cc-switch / 压缩策略
+自动扫描已安装 Agent 并自动解析 provider / cc-switch / 压缩策略（无 Agent/provider/model chooser）
   ↓
 d-token 自动安装或启用内置 runtime
   ↓
@@ -794,8 +1011,8 @@ d-token 自动安装或启用内置 runtime
 ### 0.4 产品创新点
 
 1. 把 Headroom 的命令行安装、wrap、proxy、dashboard、doctor、learn、RTK 状态、provider 配置，做成 Windows/macOS 可视化 App。
-2. 用户可以图形化选择安装/接入哪些 agent：Claude Code、Codex、Cursor、Cline、OpenCode、Aider、Continue、Goose、OpenHands、Copilot CLI 等。
-3. 用户可以图形化选择官方上游、自定义第三方 OpenAI-compatible / Anthropic-compatible 上游、cc-switch / chain bridge 路由。
+2. 自动扫描并接入全部已安装且正式支持的 agent：Claude Code、Codex、Cursor、Cline、OpenCode、Aider、Continue、Goose、OpenHands、Copilot CLI 等，不允许用户在 UI 中选择/勾选/取消。
+3. 自动解析官方上游、自定义第三方 OpenAI-compatible / Anthropic-compatible 上游、cc-switch / chain bridge 路由，不允许用户在 UI 选择 provider/上游/模型/协议/endpoint。
 4. 支持直接压缩后发到自定义 URL：官方 URL、第三方中转 URL、本地 provider URL。
 5. 支持需要二次路由的场景：先压缩，再转发到 cc-switch，再由 cc-switch 路由到最终 provider。
 6. 典型场景：Claude Code 中使用 OpenCode Go 订阅，需要 cc-switch 路由；d-token 负责先压缩、再转发一次到 cc-switch。
@@ -824,15 +1041,15 @@ d-token 自动安装或启用内置 runtime
 ```text
 打开 d-token 桌面 App
   ↓
-选择傻瓜模式或高级模式
+启动真实本地服务并点击「开始一键配置」（无 Agent/provider/model chooser）
   ↓
-选择 agent
+自动扫描全部已安装且正式支持的 Agent
   ↓
-选择压缩能力与项目策略
+自动解析压缩能力与项目策略
   ↓
-选择 provider：官方 / 第三方自定义 URL / cc-switch / chain bridge
+自动解析 provider：官方 / 第三方自定义 URL / cc-switch / chain bridge
   ↓
-预览 diff / 风险 / 回滚点
+预览聚合脱敏 diff / 风险 / 回滚点
   ↓
 一键安装或启用内置 runtime
   ↓
@@ -874,11 +1091,11 @@ d-token 自动安装或启用内置 runtime
 
 开发期默认必须通过 fixture、fake binary、临时 HOME、临时 PATH、临时端口、mock provider、sandbox config 来验证 d-token 自身逻辑。
 
-OpenCode Real Route Track 是当前用户明确授权的例外：为了验证真实链路，OpenCode 测试可以使用用户正常 OpenCode 环境和真实配置文件位置，不强制隔离 HOME，也不要求先造 fake config；provider/model 必须来自自动发现并由用户显式选择，发布验收默认使用 OpenCode 官方免费模型。该例外只适用于 OpenCode routed / streaming / workload test，不得扩展到 Claude Code、Codex、Cursor、Cline、外部 Headroom、RTK、cc-switch、系统代理或 shell profile。
+OpenCode Real Route Track 是当前用户明确授权的例外：为了验证真实链路，OpenCode 测试可以使用用户正常 OpenCode 环境和真实配置文件位置，不强制隔离 HOME，也不要求先造 fake config；provider/model 必须来自自动发现并自动解析，无法唯一解析时 fail-closed，发布验收默认使用 OpenCode 官方免费模型。该例外只适用于 OpenCode routed / streaming / workload test，不得扩展到 Claude Code、Codex、Cursor、Cline、外部 Headroom、RTK、cc-switch、系统代理或 shell profile。
 
-OpenCode 真实测试的默认动作是“在正常配置位置通过受控事务接入 d-token，再用显式选择的官方免费候选跑通链路”。只有在需要把 OpenCode provider/baseURL 指向 d-token 时，才允许对 OpenCode 配置做最小变更；变更前必须备份，报告中只记录 backup 路径和脱敏 diff 摘要，验证后必须逐字节恢复，禁止读取、打印、保存或提交密钥、token、cookie、auth 文件、完整 prompt/response。
+OpenCode 真实测试的默认动作是“在正常配置位置通过受控事务接入 d-token，再用自动解析的唯一高置信官方免费候选跑通链路”。只有在需要把 OpenCode provider/baseURL 指向 d-token 时，才允许对 OpenCode 配置做最小变更；变更前必须备份，报告中只记录 backup 路径和脱敏 diff 摘要，验证后必须逐字节恢复，禁止读取、打印、保存或提交密钥、token、cookie、auth 文件、完整 prompt/response。
 
-OpenCode 真实测试对应的产品动作不是“测试 OpenCode”，而是“在安装向导中接入 OpenCode”：启动/安装 d-token-owned 服务，选择 OpenCode agent，生成并预览配置 diff，备份 OpenCode 配置，应用最小配置变更，验证配置生效，回到 Dashboard 显示真实路由与压缩数据。测试脚本只负责在幕后证明该产品动作有效。
+OpenCode 真实测试对应的产品动作不是“测试 OpenCode”，而是“在安装向导中接入 OpenCode”：启动/安装 d-token-owned 服务，OpenCode 自动纳入批次，生成并预览配置 diff，备份 OpenCode 配置，应用最小配置变更，验证配置生效，回到 Dashboard 显示真实路由与压缩数据。测试脚本只负责在幕后证明该产品动作有效。
 
 ### 3.3 成品安装事务
 
@@ -929,11 +1146,24 @@ d-token 将直接吸收和修改 Headroom 能力，形成 Headroom-derived runti
 3. CCR reversible compression 与 local retrieval。
 4. Local proxy / SDK / MCP server。
 5. Agent wrap / unwrap。
-6. Cross-agent memory、per-project memory、SharedContext。
+6. memory / SharedContext 的请求内授权接口与 provenance 记录；跨 Agent 复用的 Context Bus 由独立的 LeanCTX 对齐层负责。
 7. learn / verbosity / output shaper。
 8. Metrics、stats、history、dashboard primitives。
 9. Integrated RTK install / hook / wrap-side metrics bridge。
 10. Windows/macOS 兼容性补丁：UTF-8、路径、shim、端口、进程身份。
+
+### 4.1.1 LeanCTX / Context Bus-derived owns
+
+LeanCTX 对齐层不是外部 Python sidecar，也不是 Headroom proxy 的隐式依赖。它必须由 d-token-owned service 以独立 capability 和证据域提供：
+
+1. Context Bus、Session Cache、Context Relay 和 Query-aware Retrieval；
+2. map、signatures、code map、脱敏摘要和已验证结论的项目级复用；
+3. 用户、项目、Agent、Session scope、freshness、provenance、deduplication 和失效；
+4. Recovery Pointer/Manifest、Stale/Superseded Context 和文件变化后的安全拒绝；
+5. 跨 Agent 命中与压缩收益分离计量，Relay 失败回退正常读取；
+6. export/delete、TTL/quota、崩溃恢复和授权审计。
+
+该层的上游来源、许可证、参考 commit、修改边界和行为差异必须独立登记。没有真实跨 Agent 证据时，只能显示 `partial`/`unavailable`，不得因为 Headroom codec 或 CCR 通过而自动变绿。
 
 ### 4.2 Integrated RTK owns
 
@@ -952,7 +1182,7 @@ RTK 不作为用户可选的独立产品路径出现。
 ### 4.3 d-token App owns
 
 1. Windows/macOS desktop app。
-2. 图形化安装向导与工具选择。
+2. 图形化安装向导与自动配置批次。
 3. 傻瓜模式与高级模式。
 4. 内置 runtime 的安装、启用、升级、停止、卸载、回滚。
 5. ProviderProfile / RouteProfile / InstanceProfile / ProjectProfile。
@@ -1021,7 +1251,7 @@ Final upstream provider
 4. Provider 401 必须显示为 route/provider mismatch，而不是泛化为 token 错误。
 5. Header stripping、Authorization 选择、base URL 选择必须可审计。
 6. GUI 必须展示“当前请求实际会去哪里”。
-7. 用户不需要理解底层两次转发，只需要在图形界面选择“使用 cc-switch 路由”。
+7. 用户不需要理解底层两次转发；是否走 cc-switch 由自动解析的当前生效链路决定，不提供该选择的 UI。
 
 ### 5.3 d-token-native 替代路径
 
@@ -1106,7 +1336,9 @@ Standalone RTK 不作为用户路径保留。d-token 必须适配 integrated RTK
 
 ## 8. Headroom-derived runtime 适配范围
 
-当前公开试用候选必须完整保留、吸收并实现：Library / SDK、Local proxy、Agent wrap / unwrap、MCP server、Content-aware compression pipeline、ContentRouter、CacheAligner、SmartCrusher、CodeCompressor、Kompress/text compressor、image compression、live-zone compression、CCR reversible compression、local retrieval、Cross-agent memory、Per-project memory、SharedContext、learn、output shaper、verbosity steering、effort routing、durable savings ledger、metrics endpoints、Historical stats、JSON/CSV export、Cost tracking、Per-model/per-agent/per-project breakdown、Doctor/perf/benchmark/troubleshooting、integrated RTK。
+当前公开试用候选必须完整保留、吸收并实现：Library / SDK、Local proxy、Agent wrap / unwrap、MCP server、Content-aware compression pipeline、ContentRouter、CacheAligner、SmartCrusher、CodeCompressor、Kompress/text compressor、**Optical context compression（代码/上下文 → PNG → 多模态模型输入）**、live-zone compression、CCR reversible compression、local retrieval、Cross-agent memory、Per-project memory、SharedContext、learn、output shaper、verbosity steering、effort routing、durable savings ledger、metrics endpoints、Historical stats、JSON/CSV export、Cost tracking、Per-model/per-agent/per-project breakdown、Doctor/performance/troubleshooting、integrated RTK。
+
+普通图片文件的 resize、re-encode、tile、ONNX 推理或通用图片上传压缩不属于 d-token 范围，也不得被当作 Optical 迁移完成条件。
 
 完成判定必须逐能力同时满足：真实 Rust-owned 执行路径、公开/内部接口、正常与失败路径测试、隐私与资源上限、Event Ledger/metrics 证据，以及至少一条实际 Agent routed flow。只有路由定义、Tauri command、metadata summary、preview、fixture smoke 或 UI 入口不算迁移完成。对上游实现只做行为参考时必须记录参考 commit 与许可证；复制或修改代码时必须额外记录 NOTICE、文件范围与变更说明。
 
@@ -1207,7 +1439,7 @@ interface RouteProfile {
 5. route decision 必须进入 Event Ledger。
 6. Dashboard 必须显示当前 agent → compression → route → provider 的完整链路。
 7. 所有 fallback 默认禁用；如支持 fallback，必须显式展示并要求用户确认。
-8. 用户可以选择“压缩后直连自定义 URL”或“压缩后转发到 cc-switch”。
+8. 转发形态（压缩后直连自定义 URL，或压缩后转发到 cc-switch）由自动解析的当前生效配置决定，用户不得在 UI 选择；来源不足时 fail-closed。
 
 ## 9. Headroom-derived 项目级压缩策略
 
@@ -1371,10 +1603,10 @@ GUI 必须覆盖并逐步取代普通用户对以下命令或页面的依赖：
 必须包含：
 
 1. Welcome / Setup Wizard。
-2. 傻瓜模式 / 高级模式选择。
-3. Agent Selection。
-4. Provider Setup：官方 / 第三方自定义 URL / cc-switch。
-5. Route Builder：agent → compression → provider / cc-switch。
+2. 首次引导：真实启动服务 + 「开始一键配置」按钮（无 Agent/provider/model chooser）。
+3. Agent 自动扫描与统一批次（只读展示，不允许选择/勾选/取消）。
+4. Provider/Route 自动解析与来源修复（只读展示，多候选时 fail-closed 提供「修复来源配置 / 重新扫描」）。
+5. Route 状态展示：agent → compression → provider / cc-switch。
 6. Runtime Status。
 7. Integrated RTK Status。
 8. Project Policy。
@@ -1392,8 +1624,8 @@ GUI 必须覆盖并逐步取代普通用户对以下命令或页面的依赖：
 正式 UI 必须遵守以下边界：
 
 1. 不展示“测试 workload”“benchmark”“smoke test”“fixture test”“mock test”“fake binary test”等开发验收概念。
-2. 不把 OpenCode 当前测试入口设计成长期独立测试页；OpenCode 应作为 Agent Selection / Install Wizard / Route Builder 中的一个 agent。
-3. 安装页的主路径是：服务状态 → 选择 agent → 配置 provider/route → 预览 diff/backup → 应用 → 验证 → Doctor/Dashboard。
+2. 不把 OpenCode 当前测试入口设计成长期独立测试页；OpenCode 应作为自动纳入批次中的普通一员，与其他 Agent 共享同一接入模型。
+3. 安装页的主路径是：服务状态 → 开始一键配置（自动扫描全部 Agent、自动解析 provider/route）→ 预览脱敏 diff/backup → 一次确认整批 → 应用 → 验证 → Doctor/Dashboard。
 4. 对用户可见的验证文案应是“验证配置”“诊断连接”“检查路由是否生效”，不能是“跑真实测试”。
 5. 所有真实功能仍必须可被自动化测试覆盖，但触发位置应在 `support/scripts`、CI、Tauri command-level harness、隐藏 dev mode 或测试报告中。
 6. OpenCode 当前验收只允许验证“安装/启动服务后，点击 OpenCode 的安装/配置/连接动作是否生效”；该验收不能把最终 App 变成 OpenCode 专用测试工具。
@@ -1401,12 +1633,12 @@ GUI 必须覆盖并逐步取代普通用户对以下命令或页面的依赖：
 8. 多 agent 兼容是最终产品原则。Claude Code、Codex、Cursor、Cline、OpenCode 等都应共享同一套 agent 接入模型、路由模型、Doctor 模型和 Dashboard 模型。
 9. 浏览器或桌面窗口人工验收只能证明 UI 显示、交互、状态切换和可读性正常，不能被写成“真实功能已接入”的证据。真实接入完成必须由 d-token-owned runtime/API/Tauri command、Event Ledger、metrics/export、OpenCode routed flow 等运行证据共同证明。
 10. 正式 App 中的 OpenCode 入口只能表达为“连接 OpenCode”“配置 OpenCode”“应用配置”“验证配置”“查看运行状态/日志/诊断”，不能表达为“测试 OpenCode”“跑 benchmark”“跑 workload”。同一条真实验证链路可以由开发脚本复用，但不能变成用户主界面的测试产品。
-11. 安装/连接流程必须以 d-token 自有服务为中心：启动或连接 d-token-owned local service，选择 agent，生成 route/provider 配置，备份并应用最小 diff，验证请求是否进入 d-token Event Ledger。不得把外部 Headroom、外部 RTK 或外部 cc-switch 服务当作 UI 数据源或完成态依据。
+11. 安装/连接流程必须以 d-token 自有服务为中心：启动或连接 d-token-owned local service，自动扫描 Agent，自动生成 route/provider 配置，备份并应用最小 diff，验证请求是否进入 d-token Event Ledger。不得把外部 Headroom、外部 RTK 或外部 cc-switch 服务当作 UI 数据源或完成态依据。
 12. OpenCode 是第一条真实验收入口，不是产品信息架构中心。后续 Claude Code、Codex、Cursor、Cline 等 agent 必须复用同一套 agent 接入、配置 diff、备份回滚、路由验证、Doctor 和 Dashboard 模型。
 13. 测试结果可以进入开发报告、CI artifact、`support/artifacts` 或隐藏 dev mode，但正式 UI 只展示用户能理解和能操作的产品状态：已连接、待配置、配置已备份、路由已生效、服务运行中、诊断通过、日志可查看。
 14. 若后续需要在 UI 中触发“验证配置”，按钮背后的实现可以调用真实 OpenCode 或其他 agent，但 UI 必须只展示脱敏后的配置生效、路由命中、事件入账和诊断结果，不展示完整 prompt/response、密钥、cookie、auth 文件或开发 benchmark 细节。
 15. UI 中不得为了“方便测试”增加长期可见的测试中心、测试标签页、测试按钮、测试报告卡片；开发人员需要的验证入口必须放在脚本、CI、Tauri command harness、隐藏 dev mode 或文档化报告中。允许存在正式产品页「视觉压缩（Beta）」用于 metadata 观测与 shadow 规划预览，但其文案与交互必须面向用户任务，不得呈现 lab/benchmark/workload/fixture 开发语义。
-16. 安装页不承担测试中心职责；它只承担服务安装/启动、agent 选择、provider/route 配置、diff/backup/apply、验证配置、跳转 Doctor/Dashboard/Logs 的职责。
+16. 安装页不承担测试中心职责；它只承担服务安装/启动、Agent 自动扫描纳入、provider/route 自动解析、diff/backup/apply、验证配置、跳转 Doctor/Dashboard/Logs 的职责。
 17. Dashboard 不展示“测试是否通过”，而展示真实运行事实：请求量、压缩收益、路由目标、provider/cc-switch 状态、错误类型、延迟、Event Ledger 入账状态。
 18. Logs 不展示完整测试 prompt/response，不保存或暴露密钥、token、cookie、auth 文件；只展示脱敏后的运行日志、路由日志、配置变更日志、错误日志和导出入口。
 19. Doctor 可以执行诊断动作，但文案必须面向修复和状态解释，例如“检查 OpenCode 配置”“检查 d-token 服务”“检查路由是否生效”“查看修复建议”，不得把开发 smoke test 原样暴露给普通用户。
@@ -1550,7 +1782,7 @@ UI 达到内测水准必须同时具备：
 
 1. React 单元测试、TypeScript、Vite production build、Chromium/WebKit E2E 全绿。
 2. macOS `.app` 真实窗口截图与可访问树证据，覆盖中英、深浅色、1180×780、920×640、键盘和 Reduce Motion。
-3. 最小流程：启动/连接 d-token → 选择 Agent → 配置 Provider/Route → 预览 diff/backup → 应用 → 验证 → 在概览/日志看到真实结果。
+3. 最小流程：启动/连接 d-token → 开始一键配置（自动扫描 Agent、自动解析 Provider/Route）→ 预览脱敏 diff/backup → 一次确认整批 → 应用 → 验证 → 在概览/日志看到真实结果。
 4. 扩展流程：多 Agent、cc-switch/custom upstream、Doctor、日志导出、配置变更与 rollback。
 5. OpenCode 真实 routed test 使用正常配置位置与自动发现的官方免费候选，证明流量命中 d-token、route/provider/model/CCR 与 Event Ledger，并逐字节恢复临时配置；UI 只显示脱敏后的“配置已验证/路由已生效”等产品状态。
 6. OpenCode 长上下文验收必须使用非敏感合成输入并证明压缩真实触发，而不是只完成路由冒烟测试；同一 request id 的压缩决策、context accounting、signed savings、route decision、RequestLog、CCR metadata 与 provider outcome 必须可关联，且不得持久化原始 prompt/response 或测试 nonce。
@@ -1701,8 +1933,8 @@ PRD 只保留产品真理源：目标、边界、技术契约与验收标准。�
 10. 默认 RTK 路径是 integrated RTK，不保留 standalone RTK 用户路径。
 11. Dashboard 必须能区分 RTK 命令输出预处理收益、runtime 上下文压缩收益、端到端总收益、provider/cc-switch route overhead。
 12. 用户必须能按项目自定义压缩等级，并查看推荐等级与推荐理由。
-13. 用户必须能选择官方 provider、第三方自定义 URL、cc-switch 或 chain bridge。
-14. 用户必须能图形化选择 agent 并安装/接入对应 wrap/config。
+13. Provider、上游、模型、协议和 endpoint 由自动解析决定，用户不得在 UI 选择官方 provider、第三方自定义 URL、cc-switch 或 chain bridge；来源不足时 fail-closed。
+14. d-token 必须自动扫描全部已安装且正式支持的 agent 并自动纳入同一配置批次，不允许用户在 UI 中选择/勾选/取消 agent。
 15. 所有 agent/runtime/provider/cc-switch/shell 配置修改必须支持 diff、backup、rollback。
 16. CI 必须至少覆盖 structure check、cargo check、cargo test、no-touch smoke、desktop build。
 17. M3 GUI 开发默认 fixture，不允许默认扫描或修改真实环境。
@@ -1712,21 +1944,28 @@ PRD 只保留产品真理源：目标、边界、技术契约与验收标准。�
 21. d-token 吸收/修改 Headroom/RTK 代码必须保留开源合规记录、upstream base commit、NOTICE 与变更说明。
 22. 正式 UI 不得出现 workload benchmark、smoke test、fake/fixture test、testing center 等开发测试产品化入口；这些能力只能存在于脚本、CI、隐藏开发模式和报告中。
 23. 真实功能验收必须区分两类证据：桌面/浏览器验收负责证明界面正确，运行时验收负责证明 OpenCode 或其他 agent 的真实请求经过 d-token-owned service、route adapter、upstream provider，并写入 Event Ledger。
-24. 安装页验收以产品流程为准：打开后自动读取 Agent、现有上游和 cc-switch；唯一方案直接准备完成，有歧义时只补充选择或凭据；用户确认后自动安装/启动 d-token、应用最小 diff、验证并生成回退点。不得要求普通用户先进入高级安装、手填已可发现 URL，或把“点击测试按钮跑 workload”作为最终用户验收路径。
+24. 安装页验收以产品流程为准：打开后自动读取 Agent、现有上游和 cc-switch；唯一方案直接准备完成，多候选/字段不足/schema 未知/凭据不可复用时 fail-closed 展示冲突来源并引导「修复来源配置 / 重新扫描」，仅凭据确实缺失且不能复用时请求补充；用户一次确认后自动安装/启动 d-token、应用最小 diff、验证并生成回退点。不得要求普通用户先进入高级安装、手填已可发现 URL、在 UI 选择 agent/provider/model，或把“点击测试按钮跑 workload”作为最终用户验收路径。
 25. OpenCode 验收必须证明“正式安装/配置流程里的 OpenCode 连接动作有效”，而不是证明“UI 里有 OpenCode 测试按钮”。测试实现可以复用脚本，但用户看到的是连接、配置、验证、诊断和运行状态。
 26. 每个真实能力接入完成时，必须同时提供 UI 证据和运行时证据：UI 证据来自浏览器/桌面窗口检查；运行时证据来自 d-token-owned API/Tauri command、Event Ledger、metrics/export、OpenCode routed flow 或对应 agent flow。
 27. 功能实现前必须先对照 PRD 和成熟应用逻辑完成产品判断；如果实现方案会把开发测试、fixture、mock、benchmark、smoke 直接暴露给用户，则验收不通过。
 28. d-token 最终 UI 必须保持多 agent 控制面结构；任何只适配 OpenCode、只展示 OpenCode 测试、或把 OpenCode 作为唯一产品中心的实现都不满足 PRD。
 29. 概览必须默认本年，并以 AiMaMi 式紧凑热力图展示本周、本月和本年不同数据窗口；零活动时对应时间格仍完整可核验，活动趋势紧随四格 KPI，运行概况位于页面最底部。任何整屏大月历或大日期卡实现均不通过。
 30. 页面切换和 App 重启不得丢失已验证运行状态；所有一级页必须基于同一份带 source、freshness、collectedAt 和 error 的运行证据，局部失败不得伪装成全局停止。
-31. 上游必须按 Agent 优先自动发现和解析；唯一高置信度候选自动选中，OpenCode 多 provider、cc-switch 多候选或字段不确定时才由用户显式选择。发布验收默认使用 OpenCode 官方免费模型完成真实 routed 与长上下文压缩测试。
+31. 上游必须按 Agent 优先自动发现和解析；唯一高置信度来源自动采用，OpenCode 多 provider、cc-switch 多候选或字段不确定时一律 fail-closed 展示冲突来源、影响与「修复来源配置 / 重新扫描」，不提供 chooser、不猜测。发布验收默认使用 OpenCode 官方免费模型完成真实 routed 与长上下文压缩测试。
 32. 发布候选必须绑定同一 commit 的 macOS/Windows 安装产物、哈希、自动化门禁、真实安装启动、功能链路、配置精确恢复与已知限制；不能用旧截图、旧 DMG 或不同 commit 的测试结果拼接发布结论。
 33. 所有正式可见的有副作用操作必须通过统一产品弹窗完成，并产生可关联的动作结果；Topbar 必须提供重要状态通知与未读入口。浏览器原生确认框、无来源 toast、重复轮询通知或裸文本操作结果均不通过。
 34. 真实 Agent 测试前必须有逐页功能—数据源—持久化矩阵证据，证明所有正式可见功能已接通或按 PRD 明确隐藏；八个一级页（含视觉压缩 Beta 与代码图谱实验页）、所有二级 UI、Topbar、StatusBar、弹窗和通知不得出现互相矛盾的检测、连接、运行或保存状态。
 35. 统一状态必须在真实 App 中证明三类更新：后台真实请求发生后无需切页即可实时刷新；切换页面后同一事实保持一致；退出并重开 App 后服务、设置、事务、回退点和最后可验证证据正确恢复。完成这三类证据前不得开始最终 OpenCode routed/compression 验收。
-36. 一键安装必须证明 `already-connected` 幂等状态、多 Agent 分层事务、配置并发修改失效和失败回退；相同配置不得重复写入、重复重启或制造无意义变更。
+36. 一键安装必须证明 `already-connected` 幂等状态、多 Agent 自动纳入与分层事务、whole-batch reverse rollback、配置并发修改失效和失败回退；相同配置不得重复写入、重复重启或制造无意义变更。
 37. 高级安装必须由自动方案预填进入，并与一键安装共享同一校验和事务引擎；恢复自动推荐不得删除用户原有第三方配置。
 38. 智能学习必须在进入对应上栏后自动枚举本机全部受支持 Agent 的可安全识别会话记录，不输入项目路径、不依赖已有 d-token 请求也能发现项目；必须证明 metadata-only、增量缓存、进度、取消、排序解释和大数据量下 UI 不阻塞。
 39. 正式 App 只能有一个 App 级运行证据调度器；页面级重复固定轮询、全量 payload 携带全部详情、长列表完整 DOM 渲染或退出动画阻塞导航均不通过性能验收。
 40. 发布候选必须提供同一 commit、同一 release build 的启动、导航、runtime 刷新、空闲 CPU/内存、Native command p95、长列表和智能学习压力测试证据，并满足 P0.2.2 性能预算；未达标不得宣称“流畅”“低占用”或“高性能”。
 41. Headroom 全能力验收必须使用固定上游参考 commit 的能力矩阵逐项证明 Library/SDK、proxy、wrap/unwrap、MCP、ContentRouter 与各类 compressor、CacheAligner/live-zone、CCR retrieval、memory/SharedContext、learn、output shaping、ledger/stats/export、Doctor 与 integrated RTK；任何 passthrough、metadata-only、preview-only、测试专用或外部 8787 依赖项均判定未完成。
+42. 首次引导必须证明真实启动服务和「开始一键配置」按钮存在，且全程无 Agent / provider / model chooser（见 P0.0.10.7）。
+43. 所有正式 UI（普通与高级）不得提供 Agent / Provider / 上游 / 模型 / 协议 / endpoint 的 chooser；多候选 / 字段不足 / schema 未知 / 凭据不可复用必须 fail-closed 展示冲突来源、影响与「修复来源配置 / 重新扫描」，不猜测、不静默覆盖（见 P0.0.10.1–3）。
+44. 自动配置闭环必须证明 `scan → resolve current route → build per-Agent plan → aggregate redacted diff → one confirmation → backup → atomic/ordered apply → readback verify → real routed evidence → receipt/ledger`，且批次内任一 Agent 失败时 whole-batch reverse rollback 本批次已写入目标（见 P0.0.10.4）。
+45. Codex 首要正式场景必须证明 `Codex → d-token:18001/v1 → ocxlocal:10100/v1 → 动态模型上游` 链路，保持 Responses 协议、无 OpenAI 认证语义和请求 model 透传，模型不固定为安装时值，用户仍可在原 Agent/代理中无缝切换模型（见 P0.0.10.5）。
+46. Agent / MCP / Hook 诚实区分验收：Route 配置必须证明真实模型流量经过 d-token；MCP / Hook 配置只证明工具能力，不得冒充模型流量经过 d-token，Hook/MCP 可用不得显示为 Active 路由已启用（见 P0.0.10.6）。
+47. 多 Agent 批次必须证明不同 Agent 保留各自独立解析链路（各自 provider/上游/模型/协议/endpoint），禁止单全局选择覆盖所有 Agent。
+48. 智能学习、代码图谱、Doctor 等其他批次流程同样不得出现 Agent 勾选 / 多选 / 取消入口；「不选择」不等于静默写入，每次整批写入前必须有脱敏 diff、风险、备份、一次明确确认、verify 与 receipt。

@@ -5,8 +5,11 @@
 //! A bounded Streamable-HTTP JSON session registry layers terminal-state bookkeeping on top of
 //! the same `McpServer`: sessions are created over POST /mcp, in-flight requests can be
 //! cancelled by `notifications/cancelled`, every request reaches a recorded terminal state
-//! (completed / cancelled / failed), and termination is explicit.  No SSE session endpoint is
-//! registered: the axum build has no `sse` feature, so sessions answer JSON only.
+//! (completed / cancelled / failed), termination is explicit, and DELETE /mcp removes a
+//! session so its capacity slot is reclaimed immediately.  Idle Active sessions are reaped
+//! lazily at request boundaries after `MCP_SESSION_IDLE_TTL`; a session with an in-flight
+//! request is never reaped.  No SSE session endpoint is registered: the axum build has no
+//! `sse` feature, so sessions answer JSON only.
 
 use crate::AppState;
 use dtoken_context_store::{
@@ -20,6 +23,7 @@ use std::{
     collections::{HashMap, HashSet, VecDeque},
     io,
     sync::{Arc, Mutex},
+    time::{Duration, Instant},
 };
 use tokio::{
     io::{AsyncBufRead, AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader},
@@ -31,7 +35,12 @@ pub const MCP_IMPLEMENTATION_REVISION: &str = "dtoken-mcp-stdio-v1";
 pub const MAX_MCP_COMPRESS_BODY_BYTES: usize = 1024 * 1024;
 pub const MAX_MCP_MESSAGE_BYTES: usize = MAX_MCP_COMPRESS_BODY_BYTES + 16 * 1024;
 const MAX_CANCELLED_REQUESTS: usize = 128;
-const MAX_MCP_SESSIONS: usize = 16;
+pub(crate) const MAX_MCP_SESSIONS: usize = 16;
+/// Idle-session TTL. An Active session whose last activity is older than this
+/// TTL (and that has no in-flight request) is reaped lazily on the next
+/// request boundary, so capacity freed by a client that exits without
+/// DELETE /mcp is reclaimed within one TTL instead of leaking forever.
+pub const MCP_SESSION_IDLE_TTL: Duration = Duration::from_secs(10 * 60);
 const STDIO_JSONRPC_TRANSPORT: &str = "stdio-json-rpc";
 
 /// Streamable-HTTP session header name used by POST /mcp, GET /mcp and
@@ -236,6 +245,7 @@ struct McpSessionEntry {
     request_count: u64,
     last_terminal: Option<McpSessionTerminal>,
     in_flight: Option<InFlightRequest>,
+    last_activity: Instant,
 }
 
 impl McpSessionEntry {
@@ -458,6 +468,7 @@ impl McpServer {
                 request_count: 0,
                 last_terminal: None,
                 in_flight: None,
+                last_activity: Instant::now(),
             },
         );
         Ok(McpSessionState {
@@ -482,8 +493,55 @@ impl McpServer {
             .ok_or(McpSessionError::SessionUnknown)
     }
 
+    /// Remove idle Active sessions and dead Terminated entries, returning how
+    /// many sessions were reclaimed. Called lazily at request boundaries, so a
+    /// client that exits without DELETE /mcp releases its capacity slot within
+    /// `MCP_SESSION_IDLE_TTL`. Fail-closed: a session with an in-flight
+    /// request is active by definition and is never reaped.
+    pub fn reap_idle_sessions(&self) -> usize {
+        self.reap_idle_sessions_at(Instant::now())
+    }
+
+    fn reap_idle_sessions_at(&self, now: Instant) -> usize {
+        let Ok(mut registry) = self.sessions.lock() else {
+            return 0;
+        };
+        let mut removed = 0usize;
+        registry.sessions.retain(|_session_id, entry| {
+            let expired = entry.status == McpSessionStatus::Terminated
+                || (entry.status == McpSessionStatus::Active
+                    && entry.in_flight.is_none()
+                    && now.saturating_duration_since(entry.last_activity) >= MCP_SESSION_IDLE_TTL);
+            if expired {
+                removed += 1;
+            }
+            !expired
+        });
+        removed
+    }
+
+    /// Terminate and remove a session, reclaiming its capacity slot
+    /// immediately (DELETE /mcp). The in-flight request, if any, is cancelled;
+    /// an unknown session id is rejected fail-closed.
+    pub fn remove_session(&self, session_id: &str) -> Result<McpSessionState, McpSessionError> {
+        let mut registry = self
+            .sessions
+            .lock()
+            .map_err(|_| McpSessionError::InvalidRequest)?;
+        let entry = registry
+            .sessions
+            .remove(session_id)
+            .ok_or(McpSessionError::SessionUnknown)?;
+        let state = entry.state(session_id);
+        if let Some(in_flight) = entry.in_flight {
+            let _ = in_flight.cancel.send(());
+        }
+        Ok(state)
+    }
+
     /// Explicitly terminate a session: the in-flight request (if any) is
-    /// cancelled and no further request is accepted.
+    /// cancelled and no further request is accepted. The entry stays visible
+    /// as `Terminated` until the next idle reaping pass reclaims its slot.
     pub fn terminate_session(&self, session_id: &str) -> Result<McpSessionState, McpSessionError> {
         let mut registry = self
             .sessions
@@ -502,6 +560,7 @@ impl McpServer {
             request_id: None,
             code: None,
         });
+        entry.last_activity = Instant::now();
         Ok(entry.state(session_id))
     }
 
@@ -539,6 +598,7 @@ impl McpServer {
                 return Err(McpSessionError::SessionBusy);
             }
             entry.request_count += 1;
+            entry.last_activity = Instant::now();
             entry.in_flight = Some(InFlightRequest {
                 request_id: request_id.clone(),
                 cancel: cancel_tx,
@@ -620,6 +680,7 @@ impl McpServer {
                     .lock()
                     .map_err(|_| McpSessionError::InvalidRequest)?;
                 if let Some(entry) = registry.sessions.get_mut(session_id) {
+                    entry.last_activity = Instant::now();
                     if entry
                         .in_flight
                         .as_ref()
@@ -1184,6 +1245,7 @@ mod tests {
                 models: vec!["mcp-model".to_string()],
                 timeout_ms: 100,
                 healthcheck_path: None,
+                wire_api: dtoken_types::ProviderWireApi::OpenAiChat,
             }],
             routes: vec![RouteProfile {
                 id: "mcp-route".to_string(),
@@ -1871,6 +1933,155 @@ mod tests {
             .handle_jsonrpc(request(MAX_CANCELLED_REQUESTS as u64, "ping", json!({})))
             .expect("last response");
         assert_eq!(last["error"]["code"], -32800);
+    }
+
+    #[test]
+    fn idle_sessions_are_reaped_and_reclaim_capacity() {
+        let server = McpServer::new(AppState::new(DtokenConfig::empty()));
+        let session_ids = (0..MAX_MCP_SESSIONS)
+            .map(|_| server.create_session().expect("session").session_id)
+            .collect::<Vec<_>>();
+        assert!(matches!(
+            server.create_session(),
+            Err(McpSessionError::SessionCapacityExhausted)
+        ));
+
+        // Rewind every session's last activity past the idle TTL, then reap.
+        {
+            let mut registry = server.sessions.lock().expect("registry lock");
+            let now = Instant::now();
+            for entry in registry.sessions.values_mut() {
+                entry.last_activity = now - MCP_SESSION_IDLE_TTL - Duration::from_secs(1);
+            }
+        }
+        assert_eq!(server.reap_idle_sessions(), MAX_MCP_SESSIONS);
+
+        // Reaped sessions are unknown again and capacity is reclaimed.
+        assert!(matches!(
+            server.session_state(&session_ids[0]),
+            Err(McpSessionError::SessionUnknown)
+        ));
+        assert!(server.create_session().is_ok());
+    }
+
+    #[tokio::test]
+    async fn in_flight_sessions_are_never_reaped_by_idle_cleanup() {
+        let gate = Arc::new(Notify::new());
+        let server = McpServer::new_with_session_gate_for_test(
+            AppState::new(DtokenConfig::empty()),
+            gate.clone(),
+        );
+        let session_id = server.create_session().expect("session").session_id;
+        let submitter = {
+            let server = server.clone();
+            let session_id = session_id.clone();
+            tokio::spawn(async move {
+                server
+                    .submit_session_jsonrpc(&session_id, request(1, "ping", json!({})))
+                    .await
+            })
+        };
+        for _ in 0..100 {
+            if server
+                .session_state(&session_id)
+                .expect("session state")
+                .in_flight_request_id
+                .is_some()
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        assert!(
+            server
+                .session_state(&session_id)
+                .expect("session state")
+                .in_flight_request_id
+                .is_some(),
+            "request did not become in-flight"
+        );
+
+        // Rewind last activity past the TTL: the in-flight session must
+        // survive idle reaping because it is active by definition.
+        {
+            let mut registry = server.sessions.lock().expect("registry lock");
+            registry
+                .sessions
+                .get_mut(&session_id)
+                .expect("session entry")
+                .last_activity = Instant::now() - MCP_SESSION_IDLE_TTL - Duration::from_secs(1);
+        }
+        assert_eq!(server.reap_idle_sessions(), 0);
+        assert_eq!(
+            server
+                .session_state(&session_id)
+                .expect("session state")
+                .status,
+            McpSessionStatus::Active
+        );
+
+        gate.notify_one();
+        let outcome = submitter.await.expect("submitter join").expect("submit ok");
+        assert!(outcome.is_some(), "in-flight request completed");
+    }
+
+    #[test]
+    fn remove_session_reclaims_capacity_and_rejects_unknown() {
+        let server = McpServer::new(AppState::new(DtokenConfig::empty()));
+        let session_ids = (0..MAX_MCP_SESSIONS)
+            .map(|_| server.create_session().expect("session").session_id)
+            .collect::<Vec<_>>();
+        assert!(matches!(
+            server.create_session(),
+            Err(McpSessionError::SessionCapacityExhausted)
+        ));
+
+        // Unknown session ids stay fail-closed.
+        assert!(matches!(
+            server.remove_session("missing-session"),
+            Err(McpSessionError::SessionUnknown)
+        ));
+
+        // Removing one session frees its capacity slot immediately.
+        assert!(server.remove_session(&session_ids[0]).is_ok());
+        assert!(matches!(
+            server.session_state(&session_ids[0]),
+            Err(McpSessionError::SessionUnknown)
+        ));
+        assert!(server.create_session().is_ok());
+    }
+
+    #[tokio::test]
+    async fn remove_session_cancels_an_in_flight_request() {
+        let gate = Arc::new(Notify::new());
+        let server = McpServer::new_with_session_gate_for_test(
+            AppState::new(DtokenConfig::empty()),
+            gate.clone(),
+        );
+        let session_id = server.create_session().expect("session").session_id;
+        let submitter = {
+            let server = server.clone();
+            let session_id = session_id.clone();
+            tokio::spawn(async move {
+                server
+                    .submit_session_jsonrpc(&session_id, request(1, "ping", json!({})))
+                    .await
+            })
+        };
+        for _ in 0..100 {
+            if server
+                .session_state(&session_id)
+                .expect("session state")
+                .in_flight_request_id
+                .is_some()
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        assert!(server.remove_session(&session_id).is_ok());
+        let outcome = submitter.await.expect("submitter join");
+        assert!(matches!(outcome, Err(McpSessionError::RequestCancelled)));
     }
 
     #[tokio::test]

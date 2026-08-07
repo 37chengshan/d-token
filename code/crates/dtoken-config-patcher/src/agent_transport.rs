@@ -1022,7 +1022,6 @@ fn prepare_request(
         if matches!(
             descriptor.kind,
             AgentTransportAdapterKind::ClaudeCode
-                | AgentTransportAdapterKind::Codex
                 | AgentTransportAdapterKind::ClineCli
                 | AgentTransportAdapterKind::Goose
                 | AgentTransportAdapterKind::KiloCode
@@ -1039,6 +1038,9 @@ fn prepare_request(
         ) {
             validate_model(request.model.as_deref())?;
         }
+        // Codex is intentionally excluded from the explicit-model requirement:
+        // its model policy is preserve_request/passthrough, so a local
+        // OpenAI-compatible Responses proxy may own dynamic model switching.
     }
     Ok(descriptor)
 }
@@ -8387,11 +8389,10 @@ fn transform_codex(
     let marker = codex_marker(&document)?;
     match operation {
         AgentTransportOperation::Configure => {
-            let model = model.context("Codex transport requires an explicit model")?;
             let current = codex_current_selection(&document)?;
             if let Some(existing) = marker.as_ref() {
                 ensure_codex_current_matches(existing, &document, &current)?;
-                if existing.endpoint == endpoint && existing.model == model {
+                if existing.endpoint == endpoint && existing.model == model.unwrap_or("") {
                     return Ok(text.to_string());
                 }
             } else if codex_has_legacy_trace(&document)? {
@@ -8400,8 +8401,14 @@ fn transform_codex(
             let prior = marker.map(|marker| marker.prior).unwrap_or(current);
             set_codex_provider(&mut document, endpoint)?;
             set_toml_selection(&mut document, "model_provider", Some(CODEX_PROVIDER_ID));
-            set_toml_selection(&mut document, "model", Some(model));
-            set_codex_marker(&mut document, endpoint, model, &prior)?;
+            // Model policy is preserve_request/passthrough: only an explicitly
+            // reviewed model is written; a local Responses proxy owns dynamic
+            // model switching, so no model is forced here.
+            if let Some(model) = model {
+                set_toml_selection(&mut document, "model", Some(model));
+            }
+            let marker_model = model.unwrap_or(prior.model.as_deref().unwrap_or(""));
+            set_codex_marker(&mut document, endpoint, marker_model, &prior)?;
         }
         AgentTransportOperation::Clear => {
             let Some(marker) = marker else {
@@ -8712,7 +8719,9 @@ fn codex_marker(document: &toml_edit::DocumentMut) -> Result<Option<OwnedSelecti
         .map(str::to_owned)
         .context("Codex ownership record is missing model")?;
     validate_endpoint(&endpoint)?;
-    validate_model(Some(&model))?;
+    if !model.is_empty() {
+        validate_model(Some(&model))?;
+    }
     let prior_provider = optional("previous_model_provider", provider_present)?;
     let prior_model = optional("previous_model", model_present)?;
     validate_prior_selection(None, prior_model.as_deref())?;
@@ -8743,9 +8752,15 @@ fn ensure_codex_current_matches(
     document: &toml_edit::DocumentMut,
     current: &PriorSelection,
 ) -> Result<()> {
-    if current.provider.as_deref() != Some(CODEX_PROVIDER_ID)
-        || current.model.as_deref() != Some(marker.model.as_str())
-    {
+    // Model policy is preserve_request/passthrough: an empty marker model
+    // means d-token pinned no model, so the user's current model (or absence)
+    // must be accepted rather than treated as an external edit.
+    let model_matches = if marker.model.is_empty() {
+        current.model.is_none() || current.model.as_deref() == Some("")
+    } else {
+        current.model.as_deref() == Some(marker.model.as_str())
+    };
+    if current.provider.as_deref() != Some(CODEX_PROVIDER_ID) || !model_matches {
         bail!("Codex selection changed outside d-token; automatic clear is unsafe");
     }
     ensure_owned_codex_provider(document, &marker.endpoint)
@@ -8758,10 +8773,14 @@ fn ensure_owned_codex_provider(document: &toml_edit::DocumentMut, endpoint: &str
         .and_then(|providers| providers.get(CODEX_PROVIDER_ID))
         .and_then(toml_edit::Item::as_table)
         .context("d-token Codex provider is absent")?;
-    if provider.len() != 3
+    if provider.len() != 4
         || provider.get("name").and_then(toml_edit::Item::as_str) != Some("d-token local route")
         || provider.get("base_url").and_then(toml_edit::Item::as_str) != Some(endpoint)
         || provider.get("wire_api").and_then(toml_edit::Item::as_str) != Some("responses")
+        || provider
+            .get("requires_openai_auth")
+            .and_then(toml_edit::Item::as_bool)
+            != Some(false)
     {
         bail!("d-token Codex provider is incomplete or modified; automatic clear is unsafe");
     }
@@ -8778,6 +8797,9 @@ fn set_codex_provider(document: &mut toml_edit::DocumentMut, endpoint: &str) -> 
     provider["name"] = toml_edit::value("d-token local route");
     provider["base_url"] = toml_edit::value(endpoint);
     provider["wire_api"] = toml_edit::value("responses");
+    // The local OpenAI-compatible Responses proxy owns auth; Codex must never
+    // try OpenAI credential auth against the d-token listener.
+    provider["requires_openai_auth"] = toml_edit::value(false);
     providers.insert(CODEX_PROVIDER_ID, toml_edit::Item::Table(provider));
     Ok(())
 }
@@ -9170,8 +9192,16 @@ fn verify_codex(text: &str, endpoint: &str, model: Option<&str>) -> Result<()> {
         .parse::<toml_edit::DocumentMut>()
         .context("Codex configuration is invalid TOML")?;
     let marker = codex_marker(&document)?.context("d-token Codex ownership record is absent")?;
-    if marker.endpoint != endpoint || Some(marker.model.as_str()) != model {
+    if marker.endpoint != endpoint {
         bail!("d-token Codex selection does not match the reviewed request");
+    }
+    // Model policy is preserve_request/passthrough: when no model was reviewed,
+    // the ownership record may pin no model and the document's own model (or
+    // absence) is verified by ensure_codex_current_matches below.
+    if let Some(model) = model {
+        if marker.model.is_empty() || marker.model != model {
+            bail!("d-token Codex selection does not match the reviewed request");
+        }
     }
     ensure_codex_current_matches(&marker, &document, &codex_current_selection(&document)?)
 }
@@ -9283,7 +9313,8 @@ fn current_upstream_signature(
                 return Ok(None);
             };
             ensure_codex_current_matches(&marker, &document, &codex_current_selection(&document)?)?;
-            (marker.endpoint, Some(marker.model), true)
+            let model = (!marker.model.is_empty()).then_some(marker.model);
+            (marker.endpoint, model, true)
         }
         AgentTransportAdapterKind::OpenCodeProvider => {
             let root: Value =
@@ -9487,6 +9518,46 @@ mod tests {
         assert!(cleared.contains("model = \"gpt-old\""));
         assert!(cleared.contains("[model_providers.openai]"));
         assert!(!cleared.contains("[model_providers.dtoken]"));
+    }
+
+    #[test]
+    fn codex_ocxlocal_fixture_configures_local_responses_proxy_without_forcing_model() {
+        // Real fixture: Codex points at a local OpenAI-compatible Responses proxy
+        // (OpenCodex / ocxlocal on 127.0.0.1:10100) whose dynamic model switching
+        // is owned by the proxy. d-token must route to it without pinning a model.
+        const FIXTURE: &str = include_str!("../tests/fixtures/codex-ocxlocal.toml");
+        let root = workspace_tempdir();
+        let path = root.path().join("config.toml");
+        fs::write(&path, FIXTURE).unwrap();
+        let mut req = request("codex", path.clone());
+        req.endpoint = "http://127.0.0.1:18001".into();
+        req.model = None; // preserve_request/passthrough: no model is forced
+        let backup = root.path().join("backups");
+
+        let receipt = configure_agent_transport(&req, &backup).unwrap();
+        assert!(receipt.verification.ok);
+        let after = fs::read_to_string(&path).unwrap();
+        // d-token-owned provider points at the listener with Responses wire_api
+        // and requires_openai_auth=false so Codex never tries OpenAI auth.
+        assert!(after.contains("model_provider = \"dtoken\""));
+        assert!(after.contains("[model_providers.dtoken]"));
+        assert!(after.contains("base_url = \"http://127.0.0.1:18001\""));
+        assert!(after.contains("wire_api = \"responses\""));
+        assert!(after.contains("requires_openai_auth = false"));
+        // The original ocxlocal provider is preserved untouched for rollback.
+        assert!(after.contains("[model_providers.ocxlocal]"));
+        assert!(after.contains("base_url = \"http://127.0.0.1:10100/v1\""));
+        // Passthrough: no root model is invented for the user. The d-token
+        // ownership marker may still contain its own empty `model` field.
+        let configured = after.parse::<toml_edit::DocumentMut>().unwrap();
+        assert!(configured.get("model").is_none());
+
+        assert!(can_clear_agent_transport("codex", &path));
+        let cleared = clear_agent_transport(&req, &backup).unwrap();
+        assert!(cleared.verification.ok);
+        // Exact restore of the original selection and provider.
+        let restored = fs::read_to_string(&path).unwrap();
+        assert_eq!(restored, FIXTURE);
     }
 
     #[test]
@@ -10504,8 +10575,20 @@ mod tests {
         assert!(!receipt.changed);
     }
 
+    // Serializes OpenHands tests that read or mutate the same environment
+    // variables via `openhands_is_v1_environment`. Without the lock, the
+    // env-mutating `openhands_v1_environment_fails_closed` races with the
+    // parallel configure/clear tests and makes them spuriously fail closed.
+    fn openhands_env_guard() -> std::sync::MutexGuard<'static, ()> {
+        static OPENHANDS_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        OPENHANDS_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
     #[test]
     fn openhands_configure_clear_restores_previous_llm_section() {
+        let _guard = openhands_env_guard();
         let root = workspace_tempdir();
         let config_path = root.path().join("config.toml");
         let prior = r#"[llm]
@@ -10546,6 +10629,7 @@ api_key = "prior-key"
 
     #[test]
     fn openhands_v1_environment_fails_closed() {
+        let _guard = openhands_env_guard();
         let root = workspace_tempdir();
         let config_path = root.path().join("config.toml");
         fs::write(&config_path, "[llm]\nmodel = \"test\"\n").unwrap();
@@ -10558,6 +10642,7 @@ api_key = "prior-key"
 
     #[test]
     fn openhands_clear_is_idempotent_when_no_dtoken_transport() {
+        let _guard = openhands_env_guard();
         let root = workspace_tempdir();
         let config_path = root.path().join("config.toml");
         fs::write(&config_path, "[llm]\nmodel = \"test\"\n").unwrap();

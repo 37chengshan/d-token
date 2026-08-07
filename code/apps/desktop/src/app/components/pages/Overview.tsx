@@ -1,5 +1,7 @@
-import { useMemo } from "react";
-import { Activity, Bot, CircleAlert, Coins, Gauge, Route, Server } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
+import { Activity, Bot, CircleAlert, Gauge, Route, Server } from "lucide-react";
+import { loadModelPriceCache, type ModelPriceCache } from "../../lib/analytics/pricing";
+import { isTauriRuntime } from "../../lib/native";
 import { MetricStrip, Surface } from "../common/Surface";
 import { DataSourceBadge } from "../common/DataSourceBadge";
 import { Heatmap } from "../common/Heatmap";
@@ -14,6 +16,7 @@ import {
   deriveOverviewOperationalSummary,
   overviewFromPayload,
 } from "../../lib/overview/derivations";
+import { deriveSavingsWindows, type SavingsWindowKey } from "../../lib/overview/savings";
 import {
   AccountQuotaCard,
   CcSwitchOperationalItem,
@@ -21,6 +24,7 @@ import {
   OperationalItem,
   OverviewKpi,
   OverviewTrendChart,
+  SavingsWindowCard,
 } from "../../lib/overview/components";
 
 export {
@@ -28,11 +32,13 @@ export {
   deriveOverviewOperationalSummary,
   overviewFromPayload,
 } from "../../lib/overview/derivations";
+export { deriveSavingsWindows } from "../../lib/overview/savings";
 export type {
   AccountQuotaSummary,
   AccountQuotaWindow,
   OverviewOperationalSummary,
 } from "../../lib/overview/derivations";
+export type { SavingsDerivation, SavingsWindowKey, SavingsWindowSummary } from "../../lib/overview/savings";
 
 function fmt(n: number) {
   if (n >= 1_000_000) return (n / 1_000_000).toFixed(2) + "M";
@@ -78,11 +84,32 @@ export function Overview(_props: { setPage: (p: PageId) => void }) {
     () => deriveAccountQuotaSummary(payload, evidenceState, lang),
     [evidenceState, lang, payload],
   );
-  const { stats, metricsAvailable, compressionAvailable, trafficAvailable, sourceLabel: unavailableDetail } = runtime;
+  const [priceCache, setPriceCache] = useState<ModelPriceCache | null>(null);
+  useEffect(() => {
+    // 仅在 native 环境异步读取 Settings model-pricing；错误/预览保持 null（不猜测）。
+    // 挂载时读取一次即可：设置保存后重新进入页面会刷新，无需实时广播。
+    if (!isTauriRuntime()) return;
+    let cancelled = false;
+    loadModelPriceCache().then((cache) => {
+      if (!cancelled) setPriceCache(cache);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+  const savings = useMemo(() => deriveSavingsWindows(payload, evidenceState, lang, undefined, priceCache), [evidenceState, lang, payload, priceCache]);
+  const [savingsWindow, setSavingsWindow] = useState<SavingsWindowKey>("total");
+  const [reducedMotion] = useState(
+    () =>
+      typeof window !== "undefined" &&
+      typeof window.matchMedia === "function" &&
+      window.matchMedia("(prefers-reduced-motion: reduce)").matches,
+  );
+  const { stats, compressionAvailable, trafficAvailable, sourceLabel: unavailableDetail } = runtime;
 
   return <div className="overview-page space-y-4">
-    <div className="flex flex-wrap items-center justify-between gap-2">
-      <h1>{t("ov.title")}</h1>
+    <div className="flex flex-wrap items-center justify-end gap-2">
+      <h1 className="sr-only">{t("ov.title")}</h1>
       <div className="flex flex-wrap items-center justify-end gap-2">
         <DataSourceBadge mode={evidenceState === "verified" ? "runtime" : evidenceState === "preview" || evidenceState === "loading" ? "preview" : "unavailable"} label={overviewEvidenceLabel(evidenceState, lang)} />
         <Badge variant={evidenceState === "verified" ? "default" : "secondary"}>{runtime.sourceLabel}{(evidenceState === "verified" || evidenceState === "stale") && updatedAt ? ` · ${updatedAt.toLocaleTimeString()}` : ""}</Badge>
@@ -91,7 +118,7 @@ export function Overview(_props: { setPage: (p: PageId) => void }) {
 
     <MetricStrip data-overview-section="kpis" data-testid="overview-kpis">
       <OverviewKpi label={t("ov.routedRequests")} value={trafficAvailable ? fmt(stats.requestCount) : "—"} detail={trafficAvailable ? (lang === "zh" ? "来自 d-token 本地请求记录" : "From local d-token request records") : unavailableDetail} icon={Activity} />
-      <OverviewKpi label={lang === "zh" ? "实际减少 Token" : "Actual token reduction"} value={metricsAvailable ? fmt(stats.savedTotal) : "—"} detail={metricsAvailable ? (lang === "zh" ? "按压缩前后值计算；账单影响待确认。" : "Based on before/after values; billing impact is pending.") : unavailableDetail} icon={Coins} />
+      <SavingsWindowCard derivation={savings} selected={savingsWindow} onSelect={setSavingsWindow} reducedMotion={reducedMotion} lang={lang} />
       <OverviewKpi label={lang === "zh" ? "物理减少比例" : "Physical reduction rate"} value={compressionAvailable ? `${(stats.compressionRate * 100).toFixed(1)}%` : "—"} detail={compressionAvailable ? (lang === "zh" ? "仅基于同时具备压缩前后值的请求" : "Only requests with both before and after values are included") : unavailableDetail} icon={Gauge} />
       <OverviewKpi label={lang === "zh" ? "请求错误" : "Request errors"} value={trafficAvailable ? fmt(stats.errorsToday) : "—"} detail={trafficAvailable ? runtime.errorLabel : unavailableDetail} icon={CircleAlert} tone={trafficAvailable && stats.errorsToday > 0 ? "negative" : trafficAvailable ? "positive" : "neutral"} />
     </MetricStrip>

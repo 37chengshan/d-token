@@ -788,6 +788,21 @@ pub enum SupportLevel {
     None,
 }
 
+/// Explicit wire API a provider speaks, used to discriminate native
+/// passthrough from protocol bridging on the same ingress surface.
+///
+/// `OpenAiChat` is the default and preserves the existing Responses -> Chat
+/// bridge for ordinary OpenAI Chat providers. `OpenAiResponses` routes the
+/// `/v1/responses` surface verbatim to the upstream `/v1/responses` endpoint
+/// (e.g. ocxlocal / Codex) without any Chat conversion.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderWireApi {
+    #[default]
+    OpenAiChat,
+    OpenAiResponses,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProviderProfile {
     pub id: String,
@@ -799,6 +814,10 @@ pub struct ProviderProfile {
     pub models: Vec<String>,
     pub timeout_ms: u64,
     pub healthcheck_path: Option<String>,
+    /// Explicit wire-API discriminator. Missing on deserialization (legacy
+    /// config) defaults to `OpenAiChat`, preserving the existing bridge.
+    #[serde(default)]
+    pub wire_api: ProviderWireApi,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

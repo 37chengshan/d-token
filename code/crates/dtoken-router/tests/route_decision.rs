@@ -18,6 +18,7 @@ fn decides_route_by_instance_and_protocol() {
             models: vec!["demo-model".to_string()],
             timeout_ms: 120_000,
             healthcheck_path: Some("/health".to_string()),
+            wire_api: dtoken_types::ProviderWireApi::OpenAiChat,
         }],
         routes: vec![RouteProfile {
             id: "demo-route".to_string(),
@@ -67,6 +68,7 @@ fn rejects_ambiguous_routes_instead_of_selecting_first() {
         models: vec!["demo-model".to_string()],
         timeout_ms: 120_000,
         healthcheck_path: None,
+        wire_api: dtoken_types::ProviderWireApi::OpenAiChat,
     };
     let route = |id: &str| RouteProfile {
         id: id.to_string(),

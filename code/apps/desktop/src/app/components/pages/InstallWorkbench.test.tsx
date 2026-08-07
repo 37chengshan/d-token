@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 afterEach(cleanup);
 
-vi.mock("./Install", () => ({ Install: () => <div>一键安装内容</div> }));
+vi.mock("./Install", () => ({ Install: ({ initialAgentId }: { initialAgentId?: string }) => <div>一键安装内容:{initialAgentId ?? "none"}</div> }));
 vi.mock("./SmartLearning", () => ({ SmartLearning: () => <div>智能学习内容</div> }));
 vi.mock("./Advanced", () => ({ Advanced: () => <div>高级安装内容</div> }));
 vi.mock("./LogsSecurity", () => ({ LogsSecurity: () => <div>日志内容</div> }));
@@ -35,6 +35,12 @@ describe("InstallWorkbench", () => {
       expect(descriptionNode).toHaveClass("install-workbench-nav-description");
       expect(descriptionNode).not.toHaveClass("truncate");
     }
+  });
+
+  it("forwards the onboarding Agent selection to one-click install", () => {
+    render(<InstallWorkbench initialAgentId="codex" />);
+
+    expect(screen.getByText("一键安装内容:codex")).toBeInTheDocument();
   });
 
   it("switches panels through accessible tabs", async () => {

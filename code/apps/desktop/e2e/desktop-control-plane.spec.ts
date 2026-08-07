@@ -26,6 +26,34 @@ test.describe("d-token desktop control plane", () => {
     }
   });
 
+  test("every primary page exposes exactly one semantic h1 and no visually rendered content h1", async ({ page }) => {
+    const app = new AppShellPage(page);
+    await app.open();
+
+    for (const target of MAIN_PAGES) {
+      await test.step(target.heading, async () => {
+        await app.navigateTo(target);
+        const structure = await app.main.evaluate((main) => {
+          const headings = Array.from(main.querySelectorAll("h1"));
+          const visuallyRendered = headings.filter((element) => {
+            const style = window.getComputedStyle(element);
+            const rect = element.getBoundingClientRect();
+            return (
+              style.display !== "none" &&
+              style.visibility !== "hidden" &&
+              style.clip !== "rect(0px, 0px, 0px, 0px)" &&
+              rect.width > 1 &&
+              rect.height > 1
+            );
+          });
+          return { total: headings.length, visuallyRendered: visuallyRendered.length };
+        });
+        expect(structure.total, `${target.heading} must expose exactly one semantic h1`).toBe(1);
+        expect(structure.visuallyRendered, `${target.heading} must not render a visible content h1 (sr-only allowed)`).toBe(0);
+      });
+    }
+  });
+
   test("browser preview fails closed for native detection and change mutations", async ({ page }) => {
     const unexpectedExternalRequests: string[] = [];
     page.on("request", (request) => {
@@ -131,6 +159,71 @@ test.describe("d-token desktop control plane", () => {
           width.clientWidth,
         );
       });
+    }
+  });
+
+  test("shell page stage keeps compact top padding at desktop and compact widths", async ({ page }) => {
+    const app = new AppShellPage(page);
+    await app.open();
+    const stage = app.main.locator(".shell-page-stage").first();
+
+    await expect(stage).toHaveCSS("padding-top", "12px");
+
+    await app.useCompactViewport();
+    await expect(stage).toHaveCSS("padding-top", "8px");
+  });
+
+  test("safe-area regression: title stays visually hidden and stage padding/width hold at desktop and compact", async ({ page }) => {
+    const app = new AppShellPage(page);
+    await app.open();
+
+    const viewports = [
+      { name: "desktop", size: { width: 1180, height: 780 }, paddingTop: "12px" },
+      { name: "compact", size: { width: 920, height: 640 }, paddingTop: "8px" },
+    ];
+
+    for (const viewport of viewports) {
+      await page.setViewportSize(viewport.size);
+      for (const target of MAIN_PAGES) {
+        await test.step(`${viewport.name} / ${target.heading}`, async () => {
+          await app.navigateTo(target);
+          const structure = await app.main.evaluate((main) => {
+            const headings = Array.from(main.querySelectorAll("h1"));
+            const visuallyRendered = headings.filter((element) => {
+              const style = window.getComputedStyle(element);
+              const rect = element.getBoundingClientRect();
+              return (
+                style.display !== "none" &&
+                style.visibility !== "hidden" &&
+                style.clip !== "rect(0px, 0px, 0px, 0px)" &&
+                rect.width > 1 &&
+                rect.height > 1
+              );
+            });
+            const stage = main.querySelector(".shell-page-stage");
+            const documentElement = document.documentElement;
+            return {
+              h1Count: headings.length,
+              visuallyRendered: visuallyRendered.length,
+              stagePaddingTop: stage ? window.getComputedStyle(stage).paddingTop : "missing",
+              scrollWidth: documentElement.scrollWidth,
+              clientWidth: documentElement.clientWidth,
+            };
+          });
+          expect(structure.h1Count, `${target.heading} must expose exactly one semantic h1 (${viewport.name})`).toBe(1);
+          expect(
+            structure.visuallyRendered,
+            `${target.heading} must keep its title visually hidden via computed style/rect (${viewport.name})`,
+          ).toBe(0);
+          expect(structure.stagePaddingTop, `${target.heading} page-stage top padding (${viewport.name})`).toBe(
+            viewport.paddingTop,
+          );
+          expect(
+            structure.scrollWidth,
+            `${target.heading} must not create horizontal document overflow (${viewport.name})`,
+          ).toBeLessThanOrEqual(structure.clientWidth);
+        });
+      }
     }
   });
 

@@ -1,6 +1,9 @@
 import "@testing-library/jest-dom/vitest";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { protocolId, protocolLabel } from "../../lib/protocol";
+
 
 const dashboard = vi.hoisted(() => ({
   state: {
@@ -26,6 +29,18 @@ vi.mock("../../lib/native", () => ({
   invokeNative: (...args: unknown[]) => native.invoke(...args),
 }));
 
+// 测试级隔离价格加载：Analytics 挂载时会调用 loadModelPriceCache，它内部走
+// invokeNative("get_app_settings")。若不 mock，该调用会占用 native.invoke 的
+// mockResolvedValueOnce 序列，吃掉本应属于 get_analytics_request_page 的第一页。
+// 默认返回 null（价格未知），成本相关测试再显式 mockResolvedValue 注入缓存。
+vi.mock("../../lib/analytics/pricing", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../lib/analytics/pricing")>();
+  return {
+    ...actual,
+    loadModelPriceCache: vi.fn(async () => null),
+  };
+});
+
 vi.mock("recharts", () => ({
   ResponsiveContainer: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
   BarChart: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
@@ -35,6 +50,7 @@ vi.mock("recharts", () => ({
 }));
 
 import { Analytics } from "./Analytics";
+import { buildPriceCache, loadModelPriceCache } from "../../lib/analytics/pricing";
 
 const runtimeIdentity = {
   source: "dtoken-owned-runtime",
@@ -56,6 +72,8 @@ beforeEach(() => {
   };
   native.enabled = false;
   native.invoke.mockReset();
+  vi.mocked(loadModelPriceCache).mockReset();
+  vi.mocked(loadModelPriceCache).mockResolvedValue(null);
 });
 
 afterEach(cleanup);
@@ -208,7 +226,7 @@ describe("Analytics runtime data truthfulness", () => {
     expect(metric("请求错误")).toHaveTextContent("11");
     expect(screen.getByText(/分布、耗时和趋势只覆盖当前返回的最近请求窗口/)).toBeInTheDocument();
     expect(screen.getByText("gpt-5")).toBeInTheDocument();
-    expect(screen.getByText("openai")).toBeInTheDocument();
+    expect(screen.getByText("OpenAI")).toBeInTheDocument();
     expect(screen.getByText("provider_timeout")).toBeInTheDocument();
   });
 
@@ -444,6 +462,604 @@ describe("Analytics runtime data truthfulness", () => {
     expect(await screen.findByText("RecoveredAgent")).toBeInTheDocument();
     await waitFor(() => expect(native.invoke).toHaveBeenCalledTimes(3));
     expect(native.invoke).toHaveBeenLastCalledWith("get_analytics_request_page", { cursor: null, limit: 10 });
+  });
+});
+
+describe("Analytics log subpage (日志)", () => {
+  async function openLogsTab() {
+    const user = userEvent.setup();
+    render(<Analytics />);
+    await user.click(screen.getByRole("tab", { name: "日志" }));
+  }
+
+  it("renders one log line per real request with all required columns", async () => {
+    dashboard.state = {
+      payload: {
+        ...runtimeIdentity,
+        request_logs: [
+          {
+            request_id: "request-abc-123",
+            timestamp_ms: Date.UTC(2026, 6, 1),
+            agent: "OpenCode",
+            provider_id: "provider-main",
+            route_id: "route-main",
+            model: "gpt-5",
+            input_protocol: "openai",
+            status: "ok",
+            input_tokens_before: 1_000,
+            input_tokens_after: 800,
+            provider_input_tokens: 750,
+            output_tokens: 80,
+            tokens_saved: 200,
+            transforms_applied: ["compact_json"],
+            latency_ms: 100,
+          },
+        ],
+      },
+      status: "runtime",
+      updatedAt: new Date("2026-07-10T12:00:00Z"),
+      error: "",
+      refresh: vi.fn(),
+    };
+
+    await openLogsTab();
+
+    expect(screen.getByText("请求日志")).toBeInTheDocument();
+    const logGrid = screen.getByTestId("analytics-log-grid");
+    expect(within(logGrid).getByText("OpenCode")).toBeInTheDocument();
+    expect(within(logGrid).getByText("1,000")).toBeInTheDocument();
+    expect(within(logGrid).getByText("750")).toBeInTheDocument();
+    expect(within(logGrid).getByText("1,000 → 800")).toBeInTheDocument();
+    expect(within(logGrid).getByText("200")).toBeInTheDocument();
+    expect(within(logGrid).getByText("100ms")).toBeInTheDocument();
+    expect(within(logGrid).getByText("gpt-5")).toBeInTheDocument();
+    expect(within(logGrid).getByText("provider-main")).toBeInTheDocument();
+    expect(within(logGrid).getByText("完成")).toBeInTheDocument();
+    expect(within(logGrid).getByText("request-abc-123")).toBeInTheDocument();
+    expect(within(logGrid).getByRole("button", { name: "查看详情" })).toHaveAttribute("aria-expanded", "false");
+  });
+  it("merges secondary metadata into one header row without dropping evidence", async () => {
+    dashboard.state = {
+      payload: {
+        ...runtimeIdentity,
+        request_logs: [
+          {
+            request_id: "request-merged-header",
+            timestamp_ms: Date.UTC(2026, 6, 1),
+            agent: "OpenCode",
+            provider_id: "provider-main",
+            route_id: "route-main",
+            model: "gpt-5",
+            input_protocol: "openai",
+            status: "ok",
+            input_tokens_before: 100,
+            input_tokens_after: 80,
+            tokens_saved: 20,
+            latency_ms: 12,
+          },
+        ],
+      },
+      status: "runtime",
+      updatedAt: new Date("2026-07-10T12:00:00Z"),
+      error: "",
+      refresh: vi.fn(),
+    };
+
+    await openLogsTab();
+
+    const card = screen.getByText("request-merged-header").closest("article");
+    expect(card).not.toBeNull();
+    const cardView = within(card as HTMLElement);
+
+    // 折叠卡片内 request id、状态、时间戳、agent、model、provider、protocol 与请求标识同处一个头部行
+    const headerRow = screen.getByText("request-merged-header").parentElement;
+    expect(headerRow).not.toBeNull();
+    expect(headerRow).toHaveClass("flex");
+    expect(within(headerRow as HTMLElement).getByText("完成")).toBeInTheDocument();
+    expect(within(headerRow as HTMLElement).getByText("OpenCode")).toBeInTheDocument();
+    expect(within(headerRow as HTMLElement).getByText("gpt-5")).toBeInTheDocument();
+    expect(within(headerRow as HTMLElement).getByText("provider-main")).toBeInTheDocument();
+    expect(within(headerRow as HTMLElement).getByText("OpenAI")).toBeInTheDocument();
+    // 时间戳仍在合并行内可见（期望值按测试环境同款 locale 生成）
+    const expectedTimestamp = new Date(Date.UTC(2026, 6, 1)).toLocaleString();
+    expect(within(headerRow as HTMLElement).getByText(expectedTimestamp)).toBeInTheDocument();
+
+    // 证据网格与展开按钮不受合并影响
+    expect(cardView.getByText("100 → 80")).toBeInTheDocument();
+    expect(cardView.getByText("route-main")).toBeInTheDocument();
+    const detailButton = cardView.getByRole("button", { name: "查看详情" });
+    expect(detailButton).toHaveAttribute("aria-expanded", "false");
+    fireEvent.click(detailButton);
+    expect(detailButton).toHaveAttribute("aria-expanded", "true");
+  });
+  it("filters request logs by search, status, and provider while showing matched count", async () => {
+    dashboard.state = {
+      payload: {
+        ...runtimeIdentity,
+        request_logs: [
+          { request_id: "request-anthropic-ok", timestamp_ms: Date.UTC(2026, 6, 1), agent: "Codex", provider_id: "provider-a", model: "claude-sonnet", input_protocol: "anthropic", status: "ok" },
+          { request_id: "request-openai-failed", timestamp_ms: Date.UTC(2026, 6, 2), agent: "OpenCode", provider_id: "provider-b", model: "gpt-5", input_protocol: "openai", status: "failed", error_type: "provider_timeout" },
+          { request_id: "request-unknown", timestamp_ms: Date.UTC(2026, 6, 3), agent: "Cline", provider_id: "provider-a", model: "mystery", input_protocol: "vendor-secret" },
+        ],
+      },
+      status: "runtime",
+      updatedAt: new Date("2026-07-10T12:00:00Z"),
+      error: "",
+      refresh: vi.fn(),
+    };
+
+    await openLogsTab();
+
+    expect(screen.getByText("显示 3 / 3")).toBeInTheDocument();
+    const search = screen.getByRole("searchbox", { name: "搜索请求日志" });
+
+    await userEvent.type(search, "anthropic");
+    expect(screen.getByText("显示 1 / 3")).toBeInTheDocument();
+    expect(within(screen.getByTestId("analytics-log-grid")).getByText("request-anthropic-ok")).toBeInTheDocument();
+    expect(screen.queryByText("request-openai-failed")).not.toBeInTheDocument();
+
+    await userEvent.clear(search);
+    await userEvent.type(search, "vendor-secret");
+    expect(screen.getByText("显示 1 / 3")).toBeInTheDocument();
+    expect(within(screen.getByTestId("analytics-log-grid")).getByText("request-unknown")).toBeInTheDocument();
+
+    await userEvent.clear(search);
+    await userEvent.selectOptions(screen.getByRole("combobox", { name: "状态筛选" }), "failed");
+    expect(screen.getByText("显示 1 / 3")).toBeInTheDocument();
+    expect(within(screen.getByTestId("analytics-log-grid")).getByText("request-openai-failed")).toBeInTheDocument();
+
+    await userEvent.selectOptions(screen.getByRole("combobox", { name: "状态筛选" }), "all");
+    await userEvent.selectOptions(screen.getByRole("combobox", { name: "Provider 筛选" }), "provider-a");
+    expect(screen.getByText("显示 2 / 3")).toBeInTheDocument();
+    expect(screen.queryByText("request-openai-failed")).not.toBeInTheDocument();
+  });
+
+  it("uses responsive cards and groups expanded evidence without converting unknown values", async () => {
+    dashboard.state = {
+      payload: {
+        ...runtimeIdentity,
+        request_logs: [{
+          request_id: "request-responsive",
+          timestamp_ms: Date.UTC(2026, 6, 3),
+          agent: "OpenCode",
+          provider_id: "provider-main",
+          route_id: "route-main",
+          model: "claude-sonnet",
+          input_protocol: "anthropic",
+          input_tokens_before: 100,
+          input_tokens_after: 80,
+          provider_input_tokens: null,
+          tokens_saved: null,
+          context_accounting: { disposition: "active" },
+        }],
+      },
+      status: "runtime",
+      updatedAt: new Date("2026-07-10T12:00:00Z"),
+      error: "",
+      refresh: vi.fn(),
+    };
+
+    await openLogsTab();
+
+    const logGrid = screen.getByTestId("analytics-log-grid");
+    expect(logGrid).toHaveClass("grid");
+    expect(screen.queryByRole("table")).not.toBeInTheDocument();
+    expect(within(logGrid).getAllByText("—").length).toBeGreaterThanOrEqual(2);
+    expect(within(logGrid).queryByText("0")).not.toBeInTheDocument();
+
+    const detailButton = within(logGrid).getByRole("button", { name: "查看详情" });
+    fireEvent.click(detailButton);
+    const detail = document.getElementById(detailButton.getAttribute("aria-controls") ?? "");
+    expect(detail).not.toBeNull();
+    expect(within(detail as HTMLElement).getByText("路由身份")).toBeInTheDocument();
+    expect(within(detail as HTMLElement).getByText("Token 证据")).toBeInTheDocument();
+    expect(within(detail as HTMLElement).getByText("Provider Token")).toBeInTheDocument();
+    expect(within(detail as HTMLElement).getByText("Local Token")).toBeInTheDocument();
+    expect(within(detail as HTMLElement).getByText("性能与费用")).toBeInTheDocument();
+    expect(within(detail as HTMLElement).getByText("证据 Receipt")).toBeInTheDocument();
+  });
+  it("shows OpenAI, Anthropic, and Unknown protocols in cards and details", async () => {
+    dashboard.state = {
+      payload: {
+        ...runtimeIdentity,
+        request_logs: [
+          { request_id: "request-protocol-openai", timestamp_ms: Date.UTC(2026, 6, 3), agent: "Codex", input_protocol: "openai" },
+          { request_id: "request-protocol-anthropic", timestamp_ms: Date.UTC(2026, 6, 4), agent: "Codex", input_protocol: "anthropic" },
+          { request_id: "request-protocol-unknown", timestamp_ms: Date.UTC(2026, 6, 5), agent: "Codex", input_protocol: "vendor-secret" },
+        ],
+      },
+      status: "runtime",
+      updatedAt: new Date("2026-07-10T12:00:00Z"),
+      error: "",
+      refresh: vi.fn(),
+    };
+
+    await openLogsTab();
+
+    for (const [requestId, label] of [
+      ["request-protocol-openai", "OpenAI"],
+      ["request-protocol-anthropic", "Anthropic"],
+      ["request-protocol-unknown", "Unknown"],
+    ] as const) {
+      const card = screen.getByText(requestId).closest("article");
+      expect(card).not.toBeNull();
+      expect(within(card as HTMLElement).getByText(label)).toBeInTheDocument();
+      fireEvent.click(within(card as HTMLElement).getByRole("button", { name: "查看详情" }));
+      expect(within(card as HTMLElement).getAllByText(label)).toHaveLength(2);
+    }
+  });
+
+
+  it("shows Local before, compressed after, and provider usage separately", async () => {
+    dashboard.state = {
+      payload: {
+        ...runtimeIdentity,
+        request_logs: [
+          {
+            request_id: "request-three-values",
+            timestamp_ms: Date.UTC(2026, 6, 2),
+            agent: "OpenCode",
+            provider_id: "provider-main",
+            route_id: "route-main",
+            model: "gpt-5",
+            status: "ok",
+            input_tokens_before: 100,
+            input_tokens_after: 80,
+            provider_input_tokens: 77,
+            output_tokens: 10,
+            tokens_saved: 20,
+            latency_ms: 12,
+          },
+        ],
+      },
+      status: "runtime",
+      updatedAt: new Date("2026-07-10T12:00:00Z"),
+      error: "",
+      refresh: vi.fn(),
+    };
+
+    await openLogsTab();
+
+    const logGrid = screen.getByTestId("analytics-log-grid");
+    // Local Token 卡片读 input_tokens_before
+    expect(within(logGrid).getByText("100")).toBeInTheDocument();
+    // 压缩前后卡片仍用 input_tokens_after
+    expect(within(logGrid).getByText("100 → 80")).toBeInTheDocument();
+    // Provider Token 卡片读 provider_input_tokens，而非回退 input_tokens_after
+    expect(within(logGrid).getByText("77")).toBeInTheDocument();
+    expect(within(logGrid).queryByText("80")).not.toBeInTheDocument();
+    expect(within(logGrid).getByText("完成")).toBeInTheDocument();
+  });
+
+  it("never falls back to input_tokens_after when provider usage is missing", async () => {
+    dashboard.state = {
+      payload: {
+        ...runtimeIdentity,
+        request_logs: [
+          {
+            request_id: "request-no-provider-usage",
+            timestamp_ms: Date.UTC(2026, 6, 2),
+            agent: "Codex",
+            provider_id: "provider-main",
+            route_id: "route-main",
+            model: "gpt-5",
+            status: "ok",
+            input_tokens_before: 100,
+            input_tokens_after: 80,
+            tokens_saved: 20,
+            latency_ms: 12,
+          },
+        ],
+      },
+      status: "runtime",
+      updatedAt: new Date("2026-07-10T12:00:00Z"),
+      error: "",
+      refresh: vi.fn(),
+    };
+
+    await openLogsTab();
+
+    const logGrid = screen.getByTestId("analytics-log-grid");
+    // 压缩前后卡片仍显示 Local 压缩后值
+    expect(within(logGrid).getByText("100 → 80")).toBeInTheDocument();
+    // Provider Token 缺 provider_input_tokens 时必须显示 —，绝不显示 80
+    expect(within(logGrid).getAllByText("—").length).toBeGreaterThanOrEqual(1);
+    expect(within(logGrid).queryByText("80")).not.toBeInTheDocument();
+  });
+
+  it("keeps missing token evidence as em-dash instead of zero-filling", async () => {
+    dashboard.state = {
+      payload: {
+        ...runtimeIdentity,
+        request_logs: [
+          {
+            request_id: "request-no-tokens",
+            timestamp_ms: Date.UTC(2026, 6, 2),
+            agent: "Codex",
+            provider_id: "provider-main",
+            route_id: "route-main",
+            model: "gpt-5",
+            error: "provider_timeout",
+          },
+        ],
+      },
+      status: "runtime",
+      updatedAt: new Date("2026-07-10T12:00:00Z"),
+      error: "",
+      refresh: vi.fn(),
+    };
+
+    await openLogsTab();
+
+    const logGrid = screen.getByTestId("analytics-log-grid");
+    expect(within(logGrid).getAllByText("—").length).toBeGreaterThanOrEqual(5);
+    expect(within(logGrid).queryByText("0")).not.toBeInTheDocument();
+    expect(within(logGrid).getByText("失败")).toBeInTheDocument();
+    expect(within(logGrid).queryByText("完成")).not.toBeInTheDocument();
+  });
+
+  it("expands a row to redacted route evidence and receipt whitelist only", async () => {
+    dashboard.state = {
+      payload: {
+        ...runtimeIdentity,
+        request_logs: [
+          {
+            request_id: "request-detail",
+            timestamp_ms: Date.UTC(2026, 6, 3),
+            agent: "OpenCode",
+            instance_id: "interface-main",
+            provider_id: "provider-main",
+            route_id: "route-main",
+            model: "gpt-5",
+            input_protocol: "openai",
+            chain_mode: "direct",
+            output_tokens: 80,
+            compression_ms: 5,
+            route_ms: 3,
+            upstream_ttfb_ms: 40,
+            end_to_end_ms: 90,
+            cache_alignment: "aligned",
+            transforms_applied: ["compact_json", "drop_redundant_context"],
+            error_type: "provider_timeout",
+            context_accounting: {
+              disposition: "active",
+              sent_payload: "optimized",
+              upstream_state: "completed",
+              attribution_basis: "provider_reconciled_actual",
+              provider_reconciled_input_savings: 200,
+              estimated: { signed_savings: { input_tokens: 200, total_tokens: 210 } },
+              api_key: "sk-secret-must-not-appear",
+              prompt: "full prompt must not appear",
+            },
+          },
+        ],
+      },
+      status: "runtime",
+      updatedAt: new Date("2026-07-10T12:00:00Z"),
+      error: "",
+      refresh: vi.fn(),
+    };
+
+    await openLogsTab();
+
+    const logGrid = screen.getByTestId("analytics-log-grid");
+    const detailButton = within(logGrid).getByRole("button", { name: "查看详情" });
+    fireEvent.click(detailButton);
+    const detail = document.getElementById(detailButton.getAttribute("aria-controls") ?? "");
+    expect(detail).not.toBeNull();
+    const detailView = within(detail as HTMLElement);
+
+    expect(detailButton).toHaveAttribute("aria-expanded", "true");
+    expect(detailView.getByText("界面（实例）")).toBeInTheDocument();
+    expect(detailView.getByText("interface-main")).toBeInTheDocument();
+    expect(detailView.getByText("route-main")).toBeInTheDocument();
+    expect(detailView.getByText("变换证据")).toBeInTheDocument();
+    expect(detailView.getByText("compact_json")).toBeInTheDocument();
+    expect(detailView.getByText("drop_redundant_context")).toBeInTheDocument();
+    expect(detailView.getByText("Optimization Receipt（脱敏白名单）")).toBeInTheDocument();
+    expect(detailView.getByText("active")).toBeInTheDocument();
+    expect(detailView.getByText("optimized")).toBeInTheDocument();
+    expect(detailView.getByText("provider_reconciled_actual")).toBeInTheDocument();
+    expect(detailView.getByText("provider_timeout")).toBeInTheDocument();
+    expect(detailView.queryByText("sk-secret-must-not-appear")).not.toBeInTheDocument();
+    expect(detailView.queryByText("full prompt must not appear")).not.toBeInTheDocument();
+
+    fireEvent.click(detailButton);
+    expect(screen.queryByText("变换证据")).not.toBeInTheDocument();
+  });
+
+  it("marks the receipt unavailable when runtime accounting is absent", async () => {
+    dashboard.state = {
+      payload: {
+        ...runtimeIdentity,
+        request_logs: [{ request_id: "request-no-receipt", timestamp_ms: Date.UTC(2026, 6, 3), agent: "Codex", input_tokens_before: 100, input_tokens_after: 80 }],
+      },
+      status: "runtime",
+      updatedAt: new Date("2026-07-10T12:00:00Z"),
+      error: "",
+      refresh: vi.fn(),
+    };
+
+    await openLogsTab();
+    fireEvent.click(screen.getByRole("button", { name: "查看详情" }));
+    expect(screen.getByText("Optimization Receipt（runtime 未合并 · 暂不可用）")).toBeInTheDocument();
+    expect(screen.getAllByText("—").length).toBeGreaterThan(0);
+  });
+
+  it("expands a row to show upstream billed cost independent of the price cache, then priced before/after/difference and basis when a cache exists", async () => {
+    dashboard.state = {
+      payload: {
+        ...runtimeIdentity,
+        request_logs: [
+          {
+            request_id: "request-cost-evidence",
+            timestamp_ms: Date.UTC(2026, 6, 3),
+            agent: "OpenCode",
+            provider_id: "provider-main",
+            route_id: "route-main",
+            model: "gpt-5",
+            status: "ok",
+            input_tokens_before: 1_000_000,
+            input_tokens_after: 800_000,
+            tokens_saved: 200_000,
+            latency_ms: 12,
+            provider_cost_usd: 0.001234,
+            cost_usd: 0.999999,
+          },
+        ],
+      },
+      status: "runtime",
+      updatedAt: new Date("2026-07-10T12:00:00Z"),
+      error: "",
+      refresh: vi.fn(),
+    };
+
+    // 阶段 1：默认无价格缓存 —— 上游账单费用直接读行字段，与缓存无关；无缓存不估算
+    await openLogsTab();
+    fireEvent.click(screen.getByRole("button", { name: "查看详情" }));
+    expect(screen.getByText("上游账单费用")).toBeInTheDocument();
+    expect(screen.getByText("$0.001234")).toBeInTheDocument();
+    expect(screen.getByText("价格未知")).toBeInTheDocument();
+    expect(screen.queryByText("$0.600000")).not.toBeInTheDocument();
+    expect(native.invoke).not.toHaveBeenCalled();
+
+    // 阶段 2：显式注入价格缓存 —— 前/后/差额/来源齐备，上游费用仍独立展示且不触碰 native mock
+    cleanup();
+    vi.mocked(loadModelPriceCache).mockResolvedValue(
+      buildPriceCache(
+        [{ model: "gpt-5", currency: "USD", inputPerMillion: 3, outputPerMillion: 15, source: "user-settings", updatedAt: "unix:2" }],
+        { source: "user-settings", freshness: "fresh", checkedAt: "unix:9" },
+      )!,
+    );
+    await openLogsTab();
+    fireEvent.click(screen.getByRole("button", { name: "查看详情" }));
+
+    expect(await screen.findByText("$3.000000")).toBeInTheDocument();
+    expect(screen.getByText("$2.400000")).toBeInTheDocument();
+    expect(screen.getByText("$0.600000")).toBeInTheDocument();
+    expect(screen.getByText("USD user-settings fresh")).toBeInTheDocument();
+    expect(screen.getByText("$0.001234")).toBeInTheDocument();
+    expect(native.invoke).not.toHaveBeenCalled();
+  });
+
+  it("paginates the log list with the same bounded request pages", async () => {
+    dashboard.state = {
+      payload: {
+        ...runtimeIdentity,
+        request_logs: Array.from({ length: 11 }, (_, index) => ({
+          request_id: `request-log-${index}`,
+          timestamp_ms: Date.UTC(2026, 6, index + 1),
+          agent: "Codex",
+          provider_id: "provider-main",
+          route_id: "route-main",
+          model: "gpt-5",
+          input_tokens_before: 100,
+          input_tokens_after: 80,
+          tokens_saved: 20,
+          latency_ms: 12,
+        })),
+      },
+      status: "runtime",
+      updatedAt: new Date("2026-07-15T12:00:00Z"),
+      error: "",
+      refresh: vi.fn(),
+    };
+
+    await openLogsTab();
+
+    expect(screen.getByText("第 1 / 2 页")).toBeInTheDocument();
+    expect(screen.getByText("request-log-0")).toBeInTheDocument();
+    expect(screen.queryByText("request-log-10")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "下一页" }));
+    expect(screen.getByText("第 2 / 2 页")).toBeInTheDocument();
+    expect(screen.getByText("request-log-10")).toBeInTheDocument();
+  });
+  it("keeps native next-page navigation when the current bounded page has no filter matches", async () => {
+    native.enabled = true;
+    native.invoke
+      .mockResolvedValueOnce({
+        source: "dtoken-owned-runtime",
+        freshness: "fresh",
+        revision: 10,
+        items: [{ request_id: "request-current-page", timestamp_ms: Date.UTC(2026, 6, 16), agent: "Codex", provider_id: "provider-a" }],
+        returned_count: 1,
+        total_count: 11,
+        has_more: true,
+        next_cursor: "cursor-next",
+      })
+      .mockResolvedValueOnce({
+        source: "dtoken-owned-runtime",
+        freshness: "fresh",
+        revision: 10,
+        items: [{ request_id: "request-next-page", timestamp_ms: Date.UTC(2026, 6, 17), agent: "Codex", provider_id: "provider-b" }],
+        returned_count: 1,
+        total_count: 11,
+        has_more: false,
+        next_cursor: null,
+      });
+    dashboard.state = {
+      payload: { ...runtimeIdentity, desktop_revision: "revision-filter-page", slice_revisions: { runtime_summary: 10 }, request_logs: [] },
+      status: "runtime",
+      updatedAt: new Date("2026-07-16T12:00:00Z"),
+      error: "",
+      refresh: vi.fn(),
+    };
+
+    await openLogsTab();
+    await screen.findByText("request-current-page");
+    await userEvent.type(screen.getByRole("searchbox", { name: "搜索请求日志" }), "request-next-page");
+
+    expect(screen.getByText("没有匹配的请求日志")).toBeInTheDocument();
+    const next = screen.getByRole("button", { name: "下一页" });
+    expect(next).toBeEnabled();
+    fireEvent.click(next);
+
+    expect(await screen.findByText("request-next-page")).toBeInTheDocument();
+    expect(native.invoke).toHaveBeenLastCalledWith("get_analytics_request_page", { cursor: "cursor-next", limit: 10 });
+  });
+
+
+  it("shows native loading before the first bounded page arrives", async () => {
+    native.enabled = true;
+    native.invoke.mockImplementation(() => new Promise(() => {}));
+    dashboard.state = {
+      payload: { ...runtimeIdentity, desktop_revision: "revision-log-loading", slice_revisions: { runtime_summary: 8 }, request_logs: [] },
+      status: "runtime",
+      updatedAt: new Date("2026-07-16T12:00:00Z"),
+      error: "",
+      refresh: vi.fn(),
+    };
+
+    await openLogsTab();
+
+    expect(await screen.findByText("正在加载有界请求明细…")).toBeInTheDocument();
+  });
+
+  it("renders an explicit empty state when the runtime has no request logs", async () => {
+    dashboard.state = {
+      payload: { ...runtimeIdentity, request_logs: [] },
+      status: "runtime",
+      updatedAt: new Date("2026-07-10T12:00:00Z"),
+      error: "",
+      refresh: vi.fn(),
+    };
+
+    await openLogsTab();
+
+    expect(screen.getByText("暂无请求日志")).toBeInTheDocument();
+  });
+});
+describe("Analytics protocol adapter", () => {
+  it("maps wire and legacy OpenAI plus Anthropic to canonical labels", () => {
+    expect(protocolId("open_ai")).toBe("openai");
+    expect(protocolId("openai")).toBe("openai");
+    expect(protocolLabel("anthropic")).toBe("Anthropic");
+  });
+
+  it("fails closed for unknown and missing protocol values", () => {
+    expect(protocolLabel("vendor-secret")).toBe("Unknown");
+    expect(protocolId("vendor-secret")).toBeNull();
+    expect(protocolLabel(undefined)).toBeNull();
   });
 });
 

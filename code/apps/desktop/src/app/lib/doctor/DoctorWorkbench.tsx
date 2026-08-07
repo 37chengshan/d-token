@@ -728,7 +728,7 @@ export function Doctor({ setPage }: { setPage: (page: PageId) => void }) {
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
           <div className="flex items-center gap-3">
-            <h1>{zh ? "Doctor" : "Doctor"}</h1>
+            <h1 className="sr-only">{zh ? "Doctor" : "Doctor"}</h1>
             <DataSourceBadge mode={source === "native" ? "native" : source === "preview" ? "preview" : "unavailable"} label={sourceLabel} />
           </div>
           <p className="mt-2 max-w-2xl text-sm text-muted-foreground">
