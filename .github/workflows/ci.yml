@@ -113,6 +113,23 @@ jobs:
           components: rustfmt, clippy
           targets: x86_64-pc-windows-msvc
 
+      - name: Install Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: code/apps/desktop/package-lock.json
+
+      # generate_context!() embeds ../dist at compile time, so Rust Clippy needs
+      # a real frontend build first — same contract as the Linux check job.
+      - name: Install frontend dependencies
+        working-directory: code/apps/desktop
+        run: npm ci
+
+      - name: Frontend build
+        working-directory: code/apps/desktop
+        run: npm run build
+
       - name: Prepare Windows d-token runtime sidecar for workspace checks
         shell: pwsh
         run: ./support/scripts/prepare_desktop_sidecars.ps1

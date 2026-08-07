@@ -41,7 +41,7 @@ pub fn install(app: &AppHandle) -> tauri::Result<()> {
     let quit_item = MenuItem::with_id(app, MENU_QUIT, "Quit d-token", true, None::<&str>)?;
     let menu = Menu::with_items(app, &[&open_item, &quit_item])?;
 
-    let mut builder = TrayIconBuilder::with_id("dtoken-tray")
+    let builder = TrayIconBuilder::with_id("dtoken-tray")
         .icon(Image::from_bytes(TRAY_ICON_PNG)?)
         .tooltip("d-token")
         // Left click toggles the panel, so the menu is reserved for right click.
@@ -71,10 +71,10 @@ pub fn install(app: &AppHandle) -> tauri::Result<()> {
             }
         });
 
+    // Template rendering is macOS-only; shadow the binding instead of
+    // mutating it so non-macOS builds carry no unused `mut`.
     #[cfg(target_os = "macos")]
-    {
-        builder = builder.icon_as_template(true);
-    }
+    let builder = builder.icon_as_template(true);
 
     builder.build(app)?;
     Ok(())

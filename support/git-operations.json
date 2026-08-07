@@ -1350,6 +1350,15 @@
       "summary": "Push verified integration CI fixes for PR #6.",
       "head_before": "2061342c469a",
       "remote": "origin"
+    },
+    {
+      "id": "c6cd0f43-2e0b-4251-8e6b-d865bd7d7ec4",
+      "timestamp": "2026-08-08T01:08:21+08:00",
+      "operation": "commit",
+      "branch": "codex/final-release-iteration",
+      "summary": "Fix clean-checkout tray resources and Windows frontend build prerequisites for CI.",
+      "head_before": "3eb6afd1a1ce",
+      "remote": null
     }
   ]
 }
