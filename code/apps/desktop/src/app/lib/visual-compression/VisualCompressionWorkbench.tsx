@@ -200,6 +200,7 @@ export function VisualCompression() {
 
   const [previewOpen, setPreviewOpen] = useState(false);
   const [previewText, setPreviewText] = useState(() => JSON.stringify(OPTICAL_SAMPLE_BODY, null, 2));
+  const [previewRouteId, setPreviewRouteId] = useState("");
   const [previewRunning, setPreviewRunning] = useState(false);
   const [previewError, setPreviewError] = useState("");
   const [previewResult, setPreviewResult] = useState<OpticalPlanSummary | null>(null);
@@ -208,6 +209,7 @@ export function VisualCompression() {
   const mountedRef = useRef(true);
   const refreshSeqRef = useRef(0);
   const previewSeqRef = useRef(0);
+  const lastPollRef = useRef(0);
 
   const loadEditor = useCallback(async () => {
     setEditorLoading(true);
@@ -366,10 +368,15 @@ export function VisualCompression() {
     void loadAgentIntegration(true);
     const timer = window.setInterval(() => {
       if (document.visibilityState !== "visible") return;
+      lastPollRef.current = Date.now();
       void refresh("poll");
     }, REFRESH_MS);
     const onFocus = () => {
-      if (document.visibilityState === "visible") void refresh("poll");
+      if (document.visibilityState !== "visible") return;
+      // Skip a focus-triggered poll when the interval already polled recently.
+      if (Date.now() - lastPollRef.current < REFRESH_MS - 1_000) return;
+      lastPollRef.current = Date.now();
+      void refresh("poll");
     };
     window.addEventListener("focus", onFocus);
     return () => {
@@ -385,6 +392,7 @@ export function VisualCompression() {
   const lifecycle = snapshot?.lifecycle.data;
   const events = snapshot?.events.data ?? [];
   const statusOk = Boolean(snapshot?.status.ok && status);
+  const capabilitiesOk = Boolean(snapshot?.capabilities.ok && capabilities);
   const lifecycleOk = Boolean(snapshot?.lifecycle.ok && lifecycle);
   const eventsOk = Boolean(snapshot?.events.ok && Array.isArray(snapshot.events.data));
   const dataSourceMode =
@@ -396,12 +404,14 @@ export function VisualCompression() {
 
   const dirty = Boolean(draft && baselineDraft && !opticalDraftsEqual(draft, baselineDraft));
   const canConfigure = Boolean(editor?.ok && editor.active_config_exists && editor.route_count > 0);
-  const shadowEnabled = Boolean(draft?.global.enabled || status?.enabled);
+  // Runtime status is the single source of truth for "enabled". The config draft is
+  // only the editing baseline; a written-but-unverified config must not read as enabled.
+  const runtimeEnabled = Boolean(statusOk && status?.enabled);
   const oneClickPhase = !editor && editorLoading
     ? "loading"
     : !canConfigure
       ? "blocked"
-      : shadowEnabled
+      : runtimeEnabled
         ? "enabled"
         : "ready";
 
@@ -468,15 +478,37 @@ export function VisualCompression() {
       if (!mountedRef.current) return;
       setLastApply(result);
       if (!result.ok) {
-        const failure = presentOperationFailure("visual", result.error || result.summary, lang);
-        setConfigNotice(failure.message);
-        addNotification({ dedupeKey: "optical-config-apply-failed", level: "error", title: failure.title, message: failure.message, details: failure.details, receipt: { requestId, rollbackId: result.rollback_id ?? undefined, targetId: "optical-config" } });
+        if (result.config_applied === true) {
+          // Written to disk, but the runtime did not verify it (restart/verify failed).
+          // Close the stale confirm dialog, keep the rollback entry, and say exactly
+          // that — do not present a generic failure.
+          const unverified = t("visual.config.writeUnverified");
+          setConfigNotice(unverified);
+          addNotification({ dedupeKey: `optical-config-apply-unverified-${result.rollback_id ?? "done"}`, level: "warning", title: lang === "zh" ? "配置已写入，服务未验证" : "Config written, service not verified", message: unverified, persistent: true, receipt: { requestId, rollbackId: result.rollback_id ?? undefined, targetId: "optical-config" } });
+          setConfirmOpen(false);
+          setReview(null);
+          setPendingDraft(null);
+          await loadEditor();
+          await refresh("action");
+        } else {
+          const failure = presentOperationFailure("visual", result.error || result.summary, lang);
+          setConfigNotice(failure.message);
+          addNotification({ dedupeKey: "optical-config-apply-failed", level: "error", title: failure.title, message: failure.message, details: failure.details, receipt: { requestId, targetId: "optical-config" } });
+        }
         return;
       }
       setConfirmOpen(false);
-      const applied = t("visual.config.applied");
-      setConfigNotice(applied);
-      addNotification({ dedupeKey: `optical-config-applied-${result.rollback_id ?? "done"}`, level: "success", title: lang === "zh" ? "视觉压缩配置已应用" : "Visual compression config applied", message: applied, persistent: true, receipt: { requestId, rollbackId: result.rollback_id ?? undefined, targetId: "optical-config" } });
+      if (result.runtime_verified === false) {
+        // Config is on disk but the service has not confirmed it yet — keep the
+        // rollback entry visible instead of claiming a fully verified apply.
+        const unverified = t("visual.config.writeUnverified");
+        setConfigNotice(unverified);
+        addNotification({ dedupeKey: `optical-config-applied-unverified-${result.rollback_id ?? "done"}`, level: "warning", title: lang === "zh" ? "配置已写入，服务未验证" : "Config written, service not verified", message: unverified, persistent: true, receipt: { requestId, rollbackId: result.rollback_id ?? undefined, targetId: "optical-config" } });
+      } else {
+        const applied = t("visual.config.applied");
+        setConfigNotice(applied);
+        addNotification({ dedupeKey: `optical-config-applied-${result.rollback_id ?? "done"}`, level: "success", title: lang === "zh" ? "视觉压缩配置已应用" : "Visual compression config applied", message: applied, persistent: true, receipt: { requestId, rollbackId: result.rollback_id ?? undefined, targetId: "optical-config" } });
+      }
       setReview(null);
       setPendingDraft(null);
       await loadEditor();
@@ -717,7 +749,7 @@ export function VisualCompression() {
     }
     setPreviewRunning(true);
     try {
-      const result = await previewOpticalPlan(body);
+      const result = await previewOpticalPlan(body, { route_id: previewRouteId || undefined });
       if (!mountedRef.current || seq !== previewSeqRef.current) return;
       if (!result.ok || !result.data) {
         const failure = presentOperationFailure("visual", result.error, lang);
@@ -756,9 +788,11 @@ export function VisualCompression() {
     {
       label: t("visual.kpi.active"),
       value: !statusOk ? "—" : status?.active_reachable ? t("visual.activeReachable") : t("visual.activeOff"),
-      detail: `${t("visual.activeReadonly")} · ${status?.active_execution_observed
-        ? t("visual.activeObserved")
-        : t("visual.activeNotObserved")}`,
+      detail: statusOk
+        ? `${t("visual.activeReadonly")} · ${status?.active_execution_observed
+            ? t("visual.activeObserved")
+            : t("visual.activeNotObserved")}`
+        : t("visual.unavailableDetail"),
     },
     {
       label: t("visual.kpi.failClosed"),
@@ -770,13 +804,13 @@ export function VisualCompression() {
   ], [lang, status, statusOk, t]);
 
   const capabilityRows = useMemo(() => [
-    [t("visual.cap.shadow"), capabilities?.shadow_preview_supported],
-    [t("visual.cap.active"), capabilities?.active_transform_enabled],
-    [t("visual.cap.renderer"), capabilities?.deterministic_png_renderer ?? status?.renderer_ready],
-    [t("visual.cap.patcher"), status?.patcher_ready],
-    [t("visual.cap.validator"), capabilities?.artifact_post_validation ?? status?.post_validator_ready],
-    [t("visual.cap.attestation"), capabilities?.capability_attestation_required],
-  ] as const, [capabilities, status, t]);
+    [t("visual.cap.shadow"), capabilitiesOk ? capabilities?.shadow_preview_supported : undefined],
+    [t("visual.cap.active"), capabilitiesOk ? capabilities?.active_transform_enabled : undefined],
+    [t("visual.cap.renderer"), capabilitiesOk ? capabilities?.deterministic_png_renderer : undefined],
+    [t("visual.cap.patcher"), statusOk ? status?.patcher_ready : undefined],
+    [t("visual.cap.validator"), capabilitiesOk ? capabilities?.artifact_post_validation : undefined],
+    [t("visual.cap.attestation"), capabilitiesOk ? capabilities?.capability_attestation_required : undefined],
+  ] as const, [capabilities, capabilitiesOk, status, statusOk, t]);
 
   const lifecycleRows = useMemo(() => [
     [t("visual.life.configured"), lifecycle?.configured_snapshots],
@@ -1107,19 +1141,33 @@ export function VisualCompression() {
                     <li>{t("visual.oneClick.bulletNoActive")}</li>
                   </ul>
                 </div>
-                <Button
-                  type="button"
-                  size="lg"
-                  className="gap-2"
-                  disabled={configBusy !== ""}
-                  onClick={() => void beginApply(buildOneClickEnableDraft(editor), "one-click-enable")}
-                  aria-busy={configBusy === "preview" || configBusy === "apply"}
-                >
-                  {configBusy === "preview" || configBusy === "apply" ? <RefreshCw className="size-4 animate-spin" aria-hidden /> : <Rocket className="size-4" aria-hidden />}
-                  {configBusy === "preview" || configBusy === "apply"
-                    ? t("visual.config.applying")
-                    : t("visual.oneClick.enableCta")}
-                </Button>
+                <div className="flex flex-wrap gap-2">
+                  <Button
+                    type="button"
+                    size="lg"
+                    className="gap-2"
+                    disabled={configBusy !== ""}
+                    onClick={() => void beginApply(buildOneClickEnableDraft(editor), "one-click-enable")}
+                    aria-busy={configBusy === "preview" || configBusy === "apply"}
+                  >
+                    {configBusy === "preview" || configBusy === "apply" ? <RefreshCw className="size-4 animate-spin" aria-hidden /> : <Rocket className="size-4" aria-hidden />}
+                    {configBusy === "preview" || configBusy === "apply"
+                      ? t("visual.config.applying")
+                      : t("visual.oneClick.enableCta")}
+                  </Button>
+                  {lastApply?.rollback_id ? (
+                    <Button
+                      type="button"
+                      variant="outline"
+                      disabled={configBusy !== ""}
+                      onClick={() => void runRollback()}
+                      aria-busy={configBusy === "rollback"}
+                    >
+                      {configBusy === "rollback" ? <RefreshCw className="size-3.5 animate-spin" aria-hidden /> : null}
+                      {t("visual.config.rollback")}
+                    </Button>
+                  ) : null}
+                </div>
               </div>
             ) : null}
 
@@ -1452,7 +1500,25 @@ export function VisualCompression() {
                 </button>
                 {previewOpen ? (
                   <div id="visual-preview-panel" className="mt-4 space-y-3" role="region" aria-labelledby="visual-preview-toggle">
-                    <div className="flex flex-wrap gap-2">
+                    <div className="flex flex-wrap items-center gap-2">
+                      {editor && editor.routes.length > 0 ? (
+                        <label className="flex items-center gap-2 text-sm">
+                          <span className="text-xs text-muted-foreground">{t("visual.preview.route")}</span>
+                          <select
+                            className="h-9 rounded-md border border-border bg-background px-2 text-sm"
+                            value={previewRouteId}
+                            onChange={(event) => setPreviewRouteId(event.target.value)}
+                            aria-label={t("visual.preview.route")}
+                          >
+                            <option value="">{t("visual.preview.routeNone")}</option>
+                            {editor.routes.map((route) => (
+                              <option key={route.route_id} value={route.route_id}>
+                                {route.label ?? route.route_id}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                      ) : null}
                       <Button
                         type="button"
                         variant="outline"
@@ -1509,6 +1575,32 @@ export function VisualCompression() {
                             </div>
                           </div>
                         </div>
+                        {previewResult.gates && previewResult.gates.length > 0 ? (
+                          <div className="mt-3">
+                            <div className="text-xs text-muted-foreground">{t("visual.preview.gates")}</div>
+                            <ul className="mt-1 space-y-1">
+                              {previewResult.gates.map((gate, index) => (
+                                <li key={`${gate.name ?? "gate"}-${index}`} className="flex flex-wrap items-baseline gap-x-2 text-xs">
+                                  <span className="font-medium">{gate.name ?? `#${index + 1}`}</span>
+                                  <span className={gate.passed ? "text-emerald-700 dark:text-emerald-300" : "text-amber-700 dark:text-amber-300"}>
+                                    {gate.passed ? t("visual.preview.gatePassed") : t("visual.preview.gateFailed")}
+                                  </span>
+                                  {gate.reason ? <span className="text-muted-foreground">{gate.reason}</span> : null}
+                                </li>
+                              ))}
+                            </ul>
+                          </div>
+                        ) : null}
+                        {previewResult.warnings && previewResult.warnings.length > 0 ? (
+                          <div className="mt-3">
+                            <div className="text-xs text-muted-foreground">{t("visual.preview.warnings")}</div>
+                            <ul className="mt-1 list-disc space-y-1 pl-4 text-xs text-amber-700 dark:text-amber-300">
+                              {previewResult.warnings.map((warning, index) => (
+                                <li key={index}>{warning}</li>
+                              ))}
+                            </ul>
+                          </div>
+                        ) : null}
                       </div>
                     ) : null}
                   </div>

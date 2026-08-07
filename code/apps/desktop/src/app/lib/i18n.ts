@@ -174,7 +174,6 @@ export const DICT: Dict = {
   },
   "visual.capabilities": { zh: "能力", en: "Capabilities" },
   "visual.lifecycle": { zh: "Capability 生命周期", en: "Capability lifecycle" },
-  "visual.lifecycleUnavailable": { zh: "生命周期数据不可用", en: "Lifecycle data unavailable" },
   "visual.cap.shadow": { zh: "Shadow 预览", en: "Shadow preview" },
   "visual.cap.active": { zh: "Active 变换", en: "Active transform" },
   "visual.cap.renderer": { zh: "确定性渲染", en: "Deterministic renderer" },
@@ -215,13 +214,16 @@ export const DICT: Dict = {
   "visual.preview.invalidJson": { zh: "JSON 无效，请检查后重试。", en: "Invalid JSON. Fix it and try again." },
   "visual.preview.tooLarge": { zh: "请求体过大，请缩小后再试。", en: "Request body is too large. Reduce it and retry." },
   "visual.preview.failed": { zh: "预览失败。", en: "Preview failed." },
-  "visual.preview.nativeOnly": {
-    zh: "请在 d-token 桌面窗口中运行预览。",
-    en: "Run preview in the d-token desktop window.",
-  },
   "visual.preview.finalStatus": { zh: "规划结果", en: "Plan result" },
   "visual.preview.gates": { zh: "门控", en: "Gates" },
+  "visual.preview.gatePassed": { zh: "通过", en: "Passed" },
+  "visual.preview.gateFailed": { zh: "未通过", en: "Failed" },
   "visual.preview.warnings": { zh: "警告", en: "Warnings" },
+  "visual.preview.route": { zh: "Route", en: "Route" },
+  "visual.preview.routeNone": {
+    zh: "不指定（unknown-model shadow-only）",
+    en: "None (unknown-model shadow-only)",
+  },
 
   "visual.tab.oneClick": { zh: "一键启用", en: "One-Click Enable" },
   "visual.tab.oneClickDesc": { zh: "安全默认开启 Shadow 预览", en: "Enable shadow preview with safe defaults" },
@@ -302,19 +304,18 @@ export const DICT: Dict = {
   "visual.config.apply": { zh: "确认并应用", en: "Confirm and apply" },
   "visual.config.previewing": { zh: "生成 diff…", en: "Building diff…" },
   "visual.config.applying": { zh: "应用中…", en: "Applying…" },
-  "visual.config.nativeOnly": {
-    zh: "配置写入仅在 d-token 桌面窗口可用。",
-    en: "Config writes are only available in the d-token desktop window.",
-  },
   "visual.config.confirmTitle": { zh: "应用视觉压缩配置？", en: "Apply visual compression config?" },
   "visual.config.confirmSummary": {
     zh: "将写入 d-token active config 的 optical 段，创建回退点，并在服务运行时重启本地服务。不会开启 active 改写，也不会修改第三方 Agent 配置。",
     en: "Writes the optical section of the d-token active config, creates a rollback point, and restarts the local service when it is running. Does not enable active rewrite or change third-party Agent configs.",
   },
   "visual.config.applied": { zh: "配置已应用", en: "Config applied" },
+  "visual.config.writeUnverified": {
+    zh: "配置已写盘，但服务尚未验证；本次变更可回退。",
+    en: "Config written, but the service has not verified it yet; this change can be rolled back.",
+  },
   "visual.config.rollback": { zh: "撤销本次配置", en: "Undo this config" },
   "visual.config.rollbackDone": { zh: "已恢复回退点", en: "Rollback point restored" },
-  "visual.config.failed": { zh: "配置操作失败", en: "Config operation failed" },
 
   // optical state labels
   "optical.mode.off": { zh: "关闭", en: "Off" },

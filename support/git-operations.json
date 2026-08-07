@@ -943,6 +943,11 @@
       "operation": "commit",
       "branch": "codex/release-log-view",
       "summary": "提交 Analytics 日志子页：逐条请求日志、脱敏详情与 Optimization Receipt 白名单",
+      "id": "65d368fe-199d-4d2c-8a73-4287a3c61969",
+      "timestamp": "2026-08-06T23:26:41+08:00",
+      "operation": "commit",
+      "branch": "codex/release-optical-implementation",
+      "summary": "Complete Optical desktop research slice with runtime status truth, explicit preview gates, rollback distinction, and route-safe preview contract",
       "head_before": "f1b89dc",
       "remote": null
     },
@@ -1115,6 +1120,12 @@
       "branch": "codex/code-graph-mcp-integration",
       "summary": "合并 Optical Beta 小范围打磨分支，保持 shadow/preview only",
       "head_before": "adaf98b",
+      "id": "b5471771-154c-494b-8693-52bc9bed67c8",
+      "timestamp": "2026-08-06T23:27:11+08:00",
+      "operation": "commit",
+      "branch": "codex/release-optical-implementation",
+      "summary": "Commit audit ledger entry for Optical release slice",
+      "head_before": "2fa1b92",
       "remote": null
     }
   ]
