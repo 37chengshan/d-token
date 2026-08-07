@@ -1,6 +1,10 @@
+// The package intentionally omits @types/node; Vitest supplies these modules at runtime.
 import { describe, expect, it } from "vitest";
+// @ts-ignore Node runtime module
 import { readFileSync } from "node:fs";
+// @ts-ignore Node runtime module
 import { fileURLToPath } from "node:url";
+// @ts-ignore Node runtime module
 import { dirname, resolve } from "node:path";
 
 const here = dirname(fileURLToPath(import.meta.url));

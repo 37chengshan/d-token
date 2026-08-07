@@ -1921,7 +1921,7 @@ fn restrict_store_sidecar_permissions(path: &Path) -> Result<()> {
 fn restrict_store_directory_permissions(_path: &Path) -> Result<()> {
     #[cfg(windows)]
     {
-        return apply_private_directory_acl(_path);
+        apply_private_directory_acl(_path)
     }
     #[cfg(not(windows))]
     {
@@ -1933,7 +1933,7 @@ fn restrict_store_directory_permissions(_path: &Path) -> Result<()> {
 fn restrict_store_permissions(_path: &Path) -> Result<()> {
     #[cfg(windows)]
     {
-        return apply_private_file_acl(_path);
+        apply_private_file_acl(_path)
     }
     #[cfg(not(windows))]
     {
