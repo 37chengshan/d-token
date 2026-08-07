@@ -873,6 +873,15 @@
       "summary": "docs: README 改为开源项目范式（首屏定位 + Highlights + Quick start，未签名声明压缩为 NOTE）",
       "head_before": "5a0fa0fcef646daa099b44478cad459274d28780",
       "remote": null
+    },
+    {
+      "id": "7b6ab378-6be4-4f3d-aaab-c8ea68a41154",
+      "timestamp": "2026-08-07T10:05:30+08:00",
+      "operation": "push",
+      "branch": "main",
+      "summary": "push README 开源范式重写到 main",
+      "head_before": "7109462",
+      "remote": "origin"
     }
   ]
 }
