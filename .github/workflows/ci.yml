@@ -40,7 +40,16 @@ jobs:
         run: |
           python support/scripts/check_structure.py
           python support/scripts/check_release_scope.py
-          python support/scripts/check_release_version.py
+          # GITHUB_REF_NAME is set for every push — branch/PR names on branch
+          # pushes (e.g. codex/final-release-iteration), tag names on tag
+          # pushes. check_release_version.py would treat it as a release tag,
+          # so only pass it when the ref is actually a tag (GITHUB_REF_TYPE).
+          if [ "${GITHUB_REF_TYPE:-}" = "tag" ]; then
+            python support/scripts/check_release_version.py --tag "$GITHUB_REF_NAME"
+          else
+            unset GITHUB_REF_NAME
+            python support/scripts/check_release_version.py
+          fi
 
       - name: Release gate contract
         shell: pwsh

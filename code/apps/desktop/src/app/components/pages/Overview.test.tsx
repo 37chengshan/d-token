@@ -670,7 +670,9 @@ describe("Overview savings windows", () => {
     const card = screen.getByTestId("overview-savings-window");
     expect(card).toHaveAttribute("data-savings-window", "total");
     expect(within(card).getByText("节省 Token")).toBeVisible();
-    expect(screen.getByRole("radiogroup", { name: "节省时间区间" })).toBeVisible();
+    const control = screen.getByRole("radiogroup", { name: "节省时间区间" });
+    expect(control).toBeVisible();
+    expect(control).toHaveClass("overview-savings-period-control");
 
     fireEvent.click(screen.getByRole("radio", { name: "当天" }));
     expect(card).toHaveAttribute("data-savings-window", "day");

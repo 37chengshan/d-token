@@ -72,6 +72,7 @@ export function SavingsWindowCard({
       reducedMotion={reducedMotion}
       value={window.key}
       onValueChange={onSelect}
+      className="overview-savings-period-control"
       items={derivation.windows.map((item) => ({ value: item.key, label: item.label }))}
     /></div>
     <div className="overview-kpi-detail mt-1 text-[11px] text-muted-foreground" title={derivation.cost.detail}>{lang === "zh" ? "费用差额" : "Cost delta"}: {costDeltaText(derivation.cost, lang)}</div>

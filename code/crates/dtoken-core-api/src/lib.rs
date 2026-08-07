@@ -3543,7 +3543,7 @@ fn verify_windows_private_runtime_contract(
         .with_context(|| format!("verify private CCR directory {}", ccr_root.display()))?;
 
     if state.context_store.is_none() {
-        bail!(
+        anyhow::bail!(
             "Windows private runtime-state.sqlite3 projection did not initialize; refusing CCR-enabled persistent startup"
         );
     }
