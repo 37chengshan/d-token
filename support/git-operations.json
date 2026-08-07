@@ -1359,6 +1359,15 @@
       "summary": "Fix clean-checkout tray resources and Windows frontend build prerequisites for CI.",
       "head_before": "3eb6afd1a1ce",
       "remote": null
+    },
+    {
+      "id": "0d3fcc2c-821d-4cd6-ad40-f634d42172a0",
+      "timestamp": "2026-08-08T01:08:33+08:00",
+      "operation": "push",
+      "branch": "codex/final-release-iteration",
+      "summary": "Push clean-checkout desktop CI fixes for PR #6.",
+      "head_before": "a427d61acf3b",
+      "remote": "origin"
     }
   ]
 }
