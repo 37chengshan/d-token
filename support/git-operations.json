@@ -1404,6 +1404,15 @@
       "summary": "Push platform-specific Windows test compilation fixes for PR #6.",
       "head_before": "15d35ce22e6c",
       "remote": "origin"
+    },
+    {
+      "id": "c0991211-f4fc-45df-b588-7ef4feec1ff3",
+      "timestamp": "2026-08-08T02:03:44+08:00",
+      "operation": "commit",
+      "branch": "codex/final-release-iteration",
+      "summary": "Make the hybrid Agent integration test use the hash-bound staged bridge.",
+      "head_before": "0b033101471d",
+      "remote": null
     }
   ]
 }

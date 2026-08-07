@@ -16159,43 +16159,33 @@ mod tests {
             } else {
                 "dtoken-proxy"
             });
-            let bridge = bin.join(if cfg!(windows) {
-                "dtoken-agent-bridge.exe"
-            } else {
-                "dtoken-agent-bridge"
-            });
             fs::write(&proxy, b"test proxy").expect("write proxy");
-            let bridge_identity = json!({
-                "component": BRIDGE_COMPONENT,
-                "protocol_version": BRIDGE_PROTOCOL_VERSION,
-                "arch": env::consts::ARCH,
-                "os": env::consts::OS,
-                "version": BRIDGE_VERSION,
-            })
-            .to_string();
-            if cfg!(windows) {
-                fs::write(&bridge, format!("@echo {bridge_identity}\r\n")).expect("write bridge");
-            } else {
-                fs::write(
-                    &bridge,
-                    format!(
-                        "#!/bin/sh\nif [ \"$1\" = identity ]; then printf '%s' '{bridge_identity}'; fi\n"
-                    ),
-                )
-                .expect("write bridge");
-            }
             #[cfg(unix)]
             {
                 use std::os::unix::fs::PermissionsExt;
                 fs::set_permissions(&proxy, fs::Permissions::from_mode(0o755))
                     .expect("make proxy executable");
-                fs::set_permissions(&bridge, fs::Permissions::from_mode(0o755))
-                    .expect("make bridge executable");
             }
             let previous_home = env::var_os("HOME");
             let previous_userprofile = env::var_os("USERPROFILE");
             let previous_proxy = env::var_os("DTOKEN_PROXY_EXE");
             let previous_bridge = env::var_os("DTOKEN_AGENT_BRIDGE_EXE");
+            // The resolver checks DTOKEN_AGENT_BRIDGE_EXE first, so clear any stale value
+            // before pointing it at the staged bridge next to the built test binary.
+            env::remove_var("DTOKEN_AGENT_BRIDGE_EXE");
+            let staged_bridge = env::current_exe()
+                .expect("current exe")
+                .parent()
+                .and_then(|dir| dir.parent())
+                .expect("target dir")
+                .join(if cfg!(windows) {
+                    "dtoken-agent-bridge.exe"
+                } else {
+                    "dtoken-agent-bridge"
+                });
+            env::set_var("DTOKEN_AGENT_BRIDGE_EXE", &staged_bridge);
+            let bridge = resolve_dtoken_agent_bridge_exe()
+                .expect("staged bridge must pass embedded hash and identity verification");
             env::set_var("HOME", &home);
             env::set_var("USERPROFILE", &home);
             env::set_var("DTOKEN_PROXY_EXE", &proxy);
