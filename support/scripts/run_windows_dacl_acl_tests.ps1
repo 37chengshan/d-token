@@ -53,8 +53,8 @@ if (-not $IsWindowsHost) {
 # Filters must match REAL cargo test names/module paths (cargo test filters
 # match the fully-qualified test path, not function names of non-test code).
 # Every group's filter was verified against the crate source:
-#   - dtoken-context-store::windows_private_acl::tests::directory_acl_... and
-#     file_acl_... match the module path "windows_private_acl".
+#   - dtoken-context-store::windows_private_acl::tests::directory_acl_is_protected_and_limited_to_current_user_and_system
+#     and file_acl_is_protected_and_limited_to_current_user_and_system match the module path "windows_private_acl".
 #   - dtoken-context-store::lib::tests::open_applies_protected_private_dacl_...
 #     and open_restricts_parent_database_... match "open_applies" / "open_restricts".
 #   - dtoken-config-patcher has NO windows_acl test; the config privacy ACL is
