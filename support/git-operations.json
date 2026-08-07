@@ -1125,6 +1125,33 @@
       "summary": "Finalize PRD-aligned release iteration: automatic Agent onboarding, native Codex Responses routing, truthful analytics pricing, tray and Code Graph polish",
       "head_before": "c4ebc2509a96",
       "remote": null
+    },
+    {
+      "id": "8d970c56-1f5e-44bb-aac7-2bbcdc817e48",
+      "timestamp": "2026-08-07T20:19:44+08:00",
+      "operation": "rebase",
+      "branch": "codex/code-graph-mcp-integration",
+      "summary": "Rebase the validated release candidate onto current origin/main before final pull request",
+      "head_before": "393c627d5cd7",
+      "remote": "origin"
+    },
+    {
+      "id": "49a5ba88-c159-4798-b642-bc3249e08a33",
+      "timestamp": "2026-08-07T20:19:55+08:00",
+      "operation": "commit",
+      "branch": "codex/code-graph-mcp-integration",
+      "summary": "Record release candidate rebase audit before history rewrite",
+      "head_before": "393c627d5cd7",
+      "remote": null
+    },
+    {
+      "id": "a7f27b41-8619-4729-81f9-d4d8a89042cf",
+      "timestamp": "2026-08-07T20:22:16+08:00",
+      "operation": "branch-create",
+      "branch": "codex/final-release-iteration",
+      "summary": "Create clean final release PR branch from current origin/main for validated candidate squash",
+      "head_before": "1183584fdb87",
+      "remote": "origin"
     }
   ]
 }
