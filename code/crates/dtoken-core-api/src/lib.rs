@@ -17966,8 +17966,11 @@ mod tests {
         std::fs::create_dir_all(dir.join("runtime-state.sqlite3"))
             .expect("block projection path with directory");
 
-        let error = AppState::new_persistent_with_ccr_key(DtokenConfig::empty(), &dir, [42_u8; 32])
-            .expect_err("Windows private projection failure must be fatal");
+        let error =
+            match AppState::new_persistent_with_ccr_key(DtokenConfig::empty(), &dir, [42_u8; 32]) {
+                Ok(_) => panic!("Windows private projection failure must be fatal"),
+                Err(error) => error,
+            };
         assert!(
             format!("{error:#}").contains("runtime-state.sqlite3 projection did not initialize"),
             "unexpected error: {error:#}"

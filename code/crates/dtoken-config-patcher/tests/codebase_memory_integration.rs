@@ -694,19 +694,13 @@ fn real_launcher_and_pinned_upstream_preview_apply_verify_rollback_restores_byte
         fs::set_permissions(&target, fs::Permissions::from_mode(0o640))
             .expect("set original config mode");
     }
+    #[cfg(unix)]
     let original_mode = {
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            fs::metadata(&target)
-                .expect("original config metadata")
-                .permissions()
-                .mode()
-        }
-        #[cfg(not(unix))]
-        {
-            0
-        }
+        use std::os::unix::fs::PermissionsExt;
+        fs::metadata(&target)
+            .expect("original config metadata")
+            .permissions()
+            .mode()
     };
 
     let request = CodebaseMemoryIntegrationRequest {
