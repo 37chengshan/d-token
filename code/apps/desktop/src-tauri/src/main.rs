@@ -16723,11 +16723,14 @@ mod tests {
             resolve_managed_agent_path_with_context(request(registered.clone()), &context)
                 .expect("registered Codex target");
         assert_eq!(resolved.target_path, registered);
-        let arbitrary = resolve_managed_agent_path_with_context(
-            request(PathBuf::from("/tmp/x.toml")),
-            &context,
-        )
-        .expect_err("arbitrary absolute path must fail closed");
+        let arbitrary_target = if cfg!(windows) {
+            PathBuf::from("C:\\unregistered\\x.toml")
+        } else {
+            PathBuf::from("/tmp/x.toml")
+        };
+        let arbitrary =
+            resolve_managed_agent_path_with_context(request(arbitrary_target), &context)
+                .expect_err("arbitrary absolute path must fail closed");
         assert!(arbitrary.contains("outside the registered Agent targets"));
         let ssh = resolve_managed_agent_path_with_context(
             request(root.path().join(".ssh/config")),

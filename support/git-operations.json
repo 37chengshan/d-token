@@ -1422,6 +1422,33 @@
       "summary": "Push the deterministic staged-bridge hybrid transaction test for PR #6.",
       "head_before": "2d7d82ee357f",
       "remote": "origin"
+    },
+    {
+      "id": "ad5b319b-f214-436e-85a9-45ba82fe620d",
+      "timestamp": "2026-08-08T16:35:15+08:00",
+      "operation": "commit",
+      "branch": "codex/final-release-iteration",
+      "summary": "fix: bind desktop tests to staged sidecar hash and canonical temp root",
+      "head_before": "4fb6498b42ad5cde81d110a9d97c7bfba3df223f",
+      "remote": null
+    },
+    {
+      "id": "f7adb755-4edf-43bc-9f08-9f777b27177b",
+      "timestamp": "2026-08-08T16:35:24+08:00",
+      "operation": "push",
+      "branch": "codex/final-release-iteration",
+      "summary": "push PR6 test fix: staged sidecar hash + canonical temp root",
+      "head_before": "f0a9bed",
+      "remote": "origin"
+    },
+    {
+      "id": "8843d23b-368e-452e-90a3-6aef9e19c733",
+      "timestamp": "2026-08-08T17:01:49+08:00",
+      "operation": "commit",
+      "branch": "codex/final-release-iteration",
+      "summary": "fix: make masked Linux/Windows test assertions platform-aware",
+      "head_before": "f0a9bed",
+      "remote": null
     }
   ]
 }
