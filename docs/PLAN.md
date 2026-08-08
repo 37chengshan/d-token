@@ -787,7 +787,7 @@ idle
 
 ## 1C. 当前唯一实施主线：Headroom 后端全能力迁移（实施中）
 
-当前参考基线固定为 `headroomlabs-ai/headroom@main` / `01df2452529a86c689cf226fecd5918cc5d19676`（2026-08-02，未发布 tag）；前一发布基线 `v0.33.0` / `28aa53dc7ca51e687cc719c3fe160f3be50c6570`，历史 commit `1725cd1f8376828849c0e48fd9008afa25d24fff` 只解释旧证据，不再作为完成口径。当前先做行为与接口对照；如复制或修改上游源码，必须在动手前补齐 NOTICE、文件清单和修改说明。外部 Headroom 8787 只允许 no-touch 只读对照。
+当前参考基线固定为 `headroomlabs-ai/headroom` release `v0.34.0` / `9fd5ae3d530b5d9eb9e9127e413235a5a3b2faf6`（2026-08-05 发布；2026-08-08 三候选审计后定为唯一 current comparison pin）；旧基线 `01df2452529a86c689cf226fecd5918cc5d19676`（2026-08-02 获取的 main HEAD，pyproject version 0.33.0）与前一发布基线 `v0.33.0` / `28aa53dc7ca51e687cc719c3fe160f3be50c6570` 均为历史，历史 commit `1725cd1f8376828849c0e48fd9008afa25d24fff` 只解释旧证据；main `7f6950be34e29304deae0fa5138b852491b092fe`（2026-08-08 获取）为 post-release delta，跟踪不 pin。除 `v0.34.0` 外的候选均不再作为完成口径。当前先做行为与接口对照；如复制或修改上游源码，必须在动手前补齐 NOTICE、文件清单和修改说明。外部 Headroom 8787 只允许 no-touch 只读对照。
 
 v0.33 delta 必须纳入 G0–G8：compressor registry、route-bound `/v1/compress` gateway/SDK surface、递归/混合/config 内容路由、cold-prefix/thinking compaction、tool-schema savings、streamable MCP、CCR sliding TTL、persistent metrics 与新增 Provider/Agent 路由均须逐项标为真实、部分、缺失或不在范围。2026-08-02 首批已接入 Rust-owned 内置 compressor registry 和不转发请求的显式 route-bound `/v1/compress`；动态 Python entry point/进程内第三方插件继续禁止，第三方中转通过 d-token RouteProfile 与受限 HTTP/MCP/SDK 合同接入。
 

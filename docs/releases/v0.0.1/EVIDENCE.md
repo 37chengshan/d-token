@@ -19,6 +19,7 @@
 | release gate 聚合状态 | `support/artifacts/release-gate-status-20260807T092350Z.json`、`...T110417Z.json` | fail-closed 输出；G6/G8 未通过 | 2026-08-07 | N9 重新生成 |
 | RTK 研究/内部实现 | `docs/archive/` REPORT_01_RTK_HEADROOM_INTERNALS 等 | RTK 行为/边界研究 | 历史 | 背景 |
 | provenance 登记 | `docs/legal/THIRD_PARTY_NOTICES.md`、根 `THIRD_PARTY_NOTICES.md`、`code/runtimes/headroom/README.md`、`code/runtimes/codebase-memory/README.md`+`artifact-manifest.json` | 七轨道来源/pin/许可证/NOTICE | 2026-08-06 更新 | OSS 漂移 D1–D5 基线 |
+| Headroom 三候选 pin 审计（PR-H1，2026-08-08） | `code/runtimes/headroom/README.md` §三候选漂移审计与唯一 pin 决议；`docs/legal/THIRD_PARTY_NOTICES.md`；根 `THIRD_PARTY_NOTICES.md` | 唯一 current comparison pin = `v0.34.0`/`9fd5ae3d`；`01df2452`→`v0.34.0`（33 commit/129 文件/+8936 −1021）、`v0.34.0`→main `7f6950be`（33 commit/74 文件/+4874 −428）漂移已审计；许可证 Apache-2.0 三 pin 无差异；NOTICE 增量（#2734 vendored dashboard assets）已登记；无必须采用 main 的实际证据；`01df2452` 标历史、main 只作 post-release delta | worktree `codex/final/headroom-pin`（base `c5a5849`）；三候选 commit 于外部克隆 `headroom-main-2026-08-08` 核验 | OSS 漂移 D2 闭合（只闭合 pin 漂移，不涉及能力迁移完成度） |
 
 ## 2. 过期证据隔离清单（禁止绑定 `C_final`，禁止写入最终证据表）
 
@@ -49,7 +50,7 @@
 | N0 门禁报告 | `support/artifacts/release-gate-status-<ts>.json` | N0 | C_final |
 | N1–N8 各域证据 | 对应 artifact 目录 | Main/外部 | C_final |
 | N9 最终聚合 + 三结论判定 + 发布报告 | `.ai-bridge/release-iteration/final-candidate-evidence.md`（模板）+ 发布报告 | PR-9 → N9 | C_final |
-| OSS 漂移闭合记录（D1–D5） | 各切片报告 | PR-CBM1/H1/O1/L0/R1 | 切片 commit |
+| OSS 漂移闭合记录（D1–D5） | 各切片报告（D2 已闭合：PR-H1 审计记录在 `code/runtimes/headroom/README.md` §三候选漂移审计与唯一 pin 决议） | PR-CBM1/H1✅/O1/L0/R1 | 切片 commit |
 | Headroom 矩阵/G9 判定表 | `docs/PLAN.md` §1C、切片报告 | PR-H2/H3 | C_final |
 | LeanCTX 九边界实现与测试 | 对应 crate tests | PR-L1..L3 | 切片 commit |
 | pxpipe v0.12.0 评估记录 | 切片报告 | PR-O1 | 切片 commit |
