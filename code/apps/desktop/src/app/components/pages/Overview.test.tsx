@@ -141,7 +141,7 @@ describe("Overview information hierarchy and truthfulness", () => {
           already_connected: true,
         }],
         sources: [],
-        selection_required: false,
+        has_resolution_gap: false,
         cc_switch_sync: {
           detected: true,
           status: "synced",
@@ -183,7 +183,7 @@ describe("Overview information hierarchy and truthfulness", () => {
         already_connected: true,
       }],
       sources: [],
-      selection_required: false,
+      has_resolution_gap: false,
       cc_switch_sync: {
         detected: true,
         status: "synced",

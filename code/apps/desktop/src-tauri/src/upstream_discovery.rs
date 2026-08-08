@@ -534,11 +534,11 @@ pub fn discover() -> Value {
             }),
         ),
     };
-    let selection_required = agent_bindings.iter().any(|binding| {
+    let has_resolution_gap = agent_bindings.iter().any(|binding| {
         binding.installed
             && matches!(
                 binding.resolution.as_str(),
-                "needs-choice" | "needs-credential"
+                "needs-source-fix" | "needs-credential"
             )
     });
     let cc_switch_sync = cc_switch_sync_state(&sources, &candidates);
@@ -553,7 +553,7 @@ pub fn discover() -> Value {
         "agent_bindings": agent_bindings,
         "agent_scan": agent_scan,
         "sources": sources,
-        "selection_required": selection_required,
+        "has_resolution_gap": has_resolution_gap,
         "cc_switch_sync": cc_switch_sync,
         "external_config_snapshot": external_config_snapshot,
         "external_config_refresh": external_config_refresh,
@@ -2720,16 +2720,19 @@ fn resolve_binding_state(
     }
     if selected.is_none() && (active.len() > 1 || (active.is_empty() && eligible.len() > 1)) {
         return (
-            "needs-choice".to_string(),
+            "needs-source-fix".to_string(),
             0,
             vec!["Multiple equally plausible upstreams were found".to_string()],
         );
     }
     let Some(candidate) = selected else {
         return (
-            "needs-choice".to_string(),
+            "needs-source-fix".to_string(),
             0,
-            vec!["Select one discovered upstream".to_string()],
+            vec![
+                "The discovered upstream cannot be uniquely resolved; fix the source configuration and rescan"
+                    .to_string(),
+            ],
         );
     };
     if candidate.protocol == "unknown" {
@@ -2762,9 +2765,12 @@ fn resolve_binding_state(
     }
     if candidate.models.len() != 1 {
         return (
-            "needs-choice".to_string(),
+            "needs-source-fix".to_string(),
             candidate.confidence,
-            vec!["Select the model to keep for this Agent".to_string()],
+            vec![
+                "Multiple models are configured for this Agent; fix the source configuration and rescan"
+                    .to_string(),
+            ],
         );
     }
     (
@@ -3121,7 +3127,9 @@ mod tests {
     #[test]
     fn official_catalog_shape_is_no_auth_and_explicit() {
         let value = discover();
-        assert!(value["selection_required"].is_boolean());
+        assert!(value["has_resolution_gap"].is_boolean());
+        // The cutover renamed the flag: the legacy key must never be emitted.
+        assert!(value.get("selection_required").is_none());
         assert!(value["agent_bindings"].is_array());
         assert!(value["revision"]
             .as_str()
@@ -4199,7 +4207,7 @@ wire_api = "responses"
         assert_ne!(candidates[0].id, candidates[1].id);
         let bindings = resolve_agent_bindings(&candidates, &detected);
         assert_eq!(bindings[0].config_paths.len(), 2);
-        assert_eq!(bindings[0].resolution, "needs-choice");
+        assert_eq!(bindings[0].resolution, "needs-source-fix");
         assert!(bindings[0].resolved_candidate.is_none());
     }
 
@@ -4243,7 +4251,72 @@ wire_api = "responses"
         };
         let (resolution, _, _) =
             resolve_binding_state(spec, true, false, &[current, second], &[], None, true);
-        assert_eq!(resolution, "needs-choice");
+        assert_eq!(resolution, "needs-source-fix");
+    }
+
+    #[test]
+    fn ambiguous_upstream_reasons_instruct_source_fix_instead_of_selection() {
+        let spec = AGENT_REGISTRY
+            .iter()
+            .find(|spec| spec.id == "opencode")
+            .unwrap();
+        let single = UpstreamCandidate {
+            id: "only".to_string(),
+            name: "Only candidate".to_string(),
+            protocol: "open_ai".to_string(),
+            base_url: Some("https://example.test/v1".to_string()),
+            models: vec!["model-a".to_string()],
+            source: "agent-config:opencode".to_string(),
+            freshness: "unix:1".to_string(),
+            auth_mode: "none".to_string(),
+            active: false,
+            port: None,
+            state: "discovered".to_string(),
+            agent_ids: vec!["opencode".to_string()],
+            confidence: 90,
+            reasons: vec![],
+        };
+        // A single eligible candidate without a resolved selection fails
+        // closed, and the EN reason directs the user to fix the source and
+        // rescan instead of picking one upstream.
+        let (resolution, _, reasons) = resolve_binding_state(
+            spec,
+            true,
+            false,
+            std::slice::from_ref(&single),
+            &[],
+            None,
+            true,
+        );
+        assert_eq!(resolution, "needs-source-fix");
+        assert_eq!(
+            reasons[0],
+            "The discovered upstream cannot be uniquely resolved; fix the source configuration and rescan"
+        );
+
+        // One selected candidate exposing multiple models uses the same
+        // fail-closed copy: fix the source, never select a model.
+        let multi_model = UpstreamCandidate {
+            id: "multi".to_string(),
+            name: "Multi model".to_string(),
+            models: vec!["model-a".to_string(), "model-b".to_string()],
+            active: true,
+            ..single.clone()
+        };
+        let (resolution, _, reasons) = resolve_binding_state(
+            spec,
+            true,
+            false,
+            std::slice::from_ref(&multi_model),
+            std::slice::from_ref(&multi_model),
+            Some(&multi_model),
+            true,
+        );
+        assert_eq!(resolution, "needs-source-fix");
+        assert_eq!(
+            reasons[0],
+            "Multiple models are configured for this Agent; fix the source configuration and rescan"
+        );
     }
 
     #[test]

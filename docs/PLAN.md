@@ -162,7 +162,7 @@ type AgentUpstreamBinding = {
 1. `Install.tsx` 把“没有已应用 d-token route”解释为“必须先进入高级安装”，与 PRD 的自动发现默认路径冲突。
 2. 页面虽然自动调用 `discover_upstream_candidates`，但仍把结果当成用户手动选择模型的辅助数据，没有形成 Agent 级自动解析结果。
 3. 当前发现源主要覆盖 OpenCode 与 cc-switch，尚未读取 Claude Code、Codex、Cursor、Cline 的当前配置与当前上游。
-4. `selection_required` 固定为 true，没有区分唯一高置信度候选与多候选歧义。
+4. `has_resolution_gap` 固定为 true，没有区分唯一高置信度候选与多候选歧义。
 5. cc-switch 当前 profile 切换尚未形成事件化同步状态，d-token 可能继续保留旧 active route。
 6. 安装事务主要负责服务启动，自动发现结果尚未进入统一 route plan、diff、apply 和 verification 事务。
 
@@ -370,14 +370,14 @@ UI 至少显示前三条排序依据，例如“最近有 Codex 会话”“同�
 
 普通路径最多要求用户做两类决策：
 
-1. 当检测到多个已安装 Agent 或同等有效上游时，选择要连接的 Agent/候选。
+1. 当检测到多个已安装 Agent 或同等有效上游时，不做选择：进入 `needs-source-fix`，展示冲突来源，要求修复来源配置后重新扫描。
 2. 确认将要修改的内容；如凭据无法安全复用，只补充必要凭据。
 
 页面主状态应为：
 
 1. `discovering`：正在自动读取本机 Agent、现有上游和 cc-switch。
 2. `ready`：已得到唯一高置信度方案，可直接连接。
-3. `needs-choice`：只展示发生歧义的 Agent 和候选，不让用户重复填写已识别字段。
+3. `needs-source-fix`：只展示发生歧义的 Agent 和候选，不让用户重复填写已识别字段。
 4. `needs-credential`：保留已识别 URL、协议和模型，只请求缺失凭据。
 5. `applying`：安装/启动服务并执行配置事务。
 6. `verified`：连接已验证，显示真实连接路径和回退入口。
@@ -389,7 +389,7 @@ UI 至少显示前三条排序依据，例如“最近有 Codex 会话”“同�
 1. “已自动读取 X 个 Agent、Y 个上游、Z 个 cc-switch profile”。
 2. 默认只展示一句人话结果，例如“OpenCode 将保留 OpenCode Zen，并通过 d-token 连接”。
 3. 连接路径、协议、端口和 diff 放在可展开详情中，不占据主流程。
-4. 唯一候选自动选中；多候选只展示选择器，不展示手填 URL 为默认动作。
+4. 唯一候选自动选中；多候选不提供选择器，只展示冲突来源与「修复来源配置 / 重新扫描」，不展示手填 URL 为默认动作。
 5. `out-of-sync` 时直接显示“同步到当前 cc-switch profile”。
 6. 只有 `unsupported/unavailable` 才显示“进入高级安装”。
 7. 服务安装/启动是“连接”动作的内部阶段；除非发生端口冲突、权限错误或进程身份异常，不要求用户先单独操作服务。
@@ -551,7 +551,7 @@ idle
   -> discovering
   -> already-connected
   -> ready
-  -> needs-choice / needs-credential
+  -> needs-source-fix / needs-credential
   -> review
   -> applying-runtime
   -> applying-agent-configs
@@ -565,7 +565,7 @@ idle
 1. `discovering` 自动开始，不需要用户先点击“检测”。手动刷新只是重新扫描，不是正常必经步骤。
 2. `already-connected` 显示当前连接路径和“重新验证”，不显示“安装”或“连接”主 CTA。
 3. `ready` 的主 CTA 使用结果导向文案，例如“连接 OpenCode”，不使用“执行事务”“应用 route”等工程术语。
-4. `needs-choice` 只展开有歧义的字段；其他 Agent 和上游保持自动解析结果。
+4. `needs-source-fix` 只展开有歧义的字段；其他 Agent 和上游保持自动解析结果。
 5. `needs-credential` 只请求必要凭据，并写入操作系统凭据库；不要求重新填写 URL、协议和模型。
 6. `review` 默认显示人话摘要，技术连接路径、文件 diff、hash 和备份位置按需展开。
 7. `applying-runtime` 仅在 runtime 缺失、版本不兼容或未运行时执行；已正常运行时必须跳过。

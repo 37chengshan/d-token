@@ -32,7 +32,7 @@ const FORBIDDEN_PATTERNS: Array<{ name: string; pattern: RegExp }> = [
   { name: "TOGGLE_AGENT event", pattern: /TOGGLE_AGENT/ },
   { name: "discovered-upstream chooser copy", pattern: /选择已发现/ },
   { name: "choose-model copy", pattern: /Choose[^.]*model/i },
-  { name: "needs-choice <select> chooser", pattern: /<select/ },
+  { name: "needs-source-fix <select> chooser", pattern: /<select/ },
 ];
 
 describe("install selection controls are removed from production code", () => {

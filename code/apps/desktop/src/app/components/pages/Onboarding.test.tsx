@@ -36,7 +36,7 @@ const emptySnapshot: ConnectionSetupSnapshot = {
   candidates: [],
   agent_bindings: [],
   sources: [],
-  selection_required: false,
+  has_resolution_gap: false,
   cc_switch_sync: null,
   writes_performed: false,
   privacy: "metadata only",

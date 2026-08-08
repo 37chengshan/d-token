@@ -60,7 +60,7 @@ const snapshot = (revision: string, agentBinding = binding()): ConnectionSetupSn
   candidates: agentBinding.candidates,
   agent_bindings: [agentBinding],
   sources: [],
-  selection_required: agentBinding.resolution === "needs-choice",
+  has_resolution_gap: agentBinding.resolution === "needs-source-fix",
   cc_switch_sync: null,
   writes_performed: false,
   privacy: "redacted",
@@ -93,7 +93,7 @@ describe("installMachine", () => {
   it("blocks the whole plan when an installed Agent's upstream/model is ambiguous", () => {
     const first = candidate({ id: "one", active: false });
     const second = candidate({ id: "two", active: false, models: ["model-b"] });
-    const ambiguous = binding({ candidates: [first, second], resolved_candidate: null, resolution: "needs-choice" });
+    const ambiguous = binding({ candidates: [first, second], resolved_candidate: null, resolution: "needs-source-fix" });
     const state = installMachineReducer(initialInstallMachineState, { type: "DISCOVERED", snapshot: snapshot("r1", ambiguous) });
     // The ambiguous Agent joins the automatic batch and fails closed; no
     // chooser is offered.
