@@ -24,7 +24,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from contextlib import redirect_stderr, redirect_stdout
+from contextlib import contextmanager, redirect_stderr, redirect_stdout
 from io import StringIO
 from pathlib import Path
 from unittest.mock import patch
@@ -62,6 +62,25 @@ def run_main(module, argv: list[str]) -> tuple[int, str, str]:
     with redirect_stdout(out), redirect_stderr(err):
         code = module.main(argv)
     return code, out.getvalue(), err.getvalue()
+
+
+@contextmanager
+def mac_host():
+    """Force the audit script's darwin execute path regardless of the host
+    platform. The lifecycle is fully offline (mocked subprocess), so the
+    darwin-only branch is exercised deterministically on any CI host."""
+    with patch.object(AUDIT.sys, "platform", "darwin"):
+        yield
+
+
+@contextmanager
+def darwin_host():
+    """Force the round-trip script's darwin execute path regardless of the
+    host platform, with a fixed uid for the launchctl GUI domain. The
+    lifecycle is fully offline (mocked subprocess)."""
+    with patch.object(ROUND.sys, "platform", "darwin"), \
+            patch.object(ROUND.os, "getuid", lambda: 501, create=True):
+        yield
 
 
 def make_bundle(root: Path, app_name: str, version: str, exe_name: str, payload: str) -> Path:
@@ -214,10 +233,17 @@ class MacosUpgradeRollbackAuditTests(unittest.TestCase):
         self.assertEqual(artifact["status"], "blocked")
         self.assertFalse(artifact["ok"])
         self.assertIn("platform-unsupported", artifact["errors"][0])
+        # Blocked runs never mounted/copied/removed anything: no false claims.
+        self.assertIsNone(artifact["rollback"]["matched_install_digest"])
+        self.assertIsNone(artifact["rollback"]["version_equal_install"])
+        self.assertIsNone(artifact["cleanup"]["mounts_detached"])
+        self.assertIsNone(artifact["cleanup"]["app_removed"])
+        self.assertIsNone(artifact["cleanup"]["restored_exact"])
+        self.assertIsNone(artifact["cleanup"]["temp_root_removed"])
 
     def test_happy_path_verified_with_hash_mode_evidence(self) -> None:
         mocks = AuditMocks(self.mount_install, self.mount_upgrade, "Fixture.app")
-        with patch.object(AUDIT, "_run", mocks):
+        with mac_host(), patch.object(AUDIT, "_run", mocks):
             code, out, _err = run_main(AUDIT, self.base_args(execute=True))
         self.assertEqual(code, 0, msg=out)
         artifact = json.loads(self.artifact.read_text(encoding="utf-8"))
@@ -260,7 +286,7 @@ class MacosUpgradeRollbackAuditTests(unittest.TestCase):
 
     def test_artifact_contains_no_absolute_paths_or_contents(self) -> None:
         mocks = AuditMocks(self.mount_install, self.mount_upgrade, "Fixture.app")
-        with patch.object(AUDIT, "_run", mocks):
+        with mac_host(), patch.object(AUDIT, "_run", mocks):
             run_main(AUDIT, self.base_args(execute=True))
         text = self.artifact.read_text(encoding="utf-8")
         self.assertNotIn(self.tmp.name, text)
@@ -282,11 +308,16 @@ class MacosUpgradeRollbackAuditTests(unittest.TestCase):
 
     def test_post_create_verification_failure_ok_false_with_cleanup(self) -> None:
         mocks = AuditMocks(self.mount_install, self.mount_upgrade, "Fixture.app")
+        real_metadata = AUDIT.bundle_metadata
+        calls = {"n": 0}
 
         def failing_metadata(bundle: Path):
-            raise AUDIT.AuditError("Info.plist unreadable after install")
+            calls["n"] += 1
+            if calls["n"] == 2:  # 1 = pre-state source read, 2 = verify_installed
+                raise AUDIT.AuditError("Info.plist unreadable after install")
+            return real_metadata(bundle)
 
-        with patch.object(AUDIT, "_run", mocks), \
+        with mac_host(), patch.object(AUDIT, "_run", mocks), \
                 patch.object(AUDIT, "bundle_metadata", failing_metadata):
             code, _out, _err = run_main(AUDIT, self.base_args(execute=True))
         self.assertEqual(code, 1)
@@ -318,7 +349,7 @@ class MacosUpgradeRollbackAuditTests(unittest.TestCase):
                 return "0" * 64, 0
             return real_hash_bundle(bundle)
 
-        with patch.object(AUDIT, "_run", mocks), \
+        with mac_host(), patch.object(AUDIT, "_run", mocks), \
                 patch.object(AUDIT, "hash_bundle", faulty_hash_bundle):
             code, _out, _err = run_main(AUDIT, self.base_args(execute=True))
         self.assertEqual(code, 1)
@@ -343,7 +374,7 @@ class MacosUpgradeRollbackAuditTests(unittest.TestCase):
                 raise OSError("permission denied")
             return real_rmtree(path, **kwargs)
 
-        with patch.object(AUDIT, "_run", mocks), \
+        with mac_host(), patch.object(AUDIT, "_run", mocks), \
                 patch.object(AUDIT.shutil, "rmtree", faulty_rmtree):
             code, _out, _err = run_main(AUDIT, self.base_args(execute=True))
         self.assertEqual(code, 1)
@@ -363,7 +394,7 @@ class MacosUpgradeRollbackAuditTests(unittest.TestCase):
     def test_cleanup_detach_failure_ok_false(self) -> None:
         mocks = AuditMocks(self.mount_install, self.mount_upgrade, "Fixture.app")
         mocks.detach_fail_on = ["mnt-install"]
-        with patch.object(AUDIT, "_run", mocks):
+        with mac_host(), patch.object(AUDIT, "_run", mocks):
             code, _out, _err = run_main(AUDIT, self.base_args(execute=True))
         self.assertEqual(code, 1)
         artifact = json.loads(self.artifact.read_text(encoding="utf-8"))
@@ -374,7 +405,7 @@ class MacosUpgradeRollbackAuditTests(unittest.TestCase):
 
     def test_check_schema_valid_then_invalid(self) -> None:
         mocks = AuditMocks(self.mount_install, self.mount_upgrade, "Fixture.app")
-        with patch.object(AUDIT, "_run", mocks):
+        with mac_host(), patch.object(AUDIT, "_run", mocks):
             run_main(AUDIT, self.base_args(execute=True))
         code, _out, _err = run_main(
             AUDIT, ["--check-schema", "--artifact", str(self.artifact)]
@@ -485,8 +516,12 @@ class AutostartCredentialRoundtripTests(unittest.TestCase):
         return fake_run
 
     def test_default_mode_is_dry_run_with_no_side_effects(self) -> None:
+        # Explicit --platform darwin keeps the expected plan text identical
+        # on every CI host (auto would resolve to the host platform).
         with patch.object(ROUND, "_run") as mock_run:
-            code, out, _err = run_main(ROUND, self.base_args(execute=False))
+            code, out, _err = run_main(
+                ROUND, self.base_args(execute=False, platform="darwin")
+            )
         self.assertEqual(code, 0)
         self.assertIn("dry-run: inputs valid", out)
         self.assertIn("LaunchAgent", out)
@@ -523,6 +558,8 @@ class AutostartCredentialRoundtripTests(unittest.TestCase):
         artifact = json.loads(self.artifact.read_text(encoding="utf-8"))
         self.assertEqual(artifact["status"], "blocked")
         self.assertFalse(artifact["ok"])
+        self.assertIsNone(artifact["pre_state"]["entry_present"])
+        self.assertIsNone(artifact["cleanup"]["entry_removed"])
 
     def test_linux_platform_dry_run_exits_2(self) -> None:
         with patch.object(ROUND.sys, "platform", "linux"):
@@ -534,7 +571,7 @@ class AutostartCredentialRoundtripTests(unittest.TestCase):
 
     def test_macos_happy_path_verified(self) -> None:
         fake_run = self.darwin_mock()
-        with patch.object(ROUND, "_run", fake_run), \
+        with darwin_host(), patch.object(ROUND, "_run", fake_run), \
                 patch.object(ROUND, "_generate_secret", lambda: SECRET):
             code, out, _err = run_main(ROUND, self.base_args(execute=True))
         self.assertEqual(code, 0)
@@ -565,7 +602,7 @@ class AutostartCredentialRoundtripTests(unittest.TestCase):
 
     def test_launchctl_argv_contract(self) -> None:
         fake_run = self.darwin_mock()
-        with patch.object(ROUND, "_run", fake_run), \
+        with darwin_host(), patch.object(ROUND, "_run", fake_run), \
                 patch.object(ROUND, "_generate_secret", lambda: SECRET):
             run_main(ROUND, self.base_args(execute=True))
         bootstraps = [c for c in fake_run.calls if c[0] == "launchctl" and c[1] == "bootstrap"]
@@ -573,7 +610,7 @@ class AutostartCredentialRoundtripTests(unittest.TestCase):
         self.assertEqual(len(bootstraps), 2)
         self.assertEqual(len(bootouts), 2)
         for call in bootstraps:
-            self.assertEqual(call[1:3], ["bootstrap", f"gui/{os.getuid()}"])
+            self.assertEqual(call[1:3], ["bootstrap", "gui/501"])
             self.assertEqual(Path(call[3]).name, "roundtrip-ns.plist")
         for call in bootouts:
             self.assertEqual(
@@ -585,7 +622,7 @@ class AutostartCredentialRoundtripTests(unittest.TestCase):
         plist = self.launch_agents / "roundtrip-ns.plist"
         plist.write_bytes(ROUND.build_launch_agent_plist("roundtrip-ns"))
         fake_run = self.darwin_mock()
-        with patch.object(ROUND, "_run", fake_run), \
+        with darwin_host(), patch.object(ROUND, "_run", fake_run), \
                 patch.object(ROUND, "_generate_secret", lambda: SECRET):
             code, _out, err = run_main(ROUND, self.base_args(execute=True))
         self.assertEqual(code, 2)
@@ -603,7 +640,7 @@ class AutostartCredentialRoundtripTests(unittest.TestCase):
                 return cp(0)
             return original(argv, **kwargs)
 
-        with patch.object(ROUND, "_run", with_existing), \
+        with darwin_host(), patch.object(ROUND, "_run", with_existing), \
                 patch.object(ROUND, "_generate_secret", lambda: SECRET):
             code, _out, err = run_main(ROUND, self.base_args(execute=True))
         self.assertEqual(code, 2)
@@ -615,7 +652,7 @@ class AutostartCredentialRoundtripTests(unittest.TestCase):
     def test_post_create_verification_failure_ok_false_with_cleanup(self) -> None:
         # Entry is stored but never retrievable -> set verification fails.
         fake_run = self.darwin_mock(retrievable=False)
-        with patch.object(ROUND, "_run", fake_run), \
+        with darwin_host(), patch.object(ROUND, "_run", fake_run), \
                 patch.object(ROUND, "_generate_secret", lambda: SECRET):
             code, _out, _err = run_main(ROUND, self.base_args(execute=True))
         self.assertEqual(code, 1)
@@ -635,7 +672,7 @@ class AutostartCredentialRoundtripTests(unittest.TestCase):
 
     def test_delete_failure_ok_false_with_restore_failure(self) -> None:
         fake_run = self.darwin_mock(delete_ok=False)
-        with patch.object(ROUND, "_run", fake_run), \
+        with darwin_host(), patch.object(ROUND, "_run", fake_run), \
                 patch.object(ROUND, "_generate_secret", lambda: SECRET):
             code, _out, _err = run_main(ROUND, self.base_args(execute=True))
         self.assertEqual(code, 1)
@@ -679,7 +716,8 @@ class AutostartCredentialRoundtripTests(unittest.TestCase):
         self.assertNotIn(SECRET, self.artifact.read_text(encoding="utf-8"))
 
     def test_windows_blocked_on_macos_host_not_fabricated(self) -> None:
-        with patch.object(ROUND, "_run") as mock_run:
+        with patch.object(ROUND.sys, "platform", "darwin"), \
+                patch.object(ROUND, "_run") as mock_run:
             code, _out, err = run_main(
                 ROUND, self.base_args(execute=True, platform="win32")
             )
@@ -690,10 +728,14 @@ class AutostartCredentialRoundtripTests(unittest.TestCase):
         self.assertEqual(artifact["status"], "blocked")
         self.assertFalse(artifact["ok"])
         self.assertTrue(any("windows-host-unavailable" in e for e in artifact["errors"]))
+        # Blocked runs never probed the stores: unprobed facts are null.
+        self.assertIsNone(artifact["pre_state"]["entry_present"])
+        self.assertIsNone(artifact["cleanup"]["entry_removed"])
+        self.assertIsNone(artifact["cleanup"]["restored_exact"])
 
     def test_check_schema_valid_then_invalid(self) -> None:
         fake_run = self.darwin_mock()
-        with patch.object(ROUND, "_run", fake_run), \
+        with darwin_host(), patch.object(ROUND, "_run", fake_run), \
                 patch.object(ROUND, "_generate_secret", lambda: SECRET):
             run_main(ROUND, self.base_args(execute=True))
         code, _out, _err = run_main(
