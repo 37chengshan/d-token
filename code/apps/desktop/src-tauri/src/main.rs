@@ -15558,11 +15558,58 @@ mod tests {
         LOCK.get_or_init(|| Mutex::new(()))
     }
 
+    /// Temp root for path-sensitive tests. On macOS `/tmp` is a symlink to
+    /// `/private/tmp`, so the anti-symlink walk needs the canonical root. On
+    /// Windows `fs::canonicalize` returns `\\?\` extended-length paths whose
+    /// drive prefix cannot be probed with reparse semantics
+    /// (ERROR_INVALID_FUNCTION); `%TEMP%` is already a real absolute root.
+    fn test_temp_root() -> PathBuf {
+        #[cfg(windows)]
+        {
+            env::temp_dir()
+        }
+        #[cfg(not(windows))]
+        {
+            fs::canonicalize(env::temp_dir()).expect("canonical temporary root")
+        }
+    }
+
+    /// Locate the staged sidecar in src-tauri/binaries whose SHA-256 exactly
+    /// matches the digest build.rs embedded at compile time. build.rs hashes
+    /// `binaries/dtoken-agent-bridge-<TARGET>[.exe]`, so this is the only file
+    /// `verify_dtoken_agent_bridge` accepts on Linux/Windows; the raw cargo
+    /// artifact under target/ is NOT the file the embedded hash covers. Falls
+    /// back to any staged bridge when the digest is unavailable (macOS, where
+    /// release authority is the codesign identity check, not the digest).
+    fn staged_agent_bridge_matching_embedded_hash() -> Option<PathBuf> {
+        use sha2::{Digest, Sha256};
+
+        let expected = env!("DTOKEN_AGENT_BRIDGE_SHA256");
+        let binaries_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("binaries");
+        let mut any_staged = None;
+        for entry in fs::read_dir(&binaries_dir).ok()? {
+            let path = entry.ok()?.path();
+            let name = path.file_name()?.to_string_lossy().into_owned();
+            if !name.starts_with("dtoken-agent-bridge-") {
+                continue;
+            }
+            let bytes = fs::read(&path).ok()?;
+            if expected != "unavailable" {
+                let digest = format!("{:x}", Sha256::digest(&bytes));
+                if digest == expected {
+                    return Some(path);
+                }
+            } else if any_staged.is_none() {
+                any_staged = Some(path);
+            }
+        }
+        any_staged
+    }
+
     #[test]
     fn managed_mcp_clear_accepts_absent_registered_parent_without_creating_it() {
-        let canonical_temp_root =
-            fs::canonicalize(env::temp_dir()).expect("canonical temporary root");
-        let home = tempfile::tempdir_in(canonical_temp_root).expect("temporary home");
+        let temp_root = test_temp_root();
+        let home = tempfile::tempdir_in(temp_root).expect("temporary home");
         let expected = home.path().join(".cursor/mcp.json");
         assert!(!expected.exists());
         assert!(!expected.parent().expect("mcp parent").exists());
@@ -15584,9 +15631,8 @@ mod tests {
     #[test]
     fn managed_mcp_clear_resolves_windows_claude_desktop_via_roaming_app_data() {
         use dtoken_config_patcher::agent::{AgentEvidenceOverride, HostPlatform};
-        let canonical_temp_root =
-            fs::canonicalize(env::temp_dir()).expect("canonical temporary root");
-        let temp = tempfile::tempdir_in(canonical_temp_root).expect("temporary root");
+        let temp_root = test_temp_root();
+        let temp = tempfile::tempdir_in(temp_root).expect("temporary root");
         let home = temp.path().join("home");
         let roaming = temp.path().join("roaming");
         fs::create_dir_all(&roaming).expect("roaming app data");
@@ -16171,18 +16217,13 @@ mod tests {
             let previous_proxy = env::var_os("DTOKEN_PROXY_EXE");
             let previous_bridge = env::var_os("DTOKEN_AGENT_BRIDGE_EXE");
             // The resolver checks DTOKEN_AGENT_BRIDGE_EXE first, so clear any stale value
-            // before pointing it at the staged bridge next to the built test binary.
+            // before pointing it at the staged sidecar whose digest build.rs embedded
+            // (src-tauri/binaries/dtoken-agent-bridge-<TARGET>[.exe]). The raw cargo
+            // build artifact under target/ is NOT the file the embedded hash covers.
             env::remove_var("DTOKEN_AGENT_BRIDGE_EXE");
-            let staged_bridge = env::current_exe()
-                .expect("current exe")
-                .parent()
-                .and_then(|dir| dir.parent())
-                .expect("target dir")
-                .join(if cfg!(windows) {
-                    "dtoken-agent-bridge.exe"
-                } else {
-                    "dtoken-agent-bridge"
-                });
+            let staged_bridge = staged_agent_bridge_matching_embedded_hash().expect(
+                "staged Agent bridge sidecar matching the embedded hash must exist; run the platform sidecar prepare script first",
+            );
             env::set_var("DTOKEN_AGENT_BRIDGE_EXE", &staged_bridge);
             let bridge = resolve_dtoken_agent_bridge_exe()
                 .expect("staged bridge must pass embedded hash and identity verification");
@@ -16654,9 +16695,8 @@ mod tests {
     fn managed_agent_transport_rejects_unregistered_sensitive_paths() {
         use dtoken_config_patcher::agent::HostPlatform;
 
-        let canonical_temp_root =
-            fs::canonicalize(std::env::temp_dir()).expect("canonical temporary root");
-        let root = tempfile::tempdir_in(canonical_temp_root).expect("temporary home");
+        let temp_root = test_temp_root();
+        let root = tempfile::tempdir_in(temp_root).expect("temporary home");
         let codex_dir = root.path().join(".codex");
         fs::create_dir_all(&codex_dir).expect("create Codex directory");
         let registered = codex_dir.join("config.toml");
@@ -16703,9 +16743,8 @@ mod tests {
         use dtoken_config_patcher::agent::HostPlatform;
         use std::os::unix::fs::symlink;
 
-        let canonical_temp_root =
-            fs::canonicalize(std::env::temp_dir()).expect("canonical temporary root");
-        let root = tempfile::tempdir_in(canonical_temp_root).expect("temporary home");
+        let temp_root = test_temp_root();
+        let root = tempfile::tempdir_in(temp_root).expect("temporary home");
         let codex_dir = root.path().join(".codex");
         fs::create_dir_all(&codex_dir).expect("create Codex directory");
         let outside = root.path().join("outside.toml");
