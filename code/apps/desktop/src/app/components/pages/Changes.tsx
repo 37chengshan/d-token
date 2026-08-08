@@ -6,7 +6,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "../ui/tabs";
 import { Button } from "../ui/button";
 import { Badge } from "../ui/badge";
 import { OperationDialog } from "../common/OperationDialog";
-import { useI18n } from "../../lib/i18n";
+import { translateCopy, useI18n } from "../../lib/i18n";
 import { invokeNative } from "../../lib/native";
 import type { PageId } from "../../lib/nav";
 import { classifyEvidence } from "../../lib/state/evidence";
@@ -209,7 +209,7 @@ export function Changes({ setPage }: { setPage?: (page: PageId) => void } = {}) 
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
           <div className="flex flex-wrap items-center gap-3">
-            <h1 className="sr-only">{zh ? "变更与回退" : "Changes & Rollback"}</h1>
+            <h1 className="sr-only">{translateCopy("nav.changes", lang)}</h1>
             <DataSourceBadge mode={source === "desktop" ? "native" : source === "browser-preview" ? "preview" : "unavailable"} label={sourceLabel} />
           </div>
           <p className="mt-2 max-w-2xl text-sm text-muted-foreground">
