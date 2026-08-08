@@ -46,7 +46,7 @@ Artifact contract (PR-7 aggregator compatible)
 Top-level JSON object with exactly these keys: schema_version, status
 (verified|failed|blocked), mode (always "executed"; dry-run/check-schema
 never write an artifact), platform, namespace, candidate_commit (40-hex git
-sha), source_digest (sha256 of the tracked diff), ok (bool), autostart,
+sha), source_digest (64-hex sha256 source digest of the candidate), ok (bool), autostart,
 credential, pre_state, cleanup, errors. Written to
 support/artifacts/upgrade-autostart-credential/autostart-credential-roundtrip-<ns>.json
 by default. `--check-schema` validates an existing artifact against this
@@ -228,7 +228,7 @@ def parse_arguments(argv: Optional[list[str]] = None) -> argparse.Namespace:
         "--source-digest",
         metavar="SHA256",
         default="",
-        help="sha256 of the tracked diff (aggregator binding; required in execute mode)",
+        help="64-hex sha256 source digest of the candidate (aggregator binding; required in execute mode)",
     )
     parser.add_argument(
         "--artifact",
@@ -626,6 +626,16 @@ def run_credential_roundtrip(
     }
 
 
+def _bool_or_blocked_null(value: Any, status: Any, name: str, violations: list[str]) -> None:
+    """Booleans are required for executed runs; blocked runs may record
+    null for facts that were never probed (no false claims of evidence)."""
+    if value is None and status == STATUS_BLOCKED:
+        return
+    if not isinstance(value, bool):
+        violations.append(f"{name} must be a boolean"
+                          + ("" if status == STATUS_BLOCKED else " (or null only for blocked artifacts)"))
+
+
 def write_artifact_atomic(artifact_path: Path, artifact: dict[str, Any]) -> None:
     artifact_path.parent.mkdir(parents=True, exist_ok=True)
     payload = json.dumps(artifact, indent=2, ensure_ascii=False, sort_keys=True) + "\n"
@@ -693,20 +703,38 @@ def check_artifact_schema(artifact_path: Path) -> list[str]:
     pre_state = data.get("pre_state")
     if not isinstance(pre_state, dict) or set(pre_state.keys()) != PRE_STATE_KEYS:
         violations.append(f"pre_state keys must be exactly {sorted(PRE_STATE_KEYS)}")
+    else:
+        _bool_or_blocked_null(
+            pre_state.get("entry_present"), data.get("status"),
+            "pre_state.entry_present", violations,
+        )
     cleanup = data.get("cleanup")
     if not isinstance(cleanup, dict) or set(cleanup.keys()) != CLEANUP_KEYS:
         violations.append(f"cleanup keys must be exactly {sorted(CLEANUP_KEYS)}")
+    else:
+        for name in ("entry_removed", "restored_exact"):
+            _bool_or_blocked_null(
+                cleanup.get(name), data.get("status"), f"cleanup.{name}", violations,
+            )
     if not isinstance(data.get("errors"), list):
         violations.append("errors must be a list")
     return violations
 
 
 def entry_present(platform: str, namespace: str, launch_agents_dir: Path) -> bool:
-    """Presence probe used by pre-flight refusal and final restore verification."""
+    """Presence probe used by pre-flight refusal and final restore verification.
+
+    On darwin the probe covers all three persistence surfaces of the
+    namespace entry: the LaunchAgent plist file, a still-bootstrapped
+    same-label service (e.g. leftover from a crashed prior run), and the
+    Keychain service+account pair.
+    """
     if platform == "darwin":
-        return darwin_plist_present(
-            launch_agent_plist(namespace, launch_agents_dir)
-        ) or darwin_keychain_present(namespace)
+        return (
+            darwin_plist_present(launch_agent_plist(namespace, launch_agents_dir))
+            or darwin_launchctl_loaded(namespace)
+            or darwin_keychain_present(namespace)
+        )
     return win32_run_present(namespace) or win32_cmdkey_present(namespace)
 
 
@@ -744,8 +772,8 @@ def blocked_artifact(args: argparse.Namespace, platform: str, reason: str) -> di
             "delete": {"ok": False, "verified": False},
             "round_trips": 0, "plaintext_fallback": False,
         },
-        "pre_state": {"entry_present": False},
-        "cleanup": {"entry_removed": True, "restored_exact": True},
+        "pre_state": {"entry_present": None},
+        "cleanup": {"entry_removed": None, "restored_exact": None},
         "errors": [reason],
     }
 

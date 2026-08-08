@@ -41,7 +41,7 @@ Artifact contract (PR-7 aggregator compatible)
 Top-level JSON object with exactly these keys: schema_version, status
 (verified|failed|blocked), mode (always "executed"; dry-run/check-schema
 never write an artifact), platform, namespace, candidate_commit (40-hex git
-sha of the candidate), source_digest (sha256 of the tracked diff), ok (bool,
+sha of the candidate), source_digest (64-hex sha256 source digest of the candidate), ok (bool,
 true only when status == verified), sources, steps, rollback, cleanup,
 errors. Written to
 support/artifacts/upgrade-autostart-credential/upgrade-rollback-audit-*.json
@@ -199,7 +199,7 @@ def parse_arguments(argv: Optional[list[str]] = None) -> argparse.Namespace:
         "--source-digest",
         metavar="SHA256",
         default="",
-        help="sha256 of the tracked diff (aggregator binding; required in execute mode)",
+        help="64-hex sha256 source digest of the candidate (aggregator binding; required in execute mode)",
     )
     parser.add_argument(
         "--artifact",
@@ -463,6 +463,11 @@ def check_artifact_schema(artifact_path: Path) -> list[str]:
         violations.append(
             "rollback must have exactly matched_install_digest/version_equal_install"
         )
+    else:
+        for name in ("matched_install_digest", "version_equal_install"):
+            _bool_or_blocked_null(
+                rollback.get(name), data.get("status"), f"rollback.{name}", violations,
+            )
     cleanup = data.get("cleanup")
     if not isinstance(cleanup, dict) or set(cleanup.keys()) != {
         "mounts_detached", "app_removed", "restored_exact", "temp_root_removed",
@@ -471,9 +476,26 @@ def check_artifact_schema(artifact_path: Path) -> list[str]:
             "cleanup must have exactly "
             "mounts_detached/app_removed/restored_exact/temp_root_removed"
         )
+    else:
+        for name in (
+            "mounts_detached", "app_removed", "restored_exact", "temp_root_removed",
+        ):
+            _bool_or_blocked_null(
+                cleanup.get(name), data.get("status"), f"cleanup.{name}", violations,
+            )
     if not isinstance(data.get("errors"), list):
         violations.append("errors must be a list")
     return violations
+
+
+def _bool_or_blocked_null(value: Any, status: Any, name: str, violations: list[str]) -> None:
+    """Booleans are required for executed runs; blocked runs may record
+    null for facts that were never probed (no false claims of evidence)."""
+    if value is None and status == STATUS_BLOCKED:
+        return
+    if not isinstance(value, bool):
+        violations.append(f"{name} must be a boolean"
+                          + ("" if status == STATUS_BLOCKED else " (or null only for blocked artifacts)"))
 
 
 def run_audit(args: argparse.Namespace) -> tuple[str, dict[str, Any]]:
@@ -564,27 +586,49 @@ def run_audit(args: argparse.Namespace) -> tuple[str, dict[str, Any]]:
         }
 
     try:
-        temp_root = Path(tempfile.mkdtemp(prefix=f"dtoken-upgrade-{namespace}-"))
-        mount_install = temp_root / "mnt-install"
-        mount_upgrade = temp_root / "mnt-upgrade"
-        mount_install.mkdir()
-        mount_upgrade.mkdir()
-
-        install_sources = [fingerprint_dmg(install_dmg), fingerprint_dmg(upgrade_dmg)]
+        try:
+            temp_root = Path(tempfile.mkdtemp(prefix=f"dtoken-upgrade-{namespace}-"))
+            mount_install = temp_root / "mnt-install"
+            mount_upgrade = temp_root / "mnt-upgrade"
+            mount_install.mkdir()
+            mount_upgrade.mkdir()
+            install_sources = [
+                fingerprint_dmg(install_dmg),
+                fingerprint_dmg(upgrade_dmg),
+            ]
+        except Exception as error:
+            errors.append(f"pre-run setup failed: {error}")
+            record_step("setup", "failed", error_class=error.__class__.__name__)
+            raise
 
         # pre_state_snapshot: the app-dir is known empty of the target bundle
-        # (validation refused an existing same-name app). The LaunchServices
-        # query needs the bundle id, resolved after install.
-        record_step(
-            "pre_state_snapshot", "ok",
-            launch_services={"queryable": False, "registered_entries": None},
-        )
-
-        # install
+        # (validation refused an existing same-name app). The bundle id is
+        # resolved from the mounted install DMG's source bundle so the
+        # LaunchServices query records a genuine pre-install baseline of
+        # registrations for that bundle id (a user's real install elsewhere
+        # or a leftover from a crashed prior run is visible, not conflated
+        # with registrations caused by this run).
         try:
             hdiutil_attach(install_dmg, mount_install)
             mounted.append(mount_install)
             source_bundle = find_bundle(mount_install, app_name)
+            if not bundle_id:
+                source_info, _, _, _, _ = bundle_metadata(source_bundle)
+                bundle_id = str(source_info.get("CFBundleIdentifier", ""))
+            pre_state_ls = (
+                lsregister_state(bundle_id, app_name) if bundle_id else {}
+            )
+            record_step("pre_state_snapshot", "ok", launch_services=pre_state_ls)
+        except Exception as error:
+            record_step(
+                "pre_state_snapshot", "failed",
+                error_class=error.__class__.__name__,
+            )
+            errors.append(f"pre_state_snapshot failed: {error}")
+            raise
+
+        # install
+        try:
             installed_bundle = app_dir / app_name
             copy_bundle(source_bundle, installed_bundle)
             record_step("install", "ok")
@@ -715,8 +759,11 @@ def run_audit(args: argparse.Namespace) -> tuple[str, dict[str, Any]]:
             errors.append(f"verify_after_uninstall failed: {error}")
             raise
     except Exception:
-        # Already recorded by the failing step.
-        pass
+        # Every lifecycle block records its own failed step and re-raises;
+        # this guard catches anything that escaped without a record so the
+        # artifact never reports failure with an empty cause.
+        if not any(step["status"] == "failed" for step in steps):
+            errors.append("audit aborted before any step could record the failure")
 
     cleanup_evidence = cleanup()
     all_steps_ok = all(step["status"] == "ok" for step in steps)
@@ -771,12 +818,12 @@ def blocked_artifact(args: argparse.Namespace, reason: str) -> dict[str, Any]:
         "ok": False,
         "sources": [],
         "steps": [],
-        "rollback": {"matched_install_digest": False, "version_equal_install": False},
+        "rollback": {"matched_install_digest": None, "version_equal_install": None},
         "cleanup": {
-            "mounts_detached": True,
-            "app_removed": True,
-            "restored_exact": True,
-            "temp_root_removed": True,
+            "mounts_detached": None,
+            "app_removed": None,
+            "restored_exact": None,
+            "temp_root_removed": None,
         },
         "errors": [reason],
     }
