@@ -1,6 +1,6 @@
 # Headroom-derived runtime boundary
 
-更新时间：2026-08-06
+更新时间：2026-08-08
 
 本目录记录 d-token 对 Headroom-derived 能力的来源、兼容、迁移和审计边界。
 
@@ -39,6 +39,13 @@
 - 子包例外（声明 MIT，单独列出，不并入项目总许可）：`clients/python`（`pyproject.toml`）、`rust/crates/grammar-addons/lua`（`Cargo.toml`）
 - NOTICE：仓库包含 `NOTICE`（`lean-ctx`，Copyright 2026 Yves Gugger，含第三方贡献者列表）
 - 本地只读研究副本：`/Users/cc/Documents/d-token-external/lean-ctx/`（git clone，HEAD 固定 v3.9.17 / `cf8fce6b`；另有官方 source archive 与 SHA-256 `a1178c68…deac25` 已核验）
+- 唯一 pin 决议（2026-08-08，PR-L0）：**`v3.9.17` / `cf8fce6bb1759a845088988cca189beaf70b05a9` 为唯一参考 pin**；上游 main `95a1b7bc60a01479986af026c0c24451804993ba`（2026-08-08 克隆 `lean-ctx-main-2026-08-08`）评估后仅作 post-pin 研究，不作为第二 pin，漂移 D4 由此闭合
+- main delta 评估（`cf8fce6b..95a1b7bc`，93 commit / 160 文件 / +11209 −2665，线性历史，`v3.9.17` 为祖先）：
+  - 版本事实：workspace `rust/Cargo.toml` 与 Claude plugin `manifest.json` 版本号均未变（3.9.17 / 3.3.6），93 个提交全部未发布；`v3.9.17`（2026-08-04 tag）是唯一稳定 release tag
+  - 主要内容：ADR-001..013 与 System Inventory/Architecture Freeze；新增 `rust/crates/lean-ctx-protocol` v0.1.0 crate（wire contracts、SavingsObservationV1、policy 类带过期语义）；enterprise 特性门控（`lean-ctx enterprise init`、`[enterprise]` 配置与 `x-leanctx-*` header 注入、proxy/policy_gate/gateway_identity 与 dashboard/usage_breakdown 仅 enterprise 编译）；r15–r18 "science-driven context intelligence" 系列（agent-01..14：ib/cognitive/fsrs/anti-interrupt/wasserstein/graph-expand/mdl-mode/verbosity/prefetch/stigmergy/integration/cli/mcp/parity，后续仍带 clippy/断言修复提交 → 进行中 WIP）；上游自身 OSS/专有边界调整（ADR-010 "OSS and Proprietary Contribution Boundary"、`security: remove proprietary docs` 78219bc9）
+  - 安全修复（v3.9.17 不含，仅作 d-token 自有 Rust 实现对照情报）：#1428 shadow mode 下 honor IDE 权限规则、#1431/#1432 dot-dir glob 遍历与 firewall 指引、#1433/#1434/#1435 patch 原子性/MethodNotFound/rules-MCP gate、allowlist 委托包装检查（e5266b19）、#1418 MCP `file://` URI、#1437 sticky reroot（e75afa58）
+  - 许可证在 delta 内零变化（已逐项核对）：根 `LICENSE`/`NOTICE`、README、workspace `Cargo.toml`（`license = "Apache-2.0"`）、`.claude-plugin/manifest.json`（`"license": "Apache-2.0"`）均不变；子包 MIT 例外（`clients/python` `pyproject.toml`、`rust/crates/grammar-addons/lua` `Cargo.toml`）不变；delta 新增 `lean-ctx-protocol` 声明 Apache-2.0
+- 决议理由：d-token 对 lean-ctx 仅做公开行为/接口对照（不复制源码、不引入运行依赖），稳定 tag 是唯一可引用参考事实；main 为未发布开发线（WIP 系列 + enterprise 门控 + 版本号未升），不满足 pin 条件。上游发布新 release tag 后再评估是否更新 pin；任何 main 能力进入 d-token 评估都必须引用本 delta 记录而非 main HEAD 本身
 - 当前方式：仅行为与接口对照；d-token 不复制源码、不引入运行依赖、不把研究记为迁移完成
 - d-token 差异/边界：PRD P0.0.5 的九条能力边界（Context Bus、Session Cache、Context Relay、Query-aware Retrieval、Recovery Pointer、Stale/Superseded、SharedContext、同 Agent 自命中防护与收益分离计量）必须由 d-token-owned Rust service 提供；无真实跨 Agent 证据时只能 `partial`/`unavailable`，不得因 Headroom codec 或 CCR 通过而自动变绿
 

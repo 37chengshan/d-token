@@ -1,6 +1,6 @@
 # 第三方版权与修改声明
 
-更新时间：2026-08-06
+更新时间：2026-08-08
 
 本文件保存维护者使用的详细版权、来源与修改记录；面向源码与安装包分发的权威声明位于仓库根目录 [`THIRD_PARTY_NOTICES.md`](../../THIRD_PARTY_NOTICES.md)。产品边界仍以 [`docs/PRD.md`](../PRD.md) 为准；两份声明都不授权使用任何第三方商标或品牌资产。
 
@@ -23,6 +23,10 @@
 - 上游许可证：Apache-2.0（项目总许可；根 `LICENSE`、README、Rust `Cargo.toml` 与 Claude plugin `manifest.json` 均声明 Apache-2.0）
 - 子包例外（声明 MIT，单独列出，不并入项目总许可）：`clients/python`（`pyproject.toml`）、`rust/crates/grammar-addons/lua`（`Cargo.toml`）
 - 本地只读研究副本：`/Users/cc/Documents/d-token-external/lean-ctx/`（git clone，HEAD 固定 v3.9.17 / `cf8fce6b`；官方 source archive SHA-256 `a1178c682afcc4cbea3021338ac878761d8e8df4da03bf40bdd6f807bbdeac25` 已核验）
+- **唯一 pin 决议（2026-08-08，PR-L0）**：`v3.9.17` / `cf8fce6bb1759a845088988cca189beaf70b05a9` 为唯一参考 pin；main `95a1b7bc60a01479986af026c0c24451804993ba`（新克隆 `lean-ctx-main-2026-08-08`）仅作 post-pin 研究，漂移 D4 闭合
+- main delta 评估（`cf8fce6b..95a1b7bc`，93 commit / 160 文件 / +11209 −2665；线性历史，`v3.9.17` 为祖先；workspace 与 plugin 版本号均未变，93 个提交全部未发布）：ADR-001..013 与 Architecture Freeze；新增 `rust/crates/lean-ctx-protocol` v0.1.0（Apache-2.0）；enterprise 特性门控（`enterprise init`、`[enterprise]` 配置、x-leanctx-* header、proxy/policy_gate/gateway_identity 与 dashboard/usage_breakdown 仅 enterprise）；r15–r18 "science-driven context intelligence" 系列（agent-01..14，含后续 clippy/断言修复，进行中 WIP）；上游自身 OSS/专有边界调整（ADR-010、78219bc9 移除 proprietary docs）；安全修复 #1428/#1431–35/#1418/#1437 与 allowlist 委托检查（v3.9.17 不含，仅作 d-token 自有实现对照情报）
+- 许可证核验（两个 pin 逐项核对，delta 内零变化）：根 `LICENSE`/`NOTICE`、README、workspace `Cargo.toml`（Apache-2.0）、`.claude-plugin/manifest.json`（Apache-2.0）均不变；子包 MIT 例外（`clients/python`、`rust/crates/grammar-addons/lua`）不变；delta 新增 `lean-ctx-protocol` crate 声明 Apache-2.0
+- 决议理由：d-token 仅做公开行为/接口对照，稳定 tag 是唯一可引用参考事实；main 为未发布开发线（WIP + enterprise 门控 + 版本号未升），不满足 pin 条件；上游发布新 release tag 后再评估
 - 与 Headroom 的关系：headroom 上游 [`#2677`](https://github.com/headroomlabs-ai/headroom/pull/2677)（2026-07-31 合并）已移除对 rtk/lean-ctx 的下载、安装与配置，二者不再有集成关系；d-token 的 LeanCTX 对齐层按 `docs/PRD.md` P0.0.5/§4.1.1 由 d-token-owned Rust service 提供
 - 当前使用边界：仅公开行为/接口对照，不复制源码、不引入运行依赖；未实现前状态必须为 `unavailable` 或 `partial`，不得宣称完成
 - 后续边界：若迁移或修改上游源码，必须在代码进入仓库前补充许可证副本、NOTICE、逐文件来源、修改范围和保留版权声明
