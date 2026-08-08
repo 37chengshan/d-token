@@ -211,7 +211,7 @@ const SidebarItem = memo(function SidebarItem({
 }: {
   id: PageId;
   labelKey: string;
-  badge?: "beta";
+  badge?: "beta" | "experimental";
   active: boolean;
   setPage: (page: PageId) => void;
   collapsed: boolean;
@@ -244,7 +244,8 @@ const SidebarItem = memo(function SidebarItem({
   });
 
   const label = t(labelKey);
-  const accessibleLabel = badge === "beta" ? `${label} Beta` : label;
+  const badgeLabel = badge === "beta" ? "Beta" : badge === "experimental" ? t("nav.experimental") : null;
+  const accessibleLabel = badgeLabel ? `${label} ${badgeLabel}` : label;
   const button = (
     <button
       ref={buttonRef}
@@ -295,7 +296,7 @@ const SidebarItem = memo(function SidebarItem({
           motionToken={motionToken}
           className="size-[18px]"
         />
-        {collapsed && badge === "beta" ? (
+        {collapsed && badge ? (
           <span
             className="absolute -right-0.5 -top-0.5 size-1.5 rounded-full bg-[color:var(--interaction-accent-strong)]"
             aria-hidden
@@ -305,9 +306,9 @@ const SidebarItem = memo(function SidebarItem({
       {!collapsed && (
         <>
           <span className="min-w-0 flex-1 truncate">{label}</span>
-          {badge === "beta" ? (
+          {badge ? (
             <span className="shrink-0 rounded px-1 py-0.5 text-[10px] font-medium leading-none text-[color:var(--interaction-accent-strong)] ring-1 ring-[color:var(--interaction-accent-strong)]/30">
-              Beta
+              {badgeLabel}
             </span>
           ) : null}
         </>

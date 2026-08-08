@@ -71,7 +71,7 @@ export function StatusBar() {
   return (
     <div className="shell-statusbar shrink-0 border-t border-border/40 px-3.5 py-2 text-[12px]">
       <div className="flex min-w-0 items-center gap-x-3">
-        <div className="flex min-w-0 flex-1 flex-nowrap items-center gap-x-4 overflow-x-auto">
+        <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-4">
           <Item label={t("status.runtime")} value={summary.runtimeLabel} health={summary.runtimeHealth} />
           <Item label={t("status.route")} value={summary.routeLabel} />
           <Item label={t("status.ports")} value={summary.portsLabel} />
@@ -87,7 +87,7 @@ export function StatusBar() {
           className="flex shrink-0 items-center gap-1 text-muted-foreground hover:text-foreground"
         >
           {t("status.details")}
-          <span className="transition-transform duration-200" style={{ transform: `rotate(${open ? 0 : 180}deg)` }}><ChevronUp className="size-4" /></span>
+          <span className={`transition-transform duration-200 motion-reduce:transform-none motion-reduce:transition-none ${open ? "rotate-0" : "rotate-180"}`}><ChevronUp className="size-4" /></span>
         </button>
       </div>
       {open && (
