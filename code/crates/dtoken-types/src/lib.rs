@@ -2617,6 +2617,48 @@ mod optimization_receipt_tests {
     }
 
     #[test]
+    fn paired_actual_negative_signed_savings_is_preserved() {
+        // PairedActual savings are signed: a negative delta (provider usage
+        // grew) is preserved as claimable, not clamped to positive savings.
+        let mut log = base_request_log();
+        // Local input grew and the legacy positive tokens_saved is set; the
+        // physical projection must stay None and never fabricate saved tokens.
+        log.input_tokens_before = Some(400);
+        log.input_tokens_after = Some(1000);
+        log.tokens_saved = Some(600);
+        log.context_accounting = Some(HybridContextAccounting {
+            schema_version: 1,
+            disposition: OptimizationDisposition::Active,
+            sent_payload: SentPayloadVariant::Optimized,
+            upstream_state: UpstreamSendState::Completed,
+            estimated: None,
+            provider_counterfactual_baseline: None,
+            provider_actual_sent: ProviderActualUsage::default(),
+            provider_reconciled_input_savings: None,
+            paired_actual: Some(UsageComparison {
+                baseline: provider_measurement(1000),
+                candidate: provider_measurement(1600),
+                signed_savings: SignedSavings {
+                    input_tokens: Some(-600),
+                    output_tokens: Some(0),
+                    total_tokens: Some(-600),
+                    ..Default::default()
+                },
+            }),
+            attribution_basis: SavingsAttribution::PairedActual,
+            fallback_reason_code: None,
+        });
+        let receipt = OptimizationReceipt::from_request_log(&log);
+        assert_eq!(receipt.disposition, OptimizationDisposition::Active);
+        // Signed: the negative claimable savings are preserved, not clamped.
+        assert_eq!(receipt.savings_claimable, Some(-600));
+        // Physical projection is not fabricated from claimable or legacy data.
+        assert_eq!(receipt.local_input_tokens_before, Some(400));
+        assert_eq!(receipt.local_input_tokens_after, Some(1000));
+        assert_eq!(receipt.physical_tokens_saved, None);
+    }
+
+    #[test]
     fn provider_usage_without_counterfactual_is_not_claimable() {
         let mut log = base_request_log();
         log.provider_input_tokens = Some(900);
@@ -2655,6 +2697,83 @@ mod optimization_receipt_tests {
         assert_eq!(receipt.local_input_tokens_before, Some(400));
         assert_eq!(receipt.local_input_tokens_after, Some(1000));
         assert_eq!(receipt.physical_tokens_saved, None);
+        assert_eq!(receipt.savings_claimable, None);
+    }
+
+    #[test]
+    fn request_log_serde_is_backward_compatible_with_old_json() {
+        // Persisted RequestLog JSON written before the provider-usage fields
+        // existed must still deserialize: the new fields default to None.
+        let old_json = r#"{
+            "request_id": "6ba7b810-9dad-11d1-80b4-00c04fd430c8",
+            "timestamp_ms": 42,
+            "agent": "test-agent",
+            "instance_id": null,
+            "input_protocol": "open_ai",
+            "provider_id": "test-provider",
+            "route_id": "test-route",
+            "chain_mode": "direct",
+            "model": "test-model",
+            "input_tokens_before": 1000,
+            "input_tokens_after": 400,
+            "output_tokens": 120,
+            "tokens_saved": 600,
+            "transforms_applied": ["test_transform"],
+            "latency_ms": 7,
+            "error": null,
+            "config_source": "test"
+        }"#;
+        let log: RequestLog =
+            serde_json::from_str(old_json).expect("old RequestLog JSON must deserialize");
+        assert_eq!(log.provider_input_tokens, None);
+        assert_eq!(log.provider_output_tokens, None);
+        assert_eq!(log.input_tokens_before, Some(1000));
+        assert_eq!(log.input_tokens_after, Some(400));
+
+        // Serialization without provider usage omits the new keys entirely, so
+        // older consumers keep parsing the exact same shape.
+        let serialized = serde_json::to_value(&log).unwrap();
+        assert!(serialized.get("provider_input_tokens").is_none());
+        assert!(serialized.get("provider_output_tokens").is_none());
+
+        // With provider usage present, values round-trip verbatim.
+        let mut with_usage = log;
+        with_usage.provider_input_tokens = Some(900);
+        with_usage.provider_output_tokens = Some(120);
+        let roundtrip: RequestLog =
+            serde_json::from_value(serde_json::to_value(&with_usage).unwrap()).unwrap();
+        assert_eq!(roundtrip.provider_input_tokens, Some(900));
+        assert_eq!(roundtrip.provider_output_tokens, Some(120));
+    }
+
+    #[test]
+    fn missing_provider_usage_serializes_as_null_not_zero() {
+        // "缺 usage 显示 unavailable": absent provider usage must surface as
+        // null (unavailable) on the receipt wire format, never as 0.
+        let receipt = OptimizationReceipt::from_request_log(&base_request_log());
+        let value = serde_json::to_value(&receipt).unwrap();
+        assert!(value["provider_input_tokens"].is_null());
+        assert!(value["provider_output_tokens"].is_null());
+        assert!(value["savings_claimable"].is_null());
+        assert_eq!(value["provider_input_tokens"].as_u64(), None);
+        assert_eq!(value["provider_output_tokens"].as_u64(), None);
+        assert_eq!(value["savings_claimable"].as_i64(), None);
+    }
+
+    #[test]
+    fn optimization_receipt_deserializes_partial_json_with_defaults() {
+        // Receipts may grow over time; a persisted receipt missing newer
+        // fields must still deserialize via the struct-level serde(default).
+        let request_id = base_request_log().request_id;
+        let partial = serde_json::json!({
+            "request_id": request_id,
+            "timestamp_ms": 42,
+        });
+        let receipt: OptimizationReceipt = serde_json::from_value(partial).unwrap();
+        assert_eq!(receipt.request_id, request_id);
+        assert_eq!(receipt.timestamp_ms, 42);
+        assert_eq!(receipt.disposition, OptimizationDisposition::Passthrough);
+        assert!(receipt.transforms_applied.is_empty());
         assert_eq!(receipt.savings_claimable, None);
     }
 }
