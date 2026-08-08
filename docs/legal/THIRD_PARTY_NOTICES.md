@@ -40,7 +40,7 @@
 - 上游版权声明：`Copyright 2025-2026 borawong`
 - 上游许可证：Apache License 2.0
 - 本仓库保留的许可证副本：[`AIMAMI_APACHE_2_0_LICENSE.txt`](AIMAMI_APACHE_2_0_LICENSE.txt)
-- 核验证据：固定 commit 的 [`LICENSE`](https://github.com/borawong/AiMaMi/blob/297c7af56f10fb371b77bc9b6b65aa320afcbe7e/LICENSE)；该 commit 没有根目录 `NOTICE` 文件。
+- 核验证据：固定 commit 的 [`LICENSE`](https://github.com/borawong/AiMaMi/blob/297c7af56f10fb371b77bc9b6b65aa320afcbe7e/LICENSE)（Apache-2.0，SHA-256 `777e0c280d6264292c86f48a365626717aec5c31a8a4b740b1fd5c37a88ea28a`，与仓库内 `AIMAMI_APACHE_2_0_LICENSE.txt` 逐字节一致）；该 commit 没有根目录 `NOTICE` 文件。
 
 ### 适配范围
 
@@ -48,7 +48,7 @@
 
 | d-token 文件 | AiMaMi 来源 | d-token 修改边界 |
 | --- | --- | --- |
-| `code/apps/desktop/src/app/components/shell/PageStage.tsx` | `src/components/layout/page-stage.tsx` | 改用 `motion/react` 与 `AnimatePresence` 生命周期；保留 140–240ms 低幅度转场意图；加入显式 Reduce Motion 分支及 d-token 间距。 |
+| `code/apps/desktop/src/app/components/shell/PageStage.tsx` | `src/components/layout/page-stage.tsx` | 改为 d-token 的 CSS 属性驱动包装（`shell-page-stage` + `data-page-motion`/`data-reduced-motion`，由 shell.css 消费）；上游内联 140–240ms 状态转场改走 d-token motion token 体系；加入显式 Reduce Motion 数据状态、d-token 间距及惰性内容标题就绪度测量。 |
 | `code/apps/desktop/src/app/components/shell/AnimatedSegmentedControl.tsx` | `src/components/ui/animated-segmented-control.tsx` | 改为 d-token 泛型 API、等宽指示器和产品样式；重写焦点移动与键盘语义；加入 Reduce Motion 数据状态。 |
 | `code/apps/desktop/src/app/components/shell/Sidebar.tsx` 与 `code/apps/desktop/src/styles/shell.css` | `src/components/layout/sidebar.tsx`、`src/components/ui/sidebar.tsx` 的 inset shell、展开/折叠与主题分段结构 | 改为 d-token 八个一级页面（含代码图谱实验页与视觉压缩 Beta）、184/64px 布局、48px 顶部基线、跨平台窗口边界、独立导航动效、d-token 设计 token 与响应式规则。 |
 
