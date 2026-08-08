@@ -1557,6 +1557,24 @@
       "summary": "fix: force LF for config-patcher fixtures (CRLF Windows CI)",
       "head_before": "417ffd7",
       "remote": null
+    },
+    {
+      "id": "bf0188fb-ef37-4b4c-9be0-96be7c9f595d",
+      "timestamp": "2026-08-08T19:28:28+08:00",
+      "operation": "push",
+      "branch": "codex/final-release-iteration",
+      "summary": "push gitattributes fix to trigger PR6 CI",
+      "head_before": "5194180",
+      "remote": null
+    },
+    {
+      "id": "fbac5ad1-64e6-47ee-aa80-4a4c63e3ed89",
+      "timestamp": "2026-08-08T19:58:07+08:00",
+      "operation": "commit",
+      "branch": "codex/final-release-iteration",
+      "summary": "Add authoritative v0.0.1 release planning package and structure enforcement",
+      "head_before": "519418063ad1955ae1d0e4332616a57a73b8dc44",
+      "remote": null
     }
   ]
 }

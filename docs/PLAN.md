@@ -3,6 +3,8 @@
 状态：Living Document
 维护规则：本文件是 d-token 的唯一执行计划，按代码现状滚动维护。产品边界改 PRD，阶段任务改本文件；当前代码事实同步维护在 `docs/product/IMPLEMENTATION_STATUS.md`。PRD（`docs/PRD.md`）是产品真理源，本文件不得与其验收标准冲突。
 
+> **v0.0.1 发布计划包**：`docs/releases/v0.0.1/`（[入口 README](releases/v0.0.1/README.md)）是本文件在 v0.0.1 收口阶段的具体执行分解（requirement registry、切片 DAG、任务清单、验证门、证据索引），**不是新的 Living Plan**。本文件仍是仓库唯一 Living Plan；两者冲突以本文件为准，执行顺序变化必须同步两边。
+
 ## 0. 当前坐标
 
 | 维度 | 现状 |

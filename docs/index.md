@@ -8,15 +8,16 @@
 
 1. [`PRD.md`](PRD.md) — 唯一产品真理源：产品边界、信息架构、安全要求和验收标准。
 2. [`PLAN.md`](PLAN.md) — 唯一 Living Plan：当前实施顺序、发布阻断和下一步。
-3. [`product/IMPLEMENTATION_STATUS.md`](product/IMPLEMENTATION_STATUS.md) — 2026-07-15 按实际源码与最终本地门整理的当前能力与限制。
-4. [`ARCHITECTURE.md`](ARCHITECTURE.md) — Rust-owned runtime、Tauri 桌面壳和本地服务架构。
-5. [`TECH_STACK.md`](TECH_STACK.md) — Windows/macOS 技术选型和平台边界。
-6. [`SECURITY_BOUNDARIES.md`](SECURITY_BOUNDARIES.md) — loopback、凭据、脱敏、配置写入和进程边界。
-7. [`APP_FUNCTIONS_AND_PAGES.md`](APP_FUNCTIONS_AND_PAGES.md) — 当前八个一级页面（含视觉压缩 Beta 与代码图谱实验页）与实际代码组件映射。
-8. [`../CHANGELOG.md`](../CHANGELOG.md) — 未签名技术预览的版本措辞、用户可见变化与已知限制。
-9. [`../SECURITY.md`](../SECURITY.md) — 漏洞报告、支持范围、系统安全警告与发布完整性策略。
-10. [`../THIRD_PARTY_NOTICES.md`](../THIRD_PARTY_NOTICES.md) — 面向源码与安装包分发的第三方声明。
-11. [`../LICENSE`](../LICENSE) — d-token 项目的 Apache License 2.0 授权文本。
+3. [`releases/v0.0.1/README.md`](releases/v0.0.1/README.md) — v0.0.1 最终发布计划包（权威入口）：九文件执行分解、版本冲突（VERSION-0）、切片 DAG、验证门（N0–N9/G0–G9）与证据索引。
+4. [`product/IMPLEMENTATION_STATUS.md`](product/IMPLEMENTATION_STATUS.md) — 2026-07-15 按实际源码与最终本地门整理的当前能力与限制。
+5. [`ARCHITECTURE.md`](ARCHITECTURE.md) — Rust-owned runtime、Tauri 桌面壳和本地服务架构。
+6. [`TECH_STACK.md`](TECH_STACK.md) — Windows/macOS 技术选型和平台边界。
+7. [`SECURITY_BOUNDARIES.md`](SECURITY_BOUNDARIES.md) — loopback、凭据、脱敏、配置写入和进程边界。
+8. [`APP_FUNCTIONS_AND_PAGES.md`](APP_FUNCTIONS_AND_PAGES.md) — 当前八个一级页面（含视觉压缩 Beta 与代码图谱实验页）与实际代码组件映射。
+9. [`../CHANGELOG.md`](../CHANGELOG.md) — 未签名技术预览的版本措辞、用户可见变化与已知限制。
+10. [`../SECURITY.md`](../SECURITY.md) — 漏洞报告、支持范围、系统安全警告与发布完整性策略。
+11. [`../THIRD_PARTY_NOTICES.md`](../THIRD_PARTY_NOTICES.md) — 面向源码与安装包分发的第三方声明。
+12. [`../LICENSE`](../LICENSE) — d-token 项目的 Apache License 2.0 授权文本。
 
 ## 2. 当前代码与产品专题
 

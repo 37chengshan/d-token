@@ -7,7 +7,7 @@
 仓库文档分为四个层级：
 
 1. **产品契约**：`docs/PRD.md`，唯一产品真理源。
-2. **执行与代码事实**：`docs/PLAN.md`、`docs/product/IMPLEMENTATION_STATUS.md`。
+2. **执行与代码事实**：`docs/PLAN.md`（唯一 Living Plan）、`docs/product/IMPLEMENTATION_STATUS.md`；`docs/releases/<version>/` 存放当前正式发布计划包（如 `docs/releases/v0.0.1/`，是 PLAN 的版本级具体执行分解，不是新的 Living Plan）。
 3. **长期规范与当前专题**：架构、技术栈、安全、页面、测试、Optical 当前规范；设计要求直接进入唯一 PRD。
 4. **历史与归档**：`docs/history/` 和 `docs/archive/`，仅用于追溯。
 
@@ -35,6 +35,7 @@ index.md
 ```text
 docs/
 ├── index.md          唯一导航入口
+├── releases/         当前正式发布计划包（每版本一个子目录，如 v0.0.1/）
 ├── product/          当前产品实现状态
 ├── testing/          当前测试边界和验收计划
 ├── experiments/      仍在执行的实验计划
@@ -45,7 +46,7 @@ docs/
 └── archive/          已退出执行线的旧计划、旧矩阵、旧研究和过程文件
 ```
 
-`release/`、`reviews/`、`notes/` 目录不再作为当前文档分类使用；其中旧内容已于 2026-07-11 归入 `archive/`。
+`docs/releases/<version>/` 是当前正式发布计划包目录（目录名必须精确版本号，如 `v0.0.1`；由 `support/scripts/check_structure.py` 校验包内文件集与链接）。旧 `release/`（单数）、`reviews/`、`notes/` 目录仍不再作为当前文档分类使用；其中旧内容已于 2026-07-11 归入 `archive/`。
 
 ## 4. 当前有效文档
 
@@ -53,6 +54,7 @@ docs/
 
 - `docs/PRD.md`
 - `docs/PLAN.md`
+- `docs/releases/v0.0.1/README.md`（v0.0.1 正式发布计划包入口：九文件执行分解、切片 DAG、验证门与证据索引；以 PRD/PLAN 为准，收口后转为历史发布计划）
 - `docs/product/IMPLEMENTATION_STATUS.md`
 - `docs/ARCHITECTURE.md`
 - `docs/TECH_STACK.md`
@@ -99,6 +101,7 @@ docs/
 
 - 产品边界变化：直接修改 `docs/PRD.md`，禁止创建 PRD v2/v3。
 - 执行顺序变化：修改 `docs/PLAN.md`。
+- 正式发布计划包：放入 `docs/releases/<version>/`（目录名精确版本号；包内文件集与链接由 `support/scripts/check_structure.py` 校验）；版本收口后保留为历史发布计划，不再编辑。
 - 代码事实变化：修改 `docs/product/IMPLEMENTATION_STATUS.md` 和对应代码 README。
 - 当前专题规范：放入对应专题目录。
 - 里程碑交付报告：放入 `docs/history/`，文件名带阶段或日期。
