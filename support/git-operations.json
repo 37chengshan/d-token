@@ -1971,6 +1971,15 @@
       "summary": "fix: privatize runtime dir in windows projection fail-closed test",
       "head_before": "7a41e60",
       "remote": null
+    },
+    {
+      "id": "1807bcc2-b49f-4378-b26d-f69b66071ca3",
+      "timestamp": "2026-08-08T21:08:18+08:00",
+      "operation": "push",
+      "branch": "codex/final-release-iteration",
+      "summary": "push windows projection fail-closed test fix",
+      "head_before": "9be1316",
+      "remote": "origin"
     }
   ]
 }
