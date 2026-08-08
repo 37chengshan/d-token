@@ -1480,6 +1480,14 @@ pub struct RequestLog {
     pub timestamp_ms: u64,
     pub agent: Option<String>,
     pub instance_id: Option<String>,
+    /// Project identity evidence from the resolved request scope; None when
+    /// identity is unavailable (never fabricated).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<String>,
+    /// Model the user requested in the original request body, parsed before
+    /// any routing; never derived from the actual routed model.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user_target_model: Option<String>,
     pub input_protocol: Protocol,
     pub provider_id: Option<String>,
     pub route_id: Option<String>,
@@ -1506,15 +1514,22 @@ pub struct RequestLog {
     pub context_accounting: Option<HybridContextAccounting>,
 }
 
-/// Minimal, safe projection of a request's optimization outcome.
+/// Minimal, safe projection of a request's optimization outcome (spec v2
+/// §7.2 field parity plus PRD P0.0.7 Local/Provider/claimable separation).
 ///
 /// `savings_estimated` is display-only; `savings_claimable` is only populated
 /// from `PairedActual` or a complete `ProviderReconciledActual` attribution
 /// chain (provider usage alone or `EstimatedActive` never makes savings
 /// claimable). `physical_tokens_saved` is projected from local before/after
 /// input measurements only when both exist and the change is non-negative;
-/// it never copies the legacy positive `tokens_saved` field. This struct
-/// never carries prompt/response bodies, credentials or local paths.
+/// it never copies the legacy positive `tokens_saved` field. `project_scope`,
+/// `user_target_model` and `provider_or_model_changed` are populated only
+/// from explicit request-scope/request-body evidence; `user_target_provider`,
+/// `protected_content`, `recovery_status` and `recovery_pointer` have no
+/// evidence source on this path and stay `None` (never guessed).
+/// `validation_status` projects the accounting record's own validation result
+/// when accounting evidence exists. This struct never carries
+/// prompt/response bodies, credentials or local paths.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default)]
 pub struct OptimizationReceipt {
@@ -1524,14 +1539,21 @@ pub struct OptimizationReceipt {
     pub provider_id: Option<String>,
     pub route_id: Option<String>,
     pub model: Option<String>,
+    pub project_scope: Option<String>,
+    pub user_target_provider: Option<String>,
+    pub user_target_model: Option<String>,
+    pub provider_or_model_changed: Option<bool>,
     pub local_input_tokens_before: Option<usize>,
     pub local_input_tokens_after: Option<usize>,
-    pub local_output_tokens: Option<usize>,
     pub provider_input_tokens: Option<usize>,
     pub provider_output_tokens: Option<usize>,
+    pub protected_content: Option<bool>,
     pub physical_tokens_saved: Option<usize>,
     pub savings_estimated: Option<i64>,
     pub savings_claimable: Option<i64>,
+    pub recovery_status: Option<String>,
+    pub recovery_pointer: Option<String>,
+    pub validation_status: Option<String>,
     pub disposition: OptimizationDisposition,
     pub failure_type: Option<String>,
     pub transforms_applied: Vec<String>,
@@ -1576,6 +1598,26 @@ impl OptimizationReceipt {
             (Some(before), Some(after)) if before >= after => Some(before - after),
             _ => None,
         };
+        // provider_or_model_changed is only provable when both the user's
+        // requested model and the routed actual model are recorded; either
+        // missing (e.g. dynamic model passthrough without a request model)
+        // stays None — never guessed.
+        let provider_or_model_changed = match (
+            request_log.user_target_model.as_deref(),
+            request_log.model.as_deref(),
+        ) {
+            (Some(user_target), Some(actual)) => Some(user_target != actual),
+            _ => None,
+        };
+        // validation_status projects the accounting record's own validation
+        // result (existing accounting evidence); no accounting -> None.
+        let validation_status = accounting.map(|accounting| {
+            if accounting.validate().is_ok() {
+                "validated".to_string()
+            } else {
+                "invalid".to_string()
+            }
+        });
         Self {
             request_id: request_log.request_id,
             timestamp_ms: request_log.timestamp_ms,
@@ -1583,14 +1625,27 @@ impl OptimizationReceipt {
             provider_id: request_log.provider_id.clone(),
             route_id: request_log.route_id.clone(),
             model: request_log.model.clone(),
+            project_scope: request_log.project_id.clone(),
+            // No request-level provider-target evidence exists on any routed
+            // path (requests name a model, never a provider); stays None.
+            user_target_provider: None,
+            user_target_model: request_log.user_target_model.clone(),
+            provider_or_model_changed,
             local_input_tokens_before: request_log.input_tokens_before,
             local_input_tokens_after: request_log.input_tokens_after,
-            local_output_tokens: request_log.output_tokens,
             provider_input_tokens: request_log.provider_input_tokens,
             provider_output_tokens: request_log.provider_output_tokens,
+            // No protected-content evidence is recorded on this path; stays
+            // None (never guessed).
+            protected_content: None,
             physical_tokens_saved,
             savings_estimated,
             savings_claimable,
+            // CCR/recovery evidence (raw_recovery_ref) is not recorded on
+            // RequestLog; stays None until a recovery slice populates it.
+            recovery_status: None,
+            recovery_pointer: None,
+            validation_status,
             disposition: accounting
                 .map(|accounting| accounting.disposition)
                 .unwrap_or_default(),
@@ -2486,6 +2541,8 @@ mod optimization_receipt_tests {
             timestamp_ms: 42,
             agent: Some("test-agent".to_string()),
             instance_id: None,
+            project_id: None,
+            user_target_model: None,
             input_protocol: Protocol::OpenAi,
             provider_id: Some("test-provider".to_string()),
             route_id: Some("test-route".to_string()),
@@ -2775,5 +2832,101 @@ mod optimization_receipt_tests {
         assert_eq!(receipt.disposition, OptimizationDisposition::Passthrough);
         assert!(receipt.transforms_applied.is_empty());
         assert_eq!(receipt.savings_claimable, None);
+        // Newer spec §7.2 fields default to null as well.
+        assert_eq!(receipt.project_scope, None);
+        assert_eq!(receipt.provider_or_model_changed, None);
+        assert_eq!(receipt.validation_status, None);
+    }
+
+    #[test]
+    fn spec_7_2_evidence_fields_stay_null_without_evidence() {
+        // Fields whose evidence source does not exist on this path must
+        // serialize as null, never as fabricated values or 0.
+        let receipt = OptimizationReceipt::from_request_log(&base_request_log());
+        assert_eq!(receipt.project_scope, None);
+        assert_eq!(receipt.user_target_provider, None);
+        assert_eq!(receipt.user_target_model, None);
+        assert_eq!(receipt.provider_or_model_changed, None);
+        assert_eq!(receipt.protected_content, None);
+        assert_eq!(receipt.recovery_status, None);
+        assert_eq!(receipt.recovery_pointer, None);
+        assert_eq!(receipt.validation_status, None);
+        let value = serde_json::to_value(&receipt).unwrap();
+        for key in [
+            "project_scope",
+            "user_target_provider",
+            "user_target_model",
+            "provider_or_model_changed",
+            "protected_content",
+            "recovery_status",
+            "recovery_pointer",
+            "validation_status",
+        ] {
+            assert!(value[key].is_null(), "{key} must serialize as null");
+            assert_eq!(value[key].as_bool(), None, "{key} must never be 0/false");
+        }
+    }
+
+    #[test]
+    fn project_scope_and_user_target_model_project_request_evidence() {
+        let mut log = base_request_log();
+        log.project_id = Some("project-a".to_string());
+        log.user_target_model = Some("user-model".to_string());
+        log.model = Some("routed-model".to_string());
+        let receipt = OptimizationReceipt::from_request_log(&log);
+        assert_eq!(receipt.project_scope.as_deref(), Some("project-a"));
+        assert_eq!(receipt.user_target_model.as_deref(), Some("user-model"));
+        // Actual model is routed independently of the user target.
+        assert_eq!(receipt.model.as_deref(), Some("routed-model"));
+        assert_eq!(receipt.provider_or_model_changed, Some(true));
+
+        // Equal target and actual models confirm no change (provable).
+        let mut unchanged = base_request_log();
+        unchanged.project_id = Some("project-a".to_string());
+        unchanged.user_target_model = Some("same-model".to_string());
+        unchanged.model = Some("same-model".to_string());
+        let receipt = OptimizationReceipt::from_request_log(&unchanged);
+        assert_eq!(receipt.provider_or_model_changed, Some(false));
+
+        // Missing user target (dynamic passthrough without a request model)
+        // is unprovable and stays null, never guessed false.
+        let mut unknown_target = base_request_log();
+        unknown_target.user_target_model = None;
+        unknown_target.model = Some("routed-model".to_string());
+        let receipt = OptimizationReceipt::from_request_log(&unknown_target);
+        assert_eq!(receipt.user_target_model, None);
+        assert_eq!(receipt.provider_or_model_changed, None);
+    }
+
+    #[test]
+    fn validation_status_projects_accounting_validation_evidence() {
+        // No accounting -> no validation evidence -> None.
+        assert_eq!(
+            OptimizationReceipt::from_request_log(&base_request_log()).validation_status,
+            None
+        );
+        // A valid accounting record projects "validated".
+        let mut valid_log = base_request_log();
+        valid_log.context_accounting = Some(accounting(OptimizationDisposition::Active));
+        assert_eq!(
+            OptimizationReceipt::from_request_log(&valid_log)
+                .validation_status
+                .as_deref(),
+            Some("validated")
+        );
+        // An internally inconsistent accounting record projects "invalid".
+        let mut invalid_log = base_request_log();
+        invalid_log.context_accounting = Some(accounting(OptimizationDisposition::Active));
+        invalid_log
+            .context_accounting
+            .as_mut()
+            .unwrap()
+            .upstream_state = UpstreamSendState::FailedBeforeCommit;
+        assert_eq!(
+            OptimizationReceipt::from_request_log(&invalid_log)
+                .validation_status
+                .as_deref(),
+            Some("invalid")
+        );
     }
 }
