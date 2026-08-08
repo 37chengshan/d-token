@@ -678,7 +678,10 @@ def run_acceptance(
     Returns (status, records, restore_order) where status is verified|failed
     and restore_order is the list of agent ids that were exact-restored, in
     the actual reverse order in which the restore happened. The artifact is
-    written as a top-level object with exactly ARTIFACT_KEYS.
+    written as a top-level object with exactly ARTIFACT_KEYS; a record that
+    cannot carry a source fingerprint (a source deleted or replaced by a
+    symlink after the snapshot) fails closed with no artifact written,
+    mirroring the unsupported-adapter blocked path.
     """
     records: list[dict[str, Any]] = []
     done: list[tuple[tuple[Path, bytes, int], dict[str, Any]]] = []
@@ -811,6 +814,20 @@ def run_acceptance(
         if any(record["status"] == STATUS_FAILED for record in records)
         else STATUS_VERIFIED
     )
+    # Fail-closed before the artifact write: a record whose source was
+    # deleted or replaced by a symlink/non-regular file between the
+    # pre-run snapshot and its staging has no fingerprint to certify.
+    # Writing it would violate the tool's own schema, so the run exits
+    # without an artifact, mirroring the unsupported-adapter blocked path.
+    for record in records:
+        if (
+            record["source_fingerprint"] is None
+            or record["source_mode"] is None
+        ):
+            raise ConfigMissing(
+                f"cannot fingerprint source for {record['agent_id']}, "
+                "no artifact written"
+            )
     artifact = {
         "schema_version": SCHEMA_VERSION,
         "status": status,
