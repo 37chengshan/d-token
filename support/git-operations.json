@@ -875,12 +875,1281 @@
       "remote": null
     },
     {
-      "id": "7b6ab378-6be4-4f3d-aaab-c8ea68a41154",
-      "timestamp": "2026-08-07T10:05:30+08:00",
+      "id": "18457dfc-53bd-4670-93db-0a03b4eebff7",
+      "timestamp": "2026-08-05T22:18:38+08:00",
       "operation": "push",
+      "branch": "codex/code-graph-mcp-integration",
+      "summary": "push 6 commits (922b866..5cfe1f2) to origin/codex/code-graph-mcp-integration",
+      "head_before": "5cfe1f2c4b58",
+      "remote": "origin"
+    },
+    {
+      "id": "46e7f980-62b7-499a-b380-cb4e25ecad65",
+      "timestamp": "2026-08-05T23:11:09+08:00",
+      "operation": "branch-create",
       "branch": "main",
-      "summary": "push README 开源范式重写到 main",
-      "head_before": "7109462",
+      "summary": "create isolated worktree branch for Agent and cc-switch closure",
+      "head_before": "76fe8838fa290514c13a20514e5c7d63c8ae75f3",
+      "remote": null
+    },
+    {
+      "id": "4795bcc3-6e5a-45ae-a674-a12d860ba602",
+      "timestamp": "2026-08-05T23:11:23+08:00",
+      "operation": "branch-create",
+      "branch": "main",
+      "summary": "create isolated worktree branch for Headroom compression and MCP closure",
+      "head_before": "76fe8838fa290514c13a20514e5c7d63c8ae75f3",
+      "remote": null
+    },
+    {
+      "id": "73dceb26-c646-4687-aea3-7d5f4af8362e",
+      "timestamp": "2026-08-05T23:11:35+08:00",
+      "operation": "branch-create",
+      "branch": "main",
+      "summary": "create isolated worktree branch for LeanCTX CCR and release evidence closure",
+      "head_before": "76fe8838fa290514c13a20514e5c7d63c8ae75f3",
+      "remote": null
+    },
+    {
+      "id": "c44becfe-d583-41e5-bec1-580ffe744a38",
+      "timestamp": "2026-08-06T00:04:25+08:00",
+      "operation": "commit",
+      "branch": "codex/code-graph-mcp-integration",
+      "summary": "提交发布前 PRD、MCP 会话、release gate 与测试合同收口改动",
+      "head_before": "5cfe1f2",
+      "remote": null
+    },
+    {
+      "id": "fbf1920b-a386-46d4-812c-b9ffc05bf738",
+      "timestamp": "2026-08-06T20:17:15+08:00",
+      "operation": "branch-create",
+      "branch": "codex/release-prd-logs-pricing",
+      "summary": "为发布前日志费用产品契约创建隔离分支",
+      "head_before": "f1b89dcc8db8",
+      "remote": null
+    },
+    {
+      "id": "3a734567-0b6a-406a-bc1c-aeb4010dd329",
+      "timestamp": "2026-08-06T20:17:16+08:00",
+      "operation": "branch-create",
+      "branch": "codex/release-runtime-logs",
+      "summary": "为真实请求日志费用数据合同创建隔离分支",
+      "head_before": "f1b89dcc8db8",
+      "remote": null
+    },
+    {
+      "id": "5001c0b7-4f1c-46bb-a8ed-7cb611071e22",
+      "timestamp": "2026-08-06T21:13:12+08:00",
+      "operation": "commit",
+      "branch": "codex/release-model-pricing",
+      "summary": "完成模型价格表与本地费用设置",
+      "head_before": "f1b89dcc8db8",
+      "remote": null
+    },
+    {
+      "id": "e3794de4-0d5e-4a7e-85ad-5f1826334280",
+      "timestamp": "2026-08-06T20:17:16+08:00",
+      "operation": "branch-create",
+      "branch": "codex/release-overview-savings",
+      "summary": "为首页节省区间切换创建隔离分支",
+      "head_before": "f1b89dcc8db8",
+      "remote": null
+    },
+    {
+      "id": "6f4b9e4c-86e3-4d82-b5cd-0971ef928cec",
+      "timestamp": "2026-08-06T20:17:17+08:00",
+      "operation": "branch-create",
+      "branch": "codex/release-log-view",
+      "summary": "为分析日志子页创建隔离分支",
+      "head_before": "f1b89dcc8db8",
+      "remote": null
+    },
+    {
+      "id": "368bb2fd-313b-4406-b2d7-97a39e7db1b7",
+      "timestamp": "2026-08-06T20:17:17+08:00",
+      "operation": "branch-create",
+      "branch": "codex/release-onboarding",
+      "summary": "为首次使用配置入口创建隔离分支",
+      "head_before": "f1b89dcc8db8",
+      "remote": null
+    },
+    {
+      "id": "2b3ab7c3-456d-4b4e-be8c-0872914b0807",
+      "timestamp": "2026-08-06T20:22:06+08:00",
+      "operation": "branch-create",
+      "branch": "codex/release-codebase-memory",
+      "summary": "为 Codebase Memory 配置阻塞修复创建隔离分支",
+      "head_before": "f1b89dcc8db8",
+      "remote": null
+    },
+    {
+      "id": "9574ecd6-363c-4b11-8121-f6d7602b155b",
+      "timestamp": "2026-08-06T20:22:06+08:00",
+      "operation": "branch-create",
+      "branch": "codex/release-optical-review",
+      "summary": "为视觉压缩发布打磨研究创建隔离分支",
+      "head_before": "f1b89dcc8db8",
+      "remote": null
+    },
+    {
+      "id": "79e5c658-50ee-4347-880c-7683a42ae5ba",
+      "timestamp": "2026-08-06T20:22:06+08:00",
+      "operation": "branch-create",
+      "branch": "codex/release-open-source",
+      "summary": "为开源来源固定与本地镜像计划创建隔离分支",
+      "head_before": "f1b89dcc8db8",
+      "remote": null
+    },
+    {
+      "id": "b9baf808-04f2-440d-a2de-2a5ab1648f43",
+      "timestamp": "2026-08-06T20:31:22+08:00",
+      "operation": "branch-create",
+      "branch": "codex/release-macos-sidebar",
+      "summary": "为 macOS 侧栏命中性能与小猫图标创建隔离分支",
+      "head_before": "f1b89dcc8db8",
+      "remote": null
+    },
+    {
+      "id": "dc766120-55b1-4d5f-9a53-9ba5bb3553b5",
+      "timestamp": "2026-08-06T20:53:06+08:00",
+      "operation": "branch-create",
+      "branch": "codex/release-optical-implementation",
+      "summary": "为视觉压缩 Beta 状态与预览打磨创建隔离分支",
+      "head_before": "f1b89dcc8db8",
+      "remote": null
+    },
+    {
+      "id": "0fd82147-6b04-41ac-99c5-d0cab3912cf3",
+      "timestamp": "2026-08-06T21:17:08+08:00",
+      "operation": "branch-create",
+      "branch": "codex/release-protocol-normalization",
+      "summary": "为运行时协议 wire 与 UI 展示正规化创建隔离分支",
+      "head_before": "f1b89dcc8db8",
+      "remote": null
+    },
+    {
+      "id": "65d368fe-199d-4d2c-8a73-4287a3c61969",
+      "timestamp": "2026-08-06T23:26:41+08:00",
+      "operation": "commit",
+      "branch": "codex/release-optical-implementation",
+      "summary": "Complete Optical desktop research slice with runtime status truth, explicit preview gates, rollback distinction, and route-safe preview contract",
+      "head_before": "f1b89dc",
+      "remote": null
+    },
+    {
+      "id": "a58fb8e1-6ab6-434c-91e1-a9469d85798e",
+      "timestamp": "2026-08-06T23:56:32+08:00",
+      "operation": "merge",
+      "branch": "codex/code-graph-mcp-integration",
+      "summary": "合并已审查的开源 provenance 修正分支",
+      "head_before": "190e1e5",
+      "remote": null
+    },
+    {
+      "id": "1dcb5ecb-e71c-4a9b-9a2a-db7e760896c8",
+      "timestamp": "2026-08-06T21:14:28+08:00",
+      "operation": "commit",
+      "branch": "codex/release-macos-sidebar",
+      "summary": "fix(sidebar): stable press hit rect, per-item render isolation, cat-ear nav icons + report",
+      "head_before": "f1b89dcc8db810b6d2373e9d1d4b5f57f1c6f40e",
+      "remote": null
+    },
+    {
+      "id": "b30c2c18-3ecb-450d-a8fd-d31008adc557",
+      "timestamp": "2026-08-06T21:21:55+08:00",
+      "operation": "commit",
+      "branch": "codex/release-open-source",
+      "summary": "fix: correct LeanCTX license to Apache-2.0 and headroom v0.34.0 release date",
+      "head_before": "378261c",
+      "remote": null
+    },
+    {
+      "id": "52564730-d013-4ca1-b13a-e1fd66cb58ab",
+      "timestamp": "2026-08-06T21:16:39+08:00",
+      "operation": "commit",
+      "branch": "codex/release-onboarding",
+      "summary": "fix: 收窄首次引导完成资格为显式用户偏好（非连接/verified 声明），summarizeOnboardingDiscovery 仅输出声明摘要",
+      "head_before": "853ac93",
+      "remote": null
+    },
+    {
+      "id": "a9a1c408-26a3-47e1-8e30-529a3640c097",
+      "timestamp": "2026-08-06T21:17:07+08:00",
+      "operation": "commit",
+      "branch": "codex/release-onboarding",
+      "summary": "chore: 提交 fix 追加 commit 的 git-operations.json audit 记录",
+      "head_before": "db3b081",
+      "remote": null
+    },
+    {
+      "id": "4e6aa2a1-7ed2-4813-96e7-2abc2cf7ead4",
+      "timestamp": "2026-08-07T00:24:00+08:00",
+      "operation": "merge",
+      "branch": "codex/code-graph-mcp-integration",
+      "summary": "合并 Codebase Memory v0.9.1-rc.1 分支，待主树测试",
+      "head_before": "facad18",
+      "remote": null
+    },
+    {
+      "id": "cecfcf5c-7f30-428b-b7fe-b7b6e3aa4bc9",
+      "timestamp": "2026-08-06T21:03:35+08:00",
+      "operation": "commit",
+      "branch": "codex/release-codebase-memory",
+      "summary": "fix: truthful Codebase Memory untrusted reason and block v0.9.1-rc.1 pin drift",
+      "head_before": "f1b89dc",
+      "remote": "null"
+    },
+    {
+      "id": "e045f5f2-68c6-4527-9e0f-6429513ff174",
+      "timestamp": "2026-08-06T23:24:02+08:00",
+      "operation": "commit",
+      "branch": "codex/release-codebase-memory",
+      "summary": "upgrade Codebase Memory pin to v0.9.1-rc.1 and fix launcher_unavailable blocked reason",
+      "head_before": "902930c",
+      "remote": "null"
+    },
+    {
+      "id": "7035aad1-eb61-4ad7-8610-5263af06a8ff",
+      "timestamp": "2026-08-06T23:06:48+08:00",
+      "operation": "commit",
+      "branch": "codex/release-model-pricing",
+      "summary": "恢复 discovery.ts 到 f1b89dc，保留模型价格实现并修正交付报告口径",
+      "head_before": "2962093",
+      "remote": null
+    },
+    {
+      "id": "b9bf713d-0c67-42fa-8d85-093ccf7c0b2c",
+      "timestamp": "2026-08-06T23:07:31+08:00",
+      "operation": "commit",
+      "branch": "codex/release-model-pricing",
+      "summary": "提交 git 操作审计账本追加记录，保持工作树整洁",
+      "head_before": "a79110a",
+      "remote": null
+    },
+    {
+      "id": "5e23772d-0b5e-432c-8d07-6afa2b7bf02a",
+      "timestamp": "2026-08-06T23:21:49+08:00",
+      "operation": "commit",
+      "branch": "codex/release-protocol-normalization",
+      "summary": "record protocol normalization commit audit entry",
+      "head_before": "86ffa900e50e1aa362332ccb6f368de8c941265a",
+      "remote": null
+    },
+    {
+      "id": "6c236a37-5091-4ab2-9137-1a3f1b409634",
+      "timestamp": "2026-08-06T23:22:08+08:00",
+      "operation": "commit",
+      "branch": "codex/release-protocol-normalization",
+      "summary": "commit final protocol normalization audit ledger",
+      "head_before": "86ffa900e50e1aa362332ccb6f368de8c941265a",
+      "remote": null
+    },
+    {
+      "id": "2a9db348-d7b0-4d87-b284-8cf618591f50",
+      "timestamp": "2026-08-06T21:09:56+08:00",
+      "operation": "commit",
+      "branch": "codex/release-log-view",
+      "summary": "P0 fix: Analytics log Provider Token column reads provider_input_tokens only; RequestLogRow contract + tests + report update",
+      "head_before": "192935f",
+      "remote": null
+    },
+    {
+      "id": "97d9e50d-23a7-4f80-92be-baa041c43dea",
+      "timestamp": "2026-08-06T23:24:25+08:00",
+      "operation": "commit",
+      "branch": "codex/release-log-view",
+      "summary": "Complete Analytics Provider Token evidence and protocol adapter display safeguards",
+      "head_before": "774e07fc5447f1aae0fea94a6abe08fd6108a732",
+      "remote": null
+    },
+    {
+      "id": "af074ad4-7990-4055-8c92-6165488c1731",
+      "timestamp": "2026-08-06T23:25:38+08:00",
+      "operation": "commit",
+      "branch": "codex/release-log-view",
+      "summary": "Commit git operation audit ledger for Analytics evidence fix",
+      "head_before": "315f314",
+      "remote": null
+    },
+    {
+      "id": "60cba030-76d1-4415-8956-29170ca898f5",
+      "timestamp": "2026-08-07T00:41:05+08:00",
+      "operation": "merge",
+      "branch": "codex/code-graph-mcp-integration",
+      "summary": "合并首页节省区间分支",
+      "head_before": "3064b0b",
+      "remote": null
+    },
+    {
+      "id": "567ccbce-c6a9-4b1e-837e-91ce9c1d9962",
+      "timestamp": "2026-08-06T21:04:15+08:00",
+      "operation": "commit",
+      "branch": "codex/release-overview-savings",
+      "summary": "feat(overview): 首页累计/当周/当月/当天节省区间，本地时区窗口与费用 unavailable 诚实口径",
+      "head_before": "f1b89dcc8db810b6d2373e9d1d4b5f57f1c6f40e",
+      "remote": null
+    },
+    {
+      "id": "7deeb248-ff24-4a63-9d81-5a1eee3b51b1",
+      "timestamp": "2026-08-06T23:22:04+08:00",
+      "operation": "commit",
+      "branch": "codex/release-macos-sidebar",
+      "summary": "Fix sidebar tooltip refs, CSS hit rect, local pulse rendering, canonical cat-face mark",
+      "head_before": "4015a75",
+      "remote": null
+    },
+    {
+      "id": "b5471771-154c-494b-8693-52bc9bed67c8",
+      "timestamp": "2026-08-06T23:27:11+08:00",
+      "operation": "commit",
+      "branch": "codex/release-optical-implementation",
+      "summary": "Commit audit ledger entry for Optical release slice",
+      "head_before": "2fa1b92",
+      "remote": null
+    },
+    {
+      "id": "f908ef0c-d998-476c-8f9c-5d3d84f88b48",
+      "timestamp": "2026-08-07T20:18:09+08:00",
+      "operation": "commit",
+      "branch": "codex/code-graph-mcp-integration",
+      "summary": "Finalize PRD-aligned release iteration: automatic Agent onboarding, native Codex Responses routing, truthful analytics pricing, tray and Code Graph polish",
+      "head_before": "c4ebc2509a96",
+      "remote": null
+    },
+    {
+      "id": "8d970c56-1f5e-44bb-aac7-2bbcdc817e48",
+      "timestamp": "2026-08-07T20:19:44+08:00",
+      "operation": "rebase",
+      "branch": "codex/code-graph-mcp-integration",
+      "summary": "Rebase the validated release candidate onto current origin/main before final pull request",
+      "head_before": "393c627d5cd7",
+      "remote": "origin"
+    },
+    {
+      "id": "49a5ba88-c159-4798-b642-bc3249e08a33",
+      "timestamp": "2026-08-07T20:19:55+08:00",
+      "operation": "commit",
+      "branch": "codex/code-graph-mcp-integration",
+      "summary": "Record release candidate rebase audit before history rewrite",
+      "head_before": "393c627d5cd7",
+      "remote": null
+    },
+    {
+      "id": "a7f27b41-8619-4729-81f9-d4d8a89042cf",
+      "timestamp": "2026-08-07T20:22:16+08:00",
+      "operation": "branch-create",
+      "branch": "codex/final-release-iteration",
+      "summary": "Create clean final release PR branch from current origin/main for validated candidate squash",
+      "head_before": "1183584fdb87",
+      "remote": "origin"
+    },
+    {
+      "id": "3789e0c8-e714-441e-aa1b-905292915dbf",
+      "timestamp": "2026-08-07T23:03:52+08:00",
+      "operation": "commit",
+      "branch": "codex/final-release-iteration",
+      "summary": "Finalize PRD-aligned release iteration with Agent onboarding, native Responses routing, truthful analytics pricing, tray, and Code Graph polish",
+      "head_before": "1183584fdb87",
+      "remote": null
+    },
+    {
+      "id": "7264d3d8-0a54-43b2-812f-989a633a7282",
+      "timestamp": "2026-08-07T23:04:19+08:00",
+      "operation": "push",
+      "branch": "codex/final-release-iteration",
+      "summary": "Push verified final release iteration for integration review",
+      "head_before": "bfea67753f65",
+      "remote": "origin"
+    },
+    {
+      "id": "4da75d9a-78a2-47c2-8cab-908ae990685d",
+      "timestamp": "2026-08-07T23:04:49+08:00",
+      "operation": "commit",
+      "branch": "codex/final-release-iteration",
+      "summary": "Record final candidate push audit before publishing integration branch",
+      "head_before": "bfea67753f65",
+      "remote": null
+    },
+    {
+      "id": "b850cf81-9ebb-49ba-914f-25e8f6d61e98",
+      "timestamp": "2026-08-08T00:00:02+08:00",
+      "operation": "commit",
+      "branch": "codex/final-release-iteration",
+      "summary": "Commit final release iteration candidate",
+      "head_before": "bf37a9d0fe6163ce09c08e9d4e7dce693ddee644",
+      "remote": null
+    },
+    {
+      "id": "3ecbb6e2-7a7f-4567-b5f3-1ee058812d4f",
+      "timestamp": "2026-08-08T00:01:28+08:00",
+      "operation": "push",
+      "branch": "codex/final-release-iteration",
+      "summary": "Prepare integration PR for final release iteration",
+      "head_before": "125709ab3378b1f50e94ae9e75c0a7fa70b57b2a",
+      "remote": "origin"
+    },
+    {
+      "id": "d74b93ca-7a5a-404c-bc1c-24e2977b904e",
+      "timestamp": "2026-08-08T00:01:51+08:00",
+      "operation": "commit",
+      "branch": "codex/final-release-iteration",
+      "summary": "Record integration PR audit",
+      "head_before": "125709ab3378b1f50e94ae9e75c0a7fa70b57b2a",
+      "remote": null
+    },
+    {
+      "id": "503aff3e-7994-4fe7-b3d7-8768dd2279b7",
+      "timestamp": "2026-08-08T00:02:33+08:00",
+      "operation": "commit",
+      "branch": "codex/final-release-iteration",
+      "summary": "Persist final release audit records",
+      "head_before": "c9149febc9d464b41bd961f74517999ce94d70c6",
+      "remote": null
+    },
+    {
+      "id": "cb5d2bc5-46ea-44b7-bbb2-588cbe9e20e2",
+      "timestamp": "2026-08-08T00:05:00+08:00",
+      "operation": "push",
+      "branch": "codex/final-release-iteration",
+      "summary": "Push final release candidate commits to integration PR branch",
+      "head_before": "d2f287c52e9a037ff31af0c018702e2263bde810",
+      "remote": "origin"
+    },
+    {
+      "id": "49be1b89-c5f5-4b34-b89e-ffcf89e0b3a8",
+      "timestamp": "2026-08-08T00:18:55+08:00",
+      "operation": "commit",
+      "branch": "codex/final-release-iteration",
+      "summary": "Fix release-gate PowerShell parse and DACL contract checks",
+      "head_before": "b31b28ce6d48f06e4da285cddab4977bea944a80",
+      "remote": null
+    },
+    {
+      "id": "f9421dbd-87fd-4112-b408-b7db16000742",
+      "timestamp": "2026-08-08T00:19:09+08:00",
+      "operation": "push",
+      "branch": "codex/final-release-iteration",
+      "summary": "Push release gate PowerShell contract fix",
+      "head_before": "b7b54abcbaf9b369ad37cd934247d6b3d1ce868f",
+      "remote": "origin"
+    },
+    {
+      "id": "33a5b67e-db3c-4e0a-96b3-12f846192104",
+      "timestamp": "2026-08-08T00:43:21+08:00",
+      "operation": "commit",
+      "branch": "codex/final-release-iteration",
+      "summary": "Fix Linux TypeScript and Windows Clippy CI failures in the integration candidate.",
+      "head_before": "5d7023c2686a",
+      "remote": null
+    },
+    {
+      "id": "84c886ba-e9a0-46b5-acc3-ad4e007a977a",
+      "timestamp": "2026-08-08T00:44:13+08:00",
+      "operation": "push",
+      "branch": "codex/final-release-iteration",
+      "summary": "Push verified integration CI fixes for PR #6.",
+      "head_before": "2061342c469a",
+      "remote": "origin"
+    },
+    {
+      "id": "c6cd0f43-2e0b-4251-8e6b-d865bd7d7ec4",
+      "timestamp": "2026-08-08T01:08:21+08:00",
+      "operation": "commit",
+      "branch": "codex/final-release-iteration",
+      "summary": "Fix clean-checkout tray resources and Windows frontend build prerequisites for CI.",
+      "head_before": "3eb6afd1a1ce",
+      "remote": null
+    },
+    {
+      "id": "0d3fcc2c-821d-4cd6-ad40-f634d42172a0",
+      "timestamp": "2026-08-08T01:08:33+08:00",
+      "operation": "push",
+      "branch": "codex/final-release-iteration",
+      "summary": "Push clean-checkout desktop CI fixes for PR #6.",
+      "head_before": "a427d61acf3b",
+      "remote": "origin"
+    },
+    {
+      "id": "61c1b045-495a-442b-bd83-55dba6f29f2e",
+      "timestamp": "2026-08-08T01:21:34+08:00",
+      "operation": "commit",
+      "branch": "codex/final-release-iteration",
+      "summary": "Gate the non-Windows Claude mapping visit limit to its implementation.",
+      "head_before": "1bfe7e648517",
+      "remote": null
+    },
+    {
+      "id": "bcc8cf44-50d0-43e8-b853-8f84fc9bd6fa",
+      "timestamp": "2026-08-08T01:21:45+08:00",
+      "operation": "push",
+      "branch": "codex/final-release-iteration",
+      "summary": "Push the Windows Claude mapping Clippy fix for PR #6.",
+      "head_before": "fb7c3ff0ba54",
+      "remote": "origin"
+    },
+    {
+      "id": "b0113a8a-1c31-476b-a55f-66a491ba87c1",
+      "timestamp": "2026-08-08T01:34:24+08:00",
+      "operation": "commit",
+      "branch": "codex/final-release-iteration",
+      "summary": "Fix platform-specific test compilation in Windows workspace Clippy.",
+      "head_before": "c270e1ed22ec",
+      "remote": null
+    },
+    {
+      "id": "2a18ba27-3d8c-4c5a-9eff-fc73d8099773",
+      "timestamp": "2026-08-08T01:34:34+08:00",
+      "operation": "push",
+      "branch": "codex/final-release-iteration",
+      "summary": "Push platform-specific Windows test compilation fixes for PR #6.",
+      "head_before": "15d35ce22e6c",
+      "remote": "origin"
+    },
+    {
+      "id": "c0991211-f4fc-45df-b588-7ef4feec1ff3",
+      "timestamp": "2026-08-08T02:03:44+08:00",
+      "operation": "commit",
+      "branch": "codex/final-release-iteration",
+      "summary": "Make the hybrid Agent integration test use the hash-bound staged bridge.",
+      "head_before": "0b033101471d",
+      "remote": null
+    },
+    {
+      "id": "9ccc7465-5dac-4781-bf0a-cbceab6dc8e2",
+      "timestamp": "2026-08-08T02:04:37+08:00",
+      "operation": "push",
+      "branch": "codex/final-release-iteration",
+      "summary": "Push the deterministic staged-bridge hybrid transaction test for PR #6.",
+      "head_before": "2d7d82ee357f",
+      "remote": "origin"
+    },
+    {
+      "id": "ad5b319b-f214-436e-85a9-45ba82fe620d",
+      "timestamp": "2026-08-08T16:35:15+08:00",
+      "operation": "commit",
+      "branch": "codex/final-release-iteration",
+      "summary": "fix: bind desktop tests to staged sidecar hash and canonical temp root",
+      "head_before": "4fb6498b42ad5cde81d110a9d97c7bfba3df223f",
+      "remote": null
+    },
+    {
+      "id": "f7adb755-4edf-43bc-9f08-9f777b27177b",
+      "timestamp": "2026-08-08T16:35:24+08:00",
+      "operation": "push",
+      "branch": "codex/final-release-iteration",
+      "summary": "push PR6 test fix: staged sidecar hash + canonical temp root",
+      "head_before": "f0a9bed",
+      "remote": "origin"
+    },
+    {
+      "id": "8843d23b-368e-452e-90a3-6aef9e19c733",
+      "timestamp": "2026-08-08T17:01:49+08:00",
+      "operation": "commit",
+      "branch": "codex/final-release-iteration",
+      "summary": "fix: make masked Linux/Windows test assertions platform-aware",
+      "head_before": "f0a9bed",
+      "remote": null
+    },
+    {
+      "id": "b3a54c9d-a810-4e95-ae28-37d1f2316604",
+      "timestamp": "2026-08-08T17:02:27+08:00",
+      "operation": "push",
+      "branch": "codex/final-release-iteration",
+      "summary": "push platform-aware test assertion fixes",
+      "head_before": "ff0ff58",
+      "remote": "origin"
+    },
+    {
+      "id": "39613a9d-dd2d-4efc-82f6-8f75793c1594",
+      "timestamp": "2026-08-08T17:09:06+08:00",
+      "operation": "branch-create",
+      "branch": "codex/final/runtime-receipt",
+      "summary": "Create isolated W1 runtime receipt branch",
+      "head_before": "1ddb30edcf0c12f5172c800a182b18e8cdadb61b",
+      "remote": null
+    },
+    {
+      "id": "e0bb86d0-25b0-4687-a5a3-0087c6db5143",
+      "timestamp": "2026-08-08T17:09:06+08:00",
+      "operation": "branch-create",
+      "branch": "codex/final/codex-ocxlocal-acceptance",
+      "summary": "Create isolated W1 Codex routed acceptance branch",
+      "head_before": "1ddb30edcf0c12f5172c800a182b18e8cdadb61b",
+      "remote": null
+    },
+    {
+      "id": "731f7f99-4f48-40e3-b424-362bafe801b6",
+      "timestamp": "2026-08-08T17:09:06+08:00",
+      "operation": "branch-create",
+      "branch": "codex/final/autoconfig-cutover",
+      "summary": "Create isolated W1 auto configuration cutover branch",
+      "head_before": "1ddb30edcf0c12f5172c800a182b18e8cdadb61b",
+      "remote": null
+    },
+    {
+      "id": "58259b2c-73bc-48f2-b6d0-f346191729af",
+      "timestamp": "2026-08-08T17:09:06+08:00",
+      "operation": "branch-create",
+      "branch": "codex/final/ui-polish",
+      "summary": "Create isolated W1 UI polish branch",
+      "head_before": "1ddb30edcf0c12f5172c800a182b18e8cdadb61b",
+      "remote": null
+    },
+    {
+      "id": "d70105a8-b50f-4e61-8ae7-69eaa102a156",
+      "timestamp": "2026-08-08T17:09:06+08:00",
+      "operation": "branch-create",
+      "branch": "codex/final/config-acceptance",
+      "summary": "Create isolated W1 Agent configuration acceptance branch",
+      "head_before": "1ddb30edcf0c12f5172c800a182b18e8cdadb61b",
+      "remote": null
+    },
+    {
+      "id": "3e26dd1a-6e76-4ce7-ba45-193a6ddd1563",
+      "timestamp": "2026-08-08T17:36:27+08:00",
+      "operation": "branch-use",
+      "branch": "codex/final/config-acceptance",
+      "summary": "Resume queued W1 Agent configuration acceptance implementation",
+      "head_before": "1ddb30edcf0c12f5172c800a182b18e8cdadb61b",
+      "remote": null
+    },
+    {
+      "id": "2c7bfa8b-926b-4080-907c-6b435429e23f",
+      "timestamp": "2026-08-08T17:37:49+08:00",
+      "operation": "commit",
+      "branch": "codex/final-release-iteration",
+      "summary": "fix: stabilize masked CI test failures (CRLF fixtures, javac dir, ETXTBSY retry)",
+      "head_before": "1ddb30e",
+      "remote": null
+    },
+    {
+      "id": "8299cb8f-3a15-4082-99fd-e70417cfa8bc",
+      "timestamp": "2026-08-08T17:38:08+08:00",
+      "operation": "push",
+      "branch": "codex/final-release-iteration",
+      "summary": "push round-3 CI stabilization fixes",
+      "head_before": "16bb7ad",
+      "remote": "origin"
+    },
+    {
+      "id": "3d176f09-492b-4121-8366-28b2c4ede115",
+      "timestamp": "2026-08-08T18:57:45+08:00",
+      "operation": "commit",
+      "branch": "codex/final-release-iteration",
+      "summary": "fix: Java fixture Java8-compatible for Windows CI javac (374368f)",
+      "head_before": "7ffa4fd",
+      "remote": null
+    },
+    {
+      "id": "0316365c-9832-4e0c-80d0-473b3707b497",
+      "timestamp": "2026-08-08T18:57:49+08:00",
+      "operation": "push",
+      "branch": "codex/final-release-iteration",
+      "summary": "push java fixture fix to trigger PR6 CI",
+      "head_before": "417ffd7",
+      "remote": null
+    },
+    {
+      "id": "759e338b-2807-438f-b607-f1e6d0a56cf1",
+      "timestamp": "2026-08-08T19:28:24+08:00",
+      "operation": "commit",
+      "branch": "codex/final-release-iteration",
+      "summary": "fix: force LF for config-patcher fixtures (CRLF Windows CI)",
+      "head_before": "417ffd7",
+      "remote": null
+    },
+    {
+      "id": "bf0188fb-ef37-4b4c-9be0-96be7c9f595d",
+      "timestamp": "2026-08-08T19:28:28+08:00",
+      "operation": "push",
+      "branch": "codex/final-release-iteration",
+      "summary": "push gitattributes fix to trigger PR6 CI",
+      "head_before": "5194180",
+      "remote": null
+    },
+    {
+      "id": "fbac5ad1-64e6-47ee-aa80-4a4c63e3ed89",
+      "timestamp": "2026-08-08T19:58:07+08:00",
+      "operation": "commit",
+      "branch": "codex/final-release-iteration",
+      "summary": "Add authoritative v0.0.1 release planning package and structure enforcement",
+      "head_before": "519418063ad1955ae1d0e4332616a57a73b8dc44",
+      "remote": null
+    },
+    {
+      "id": "e7fbbe65-5cde-4efc-8a7d-90050cf5415f",
+      "timestamp": "2026-08-08T20:01:39+08:00",
+      "operation": "branch-create",
+      "branch": "codex/final/leanctx-pin",
+      "summary": "PR-L0: create isolated worktree branch for lean-ctx unique pin decision (v3.9.17 vs main 95a1b7bc) and D4 closure",
+      "head_before": "c5a584971a9e2421a0040eb0f777ba76d9ae8f88",
+      "remote": null
+    },
+    {
+      "id": "a7f5a77b-db69-4180-84c0-d75571857993",
+      "timestamp": "2026-08-08T20:02:40+08:00",
+      "operation": "branch-create",
+      "branch": "codex/final/cbm-notice-drift",
+      "summary": "PR-CBM1: create isolated worktree branch for CBM notice drift closure (root THIRD_PARTY_NOTICES.md pin v0.9.0 -> v0.9.1-rc.1, mark v0.9.0 superseded historical)",
+      "head_before": "c5a584971a9e2421a0040eb0f777ba76d9ae8f88",
+      "remote": null
+    },
+    {
+      "id": "3079608a-681b-49d1-809e-864561d7cd7c",
+      "timestamp": "2026-08-08T20:02:58+08:00",
+      "operation": "branch-create",
+      "branch": "codex/final/headroom-pin",
+      "summary": "PR-L0: create isolated worktree branch for headroom unique pin decision (v0.34.0/9fd5ae3d vs old baseline 01df2452 vs main 7f6950be) and provenance/NOTICE update",
+      "head_before": "c5a584971a9e2421a0040eb0f777ba76d9ae8f88",
+      "remote": null
+    },
+    {
+      "id": "b5feabc4-db0b-4110-a31e-adbc43fab1e5",
+      "timestamp": "2026-08-08T20:03:09+08:00",
+      "operation": "branch-create",
+      "branch": "codex/final/rtk-pin",
+      "summary": "W1 provenance slice: 创建 RTK 来源登记分支，登记 rtk-ai/rtk v0.45.0/b34be37 唯一 pin 与 managed/integrated RTK 行为迁移边界。",
+      "head_before": "c5a5849",
+      "remote": null
+    },
+    {
+      "id": "3e78cbe3-17cc-4a6d-8401-c56156e895e8",
+      "timestamp": "2026-08-08T20:03:22+08:00",
+      "operation": "branch-create",
+      "branch": "codex/final/aimami-provenance",
+      "summary": "PR-AiMaMi: create isolated worktree branch for AiMaMi provenance/source-decision slice (pin 297c7af5 verification, adaptation scope audit, legal notice update)",
+      "head_before": "c5a584971a9e2421a0040eb0f777ba76d9ae8f88",
+      "remote": null
+    },
+    {
+      "id": "21acc0ae-72a4-45dc-b38b-75e0934086a2",
+      "timestamp": "2026-08-08T20:04:05+08:00",
+      "operation": "branch-create",
+      "branch": "codex/final/pxpipe-pin",
+      "summary": "W1 provenance slice: 创建 pxpipe 评测参考唯一 pin 分支（候选 v0.12.0/0ceabbed，评估取代旧 pin 7b7d6efa/v0.8.0）",
+      "head_before": "c5a584971a9e2421a0040eb0f777ba76d9ae8f88",
+      "remote": null
+    },
+    {
+      "id": "2779d920-9018-4f4c-974b-b1b28762ea99",
+      "timestamp": "2026-08-08T20:08:08+08:00",
+      "operation": "branch-create",
+      "branch": "codex/final/security-classifier-export",
+      "summary": "PR-5 security slice: create isolated worktree branch for unified SecretClassifier secret validation (active/merged/route-draft) and export path-leak removal (JSON/CSV)",
+      "head_before": "b1c090c",
+      "remote": null
+    },
+    {
+      "id": "2d773e7f-e7fd-4b0c-a600-4c4eb4d58992",
+      "timestamp": "2026-08-08T20:08:54+08:00",
+      "operation": "branch-create",
+      "branch": "codex/final/upgrade-autostart-credential",
+      "summary": "PR-8: create isolated worktree branch for macOS upgrade/rollback audit + LaunchAgent/HKCU + Keychain/Credential Manager unique-isolated round-trip producer scripts (dry-run/schema contract, fault injection tests)",
+      "head_before": "c5a584971a9e2421a0040eb0f777ba76d9ae8f88",
+      "remote": null
+    },
+    {
+      "id": "e72446a9-30b3-4a43-b4dc-1f42f0983459",
+      "timestamp": "2026-08-08T20:10:09+08:00",
+      "operation": "commit",
+      "branch": "codex/final/autoconfig-cutover",
+      "summary": "Cut over auto configuration to fail-closed source repair states",
+      "head_before": "1ddb30edcf0c12f5172c800a182b18e8cdadb61b",
+      "remote": null
+    },
+    {
+      "id": "9569ad41-b8a8-4c5b-a30a-364d35907eb8",
+      "timestamp": "2026-08-08T20:10:09+08:00",
+      "operation": "commit",
+      "branch": "codex/final/config-acceptance",
+      "summary": "Add isolated Agent configuration acceptance harness",
+      "head_before": "1ddb30edcf0c12f5172c800a182b18e8cdadb61b",
+      "remote": null
+    },
+    {
+      "id": "287d79dc-9aab-4f72-94df-9836f3af660b",
+      "timestamp": "2026-08-08T20:10:09+08:00",
+      "operation": "commit",
+      "branch": "codex/final/codex-ocxlocal-acceptance",
+      "summary": "Add Codex ocxlocal routed acceptance harness",
+      "head_before": "1ddb30edcf0c12f5172c800a182b18e8cdadb61b",
+      "remote": null
+    },
+    {
+      "id": "22da82fb-ea26-406b-b640-f9b47d11617d",
+      "timestamp": "2026-08-08T20:10:09+08:00",
+      "operation": "commit",
+      "branch": "codex/final/runtime-receipt",
+      "summary": "Complete optimization receipt compatibility tests",
+      "head_before": "b1c090c8baeb76393e69d3f16ed2b3388f3be3e4",
+      "remote": null
+    },
+    {
+      "id": "2bce1dc3-aea7-490d-a2b4-1f3a7b4ba740",
+      "timestamp": "2026-08-08T20:10:09+08:00",
+      "operation": "commit",
+      "branch": "codex/final/ui-polish",
+      "summary": "Finalize compact UI title and narrow-window acceptance evidence",
+      "head_before": "b003588f7f77936bfe48c033fcf7d5a97bd9a908",
+      "remote": null
+    },
+    {
+      "id": "ea82821c-d6c8-47ef-aabe-84c506648795",
+      "timestamp": "2026-08-08T20:10:47+08:00",
+      "operation": "commit",
+      "branch": "codex/final/cbm-notice-drift",
+      "summary": "Resolve Codebase Memory provenance pin drift",
+      "head_before": "c5a584971a9e2421a0040eb0f777ba76d9ae8f88",
+      "remote": null
+    },
+    {
+      "id": "a8199ab7-aed1-49de-8d4b-159bf4b3f664",
+      "timestamp": "2026-08-08T20:10:47+08:00",
+      "operation": "commit",
+      "branch": "codex/final/rtk-pin",
+      "summary": "Pin RTK v0.45.0 behavior reference",
+      "head_before": "c5a584971a9e2421a0040eb0f777ba76d9ae8f88",
+      "remote": null
+    },
+    {
+      "id": "893163dc-5d3c-4a0f-b941-d13b67c6491a",
+      "timestamp": "2026-08-08T20:10:47+08:00",
+      "operation": "commit",
+      "branch": "codex/final/pxpipe-pin",
+      "summary": "Pin pxpipe v0.12.0 evaluation reference",
+      "head_before": "c5a584971a9e2421a0040eb0f777ba76d9ae8f88",
+      "remote": null
+    },
+    {
+      "id": "7df1e1be-f5a3-400a-a4c9-c5115019b175",
+      "timestamp": "2026-08-08T20:10:47+08:00",
+      "operation": "commit",
+      "branch": "codex/final/leanctx-pin",
+      "summary": "Pin LeanCTX stable reference and record main delta",
+      "head_before": "c5a584971a9e2421a0040eb0f777ba76d9ae8f88",
+      "remote": null
+    },
+    {
+      "id": "c68c79d1-6a78-4102-a14d-ebb03e1b9b26",
+      "timestamp": "2026-08-08T20:10:47+08:00",
+      "operation": "commit",
+      "branch": "codex/final/aimami-provenance",
+      "summary": "Reconcile AiMaMi adaptation provenance",
+      "head_before": "c5a584971a9e2421a0040eb0f777ba76d9ae8f88",
+      "remote": null
+    },
+    {
+      "id": "01b64a9b-16e3-4571-ad65-cca182e25183",
+      "timestamp": "2026-08-08T20:10:47+08:00",
+      "operation": "commit",
+      "branch": "codex/final/headroom-pin",
+      "summary": "Pin Headroom v0.34.0 comparison baseline",
+      "head_before": "c5a584971a9e2421a0040eb0f777ba76d9ae8f88",
+      "remote": null
+    },
+    {
+      "id": "bf315d68-e4bd-4454-8c74-8b78c871c0ed",
+      "timestamp": "2026-08-08T20:11:13+08:00",
+      "operation": "commit",
+      "branch": "codex/final-release-iteration",
+      "summary": "Record W1 slice branch and commit audit entries",
+      "head_before": "c5a584971a9e2421a0040eb0f777ba76d9ae8f88",
+      "remote": null
+    },
+    {
+      "id": "4fc37a72-44f7-41b9-bbc9-eee83a356e8f",
+      "timestamp": "2026-08-08T20:11:53+08:00",
+      "operation": "branch-create",
+      "branch": "codex/final/cc-switch-aba-evidence",
+      "summary": "PR-7: create isolated worktree branch for cc-switch A-B-A read-only evidence harness + release gate aggregator supplemental evidence wiring",
+      "head_before": "c5a584971a9e2421a0040eb0f777ba76d9ae8f88",
+      "remote": null
+    },
+    {
+      "id": "dbb01e83-96c7-4398-93db-61c388b52ae6",
+      "timestamp": "2026-08-08T20:24:29+08:00",
+      "operation": "commit",
+      "branch": "codex/final/config-acceptance",
+      "summary": "Fail closed on unbound Agent config evidence",
+      "head_before": "88c3b154116f32e4ce32eccf90796634405f4a48",
+      "remote": null
+    },
+    {
+      "id": "d33aaf0e-773a-447a-973b-0faae6074289",
+      "timestamp": "2026-08-08T20:24:50+08:00",
+      "operation": "commit",
+      "branch": "codex/final/autoconfig-cutover",
+      "summary": "Align discovery fallback with source repair contract",
+      "head_before": "398c682ac4216f9fb467fc64414d0118958738b9",
+      "remote": null
+    },
+    {
+      "id": "537cc1db-eb0e-4a52-91ad-2773bf1f5a68",
+      "timestamp": "2026-08-08T20:24:50+08:00",
+      "operation": "commit",
+      "branch": "codex/final/ui-polish",
+      "summary": "Align UI E2E labels and reduced-motion rotation",
+      "head_before": "635224d10850163f80570f1b06e1942af1bedaf6",
+      "remote": null
+    },
+    {
+      "id": "13520f87-ac3c-43a2-9cf1-d44800a192b2",
+      "timestamp": "2026-08-08T20:24:50+08:00",
+      "operation": "commit",
+      "branch": "codex/final/pxpipe-pin",
+      "summary": "Synchronize pxpipe pin into runtime provenance",
+      "head_before": "87614200fbe9fd6674b7ecbed60f2f58d8ac3e4c",
+      "remote": null
+    },
+    {
+      "id": "e1d583b9-ae31-40ee-a43e-c19614fa4bef",
+      "timestamp": "2026-08-08T20:24:50+08:00",
+      "operation": "commit",
+      "branch": "codex/final/headroom-pin",
+      "summary": "Synchronize Headroom pin decision into living plan",
+      "head_before": "78600f7f8c546d836afbf961b620ad12749e1ecf",
+      "remote": null
+    },
+    {
+      "id": "04f3a2ba-411d-4cbc-86e5-bdba6dab6c91",
+      "timestamp": "2026-08-08T20:26:35+08:00",
+      "operation": "commit",
+      "branch": "codex/final-release-iteration",
+      "summary": "ci: pin modern JDK on windows check job for codec javac record fixture",
+      "head_before": "7ffa4fd",
+      "remote": null
+    },
+    {
+      "id": "fd2b98c9-d8be-4edf-9d2b-50654ca2e383",
+      "timestamp": "2026-08-08T20:26:47+08:00",
+      "operation": "commit",
+      "branch": "codex/final/cc-switch-aba-evidence",
+      "summary": "Add cc-switch A-B-A and release evidence gating",
+      "head_before": "c5a584971a9e2421a0040eb0f777ba76d9ae8f88",
+      "remote": null
+    },
+    {
+      "id": "0e9a895f-09d7-40c2-a551-0c6735906d3b",
+      "timestamp": "2026-08-08T20:26:49+08:00",
+      "operation": "push",
+      "branch": "codex/final-release-iteration",
+      "summary": "push JDK 21 windows check job fix",
+      "head_before": "fca5884",
+      "remote": "origin"
+    },
+    {
+      "id": "7bd1efa8-0a35-4c85-93b1-9d0ef2f19d29",
+      "timestamp": "2026-08-08T20:27:24+08:00",
+      "operation": "commit",
+      "branch": "codex/final/upgrade-autostart-credential",
+      "summary": "Add upgrade autostart and credential evidence producers",
+      "head_before": "c5a584971a9e2421a0040eb0f777ba76d9ae8f88",
+      "remote": null
+    },
+    {
+      "id": "7d7f1636-b904-4851-b638-feac7ceed0cc",
+      "timestamp": "2026-08-08T20:27:24+08:00",
+      "operation": "commit",
+      "branch": "codex/final/security-classifier-export",
+      "summary": "Unify secret classification and redact export paths",
+      "head_before": "b1c090c8baeb76393e69d3f16ed2b3388f3be3e4",
+      "remote": null
+    },
+    {
+      "id": "d77ac9a9-a7da-4ac4-b6b3-70bc63d25dfc",
+      "timestamp": "2026-08-08T20:41:59+08:00",
+      "operation": "commit",
+      "branch": "codex/final/config-acceptance",
+      "summary": "Bind Agent config evidence to candidate tree",
+      "head_before": "4c2863ef18f36552bd4c452658124d1232d9455a",
+      "remote": null
+    },
+    {
+      "id": "73afcf30-9b24-4255-a4ce-364881c6288e",
+      "timestamp": "2026-08-08T20:42:13+08:00",
+      "operation": "commit",
+      "branch": "codex/final/upgrade-autostart-credential",
+      "summary": "Make platform evidence factual and cross-host safe",
+      "head_before": "4ea18eb0426e68a0d4abbf8c84a06b36833da9f7",
+      "remote": null
+    },
+    {
+      "id": "7c2f58f4-17c7-451f-9dfb-00c1bf538634",
+      "timestamp": "2026-08-08T20:42:13+08:00",
+      "operation": "commit",
+      "branch": "codex/final/codex-ocxlocal-acceptance",
+      "summary": "Bind Codex routed evidence to runtime responses",
+      "head_before": "2326c7297b8ddfbf9cf48d1157ff31cbd798b587",
+      "remote": null
+    },
+    {
+      "id": "a4427858-e019-4181-a8e3-f3e8595338f7",
+      "timestamp": "2026-08-08T20:56:25+08:00",
+      "operation": "commit",
+      "branch": "codex/final/runtime-receipt",
+      "summary": "Complete Optimization Receipt evidence contract",
+      "head_before": "bb34bf4b2cc65c901756d962d4996eea1c5c51a0",
+      "remote": null
+    },
+    {
+      "id": "6ec99603-880a-498b-9e74-6cfc7edc73d9",
+      "timestamp": "2026-08-08T20:56:37+08:00",
+      "operation": "commit",
+      "branch": "codex/final/cc-switch-aba-evidence",
+      "summary": "Bind release evidence to candidate tree",
+      "head_before": "c9fb30e2aa1289215657193f2884fd6f1fdca45f",
+      "remote": null
+    },
+    {
+      "id": "2a65fcc6-f3b7-43e9-896c-4926369d9216",
+      "timestamp": "2026-08-08T20:57:15+08:00",
+      "operation": "commit",
+      "branch": "codex/final/security-classifier-export",
+      "summary": "Handle compact secrets and opaque credential references",
+      "head_before": "9581258380ce688a7e9d197357e133fb0cde5b56",
+      "remote": null
+    },
+    {
+      "id": "2312054f-73af-4bf2-9c20-039a0ee481e8",
+      "timestamp": "2026-08-08T20:59:41+08:00",
+      "operation": "branch-create",
+      "branch": "codex/final/candidate-integration",
+      "summary": "Create final candidate integration worktree",
+      "head_before": "7a41e6039982139517ea4a020c374d6e6c3324d6",
+      "remote": null
+    },
+    {
+      "id": "d6c2428d-1e9e-48bf-b623-4ea191706874",
+      "timestamp": "2026-08-08T21:01:55+08:00",
+      "operation": "push",
+      "branch": "codex/final/candidate-integration",
+      "summary": "Publish candidate integration branch",
+      "head_before": "7a41e6039982139517ea4a020c374d6e6c3324d6",
+      "remote": "origin"
+    },
+    {
+      "id": "a5705801-5266-4ae6-8a2e-c21f04d9f301",
+      "timestamp": "2026-08-08T21:04:55+08:00",
+      "operation": "push",
+      "branch": "codex/final/runtime-receipt",
+      "summary": "Publish runtime receipt slice for review",
+      "head_before": "fbc615fd38095cb5073c789a00743ada03100914",
+      "remote": "origin"
+    },
+    {
+      "id": "d61a2923-199a-43e7-851c-54b9e16f0f13",
+      "timestamp": "2026-08-08T21:05:36+08:00",
+      "operation": "merge",
+      "branch": "codex/final/candidate-integration",
+      "summary": "Integrate reviewed runtime receipt slice PR 7",
+      "head_before": "7a41e6039982139517ea4a020c374d6e6c3324d6",
+      "remote": null
+    },
+    {
+      "id": "ef6cb45b-4af8-4177-bb4f-e9ebbb93e73e",
+      "timestamp": "2026-08-08T21:06:38+08:00",
+      "operation": "push",
+      "branch": "codex/final/security-classifier-export",
+      "summary": "Publish security classifier slice for review",
+      "head_before": "97a3a6f7bacabeddcdadec015406b56e3577a74e",
+      "remote": "origin"
+    },
+    {
+      "id": "5adc71e8-dcf0-4bff-9bc1-d201ea1241b5",
+      "timestamp": "2026-08-08T21:07:26+08:00",
+      "operation": "merge",
+      "branch": "codex/final/candidate-integration",
+      "summary": "Integrate reviewed security classifier slice PR 8",
+      "head_before": "a720d22b0fd326412468cf2d410ae49f0cc93339",
+      "remote": null
+    },
+    {
+      "id": "5fcc6099-8811-4399-9c2c-dd015d9ac977",
+      "timestamp": "2026-08-08T21:08:08+08:00",
+      "operation": "commit",
+      "branch": "codex/final-release-iteration",
+      "summary": "fix: privatize runtime dir in windows projection fail-closed test",
+      "head_before": "7a41e60",
+      "remote": null
+    },
+    {
+      "id": "1807bcc2-b49f-4378-b26d-f69b66071ca3",
+      "timestamp": "2026-08-08T21:08:18+08:00",
+      "operation": "push",
+      "branch": "codex/final-release-iteration",
+      "summary": "push windows projection fail-closed test fix",
+      "head_before": "9be1316",
+      "remote": "origin"
+    },
+    {
+      "id": "3fb6d9e2-4743-40d3-a731-84d0101db8a4",
+      "timestamp": "2026-08-08T21:09:54+08:00",
+      "operation": "push",
+      "branch": "codex/final/autoconfig-cutover",
+      "summary": "Publish autoconfig cutover slice",
+      "head_before": "3bedd52f2ff584ad7acf883718733775c0e10f6a",
+      "remote": "origin"
+    },
+    {
+      "id": "8a1815d7-1ae9-4d10-a427-42fa39622684",
+      "timestamp": "2026-08-08T21:09:54+08:00",
+      "operation": "push",
+      "branch": "codex/final/ui-polish",
+      "summary": "Publish UI polish slice",
+      "head_before": "6552b6c0a1562b3b9f20219268658c3677a9d4e4",
+      "remote": "origin"
+    },
+    {
+      "id": "9c08ebd7-f71d-4b9a-a102-3d5b62df2ad1",
+      "timestamp": "2026-08-08T21:09:54+08:00",
+      "operation": "push",
+      "branch": "codex/final/config-acceptance",
+      "summary": "Publish config acceptance slice",
+      "head_before": "e0b395f47a9a36af253471501af879b093c3429b",
+      "remote": "origin"
+    },
+    {
+      "id": "ad8d5194-d9e0-4556-839d-b65645c50491",
+      "timestamp": "2026-08-08T21:09:54+08:00",
+      "operation": "push",
+      "branch": "codex/final/codex-ocxlocal-acceptance",
+      "summary": "Publish Codex acceptance slice",
+      "head_before": "09bdcfdfd6d2852d3d836b50d9af8a1001428065",
+      "remote": "origin"
+    },
+    {
+      "id": "c16d8f3c-578e-4054-9ba5-c134fd2ed545",
+      "timestamp": "2026-08-08T21:09:55+08:00",
+      "operation": "push",
+      "branch": "codex/final/cc-switch-aba-evidence",
+      "summary": "Publish cc-switch evidence slice",
+      "head_before": "0a9c31e76df55b13962c030e2868772f7a7ad24d",
+      "remote": "origin"
+    },
+    {
+      "id": "f05f11f6-8220-48a2-8e11-b9deeaf3ccfd",
+      "timestamp": "2026-08-08T21:09:55+08:00",
+      "operation": "push",
+      "branch": "codex/final/upgrade-autostart-credential",
+      "summary": "Publish platform round-trip slice",
+      "head_before": "d438ac7223ff505a4acc46ec1c051d46df0fcfcb",
+      "remote": "origin"
+    },
+    {
+      "id": "9fcc21f0-f5bb-4688-a19a-791a8b3da3de",
+      "timestamp": "2026-08-08T21:09:55+08:00",
+      "operation": "push",
+      "branch": "codex/final/aimami-provenance",
+      "summary": "Publish AiMaMi provenance slice",
+      "head_before": "32c9767d26e80a07ecf3297e6c78bb39c1f88fca",
+      "remote": "origin"
+    },
+    {
+      "id": "ce8fe0c8-41d8-4e3a-bbcf-f72af565c930",
+      "timestamp": "2026-08-08T21:09:55+08:00",
+      "operation": "push",
+      "branch": "codex/final/cbm-notice-drift",
+      "summary": "Publish Codebase Memory provenance slice",
+      "head_before": "1c85fd0f6519375c5a66fd5a431f42a3f47db19e",
+      "remote": "origin"
+    },
+    {
+      "id": "6ef46e8a-f91e-4c15-8e3f-ab62ae55be88",
+      "timestamp": "2026-08-08T21:09:55+08:00",
+      "operation": "push",
+      "branch": "codex/final/headroom-pin",
+      "summary": "Publish Headroom provenance slice",
+      "head_before": "39097f446c3213ee7e4c2e6db62b8669a95d3bfb",
+      "remote": "origin"
+    },
+    {
+      "id": "8661898f-1b3f-4b33-a360-15e7fb3edab8",
+      "timestamp": "2026-08-08T21:09:55+08:00",
+      "operation": "push",
+      "branch": "codex/final/leanctx-pin",
+      "summary": "Publish LeanCTX provenance slice",
+      "head_before": "16066804ef58fd089d89f33090aba4b9746e395d",
+      "remote": "origin"
+    },
+    {
+      "id": "7e3b8e3b-7f43-47d0-a1b7-c799592f293d",
+      "timestamp": "2026-08-08T21:09:55+08:00",
+      "operation": "push",
+      "branch": "codex/final/pxpipe-pin",
+      "summary": "Publish pxpipe provenance slice",
+      "head_before": "24d798a415b86203cde760dbf383b256edb138f0",
+      "remote": "origin"
+    },
+    {
+      "id": "5bf6d19f-5041-44f4-8082-a87193d8ec91",
+      "timestamp": "2026-08-08T21:09:55+08:00",
+      "operation": "push",
+      "branch": "codex/final/rtk-pin",
+      "summary": "Publish RTK provenance slice",
+      "head_before": "40c6bafe5be26989a85d7a2f728ee9b655e88b3a",
+      "remote": "origin"
+    },
+    {
+      "id": "a20fcd17-56a6-4302-8f9e-70f5b6ea7876",
+      "timestamp": "2026-08-08T21:14:05+08:00",
+      "operation": "merge",
+      "branch": "codex/final/candidate-integration",
+      "summary": "Integrate reviewed autoconfig UI config and Codex slices PR 9-12",
+      "head_before": "9454668a4e39c6b180c2200040637a51578187fd",
+      "remote": null
+    },
+    {
+      "id": "85b3c207-59d2-4d82-b9d6-cc542637cc72",
+      "timestamp": "2026-08-08T21:14:05+08:00",
+      "operation": "merge",
+      "branch": "codex/final/candidate-integration",
+      "summary": "Integrate reviewed gate and platform evidence slices PR 13-14",
+      "head_before": "9454668a4e39c6b180c2200040637a51578187fd",
+      "remote": null
+    },
+    {
+      "id": "4bdc6c3f-f9c6-465b-a095-4f9377a193cf",
+      "timestamp": "2026-08-08T21:14:05+08:00",
+      "operation": "merge",
+      "branch": "codex/final/candidate-integration",
+      "summary": "Integrate reviewed provenance slices PR 15-20",
+      "head_before": "9454668a4e39c6b180c2200040637a51578187fd",
+      "remote": null
+    },
+    {
+      "id": "fcdcfcce-d853-46c8-adaa-66e8c1395806",
+      "timestamp": "2026-08-08T21:18:47+08:00",
+      "operation": "branch-create",
+      "branch": "codex/final/version-unification",
+      "summary": "Create version unification slice from integrated candidate",
+      "head_before": "927958d7f161c92d39f4ad7a3d88d797e8e7b7ea",
+      "remote": null
+    },
+    {
+      "id": "6652b171-e478-4f96-9950-e0ab2bfde667",
+      "timestamp": "2026-08-08T21:18:47+08:00",
+      "operation": "branch-create",
+      "branch": "codex/final/verification-orchestration",
+      "summary": "Create final verification orchestration slice",
+      "head_before": "927958d7f161c92d39f4ad7a3d88d797e8e7b7ea",
+      "remote": null
+    },
+    {
+      "id": "f7adfcaf-37dc-4486-9d00-0c5bb7e7d89d",
+      "timestamp": "2026-08-08T21:43:53+08:00",
+      "operation": "commit",
+      "branch": "codex/final-release-iteration",
+      "summary": "fix: compare canonical bridge path in managed RTK rewrite test",
+      "head_before": "33b4036",
+      "remote": null
+    },
+    {
+      "id": "41ca15fb-1e5b-4cdc-ac8d-a9b94261f46a",
+      "timestamp": "2026-08-08T21:44:09+08:00",
+      "operation": "push",
+      "branch": "codex/final-release-iteration",
+      "summary": "push managed RTK rewrite path assertion fix",
+      "head_before": "13f52e2",
       "remote": "origin"
     }
   ]

@@ -36,6 +36,7 @@ import { dispatchInstallMachine, resetInstallMachineState } from "../../lib/inst
 import {
   assertNativeActionSucceeded,
   connectionDiscoveryCounts,
+  buildConnectionRoutePlanRequest,
   desktopInstallRoot,
   deriveServicePresentation,
   Install,
@@ -159,6 +160,7 @@ afterEach(() => {
   mocks.invokeNative.mockReset();
   mocks.refreshRuntime.mockReset();
 });
+
 
 describe("Install", () => {
   it("stops a configuration flow when a native transaction reports failure", () => {
@@ -396,9 +398,11 @@ describe("Install", () => {
     });
 
     render(<Install />);
-    fireEvent.click(await screen.findByRole("button", { name: "查看连接方案" }));
+    fireEvent.click(await screen.findByRole("button", { name: "查看变更" }));
     expect(await screen.findByText(/传输配置/)).toBeInTheDocument();
     expect(screen.getByText("+ d-token local provider")).toBeInTheDocument();
+    // The confirm dialog states the rollback boundary alongside target/diff/hash.
+    expect(screen.getByText(/应用前会创建备份与回退点/)).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "确认并连接" }));
 
     await waitFor(() => expect(mocks.invokeNative).toHaveBeenCalledWith(
@@ -448,7 +452,7 @@ describe("Install", () => {
     expect(screen.getByText("隐私边界：未读取或显示凭据、认证文件、提示词或响应原文。")).toBeInTheDocument();
   });
 
-  it("shows configure and clear controls for every detected Agent while unsafe operations stay fail-closed", async () => {
+  it("renders real one-click controls only for Agents with a verified write action", async () => {
     const agents: Array<[string, string, boolean, boolean]> = [
       ["opencode", "OpenCode", true, true],
       ["claude-code", "Claude Code", true, false],
@@ -485,20 +489,95 @@ describe("Install", () => {
     render(<Install />);
 
     expect(await screen.findByText("OpenClaw")).toBeInTheDocument();
-    const configureButtons = screen.getAllByRole("button", { name: "配置" });
-    const clearButtons = screen.getAllByRole("button", { name: "清除" });
-    expect(configureButtons).toHaveLength(7);
-    expect(clearButtons).toHaveLength(7);
-    expect(configureButtons.filter((button) => (button as HTMLButtonElement).disabled)).toHaveLength(2);
-    expect(clearButtons.filter((button) => (button as HTMLButtonElement).disabled)).toHaveLength(6);
+    // Only Agents with a real backend write action get rows with buttons.
+    const configureButtons = screen.getAllByRole("button", { name: "一键配置" });
+    const clearButtons = screen.getAllByRole("button", { name: "清除 d-token 配置" });
+    expect(configureButtons).toHaveLength(5);
+    expect(clearButtons).toHaveLength(5);
+    expect(configureButtons.filter((button) => (button as HTMLButtonElement).disabled)).toHaveLength(0);
+    expect(clearButtons.filter((button) => (button as HTMLButtonElement).disabled)).toHaveLength(4);
+    // Detection-only Agents are counted as evidence, never given fake buttons.
+    expect(screen.queryByText("Cursor")).not.toBeInTheDocument();
+    expect(screen.queryByText("Gemini CLI")).not.toBeInTheDocument();
+    expect(screen.getByText("7 个已检测")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "高级配置" })).not.toBeInTheDocument();
     expect(screen.queryByText(/手动配置|需要手动|手动完成/)).not.toBeInTheDocument();
+    // No dead-end copy is rendered anywhere.
+    expect(screen.queryByText(/暂未开放|自动写入未开放|等待安全适配/)).not.toBeInTheDocument();
 
-    // A genuinely disabled Configure button is fail-closed: clicking it does
-    // not open the manual-setup notice or write anything.
-    expect(configureButtons[3]).toBeDisabled();
-    fireEvent.click(configureButtons[3]);
-    expect(screen.queryByText(/当前版本暂未开放可验证的自动配置/)).not.toBeInTheDocument();
+    // Clear stays fail-closed without an ownership receipt: clicking a disabled
+    // Clear button never claims success and never reports a version dead-end.
+    expect(clearButtons[1]).toBeDisabled();
+    fireEvent.click(clearButtons[1]);
+    expect(screen.queryByText(/当前版本暂未开放可验证的自动清除/)).not.toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
+  it("auto-includes every installed Agent and makes View changes the primary action", async () => {
+    const clineBinding = {
+      ...connectedSnapshot.agent_bindings[0],
+      agent_id: "cline",
+      agent_name: "Cline",
+      config_path: "~/.cline/settings/providers.json",
+      candidates: [{
+        id: "cline-provider",
+        name: "Cline provider",
+        protocol: "open_ai",
+        base_url: "https://cline.example.test/v1",
+        models: ["cline-model"],
+        source: "agent-config:cline",
+        freshness: "unix:4",
+        auth_mode: "none",
+        active: true,
+        state: "discovered",
+        agent_ids: ["cline"],
+        confidence: 99,
+        reasons: ["current"],
+      }],
+      resolved_candidate: {
+        id: "cline-provider",
+        name: "Cline provider",
+        protocol: "open_ai",
+        base_url: "https://cline.example.test/v1",
+        models: ["cline-model"],
+        source: "agent-config:cline",
+        freshness: "unix:4",
+        auth_mode: "none",
+        active: true,
+        state: "discovered",
+        agent_ids: ["cline"],
+        confidence: 99,
+        reasons: ["current"],
+      },
+      resolution: "auto-resolved" as const,
+      capability: "one-click" as const,
+      can_configure: true,
+      can_clear: true,
+      already_connected: false,
+    };
+    const openCodeBinding = {
+      ...connectedSnapshot.agent_bindings[0],
+      can_configure: true,
+      can_clear: true,
+    };
+    const focusSnapshot = {
+      ...connectedSnapshot,
+      revision: "onboarding-focus",
+      agent_bindings: [clineBinding, openCodeBinding],
+    };
+    mocks.invokeNative.mockImplementation(async (command: string) => {
+      if (command === "discover_upstream_candidates") return focusSnapshot;
+      throw new Error(`unexpected command: ${command}`);
+    });
+
+    render(<Install initialAgentId="cline" />);
+
+    // The batch is automatic: no per-Agent include checkbox is rendered and
+    // the onboarding Agent hint never narrows the auto batch to one Agent.
+    expect(await screen.findByRole("button", { name: "查看变更" })).toBeEnabled();
+    expect(screen.queryByRole("checkbox")).not.toBeInTheDocument();
+    expect(screen.getByText("Cline")).toBeInTheDocument();
+    expect(screen.getByText("OpenCode")).toBeInTheDocument();
   });
 
   it("rescans instead of redirecting a detection-only Agent to Advanced setup", async () => {
@@ -590,7 +669,7 @@ describe("Install", () => {
     expect(screen.getByText("下一步：重新配置此 Agent，使请求重新经过 d-token。")).toBeInTheDocument();
     expect(screen.getByText(/d-token 路由 · cline-upstream · cline-model · open_ai/)).toBeInTheDocument();
     expect(screen.getByText("receipt applied_verified · runtime_reloaded")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "配置" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "一键配置" })).toBeEnabled();
   });
 
   it("counts only detected Agents and their real discovered upstreams", () => {
@@ -612,6 +691,114 @@ describe("Install", () => {
     })).toEqual({ agents: 1, upstreams: 1, ccSwitchProfiles: 3 });
   });
 
+  it("keeps Codex Responses proxy model passthrough in the automatic route request", () => {
+    const codexCandidate = {
+      id: "codex-ocxlocal",
+      name: "Codex ocxlocal",
+      protocol: "responses",
+      base_url: "http://127.0.0.1:10100/v1",
+      models: [],
+      source: "agent-config:codex",
+      freshness: "unix:1",
+      auth_mode: "none",
+      active: true,
+      state: "discovered",
+      agent_ids: ["codex"],
+      confidence: 100,
+      reasons: [],
+    };
+    expect(buildConnectionRoutePlanRequest("r-codex", [{
+      agent_id: "codex",
+      agent_name: "Codex",
+      installed: true,
+      current_config_source: "agent-config:codex",
+      candidates: [codexCandidate],
+      resolved_candidate: codexCandidate,
+      resolution: "auto-resolved",
+      confidence: 100,
+      reasons: [],
+      capability: "one-click",
+      already_connected: false,
+    }], {})).toEqual({
+      discovery_revision: "r-codex",
+      bindings: [{
+        agent_id: "codex",
+        candidate_id: "codex-ocxlocal",
+        candidate_source: "agent-config:codex",
+        model: "",
+      }],
+    });
+  });
+
+  it("omits a multi-model resolved candidate from the route plan instead of locking models[0]", () => {
+    const multi = {
+      id: "multi",
+      name: "Multi model",
+      protocol: "open_ai",
+      base_url: "https://example.test/v1",
+      models: ["model-a", "model-b"],
+      source: "agent-config:codex",
+      freshness: "unix:1",
+      auth_mode: "none",
+      active: true,
+      state: "discovered",
+      agent_ids: ["codex"],
+      confidence: 100,
+      reasons: [],
+    };
+    const plan = buildConnectionRoutePlanRequest("r-multi", [{
+      agent_id: "codex",
+      agent_name: "Codex",
+      installed: true,
+      current_config_source: "agent-config:codex",
+      candidates: [multi],
+      resolved_candidate: multi,
+      resolution: "auto-resolved",
+      confidence: 100,
+      reasons: [],
+      capability: "one-click",
+      already_connected: false,
+    }], {});
+    expect(plan.bindings).toEqual([]);
+  });
+
+  it("carries the single auto-resolved model into the route plan without a chooser", () => {
+    const single = {
+      id: "single",
+      name: "Single",
+      protocol: "open_ai",
+      base_url: "https://example.test/v1",
+      models: ["model-a"],
+      source: "agent-config:codex",
+      freshness: "unix:1",
+      auth_mode: "none",
+      active: true,
+      state: "discovered",
+      agent_ids: ["codex"],
+      confidence: 100,
+      reasons: [],
+    };
+    const plan = buildConnectionRoutePlanRequest("r-single", [{
+      agent_id: "codex",
+      agent_name: "Codex",
+      installed: true,
+      current_config_source: "agent-config:codex",
+      candidates: [single],
+      resolved_candidate: single,
+      resolution: "auto-resolved",
+      confidence: 100,
+      reasons: [],
+      capability: "one-click",
+      already_connected: false,
+    }], {});
+    expect(plan.bindings).toEqual([{
+      agent_id: "codex",
+      candidate_id: "single",
+      candidate_source: "agent-config:codex",
+      model: "model-a",
+    }]);
+  });
+
   it("stores a required credential through the secure command without rendering it when native storage fails", async () => {
     const credential = "test-credential-never-rendered";
     mocks.invokeNative.mockImplementation(async (command: string) => {
@@ -622,8 +809,7 @@ describe("Install", () => {
 
     render(<Install />);
 
-    fireEvent.click(await screen.findByRole("checkbox", { name: "加入本次连接: OpenCode" }));
-    fireEvent.click(screen.getByRole("button", { name: "补充所需凭据" }));
+    fireEvent.click(await screen.findByRole("button", { name: "补充所需凭据" }));
     fireEvent.change(screen.getByLabelText("凭据"), { target: { value: credential } });
     fireEvent.click(screen.getByRole("button", { name: "安全保存并继续" }));
 
@@ -821,7 +1007,9 @@ describe("Install", () => {
 
     render(<Install />);
     expect(await screen.findByText("Agent MCP")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "配置" }));
+    // MCP/Hook integrations are labeled truthfully: tool capability only.
+    expect(screen.getByText("工具能力，不改变模型上游")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "配置工具集成" }));
 
     await waitFor(() => {
       expect(mocks.invokeNative).toHaveBeenCalledWith(
@@ -889,7 +1077,7 @@ describe("Install", () => {
 
     render(<Install />);
     expect(await screen.findByText("Agent MCP")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "配置" }));
+    fireEvent.click(screen.getByRole("button", { name: "配置工具集成" }));
 
     await waitFor(() => {
       expect(mocks.invokeNative).not.toHaveBeenCalledWith(

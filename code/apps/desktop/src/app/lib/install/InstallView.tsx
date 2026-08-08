@@ -9,7 +9,6 @@ import type { Health } from "../runtime/types";
 import type { NativeActionLog } from "../native";
 import type { AgentUpstreamBinding, ConnectionSetupSnapshot } from "../connectionSetup";
 import {
-  canJoinInstallBatch,
   type InstallAgentReceipt,
   type InstallMachineEvent,
   type InstallMachineState,
@@ -190,21 +189,18 @@ export function InstallView(props: InstallViewProps) {
                   <AgentBindingRow
                     key={binding.agent_id}
                     binding={binding}
-                    selection={machine.selections[binding.agent_id]}
-                    included={machine.selectedAgentIds.includes(binding.agent_id)}
-                    selectable={canJoinInstallBatch(binding)}
                     lang={lang}
                     busy={busy}
                     transportBusy={transportBusyAgent === binding.agent_id}
                     onConfigure={() => onConfigureAgent(binding)}
                     onClear={() => onClearAgent(binding)}
-                    onSelect={(candidateKey, model) => dispatch({ type: "SELECT_UPSTREAM", agentId: binding.agent_id, selection: { candidateKey, model } })}
-                    onToggle={(selected) => dispatch({ type: "TOGGLE_AGENT", agentId: binding.agent_id, selected })}
                   />
                 ))}
                 {primaryBindings.length === 0 && visibleBindings.length > 0 && (
                   <div className="py-4 text-sm text-muted-foreground">
-                    {lang === "zh" ? "已检测到工具，但当前版本尚无可验证的自动连接 adapter。" : "Tools were detected, but this version has no verified automatic connection adapter for them."}
+                    {lang === "zh"
+                      ? `已检测到 ${visibleBindings.length} 个工具；未发现提供 d-token 写入动作的 Agent，未修改任何配置。`
+                      : `${visibleBindings.length} tools were detected, but none exposes a d-token write action; no configuration was modified.`}
                   </div>
                 )}
                 </div>
@@ -221,16 +217,11 @@ export function InstallView(props: InstallViewProps) {
                         <AgentBindingRow
                           key={binding.agent_id}
                           binding={binding}
-                          selection={machine.selections[binding.agent_id]}
-                          included={machine.selectedAgentIds.includes(binding.agent_id)}
-                          selectable={canJoinInstallBatch(binding)}
                           lang={lang}
                           busy={busy}
                           transportBusy={transportBusyAgent === binding.agent_id}
                           onConfigure={() => onConfigureAgent(binding)}
                           onClear={() => onClearAgent(binding)}
-                          onSelect={(candidateKey, model) => dispatch({ type: "SELECT_UPSTREAM", agentId: binding.agent_id, selection: { candidateKey, model } })}
-                          onToggle={(selected) => dispatch({ type: "TOGGLE_AGENT", agentId: binding.agent_id, selected })}
                         />
                       ))}
                     </div>
@@ -364,6 +355,14 @@ export function InstallView(props: InstallViewProps) {
                   : "Follow confirmed Agent upstreams: provider, model, protocol, or endpoint changes update only d-token's route and reverify the runtime. Agent configuration and credentials are not rewritten automatically; new identities, ambiguity, or credentials stop for confirmation."}
               </span>
             </label>
+            <div className="rounded-lg border border-border bg-muted/30 p-3 text-xs text-muted-foreground">
+              <div className="font-medium">{lang === "zh" ? "回退边界" : "Rollback boundary"}</div>
+              <div className="mt-1">
+                {lang === "zh"
+                  ? "应用前会创建备份与回退点；失败时保留 transaction receipt，可回退已应用项。"
+                  : "A backup and rollback point are created before apply; on failure, transaction receipts are kept so applied items can be rolled back."}
+              </div>
+            </div>
             {routePlanReview && (
               <div className="rounded-lg border border-border bg-muted/30 p-3">
                 <div className="font-medium">{lang === "zh" ? "d-token 自动路由" : "Automatic d-token routes"}</div>

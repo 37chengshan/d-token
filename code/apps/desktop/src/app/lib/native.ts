@@ -167,8 +167,8 @@ export async function invokeNative<T>(command: string, args?: Record<string, unk
 //
 // `spectaCommands` exposes the Rust commands registered in
 // `specta_commands!` (src-tauri/src/main.rs) with full TypeScript types.
-// When bindings are absent (e.g. running `npm run dev` without Tauri), the
-// proxy throws `native_unavailable` so callers fall back to mock data.
+// Outside the Tauri runtime the proxy throws `native_unavailable` so callers
+// fall back to mock data — regardless of whether bindings.ts exists.
 //
 // Usage:
 //   import { spectaCommands } from "@/app/lib/native";
@@ -183,11 +183,14 @@ export async function invokeNative<T>(command: string, args?: Record<string, unk
 /**
  * Type-safe access to the tauri-specta command surface.
  *
- * Because the bindings module is gitignored and may be absent, each call
- * lazily loads the bindings via `loadSpectaBindings`. When the bindings are
- * missing the returned promise rejects with `native_unavailable`, which is the
- * same sentinel `invokeNative` uses for a non-Tauri environment. Callers can
- * therefore branch on `native_unavailable` to fall back to mock data.
+ * Outside the Tauri runtime each call fails closed with `native_unavailable`
+ * before touching the bindings module, even when the gitignored `bindings.ts`
+ * happens to exist. Inside the Tauri runtime the bindings are lazily loaded
+ * via `loadSpectaBindings`; when they are missing the call rejects with
+ * `native_unavailable` (the same sentinel `invokeNative` uses for a non-Tauri
+ * environment), and unknown commands reject with
+ * `specta command not found: <name>`. Callers can branch on
+ * `native_unavailable` to fall back to mock data.
  *
  * This surface is async (returns `Promise<unknown>` per command) to match the
  * tauri-specta generated bindings, which always return promises.
@@ -197,6 +200,12 @@ export const spectaCommands = new Proxy(
   {
     get(_target, prop: string) {
       return async (...args: unknown[]): Promise<unknown> => {
+        // Fail closed before touching the bindings module: outside the Tauri
+        // runtime the surface is always unavailable, even if the gitignored
+        // bindings.ts happens to exist (its commands would call __TAURI_INVOKE__).
+        if (!isTauriRuntime()) {
+          throw new Error("native_unavailable");
+        }
         const bindings = await loadSpectaBindings();
         if (!bindings) {
           throw new Error("native_unavailable");

@@ -1,68 +1,64 @@
 import { Badge } from "../../components/ui/badge";
-import { Checkbox } from "../../components/ui/checkbox";
 import { StatusBadge } from "../../components/common/StatusBadge";
 import { Button } from "../../components/ui/button";
-import { bindingOptions, selectedCandidate, type InstallPhase } from "../installMachine";
+import { resolveAgentBinding, selectedCandidate, type InstallPhase } from "../installMachine";
 import type { AgentUpstreamBinding, ConnectionSetupSnapshot, UpstreamCandidate } from "../connectionSetup";
+import { protocolLabel } from "../protocol";
 
 function AgentBindingRow({
   binding,
-  selection,
-  included,
-  selectable,
   lang,
   busy,
   transportBusy,
   onConfigure,
   onClear,
-  onSelect,
-  onToggle,
 }: {
   binding: AgentUpstreamBinding;
-  selection?: { candidateKey: string; model: string };
-  included: boolean;
-  selectable: boolean;
   lang: "zh" | "en";
   busy: boolean;
   transportBusy: boolean;
   onConfigure: () => void;
   onClear: () => void;
-  onSelect: (candidateKey: string, model: string) => void;
-  onToggle: (selected: boolean) => void;
 }) {
   const presentation = presentBinding(binding, lang);
-  const canConfigure = binding.can_configure === true;
-  const canClear = binding.can_clear === true;
-  const options = bindingOptions(binding);
-  const selected = selectedCandidate(binding, selection);
-  const resolved = selected?.candidate ?? binding.resolved_candidate;
-  const model = selected?.model || resolved?.models?.[0];
+  const isMcpOrHook = binding.integration_kind === "mcp" || binding.integration_kind === "hook";
+  // MCP/Hook integrations act on the tool config only; the write action exists
+  // whenever a verified MCP config path was discovered. Route adapters gate on
+  // native capability flags so missing values fail closed.
+  const mcpPathReady = Boolean(binding.mcp_config_path) && !binding.mcp_config_path?.startsWith("<local>/");
+  const canConfigure = isMcpOrHook ? mcpPathReady : binding.can_configure === true;
+  const canClear = isMcpOrHook ? mcpPathReady : binding.can_clear === true;
+  const configureLabel = isMcpOrHook
+    ? (lang === "zh" ? "配置工具集成" : "Configure tools")
+    : (lang === "zh" ? "一键配置" : "One-click configure");
+  const clearLabel = isMcpOrHook
+    ? (lang === "zh" ? "清除工具集成" : "Clear tools")
+    : (lang === "zh" ? "清除 d-token 配置" : "Clear d-token config");
+  // The card is read-only: provider/model/protocol/endpoint/source come from
+  // the uniquely auto-resolved candidate. Ambiguity blocks the plan and is
+  // surfaced by the binding summary; no chooser is rendered.
+  const resolved = binding.resolved_candidate;
+  const model = resolved?.models?.[0];
   const follow = presentAgentFollow(binding, lang);
   // Truthful labels for MCP/Hook — these integrations provide only
   // tool-level access, never route evidence or compression.
-  const isMcpOrHook = binding.integration_kind === "mcp" || binding.integration_kind === "hook";
   return (
-    <div className="grid gap-3 py-3 md:grid-cols-[28px_minmax(0,1fr)_minmax(220px,0.8fr)_auto_auto] md:items-center">
-      <div className="flex items-center justify-center">
-        {selectable ? (
-          <Checkbox
-            checked={included}
-            disabled={busy}
-            aria-label={`${lang === "zh" ? "加入本次连接" : "Include in this connection"}: ${binding.agent_name}`}
-            onCheckedChange={(checked) => onToggle(checked === true)}
-          />
-        ) : <span className="size-4" aria-hidden="true" />}
-      </div>
+    <div className="grid gap-3 py-3 md:grid-cols-[minmax(0,1fr)_minmax(220px,0.8fr)_auto_auto] md:items-center">
       <div className="min-w-0">
         <div className="flex flex-wrap items-center gap-2">
           <span className="font-medium">{binding.agent_name}</span>
           <Badge variant="secondary">{capabilityLabel(binding, lang)}</Badge>
           {binding.follow && <Badge variant="outline">{follow.label}</Badge>}
           {isMcpOrHook && (
-            <Badge variant="outline" className="text-amber-700 dark:text-amber-300 border-amber-500/30">
+            <Badge variant="outline" className="border-amber-500/30 text-amber-700 dark:text-amber-300">
               {binding.integration_kind === "mcp"
-                ? (lang === "zh" ? "仅 MCP" : "MCP only")
-                : (lang === "zh" ? "仅 Hook" : "Hook only")}
+                ? (lang === "zh" ? "仅 MCP 工具" : "MCP tools only")
+                : (lang === "zh" ? "仅 Hook 工具" : "Hook tools only")}
+            </Badge>
+          )}
+          {isMcpOrHook && (
+            <Badge variant="outline" className="border-amber-500/30 text-amber-700 dark:text-amber-300">
+              {lang === "zh" ? "工具能力，不改变模型上游" : "Tool capability; model upstream unchanged"}
             </Badge>
           )}
         </div>
@@ -85,38 +81,18 @@ function AgentBindingRow({
         )}
       </div>
       <div className="min-w-0">
-        {selectable && binding.resolution === "needs-choice" ? (
-          <select
-            aria-label={`${binding.agent_name} ${lang === "zh" ? "上游" : "upstream"}`}
-            className="w-full rounded-md border border-border bg-background px-2 py-2 text-sm"
-            value={selection?.candidateKey ?? ""}
-            disabled={busy}
-            onChange={(event) => {
-              const option = options.find((item) => item.key === event.target.value);
-              if (option) onSelect(option.key, option.model);
-            }}
-          >
-            <option value="">{lang === "zh" ? "选择已发现的上游 / 模型" : "Select a discovered upstream / model"}</option>
-            {options.map((option) => (
-              <option key={option.key} value={option.key}>{option.candidate.name} · {option.model || (lang === "zh" ? "模型待确认" : "model required")} · {option.candidate.protocol}</option>
-            ))}
-          </select>
-        ) : (
-          <>
-            <div className="truncate text-sm text-muted-foreground">
-              {presentBindingSummary(binding, resolved, model, lang)}
-            </div>
-            {binding.follow?.current_upstream && (
-              <div className="mt-1 truncate text-[11px] text-muted-foreground">
-                {lang === "zh" ? "d-token 路由" : "d-token route"} · {binding.follow.current_upstream.provider_id} · {binding.follow.current_upstream.model} · {binding.follow.current_upstream.protocol}
-              </div>
-            )}
-            {binding.follow?.last_receipt && (
-              <div className="mt-1 truncate font-mono text-[10px] text-muted-foreground">
-                receipt {binding.follow.last_receipt.state} · {binding.follow.last_receipt.runtime_state}
-              </div>
-            )}
-          </>
+        <div className="truncate text-sm text-muted-foreground">
+          {presentBindingSummary(binding, resolved, model, lang)}
+        </div>
+        {binding.follow?.current_upstream && (
+          <div className="mt-1 truncate text-[11px] text-muted-foreground">
+            {lang === "zh" ? "d-token 路由" : "d-token route"} · {binding.follow.current_upstream.provider_id} · {binding.follow.current_upstream.model} · {binding.follow.current_upstream.protocol}
+          </div>
+        )}
+        {binding.follow?.last_receipt && (
+          <div className="mt-1 truncate font-mono text-[10px] text-muted-foreground">
+            receipt {binding.follow.last_receipt.state} · {binding.follow.last_receipt.runtime_state}
+          </div>
         )}
       </div>
       <StatusBadge status={presentation.health} label={presentation.label} />
@@ -126,10 +102,10 @@ function AgentBindingRow({
           variant="outline"
           size="sm"
           disabled={busy || transportBusy || !canConfigure}
-          title={!canConfigure ? (lang === "zh" ? "当前版本没有可验证的自动配置 schema" : "No verified automatic configuration schema is available for this version") : undefined}
+          title={!canConfigure ? (lang === "zh" ? "此 Agent 未提供可执行的一键配置写入动作" : "This Agent exposes no executable one-click write action") : undefined}
           onClick={onConfigure}
         >
-          {transportBusy ? (lang === "zh" ? "处理中…" : "Working…") : (lang === "zh" ? "配置" : "Configure")}
+          {transportBusy ? (lang === "zh" ? "处理中…" : "Working…") : configureLabel}
         </Button>
         <Button
           type="button"
@@ -139,7 +115,7 @@ function AgentBindingRow({
           title={!canClear ? (lang === "zh" ? "没有 d-token ownership receipt，不能安全清除" : "No d-token ownership receipt is available for a safe clear") : undefined}
           onClick={onClear}
         >
-          {lang === "zh" ? "清除" : "Clear"}
+          {clearLabel}
         </Button>
       </div>
     </div>
@@ -221,13 +197,20 @@ function presentBindingSummary(
   model: string | undefined,
   lang: "zh" | "en",
 ) {
-  if (resolved) return `${resolved.name}${model ? ` · ${model}` : ""} · ${resolved.protocol}`;
+  if (resolved) {
+    // Read-only auto-resolution: provider · model · protocol · endpoint · source.
+    return [
+      resolved.name,
+      model,
+      protocolLabel(resolved.protocol, lang) ?? (lang === "zh" ? "未知" : "Unknown"),
+      resolved.base_url,
+      resolved.source,
+    ].filter(Boolean).join(" · ");
+  }
   if (lang === "en") return binding.reasons[0] || "No reusable upstream configuration was found";
   if (!binding.installed || binding.resolution === "unavailable") return `未检测到可用的 ${binding.agent_name} 配置`;
+  if (binding.resolution === "needs-choice") return "存在多个候选上游 / 模型，无法唯一解析；请修复来源配置后重新扫描";
   if (binding.resolution === "needs-credential") return "已发现上游，需要补充凭据";
-  if (binding.resolution === "unsupported") {
-    return "已检测；当前版本暂未开放安全自动写入";
-  }
   return "未发现可安全复用的上游配置";
 }
 
@@ -243,8 +226,7 @@ function derivePrimaryAction(
     return { label: phase === "discovering" ? (zh ? "正在读取" : "Discovering") : (zh ? "正在处理" : "Working"), disabled: true, icon: "rocket" };
   }
   if (restartRequired) return { label: zh ? "重启服务" : "Restart service", disabled: false, icon: "restart" };
-  if (phase === "ready") return { label: zh ? "查看连接方案" : "View connection plan", disabled: !reviewReady, icon: "rocket" };
-  if (phase === "needs-choice") return { label: zh ? "完成选择后继续" : "Choose before continuing", disabled: true, icon: "rocket" };
+  if (phase === "ready") return { label: zh ? "查看变更" : "View changes", disabled: !reviewReady, icon: "rocket" };
   if (phase === "needs-credential") return { label: zh ? "补充所需凭据" : "Add required credential", disabled: false, icon: "settings" };
   if (["already-connected", "verified"].includes(phase)) {
     return { label: serviceOnline ? (zh ? "重新验证" : "Verify again") : (zh ? "启动并验证" : "Start and verify"), disabled: false, icon: "verify" };
@@ -259,7 +241,6 @@ function presentInstallPhase(phase: InstallPhase, lang: "zh" | "en") {
     discovering: { health: "warning", label: zh ? "正在发现" : "Discovering", description: zh ? "正在只读扫描 Agent 当前配置、OpenCode catalog、cc-switch 与 d-token 状态。" : "Reading Agent config, the OpenCode catalog, cc-switch, and d-token state without writing." },
     "already-connected": { health: "healthy", label: zh ? "已连接" : "Connected", description: zh ? "Agent 已指向 d-token；相同配置不会重复写入。" : "Agents already point to d-token; identical configuration will not be written again." },
     ready: { health: "healthy", label: zh ? "可继续" : "Ready to continue", description: zh ? "已找到唯一且可信的连接方案。查看变更后确认继续。" : "One reliable connection plan was found. View the changes, then confirm to continue." },
-    "needs-choice": { health: "warning", label: zh ? "需要选择" : "Choice required", description: zh ? "只展开真正存在歧义的 Agent；其他字段继续保留自动结果。" : "Only genuinely ambiguous Agents need input; all other detected fields stay resolved." },
     "needs-credential": { health: "warning", label: zh ? "缺少凭据" : "Credential required", description: zh ? "地址、协议和模型已保留，只需补充无法安全复用的凭据。" : "Address, protocol, and model are preserved; only a credential that cannot be reused is required." },
     review: { health: "warning", label: zh ? "等待确认" : "Awaiting confirmation", description: zh ? "正在核对摘要、差异、源哈希与回退边界。" : "Checking the summary, differences, source hash, and rollback boundary." },
     "applying-runtime": { health: "warning", label: zh ? "正在启动服务" : "Starting service", description: zh ? "正在安装或启动 d-token runtime。" : "Installing or starting the d-token runtime." },
@@ -281,10 +262,10 @@ function presentBinding(binding: AgentUpstreamBinding, lang: "zh" | "en") {
     return { health: "healthy" as const, label: zh ? "已准备好，需你确认" : "Ready, needs confirmation" };
   }
   if (binding.resolution === "auto-resolved") return { health: "healthy" as const, label: zh ? "已自动解析" : "Auto-resolved" };
-  if (binding.resolution === "needs-choice") return { health: "warning" as const, label: zh ? "需要选择" : "Choose" };
+  if (binding.resolution === "needs-choice") return { health: "error" as const, label: zh ? "来源冲突" : "Source conflict" };
   if (binding.resolution === "needs-credential") return { health: "warning" as const, label: zh ? "需要凭据" : "Credential" };
   if (binding.transport_status === "advanced_required" || binding.transport_status === "schema_unverified") {
-    return { health: "warning" as const, label: zh ? "自动写入未开放" : "Automatic write unavailable" };
+    return { health: "warning" as const, label: zh ? "仅检测" : "Detection only" };
   }
   return { health: "warning" as const, label: zh ? "等待安全适配" : "Awaiting safe adapter" };
 }
@@ -314,15 +295,17 @@ export function buildConnectionRoutePlanRequest(
     discovery_revision: discoveryRevision,
     bindings: bindings.flatMap((binding) => {
       if (binding.already_connected) return [];
-      const chosen = selectedCandidate(binding, selections[binding.agent_id]);
-      const candidate = chosen?.candidate ?? binding.resolved_candidate;
-      const model = chosen?.model || selections[binding.agent_id]?.model || candidate?.models?.[0];
-      if (!candidate || !model) return [];
+      // Only the uniquely auto-resolved model (or the Codex Responses
+      // passthrough marker "") may enter the route plan. Ambiguity never falls
+      // back to a first model: the binding is omitted and the batch stays
+      // blocked at the machine level until the source is fixed.
+      const resolved = resolveAgentBinding(binding, selections[binding.agent_id]);
+      if (!resolved) return [];
       return [{
         agent_id: binding.agent_id,
-        candidate_id: candidate.id,
-        candidate_source: candidate.source,
-        model,
+        candidate_id: resolved.candidate.id,
+        candidate_source: resolved.candidate.source,
+        model: resolved.model,
       }];
     }),
   };
@@ -332,7 +315,6 @@ function machineMessage(message: string, lang: "zh" | "en") {
   if (message === "native_unavailable" || message === "connection_setup_unavailable") return lang === "zh" ? "当前是浏览器预览，不读取或改写本机配置。" : "Browser preview does not read or modify local configuration.";
   if (message === "source-config-changed") return lang === "zh" ? "检测到源配置变化，旧连接方案已失效。" : "The source configuration changed, so the previous connection plan is no longer valid.";
   if (message === "agent-write-unavailable") return lang === "zh" ? "部分 Agent 当前仅检测，现有配置保持不变。" : "Some Agents are detection-only in this version; their existing configuration remains unchanged.";
-  if (message === "select-at-least-one-agent") return lang === "zh" ? "请至少选择一个可一键连接的 Agent。" : "Select at least one one-click Agent.";
   return message;
 }
 
@@ -546,6 +528,19 @@ function supportsAutomaticAgentIntegration(agentId: string) {
   return ["claude-code", "codex", "opencode"].includes(agentId);
 }
 
+/**
+ * Whether a discovered Agent exposes a real, verified backend write action.
+ * Route adapters require native capability flags; MCP/Hook integrations act
+ * on the discovered tool config path. Agents without an action must never be
+ * rendered with fake Configure/Clear buttons.
+ */
+function hasRealAgentAction(binding: AgentUpstreamBinding) {
+  if (binding.integration_kind === "mcp" || binding.integration_kind === "hook") {
+    return Boolean(binding.mcp_config_path) && !binding.mcp_config_path?.startsWith("<local>/");
+  }
+  return binding.can_configure === true || binding.can_clear === true;
+}
+
 function hybridAgentIntegrationDraft(agentId: string) {
   return {
     agent_ids: [agentId],
@@ -562,6 +557,7 @@ export {
   AgentBindingRow,
   connectionPath,
   derivePrimaryAction,
+  hasRealAgentAction,
   hybridAgentIntegrationDraft,
   machineMessage,
   presentCcSwitch,

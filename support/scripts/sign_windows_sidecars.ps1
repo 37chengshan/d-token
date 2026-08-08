@@ -51,7 +51,7 @@ foreach ($Pair in $SidecarPairs) {
   foreach ($Artifact in @($Pair.prepared, $Pair.release)) {
     $Signature = Get-AuthenticodeSignature -LiteralPath $Artifact
     if ($Signature.Status -ne "Valid") {
-      throw "Authenticode verification failed for $Artifact: $($Signature.Status)"
+      throw "Authenticode verification failed for ${Artifact}: $($Signature.Status)"
     }
     $Artifacts += $Artifact
   }

@@ -29,6 +29,7 @@ const MAX_SCAN_DEPTH: usize = 4;
 const MAX_SESSION_LINE_BYTES: usize = 256 * 1024;
 const MAX_SESSION_METADATA_BYTES_PER_FILE: usize = 512 * 1024;
 const MAX_SESSION_METADATA_LINES_PER_FILE: usize = 16;
+#[cfg(not(windows))]
 const MAX_CLAUDE_MAPPING_VISITS: usize = 512;
 const SESSION_ADAPTER_CACHE_VERSION: &str = "session-metadata-v3";
 

@@ -12,6 +12,7 @@ import { Badge } from "../../components/ui/badge";
 import { Input } from "../../components/ui/input";
 import { OperationDialog } from "../../components/common/OperationDialog";
 import { useI18n, useT } from "../i18n";
+import { protocolLabel, toWireProtocol } from "../protocol";
 import { invokeNative, isTauriRuntime, type NativeActionResult } from "../native";
 import { useSessionTab } from "../sessionTab";
 import { useRuntimeDashboardDetail } from "../useRuntimeDashboard";
@@ -121,7 +122,7 @@ export function Advanced() {
     void refreshProjectPolicy();
   }, []);
 
-  const runtimeRouting = useMemo(() => buildRuntimeRouting(payload, payloadStatus), [payload, payloadStatus]);
+  const runtimeRouting = useMemo(() => buildRuntimeRouting(payload, payloadStatus, lang), [payload, payloadStatus, lang]);
   const serviceBinding = useMemo(() => serviceBindingFromPayload(payload), [payload]);
   const dataSourceLabel =
     payloadStatus === "runtime"
@@ -187,7 +188,7 @@ export function Advanced() {
           provider_id: providerId,
           provider_name: routeDraft.providerName,
           provider_kind: "custom",
-          protocol: "openai",
+          protocol: toWireProtocol("openai") ?? "open_ai",
           base_url: routeDraft.baseUrl,
           api_key_ref: credentialConfigured ? credentialReferenceForProvider(providerId) : null,
           models: [routeDraft.model],
@@ -475,7 +476,7 @@ export function Advanced() {
               {runtimeRouting.providers.map((p) => (
                 <div key={p.id} className="flat-inset flex flex-wrap items-center justify-between gap-3 p-3">
                   <div className="flex items-center gap-3">
-                    <div><div>{p.name}</div><div className="text-xs text-muted-foreground">{p.protocol} · {p.baseUrl}</div></div>
+                    <div><div>{p.name}</div><div className="text-xs text-muted-foreground">{protocolLabel(p.protocol, lang) ?? "—"} · {p.baseUrl}</div></div>
                     <Badge variant={p.kind === "official" ? "default" : "outline"}>{p.kind}</Badge>
                   </div>
                   <div className="flex items-center gap-2 text-xs text-muted-foreground">
@@ -768,7 +769,7 @@ function ProjectPolicyRows({
   );
 }
 
-function buildRuntimeRouting(payload: Record<string, any> | null, status: string) {
+function buildRuntimeRouting(payload: Record<string, any> | null, status: string, lang: "zh" | "en") {
   const payloadProviders = Array.isArray(payload?.providers) ? payload.providers : [];
   const payloadRoutes = Array.isArray(payload?.routes) ? payload.routes : [];
   const payloadInstances = Array.isArray(payload?.instances) ? payload.instances : [];
@@ -787,7 +788,7 @@ function buildRuntimeRouting(payload: Record<string, any> | null, status: string
     id: safeText(provider.id, safeText(provider.name, "provider")),
     name: safeText(provider.name, safeText(provider.id, "Provider")),
     kind: safeText(provider.kind, "custom"),
-    protocol: normalizeProtocol(provider.protocol),
+    protocol: safeText(protocolLabel(provider.protocol, lang), "—"),
     baseUrl: safeText(provider.base_url, safeText(provider.baseUrl, "not configured")),
     store: provider.api_key_ref ? "local-ref" : "none",
     keyMasked: provider.api_key_ref ? maskRef(provider.api_key_ref) : "no api key stored",
@@ -859,10 +860,6 @@ function safeText(value: unknown, fallback: string) {
   return typeof value === "string" && value.length > 0 ? value : fallback;
 }
 
-function normalizeProtocol(value: unknown) {
-  const text = safeText(value, "auto");
-  return text === "open_ai" ? "openai" : text;
-}
 
 export function isDtokenSelfLoop(baseUrl: string, localPort: string) {
   try {

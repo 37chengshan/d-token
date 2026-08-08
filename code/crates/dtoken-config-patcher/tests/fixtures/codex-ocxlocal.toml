@@ -1,0 +1,10 @@
+# Real Codex config.toml fixture: Codex uses a local OpenAI-compatible
+# Responses proxy (OpenCodex / ocxlocal) as its current upstream.
+# The proxy owns dynamic model switching, so no root `model` is pinned.
+model_provider = "ocxlocal"
+
+[model_providers.ocxlocal]
+name = "OpenCodex local"
+base_url = "http://127.0.0.1:10100/v1"
+wire_api = "responses"
+requires_openai_auth = false

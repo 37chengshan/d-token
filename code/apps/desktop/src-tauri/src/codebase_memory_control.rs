@@ -47,8 +47,11 @@ const INTEGRATION_STATE_SCHEMA_VERSION: u32 = 2;
 const MAX_INTEGRATION_STATE_RECORDS: usize = 128;
 const INDEX_STATE_PATH: &[&str] = &["codebase-memory", "index.json"];
 const PACKAGE_LOCATION_STATE_PATH: &[&str] = &["codebase-memory", "package-location.json"];
+// Mirrors the release tag of the current manifest/allowlist
+// (ARTIFACT_SPECS upstream_version) at release time; an app update bumps this
+// URL together with the manifest so the download page stays current.
 const UPSTREAM_RELEASE_URL: &str =
-    "https://github.com/DeusData/codebase-memory-mcp/releases/tag/v0.9.0";
+    "https://github.com/DeusData/codebase-memory-mcp/releases/tag/v0.9.1-rc.1";
 
 static CONTROLLER: OnceLock<Mutex<ControllerState>> = OnceLock::new();
 static STATUS_MONITOR: OnceLock<()> = OnceLock::new();
@@ -943,7 +946,10 @@ fn resolve_upstream() -> Result<ResolvedUpstream, String> {
             return Ok(resolved);
         }
     }
-    Err("No pinned codebase-memory upstream binary was found for this platform".to_string())
+    Err(
+        "No manifest-verified codebase-memory upstream binary was found for this platform"
+            .to_string(),
+    )
 }
 
 fn resolve_install_context() -> Result<InstallContext, String> {
@@ -1116,10 +1122,10 @@ fn package_dimension(checked_at_ms: u64) -> StatusDimensionDto {
                 reason_code: "package_verified".to_string(),
                 detail: match spec {
                     Some(spec) => format!(
-                        "Pinned upstream {} ({}) and constrained launcher are verified.",
+                        "Manifest-verified Code Graph release {} ({}) and constrained launcher are ready.",
                         spec.upstream_version, spec.upstream_commit
                     ),
-                    None => "Pinned upstream and constrained launcher are verified.".to_string(),
+                    None => "Manifest-verified Code Graph release and constrained launcher are ready.".to_string(),
                 },
                 checked_at_ms,
                 owner: Some("dtoken".to_string()),
@@ -1155,7 +1161,7 @@ fn package_dimension(checked_at_ms: u64) -> StatusDimensionDto {
                 default_dimension(
                     "unavailable",
                     "upstream_not_imported",
-                    "Download the pinned Code Graph package and extract it into the selected package directory.",
+                    "Download the current Code Graph package from the official release and extract it into the selected package directory.",
                 )
             }
         }
@@ -1163,7 +1169,7 @@ fn package_dimension(checked_at_ms: u64) -> StatusDimensionDto {
             state: "unavailable".to_string(),
             reason_code: "package_unavailable".to_string(),
             detail:
-                "Neither the constrained launcher nor the pinned upstream artifact is available."
+                "Neither the constrained launcher nor a manifest-verified Code Graph artifact is available."
                     .to_string(),
             checked_at_ms,
             owner: Some("dtoken".to_string()),
@@ -1412,7 +1418,7 @@ fn index_dimension(
         return default_dimension(
             "unavailable",
             "index_unavailable",
-            "Index status is unavailable until the pinned package is verified.",
+            "Index status is unavailable until the current manifest-verified package is available.",
         );
     }
     if approved_project_root.is_none() {
@@ -2301,7 +2307,7 @@ fn start_codebase_memory_ui_sync(
                 state: "failed".to_string(),
                 source: CODEBASE_MEMORY_SOURCE.to_string(),
                 error: Some(sanitize_command_output(&error)),
-                summary: "Pinned Codebase Memory package is unavailable.".to_string(),
+                summary: "Manifest-verified Code Graph package is unavailable.".to_string(),
             }
         }
     };
@@ -2579,7 +2585,7 @@ fn start_codebase_memory_index_sync(
                 state: "failed".to_string(),
                 source: CODEBASE_MEMORY_SOURCE.to_string(),
                 error: Some(sanitize_command_output(&error)),
-                summary: "Pinned Codebase Memory package is unavailable.".to_string(),
+                summary: "Manifest-verified Code Graph package is unavailable.".to_string(),
             }
         }
     };
@@ -3038,7 +3044,7 @@ mod tests {
     #[test]
     fn package_directory_candidates_cover_common_extract_layouts() {
         let root = env::temp_dir().join(format!("dtoken-cbm-package-test-{}", Uuid::new_v4()));
-        let nested = root.join("codebase-memory-mcp-v0.9.0").join("bin");
+        let nested = root.join("codebase-memory-mcp-v0.9.1-rc.1").join("bin");
         fs::create_dir_all(&nested).expect("create package layout");
         let binary = nested.join(upstream_names()[0]);
         fs::write(&binary, b"fixture").expect("write package fixture");

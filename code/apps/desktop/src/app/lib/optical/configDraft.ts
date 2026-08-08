@@ -172,19 +172,3 @@ export function summarizeOpticalDraft(draft: OpticalConfigDraft, lang: "zh" | "e
     "Active transform: forced off",
   ].join(" · ");
 }
-
-export function setupChecklist(input: {
-  serviceRunning: boolean;
-  activeConfigExists: boolean;
-  routeCount: number;
-  globalEnabled: boolean;
-  enabledRouteCount: number;
-}): Array<{ id: string; done: boolean; required: boolean }> {
-  return [
-    { id: "service", done: input.serviceRunning, required: true },
-    { id: "active_config", done: input.activeConfigExists, required: true },
-    { id: "routes", done: input.routeCount > 0, required: true },
-    { id: "global_enabled", done: input.globalEnabled, required: false },
-    { id: "route_enabled", done: input.enabledRouteCount > 0, required: false },
-  ];
-}

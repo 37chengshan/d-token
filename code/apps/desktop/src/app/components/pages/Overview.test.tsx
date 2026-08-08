@@ -1,5 +1,5 @@
 import "@testing-library/jest-dom/vitest";
-import { cleanup, render, screen, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const dashboard = vi.hoisted(() => ({
@@ -43,7 +43,17 @@ vi.mock("recharts", () => ({
   XAxis: () => null,
 }));
 
-import { Overview, deriveAccountQuotaSummary, deriveOverviewOperationalSummary, overviewFromPayload } from "./Overview";
+const pricingMock = vi.hoisted(() => ({
+  loadModelPriceCache: vi.fn(),
+}));
+
+vi.mock("../../lib/analytics/pricing", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../lib/analytics/pricing")>();
+  return { ...actual, loadModelPriceCache: pricingMock.loadModelPriceCache };
+});
+
+import { Overview, deriveAccountQuotaSummary, deriveOverviewOperationalSummary, overviewFromPayload, deriveSavingsWindows } from "./Overview";
+import { buildPriceCache } from "../../lib/analytics/pricing";
 
 const runtimePayload = {
   source: "dtoken-owned-runtime",
@@ -73,6 +83,8 @@ beforeEach(() => {
     error: "",
     refresh: vi.fn(),
   };
+  pricingMock.loadModelPriceCache.mockReset();
+  pricingMock.loadModelPriceCache.mockResolvedValue(null);
 });
 
 afterEach(cleanup);
@@ -483,5 +495,274 @@ describe("Overview information hierarchy and truthfulness", () => {
 
     expect(quotas[0].state).toBe("partial");
     expect(quotas[0].windows.map((window) => window.usedPercent)).toEqual([20, null]);
+  });
+});
+
+describe("Overview savings windows", () => {
+  const basePayload = {
+    source: "dtoken-owned-runtime",
+    desktop_data_source: "dtoken-local-service",
+  };
+
+  function logsAt(entries: Array<{ y: number; m: number; d: number; h: number; saved?: number; before?: number; after?: number }>) {
+    return entries.map((entry) => ({
+      timestamp_ms: new Date(entry.y, entry.m, entry.d, entry.h).getTime(),
+      input_tokens_before: entry.before ?? (entry.saved !== undefined ? entry.saved + 400 : undefined),
+      input_tokens_after: entry.after ?? (entry.saved !== undefined ? 400 : undefined),
+    }));
+  }
+
+  it("attributes cumulative, week, month and day windows by local calendar boundaries", () => {
+    // 2026-03-15 是周日：当周起点为 3/9（周一），当月起点为 3/1。
+    const now = new Date(2026, 2, 15, 12, 0, 0);
+    const derivation = deriveSavingsWindows({
+      ...basePayload,
+      request_logs: logsAt([
+        { y: 2026, m: 2, d: 15, h: 9, saved: 300 },  // 当天
+        { y: 2026, m: 2, d: 10, h: 9, saved: 200 },  // 当周（>= 3/9）
+        { y: 2026, m: 2, d: 3, h: 9, saved: 100 },   // 当月但非当周
+        { y: 2026, m: 1, d: 28, h: 9, saved: 50 },   // 仅累计
+      ]),
+      stats: {},
+    }, "verified", "zh", now);
+
+    const byKey = Object.fromEntries(derivation.windows.map((window) => [window.key, window]));
+    expect(byKey.day.tokensSaved).toBe(300);
+    expect(byKey.day.requestCount).toBe(1);
+    expect(byKey.week.tokensSaved).toBe(500);
+    expect(byKey.week.requestCount).toBe(2);
+    expect(byKey.month.tokensSaved).toBe(600);
+    expect(byKey.month.requestCount).toBe(3);
+    expect(byKey.total.tokensSaved).toBe(650);
+    expect(byKey.total.requestCount).toBe(4);
+    for (const window of derivation.windows) expect(window.state).toBe("verified");
+  });
+
+  it("keeps cross-month and cross-year logs out of the current month and week", () => {
+    // 2026-01-15 是周四：当周起点为 1/12（周一）。
+    const now = new Date(2026, 0, 15, 12, 0, 0);
+    const derivation = deriveSavingsWindows({
+      ...basePayload,
+      request_logs: logsAt([
+        { y: 2025, m: 11, d: 31, h: 9, saved: 40 }, // 去年
+        { y: 2026, m: 0, d: 10, h: 9, saved: 30 },  // 本月非当周（周六）
+        { y: 2026, m: 0, d: 14, h: 9, saved: 20 },  // 本周非当天
+        { y: 2026, m: 0, d: 15, h: 9, saved: 10 },  // 当天
+      ]),
+      stats: {},
+    }, "verified", "zh", now);
+
+    const byKey = Object.fromEntries(derivation.windows.map((window) => [window.key, window]));
+    expect(byKey.day.tokensSaved).toBe(10);
+    expect(byKey.week.tokensSaved).toBe(30);
+    expect(byKey.month.tokensSaved).toBe(60);
+    expect(byKey.total.tokensSaved).toBe(100);
+    expect(byKey.day.state).toBe("verified");
+  });
+
+  it("accepts second-granularity timestamps and rejects missing timestamp evidence", () => {
+    const now = new Date(2026, 2, 15, 12, 0, 0);
+    const derivation = deriveSavingsWindows({
+      ...basePayload,
+      request_logs: [
+        { timestamp_ms: Math.floor(new Date(2026, 2, 15, 9).getTime() / 1000), input_tokens_before: 500, input_tokens_after: 100 },
+        { timestamp_ms: "invalid", input_tokens_before: 10, input_tokens_after: 0 },
+        { input_tokens_before: 20, input_tokens_after: 10 },
+      ],
+      stats: {},
+    }, "verified", "zh", now);
+
+    const byKey = Object.fromEntries(derivation.windows.map((window) => [window.key, window]));
+    expect(byKey.day.tokensSaved).toBe(400);
+    expect(byKey.day.requestCount).toBe(1);
+    expect(byKey.week.tokensSaved).toBe(400);
+    expect(byKey.total.tokensSaved).toBe(420);
+    expect(byKey.total.state).toBe("verified");
+  });
+
+  it("shows unavailable for every window without verified evidence", () => {
+    for (const evidence of ["preview", "loading", "unavailable", "partial"] as const) {
+      const derivation = deriveSavingsWindows(null, evidence, "zh");
+      expect(derivation.available).toBe(false);
+      for (const window of derivation.windows) {
+        expect(window.state).toBe("unavailable");
+        expect(window.tokensSaved).toBeNull();
+        expect(window.requestCount).toBeNull();
+      }
+    }
+  });
+
+  it("treats a verified empty collection as real zero, not unavailable", () => {
+    const derivation = deriveSavingsWindows({
+      ...basePayload,
+      request_logs: [],
+      stats: { requests: { total: 0 } },
+    }, "verified", "zh");
+
+    const byKey = Object.fromEntries(derivation.windows.map((window) => [window.key, window]));
+    for (const key of ["total", "week", "month", "day"] as const) {
+      expect(byKey[key].state).toBe("verified");
+      expect(byKey[key].tokensSaved).toBe(0);
+      expect(byKey[key].requestCount).toBe(0);
+    }
+  });
+
+  it("keeps the cumulative window on durable aggregates over the recent-request window", () => {
+    const derivation = deriveSavingsWindows({
+      ...basePayload,
+      request_logs: [{ input_tokens_before: 100, input_tokens_after: 100, tokens_saved: 0 }],
+      stats: { tokens: { input: 21_865_560, input_after: 21_585_347, saved: 471 } },
+    }, "verified", "zh");
+
+    const total = derivation.windows.find((window) => window.key === "total");
+    expect(total?.tokensSaved).toBe(280_213);
+    expect(total?.state).toBe("verified");
+    expect(total?.note).toContain("持久聚合");
+  });
+
+  it("marks partial windows when only some requests carry before/after values", () => {
+    const now = new Date(2026, 2, 15, 12, 0, 0);
+    const derivation = deriveSavingsWindows({
+      ...basePayload,
+      request_logs: logsAt([
+        { y: 2026, m: 2, d: 15, h: 9, saved: 100 },
+        { y: 2026, m: 2, d: 15, h: 10 }, // 缺 before/after
+      ]),
+      stats: {},
+    }, "verified", "zh", now);
+
+    const day = derivation.windows.find((window) => window.key === "day");
+    expect(day?.state).toBe("partial");
+    expect(day?.tokensSaved).toBe(100);
+    expect(day?.requestCount).toBe(2);
+  });
+
+  it("never fabricates a cost delta without a trusted pricing source", () => {
+    const zh = deriveSavingsWindows(basePayload, "verified", "zh");
+    const en = deriveSavingsWindows(basePayload, "verified", "en");
+    expect(zh.cost.available).toBe(false);
+    expect(zh.cost.detail).toContain("价格");
+    expect(en.cost.detail).toContain("pricing");
+    expect(zh.windows.map((window) => window.label)).toEqual(["累计", "当周", "当月", "当天"]);
+    expect(en.windows.map((window) => window.label)).toEqual(["Total", "This week", "This month", "Today"]);
+  });
+
+  it("renders the savings window card with a segmented control and switches windows", () => {
+    const today = new Date();
+    const todayMidnight = new Date(today.getFullYear(), today.getMonth(), today.getDate()).getTime();
+    const yesterdayMidnight = new Date(today.getFullYear(), today.getMonth(), today.getDate() - 1).getTime();
+    dashboard.state = {
+      payload: {
+        ...runtimePayload,
+        request_logs: [
+          { agent: "OpenCode", timestamp_ms: todayMidnight, input_tokens_before: 500, input_tokens_after: 200 },
+          { agent: "OpenCode", timestamp_ms: yesterdayMidnight, input_tokens_before: 300, input_tokens_after: 200 },
+        ],
+        stats: {},
+      },
+      status: "runtime",
+      updatedAt: new Date(),
+      error: "",
+      refresh: vi.fn(),
+    };
+
+    render(<Overview setPage={vi.fn()} />);
+    const card = screen.getByTestId("overview-savings-window");
+    expect(card).toHaveAttribute("data-savings-window", "total");
+    expect(within(card).getByText("节省 Token")).toBeVisible();
+    const control = screen.getByRole("radiogroup", { name: "节省时间区间" });
+    expect(control).toBeVisible();
+    expect(control).toHaveClass("overview-savings-period-control");
+
+    fireEvent.click(screen.getByRole("radio", { name: "当天" }));
+    expect(card).toHaveAttribute("data-savings-window", "day");
+    expect(card).toHaveAttribute("data-savings-state", "verified");
+    expect(within(card).getByText("300")).toBeVisible();
+  });
+
+  it("shows em-dash and unavailable state for savings in browser preview", () => {
+    dashboard.state = {
+      payload: null,
+      status: "browser-preview",
+      updatedAt: null,
+      error: "",
+      refresh: vi.fn(),
+    };
+    render(<Overview setPage={vi.fn()} />);
+    const card = screen.getByTestId("overview-savings-window");
+    expect(card).toHaveAttribute("data-savings-state", "unavailable");
+    expect(within(card).getByText("—")).toBeVisible();
+    expect(within(card).queryByText("0")).not.toBeInTheDocument();
+  });
+
+  it("honors prefers-reduced-motion on the savings segmented control", () => {
+    vi.stubGlobal("matchMedia", vi.fn((query: string) => ({
+      matches: query.includes("prefers-reduced-motion"),
+      media: query,
+      onchange: null,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      addListener: vi.fn(),
+      removeListener: vi.fn(),
+      dispatchEvent: vi.fn(),
+    })));
+    try {
+      render(<Overview setPage={vi.fn()} />);
+      const control = screen.getByRole("radiogroup", { name: "节省时间区间" });
+      expect(control).toHaveAttribute("data-reduced-motion", "true");
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("shows an estimated cost delta when a pricing cache is loaded", async () => {
+    vi.stubGlobal("__TAURI_INTERNALS__", {});
+    pricingMock.loadModelPriceCache.mockResolvedValue(
+      buildPriceCache(
+        [
+          { model: "gpt-4o", currency: "USD", inputPerMillion: 2.5, outputPerMillion: 10, source: "user", updatedAt: "unix:1" },
+        ],
+        { source: "user-settings", freshness: "fresh", checkedAt: "unix:9" },
+      ),
+    );
+    dashboard.state = {
+      payload: {
+        ...runtimePayload,
+        request_logs: [{ agent: "OpenCode", route_id: "route-main", model: "gpt-4o", input_tokens_before: 1_000_000, input_tokens_after: 800_000 }],
+        stats: { tokens: { input: 1_000_000, input_after: 800_000 } },
+      },
+      status: "runtime",
+      updatedAt: new Date(),
+      error: "",
+      refresh: vi.fn(),
+    };
+    try {
+      render(<Overview setPage={vi.fn()} />);
+      const card = screen.getByTestId("overview-savings-window");
+      await waitFor(() => expect(card.textContent).toContain("$0.50（估算）"));
+      expect(pricingMock.loadModelPriceCache).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("keeps the em-dash cost delta when no pricing cache is available", async () => {
+    vi.stubGlobal("__TAURI_INTERNALS__", {});
+    try {
+      render(<Overview setPage={vi.fn()} />);
+      const card = screen.getByTestId("overview-savings-window");
+      await waitFor(() => expect(pricingMock.loadModelPriceCache).toHaveBeenCalled());
+      expect(card.textContent).toContain("价格证据缺失");
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("keeps the em-dash cost delta when the native pricing read is unavailable", () => {
+    // 不 stub __TAURI_INTERNALS__：native 不可用，异步读取不会发起。
+    render(<Overview setPage={vi.fn()} />);
+    const card = screen.getByTestId("overview-savings-window");
+    expect(pricingMock.loadModelPriceCache).not.toHaveBeenCalled();
+    expect(card.textContent).toContain("价格证据缺失");
   });
 });

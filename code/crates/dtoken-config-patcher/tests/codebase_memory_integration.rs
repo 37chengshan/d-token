@@ -665,6 +665,92 @@ fn canonical_env_path(name: &str) -> PathBuf {
         .unwrap_or_else(|error| panic!("{name} must identify an existing path: {error}"))
 }
 
+/// Full transaction with the real d-token launcher and the real pinned
+/// upstream binary: preview -> apply -> verify -> exact rollback against a
+/// temporary HOME and a temporary Agent project. The original config bytes,
+/// hash and mode must be restored. Ignored by default because it requires the
+/// locally prepared pinned artifacts.
+#[test]
+#[ignore = "requires DTOKEN_CBM_REAL_LAUNCHER and DTOKEN_CBM_REAL_UPSTREAM pointing at the pinned artifacts"]
+fn real_launcher_and_pinned_upstream_preview_apply_verify_rollback_restores_bytes() {
+    let launcher = canonical_env_path("DTOKEN_CBM_REAL_LAUNCHER");
+    let upstream = canonical_env_path("DTOKEN_CBM_REAL_UPSTREAM");
+    let fixture = Fixture::new();
+    let target = fixture.project.join("opencode.json");
+    let original = r#"{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "existing": {
+      "type": "remote",
+      "url": "http://127.0.0.1:9000"
+    }
+  }
+}
+"#;
+    fs::write(&target, original).expect("existing OpenCode config");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&target, fs::Permissions::from_mode(0o640))
+            .expect("set original config mode");
+    }
+    #[cfg(unix)]
+    let original_mode = {
+        use std::os::unix::fs::PermissionsExt;
+        fs::metadata(&target)
+            .expect("original config metadata")
+            .permissions()
+            .mode()
+    };
+
+    let request = CodebaseMemoryIntegrationRequest {
+        agent_id: "opencode".to_string(),
+        scope: CodebaseMemoryIntegrationScope::Project,
+        project_root: Some(fixture.project.clone()),
+        launcher_path: launcher.clone(),
+        launcher_sha256: hash_file(&launcher),
+        upstream_path: upstream.clone(),
+        upstream_sha256: hash_file(&upstream),
+        cache_dir: fixture.cache.clone(),
+        surface: CodebaseMemoryIntegrationSurface::Mcp,
+    };
+
+    let prepared = prepare_codebase_memory_integration(&request, &fixture.home, &fixture.backups)
+        .expect("real binary preview");
+    assert_eq!(prepared.plan.launcher_sha256, hash_file(&launcher));
+    assert_eq!(prepared.plan.upstream_sha256, hash_file(&upstream));
+    let digest = prepared.plan.review_digest.clone();
+    let receipt = apply_codebase_memory_integration(prepared, &fixture.backups, &digest)
+        .expect("real binary apply");
+    assert!(receipt.rollback_id.is_some());
+    assert!(
+        verify_codebase_memory_integration(&receipt.transaction_id, &fixture.backups)
+            .expect("real binary semantic verification")
+            .ok
+    );
+
+    let rollback = rollback_codebase_memory_integration(&receipt.transaction_id, &fixture.backups)
+        .expect("real binary exact rollback");
+    assert!(rollback.restored);
+    let restored = fs::read(&target).expect("restored config");
+    assert_eq!(restored, original.as_bytes());
+    assert_eq!(hash_file(&target), sha256(original.as_bytes()));
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(
+            fs::metadata(&target)
+                .expect("restored config metadata")
+                .permissions()
+                .mode(),
+            original_mode,
+            "restored config must keep the original permission bits"
+        );
+    }
+    assert!(!fixture.project.join(".codex/config.toml").exists());
+    assert!(!fixture.project.join(".mcp.json").exists());
+}
+
 fn hash_file(path: &Path) -> String {
     sha256(&fs::read(path).expect("read acceptance artifact"))
 }

@@ -96,7 +96,7 @@ const copy = {
       eyebrow: "代码图谱 · 实验性",
       title: ["固定版本导入，", "显式连接与只读图谱。"],
       lede: [
-        "用户自行导入 Codebase Memory MCP v0.9.0，完成平台、架构与",
+        "用户自行导入 Codebase Memory MCP v0.9.1-rc.1，完成平台、架构与",
         "SHA-256 校验后，再按明确项目范围连接 Agent、建立索引并打开只读图谱。",
       ],
       screenTitle: "代码图谱工作台",
@@ -172,7 +172,7 @@ const copy = {
       eyebrow: "CODE GRAPH · EXPERIMENTAL",
       title: ["Pinned import, explicit setup,", "and a read-only graph."],
       lede: [
-        "Import Codebase Memory MCP v0.9.0 yourself, verify platform, architecture,",
+        "Import Codebase Memory MCP v0.9.1-rc.1 yourself, verify platform, architecture,",
         "and pinned SHA-256, then connect agents, build indexes, and open the d-token read-only graph.",
       ],
       screenTitle: "CODE GRAPH WORKBENCH",

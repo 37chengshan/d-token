@@ -33,8 +33,9 @@ use dtoken_config_patcher::{
         PreparedAgentIntegration,
     },
     agent_mcp::{
-        resolve_mcp_config_path, transform_mcp_json_document, verify_mcp_json_cleared,
-        verify_mcp_json_document,
+        is_verified_hook_agent, resolve_hook_config_path, resolve_mcp_config_path_for,
+        transform_hook_json_document, transform_mcp_json_document, verify_hook_json_cleared,
+        verify_hook_json_document, verify_mcp_json_cleared, verify_mcp_json_document,
     },
     stable_hash, ConfigPatcher, ExpectedFileState,
 };
@@ -5229,8 +5230,72 @@ fn install_or_verify(id: &str) -> ActionResult {
     }
 }
 
+/// Validates a `model-pricing` settings payload and normalizes it in place.
+///
+/// Contract (stored under `settings/model-pricing.json`):
+/// - `prices`: array of entries; an empty array is the user-maintained default
+///   empty state. Fee calculation must treat a missing entry as "price unknown"
+///   and never as zero.
+/// - Each entry: `model` (non-empty, trimmed, ≤128 chars), `currency`
+///   (USD/CNY), `inputPerMillion` / `outputPerMillion` (finite, ≥ 0).
+/// - The backend stamps `source` (`"user"`) and `updatedAt` so the local table
+///   always carries its own provenance; negative/NaN/Inf values, empty or
+///   overlong model ids, unsupported currencies and duplicate model+currency
+///   pairs are rejected before anything is written.
+fn validate_model_pricing_payload(payload: &mut Value) -> Result<(), String> {
+    let prices = payload
+        .get_mut("prices")
+        .and_then(Value::as_array_mut)
+        .ok_or_else(|| "model-pricing payload must contain a prices array".to_string())?;
+    let mut seen: std::collections::HashSet<(String, String)> = std::collections::HashSet::new();
+    let updated_at = now_timestamp();
+    for (index, entry) in prices.iter_mut().enumerate() {
+        let object = entry
+            .as_object_mut()
+            .ok_or_else(|| format!("prices[{index}] must be an object"))?;
+        let model = object
+            .get("model")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .unwrap_or("")
+            .to_string();
+        if model.is_empty() {
+            return Err(format!("prices[{index}].model must not be empty"));
+        }
+        if model.chars().count() > 128 {
+            return Err(format!("prices[{index}].model is too long"));
+        }
+        let currency = object
+            .get("currency")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
+        if currency != "USD" && currency != "CNY" {
+            return Err(format!("prices[{index}].currency is not supported"));
+        }
+        for field in ["inputPerMillion", "outputPerMillion"] {
+            match object.get(field).and_then(Value::as_f64) {
+                Some(value) if value.is_finite() && value >= 0.0 => {}
+                _ => {
+                    return Err(format!(
+                        "prices[{index}].{field} must be a finite non-negative number"
+                    ));
+                }
+            }
+        }
+        if !seen.insert((model.clone(), currency.clone())) {
+            return Err(format!("duplicate pricing for model {model}"));
+        }
+        object.insert("model".to_string(), json!(model));
+        object.insert("currency".to_string(), json!(currency));
+        object.insert("source".to_string(), json!("user"));
+        object.insert("updatedAt".to_string(), json!(updated_at));
+    }
+    Ok(())
+}
+
 #[tauri::command]
-fn save_app_settings(section: String, payload: Value) -> ActionResult {
+fn save_app_settings(section: String, mut payload: Value) -> ActionResult {
     let allowed = [
         "rtk",
         "headroom",
@@ -5239,6 +5304,7 @@ fn save_app_settings(section: String, payload: Value) -> ActionResult {
         "routing",
         "preferences",
         "smart-learning",
+        "model-pricing",
     ];
     let mut logs = vec![log(
         "info",
@@ -5255,6 +5321,22 @@ fn save_app_settings(section: String, payload: Value) -> ActionResult {
             logs,
             tools: all_checks(),
         };
+    }
+
+    if section == "model-pricing" {
+        if let Err(err) = validate_model_pricing_payload(&mut payload) {
+            logs.push(log(
+                "error",
+                format!("Model pricing validation failed: {err}"),
+            ));
+            return ActionResult {
+                ok: false,
+                summary: format!("Model pricing is invalid: {err}"),
+                logs,
+                tools: all_checks(),
+            };
+        }
+        logs.push(log("info", "Model pricing payload validated"));
     }
 
     let existing = read_app_state(&["settings", &format!("{section}.json")])
@@ -5307,6 +5389,7 @@ fn get_app_settings(section: String) -> Value {
         "routing",
         "preferences",
         "smart-learning",
+        "model-pricing",
     ];
     if !allowed.contains(&section.as_str()) {
         return json!({
@@ -5392,6 +5475,24 @@ fn parse_protocol(value: &str) -> &'static str {
         "anthropic" => "anthropic",
         _ => "open_ai",
     }
+}
+
+/// Codex's local OpenAI Responses proxy may advertise no static model list.
+/// With an empty reviewed request model the provider keeps an empty `models`
+/// array so the request model is passed through dynamically.
+fn is_codex_responses_dynamic_passthrough(
+    agent_id: &str,
+    candidate: &Value,
+    request_model: &str,
+) -> bool {
+    agent_id == "codex"
+        && request_model.trim().is_empty()
+        && candidate.get("protocol").and_then(Value::as_str) == Some("responses")
+        && candidate.get("auth_mode").and_then(Value::as_str) == Some("none")
+        && candidate
+            .get("models")
+            .and_then(Value::as_array)
+            .is_some_and(|models| models.is_empty())
 }
 
 fn parse_provider_kind(value: &str) -> &'static str {
@@ -6220,7 +6321,7 @@ fn prepare_connection_route_plan_from_discovery(
                     == Some(binding_request.candidate_id.as_str())
                     && candidate.get("source").and_then(Value::as_str)
                         == Some(binding_request.candidate_source.as_str())
-                    && candidate
+                    && (candidate
                         .get("models")
                         .and_then(Value::as_array)
                         .is_some_and(|models| {
@@ -6228,6 +6329,11 @@ fn prepare_connection_route_plan_from_discovery(
                                 .iter()
                                 .any(|model| model.as_str() == Some(binding_request.model.as_str()))
                         })
+                        || is_codex_responses_dynamic_passthrough(
+                            &agent_id,
+                            candidate,
+                            &binding_request.model,
+                        ))
             })
             .ok_or_else(|| {
                 format!(
@@ -6258,7 +6364,12 @@ fn prepare_connection_route_plan_from_discovery(
         )
         .to_string();
         let model = binding_request.model.trim().to_string();
-        if model.is_empty() || model.len() > 256 || model.contains(['\n', '\r', '\0']) {
+        let dynamic_passthrough =
+            is_codex_responses_dynamic_passthrough(&agent_id, candidate, &binding_request.model);
+        if (!dynamic_passthrough && model.is_empty())
+            || model.len() > 256
+            || model.contains(['\n', '\r', '\0'])
+        {
             return Err(format!("The model selected for {agent_id} is invalid"));
         }
 
@@ -6310,7 +6421,16 @@ fn prepare_connection_route_plan_from_discovery(
             "protocol": protocol,
             "base_url": base_url,
             "api_key_ref": Value::Null,
-            "models": [model],
+            "models": if dynamic_passthrough {
+                Vec::<String>::new()
+            } else {
+                vec![model]
+            },
+            "wire_api": if dynamic_passthrough {
+                "open_ai_responses"
+            } else {
+                "open_ai_chat"
+            },
             "timeout_ms": 120000,
             "healthcheck_path": "/health"
         }));
@@ -10242,25 +10362,49 @@ fn resolve_managed_agent_mcp_request(
 ) -> Result<ManagedAgentMcpRequest, String> {
     let context = current_process_scan_context(epoch_ms())
         .map_err(|error| format!("Agent configuration roots are unavailable: {error}"))?;
-    resolve_managed_agent_mcp_request_with_home(request, &context.home_dir)
+    resolve_managed_agent_mcp_request_with_context(request, &context)
 }
 
+#[cfg(test)]
 fn resolve_managed_agent_mcp_request_with_home(
-    mut request: ManagedAgentMcpRequest,
+    request: ManagedAgentMcpRequest,
     home_dir: &Path,
+) -> Result<ManagedAgentMcpRequest, String> {
+    let mut context = current_process_scan_context(epoch_ms())
+        .map_err(|error| format!("Agent configuration roots are unavailable: {error}"))?;
+    context.home_dir = home_dir.to_path_buf();
+    resolve_managed_agent_mcp_request_with_context(request, &context)
+}
+
+/// Resolve a managed MCP request against the full platform scan context so
+/// Windows agents (VS Code, Claude Desktop) resolve their `%APPDATA%` roaming
+/// targets instead of the macOS home-relative layout, and Hook agents resolve
+/// their verified hooks.json target.
+fn resolve_managed_agent_mcp_request_with_context(
+    mut request: ManagedAgentMcpRequest,
+    context: &AgentScanContext,
 ) -> Result<ManagedAgentMcpRequest, String> {
     if !matches!(request.operation.as_str(), "configure" | "clear") {
         return Err("Unsupported managed MCP operation".to_string());
     }
     let raw = request.config_path.to_string_lossy();
     if let Some(relative) = raw.strip_prefix("~/") {
-        request.config_path = home_dir.join(relative);
+        request.config_path = context.home_dir.join(relative);
     } else if !request.config_path.is_absolute() {
         return Err("MCP config path is not absolute or home-relative".to_string());
     }
     request.config_path = normalize_managed_agent_target(&request.config_path)?;
-    let expected = resolve_mcp_config_path(&request.agent_id, home_dir)
-        .ok_or_else(|| "Agent has no verified MCP configuration target".to_string())?;
+    let expected = if is_verified_hook_agent(&request.agent_id) {
+        resolve_hook_config_path(&request.agent_id, &context.home_dir)
+    } else {
+        resolve_mcp_config_path_for(
+            &request.agent_id,
+            context.platform,
+            &context.home_dir,
+            context.roaming_app_data.as_deref(),
+        )
+    }
+    .ok_or_else(|| "Agent has no verified MCP configuration target".to_string())?;
     let expected = normalize_managed_agent_target(&expected)?;
     if request.config_path != expected {
         return Err("MCP config path is outside the registered Agent target".to_string());
@@ -10355,7 +10499,12 @@ fn preview_managed_agent_mcp_integration(request: ManagedAgentMcpRequest) -> Val
         }
     };
     let add = request.operation == "configure";
-    let result = transform_mcp_json_document(&request.agent_id, &config_text, &entry, add);
+    let hook_agent = is_verified_hook_agent(&request.agent_id);
+    let result = if hook_agent {
+        transform_hook_json_document(&request.agent_id, &config_text, &bridge, add)
+    } else {
+        transform_mcp_json_document(&request.agent_id, &config_text, &entry, add)
+    };
     match result {
         Ok(next_text) => {
             use sha2::{Digest, Sha256};
@@ -10376,7 +10525,7 @@ fn preview_managed_agent_mcp_integration(request: ManagedAgentMcpRequest) -> Val
                     "redacted_diff": diff,
                     "bridge_path": bridge.to_string_lossy(),
                     "provides_route_evidence": false,
-                    "integration_kind": "mcp",
+                    "integration_kind": if hook_agent { "hook" } else { "mcp" },
                 }
             })
         }
@@ -10435,8 +10584,13 @@ fn apply_managed_agent_mcp_integration(
         });
     }
     let add = request.operation == "configure";
-    let next_text = match transform_mcp_json_document(&request.agent_id, &config_text, &entry, add)
-    {
+    let hook_agent = is_verified_hook_agent(&request.agent_id);
+    let next_text = if hook_agent {
+        transform_hook_json_document(&request.agent_id, &config_text, &bridge, add)
+    } else {
+        transform_mcp_json_document(&request.agent_id, &config_text, &entry, add)
+    };
+    let next_text = match next_text {
         Ok(text) => text,
         Err(error) => {
             return json!({
@@ -10581,7 +10735,13 @@ fn verify_managed_agent_mcp_integration(
         }
     };
     let result = if configured {
-        verify_mcp_json_document(&request.agent_id, &config_text, &entry)
+        if is_verified_hook_agent(&request.agent_id) {
+            verify_hook_json_document(&request.agent_id, &config_text, &bridge)
+        } else {
+            verify_mcp_json_document(&request.agent_id, &config_text, &entry)
+        }
+    } else if is_verified_hook_agent(&request.agent_id) {
+        verify_hook_json_cleared(&request.agent_id, &config_text, &bridge)
     } else {
         verify_mcp_json_cleared(&request.agent_id, &config_text, &entry)
     };
@@ -15398,11 +15558,58 @@ mod tests {
         LOCK.get_or_init(|| Mutex::new(()))
     }
 
+    /// Temp root for path-sensitive tests. On macOS `/tmp` is a symlink to
+    /// `/private/tmp`, so the anti-symlink walk needs the canonical root. On
+    /// Windows `fs::canonicalize` returns `\\?\` extended-length paths whose
+    /// drive prefix cannot be probed with reparse semantics
+    /// (ERROR_INVALID_FUNCTION); `%TEMP%` is already a real absolute root.
+    fn test_temp_root() -> PathBuf {
+        #[cfg(windows)]
+        {
+            env::temp_dir()
+        }
+        #[cfg(not(windows))]
+        {
+            fs::canonicalize(env::temp_dir()).expect("canonical temporary root")
+        }
+    }
+
+    /// Locate the staged sidecar in src-tauri/binaries whose SHA-256 exactly
+    /// matches the digest build.rs embedded at compile time. build.rs hashes
+    /// `binaries/dtoken-agent-bridge-<TARGET>[.exe]`, so this is the only file
+    /// `verify_dtoken_agent_bridge` accepts on Linux/Windows; the raw cargo
+    /// artifact under target/ is NOT the file the embedded hash covers. Falls
+    /// back to any staged bridge when the digest is unavailable (macOS, where
+    /// release authority is the codesign identity check, not the digest).
+    fn staged_agent_bridge_matching_embedded_hash() -> Option<PathBuf> {
+        use sha2::{Digest, Sha256};
+
+        let expected = env!("DTOKEN_AGENT_BRIDGE_SHA256");
+        let binaries_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("binaries");
+        let mut any_staged = None;
+        for entry in fs::read_dir(&binaries_dir).ok()? {
+            let path = entry.ok()?.path();
+            let name = path.file_name()?.to_string_lossy().into_owned();
+            if !name.starts_with("dtoken-agent-bridge-") {
+                continue;
+            }
+            let bytes = fs::read(&path).ok()?;
+            if expected != "unavailable" {
+                let digest = format!("{:x}", Sha256::digest(&bytes));
+                if digest == expected {
+                    return Some(path);
+                }
+            } else if any_staged.is_none() {
+                any_staged = Some(path);
+            }
+        }
+        any_staged
+    }
+
     #[test]
     fn managed_mcp_clear_accepts_absent_registered_parent_without_creating_it() {
-        let canonical_temp_root =
-            fs::canonicalize(env::temp_dir()).expect("canonical temporary root");
-        let home = tempfile::tempdir_in(canonical_temp_root).expect("temporary home");
+        let temp_root = test_temp_root();
+        let home = tempfile::tempdir_in(temp_root).expect("temporary home");
         let expected = home.path().join(".cursor/mcp.json");
         assert!(!expected.exists());
         assert!(!expected.parent().expect("mcp parent").exists());
@@ -15419,6 +15626,42 @@ mod tests {
 
         assert_eq!(resolved.config_path, expected);
         assert!(!expected.parent().expect("mcp parent").exists());
+    }
+
+    #[test]
+    fn managed_mcp_clear_resolves_windows_claude_desktop_via_roaming_app_data() {
+        use dtoken_config_patcher::agent::{AgentEvidenceOverride, HostPlatform};
+        let temp_root = test_temp_root();
+        let temp = tempfile::tempdir_in(temp_root).expect("temporary root");
+        let home = temp.path().join("home");
+        let roaming = temp.path().join("roaming");
+        fs::create_dir_all(&roaming).expect("roaming app data");
+        let context = AgentScanContext {
+            platform: HostPlatform::Windows,
+            home_dir: home.clone(),
+            path_dirs: Vec::new(),
+            applications_dir: None,
+            roaming_app_data: Some(roaming.clone()),
+            local_app_data: None,
+            additional_evidence: Vec::<AgentEvidenceOverride>::new(),
+            observed_at_ms: 1,
+        };
+        let resolved = resolve_managed_agent_mcp_request_with_context(
+            ManagedAgentMcpRequest {
+                agent_id: "claude-desktop".to_string(),
+                config_path: roaming.join("Claude").join("claude_desktop_config.json"),
+                operation: "clear".to_string(),
+            },
+            &context,
+        )
+        .expect("Windows Claude Desktop clear must resolve to the roaming AppData target");
+
+        assert_eq!(
+            resolved.config_path,
+            roaming.join("Claude").join("claude_desktop_config.json"),
+            "expected the Windows %APPDATA% target, not the macOS home-relative layout"
+        );
+        assert!(!resolved.config_path.exists());
     }
 
     fn clear_native_performance_observations() {
@@ -15962,43 +16205,28 @@ mod tests {
             } else {
                 "dtoken-proxy"
             });
-            let bridge = bin.join(if cfg!(windows) {
-                "dtoken-agent-bridge.exe"
-            } else {
-                "dtoken-agent-bridge"
-            });
             fs::write(&proxy, b"test proxy").expect("write proxy");
-            let bridge_identity = json!({
-                "component": BRIDGE_COMPONENT,
-                "protocol_version": BRIDGE_PROTOCOL_VERSION,
-                "arch": env::consts::ARCH,
-                "os": env::consts::OS,
-                "version": BRIDGE_VERSION,
-            })
-            .to_string();
-            if cfg!(windows) {
-                fs::write(&bridge, format!("@echo {bridge_identity}\r\n")).expect("write bridge");
-            } else {
-                fs::write(
-                    &bridge,
-                    format!(
-                        "#!/bin/sh\nif [ \"$1\" = identity ]; then printf '%s' '{bridge_identity}'; fi\n"
-                    ),
-                )
-                .expect("write bridge");
-            }
             #[cfg(unix)]
             {
                 use std::os::unix::fs::PermissionsExt;
                 fs::set_permissions(&proxy, fs::Permissions::from_mode(0o755))
                     .expect("make proxy executable");
-                fs::set_permissions(&bridge, fs::Permissions::from_mode(0o755))
-                    .expect("make bridge executable");
             }
             let previous_home = env::var_os("HOME");
             let previous_userprofile = env::var_os("USERPROFILE");
             let previous_proxy = env::var_os("DTOKEN_PROXY_EXE");
             let previous_bridge = env::var_os("DTOKEN_AGENT_BRIDGE_EXE");
+            // The resolver checks DTOKEN_AGENT_BRIDGE_EXE first, so clear any stale value
+            // before pointing it at the staged sidecar whose digest build.rs embedded
+            // (src-tauri/binaries/dtoken-agent-bridge-<TARGET>[.exe]). The raw cargo
+            // build artifact under target/ is NOT the file the embedded hash covers.
+            env::remove_var("DTOKEN_AGENT_BRIDGE_EXE");
+            let staged_bridge = staged_agent_bridge_matching_embedded_hash().expect(
+                "staged Agent bridge sidecar matching the embedded hash must exist; run the platform sidecar prepare script first",
+            );
+            env::set_var("DTOKEN_AGENT_BRIDGE_EXE", &staged_bridge);
+            let bridge = resolve_dtoken_agent_bridge_exe()
+                .expect("staged bridge must pass embedded hash and identity verification");
             env::set_var("HOME", &home);
             env::set_var("USERPROFILE", &home);
             env::set_var("DTOKEN_PROXY_EXE", &proxy);
@@ -16467,9 +16695,8 @@ mod tests {
     fn managed_agent_transport_rejects_unregistered_sensitive_paths() {
         use dtoken_config_patcher::agent::HostPlatform;
 
-        let canonical_temp_root =
-            fs::canonicalize(std::env::temp_dir()).expect("canonical temporary root");
-        let root = tempfile::tempdir_in(canonical_temp_root).expect("temporary home");
+        let temp_root = test_temp_root();
+        let root = tempfile::tempdir_in(temp_root).expect("temporary home");
         let codex_dir = root.path().join(".codex");
         fs::create_dir_all(&codex_dir).expect("create Codex directory");
         let registered = codex_dir.join("config.toml");
@@ -16496,11 +16723,14 @@ mod tests {
             resolve_managed_agent_path_with_context(request(registered.clone()), &context)
                 .expect("registered Codex target");
         assert_eq!(resolved.target_path, registered);
-        let arbitrary = resolve_managed_agent_path_with_context(
-            request(PathBuf::from("/tmp/x.toml")),
-            &context,
-        )
-        .expect_err("arbitrary absolute path must fail closed");
+        let arbitrary_target = if cfg!(windows) {
+            PathBuf::from("C:\\unregistered\\x.toml")
+        } else {
+            PathBuf::from("/tmp/x.toml")
+        };
+        let arbitrary =
+            resolve_managed_agent_path_with_context(request(arbitrary_target), &context)
+                .expect_err("arbitrary absolute path must fail closed");
         assert!(arbitrary.contains("outside the registered Agent targets"));
         let ssh = resolve_managed_agent_path_with_context(
             request(root.path().join(".ssh/config")),
@@ -16516,9 +16746,8 @@ mod tests {
         use dtoken_config_patcher::agent::HostPlatform;
         use std::os::unix::fs::symlink;
 
-        let canonical_temp_root =
-            fs::canonicalize(std::env::temp_dir()).expect("canonical temporary root");
-        let root = tempfile::tempdir_in(canonical_temp_root).expect("temporary home");
+        let temp_root = test_temp_root();
+        let root = tempfile::tempdir_in(temp_root).expect("temporary home");
         let codex_dir = root.path().join(".codex");
         fs::create_dir_all(&codex_dir).expect("create Codex directory");
         let outside = root.path().join("outside.toml");
@@ -16589,6 +16818,10 @@ mod tests {
             assert_eq!(agents, vec!["opencode"]);
             assert!(prepared.plan.diff.contains("deepseek-v4-flash-free"));
             assert!(prepared.plan.diff.contains("https://opencode.ai/zen/v1"));
+            assert!(prepared
+                .plan
+                .diff
+                .contains("\"wire_api\": \"open_ai_chat\""));
             assert!(!prepared.plan.diff.contains("sk-"));
             assert!(!prepared.plan.diff.contains("secret-value"));
 
@@ -16603,6 +16836,63 @@ mod tests {
             let error = prepare_connection_route_plan_from_discovery(&external_stale, &discovery)
                 .expect_err("external source drift must fail");
             assert!(error.contains("External Agent or cc-switch configuration changed"));
+        });
+    }
+
+    #[test]
+    fn codex_responses_upstream_forwarding_uses_dynamic_model_passthrough() {
+        with_isolated_app_state("codex-local-responses-route", || {
+            let discovery = json!({
+                "revision": "setup-reviewed",
+                "external_config_snapshot": { "fingerprint": "external-a" },
+                "agent_bindings": [{
+                    "agent_id": "codex",
+                    "installed": true,
+                    "capability": "one-click",
+                    "candidates": [{
+                        "id": "codex-ocxlocal",
+                        "name": "Codex ocxlocal",
+                        "source": "agent-config:codex",
+                        "protocol": "responses",
+                        "base_url": "http://127.0.0.1:10100/v1",
+                        "models": [],
+                        "auth_mode": "none"
+                    }]
+                }]
+            });
+            // Codex's local OpenAI Responses proxy advertises no static model
+            // list: with an empty reviewed request model the provider keeps an
+            // empty models array so the request model is passed through.
+            let request = ConnectionRoutePlanRequest {
+                discovery_revision: "setup-reviewed".to_string(),
+                source_fingerprint: None,
+                source_fingerprint_scope: None,
+                bindings: vec![ConnectionRouteBindingRequest {
+                    agent_id: "codex".to_string(),
+                    candidate_id: "codex-ocxlocal".to_string(),
+                    candidate_source: "agent-config:codex".to_string(),
+                    model: String::new(),
+                }],
+            };
+
+            let (revision, prepared, agents) =
+                prepare_connection_route_plan_from_discovery(&request, &discovery)
+                    .expect("Codex Responses upstream must be routable");
+            assert_eq!(revision, "setup-reviewed");
+            assert_eq!(agents, vec!["codex"]);
+            assert!(prepared.plan.diff.contains("http://127.0.0.1:10100/v1"));
+            assert!(prepared.plan.diff.contains("\"protocol\": \"open_ai\""));
+            assert!(prepared.plan.diff.contains("\"kind\": \"local_chain\""));
+            assert!(prepared.plan.diff.contains("\"models\": []"));
+            assert!(prepared
+                .plan
+                .diff
+                .contains("\"wire_api\": \"open_ai_responses\""));
+            assert!(prepared
+                .plan
+                .diff
+                .contains("\"input_protocol\": \"open_ai\""));
+            assert!(prepared.plan.diff.contains("\"local_port\": 18001"));
         });
     }
 
@@ -18637,6 +18927,106 @@ mod tests {
             assert_eq!(saved["payload"]["policy"]["enable_output_shaper"], true);
             assert_eq!(saved["payload"]["policy"]["holdout_ratio"], 0.1);
             assert_eq!(saved["payload"]["source"], "dtoken-project-policy");
+        });
+    }
+
+    #[test]
+    fn model_pricing_settings_round_trip_stamps_user_provenance() {
+        with_isolated_app_state("model-pricing", || {
+            let first = save_app_settings(
+                "model-pricing".to_string(),
+                json!({
+                    "prices": [
+                        {
+                            "model": "  claude-sonnet-4-5 ",
+                            "currency": "USD",
+                            "inputPerMillion": 3.0,
+                            "outputPerMillion": 15.0
+                        },
+                        {
+                            "model": "gpt-4o",
+                            "currency": "USD",
+                            "inputPerMillion": 2.5,
+                            "outputPerMillion": 10.0
+                        }
+                    ],
+                    "unit": "per_1m_tokens"
+                }),
+            );
+            assert!(first.ok, "{}", first.summary);
+
+            let saved = get_app_settings("model-pricing".to_string());
+            assert_eq!(saved["state"], "loaded");
+            let prices = saved["payload"]["prices"].as_array().expect("prices array");
+            assert_eq!(prices.len(), 2);
+            // model ids are trimmed, and source/updatedAt are stamped by the backend.
+            assert_eq!(prices[0]["model"], "claude-sonnet-4-5");
+            assert_eq!(prices[0]["source"], "user");
+            assert!(prices[0]["updatedAt"].as_str().is_some());
+            assert_eq!(prices[0]["inputPerMillion"], 3.0);
+            assert_eq!(prices[0]["outputPerMillion"], 15.0);
+            assert_eq!(prices[1]["model"], "gpt-4o");
+            assert_eq!(prices[1]["source"], "user");
+        });
+    }
+
+    #[test]
+    fn model_pricing_settings_rejects_invalid_entries_without_writing() {
+        with_isolated_app_state("model-pricing-invalid", || {
+            let cases: Vec<Value> = vec![
+                // Empty model id.
+                json!({ "prices": [{ "model": "   ", "currency": "USD", "inputPerMillion": 1.0, "outputPerMillion": 2.0 }] }),
+                // Overlong model id (129 chars).
+                json!({ "prices": [{ "model": "m".repeat(129), "currency": "USD", "inputPerMillion": 1.0, "outputPerMillion": 2.0 }] }),
+                // Unsupported currency.
+                json!({ "prices": [{ "model": "claude-sonnet-4-5", "currency": "EUR", "inputPerMillion": 1.0, "outputPerMillion": 2.0 }] }),
+                // Negative price.
+                json!({ "prices": [{ "model": "claude-sonnet-4-5", "currency": "USD", "inputPerMillion": -1.0, "outputPerMillion": 2.0 }] }),
+                // Non-numeric price.
+                json!({ "prices": [{ "model": "claude-sonnet-4-5", "currency": "USD", "inputPerMillion": "three", "outputPerMillion": 2.0 }] }),
+                // Duplicate model+currency pair.
+                json!({ "prices": [
+                    { "model": "claude-sonnet-4-5", "currency": "USD", "inputPerMillion": 1.0, "outputPerMillion": 2.0 },
+                    { "model": "claude-sonnet-4-5", "currency": "USD", "inputPerMillion": 3.0, "outputPerMillion": 4.0 }
+                ] }),
+                // Missing prices array entirely.
+                json!({ "unit": "per_1m_tokens" }),
+            ];
+            for (index, case) in cases.iter().enumerate() {
+                let result = save_app_settings("model-pricing".to_string(), case.clone());
+                assert!(
+                    !result.ok,
+                    "case {index} should be rejected: {}",
+                    result.summary
+                );
+            }
+
+            // Nothing was written: the section is still missing.
+            let saved = get_app_settings("model-pricing".to_string());
+            assert_eq!(saved["state"], "missing");
+        });
+    }
+
+    #[test]
+    fn model_pricing_settings_empty_array_restores_default_empty_state() {
+        with_isolated_app_state("model-pricing-empty", || {
+            let first = save_app_settings(
+                "model-pricing".to_string(),
+                json!({
+                    "prices": [
+                        { "model": "gpt-4o", "currency": "USD", "inputPerMillion": 2.5, "outputPerMillion": 10.0 }
+                    ]
+                }),
+            );
+            assert!(first.ok);
+
+            // Empty prices array is the verified empty state (not "missing").
+            let cleared = save_app_settings("model-pricing".to_string(), json!({ "prices": [] }));
+            assert!(cleared.ok, "{}", cleared.summary);
+            let saved = get_app_settings("model-pricing".to_string());
+            assert_eq!(saved["state"], "loaded");
+            let prices = saved["payload"]["prices"].as_array().expect("prices array");
+            assert!(prices.is_empty());
         });
     }
 

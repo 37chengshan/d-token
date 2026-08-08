@@ -59,7 +59,7 @@ impl PrivateObjectKind {
 
     fn inheritance(self) -> u32 {
         match self {
-            Self::Directory => (OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE) as u32,
+            Self::Directory => OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE,
             Self::File => 0,
         }
     }
@@ -236,7 +236,7 @@ fn verify_private_acl(path: &Path, kind: PrivateObjectKind) -> Result<()> {
                 header.AceType
             );
         }
-        if ((header.AceFlags as u32) & (INHERITED_ACE as u32)) != 0 {
+        if ((header.AceFlags as u32) & INHERITED_ACE) != 0 {
             bail!(
                 "private {} {} contains inherited ACEs",
                 kind.label(),
@@ -244,7 +244,7 @@ fn verify_private_acl(path: &Path, kind: PrivateObjectKind) -> Result<()> {
             );
         }
         let actual_inheritance =
-            (header.AceFlags as u32) & ((OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE) as u32);
+            (header.AceFlags as u32) & (OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE);
         if actual_inheritance != expected_inheritance {
             bail!(
                 "private {} {} has ACE inheritance flags {actual_inheritance:#x}, expected {expected_inheritance:#x}",

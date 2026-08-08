@@ -26,4 +26,24 @@ describe("Topbar", () => {
     fireEvent.click(screen.getByRole("button", { name: "展开侧栏" }));
     expect(setCollapsed).toHaveBeenCalledWith(false);
   });
+
+  it("opens the repeatable first-run setup entry without displacing the notification center", () => {
+    const onOpenOnboarding = vi.fn();
+    render(<Topbar collapsed={false} setCollapsed={vi.fn()} onOpenOnboarding={onOpenOnboarding} onboardingActive />);
+
+    const entry = screen.getByRole("button", { name: "首次配置" });
+    expect(entry).toHaveTextContent("配置");
+    expect(entry).toHaveAttribute("data-onboarding-active", "true");
+    expect(screen.getByRole("button", { name: "通知" })).toBeVisible();
+
+    fireEvent.click(entry);
+    expect(onOpenOnboarding).toHaveBeenCalledTimes(1);
+  });
+
+  it("omits the setup entry when no handler is wired", () => {
+    render(<Topbar collapsed={false} setCollapsed={vi.fn()} />);
+
+    expect(screen.queryByRole("button", { name: "首次配置" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "通知" })).toBeVisible();
+  });
 });

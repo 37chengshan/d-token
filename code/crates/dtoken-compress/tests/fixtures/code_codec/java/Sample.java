@@ -1,6 +1,13 @@
 package codec;
 
-record Pair(int left, int right) {}
+class Pair {
+    private int left;
+    private int right;
+    Pair(int left, int right) {
+        this.left = left;
+        this.right = right;
+    }
+}
 
 class Sample {
     static int add(int left, int right) {

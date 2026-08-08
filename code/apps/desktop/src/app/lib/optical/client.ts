@@ -9,6 +9,7 @@ import type {
   OpticalLifecycle,
   OpticalObservabilitySnapshot,
   OpticalPlanSummary,
+  OpticalPreviewRequestOptions,
   OpticalPreviewResult,
   OpticalSlice,
   OpticalStatus,
@@ -147,6 +148,7 @@ function pickPlan(data: unknown): OpticalPlanSummary | null {
     ? object.gates.map((gate) => {
         const item = asObject(gate) ?? {};
         return {
+          name: asString(item.name),
           passed: asBool(item.passed),
           reason: asString(item.reason),
         };
@@ -227,14 +229,19 @@ export async function loadOpticalObservability(): Promise<OpticalObservabilitySn
   return normalizeOpticalObservability(raw);
 }
 
-export async function previewOpticalPlan(body: unknown): Promise<OpticalPreviewResult> {
+export async function previewOpticalPlan(
+  body: unknown,
+  options?: OpticalPreviewRequestOptions,
+): Promise<OpticalPreviewResult> {
   // Match OpticalPreviewRequest: endpoint_path + optional protocol + body only.
   // Do not send raw PNG/base64 or secrets; UI only submits operator-provided JSON.
+  // An optional opaque route_id may be passed for route-scoped planning; provider
+  // and model stay null (unknown-model shadow-only unless the route supplies policy).
   const request = {
     endpoint_path: "/v1/messages",
     protocol: "anthropic",
     provider_id: null,
-    route_id: null,
+    route_id: options?.route_id ?? null,
     model: null,
     body,
   };

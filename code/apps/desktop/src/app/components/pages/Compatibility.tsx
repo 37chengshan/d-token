@@ -6,9 +6,9 @@ import { StatusBadge } from "../common/StatusBadge";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { useI18n, useT } from "../../lib/i18n";
+import { protocolLabel } from "../../lib/protocol";
 import { classifyEvidence, type EvidenceState } from "../../lib/state/evidence";
 import { useRuntimeDashboardDetail } from "../../lib/useRuntimeDashboard";
-
 type CompatibilityAgent = {
   name: string;
   rtk?: string;
@@ -330,7 +330,7 @@ function MatrixStatus({ value, detail, lang }: { value?: string; detail?: string
 
 function RouteRow({ route, lang }: { route: Record<string, any>; lang: "zh" | "en" }) {
   const title = safeText(route.name) ?? safeText(route.id) ?? (lang === "zh" ? "未命名路由" : "Unnamed route");
-  const details = [safeText(route.protocol), safeText(route.chain), safeText(route.policy)].filter(Boolean).join(" · ");
+  const details = [protocolLabel(route.protocol, lang), safeText(route.chain), safeText(route.policy)].filter(Boolean).join(" · ");
   const provider = safeText(route.target_provider_id) ?? safeText(route.provider_id) ?? safeText(route.provider);
   return (
     <div className="flat-inset flex flex-wrap items-center justify-between gap-3 p-3 text-sm">
@@ -365,7 +365,7 @@ function ProtocolRow({ profile, lang }: { profile: RuntimeProtocolProfile; lang:
   return (
     <div className="flat-inset p-3 text-sm">
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <span className="font-medium">{safeText(profile.protocol) ?? (lang === "zh" ? "未命名协议" : "Unnamed protocol")}</span>
+        <span className="font-medium">{protocolLabel(profile.protocol, lang) ?? (lang === "zh" ? "未命名协议" : "Unnamed protocol")}</span>
         <Badge variant="outline">{lang === "zh" ? "目录声明" : "Catalog declaration"}</Badge>
       </div>
       {safeText(profile.injection_method) && <div className="mt-1 text-xs text-muted-foreground">{profile.injection_method}</div>}

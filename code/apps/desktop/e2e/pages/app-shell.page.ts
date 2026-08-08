@@ -1,7 +1,7 @@
 import type { Locator, Page } from "@playwright/test";
 
 export const MAIN_PAGES = [
-  { id: "overview", navLabel: "总体概览", heading: "概览", english: { navLabel: "Overview", heading: "Overview" } },
+  { id: "overview", navLabel: "总体概览", heading: "总体概览", english: { navLabel: "Overview", heading: "Overview" } },
   { id: "install", navLabel: "安装与连接", heading: "安装与连接", english: { navLabel: "Install & Connect", heading: "Install & Connect" } },
   { id: "codebase-memory", navLabel: "代码图谱", heading: "代码图谱（实验性）", english: { navLabel: "Code Graph", heading: "Code Graph (Experimental)" } },
   { id: "analytics", navLabel: "分析", heading: "分析", english: { navLabel: "Analytics", heading: "Analytics" } },
@@ -26,7 +26,7 @@ export class AppShellPage {
 
   async open() {
     await this.page.goto("/");
-    await this.main.getByRole("heading", { level: 1, name: "概览", exact: true }).waitFor();
+    await this.main.getByRole("heading", { level: 1, name: "总体概览", exact: true }).waitFor();
   }
 
   navItem(label: string) {

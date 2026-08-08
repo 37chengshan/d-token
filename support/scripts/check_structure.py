@@ -86,6 +86,21 @@ REQUIRED = [
     "support/tests/test_release_gate_status_aggregation.py",
 ]
 
+RELEASE_PACKAGE_V001_REQUIRED = [
+    "docs/releases/v0.0.1/README.md",
+    "docs/releases/v0.0.1/GOALS.md",
+    "docs/releases/v0.0.1/REQUIREMENTS.md",
+    "docs/releases/v0.0.1/OSS_MIGRATION.md",
+    "docs/releases/v0.0.1/EXECUTION.md",
+    "docs/releases/v0.0.1/TASKS.md",
+    "docs/releases/v0.0.1/VERIFICATION.md",
+    "docs/releases/v0.0.1/RISKS_DECISIONS.md",
+    "docs/releases/v0.0.1/EVIDENCE.md",
+]
+RELEASE_PACKAGE_ALLOWED_MARKDOWN = {
+    path.rsplit("/", 1)[1] for path in RELEASE_PACKAGE_V001_REQUIRED
+}
+
 FORBIDDEN = [
     "task_plan.md",
     "findings.md",
@@ -154,7 +169,9 @@ DOCS_ROOT_MARKDOWN_ALLOWED = {
     "PRD.md",
     "SECURITY_BOUNDARIES.md",
     "TECH_STACK.md",
+    "agent-mcp-parallel-dev-prompts.md",
     "index.md",
+    "agent-mcp-parallel-dev-prompts.md",
     "d-token_AI_product_target_spec_v2.md",
 }
 
@@ -269,6 +286,20 @@ prd_sources = sorted(
 )
 unexpected_prd_sources = [path for path in prd_sources if path != "docs/PRD.md"]
 
+release_package_missing = [
+    path for path in RELEASE_PACKAGE_V001_REQUIRED if not (ROOT / path).exists()
+]
+release_package_dir = ROOT / "docs" / "releases" / "v0.0.1"
+release_package_extra_markdown = (
+    sorted(
+        path.name
+        for path in release_package_dir.glob("*.md")
+        if path.name not in RELEASE_PACKAGE_ALLOWED_MARKDOWN
+    )
+    if release_package_dir.exists()
+    else []
+)
+
 broken_links = broken_markdown_links()
 
 failures = any(
@@ -279,6 +310,8 @@ failures = any(
         unexpected_docs_root_markdown,
         missing_docs_root_markdown,
         unexpected_prd_sources,
+        release_package_missing,
+        release_package_extra_markdown,
         broken_links,
     ]
 )
@@ -308,6 +341,14 @@ if failures:
         print("Unexpected parallel PRD files present:")
         for path in unexpected_prd_sources:
             print(f"  - {path}")
+    if release_package_missing:
+        print("Missing required v0.0.1 release package files:")
+        for path in release_package_missing:
+            print(f"  - {path}")
+    if release_package_extra_markdown:
+        print("Unexpected Markdown files in release package directory:")
+        for path in release_package_extra_markdown:
+            print(f"  - {path}")
     if broken_links:
         print("Broken local Markdown links in active documentation:")
         for item in broken_links:
@@ -316,5 +357,5 @@ if failures:
 
 print(
     "Repository structure check passed: canonical roots, single PRD, archive boundaries, "
-    "and active Markdown links are valid."
+    "v0.0.1 release package, and active Markdown links are valid."
 )

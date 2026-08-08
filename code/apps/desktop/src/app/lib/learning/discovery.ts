@@ -1,6 +1,5 @@
 // d-token 候选目录发现器：从常用项目目录、Git 仓库、Agent 会话路径发现候选。
 // 关联计划：release-plan-2026-07/phase-03 §3 候选来源。
-import { AGENT_REGISTRY } from "../agents/registry";
 
 export type DiscoverySource = "git-repo" | "agent-session" | "common-project" | "editor-workspace" | "dtoken-history";
 
@@ -22,11 +21,6 @@ export const COMMON_PROJECT_ROOTS: string[] = [
   "D:/code",
   "C:/Users/%USER%/projects",
 ];
-
-/** 由 Agent descriptor 收集会话路径提示。 */
-export function agentSessionHints(): { agentId: string; paths: string[] }[] {
-  return AGENT_REGISTRY.map((agent) => ({ agentId: agent.id, paths: agent.sessionPathHints }));
-}
 
 /** 合并所有候选来源（去重），供轻量索引使用。 */
 export function mergeCandidates(lists: DiscoveryCandidate[][]): DiscoveryCandidate[] {

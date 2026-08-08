@@ -35,6 +35,7 @@ fn surface_test_config() -> DtokenConfig {
             models: vec!["surface-model".to_string()],
             timeout_ms: 100,
             healthcheck_path: None,
+            wire_api: dtoken_types::ProviderWireApi::OpenAiChat,
         }],
         routes: vec![RouteProfile {
             id: "surface-route".to_string(),

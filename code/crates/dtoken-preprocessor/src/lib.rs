@@ -483,6 +483,9 @@ pub const MAX_MANAGED_RTK_USAGE_RECORD_BYTES: usize = 8 * 1024;
 pub const MAX_MANAGED_RTK_USAGE_TOTAL_BYTES: usize = 256 * 1024;
 pub const MAX_MANAGED_RTK_USAGE_ENTRIES: usize = 128;
 const MAX_MANAGED_RTK_TRANSFORMS: usize = 16;
+/// Bounded retries for the transient Linux `Text file busy` (ETXTBSY) that can
+/// surface when a freshly staged bridge copy is executed concurrently.
+const MAX_BRIDGE_EXEC_ATTEMPTS: u32 = 3;
 pub const MIN_MANAGED_RTK_OUTPUT_BYTES: usize = 1024;
 pub const MAX_MANAGED_RTK_OUTPUT_BYTES: usize = 1024 * 1024;
 
@@ -967,11 +970,36 @@ fn validate_managed_root(root: &Path) -> Result<PathBuf> {
     canonical_existing_directory(root, "managed RTK root")
 }
 
+/// Executes the RTK bridge `identity` command, retrying the transient Linux
+/// `Text file busy` (ETXTBSY) failure that can occur when a bridge copy has
+/// just been written and is executed concurrently (parallel workspace tests).
+/// Other spawn errors surface immediately; the retry is bounded so genuine
+/// failures still fail closed.
+fn execute_bridge_identity_with_etxtbsy_retry(path: &Path) -> Result<std::process::Output> {
+    use std::io::ErrorKind;
+    use std::time::Duration;
+
+    let mut attempt = 0u32;
+    loop {
+        match StdCommand::new(path).arg("identity").output() {
+            Ok(output) => return Ok(output),
+            Err(error)
+                if error.kind() == ErrorKind::ExecutableFileBusy
+                    && attempt < MAX_BRIDGE_EXEC_ATTEMPTS =>
+            {
+                attempt += 1;
+                std::thread::sleep(Duration::from_millis(50 * u64::from(attempt)));
+            }
+            Err(error) => {
+                return Err(error)
+                    .with_context(|| format!("failed to execute RTK bridge {}", path.display()))
+            }
+        }
+    }
+}
+
 fn bridge_identity(path: &Path) -> Result<ManagedHookBridgeIdentity> {
-    let output = StdCommand::new(path)
-        .arg("identity")
-        .output()
-        .with_context(|| format!("failed to execute RTK bridge {}", path.display()))?;
+    let output = execute_bridge_identity_with_etxtbsy_retry(path)?;
     if !output.status.success() {
         bail!("RTK bridge identity command failed");
     }
@@ -1604,9 +1632,14 @@ mod tests {
 
         let rewrite = lifecycle.command_rewrite();
         assert!(rewrite.use_managed_wrapper);
+        // install_hook persists the canonical bridge path in the manifest, so
+        // compare against the canonicalized fixture path (on Windows
+        // fs::canonicalize returns a \\?\ extended-length path).
+        let canonical_fake_bridge =
+            fs::canonicalize(fake_bridge_path()).expect("canonical fake bridge");
         assert_eq!(
             rewrite.executable.as_deref(),
-            Some(fake_bridge_path().as_path())
+            Some(canonical_fake_bridge.as_path())
         );
         let managed_root =
             fs::canonicalize(root.path().join("managed-rtk")).expect("canonical root");

@@ -21,11 +21,11 @@ pub const COMPONENT: &str = "dtoken-codebase-memory-launcher";
 pub const POLICY_VERSION: u32 = 1;
 pub const PROTOCOL_VERSION: u32 = 1;
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
-/// Deterministic `lipo -create` result from the two verified v0.9.0 macOS
+/// Deterministic `lipo -create` result from the two verified v0.9.1-rc.1 macOS
 /// release binaries. It is a d-token-derived universal artifact, not an
 /// independently upstream-signed release asset.
 pub const MACOS_UNIVERSAL_BINARY_SHA256: &str =
-    "dbd7473051e8459f0b16e83eb91ed6d2ef90e31ed238c10067eb952ab985759f";
+    "c18762b9ecd5faf7a5c2c9c495f51d02344390f315b8907ea81ce33c3a078f66";
 pub const MAX_MCP_REQUEST_BYTES: usize = 512 * 1024;
 pub const MAX_MCP_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
 pub const DEFAULT_CACHE_QUOTA_BYTES: u64 = 2 * 1024 * 1024 * 1024;
@@ -50,38 +50,38 @@ pub const ARTIFACT_SPECS: &[ArtifactSpec] = &[
     ArtifactSpec {
         os: "macos",
         arch: "aarch64",
-        upstream_version: "0.9.0",
-        upstream_commit: "b637e3330c96cfe452da623db068c241aaa3ec01",
+        upstream_version: "0.9.1-rc.1",
+        upstream_commit: "ee9833df2c72b750378273897ffec9410fc2c4f2",
         archive_name: "codebase-memory-mcp-darwin-arm64.tar.gz",
-        archive_sha256: "faa02f0404230c451a9812230394481948f80183801fa5bf67044b41c2f25ed4",
-        binary_sha256: "d9fbdd7d8570a77b2fb32453e00bd52a02627281309cd56003a4eccfcfe878d6",
+        archive_sha256: "5a93a7a02a5de4f91d6d5ce4bc9a8dc471a0b141fdb9062dc1d5779205266996",
+        binary_sha256: "e4fe1cf4f764308f19a65e98b6cc2fcad5d8996b0745af321e75aacfd0c9bb1b",
     },
     ArtifactSpec {
         os: "macos",
         arch: "x86_64",
-        upstream_version: "0.9.0",
-        upstream_commit: "b637e3330c96cfe452da623db068c241aaa3ec01",
+        upstream_version: "0.9.1-rc.1",
+        upstream_commit: "ee9833df2c72b750378273897ffec9410fc2c4f2",
         archive_name: "codebase-memory-mcp-darwin-amd64.tar.gz",
-        archive_sha256: "6af3d02a27f589901fa763d3971089337bc8c9838bbed5d0cf543ca9f1a9e543",
-        binary_sha256: "04ee3048810c19099502adc8bb83039423f02f2553d17677892a7f03b924e01f",
+        archive_sha256: "82b66ad5b4663552191ac7ae229cbca0e4fed2eb767d2cf9f46e4c9573e4348c",
+        binary_sha256: "661bd7320b4b3ec9b681b38860d283d40f6a94d972821a60010999b04ff449a1",
     },
     ArtifactSpec {
         os: "windows",
         arch: "x86_64",
-        upstream_version: "0.9.0",
-        upstream_commit: "b637e3330c96cfe452da623db068c241aaa3ec01",
+        upstream_version: "0.9.1-rc.1",
+        upstream_commit: "ee9833df2c72b750378273897ffec9410fc2c4f2",
         archive_name: "codebase-memory-mcp-windows-amd64.zip",
-        archive_sha256: "92f96896f952e539f0d6cb34d7892a25064b677ccbf808b8f8310ad897e86f2c",
-        binary_sha256: "9a205fa5ae759fbc866bfe1554f0c05a303be9ae6e0a00f94d875dc0c25e0680",
+        archive_sha256: "c6f65d94ac039e3a8fdc7bffac2e20fb0b0bc1d2d8d36de72ef34c531b8d4cbd",
+        binary_sha256: "7d82ca2faedce72113b17f749a63a11860b9d78cbfc73691fab9b31cb7e71c22",
     },
     ArtifactSpec {
         os: "windows",
         arch: "aarch64",
-        upstream_version: "0.9.0",
-        upstream_commit: "b637e3330c96cfe452da623db068c241aaa3ec01",
+        upstream_version: "0.9.1-rc.1",
+        upstream_commit: "ee9833df2c72b750378273897ffec9410fc2c4f2",
         archive_name: "codebase-memory-mcp-windows-arm64.zip",
-        archive_sha256: "63994fcfd15bf5e3f03cbf368cce86261713c7d7802e31469ae81a3939e4fae6",
-        binary_sha256: "a299150de19bb4da9a880a6139757076bd4139b2f6a7e7cf31bdd431d53aed9c",
+        archive_sha256: "75f8823ba5f9c608d1e2b41b2c95e2621ed8070d42620d71b11b3f98cef27c9c",
+        binary_sha256: "af0e9c551e9d418273b7fea1f0b4cca2e3dc5a9ddec573b019fde7ad1ba3869d",
     },
 ];
 
@@ -955,7 +955,7 @@ mod tests {
             .collect::<BTreeSet<_>>();
         assert_eq!(keys.len(), ARTIFACT_SPECS.len());
         assert!(ARTIFACT_SPECS.iter().all(|spec| {
-            spec.upstream_version == "0.9.0"
+            spec.upstream_version == "0.9.1-rc.1"
                 && spec.upstream_commit.len() == 40
                 && spec.archive_sha256.len() == 64
                 && spec.binary_sha256.len() == 64
@@ -970,11 +970,18 @@ mod tests {
         } else {
             "codebase-memory-mcp"
         });
-        fs::write(&upstream, b"not-the-pinned-v0.9.0-binary").expect("write wrong artifact");
+        fs::write(&upstream, b"not-the-pinned-v0.9.1-rc.1-binary").expect("write wrong artifact");
         let error = verify_upstream_artifact(&upstream).expect_err("wrong hash must fail closed");
-        assert!(error
-            .to_string()
-            .contains("SHA-256 does not match the pinned artifact manifest"));
+        // ARTIFACT_SPECS only pins upstream binaries for supported desktop
+        // targets (macOS/Windows). On other hosts verification fails closed
+        // earlier with the platform-registration error, which is the same
+        // fail-closed contract; only platforms with a registered spec can
+        // reach the hash comparison itself.
+        if artifact_spec_for_current_platform().is_ok() {
+            assert!(error
+                .to_string()
+                .contains("SHA-256 does not match the pinned artifact manifest"));
+        }
     }
 
     #[test]
