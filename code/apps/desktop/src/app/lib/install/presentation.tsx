@@ -209,7 +209,7 @@ function presentBindingSummary(
   }
   if (lang === "en") return binding.reasons[0] || "No reusable upstream configuration was found";
   if (!binding.installed || binding.resolution === "unavailable") return `未检测到可用的 ${binding.agent_name} 配置`;
-  if (binding.resolution === "needs-choice") return "存在多个候选上游 / 模型，无法唯一解析；请修复来源配置后重新扫描";
+  if (binding.resolution === "needs-source-fix") return "存在多个候选上游 / 模型，无法唯一解析；请修复来源配置后重新扫描";
   if (binding.resolution === "needs-credential") return "已发现上游，需要补充凭据";
   return "未发现可安全复用的上游配置";
 }
@@ -262,7 +262,7 @@ function presentBinding(binding: AgentUpstreamBinding, lang: "zh" | "en") {
     return { health: "healthy" as const, label: zh ? "已准备好，需你确认" : "Ready, needs confirmation" };
   }
   if (binding.resolution === "auto-resolved") return { health: "healthy" as const, label: zh ? "已自动解析" : "Auto-resolved" };
-  if (binding.resolution === "needs-choice") return { health: "error" as const, label: zh ? "来源冲突" : "Source conflict" };
+  if (binding.resolution === "needs-source-fix") return { health: "error" as const, label: zh ? "来源冲突" : "Source conflict" };
   if (binding.resolution === "needs-credential") return { health: "warning" as const, label: zh ? "需要凭据" : "Credential" };
   if (binding.transport_status === "advanced_required" || binding.transport_status === "schema_unverified") {
     return { health: "warning" as const, label: zh ? "仅检测" : "Detection only" };
