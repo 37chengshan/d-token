@@ -1521,6 +1521,15 @@
       "summary": "fix: stabilize masked CI test failures (CRLF fixtures, javac dir, ETXTBSY retry)",
       "head_before": "1ddb30e",
       "remote": null
+    },
+    {
+      "id": "8299cb8f-3a15-4082-99fd-e70417cfa8bc",
+      "timestamp": "2026-08-08T17:38:08+08:00",
+      "operation": "push",
+      "branch": "codex/final-release-iteration",
+      "summary": "push round-3 CI stabilization fixes",
+      "head_before": "16bb7ad",
+      "remote": "origin"
     }
   ]
 }
