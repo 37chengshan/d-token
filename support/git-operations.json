@@ -1836,6 +1836,141 @@
       "summary": "push JDK 21 windows check job fix",
       "head_before": "fca5884",
       "remote": "origin"
+    },
+    {
+      "id": "7bd1efa8-0a35-4c85-93b1-9d0ef2f19d29",
+      "timestamp": "2026-08-08T20:27:24+08:00",
+      "operation": "commit",
+      "branch": "codex/final/upgrade-autostart-credential",
+      "summary": "Add upgrade autostart and credential evidence producers",
+      "head_before": "c5a584971a9e2421a0040eb0f777ba76d9ae8f88",
+      "remote": null
+    },
+    {
+      "id": "7d7f1636-b904-4851-b638-feac7ceed0cc",
+      "timestamp": "2026-08-08T20:27:24+08:00",
+      "operation": "commit",
+      "branch": "codex/final/security-classifier-export",
+      "summary": "Unify secret classification and redact export paths",
+      "head_before": "b1c090c8baeb76393e69d3f16ed2b3388f3be3e4",
+      "remote": null
+    },
+    {
+      "id": "d77ac9a9-a7da-4ac4-b6b3-70bc63d25dfc",
+      "timestamp": "2026-08-08T20:41:59+08:00",
+      "operation": "commit",
+      "branch": "codex/final/config-acceptance",
+      "summary": "Bind Agent config evidence to candidate tree",
+      "head_before": "4c2863ef18f36552bd4c452658124d1232d9455a",
+      "remote": null
+    },
+    {
+      "id": "73afcf30-9b24-4255-a4ce-364881c6288e",
+      "timestamp": "2026-08-08T20:42:13+08:00",
+      "operation": "commit",
+      "branch": "codex/final/upgrade-autostart-credential",
+      "summary": "Make platform evidence factual and cross-host safe",
+      "head_before": "4ea18eb0426e68a0d4abbf8c84a06b36833da9f7",
+      "remote": null
+    },
+    {
+      "id": "7c2f58f4-17c7-451f-9dfb-00c1bf538634",
+      "timestamp": "2026-08-08T20:42:13+08:00",
+      "operation": "commit",
+      "branch": "codex/final/codex-ocxlocal-acceptance",
+      "summary": "Bind Codex routed evidence to runtime responses",
+      "head_before": "2326c7297b8ddfbf9cf48d1157ff31cbd798b587",
+      "remote": null
+    },
+    {
+      "id": "a4427858-e019-4181-a8e3-f3e8595338f7",
+      "timestamp": "2026-08-08T20:56:25+08:00",
+      "operation": "commit",
+      "branch": "codex/final/runtime-receipt",
+      "summary": "Complete Optimization Receipt evidence contract",
+      "head_before": "bb34bf4b2cc65c901756d962d4996eea1c5c51a0",
+      "remote": null
+    },
+    {
+      "id": "6ec99603-880a-498b-9e74-6cfc7edc73d9",
+      "timestamp": "2026-08-08T20:56:37+08:00",
+      "operation": "commit",
+      "branch": "codex/final/cc-switch-aba-evidence",
+      "summary": "Bind release evidence to candidate tree",
+      "head_before": "c9fb30e2aa1289215657193f2884fd6f1fdca45f",
+      "remote": null
+    },
+    {
+      "id": "2a65fcc6-f3b7-43e9-896c-4926369d9216",
+      "timestamp": "2026-08-08T20:57:15+08:00",
+      "operation": "commit",
+      "branch": "codex/final/security-classifier-export",
+      "summary": "Handle compact secrets and opaque credential references",
+      "head_before": "9581258380ce688a7e9d197357e133fb0cde5b56",
+      "remote": null
+    },
+    {
+      "id": "2312054f-73af-4bf2-9c20-039a0ee481e8",
+      "timestamp": "2026-08-08T20:59:41+08:00",
+      "operation": "branch-create",
+      "branch": "codex/final/candidate-integration",
+      "summary": "Create final candidate integration worktree",
+      "head_before": "7a41e6039982139517ea4a020c374d6e6c3324d6",
+      "remote": null
+    },
+    {
+      "id": "d6c2428d-1e9e-48bf-b623-4ea191706874",
+      "timestamp": "2026-08-08T21:01:55+08:00",
+      "operation": "push",
+      "branch": "codex/final/candidate-integration",
+      "summary": "Publish candidate integration branch",
+      "head_before": "7a41e6039982139517ea4a020c374d6e6c3324d6",
+      "remote": "origin"
+    },
+    {
+      "id": "a5705801-5266-4ae6-8a2e-c21f04d9f301",
+      "timestamp": "2026-08-08T21:04:55+08:00",
+      "operation": "push",
+      "branch": "codex/final/runtime-receipt",
+      "summary": "Publish runtime receipt slice for review",
+      "head_before": "fbc615fd38095cb5073c789a00743ada03100914",
+      "remote": "origin"
+    },
+    {
+      "id": "d61a2923-199a-43e7-851c-54b9e16f0f13",
+      "timestamp": "2026-08-08T21:05:36+08:00",
+      "operation": "merge",
+      "branch": "codex/final/candidate-integration",
+      "summary": "Integrate reviewed runtime receipt slice PR 7",
+      "head_before": "7a41e6039982139517ea4a020c374d6e6c3324d6",
+      "remote": null
+    },
+    {
+      "id": "ef6cb45b-4af8-4177-bb4f-e9ebbb93e73e",
+      "timestamp": "2026-08-08T21:06:38+08:00",
+      "operation": "push",
+      "branch": "codex/final/security-classifier-export",
+      "summary": "Publish security classifier slice for review",
+      "head_before": "97a3a6f7bacabeddcdadec015406b56e3577a74e",
+      "remote": "origin"
+    },
+    {
+      "id": "5adc71e8-dcf0-4bff-9bc1-d201ea1241b5",
+      "timestamp": "2026-08-08T21:07:26+08:00",
+      "operation": "merge",
+      "branch": "codex/final/candidate-integration",
+      "summary": "Integrate reviewed security classifier slice PR 8",
+      "head_before": "a720d22b0fd326412468cf2d410ae49f0cc93339",
+      "remote": null
+    },
+    {
+      "id": "5fcc6099-8811-4399-9c2c-dd015d9ac977",
+      "timestamp": "2026-08-08T21:08:08+08:00",
+      "operation": "commit",
+      "branch": "codex/final-release-iteration",
+      "summary": "fix: privatize runtime dir in windows projection fail-closed test",
+      "head_before": "7a41e60",
+      "remote": null
     }
   ]
 }

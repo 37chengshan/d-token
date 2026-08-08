@@ -17960,9 +17960,16 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn windows_ccr_enabled_persistent_state_fails_closed_without_private_sqlite_projection() {
+        use dtoken_context_store::apply_private_directory_acl;
+
         let dir =
             std::env::temp_dir().join(format!("dtoken-windows-private-blocked-{}", Uuid::new_v4()));
         std::fs::create_dir_all(&dir).expect("create runtime dir");
+        // Simulate an already-privatized runtime directory: the private
+        // runtime contract verifies the runtime dir DACL before probing the
+        // projection path, so without this the test fails closed on the
+        // inherited parent ACL instead of reaching the blocked projection.
+        apply_private_directory_acl(&dir).expect("privatize runtime dir");
         std::fs::create_dir_all(dir.join("runtime-state.sqlite3"))
             .expect("block projection path with directory");
 
