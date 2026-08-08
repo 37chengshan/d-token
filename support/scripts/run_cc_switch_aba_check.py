@@ -19,16 +19,19 @@ Boundaries (do not weaken):
   ``collect`` requires an explicit ``--db``; the artifact carries only a
   path fingerprint and the basename.
 * An A->B->A artifact may only report ``passed`` when all of the following
-  hold: (1) a B-state snapshot was observed and differs from the pre state
-  (a no-op "switch" is blocked as ``switch_not_observed``), (2) the post
-  identity equals the pre identity, (3) every phase snapshot records
-  ``writes_attempted == 0`` and ``readonly_open == true``, (4) the DB bytes
-  are unchanged between the post collect and the verify run (when ``--db``
-  is provided), and (5) the candidate commit is resolvable.
+  hold: (1) all three phase snapshots were collected from the SAME cc-switch
+  database path (identical path fingerprints), (2) a B-state snapshot was
+  observed and differs from the pre state (a no-op "switch" is blocked as
+  ``switch_not_observed``), (3) the post identity equals the pre identity,
+  (4) every phase snapshot records ``writes_attempted == 0`` and
+  ``readonly_open == true``, (5) the DB bytes are unchanged between the post
+  collect and the verify run (when ``--db`` is provided), and (6) the
+  candidate commit is resolvable.
 * When ``--expected-commit`` / ``--expected-source-digest`` are provided the
-  artifact fails closed on mismatch. The source digest anchor mirrors the
-  release fan-in anchor: sha256 of ``git diff --binary HEAD -- .`` in the
-  repository root (read-only).
+  artifact fails closed on mismatch. The source digest anchor is
+  content-bearing and worktree-invariant: sha256 of the ASCII hex bytes of
+  ``git rev-parse HEAD^{tree}`` (the candidate commit's content-addressed
+  tree object id), reproducible at any clean checkout of the same commit.
 * Route identity mirrors the d-token-config-patcher pinned formats
   (cc_switch.rs / cc_switch_fixture.rs):
     upstream_signature = sha256("cc-switch-upstream-v1\\n{provider_id}\\n"
@@ -99,6 +102,7 @@ FAIL_CLASSES = frozenset({
     "unknown_schema",
     "missing_phase",
     "missing_observed_b",
+    "db_path_mismatch",
     "switch_not_observed",
     "identity_mismatch",
     "wrote_cc_switch",
@@ -496,27 +500,33 @@ def git_head(repo_root: Path) -> tuple[str, bool]:
     return commit.lower(), True
 
 
-def tracked_diff_digest(repo_root: Path) -> tuple[str, bool]:
-    """Read-only source digest anchor (same command as the release fan-in).
+def source_tree_digest(repo_root: Path) -> tuple[str, bool]:
+    """Content-bearing source digest anchor: sha256 of the commit tree object id.
 
-    sha256 of ``git diff --binary HEAD -- .`` output, with CRLF-normalized
-    lines stripped, mirroring the fan-in's independent-checkout anchor.
+    ``git rev-parse HEAD^{tree}`` yields the content-addressed tree id of the
+    candidate commit. The digest is sha256 of that tree id's ASCII hex bytes,
+    so it is (a) invariant to worktree dirtiness — reproducible at any clean
+    checkout of the same commit — and (b) content-bearing: two commits with
+    different source trees always produce different digests.  This replaces
+    the former ``git diff --binary HEAD -- .`` anchor, which is the constant
+    sha256 of an empty diff at any clean checkout (and can never be reproduced
+    for an uncommitted evidence worktree).
     """
     try:
         result = subprocess.run(
-            ["git", "diff", "--binary", "HEAD", "--", "."],
+            ["git", "rev-parse", "HEAD^{tree}"],
             cwd=str(repo_root),
             capture_output=True,
             text=True,
-            timeout=60,
+            timeout=15,
             check=False,
         )
     except (OSError, subprocess.SubprocessError):
         return "", False
-    if result.returncode != 0:
+    tree_id = result.stdout.strip()
+    if result.returncode != 0 or not re.fullmatch(r"[0-9a-fA-F]{40}", tree_id):
         return "", False
-    digest = sha256_hex("\n".join(result.stdout.splitlines()).strip().encode("utf-8"))
-    return digest, True
+    return sha256_hex(tree_id.encode("ascii")), True
 
 
 # --- Actions ledger ---------------------------------------------------------
@@ -732,6 +742,17 @@ def cmd_verify(args: argparse.Namespace) -> int:
     elif not (pre_loaded and post_loaded):
         fail("missing_phase",
              f"pre loaded={pre_loaded}, post loaded={post_loaded}; all phases must be loaded")
+    if pre_loaded and b_loaded and post_loaded:
+        # An A->B->A round trip is only evidence when all three phases were
+        # collected from the SAME cc-switch database path (same fingerprint).
+        pre_db_fp = pre.get("db", {}).get("path_fingerprint_sha256", "")
+        b_db_fp = observed_b.get("db", {}).get("path_fingerprint_sha256", "")
+        post_db_fp = post.get("db", {}).get("path_fingerprint_sha256", "")
+        if not (pre_db_fp and pre_db_fp == b_db_fp == post_db_fp):
+            fail("db_path_mismatch",
+                 "phase snapshots were not collected from the same cc-switch "
+                 "database path (path fingerprints differ); an A->B->A round "
+                 "trip must be evidenced on a single real database")
     if not observed_b_differs:
         fail("switch_not_observed",
              "observed B identity equals the pre identity; no A->B->A round trip was observed")
@@ -741,14 +762,14 @@ def cmd_verify(args: argparse.Namespace) -> int:
 
     # Candidate binding (read-only git).
     commit, commit_resolved = git_head(args.repo_root)
-    digest, digest_resolved = tracked_diff_digest(args.repo_root)
+    digest, digest_resolved = source_tree_digest(args.repo_root)
     if not commit_resolved:
         fail("candidate_unbound", "candidate commit unresolvable (read-only git rev-parse HEAD failed)")
     if args.expected_commit is not None and commit.lower() != args.expected_commit.lower():
         fail("commit_mismatch", f"expected commit {args.expected_commit} != resolved {commit}")
     if args.expected_source_digest is not None:
         if not digest_resolved:
-            fail("digest_mismatch", "source digest unresolvable (read-only git diff failed)")
+            fail("digest_mismatch", "source digest unresolvable (read-only git rev-parse HEAD^{tree} failed)")
         elif digest != args.expected_source_digest.lower():
             fail("digest_mismatch", f"expected source digest {args.expected_source_digest} != resolved {digest}")
 
@@ -783,7 +804,7 @@ def cmd_verify(args: argparse.Namespace) -> int:
             "algorithm": "sha256",
             "value": digest,
             "resolved": digest_resolved,
-            "scope": "tracked-diff-vs-head",
+            "scope": "commit-tree-object-sha256",
         },
         "phases": {
             "pre": str(Path(args.pre)),

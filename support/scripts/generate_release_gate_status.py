@@ -28,8 +28,14 @@ PR-7 extension (docs/releases/v0.0.1/REQUIREMENTS.md EVID-1/EVID-3/EVID-6):
   fan-in report's ``expected_commit`` to match ``--expected-commit``.
   Without the flags the aggregator keeps the legacy "latest artifact" mode
   and records binding_mode=latest; N9 release mode MUST pass both flags.
-* The source digest anchor is the release fan-in anchor: sha256 of
-  ``git diff --binary HEAD -- .`` at the candidate commit.
+* The source digest anchor is content-bearing and worktree-invariant:
+  sha256 of the ASCII hex bytes of ``git rev-parse HEAD^{tree}`` (the
+  candidate commit's tree object id).  Unlike the old ``git diff --binary
+  HEAD -- .`` anchor — a constant at any clean checkout — the tree anchor
+  discriminates candidate content and is reproducible at a clean C_final
+  checkout even when evidence was collected from a dirty worktree.  The
+  fan-in contract script independently computes the same tree digest for the
+  expected commit, so G8 and ``--expected-source-digest`` share one anchor.
 
 Fail-closed contract (do not weaken):
   1. A gate NEVER passes on "script parses", "metadata-only", or "unsigned"
@@ -376,10 +382,6 @@ def evaluate(artifacts_dir: Path, expected_commit: str | None = None,
     handoff = load_json(handoff_path)
     dacl_path = find("windows-dacl-acl-tests-*.json")
     dacl = load_json(dacl_path)
-    managed_rtk_path = find("candidate-*.json", subdir="managed-rtk-candidate")
-    managed_rtk = load_json(managed_rtk_path)
-    opencode_path = find("real-routed-*.json", subdir="opencode-real-routed")
-    opencode = load_json(opencode_path)
     fanin_path = find("fan-in-artifact-contract-*.json")
     fanin = load_json(fanin_path)
 
@@ -482,6 +484,16 @@ def evaluate(artifacts_dir: Path, expected_commit: str | None = None,
     # macOS managed-RTK receipts stamp status=pass (no ok field); the helper
     # accepts both schemas.  A green macOS probe is only PARTIAL until the
     # fan-in report proves Windows/WSL runner test receipts exist.
+    # Evidence may live under managed-rtk-candidate/ or, for the CI fan-in
+    # merge (which flattens evidence into one dir), at the top level.
+    managed_rtk_path = find("candidate-*.json", subdir="managed-rtk-candidate")
+    if managed_rtk_path is None:
+        managed_rtk_path = find("candidate-*.json")
+    managed_rtk = load_json(managed_rtk_path)
+    opencode_path = find("real-routed-*.json", subdir="opencode-real-routed")
+    if opencode_path is None:
+        opencode_path = find("real-routed-*.json")
+    opencode = load_json(opencode_path)
     mac_rtk_ok = report_green(managed_rtk)
     win_rtk_receipts_ok = (fanin is not None and report_green(fanin) is True)
     if mac_rtk_ok is True and win_rtk_receipts_ok:
