@@ -68,7 +68,7 @@ describe("920x640 compact shell layout", () => {
     const chevron = container.querySelector(".shell-statusbar [class*='rotate-']");
     expect(chevron).toHaveClass("rotate-180");
     expect(chevron).toHaveClass("transition-transform");
-    expect(chevron).toHaveClass("motion-reduce:transform-none");
+    expect(chevron).toHaveClass("motion-reduce:rotate-0");
     expect(chevron).toHaveClass("motion-reduce:transition-none");
     expect(chevron?.getAttribute("style")).toBeNull();
   });

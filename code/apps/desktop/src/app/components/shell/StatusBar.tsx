@@ -87,7 +87,7 @@ export function StatusBar() {
           className="flex shrink-0 items-center gap-1 text-muted-foreground hover:text-foreground"
         >
           {t("status.details")}
-          <span className={`transition-transform duration-200 motion-reduce:transform-none motion-reduce:transition-none ${open ? "rotate-0" : "rotate-180"}`}><ChevronUp className="size-4" /></span>
+          <span className={`transition-transform duration-200 motion-reduce:rotate-0 motion-reduce:transition-none ${open ? "rotate-0" : "rotate-180"}`}><ChevronUp className="size-4" /></span>
         </button>
       </div>
       {open && (

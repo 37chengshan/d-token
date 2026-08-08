@@ -328,6 +328,10 @@ test.describe("d-token desktop control plane", () => {
     expect(motion.animationNames.length).toBeGreaterThan(0);
     expect(motion.animationNames.every((animationName) => animationName === "none")).toBe(true);
     expect(motion.runningCount).toBe(0);
+
+    const chevron = page.locator(".shell-statusbar [class*='rotate-']");
+    await expect(chevron).toHaveCSS("rotate", "0deg");
+    await expect(chevron).toHaveCSS("transition-property", "none");
   });
 
   test("navigation icons and page stages expose repeatable visible motion", async ({ page }) => {
