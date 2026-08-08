@@ -109,7 +109,7 @@ export function Overview(_props: { setPage: (p: PageId) => void }) {
 
   return <div className="overview-page space-y-4">
     <div className="flex flex-wrap items-center justify-between gap-2">
-      <h1 className="text-base font-semibold leading-tight">{t("ov.title")}</h1>
+      <h1 className="text-base font-semibold leading-tight [.is-sidebar-collapsed_&]:sr-only">{t("ov.title")}</h1>
       <div className="flex flex-wrap items-center justify-end gap-2">
         <DataSourceBadge mode={evidenceState === "verified" ? "runtime" : evidenceState === "preview" || evidenceState === "loading" ? "preview" : "unavailable"} label={overviewEvidenceLabel(evidenceState, lang)} />
         <Badge variant={evidenceState === "verified" ? "default" : "secondary"}>{runtime.sourceLabel}{(evidenceState === "verified" || evidenceState === "stale") && updatedAt ? ` · ${updatedAt.toLocaleTimeString()}` : ""}</Badge>
