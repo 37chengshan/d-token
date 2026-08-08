@@ -18464,6 +18464,106 @@ mod tests {
     }
 
     #[test]
+    fn active_config_rejects_compact_structured_plaintext_credentials() {
+        with_isolated_app_state("active-config-compact-secret", || {
+            fs::create_dir_all(
+                active_config_path()
+                    .parent()
+                    .expect("active config has a parent"),
+            )
+            .expect("create active config directory");
+            // Compact JSON written straight to disk: the credential key is
+            // not the first key, so the leading base_url must not hide the
+            // api_key_ref value from classification.
+            fs::write(
+                active_config_path(),
+                r#"{"base_url":"https://one.example.test/v1","api_key_ref":"sk-abcdefghijklmnop","routes":[]}"#,
+            )
+            .expect("write active config");
+            let err = read_active_config_value().expect_err("compact secret must be rejected");
+            assert!(
+                err.contains("plaintext-looking secret"),
+                "compact active config -> {err}"
+            );
+        });
+    }
+
+    #[test]
+    fn merged_optical_config_rejects_compact_structured_plaintext_credentials() {
+        with_isolated_app_state("merged-config-compact-secret", || {
+            // Compact provider config serialized without pre-formatting: the
+            // credential value sits under a non-sensitive label after a
+            // URL-bearing key and must still be rejected.
+            let config = json!({
+                "routes": [],
+                "providers": [{
+                    "id": "leaky-provider",
+                    "name": "Leaky provider",
+                    "kind": "custom",
+                    "protocol": "open_ai",
+                    "base_url": "https://example.invalid/v1",
+                    "openai_api_key": "sk-abcdefghijklmnop",
+                    "models": ["model"],
+                    "timeout_ms": 120000,
+                    "healthcheck_path": "/health"
+                }],
+            });
+            let err = merge_optical_into_active_config(
+                config,
+                json!({
+                    "schema_version": 1,
+                    "global_policy": {
+                        "enabled": true,
+                        "default_mode": "shadow_preview",
+                        "allow_active": false,
+                        "public_summary_only": true
+                    },
+                    "route_policies": []
+                }),
+            )
+            .expect_err("compact secret must be rejected");
+            assert!(
+                err.contains("plaintext-looking secret"),
+                "compact merged config -> {err}"
+            );
+        });
+    }
+
+    #[test]
+    fn route_draft_apply_rejects_compact_structured_plaintext_credentials() {
+        with_isolated_app_state("route-draft-compact-secret", || {
+            fs::create_dir_all(app_state_dir().join("routing")).expect("create routing directory");
+            let draft = json!({
+                "config": {
+                    "providers": [{
+                        "id": "leaky-provider",
+                        "name": "Leaky provider",
+                        "kind": "custom",
+                        "protocol": "open_ai",
+                        "base_url": "https://example.invalid/v1",
+                        "openai_api_key": "sk-abcdefghijklmnop",
+                        "models": ["model"],
+                        "timeout_ms": 120000,
+                        "healthcheck_path": "/health"
+                    }],
+                    "routes": [],
+                }
+            });
+            fs::write(
+                app_state_dir().join("routing").join("leaky-route.json"),
+                serde_json::to_vec(&draft).expect("serialize draft"),
+            )
+            .expect("write route draft");
+            let err =
+                prepare_route_profile_draft_apply("leaky-route").expect_err("must be rejected");
+            assert!(
+                err.contains("plaintext-looking secret"),
+                "compact route draft -> {err}"
+            );
+        });
+    }
+
+    #[test]
     fn route_apply_requires_a_current_explicit_review() {
         with_isolated_app_state("route-review", || {
             assert!(save_test_route("reviewed-route", "https://one.example.test/v1").ok);
