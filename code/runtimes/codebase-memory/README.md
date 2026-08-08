@@ -20,8 +20,11 @@ official GitHub release assets and match the manifest below. The UI labels the
 component as a pre-release and the page requires exactly this pinned tag/commit;
 any other archive or binary is rejected by the fail-closed verification and the
 desktop page truthfully reports "untrusted (v0.9.1-rc.1 required)". The previous
-pin (immutable `v0.9.0`) was replaced only after the user confirmed real v0.9.0
-usage and the upgrade decision; no hash/signature/platform check is bypassed.
+pin (immutable `v0.9.0` / `b637e3330c96cfe452da623db068c241aaa3ec01`) is
+superseded and retained only as the historical reproduction baseline for the
+user-reported v0.9.0 import failure; it is not offered for new imports. The
+replacement was made only after the user confirmed real v0.9.0 usage and the
+upgrade decision; no hash/signature/platform check is bypassed.
 
 `artifact-manifest.json` is the machine-readable source of archive and extracted
 binary SHA-256 values for the supported Windows/macOS targets. Release
