@@ -4688,6 +4688,7 @@ fn provider_metadata_payload(providers: &[dtoken_types::ProviderProfile]) -> Val
                     "models": provider.models,
                     "timeout_ms": provider.timeout_ms,
                     "healthcheck_path": provider.healthcheck_path,
+                    "wire_api": provider.wire_api,
                     "credential_configured": provider.api_key_ref.as_deref().is_some_and(|value| !value.trim().is_empty())
                 })
             })
@@ -5559,6 +5560,7 @@ fn build_request_log(
     request_id: Uuid,
     decision: &RouteDecision,
     model: Option<String>,
+    user_target_model: Option<String>,
     input_protocol: Protocol,
     compression: &CompressionSummary,
     attribution: &RequestAttribution,
@@ -5568,6 +5570,11 @@ fn build_request_log(
         timestamp_ms: dtoken_event_ledger::now_ms(),
         agent: attribution.agent.clone(),
         instance_id: attribution.instance_id.clone(),
+        project_id: attribution
+            .project_id
+            .clone()
+            .filter(|value| !value.trim().is_empty()),
+        user_target_model,
         input_protocol,
         provider_id: Some(decision.provider_id.clone()),
         route_id: Some(decision.route_id.clone()),
@@ -9315,6 +9322,9 @@ fn anthropic_route_payload(
         body.get("model")
             .and_then(Value::as_str)
             .map(ToString::to_string),
+        body.get("model")
+            .and_then(Value::as_str)
+            .map(ToString::to_string),
         Protocol::Anthropic,
         &compression,
         &attribution,
@@ -9630,6 +9640,7 @@ fn force_payload_ccr_pre_send_baseline(
     let request_log = build_request_log(
         request_id,
         &payload.decision,
+        model.clone(),
         model,
         Protocol::Anthropic,
         &compression,
@@ -9996,6 +10007,7 @@ fn routed_openai_payload(
     let log = build_request_log(
         request_id,
         &decision,
+        request.model.clone(),
         request.model.clone(),
         Protocol::OpenAi,
         &compression,
@@ -11204,6 +11216,7 @@ async fn openai_chat_completions(
             request_id,
             &decision,
             request.model.clone(),
+            request.model.clone(),
             Protocol::OpenAi,
             &compression,
             &attribution,
@@ -11232,6 +11245,7 @@ async fn openai_chat_completions(
                     request_log = build_request_log(
                         request_id,
                         &decision,
+                        request.model.clone(),
                         request.model.clone(),
                         Protocol::OpenAi,
                         &compression,
@@ -11290,6 +11304,7 @@ async fn openai_chat_completions(
             request_log = build_request_log(
                 request_id,
                 &decision,
+                request.model.clone(),
                 request.model.clone(),
                 Protocol::OpenAi,
                 &compression,
@@ -11637,6 +11652,9 @@ async fn openai_responses(
                 body.get("model")
                     .and_then(Value::as_str)
                     .map(ToString::to_string),
+                body.get("model")
+                    .and_then(Value::as_str)
+                    .map(ToString::to_string),
                 Protocol::OpenAi,
                 &compression,
                 &attribution,
@@ -11973,6 +11991,7 @@ async fn openai_responses(
             request_id,
             &decision,
             request.model.clone(),
+            request.model.clone(),
             Protocol::OpenAi,
             &compression,
             &attribution,
@@ -12001,6 +12020,7 @@ async fn openai_responses(
                     request_log = build_request_log(
                         request_id,
                         &decision,
+                        request.model.clone(),
                         request.model.clone(),
                         Protocol::OpenAi,
                         &compression,
@@ -12063,6 +12083,7 @@ async fn openai_responses(
             request_log = build_request_log(
                 request_id,
                 &decision,
+                request.model.clone(),
                 request.model.clone(),
                 Protocol::OpenAi,
                 &compression,
@@ -15523,6 +15544,7 @@ mod tests {
             decision.request_id,
             &decision,
             Some("model-a".to_string()),
+            Some("model-a".to_string()),
             Protocol::OpenAi,
             &compression,
             &RequestAttribution::default(),
@@ -16753,6 +16775,53 @@ mod tests {
         assert!(csv_export.contains("source=desktop_active_config"));
         assert!(!json_export.to_string().contains("sk-"));
         assert!(!csv_export.contains("sk-"));
+    }
+
+    #[test]
+    fn provider_metadata_payload_exports_actual_configured_wire_api() {
+        // Routed acceptance (PR-2/PR-5 evidence loop) must be able to read the
+        // actual configured wire_api from the runtime metadata payload: the
+        // value comes from the provider's own enum, never inferred from
+        // protocol/base_url, and uses the canonical snake_case serde names.
+        let mut config = route_test_config();
+        config.providers.push(dtoken_types::ProviderProfile {
+            id: "ocxlocal".to_string(),
+            name: "OpenCodex Local".to_string(),
+            kind: dtoken_types::ProviderKind::LocalChain,
+            protocol: Protocol::OpenAi,
+            base_url: "http://127.0.0.1:10100/v1".to_string(),
+            api_key_ref: None,
+            models: vec![],
+            timeout_ms: 30_000,
+            healthcheck_path: None,
+            wire_api: dtoken_types::ProviderWireApi::OpenAiResponses,
+        });
+        let payload = provider_metadata_payload(&config.providers);
+        let by_id: std::collections::HashMap<String, serde_json::Value> = payload
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|entry| (entry["id"].as_str().unwrap().to_string(), entry.clone()))
+            .collect();
+        assert_eq!(
+            by_id["ocxlocal"]["wire_api"], "open_ai_responses",
+            "Responses provider must expose canonical wire_api"
+        );
+        assert_eq!(
+            by_id["provider-a"]["wire_api"], "open_ai_chat",
+            "Chat provider must expose canonical wire_api"
+        );
+        // Payload also flows through active_config / export surfaces.
+        let state = AppState::new(config);
+        let config_section = active_config_payload(&state);
+        let exported: Vec<&str> = config_section["providers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|entry| entry["wire_api"].as_str().unwrap())
+            .collect();
+        assert!(exported.contains(&"open_ai_responses"));
+        assert!(exported.contains(&"open_ai_chat"));
     }
 
     #[test]
@@ -19065,6 +19134,7 @@ mod tests {
             request_id,
             &decision,
             Some("model-a".to_string()),
+            Some("model-a".to_string()),
             Protocol::OpenAi,
             &compression,
             &attribution,
@@ -19243,6 +19313,8 @@ mod tests {
             timestamp_ms: 1,
             agent: Some("test-agent".to_string()),
             instance_id: None,
+            project_id: None,
+            user_target_model: None,
             input_protocol: dtoken_types::Protocol::OpenAi,
             provider_id: Some("test-provider".to_string()),
             route_id: Some("test-route".to_string()),
@@ -19270,7 +19342,7 @@ mod tests {
         );
         mark_upstream_outcome(&upstream, &mut request_log, &mut event);
 
-        // Provider-reported usage is copied verbatim, never derived.
+        // Projected from normalized provider-reported usage, never derived.
         assert_eq!(request_log.provider_input_tokens, Some(900));
         assert_eq!(request_log.provider_output_tokens, Some(120));
         let accounting = request_log.context_accounting.as_ref().unwrap();
@@ -19286,6 +19358,76 @@ mod tests {
         assert_eq!(provider_actual.usage.input.normalized_total, Some(900));
         assert_eq!(provider_actual.usage.output_tokens, Some(120));
         assert_eq!(event.context_accounting, request_log.context_accounting);
+    }
+
+    #[test]
+    fn build_request_log_projects_scope_and_user_target_into_receipt() {
+        // Request-scope project identity and the user-requested model are
+        // explicit evidence captured at build time; the receipt projection
+        // must carry them and derive provider_or_model_changed from them.
+        let decision = RouteDecision {
+            request_id: Uuid::new_v4(),
+            route_id: "route-a".to_string(),
+            provider_id: "provider-a".to_string(),
+            chain_mode: ChainMode::Direct,
+            compression_policy: CompressionPolicy::Balanced,
+            reason: "test".to_string(),
+            input_protocol: Some(Protocol::OpenAi),
+            output_protocol: Some(Protocol::OpenAi),
+        };
+        let compression = CompressionSummary {
+            original_tokens: 1000,
+            compressed_tokens: 400,
+            tokens_saved: 600,
+            savings_percent: 60.0,
+            elapsed_us: 1000,
+            transforms_applied: vec!["repeat_line_fold".to_string()],
+            fallback_reason_code: None,
+            body: json!({}),
+            context_accounting: None,
+        };
+        let attribution = RequestAttribution {
+            agent: Some("test-agent".to_string()),
+            instance_id: Some("instance-a".to_string()),
+            project_id: Some("project-a".to_string()),
+        };
+        let log = build_request_log(
+            decision.request_id,
+            &decision,
+            Some("routed-model".to_string()),
+            Some("user-model".to_string()),
+            Protocol::OpenAi,
+            &compression,
+            &attribution,
+        );
+        assert_eq!(log.project_id.as_deref(), Some("project-a"));
+        assert_eq!(log.user_target_model.as_deref(), Some("user-model"));
+
+        let receipt = OptimizationReceipt::from_request_log(&log);
+        assert_eq!(receipt.project_scope.as_deref(), Some("project-a"));
+        assert_eq!(receipt.user_target_model.as_deref(), Some("user-model"));
+        assert_eq!(receipt.model.as_deref(), Some("routed-model"));
+        assert_eq!(receipt.provider_or_model_changed, Some(true));
+        // Blank project identity stays None on the log and the receipt.
+        let blank_attribution = RequestAttribution {
+            agent: None,
+            instance_id: None,
+            project_id: Some("   ".to_string()),
+        };
+        let blank_log = build_request_log(
+            decision.request_id,
+            &decision,
+            None,
+            None,
+            Protocol::OpenAi,
+            &compression,
+            &blank_attribution,
+        );
+        assert_eq!(blank_log.project_id, None);
+        assert_eq!(
+            OptimizationReceipt::from_request_log(&blank_log).project_scope,
+            None
+        );
     }
 
     #[test]
