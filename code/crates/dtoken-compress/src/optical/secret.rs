@@ -3,7 +3,7 @@
 //! This module deliberately prefers preserving a whole block as native text over
 //! risking duplication into a rendered image or exact-value sidecar.
 
-pub const SECRET_CLASSIFIER_REVISION: &str = "dtoken-secret-classifier-v4";
+pub const SECRET_CLASSIFIER_REVISION: &str = "dtoken-secret-classifier-v5";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SecretKind {
@@ -76,6 +76,17 @@ impl SecretClassifier {
             }
             if let Some((label, value)) = split_labeled_value(token) {
                 let value = clean_token(value);
+                // In compact structured text the remainder after a key's
+                // separator may run straight into the next key
+                // (`"api_key_ref":null,"base_url":"https://..."`). Only the
+                // first delimited chunk is this label's actual value;
+                // trailing keys must not contribute entropy to its check.
+                let value = value
+                    .split(|character: char| {
+                        character.is_whitespace() || matches!(character, '"' | '\'' | ',' | ';')
+                    })
+                    .next()
+                    .unwrap_or_default();
                 let value_lower = value.to_ascii_lowercase();
                 if is_provider_credential(value, &value_lower) {
                     return finding(SecretKind::ProviderCredential);
@@ -175,13 +186,15 @@ fn contains_spaced_labeled_secret(text: &str) -> bool {
                     return false;
                 }
 
-                let words = left
-                    .split(|character: char| {
-                        character.is_whitespace()
-                            || matches!(character, '"' | '\'' | ',' | ';' | '{' | '[' | '(')
-                    })
-                    .filter(|word| !word.is_empty())
-                    .collect::<Vec<_>>();
+                // The label is the key name immediately before the
+                // separator. In structured text (JSON/TOML) that key is one
+                // quoted segment — spaces inside the quotes are part of the
+                // same key ("api key"). Restricting the window to that
+                // segment prevents an earlier key on the same line (e.g.
+                // `"api_key_ref"` two keys before `"base_url"`) from being
+                // misread as part of this label, which would otherwise
+                // reject benign values such as https base URLs.
+                let words = label_words_for(left);
                 (1..=words.len().min(3)).any(|width| {
                     let label = words[words.len() - width..].join(" ");
                     is_sensitive_label(&label)
@@ -189,6 +202,25 @@ fn contains_spaced_labeled_secret(text: &str) -> bool {
                 })
             })
     })
+}
+
+fn label_words_for(left: &str) -> Vec<&str> {
+    match left.rfind('"') {
+        Some(last_quote) => {
+            let after = &left[last_quote + 1..];
+            if after.trim().is_empty() {
+                left[..last_quote]
+                    .rsplit_once('"')
+                    .map(|(_, quoted_key_segment)| quoted_key_segment)
+                    .unwrap_or(after)
+            } else {
+                after
+            }
+            .split_whitespace()
+            .collect()
+        }
+        None => left.split_whitespace().collect(),
+    }
 }
 
 fn clean_token(token: &str) -> &str {
@@ -261,6 +293,9 @@ fn is_provider_credential(token: &str, lower: &str) -> bool {
         || lower.starts_with("github_pat_")
         || lower.starts_with("xoxb-")
         || lower.starts_with("xoxp-")
+        || (lower.starts_with("aiza") && token.len() >= 35)
+        || lower.starts_with("gocspx-")
+        || (lower.starts_with("ya29.") && token.len() >= 30)
         || ((token.starts_with("AKIA") || token.starts_with("ASIA"))
             && token.len() == 20
             && token
@@ -340,6 +375,30 @@ mod tests {
     }
 
     #[test]
+    fn detects_google_provider_credentials() {
+        for value in [
+            "AIzaSyA1234567890abcdefghijklmnopqrstuv",
+            "GOCSPX-abcdefghijklmnopqrstuvwxyz123456",
+            "ya29.abcdefghijklmnopqrstuvwxyz1234567890",
+            "google_api_key=AIzaSyA1234567890abcdefghijklmnopqrstuv",
+            "client_secret=GOCSPX-abcdefghijklmnopqrstuvwxyz123456",
+            r#"{"api_key":"ya29.abcdefghijklmnopqrstuvwxyz1234567890"}"#,
+        ] {
+            assert!(contains_secret_like(value), "expected secret: {value}");
+        }
+        for value in [
+            "AIza",
+            "aiza",
+            "AIzaSyA", // below the reasonable-length threshold
+            "GOCSPX",  // prefix without the "-" separator is not a credential
+            "ya29.0",
+            "note=prefix aiza-notes are documentation, not credentials",
+        ] {
+            assert!(!contains_secret_like(value), "expected public: {value}");
+        }
+    }
+
+    #[test]
     fn detects_fullwidth_and_zero_width_obfuscation() {
         assert!(contains_secret_like("ｔｏｋｅｎ＝abc123secret"));
         assert!(contains_secret_like("to\u{200b}ken=abc123secret"));
@@ -370,5 +429,18 @@ mod tests {
         assert!(!contains_secret_like(
             "INFO author completed authentication documentation"
         ));
+    }
+
+    #[test]
+    fn benign_route_config_with_reference_only_credentials_is_not_a_secret() {
+        for value in [
+            r#"{"api_key_ref":null,"base_url":"https://one.example.test/v1"}"#,
+            r#"{"providers":[{"api_key_ref":null,"base_url":"https://one.example.test/v1","models":["model/test"]}]}"#,
+            "log_path: ./logs/reviewed-route.jsonl",
+            "INFO provider base_url https://one.example.test/v1",
+            r#"{"api_key_ref":"os-credential://d-token/providers/opencode-zen"}"#,
+        ] {
+            assert!(!contains_secret_like(value), "expected public: {value}");
+        }
     }
 }

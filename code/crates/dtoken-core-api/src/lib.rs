@@ -4656,12 +4656,30 @@ fn compression_decision_error_code(error: CompressionDecisionError) -> &'static 
     }
 }
 
+/// Export-safe projection of [`RuntimeConfigStatus`]: every field local
+/// runtime logic consumes is preserved (`source`, `error`, route/instance
+/// counts, `fallback_disabled`, ...), while the on-disk absolute `path` is
+/// deliberately omitted so no JSON export, CSV export, dashboard, or
+/// config-active payload can leak host filesystem layout.
+fn config_status_export_payload(status: &RuntimeConfigStatus) -> Value {
+    json!({
+        "source": status.source,
+        "loaded": status.loaded,
+        "exists": status.exists,
+        "provider_count": status.provider_count,
+        "route_count": status.route_count,
+        "instance_count": status.instance_count,
+        "fallback_disabled": status.fallback_disabled,
+        "error": status.error,
+    })
+}
+
 fn active_config_payload(state: &AppState) -> Value {
     json!({
         "source": "dtoken-owned-runtime",
         "runtime_kind": "headroom-derived",
         "external_headroom_dependency": false,
-        "config": &*state.config_status,
+        "config": config_status_export_payload(&state.config_status),
         "providers": provider_metadata_payload(&state.config.providers),
         "routes": state.config.routes,
         "instances": state.config.instances,
@@ -10480,7 +10498,7 @@ fn runtime_export_csv_payload(state: &AppState) -> String {
         "kind,request_id,timestamp_ms,agent,route_id,provider_id,input_protocol,chain_mode,tokens_before,tokens_after,tokens_saved,latency_ms,error".to_string(),
     ];
     rows.push(format!(
-        "config_status,,0,d-token,{},{},,,0,0,0,0,source={};loaded={};fallback_disabled={};path={}",
+        "config_status,,0,d-token,{},{},,,0,0,0,0,source={};loaded={};fallback_disabled={}",
         csv_escape(
             state
                 .config
@@ -10500,7 +10518,6 @@ fn runtime_export_csv_payload(state: &AppState) -> String {
         csv_escape(&state.config_status.source),
         state.config_status.loaded,
         state.config_status.fallback_disabled,
-        csv_escape(state.config_status.path.clone().unwrap_or_default()),
     ));
     for log in state.recent_request_logs(10_000) {
         rows.push(format!(
@@ -16753,6 +16770,126 @@ mod tests {
         assert!(csv_export.contains("source=desktop_active_config"));
         assert!(!json_export.to_string().contains("sk-"));
         assert!(!csv_export.contains("sk-"));
+    }
+
+    #[test]
+    fn export_surfaces_never_leak_active_config_absolute_path() {
+        let config = DtokenConfig {
+            providers: vec![dtoken_types::ProviderProfile {
+                id: "export-provider".to_string(),
+                name: "Export Provider".to_string(),
+                kind: dtoken_types::ProviderKind::Custom,
+                protocol: Protocol::OpenAi,
+                base_url: "https://example.invalid/v1".to_string(),
+                api_key_ref: Some("local-secret-ref".to_string()),
+                models: vec!["model-a".to_string()],
+                timeout_ms: 30_000,
+                healthcheck_path: None,
+                wire_api: dtoken_types::ProviderWireApi::OpenAiChat,
+            }],
+            routes: vec![dtoken_types::RouteProfile {
+                id: "export-route".to_string(),
+                name: "Export Route".to_string(),
+                input_protocol: Protocol::OpenAi,
+                instance_id: "export-instance".to_string(),
+                target_provider_id: "export-provider".to_string(),
+                fallback_provider_id: None,
+                chain_mode: ChainMode::Direct,
+                compression_policy: CompressionPolicy::Balanced,
+                bind_host: "127.0.0.1".to_string(),
+                local_port: 18001,
+            }],
+            instances: vec![],
+            provider_cache_policies: vec![],
+            output_shaping_policies: vec![],
+            optical: Default::default(),
+        };
+        for (label, absolute_path) in [
+            (
+                "windows",
+                "C:/Users/example/AppData/Local/d-token/active-config/dtoken-config.json",
+            ),
+            (
+                "macos",
+                "/Users/example/Library/Application Support/d-token/active-config/dtoken-config.json",
+            ),
+        ] {
+            let status = RuntimeConfigStatus::from_config(
+                "desktop_active_config",
+                Some(absolute_path.to_string()),
+                &config,
+            );
+            let state = AppState::new_with_config_status(config.clone(), status.clone());
+            let json_export = runtime_export_json_payload(&state);
+            let csv_export = runtime_export_csv_payload(&state);
+            let dashboard = dashboard_payload_for_state(&state);
+            let config_active = active_config_payload(&state);
+
+            // Internal runtime status keeps the real path for local logic.
+            assert_eq!(
+                state.config_status.path.as_deref(),
+                Some(absolute_path),
+                "{label}: internal path must be preserved"
+            );
+
+            for (surface_name, surface) in [
+                ("json_export", &json_export),
+                ("dashboard", &dashboard),
+                ("config_active", &config_active),
+            ] {
+                let config_section = if surface_name == "config_active" {
+                    surface["config"].clone()
+                } else {
+                    surface["active_config"]["config"].clone()
+                };
+                assert_eq!(
+                    config_section["source"], "desktop_active_config",
+                    "{label} {surface_name}: source enum must be preserved"
+                );
+                assert_eq!(
+                    config_section["route_count"], 1,
+                    "{label} {surface_name}: route_count must be preserved"
+                );
+                assert_eq!(
+                    config_section["fallback_disabled"], true,
+                    "{label} {surface_name}: fallback must be preserved"
+                );
+                assert!(
+                    config_section.get("path").is_none(),
+                    "{label} {surface_name}: path key must be omitted"
+                );
+                let serialized = surface.to_string();
+                assert!(
+                    !serialized.contains(absolute_path),
+                    "{label} {surface_name}: leaked absolute path"
+                );
+                assert!(
+                    !serialized.contains("active-config/dtoken-config.json"),
+                    "{label} {surface_name}: leaked path content"
+                );
+                assert!(
+                    !serialized.contains("Application Support"),
+                    "{label} {surface_name}: leaked macos path content"
+                );
+            }
+
+            assert!(
+                !csv_export.contains("path="),
+                "{label}: CSV must drop the path field"
+            );
+            assert!(
+                !csv_export.contains(absolute_path),
+                "{label}: CSV leaked absolute path"
+            );
+            assert!(
+                !csv_export.contains("active-config/dtoken-config.json"),
+                "{label}: CSV leaked path content"
+            );
+            assert!(
+                csv_export.contains("source=desktop_active_config"),
+                "{label}: CSV must keep the source enum"
+            );
+        }
     }
 
     #[test]
