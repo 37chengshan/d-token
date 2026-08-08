@@ -460,9 +460,11 @@ fn fixture_syntax_checks_remain_reproducible_for_supported_external_toolchains()
         "{}/tests/fixtures/code_codec/java/Sample.java",
         env!("CARGO_MANIFEST_DIR")
     );
+    let java_output = output_dir.join("java");
+    fs::create_dir_all(&java_output).expect("java output directory");
     let java_status = Command::new("javac")
         .arg("-d")
-        .arg(output_dir.join("java"))
+        .arg(&java_output)
         .arg(&java)
         .status()
         .expect("javac available");

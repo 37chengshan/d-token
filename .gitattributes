@@ -1,0 +1,3 @@
+# Keep codec fixture bytes stable across platforms: the corpus digests are
+# pinned over LF content, so Windows checkouts must not convert to CRLF.
+code/crates/dtoken-compress/tests/fixtures/** text eol=lf
