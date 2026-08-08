@@ -1632,9 +1632,14 @@ mod tests {
 
         let rewrite = lifecycle.command_rewrite();
         assert!(rewrite.use_managed_wrapper);
+        // install_hook persists the canonical bridge path in the manifest, so
+        // compare against the canonicalized fixture path (on Windows
+        // fs::canonicalize returns a \\?\ extended-length path).
+        let canonical_fake_bridge =
+            fs::canonicalize(fake_bridge_path()).expect("canonical fake bridge");
         assert_eq!(
             rewrite.executable.as_deref(),
-            Some(fake_bridge_path().as_path())
+            Some(canonical_fake_bridge.as_path())
         );
         let managed_root =
             fs::canonicalize(root.path().join("managed-rtk")).expect("canonical root");

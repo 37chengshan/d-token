@@ -1980,6 +1980,168 @@
       "summary": "push windows projection fail-closed test fix",
       "head_before": "9be1316",
       "remote": "origin"
+    },
+    {
+      "id": "3fb6d9e2-4743-40d3-a731-84d0101db8a4",
+      "timestamp": "2026-08-08T21:09:54+08:00",
+      "operation": "push",
+      "branch": "codex/final/autoconfig-cutover",
+      "summary": "Publish autoconfig cutover slice",
+      "head_before": "3bedd52f2ff584ad7acf883718733775c0e10f6a",
+      "remote": "origin"
+    },
+    {
+      "id": "8a1815d7-1ae9-4d10-a427-42fa39622684",
+      "timestamp": "2026-08-08T21:09:54+08:00",
+      "operation": "push",
+      "branch": "codex/final/ui-polish",
+      "summary": "Publish UI polish slice",
+      "head_before": "6552b6c0a1562b3b9f20219268658c3677a9d4e4",
+      "remote": "origin"
+    },
+    {
+      "id": "9c08ebd7-f71d-4b9a-a102-3d5b62df2ad1",
+      "timestamp": "2026-08-08T21:09:54+08:00",
+      "operation": "push",
+      "branch": "codex/final/config-acceptance",
+      "summary": "Publish config acceptance slice",
+      "head_before": "e0b395f47a9a36af253471501af879b093c3429b",
+      "remote": "origin"
+    },
+    {
+      "id": "ad8d5194-d9e0-4556-839d-b65645c50491",
+      "timestamp": "2026-08-08T21:09:54+08:00",
+      "operation": "push",
+      "branch": "codex/final/codex-ocxlocal-acceptance",
+      "summary": "Publish Codex acceptance slice",
+      "head_before": "09bdcfdfd6d2852d3d836b50d9af8a1001428065",
+      "remote": "origin"
+    },
+    {
+      "id": "c16d8f3c-578e-4054-9ba5-c134fd2ed545",
+      "timestamp": "2026-08-08T21:09:55+08:00",
+      "operation": "push",
+      "branch": "codex/final/cc-switch-aba-evidence",
+      "summary": "Publish cc-switch evidence slice",
+      "head_before": "0a9c31e76df55b13962c030e2868772f7a7ad24d",
+      "remote": "origin"
+    },
+    {
+      "id": "f05f11f6-8220-48a2-8e11-b9deeaf3ccfd",
+      "timestamp": "2026-08-08T21:09:55+08:00",
+      "operation": "push",
+      "branch": "codex/final/upgrade-autostart-credential",
+      "summary": "Publish platform round-trip slice",
+      "head_before": "d438ac7223ff505a4acc46ec1c051d46df0fcfcb",
+      "remote": "origin"
+    },
+    {
+      "id": "9fcc21f0-f5bb-4688-a19a-791a8b3da3de",
+      "timestamp": "2026-08-08T21:09:55+08:00",
+      "operation": "push",
+      "branch": "codex/final/aimami-provenance",
+      "summary": "Publish AiMaMi provenance slice",
+      "head_before": "32c9767d26e80a07ecf3297e6c78bb39c1f88fca",
+      "remote": "origin"
+    },
+    {
+      "id": "ce8fe0c8-41d8-4e3a-bbcf-f72af565c930",
+      "timestamp": "2026-08-08T21:09:55+08:00",
+      "operation": "push",
+      "branch": "codex/final/cbm-notice-drift",
+      "summary": "Publish Codebase Memory provenance slice",
+      "head_before": "1c85fd0f6519375c5a66fd5a431f42a3f47db19e",
+      "remote": "origin"
+    },
+    {
+      "id": "6ef46e8a-f91e-4c15-8e3f-ab62ae55be88",
+      "timestamp": "2026-08-08T21:09:55+08:00",
+      "operation": "push",
+      "branch": "codex/final/headroom-pin",
+      "summary": "Publish Headroom provenance slice",
+      "head_before": "39097f446c3213ee7e4c2e6db62b8669a95d3bfb",
+      "remote": "origin"
+    },
+    {
+      "id": "8661898f-1b3f-4b33-a360-15e7fb3edab8",
+      "timestamp": "2026-08-08T21:09:55+08:00",
+      "operation": "push",
+      "branch": "codex/final/leanctx-pin",
+      "summary": "Publish LeanCTX provenance slice",
+      "head_before": "16066804ef58fd089d89f33090aba4b9746e395d",
+      "remote": "origin"
+    },
+    {
+      "id": "7e3b8e3b-7f43-47d0-a1b7-c799592f293d",
+      "timestamp": "2026-08-08T21:09:55+08:00",
+      "operation": "push",
+      "branch": "codex/final/pxpipe-pin",
+      "summary": "Publish pxpipe provenance slice",
+      "head_before": "24d798a415b86203cde760dbf383b256edb138f0",
+      "remote": "origin"
+    },
+    {
+      "id": "5bf6d19f-5041-44f4-8082-a87193d8ec91",
+      "timestamp": "2026-08-08T21:09:55+08:00",
+      "operation": "push",
+      "branch": "codex/final/rtk-pin",
+      "summary": "Publish RTK provenance slice",
+      "head_before": "40c6bafe5be26989a85d7a2f728ee9b655e88b3a",
+      "remote": "origin"
+    },
+    {
+      "id": "a20fcd17-56a6-4302-8f9e-70f5b6ea7876",
+      "timestamp": "2026-08-08T21:14:05+08:00",
+      "operation": "merge",
+      "branch": "codex/final/candidate-integration",
+      "summary": "Integrate reviewed autoconfig UI config and Codex slices PR 9-12",
+      "head_before": "9454668a4e39c6b180c2200040637a51578187fd",
+      "remote": null
+    },
+    {
+      "id": "85b3c207-59d2-4d82-b9d6-cc542637cc72",
+      "timestamp": "2026-08-08T21:14:05+08:00",
+      "operation": "merge",
+      "branch": "codex/final/candidate-integration",
+      "summary": "Integrate reviewed gate and platform evidence slices PR 13-14",
+      "head_before": "9454668a4e39c6b180c2200040637a51578187fd",
+      "remote": null
+    },
+    {
+      "id": "4bdc6c3f-f9c6-465b-a095-4f9377a193cf",
+      "timestamp": "2026-08-08T21:14:05+08:00",
+      "operation": "merge",
+      "branch": "codex/final/candidate-integration",
+      "summary": "Integrate reviewed provenance slices PR 15-20",
+      "head_before": "9454668a4e39c6b180c2200040637a51578187fd",
+      "remote": null
+    },
+    {
+      "id": "fcdcfcce-d853-46c8-adaa-66e8c1395806",
+      "timestamp": "2026-08-08T21:18:47+08:00",
+      "operation": "branch-create",
+      "branch": "codex/final/version-unification",
+      "summary": "Create version unification slice from integrated candidate",
+      "head_before": "927958d7f161c92d39f4ad7a3d88d797e8e7b7ea",
+      "remote": null
+    },
+    {
+      "id": "6652b171-e478-4f96-9950-e0ab2bfde667",
+      "timestamp": "2026-08-08T21:18:47+08:00",
+      "operation": "branch-create",
+      "branch": "codex/final/verification-orchestration",
+      "summary": "Create final verification orchestration slice",
+      "head_before": "927958d7f161c92d39f4ad7a3d88d797e8e7b7ea",
+      "remote": null
+    },
+    {
+      "id": "f7adfcaf-37dc-4486-9d00-0c5bb7e7d89d",
+      "timestamp": "2026-08-08T21:43:53+08:00",
+      "operation": "commit",
+      "branch": "codex/final-release-iteration",
+      "summary": "fix: compare canonical bridge path in managed RTK rewrite test",
+      "head_before": "33b4036",
+      "remote": null
     }
   ]
 }
