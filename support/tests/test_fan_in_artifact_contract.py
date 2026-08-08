@@ -75,6 +75,8 @@ class FanInArtifactContractTests(unittest.TestCase):
             "win_candidate_id": "candidate-win",
             "same_commit": True,
             "same_source_digest": True,
+            "source_digest_anchor": "commit-tree-object-sha256",
+            "expected_tree_digest": "b" * 64,
             "passed": 32,
             "total": 32,
             "critical_passed": 16,
@@ -92,6 +94,8 @@ class FanInArtifactContractTests(unittest.TestCase):
         restored = json.loads(serialized)
         self.assertEqual(restored["mode"], "fan-in-artifact-contract")
         self.assertTrue(restored["ok"])
+        self.assertEqual(restored["source_digest_anchor"], "commit-tree-object-sha256")
+        self.assertEqual(restored["expected_tree_digest"], "b" * 64)
         self.assertEqual(len(restored["blockers"]), 0)
 
     def test_fail_closed_when_platform_missing(self) -> None:
@@ -188,6 +192,53 @@ class FanInArtifactContractTests(unittest.TestCase):
     def test_script_writes_artifact_to_output_dir(self) -> None:
         text = SCRIPT.read_text(encoding="utf-8")
         self.assertIn("fan-in-artifact-contract-", text)
+
+    def test_source_digest_uses_tree_anchor(self) -> None:
+        """The source digest anchor must be the content-bearing tree digest.
+
+        The legacy `git diff --binary HEAD -- .` anchor is the constant
+        sha256 of an empty diff at any clean checkout and can never
+        discriminate candidates (EVID-1).  The fan-in must independently
+        compute sha256 of the expected commit's tree object id and require
+        the candidates' digests to match it; both digest fields (`source_digest`
+        for post-cutover producers, legacy `tracked_diff_sha256` fallback)
+        must be read, and the old anchor label must be gone.
+        """
+        text = SCRIPT.read_text(encoding="utf-8")
+        self.assertIn("^{tree}", text,
+                      "script must compute the expected commit tree object id")
+        self.assertIn("commit-tree-object-sha256", text,
+                      "script must declare the tree anchor")
+        self.assertIn("Get-TextSha256", text,
+                      "script must compute the digest from the tree id")
+        self.assertIn("expected_tree_digest", text,
+                      "report must expose the independently computed tree digest")
+        self.assertNotIn("publish-job-independent-checkout-git-diff", text,
+                         "the old empty-diff anchor label must be removed")
+        self.assertIn('Properties["source_digest"]', text,
+                      "post-cutover `source_digest` field must be read first")
+        self.assertIn("tracked_diff_sha256", text,
+                      "legacy candidate digest field must remain as a fallback")
+
+    def test_producer_stamps_source_digest_tree_anchor(self) -> None:
+        """The candidate producer must stamp the tree-anchor digest.
+
+        The fan-in reads `source_digest` from the candidate JSON; the
+        producer (release_candidate_provenance.ps1) must stamp it as
+        sha256 of the ASCII hex bytes of `git rev-parse HEAD^{tree}` while
+        retaining the legacy `tracked_diff_sha256` field for compatibility.
+        """
+        producer = Path(__file__).resolve().parents[1] / "scripts" / "release_candidate_provenance.ps1"
+        self.assertTrue(producer.is_file(), "candidate provenance script missing")
+        text = producer.read_text(encoding="utf-8")
+        self.assertIn('"rev-parse", "HEAD^{tree}"', text,
+                      "producer must resolve the commit tree object id")
+        self.assertIn("source_digest = $SourceDigest", text,
+                      "producer must stamp the tree-anchor source digest")
+        self.assertIn("tracked_diff_sha256 = $TrackedDiffSha256", text,
+                      "producer must retain the legacy tracked_diff field")
+        self.assertIn("Get-ReleaseSha256Text $TreeIdResult.text", text,
+                      "source_digest must be sha256 of the tree id text")
 
     def test_expected_commit_auto_detection(self) -> None:
         """The script must auto-detect expected commit from HEAD when not provided."""
