@@ -63,8 +63,22 @@ impl SecretClassifier {
             return finding(SecretKind::LabeledCredential);
         }
 
-        for token in canonical.split_whitespace().map(clean_token) {
+        // Tokenize on whitespace AND structured-text delimiters so compact
+        // JSON (`{"api_key":"sk-..."}`, `{"base_url":"...","api_key_ref":
+        // "sk-..."}`) and handwritten compact config arrive as separate
+        // key/value chunks instead of one whitespace blob whose first key
+        // hides every later credential.
+        let tokens = canonical
+            .split(|character: char| {
+                character.is_whitespace() || matches!(character, '"' | '\'' | ',' | ';')
+            })
+            .map(clean_token)
+            .collect::<Vec<_>>();
+        let mut index = 0usize;
+        while index < tokens.len() {
+            let token = tokens[index];
             if token.is_empty() {
+                index += 1;
                 continue;
             }
             let token_lower = token.to_ascii_lowercase();
@@ -74,33 +88,47 @@ impl SecretClassifier {
             if is_jwt(token) {
                 return finding(SecretKind::Jwt);
             }
-            if let Some((label, value)) = split_labeled_value(token) {
-                let value = clean_token(value);
-                // In compact structured text the remainder after a key's
-                // separator may run straight into the next key
-                // (`"api_key_ref":null,"base_url":"https://..."`). Only the
-                // first delimited chunk is this label's actual value;
-                // trailing keys must not contribute entropy to its check.
-                let value = value
-                    .split(|character: char| {
-                        character.is_whitespace() || matches!(character, '"' | '\'' | ',' | ';')
-                    })
-                    .next()
-                    .unwrap_or_default();
-                let value_lower = value.to_ascii_lowercase();
-                if is_provider_credential(value, &value_lower) {
-                    return finding(SecretKind::ProviderCredential);
-                }
-                if is_jwt(value) {
-                    return finding(SecretKind::Jwt);
-                }
-                if is_sensitive_label(label) && !value.is_empty() {
+            // Credential-store references (`os-credential://`, `wincred://`,
+            // `keychain://`) are identifiers, not secret material — but only
+            // while opaque. A reference with userinfo, query, fragment, or
+            // whitespace carries credential material and is classified.
+            if is_credential_reference_like(token) {
+                if !is_opaque_credential_reference(token) {
                     return finding(SecretKind::LabeledCredential);
                 }
-                if is_credential_label(label) && looks_high_entropy(value) {
-                    return finding(SecretKind::HighEntropyCredential);
+                index += 1;
+                continue;
+            }
+            if let Some((label, value)) = split_labeled_value(token) {
+                if let Some(finding) = classified_labeled_value(label, value) {
+                    return Some(finding);
+                }
+                // A label chunk whose separator has no inline value
+                // (`api_key:` in handwritten `api_key: value`) still pairs
+                // with the next chunk below.
+                if !value.is_empty() || (!token.ends_with('=') && !token.ends_with(':')) {
+                    index += 1;
+                    continue;
                 }
             }
+            // Structured text splits a key and its value across chunks:
+            // `"api_key":"sk-..."` yields `api_key`, `:`, `sk-...` and
+            // handwritten `api_key: value` yields `api_key:`, `value`.
+            // Pair the label chunk with the following value chunk so compact
+            // configs get the same labeled checks as spaced configs.
+            let trailing_label = token.ends_with('=') || token.ends_with(':');
+            if trailing_label && index + 1 < tokens.len() {
+                let label = token.trim_end_matches(['=', ':']);
+                if let Some(finding) = classified_labeled_value(label, tokens[index + 1]) {
+                    return Some(finding);
+                }
+            } else if index + 2 < tokens.len() && matches!(tokens[index + 1], "=" | ":") {
+                let label = token;
+                if let Some(finding) = classified_labeled_value(label, tokens[index + 2]) {
+                    return Some(finding);
+                }
+            }
+            index += 1;
         }
 
         None
@@ -113,6 +141,79 @@ impl SecretClassifier {
 
 pub fn contains_secret_like(text: &str) -> bool {
     SecretClassifier.contains_secret(text)
+}
+
+/// Labeled-value checks shared by whitespace tokens, compact structured
+/// chunks, and the spaced-label scan: provider prefixes, JWTs, sensitive
+/// labels, and high-entropy credential labels — with an exemption for
+/// opaque OS credential-store references.
+fn classified_labeled_value(label: &str, value: &str) -> Option<SecretFinding> {
+    let value = clean_token(value);
+    // In compact structured text the remainder after a key's separator may
+    // run straight into the next key (`"api_key_ref":null,"base_url":
+    // "https://..."`). Only the first delimited chunk is this label's
+    // actual value; trailing keys must not contribute entropy to its check.
+    let value = value
+        .split(|character: char| {
+            character.is_whitespace() || matches!(character, '"' | '\'' | ',' | ';')
+        })
+        .next()
+        .unwrap_or_default();
+    let value_lower = value.to_ascii_lowercase();
+    if is_provider_credential(value, &value_lower) {
+        return finding(SecretKind::ProviderCredential);
+    }
+    if is_jwt(value) {
+        return finding(SecretKind::Jwt);
+    }
+    if is_sensitive_label(label) && !value.is_empty() {
+        return finding(SecretKind::LabeledCredential);
+    }
+    if is_credential_label(label) {
+        if is_credential_reference_like(value) {
+            if is_opaque_credential_reference(value) {
+                return None;
+            }
+            return finding(SecretKind::LabeledCredential);
+        }
+        if looks_high_entropy(value) {
+            return finding(SecretKind::HighEntropyCredential);
+        }
+    }
+    None
+}
+
+/// Opaque OS credential-store reference (`os-credential://`, `wincred://`,
+/// `keychain://`) with a non-empty service and account and no userinfo,
+/// query, fragment, or whitespace. Such references are identifiers, not
+/// credential material, so numeric slugs (`gpt-4o`, `claude-3-5-sonnet`,
+/// `glm-5`) must not trip the high-entropy heuristic.
+fn is_opaque_credential_reference(value: &str) -> bool {
+    let lower = value.to_ascii_lowercase();
+    let Some(rest) = ["os-credential://", "wincred://", "keychain://"]
+        .iter()
+        .find_map(|scheme| lower.strip_prefix(scheme))
+    else {
+        return false;
+    };
+    let Some((authority, path)) = rest.split_once('/') else {
+        return false;
+    };
+    !authority.is_empty()
+        && !path.is_empty()
+        && !authority.contains(['@', '?', '#', ':', ' ', '\t', '\n', '\r'])
+        && !path.contains(['@', '?', '#', ' ', '\t', '\n', '\r', '"', '\'', ',', ';'])
+}
+
+/// True when the value starts with an allowed credential-store scheme,
+/// whether or not the reference is opaque. Reference-like strings with
+/// userinfo, query, fragment, or whitespace carry secret material and must
+/// be classified rather than exempted.
+fn is_credential_reference_like(value: &str) -> bool {
+    let lower = value.to_ascii_lowercase();
+    lower.starts_with("os-credential://")
+        || lower.starts_with("wincred://")
+        || lower.starts_with("keychain://")
 }
 
 fn finding(kind: SecretKind) -> Option<SecretFinding> {
@@ -195,10 +296,44 @@ fn contains_spaced_labeled_secret(text: &str) -> bool {
                 // misread as part of this label, which would otherwise
                 // reject benign values such as https base URLs.
                 let words = label_words_for(left);
+                // The scheme word immediately before the separator, taken
+                // from the raw left side (`api_key_ref=os-credential`,
+                // `"api_key_ref":"os-credential`, `api_key_ref:
+                // os-credential` all end in the same scheme word).
+                let scheme_word = left
+                    .split(|character: char| {
+                        character.is_whitespace()
+                            || matches!(character, '=' | ':' | '"' | '\'' | ',' | ';')
+                    })
+                    .filter(|word| !word.is_empty())
+                    .next_back()
+                    .unwrap_or("");
                 (1..=words.len().min(3)).any(|width| {
                     let label = words[words.len() - width..].join(" ");
-                    is_sensitive_label(&label)
-                        || (is_credential_label(&label) && looks_high_entropy(value))
+                    if is_sensitive_label(&label) {
+                        return true;
+                    }
+                    if !is_credential_label(&label) {
+                        return false;
+                    }
+                    // Opaque OS credential-store references are identifiers:
+                    // numeric slugs such as `gpt-4o` must not trip the
+                    // entropy heuristic. The separator inside
+                    // `os-credential://...` reconstructs the full reference
+                    // from the scheme word plus the `//` remainder.
+                    if is_opaque_credential_reference(value)
+                        || is_opaque_credential_reference(&format!("{scheme_word}:{value}"))
+                    {
+                        return false;
+                    }
+                    // ...but reference-like values with userinfo, query, or
+                    // fragment are exactly the shapes that hide secrets.
+                    if is_credential_reference_like(value)
+                        || is_credential_reference_like(&format!("{scheme_word}:{value}"))
+                    {
+                        return true;
+                    }
+                    looks_high_entropy(value)
                 })
             })
     })
@@ -399,6 +534,26 @@ mod tests {
     }
 
     #[test]
+    fn compact_structured_config_never_hides_provider_credentials() {
+        for value in [
+            r#"{"api_key":"sk-abcdefghijklmnop"}"#,
+            // The credential key is not first: the leading base_url must not
+            // hide the api_key_ref value behind its own token.
+            r#"{"base_url":"https://one.example.test/v1","api_key_ref":"sk-abcdefghijklmnop"}"#,
+            r#"{"base_url":"https://one.example.test/v1","api_key_ref":"ghp_abcdefghijklmnopqrstuvwxyz012345","routes":[]}"#,
+            r#"{"providers":[{"id":"p1","base_url":"https://one.example.test/v1","api_key_ref":"sk-ant-abcdefghijklmnop"}]}"#,
+            r#"{"api_key":"eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.signature123"}"#,
+            r#"{"openai_token":"sk-abcdefghijklmnop","base_url":"https://one.example.test/v1"}"#,
+            // Handwritten compact config without quotes.
+            "api_key_ref:sk-abcdefghijklmnop,base_url:https://one.example.test/v1",
+            // Pretty JSON with the credential key after a URL-bearing key.
+            "{\n  \"base_url\": \"https://one.example.test/v1\",\n  \"api_key_ref\": \"sk-abcdefghijklmnop\"\n}",
+        ] {
+            assert!(contains_secret_like(value), "expected secret: {value}");
+        }
+    }
+
+    #[test]
     fn detects_fullwidth_and_zero_width_obfuscation() {
         assert!(contains_secret_like("ｔｏｋｅｎ＝abc123secret"));
         assert!(contains_secret_like("to\u{200b}ken=abc123secret"));
@@ -441,6 +596,39 @@ mod tests {
             r#"{"api_key_ref":"os-credential://d-token/providers/opencode-zen"}"#,
         ] {
             assert!(!contains_secret_like(value), "expected public: {value}");
+        }
+    }
+
+    #[test]
+    fn opaque_credential_references_with_numeric_slugs_are_not_secrets() {
+        for value in [
+            "os-credential://d-token/providers/gpt-4o",
+            "os-credential://d-token/providers/claude-3-5-sonnet",
+            "os-credential://d-token/providers/glm-5",
+            "wincred://d-token/providers/gpt-4o",
+            "keychain://d-token/providers/gpt-4o",
+            r#"{"api_key_ref":"os-credential://d-token/providers/gpt-4o"}"#,
+            r#"{"api_key_ref":"os-credential://d-token/providers/claude-3-5-sonnet"}"#,
+            r#"{"api_key_ref":"os-credential://d-token/providers/glm-5"}"#,
+            r#"{"api_key_ref":"wincred://d-token/providers/gpt-4o"}"#,
+            r#"{"providers":[{"api_key_ref":"wincred://d-token/providers/gpt-4o"}]}"#,
+            "api_key_ref=os-credential://d-token/providers/gpt-4o",
+            "api_key_ref: os-credential://d-token/providers/claude-3-5-sonnet",
+        ] {
+            assert!(!contains_secret_like(value), "expected public: {value}");
+        }
+    }
+
+    #[test]
+    fn credential_references_with_userinfo_or_query_are_still_secrets() {
+        for value in [
+            r#"{"api_key_ref":"os-credential://user:pass@d-token/item"}"#,
+            r#"{"api_key_ref":"os-credential://d-token/item?secret=value"}"#,
+            r#"{"api_key_ref":"os-credential://d-token/item#fragment"}"#,
+            "os-credential://user:pass@d-token/item",
+            "api_key_ref=os-credential://d-token/item?secret=value",
+        ] {
+            assert!(contains_secret_like(value), "expected secret: {value}");
         }
     }
 }
