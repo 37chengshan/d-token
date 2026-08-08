@@ -421,6 +421,25 @@ class ReleaseGateStatusAggregatorContractTests(unittest.TestCase):
             self.assertEqual(upgrade["state"], "blocked",
                              "ok=true with a non-pass status must never pass")
 
+    def test_flat_merged_evidence_supports_g5_and_g7(self) -> None:
+        # The CI fan-in merge flattens platform evidence into one directory;
+        # G5 (managed-rtk) and G7 (real-routed) must be found at top level.
+        with tempfile.TemporaryDirectory() as tmp:
+            dir_ = Path(tmp)
+            write_json(dir_ / "candidate-20260805T000000Z-7536.json", {"ok": True})
+            write_json(dir_ / "real-routed-20260805T000000Z-76558.json",
+                       {"candidate_id": "G7", "status": "pass", "gate": {"ok": True}})
+            write_json(dir_ / "fan-in-artifact-contract-20260805T000000Z.json",
+                       {"ok": True, "same_commit": True, "same_source_digest": True})
+            proc = run_aggregator(dir_)
+            self.assertEqual(proc.returncode, 1)  # supplemental evidence still missing
+            report = json.loads(proc.stdout)
+            states = {g["gate"]: g["state"] for g in report["gates"]}
+            self.assertEqual(states["G5"], "passed",
+                             "flat merged managed-rtk candidate must satisfy G5")
+            self.assertEqual(states["G7"], "passed",
+                             "flat merged real-routed report must satisfy G7")
+
     def test_g7_not_satisfied_by_codex_supplemental(self) -> None:
         # Supplemental evidence must never impersonate G7 (Real OpenCode).
         with tempfile.TemporaryDirectory() as tmp:

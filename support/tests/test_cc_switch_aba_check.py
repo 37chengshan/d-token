@@ -61,20 +61,45 @@ def copy_fixture(tmp: Path, name: str) -> Path:
     return target
 
 
-def make_b_state(tmp: Path) -> Path:
-    """Private B-state copy: flips the active codex provider to the alternative.
+def flip_to_b(db: Path) -> None:
+    """Flip a private copy to the B state (active codex provider alternates).
 
     This is the only write in the test suite and it targets a private temp
     copy — it simulates what the Main agent's Computer switch does to the real
-    database between harness observations.
+    database between harness observations.  The file stays at the SAME path,
+    so all three A->B->A phases share one path fingerprint.
     """
-    b_db = copy_fixture(tmp, "b-state.db")
-    conn = sqlite3.connect(str(b_db))
+    conn = sqlite3.connect(str(db))
     conn.execute("UPDATE providers SET is_current = 0 WHERE app_type = 'codex' AND is_current = 1")
     conn.execute("UPDATE providers SET is_current = 1 WHERE id = 'fixture-codex-alt'")
     conn.commit()
     conn.close()
-    return b_db
+
+
+def collect_aba_phases(tmp: Path, db_name: str = "live.db") -> tuple[Path, Path, Path, Path]:
+    """Collect pre / observed-b / post from the SAME database path.
+
+    The test flips the file between collections (A -> B -> A), exactly like
+    the Main agent's Computer switch on the real database.  Returns
+    (pre, observed_b, post, db) paths.
+    """
+    db = copy_fixture(tmp, db_name)
+    pre = tmp / "pre.json"
+    b = tmp / "b.json"
+    post = tmp / "post.json"
+    for flip, phase, out in (
+        (None, "pre", pre),
+        (flip_to_b, "observed-b", b),
+        (None, "post", post),
+    ):
+        if flip is not None:
+            flip(db)
+        elif phase == "post":
+            # Restore the A state at the same path before the post collect.
+            shutil.copy2(FIXTURE_DB, db)
+        proc = run_collect(db, phase, out)
+        assert proc.returncode == 0, f"collect {phase} failed: {proc.stderr}"
+    return pre, b, post, db
 
 
 def make_actions(tmp: Path, entries: list[dict] | None = None) -> Path:
@@ -96,11 +121,16 @@ def repo_commit() -> str:
 
 
 def repo_digest() -> str:
-    diff = subprocess.run(
-        ["git", "diff", "--binary", "HEAD", "--", "."], cwd=str(REPO_ROOT),
+    """Content-bearing source digest anchor: sha256 of the commit tree id hex.
+
+    Must mirror the harness's source_tree_digest exactly so bound-mode tests
+    reproduce the producer value (invariant to worktree dirtiness).
+    """
+    tree_id = subprocess.run(
+        ["git", "rev-parse", "HEAD^{tree}"], cwd=str(REPO_ROOT),
         capture_output=True, text=True, check=True,
-    ).stdout
-    return hashlib.sha256("\n".join(diff.splitlines()).strip().encode("utf-8")).hexdigest()
+    ).stdout.strip()
+    return hashlib.sha256(tree_id.encode("ascii")).hexdigest()
 
 
 def stable_hash(content: str) -> str:
@@ -197,13 +227,7 @@ class CcSwitchAbaHarnessContractTests(unittest.TestCase):
     def test_full_aba_roundtrip_passes_with_binding(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp = Path(tmp)
-            pre_db = copy_fixture(tmp, "a.db")
-            b_db = make_b_state(tmp)
-            post_db = copy_fixture(tmp, "a-post.db")
-            pre, b, post = tmp / "pre.json", tmp / "b.json", tmp / "post.json"
-            for db, phase, out in ((pre_db, "pre", pre), (b_db, "observed-b", b), (post_db, "post", post)):
-                proc = run_collect(db, phase, out)
-                self.assertEqual(proc.returncode, 0, f"collect {phase} failed")
+            pre, b, post, db = collect_aba_phases(tmp)
 
             b_snap = json.loads(b.read_text(encoding="utf-8"))
             pre_snap = json.loads(pre.read_text(encoding="utf-8"))
@@ -213,11 +237,17 @@ class CcSwitchAbaHarnessContractTests(unittest.TestCase):
             codex_ids = [u["provider_id"] for u in b_snap["route"]["active_upstreams"]
                          if u["app_type"] == "codex"]
             self.assertEqual(codex_ids, ["fixture-codex-alt"])
+            # All three phases were collected from the same database path.
+            self.assertEqual(pre_snap["db"]["path_fingerprint_sha256"],
+                             b_snap["db"]["path_fingerprint_sha256"])
+            post_snap = json.loads(post.read_text(encoding="utf-8"))
+            self.assertEqual(pre_snap["db"]["path_fingerprint_sha256"],
+                             post_snap["db"]["path_fingerprint_sha256"])
 
             artifact = tmp / "cc-switch-aba.json"
             proc = run_harness(
                 "verify", "--pre", str(pre), "--observed-b", str(b), "--post", str(post),
-                "--actions", str(make_actions(tmp)), "--db", str(post_db),
+                "--actions", str(make_actions(tmp)), "--db", str(db),
                 "--expected-commit", repo_commit(), "--expected-source-digest", repo_digest(),
                 "--artifact", str(artifact), "--quiet",
             )
@@ -234,6 +264,7 @@ class CcSwitchAbaHarnessContractTests(unittest.TestCase):
             self.assertIs(data["candidate"]["resolved"], True)
             self.assertEqual(data["source_digest"]["value"], repo_digest())
             self.assertIs(data["source_digest"]["resolved"], True)
+            self.assertEqual(data["source_digest"]["scope"], "commit-tree-object-sha256")
             self.assertEqual(data["db"]["writes_attempted"], 0)
             self.assertIs(data["db"]["db_unchanged_during_verify"], True)
             self.assertEqual(len(data["ledger"]["computer_actions"]), 2)
@@ -243,12 +274,12 @@ class CcSwitchAbaHarnessContractTests(unittest.TestCase):
     def test_identity_not_restored_blocks(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp = Path(tmp)
-            pre_db = copy_fixture(tmp, "a.db")
-            b_db = make_b_state(tmp)
-            pre, b, post_b = tmp / "pre.json", tmp / "b.json", tmp / "post-b.json"
-            run_collect(pre_db, "pre", pre)
-            run_collect(b_db, "observed-b", b)
-            run_collect(b_db, "post", post_b)  # switched back to B, NOT A
+            pre, b, _, db = collect_aba_phases(tmp)
+            # Switch back to B (NOT A) and collect post from the same path.
+            flip_to_b(db)
+            post_b = tmp / "post-b.json"
+            proc = run_collect(db, "post", post_b)
+            self.assertEqual(proc.returncode, 0)
             artifact = tmp / "a.json"
             proc = run_harness("verify", "--pre", str(pre), "--observed-b", str(b),
                                "--post", str(post_b), "--artifact", str(artifact), "--quiet")
@@ -320,18 +351,12 @@ class CcSwitchAbaHarnessContractTests(unittest.TestCase):
     def test_db_changed_during_verify_fails(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp = Path(tmp)
-            pre_db = copy_fixture(tmp, "a.db")
-            b_db = make_b_state(tmp)
-            post_db = copy_fixture(tmp, "a-post.db")
-            pre, b, post = tmp / "pre.json", tmp / "b.json", tmp / "post.json"
-            run_collect(pre_db, "pre", pre)
-            run_collect(b_db, "observed-b", b)
-            run_collect(post_db, "post", post)
-            with open(post_db, "ab") as handle:
+            pre, b, post, db = collect_aba_phases(tmp)
+            with open(db, "ab") as handle:
                 handle.write(b"TAMPERED-AFTER-COLLECT")
             artifact = tmp / "a.json"
             proc = run_harness("verify", "--pre", str(pre), "--observed-b", str(b),
-                               "--post", str(post), "--db", str(post_db),
+                               "--post", str(post), "--db", str(db),
                                "--artifact", str(artifact), "--quiet")
             self.assertEqual(proc.returncode, 1)
             data = json.loads(artifact.read_text(encoding="utf-8"))
@@ -342,11 +367,7 @@ class CcSwitchAbaHarnessContractTests(unittest.TestCase):
     def test_expected_commit_mismatch_blocks(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp = Path(tmp)
-            pre_db = copy_fixture(tmp, "a.db")
-            b_db = make_b_state(tmp)
-            pre, b = tmp / "pre.json", tmp / "b.json"
-            run_collect(pre_db, "pre", pre)
-            run_collect(b_db, "observed-b", b)
+            pre, b, _, _ = collect_aba_phases(tmp)
             artifact = tmp / "a.json"
             proc = run_harness("verify", "--pre", str(pre), "--observed-b", str(b),
                                "--post", str(pre), "--expected-commit", "0" * 40,
@@ -358,11 +379,7 @@ class CcSwitchAbaHarnessContractTests(unittest.TestCase):
     def test_expected_digest_mismatch_blocks(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp = Path(tmp)
-            pre_db = copy_fixture(tmp, "a.db")
-            b_db = make_b_state(tmp)
-            pre, b = tmp / "pre.json", tmp / "b.json"
-            run_collect(pre_db, "pre", pre)
-            run_collect(b_db, "observed-b", b)
+            pre, b, _, _ = collect_aba_phases(tmp)
             artifact = tmp / "a.json"
             proc = run_harness("verify", "--pre", str(pre), "--observed-b", str(b),
                                "--post", str(pre), "--expected-source-digest", "0" * 64,
@@ -374,11 +391,7 @@ class CcSwitchAbaHarnessContractTests(unittest.TestCase):
     def test_actions_with_secret_shape_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp = Path(tmp)
-            pre_db = copy_fixture(tmp, "a.db")
-            b_db = make_b_state(tmp)
-            pre, b = tmp / "pre.json", tmp / "b.json"
-            run_collect(pre_db, "pre", pre)
-            run_collect(b_db, "observed-b", b)
+            pre, b, _, _ = collect_aba_phases(tmp)
             actions = tmp / "bad-actions.json"
             actions.write_text(json.dumps([
                 {"sequence": 1, "action": "switch", "detail": "sk-abcdef0123456789abcdef"},
@@ -389,14 +402,29 @@ class CcSwitchAbaHarnessContractTests(unittest.TestCase):
                                "--artifact", str(artifact), "--quiet")
             self.assertEqual(proc.returncode, 2, "secret-shaped action entries must be rejected")
 
+    def test_phases_from_different_db_paths_block(self) -> None:
+        # An A->B->A round trip is only evidence on a SINGLE database path:
+        # a post snapshot collected from a different file must fail closed
+        # even when the identities match.
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            pre, b, _, _ = collect_aba_phases(tmp)
+            other = copy_fixture(tmp, "other-copy.db")  # same A content, different path
+            post_other = tmp / "post-other.json"
+            proc = run_collect(other, "post", post_other)
+            self.assertEqual(proc.returncode, 0)
+            artifact = tmp / "a.json"
+            proc = run_harness("verify", "--pre", str(pre), "--observed-b", str(b),
+                               "--post", str(post_other), "--artifact", str(artifact), "--quiet")
+            self.assertEqual(proc.returncode, 1)
+            data = json.loads(artifact.read_text(encoding="utf-8"))
+            self.assertEqual(data["failure"]["class"], "db_path_mismatch",
+                             "phases collected from different database paths must block")
+
     def test_check_schema_accepts_artifact_and_rejects_tampered(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp = Path(tmp)
-            pre_db = copy_fixture(tmp, "a.db")
-            b_db = make_b_state(tmp)
-            pre, b = tmp / "pre.json", tmp / "b.json"
-            run_collect(pre_db, "pre", pre)
-            run_collect(b_db, "observed-b", b)
+            pre, b, _, _ = collect_aba_phases(tmp)
             artifact = tmp / "cc-switch-aba.json"
             proc = run_harness("verify", "--pre", str(pre), "--observed-b", str(b),
                                "--post", str(pre), "--artifact", str(artifact), "--quiet")
