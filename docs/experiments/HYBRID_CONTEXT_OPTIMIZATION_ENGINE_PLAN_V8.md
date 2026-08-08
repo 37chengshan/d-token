@@ -36,7 +36,7 @@ PreserveText
 
 ### 1.1 上游参照
 
-- pxpipe 固定 commit：`7b7d6efa42926a73b1bd709b5f6d1af1ae679947`。
+- pxpipe 固定 commit：`0ceabbed941cf7e95d395153825e944ea9f82e2c`（v0.12.0 release，2026-08-06；旧固定 `7b7d6efa42926a73b1bd709b5f6d1af1ae679947`/v0.8.0 标注为历史）。
 - 许可证：代码 MIT；Spleen 字体 BSD-2-Clause；现有 NOTICE 继续记录来源、字体和独立实现边界。
 - 只复用公开思想、测试合同和已审计字体数据；生产实现仍由 d-token Rust runtime 所有。
 

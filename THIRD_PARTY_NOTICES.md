@@ -86,8 +86,8 @@ lean-ctx informed behavior studies for the LeanCTX / Context Bus / Context Relay
 ### pxpipe
 
 - Upstream: `teamchong/pxpipe`
-- Pinned comparison commit: `7b7d6efa42926a73b1bd709b5f6d1af1ae679947`
-- License: MIT
+- Pinned comparison commit: `0ceabbed941cf7e95d395153825e944ea9f82e2c` (v0.12.0 release, 2026-08-06; supersedes `7b7d6efa42926a73b1bd709b5f6d1af1ae679947` / v0.8.0, kept as historical)
+- License: MIT (unchanged between pins; no NOTICE file upstream)
 
 pxpipe informed public evaluation ideas around optical context representation. d-token's Rust renderer, request IR, patcher, routing and safety gates are independently implemented.
 
