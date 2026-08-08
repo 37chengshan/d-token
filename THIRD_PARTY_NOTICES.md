@@ -65,14 +65,16 @@ The projects below informed behavior studies or evaluation design. Their source 
 
 ### Headroom
 
-- Upstream: `headroomlabs-ai/headroom`
-- Pinned comparison tag/commit: `v0.33.0` / `28aa53dc7ca51e687cc719c3fe160f3be50c6570`
-- Current comparison baseline (main HEAD, fetched 2026-08-02): `01df2452529a86c689cf226fecd5918cc5d19676`
-- Latest stable tag (released 2026-08-05, after the current baseline, not yet evaluated): `v0.34.0` / `9fd5ae3d530b5d9eb9e9127e413235a5a3b2faf6`
+- Upstream: `headroomlabs-ai/headroom` (official remote: `https://github.com/headroomlabs-ai/headroom.git`)
+- Pinned comparison tag/commit (unique current comparison pin, selected 2026-08-08 after a three-candidate drift audit): `v0.34.0` / `9fd5ae3d530b5d9eb9e9127e413235a5a3b2faf6` (released 2026-08-05; `pyproject.toml` version 0.34.0)
+- Historical baseline (superseded by `v0.34.0`): `01df2452529a86c689cf226fecd5918cc5d19676` (main HEAD as fetched 2026-08-02; `pyproject.toml` version 0.33.0; kept only to explain earlier evidence)
+- Previous release baseline (historical): `v0.33.0` / `28aa53dc7ca51e687cc719c3fe160f3be50c6570` (released 2026-07-29)
+- Post-release delta (tracked, not pinned): main `7f6950be34e29304deae0fa5138b852491b092fe` (fetched 2026-08-08; `pyproject.toml` version still 0.34.0, unreleased)
 - Historical comparison commit: `1725cd1f8376828849c0e48fd9008afa25d24fff`
-- License: Apache License 2.0
+- License: Apache License 2.0 (identical at all three candidate pins)
+- Upstream NOTICE: since `v0.34.0` it lists the vendored dashboard assets (`headroom/dashboard/static/`: Tailwind CSS 3.4.17 MIT, htmx 1.9.10 Zero-Clause BSD, Alpine.js 3.13.3 MIT, added by `#2734`); no NOTICE change from `v0.34.0` to main. d-token does not distribute those upstream assets.
 
-Versioned `headroom-*/` directories are local reference workspaces and are excluded from release source scope and desktop packages. d-token's Rust runtime is not a Python Headroom sidecar and does not silently install or launch Headroom. The CCR reversible-compression capability is a Headroom-internal component (not an independent upstream project); its provenance is covered by the Headroom pinned commit above.
+Versioned `headroom-*/` directories are local reference workspaces and are excluded from release source scope and desktop packages. d-token's Rust runtime is not a Python Headroom sidecar, does not silently install or launch Headroom, and does not depend on an external Headroom 8787 service. The CCR reversible-compression capability is a Headroom-internal component (not an independent upstream project); its provenance is covered by the Headroom pinned release above.
 
 ### lean-ctx (LeanCTX / Context Bus / Context Relay reference)
 
