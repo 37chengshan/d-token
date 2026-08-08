@@ -1,3 +1,10 @@
+/*
+ * d-token sidebar, structurally adapted from AiMaMi at
+ * 297c7af56f10fb371b77bc9b6b65aa320afcbe7e (Apache-2.0).
+ * Insets, expand/collapse and theme-segmented structure derive from AiMaMi's
+ * layout/ui sidebar; page set, metrics, motion and tokens are d-token's own.
+ * See docs/legal/THIRD_PARTY_NOTICES.md (AiMaMi 适配范围) and shell.css header.
+ */
 import { NAV, SETTINGS_NAV, type PageId } from "../../lib/nav";
 import { useT } from "../../lib/i18n";
 import { useAppearance } from "../../lib/theme-context";
