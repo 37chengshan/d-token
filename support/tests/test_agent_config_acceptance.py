@@ -1188,6 +1188,73 @@ class AgentConfigAcceptanceTests(unittest.TestCase):
         self.assertIn("cannot read config", err)
         self.assertFalse(self.artifact.exists())
 
+    def test_source_deleted_before_lstat_no_artifact(self) -> None:
+        # agent 0's probe has already run when agent 1's source is deleted
+        # before its own lstat: the record can carry no fingerprint, so the
+        # run must fail closed with NO artifact (writing a null-fingerprint
+        # artifact would violate the tool's own schema), and agent 0's
+        # staged copy must still be exact-restored first.
+        first = self.write_config("config-a.toml", b"[a]\n")
+        second = self.write_config("config-b.toml", b"[b]\n")
+        calls: list = []
+
+        def delete_side_effect(
+            argv: list[str], **kwargs: object
+        ) -> subprocess.CompletedProcess:
+            calls.append(argv)
+            if len(calls) == 1:
+                second.unlink()
+            return probe_result(Path(argv[8]), argv[7])
+
+        with patch.object(MODULE, "_communicate_probe", side_effect=delete_side_effect):
+            code, out, err = self.run_cli(
+                *self.agent_args(f"codex={first}", f"cline={second}"),
+                "--temp-root",
+                str(self.temp_root),
+                "--artifact",
+                str(self.artifact),
+            )
+        self.assertEqual(code, 2, msg=out + err)
+        self.assertIn("cannot fingerprint", err)
+        self.assertFalse(self.artifact.exists(), "no artifact with null fingerprint")
+        self.assertEqual(
+            self.staged_copy(0, "config-a.toml").read_bytes(), b"[a]\n"
+        )
+
+    def test_source_replaced_by_symlink_before_lstat_no_artifact(self) -> None:
+        # agent 0's probe has already run when agent 1's source is replaced
+        # by a symlink before its own lstat: same fail-closed guarantee as
+        # the deletion case, with no artifact and no writes through the link.
+        first = self.write_config("config-a.toml", b"[a]\n")
+        second = self.write_config("config-b.toml", b"[b]\n")
+        target = self.write_config("config-target.toml", b"[t]\n")
+        calls: list = []
+
+        def symlink_side_effect(
+            argv: list[str], **kwargs: object
+        ) -> subprocess.CompletedProcess:
+            calls.append(argv)
+            if len(calls) == 1:
+                second.unlink()
+                os.symlink(target, second)
+            return probe_result(Path(argv[8]), argv[7])
+
+        with patch.object(MODULE, "_communicate_probe", side_effect=symlink_side_effect):
+            code, out, err = self.run_cli(
+                *self.agent_args(f"codex={first}", f"cline={second}"),
+                "--temp-root",
+                str(self.temp_root),
+                "--artifact",
+                str(self.artifact),
+            )
+        self.assertEqual(code, 2, msg=out + err)
+        self.assertIn("cannot fingerprint", err)
+        self.assertFalse(self.artifact.exists(), "no artifact with null fingerprint")
+        self.assertEqual(target.read_bytes(), b"[t]\n")
+        self.assertEqual(
+            self.staged_copy(0, "config-a.toml").read_bytes(), b"[a]\n"
+        )
+
     def test_artifact_write_oserror_clean_exit(self) -> None:
         # artifact path blocked by an existing directory: clean stderr
         # exit 1, no traceback
