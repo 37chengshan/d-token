@@ -849,6 +849,7 @@ version = "0.2.0-beta.1"
 dependencies = [
  "dtoken-agent-bridge",
  "dtoken-codebase-memory",
+ "dtoken-compress",
  "dtoken-config",
  "dtoken-config-patcher",
  "dtoken-context-store",
