@@ -7,7 +7,7 @@
   "routed": true,
   "platform": "darwin",
   "agent_id": "codex",
-  "protocol": "responses",
+  "protocol": "open_ai_responses",
   "requires_openai_auth": false,
   "route": {
     "dynamic_model": true,
@@ -56,9 +56,7 @@
     "status": "no_changes_made",
     "note": "runner performs no config writes; nothing to restore"
   },
-  "candidate": {
-    "commit": "<full hex sha of git HEAD at run time>",
-    "resolved": true
-  },
+  "candidate_commit": "<40-hex git HEAD at run time>",
+  "source_digest": "<64-hex sha256 of the git HEAD^{tree} tree id bytes>",
   "redacted": true
 }

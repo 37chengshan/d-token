@@ -11,16 +11,19 @@ They do not bind any listener and do not contact the network.
 Coverage: --check-schema positive and negative, real-shape chain correlation
 via request_id (request_log -> route_decision -> event), agent normalization
 to codex, provider metadata (127.0.0.1:10100, responses protocol,
-credential_configured=false), dynamic two-model passthrough, metrics text
-parser, old fake shape rejection, request_id correlation mismatch blocking,
-zero-ledger blocking, fail-closed behavior on missing evidence, expected
-model validation-set semantics (same-window non-expected Codex concurrency
-ignored, missing expected model blocked, freshness ids/count restricted to
-correlated expected models), metrics request_count as the fresh delta (never
-a post absolute count), candidate commit binding (read-only git HEAD;
-schema-only mode records unresolved; real success fails closed with
-candidate_unbound when unresolvable), and fixture loading from
-support/fixtures/codex-ocxlocal-routed/.
+wire_api=open_ai_responses, credential_configured=false), the report
+protocol field derived from verified wire_api (never self-asserted),
+terminal success fields (request_log.error null, event status ok), dynamic
+two-model passthrough, metrics text parser, old fake shape rejection,
+request_id correlation mismatch blocking, zero-ledger blocking, fail-closed
+behavior on missing evidence, expected model validation-set semantics
+(same-window non-expected Codex concurrency ignored, missing expected model
+blocked, freshness ids/count restricted to correlated expected models),
+metrics request_count as the fresh delta (never a post absolute count),
+candidate provenance binding (top-level candidate_commit 40-hex + source_digest
+64-hex from read-only git; schema-only mode leaves both empty; real success
+fails closed with candidate_unbound when unresolvable), and fixture loading
+from support/fixtures/codex-ocxlocal-routed/.
 """
 
 from __future__ import annotations
@@ -40,7 +43,8 @@ SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "run_codex_ocxlocal_r
 REPORT_KEYS = (
     "schema_version", "mode", "status", "ok", "schema_valid", "routed", "platform",
     "agent_id", "protocol", "requires_openai_auth", "route", "runtime", "ledger",
-    "metrics", "freshness", "failure", "restore", "candidate", "redacted",
+    "metrics", "freshness", "failure", "restore", "candidate_commit", "source_digest",
+    "redacted",
 )
 
 # --- Real Rust schema shapes (dtoken-types: RequestLog, RouteDecision,      ---
@@ -96,7 +100,9 @@ def request_log(request_id: str, model: str, *, agent: str = "codex") -> dict:
 
 
 def route_decision(request_id: str) -> dict:
-    """Real RouteDecision shape (dtoken-types): NO agent_id, NO model."""
+    """Real RouteDecision shape as exported by the runtime: the stored value
+    carries protocol_label() labels ("openai"), NOT the serde enum spelling
+    ("open_ai"); no agent_id, no model."""
     return {
         "request_id": request_id,
         "route_id": ROUTE_ID,
@@ -104,8 +110,8 @@ def route_decision(request_id: str) -> dict:
         "chain_mode": "explicit",
         "compression_policy": "off",
         "reason": "routed",
-        "input_protocol": "open_ai",
-        "output_protocol": "open_ai",
+        "input_protocol": "openai",
+        "output_protocol": "openai",
     }
 
 
@@ -141,6 +147,7 @@ def real_export(
     provider: bool = True,
     provider_base: str = PROVIDER_BASE_URL,
     provider_protocol: str = "open_ai",
+    provider_wire_api: str | None = "open_ai_responses",
     provider_credential: bool = False,
     provider_models: tuple[str, ...] = ("model-a", "model-b"),
     route_meta: bool = True,
@@ -193,6 +200,7 @@ def real_export(
                     "name": "OCX-local provider",
                     "kind": "custom",
                     "protocol": provider_protocol,
+                    "wire_api": provider_wire_api,
                     "base_url": provider_base,
                     "models": list(provider_models),
                     "timeout_ms": 30_000,
@@ -311,14 +319,15 @@ class CodexOcxlocalSchemaCheckTests(unittest.TestCase):
     def test_check_schema_positive_contract_fields(self) -> None:
         _, report = self._run_check_schema()
         self.assertEqual(report["agent_id"], "codex")
-        self.assertEqual(report["protocol"], "responses")
         self.assertIs(report["requires_openai_auth"], False)
         self.assertEqual(report["mode"], "codex-ocxlocal-routed-acceptance")
         for key in REPORT_KEYS:
             self.assertIn(key, report)
-        # Schema-only proof never binds a candidate commit: no git read, no
-        # executed claim, so candidate stays unresolved.
-        self.assertEqual(report["candidate"], {"commit": "", "resolved": False})
+        # Schema-only proof never self-asserts the wire protocol and never
+        # binds provenance: no git read, no executed claim.
+        self.assertEqual(report["protocol"], "")
+        self.assertEqual(report["candidate_commit"], "")
+        self.assertEqual(report["source_digest"], "")
 
     def test_check_schema_negative_const_mismatch(self) -> None:
         module = self.module
@@ -469,6 +478,9 @@ class CodexOcxlocalEvidenceTests(unittest.TestCase):
         self.assertEqual(report["metrics"]["request_count"], 2)
         self.assertTrue(report["route"]["route_verified"])
         self.assertEqual(report["restore"]["status"], "no_changes_made")
+        # protocol is DERIVED from the verified provider metadata wire_api,
+        # never a self-asserted const.
+        self.assertEqual(report["protocol"], "open_ai_responses")
         # Upstream evidence comes from provider metadata base_url (redacted).
         self.assertEqual(report["route"]["upstream"]["host"], "127.0.0.1")
         self.assertEqual(report["route"]["upstream"]["port"], 10100)
@@ -665,6 +677,63 @@ class CodexOcxlocalEvidenceTests(unittest.TestCase):
         self.assertFalse(report["ok"])
         self.assertEqual(report["failure"]["class"], "upstream_mismatch")
 
+    def test_provider_wire_api_missing_blocked(self) -> None:
+        # Without provider metadata wire_api the chain cannot prove the
+        # OpenAiResponses wire; the report protocol must never be filled in.
+        evidence = real_evidence(self.module, provider_wire_api=None)
+        report = self._build(evidence, "--upstream-no-auth")
+        self.assertFalse(report["ok"])
+        self.assertFalse(report["routed"])
+        self.assertEqual(report["failure"]["class"], "evidence_missing")
+        self.assertEqual(report["protocol"], "")
+
+    def test_provider_wire_api_not_responses_blocked(self) -> None:
+        # wire_api = OpenAiChat is NOT the Responses wire; must be blocked.
+        evidence = real_evidence(self.module, provider_wire_api="open_ai_chat")
+        report = self._build(evidence, "--upstream-no-auth")
+        self.assertFalse(report["ok"])
+        self.assertFalse(report["routed"])
+        self.assertEqual(report["failure"]["class"], "upstream_mismatch")
+        self.assertEqual(report["protocol"], "")
+
+    def test_request_log_terminal_error_blocked(self) -> None:
+        # A routed request that finished with an error cannot prove the
+        # acceptance chain even when counts look right.
+        evidence = real_evidence(self.module)
+        evidence["export"]["request_logs"][0]["error"] = "upstream 500"
+        report = self._build(evidence, "--upstream-no-auth")
+        self.assertFalse(report["ok"])
+        self.assertFalse(report["routed"])
+        self.assertEqual(report["failure"]["class"], "correlation_mismatch")
+
+    def test_request_log_error_field_missing_blocked(self) -> None:
+        # RequestLog.error is the terminal success field; without it the
+        # request's outcome is unprovable.
+        evidence = real_evidence(self.module)
+        del evidence["export"]["request_logs"][0]["error"]
+        report = self._build(evidence, "--upstream-no-auth")
+        self.assertFalse(report["ok"])
+        self.assertEqual(report["failure"]["class"], "evidence_missing")
+
+    def test_ledger_event_status_missing_blocked(self) -> None:
+        # The ledger event must carry its terminal EventStatus.
+        evidence = real_evidence(self.module)
+        del evidence["export"]["events"][0]["status"]
+        report = self._build(evidence, "--upstream-no-auth")
+        self.assertFalse(report["ok"])
+        self.assertFalse(report["routed"])
+        self.assertEqual(report["failure"]["class"], "evidence_missing")
+
+    def test_ledger_event_status_not_ok_blocked(self) -> None:
+        # EventStatus != Ok means the routed stage did not succeed; counting
+        # the event is not enough.
+        evidence = real_evidence(self.module)
+        evidence["export"]["events"][0]["status"] = "failed"
+        report = self._build(evidence, "--upstream-no-auth")
+        self.assertFalse(report["ok"])
+        self.assertFalse(report["routed"])
+        self.assertEqual(report["failure"]["class"], "correlation_mismatch")
+
     def test_route_meta_missing_blocked(self) -> None:
         evidence = real_evidence(self.module, route_meta=False)
         report = self._build(evidence, "--upstream-no-auth")
@@ -839,33 +908,38 @@ class CodexOcxlocalFreshRunTests(unittest.TestCase):
         self.assertGreaterEqual(freshness["fresh_window_seconds"], 0)
         self.assertEqual(freshness["source_mode"], self.source_mode)
         self.assertTrue(freshness["source_fingerprint_sha256"])
-        # The artifact is bound to the candidate commit (read-only git HEAD)
-        # AND the staged source config digest; both must be present.
-        candidate = report["candidate"]
-        self.assertTrue(candidate["resolved"])
-        self.assertRegex(candidate["commit"], r"[0-9a-fA-F]{40,64}")
+        # The artifact is bound top-level to the candidate commit (40-hex,
+        # read-only git HEAD) AND the source digest (64-hex, sha256 of the
+        # bytes of `git rev-parse HEAD^{tree}` without the trailing newline —
+        # the content-bearing clean candidate tree anchor); the report
+        # protocol is derived from the verified wire_api.
+        self.assertRegex(report["candidate_commit"], r"[0-9a-f]{40}")
+        self.assertRegex(report["source_digest"], r"[0-9a-f]{64}")
+        self.assertEqual(report["protocol"], "open_ai_responses")
 
-    def test_candidate_commit_unresolved_fails_closed(self) -> None:
+    def test_candidate_provenance_unresolved_fails_closed(self) -> None:
         # A run that would otherwise pass must fail closed
-        # (candidate_unbound) when the candidate commit cannot be resolved:
-        # unbound evidence must never be claimable as routed acceptance.
+        # (candidate_unbound) when the candidate commit/source digest cannot
+        # be resolved: unbound evidence must never be claimable as routed
+        # acceptance.
         module = self.module
         pre = real_evidence(module, request_ids=("req-old",), models=("model-a",), stats_total=0, metrics_text="# empty\n")
         post = real_evidence(module, request_ids=("req-new-1", "req-new-2"), models=("model-a", "model-b"), stats_total=2)
-        with mock.patch.object(module, "git_head", return_value=("", False)):
+        with mock.patch.object(module, "git_provenance", return_value=("", "", False)):
             exit_code, report = self._run(pre, post)
         self.assertEqual(exit_code, 1)
         self.assertFalse(report["ok"])
         self.assertFalse(report["routed"])
         self.assertEqual(report["failure"]["class"], "candidate_unbound")
-        self.assertEqual(report["candidate"], {"commit": "", "resolved": False})
+        self.assertEqual(report["candidate_commit"], "")
+        self.assertEqual(report["source_digest"], "")
 
-    def test_blocked_report_keeps_class_when_commit_unresolved(self) -> None:
-        # Blocked/failed artifacts record the unbound candidate as metadata
+    def test_blocked_report_keeps_class_when_provenance_unresolved(self) -> None:
+        # Blocked/failed artifacts record the unbound provenance as metadata
         # but never mask the original failure class.
         module = self.module
         post = real_evidence(module, request_ids=("req-new-1", "req-new-2"), models=("model-a", "model-b"), stats_total=2)
-        with mock.patch.object(module, "git_head", return_value=("", False)):
+        with mock.patch.object(module, "git_provenance", return_value=("", "", False)):
             exit_code, report = self._run(
                 {"health": None, "export": None, "metrics_text": None},
                 post,
@@ -873,7 +947,8 @@ class CodexOcxlocalFreshRunTests(unittest.TestCase):
         self.assertEqual(exit_code, 1)
         self.assertFalse(report["ok"])
         self.assertEqual(report["failure"]["class"], "runtime_unreachable")
-        self.assertEqual(report["candidate"], {"commit": "", "resolved": False})
+        self.assertEqual(report["candidate_commit"], "")
+        self.assertEqual(report["source_digest"], "")
 
     def test_pre_fetch_evidence_missing_blocked(self) -> None:
         # A failed pre-fetch must fail closed: without a valid baseline,

@@ -13,24 +13,39 @@ PR-2 fail-closed contract:
     request_logs -> route_decisions -> events, with agent normalized to codex,
     provider metadata (active_config.providers) confirming
     127.0.0.1:10100, responses-family protocol, and auth-free semantics
-    (credential_configured=false). route_decision.output_protocol must be a
-    responses-family protocol. Models are forwarded from the actual
-    request_logs (ocxlocal owns dynamic switching). Any missing or mismatched
-    evidence — including zero ledger events — is blocked.
+    (credential_configured=false). The actual wire API is read from
+    provider metadata wire_api and must be responses-family
+    (ProviderWireApi::OpenAiResponses); route_decision.output_protocol must
+    also be responses-family. The report's protocol field is DERIVED from the
+    verified provider wire_api, never self-asserted. Terminal success fields
+    are checked per record — request_log.error must be null and the ledger
+    event status must be "ok" — not just record counts. Models are forwarded
+    from the actual request_logs (ocxlocal owns dynamic switching). Any
+    missing or mismatched evidence — including zero ledger events or a
+    missing/foreign wire_api — is blocked.
   - --check-schema / --dry-run only proves the report schema against the
     schema/template fixture under support/fixtures/codex-ocxlocal-routed/.
     Schema-only mode never sets ok=true and never claims a routed chain.
-  - Every real-mode artifact is bound to the candidate commit (read-only
-    git rev-parse HEAD of the repository root) plus the staged source config
-    digest (freshness.source_fingerprint_sha256); a run that would pass
-    without a resolvable commit fails closed (candidate_unbound).
+  - Every real-mode artifact is bound to the candidate commit
+    (candidate_commit, read-only git rev-parse HEAD) and the source digest
+    (source_digest, sha256 of the bytes of `git rev-parse HEAD^{tree}` with
+    the trailing newline stripped — the content-bearing clean candidate tree
+    anchor, independent of dirty worktree state), plus the staged source
+    config digest (freshness.source_fingerprint_sha256); a run that would
+    pass without resolvable provenance fails closed (candidate_unbound).
+    --dry-run / --check-schema artifacts leave candidate_commit and
+    source_digest empty.
   - Redaction: auth references (keychain:// / os-credential://) and upstream
     URLs are never emitted verbatim; only redacted fingerprints are recorded.
     Internal identifiers (request_id/provider_id/route_id) appear in failure
     details only as truncated sha256 hashes. Raw prompts and responses never
     enter the report.
   - The runner performs no config writes, so restore.status is
-    "no_changes_made"; Codex config files are never modified or read.
+    "no_changes_made". The real Codex home and auth files are never modified
+    or read: the explicitly declared --codex-config source is only stat()ed
+    and hashed, and one copy is staged into the temp CODEX_HOME for codex
+    itself. The runner reads only that declared source file (plus the
+    d-token runtime evidence endpoints), never any other config.
 """
 
 from __future__ import annotations
@@ -59,9 +74,12 @@ OCXLOCAL_EXPECTED_PORT = 10100
 RUNTIME_IDENTITY = "dtoken-runtime-local"
 CORE_API_COMPONENT = "dtoken-core-api"
 AGENT_ID = "codex"
-PROTOCOL = "responses"
 REQUIRES_OPENAI_AUTH = False
 SCHEMA_VERSION = 1
+# Canonical ProviderWireApi::OpenAiResponses serialization; the report's
+# protocol field is set to this ONLY after provider metadata wire_api is
+# verified responses-family from runtime evidence (never self-asserted).
+CANONICAL_WIRE_API = "open_ai_responses"
 
 REF_PREFIXES = ("keychain://", "os-credential://")
 
@@ -246,27 +264,43 @@ def _sha256(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
-def git_head() -> tuple[str, bool]:
-    """Read-only candidate commit resolution: git rev-parse HEAD in the repo
-    root. Returns (commit, True) when HEAD is a full 40-64 hex object id, or
-    ("", False) when git is unavailable, HEAD is not a full object id, or the
-    checkout is not a repository. Never writes anything and never prints."""
+def git_provenance() -> tuple[str, str, bool]:
+    """Read-only candidate provenance: (commit, source_digest, resolved).
+
+    commit is the full 40-64 hex git HEAD; source_digest is the 64-hex
+    sha256 of the bytes of `git rev-parse HEAD^{tree}` with the trailing
+    newline stripped — the content-bearing clean candidate tree anchor used
+    across the release evidence system, independent of any dirty worktree
+    state. Returns ("", "", False) when git is unavailable, HEAD is not a
+    full object id, the tree id cannot be produced, or the checkout is not
+    a repository. Never writes anything and never prints."""
     try:
-        result = subprocess.run(
+        head = subprocess.run(
             ["git", "rev-parse", "HEAD"],
             cwd=str(REPO_ROOT),
             capture_output=True,
             text=True,
             timeout=5,
         )
+        if head.returncode != 0:
+            return "", "", False
+        commit = head.stdout.strip()
+        if not re.fullmatch(r"[0-9a-fA-F]{40,64}", commit):
+            return "", "", False
+        tree = subprocess.run(
+            ["git", "rev-parse", "HEAD^{tree}"],
+            cwd=str(REPO_ROOT),
+            capture_output=True,
+            timeout=10,
+        )
+        if tree.returncode != 0:
+            return "", "", False
+        tree_id = tree.stdout.strip()
+        if not re.fullmatch(rb"[0-9a-fA-F]{40,64}", tree_id):
+            return "", "", False
+        return commit, hashlib.sha256(tree_id).hexdigest(), True
     except (OSError, subprocess.TimeoutExpired):
-        return "", False
-    if result.returncode != 0:
-        return "", False
-    commit = result.stdout.strip()
-    if not re.fullmatch(r"[0-9a-fA-F]{40,64}", commit):
-        return "", False
-    return commit, True
+        return "", "", False
 
 
 def _redact_id(identifier: str) -> str:
@@ -317,7 +351,9 @@ def base_report(args: argparse.Namespace) -> dict[str, Any]:
         "routed": False,
         "platform": platform.system().lower(),
         "agent_id": AGENT_ID,
-        "protocol": PROTOCOL,
+        # Derived from verified provider metadata wire_api, never self-asserted;
+        # empty until a routed chain proves OpenAiResponses.
+        "protocol": "",
         "requires_openai_auth": REQUIRES_OPENAI_AUTH,
         "route": {
             "dynamic_model": False,
@@ -346,7 +382,10 @@ def base_report(args: argparse.Namespace) -> dict[str, Any]:
             "status": "no_changes_made",
             "note": "runner performs no config writes; nothing to restore",
         },
-        "candidate": {"commit": "", "resolved": False},
+        # Candidate binding, filled by finalize_report from read-only git
+        # provenance in real mode; empty in schema-only mode.
+        "candidate_commit": "",
+        "source_digest": "",
         "redacted": True,
     }
 
@@ -496,8 +535,9 @@ def correlate_chain(
     keys: models, request_ids, request_match_count, events_observed, upstream
     (redacted record from provider metadata). Any gap (missing array,
     non-codex agent, mismatched request_id, wrong provider
-    base_url/protocol/credential semantics, missing route meta, zero events)
-    returns a fail-closed (None, (failure_class, detail)).
+    base_url/protocol/wire_api/credential semantics, non-success terminal
+    state (request_log.error set or event status != ok), missing route meta,
+    zero events) returns a fail-closed (None, (failure_class, detail)).
     """
     if not isinstance(export, dict) or export.get("source") != "dtoken-owned-runtime":
         return {}, ("evidence_missing", "export/json missing or not dtoken-owned-runtime")
@@ -540,6 +580,13 @@ def correlate_chain(
         if not protocol_is_responses(decision.get("output_protocol")):
             return {}, ("upstream_mismatch", f"route_decision output_protocol not responses for request_id={_redact_id(request_id)}")
 
+        # Terminal success state of the request itself, not just its count:
+        # RequestLog.error must be present and null for the routed request.
+        if "error" not in log:
+            return {}, ("evidence_missing", f"request_log missing terminal error field for request_id={_redact_id(request_id)}")
+        if log.get("error"):
+            return {}, ("correlation_mismatch", f"request_log terminal error set for request_id={_redact_id(request_id)}")
+
         event = next(
             (e for e in events if isinstance(e, dict) and e.get("request_id") == request_id),
             None,
@@ -549,6 +596,13 @@ def correlate_chain(
         event_agent = normalize_agent(event.get("agent_id"))
         if event_agent != AGENT_ID:
             return {}, ("correlation_mismatch", f"ledger event agent {event_agent!r} != codex for request_id={_redact_id(request_id)}")
+        # Terminal success state of the ledger event (EventStatus::Ok), not
+        # just an event count.
+        event_status = event.get("status")
+        if not isinstance(event_status, str) or not event_status:
+            return {}, ("evidence_missing", f"ledger event missing status for request_id={_redact_id(request_id)}")
+        if event_status.strip().lower() != "ok":
+            return {}, ("correlation_mismatch", f"ledger event terminal status not ok for request_id={_redact_id(request_id)}")
         matched_events += 1
 
         provider = find_provider_meta(export, provider_id)
@@ -567,6 +621,15 @@ def correlate_chain(
             return {}, ("upstream_mismatch", f"provider {_redact_id(provider_id)} base_url is not {LOOPBACK}:{expected_port}")
         if not protocol_is_responses(provider.get("protocol")):
             return {}, ("upstream_mismatch", f"provider {_redact_id(provider_id)} protocol not responses-family")
+        # The actual wire API must be provable from provider metadata:
+        # ProviderWireApi (wire_api) must be present and responses-family
+        # (OpenAiResponses). Absent wire_api means the chain cannot prove
+        # the Responses wire and is blocked.
+        wire_api = provider.get("wire_api")
+        if not isinstance(wire_api, str) or not wire_api:
+            return {}, ("evidence_missing", f"provider {_redact_id(provider_id)} wire_api missing (cannot prove OpenAiResponses)")
+        if not protocol_is_responses(wire_api):
+            return {}, ("upstream_mismatch", f"provider {_redact_id(provider_id)} wire_api not responses-family")
         if provider.get("credential_configured") is not False:
             return {}, ("upstream_mismatch", f"provider {_redact_id(provider_id)} credential_configured must be false (auth-free upstream)")
         route_meta = find_route_meta(export, route_id)
@@ -616,7 +679,8 @@ def build_report(
     metrics.request_count records the fresh metrics_delta (fail-closed below
     2), never a post absolute counter value. source_* / fresh_window fill the
     freshness record used to attribute the run (never absolute paths or raw
-    output).
+    output). protocol is derived from the verified provider wire_api
+    (CANONICAL_WIRE_API), never self-asserted.
     """
     report = base_report(args)
 
@@ -672,6 +736,10 @@ def build_report(
     if metrics_delta < 2:
         return _fail(report, "stale_only", f"fresh metrics delta {metrics_delta} < 2")
 
+    # protocol is evidence-derived: correlation already required provider
+    # metadata wire_api to be responses-family, so the canonical
+    # OpenAiResponses serialization is recorded here and nowhere else.
+    report["protocol"] = CANONICAL_WIRE_API
     report["route"]["model_forwarded"] = chain["models"]
     report["route"]["dynamic_model"] = len(set(chain["models"])) >= 2
     report["route"]["route_verified"] = True
@@ -832,29 +900,31 @@ def run_routed(args: argparse.Namespace) -> int:
 
     # Stage the source config: stat/hash before copy, then copy2 into the
     # temp CODEX_HOME as config.toml. auth.json is never copied or read.
-    staging = Path(tempfile.mkdtemp(prefix="codex-ocxlocal-acceptance-", dir=temp_root))
-    codex_home = staging / "CODEX_HOME"
-    workdir = staging / "workdir"
-    codex_home.mkdir(parents=True, exist_ok=True)
-    workdir.mkdir(parents=True, exist_ok=True)
-    config_dst = codex_home / "config.toml"
-    source_mode = source_mode_str(source)
-    source_fingerprint = file_sha256(source)
+    # The staging dir is created and cleaned up under ONE try/finally so any
+    # OSError (mkdtemp, mkdir, stat, hash, copy, re-verify) fails closed with
+    # the staging tree removed — never a leaked temp dir or raw traceback.
+    staging: Path | None = None
     try:
-        shutil.copy2(source, config_dst)
-    except OSError:
-        shutil.rmtree(staging, ignore_errors=True)
-        return _fail_report(args, "source_changed", "could not stage source config into temp CODEX_HOME")
-    if file_sha256(config_dst) != source_fingerprint:
-        shutil.rmtree(staging, ignore_errors=True)
-        return _fail_report(args, "source_changed", "staged config copy does not match the fingerprinted source")
+        staging = Path(tempfile.mkdtemp(prefix="codex-ocxlocal-acceptance-", dir=temp_root))
+        codex_home = staging / "CODEX_HOME"
+        workdir = staging / "workdir"
+        codex_home.mkdir(parents=True, exist_ok=True)
+        workdir.mkdir(parents=True, exist_ok=True)
+        config_dst = codex_home / "config.toml"
+        source_mode = source_mode_str(source)
+        source_fingerprint = file_sha256(source)
+        try:
+            shutil.copy2(source, config_dst)
+        except OSError:
+            return _fail_report(args, "source_changed", "could not stage source config into temp CODEX_HOME")
+        if file_sha256(config_dst) != source_fingerprint:
+            return _fail_report(args, "source_changed", "staged config copy does not match the fingerprinted source")
 
-    started = time.monotonic()
-    try:
+        started = time.monotonic()
         for model in models:
             ok = run_codex_exec(args.codex_bin, model, codex_home, workdir, ACCEPTANCE_PROMPT, args.timeout)
             if not ok:
-                return _fail_report(args, "execution_failed", f"codex exec for model failed or timed out")
+                return _fail_report(args, "execution_failed", "codex exec for model failed or timed out")
         fresh_window_seconds = time.monotonic() - started
 
         # Source must be unchanged for the whole run (hash + mode).
@@ -886,8 +956,11 @@ def run_routed(args: argparse.Namespace) -> int:
             expected_models=models,
             metrics_delta=metrics_delta,
         )
+    except OSError:
+        return _fail_report(args, "source_changed", "filesystem/staging error during the run")
     finally:
-        shutil.rmtree(staging, ignore_errors=True)
+        if staging is not None:
+            shutil.rmtree(staging, ignore_errors=True)
 
     return finalize_report(args, report)
 
@@ -898,14 +971,17 @@ def _fail_report(args: argparse.Namespace, failure_class: str, detail: str) -> i
 
 
 def finalize_report(args: argparse.Namespace, report: dict[str, Any]) -> int:
-    # Every real-mode artifact is bound to the candidate commit (read-only
-    # git rev-parse HEAD). A report that would otherwise pass must fail closed
-    # when the commit is unresolvable; blocked/failed artifacts just record
-    # resolved=false. Schema-only mode never reaches this function.
-    commit, resolved = git_head()
-    report["candidate"] = {"commit": commit, "resolved": resolved}
+    # Every real-mode artifact is bound to the candidate commit and the
+    # source digest (read-only git rev-parse HEAD / HEAD^{tree} tree anchor).
+    # A report that would otherwise pass must fail closed when provenance is
+    # unresolvable; blocked/failed artifacts just record empty values.
+    # Schema-only mode never reaches this function, so --dry-run/--check-schema
+    # artifacts stay empty (never fabricated provenance).
+    commit, source_digest, resolved = git_provenance()
+    report["candidate_commit"] = commit
+    report["source_digest"] = source_digest
     if not resolved and report["ok"]:
-        report = _fail(report, "candidate_unbound", "candidate commit unresolvable (read-only git rev-parse HEAD failed or not a repository)")
+        report = _fail(report, "candidate_unbound", "candidate commit/source digest unresolvable (read-only git rev-parse/diff failed or not a repository)")
     schema = load_schema()
     if schema is not None:
         errors = validate_report_against_schema(report, schema)
