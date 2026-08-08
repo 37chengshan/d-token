@@ -11,6 +11,26 @@ support/artifacts/ and reports each gate as one of:
                 (e.g. PowerShell gates on a macOS host without pwsh)
   blocked     - evidence exists but failed, or required evidence is absent
 
+PR-7 extension (docs/releases/v0.0.1/REQUIREMENTS.md EVID-1/EVID-3/EVID-6):
+
+* Supplemental required evidence is aggregated in a separate top-level
+  ``supplemental`` section (Codex routed acceptance, agent config acceptance,
+  cc-switch A->B->A, macOS upgrade/rollback, autostart/credential round-trip).
+  Any missing or non-green supplemental evidence blocks the release
+  (exit 1).  Supplemental evidence NEVER feeds G0-G8: G7 still means "Real
+  OpenCode" only, and the other gates keep their exact semantics.
+* ``--expected-commit`` and ``--expected-source-digest`` enable bound mode:
+  every supplemental artifact must carry a candidate commit (and, when the
+  digest flag is given, a source digest) matching the expected values.  In
+  bound mode the aggregator never accepts "the newest file" alone: it only
+  considers artifacts bound to the expected candidate, so stale pass
+  artifacts cannot leak through (EVID-1).  G8 additionally requires the
+  fan-in report's ``expected_commit`` to match ``--expected-commit``.
+  Without the flags the aggregator keeps the legacy "latest artifact" mode
+  and records binding_mode=latest; N9 release mode MUST pass both flags.
+* The source digest anchor is the release fan-in anchor: sha256 of
+  ``git diff --binary HEAD -- .`` at the candidate commit.
+
 Fail-closed contract (do not weaken):
   1. A gate NEVER passes on "script parses", "metadata-only", or "unsigned"
      presence alone.  Every passed gate requires an executed report artifact
@@ -21,13 +41,15 @@ Fail-closed contract (do not weaken):
   3. G8 (Candidate) requires `fan-in-artifact-contract-*.json` ok=true, which
      binds BOTH platforms to the same non-empty git commit and the same source
      digest.  Missing or failed fan-in evidence => G8 `blocked`.
-  4. Default exit code is 1 whenever any gate is not `passed`.  `--report-only`
-     writes the report and exits 0 for diagnostics; it never marks a release
-     ready and must never be used as a release pass.
+  4. Default exit code is 1 whenever any gate is not `passed` or any
+     supplemental evidence is not `passed`.  `--report-only` writes the
+     report and exits 0 for diagnostics; it never marks a release ready and
+     must never be used as a release pass.
 
 Usage:
   python3 support/scripts/generate_release_gate_status.py \
     [--artifacts-dir support/artifacts] [--output-dir support/artifacts] \
+    [--expected-commit <C_final>] [--expected-source-digest <sha256>] \
     [--report-only] [--quiet]
 """
 from __future__ import annotations
@@ -35,6 +57,7 @@ from __future__ import annotations
 import argparse
 import datetime
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -51,6 +74,60 @@ GATES = [
     ("G7", "Real OpenCode"),
     ("G8", "Candidate"),
 ]
+
+# Supplemental required evidence (PR-7).  Each spec lists artifact globs
+# relative to the artifacts dir (top level and/or one subdir), a green
+# predicate, and whether the artifact is expected to carry candidate binding.
+# Missing evidence is always `blocked`, never `unavailable`: these artifacts
+# are produced by Main / the candidate verification nodes, not by host
+# capability.
+_SUPPLEMENTAL_SPECS: list[dict] = [
+    {
+        "id": "codex",
+        "label": "Codex routed acceptance (N2)",
+        "patterns": ["codex-ocxlocal-routed/*.json", "codex-ocxlocal-routed-*.json"],
+        "green": "ok_and_status",
+        "ok_statuses": {"routed-verified", "passed", "pass", "ok"},
+        "binding": True,
+    },
+    {
+        "id": "config",
+        "label": "Agent config acceptance (N4)",
+        "patterns": ["agent-config-acceptance/*.json", "agent-config-acceptance-*.json"],
+        "green": "status_ok",
+        "ok_statuses": {"ok", "passed", "pass"},
+        "binding": True,
+    },
+    {
+        "id": "cc-switch",
+        "label": "cc-switch A->B->A evidence (N5)",
+        "patterns": ["cc-switch-aba/*.json", "cc-switch-aba-*.json"],
+        "green": "cc_switch_aba",
+        "ok_statuses": set(),
+        "binding": True,
+    },
+    {
+        "id": "upgrade-rollback",
+        "label": "macOS upgrade/rollback audit (N7)",
+        "patterns": ["upgrade-autostart-credential/upgrade-rollback-audit-*.json",
+                     "upgrade-rollback-audit-*.json"],
+        "green": "ok_and_status",
+        "ok_statuses": {"verified", "passed", "pass", "ok"},
+        "binding": True,
+    },
+    {
+        "id": "autostart-credential",
+        "label": "Autostart/credential round-trip (N7)",
+        "patterns": ["upgrade-autostart-credential/autostart-credential-roundtrip-*.json",
+                     "autostart-credential-roundtrip-*.json"],
+        "green": "ok_and_status",
+        "ok_statuses": {"verified", "passed", "pass", "ok"},
+        "binding": True,
+    },
+]
+
+COMMIT_RE = re.compile(r"[0-9a-fA-F]{40,64}")
+DIGEST_RE = re.compile(r"[0-9a-fA-F]{64}")
 
 
 def latest_file(directory: Path, pattern: str) -> Path | None:
@@ -122,7 +199,158 @@ def all_steps_ok(report: dict | None, step_ids: list[str]) -> bool | None:
     return all(results)
 
 
-def evaluate(artifacts_dir: Path) -> dict:
+# --- PR-7 supplemental evidence helpers -------------------------------------
+
+def artifact_binding(artifact: dict | None) -> tuple[str | None, str | None]:
+    """Extract (candidate_commit, source_digest) from an evidence artifact.
+
+    Accepted shapes (anything else yields None for that field, which fails
+    closed in bound mode):
+      - top-level ``candidate_commit`` / ``source_digest``
+      - nested ``candidate: {"commit": ..., "source_digest" | "digest": ...}``
+      - ``source_digest`` as ``{"value": ...}``
+    """
+    if not isinstance(artifact, dict):
+        return None, None
+    commit = artifact.get("candidate_commit")
+    digest = artifact.get("source_digest")
+    candidate = artifact.get("candidate")
+    if isinstance(candidate, dict):
+        if not isinstance(commit, str):
+            commit = candidate.get("commit")
+        if not isinstance(digest, (str, dict)):
+            digest = candidate.get("source_digest") or candidate.get("digest")
+    if isinstance(digest, dict):
+        digest = digest.get("value")
+    if not isinstance(commit, str) or not COMMIT_RE.fullmatch(commit):
+        commit = None
+    if not isinstance(digest, str) or not DIGEST_RE.fullmatch(digest):
+        digest = None
+    return commit, digest
+
+
+def evidence_green(spec: dict, artifact: dict | None) -> bool:
+    """Green predicate per supplemental spec; never green on presence alone."""
+    if not isinstance(artifact, dict):
+        return False
+    if spec["green"] == "cc_switch_aba":
+        return (
+            artifact.get("ok") is True
+            and artifact.get("wrote_cc_switch") is False
+            and artifact.get("identity_restored") is True
+        )
+    if spec["green"] == "status_ok":
+        status = artifact.get("status")
+        return isinstance(status, str) and status.lower() in spec["ok_statuses"]
+    # ok_and_status: an executed pass requires ok=true AND a pass status.
+    if artifact.get("ok") is not True:
+        return False
+    status = artifact.get("status")
+    return isinstance(status, str) and status.lower() in spec["ok_statuses"]
+
+
+def find_evidence_files(directory: Path, patterns: list[str]) -> list[Path]:
+    """All evidence files matching any pattern (top level or one subdir)."""
+    if directory is None or not directory.is_dir():
+        return []
+    found: list[Path] = []
+    for pattern in patterns:
+        if "/" in pattern:
+            subdir, name = pattern.split("/", 1)
+            base = directory / subdir
+            if base.is_dir():
+                found.extend(p for p in base.glob(name) if p.is_file())
+        else:
+            found.extend(p for p in directory.glob(pattern) if p.is_file())
+    # Newest first, deterministic order for the evidence list.
+    return sorted(found, key=lambda p: p.stat().st_mtime, reverse=True)
+
+
+def bound_match(artifact: dict | None, expected_commit: str | None,
+                expected_digest: str | None) -> bool:
+    """True when the artifact binds to the expected candidate (bound mode).
+
+    In bound mode a binding field that is absent counts as a mismatch: a
+    pass artifact without a candidate commit must not leak through (EVID-1).
+    """
+    if expected_commit is None and expected_digest is None:
+        return True
+    commit, digest = artifact_binding(artifact)
+    if expected_commit is not None:
+        if commit is None or commit.lower() != expected_commit.lower():
+            return False
+    if expected_digest is not None:
+        if digest is None or digest.lower() != expected_digest.lower():
+            return False
+    return True
+
+
+def supplemental_checks(artifacts_dir: Path, expected_commit: str | None,
+                        expected_digest: str | None) -> list[dict]:
+    """Evaluate the PR-7 supplemental required evidence (fail-closed)."""
+    checks: list[dict] = []
+    for spec in _SUPPLEMENTAL_SPECS:
+        files = find_evidence_files(artifacts_dir, spec["patterns"])
+        if not files:
+            checks.append({
+                "id": spec["id"],
+                "label": spec["label"],
+                "state": "blocked",
+                "detail": "required supplemental evidence is missing (no matching artifact)",
+                "evidence": [],
+                "binding": None,
+            })
+            continue
+        # Bound mode: only artifacts bound to the expected candidate count;
+        # stale/unbound artifacts are reported but never accepted.
+        eligible = files
+        if expected_commit is not None or expected_digest is not None:
+            eligible = [
+                path for path in files
+                if bound_match(load_json(path), expected_commit, expected_digest)
+            ]
+        if not eligible:
+            newest = load_json(files[0])
+            commit, digest = artifact_binding(newest)
+            checks.append({
+                "id": spec["id"],
+                "label": spec["label"],
+                "state": "blocked",
+                "detail": (
+                    f"no artifact binds the expected candidate "
+                    f"(expected_commit={expected_commit}, expected_source_digest={expected_digest}); "
+                    f"newest artifact binding: commit={commit}, source_digest={digest} — "
+                    "stale/old pass artifacts are rejected (EVID-1)"
+                ),
+                "evidence": [str(p) for p in files],
+                "binding": {"commit": commit, "source_digest": digest},
+            })
+            continue
+        chosen = eligible[0]
+        artifact = load_json(chosen)
+        green = evidence_green(spec, artifact)
+        commit, digest = artifact_binding(artifact)
+        checks.append({
+            "id": spec["id"],
+            "label": spec["label"],
+            "state": "passed" if green else "blocked",
+            "detail": (
+                f"artifact {chosen.name} is an executed pass bound to the expected candidate"
+                if green else
+                f"latest bound artifact {chosen.name} is not green "
+                f"(ok={artifact.get('ok') if isinstance(artifact, dict) else None}, "
+                f"status={artifact.get('status') if isinstance(artifact, dict) else None}, "
+                f"wrote_cc_switch={artifact.get('wrote_cc_switch') if isinstance(artifact, dict) else None}, "
+                f"identity_restored={artifact.get('identity_restored') if isinstance(artifact, dict) else None})"
+            ),
+            "evidence": [str(p) for p in files],
+            "binding": {"commit": commit, "source_digest": digest},
+        })
+    return checks
+
+
+def evaluate(artifacts_dir: Path, expected_commit: str | None = None,
+             expected_source_digest: str | None = None) -> dict:
     checks: list[dict] = []
 
     def add(gate_id: str, state: str, detail: str, evidence: list[str]) -> None:
@@ -319,6 +547,13 @@ def evaluate(artifacts_dir: Path) -> dict:
             evidence_list(opencode_path))
 
     # --- G8 Candidate --------------------------------------------------------
+    # PR-7 bound mode: the fan-in report must also be bound to the expected
+    # commit.  G8 semantics are otherwise unchanged (same commit + same source
+    # digest across both platforms is still required).
+    fanin_commit_ok = True
+    if expected_commit is not None and isinstance(fanin, dict):
+        reported = fanin.get("expected_commit")
+        fanin_commit_ok = isinstance(reported, str) and reported.lower() == expected_commit.lower()
     if fanin is None:
         add("G8", "blocked",
             "双平台同 commit fan-in 证据缺失: no fan-in-artifact-contract report on this host; Windows runner and dual-platform same-commit evidence not yet produced",
@@ -331,20 +566,38 @@ def evaluate(artifacts_dir: Path) -> dict:
           or fanin.get("same_source_digest") is not True):
         add("G8", "blocked",
             "fan-in ok but same_commit/same_source_digest not both true", evidence_list(fanin_path))
+    elif not fanin_commit_ok:
+        add("G8", "blocked",
+            f"fan-in expected_commit does not match --expected-commit {expected_commit}",
+            evidence_list(fanin_path))
     else:
         add("G8", "passed",
             "fan-in report green: both platforms bound to the same commit and source digest",
             evidence_list(fanin_path))
+
+    # --- PR-7 supplemental required evidence --------------------------------
+    supplemental = supplemental_checks(artifacts_dir, expected_commit, expected_source_digest)
 
     blockers = [
         f"{gate['gate']} ({dict(GATES)[gate['gate']]}): {gate['state']} — {gate['detail']}"
         for gate in checks
         if gate["state"] != "passed"
     ]
+    blockers.extend(
+        f"supplemental[{item['id']}] ({item['label']}): {item['state']} — {item['detail']}"
+        for item in supplemental
+        if item["state"] != "passed"
+    )
     release_ready = len(blockers) == 0
     return {
         "release_ready": release_ready,
         "gates": checks,
+        "supplemental": supplemental,
+        "binding": {
+            "mode": "bound" if (expected_commit is not None or expected_source_digest is not None) else "latest",
+            "expected_commit": expected_commit,
+            "expected_source_digest": expected_source_digest,
+        },
         "blockers": blockers,
         "evidence": {
             "release_verification": str(verification_path) if verification_path else None,
@@ -365,14 +618,25 @@ def main(argv: list[str] | None = None) -> int:
                         help="Directory scanned for evidence (default: support/artifacts)")
     parser.add_argument("--output-dir", default="support/artifacts",
                         help="Where to write the status report (default: same as artifacts-dir)")
+    parser.add_argument("--expected-commit",
+                        help="Required candidate commit (40-64 hex). Bound mode: any evidence not "
+                             "bound to this commit is blocked; the latest-file fallback is disabled.")
+    parser.add_argument("--expected-source-digest",
+                        help="Required source digest sha256 (64 hex). Bound mode: any evidence "
+                             "without a matching source digest is blocked.")
     parser.add_argument("--report-only", action="store_true",
                         help="Write the report and exit 0 even when gates are blocked/unavailable. "
                              "Diagnostics only — never a release pass.")
     parser.add_argument("--quiet", action="store_true", help="Suppress human-readable summary")
     args = parser.parse_args(argv)
 
+    if args.expected_commit is not None and not COMMIT_RE.fullmatch(args.expected_commit):
+        parser.error("--expected-commit must be a 40-64 hex git commit")
+    if args.expected_source_digest is not None and not DIGEST_RE.fullmatch(args.expected_source_digest):
+        parser.error("--expected-source-digest must be a 64-hex sha256")
+
     artifacts_dir = Path(args.artifacts_dir)
-    result = evaluate(artifacts_dir)
+    result = evaluate(artifacts_dir, args.expected_commit, args.expected_source_digest)
 
     report = {
         "ok": result["release_ready"],
@@ -380,10 +644,13 @@ def main(argv: list[str] | None = None) -> int:
         "generated_at": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "host_platform": sys.platform,
         "release_ready": result["release_ready"],
-        "release_ready_hint": "false unless EVERY G0-G8 gate is passed; PowerShell-unexecuted and "
-                              "Windows-runner evidence are blockers, never passes",
+        "release_ready_hint": "false unless EVERY G0-G8 gate is passed AND every supplemental "
+                              "required evidence item is passed; PowerShell-unexecuted, "
+                              "Windows-runner and Main-hosted evidence are blockers, never passes",
+        "binding": result["binding"],
         "blockers": result["blockers"],
         "gates": result["gates"],
+        "supplemental": result["supplemental"],
         "evidence": result["evidence"],
     }
 

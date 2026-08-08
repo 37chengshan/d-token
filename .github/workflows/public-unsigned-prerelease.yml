@@ -346,6 +346,45 @@ jobs:
             -ExpectedCommit "$env:EXPECTED_COMMIT" `
             -OutputDir support/artifacts
 
+      # PR-7 evidence wiring (fan-in artifact only): merge the platform
+      # evidence and the fan-in contract report, then produce the release-gate
+      # status artifact bound to this commit. This step is diagnostic-only in
+      # CI (--report-only): the hard gate is the fan-in contract above, and
+      # the full fail-closed aggregation over all Main-hosted supplemental
+      # evidence (codex/config/cc-switch/upgrade/autostart/credential) runs
+      # locally as N9 with --expected-commit/--expected-source-digest.
+      - name: Aggregate release gate status (fan-in evidence)
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p evidence-fan-in
+          find release-inputs -type f \
+            \( -name 'release-verification-*.json' \
+               -o -name 'desktop-bundle-artifact-audit-*.json' \
+               -o -name 'release-handoff-manifest-*.json' \
+               -o -name 'windows-dacl-acl-tests-*.json' \
+               -o -name 'fan-in-artifact-contract-*.json' \
+               -o -name 'cc-switch-aba-*.json' \
+               -o -name 'codex-ocxlocal-routed-*.json' \
+               -o -name 'agent-config-acceptance-*.json' \
+               -o -name 'upgrade-rollback-audit-*.json' \
+               -o -name 'autostart-credential-roundtrip-*.json' \) \
+            -exec cp -n {} evidence-fan-in/ \; || true
+          cp -n support/artifacts/fan-in-artifact-contract-*.json evidence-fan-in/ 2>/dev/null || true
+          python3 support/scripts/generate_release_gate_status.py \
+            --artifacts-dir evidence-fan-in \
+            --output-dir evidence-fan-in \
+            --expected-commit "$GITHUB_SHA" \
+            --report-only
+
+      - name: Upload release gate status artifact (fan-in wiring)
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-gate-status
+          if-no-files-found: error
+          path: |
+            evidence-fan-in/release-gate-status-*.json
+
       - name: Create immutable public prerelease
         shell: bash
         env:
