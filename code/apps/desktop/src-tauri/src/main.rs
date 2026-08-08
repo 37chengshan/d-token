@@ -10877,7 +10877,7 @@ async fn discover_upstream_candidates() -> Value {
                 "candidates": [],
                 "agent_bindings": [],
                 "sources": [],
-                "selection_required": false,
+                "has_resolution_gap": false,
                 "cc_switch_sync": null,
                 "writes_performed": false,
                 "privacy": "No credential values were read or returned",
