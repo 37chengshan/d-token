@@ -78,7 +78,7 @@
 
 | ID | 需求（来源） | current | gap | owner | acceptance | release claim |
 |---|---|---|---|---|---|---|
-| OSS-1 | 每个外部来源 pin 唯一且无漂移（GOAL G8/G9、[OSS_MIGRATION.md](./OSS_MIGRATION.md)） | CBM 根 NOTICE v0.9.0 vs manifest v0.9.1-rc.1 漂移；Headroom 三候选并存（旧基线 `01df2452` / release `v0.34.0`/`9fd5ae3d` / main `7f6950be`）；pxpipe 旧 pin 未评估；lean-ctx v3.9.17 vs main 95a1b7bc；RTK v0.45.0 新克隆待审计 | 逐轨道 pin 决议 + 单一事实源 | PR-CBM1, PR-H1, PR-O1, PR-L0, PR-R1, PR-A | 全轨道 pin 唯一；漂移清单清零；结构检查通过 | MUST |
+| OSS-1 | 每个外部来源 pin 唯一且无漂移（GOAL G8/G9、[OSS_MIGRATION.md](./OSS_MIGRATION.md)） | ✅ Headroom D2 已闭合（PR-H1）：唯一 pin = `v0.34.0`/`9fd5ae3d`，旧基线 `01df2452` 标历史，main `7f6950be` 只作 post-release delta；仍待闭合：CBM 根 NOTICE v0.9.0 vs manifest v0.9.1-rc.1 漂移；pxpipe 旧 pin 未评估；lean-ctx v3.9.17 vs main 95a1b7bc；RTK v0.45.0 新克隆待审计 | 逐轨道 pin 决议 + 单一事实源 | PR-CBM1, PR-H1✅, PR-O1, PR-L0, PR-R1, PR-A | 全轨道 pin 唯一；漂移清单清零；结构检查通过 | MUST |
 | OSS-2 | NOTICE/许可证副本随分发（GOAL G8、AGENTS.md） | root + docs/legal 双份 NOTICE；AiMaMi LICENSE 副本在仓 | 随包分发清单复验 | PR-A, N0 | SBOM/license 门通过且包含全部轨道声明 | MUST |
 | OSS-3 | 外部仓库只读研究；不复制进生产；不新增运行依赖（GOAL G8、INV-4） | 本地副本全部在 `/Users/cc/Documents/d-token-external/`（仓库外） | 依赖扫描断言 | N0 | Cargo/npm 依赖无外部轨道运行时依赖；无复制源码 | MUST |
 | OSS-4 | CBM v0.9.1-rc.1 固定 tag/commit + 平台 archive/binary SHA + Sigstore/Cosign；不得放宽校验（GOAL G9） | manifest 已 pin `ee9833df` + SHA；Cosign blob bundle 校验流程已定义 | 根 NOTICE 漂移修复 + Windows 收口实机 | PR-CBM1, PR-CBM2 | 根/内 notice 一致；四平台（macOS/Windows 各目标）archive+binary SHA 与 Cosign 校验证据 | MUST |
