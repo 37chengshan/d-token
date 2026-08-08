@@ -1,0 +1,123 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "dtoken://artifacts/codex-ocxlocal-routed/report.schema.json",
+  "title": "Codex OCX-local Routed Acceptance Report",
+  "description": "Fail-closed acceptance artifact for Codex -> d-token:18001 -> ocxlocal:10100. Evidence correlated from GET /health + GET /export/json (request_logs -> route_decisions -> events via request_id) with provider metadata from active_config.providers. Bound to the candidate commit (read-only git HEAD) and the staged source config digest. Redacted: auth references and upstream URLs only appear as fingerprints.",
+  "type": "object",
+  "required": ["schema_version", "mode", "status", "ok", "schema_valid", "routed", "platform", "agent_id", "protocol", "requires_openai_auth", "route", "runtime", "ledger", "metrics", "freshness", "failure", "restore", "candidate", "redacted"],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": { "type": "integer", "const": 1 },
+    "mode": { "type": "string", "const": "codex-ocxlocal-routed-acceptance" },
+    "status": { "enum": ["schema-validated-only", "routed-verified", "blocked", "failed"] },
+    "ok": { "type": "boolean" },
+    "schema_valid": { "type": "boolean" },
+    "routed": { "type": "boolean" },
+    "platform": { "type": "string" },
+    "agent_id": { "type": "string", "const": "codex" },
+    "protocol": { "type": "string", "const": "responses" },
+    "requires_openai_auth": { "type": "boolean", "const": false },
+    "route": {
+      "type": "object",
+      "required": ["dynamic_model", "model_forwarded", "route_verified", "upstream", "auth"],
+      "additionalProperties": false,
+      "properties": {
+        "dynamic_model": { "type": "boolean" },
+        "model_forwarded": { "type": "array", "items": { "type": "string" } },
+        "route_verified": { "type": "boolean" },
+        "upstream": {
+          "type": "object",
+          "required": ["scheme", "host", "port", "fingerprint_sha256", "redacted"],
+          "additionalProperties": false,
+          "properties": {
+            "scheme": { "type": "string" },
+            "host": { "type": "string" },
+            "port": { "type": "integer", "minimum": 1 },
+            "fingerprint_sha256": { "type": "string" },
+            "redacted": { "type": "boolean", "const": true }
+          }
+        },
+        "auth": {
+          "type": "object",
+          "required": ["declared", "fingerprint_sha256", "redacted"],
+          "additionalProperties": false,
+          "properties": {
+            "declared": { "enum": ["ref", "none"] },
+            "fingerprint_sha256": { "type": "string" },
+            "redacted": { "type": "boolean", "const": true }
+          }
+        }
+      }
+    },
+    "runtime": {
+      "type": "object",
+      "required": ["port", "runtime_identity", "component_verified", "health_status"],
+      "additionalProperties": false,
+      "properties": {
+        "port": { "type": "integer", "const": 18001 },
+        "runtime_identity": { "type": "string" },
+        "component_verified": { "type": "boolean" },
+        "health_status": { "type": "string" }
+      }
+    },
+    "ledger": {
+      "type": "object",
+      "required": ["request_match_count", "events_observed", "redacted"],
+      "additionalProperties": false,
+      "properties": {
+        "request_match_count": { "type": "integer", "minimum": 0 },
+        "events_observed": { "type": "integer", "minimum": 0 },
+        "redacted": { "type": "boolean", "const": true }
+      }
+    },
+    "metrics": {
+      "type": "object",
+      "required": ["request_count", "redacted"],
+      "additionalProperties": false,
+      "properties": {
+        "request_count": { "type": "integer", "minimum": 0 },
+        "redacted": { "type": "boolean", "const": true }
+      }
+    },
+    "freshness": {
+      "type": "object",
+      "required": ["source_fingerprint_sha256", "source_mode", "fresh_window_seconds", "new_request_ids_hash", "new_request_ids_count"],
+      "additionalProperties": false,
+      "properties": {
+        "source_fingerprint_sha256": { "type": "string" },
+        "source_mode": { "type": "string" },
+        "fresh_window_seconds": { "type": "number", "minimum": 0 },
+        "new_request_ids_hash": { "type": "string" },
+        "new_request_ids_count": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "failure": {
+      "type": "object",
+      "required": ["class", "detail_redacted"],
+      "additionalProperties": false,
+      "properties": {
+        "class": { "enum": ["none", "usage", "schema_invalid", "schema_artifact_missing", "runtime_unreachable", "runtime_identity_mismatch", "evidence_missing", "no_routed_codex_request", "upstream_not_found", "upstream_mismatch", "correlation_mismatch", "execution_failed", "stale_only", "source_changed", "candidate_unbound"] },
+        "detail_redacted": { "type": "string" }
+      }
+    },
+    "restore": {
+      "type": "object",
+      "required": ["status", "note"],
+      "additionalProperties": false,
+      "properties": {
+        "status": { "enum": ["no_changes_made"] },
+        "note": { "type": "string" }
+      }
+    },
+    "candidate": {
+      "type": "object",
+      "required": ["commit", "resolved"],
+      "additionalProperties": false,
+      "properties": {
+        "commit": { "type": "string" },
+        "resolved": { "type": "boolean" }
+      }
+    },
+    "redacted": { "type": "boolean", "const": true }
+  }
+}

@@ -1,0 +1,64 @@
+{
+  "schema_version": 1,
+  "mode": "codex-ocxlocal-routed-acceptance",
+  "status": "routed-verified",
+  "ok": true,
+  "schema_valid": true,
+  "routed": true,
+  "platform": "darwin",
+  "agent_id": "codex",
+  "protocol": "responses",
+  "requires_openai_auth": false,
+  "route": {
+    "dynamic_model": true,
+    "model_forwarded": ["model-a", "model-b"],
+    "route_verified": true,
+    "upstream": {
+      "scheme": "http",
+      "host": "127.0.0.1",
+      "port": 10100,
+      "fingerprint_sha256": "<sha256 of provider base_url>",
+      "redacted": true
+    },
+    "auth": {
+      "declared": "none",
+      "fingerprint_sha256": "",
+      "redacted": true
+    }
+  },
+  "runtime": {
+    "port": 18001,
+    "runtime_identity": "dtoken-runtime-local",
+    "component_verified": true,
+    "health_status": "healthy"
+  },
+  "ledger": {
+    "request_match_count": 2,
+    "events_observed": 2,
+    "redacted": true
+  },
+  "metrics": {
+    "request_count": 2,
+    "redacted": true
+  },
+  "freshness": {
+    "source_fingerprint_sha256": "<sha256 of staged source config>",
+    "source_mode": "0o644",
+    "fresh_window_seconds": 12.345,
+    "new_request_ids_hash": "<sha256 of sorted correlated fresh request_ids (expected models only)>",
+    "new_request_ids_count": 2
+  },
+  "failure": {
+    "class": "none",
+    "detail_redacted": ""
+  },
+  "restore": {
+    "status": "no_changes_made",
+    "note": "runner performs no config writes; nothing to restore"
+  },
+  "candidate": {
+    "commit": "<full hex sha of git HEAD at run time>",
+    "resolved": true
+  },
+  "redacted": true
+}
