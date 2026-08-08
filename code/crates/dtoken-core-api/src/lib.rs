@@ -56,8 +56,8 @@ use dtoken_types::{
     OpticalCapabilitiesPublicSummary, OpticalCapabilityLifecyclePublicSummary, OpticalEndpoint,
     OpticalEventMetadataPublicSummary, OpticalEventPublicSummary, OpticalMode,
     OpticalPlanPublicSummary, OpticalPlanStatus, OpticalPreviewRequest, OpticalStatusPublicSummary,
-    PayloadByteUsage, Protocol, ProtocolInjectionProfile, RequestLog, RequestScope,
-    RequestScopeError, RouteDecision, SupportLevel, UpstreamSendState, UsageEvidence,
+    OptimizationReceipt, PayloadByteUsage, Protocol, ProtocolInjectionProfile, RequestLog,
+    RequestScope, RequestScopeError, RouteDecision, SupportLevel, UpstreamSendState, UsageEvidence,
     UsageEvidenceKind, UsageMeasurement, UsageVector,
 };
 use futures_util::{Stream, TryStreamExt};
@@ -5576,6 +5576,8 @@ fn build_request_log(
         input_tokens_before: Some(compression.original_tokens as usize),
         input_tokens_after: Some(compression.compressed_tokens as usize),
         output_tokens: None,
+        provider_input_tokens: None,
+        provider_output_tokens: None,
         tokens_saved: Some(if compression.context_accounting.is_some() {
             0
         } else {
@@ -6118,11 +6120,17 @@ fn mark_upstream_outcome(
     event: &mut DtokenEvent,
 ) {
     let provider_usage = provider_usage_measurement(&upstream.response);
+    let provider_input_tokens = provider_usage
+        .as_ref()
+        .and_then(|measurement| measurement.usage.input.normalized_total)
+        .and_then(|tokens| usize::try_from(tokens).ok());
     let output_tokens = provider_usage
         .as_ref()
         .and_then(|measurement| measurement.usage.output_tokens)
         .and_then(|tokens| usize::try_from(tokens).ok());
     request_log.quota_metadata = upstream.quota_metadata.clone();
+    request_log.provider_input_tokens = provider_input_tokens;
+    request_log.provider_output_tokens = output_tokens;
 
     if let Some(accounting) = request_log.context_accounting.as_mut() {
         accounting.upstream_state = upstream.send_state;
@@ -10435,6 +10443,10 @@ fn route_overhead_payload(logs: &[RequestLog]) -> Value {
 
 fn runtime_export_json_payload(state: &AppState) -> Value {
     let logs = state.recent_request_logs(10_000);
+    let optimization_receipts: Vec<OptimizationReceipt> = logs
+        .iter()
+        .map(OptimizationReceipt::from_request_log)
+        .collect();
     json!({
         "source": "dtoken-owned-runtime",
         "runtime_kind": "headroom-derived",
@@ -10447,6 +10459,7 @@ fn runtime_export_json_payload(state: &AppState) -> Value {
         "events": state.recent_events(10_000),
         "route_decisions": state.recent_route_decisions(10_000),
         "request_logs": logs,
+        "optimization_receipts": optimization_receipts,
         "active_config": active_config_payload(state),
         "ccr": runtime_cache_summary_for_state(state),
         "memory": memory_summary_for_state(state),
@@ -10814,7 +10827,11 @@ pub fn dashboard_payload_for_state(state: &AppState) -> Value {
     let route_decisions = state.recent_route_decisions(20);
     let request_logs = state.recent_request_logs(20);
     let all_logs = state.recent_request_logs(10_000);
-    with_cached_account_quota(with_active_config(
+    let optimization_receipts: Vec<OptimizationReceipt> = request_logs
+        .iter()
+        .map(OptimizationReceipt::from_request_log)
+        .collect();
+    let mut payload = with_cached_account_quota(with_active_config(
         build_dashboard_payload(DashboardPayloadInput {
             stats: runtime_stats_payload(&all_logs),
             history: runtime_stats_history_payload(&all_logs),
@@ -10829,7 +10846,14 @@ pub fn dashboard_payload_for_state(state: &AppState) -> Value {
             memory: memory_summary_for_state(state),
         }),
         active_config_payload(state),
-    ))
+    ));
+    if let Some(object) = payload.as_object_mut() {
+        object.insert(
+            "optimization_receipts".to_string(),
+            json!(optimization_receipts),
+        );
+    }
+    payload
 }
 
 pub fn dashboard_summary_for_state(state: &AppState) -> Value {
@@ -19113,6 +19137,155 @@ mod tests {
         assert!(csv.contains("request_log"));
         assert!(csv.contains("dtoken-opencode-local"));
         assert!(!csv.contains("SECRET_PROMPT_SHOULD_NOT_APPEAR"));
+    }
+
+    #[test]
+    fn runtime_export_and_dashboard_expose_same_fact_optimization_receipts() {
+        let state = AppState::new(DtokenConfig::empty());
+        let request = OpenAiChatRequest {
+            model: Some("opencode/deepseek-v4-flash-free".to_string()),
+            messages: Some(vec![json!({
+                "role": "user",
+                "content": "terminal state normal request"
+            })]),
+            stream: Some(false),
+        };
+        let (_response, decision, request_log, event) = routed_openai_payload(&request);
+        state.record_routed_request(&decision, request_log, event);
+
+        let export = runtime_export_json_payload(&state);
+        let receipts = export["optimization_receipts"].as_array().unwrap();
+        let logs = export["request_logs"].as_array().unwrap();
+        assert_eq!(receipts.len(), 1);
+        assert_eq!(receipts.len(), logs.len());
+        // Receipt request_id corresponds 1:1 to request_logs.
+        assert_eq!(receipts[0]["request_id"], logs[0]["request_id"]);
+        assert_eq!(receipts[0]["timestamp_ms"], logs[0]["timestamp_ms"]);
+        // Provider usage was not measured on this passthrough path.
+        assert!(receipts[0]["provider_input_tokens"].is_null());
+        assert!(receipts[0]["provider_output_tokens"].is_null());
+        // Receipt projection never leaks raw payload, bodies, auth or paths.
+        let serialized = export.to_string();
+        assert!(!serialized.contains("raw_prompt"));
+        assert!(!serialized.contains("response_body"));
+        assert!(!serialized.contains("Authorization"));
+        assert!(!serialized.contains("Cookie"));
+        let receipt_object = receipts[0].as_object().unwrap();
+        for key in ["raw", "body", "auth", "path"] {
+            assert!(
+                !receipt_object.contains_key(key),
+                "receipt must not carry {key}"
+            );
+        }
+
+        // Dashboard exposes the same projection (same fact, no duplicated accounting).
+        let dashboard = dashboard_payload_for_state(&state);
+        let dashboard_receipts = dashboard["optimization_receipts"].as_array().unwrap();
+        assert_eq!(dashboard_receipts.len(), 1);
+        assert_eq!(
+            dashboard_receipts[0]["request_id"],
+            receipts[0]["request_id"]
+        );
+        assert_eq!(
+            dashboard["request_logs"].as_array().unwrap().len(),
+            dashboard_receipts.len()
+        );
+    }
+
+    #[test]
+    fn optimization_receipts_cover_compression_fallback() {
+        let state = AppState::new(DtokenConfig::empty());
+        let request = OpenAiChatRequest {
+            model: Some("opencode/deepseek-v4-flash-free".to_string()),
+            messages: Some(vec![json!({"role": "user", "content": "fallback case"})]),
+            stream: Some(false),
+        };
+        let (_response, decision, mut request_log, event) = routed_openai_payload(&request);
+        request_log.context_accounting = Some(dtoken_types::HybridContextAccounting {
+            schema_version: 1,
+            disposition: dtoken_types::OptimizationDisposition::FallbackPreSend,
+            sent_payload: dtoken_types::SentPayloadVariant::Original,
+            upstream_state: dtoken_types::UpstreamSendState::Completed,
+            estimated: None,
+            provider_counterfactual_baseline: None,
+            provider_actual_sent: dtoken_types::ProviderActualUsage { measurement: None },
+            provider_reconciled_input_savings: None,
+            paired_actual: None,
+            attribution_basis: dtoken_types::SavingsAttribution::None,
+            fallback_reason_code: Some("compression_failed".to_string()),
+        });
+        state.record_routed_request(&decision, request_log, event);
+
+        let export = runtime_export_json_payload(&state);
+        let receipt = &export["optimization_receipts"][0];
+        assert_eq!(receipt["disposition"], "fallback_pre_send");
+        assert_eq!(receipt["failure_type"], "compression_failed");
+        assert!(receipt["savings_claimable"].is_null());
+        assert!(receipt["savings_estimated"].is_null());
+    }
+
+    #[test]
+    fn mark_upstream_outcome_records_provider_actual_usage() {
+        let upstream = UpstreamResult {
+            response: json!({
+                "usage": {
+                    "prompt_tokens": 900,
+                    "completion_tokens": 120
+                }
+            }),
+            status: Some(200),
+            error_category: None,
+            send_state: UpstreamSendState::Completed,
+            quota_metadata: None,
+        };
+        let mut request_log = RequestLog {
+            request_id: Uuid::new_v4(),
+            timestamp_ms: 1,
+            agent: Some("test-agent".to_string()),
+            instance_id: None,
+            input_protocol: dtoken_types::Protocol::OpenAi,
+            provider_id: Some("test-provider".to_string()),
+            route_id: Some("test-route".to_string()),
+            chain_mode: None,
+            model: Some("test-model".to_string()),
+            input_tokens_before: Some(1000),
+            input_tokens_after: Some(400),
+            output_tokens: None,
+            provider_input_tokens: None,
+            provider_output_tokens: None,
+            tokens_saved: None,
+            transforms_applied: vec![],
+            latency_ms: None,
+            error: None,
+            config_source: None,
+            quota_metadata: None,
+            context_accounting: Some(completed_active_accounting()),
+        };
+        let mut event = optical_test_event(
+            LayeredStage::HeadroomRetrieve,
+            EventStatus::Ok,
+            1,
+            json!({}),
+            None,
+        );
+        mark_upstream_outcome(&upstream, &mut request_log, &mut event);
+
+        // Provider-reported usage is copied verbatim, never derived.
+        assert_eq!(request_log.provider_input_tokens, Some(900));
+        assert_eq!(request_log.provider_output_tokens, Some(120));
+        let accounting = request_log.context_accounting.as_ref().unwrap();
+        let provider_actual = accounting
+            .provider_actual_sent
+            .measurement
+            .as_ref()
+            .expect("mark_upstream_outcome must record provider actual usage");
+        assert_eq!(
+            provider_actual.evidence.kind,
+            UsageEvidenceKind::ProviderActual
+        );
+        assert_eq!(provider_actual.usage.input.normalized_total, Some(900));
+        assert_eq!(provider_actual.usage.output_tokens, Some(120));
+        assert_eq!(event.context_accounting, request_log.context_accounting);
     }
 
     #[test]

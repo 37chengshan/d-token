@@ -1836,6 +1836,13 @@
       "summary": "push JDK 21 windows check job fix",
       "head_before": "fca5884",
       "remote": "origin"
+      "id": "bc113092-d635-4454-bcf5-1d40933679c0",
+      "timestamp": "2026-08-08T17:56:41+08:00",
+      "operation": "commit",
+      "branch": "codex/final/runtime-receipt",
+      "summary": "Add runtime optimization receipt projection and provider usage evidence",
+      "head_before": "1ddb30edcf0c12f5172c800a182b18e8cdadb61b",
+      "remote": null
     }
   ]
 }
