@@ -228,6 +228,9 @@ describe("Overview information hierarchy and truthfulness", () => {
     };
     render(<Overview setPage={vi.fn()} />);
 
+    expect(screen.getByRole("heading", { level: 1, name: "总体概览" })).toBeVisible();
+    expect(screen.getByRole("heading", { level: 1, name: "总体概览" })).toHaveClass("[.is-sidebar-collapsed_&]:sr-only");
+
     expect(screen.getAllByText("浏览器预览 · 未连接实时数据")).not.toHaveLength(0);
     expect(screen.queryByText("浏览器预览 · 示例数据")).not.toBeInTheDocument();
     const kpis = screen.getByTestId("overview-kpis");
