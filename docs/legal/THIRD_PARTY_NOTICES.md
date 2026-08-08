@@ -37,6 +37,17 @@
 - 来源：随 Headroom 基线登记（见上文固定对照，Apache-2.0 + NOTICE），无需单独克隆。
 - d-token 差异：d-token 的 CCR 为 Rust-owned 实现（加密、TTL、配额、权限、retrieve/delete、崩溃恢复、精确删除），与 LeanCTX 职责分离（`docs/PRD.md` P0.0.5 表格）；普通日志/Dashboard/Ledger/export 只保存 metadata，不保存 CCR 原文。
 
+## RTK（integrated/managed 行为迁移基线）
+
+- 项目：[`rtk-ai/rtk`](https://github.com/rtk-ai/rtk)；官方 remote：`https://github.com/rtk-ai/rtk.git`
+- 唯一参考 pin：release [`v0.45.0`](https://github.com/rtk-ai/rtk/releases/tag/v0.45.0) / commit [`b34be37caf3796b69a50952a28e60e32b5daad43`](https://github.com/rtk-ai/rtk/commit/b34be37caf3796b69a50952a28e60e32b5daad43)（2026-08-07 发布；git tag `v0.45.0` 与 `latest` 均指向该 commit，`Cargo.toml` `version = "0.45.0"` 一致）
+- 上游许可证：Apache License 2.0（根 `LICENSE`，2026-08-08 核验，SHA-256 `4044ade9c21d8b084d3d16a03375cf3b7e166b946a327bb37a3fbbdb53287cfd`；标准条款 1–9 完整，文末以 `Copyright 2024 rtk-ai and rtk-ai Labs` 版权行替换了附录样板）
+- NOTICE：固定 commit **无根目录 `NOTICE` 文件**（全仓检索无任何 `NOTICE*` 文件），无独立版权声明文件可随附
+- 本地只读研究副本：`/Users/cc/Documents/d-token-external/rtk-v0.45.0/`（git clone，HEAD 固定 v0.45.0 / `b34be37`，2026-08-08 核验）
+- 来源语义：RTK 在 d-token 中是 **integrated/managed 能力的行为迁移边界，不是隐式 external runtime**。按 `docs/PRD.md` §0.3/§4.2/§7，d-token 不提供 standalone RTK 用户路径、不默认单独安装 RTK、不把 RTK 放进 proxy hot path；`dtoken-preprocessor` 的 managed RTK lifecycle（command rewrite、shim/hook、fail-safe、usage metadata、精确卸载）是 d-token-owned 实现，不复制该 commit 源码、不引入运行依赖，也不独立分发 RTK binary。外部 standalone RTK 只允许在 no-touch/只读检测边界内识别为冲突提示，不作为推荐路径。
+- `rtk gain`：RTK 的本地 savings 汇总命令，**不作为 d-token 产品轮询路径**；RTK savings 只来自 d-token runtime metrics 或 integrated RTK metrics（`docs/PRD.md` §10/§15）。
+- 后续边界：若迁移或修改上游源码，必须在代码进入仓库前补充许可证副本、NOTICE、逐文件来源、修改范围和保留版权声明（`docs/PRD.md` §18/§21）。
+
 ## AiMaMi
 
 - 项目：[`borawong/AiMaMi`](https://github.com/borawong/AiMaMi)

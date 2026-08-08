@@ -54,3 +54,17 @@
 - 判定：CCR **不是独立开源项目**。按 headroom 官方源码与文档（README "Reversible (CCR)"、`headroom_retrieve` MCP 工具、`<<ccr:` 内联 marker），CCR 是 headroom 仓库内的可逆压缩存储能力（CacheAligner → ContentRouter → CCR 管线的一部分），没有独立上游仓库。
 - 来源：随 headroom 基线登记——`headroomlabs-ai/headroom` 参考 commit `01df2452529a86c689cf226fecd5918cc5d19676`（Apache-2.0 + NOTICE），无需单独克隆。
 - d-token 差异：d-token 的 CCR 为 Rust-owned 实现（加密、TTL、配额、权限、retrieve/delete、崩溃恢复、精确删除），与 LeanCTX 职责分离（PRD P0.0.5 表格）；普通日志/Dashboard/Ledger/export 只保存 metadata，不保存 CCR 原文。
+
+## RTK（integrated/managed 来源登记）（2026-08-08）
+
+依据 `docs/PRD.md` §0.3/§4.2/§7，RTK 不作为独立产品路径，只作为 runtime 内部能力登记来源：
+
+- 上游项目：`rtk-ai/rtk`；官方 remote：`https://github.com/rtk-ai/rtk.git`
+- 唯一参考 pin：`v0.45.0` / `b34be37caf3796b69a50952a28e60e32b5daad43`（2026-08-07 发布；git tag `v0.45.0` 与 `latest` 均指向该 commit；`Cargo.toml` `version = "0.45.0"`）
+- 许可证：Apache-2.0（根 `LICENSE`，2026-08-08 核验，SHA-256 `4044ade9…87cfd`；文末以 `Copyright 2024 rtk-ai and rtk-ai Labs` 版权行替换附录样板）
+- NOTICE：固定 commit 无根目录 `NOTICE`（全仓无 `NOTICE*` 文件）
+- 本地只读研究副本：`/Users/cc/Documents/d-token-external/rtk-v0.45.0/`（git clone，HEAD 固定 v0.45.0 / `b34be37`）
+- 边界：integrated/managed RTK 是 **d-token-owned 行为迁移边界，不是隐式 external runtime**——`dtoken-preprocessor` 的 managed RTK lifecycle（command rewrite、shim/hook、fail-safe、usage metadata、精确卸载）为 d-token 自有实现；d-token 不独立分发 RTK binary、不默认安装 standalone RTK、不把外部 RTK 当运行依赖；外部 standalone RTK 只读检测仅作冲突提示（PRD §13.2/§7.8）
+- `rtk gain`：RTK 本地 savings 汇总命令，不作为 d-token 产品轮询路径；RTK savings 只来自 d-token runtime metrics 或 integrated RTK metrics（PRD §10/§15）
+- 当前方式：行为与接口对照；d-token 未复制该 commit 源码、无运行依赖
+- 后续边界：若迁移或修改上游源码，必须在代码进入仓库前补充许可证副本、NOTICE、逐文件来源、修改范围和保留版权声明（PRD §18/§21）
