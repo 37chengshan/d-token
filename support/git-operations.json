@@ -2142,6 +2142,15 @@
       "summary": "fix: compare canonical bridge path in managed RTK rewrite test",
       "head_before": "33b4036",
       "remote": null
+    },
+    {
+      "id": "41ca15fb-1e5b-4cdc-ac8d-a9b94261f46a",
+      "timestamp": "2026-08-08T21:44:09+08:00",
+      "operation": "push",
+      "branch": "codex/final-release-iteration",
+      "summary": "push managed RTK rewrite path assertion fix",
+      "head_before": "13f52e2",
+      "remote": "origin"
     }
   ]
 }
