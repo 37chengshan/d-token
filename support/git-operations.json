@@ -1539,6 +1539,24 @@
       "summary": "fix: Java fixture Java8-compatible for Windows CI javac (374368f)",
       "head_before": "7ffa4fd",
       "remote": null
+    },
+    {
+      "id": "0316365c-9832-4e0c-80d0-473b3707b497",
+      "timestamp": "2026-08-08T18:57:49+08:00",
+      "operation": "push",
+      "branch": "codex/final-release-iteration",
+      "summary": "push java fixture fix to trigger PR6 CI",
+      "head_before": "417ffd7",
+      "remote": null
+    },
+    {
+      "id": "759e338b-2807-438f-b607-f1e6d0a56cf1",
+      "timestamp": "2026-08-08T19:28:24+08:00",
+      "operation": "commit",
+      "branch": "codex/final-release-iteration",
+      "summary": "fix: force LF for config-patcher fixtures (CRLF Windows CI)",
+      "head_before": "417ffd7",
+      "remote": null
     }
   ]
 }
