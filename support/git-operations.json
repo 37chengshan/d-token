@@ -1575,6 +1575,186 @@
       "summary": "Add authoritative v0.0.1 release planning package and structure enforcement",
       "head_before": "519418063ad1955ae1d0e4332616a57a73b8dc44",
       "remote": null
+    },
+    {
+      "id": "e7fbbe65-5cde-4efc-8a7d-90050cf5415f",
+      "timestamp": "2026-08-08T20:01:39+08:00",
+      "operation": "branch-create",
+      "branch": "codex/final/leanctx-pin",
+      "summary": "PR-L0: create isolated worktree branch for lean-ctx unique pin decision (v3.9.17 vs main 95a1b7bc) and D4 closure",
+      "head_before": "c5a584971a9e2421a0040eb0f777ba76d9ae8f88",
+      "remote": null
+    },
+    {
+      "id": "a7f5a77b-db69-4180-84c0-d75571857993",
+      "timestamp": "2026-08-08T20:02:40+08:00",
+      "operation": "branch-create",
+      "branch": "codex/final/cbm-notice-drift",
+      "summary": "PR-CBM1: create isolated worktree branch for CBM notice drift closure (root THIRD_PARTY_NOTICES.md pin v0.9.0 -> v0.9.1-rc.1, mark v0.9.0 superseded historical)",
+      "head_before": "c5a584971a9e2421a0040eb0f777ba76d9ae8f88",
+      "remote": null
+    },
+    {
+      "id": "3079608a-681b-49d1-809e-864561d7cd7c",
+      "timestamp": "2026-08-08T20:02:58+08:00",
+      "operation": "branch-create",
+      "branch": "codex/final/headroom-pin",
+      "summary": "PR-L0: create isolated worktree branch for headroom unique pin decision (v0.34.0/9fd5ae3d vs old baseline 01df2452 vs main 7f6950be) and provenance/NOTICE update",
+      "head_before": "c5a584971a9e2421a0040eb0f777ba76d9ae8f88",
+      "remote": null
+    },
+    {
+      "id": "b5feabc4-db0b-4110-a31e-adbc43fab1e5",
+      "timestamp": "2026-08-08T20:03:09+08:00",
+      "operation": "branch-create",
+      "branch": "codex/final/rtk-pin",
+      "summary": "W1 provenance slice: 创建 RTK 来源登记分支，登记 rtk-ai/rtk v0.45.0/b34be37 唯一 pin 与 managed/integrated RTK 行为迁移边界。",
+      "head_before": "c5a5849",
+      "remote": null
+    },
+    {
+      "id": "3e78cbe3-17cc-4a6d-8401-c56156e895e8",
+      "timestamp": "2026-08-08T20:03:22+08:00",
+      "operation": "branch-create",
+      "branch": "codex/final/aimami-provenance",
+      "summary": "PR-AiMaMi: create isolated worktree branch for AiMaMi provenance/source-decision slice (pin 297c7af5 verification, adaptation scope audit, legal notice update)",
+      "head_before": "c5a584971a9e2421a0040eb0f777ba76d9ae8f88",
+      "remote": null
+    },
+    {
+      "id": "21acc0ae-72a4-45dc-b38b-75e0934086a2",
+      "timestamp": "2026-08-08T20:04:05+08:00",
+      "operation": "branch-create",
+      "branch": "codex/final/pxpipe-pin",
+      "summary": "W1 provenance slice: 创建 pxpipe 评测参考唯一 pin 分支（候选 v0.12.0/0ceabbed，评估取代旧 pin 7b7d6efa/v0.8.0）",
+      "head_before": "c5a584971a9e2421a0040eb0f777ba76d9ae8f88",
+      "remote": null
+    },
+    {
+      "id": "2779d920-9018-4f4c-974b-b1b28762ea99",
+      "timestamp": "2026-08-08T20:08:08+08:00",
+      "operation": "branch-create",
+      "branch": "codex/final/security-classifier-export",
+      "summary": "PR-5 security slice: create isolated worktree branch for unified SecretClassifier secret validation (active/merged/route-draft) and export path-leak removal (JSON/CSV)",
+      "head_before": "b1c090c",
+      "remote": null
+    },
+    {
+      "id": "2d773e7f-e7fd-4b0c-a600-4c4eb4d58992",
+      "timestamp": "2026-08-08T20:08:54+08:00",
+      "operation": "branch-create",
+      "branch": "codex/final/upgrade-autostart-credential",
+      "summary": "PR-8: create isolated worktree branch for macOS upgrade/rollback audit + LaunchAgent/HKCU + Keychain/Credential Manager unique-isolated round-trip producer scripts (dry-run/schema contract, fault injection tests)",
+      "head_before": "c5a584971a9e2421a0040eb0f777ba76d9ae8f88",
+      "remote": null
+    },
+    {
+      "id": "e72446a9-30b3-4a43-b4dc-1f42f0983459",
+      "timestamp": "2026-08-08T20:10:09+08:00",
+      "operation": "commit",
+      "branch": "codex/final/autoconfig-cutover",
+      "summary": "Cut over auto configuration to fail-closed source repair states",
+      "head_before": "1ddb30edcf0c12f5172c800a182b18e8cdadb61b",
+      "remote": null
+    },
+    {
+      "id": "9569ad41-b8a8-4c5b-a30a-364d35907eb8",
+      "timestamp": "2026-08-08T20:10:09+08:00",
+      "operation": "commit",
+      "branch": "codex/final/config-acceptance",
+      "summary": "Add isolated Agent configuration acceptance harness",
+      "head_before": "1ddb30edcf0c12f5172c800a182b18e8cdadb61b",
+      "remote": null
+    },
+    {
+      "id": "287d79dc-9aab-4f72-94df-9836f3af660b",
+      "timestamp": "2026-08-08T20:10:09+08:00",
+      "operation": "commit",
+      "branch": "codex/final/codex-ocxlocal-acceptance",
+      "summary": "Add Codex ocxlocal routed acceptance harness",
+      "head_before": "1ddb30edcf0c12f5172c800a182b18e8cdadb61b",
+      "remote": null
+    },
+    {
+      "id": "22da82fb-ea26-406b-b640-f9b47d11617d",
+      "timestamp": "2026-08-08T20:10:09+08:00",
+      "operation": "commit",
+      "branch": "codex/final/runtime-receipt",
+      "summary": "Complete optimization receipt compatibility tests",
+      "head_before": "b1c090c8baeb76393e69d3f16ed2b3388f3be3e4",
+      "remote": null
+    },
+    {
+      "id": "2bce1dc3-aea7-490d-a2b4-1f3a7b4ba740",
+      "timestamp": "2026-08-08T20:10:09+08:00",
+      "operation": "commit",
+      "branch": "codex/final/ui-polish",
+      "summary": "Finalize compact UI title and narrow-window acceptance evidence",
+      "head_before": "b003588f7f77936bfe48c033fcf7d5a97bd9a908",
+      "remote": null
+    },
+    {
+      "id": "ea82821c-d6c8-47ef-aabe-84c506648795",
+      "timestamp": "2026-08-08T20:10:47+08:00",
+      "operation": "commit",
+      "branch": "codex/final/cbm-notice-drift",
+      "summary": "Resolve Codebase Memory provenance pin drift",
+      "head_before": "c5a584971a9e2421a0040eb0f777ba76d9ae8f88",
+      "remote": null
+    },
+    {
+      "id": "a8199ab7-aed1-49de-8d4b-159bf4b3f664",
+      "timestamp": "2026-08-08T20:10:47+08:00",
+      "operation": "commit",
+      "branch": "codex/final/rtk-pin",
+      "summary": "Pin RTK v0.45.0 behavior reference",
+      "head_before": "c5a584971a9e2421a0040eb0f777ba76d9ae8f88",
+      "remote": null
+    },
+    {
+      "id": "893163dc-5d3c-4a0f-b941-d13b67c6491a",
+      "timestamp": "2026-08-08T20:10:47+08:00",
+      "operation": "commit",
+      "branch": "codex/final/pxpipe-pin",
+      "summary": "Pin pxpipe v0.12.0 evaluation reference",
+      "head_before": "c5a584971a9e2421a0040eb0f777ba76d9ae8f88",
+      "remote": null
+    },
+    {
+      "id": "7df1e1be-f5a3-400a-a4c9-c5115019b175",
+      "timestamp": "2026-08-08T20:10:47+08:00",
+      "operation": "commit",
+      "branch": "codex/final/leanctx-pin",
+      "summary": "Pin LeanCTX stable reference and record main delta",
+      "head_before": "c5a584971a9e2421a0040eb0f777ba76d9ae8f88",
+      "remote": null
+    },
+    {
+      "id": "c68c79d1-6a78-4102-a14d-ebb03e1b9b26",
+      "timestamp": "2026-08-08T20:10:47+08:00",
+      "operation": "commit",
+      "branch": "codex/final/aimami-provenance",
+      "summary": "Reconcile AiMaMi adaptation provenance",
+      "head_before": "c5a584971a9e2421a0040eb0f777ba76d9ae8f88",
+      "remote": null
+    },
+    {
+      "id": "01b64a9b-16e3-4571-ad65-cca182e25183",
+      "timestamp": "2026-08-08T20:10:47+08:00",
+      "operation": "commit",
+      "branch": "codex/final/headroom-pin",
+      "summary": "Pin Headroom v0.34.0 comparison baseline",
+      "head_before": "c5a584971a9e2421a0040eb0f777ba76d9ae8f88",
+      "remote": null
+    },
+    {
+      "id": "bf315d68-e4bd-4454-8c74-8b78c871c0ed",
+      "timestamp": "2026-08-08T20:11:13+08:00",
+      "operation": "commit",
+      "branch": "codex/final-release-iteration",
+      "summary": "Record W1 slice branch and commit audit entries",
+      "head_before": "c5a584971a9e2421a0040eb0f777ba76d9ae8f88",
+      "remote": null
     }
   ]
 }
