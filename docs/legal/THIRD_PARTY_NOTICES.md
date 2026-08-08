@@ -1,18 +1,21 @@
 # 第三方版权与修改声明
 
-更新时间：2026-08-06
+更新时间：2026-08-08
 
 本文件保存维护者使用的详细版权、来源与修改记录；面向源码与安装包分发的权威声明位于仓库根目录 [`THIRD_PARTY_NOTICES.md`](../../THIRD_PARTY_NOTICES.md)。产品边界仍以 [`docs/PRD.md`](../PRD.md) 为准；两份声明都不授权使用任何第三方商标或品牌资产。
 
 ## Headroom 行为对照基线
 
-- 项目：[`headroomlabs-ai/headroom`](https://github.com/headroomlabs-ai/headroom)
-- 当前固定对照：[`main`](https://github.com/headroomlabs-ai/headroom/tree/main) / [`01df2452529a86c689cf226fecd5918cc5d19676`](https://github.com/headroomlabs-ai/headroom/commit/01df2452529a86c689cf226fecd5918cc5d19676)（2026-08-02 获取；截至 2026-08-06 仍为本仓库评估基线）
-- 最新稳定 tag：[`v0.34.0`](https://github.com/headroomlabs-ai/headroom/releases/tag/v0.34.0) / [`9fd5ae3d530b5d9eb9e9127e413235a5a3b2faf6`](https://github.com/headroomlabs-ai/headroom/commit/9fd5ae3d530b5d9eb9e9127e413235a5a3b2faf6)（2026-08-05 已发布，晚于当前固定对照；其增量尚未评估，未纳入能力矩阵，不作为完成口径）
-- 前一发布对照：[`v0.33.0`](https://github.com/headroomlabs-ai/headroom/releases/tag/v0.33.0) / [`28aa53dc7ca51e687cc719c3fe160f3be50c6570`](https://github.com/headroomlabs-ai/headroom/commit/28aa53dc7ca51e687cc719c3fe160f3be50c6570)
+- 项目：[`headroomlabs-ai/headroom`](https://github.com/headroomlabs-ai/headroom)（官方 remote：`https://github.com/headroomlabs-ai/headroom.git`）
+- **当前比较 pin（唯一）**：[`v0.34.0`](https://github.com/headroomlabs-ai/headroom/releases/tag/v0.34.0) / [`9fd5ae3d530b5d9eb9e9127e413235a5a3b2faf6`](https://github.com/headroomlabs-ai/headroom/commit/9fd5ae3d530b5d9eb9e9127e413235a5a3b2faf6)（2026-08-05 发布；2026-08-08 完成三候选漂移审计后定为唯一 current comparison pin；`pyproject.toml` version 0.34.0）
+- 历史 pin：[`01df2452529a86c689cf226fecd5918cc5d19676`](https://github.com/headroomlabs-ai/headroom/commit/01df2452529a86c689cf226fecd5918cc5d19676)（2026-08-02 获取的 main HEAD，`pyproject.toml` version 0.33.0；被 v0.34.0 取代，仅用于解释旧证据，不再作为完成口径）
+- 前一发布对照（历史）：[`v0.33.0`](https://github.com/headroomlabs-ai/headroom/releases/tag/v0.33.0) / [`28aa53dc7ca51e687cc719c3fe160f3be50c6570`](https://github.com/headroomlabs-ai/headroom/commit/28aa53dc7ca51e687cc719c3fe160f3be50c6570)
 - 历史对照：[`1725cd1f8376828849c0e48fd9008afa25d24fff`](https://github.com/headroomlabs-ai/headroom/commit/1725cd1f8376828849c0e48fd9008afa25d24fff)，仅用于解释 2026-07 的旧证据
-- 上游许可证：Apache License 2.0；固定 commit 包含根目录 `NOTICE`
-- 当前使用边界：只进行公开行为、接口和测试语义对照；`dtoken-learning`、Rust compressor registry、route-bound gateway compression 与现有 d-token runtime 均为本仓库独立实现，没有从该 commit 复制源码
+- **main post-release delta（跟踪，不 pin）**：[`7f6950be34e29304deae0fa5138b852491b092fe`](https://github.com/headroomlabs-ai/headroom/commit/7f6950be34e29304deae0fa5138b852491b092fe)（2026-08-08 获取；`pyproject.toml` version 仍为 0.34.0，未发布）
+- 上游许可证：Apache License 2.0（三个候选 pin 的根 `LICENSE` 均为 Apache-2.0 原文，无差异）
+- 上游 NOTICE：v0.34.0 起新增 "Vendored dashboard assets" 段（`headroom/dashboard/static/`：Tailwind CSS 3.4.17 MIT、htmx 1.9.10 Zero-Clause BSD、Alpine.js 3.13.3 MIT，来自 #2734）；v0.34.0 → main 无 NOTICE 变化
+- 漂移审计决议（2026-08-08）：`01df2452` → `v0.34.0` 为 33 commit / 129 文件 / +8936 −1021（含 `/v1/compress` 契约文档化 #2743、qualified CCR 名称 #2698、retrieve 二次压缩修复 #2654、CVE 依赖升级 #2753、NOTICE 静态资源段 #2734；无新 codec、无 registry 结构变化）；`v0.34.0` → main `7f6950be` 为 33 commit / 74 文件 / +4874 −428（proxy 行为修复、CCR 内部 TTL/marker 策略、telemetry/perf、上游自身依赖 CVE 升级；许可证与 NOTICE 无变化、无 codec、无 `/v1/compress` 契约变化）。无必须采用 main 的实际证据，main 只作 post-release delta 跟踪
+- 当前使用边界：只进行公开行为、接口和测试语义对照；不复制上游源码，不启动、不依赖外部 Headroom 8787 服务；`dtoken-learning`、Rust compressor registry、route-bound gateway compression 与现有 d-token runtime 均为本仓库独立实现
 - 后续边界：若迁移或修改上游源码，必须在代码进入仓库前补充许可证副本、NOTICE、逐文件来源、修改范围和保留版权声明；仅有同名接口、metadata endpoint 或布尔字段不得算作能力迁移
 
 ## LeanCTX / Context Bus / Context Relay 行为对照基线
