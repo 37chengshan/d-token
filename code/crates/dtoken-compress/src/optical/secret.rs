@@ -305,8 +305,7 @@ fn contains_spaced_labeled_secret(text: &str) -> bool {
                         character.is_whitespace()
                             || matches!(character, '=' | ':' | '"' | '\'' | ',' | ';')
                     })
-                    .filter(|word| !word.is_empty())
-                    .next_back()
+                    .rfind(|word| !word.is_empty())
                     .unwrap_or("");
                 (1..=words.len().min(3)).any(|width| {
                     let label = words[words.len() - width..].join(" ");
