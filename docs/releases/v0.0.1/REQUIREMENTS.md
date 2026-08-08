@@ -69,7 +69,7 @@
 |---|---|---|---|---|---|---|
 | OPTICAL-1 | Beta 只 shadow/preview；production active 不可由产品 UI 打开（GOAL G10、PRD 12.5、INV-11） | `visual.config.activeForced`（allow_active=false）已实现；V3 评测 harness 存在 | 候选复验 + UI 断言 | N6 | UI 无 active 开关；active 默认空且关闭 | MUST |
 | OPTICAL-2 | 不扩大为普通图片压缩（GOAL G10） | 范围已限定 | 边界断言 | PR-O3 | 无普通图片压缩入口 | MUST |
-| OPTICAL-3 | pxpipe 评测配方 pin 重评估（旧 pin `7b7d6efa` 未评估；上游已发布 v0.12.0） | 法律声明记录旧 pin | 新 pin 评估 + capability matrix 刷新 | PR-O1 | pin 唯一；评估记录落盘；1928×1928 非生产 profile 声明保留 | BOUNDARY（参考轨，不阻断） |
+| OPTICAL-3 | pxpipe 评测配方 pin 重评估（旧 pin `7b7d6efa` 未评估；上游已发布 v0.12.0） | 已闭合（PR-O1，2026-08-08）：唯一 pin `0ceabbed`/v0.12.0；`docs/legal/THIRD_PARTY_NOTICES.md` + 根 NOTICE + `PXPIPE_SOURCE_COMMIT` + 计划文档已同步；旧 pin 标注为历史 | 无（capability matrix 已刷新：768×1932 为 OpenAI 兜底、Sol/Grok 原生 14px 条带、Spleen 5×8 `K` 字形修正、`[U+HEX]` 转义、billing 行不入成像 slab） | PR-O1 | pin 唯一；评估记录落盘；1928×1928 非生产 profile 声明保留（均满足） | BOUNDARY（参考轨，不阻断） |
 | OPTICAL-4 | Spleen 5×8 字体数据来源/许可证/分发边界收口 | 2.2.0/BSD-2-Clause 已登记 | 渲染确定性 + 分发边界审计 | PR-O2 | 字体数据随分发的声明完整；renderer 跨平台确定性有测试 | MUST |
 | OPTICAL-5 | active 门槛：renderer/font/profile hash、版本化 token 公式、eval digest、可信 authority（PRD 12.5） | active 默认关闭 | 门槛文档 + shadow 证据 | PR-O3 | active 不可达有测试；shadow 保留 raw ingress | MUST |
 | OPTICAL-6 | shadow 保留 raw ingress；post-commit 永不自动原文重试（PRD 12.5） | 契约已定 | 候选复验 | N6 | 断言测试 | MUST |
@@ -78,7 +78,7 @@
 
 | ID | 需求（来源） | current | gap | owner | acceptance | release claim |
 |---|---|---|---|---|---|---|
-| OSS-1 | 每个外部来源 pin 唯一且无漂移（GOAL G8/G9、[OSS_MIGRATION.md](./OSS_MIGRATION.md)） | CBM 根 NOTICE v0.9.0 vs manifest v0.9.1-rc.1 漂移；Headroom 三候选并存（旧基线 `01df2452` / release `v0.34.0`/`9fd5ae3d` / main `7f6950be`）；pxpipe 旧 pin 未评估；lean-ctx v3.9.17 vs main 95a1b7bc；RTK v0.45.0 新克隆待审计 | 逐轨道 pin 决议 + 单一事实源 | PR-CBM1, PR-H1, PR-O1, PR-L0, PR-R1, PR-A | 全轨道 pin 唯一；漂移清单清零；结构检查通过 | MUST |
+| OSS-1 | 每个外部来源 pin 唯一且无漂移（GOAL G8/G9、[OSS_MIGRATION.md](./OSS_MIGRATION.md)） | CBM 根 NOTICE v0.9.0 vs manifest v0.9.1-rc.1 漂移；Headroom 三候选并存（旧基线 `01df2452` / release `v0.34.0`/`9fd5ae3d` / main `7f6950be`）；pxpipe 旧 pin 未评估（已闭合 PR-O1：唯一 pin `0ceabbed`/v0.12.0）；lean-ctx v3.9.17 vs main 95a1b7bc；RTK v0.45.0 新克隆待审计 | 逐轨道 pin 决议 + 单一事实源（pxpipe 项无剩余 gap） | PR-CBM1, PR-H1, PR-O1, PR-L0, PR-R1, PR-A | 全轨道 pin 唯一；漂移清单清零；结构检查通过 | MUST |
 | OSS-2 | NOTICE/许可证副本随分发（GOAL G8、AGENTS.md） | root + docs/legal 双份 NOTICE；AiMaMi LICENSE 副本在仓 | 随包分发清单复验 | PR-A, N0 | SBOM/license 门通过且包含全部轨道声明 | MUST |
 | OSS-3 | 外部仓库只读研究；不复制进生产；不新增运行依赖（GOAL G8、INV-4） | 本地副本全部在 `/Users/cc/Documents/d-token-external/`（仓库外） | 依赖扫描断言 | N0 | Cargo/npm 依赖无外部轨道运行时依赖；无复制源码 | MUST |
 | OSS-4 | CBM v0.9.1-rc.1 固定 tag/commit + 平台 archive/binary SHA + Sigstore/Cosign；不得放宽校验（GOAL G9） | manifest 已 pin `ee9833df` + SHA；Cosign blob bundle 校验流程已定义 | 根 NOTICE 漂移修复 + Windows 收口实机 | PR-CBM1, PR-CBM2 | 根/内 notice 一致；四平台（macOS/Windows 各目标）archive+binary SHA 与 Cosign 校验证据 | MUST |

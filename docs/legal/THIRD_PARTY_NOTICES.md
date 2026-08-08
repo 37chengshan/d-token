@@ -65,10 +65,11 @@ d-token 未复制或分发 AiMaMi 的名称、Logo、应用图标、截图、人
 ## pxpipe 评测配方参考
 
 - 项目：[`teamchong/pxpipe`](https://github.com/teamchong/pxpipe)
-- 固定来源：[`7b7d6efa42926a73b1bd709b5f6d1af1ae679947`](https://github.com/teamchong/pxpipe/commit/7b7d6efa42926a73b1bd709b5f6d1af1ae679947)
+- 固定来源：[`0ceabbed941cf7e95d395153825e944ea9f82e2c`](https://github.com/teamchong/pxpipe/commit/0ceabbed941cf7e95d395153825e944ea9f82e2c)（release v0.12.0，2026-08-06；取代旧固定来源 [`7b7d6efa42926a73b1bd709b5f6d1af1ae679947`](https://github.com/teamchong/pxpipe/commit/7b7d6efa42926a73b1bd709b5f6d1af1ae679947) / v0.8.0）
 - 上游版权声明：`Copyright (c) 2026 claude-image-proxy contributors`
-- 上游许可证：MIT
-- 使用边界：参考 768×1932、Spleen 5×8、reflow/newline marker、IDS、factsheet、recent-six 保护，以及“本地代理在转发前将旧上下文替换为图片并保留当前请求”的公开行为；d-token 的 Rust renderer、灰度 AA、请求 IR/patcher、Agent bridge、Hybrid 分区、grader和运行器为独立实现，不是 pxpipe 的像素级或 TypeScript 实现复制。
+- 上游许可证：MIT（v0.8.0→v0.12.0 的 LICENSE 未变更；两个 pin 上游均无 NOTICE 文件）
+- 使用边界：参考 OpenAI 兜底 768×1932、Claude 312 列 1568×728 Spleen 5×8、Sol/Grok 原生 14px JetBrains Mono 84 列条带（v0.10.0 起）、reflow/newline marker、IDS、factsheet（≤96 个 precision-critical token）、recent-six 保护，以及“本地代理在转发前将旧上下文替换为图片并保留当前请求”的公开行为；d-token 的 Rust renderer、灰度 AA、请求 IR/patcher、Agent bridge、Hybrid 分区、grader和运行器为独立实现，不是 pxpipe 的像素级或 TypeScript 实现复制。
+- 版本差异（7b7d6efa/v0.8.0 → 0ceabbed/v0.12.0，依据上游 CHANGELOG）：新增 Gemini 3.6 Flash 默认 reader、Messages→Responses/Chat 桥与 OpenAI/Cloudflare 精确路由；Sol/Grok 从 152 列 5×8 Spleen 改为原生 14px JetBrains Mono；Spleen 5×8 `K` 字形修正（H/K 错误率 47.2%→18.7%）；缺失字形转义为 `[U+HEX]`；per-turn billing 行不再进入缓存前缀/成像 slab；recent-six 保护、factsheet、reflow/newline marker、IDS 均保留。
 - 1928×1928 profile只作为历史headline研究轨道，不声明为当前pxpipe生产profile。
 
 ## Spleen 5×8
