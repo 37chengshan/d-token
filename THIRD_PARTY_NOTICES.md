@@ -50,12 +50,14 @@ THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND 
 ## Codebase Memory MCP import integration
 
 - Upstream: `DeusData/codebase-memory-mcp`
-- Pinned release: `v0.9.0`
-- Pinned commit: `b637e3330c96cfe452da623db068c241aaa3ec01`
+- Current pin (immutable pre-release): `v0.9.1-rc.1`, published 2026-07-30
+- Pinned commit: `ee9833df2c72b750378273897ffec9410fc2c4f2`
 - License: MIT
 - Integrity manifest: [`code/runtimes/codebase-memory/artifact-manifest.json`](code/runtimes/codebase-memory/artifact-manifest.json)
 
 The d-token installer ships only its restricted launcher and the legal text needed to explain the optional import. The upstream executable, installer, updater and native web UI are not included in the d-token installer. When a user chooses to import the pinned upstream archive, the d-token control plane verifies the archive and executable hashes before use and keeps the upstream license/notices with the imported component.
+
+Superseded historical pin `v0.9.0` / `b637e3330c96cfe452da623db068c241aaa3ec01` (superseded 2026-08-06): retained only as the reproduction baseline for the user-reported v0.9.0 import failure; it is no longer the active import pin and is not offered for new imports.
 
 ## Reference-only projects
 
