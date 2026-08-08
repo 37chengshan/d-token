@@ -1302,9 +1302,10 @@ fn saturating_i64_difference_u128(baseline: u128, candidate: u128) -> i64 {
     }
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum OptimizationDisposition {
+    #[default]
     Passthrough,
     Shadow,
     Active,
@@ -1487,6 +1488,12 @@ pub struct RequestLog {
     pub input_tokens_before: Option<usize>,
     pub input_tokens_after: Option<usize>,
     pub output_tokens: Option<usize>,
+    /// Actual provider-reported input tokens from the upstream response; never derived.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_input_tokens: Option<usize>,
+    /// Actual provider-reported output tokens from the upstream response; never derived.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_output_tokens: Option<usize>,
     pub tokens_saved: Option<usize>,
     pub transforms_applied: Vec<String>,
     pub latency_ms: Option<u64>,
@@ -1497,6 +1504,103 @@ pub struct RequestLog {
     pub quota_metadata: Option<serde_json::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_accounting: Option<HybridContextAccounting>,
+}
+
+/// Minimal, safe projection of a request's optimization outcome.
+///
+/// `savings_estimated` is display-only; `savings_claimable` is only populated
+/// from `PairedActual` or a complete `ProviderReconciledActual` attribution
+/// chain (provider usage alone or `EstimatedActive` never makes savings
+/// claimable). `physical_tokens_saved` is projected from local before/after
+/// input measurements only when both exist and the change is non-negative;
+/// it never copies the legacy positive `tokens_saved` field. This struct
+/// never carries prompt/response bodies, credentials or local paths.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct OptimizationReceipt {
+    pub request_id: Uuid,
+    pub timestamp_ms: u64,
+    pub agent: Option<String>,
+    pub provider_id: Option<String>,
+    pub route_id: Option<String>,
+    pub model: Option<String>,
+    pub local_input_tokens_before: Option<usize>,
+    pub local_input_tokens_after: Option<usize>,
+    pub local_output_tokens: Option<usize>,
+    pub provider_input_tokens: Option<usize>,
+    pub provider_output_tokens: Option<usize>,
+    pub physical_tokens_saved: Option<usize>,
+    pub savings_estimated: Option<i64>,
+    pub savings_claimable: Option<i64>,
+    pub disposition: OptimizationDisposition,
+    pub failure_type: Option<String>,
+    pub transforms_applied: Vec<String>,
+    pub latency_ms: Option<u64>,
+}
+
+impl OptimizationReceipt {
+    /// Safe projection from a `&RequestLog`.
+    ///
+    /// Claimable savings require the full, validated, declarable
+    /// `HybridContextAccounting` path; a request with only provider usage
+    /// recorded is never claimable.
+    pub fn from_request_log(request_log: &RequestLog) -> Self {
+        let accounting = request_log.context_accounting.as_ref();
+        // Claimable savings require complete, validated, declarable attribution:
+        // PairedActual, or the full ProviderReconciledActual chain (counterfactual
+        // baseline + provider actual + reconciled savings). EstimatedActive and
+        // provider-usage-only never produce claimable savings.
+        let savings_claimable = match accounting {
+            Some(accounting) => match accounting.attribution_basis {
+                SavingsAttribution::PairedActual => accounting
+                    .claimable_signed_savings()
+                    .and_then(|savings| savings.total_tokens),
+                SavingsAttribution::ProviderReconciledActual => accounting
+                    .provider_reconciled_signed_savings()
+                    .and_then(|savings| savings.total_tokens),
+                SavingsAttribution::None | SavingsAttribution::EstimatedActive => None,
+            },
+            None => None,
+        };
+        let savings_estimated = accounting
+            .and_then(|accounting| accounting.estimated.as_ref())
+            .and_then(|comparison| comparison.signed_savings.total_tokens);
+        // Physical local-input savings are only projected when both before and
+        // after measurements exist and the signed change is non-negative;
+        // missing measurements or growth stay None (no negative truncation,
+        // never copied from the legacy positive-only `tokens_saved` field).
+        let physical_tokens_saved = match (
+            request_log.input_tokens_before,
+            request_log.input_tokens_after,
+        ) {
+            (Some(before), Some(after)) if before >= after => Some(before - after),
+            _ => None,
+        };
+        Self {
+            request_id: request_log.request_id,
+            timestamp_ms: request_log.timestamp_ms,
+            agent: request_log.agent.clone(),
+            provider_id: request_log.provider_id.clone(),
+            route_id: request_log.route_id.clone(),
+            model: request_log.model.clone(),
+            local_input_tokens_before: request_log.input_tokens_before,
+            local_input_tokens_after: request_log.input_tokens_after,
+            local_output_tokens: request_log.output_tokens,
+            provider_input_tokens: request_log.provider_input_tokens,
+            provider_output_tokens: request_log.provider_output_tokens,
+            physical_tokens_saved,
+            savings_estimated,
+            savings_claimable,
+            disposition: accounting
+                .map(|accounting| accounting.disposition)
+                .unwrap_or_default(),
+            failure_type: request_log.error.clone().or_else(|| {
+                accounting.and_then(|accounting| accounting.fallback_reason_code.clone())
+            }),
+            transforms_applied: request_log.transforms_applied.clone(),
+            latency_ms: request_log.latency_ms,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -2298,5 +2402,259 @@ mod capability_contract_tests {
         artifact.quality_delta = 0.0;
         artifact.passed = true;
         assert!(!artifact.passes_derived_quality_gate());
+    }
+}
+
+#[cfg(test)]
+mod optimization_receipt_tests {
+    use super::*;
+
+    fn measurement(normalized_total: u64) -> UsageMeasurement {
+        UsageMeasurement {
+            evidence: UsageEvidence {
+                kind: UsageEvidenceKind::LocalEstimate,
+                source_revision: "rev-1".to_string(),
+            },
+            usage: UsageVector {
+                input: InputTokenUsage {
+                    normalized_total: Some(normalized_total),
+                    ..Default::default()
+                },
+                output_tokens: None,
+                ..Default::default()
+            },
+        }
+    }
+
+    fn provider_measurement(normalized_total: u64) -> UsageMeasurement {
+        UsageMeasurement {
+            evidence: UsageEvidence {
+                kind: UsageEvidenceKind::ProviderActual,
+                source_revision: "rev-1".to_string(),
+            },
+            usage: UsageVector {
+                input: InputTokenUsage {
+                    normalized_total: Some(normalized_total),
+                    ..Default::default()
+                },
+                output_tokens: Some(0),
+                ..Default::default()
+            },
+        }
+    }
+
+    fn accounting(disposition: OptimizationDisposition) -> HybridContextAccounting {
+        let active = matches!(
+            disposition,
+            OptimizationDisposition::Active | OptimizationDisposition::SemanticActive
+        );
+        HybridContextAccounting {
+            schema_version: 1,
+            disposition,
+            sent_payload: if active {
+                SentPayloadVariant::Optimized
+            } else {
+                SentPayloadVariant::Original
+            },
+            upstream_state: UpstreamSendState::Completed,
+            estimated: Some(UsageComparison {
+                baseline: measurement(1000),
+                candidate: measurement(400),
+                signed_savings: SignedSavings {
+                    input_tokens: Some(600),
+                    output_tokens: Some(0),
+                    total_tokens: Some(600),
+                    ..Default::default()
+                },
+            }),
+            provider_counterfactual_baseline: None,
+            provider_actual_sent: ProviderActualUsage::default(),
+            provider_reconciled_input_savings: None,
+            paired_actual: None,
+            attribution_basis: if active {
+                SavingsAttribution::EstimatedActive
+            } else {
+                SavingsAttribution::None
+            },
+            fallback_reason_code: None,
+        }
+    }
+
+    fn base_request_log() -> RequestLog {
+        RequestLog {
+            request_id: Uuid::new_v4(),
+            timestamp_ms: 42,
+            agent: Some("test-agent".to_string()),
+            instance_id: None,
+            input_protocol: Protocol::OpenAi,
+            provider_id: Some("test-provider".to_string()),
+            route_id: Some("test-route".to_string()),
+            chain_mode: Some(ChainMode::Direct),
+            model: Some("test-model".to_string()),
+            input_tokens_before: Some(1000),
+            input_tokens_after: Some(400),
+            output_tokens: Some(120),
+            provider_input_tokens: None,
+            provider_output_tokens: None,
+            tokens_saved: Some(600),
+            transforms_applied: vec!["test_transform".to_string()],
+            latency_ms: Some(7),
+            error: None,
+            config_source: Some("test".to_string()),
+            quota_metadata: None,
+            context_accounting: None,
+        }
+    }
+
+    fn assert_no_sensitive_keys(value: &serde_json::Value) {
+        match value {
+            serde_json::Value::Object(map) => {
+                for (key, child) in map {
+                    let lower = key.to_ascii_lowercase();
+                    assert!(
+                        !lower.contains("prompt")
+                            && !lower.contains("response")
+                            && !lower.contains("auth")
+                            && !lower.contains("path"),
+                        "sensitive key found: {key}"
+                    );
+                    assert_no_sensitive_keys(child);
+                }
+            }
+            serde_json::Value::Array(items) => {
+                for item in items {
+                    assert_no_sensitive_keys(item);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    #[test]
+    fn receipt_and_log_serialization_omit_prompt_response_auth_path() {
+        let mut log = base_request_log();
+        log.provider_input_tokens = Some(900);
+        log.provider_output_tokens = Some(120);
+        log.context_accounting = Some(accounting(OptimizationDisposition::Active));
+        let receipt = OptimizationReceipt::from_request_log(&log);
+        assert_no_sensitive_keys(&serde_json::to_value(&log).unwrap());
+        assert_no_sensitive_keys(&serde_json::to_value(&receipt).unwrap());
+    }
+
+    #[test]
+    fn provider_usage_alone_is_not_claimable() {
+        let mut log = base_request_log();
+        log.provider_input_tokens = Some(900);
+        log.provider_output_tokens = Some(120);
+        let receipt = OptimizationReceipt::from_request_log(&log);
+        assert_eq!(receipt.provider_input_tokens, Some(900));
+        assert_eq!(receipt.provider_output_tokens, Some(120));
+        assert_eq!(receipt.disposition, OptimizationDisposition::Passthrough);
+        assert_eq!(receipt.savings_estimated, None);
+        assert_eq!(receipt.savings_claimable, None);
+    }
+
+    #[test]
+    fn failed_and_fallback_accounting_are_not_claimable() {
+        let mut failed_log = base_request_log();
+        failed_log.context_accounting = Some(accounting(OptimizationDisposition::Active));
+        failed_log
+            .context_accounting
+            .as_mut()
+            .unwrap()
+            .upstream_state = UpstreamSendState::FailedBeforeCommit;
+        failed_log.error = Some("upstream_error".to_string());
+        let failed = OptimizationReceipt::from_request_log(&failed_log);
+        assert_eq!(failed.failure_type.as_deref(), Some("upstream_error"));
+        assert_eq!(failed.savings_claimable, None);
+
+        let mut fallback_log = base_request_log();
+        fallback_log.context_accounting =
+            Some(accounting(OptimizationDisposition::FallbackPreSend));
+        let fallback = OptimizationReceipt::from_request_log(&fallback_log);
+        assert_eq!(
+            fallback.disposition,
+            OptimizationDisposition::FallbackPreSend
+        );
+        assert_eq!(fallback.savings_claimable, None);
+    }
+
+    #[test]
+    fn estimated_active_is_estimated_only_not_claimable() {
+        let mut log = base_request_log();
+        log.context_accounting = Some(accounting(OptimizationDisposition::Active));
+        let receipt = OptimizationReceipt::from_request_log(&log);
+        assert_eq!(receipt.disposition, OptimizationDisposition::Active);
+        assert_eq!(receipt.savings_estimated, Some(600));
+        // EstimatedActive is display-only; no provider billing/usage evidence.
+        assert_eq!(receipt.savings_claimable, None);
+        // Physical projection still derives from local before/after, not legacy.
+        assert_eq!(receipt.physical_tokens_saved, Some(600));
+    }
+
+    #[test]
+    fn provider_reconciled_full_chain_is_claimable() {
+        let mut log = base_request_log();
+        log.context_accounting = Some(HybridContextAccounting {
+            schema_version: 1,
+            disposition: OptimizationDisposition::Active,
+            sent_payload: SentPayloadVariant::Optimized,
+            upstream_state: UpstreamSendState::Completed,
+            estimated: None,
+            provider_counterfactual_baseline: Some(provider_measurement(1000)),
+            provider_actual_sent: ProviderActualUsage {
+                measurement: Some(provider_measurement(400)),
+            },
+            provider_reconciled_input_savings: Some(600),
+            paired_actual: None,
+            attribution_basis: SavingsAttribution::ProviderReconciledActual,
+            fallback_reason_code: None,
+        });
+        let receipt = OptimizationReceipt::from_request_log(&log);
+        assert_eq!(receipt.disposition, OptimizationDisposition::Active);
+        assert_eq!(receipt.savings_estimated, None);
+        assert_eq!(receipt.savings_claimable, Some(600));
+    }
+
+    #[test]
+    fn provider_usage_without_counterfactual_is_not_claimable() {
+        let mut log = base_request_log();
+        log.provider_input_tokens = Some(900);
+        log.provider_output_tokens = Some(120);
+        log.context_accounting = Some(HybridContextAccounting {
+            schema_version: 1,
+            disposition: OptimizationDisposition::Active,
+            sent_payload: SentPayloadVariant::Optimized,
+            upstream_state: UpstreamSendState::Completed,
+            estimated: None,
+            // Provider usage present, but no counterfactual baseline / no
+            // reconciled savings: attribution chain is incomplete.
+            provider_counterfactual_baseline: None,
+            provider_actual_sent: ProviderActualUsage {
+                measurement: Some(provider_measurement(400)),
+            },
+            provider_reconciled_input_savings: None,
+            paired_actual: None,
+            attribution_basis: SavingsAttribution::ProviderReconciledActual,
+            fallback_reason_code: None,
+        });
+        let receipt = OptimizationReceipt::from_request_log(&log);
+        assert_eq!(receipt.provider_input_tokens, Some(900));
+        assert_eq!(receipt.savings_claimable, None);
+    }
+
+    #[test]
+    fn local_growth_does_not_fake_saved() {
+        // Local input grew (before < after): must NOT be projected as saved,
+        // and the legacy positive tokens_saved must not be copied either.
+        let mut log = base_request_log();
+        log.input_tokens_before = Some(400);
+        log.input_tokens_after = Some(1000);
+        log.tokens_saved = Some(600);
+        let receipt = OptimizationReceipt::from_request_log(&log);
+        assert_eq!(receipt.local_input_tokens_before, Some(400));
+        assert_eq!(receipt.local_input_tokens_after, Some(1000));
+        assert_eq!(receipt.physical_tokens_saved, None);
+        assert_eq!(receipt.savings_claimable, None);
     }
 }
