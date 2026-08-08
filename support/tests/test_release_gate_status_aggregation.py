@@ -86,7 +86,7 @@ def make_supplemental_evidence(dir: Path, commit: str = FIXTURE_COMMIT,
     write_json(dir / "codex-ocxlocal-routed" / "codex-20260805T000000Z.json",
                {**bound, "ok": True, "status": "routed-verified"})
     write_json(dir / "agent-config-acceptance" / "agent-config-acceptance-20260805T000000Z.json",
-               {**bound, "status": "ok"})
+               {**bound, "status": "verified"})
     write_json(dir / "cc-switch-aba" / "cc-switch-aba-20260805T000000Z.json",
                {**bound, "ok": True, "status": "passed",
                 "wrote_cc_switch": False, "identity_restored": True,
@@ -439,6 +439,40 @@ class ReleaseGateStatusAggregatorContractTests(unittest.TestCase):
                              "flat merged managed-rtk candidate must satisfy G5")
             self.assertEqual(states["G7"], "passed",
                              "flat merged real-routed report must satisfy G7")
+
+    def test_config_supplemental_accepts_producer_verified_artifact(self) -> None:
+        # The PR-6 producer (run_agent_config_acceptance.py) stamps a top-level
+        # artifact with status=verified (its only success state) plus
+        # candidate_commit/source_digest.  The aggregator must accept exactly
+        # that shape in both latest and bound modes, and reject the other
+        # producer statuses (failed/blocked).
+        with tempfile.TemporaryDirectory() as tmp:
+            dir_ = Path(tmp)
+            for status in ("failed", "blocked"):
+                write_json(dir_ / "agent-config-acceptance" / f"agent-config-acceptance-{status}.json",
+                           {"status": status, "candidate_commit": FIXTURE_COMMIT,
+                            "source_digest": FIXTURE_DIGEST})
+            proc = run_aggregator(dir_, expected_commit=FIXTURE_COMMIT,
+                                  expected_source_digest=FIXTURE_DIGEST)
+            self.assertEqual(proc.returncode, 1)
+            report = json.loads(proc.stdout)
+            config = next(s for s in report["supplemental"] if s["id"] == "config")
+            self.assertEqual(config["state"], "blocked",
+                             "producer failed/blocked statuses must never pass")
+            # Now the producer success shape: verified + binding fields.
+            dir2 = Path(tmp) / "success"
+            write_json(dir2 / "agent-config-acceptance" / "agent-config-acceptance-20260805T000000Z.json",
+                       {"status": "verified", "candidate_commit": FIXTURE_COMMIT,
+                        "source_digest": FIXTURE_DIGEST})
+            proc = run_aggregator(dir2, expected_commit=FIXTURE_COMMIT,
+                                  expected_source_digest=FIXTURE_DIGEST)
+            self.assertEqual(proc.returncode, 1, "other supplemental evidence still missing")
+            report = json.loads(proc.stdout)
+            config = next(s for s in report["supplemental"] if s["id"] == "config")
+            self.assertEqual(config["state"], "passed",
+                             "producer status=verified artifact must be accepted")
+            self.assertEqual(config["binding"]["commit"], FIXTURE_COMMIT)
+            self.assertEqual(config["binding"]["source_digest"], FIXTURE_DIGEST)
 
     def test_g7_not_satisfied_by_codex_supplemental(self) -> None:
         # Supplemental evidence must never impersonate G7 (Real OpenCode).

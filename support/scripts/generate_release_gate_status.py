@@ -101,7 +101,7 @@ _SUPPLEMENTAL_SPECS: list[dict] = [
         "label": "Agent config acceptance (N4)",
         "patterns": ["agent-config-acceptance/*.json", "agent-config-acceptance-*.json"],
         "green": "status_ok",
-        "ok_statuses": {"ok", "passed", "pass"},
+        "ok_statuses": {"verified", "ok", "passed", "pass"},
         "binding": True,
     },
     {
