@@ -1530,6 +1530,15 @@
       "summary": "push round-3 CI stabilization fixes",
       "head_before": "16bb7ad",
       "remote": "origin"
+    },
+    {
+      "id": "3d176f09-492b-4121-8366-28b2c4ede115",
+      "timestamp": "2026-08-08T18:57:45+08:00",
+      "operation": "commit",
+      "branch": "codex/final-release-iteration",
+      "summary": "fix: Java fixture Java8-compatible for Windows CI javac (374368f)",
+      "head_before": "7ffa4fd",
+      "remote": null
     }
   ]
 }
