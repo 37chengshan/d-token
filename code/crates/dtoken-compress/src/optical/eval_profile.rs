@@ -9,7 +9,13 @@ use super::spleen5x8::SPLEEN_5X8_SOURCE_REVISION;
 pub const OPENAI_VISION_RULES_URL: &str =
     "https://developers.openai.com/api/docs/guides/images-vision";
 pub const OPENAI_VISION_RULES_RETRIEVED_AT: &str = "2026-07-12";
-pub const PXPIPE_SOURCE_COMMIT: &str = "7b7d6efa42926a73b1bd709b5f6d1af1ae679947";
+/// pxpipe evaluation-reference release commit (v0.12.0, 2026-08-06).
+/// Supersedes the v0.8.0 pin `7b7d6efa42926a73b1bd709b5f6d1af1ae679947`
+/// (kept historical in notices); upstream LICENSE (MIT) and absence of a
+/// NOTICE file are unchanged between the two pins. This value feeds the
+/// `PxpipeCurrentGptProductionReference` profile revision, so profile digests
+/// change with the pin by design.
+pub const PXPIPE_SOURCE_COMMIT: &str = "0ceabbed941cf7e95d395153825e944ea9f82e2c";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RenderFontId {
