@@ -120,6 +120,15 @@ jobs:
           cache: npm
           cache-dependency-path: code/apps/desktop/package-lock.json
 
+      # code_codec_gate.rs compiles the Java codec fixture with javac, which
+      # uses a Java 16 `record`; the default JDK on windows-2022 is too old to
+      # parse it, so pin a modern JDK before the Rust workspace checks.
+      - name: Install Java (modern JDK for codec fixture syntax checks)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
       # generate_context!() embeds ../dist at compile time, so Rust Clippy needs
       # a real frontend build first — same contract as the Linux check job.
       - name: Install frontend dependencies

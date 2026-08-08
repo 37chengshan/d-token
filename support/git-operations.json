@@ -1755,6 +1755,69 @@
       "summary": "Record W1 slice branch and commit audit entries",
       "head_before": "c5a584971a9e2421a0040eb0f777ba76d9ae8f88",
       "remote": null
+    },
+    {
+      "id": "4fc37a72-44f7-41b9-bbc9-eee83a356e8f",
+      "timestamp": "2026-08-08T20:11:53+08:00",
+      "operation": "branch-create",
+      "branch": "codex/final/cc-switch-aba-evidence",
+      "summary": "PR-7: create isolated worktree branch for cc-switch A-B-A read-only evidence harness + release gate aggregator supplemental evidence wiring",
+      "head_before": "c5a584971a9e2421a0040eb0f777ba76d9ae8f88",
+      "remote": null
+    },
+    {
+      "id": "dbb01e83-96c7-4398-93db-61c388b52ae6",
+      "timestamp": "2026-08-08T20:24:29+08:00",
+      "operation": "commit",
+      "branch": "codex/final/config-acceptance",
+      "summary": "Fail closed on unbound Agent config evidence",
+      "head_before": "88c3b154116f32e4ce32eccf90796634405f4a48",
+      "remote": null
+    },
+    {
+      "id": "d33aaf0e-773a-447a-973b-0faae6074289",
+      "timestamp": "2026-08-08T20:24:50+08:00",
+      "operation": "commit",
+      "branch": "codex/final/autoconfig-cutover",
+      "summary": "Align discovery fallback with source repair contract",
+      "head_before": "398c682ac4216f9fb467fc64414d0118958738b9",
+      "remote": null
+    },
+    {
+      "id": "537cc1db-eb0e-4a52-91ad-2773bf1f5a68",
+      "timestamp": "2026-08-08T20:24:50+08:00",
+      "operation": "commit",
+      "branch": "codex/final/ui-polish",
+      "summary": "Align UI E2E labels and reduced-motion rotation",
+      "head_before": "635224d10850163f80570f1b06e1942af1bedaf6",
+      "remote": null
+    },
+    {
+      "id": "13520f87-ac3c-43a2-9cf1-d44800a192b2",
+      "timestamp": "2026-08-08T20:24:50+08:00",
+      "operation": "commit",
+      "branch": "codex/final/pxpipe-pin",
+      "summary": "Synchronize pxpipe pin into runtime provenance",
+      "head_before": "87614200fbe9fd6674b7ecbed60f2f58d8ac3e4c",
+      "remote": null
+    },
+    {
+      "id": "e1d583b9-ae31-40ee-a43e-c19614fa4bef",
+      "timestamp": "2026-08-08T20:24:50+08:00",
+      "operation": "commit",
+      "branch": "codex/final/headroom-pin",
+      "summary": "Synchronize Headroom pin decision into living plan",
+      "head_before": "78600f7f8c546d836afbf961b620ad12749e1ecf",
+      "remote": null
+    },
+    {
+      "id": "04f3a2ba-411d-4cbc-86e5-bdba6dab6c91",
+      "timestamp": "2026-08-08T20:26:35+08:00",
+      "operation": "commit",
+      "branch": "codex/final-release-iteration",
+      "summary": "ci: pin modern JDK on windows check job for codec javac record fixture",
+      "head_before": "7ffa4fd",
+      "remote": null
     }
   ]
 }
