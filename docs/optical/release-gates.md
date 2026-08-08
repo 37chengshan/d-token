@@ -259,6 +259,8 @@ Private model slug identity and usage evidence complete
 
 即使全部通过也只能标记 `LAB_CANDIDATE`；不得自动注册Capability或启用active。当前V2没有执行付费调用，因此该门仍为 `NOT RUN`。
 
+pxpipe 评测配方参考 pin：v0.12.0 `0ceabbed941cf7e95d395153825e944ea9f82e2c`（2026-08-06 release；上游 LICENSE 仍为 MIT、无 NOTICE 文件；取代 v0.8.0 `7b7d6efa`）。1928×1928 仅为上游历史 audit 页（`LEGIBILITY-AUDIT-2026-07-01.md` 中 "old page" CLAMPED），不构成生产 profile。
+
 ```text
 Shadow planner                         PASS
 Capability lifecycle foundation        PASS
