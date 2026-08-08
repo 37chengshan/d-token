@@ -22,11 +22,17 @@ paths.
 
 Evidence contract
 -----------------
-The JSON artifact is a single top-level object with exactly five keys:
-schema_version, status, mode, agents, restore_order. schema_version is the
-artifact schema version; status is one of verified|failed|blocked; mode is
-always executed (--dry-run and --check-schema never write an artifact);
-agents is an array of per-agent records containing exactly agent_id, adapter,
+The JSON artifact is a single top-level object with exactly seven keys:
+schema_version, status, mode, candidate_commit, source_digest, agents,
+restore_order. schema_version is the artifact schema version; status is one
+of verified|failed|blocked; mode is always executed (--dry-run and
+--check-schema never write an artifact); candidate_commit is the repository
+HEAD commit and source_digest is the sha256 of the HEAD tree id (the
+`git rev-parse HEAD^{tree}` output without its trailing newline) — a
+content-bearing clean anchor that never hashes to empty input, binding the
+evidence to the candidate's exact committed tree (N9 bound mode, resolved
+fail-closed before any executed artifact); agents is an
+array of per-agent records containing exactly agent_id, adapter,
 source_fingerprint, source_mode, status, error_class, steps; restore_order is
 the list of agent ids exact-restored during a rollback, in the actual
 reverse order in which they were restored. The artifact never contains file
@@ -54,6 +60,7 @@ import hashlib
 import json
 import os
 import signal
+import string
 import subprocess
 import sys
 import tempfile
@@ -77,13 +84,26 @@ _O_BINARY = getattr(os, "O_BINARY", 0)
 
 # Top-level artifact contract: one object with exactly these keys. status is
 # one of verified|failed|blocked and mode is always executed; --dry-run and
-# --check-schema never write an artifact.
-SCHEMA_VERSION = "1.0"
+# --check-schema never write an artifact. candidate_commit and source_digest
+# bind the evidence to a concrete candidate revision (N9 bound mode):
+# candidate_commit is the repository HEAD commit and source_digest is the
+# sha256 of the HEAD tree id (git rev-parse HEAD^{tree} output without the
+# trailing newline), a content-bearing anchor that is never empty; both are
+# resolved before any run.
+SCHEMA_VERSION = "1.1"
 STATUS_VERIFIED = "verified"
 STATUS_BLOCKED = "blocked"
 MODE_EXECUTED = "executed"
 ARTIFACT_KEYS = frozenset(
-    {"schema_version", "status", "mode", "agents", "restore_order"}
+    {
+        "schema_version",
+        "status",
+        "mode",
+        "candidate_commit",
+        "source_digest",
+        "agents",
+        "restore_order",
+    }
 )
 ARTIFACT_STATUSES = frozenset({STATUS_VERIFIED, STATUS_FAILED, STATUS_BLOCKED})
 
@@ -207,6 +227,10 @@ class ProbeFailed(AcceptanceError):
 
 class ProbeReportInvalid(AcceptanceError):
     error_class = "ProbeReportInvalid"
+
+
+class GitBindingUnresolved(AcceptanceError):
+    error_class = "GitBindingUnresolved"
 
 
 def sha256_bytes(data: bytes) -> str:
@@ -662,18 +686,68 @@ def write_artifact_atomic(artifact_path: Path, artifact: dict[str, Any]) -> None
         raise
 
 
+def resolve_git_bindings(repo_root: Path) -> tuple[str, str]:
+    """Resolve the N9 bound-mode evidence for the artifact.
+
+    Returns (candidate_commit, source_digest): the repository HEAD commit
+    and the sha256 of the HEAD tree id — ``git rev-parse HEAD^{tree}``
+    output without its trailing newline. The tree id is a content-bearing
+    clean anchor: it identifies the exact committed tree of the candidate
+    and is never empty, unlike a working-tree diff. The digest is computed
+    over the raw subprocess bytes. Any failure — git missing, the path not
+    being a repository, a non-zero exit, or a hang — fails closed with
+    GitBindingUnresolved, and no executed artifact may be written.
+    """
+    try:
+        head = subprocess.run(
+            ["git", "-C", str(repo_root), "rev-parse", "HEAD"],
+            capture_output=True,
+            timeout=60,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise GitBindingUnresolved(
+            f"cannot resolve git HEAD: {exc}"
+        ) from exc
+    if head.returncode != 0 or not head.stdout.strip():
+        raise GitBindingUnresolved(
+            "cannot resolve git HEAD (not a repository?)"
+        )
+    try:
+        tree = subprocess.run(
+            ["git", "-C", str(repo_root), "rev-parse", "HEAD^{tree}"],
+            capture_output=True,
+            timeout=60,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise GitBindingUnresolved(
+            f"cannot resolve source digest: {exc}"
+        ) from exc
+    if tree.returncode != 0 or not tree.stdout.strip():
+        raise GitBindingUnresolved(
+            "cannot resolve source digest (HEAD^{tree} unresolved)"
+        )
+    return (
+        head.stdout.decode("utf-8", errors="replace").strip(),
+        sha256_bytes(tree.stdout.removesuffix(b"\n")),
+    )
+
+
 def run_acceptance(
     agent_specs: list[tuple[str, Path]],
     temp_root: Path,
     artifact_path: Path,
     endpoint: str,
     model: str,
+    candidate_commit: str,
+    source_digest: str,
 ) -> tuple[str, list[dict[str, Any]], list[str]]:
     """Run all agents sequentially; after every probe re-verify every
     original source for both sha256 and permission mode. On any failure or
     source change, exact-restore every staged copy in reverse order back to
     the pre-run snapshot bytes, so a source mutated before its agent was
     staged is still rolled back to the content that existed before the run.
+    candidate_commit/source_digest (resolved by the caller) are embedded in
+    the written artifact to bind the evidence to the candidate revision.
 
     Returns (status, records, restore_order) where status is verified|failed
     and restore_order is the list of agent ids that were exact-restored, in
@@ -832,6 +906,8 @@ def run_acceptance(
         "schema_version": SCHEMA_VERSION,
         "status": status,
         "mode": MODE_EXECUTED,
+        "candidate_commit": candidate_commit,
+        "source_digest": source_digest,
         "agents": records,
         "restore_order": restore_order,
     }
@@ -874,7 +950,8 @@ def check_artifact_schema(artifact_path: Path) -> list[str]:
     if not isinstance(data, dict):
         return [
             "artifact must be a top-level JSON object with exactly "
-            "schema_version/status/mode/agents/restore_order"
+            "schema_version/status/mode/candidate_commit/source_digest/"
+            "agents/restore_order"
         ]
 
     extra = sorted(set(data) - ARTIFACT_KEYS)
@@ -889,6 +966,24 @@ def check_artifact_schema(artifact_path: Path) -> list[str]:
         violations.append("status must be verified|failed|blocked")
     if data.get("mode") != MODE_EXECUTED:
         violations.append("mode must be executed")
+    candidate_commit = data.get("candidate_commit")
+    if (
+        not isinstance(candidate_commit, str)
+        or len(candidate_commit) not in (40, 64)
+        or any(char not in string.hexdigits for char in candidate_commit)
+    ):
+        violations.append(
+            "candidate_commit must be a git commit hash (40 or 64 hex chars)"
+        )
+    source_digest = data.get("source_digest")
+    if (
+        not isinstance(source_digest, str)
+        or len(source_digest) != 64
+        or any(char not in string.hexdigits for char in source_digest)
+    ):
+        violations.append(
+            "source_digest must be a sha256 hex digest (64 hex chars)"
+        )
 
     agents = data.get("agents")
     if not isinstance(agents, list) or not agents:
@@ -1048,8 +1143,10 @@ def build_parser() -> argparse.ArgumentParser:
             "Run the formal agent transport candidate probe on copies of "
             "agent configs staged in a temp root. Source config files are "
             "never modified; the artifact is a top-level JSON object with "
-            "schema_version/status/mode/agents/restore_order and never "
-            "contains content, target, model, or absolute paths."
+            "schema_version/status/mode/candidate_commit/source_digest/"
+            "agents/restore_order, bound to the candidate revision (git "
+            "HEAD + tree digest) and never contains content, target, "
+            "model, or absolute paths."
         ),
     )
     parser.add_argument(
@@ -1156,6 +1253,15 @@ def main(argv: Optional[list[str]] = None) -> int:
         for problem in problems:
             print(f"validation failed: {problem}", file=sys.stderr)
         return 2
+    # N9 bound mode: every executed artifact must be bound to a concrete
+    # candidate revision. Resolution happens once, before either the
+    # blocked or the real run path, and fails closed with no artifact if
+    # the repository state cannot be established.
+    try:
+        candidate_commit, source_digest = resolve_git_bindings(REPO_ROOT)
+    except AcceptanceError as exc:
+        print(f"run failed: {exc}", file=sys.stderr)
+        return 2
     if unsupported:
         # A real execution with an unsupported adapter writes a blocked
         # structured artifact instead of exiting without evidence. The
@@ -1196,6 +1302,8 @@ def main(argv: Optional[list[str]] = None) -> int:
             "schema_version": SCHEMA_VERSION,
             "status": STATUS_BLOCKED,
             "mode": MODE_EXECUTED,
+            "candidate_commit": candidate_commit,
+            "source_digest": source_digest,
             "agents": records,
             "restore_order": [],
         }
@@ -1222,7 +1330,13 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     try:
         status, records, restore_order = run_acceptance(
-            agent_specs, temp_root, artifact_path, args.endpoint, args.model
+            agent_specs,
+            temp_root,
+            artifact_path,
+            args.endpoint,
+            args.model,
+            candidate_commit,
+            source_digest,
         )
     except AcceptanceError as exc:
         print(f"run failed: {exc}", file=sys.stderr)

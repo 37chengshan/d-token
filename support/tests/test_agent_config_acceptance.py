@@ -78,6 +78,22 @@ def probe_result(copy_path: Path, agent_id: str) -> subprocess.CompletedProcess:
     )
 
 
+def expected_bindings() -> tuple[str, str]:
+    """Independently compute the N9 bound-mode values for the worktree.
+
+    Mirrors the runner's resolve_git_bindings: the HEAD commit and the
+    sha256 of the HEAD tree id (`git rev-parse HEAD^{tree}` output without
+    its trailing newline).
+    """
+    head = subprocess.check_output(
+        ["git", "-C", str(MODULE.REPO_ROOT), "rev-parse", "HEAD"]
+    ).decode("utf-8", errors="replace").strip()
+    tree = subprocess.check_output(
+        ["git", "-C", str(MODULE.REPO_ROOT), "rev-parse", "HEAD^{tree}"]
+    )
+    return head, MODULE.sha256_bytes(tree.removesuffix(b"\n"))
+
+
 class AgentConfigAcceptanceTests(unittest.TestCase):
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
@@ -160,6 +176,11 @@ class AgentConfigAcceptanceTests(unittest.TestCase):
         self.assertEqual(data["status"], "blocked")
         self.assertEqual(data["mode"], "executed")
         self.assertEqual(data["restore_order"], [])
+        # N9 bound mode: the blocked artifact is still bound to the
+        # candidate revision
+        head, digest = expected_bindings()
+        self.assertEqual(data["candidate_commit"], head)
+        self.assertEqual(data["source_digest"], digest)
         self.assertEqual(len(data["agents"]), 1)
         self.assertEqual(data["agents"][0]["agent_id"], "unsupported-agent")
         self.assertEqual(data["agents"][0]["status"], "failed")
@@ -235,6 +256,146 @@ class AgentConfigAcceptanceTests(unittest.TestCase):
         self.assertIn("cannot fingerprint", err)
         self.assertFalse(self.artifact.exists())
 
+    # --- N9 bound mode: candidate_commit + source_digest ---
+
+    def test_git_bindings_resolved_and_bound(self) -> None:
+        source = self.write_config("config.toml", b"[core]\n")
+        with patch.object(
+            MODULE, "_communicate_probe", side_effect=self.ok_side_effect([])
+        ):
+            code, out, err = self.run_cli(
+                *self.agent_args(f"codex={source}"),
+                "--temp-root",
+                str(self.temp_root),
+                "--artifact",
+                str(self.artifact),
+            )
+        self.assertEqual(code, 0, msg=out + err)
+        head, digest = expected_bindings()
+        data = json.loads(self.artifact.read_text(encoding="utf-8"))
+        self.assertEqual(set(data), MODULE.ARTIFACT_KEYS)
+        self.assertEqual(data["candidate_commit"], head)
+        self.assertEqual(data["source_digest"], digest)
+        self.assertEqual(MODULE.check_artifact_schema(self.artifact), [])
+        # the binding is stable across two resolutions of the same tree
+        self.assertEqual(
+            MODULE.resolve_git_bindings(MODULE.REPO_ROOT), (head, digest)
+        )
+
+    def test_git_binding_unresolved_real_run_fail_closed(self) -> None:
+        source = self.write_config("config.toml", b"[core]\n")
+
+        def unresolved(repo_root: Path) -> tuple[str, str]:
+            raise MODULE.GitBindingUnresolved("cannot resolve git HEAD")
+
+        with patch.object(MODULE, "resolve_git_bindings", side_effect=unresolved):
+            code, out, err = self.run_cli(
+                *self.agent_args(f"codex={source}"),
+                "--temp-root",
+                str(self.temp_root),
+                "--artifact",
+                str(self.artifact),
+            )
+        self.assertEqual(code, 2, msg=out + err)
+        self.assertIn("cannot resolve git HEAD", err)
+        self.assertFalse(
+            self.artifact.exists(), "no artifact without a git binding"
+        )
+
+    def test_git_binding_unresolved_blocked_fail_closed(self) -> None:
+        # the unsupported-adapter blocked path binds its artifact too; an
+        # unresolved binding fails closed with no artifact, same as the run
+        # path
+        source = self.write_config("settings.json", b"{}")
+
+        def unresolved(repo_root: Path) -> tuple[str, str]:
+            raise MODULE.GitBindingUnresolved("cannot resolve git HEAD")
+
+        with patch.object(MODULE, "resolve_git_bindings", side_effect=unresolved):
+            code, out, err = self.run_cli(
+                *self.agent_args(f"bogus-agent={source}"),
+                "--temp-root",
+                str(self.temp_root),
+                "--artifact",
+                str(self.artifact),
+            )
+        self.assertEqual(code, 2, msg=out + err)
+        self.assertIn("cannot resolve git HEAD", err)
+        self.assertFalse(
+            self.artifact.exists(), "no blocked artifact without a git binding"
+        )
+
+    def test_check_schema_missing_bindings_rejected(self) -> None:
+        # a five-key artifact without the bound-mode keys must fail closed
+        bad = self.tempdir / "bad.json"
+        bad.write_text(
+            json.dumps(
+                {
+                    "schema_version": MODULE.SCHEMA_VERSION,
+                    "status": "verified",
+                    "mode": "executed",
+                    "agents": [
+                        {
+                            "agent_id": "codex",
+                            "adapter": "codex",
+                            "source_fingerprint": "a" * 64,
+                            "source_mode": "0o644",
+                            "status": "ok",
+                            "error_class": None,
+                            "steps": [],
+                        }
+                    ],
+                    "restore_order": [],
+                }
+            ),
+            encoding="utf-8",
+        )
+        violations = MODULE.check_artifact_schema(bad)
+        self.assertTrue(
+            any("artifact missing keys" in v for v in violations), str(violations)
+        )
+        self.assertTrue(
+            any("candidate_commit" in v for v in violations), str(violations)
+        )
+        self.assertTrue(
+            any("source_digest" in v for v in violations), str(violations)
+        )
+
+    def test_check_schema_rejects_bad_bindings(self) -> None:
+        bad = self.tempdir / "bad.json"
+        bad.write_text(
+            json.dumps(
+                {
+                    "schema_version": MODULE.SCHEMA_VERSION,
+                    "status": "verified",
+                    "mode": "executed",
+                    "candidate_commit": "not-a-commit",
+                    "source_digest": "short",
+                    "agents": [
+                        {
+                            "agent_id": "codex",
+                            "adapter": "codex",
+                            "source_fingerprint": "a" * 64,
+                            "source_mode": "0o644",
+                            "status": "ok",
+                            "error_class": None,
+                            "steps": [],
+                        }
+                    ],
+                    "restore_order": [],
+                }
+            ),
+            encoding="utf-8",
+        )
+        violations = MODULE.check_artifact_schema(bad)
+        self.assertTrue(
+            any("candidate_commit must be" in v for v in violations),
+            str(violations),
+        )
+        self.assertTrue(
+            any("source_digest must be" in v for v in violations), str(violations)
+        )
+
     # --- behavior: source unchanged + copies byte-exact ---
 
     def test_source_configs_untouched_and_copies_byte_exact(self) -> None:
@@ -268,6 +429,9 @@ class AgentConfigAcceptanceTests(unittest.TestCase):
         self.assertEqual(data["status"], "verified")
         self.assertEqual(data["mode"], "executed")
         self.assertEqual(data["restore_order"], [])
+        head, digest = expected_bindings()
+        self.assertEqual(data["candidate_commit"], head)
+        self.assertEqual(data["source_digest"], digest)
         self.assertEqual(len(data["agents"]), 2)
         for record in data["agents"]:
             self.assertEqual(set(record), MODULE.ALLOWED_AGENT_KEYS)
