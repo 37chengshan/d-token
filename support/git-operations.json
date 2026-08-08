@@ -1818,6 +1818,24 @@
       "summary": "ci: pin modern JDK on windows check job for codec javac record fixture",
       "head_before": "7ffa4fd",
       "remote": null
+    },
+    {
+      "id": "fd2b98c9-d8be-4edf-9d2b-50654ca2e383",
+      "timestamp": "2026-08-08T20:26:47+08:00",
+      "operation": "commit",
+      "branch": "codex/final/cc-switch-aba-evidence",
+      "summary": "Add cc-switch A-B-A and release evidence gating",
+      "head_before": "c5a584971a9e2421a0040eb0f777ba76d9ae8f88",
+      "remote": null
+    },
+    {
+      "id": "0e9a895f-09d7-40c2-a551-0c6735906d3b",
+      "timestamp": "2026-08-08T20:26:49+08:00",
+      "operation": "push",
+      "branch": "codex/final-release-iteration",
+      "summary": "push JDK 21 windows check job fix",
+      "head_before": "fca5884",
+      "remote": "origin"
     }
   ]
 }
