@@ -2457,6 +2457,24 @@
       "summary": "提交 N0 候选审计账本追加记录",
       "head_before": "25241e5",
       "remote": null
+    },
+    {
+      "id": "977018af-dfb2-4314-b064-01a384acd22e",
+      "timestamp": "2026-08-10T00:51:50+08:00",
+      "operation": "commit",
+      "branch": "codex/final/stage-pack-integrated",
+      "summary": "补齐 N0 全量结构、Rust、桌面与真实 E2E 前置门",
+      "head_before": "c8946db",
+      "remote": null
+    },
+    {
+      "id": "eaa17027-d85c-481c-8e66-49bce92adeeb",
+      "timestamp": "2026-08-10T01:02:56+08:00",
+      "operation": "commit",
+      "branch": "codex/final/stage-pack-integrated",
+      "summary": "修复 N0 完整门、浏览器 fallback、跳过门 fail-closed 与冻结 fixture digest 绑定",
+      "head_before": "22076a1",
+      "remote": null
     }
   ]
 }

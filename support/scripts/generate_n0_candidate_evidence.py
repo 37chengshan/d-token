@@ -150,19 +150,27 @@ def compute_source_manifest(root: Path, commit: str) -> tuple[dict[str, str], st
     return manifest, sha256_bytes(canonical)
 
 
-def registry_digest(registry_path: Path) -> str:
-    """SHA-256 of the canonical JSON of the capability registry fixture."""
-    if not registry_path.is_file():
-        raise RuntimeError(f"registry fixture missing: {registry_path}")
-    data = json.loads(registry_path.read_text(encoding="utf-8"))
+def json_blob_at(root: Path, commit: str, path: str) -> dict[str, Any]:
+    proc = run_git(root, "show", f"{commit}:{path}")
+    if proc.returncode != 0:
+        raise RuntimeError(f"tracked JSON fixture missing at {commit}:{path}")
+    data = json.loads(proc.stdout.decode("utf-8"))
+    if not isinstance(data, dict):
+        raise RuntimeError(f"tracked JSON fixture must be an object: {path}")
+    return data
+
+
+def registry_digest(root: Path, commit: str) -> str:
+    """SHA-256 of the canonical registry JSON at the frozen commit."""
+    data = json_blob_at(
+        root, commit, "support/fixtures/unified-capability-registry-v1.json"
+    )
     return sha256_bytes(gate_status.canonical_json_bytes(data))
 
 
-def corpus_digests(manifest_path: Path) -> dict[str, str]:
-    """Per-family digests from the unified-corpus manifest (fail-closed)."""
-    if not manifest_path.is_file():
-        raise RuntimeError(f"corpus manifest missing: {manifest_path}")
-    data = json.loads(manifest_path.read_text(encoding="utf-8"))
+def corpus_digests(root: Path, commit: str) -> dict[str, str]:
+    """Per-family digests from the frozen commit corpus manifest."""
+    data = json_blob_at(root, commit, "support/fixtures/unified-corpus/manifest.json")
     corpora = data.get("corpora")
     if not isinstance(corpora, dict):
         raise RuntimeError("corpus manifest has no 'corpora' object")
@@ -181,10 +189,21 @@ def corpus_digests(manifest_path: Path) -> dict[str, str]:
     return digests
 
 
-def run_gate(root: Path, argv: list[str], cwd: Path) -> dict[str, Any]:
+def run_gate(
+    root: Path,
+    argv: list[str],
+    cwd: Path,
+    *,
+    env: dict[str, str] | None = None,
+) -> dict[str, Any]:
     started = utc_now()
     proc = subprocess.run(
-        argv, cwd=cwd, check=False, stdout=subprocess.PIPE, stderr=subprocess.STDOUT
+        argv,
+        cwd=cwd,
+        check=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        env=env,
     )
     tail = proc.stdout.decode("utf-8", errors="replace").strip().splitlines()[-5:]
     return {
@@ -202,27 +221,44 @@ def preflight_gates(root: Path, skip: bool) -> list[dict[str, Any]]:
     """Run the complete N0 preflight defined by VERIFICATION.md §3."""
     if skip:
         return []
+    import os
+
     desktop = root / "code" / "apps" / "desktop"
+    browser = os.environ.get("E2E_CHROMIUM_EXECUTABLE_PATH")
+    if not browser:
+        system_chrome = Path("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome")
+        playwright_chrome = next(
+            Path.home().glob(
+                "Library/Caches/ms-playwright/chromium-*/chrome-mac-*/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing"
+            ),
+            None,
+        )
+        candidate = system_chrome if system_chrome.is_file() else playwright_chrome
+        browser = str(candidate) if candidate and candidate.is_file() else None
+    e2e_env = dict(os.environ)
+    if browser:
+        e2e_env["E2E_CHROMIUM_EXECUTABLE_PATH"] = browser
+    e2e_env["E2E_DISABLE_VIDEO"] = "1"
     gates = [
-        (["python3", str(root / "support/scripts/check_structure.py")], root),
-        (["python3", str(root / "support/scripts/check_release_version.py")], root),
-        (["python3", str(root / "support/scripts/check_release_scope.py")], root),
-        (["python3", str(root / "support/scripts/generate_release_metadata.py"), "--skip-audits"], root),
-        (["python3", str(root / "support/scripts/validate_unified_capability_registry.py")], root),
-        (["python3", str(root / "support/scripts/validate_unified_corpus_manifests.py")], root),
-        (["bash", str(root / "support/scripts/run_fake_binary_tests.sh")], root),
-        (["cargo", "fmt", "--all", "--", "--check"], root / "code"),
-        (["cargo", "clippy", "--workspace", "--all-targets", "--", "-D", "warnings"], root / "code"),
-        (["cargo", "test", "--workspace"], root / "code"),
-        (["npm", "run", "test:run"], desktop),
-        ([str(desktop / "node_modules/.bin/tsc"), "--noEmit", "--pretty", "false"], desktop),
-        (["npm", "run", "build"], desktop),
-        (["npm", "run", "test:e2e"], desktop),
-        (["git", "status", "--porcelain"], root),
+        (["python3", str(root / "support/scripts/check_structure.py")], root, None),
+        (["python3", str(root / "support/scripts/check_release_version.py")], root, None),
+        (["python3", str(root / "support/scripts/check_release_scope.py")], root, None),
+        (["python3", str(root / "support/scripts/generate_release_metadata.py"), "--skip-audits"], root, None),
+        (["python3", str(root / "support/scripts/validate_unified_capability_registry.py")], root, None),
+        (["python3", str(root / "support/scripts/validate_unified_corpus_manifests.py")], root, None),
+        (["bash", str(root / "support/scripts/run_fake_binary_tests.sh")], root, None),
+        (["cargo", "fmt", "--all", "--", "--check"], root / "code", None),
+        (["cargo", "clippy", "--workspace", "--all-targets", "--", "-D", "warnings"], root / "code", None),
+        (["cargo", "test", "--workspace"], root / "code", None),
+        (["npm", "run", "test:run"], desktop, None),
+        ([str(desktop / "node_modules/.bin/tsc"), "--noEmit", "--pretty", "false"], desktop, None),
+        (["npm", "run", "build"], desktop, None),
+        (["npm", "run", "test:e2e"], desktop, e2e_env),
+        (["git", "status", "--porcelain"], root, None),
     ]
     results = []
-    for argv, cwd in gates:
-        results.append(run_gate(root, argv, cwd))
+    for argv, cwd, env in gates:
+        results.append(run_gate(root, argv, cwd, env=env))
     # The git-clean gate must be empty output.
     for result in results:
         if result["argv"] == "git status --porcelain":
@@ -305,8 +341,8 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         manifest, source_digest = compute_source_manifest(REPO_ROOT, args.candidate_commit)
-        reg_digest = registry_digest(REGISTRY)
-        corpus = corpus_digests(CORPUS_MANIFEST)
+        reg_digest = registry_digest(REPO_ROOT, args.candidate_commit)
+        corpus = corpus_digests(REPO_ROOT, args.candidate_commit)
     except (RuntimeError, ValueError, json.JSONDecodeError, OSError) as exc:
         print(f"N0 freeze could not be computed: {exc}")
         return 1
@@ -314,9 +350,8 @@ def main(argv: list[str] | None = None) -> int:
     gates = preflight_gates(REPO_ROOT, args.skip_gates)
     gates_ok = bool(gates) and all(gate["ok"] for gate in gates)
     if args.skip_gates:
-        # Test helper: without gates there is nothing to fail.
-        status = "pass"
-        reason_codes: list[str] = []
+        status = "skipped"
+        reason_codes = ["gates-skipped"]
     else:
         status = "pass" if gates_ok else "failed"
         reason_codes = (

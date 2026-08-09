@@ -92,16 +92,17 @@ class N0CandidateEvidenceProducerTest(unittest.TestCase):
         self.assertEqual(source_digest, hashlib.sha256(canonical).hexdigest())
 
     def test_registry_digest_binds_fixture(self) -> None:
-        digest = self.producer.registry_digest(self.producer.REGISTRY)
+        digest = self.producer.registry_digest(REPO_ROOT, self.commit)
         self.assertRegex(digest, r"^[0-9a-f]{64}$")
-        # Deterministic: recomputing yields the same value.
-        self.assertEqual(digest, self.producer.registry_digest(self.producer.REGISTRY))
+        # Deterministic: recomputing from the frozen commit yields the same value.
+        self.assertEqual(digest, self.producer.registry_digest(REPO_ROOT, self.commit))
 
     def test_corpus_digests_cover_fixed_families(self) -> None:
-        digests = self.producer.corpus_digests(self.producer.CORPUS_MANIFEST)
+        digests = self.producer.corpus_digests(REPO_ROOT, self.commit)
         self.assertEqual(set(digests), EXPECTED_CORPUS_FAMILIES)
         for digest in digests.values():
             self.assertRegex(digest, r"^[0-9a-f]{64}$")
+
     def test_n0_preflight_declares_required_gate_commands(self) -> None:
         gates = self.producer.preflight_gates(REPO_ROOT, skip=False)
         commands = [result["argv"] for result in gates]
@@ -131,7 +132,7 @@ class N0CandidateEvidenceProducerTest(unittest.TestCase):
                 capture_output=True,
                 text=True,
             )
-            self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+            self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
             expected_names = {
                 "source-manifest.json",
                 "N0-preflight.json",
@@ -152,13 +153,15 @@ class N0CandidateEvidenceProducerTest(unittest.TestCase):
             }
             for artifact in (preflight, provenance):
                 self.assertEqual(artifact["node_id"], "N0")
-                self.assertEqual(artifact["status"], "pass")
+                self.assertEqual(artifact["status"], "skipped")
+                self.assertIn("gates-skipped", artifact["reason_codes"])
                 self.assertIs(artifact["dirty"], False)
                 self.assertEqual(
                     artifact["artifact_sha256"], canonical_sha(artifact)
                 )
-                self.assertEqual(
-                    self.gates.envelope_violations(artifact, expected), []
+                violations = self.gates.envelope_violations(artifact, expected)
+                self.assertTrue(
+                    any("status='skipped'" in violation for violation in violations)
                 )
 
             source = json.loads((root / "source-manifest.json").read_text())
