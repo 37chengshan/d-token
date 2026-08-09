@@ -102,6 +102,16 @@ class N0CandidateEvidenceProducerTest(unittest.TestCase):
         self.assertEqual(set(digests), EXPECTED_CORPUS_FAMILIES)
         for digest in digests.values():
             self.assertRegex(digest, r"^[0-9a-f]{64}$")
+    def test_n0_preflight_declares_required_gate_commands(self) -> None:
+        gates = self.producer.preflight_gates(REPO_ROOT, skip=False)
+        commands = [result["argv"] for result in gates]
+        self.assertTrue(any("cargo fmt --all" in command for command in commands))
+        self.assertTrue(any("cargo clippy --workspace --all-targets" in command for command in commands))
+        self.assertTrue(any("cargo test --workspace" in command for command in commands))
+        self.assertTrue(any("npm run test:run" in command for command in commands))
+        self.assertTrue(any("npm run build" in command for command in commands))
+        self.assertTrue(any("npm run test:e2e" in command for command in commands))
+        self.assertTrue(any("generate_release_metadata.py" in command for command in commands))
 
     def test_producer_writes_three_artifacts_with_valid_envelope(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

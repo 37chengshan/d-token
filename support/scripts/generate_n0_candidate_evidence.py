@@ -199,20 +199,25 @@ def run_gate(root: Path, argv: list[str], cwd: Path) -> dict[str, Any]:
 
 
 def preflight_gates(root: Path, skip: bool) -> list[dict[str, Any]]:
-    """Real N0 preflight gates (VERIFICATION.md §3): structure/version/digests."""
+    """Run the complete N0 preflight defined by VERIFICATION.md §3."""
     if skip:
         return []
+    desktop = root / "code" / "apps" / "desktop"
     gates = [
         (["python3", str(root / "support/scripts/check_structure.py")], root),
         (["python3", str(root / "support/scripts/check_release_version.py")], root),
-        (
-            ["python3", str(root / "support/scripts/validate_unified_capability_registry.py")],
-            root,
-        ),
-        (
-            ["python3", str(root / "support/scripts/validate_unified_corpus_manifests.py")],
-            root,
-        ),
+        (["python3", str(root / "support/scripts/check_release_scope.py")], root),
+        (["python3", str(root / "support/scripts/generate_release_metadata.py"), "--skip-audits"], root),
+        (["python3", str(root / "support/scripts/validate_unified_capability_registry.py")], root),
+        (["python3", str(root / "support/scripts/validate_unified_corpus_manifests.py")], root),
+        (["bash", str(root / "support/scripts/run_fake_binary_tests.sh")], root),
+        (["cargo", "fmt", "--all", "--", "--check"], root / "code"),
+        (["cargo", "clippy", "--workspace", "--all-targets", "--", "-D", "warnings"], root / "code"),
+        (["cargo", "test", "--workspace"], root / "code"),
+        (["npm", "run", "test:run"], desktop),
+        ([str(desktop / "node_modules/.bin/tsc"), "--noEmit", "--pretty", "false"], desktop),
+        (["npm", "run", "build"], desktop),
+        (["npm", "run", "test:e2e"], desktop),
         (["git", "status", "--porcelain"], root),
     ]
     results = []
