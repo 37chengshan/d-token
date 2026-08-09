@@ -1,10 +1,10 @@
 # EVIDENCE — v0.0.1 证据索引
 
-- 规则：证据分为「已有」「过期」「待生成」三类。**过期证据禁止冒充最终候选**；最终候选只接受绑定 `C_final` + 同一 `source_digest` 的证据（见 [VERIFICATION.md](./VERIFICATION.md#8)）。
-- 路径均为相对仓库根；`support/artifacts/` 下为 gitignored 运行时证据，不作为 PR 交付物。
-- 本索引随执行滚动更新（[TASKS.md](./TASKS.md) T-DOC）。
+- 规则：证据分为「已有」「过期」「待生成」。最终候选只接受 [VERIFICATION.md](./VERIFICATION.md#1-证据公共-envelope所有-n0n10-必填) 的统一 envelope，并精确绑定 `C_final`、`source_digest`、117 registry digest 与各 corpus revision；旧证据、`candidate_id=null`、mtime/latest/pass-only 一律拒绝。
+- 运行 artifact 统一位于 `support/artifacts/final-candidate/<C_final>/`（gitignored）；tracked schema/registry/corpus/template 位于 `support/fixtures/`、`support/schemas/` 或 `support/scripts/`，由任务首次创建。
+- 本索引随每个 C0–C8 切片与 N0–N10 节点滚动更新；“路径存在”不构成证据。
 
-## 1. 已有证据（2026-08-08 可引用，但未绑定 `C_final` 前只作过程事实）
+## 1. 已有证据（2026-08-09 可引用，但未绑定 `C_final` 前只作过程事实）
 
 | 证据 | 路径/位置 | 事实 | 绑定 | 用途 |
 |---|---|---|---|---|
@@ -31,38 +31,45 @@
 | `support/artifacts/` 中旧 schema/旧 mtime 的 artifact | 聚合器不得按 mtime/latest/pass-only 接受 | PR-7/PR-9 candidate binding 拒绝 |
 | 历史 docs（`docs/history/`、`docs/archive/`）中任何「已发布/已通过」表述 | 历史快照 | 只追溯，不作为当前证据 |
 
-## 3. 待生成证据（owner 切片 / 验证节点）
+## 3. 待生成证据（全部 MUST）
 
-| 证据 | 路径（建议） | owner | 绑定 |
+| 证据 | 计划路径 | owner/node | 必需绑定 |
 |---|---|---|---|
-| baseline freeze 报告（更新版） | `.ai-bridge/release-iteration/preflight-report.md` | P0 | 冻结 commit |
-| OptimizationReceipt 单测 + 投影测试 | `code/crates/dtoken-types/tests/`、`code/crates/dtoken-core-api/tests/` | PR-1 | 切片 commit |
-| Codex routed acceptance artifact | `support/artifacts/codex-ocxlocal-routed/` | PR-2 → N2 | C_final |
-| 无 chooser 残留 grep 输出 | 切片报告 | PR-3 | 切片 commit |
-| 920×640 Playwright layout 证据 | e2e 报告 | PR-4 | 切片 commit |
-| SecretClassifier 覆盖矩阵 + export 回归 | 切片报告 | PR-5 | 切片 commit |
-| 配置验收契约测试 + 真实验收 | `support/tests/test_agent_config_acceptance.py`；N4 | PR-6 → N4 | C_final |
-| cc-switch A→B→A artifact | `support/artifacts/cc-switch-aba/` | PR-7 → N5 | C_final |
-| macOS upgrade/rollback + autostart/credential round-trip | `support/artifacts/`（N7） | PR-8 → N7 | C_final |
-| fan-in artifact contract | `support/artifacts/fan-in-artifact-contract-*.json` | PR-7/PR-8 → N8 | C_final + digest |
-| 版本统一检查输出 | `check_release_version.py` 输出 | V-1 | v0.0.1 |
-| N0 门禁报告 | `support/artifacts/release-gate-status-<ts>.json` | N0 | C_final |
-| N1–N8 各域证据 | 对应 artifact 目录 | Main/外部 | C_final |
-| N9 最终聚合 + 三结论判定 + 发布报告 | `.ai-bridge/release-iteration/final-candidate-evidence.md`（模板）+ 发布报告 | PR-9 → N9 | C_final |
-| OSS 漂移闭合记录（D1–D5） | 各切片报告 | PR-CBM1/H1/O1/L0/R1 | 切片 commit |
-| Headroom 矩阵/G9 判定表 | `docs/PLAN.md` §1C、切片报告 | PR-H2/H3 | C_final |
-| LeanCTX 九边界实现与测试 | 对应 crate tests | PR-L1..L3 | 切片 commit |
-| pxpipe v0.12.0 评估记录 | 切片报告 | PR-O1 | 切片 commit |
-| Spleen/渲染确定性测试 | `code/crates/dtoken-compress/tests/` | PR-O2 | 切片 commit |
-| Optical active 不可达断言 | 对应测试 + `docs/optical/release-gates.md` | PR-O3 | 切片 commit |
-| CBM Windows 证据 + v0.9.0 Bug 修复测试 | `support/tests/`、runner 报告 | PR-CBM2 | C_final |
-| RTK v0.45.0 pin 记录 + Windows/WSL 证据 | 切片报告、runner 报告 | PR-R1/R2 | C_final |
-| AiMaMi 适配复核记录 | 切片报告 | PR-A | 切片 commit |
+| C_final source manifest | `support/artifacts/final-candidate/<C_final>/source-manifest.json` | N0 | commit/source digest/dirty=false |
+| 117 capability registry | `support/fixtures/unified-capability-registry-v1.json` + validator/coverage schema | C0C/C8A/U1/U9 | registry digest；恰 117；dispatch/tests/evidence/gate |
+| fixed corpus manifests | `support/fixtures/unified-compression/{benchmark,replay,fuzz,fault,quality,optical}/manifest.json` | C0C/C7/N10 | corpus revision/digest/license/privacy |
+| contract/surface parity | `.../<C_final>/N10-U0-contract.json` | C1/U0 | route decision + IR/schema/producer digests |
+| property/fuzz | `.../<C_final>/N10-U2-property-fuzz.json` | C2/C4/C5/U2 | codec/NodeAction/corpus/failure counts |
+| fault/durability | `.../<C_final>/N10-U3-fault.json` | C6/U3 | failpoint registry + send terminal receipts |
+| replay/task quality | `.../<C_final>/N10-U4-replay-quality.json` | C7B/U4 | baseline/optimized body+decision digests、outcomes |
+| perf fresh baseline/SLO | `.../<C_final>/N10-U5-perf.json` + tracked thresholds | C7A/C7C/U5 | hardware/OS/release profile/corpus/noise band |
+| Provider paired usage | `.../<C_final>/N10-U6-provider-paired.json` | C7B/U6 | exact provider/model/API/route；actual usage/cost/cache/latency |
+| Optical exact active | `.../<C_final>/N10-U7-optical-active.json` | C5D/U7 | capability/renderer/font/profile/corpus/tokenizer/pricing/cache/eval digests |
+| cross-platform determinism | `.../<C_final>/N10-U8-platform.json` | C5A/N8/U8 | macOS/Windows PNG/body/plan digest |
+| 117 coverage seal | `.../<C_final>/N10-U9-coverage.json` | C8A/U9 | 117/117 verified、零 placeholder |
+| N0 preflight | `.../<C_final>/N0-preflight.json` | N0 | full gates + source/registry/corpus digests |
+| N1 receipt/accounting | `.../<C_final>/N1-receipt.json` | N1 | request/route/validation/send/provider outcome digests |
+| N2 Codex routed | `.../<C_final>/N2-codex.json` | N2 | agent_id=codex、route/model/protocol/restore/privacy |
+| N3 OpenCode routed | `.../<C_final>/N3-opencode.json` | N3 | **两条长工程验收**：OpenCode Free `opencode/deepseek-v4-flash-free` 与 Go dsv4flash 工程链；真实 routed path、长时/长上下文 workload、C_final/source digest、same-model baseline/optimized paired、exact restore；旧 bounded replay（2026-08-04 G7）不替代 |
+| N4 config | `.../<C_final>/N4-config.json` | N4 | per-target before/after/restore hash+permissions |
+| N5 cc-switch | `.../<C_final>/N5-cc-switch.json` | N5 | A→B→A、wrote=false、identity restore、Computer evidence |
+| N6 Tauri UI | `.../<C_final>/N6-ui.json` | N6 | real window, size/theme/language/motion/actions |
+| N7 macOS | `.../<C_final>/N7-macos.json` | N7 | app/DMG/autostart/keychain/RTK/install rollback |
+| N8 Windows/G6/G8 | `.../<C_final>/N8-windows.json` + fan-in | N8 | NSIS/DACL/MSVC/pwsh/CBM/RTK/signature/same commit |
+| N9 final aggregation | `.../<C_final>/N9-release-status.json` + release report | N9 | explicit artifact paths；G0–G9；三结论 |
+| OSS/provenance closure | `.../<C_final>/N0-provenance.json` + tracked NOTICE/SBOM | H1/L0/R1/O1/O2/CBM1/A/N0 | unique pins/archive/license/distribution boundaries |
+| CBM v0.9.0 bug + v0.9.1-rc.1 | N4/N8 subreceipts | CBM2 | failing-path reproduction + exact restore + Windows Cosign |
+| CBM 五版本 v2 manifest | `code/runtimes/codebase-memory/artifact-manifest.json`（v2 schema）+ 构建期摘要测试 | CBM3 | 五正式版 v0.9.0/v0.8.1/0.8.0/0.7.0/0.6.1 + 批准 prerelease pin v0.9.1-rc.1 并列；tag/commit/平台 SHA/协议适配器/平台矩阵 |
+| CBM 逐版本真实验证 | `.../<C_final>/N4-cbm-versions.json`（子 receipt）+ `support/fixtures/cbm-versions/` | CBM4 | v0.9.0/v0.8.1 官方二进制临时工程 indexing/graph/call chain/dependency/impact 真实证据；0.8.0/0.7.0/0.6.1 source-tag 登记 + fail-closed（untrusted/incompatible） |
+
+任何计划路径在脚本/producer/schema 未实现前状态都是 `missing`/blocked，禁止先在本表标 completed。
 
 ## 4. 证据卫生规则
 
-1. 任何已生成证据不得在候选 commit 变化后复用（包括 mtime 更新）；必须重新执行。
-2. artifact 必须携带 `candidate_commit`/`source_digest`；聚合器强校验。
-3. 截图证据必须来自主代理 Computer 操作（真实 Tauri 窗口），并含时间戳/窗口信息。
-4. `support/artifacts/` 只放运行时证据；可版本化 schema/template 走 tracked 路径。
-5. 本索引每完成一个切片/节点即更新；发布报告以最终版索引为准。
+1. artifact 只能由其 tracked producer 生成；producer/schema/registry/corpus digest 必须进入统一 envelope。
+2. 聚合器必须消费显式 artifact path manifest，并逐项复算 SHA-256；禁止目录扫描、`latest_file()`、mtime、文件名或 `status=pass` 选证。
+3. 候选变化即失效；`candidate_commit`、`source_digest`、registry/corpus/eval/platform 任一不匹配都 blocked。
+4. 截图/Computer evidence 必须来自主代理真实 Tauri/cc-switch 操作，附窗口/坐标/时间；浏览器 preview 不能证明 native/runtime。
+5. 任何 raw prompt/response/PNG/base64/secret/auth/config content 不进入 artifact；只保存 bounded metadata、hash、size、reason、receipt。
+6. `support/artifacts/` 保持 gitignored；tracked schema/fixture/threshold/provenance 不得写入 runtime artifact 目录。
+7. 每完成一个切片/节点即更新索引；final report 只引用 N9 manifest 列出的 artifact。

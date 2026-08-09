@@ -6,12 +6,12 @@
 
 ## 1. 基线（W0）
 
-- [~] T-P0 preflight-baseline：核对 git status/diff（含 `code/apps/desktop/src-tauri/src/main.rs` 与 untracked `code/crates/dtoken-compress/examples/_diag_tmp.rs` 裁决），冻结基线并更新冻结 commit（当前 HEAD 事实 `51941806`，仍在变动）。独立分支**尚未创建**：P0 分支为计划名，执行时由主代理新建（不指向现有分支）。REQ：EVID-7（前置）、VERSION-0（基线事实）｜owner：P0 Agent / Main｜output：`.ai-bridge/release-iteration/preflight-report.md`（更新版）。依赖：—。验证：N0 前置。
+- [~] T-P0 preflight-baseline：**执行时点用 `git status`/`git rev-parse HEAD` 实时采集基线事实并冻结**（不硬编码历史 HEAD；历史 `1ddb30e`/`f0a9bed`/`51941806`/`dc647af` 只作过程事实），裁决 untracked `code/crates/dtoken-compress/examples/_diag_tmp.rs` 与 dirty 文件，冻结 commit 后所有切片以其为起点。独立分支**尚未创建**：P0 分支为计划名，执行时由主代理新建（不指向现有分支）。REQ：EVID-7（前置）、VERSION-0（基线事实）｜owner：P0 Agent / Main｜output：`.ai-bridge/release-iteration/preflight-report.md`（更新版，2026-08-09 口径）。依赖：—。验证：N0 前置。
 
-## 2. 版本统一（V-1）
+## 2. 版本统一（W9）
 
-- [ ] T-V1 版本统一切片：用户确认目标版本 v0.0.1 后，一次性统一 manifest/PRD 版本门/PLAN/IMPLEMENTATION_STATUS/CHANGELOG/release workflow/`check_release_version.py`（`docs/PLAN.md` 与 `docs/product/IMPLEMENTATION_STATUS.md` 的版本修改由主代理合并期统一执行）。REQ：VERSION-0, VERSION-1, DOCS-4｜owner：V-1 Agent / Main｜output：版本检查通过 + 结构检查通过。依赖：T-P0, 全部功能切片（含 T-PR7，workflow 先合）。验证：N0（版本门）。
-- [ ] T-V2 版本回归断言：活跃文档 grep 无 `0.2.0-beta.1`（除 history/archive/CHANGELOG 历史条目）。REQ：VERSION-0｜owner：Main｜output：grep 输出。依赖：T-V1。验证：N0。
+- [ ] T-V1：全部功能与证据接线切片完成后，一次性统一 manifest、PRD 版本门、PLAN/status/CHANGELOG/workflow/check script 为 v0.0.1；用户已指定目标版本，无需再次确认。REQ：VERSION-0/1, DOCS-4｜依赖：T-C8B、PR-1..14、CBM2/3/4、A｜验证：N0。
+- [ ] T-V2：活跃文档旧版本残留断言（history/archive/CHANGELOG 历史除外）。REQ：VERSION-0｜依赖：T-V1｜验证：N0。
 
 ## 3. 在途收口切片（PR-1..9）
 
@@ -23,60 +23,90 @@
 - [~] T-PR6 config-acceptance：隔离临时根 harness（configure→reread→clear→exact restore；原文件仅 hash/权限；逆序回退）。REQ：AGENT-6, CONFIG-1, CONFIG-2, CONFIG-3｜依赖：T-P0｜owner：PR-6 Agent｜output：`support/scripts/run_agent_config_acceptance.py` + 契约测试。验证：N4。
 - [ ] T-PR7 cc-switch-aba + gate wiring：A→B→A artifact harness + 聚合器 `--expected-commit`/`--expected-source-digest` 强绑定 + supplemental evidence + fan-in 接线。REQ：AGENT-5, EVID-1, EVID-3, EVID-6, PLATFORM-3｜依赖：T-PR2, T-PR3, T-PR6｜owner：PR-7 Agent｜output：`run_cc_switch_aba_check.py` + 聚合扩展测试。验证：N5/N9。
 - [ ] T-PR8 upgrade-autostart-credential：macOS upgrade/rollback 审计 + LaunchAgent/HKCU + Keychain/Credential Manager 唯一隔离 round-trip + 故障注入。REQ：PLATFORM-1, PLATFORM-2, CONFIG-4｜依赖：T-PR7｜owner：PR-8 Agent｜output：两个新脚本 + 契约测试。验证：N7/N8。
-- [ ] T-PR9 verification-orchestration：N0→N1–N8→N9 编排 + 候选变化失效 + 旧 pass artifact 拒绝 + 三结论模板。REQ：EVID-2, EVID-3, PLATFORM-4, DOCS-3｜依赖：T-V1, 全部功能切片｜owner：PR-9 Agent｜output：`run_final_candidate_verification.py` + dry-run。验证：N0–N9 本身。
+- [ ] T-PR9 verification-orchestration：编排 N0→N1–N8/N10→N9，候选变化使旧证据失效；三结论模板。REQ：EVID-2/3, PLATFORM-4, DOCS-3｜依赖：T-V1, T-C8B｜验证：dry-run + N0–N10。
+- [ ] T-PR10 codex-toml-top-level：`candidate_from_codex_toml` 解析顶层 `openai_base_url`/`model_catalog_json`（无 `[model_providers]` 形态）；两种形态 fixture 单测。REQ：AGENT-8｜依赖：T-P0｜owner：PR-10 Agent｜output：parser 扩展 + fixture 单测。验证：N2。
+- [ ] T-PR11 cc-switch-openclaw：discovery SQL/`agent_ids_for_cc_switch_app` 补 openclaw app type + A→B→A 连续识别 fixture 单测 + 只读断言；**cc-switch sync 与 active route 最终比对（`derive_cc_switch_status`/`enrich_upstream_discovery`）下沉 Rust-owned 合同（`cc_switch_sync_state` 补 enriched 状态/`route_snapshot_identity`，agent 矩阵 H4）**。REQ：AGENT-9（含 H4）｜依赖：T-P0, T-PR3｜owner：PR-11 Agent｜output：SQL/映射扩展 + Rust 合同 + 单测。验证：N5。
+- [ ] T-PR12 native-responses-single-dispatch：Native Responses（`/v1/responses`）接入 canonical pipeline，parity fixture 含 Responses 协议；发送体=验证体。REQ：AGENT-10, RUNTIME-7｜依赖：T-C1C｜owner：PR-12 Agent｜output：single-dispatch 覆盖 + parity fixture。验证：N10/U0。
+- [ ] T-PR13 hot-sync-auth-revocation：review-gated 热同步真实证据落证（外部配置变更→review_required→plan/confirm/apply 闭环，`automatic_apply_allowed=false`）；若开放「无二次确认自动同步」，PRD 授权范围先行 + 撤销门 + 自动同步仍走 backup/verify/receipt/ledger + 整批回滚；**dtoken-agent-bridge 存在性与身份验证（component/protocol/OS/arch/version + 签名/Team ID/Authenticode）证据，通过后才开放 MCP/Hook desktop-managed 写面（agent 矩阵 H3）**。REQ：AGENT-11, AGENT-7（含 H3）｜依赖：T-P0, T-PR3｜owner：PR-13 Agent｜output：证据 receipt + 授权门（PRD 先行）+ bridge 身份验证证据。验证：N4/N5。
+- [ ] T-PR14 onboarding-5seg：STEP_KEYS 收敛为 5（welcome/service/agents/config/verify），删除独立 upstream 步骤（信息并入 agents/config）；service 步骤阶段标签 + indeterminate 呼吸动画 + Reduce Motion 静态等价；wizard 顺序门；八页可见文案入 DICT + OMP DS copy gate 断言；**service 运行中≠connected 文案诚实（H-1：service healthy 徽标不得误读为已连接，成功文案「服务已启动，尚未完成 Agent 接入」）+ Install.tsx `window.confirm`→统一 OperationDialog（M-3）**。REQ：PRODUCT-5, UI-8/9/10/11（含 H-1/M-3）｜依赖：T-P0｜owner：PR-14 Agent｜output：Onboarding STEP_KEYS=5 + StepProgress 接入 + 顺序门 + copyPolicy 断言 + confirm→OperationDialog。验证：N6。
 
-## 4. Headroom 轨道（PR-H）
+## 4. Provenance / 迁移差异（W1）
 
-- [ ] T-H1 headroom-pin：评估 release v0.34.0/`9fd5ae3d` 与 main `7f6950be` 相对旧基线 `01df2452` 的增量；三候选中唯一 pin 决议；更新登记文档。REQ：OSS-1, CONTEXT-1｜依赖：T-P0｜owner：PR-H1 Agent｜output：评估记录 + 漂移 D2 闭合。验证：N0（结构/漂移 grep）。
-- [ ] T-H2 headroom-matrix：117 项能力矩阵零占位/缺失或显式记录；B0→B6 顺序闭合残余缺口。REQ：CONTEXT-1, CONTEXT-2｜依赖：T-H1, T-PR1｜owner：PR-H2 Agent｜output：矩阵更新 + 切片报告。验证：N1/N3。
-- [ ] T-H3 headroom-g9：§8 能力逐项绑定 `C_final`；G9 判定表（G0–G8 全绿后才开放）。REQ：CONTEXT-1, EVID-1｜依赖：T-H2, T-PR7, T-PR9｜owner：PR-H3 Agent｜output：G9 判定表 + 证据绑定。验证：N9。
+- [ ] T-H1：Headroom 三候选增量评估并唯一 pin；NOTICE/license 统一。REQ：OSS-1/2｜验证：N0。
+- [ ] T-L0：LeanCTX v3.9.17 vs main 增量评估并唯一 pin。REQ：OSS-1｜验证：N0。
+- [ ] T-R1：RTK v0.45.0 `b34be37` pin/license/差异矩阵。REQ：OSS-1, PLATFORM-5｜验证：N0/N10。
+- [ ] T-O1：pxpipe v0.12.0 `0ceabbe` pin/archive/license/8 项差异矩阵。REQ：OPTICAL-3, OSS-1｜验证：N0/N10。
+- [ ] T-O2：Spleen 2.2.0 provenance 与字形/渲染差异。REQ：OPTICAL-3/4, OSS-2｜依赖：T-O1｜验证：N10。
+- [ ] T-CBM1：根 NOTICE 与 v0.9.1-rc.1 manifest 单一化。REQ：OSS-1/4｜验证：N0。
+- [ ] T-CBM2：v0.9.0 配置 Bug 先红后绿 + Windows SHA/Cosign + 临时 Agent 配置 exact restore。REQ：PRODUCT-6, OSS-4, CONFIG-1/2｜依赖：T-CBM1,T-PR6｜验证：N4/N8。
+- [ ] T-CBM3：CBM 多版本 manifest schema v2（五正式版 v0.9.0/v0.8.1/0.8.0/0.7.0/0.6.1 + 批准 prerelease pin v0.9.1-rc.1 并列标注）；每版本 tag+commit+平台 archive/binary SHA+协议适配器+平台矩阵（v0.8.1 无 windows-arm64 → 显式 incompatible）；身份只用 tag/commit/hash，不读 server.json version；构建期对 v2 manifest 摘要并加完整性测试；**promo 生成脚本（`generate-promo-v2.mjs`）改由 v2 manifest 驱动，消除硬编码版本字面量（CBM 审计 M1）**。REQ：OSS-5/7（含 M1）｜依赖：T-CBM1｜验证：N4/N8。**缺上游资产/证据的版本保持 blocked，release 不得放行。**
+- [ ] T-CBM4：逐版本真实验证 harness（临时工程 + repo zero-write + persistence=false + endpoint allowlist）：v0.9.0/v0.8.1（有官方二进制）逐版本执行 indexing/graph query/call chain/dependency/impact 并落证；0.8.0/0.7.0/0.6.1（官方无资产）只做 source-tag 级登记（tag+commit+官方归档链接）+ fail-closed（incompatible/untrusted），UI 不开放配置/索引/图谱；绝不冒充 runtime 兼容。REQ：OSS-6, PRODUCT-6｜依赖：T-CBM3,T-PR6｜验证：N4/N8。
+- [ ] T-A1：AiMaMi pin/LICENSE/适配范围/无品牌资产复核。REQ：OSS-1/2｜验证：N0。
 
-## 5. LeanCTX 轨道（PR-L，九边界）
+## 5. Unified Compression C0 — 合同与 corpus（W2–W3）
 
-- [ ] T-L0 leanctx-pin：v3.9.17 vs main `95a1b7bc` 评估；唯一 pin。REQ：OSS-1｜依赖：T-P0｜owner：PR-L0 Agent｜output：评估记录 + 漂移 D4 闭合。验证：N0。
-- [ ] T-L1 leanctx-core：Context Bus + Session Cache + 同 Agent 自命中防护（d-token-owned Rust）。REQ：CONTEXT-1｜依赖：T-L0｜owner：PR-L1 Agent｜output：crate + 测试。验证：N1（契约）。
-- [ ] T-L2 leanctx-relay：Context Relay + Query-aware Retrieval + 收益分离计量。REQ：CONTEXT-1, CONTEXT-3｜依赖：T-L1｜owner：PR-L2 Agent｜output：crate + 测试。验证：N1。
-- [ ] T-L3 leanctx-recovery：Recovery Pointer/Manifest + Stale/Superseded + SharedContext。REQ：CONTEXT-1｜依赖：T-L2｜owner：PR-L3 Agent｜output：crate + 测试。验证：N1。
+- [ ] T-C0A schemas-policy：冻结 canonical IR、NodeAction、manifest、RouteDecision digest、全局 safety policy 与四维 accounting。REQ：PRODUCT-8,RUNTIME-7/9｜依赖：provenance pins｜验证：N10 ContractTest。
+- [ ] T-C0B sealed-receipts：Validation/Recovery/SendCommit receipts 不可伪造；compile-fail + forged negatives。REQ：RUNTIME-8,CONTEXT-2,QUALITY-7｜依赖：T-C0A｜验证：N10 Property/Fault。
+- [ ] T-C0C registry-corpus：创建恰 117 项机器 registry、固定 benchmark/replay/fuzz/fault/eval corpus manifest。REQ：QUALITY-1/3｜依赖：T-C0A,H1/L0/R1/O1｜验证：N10 RegistryTest。
+- [ ] T-C0D registry-117-start：117 registry 框架+内容按现有 C0C registry/corpus 合同起步，用「9 codec 真实项（`production_registry_codec_ids`）+ 12 聚合 ID 映射」先行映射，再逐领域扩充到 117；每项 `id/source_capability/owner_crate/dispatch_symbol/tests/real_evidence/gates/status` 必填，status 只允许 implemented_unverified/verified/blocked；C2 等所有 codec 切片以 registry 条目为 DoD（C2A 合同），C8A 以 117/117 verified 收口（C8A 合同）。REQ：QUALITY-1｜依赖：T-C0C｜验证：N10 RegistryTest（先结构门，N9 前 117/117 verified）。
 
-## 6. Optical 轨道（PR-O）
+## 6. C1 — 单一 production pipeline（W4）
 
-- [ ] T-O1 pxpipe-pin：v0.12.0/`0ceabbe` 评估 vs 旧 pin `7b7d6efa`；capability matrix 刷新；1928×1928 非生产声明保留。REQ：OPTICAL-3, OSS-1｜依赖：T-P0｜owner：PR-O1 Agent｜output：评估记录 + 漂移 D3 闭合。验证：N0。
-- [ ] T-O2 spleen-renderer：Spleen 2.2.0 声明完整 + 跨平台渲染确定性测试。REQ：OPTICAL-4, OPTICAL-6｜依赖：T-O1｜owner：PR-O2 Agent｜output：确定性测试。验证：N1/N6。
-- [ ] T-O3 optical-active-gate：active 不可达断言 + shadow raw ingress 测试 + 门槛文档。REQ：OPTICAL-1, OPTICAL-2, OPTICAL-5｜依赖：T-O2, T-PR1｜owner：PR-O3 Agent｜output：gate 测试 + `docs/optical/release-gates.md` 更新。验证：N6。
+- [ ] T-C1A route-lowering：RouteDecision 唯一权威；三协议 parse/lower once。REQ：RUNTIME-7,QUALITY-6｜依赖：C0B/C｜验证：N10 Contract/Parity。
+- [ ] T-C3A context-bus-core：新 `dtoken-context-bus`，搬移 Session Cache/map/signature/self-hit policy，store 仅 persistence。REQ：CONTEXT-1｜依赖：C0A,L0｜验证：N10 ContextBus。
+- [ ] T-C1B reuse-before-plan：删除 post-validation memory injection；Reuse 在 transform planning 前入 IR。REQ：CONTEXT-4,RUNTIME-7｜依赖：C1A,C3A｜验证：send digest=validation digest。
+- [ ] T-C1C single-dispatch：HTTP/Rust/MCP/TS/Proxy 全面切到 resolved pipeline；删 no-op/第二 fallback path。REQ：RUNTIME-7/8｜依赖：C1B,PR-1｜验证：N10 SurfaceParity。
 
-## 7. Codebase Memory 轨道（PR-CBM）
+## 7. C2/C3/C4/C5 stage 内核（W5–W7）
 
-- [ ] T-CBM1 notice-drift：根 NOTICE v0.9.0→v0.9.1-rc.1 统一（v0.9.0 标 superseded）。REQ：OSS-1, OSS-4｜依赖：T-P0｜owner：PR-CBM1 Agent｜output：漂移 D1 闭合 + 结构检查。验证：N0。
-- [ ] T-CBM2 cbm-windows-fix：v0.9.0 配置 Bug 复现→失败测试→临时 Agent 配置 preview/apply/verify/rollback + 原始 hash/权限恢复；Windows archive/binary SHA + Cosign/OIDC 落证；状态五维不冒充。REQ：PRODUCT-6, OSS-4, CONFIG-1, CONFIG-2｜依赖：T-CBM1, T-PR6｜owner：PR-CBM2 Agent｜output：先红后绿测试 + Windows 证据。验证：N4/N8。
+- [ ] T-C2A headroom-codecs：九类 codecs/mixed router/exclusive action/property+fuzz 完整。REQ：QUALITY-2,QUALITY-1 117 core｜依赖：C1C,H1｜验证：N10 Codec/Property。
+- [ ] T-C2B cache-live-zone：stable prefix/live-zone/cache identity/TTL/strategy；stale/mismatch miss。REQ：117 CacheAligner｜依赖：C2A｜验证：N10 Cache。
+- [ ] T-C2C ccr-memory-learning：CCR tool/retrieve/crash、memory/learning/output/holdout 残余矩阵。REQ：CONTEXT-2,QUALITY-1｜依赖：C2B,C0B｜验证：N1/N10/N8。
+- [ ] T-C3B relay-retrieval：Context Relay/query-aware retrieval/跨 Agent 两实例证据/独立 accounting。REQ：CONTEXT-1/3｜依赖：C3A,C1C｜验证：N1/N10。
+- [ ] T-C3C recovery-shared：Recovery Pointer/Manifest、Stale/Superseded、SharedContext grant/revoke。REQ：CONTEXT-1/4｜依赖：C3B,C2C｜验证：N10。
+- [ ] T-C4A rtk-filters：git/cargo/npm/pytest/json classification + TOML DSL；secret/error/unknown/negative Preserve。REQ：RUNTIME-7,PLATFORM-5｜依赖：C0A,R1,**C4U（解封前置，RUNTIME-10）**｜验证：N10 RTK property/fuzz。
+- [ ] T-C4U rtk-unblock：移除三平台 `ManagedRtkTransactionState::Blocked` 硬封锁（改为「未配置即 unavailable」语义）；先红后绿（现测试 `managed_rtk_lifecycle_is_explicitly_blocked_on_macos_and_windows` 语义改写）；未解封前不得宣称 RTK production 完成。REQ：RUNTIME-10,PLATFORM-5｜依赖：T-R1,T-C0A｜验证：N7/N8/N10。**RUNTIME-10 是 C4A/B/C 的前置阻断。**
+- [ ] T-C4B rtk-hook-tee：真实支持 Agent hook 指向 bridge；tee private；exit/timeout/truncation；三平台。REQ：PLATFORM-5,CONFIG-1｜依赖：C4A,PR-6｜验证：N4/N8/N10。
+- [ ] T-C4C rtk-planner-accounting：RtkCommandOutput production dispatch、卸载、四维 bucket、双计断言。REQ：RUNTIME-5/7/9,CONTEXT-3｜依赖：C4B,C1C｜验证：N1/N10。
+- [ ] T-C5A optical-renderer：pxpipe/Spleen 单 pin、Unicode/CJK fallback、跨平台 deterministic/self-decode/resource limits。REQ：OPTICAL-2/3/4｜依赖：O1/O2,C0C｜验证：N8/N10。
+- [ ] T-C5B optical-history-cache：history collapse/static slab/freeze grid/cache anchors/billing boundary/pin semantics。REQ：OPTICAL-6｜依赖：C2B,C5A｜验证：N10。
+- [ ] T-C5C optical-attestation：exact Ed25519 capability + economics + paired eval digests/lifecycle。REQ：OPTICAL-5/6｜依赖：C5B,C7B｜验证：N10。
+- [ ] T-C5D optical-active：至少一个 exact Anthropic route 自动 active；其他 route PreserveText；无 UI switch。REQ：OPTICAL-1/2/5｜依赖：C5C,C6C｜验证：N10 exact E2E。
 
-## 8. RTK 轨道（PR-R）
+## 8. C6 — 并发、持久化、恢复（W6）
 
-- [ ] T-R1 rtk-pin：v0.45.0/`b34be37` 许可证/NOTICE 核验 + pin 登记；与 PRD「内建能力」对齐。REQ：OSS-1, PLATFORM-5｜依赖：T-P0｜owner：PR-R1 Agent｜output：漂移 D5 闭合 + 登记更新。验证：N0。
-- [ ] T-R2 rtk-windows：Windows/WSL managed lifecycle + hook integrity 证据（runner 或 external/blocked）。REQ：PLATFORM-5｜依赖：T-R1｜owner：PR-R2 Agent｜output：runner 报告或 external 标注。验证：N8。
-- [ ] T-R3 rtk-savings：savings 分账契约测试；无双计路径。REQ：RUNTIME-5, CONTEXT-3｜依赖：T-R2｜owner：PR-R3 Agent｜output：契约测试。验证：N1。
+- [ ] T-C6A：request-wide deadline/byte permit、有界 worker/queue、stable order、饱和 Preserve。REQ：QUALITY-5/6｜依赖：C2C/C3C/C4C/C5B｜验证：N10 Perf/Fault。
+- [ ] T-C6B：CCR FULL durability、可重建 projection、JSONL/SQLite/private store failpoints。REQ：CONTEXT-2,QUALITY-5｜依赖：C6A｜验证：N10 Fault。
+- [ ] T-C6C：pre-commit baseline once；post-commit no retry/provider switch；唯一 terminal receipt。REQ：RUNTIME-8,QUALITY-2/5/7｜依赖：C6B｜验证：N10 Fault/Replay。
 
-## 9. AiMaMi 轨道（PR-A）
+## 9. C7 — 质量/性能优化（W7）
 
-- [ ] T-A1 aimami-provenance：pin `297c7af5` 与 LICENSE 副本哈希复核；适配范围表与源码注释一致；品牌资产不进入分发复验。REQ：OSS-1, OSS-2｜依赖：T-P0｜owner：PR-A Agent｜output：复核记录。验证：N0（SBOM/license）。
+- [ ] T-C7A fresh-baseline：resolved path fixed corpus 的 p50/p95/p99/CPU/throughput/alloc/RSS/queue/cancel/benefit/fallback；冻结 noise/no-regression band；**并采集 product-level corpus 端到端节省 baseline（QUALITY-8 floor ≥10% 的门槛基准，与 no-regression band 分离）**。REQ：QUALITY-3/6/8｜依赖：C1C,C6C,C0C｜验证：N10 Perf。
+- [ ] T-C7B replay-quality-eval：decision/body replay、coding-task same-model paired outcome、Optical fidelity/cost/latency、holdout。REQ：QUALITY-4,OPTICAL-5｜依赖：C7A（按 [EXECUTION.md](./EXECUTION.md) §4 唯一 DAG：C1C/C6C/C0C→C7A→C7B；不回指 C7B 的已完成 stage artifacts 由 C7A 链覆盖，字面不展开 C2..C6 以免含 C5B/C6 回指环；C5C 保持依赖 C7B）｜验证：N3/N10。
+- [ ] T-C7C optimize-SLO：parse/digest/token once、lazy candidate/Cow、去整树 clone；只提升超噪声且质量全绿者；**端到端节省 floor ≥10% 断言（product-level corpus，QUALITY-8）；低于 floor 不得以「无回归」通过**。REQ：QUALITY-3/6/8｜依赖：C7A/B｜验证：N10 Perf/Quality。
 
-## 10. 真实验证节点（W5–W7，见 [VERIFICATION.md](./VERIFICATION.md)）
+## 10. C8 — 117 proof 与候选接线（W8–W9）
 
-- [ ] T-N0 候选全量质量门：structure + Rust fmt/clippy/workspace tests + Vitest/tsc/build/E2E + no-touch smoke + 版本门 + loopback-only 默认绑定断言。REQ：EVID-2, SECURITY-3/4/5/8/9, RUNTIME-3, OSS-2/3｜owner：Main｜output：门禁报告（绑定 `C_final`）。依赖：全部切片合并。
-- [ ] T-N1 Receipt 真实验证：真实 routed 请求核对 PRD 最小字段、Local/Provider/claimable、Analytics/export 脱敏。REQ：PRODUCT-1/2/3/4, RUNTIME-2/5, CONTEXT-2, RUNTIME-5, PR-R3｜owner：Main/验收环境。
-- [ ] T-N2 Codex routed：`Codex→18001→10100→动态 model` 真实运行 + artifact。REQ：AGENT-1, RUNTIME-6｜owner：Main。
-- [ ] T-N3 OpenCode routed：`C_final` 重跑真实 OpenCode；旧 G7 仅历史。REQ：AGENT-2, CONTEXT-2｜owner：Main。
-- [ ] T-N4 配置验收：隔离副本 configure→reread→clear→exact restore + 逆序回退 + 多 Agent 批次。REQ：AGENT-4/6/7, CONFIG-1/2/3, SECURITY-6｜owner：Main。
-- [ ] T-N5 cc-switch A→B→A：主代理 Computer 真实切换；identity 恢复 + `wrote_cc_switch=false` + ledger。REQ：AGENT-5, SECURITY-7｜owner：Main（Computer）。
-- [ ] T-N6 Tauri UI：八页/主题/语言/窄窗/Reduce Motion/native action/重启恢复 + 侧栏 S1–S4 真实窗口复核 + Optical active 不可达。REQ：UI-1..7, PRODUCT-3/5/7, OPTICAL-1/6, EVID-5｜owner：Main（Computer）。
-- [ ] T-N7 macOS：安装/升级/卸载/回滚 + autostart + 凭据 round-trip（唯一隔离）。REQ：PLATFORM-1, CONFIG-4｜owner：Main。
-- [ ] T-N8 Windows/G6/G8：NSIS/DACL/MSVC/PowerShell G6 + 双平台同 commit fan-in + CBM/RTK Windows 证据；缺则 external/blocked。REQ：PLATFORM-2/3/5, OSS-4｜owner：外部 runner/CI。
-- [ ] T-N9 聚合：仅 N1–N8 全结算后，以 `C_final` + source digest 运行 final gate/status；三结论之一落盘 + 发布报告。REQ：EVID-1/2/3/6, PLATFORM-4, DOCS-3｜owner：Main。
+- [ ] T-C8A capability-proof：生成 117/117 registry→dispatch→test→real evidence→gate coverage；零缺失/占位。REQ：QUALITY-1,EVID-6｜依赖：C2..C7｜验证：N10 Registry。
+- [ ] T-C8B real-routes-platform：Provider/Agent matrix、Codex/OpenCode、Optical exact route、macOS/Windows 同 commit evidence。REQ：AGENT-1/2,PLATFORM-1..5｜依赖：C8A,PR-2/6/7/8｜验证：N2/N3/N7/N8/N10。
+- [ ] T-C8C final-gate：聚合器强绑定 candidate/source/corpus/registry/eval/platform；N10 进入 G8/G9 required evidence。REQ：EVID-1/2/3/6｜依赖：V-1,PR-9,C8B｜验证：N9。
 
-## 11. 收口文档（W7 后）
+## 11. 真实验证节点（W10）
 
-- [ ] T-DOC 发布收口：更新 `docs/PRD.md`（版本门）、`docs/PLAN.md`、`docs/product/IMPLEMENTATION_STATUS.md`、README、CHANGELOG 与最终发布报告；本包 [EVIDENCE.md](./EVIDENCE.md) 滚动同步。REQ：DOCS-3, DOCS-4, EVID-4｜依赖：T-N9｜owner：Main。
+- [ ] T-N0：冻结 `C_final`，structure/version/full Rust+frontend/no-touch/security/OSS preflight。任一修复使受影响证据失效。
+- [ ] T-N1：真实 Receipt、四维 accounting、CCR/Relay/cache/RTK 投影、UI/export 脱敏。
+- [ ] T-N2：Codex `18001→10100→dynamic model` 真实 routed。
+- [ ] T-N3：OpenCode 两条长工程验收（OpenCode Free `opencode/deepseek-v4-flash-free` 与 Go dsv4flash 工程链）：真实 routed path + 长时/长上下文工程 workload + C_final/source digest + same-model baseline/optimized paired + exact restore；旧 bounded replay 不替代。
+- [ ] T-N4：多 Agent 配置副本/apply/reread/clear/exact restore + hook/tee。
+- [ ] T-N5：主代理 Computer 执行 cc-switch A→B→A，只读且 route identity 恢复。
+- [ ] T-N6：真实 Tauri 八页/双尺寸/双主题/双语/Reduce Motion；Optical UI 无 active switch且状态可解释。
+- [ ] T-N7：macOS install/upgrade/uninstall/rollback/autostart/credential/RTK。
+- [ ] T-N8：Windows NSIS/DACL/MSVC/PowerShell/CBM/RTK + 双平台 fan-in。
+- [ ] T-N10：统一压缩 proof：Contract→Registry→Property/Fuzz→Fault→Replay→Perf→Provider Paired→Optical Exact Active→Platform，全部同 C_final/source_digest/corpus revisions。
+- [ ] T-N9：仅 N1–N8/N10 全结算后聚合；任一 MUST 缺失则 blocked。
 
-## 12. 完整性自查
+## 12. 收口与完整性
 
-- 每个 requirement 是否都有任务：见 [REQUIREMENTS.md](./REQUIREMENTS.md) owner 列 → 本文件 T-* 任务；每个任务是否都有验证节点：本文件「验证」列 → [VERIFICATION.md](./VERIFICATION.md)。
-- 迁移不漏项核对：用户 GOAL 13 项（G1–G13 映射表）→ 侧栏 S1–S4 → 硬边界 B1–B8 → 阻断 K1–K6 → 九边界 → 七 OSS 轨道 → 全部落任务。
+- [ ] T-DOC：N9 后同步 PRD/PLAN/IMPLEMENTATION_STATUS/README/CHANGELOG/发布报告/EVIDENCE。
+- [ ] 每个 REQUIREMENTS owner 必须在本清单存在；117 registry 的每一项必须由 T-C8A 机器校验；任何 `boundary/deferred/not-in-scope` 状态不得通过。
+
