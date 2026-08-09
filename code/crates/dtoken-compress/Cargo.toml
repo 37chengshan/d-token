@@ -7,6 +7,7 @@ repository.workspace = true
 
 [dependencies]
 anyhow.workspace = true
+dtoken-context-bus = { path = "../dtoken-context-bus" }
 dtoken-types = { path = "../dtoken-types" }
 serde_json.workspace = true
 sha2 = "0.10"

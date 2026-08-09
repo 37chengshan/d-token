@@ -1531,6 +1531,9 @@ pub struct AppState {
     /// still reconciled.  Populated only during persistent restart.
     terminal_pending_commits: HashMap<Uuid, TerminalCommitMarker>,
     context_store: Option<Arc<Mutex<ContextStore>>>,
+    /// LeanCTX Context Bus（PR-C3A..C3C）：canonical resolved path 的
+    /// session cache / relay 复用入口。未配置（None）时生产路径行为不变。
+    context_bus: Option<Arc<Mutex<dtoken_context_bus::ContextBus>>>,
     managed_rtk_root: Option<Arc<PathBuf>>,
     agent_discovery: Arc<Option<AgentDiscoverySnapshot>>,
     http_client: reqwest::Client,
@@ -1574,6 +1577,7 @@ impl AppState {
             runtime_store: None,
             terminal_pending_commits: HashMap::new(),
             context_store: None,
+            context_bus: None,
             managed_rtk_root: None,
             agent_discovery: Arc::new(agent_discovery),
             http_client: reqwest::Client::new(),
@@ -1611,6 +1615,11 @@ impl AppState {
     ) -> Self {
         let store = Arc::new(RuntimeStore::new(runtime_dir));
         let mut state = Self::new_with_config_status(config, config_status);
+        // PR-C3A..C3C: production 启动即接入 LeanCTX Context Bus（内存 port；
+        // store 只保留 persistence port，bus 域 policy 单一 authority）。
+        state.context_bus = Some(Arc::new(Mutex::new(
+            dtoken_context_bus::ContextBus::new(dtoken_context_bus::BusConfig::default()),
+        )));
         state.ccr_private_store = ccr_private_store;
         // G3: the terminal-commit recovery sweep needs the journal installed
         // before any load, and every subsequent load must filter the requests
@@ -4847,6 +4856,9 @@ struct CompressionSummary {
     fallback_reason_code: Option<String>,
     body: Value,
     context_accounting: Option<dtoken_types::HybridContextAccounting>,
+    /// LeanCTX Context Bus receipts（PR-C3B/CONTEXT-3）：RelayHit/CacheReuse
+    /// 与 compression savings 严格分离，永不进入 `tokens_saved`。
+    bus_receipts: Vec<dtoken_context_bus::BusReceipt>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -5291,7 +5303,134 @@ fn compress_for_route_with_ir(
         fallback_reason_code,
         body: result.body,
         context_accounting: result.context_accounting,
+        bus_receipts: Vec::new(),
     }
+}
+
+/// PR-C3A..C3C 接线：canonical resolved path 前 consult Context Bus。
+///
+/// - 命中（Session Cache / Context Relay）→ 复用候选 body，`bus_receipts`
+///   单独记录，不计入 compression savings（CONTEXT-3 四维分账独立）；
+/// - 未命中 → 走 canonical resolved path 压缩后 record，供后续复用；
+/// - 任何 bus 失败（未配置 / 锁失败 / 校验失败）→ fail-open 回退原文路径，
+///   与未接线行为完全一致（失败正常读取原文）。
+#[allow(clippy::too_many_arguments)]
+fn compress_for_route_with_relay(
+    state: &AppState,
+    scope: &RequestScope,
+    context: Option<&ResolvedRouteOptimizationContext>,
+    policy: CompressionPolicy,
+    body: Value,
+    cache_evidence: Option<&dtoken_compress::context_pipeline::ProviderCacheEvidence>,
+    frozen_message_count: Option<usize>,
+    ir: Option<&dtoken_compress::HybridContextIr>,
+) -> CompressionSummary {
+    // bus 未配置 → 原路径（行为不变）。
+    let Some(bus) = state.context_bus.as_ref() else {
+        return compress_for_route_with_ir(context, policy, body, cache_evidence, frozen_message_count, ir);
+    };
+    // scope 缺少 project/agent → 无法投影 BusScope → 回退原文路径。
+    let (Some(project_id), Some(agent_id)) = (
+        scope.project.value.clone(),
+        scope.agent.value.clone(),
+    ) else {
+        return compress_for_route_with_ir(context, policy, body, cache_evidence, frozen_message_count, ir);
+    };
+    let session_id = scope.session.value.clone().unwrap_or_default();
+    let bus_scope = dtoken_context_bus::BusScope::new(project_id, agent_id, session_id);
+    if !bus_scope.is_valid() {
+        return compress_for_route_with_ir(context, policy, body, cache_evidence, frozen_message_count, ir);
+    }
+    // map-signature：canonical JSON of body；source fingerprint：evidence 的
+    // source_revision + 无 file digest（HTTP body 无文件粒度）。
+    let Ok(canonical_content) = serde_json::to_string(&body) else {
+        return compress_for_route_with_ir(context, policy, body, cache_evidence, frozen_message_count, ir);
+    };
+    let source_revision = cache_evidence
+        .map(|evidence| evidence.source_revision.as_str())
+        .unwrap_or_default();
+    let source_fingerprint = dtoken_context_bus::signature::source_fingerprint(source_revision, None);
+    let query_tokens = vec![scope.route_id.clone(), scope.model.clone()];
+    let now_ms = dtoken_event_ledger::now_ms().max(1);
+    let map_signature =
+        dtoken_context_bus::signature::map_signature(&bus_scope.project_id, &canonical_content);
+    let Ok(mut bus) = bus.lock() else {
+        return compress_for_route_with_ir(context, policy, body, cache_evidence, frozen_message_count, ir);
+    };
+    match bus.consult(&bus_scope, &map_signature, &source_fingerprint, &query_tokens, now_ms) {
+        dtoken_context_bus::bus::ConsultOutcome::CacheHit { entry, receipt } => {
+            relay_hit_compression_summary(&body, entry.body.as_deref(), vec![dtoken_context_bus::BusReceipt::CacheReuse(receipt)])
+        }
+        dtoken_context_bus::bus::ConsultOutcome::RelayHit { entry, receipt } => {
+            relay_hit_compression_summary(&body, entry.body.as_deref(), vec![dtoken_context_bus::BusReceipt::RelayHit(receipt)])
+        }
+        dtoken_context_bus::bus::ConsultOutcome::Miss => {
+            // 未命中：走 canonical resolved path 压缩。
+            let summary = compress_for_route_with_ir(
+                context,
+                policy,
+                body.clone(),
+                cache_evidence,
+                frozen_message_count,
+                ir,
+            );
+            // record 失败静默忽略（不影响发送路径）。
+            if let Ok(candidate_body) = serde_json::to_string(&summary.body) {
+                let _ = bus.record(
+                    &bus_scope,
+                    &canonical_content,
+                    source_revision,
+                    None,
+                    Some(candidate_body),
+                    &query_tokens,
+                    now_ms,
+                );
+            }
+            summary
+        }
+    }
+}
+
+/// relay/cache 命中：用候选 body 构造 CompressionSummary。
+/// `tokens_saved` 保持 0（Relay/Cache 不计 compression savings），
+/// receipt 单独记录；候选 body 缺失/不可解析时回退原文 body。
+fn relay_hit_compression_summary(
+    original: &Value,
+    candidate_body: Option<&str>,
+    bus_receipts: Vec<dtoken_context_bus::BusReceipt>,
+) -> CompressionSummary {
+    let body: Value = candidate_body
+        .and_then(|candidate| serde_json::from_str(candidate).ok())
+        .unwrap_or_else(|| original.clone());
+    let original_tokens = dtoken_compress::estimate_tokens(original) as u64;
+    let compressed_tokens = dtoken_compress::estimate_tokens(&body) as u64;
+    CompressionSummary {
+        original_tokens,
+        compressed_tokens,
+        tokens_saved: 0,
+        savings_percent: 0.0,
+        elapsed_us: 1,
+        transforms_applied: Vec::new(),
+        fallback_reason_code: None,
+        body,
+        context_accounting: None,
+        bus_receipts,
+    }
+}
+
+/// CONTEXT-3 独立分账：把 bus receipts 投影成脱敏 metadata（只含 kind 与
+/// avoided bytes，不含任何 prompt/response 内容）。
+fn bus_receipts_metadata(receipts: &[dtoken_context_bus::BusReceipt]) -> Vec<Value> {
+    receipts
+        .iter()
+        .map(|receipt| {
+            json!({
+                "kind": receipt.savings_kind().as_str(),
+                "avoided_bytes": receipt.avoided_bytes(),
+                "project_id": receipt.project_id(),
+            })
+        })
+        .collect()
 }
 
 /// Direct baseline summary: body untouched, zero transforms, honest token
@@ -5703,6 +5842,9 @@ fn build_ledger_event(
             "compression_elapsed_us": compression.elapsed_us,
             "transforms_applied": compression.transforms_applied,
             "compression_fallback_reason": compression.fallback_reason_code,
+            // CONTEXT-3: Relay/Cache 命中与 compression savings 严格分离。
+            // receipt 只记录命中来源与避免重传字节，永不进入 `saved_tokens`。
+            "bus_receipts": bus_receipts_metadata(&compression.bus_receipts),
             "privacy": "aggregate only; prompt and response bodies are not stored"
         }),
         context_accounting: compression.context_accounting.clone(),
@@ -9377,7 +9519,10 @@ fn anthropic_route_payload(
             &optimization_context.compression_context,
             &upstream_body,
         );
-        compress_for_route_with_ir(
+        // PR-C3A..C3C: relay-aware canonical resolved path（bus 失败回退原文）。
+        compress_for_route_with_relay(
+            state,
+            &scope,
             Some(&optimization_context),
             decision.compression_policy.clone(),
             upstream_body.clone(),
@@ -11276,7 +11421,10 @@ async fn openai_chat_completions(
         );
         let baseline_body = ingress_body.clone();
         let cache_evidence = configured_provider_cache_evidence(&state, &scope);
-        let mut compression = compress_for_route_with_ir(
+        // PR-C3A..C3C: relay-aware canonical resolved path（bus 失败回退原文）。
+        let mut compression = compress_for_route_with_relay(
+            &state,
+            &scope,
             Some(&optimization_context),
             decision.compression_policy.clone(),
             ingress_body,
@@ -11763,7 +11911,10 @@ async fn openai_responses(
             );
             let baseline_body = ingress_body.clone();
             let cache_evidence = configured_provider_cache_evidence(&state, &scope);
-            let mut compression = compress_for_route_with_ir(
+            // PR-C3A..C3C: relay-aware canonical resolved path（bus 失败回退原文）。
+            let mut compression = compress_for_route_with_relay(
+                &state,
+                &scope,
                 Some(&optimization_context),
                 decision.compression_policy.clone(),
                 ingress_body,
@@ -12250,7 +12401,10 @@ async fn openai_responses(
         );
         let baseline_body = ingress_body.clone();
         let cache_evidence = configured_provider_cache_evidence(&state, &scope);
-        let mut compression = compress_for_route_with_ir(
+        // PR-C3A..C3C: relay-aware canonical resolved path（bus 失败回退原文）。
+        let mut compression = compress_for_route_with_relay(
+            &state,
+            &scope,
             Some(&optimization_context),
             decision.compression_policy.clone(),
             ingress_body,
@@ -15802,6 +15956,7 @@ mod tests {
             fallback_reason_code: None,
             body: json!({}),
             context_accounting: None,
+            bus_receipts: vec![],
         };
         let log = build_request_log(
             decision.request_id,
