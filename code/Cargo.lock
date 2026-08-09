@@ -1320,6 +1320,8 @@ name = "dtoken-runtime-pipeline"
 version = "0.2.0-beta.1"
 dependencies = [
  "dtoken-types",
+ "serde",
+ "serde_json",
  "sha2",
  "uuid",
 ]
@@ -1330,6 +1332,7 @@ version = "0.2.0-beta.1"
 dependencies = [
  "serde",
  "serde_json",
+ "sha2",
  "uuid",
 ]
 

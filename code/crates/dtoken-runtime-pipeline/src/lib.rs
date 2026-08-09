@@ -4,7 +4,10 @@
 use dtoken_types::RequestScope;
 use sha2::{Digest, Sha256};
 
+pub mod receipts;
+
 pub use dtoken_types::{SentPayloadVariant, UpstreamSendState as SendCommitState};
+pub use receipts::{RecoveryReceipt, SendCommitReceipt, ValidationReceipt};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PipelineError {

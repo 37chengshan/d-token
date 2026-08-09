@@ -1,0 +1,1654 @@
+{
+  "schema": "unified-capability-registry",
+  "schema_version": 1,
+  "revision": "c0d-start-117",
+  "description": "Machine-readable capability registry for the v0.0.1 unified-compression proof (QUALITY-1 / U1). Exactly 117 unique entries; before N0 every status is implemented_unverified or blocked; verified status is sealed only by N10/U9.",
+  "owner_crates": [
+    "dtoken-types", "dtoken-config", "dtoken-router", "dtoken-compress",
+    "dtoken-context-store", "dtoken-process", "dtoken-doctor",
+    "dtoken-event-ledger", "dtoken-preprocessor", "dtoken-headroom-adapter",
+    "dtoken-project-policy", "dtoken-runtime-pipeline", "dtoken-learning",
+    "dtoken-config-patcher", "dtoken-agent-bridge", "dtoken-codebase-memory",
+    "dtoken-core-api", "dtoken-proxy"
+  ],
+  "entries": [
+    {
+      "id": "json-codec",
+      "source_capability": "JSON minify codec (lossless whitespace compaction for ContentKind::Json)",
+      "owner_crate": "dtoken-compress",
+      "dispatch_symbol": "dtoken_compress::compressor_registry::ProductionCompressorRegistry::select",
+      "tests": {
+        "normal": ["code/crates/dtoken-compress/tests/hybrid_safe_baseline.rs"],
+        "error": ["code/crates/dtoken-compress/tests/hybrid_safe_baseline.rs"],
+        "recovery": ["code/crates/dtoken-compress/tests/hybrid_safe_baseline.rs"]
+      },
+      "real_evidence": ["docs/releases/v0.0.1/REQUIREMENTS.md", "code/crates/dtoken-compress/src/compressor_registry.rs"],
+      "gates": ["G2", "U1", "U2"],
+      "status": "implemented_unverified"
+    },
+    {
+      "id": "log-codec",
+      "source_capability": "Log fold codec (lossless line folding for ContentKind::Log)",
+      "owner_crate": "dtoken-compress",
+      "dispatch_symbol": "dtoken_compress::compressor_registry::ProductionCompressorRegistry::select",
+      "tests": {
+        "normal": ["code/crates/dtoken-compress/tests/hybrid_safe_baseline.rs"],
+        "error": ["code/crates/dtoken-compress/tests/hybrid_safe_baseline.rs"],
+        "recovery": ["code/crates/dtoken-compress/tests/hybrid_safe_baseline.rs"]
+      },
+      "real_evidence": ["docs/releases/v0.0.1/REQUIREMENTS.md", "code/crates/dtoken-compress/src/compressor_registry.rs"],
+      "gates": ["G2", "U1", "U2"],
+      "status": "implemented_unverified"
+    },
+    {
+      "id": "search-codec",
+      "source_capability": "Search results fold codec (lossless folding for ContentKind::SearchResults)",
+      "owner_crate": "dtoken-compress",
+      "dispatch_symbol": "dtoken_compress::compressor_registry::ProductionCompressorRegistry::select",
+      "tests": {
+        "normal": ["code/crates/dtoken-compress/tests/hybrid_safe_baseline.rs"],
+        "error": ["code/crates/dtoken-compress/tests/hybrid_safe_baseline.rs"],
+        "recovery": ["code/crates/dtoken-compress/tests/hybrid_safe_baseline.rs"]
+      },
+      "real_evidence": ["docs/releases/v0.0.1/REQUIREMENTS.md", "code/crates/dtoken-compress/src/compressor_registry.rs"],
+      "gates": ["G2", "U1", "U2"],
+      "status": "implemented_unverified"
+    },
+    {
+      "id": "build-codec",
+      "source_capability": "Build output fold codec (lossless folding for ContentKind::BuildOutput)",
+      "owner_crate": "dtoken-compress",
+      "dispatch_symbol": "dtoken_compress::compressor_registry::ProductionCompressorRegistry::select",
+      "tests": {
+        "normal": ["code/crates/dtoken-compress/tests/hybrid_safe_baseline.rs"],
+        "error": ["code/crates/dtoken-compress/tests/hybrid_safe_baseline.rs"],
+        "recovery": ["code/crates/dtoken-compress/tests/hybrid_safe_baseline.rs"]
+      },
+      "real_evidence": ["docs/releases/v0.0.1/REQUIREMENTS.md", "code/crates/dtoken-compress/src/compressor_registry.rs"],
+      "gates": ["G2", "U1", "U2"],
+      "status": "implemented_unverified"
+    },
+    {
+      "id": "diff-codec",
+      "source_capability": "Diff fold codec (lossless folding for ContentKind::Diff)",
+      "owner_crate": "dtoken-compress",
+      "dispatch_symbol": "dtoken_compress::compressor_registry::ProductionCompressorRegistry::select",
+      "tests": {
+        "normal": ["code/crates/dtoken-compress/tests/hybrid_safe_baseline.rs"],
+        "error": ["code/crates/dtoken-compress/tests/hybrid_safe_baseline.rs"],
+        "recovery": ["code/crates/dtoken-compress/tests/hybrid_safe_baseline.rs"]
+      },
+      "real_evidence": ["docs/releases/v0.0.1/REQUIREMENTS.md", "code/crates/dtoken-compress/src/compressor_registry.rs"],
+      "gates": ["G2", "U1", "U2"],
+      "status": "implemented_unverified"
+    },
+    {
+      "id": "text-codec",
+      "source_capability": "Text repeat-fold codec (lossless repetition folding for ContentKind::Text)",
+      "owner_crate": "dtoken-compress",
+      "dispatch_symbol": "dtoken_compress::compressor_registry::ProductionCompressorRegistry::select",
+      "tests": {
+        "normal": ["code/crates/dtoken-compress/tests/hybrid_safe_baseline.rs"],
+        "error": ["code/crates/dtoken-compress/tests/hybrid_safe_baseline.rs"],
+        "recovery": ["code/crates/dtoken-compress/tests/hybrid_safe_baseline.rs"]
+      },
+      "real_evidence": ["docs/releases/v0.0.1/REQUIREMENTS.md", "code/crates/dtoken-compress/src/compressor_registry.rs"],
+      "gates": ["G2", "U1", "U2"],
+      "status": "implemented_unverified"
+    },
+    {
+      "id": "html-codec",
+      "source_capability": "HTML repeat-fold codec (lossless repetition folding for ContentKind::Html)",
+      "owner_crate": "dtoken-compress",
+      "dispatch_symbol": "dtoken_compress::compressor_registry::ProductionCompressorRegistry::select",
+      "tests": {
+        "normal": ["code/crates/dtoken-compress/tests/hybrid_safe_baseline.rs"],
+        "error": ["code/crates/dtoken-compress/tests/hybrid_safe_baseline.rs"],
+        "recovery": ["code/crates/dtoken-compress/tests/hybrid_safe_baseline.rs"]
+      },
+      "real_evidence": ["docs/releases/v0.0.1/REQUIREMENTS.md", "code/crates/dtoken-compress/src/compressor_registry.rs"],
+      "gates": ["G2", "U1", "U2"],
+      "status": "implemented_unverified"
+    },
+    {
+      "id": "config-codec",
+      "source_capability": "Config repeat-fold codec (lossless repetition folding for ContentKind::Config)",
+      "owner_crate": "dtoken-compress",
+      "dispatch_symbol": "dtoken_compress::compressor_registry::ProductionCompressorRegistry::select",
+      "tests": {
+        "normal": ["code/crates/dtoken-compress/tests/hybrid_safe_baseline.rs"],
+        "error": ["code/crates/dtoken-compress/tests/hybrid_safe_baseline.rs"],
+        "recovery": ["code/crates/dtoken-compress/tests/hybrid_safe_baseline.rs"]
+      },
+      "real_evidence": ["docs/releases/v0.0.1/REQUIREMENTS.md", "code/crates/dtoken-compress/src/compressor_registry.rs"],
+      "gates": ["G2", "U1", "U2"],
+      "status": "implemented_unverified"
+    },
+    {
+      "id": "code-compressor",
+      "source_capability": "Code fence envelope trim codec (lossless envelope trim for ContentKind::Code)",
+      "owner_crate": "dtoken-compress",
+      "dispatch_symbol": "dtoken_compress::compressor_registry::ProductionCompressorRegistry::select",
+      "tests": {
+        "normal": ["code/crates/dtoken-compress/tests/hybrid_safe_baseline.rs"],
+        "error": ["code/crates/dtoken-compress/tests/hybrid_safe_baseline.rs"],
+        "recovery": ["code/crates/dtoken-compress/tests/hybrid_safe_baseline.rs"]
+      },
+      "real_evidence": ["docs/releases/v0.0.1/REQUIREMENTS.md", "code/crates/dtoken-compress/src/compressor_registry.rs"],
+      "gates": ["G2", "U1", "U2"],
+      "status": "implemented_unverified"
+    },
+    {
+      "id": "aggregate.headroom-semantic",
+      "source_capability": "HeadroomSemantic exclusive NodeAction aggregate (codec selection boundary, not an engine chooser)",
+      "owner_crate": "dtoken-types",
+      "dispatch_symbol": "dtoken_types::contract::NodeAction::HeadroomSemantic",
+      "tests": {
+        "normal": ["code/crates/dtoken-types/tests/canonical_contract.rs"],
+        "error": ["code/crates/dtoken-types/tests/canonical_contract.rs"],
+        "recovery": ["code/crates/dtoken-types/tests/canonical_contract.rs"]
+      },
+      "real_evidence": ["docs/releases/v0.0.1/REQUIREMENTS.md", "docs/releases/v0.0.1/VERIFICATION.md"],
+      "gates": ["U0", "G1", "U1"],
+      "status": "implemented_unverified"
+    },
+    {
+      "id": "aggregate.reuse",
+      "source_capability": "Reuse exclusive NodeAction aggregate (map-signature/session reuse before planning)",
+      "owner_crate": "dtoken-types",
+      "dispatch_symbol": "dtoken_types::contract::NodeAction::Reuse",
+      "tests": {
+        "normal": ["code/crates/dtoken-types/tests/canonical_contract.rs"],
+        "error": ["code/crates/dtoken-types/tests/canonical_contract.rs"],
+        "recovery": ["code/crates/dtoken-types/tests/canonical_contract.rs"]
+      },
+      "real_evidence": ["docs/releases/v0.0.1/REQUIREMENTS.md", "docs/releases/v0.0.1/VERIFICATION.md"],
+      "gates": ["U0", "G1", "U1"],
+      "status": "implemented_unverified"
+    },
+    {
+      "id": "aggregate.rtk-command-output",
+      "source_capability": "RtkCommandOutput exclusive NodeAction aggregate (RTK structured filter output bucket)",
+      "owner_crate": "dtoken-types",
+      "dispatch_symbol": "dtoken_types::contract::NodeAction::RtkCommandOutput",
+      "tests": {
+        "normal": ["code/crates/dtoken-types/tests/canonical_contract.rs"],
+        "error": ["code/crates/dtoken-types/tests/canonical_contract.rs"],
+        "recovery": ["code/crates/dtoken-types/tests/canonical_contract.rs"]
+      },
+      "real_evidence": ["docs/releases/v0.0.1/REQUIREMENTS.md", "docs/releases/v0.0.1/VERIFICATION.md"],
+      "gates": ["U0", "G1", "U1"],
+      "status": "implemented_unverified"
+    },
+    {
+      "id": "aggregate.optical",
+      "source_capability": "Optical exclusive NodeAction aggregate (exact renderer path, shadow-only before attestation)",
+      "owner_crate": "dtoken-types",
+      "dispatch_symbol": "dtoken_types::contract::NodeAction::Optical",
+      "tests": {
+        "normal": ["code/crates/dtoken-types/tests/canonical_contract.rs"],
+        "error": ["code/crates/dtoken-types/tests/canonical_contract.rs"],
+        "recovery": ["code/crates/dtoken-types/tests/canonical_contract.rs"]
+      },
+      "real_evidence": ["docs/releases/v0.0.1/REQUIREMENTS.md", "docs/releases/v0.0.1/VERIFICATION.md"],
+      "gates": ["U0", "G1", "U1"],
+      "status": "implemented_unverified"
+    },
+    {
+      "id": "aggregate.preserve",
+      "source_capability": "Preserve exclusive NodeAction aggregate (byte-exact passthrough and protected content)",
+      "owner_crate": "dtoken-types",
+      "dispatch_symbol": "dtoken_types::contract::NodeAction::Preserve",
+      "tests": {
+        "normal": ["code/crates/dtoken-types/tests/canonical_contract.rs"],
+        "error": ["code/crates/dtoken-types/tests/canonical_contract.rs"],
+        "recovery": ["code/crates/dtoken-types/tests/canonical_contract.rs"]
+      },
+      "real_evidence": ["docs/releases/v0.0.1/REQUIREMENTS.md", "docs/releases/v0.0.1/VERIFICATION.md"],
+      "gates": ["U0", "G1", "U1"],
+      "status": "implemented_unverified"
+    },
+    {
+      "id": "aggregate.ccr-recovery",
+      "source_capability": "CCR recovery aggregate (durable store -> receipt -> marker -> restore loop, fail-closed without receipt)",
+      "owner_crate": "dtoken-runtime-pipeline",
+      "dispatch_symbol": "dtoken_runtime_pipeline::RecoveryReceipt",
+      "tests": {
+        "normal": ["code/crates/dtoken-runtime-pipeline/tests/sealed_receipts.rs"],
+        "error": ["code/crates/dtoken-runtime-pipeline/tests/sealed_receipts.rs"],
+        "recovery": ["code/crates/dtoken-runtime-pipeline/tests/sealed_receipts.rs"]
+      },
+      "real_evidence": ["docs/releases/v0.0.1/REQUIREMENTS.md", "docs/releases/v0.0.1/VERIFICATION.md"],
+      "gates": ["U3", "G3", "U1"],
+      "status": "implemented_unverified"
+    },
+    {
+      "id": "aggregate.relay",
+      "source_capability": "Context Relay aggregate (query-aware retrieval, avoided-retransmission accounting)",
+      "owner_crate": "dtoken-context-store",
+      "dispatch_symbol": "dtoken_context_store::relay::RelayRegistry",
+      "tests": {
+        "normal": ["code/crates/dtoken-context-store/tests/relay_contract.rs"],
+        "error": ["code/crates/dtoken-context-store/tests/relay_contract.rs"],
+        "recovery": ["code/crates/dtoken-context-store/tests/relay_contract.rs"]
+      },
+      "real_evidence": ["docs/releases/v0.0.1/REQUIREMENTS.md", "docs/releases/v0.0.1/VERIFICATION.md"],
+      "gates": ["G5", "U1", "N1"],
+      "status": "blocked"
+    },
+    {
+      "id": "aggregate.provider-cache",
+      "source_capability": "Provider cache aggregate (cache identity, TTL, strategy, stable prefix)",
+      "owner_crate": "dtoken-types",
+      "dispatch_symbol": "dtoken_types::ProviderCachePolicy",
+      "tests": {
+        "normal": ["code/crates/dtoken-types/tests/canonical_contract.rs"],
+        "error": ["code/crates/dtoken-types/tests/canonical_contract.rs"],
+        "recovery": ["code/crates/dtoken-types/tests/canonical_contract.rs"]
+      },
+      "real_evidence": ["docs/releases/v0.0.1/REQUIREMENTS.md", "docs/releases/v0.0.1/VERIFICATION.md"],
+      "gates": ["G2", "U1", "N1"],
+      "status": "implemented_unverified"
+    },
+    {
+      "id": "aggregate.route-decision",
+      "source_capability": "RouteDecision authority aggregate (stable digest, explicit selection, no chooser)",
+      "owner_crate": "dtoken-types",
+      "dispatch_symbol": "dtoken_types::RouteDecision::stable_digest",
+      "tests": {
+        "normal": ["code/crates/dtoken-types/tests/route_decision_digest.rs"],
+        "error": ["code/crates/dtoken-types/tests/route_decision_digest.rs"],
+        "recovery": ["code/crates/dtoken-types/tests/route_decision_digest.rs"]
+      },
+      "real_evidence": ["docs/releases/v0.0.1/REQUIREMENTS.md", "docs/releases/v0.0.1/VERIFICATION.md"],
+      "gates": ["U0", "G1", "U1"],
+      "status": "implemented_unverified"
+    },
+    {
+      "id": "aggregate.safety-policy",
+      "source_capability": "Global safety policy aggregate (default safe_lossless; enhanced/lossy need explicit confirmation revision)",
+      "owner_crate": "dtoken-types",
+      "dispatch_symbol": "dtoken_types::contract::SafetyPolicy",
+      "tests": {
+        "normal": ["code/crates/dtoken-types/tests/canonical_contract.rs"],
+        "error": ["code/crates/dtoken-types/tests/canonical_contract.rs"],
+        "recovery": ["code/crates/dtoken-types/tests/canonical_contract.rs"]
+      },
+      "real_evidence": ["docs/releases/v0.0.1/REQUIREMENTS.md", "docs/releases/v0.0.1/VERIFICATION.md"],
+      "gates": ["U0", "G1", "N6"],
+      "status": "implemented_unverified"
+    },
+    {
+      "id": "aggregate.sealed-receipts",
+      "source_capability": "Sealed receipts aggregate (Validation/Recovery/SendCommit; adapters cannot mint Optimized/Committed)",
+      "owner_crate": "dtoken-runtime-pipeline",
+      "dispatch_symbol": "dtoken_runtime_pipeline::ValidationReceipt",
+      "tests": {
+        "normal": ["code/crates/dtoken-runtime-pipeline/tests/sealed_receipts.rs"],
+        "error": ["code/crates/dtoken-runtime-pipeline/tests/sealed_receipts.rs"],
+        "recovery": ["code/crates/dtoken-runtime-pipeline/tests/sealed_receipts.rs"]
+      },
+      "real_evidence": ["docs/releases/v0.0.1/REQUIREMENTS.md", "docs/releases/v0.0.1/VERIFICATION.md"],
+      "gates": ["U0", "U3", "G1"],
+      "status": "implemented_unverified"
+    },
+    {
+      "id": "aggregate.accounting",
+      "source_capability": "Four-dimension accounting aggregate (compression/command-output/provider-cache/relay; never summed naively)",
+      "owner_crate": "dtoken-types",
+      "dispatch_symbol": "dtoken_types::contract::AccountingBuckets",
+      "tests": {
+        "normal": ["code/crates/dtoken-types/tests/canonical_contract.rs"],
+        "error": ["code/crates/dtoken-types/tests/canonical_contract.rs"],
+        "recovery": ["code/crates/dtoken-types/tests/canonical_contract.rs"]
+      },
+      "real_evidence": ["docs/releases/v0.0.1/REQUIREMENTS.md", "docs/releases/v0.0.1/VERIFICATION.md"],
+      "gates": ["U0", "G1", "N1"],
+      "status": "implemented_unverified"
+    },
+    {
+      "id": "contract.bound-request",
+      "source_capability": "BoundRequest canonical contract: request bound to identity evidence, ingress digest and decision digest",
+      "owner_crate": "dtoken-types",
+      "dispatch_symbol": "dtoken_types::contract::BoundRequest::new",
+      "tests": {
+        "normal": ["code/crates/dtoken-types/tests/canonical_contract.rs"],
+        "error": ["code/crates/dtoken-types/tests/canonical_contract.rs"],
+        "recovery": ["code/crates/dtoken-types/tests/canonical_contract.rs"]
+      },
+      "real_evidence": ["docs/releases/v0.0.1/REQUIREMENTS.md", "docs/releases/v0.0.1/VERIFICATION.md"],
+      "gates": ["U0", "G1", "N10"],
+      "status": "implemented_unverified"
+    },
+    {
+      "id": "contract.ir-node",
+      "source_capability": "IrNode canonical contract: source reference plus exactly one exclusive NodeAction",
+      "owner_crate": "dtoken-types",
+      "dispatch_symbol": "dtoken_types::contract::IrNode::new",
+      "tests": {
+        "normal": ["code/crates/dtoken-types/tests/canonical_contract.rs"],
+        "error": ["code/crates/dtoken-types/tests/canonical_contract.rs"],
+        "recovery": ["code/crates/dtoken-types/tests/canonical_contract.rs"]
+      },
+      "real_evidence": ["docs/releases/v0.0.1/REQUIREMENTS.md", "docs/releases/v0.0.1/VERIFICATION.md"],
+      "gates": ["U0", "G1", "N10"],
+      "status": "implemented_unverified"
+    },
+    {
+      "id": "contract.node-action-preserve",
+      "source_capability": "Preserve NodeAction: byte-exact passthrough and protected content",
+      "owner_crate": "dtoken-types",
+      "dispatch_symbol": "dtoken_types::contract::NodeAction::Preserve",
+      "tests": {
+        "normal": ["code/crates/dtoken-types/tests/canonical_contract.rs"],
+        "error": ["code/crates/dtoken-types/tests/canonical_contract.rs"],
+        "recovery": ["code/crates/dtoken-types/tests/canonical_contract.rs"]
+      },
+      "real_evidence": ["docs/releases/v0.0.1/REQUIREMENTS.md", "docs/releases/v0.0.1/VERIFICATION.md"],
+      "gates": ["U0", "U2", "N10"],
+      "status": "implemented_unverified"
+    },
+    {
+      "id": "contract.node-action-reuse",
+      "source_capability": "Reuse NodeAction: map-signature and session cache reuse before planning",
+      "owner_crate": "dtoken-types",
+      "dispatch_symbol": "dtoken_types::contract::NodeAction::Reuse",
+      "tests": {
+        "normal": ["code/crates/dtoken-types/tests/canonical_contract.rs"],
+        "error": ["code/crates/dtoken-types/tests/canonical_contract.rs"],
+        "recovery": ["code/crates/dtoken-types/tests/canonical_contract.rs"]
+      },
+      "real_evidence": ["docs/releases/v0.0.1/REQUIREMENTS.md", "docs/releases/v0.0.1/VERIFICATION.md"],
+      "gates": ["U0", "U2", "N10"],
+      "status": "implemented_unverified"
+    },
+    {
+      "id": "contract.node-action-headroom-semantic",
+      "source_capability": "HeadroomSemantic NodeAction: lossless semantic codec selection per content kind",
+      "owner_crate": "dtoken-types",
+      "dispatch_symbol": "dtoken_types::contract::NodeAction::HeadroomSemantic",
+      "tests": {
+        "normal": ["code/crates/dtoken-types/tests/canonical_contract.rs"],
+        "error": ["code/crates/dtoken-types/tests/canonical_contract.rs"],
+        "recovery": ["code/crates/dtoken-types/tests/canonical_contract.rs"]
+      },
+      "real_evidence": ["docs/releases/v0.0.1/REQUIREMENTS.md", "docs/releases/v0.0.1/VERIFICATION.md"],
+      "gates": ["U0", "U2", "N10"],
+      "status": "implemented_unverified"
+    },
+    {
+      "id": "contract.node-action-rtk-command-output",
+      "source_capability": "RtkCommandOutput NodeAction: structured RTK command-output bucket boundary",
+      "owner_crate": "dtoken-types",
+      "dispatch_symbol": "dtoken_types::contract::NodeAction::RtkCommandOutput",
+      "tests": {
+        "normal": ["code/crates/dtoken-types/tests/canonical_contract.rs"],
+        "error": ["code/crates/dtoken-types/tests/canonical_contract.rs"],
+        "recovery": ["code/crates/dtoken-types/tests/canonical_contract.rs"]
+      },
+      "real_evidence": ["docs/releases/v0.0.1/REQUIREMENTS.md", "docs/releases/v0.0.1/VERIFICATION.md"],
+      "gates": ["U0", "U2", "N10"],
+      "status": "implemented_unverified"
+    },
+    {
+      "id": "contract.node-action-optical",
+      "source_capability": "Optical NodeAction: exact renderer path, shadow-only before attestation",
+      "owner_crate": "dtoken-types",
+      "dispatch_symbol": "dtoken_types::contract::NodeAction::Optical",
+      "tests": {
+        "normal": ["code/crates/dtoken-types/tests/canonical_contract.rs"],
+        "error": ["code/crates/dtoken-types/tests/canonical_contract.rs"],
+        "recovery": ["code/crates/dtoken-types/tests/canonical_contract.rs"]
+      },
+      "real_evidence": ["docs/releases/v0.0.1/REQUIREMENTS.md", "docs/releases/v0.0.1/VERIFICATION.md"],
+      "gates": ["U0", "U2", "N10"],
+      "status": "implemented_unverified"
+    },
+    {
+      "id": "contract.node-plan",
+      "source_capability": "NodePlan canonical contract: ordered nodes, unique ids, derived plan digest",
+      "owner_crate": "dtoken-types",
+      "dispatch_symbol": "dtoken_types::contract::NodePlan::new",
+      "tests": {
+        "normal": ["code/crates/dtoken-types/tests/canonical_contract.rs"],
+        "error": ["code/crates/dtoken-types/tests/canonical_contract.rs"],
+        "recovery": ["code/crates/dtoken-types/tests/canonical_contract.rs"]
+      },
+      "real_evidence": ["docs/releases/v0.0.1/REQUIREMENTS.md", "docs/releases/v0.0.1/VERIFICATION.md"],
+      "gates": ["U0", "G1", "N10"],
+      "status": "implemented_unverified"
+    },
+    {
+      "id": "contract.stage-artifact",
+      "source_capability": "StageArtifact canonical contract: per-stage derived body digest and transform ids",
+      "owner_crate": "dtoken-types",
+      "dispatch_symbol": "dtoken_types::contract::StageArtifact::new",
+      "tests": {
+        "normal": ["code/crates/dtoken-types/tests/canonical_contract.rs"],
+        "error": ["code/crates/dtoken-types/tests/canonical_contract.rs"],
+        "recovery": ["code/crates/dtoken-types/tests/canonical_contract.rs"]
+      },
+      "real_evidence": ["docs/releases/v0.0.1/REQUIREMENTS.md", "docs/releases/v0.0.1/VERIFICATION.md"],
+      "gates": ["U0", "G1", "N10"],
+      "status": "implemented_unverified"
+    },
+    {
+      "id": "contract.optimization-manifest",
+      "source_capability": "OptimizationManifest canonical contract: request/plan/stages/policy/buckets with self-excluding verifiable digest",
+      "owner_crate": "dtoken-types",
+      "dispatch_symbol": "dtoken_types::contract::OptimizationManifest::new",
+      "tests": {
+        "normal": ["code/crates/dtoken-types/tests/canonical_contract.rs"],
+        "error": ["code/crates/dtoken-types/tests/canonical_contract.rs"],
+        "recovery": ["code/crates/dtoken-types/tests/canonical_contract.rs"]
+      },
+      "real_evidence": ["docs/releases/v0.0.1/REQUIREMENTS.md", "docs/releases/v0.0.1/VERIFICATION.md"],
+      "gates": ["U0", "G1", "N10"],
+      "status": "implemented_unverified"
+    },
+    {
+      "id": "contract.safety-policy-default",
+      "source_capability": "Global safety policy default is safe_lossless",
+      "owner_crate": "dtoken-types",
+      "dispatch_symbol": "dtoken_types::contract::SafetyPolicy::default",
+      "tests": {
+        "normal": ["code/crates/dtoken-types/tests/canonical_contract.rs"],
+        "error": ["code/crates/dtoken-types/tests/canonical_contract.rs"],
+        "recovery": ["code/crates/dtoken-types/tests/canonical_contract.rs"]
+      },
+      "real_evidence": ["docs/releases/v0.0.1/REQUIREMENTS.md", "docs/releases/v0.0.1/VERIFICATION.md"],
+      "gates": ["U0", "G1", "N6"],
+      "status": "implemented_unverified"
+    },
+    {
+      "id": "contract.safety-policy-enhanced",
+      "source_capability": "Enhanced safety policy requires explicit confirmation revision",
+      "owner_crate": "dtoken-types",
+      "dispatch_symbol": "dtoken_types::contract::SafetyPolicy::enhanced",
+      "tests": {
+        "normal": ["code/crates/dtoken-types/tests/canonical_contract.rs"],
+        "error": ["code/crates/dtoken-types/tests/canonical_contract.rs"],
+        "recovery": ["code/crates/dtoken-types/tests/canonical_contract.rs"]
+      },
+      "real_evidence": ["docs/releases/v0.0.1/REQUIREMENTS.md", "docs/releases/v0.0.1/VERIFICATION.md"],
+      "gates": ["U0", "G1", "N6"],
+      "status": "implemented_unverified"
+    },
+    {
+      "id": "contract.safety-policy-lossy",
+      "source_capability": "Lossy safety policy requires explicit confirmation revision",
+      "owner_crate": "dtoken-types",
+      "dispatch_symbol": "dtoken_types::contract::SafetyPolicy::lossy",
+      "tests": {
+        "normal": ["code/crates/dtoken-types/tests/canonical_contract.rs"],
+        "error": ["code/crates/dtoken-types/tests/canonical_contract.rs"],
+        "recovery": ["code/crates/dtoken-types/tests/canonical_contract.rs"]
+      },
+      "real_evidence": ["docs/releases/v0.0.1/REQUIREMENTS.md", "docs/releases/v0.0.1/VERIFICATION.md"],
+      "gates": ["U0", "G1", "N6"],
+      "status": "implemented_unverified"
+    },
+    {
+      "id": "contract.accounting-bucket-compression",
+      "source_capability": "Compression accounting bucket (independent dimension, unknown stays None)",
+      "owner_crate": "dtoken-types",
+      "dispatch_symbol": "dtoken_types::contract::AccountingBuckets",
+      "tests": {
+        "normal": ["code/crates/dtoken-types/tests/canonical_contract.rs"],
+        "error": ["code/crates/dtoken-types/tests/canonical_contract.rs"],
+        "recovery": ["code/crates/dtoken-types/tests/canonical_contract.rs"]
+      },
+      "real_evidence": ["docs/releases/v0.0.1/REQUIREMENTS.md", "docs/releases/v0.0.1/VERIFICATION.md"],
+      "gates": ["U0", "G1", "N1"],
+      "status": "implemented_unverified"
+    },
+    {
+      "id": "contract.accounting-bucket-command-output",
+      "source_capability": "Command-output accounting bucket (independent dimension, unknown stays None)",
+      "owner_crate": "dtoken-types",
+      "dispatch_symbol": "dtoken_types::contract::AccountingBuckets",
+      "tests": {
+        "normal": ["code/crates/dtoken-types/tests/canonical_contract.rs"],
+        "error": ["code/crates/dtoken-types/tests/canonical_contract.rs"],
+        "recovery": ["code/crates/dtoken-types/tests/canonical_contract.rs"]
+      },
+      "real_evidence": ["docs/releases/v0.0.1/REQUIREMENTS.md", "docs/releases/v0.0.1/VERIFICATION.md"],
+      "gates": ["U0", "G1", "N1"],
+      "status": "implemented_unverified"
+    },
+    {
+      "id": "contract.accounting-bucket-provider-cache",
+      "source_capability": "Provider-cache accounting bucket (independent dimension, unknown stays None)",
+      "owner_crate": "dtoken-types",
+      "dispatch_symbol": "dtoken_types::contract::AccountingBuckets",
+      "tests": {
+        "normal": ["code/crates/dtoken-types/tests/canonical_contract.rs"],
+        "error": ["code/crates/dtoken-types/tests/canonical_contract.rs"],
+        "recovery": ["code/crates/dtoken-types/tests/canonical_contract.rs"]
+      },
+      "real_evidence": ["docs/releases/v0.0.1/REQUIREMENTS.md", "docs/releases/v0.0.1/VERIFICATION.md"],
+      "gates": ["U0", "G1", "N1"],
+      "status": "implemented_unverified"
+    },
+    {
+      "id": "contract.accounting-bucket-relay",
+      "source_capability": "Relay accounting bucket (independent dimension, unknown stays None)",
+      "owner_crate": "dtoken-types",
+      "dispatch_symbol": "dtoken_types::contract::AccountingBuckets",
+      "tests": {
+        "normal": ["code/crates/dtoken-types/tests/canonical_contract.rs"],
+        "error": ["code/crates/dtoken-types/tests/canonical_contract.rs"],
+        "recovery": ["code/crates/dtoken-types/tests/canonical_contract.rs"]
+      },
+      "real_evidence": ["docs/releases/v0.0.1/REQUIREMENTS.md", "docs/releases/v0.0.1/VERIFICATION.md"],
+      "gates": ["U0", "G1", "N1"],
+      "status": "implemented_unverified"
+    },
+    {
+      "id": "types.request-scope",
+      "source_capability": "RequestScope identity evidence: agent/project/session/instance with known-or-unknown sources, never fabricated defaults",
+      "owner_crate": "dtoken-types",
+      "dispatch_symbol": "dtoken_types::RequestScope::new",
+      "tests": {
+        "normal": ["code/crates/dtoken-types/tests/canonical_contract.rs"],
+        "error": ["code/crates/dtoken-types/tests/canonical_contract.rs"],
+        "recovery": ["code/crates/dtoken-types/tests/canonical_contract.rs"]
+      },
+      "real_evidence": ["docs/releases/v0.0.1/REQUIREMENTS.md", "docs/releases/v0.0.1/VERIFICATION.md"],
+      "gates": ["U0", "G1", "N10"],
+      "status": "implemented_unverified"
+    },
+    {
+      "id": "types.evidence-value",
+      "source_capability": "EvidenceValue known/unknown wrapper: unknown stays explicit with reason code, never 0/empty",
+      "owner_crate": "dtoken-types",
+      "dispatch_symbol": "dtoken_types::EvidenceValue::known",
+      "tests": {
+        "normal": ["code/crates/dtoken-types/tests/canonical_contract.rs"],
+        "error": ["code/crates/dtoken-types/tests/canonical_contract.rs"],
+        "recovery": ["code/crates/dtoken-types/tests/canonical_contract.rs"]
+      },
+      "real_evidence": ["docs/releases/v0.0.1/REQUIREMENTS.md", "docs/releases/v0.0.1/VERIFICATION.md"],
+      "gates": ["U0", "G1", "N10"],
+      "status": "implemented_unverified"
+    },
+    {
+      "id": "types.provider-cache-policy",
+      "source_capability": "ProviderCachePolicy: TTL/strategy with is_well_formed validation",
+      "owner_crate": "dtoken-types",
+      "dispatch_symbol": "dtoken_types::ProviderCachePolicy::is_well_formed",
+      "tests": {
+        "normal": ["code/crates/dtoken-types/tests/canonical_contract.rs"],
+        "error": ["code/crates/dtoken-types/tests/canonical_contract.rs"],
+        "recovery": ["code/crates/dtoken-types/tests/canonical_contract.rs"]
+      },
+      "real_evidence": ["docs/releases/v0.0.1/REQUIREMENTS.md", "docs/releases/v0.0.1/VERIFICATION.md"],
+      "gates": ["G2", "U1", "N10"],
+      "status": "implemented_unverified"
+    },
+    {
+      "id": "types.provider-cache-observation",
+      "source_capability": "ProviderCacheObservation: validated cache observations with strict non-empty identity",
+      "owner_crate": "dtoken-types",
+      "dispatch_symbol": "dtoken_types::ProviderCacheObservation::new",
+      "tests": {
+        "normal": ["code/crates/dtoken-types/tests/canonical_contract.rs"],
+        "error": ["code/crates/dtoken-types/tests/canonical_contract.rs"],
+        "recovery": ["code/crates/dtoken-types/tests/canonical_contract.rs"]
+      },
+      "real_evidence": ["docs/releases/v0.0.1/REQUIREMENTS.md", "docs/releases/v0.0.1/VERIFICATION.md"],
+      "gates": ["G2", "U1", "N10"],
+      "status": "implemented_unverified"
+    },
+    {
+      "id": "types.capability-evidence",
+      "source_capability": "CapabilityEvidence: available/unavailable state machine with bounded reason codes",
+      "owner_crate": "dtoken-types",
+      "dispatch_symbol": "dtoken_types::CapabilityEvidence::new",
+      "tests": {
+        "normal": ["code/crates/dtoken-types/tests/canonical_contract.rs"],
+        "error": ["code/crates/dtoken-types/tests/canonical_contract.rs"],
+        "recovery": ["code/crates/dtoken-types/tests/canonical_contract.rs"]
+      },
+      "real_evidence": ["docs/releases/v0.0.1/REQUIREMENTS.md", "docs/releases/v0.0.1/VERIFICATION.md"],
+      "gates": ["U0", "G1", "N10"],
+      "status": "implemented_unverified"
+    },
+    {
+      "id": "types.capability-registry-snapshot",
+      "source_capability": "CapabilityRegistrySnapshot: rejects duplicate capability ids",
+      "owner_crate": "dtoken-types",
+      "dispatch_symbol": "dtoken_types::CapabilityRegistrySnapshot::new",
+      "tests": {
+        "normal": ["code/crates/dtoken-types/tests/canonical_contract.rs"],
+        "error": ["code/crates/dtoken-types/tests/canonical_contract.rs"],
+        "recovery": ["code/crates/dtoken-types/tests/canonical_contract.rs"]
+      },
+      "real_evidence": ["docs/releases/v0.0.1/REQUIREMENTS.md", "docs/releases/v0.0.1/VERIFICATION.md"],
+      "gates": ["U1", "G0", "N10"],
+      "status": "implemented_unverified"
+    },
+    {
+      "id": "types.usage-comparison",
+      "source_capability": "UsageComparison: signed savings from baseline/candidate measurements with evidence kind",
+      "owner_crate": "dtoken-types",
+      "dispatch_symbol": "dtoken_types::UsageComparison::from_measurements",
+      "tests": {
+        "normal": ["code/crates/dtoken-types/tests/hybrid_accounting.rs"],
+        "error": ["code/crates/dtoken-types/tests/hybrid_accounting.rs"],
+        "recovery": ["code/crates/dtoken-types/tests/hybrid_accounting.rs"]
+      },
+      "real_evidence": ["docs/releases/v0.0.1/REQUIREMENTS.md", "docs/releases/v0.0.1/VERIFICATION.md"],
+      "gates": ["N1", "U6", "N10"],
+      "status": "implemented_unverified"
+    },
+    {
+      "id": "types.hybrid-context-accounting",
+      "source_capability": "HybridContextAccounting: disposition/sent-payload/attribution validation, claimable only from actual evidence",
+      "owner_crate": "dtoken-types",
+      "dispatch_symbol": "dtoken_types::HybridContextAccounting::validate",
+      "tests": {
+        "normal": ["code/crates/dtoken-types/tests/hybrid_accounting.rs"],
+        "error": ["code/crates/dtoken-types/tests/hybrid_accounting.rs"],
+        "recovery": ["code/crates/dtoken-types/tests/hybrid_accounting.rs"]
+      },
+      "real_evidence": ["docs/releases/v0.0.1/REQUIREMENTS.md", "docs/releases/v0.0.1/VERIFICATION.md"],
+      "gates": ["N1", "U6", "N10"],
+      "status": "implemented_unverified"
+    },
+    {
+      "id": "types.request-log",
+      "source_capability": "RequestLog: per-request record with provider usage fields and serde-backward-compatible additions",
+      "owner_crate": "dtoken-types",
+      "dispatch_symbol": "dtoken_types::RequestLog",
+      "tests": {
+        "normal": ["code/crates/dtoken-types/tests/canonical_contract.rs"],
+        "error": ["code/crates/dtoken-types/tests/canonical_contract.rs"],
+        "recovery": ["code/crates/dtoken-types/tests/canonical_contract.rs"]
+      },
+      "real_evidence": ["docs/releases/v0.0.1/REQUIREMENTS.md", "docs/releases/v0.0.1/VERIFICATION.md"],
+      "gates": ["N1", "G6", "N10"],
+      "status": "implemented_unverified"
+    },
+    {
+      "id": "types.optimization-receipt",
+      "source_capability": "OptimizationReceipt: minimal PRD projection with Local/Provider/claimable separation and redaction",
+      "owner_crate": "dtoken-types",
+      "dispatch_symbol": "dtoken_types::OptimizationReceipt::from_request_log",
+      "tests": {
+        "normal": ["code/crates/dtoken-types/tests/receipt_projection.rs"],
+        "error": ["code/crates/dtoken-types/tests/receipt_projection.rs"],
+        "recovery": ["code/crates/dtoken-types/tests/receipt_projection.rs"]
+      },
+      "real_evidence": ["docs/releases/v0.0.1/REQUIREMENTS.md", "docs/releases/v0.0.1/VERIFICATION.md"],
+      "gates": ["N1", "G6", "N10"],
+      "status": "implemented_unverified"
+    },
+    {
+      "id": "optical.global-policy",
+      "source_capability": "OpticalGlobalPolicy: shadow-only default with explicit exactness classes",
+      "owner_crate": "dtoken-types",
+      "dispatch_symbol": "dtoken_types::OpticalGlobalPolicy",
+      "tests": {
+        "normal": ["code/crates/dtoken-types/tests/optical_types.rs"],
+        "error": ["code/crates/dtoken-types/tests/optical_types.rs"],
+        "recovery": ["code/crates/dtoken-types/tests/optical_types.rs"]
+      },
+      "real_evidence": ["docs/releases/v0.0.1/REQUIREMENTS.md", "docs/releases/v0.0.1/VERIFICATION.md"],
+      "gates": ["U7", "U1", "N10"],
+      "status": "implemented_unverified"
+    },
+    {
+      "id": "optical.capability-snapshot",
+      "source_capability": "OpticalCapabilitySnapshot: schema-versioned capability state machine",
+      "owner_crate": "dtoken-types",
+      "dispatch_symbol": "dtoken_types::OpticalCapabilitySnapshot",
+      "tests": {
+        "normal": ["code/crates/dtoken-types/tests/optical_types.rs"],
+        "error": ["code/crates/dtoken-types/tests/optical_types.rs"],
+        "recovery": ["code/crates/dtoken-types/tests/optical_types.rs"]
+      },
+      "real_evidence": ["docs/releases/v0.0.1/REQUIREMENTS.md", "docs/releases/v0.0.1/VERIFICATION.md"],
+      "gates": ["U7", "U1", "N10"],
+      "status": "implemented_unverified"
+    },
+    {
+      "id": "optical.attestation",
+      "source_capability": "OpticalCapabilityAttestation: exact route/provider/model/API + digests, lifecycle expiry",
+      "owner_crate": "dtoken-types",
+      "dispatch_symbol": "dtoken_types::OpticalCapabilityAttestation",
+      "tests": {
+        "normal": ["code/crates/dtoken-types/tests/optical_types.rs"],
+        "error": ["code/crates/dtoken-types/tests/optical_types.rs"],
+        "recovery": ["code/crates/dtoken-types/tests/optical_types.rs"]
+      },
+      "real_evidence": ["docs/releases/v0.0.1/REQUIREMENTS.md", "docs/releases/v0.0.1/VERIFICATION.md"],
+      "gates": ["U7", "U1", "N10"],
+      "status": "implemented_unverified"
+    },
+    {
+      "id": "optical.eval-artifact",
+      "source_capability": "OpticalEvalArtifact: quality gate derived from measurements, never a passed label",
+      "owner_crate": "dtoken-types",
+      "dispatch_symbol": "dtoken_types::OpticalEvalArtifact::passes_derived_quality_gate",
+      "tests": {
+        "normal": ["code/crates/dtoken-types/tests/optical_types.rs"],
+        "error": ["code/crates/dtoken-types/tests/optical_types.rs"],
+        "recovery": ["code/crates/dtoken-types/tests/optical_types.rs"]
+      },
+      "real_evidence": ["docs/releases/v0.0.1/REQUIREMENTS.md", "docs/releases/v0.0.1/VERIFICATION.md"],
+      "gates": ["U7", "U1", "N10"],
+      "status": "implemented_unverified"
+    },
+    {
+      "id": "optical.gate-decision",
+      "source_capability": "OpticalGateDecision: per-request exactness gate with shadow/active state",
+      "owner_crate": "dtoken-types",
+      "dispatch_symbol": "dtoken_types::OpticalGateDecision",
+      "tests": {
+        "normal": ["code/crates/dtoken-types/tests/optical_types.rs"],
+        "error": ["code/crates/dtoken-types/tests/optical_types.rs"],
+        "recovery": ["code/crates/dtoken-types/tests/optical_types.rs"]
+      },
+      "real_evidence": ["docs/releases/v0.0.1/REQUIREMENTS.md", "docs/releases/v0.0.1/VERIFICATION.md"],
+      "gates": ["U7", "U1", "N10"],
+      "status": "implemented_unverified"
+    },
+    {
+      "id": "optical.bucket-summary",
+      "source_capability": "OpticalBucketSummary: history bucket classification for render boundaries",
+      "owner_crate": "dtoken-types",
+      "dispatch_symbol": "dtoken_types::OpticalBucketSummary",
+      "tests": {
+        "normal": ["code/crates/dtoken-types/tests/optical_types.rs"],
+        "error": ["code/crates/dtoken-types/tests/optical_types.rs"],
+        "recovery": ["code/crates/dtoken-types/tests/optical_types.rs"]
+      },
+      "real_evidence": ["docs/releases/v0.0.1/REQUIREMENTS.md", "docs/releases/v0.0.1/VERIFICATION.md"],
+      "gates": ["U7", "U1", "N10"],
+      "status": "implemented_unverified"
+    },
+    {
+      "id": "optical.route-policy",
+      "source_capability": "RouteOpticalPolicy: per-route optical policy with default shadow",
+      "owner_crate": "dtoken-types",
+      "dispatch_symbol": "dtoken_types::RouteOpticalPolicy",
+      "tests": {
+        "normal": ["code/crates/dtoken-types/tests/optical_types.rs"],
+        "error": ["code/crates/dtoken-types/tests/optical_types.rs"],
+        "recovery": ["code/crates/dtoken-types/tests/optical_types.rs"]
+      },
+      "real_evidence": ["docs/releases/v0.0.1/REQUIREMENTS.md", "docs/releases/v0.0.1/VERIFICATION.md"],
+      "gates": ["U7", "U1", "N10"],
+      "status": "implemented_unverified"
+    },
+    {
+      "id": "optical.runtime-config",
+      "source_capability": "OpticalRuntimeConfig: schema-versioned runtime configuration for shadow preview",
+      "owner_crate": "dtoken-types",
+      "dispatch_symbol": "dtoken_types::OpticalRuntimeConfig",
+      "tests": {
+        "normal": ["code/crates/dtoken-types/tests/optical_types.rs"],
+        "error": ["code/crates/dtoken-types/tests/optical_types.rs"],
+        "recovery": ["code/crates/dtoken-types/tests/optical_types.rs"]
+      },
+      "real_evidence": ["docs/releases/v0.0.1/REQUIREMENTS.md", "docs/releases/v0.0.1/VERIFICATION.md"],
+      "gates": ["U7", "U1", "N10"],
+      "status": "implemented_unverified"
+    },
+    {
+      "id": "router.decide",
+      "source_capability": "Router::decide: explicit instance+protocol route selection, ambiguous routes fail closed",
+      "owner_crate": "dtoken-router",
+      "dispatch_symbol": "dtoken_router::Router::decide",
+      "tests": {
+        "normal": ["code/crates/dtoken-router/tests/route_decision.rs"],
+        "error": ["code/crates/dtoken-router/tests/route_decision.rs"],
+        "recovery": ["code/crates/dtoken-router/tests/route_decision.rs"]
+      },
+      "real_evidence": ["docs/releases/v0.0.1/REQUIREMENTS.md", "docs/releases/v0.0.1/VERIFICATION.md"],
+      "gates": ["U0", "G1", "N10"],
+      "status": "implemented_unverified"
+    },
+    {
+      "id": "router.ambiguous-reject",
+      "source_capability": "Ambiguous route rejection: never silently picks the first matching route",
+      "owner_crate": "dtoken-router",
+      "dispatch_symbol": "dtoken_router::Router::decide",
+      "tests": {
+        "normal": ["code/crates/dtoken-router/tests/route_decision.rs"],
+        "error": ["code/crates/dtoken-router/tests/route_decision.rs"],
+        "recovery": ["code/crates/dtoken-router/tests/route_decision.rs"]
+      },
+      "real_evidence": ["docs/releases/v0.0.1/REQUIREMENTS.md", "docs/releases/v0.0.1/VERIFICATION.md"],
+      "gates": ["U0", "G1", "N10"],
+      "status": "implemented_unverified"
+    },
+    {
+      "id": "router.route-decision-digest",
+      "source_capability": "RouteDecision stable digest: canonical sorted-key JSON, any field change changes the digest",
+      "owner_crate": "dtoken-types",
+      "dispatch_symbol": "dtoken_types::RouteDecision::stable_digest",
+      "tests": {
+        "normal": ["code/crates/dtoken-types/tests/route_decision_digest.rs"],
+        "error": ["code/crates/dtoken-types/tests/route_decision_digest.rs"],
+        "recovery": ["code/crates/dtoken-types/tests/route_decision_digest.rs"]
+      },
+      "real_evidence": ["docs/releases/v0.0.1/REQUIREMENTS.md", "docs/releases/v0.0.1/VERIFICATION.md"],
+      "gates": ["U0", "G1", "N10"],
+      "status": "implemented_unverified"
+    },
+    {
+      "id": "router.no-engine-chooser",
+      "source_capability": "No engine chooser: stage selection is decided by the canonical planner, never by callers/adapters",
+      "owner_crate": "dtoken-router",
+      "dispatch_symbol": "dtoken_router::Router::decide",
+      "tests": {
+        "normal": ["code/crates/dtoken-types/tests/canonical_contract.rs"],
+        "error": ["code/crates/dtoken-types/tests/canonical_contract.rs"],
+        "recovery": ["code/crates/dtoken-types/tests/canonical_contract.rs"]
+      },
+      "real_evidence": ["docs/releases/v0.0.1/REQUIREMENTS.md", "docs/releases/v0.0.1/VERIFICATION.md"],
+      "gates": ["U0", "G1", "N10"],
+      "status": "implemented_unverified"
+    },
+    {
+      "id": "pipeline.context-envelope",
+      "source_capability": "ContextEnvelope: bounded typed pipeline ingress, rejects empty and oversized input",
+      "owner_crate": "dtoken-runtime-pipeline",
+      "dispatch_symbol": "dtoken_runtime_pipeline::ContextEnvelope::new",
+      "tests": {
+        "normal": ["code/crates/dtoken-runtime-pipeline/tests/lifecycle.rs"],
+        "error": ["code/crates/dtoken-runtime-pipeline/tests/lifecycle.rs"],
+        "recovery": ["code/crates/dtoken-runtime-pipeline/tests/lifecycle.rs"]
+      },
+      "real_evidence": ["docs/releases/v0.0.1/REQUIREMENTS.md", "docs/releases/v0.0.1/VERIFICATION.md"],
+      "gates": ["U0", "G1", "N10"],
+      "status": "implemented_unverified"
+    },
+    {
+      "id": "pipeline.prepared-request",
+      "source_capability": "PreparedRequest: baseline digest computed from ingress, candidate source digest must match",
+      "owner_crate": "dtoken-runtime-pipeline",
+      "dispatch_symbol": "dtoken_runtime_pipeline::PipelineInput::prepare",
+      "tests": {
+        "normal": ["code/crates/dtoken-runtime-pipeline/tests/lifecycle.rs"],
+        "error": ["code/crates/dtoken-runtime-pipeline/tests/lifecycle.rs"],
+        "recovery": ["code/crates/dtoken-runtime-pipeline/tests/lifecycle.rs"]
+      },
+      "real_evidence": ["docs/releases/v0.0.1/REQUIREMENTS.md", "docs/releases/v0.0.1/VERIFICATION.md"],
+      "gates": ["U0", "G1", "N10"],
+      "status": "implemented_unverified"
+    },
+    {
+      "id": "pipeline.transform-artifact",
+      "source_capability": "TransformArtifact: source digest + candidate + ordered transform ids, non-empty validation",
+      "owner_crate": "dtoken-runtime-pipeline",
+      "dispatch_symbol": "dtoken_runtime_pipeline::TransformArtifact::new",
+      "tests": {
+        "normal": ["code/crates/dtoken-runtime-pipeline/tests/lifecycle.rs"],
+        "error": ["code/crates/dtoken-runtime-pipeline/tests/lifecycle.rs"],
+        "recovery": ["code/crates/dtoken-runtime-pipeline/tests/lifecycle.rs"]
+      },
+      "real_evidence": ["docs/releases/v0.0.1/REQUIREMENTS.md", "docs/releases/v0.0.1/VERIFICATION.md"],
+      "gates": ["U0", "G1", "N10"],
+      "status": "implemented_unverified"
+    },
+    {
+      "id": "pipeline.ready-to-send",
+      "source_capability": "ReadyToSend type-state: optimized payload only reachable after validation + durable recovery receipt",
+      "owner_crate": "dtoken-runtime-pipeline",
+      "dispatch_symbol": "dtoken_runtime_pipeline::ValidatedRequest::into_ready_to_send",
+      "tests": {
+        "normal": ["code/crates/dtoken-runtime-pipeline/tests/lifecycle.rs"],
+        "error": ["code/crates/dtoken-runtime-pipeline/tests/lifecycle.rs"],
+        "recovery": ["code/crates/dtoken-runtime-pipeline/tests/lifecycle.rs"]
+      },
+      "real_evidence": ["docs/releases/v0.0.1/REQUIREMENTS.md", "docs/releases/v0.0.1/VERIFICATION.md"],
+      "gates": ["U0", "U3", "N10"],
+      "status": "implemented_unverified"
+    },
+    {
+      "id": "pipeline.send-commit-receipt",
+      "source_capability": "SendCommitReceipt: transport-observable commit state, sealed constructor, forged receipts rejected",
+      "owner_crate": "dtoken-runtime-pipeline",
+      "dispatch_symbol": "dtoken_runtime_pipeline::SendCommitReceipt::mint",
+      "tests": {
+        "normal": ["code/crates/dtoken-runtime-pipeline/tests/sealed_receipts.rs"],
+        "error": ["code/crates/dtoken-runtime-pipeline/tests/sealed_receipts.rs"],
+        "recovery": ["code/crates/dtoken-runtime-pipeline/tests/sealed_receipts.rs"]
+      },
+      "real_evidence": ["docs/releases/v0.0.1/REQUIREMENTS.md", "docs/releases/v0.0.1/VERIFICATION.md"],
+      "gates": ["U0", "U3", "N10"],
+      "status": "implemented_unverified"
+    },
+    {
+      "id": "receipt.validation",
+      "source_capability": "ValidationReceipt: artifact-derived, verify() recomputes digest, matches_artifact cross-checks bytes",
+      "owner_crate": "dtoken-runtime-pipeline",
+      "dispatch_symbol": "dtoken_runtime_pipeline::ValidationReceipt::mint",
+      "tests": {
+        "normal": ["code/crates/dtoken-runtime-pipeline/tests/sealed_receipts.rs"],
+        "error": ["code/crates/dtoken-runtime-pipeline/tests/sealed_receipts.rs"],
+        "recovery": ["code/crates/dtoken-runtime-pipeline/tests/sealed_receipts.rs"]
+      },
+      "real_evidence": ["docs/releases/v0.0.1/REQUIREMENTS.md", "docs/releases/v0.0.1/VERIFICATION.md"],
+      "gates": ["U0", "U3", "N10"],
+      "status": "implemented_unverified"
+    },
+    {
+      "id": "receipt.recovery",
+      "source_capability": "RecoveryReceipt: request/source/decision-bound, wrong scope and expiry fail closed",
+      "owner_crate": "dtoken-runtime-pipeline",
+      "dispatch_symbol": "dtoken_runtime_pipeline::RecoveryReceipt::mint",
+      "tests": {
+        "normal": ["code/crates/dtoken-runtime-pipeline/tests/sealed_receipts.rs"],
+        "error": ["code/crates/dtoken-runtime-pipeline/tests/sealed_receipts.rs"],
+        "recovery": ["code/crates/dtoken-runtime-pipeline/tests/sealed_receipts.rs"]
+      },
+      "real_evidence": ["docs/releases/v0.0.1/REQUIREMENTS.md", "docs/releases/v0.0.1/VERIFICATION.md"],
+      "gates": ["U3", "G3", "N10"],
+      "status": "implemented_unverified"
+    },
+    {
+      "id": "receipt.send-commit",
+      "source_capability": "SendCommitReceipt: transport-observable, sealed mint path, verify rejects forged JSON",
+      "owner_crate": "dtoken-runtime-pipeline",
+      "dispatch_symbol": "dtoken_runtime_pipeline::SendCommitReceipt",
+      "tests": {
+        "normal": ["code/crates/dtoken-runtime-pipeline/tests/sealed_receipts.rs"],
+        "error": ["code/crates/dtoken-runtime-pipeline/tests/sealed_receipts.rs"],
+        "recovery": ["code/crates/dtoken-runtime-pipeline/tests/sealed_receipts.rs"]
+      },
+      "real_evidence": ["docs/releases/v0.0.1/REQUIREMENTS.md", "docs/releases/v0.0.1/VERIFICATION.md"],
+      "gates": ["U0", "U3", "N10"],
+      "status": "implemented_unverified"
+    },
+    {
+      "id": "engine.compress-resolved",
+      "source_capability": "CompressionEngine::compress_resolved: resolved-path compression with context/route binding",
+      "owner_crate": "dtoken-compress",
+      "dispatch_symbol": "dtoken_compress::CompressionEngine::compress_resolved",
+      "tests": {
+        "normal": ["code/crates/dtoken-compress/tests/hybrid_safe_baseline.rs"],
+        "error": ["code/crates/dtoken-compress/tests/hybrid_safe_baseline.rs"],
+        "recovery": ["code/crates/dtoken-compress/tests/hybrid_safe_baseline.rs"]
+      },
+      "real_evidence": ["docs/releases/v0.0.1/REQUIREMENTS.md", "docs/releases/v0.0.1/VERIFICATION.md"],
+      "gates": ["G2", "U2", "N10"],
+      "status": "implemented_unverified"
+    },
+    {
+      "id": "engine.compressor-registry",
+      "source_capability": "ProductionCompressorRegistry: exactly nine pinned codec descriptors, no third-party loading",
+      "owner_crate": "dtoken-compress",
+      "dispatch_symbol": "dtoken_compress::compressor_registry::production_registry_codec_ids",
+      "tests": {
+        "normal": ["code/crates/dtoken-compress/tests/hybrid_safe_baseline.rs"],
+        "error": ["code/crates/dtoken-compress/tests/hybrid_safe_baseline.rs"],
+        "recovery": ["code/crates/dtoken-compress/tests/hybrid_safe_baseline.rs"]
+      },
+      "real_evidence": ["docs/releases/v0.0.1/REQUIREMENTS.md", "docs/releases/v0.0.1/VERIFICATION.md"],
+      "gates": ["G2", "U1", "N10"],
+      "status": "implemented_unverified"
+    },
+    {
+      "id": "engine.content-router",
+      "source_capability": "Content router: deterministic codec selection per content kind with budget",
+      "owner_crate": "dtoken-compress",
+      "dispatch_symbol": "dtoken_compress::content_router::route_content_with_budget",
+      "tests": {
+        "normal": ["code/crates/dtoken-compress/tests/hybrid_safe_baseline.rs"],
+        "error": ["code/crates/dtoken-compress/tests/hybrid_safe_baseline.rs"],
+        "recovery": ["code/crates/dtoken-compress/tests/hybrid_safe_baseline.rs"]
+      },
+      "real_evidence": ["docs/releases/v0.0.1/REQUIREMENTS.md", "docs/releases/v0.0.1/VERIFICATION.md"],
+      "gates": ["G2", "U2", "N10"],
+      "status": "implemented_unverified"
+    },
+    {
+      "id": "engine.single-production-path",
+      "source_capability": "Single canonical production pipeline: no second bypass path; Native Responses must route through it",
+      "owner_crate": "dtoken-compress",
+      "dispatch_symbol": "dtoken_compress::CompressionEngine",
+      "tests": {
+        "normal": ["code/crates/dtoken-core-api/tests/surface_parity.rs"],
+        "error": ["code/crates/dtoken-core-api/tests/surface_parity.rs"],
+        "recovery": ["code/crates/dtoken-core-api/tests/surface_parity.rs"]
+      },
+      "real_evidence": ["docs/releases/v0.0.1/REQUIREMENTS.md", "docs/releases/v0.0.1/VERIFICATION.md"],
+      "gates": ["U0", "G4", "N10"],
+      "status": "blocked"
+    },
+    {
+      "id": "c1.route-lowering",
+      "source_capability": "Route lowering: RouteDecision as the single authority; three protocols parse/lower exactly once",
+      "owner_crate": "dtoken-router",
+      "dispatch_symbol": "dtoken_router::Router::decide",
+      "tests": {
+        "normal": ["code/crates/dtoken-router/tests/route_decision.rs"],
+        "error": ["code/crates/dtoken-router/tests/route_decision.rs"],
+        "recovery": ["code/crates/dtoken-router/tests/route_decision.rs"]
+      },
+      "real_evidence": ["docs/releases/v0.0.1/REQUIREMENTS.md", "docs/releases/v0.0.1/VERIFICATION.md"],
+      "gates": ["U0", "G1", "N10"],
+      "status": "blocked"
+    },
+    {
+      "id": "c1.single-dispatch-native-responses",
+      "source_capability": "Native Responses (/v1/responses) routed through the canonical pipeline with parity",
+      "owner_crate": "dtoken-core-api",
+      "dispatch_symbol": "dtoken_core_api::prepare_json_pipeline_payload",
+      "tests": {
+        "normal": ["code/crates/dtoken-core-api/tests/surface_parity.rs"],
+        "error": ["code/crates/dtoken-core-api/tests/surface_parity.rs"],
+        "recovery": ["code/crates/dtoken-core-api/tests/surface_parity.rs"]
+      },
+      "real_evidence": ["docs/releases/v0.0.1/REQUIREMENTS.md", "docs/releases/v0.0.1/VERIFICATION.md"],
+      "gates": ["U0", "G4", "N10"],
+      "status": "blocked"
+    },
+    {
+      "id": "c2.cache-live-zone",
+      "source_capability": "Cache live-zone: stable prefix / live-zone / cache identity / TTL / strategy; stale or mismatch is a miss",
+      "owner_crate": "dtoken-compress",
+      "dispatch_symbol": "dtoken_compress::context_pipeline::plan_context",
+      "tests": {
+        "normal": ["code/crates/dtoken-compress/tests/hybrid_safe_baseline.rs"],
+        "error": ["code/crates/dtoken-compress/tests/hybrid_safe_baseline.rs"],
+        "recovery": ["code/crates/dtoken-compress/tests/hybrid_safe_baseline.rs"]
+      },
+      "real_evidence": ["docs/releases/v0.0.1/REQUIREMENTS.md", "docs/releases/v0.0.1/VERIFICATION.md"],
+      "gates": ["G2", "U2", "N10"],
+      "status": "blocked"
+    },
+    {
+      "id": "c2.ccr-memory-learning",
+      "source_capability": "CCR tool retrieve/crash, memory/learning/output/holdout residual matrix",
+      "owner_crate": "dtoken-core-api",
+      "dispatch_symbol": "dtoken_core_api::CcrStoreReceipt",
+      "tests": {
+        "normal": ["code/crates/dtoken-core-api/tests/compress_gateway.rs"],
+        "error": ["code/crates/dtoken-core-api/tests/compress_gateway.rs"],
+        "recovery": ["code/crates/dtoken-core-api/tests/compress_gateway.rs"]
+      },
+      "real_evidence": ["docs/releases/v0.0.1/REQUIREMENTS.md", "docs/releases/v0.0.1/VERIFICATION.md"],
+      "gates": ["G3", "U3", "N10"],
+      "status": "blocked"
+    },
+    {
+      "id": "c3.context-bus",
+      "source_capability": "Context Bus: shared Rust-owned domain for cache/reuse policy (not copied into other crates)",
+      "owner_crate": "dtoken-context-store",
+      "dispatch_symbol": "dtoken_context_store::SharedContext",
+      "tests": {
+        "normal": ["code/crates/dtoken-context-store/tests/shared_context.rs"],
+        "error": ["code/crates/dtoken-context-store/tests/shared_context.rs"],
+        "recovery": ["code/crates/dtoken-context-store/tests/shared_context.rs"]
+      },
+      "real_evidence": ["docs/releases/v0.0.1/REQUIREMENTS.md", "docs/releases/v0.0.1/VERIFICATION.md"],
+      "gates": ["G1", "U2", "N10"],
+      "status": "blocked"
+    },
+    {
+      "id": "c3.session-cache",
+      "source_capability": "Session Cache: map/signature/self-hit/scope/size state machine",
+      "owner_crate": "dtoken-context-store",
+      "dispatch_symbol": "dtoken_context_store::SessionCache",
+      "tests": {
+        "normal": ["code/crates/dtoken-context-store/tests/shared_context.rs"],
+        "error": ["code/crates/dtoken-context-store/tests/shared_context.rs"],
+        "recovery": ["code/crates/dtoken-context-store/tests/shared_context.rs"]
+      },
+      "real_evidence": ["docs/releases/v0.0.1/REQUIREMENTS.md", "docs/releases/v0.0.1/VERIFICATION.md"],
+      "gates": ["G1", "U2", "N10"],
+      "status": "blocked"
+    },
+    {
+      "id": "c3.context-relay",
+      "source_capability": "Context Relay: cross-agent query-aware retrieval with independent relay accounting",
+      "owner_crate": "dtoken-context-store",
+      "dispatch_symbol": "dtoken_context_store::ContextRelay",
+      "tests": {
+        "normal": ["code/crates/dtoken-context-store/tests/shared_context.rs"],
+        "error": ["code/crates/dtoken-context-store/tests/shared_context.rs"],
+        "recovery": ["code/crates/dtoken-context-store/tests/shared_context.rs"]
+      },
+      "real_evidence": ["docs/releases/v0.0.1/REQUIREMENTS.md", "docs/releases/v0.0.1/VERIFICATION.md"],
+      "gates": ["G5", "U2", "N10"],
+      "status": "blocked"
+    },
+    {
+      "id": "c3.query-aware-retrieval",
+      "source_capability": "Query-aware retrieval: query-derived reuse without cross-project pollution",
+      "owner_crate": "dtoken-context-store",
+      "dispatch_symbol": "dtoken_context_store::retrieve",
+      "tests": {
+        "normal": ["code/crates/dtoken-context-store/tests/shared_context.rs"],
+        "error": ["code/crates/dtoken-context-store/tests/shared_context.rs"],
+        "recovery": ["code/crates/dtoken-context-store/tests/shared_context.rs"]
+      },
+      "real_evidence": ["docs/releases/v0.0.1/REQUIREMENTS.md", "docs/releases/v0.0.1/VERIFICATION.md"],
+      "gates": ["G5", "U2", "N10"],
+      "status": "blocked"
+    },
+    {
+      "id": "c3.recovery-pointer-manifest",
+      "source_capability": "Recovery Pointer/Manifest: request/source/decision-bound recovery identity",
+      "owner_crate": "dtoken-runtime-pipeline",
+      "dispatch_symbol": "dtoken_runtime_pipeline::RecoveryReceipt",
+      "tests": {
+        "normal": ["code/crates/dtoken-runtime-pipeline/tests/sealed_receipts.rs"],
+        "error": ["code/crates/dtoken-runtime-pipeline/tests/sealed_receipts.rs"],
+        "recovery": ["code/crates/dtoken-runtime-pipeline/tests/sealed_receipts.rs"]
+      },
+      "real_evidence": ["docs/releases/v0.0.1/REQUIREMENTS.md", "docs/releases/v0.0.1/VERIFICATION.md"],
+      "gates": ["U3", "G3", "N10"],
+      "status": "blocked"
+    },
+    {
+      "id": "c3.stale-superseded",
+      "source_capability": "Stale/Superseded: changes in file/TTL/permission/source invalidate reuse",
+      "owner_crate": "dtoken-context-store",
+      "dispatch_symbol": "dtoken_context_store::SharedContext",
+      "tests": {
+        "normal": ["code/crates/dtoken-context-store/tests/shared_context.rs"],
+        "error": ["code/crates/dtoken-context-store/tests/shared_context.rs"],
+        "recovery": ["code/crates/dtoken-context-store/tests/shared_context.rs"]
+      },
+      "real_evidence": ["docs/releases/v0.0.1/REQUIREMENTS.md", "docs/releases/v0.0.1/VERIFICATION.md"],
+      "gates": ["G3", "U3", "N10"],
+      "status": "blocked"
+    },
+    {
+      "id": "c3.shared-context-authorization",
+      "source_capability": "SharedContext grant/revoke authorization boundary",
+      "owner_crate": "dtoken-context-store",
+      "dispatch_symbol": "dtoken_context_store::SharedContext",
+      "tests": {
+        "normal": ["code/crates/dtoken-context-store/tests/shared_context.rs"],
+        "error": ["code/crates/dtoken-context-store/tests/shared_context.rs"],
+        "recovery": ["code/crates/dtoken-context-store/tests/shared_context.rs"]
+      },
+      "real_evidence": ["docs/releases/v0.0.1/REQUIREMENTS.md", "docs/releases/v0.0.1/VERIFICATION.md"],
+      "gates": ["G3", "U3", "N10"],
+      "status": "blocked"
+    },
+    {
+      "id": "c4.rtk-structured-filters",
+      "source_capability": "RTK structured filters: git/cargo/npm/pytest/json classification with TOML DSL; secret/error/unknown preserved",
+      "owner_crate": "dtoken-preprocessor",
+      "dispatch_symbol": "dtoken_preprocessor::rtk::classify",
+      "tests": {
+        "normal": ["code/crates/dtoken-preprocessor/tests/rtk_filters.rs"],
+        "error": ["code/crates/dtoken-preprocessor/tests/rtk_filters.rs"],
+        "recovery": ["code/crates/dtoken-preprocessor/tests/rtk_filters.rs"]
+      },
+      "real_evidence": ["docs/releases/v0.0.1/REQUIREMENTS.md", "docs/releases/v0.0.1/VERIFICATION.md"],
+      "gates": ["G5", "U2", "N10"],
+      "status": "blocked"
+    },
+    {
+      "id": "c4.rtk-managed-hook-tee",
+      "source_capability": "RTK managed hook/tee lifecycle across macOS/Windows/WSL with exact restore",
+      "owner_crate": "dtoken-preprocessor",
+      "dispatch_symbol": "dtoken_preprocessor::rtk::ManagedRtkLifecycle",
+      "tests": {
+        "normal": ["code/crates/dtoken-preprocessor/tests/rtk_hook_tee.rs"],
+        "error": ["code/crates/dtoken-preprocessor/tests/rtk_hook_tee.rs"],
+        "recovery": ["code/crates/dtoken-preprocessor/tests/rtk_hook_tee.rs"]
+      },
+      "real_evidence": ["docs/releases/v0.0.1/REQUIREMENTS.md", "docs/releases/v0.0.1/VERIFICATION.md"],
+      "gates": ["G5", "U2", "N10"],
+      "status": "blocked"
+    },
+    {
+      "id": "c4.rtk-planner-accounting",
+      "source_capability": "RTK planner/accounting: RtkCommandOutput production dispatch with dedicated bucket, no double counting",
+      "owner_crate": "dtoken-preprocessor",
+      "dispatch_symbol": "dtoken_preprocessor::rtk::RtkCommandOutput",
+      "tests": {
+        "normal": ["code/crates/dtoken-preprocessor/tests/rtk_planner_accounting.rs"],
+        "error": ["code/crates/dtoken-preprocessor/tests/rtk_planner_accounting.rs"],
+        "recovery": ["code/crates/dtoken-preprocessor/tests/rtk_planner_accounting.rs"]
+      },
+      "real_evidence": ["docs/releases/v0.0.1/REQUIREMENTS.md", "docs/releases/v0.0.1/VERIFICATION.md"],
+      "gates": ["G5", "U2", "N10"],
+      "status": "blocked"
+    },
+    {
+      "id": "c5.optical-renderer",
+      "source_capability": "Optical renderer: pxpipe/Spleen single pin, Unicode/CJK fallback, deterministic cross-platform digest",
+      "owner_crate": "dtoken-compress",
+      "dispatch_symbol": "dtoken_compress::optical::render",
+      "tests": {
+        "normal": ["code/crates/dtoken-compress/tests/optical_render.rs"],
+        "error": ["code/crates/dtoken-compress/tests/optical_render.rs"],
+        "recovery": ["code/crates/dtoken-compress/tests/optical_render.rs"]
+      },
+      "real_evidence": ["docs/releases/v0.0.1/REQUIREMENTS.md", "docs/releases/v0.0.1/VERIFICATION.md"],
+      "gates": ["U7", "U8", "N10"],
+      "status": "blocked"
+    },
+    {
+      "id": "c5.optical-history-cache",
+      "source_capability": "Optical history/cache: collapse, static slab, freeze grid, cache anchor, billing boundary",
+      "owner_crate": "dtoken-compress",
+      "dispatch_symbol": "dtoken_compress::optical::history",
+      "tests": {
+        "normal": ["code/crates/dtoken-compress/tests/optical_history.rs"],
+        "error": ["code/crates/dtoken-compress/tests/optical_history.rs"],
+        "recovery": ["code/crates/dtoken-compress/tests/optical_history.rs"]
+      },
+      "real_evidence": ["docs/releases/v0.0.1/REQUIREMENTS.md", "docs/releases/v0.0.1/VERIFICATION.md"],
+      "gates": ["U7", "U2", "N10"],
+      "status": "blocked"
+    },
+    {
+      "id": "c5.optical-attestation",
+      "source_capability": "Optical attestation: exact Ed25519 capability with digests; expired/revoked rejected",
+      "owner_crate": "dtoken-compress",
+      "dispatch_symbol": "dtoken_compress::optical::attest",
+      "tests": {
+        "normal": ["code/crates/dtoken-compress/tests/optical_attestation.rs"],
+        "error": ["code/crates/dtoken-compress/tests/optical_attestation.rs"],
+        "recovery": ["code/crates/dtoken-compress/tests/optical_attestation.rs"]
+      },
+      "real_evidence": ["docs/releases/v0.0.1/REQUIREMENTS.md", "docs/releases/v0.0.1/VERIFICATION.md"],
+      "gates": ["U7", "G8", "N10"],
+      "status": "blocked"
+    },
+    {
+      "id": "c5.optical-exact-active",
+      "source_capability": "Optical exact active: at least one exact Anthropic route automatic active; other routes PreserveText",
+      "owner_crate": "dtoken-compress",
+      "dispatch_symbol": "dtoken_compress::optical::active",
+      "tests": {
+        "normal": ["code/crates/dtoken-compress/tests/optical_active.rs"],
+        "error": ["code/crates/dtoken-compress/tests/optical_active.rs"],
+        "recovery": ["code/crates/dtoken-compress/tests/optical_active.rs"]
+      },
+      "real_evidence": ["docs/releases/v0.0.1/REQUIREMENTS.md", "docs/releases/v0.0.1/VERIFICATION.md"],
+      "gates": ["U7", "G8", "N10"],
+      "status": "blocked"
+    },
+    {
+      "id": "c5.optical-shadow-preview",
+      "source_capability": "Optical shadow preview: metadata-only observability, never active transform",
+      "owner_crate": "dtoken-compress",
+      "dispatch_symbol": "dtoken_compress::optical::shadow",
+      "tests": {
+        "normal": ["code/crates/dtoken-compress/tests/optical_shadow.rs"],
+        "error": ["code/crates/dtoken-compress/tests/optical_shadow.rs"],
+        "recovery": ["code/crates/dtoken-compress/tests/optical_shadow.rs"]
+      },
+      "real_evidence": ["docs/releases/v0.0.1/REQUIREMENTS.md", "docs/releases/v0.0.1/VERIFICATION.md"],
+      "gates": ["U7", "U1", "N10"],
+      "status": "blocked"
+    },
+    {
+      "id": "c6.bounded-concurrency",
+      "source_capability": "Bounded workers/queues, request-wide deadline/byte permit, stable output order, saturation Preserve",
+      "owner_crate": "dtoken-core-api",
+      "dispatch_symbol": "dtoken_core_api::AppState::route_request",
+      "tests": {
+        "normal": ["code/crates/dtoken-core-api/tests/compress_gateway.rs"],
+        "error": ["code/crates/dtoken-core-api/tests/compress_gateway.rs"],
+        "recovery": ["code/crates/dtoken-core-api/tests/compress_gateway.rs"]
+      },
+      "real_evidence": ["docs/releases/v0.0.1/REQUIREMENTS.md", "docs/releases/v0.0.1/VERIFICATION.md"],
+      "gates": ["G6", "U5", "N10"],
+      "status": "blocked"
+    },
+    {
+      "id": "c6.ccr-full-durability",
+      "source_capability": "CCR FULL durability: journal/SQLite/private store failpoints, rebuildable projection",
+      "owner_crate": "dtoken-core-api",
+      "dispatch_symbol": "dtoken_core_api::ccr_store::CcrStore",
+      "tests": {
+        "normal": ["code/crates/dtoken-core-api/tests/compress_gateway.rs"],
+        "error": ["code/crates/dtoken-core-api/tests/compress_gateway.rs"],
+        "recovery": ["code/crates/dtoken-core-api/tests/compress_gateway.rs"]
+      },
+      "real_evidence": ["docs/releases/v0.0.1/REQUIREMENTS.md", "docs/releases/v0.0.1/VERIFICATION.md"],
+      "gates": ["U3", "G3", "N10"],
+      "status": "blocked"
+    },
+    {
+      "id": "c6.recovery-state-machine",
+      "source_capability": "Recovery state machine: pre-commit baseline once, post-commit no retry/provider switch, unique terminal",
+      "owner_crate": "dtoken-runtime-pipeline",
+      "dispatch_symbol": "dtoken_runtime_pipeline::ReadyToSend",
+      "tests": {
+        "normal": ["code/crates/dtoken-runtime-pipeline/tests/lifecycle.rs"],
+        "error": ["code/crates/dtoken-runtime-pipeline/tests/lifecycle.rs"],
+        "recovery": ["code/crates/dtoken-runtime-pipeline/tests/lifecycle.rs"]
+      },
+      "real_evidence": ["docs/releases/v0.0.1/REQUIREMENTS.md", "docs/releases/v0.0.1/VERIFICATION.md"],
+      "gates": ["U3", "G3", "N10"],
+      "status": "blocked"
+    },
+    {
+      "id": "c7.benchmark-corpus",
+      "source_capability": "Fixed-corpus release benchmark: p50/p95/p99, CPU, throughput, alloc/RSS, queue/cancel, benefit/fallback",
+      "owner_crate": "dtoken-compress",
+      "dispatch_symbol": "dtoken_compress::bench::run",
+      "tests": {
+        "normal": ["support/tests/test_unified_corpus_manifests.py"],
+        "error": ["support/tests/test_unified_corpus_manifests.py"],
+        "recovery": ["support/tests/test_unified_corpus_manifests.py"]
+      },
+      "real_evidence": ["docs/releases/v0.0.1/REQUIREMENTS.md", "docs/releases/v0.0.1/VERIFICATION.md"],
+      "gates": ["U5", "G6", "N10"],
+      "status": "blocked"
+    },
+    {
+      "id": "c7.deterministic-replay",
+      "source_capability": "Deterministic replay: same source/decision/corpus yields same plan/body digest",
+      "owner_crate": "dtoken-compress",
+      "dispatch_symbol": "dtoken_compress::replay::replay",
+      "tests": {
+        "normal": ["code/crates/dtoken-compress/tests/replay.rs"],
+        "error": ["code/crates/dtoken-compress/tests/replay.rs"],
+        "recovery": ["code/crates/dtoken-compress/tests/replay.rs"]
+      },
+      "real_evidence": ["docs/releases/v0.0.1/REQUIREMENTS.md", "docs/releases/v0.0.1/VERIFICATION.md"],
+      "gates": ["U4", "G7", "N10"],
+      "status": "blocked"
+    },
+    {
+      "id": "c7.paired-quality-eval",
+      "source_capability": "Paired quality eval: same-model baseline/optimized outcome with holdout, claimable only from Provider actual",
+      "owner_crate": "dtoken-compress",
+      "dispatch_symbol": "dtoken_compress::eval::paired",
+      "tests": {
+        "normal": ["code/crates/dtoken-compress/tests/paired_eval.rs"],
+        "error": ["code/crates/dtoken-compress/tests/paired_eval.rs"],
+        "recovery": ["code/crates/dtoken-compress/tests/paired_eval.rs"]
+      },
+      "real_evidence": ["docs/releases/v0.0.1/REQUIREMENTS.md", "docs/releases/v0.0.1/VERIFICATION.md"],
+      "gates": ["U6", "U4", "N10"],
+      "status": "blocked"
+    },
+    {
+      "id": "core-api.prepare-json-pipeline-payload",
+      "source_capability": "prepare_json_pipeline_payload: canonical JSON pipeline payload construction for routed requests",
+      "owner_crate": "dtoken-core-api",
+      "dispatch_symbol": "dtoken_core_api::prepare_json_pipeline_payload",
+      "tests": {
+        "normal": ["code/crates/dtoken-core-api/tests/compress_gateway.rs"],
+        "error": ["code/crates/dtoken-core-api/tests/compress_gateway.rs"],
+        "recovery": ["code/crates/dtoken-core-api/tests/compress_gateway.rs"]
+      },
+      "real_evidence": ["docs/releases/v0.0.1/REQUIREMENTS.md", "docs/releases/v0.0.1/VERIFICATION.md"],
+      "gates": ["U0", "G4", "N10"],
+      "status": "implemented_unverified"
+    },
+    {
+      "id": "core-api.ccr-store",
+      "source_capability": "CCR store: durable request-bound recovery store with receipts",
+      "owner_crate": "dtoken-core-api",
+      "dispatch_symbol": "dtoken_core_api::ccr_store::CcrStore",
+      "tests": {
+        "normal": ["code/crates/dtoken-core-api/tests/compress_gateway.rs"],
+        "error": ["code/crates/dtoken-core-api/tests/compress_gateway.rs"],
+        "recovery": ["code/crates/dtoken-core-api/tests/compress_gateway.rs"]
+      },
+      "real_evidence": ["docs/releases/v0.0.1/REQUIREMENTS.md", "docs/releases/v0.0.1/VERIFICATION.md"],
+      "gates": ["U3", "G3", "N10"],
+      "status": "implemented_unverified"
+    },
+    {
+      "id": "core-api.mcp-surface",
+      "source_capability": "MCP surface: owned transport status with held-back retrieve evidence",
+      "owner_crate": "dtoken-core-api",
+      "dispatch_symbol": "dtoken_core_api::mcp::McpServer",
+      "tests": {
+        "normal": ["code/crates/dtoken-core-api/tests/compress_gateway.rs"],
+        "error": ["code/crates/dtoken-core-api/tests/compress_gateway.rs"],
+        "recovery": ["code/crates/dtoken-core-api/tests/compress_gateway.rs"]
+      },
+      "real_evidence": ["docs/releases/v0.0.1/REQUIREMENTS.md", "docs/releases/v0.0.1/VERIFICATION.md"],
+      "gates": ["G4", "U0", "N10"],
+      "status": "implemented_unverified"
+    },
+    {
+      "id": "core-api.export-redaction",
+      "source_capability": "Runtime JSON/CSV export redaction: no absolute config path, no secret/token/cookie leakage",
+      "owner_crate": "dtoken-core-api",
+      "dispatch_symbol": "dtoken_core_api::export_runtime_summary",
+      "tests": {
+        "normal": ["code/crates/dtoken-core-api/tests/compress_gateway.rs"],
+        "error": ["code/crates/dtoken-core-api/tests/compress_gateway.rs"],
+        "recovery": ["code/crates/dtoken-core-api/tests/compress_gateway.rs"]
+      },
+      "real_evidence": ["docs/releases/v0.0.1/REQUIREMENTS.md", "docs/releases/v0.0.1/VERIFICATION.md"],
+      "gates": ["G6", "N1", "N0"],
+      "status": "implemented_unverified"
+    },
+    {
+      "id": "core-api.native-responses",
+      "source_capability": "Native Responses handler wired into the canonical pipeline with parity",
+      "owner_crate": "dtoken-core-api",
+      "dispatch_symbol": "dtoken_core_api::openai_responses",
+      "tests": {
+        "normal": ["code/crates/dtoken-core-api/tests/surface_parity.rs"],
+        "error": ["code/crates/dtoken-core-api/tests/surface_parity.rs"],
+        "recovery": ["code/crates/dtoken-core-api/tests/surface_parity.rs"]
+      },
+      "real_evidence": ["docs/releases/v0.0.1/REQUIREMENTS.md", "docs/releases/v0.0.1/VERIFICATION.md"],
+      "gates": ["U0", "G4", "N10"],
+      "status": "blocked"
+    },
+    {
+      "id": "ledger.events",
+      "source_capability": "Event Ledger: unified request events with redaction and no mock/fixture substitution",
+      "owner_crate": "dtoken-event-ledger",
+      "dispatch_symbol": "dtoken_event_ledger::EventLedger",
+      "tests": {
+        "normal": ["code/crates/dtoken-event-ledger/tests/ledger.rs"],
+        "error": ["code/crates/dtoken-event-ledger/tests/ledger.rs"],
+        "recovery": ["code/crates/dtoken-event-ledger/tests/ledger.rs"]
+      },
+      "real_evidence": ["docs/releases/v0.0.1/REQUIREMENTS.md", "docs/releases/v0.0.1/VERIFICATION.md"],
+      "gates": ["G6", "N1", "N10"],
+      "status": "implemented_unverified"
+    },
+    {
+      "id": "ledger.metrics",
+      "source_capability": "Ledger metrics: latency/cost/savings projections without double counting",
+      "owner_crate": "dtoken-event-ledger",
+      "dispatch_symbol": "dtoken_event_ledger::EventLedger::metrics",
+      "tests": {
+        "normal": ["code/crates/dtoken-event-ledger/tests/ledger.rs"],
+        "error": ["code/crates/dtoken-event-ledger/tests/ledger.rs"],
+        "recovery": ["code/crates/dtoken-event-ledger/tests/ledger.rs"]
+      },
+      "real_evidence": ["docs/releases/v0.0.1/REQUIREMENTS.md", "docs/releases/v0.0.1/VERIFICATION.md"],
+      "gates": ["G6", "N1", "N10"],
+      "status": "implemented_unverified"
+    },
+    {
+      "id": "proxy.loopback-only",
+      "source_capability": "Proxy binds loopback only; non-loopback bind is rejected",
+      "owner_crate": "dtoken-proxy",
+      "dispatch_symbol": "dtoken_proxy::parse_loopback_host",
+      "tests": {
+        "normal": ["code/crates/dtoken-proxy/tests/loopback.rs"],
+        "error": ["code/crates/dtoken-proxy/tests/loopback.rs"],
+        "recovery": ["code/crates/dtoken-proxy/tests/loopback.rs"]
+      },
+      "real_evidence": ["docs/releases/v0.0.1/REQUIREMENTS.md", "docs/releases/v0.0.1/VERIFICATION.md"],
+      "gates": ["G6", "N0", "N10"],
+      "status": "implemented_unverified"
+    },
+    {
+      "id": "doctor.checks",
+      "source_capability": "Doctor checks: capability health with fail-closed unavailable semantics",
+      "owner_crate": "dtoken-doctor",
+      "dispatch_symbol": "dtoken_doctor::DoctorReport",
+      "tests": {
+        "normal": ["code/crates/dtoken-doctor/tests/doctor.rs"],
+        "error": ["code/crates/dtoken-doctor/tests/doctor.rs"],
+        "recovery": ["code/crates/dtoken-doctor/tests/doctor.rs"]
+      },
+      "real_evidence": ["docs/releases/v0.0.1/REQUIREMENTS.md", "docs/releases/v0.0.1/VERIFICATION.md"],
+      "gates": ["G6", "N0", "N10"],
+      "status": "implemented_unverified"
+    },
+    {
+      "id": "context-store.persistence",
+      "source_capability": "Context store persistence port: durable persistence behind the store boundary",
+      "owner_crate": "dtoken-context-store",
+      "dispatch_symbol": "dtoken_context_store::SharedContext",
+      "tests": {
+        "normal": ["code/crates/dtoken-context-store/tests/shared_context.rs"],
+        "error": ["code/crates/dtoken-context-store/tests/shared_context.rs"],
+        "recovery": ["code/crates/dtoken-context-store/tests/shared_context.rs"]
+      },
+      "real_evidence": ["docs/releases/v0.0.1/REQUIREMENTS.md", "docs/releases/v0.0.1/VERIFICATION.md"],
+      "gates": ["G3", "U3", "N10"],
+      "status": "implemented_unverified"
+    },
+    {
+      "id": "learning.patterns",
+      "source_capability": "Learning: typed failure patterns with terminal-only recording",
+      "owner_crate": "dtoken-learning",
+      "dispatch_symbol": "dtoken_learning::LearningStore",
+      "tests": {
+        "normal": ["code/crates/dtoken-learning/tests/learning.rs"],
+        "error": ["code/crates/dtoken-learning/tests/learning.rs"],
+        "recovery": ["code/crates/dtoken-learning/tests/learning.rs"]
+      },
+      "real_evidence": ["docs/releases/v0.0.1/REQUIREMENTS.md", "docs/releases/v0.0.1/VERIFICATION.md"],
+      "gates": ["G6", "N1", "N10"],
+      "status": "implemented_unverified"
+    },
+    {
+      "id": "process.identity-verified-stop",
+      "source_capability": "Process stop verifies PID/executable/port/identity before termination",
+      "owner_crate": "dtoken-process",
+      "dispatch_symbol": "dtoken_process::stop",
+      "tests": {
+        "normal": ["code/crates/dtoken-process/tests/process.rs"],
+        "error": ["code/crates/dtoken-process/tests/process.rs"],
+        "recovery": ["code/crates/dtoken-process/tests/process.rs"]
+      },
+      "real_evidence": ["docs/releases/v0.0.1/REQUIREMENTS.md", "docs/releases/v0.0.1/VERIFICATION.md"],
+      "gates": ["G6", "N0", "N10"],
+      "status": "implemented_unverified"
+    },
+    {
+      "id": "config-patcher.transaction",
+      "source_capability": "Config transaction: detect-parse-plan-diff-backup-confirm-apply-reread-verify-receipt with exact rollback",
+      "owner_crate": "dtoken-config-patcher",
+      "dispatch_symbol": "dtoken_config_patcher::ConfigPatcher",
+      "tests": {
+        "normal": ["code/crates/dtoken-config-patcher/tests/config_patcher.rs"],
+        "error": ["code/crates/dtoken-config-patcher/tests/config_patcher.rs"],
+        "recovery": ["code/crates/dtoken-config-patcher/tests/config_patcher.rs"]
+      },
+      "real_evidence": ["docs/releases/v0.0.1/REQUIREMENTS.md", "docs/releases/v0.0.1/VERIFICATION.md"],
+      "gates": ["G5", "N4", "N10"],
+      "status": "implemented_unverified"
+    },
+    {
+      "id": "preprocessor.secret-classifier",
+      "source_capability": "Shared SecretClassifier: single production secret/path validation classifier, no fork copies",
+      "owner_crate": "dtoken-compress",
+      "dispatch_symbol": "dtoken_compress::optical::secret::classify",
+      "tests": {
+        "normal": ["code/crates/dtoken-compress/tests/secret_classifier.rs"],
+        "error": ["code/crates/dtoken-compress/tests/secret_classifier.rs"],
+        "recovery": ["code/crates/dtoken-compress/tests/secret_classifier.rs"]
+      },
+      "real_evidence": ["docs/releases/v0.0.1/REQUIREMENTS.md", "docs/releases/v0.0.1/VERIFICATION.md"],
+      "gates": ["G6", "N0", "N10"],
+      "status": "implemented_unverified"
+    },
+    {
+      "id": "agent-bridge.identity",
+      "source_capability": "Agent bridge identity: component/protocol/OS/arch/version verification before managed writes",
+      "owner_crate": "dtoken-agent-bridge",
+      "dispatch_symbol": "dtoken_agent_bridge::identity",
+      "tests": {
+        "normal": ["code/crates/dtoken-agent-bridge/tests/identity.rs"],
+        "error": ["code/crates/dtoken-agent-bridge/tests/identity.rs"],
+        "recovery": ["code/crates/dtoken-agent-bridge/tests/identity.rs"]
+      },
+      "real_evidence": ["docs/releases/v0.0.1/REQUIREMENTS.md", "docs/releases/v0.0.1/VERIFICATION.md"],
+      "gates": ["G5", "N4", "N10"],
+      "status": "implemented_unverified"
+    },
+    {
+      "id": "codebase-memory.indexing",
+      "source_capability": "CBM indexing/graph: official-binary indexing with fail-closed behavior when platform assets are unavailable",
+      "owner_crate": "dtoken-codebase-memory",
+      "dispatch_symbol": "dtoken_codebase_memory::index",
+      "tests": {
+        "normal": ["support/tests/test_prepare_codebase_memory_artifact.py"],
+        "error": ["support/tests/test_prepare_codebase_memory_artifact.py"],
+        "recovery": ["support/tests/test_prepare_codebase_memory_artifact.py"]
+      },
+      "real_evidence": ["docs/releases/v0.0.1/REQUIREMENTS.md", "docs/releases/v0.0.1/VERIFICATION.md"],
+      "gates": ["G5", "N4", "N10"],
+      "status": "blocked"
+    },
+    {
+      "id": "support.registry-validator",
+      "source_capability": "Capability registry validator: 117 unique entries, complete fields, allowed statuses",
+      "owner_crate": "dtoken-core-api",
+      "dispatch_symbol": "support/scripts/validate_unified_capability_registry.py",
+      "tests": {
+        "normal": ["support/tests/test_unified_capability_registry.py"],
+        "error": ["support/tests/test_unified_capability_registry.py"],
+        "recovery": ["support/tests/test_unified_capability_registry.py"]
+      },
+      "real_evidence": ["support/fixtures/unified-capability-registry-v1.json", "docs/releases/v0.0.1/REQUIREMENTS.md"],
+      "gates": ["U1", "G0", "N10"],
+      "status": "implemented_unverified"
+    },
+    {
+      "id": "support.corpus-validator",
+      "source_capability": "Corpus manifest validator: schema/revision/digest/license/privacy, path resolvable and digest matches",
+      "owner_crate": "dtoken-core-api",
+      "dispatch_symbol": "support/scripts/validate_unified_corpus_manifests.py",
+      "tests": {
+        "normal": ["support/tests/test_unified_corpus_manifests.py"],
+        "error": ["support/tests/test_unified_corpus_manifests.py"],
+        "recovery": ["support/tests/test_unified_corpus_manifests.py"]
+      },
+      "real_evidence": ["support/fixtures/unified-corpus/README.md", "docs/releases/v0.0.1/REQUIREMENTS.md"],
+      "gates": ["U1", "G0", "N10"],
+      "status": "implemented_unverified"
+    },
+    {
+      "id": "support.gate-aggregator",
+      "source_capability": "Release gate aggregator: fail-closed, expected commit/source digest binding, no latest-file selection",
+      "owner_crate": "dtoken-core-api",
+      "dispatch_symbol": "support/scripts/generate_release_gate_status.py",
+      "tests": {
+        "normal": ["support/tests/test_release_gate_status_aggregation.py"],
+        "error": ["support/tests/test_release_gate_status_aggregation.py"],
+        "recovery": ["support/tests/test_release_gate_status_aggregation.py"]
+      },
+      "real_evidence": ["docs/releases/v0.0.1/VERIFICATION.md", "docs/releases/v0.0.1/REQUIREMENTS.md"],
+      "gates": ["G8", "N9", "N10"],
+      "status": "implemented_unverified"
+    },
+    {
+      "id": "types.managed-rtk-transaction",
+      "source_capability": "Managed RTK transaction types: plan/receipt/usage evidence with platform capability state machine",
+      "owner_crate": "dtoken-types",
+      "dispatch_symbol": "dtoken_types::ManagedRtkTransactionReceipt",
+      "tests": {
+        "normal": ["code/crates/dtoken-types/tests/canonical_contract.rs"],
+        "error": ["code/crates/dtoken-types/tests/canonical_contract.rs"],
+        "recovery": ["code/crates/dtoken-types/tests/canonical_contract.rs"]
+      },
+      "real_evidence": ["docs/releases/v0.0.1/REQUIREMENTS.md", "docs/releases/v0.0.1/VERIFICATION.md"],
+      "gates": ["G5", "U2", "N10"],
+      "status": "implemented_unverified"
+    }
+  ]
+}

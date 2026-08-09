@@ -1,0 +1,8 @@
+{
+  "id": "quality-holdout-stale",
+  "kind": "holdout",
+  "description": "Holdout case: stale or malformed content must not regress hidden quality checks.",
+  "privacy": "synthetic fixture; no credentials, paths, or real prompts",
+  "holdout_kinds": ["stale_tool_result", "malformed_json", "resource_exhausted"],
+  "expected": "no_hidden_regression"
+}

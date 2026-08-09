@@ -5559,6 +5559,7 @@ fn build_request_log(
     request_id: Uuid,
     decision: &RouteDecision,
     model: Option<String>,
+    user_target_model: Option<String>,
     input_protocol: Protocol,
     compression: &CompressionSummary,
     attribution: &RequestAttribution,
@@ -5568,6 +5569,11 @@ fn build_request_log(
         timestamp_ms: dtoken_event_ledger::now_ms(),
         agent: attribution.agent.clone(),
         instance_id: attribution.instance_id.clone(),
+        project_id: attribution
+            .project_id
+            .clone()
+            .filter(|value| !value.trim().is_empty()),
+        user_target_model,
         input_protocol,
         provider_id: Some(decision.provider_id.clone()),
         route_id: Some(decision.route_id.clone()),
@@ -5581,6 +5587,8 @@ fn build_request_log(
         } else {
             compression.tokens_saved as usize
         }),
+        provider_input_tokens: None,
+        provider_output_tokens: None,
         transforms_applied: compression.transforms_applied.clone(),
         latency_ms: Some((compression.elapsed_us / 1000).max(1) as u64),
         error: None,
@@ -6118,11 +6126,17 @@ fn mark_upstream_outcome(
     event: &mut DtokenEvent,
 ) {
     let provider_usage = provider_usage_measurement(&upstream.response);
+    let provider_input_tokens = provider_usage
+        .as_ref()
+        .and_then(|measurement| measurement.usage.input.normalized_total)
+        .and_then(|tokens| usize::try_from(tokens).ok());
     let output_tokens = provider_usage
         .as_ref()
         .and_then(|measurement| measurement.usage.output_tokens)
         .and_then(|tokens| usize::try_from(tokens).ok());
     request_log.quota_metadata = upstream.quota_metadata.clone();
+    request_log.provider_input_tokens = provider_input_tokens;
+    request_log.provider_output_tokens = output_tokens;
 
     if let Some(accounting) = request_log.context_accounting.as_mut() {
         accounting.upstream_state = upstream.send_state;
@@ -9307,6 +9321,9 @@ fn anthropic_route_payload(
         body.get("model")
             .and_then(Value::as_str)
             .map(ToString::to_string),
+        body.get("model")
+            .and_then(Value::as_str)
+            .map(ToString::to_string),
         Protocol::Anthropic,
         &compression,
         &attribution,
@@ -9622,6 +9639,7 @@ fn force_payload_ccr_pre_send_baseline(
     let request_log = build_request_log(
         request_id,
         &payload.decision,
+        model.clone(),
         model,
         Protocol::Anthropic,
         &compression,
@@ -9988,6 +10006,7 @@ fn routed_openai_payload(
     let log = build_request_log(
         request_id,
         &decision,
+        request.model.clone(),
         request.model.clone(),
         Protocol::OpenAi,
         &compression,
@@ -11180,6 +11199,7 @@ async fn openai_chat_completions(
             request_id,
             &decision,
             request.model.clone(),
+            request.model.clone(),
             Protocol::OpenAi,
             &compression,
             &attribution,
@@ -11208,6 +11228,7 @@ async fn openai_chat_completions(
                     request_log = build_request_log(
                         request_id,
                         &decision,
+                        request.model.clone(),
                         request.model.clone(),
                         Protocol::OpenAi,
                         &compression,
@@ -11266,6 +11287,7 @@ async fn openai_chat_completions(
             request_log = build_request_log(
                 request_id,
                 &decision,
+                request.model.clone(),
                 request.model.clone(),
                 Protocol::OpenAi,
                 &compression,
@@ -11613,6 +11635,9 @@ async fn openai_responses(
                 body.get("model")
                     .and_then(Value::as_str)
                     .map(ToString::to_string),
+                body.get("model")
+                    .and_then(Value::as_str)
+                    .map(ToString::to_string),
                 Protocol::OpenAi,
                 &compression,
                 &attribution,
@@ -11949,6 +11974,7 @@ async fn openai_responses(
             request_id,
             &decision,
             request.model.clone(),
+            request.model.clone(),
             Protocol::OpenAi,
             &compression,
             &attribution,
@@ -11977,6 +12003,7 @@ async fn openai_responses(
                     request_log = build_request_log(
                         request_id,
                         &decision,
+                        request.model.clone(),
                         request.model.clone(),
                         Protocol::OpenAi,
                         &compression,
@@ -12039,6 +12066,7 @@ async fn openai_responses(
             request_log = build_request_log(
                 request_id,
                 &decision,
+                request.model.clone(),
                 request.model.clone(),
                 Protocol::OpenAi,
                 &compression,
@@ -15498,6 +15526,7 @@ mod tests {
         let log = build_request_log(
             decision.request_id,
             &decision,
+            Some("model-a".to_string()),
             Some("model-a".to_string()),
             Protocol::OpenAi,
             &compression,
@@ -19047,6 +19076,7 @@ mod tests {
         let mut request_log = build_request_log(
             request_id,
             &decision,
+            Some("model-a".to_string()),
             Some("model-a".to_string()),
             Protocol::OpenAi,
             &compression,

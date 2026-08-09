@@ -1,0 +1,9 @@
+{
+  "id": "fault-postcommit-stream-drop",
+  "kind": "fault-scenario",
+  "description": "Post-commit stream drop: after send committed, the stream fails; no retry and no provider switch.",
+  "privacy": "synthetic fixture; no credentials, paths, or real prompts",
+  "failpoint": "transport.stream",
+  "expected_unique_terminal_state": "failed_after_commit_no_retry",
+  "forbidden": ["provider_switch", "automatic_retry", "send_twice"]
+}

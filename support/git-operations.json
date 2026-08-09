@@ -2250,6 +2250,15 @@
       "summary": "Push release-plan merge audit ledger",
       "head_before": "88c7f189c3b183a132828da83683e3e0c32ee4e3",
       "remote": "origin"
+    },
+    {
+      "id": "37f5c44f-e68c-46e6-8d07-67f09049ccb6",
+      "timestamp": "2026-08-09T18:35:27+08:00",
+      "operation": "commit",
+      "branch": "codex/final/c0a-schema-policy",
+      "summary": "Deliver canonical contracts sealed receipts and capability corpus",
+      "head_before": "082f00125683",
+      "remote": null
     }
   ]
 }
