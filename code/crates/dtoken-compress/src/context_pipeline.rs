@@ -371,6 +371,21 @@ fn apply_cache_evidence(
         plan.cache_alignment.evidence_revision = Some(evidence.source_revision.clone());
         plan.cache_alignment.ttl_seconds = evidence.ttl_seconds;
         plan.cache_alignment.min_prefix_bytes = Some(evidence.min_prefix_bytes);
+        // The cache identity binds the evidence source revision: two requests
+        // with the same resolved route and stable prefix but a different
+        // provider/config revision must never alias the same cache slot. The
+        // unverified key (resolved identity + stable prefix) is kept for the
+        // no-evidence plan; verified plans rebind it with the revision so a
+        // provider policy change turns a previously cached prefix into a miss.
+        if let Some(prefix) = plan.cache_alignment.stable_prefix_digest.clone() {
+            plan.cache_alignment.cache_key_digest = Some(digest_bytes(
+                format!(
+                    "{}\0{}\0{}",
+                    plan.cache_alignment.resolved_identity_digest, prefix, evidence.source_revision
+                )
+                .as_bytes(),
+            ));
+        }
     }
     Ok(plan)
 }
