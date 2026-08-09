@@ -30,7 +30,7 @@ import { DataSourceBadge } from "../common/DataSourceBadge";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../ui/tabs";
-import { useI18n, useT } from "../../lib/i18n";
+import { useI18n, useT, translateCopy } from "../../lib/i18n";
 import { protocolLabel } from "../../lib/protocol";
 import {
   buildAnalyticsSnapshot,
@@ -244,8 +244,8 @@ export function Analytics() {
       : "unavailable";
   const requestEvidence = trafficEvidenceAvailable
     ? evidenceState === "stale"
-      ? lang === "zh" ? "来自上次验证的 d-token 本地请求记录" : "From the last verified local d-token request records"
-      : lang === "zh" ? "来自 d-token 本地请求记录" : "From local d-token request records"
+      ? translateCopy("an.fromTheLastVerifiedLocalDTokenRequestRecords", lang)
+      : translateCopy("ov.fromLocalDTokenRequestRecords", lang)
     : sourceLabel;
 
   return (
@@ -262,7 +262,7 @@ export function Analytics() {
         <div className="flex items-start gap-3">
           <Activity className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
           <div>
-            <div className="text-sm font-semibold">{lang === "zh" ? "分析数据状态" : "Analytics data status"}</div>
+            <div className="text-sm font-semibold">{translateCopy("an.analyticsDataStatus", lang)}</div>
             <div className="mt-0.5 text-xs text-muted-foreground">
               {analyticsStatusDetail(evidenceState, snapshot.hasRequests, lang)}
             </div>
@@ -272,10 +272,10 @@ export function Analytics() {
 
       <Tabs value={tab} onValueChange={setTab}>
         <TabsList>
-          <TabsTrigger value="live">{lang === "zh" ? "价值概览" : "Value overview"}</TabsTrigger>
-          <TabsTrigger value="history">{lang === "zh" ? "历史趋势" : "Trend history"}</TabsTrigger>
-          <TabsTrigger value="parity">{lang === "zh" ? "数据范围" : "Data scope"}</TabsTrigger>
-          <TabsTrigger value="logs">{lang === "zh" ? "日志" : "Logs"}</TabsTrigger>
+          <TabsTrigger value="live">{translateCopy("an.valueOverview", lang)}</TabsTrigger>
+          <TabsTrigger value="history">{translateCopy("an.trendHistory", lang)}</TabsTrigger>
+          <TabsTrigger value="parity">{translateCopy("an.dataScope", lang)}</TabsTrigger>
+          <TabsTrigger value="logs">{translateCopy("in.tab.logs", lang)}</TabsTrigger>
         </TabsList>
 
         <TabsContent value="live" className="mt-3 space-y-4">
@@ -286,7 +286,7 @@ export function Analytics() {
             <Metric
               index={0}
               icon={<ArrowDownWideNarrow className="size-3.5" />}
-              label={lang === "zh" ? "已处理请求" : "Routed requests"}
+              label={translateCopy("tray.routedRequests", lang)}
               value={trafficEvidenceAvailable ? nf(snapshot.requestCount) : unavailableValue}
               detail={requestEvidence}
               color="var(--chart-2)"
@@ -294,7 +294,7 @@ export function Analytics() {
             <Metric
               index={1}
               icon={<Gauge className="size-3.5" />}
-              label={lang === "zh" ? "估算输入 Token" : "Estimated input tokens"}
+              label={translateCopy("an.estimatedInputTokens", lang)}
               value={trafficEvidenceAvailable ? optionalNumber(snapshot.estimatedInputTokens) : unavailableValue}
               detail={metricDetail(snapshot.estimatedInputTokens, sourceLabel, lang)}
               color="var(--chart-3)"
@@ -302,7 +302,7 @@ export function Analytics() {
             <Metric
               index={2}
               icon={<Coins className="size-3.5" />}
-              label={lang === "zh" ? "物理减少 Token" : "Physical token reduction"}
+              label={translateCopy("tray.physicalTokenReduction", lang)}
               value={trafficEvidenceAvailable ? optionalNumber(snapshot.estimatedSavedTokens) : unavailableValue}
               detail={metricDetail(snapshot.estimatedSavedTokens, sourceLabel, lang)}
               color="var(--chart-accent)"
@@ -310,7 +310,7 @@ export function Analytics() {
             <Metric
               index={3}
               icon={<GitBranch className="size-3.5" />}
-              label={lang === "zh" ? "物理减少比例" : "Physical reduction rate"}
+              label={translateCopy("tray.physicalReductionRate", lang)}
               value={trafficEvidenceAvailable && snapshot.estimatedSavingsRate !== null
                 ? `${(snapshot.estimatedSavingsRate * 100).toFixed(1)}%`
                 : unavailableValue}
@@ -320,7 +320,7 @@ export function Analytics() {
             <Metric
               index={4}
               icon={<Bot className="size-3.5" />}
-              label={lang === "zh" ? "估算输出 Token" : "Estimated output tokens"}
+              label={translateCopy("an.estimatedOutputTokens", lang)}
               value={trafficEvidenceAvailable ? optionalNumber(snapshot.estimatedOutputTokens) : unavailableValue}
               detail={metricDetail(snapshot.estimatedOutputTokens, sourceLabel, lang)}
               color="var(--chart-5)"
@@ -328,7 +328,7 @@ export function Analytics() {
             <Metric
               index={5}
               icon={<AlertTriangle className="size-3.5" />}
-              label={lang === "zh" ? "请求错误" : "Request errors"}
+              label={translateCopy("ov.requestErrors", lang)}
               value={trafficEvidenceAvailable ? nf(snapshot.errorCount) : unavailableValue}
               detail={requestEvidence}
               color={snapshot.errorCount > 0 ? "var(--destructive)" : "var(--muted-foreground)"}
@@ -350,19 +350,19 @@ export function Analytics() {
             <Surface className="p-4" hover={false}>
               <h3 className="mb-3 flex items-center gap-2 text-sm">
                 <Timer className="size-4" />
-                {lang === "zh" ? "压缩耗时" : "Compression latency"}
+                {translateCopy("an.compressionLatency", lang)}
               </h3>
               {snapshot.latency ? (
                 <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-                  <Summary label={lang === "zh" ? "有耗时记录" : "Records with timing"} value={nf(snapshot.latency.sampleCount)} />
-                  <Summary label={lang === "zh" ? "平均" : "Average"} value={`${snapshot.latency.averageMs.toFixed(1)}ms`} />
+                  <Summary label={translateCopy("an.recordsWithTiming", lang)} value={nf(snapshot.latency.sampleCount)} />
+                  <Summary label={translateCopy("an.average", lang)} value={`${snapshot.latency.averageMs.toFixed(1)}ms`} />
                   <Summary label="p50" value={`${snapshot.latency.p50Ms.toFixed(1)}ms`} />
                   <Summary label="p95" value={`${snapshot.latency.p95Ms.toFixed(1)}ms`} />
                 </div>
               ) : (
                 <NoData
-                  title={lang === "zh" ? "暂无压缩耗时记录" : "No compression latency records"}
-                  detail={lang === "zh" ? "记录的耗时只覆盖压缩阶段，不用于推算上游或端到端延迟" : "Recorded timing covers the compression stage only, and is not used to infer upstream or end-to-end latency"}
+                  title={translateCopy("an.noCompressionLatencyRecords", lang)}
+                  detail={translateCopy("an.recordedTimingCoversTheCompressionStageOnlyAndIsNotUsedToInferUpstreamOrEndToEndLatency", lang)}
                 />
               )}
             </Surface>
@@ -370,7 +370,7 @@ export function Analytics() {
             <Surface className="p-4" hover={false}>
               <h3 className="mb-3 flex items-center gap-2 text-sm">
                 <Bot className="size-4" />
-                {lang === "zh" ? "Agent 分布" : "Agent distribution"}
+                {translateCopy("an.agentDistribution", lang)}
               </h3>
               <BreakdownList rows={snapshot.agentBreakdown} lang={lang} />
             </Surface>
@@ -380,14 +380,14 @@ export function Analytics() {
             <Surface className="p-4" hover={false}>
               <h3 className="mb-3 flex items-center gap-2 text-sm">
                 <Route className="size-4" />
-                {lang === "zh" ? "路由分布" : "Route distribution"}
+                {translateCopy("an.routeDistribution", lang)}
               </h3>
               <BreakdownList rows={snapshot.routeBreakdown} lang={lang} />
             </Surface>
             <Surface className="p-4" hover={false}>
               <h3 className="mb-3 flex items-center gap-2 text-sm">
                 <GitBranch className="size-4" />
-                {lang === "zh" ? "上游分布" : "Provider distribution"}
+                {translateCopy("an.providerDistribution", lang)}
               </h3>
               <BreakdownList rows={snapshot.upstreamBreakdown} lang={lang} />
             </Surface>
@@ -397,69 +397,69 @@ export function Analytics() {
             <div className="mb-3 flex items-center justify-between gap-2">
               <h3 className="flex items-center gap-2 text-sm">
                 <Boxes className="size-4" />
-                {lang === "zh" ? "实际处理步骤" : "Recorded processing steps"}
+                {translateCopy("an.recordedProcessingSteps", lang)}
               </h3>
               <Badge variant="secondary">
                 {snapshot.compressionCount === null
                   ? unavailableValue
-                  : `${nf(snapshot.compressionCount)} ${lang === "zh" ? "次有节省记录" : "records with savings"}`}
+                  : `${nf(snapshot.compressionCount)} ${translateCopy("an.recordsWithSavings", lang)}`}
               </Badge>
             </div>
             <BreakdownList rows={snapshot.strategyBreakdown} lang={lang} showSaved={false} />
           </Surface>
 
           <div className="grid gap-3 lg:grid-cols-2">
-            <AnalyticsBreakdownCard icon={<Layers3 className="size-4" />} title={lang === "zh" ? "模型" : "Model"} rows={snapshot.modelBreakdown} lang={lang} />
-            <AnalyticsBreakdownCard icon={<ListFilter className="size-4" />} title={lang === "zh" ? "输入协议" : "Input protocol"} rows={snapshot.protocolBreakdown} lang={lang} />
-            <AnalyticsBreakdownCard icon={<ListFilter className="size-4" />} title={lang === "zh" ? "项目" : "Project"} rows={snapshot.projectBreakdown} lang={lang} />
-            <AnalyticsBreakdownCard icon={<Route className="size-4" />} title={lang === "zh" ? "中转链模式" : "Relay chain mode"} rows={snapshot.chainBreakdown} lang={lang} />
+            <AnalyticsBreakdownCard icon={<Layers3 className="size-4" />} title={translateCopy("an.model", lang)} rows={snapshot.modelBreakdown} lang={lang} />
+            <AnalyticsBreakdownCard icon={<ListFilter className="size-4" />} title={translateCopy("an.inputProtocol", lang)} rows={snapshot.protocolBreakdown} lang={lang} />
+            <AnalyticsBreakdownCard icon={<ListFilter className="size-4" />} title={translateCopy("an.project", lang)} rows={snapshot.projectBreakdown} lang={lang} />
+            <AnalyticsBreakdownCard icon={<Route className="size-4" />} title={translateCopy("an.relayChainMode", lang)} rows={snapshot.chainBreakdown} lang={lang} />
           </div>
 
           <div className="grid gap-3 lg:grid-cols-2">
             <Surface className="p-4" hover={false}>
-              <h3 className="mb-3 flex items-center gap-2 text-sm"><Database className="size-4" />{lang === "zh" ? "缓存对齐与命中" : "Cache alignment"}</h3>
+              <h3 className="mb-3 flex items-center gap-2 text-sm"><Database className="size-4" />{translateCopy("an.cacheAlignment", lang)}</h3>
               {snapshot.cache ? (
                 <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
-                  <Summary label={lang === "zh" ? "对齐" : "Aligned"} value={nf(snapshot.cache.aligned)} />
-                  <Summary label={lang === "zh" ? "未对齐" : "Misaligned"} value={nf(snapshot.cache.misaligned)} />
-                  <Summary label={lang === "zh" ? "读取" : "Reads"} value={nf(snapshot.cache.reads)} />
-                  <Summary label={lang === "zh" ? "写入" : "Writes"} value={nf(snapshot.cache.writes)} />
-                  <Summary label={lang === "zh" ? "未命中" : "Misses"} value={nf(snapshot.cache.misses)} />
-                  <Summary label={lang === "zh" ? "Bust" : "Busts"} value={nf(snapshot.cache.busts)} />
+                  <Summary label={translateCopy("an.aligned", lang)} value={nf(snapshot.cache.aligned)} />
+                  <Summary label={translateCopy("an.misaligned", lang)} value={nf(snapshot.cache.misaligned)} />
+                  <Summary label={translateCopy("an.reads", lang)} value={nf(snapshot.cache.reads)} />
+                  <Summary label={translateCopy("an.writes", lang)} value={nf(snapshot.cache.writes)} />
+                  <Summary label={translateCopy("an.misses", lang)} value={nf(snapshot.cache.misses)} />
+                  <Summary label={translateCopy("an.busts", lang)} value={nf(snapshot.cache.busts)} />
                 </div>
-              ) : <NoData title={lang === "zh" ? "暂无缓存证据" : "No cache evidence"} detail={lang === "zh" ? "当前请求没有记录缓存读写或对齐信息" : "Requests contain no cache read/write or alignment evidence"} />}
+              ) : <NoData title={translateCopy("an.noCacheEvidence", lang)} detail={translateCopy("an.requestsContainNoCacheReadWriteOrAlignmentEvidence", lang)} />}
             </Surface>
             <Surface className="p-4" hover={false}>
-              <h3 className="mb-3 flex items-center gap-2 text-sm"><Timer className="size-4" />{lang === "zh" ? "流水线耗时" : "Pipeline timing"}</h3>
+              <h3 className="mb-3 flex items-center gap-2 text-sm"><Timer className="size-4" />{translateCopy("an.pipelineTiming", lang)}</h3>
               {snapshot.pipeline ? (
                 <div className="grid grid-cols-2 gap-2">
-                  <Summary label={lang === "zh" ? "压缩" : "Compression"} value={timingValue(snapshot.pipeline.compressionMs)} />
-                  <Summary label={lang === "zh" ? "路由" : "Route"} value={timingValue(snapshot.pipeline.routeMs)} />
+                  <Summary label={translateCopy("an.compression", lang)} value={timingValue(snapshot.pipeline.compressionMs)} />
+                  <Summary label={translateCopy("dr.layer.route", lang)} value={timingValue(snapshot.pipeline.routeMs)} />
                   <Summary label="TTFB" value={timingValue(snapshot.pipeline.upstreamTtfbMs)} />
-                  <Summary label={lang === "zh" ? "端到端" : "End-to-end"} value={timingValue(snapshot.pipeline.endToEndMs)} />
+                  <Summary label={translateCopy("an.endToEnd", lang)} value={timingValue(snapshot.pipeline.endToEndMs)} />
                 </div>
-              ) : <NoData title={lang === "zh" ? "暂无分段耗时" : "No stage timing"} detail={lang === "zh" ? "当前仅有压缩耗时时不会推算端到端延迟" : "End-to-end latency is not inferred from compression-only timing"} />}
+              ) : <NoData title={translateCopy("an.noStageTiming", lang)} detail={translateCopy("an.endToEndLatencyIsNotInferredFromCompressionOnlyTiming", lang)} />}
             </Surface>
           </div>
 
           <div className="grid gap-3 lg:grid-cols-2">
-            <AnalyticsBreakdownCard icon={<AlertTriangle className="size-4" />} title={lang === "zh" ? "失败原因" : "Failure reasons"} rows={snapshot.errorBreakdown} lang={lang} />
+            <AnalyticsBreakdownCard icon={<AlertTriangle className="size-4" />} title={translateCopy("an.failureReasons", lang)} rows={snapshot.errorBreakdown} lang={lang} />
             <Surface className="p-4" hover={false}>
-              <h3 className="mb-3 text-sm">{lang === "zh" ? "浪费信号" : "Waste signals"}</h3>
-              {snapshot.wasteSignals.length > 0 ? <div className="space-y-2">{snapshot.wasteSignals.map((signal) => <div key={signal.label} className="flat-inset flex items-center justify-between gap-3 p-2.5"><div><div className="text-sm">{signal.label}</div><div className="text-xs text-muted-foreground">{signal.detail}</div></div><Badge variant="secondary">{nf(signal.count)}</Badge></div>)}</div> : <NoData title={lang === "zh" ? "暂无浪费信号" : "No waste signals"} detail={lang === "zh" ? "需要请求级缓存或变换证据" : "Request-level cache or transform evidence is required"} />}
+              <h3 className="mb-3 text-sm">{translateCopy("an.wasteSignals", lang)}</h3>
+              {snapshot.wasteSignals.length > 0 ? <div className="space-y-2">{snapshot.wasteSignals.map((signal) => <div key={signal.label} className="flat-inset flex items-center justify-between gap-3 p-2.5"><div><div className="text-sm">{signal.label}</div><div className="text-xs text-muted-foreground">{signal.detail}</div></div><Badge variant="secondary">{nf(signal.count)}</Badge></div>)}</div> : <NoData title={translateCopy("an.noWasteSignals", lang)} detail={translateCopy("an.requestLevelCacheOrTransformEvidenceIsRequired", lang)} />}
             </Surface>
           </div>
 
           <Surface className="p-4" hover={false}>
-            <div className="mb-3 flex items-center justify-between gap-2"><h3 className="text-sm">{lang === "zh" ? "请求明细（有界分页）" : "Request detail (bounded pages)"}</h3><span className="text-xs text-muted-foreground">{requestTotal > 0 ? `${requestTotal} ${lang === "zh" ? (nativePagination ? "条 runtime 记录" : "条当前快照") : (nativePagination ? "runtime records" : "in current snapshot")}` : sourceLabel}</span></div>
-            {nativePageError && <div role="status" className="mb-2 text-xs text-amber-600 dark:text-amber-400">{nativePageError === "invalid_cursor" ? (lang === "zh" ? "分页游标已失效，已显示第一页数据。" : "The page cursor expired. First-page data is shown.") : nativePageError === "invalid_evidence" ? (lang === "zh" ? "分页结果缺少可信的来源与时效标记，已显示当前摘要快照。" : "The page result lacks trusted source and freshness markers. The current summary snapshot is shown.") : (lang === "zh" ? "请求分页暂不可用，已显示当前摘要快照。" : "Request pagination is unavailable. The current summary snapshot is shown.")}</div>}
-            {nativeRequestPage && <div className="mb-2 text-xs text-muted-foreground">{lang === "zh" ? `明细源 d-token runtime · fresh · r${requestRevision}${summaryRevision === null ? "" : `；摘要 r${summaryRevision}`}${requestRevisionAligned === false ? "。runtime 在两次读取间已更新，明细与摘要需分别解读。" : ""}` : `Detail source d-token runtime · fresh · r${requestRevision}${summaryRevision === null ? "" : `; summary r${summaryRevision}`}${requestRevisionAligned === false ? ". The runtime changed between reads; interpret detail and summary as separate snapshots." : ""}`}</div>}
-            {nativeInitialLoading ? <div role="status" className="rounded-lg border border-dashed border-border/60 bg-muted/15 px-3 py-3 text-xs text-muted-foreground">{lang === "zh" ? "正在加载有界请求明细…" : "Loading bounded request detail…"}</div> : visibleRequestRows.length > 0 ? <>
+            <div className="mb-3 flex items-center justify-between gap-2"><h3 className="text-sm">{translateCopy("an.requestDetailBoundedPages", lang)}</h3><span className="text-xs text-muted-foreground">{requestTotal > 0 ? `${requestTotal} ${translateCopy(nativePagination ? "an.runtimeRecords" : "an.currentSnapshotRecords", lang)}` : sourceLabel}</span></div>
+            {nativePageError && <div role="status" className="mb-2 text-xs text-amber-600 dark:text-amber-400">{nativePageError === "invalid_cursor" ? (translateCopy("an.thePageCursorExpiredFirstPageDataIsShown", lang)) : nativePageError === "invalid_evidence" ? (translateCopy("an.thePageResultLacksTrustedSourceAndFreshnessMarkersTheCurrentSummarySnapshotIsShown", lang)) : (translateCopy("an.requestPaginationIsUnavailableTheCurrentSummarySnapshotIsShown", lang))}</div>}
+            {nativeRequestPage && <div className="mb-2 text-xs text-muted-foreground">{translateCopy("an.detailSourceRuntimeFresh", lang, { v1: requestRevision, v2: summaryRevision === null ? "" : `；摘要 r${summaryRevision}`, v3: requestRevisionAligned === false ? "。runtime 在两次读取间已更新，明细与摘要需分别解读。" : "", v4: summaryRevision === null ? "" : `; summary r${summaryRevision}`, v5: requestRevisionAligned === false ? ". The runtime changed between reads; interpret detail and summary as separate snapshots." : "" })}</div>}
+            {nativeInitialLoading ? <div role="status" className="rounded-lg border border-dashed border-border/60 bg-muted/15 px-3 py-3 text-xs text-muted-foreground">{translateCopy("an.loadingBoundedRequestDetail", lang)}</div> : visibleRequestRows.length > 0 ? <>
               <div className="overflow-x-auto">
                 <table className="min-w-[720px] w-full text-sm">
                   <thead>
                     <tr className="border-b border-border/50 text-left text-xs text-muted-foreground">
-                      {[lang === "zh" ? "时间" : "Time", "Agent", lang === "zh" ? "模型" : "Model", lang === "zh" ? "路由" : "Route", lang === "zh" ? "节省" : "Saved", lang === "zh" ? "状态" : "Status"].map((label) => <th key={label} className="whitespace-nowrap pb-2 font-normal">{label}</th>)}
+                      {[translateCopy("visual.col.time", lang), "Agent", translateCopy("an.model", lang), translateCopy("dr.layer.route", lang), translateCopy("an.saved", lang), translateCopy("visual.col.status", lang)].map((label) => <th key={label} className="whitespace-nowrap pb-2 font-normal">{label}</th>)}
                     </tr>
                   </thead>
                   <tbody>
@@ -470,40 +470,40 @@ export function Analytics() {
                         <td className="max-w-40 truncate py-2">{safeCell(row.model_id ?? row.model)}</td>
                         <td className="max-w-40 truncate py-2">{safeCell(row.route_id ?? row.route)}</td>
                         <td className="whitespace-nowrap py-2 tabular-nums">{row.tokens_saved ?? "—"}</td>
-                        <td className="whitespace-nowrap py-2">{row.error || row.error_type ? <Badge variant="destructive">{lang === "zh" ? "失败" : "Error"}</Badge> : <Badge variant="secondary">{lang === "zh" ? "完成" : "OK"}</Badge>}</td>
+                        <td className="whitespace-nowrap py-2">{row.error || row.error_type ? <Badge variant="destructive">{translateCopy("an.error", lang)}</Badge> : <Badge variant="secondary">{translateCopy("an.ok", lang)}</Badge>}</td>
                       </tr>
                     ))}
                   </tbody>
                 </table>
               </div>
-              {nativeRequestPage?.coverage?.complete === false && <div className="mt-2 text-xs text-muted-foreground">{lang === "zh" ? `明细最多覆盖最近 ${nf(nativeRequestPage.coverage.loaded_limit ?? 10_000)} 条 runtime 记录。` : `Detail coverage is limited to the latest ${nf(nativeRequestPage.coverage.loaded_limit ?? 10_000)} runtime records.`}</div>}
+              {nativeRequestPage?.coverage?.complete === false && <div className="mt-2 text-xs text-muted-foreground">{translateCopy("an.detailCoverageIsLimitedToTheLatestRuntimeRecords", lang, { v1: nf(nativeRequestPage.coverage.loaded_limit ?? 10_000) })}</div>}
               {requestTotal > REQUEST_PAGE_SIZE && <RequestPaginationBar lang={lang} currentRequestPage={currentRequestPage} requestPageCount={requestPageCount} requestHasMore={requestHasMore} nativePageStatus={nativePageStatus} onPrevious={() => nativePagination ? setNativePendingPageIndex(Math.max(0, currentRequestPage - 1)) : setRequestPage(Math.max(0, currentRequestPage - 1))} onNext={() => { if (nativePagination) { const next = nativeRequestPage.next_cursor; if (!next) return; setNativeCursors((cursors) => [...cursors.slice(0, nativePageIndex + 1), next]); setNativePendingPageIndex(nativePageIndex + 1); } else { setRequestPage(Math.min(requestPageCount - 1, currentRequestPage + 1)); } }} />}
-            </> : requestRows.length > 0 ? <div className="rounded-lg border border-dashed border-border/60 bg-muted/15 px-3 py-2 text-xs text-muted-foreground">{lang === "zh" ? "当前快照少于一页；请求维度已在上方分布中展示。" : "The current snapshot fits on one page; request dimensions are shown in the breakdowns above."}</div> : <NoData title={lang === "zh" ? "暂无请求明细" : "No request detail"} detail={lang === "zh" ? "此列表只展示 runtime 提供的有界快照，不代表全量历史" : "This table shows only the bounded runtime snapshot, not full history"} />}
+            </> : requestRows.length > 0 ? <div className="rounded-lg border border-dashed border-border/60 bg-muted/15 px-3 py-2 text-xs text-muted-foreground">{translateCopy("an.theCurrentSnapshotFitsOnOnePageRequestDimensionsAreShownInTheBreakdownsAbove", lang)}</div> : <NoData title={translateCopy("an.noRequestDetail", lang)} detail={translateCopy("an.thisTableShowsOnlyTheBoundedRuntimeSnapshotNotFullHistory", lang)} />}
           </Surface>
         </TabsContent>
 
         <TabsContent value="history" className="mt-3 space-y-4">
           <MetricStrip>
             <SummaryCard
-              label={lang === "zh" ? "请求记录" : "Request records"}
+              label={translateCopy("an.requestRecords", lang)}
               value={snapshot.hasRequests ? nf(snapshot.requestCount) : unavailableValue}
             />
             <SummaryCard
-              label={lang === "zh" ? "估算累计节省" : "Estimated saved tokens"}
+              label={translateCopy("an.estimatedSavedTokens", lang)}
               value={optionalNumber(snapshot.estimatedSavedTokens)}
             />
             <SummaryCard
-              label={lang === "zh" ? "有记录日期" : "Recorded days"}
+              label={translateCopy("an.recordedDays", lang)}
               value={snapshot.trend30d.length > 0 ? nf(snapshot.trend30d.length) : unavailableValue}
             />
             <SummaryCard
-              label={lang === "zh" ? "请求错误" : "Request errors"}
+              label={translateCopy("ov.requestErrors", lang)}
               value={snapshot.hasRequests ? nf(snapshot.errorCount) : unavailableValue}
             />
           </MetricStrip>
 
           <Surface className="p-4" hover={false}>
-            <h3 className="mb-3 text-sm">{lang === "zh" ? "近 30 日有记录日期" : "Recorded days in the latest 30-day window"}</h3>
+            <h3 className="mb-3 text-sm">{translateCopy("an.recordedDaysInTheLatest30DayWindow", lang)}</h3>
             {snapshot.trend30d.length > 0 ? (
               <div className="h-56" data-testid="analytics-trend">
                 <ResponsiveContainer width="100%" height="100%">
@@ -513,29 +513,29 @@ export function Analytics() {
                       cursor={{ fill: "var(--muted)" }}
                       contentStyle={{ background: "var(--popover)", border: "1px solid var(--border)", borderRadius: 8, fontSize: 12 }}
                     />
-                    <Bar dataKey="requests" name={lang === "zh" ? "请求" : "Requests"} fill="var(--chart-2)" radius={[4, 4, 0, 0]} />
-                    <Bar dataKey="saved" name={lang === "zh" ? "估算节省 Token" : "Estimated saved tokens"} fill="var(--chart-accent)" radius={[4, 4, 0, 0]} />
+                    <Bar dataKey="requests" name={translateCopy("an.requests", lang)} fill="var(--chart-2)" radius={[4, 4, 0, 0]} />
+                    <Bar dataKey="saved" name={translateCopy("an.estimatedSavedTokens2", lang)} fill="var(--chart-accent)" radius={[4, 4, 0, 0]} />
                   </BarChart>
                 </ResponsiveContainer>
               </div>
             ) : (
               <NoData
-                title={lang === "zh" ? "暂无趋势记录" : "No trend records"}
-                detail={lang === "zh" ? "只有带有效时间戳的真实请求才会进入趋势" : "Only real requests with valid timestamps appear here"}
+                title={translateCopy("an.noTrendRecords", lang)}
+                detail={translateCopy("an.onlyRealRequestsWithValidTimestampsAppearHere", lang)}
               />
             )}
           </Surface>
 
           <Surface className="p-4" hover={false}>
-            <h3 className="mb-3 text-sm">{lang === "zh" ? "日期汇总" : "Daily summary"}</h3>
+            <h3 className="mb-3 text-sm">{translateCopy("an.dailySummary", lang)}</h3>
             {snapshot.trend30d.length > 0 ? (
               <div className="overflow-x-auto">
                 <table className="w-full text-sm">
                   <thead>
                     <tr className="border-b border-border/50 text-left text-xs text-muted-foreground">
-                      <th className="pb-2 font-normal">{lang === "zh" ? "日期" : "Date"}</th>
-                      <th className="pb-2 font-normal">{lang === "zh" ? "请求" : "Requests"}</th>
-                      <th className="pb-2 font-normal">{lang === "zh" ? "估算节省 Token" : "Estimated saved tokens"}</th>
+                      <th className="pb-2 font-normal">{translateCopy("an.date", lang)}</th>
+                      <th className="pb-2 font-normal">{translateCopy("an.requests", lang)}</th>
+                      <th className="pb-2 font-normal">{translateCopy("an.estimatedSavedTokens2", lang)}</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -551,8 +551,8 @@ export function Analytics() {
               </div>
             ) : (
               <NoData
-                title={lang === "zh" ? "暂无日期汇总" : "No daily summary"}
-                detail={lang === "zh" ? "连接本地服务并产生真实请求后显示" : "Connect the local service and send real requests"}
+                title={translateCopy("an.noDailySummary", lang)}
+                detail={translateCopy("an.connectTheLocalServiceAndSendRealRequests", lang)}
               />
             )}
           </Surface>
@@ -560,11 +560,9 @@ export function Analytics() {
 
         <TabsContent value="parity" className="mt-3">
           <Surface className="p-4" hover={false}>
-            <h3 className="mb-1 text-sm">{lang === "zh" ? "当前数据覆盖" : "Current data coverage"}</h3>
+            <h3 className="mb-1 text-sm">{translateCopy("an.currentDataCoverage", lang)}</h3>
             <p className="mb-3 text-xs text-muted-foreground">
-              {lang === "zh"
-                ? "数据范围：当前 d-token 本地请求快照中可核验的数据。缺失指标保持为空。"
-                : "Data scope: metrics verifiable from the current local d-token request snapshot. Missing metrics remain empty."}
+              {translateCopy("an.dataScopeMetricsVerifiableFromTheCurrentLocalDTokenRequestSnapshotMissingMetricsRemainEmpty", lang)}
             </p>
             <div className="grid gap-2 sm:grid-cols-2">
               {coverageRows(snapshot, lang, priceCacheStatus).map((item) => (
@@ -572,8 +570,8 @@ export function Analytics() {
                   <span>{item.label}</span>
                   <Badge variant={item.available ? "default" : "secondary"}>
                     {item.available
-                      ? lang === "zh" ? "有真实记录" : "Recorded"
-                      : lang === "zh" ? "暂无记录" : "No record"}
+                      ? translateCopy("an.recorded", lang)
+                      : translateCopy("an.noRecord", lang)}
                   </Badge>
                 </div>
               ))}
@@ -587,49 +585,47 @@ export function Analytics() {
               <div>
                 <h3 className="flex items-center gap-2 text-sm">
                   <ScrollText className="size-4" />
-                  {lang === "zh" ? "请求日志" : "Request log"}
+                  {translateCopy("an.requestLog", lang)}
                 </h3>
                 <p className="mt-1 text-xs text-muted-foreground">
-                  {lang === "zh"
-                    ? "逐条展示 runtime 真实请求记录；缺失字段保持为空，不估算、不补 0。"
-                    : "One real runtime request record per line; missing fields stay empty, never estimated or zero-filled."}
+                  {translateCopy("an.oneRealRuntimeRequestRecordPerLineMissingFieldsStayEmptyNeverEstimatedOrZeroFilled", lang)}
                 </p>
               </div>
               <span className="text-xs text-muted-foreground">
                 {requestTotal > 0
-                  ? `${requestTotal} ${lang === "zh" ? (nativePagination ? "条 runtime 记录" : "条当前快照") : (nativePagination ? "runtime records" : "in current snapshot")}`
+                  ? `${requestTotal} ${translateCopy(nativePagination ? "an.runtimeRecords" : "an.currentSnapshotRecords", lang)}`
                   : sourceLabel}
               </span>
             </div>
             <div className="mb-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-[minmax(0,1fr)_10rem_12rem_auto]">
               <label className="min-w-0">
-                <span className="sr-only">{lang === "zh" ? "搜索请求日志" : "Search request logs"}</span>
+                <span className="sr-only">{translateCopy("an.searchRequestLogs", lang)}</span>
                 <input
                   type="search"
-                  aria-label={lang === "zh" ? "搜索请求日志" : "Search request logs"}
+                  aria-label={translateCopy("an.searchRequestLogs", lang)}
                   value={logSearch}
                   onChange={(event) => { setLogSearch(event.target.value); if (!nativePagination) setRequestPage(0); }}
-                  placeholder={lang === "zh" ? "搜索 request_id / Provider / 模型 / 协议 / 状态" : "Search request id, provider, model, protocol, or status"}
+                  placeholder={translateCopy("an.searchRequestIdProviderModelProtocolOrStatus", lang)}
                   className="h-9 w-full min-w-0 rounded-md border border-input bg-background px-3 text-xs outline-none focus-visible:ring-2 focus-visible:ring-ring"
                 />
               </label>
-              <select aria-label={lang === "zh" ? "状态筛选" : "Status filter"} value={logStatusFilter} onChange={(event) => { setLogStatusFilter(event.target.value as typeof logStatusFilter); if (!nativePagination) setRequestPage(0); }} className="h-9 min-w-0 rounded-md border border-input bg-background px-2 text-xs outline-none focus-visible:ring-2 focus-visible:ring-ring">
-                <option value="all">{lang === "zh" ? "全部状态" : "All statuses"}</option>
-                <option value="ok">{lang === "zh" ? "完成" : "Completed"}</option>
-                <option value="failed">{lang === "zh" ? "失败" : "Failed"}</option>
-                <option value="unknown">{lang === "zh" ? "未知" : "Unknown"}</option>
+              <select aria-label={translateCopy("an.statusFilter", lang)} value={logStatusFilter} onChange={(event) => { setLogStatusFilter(event.target.value as typeof logStatusFilter); if (!nativePagination) setRequestPage(0); }} className="h-9 min-w-0 rounded-md border border-input bg-background px-2 text-xs outline-none focus-visible:ring-2 focus-visible:ring-ring">
+                <option value="all">{translateCopy("an.allStatuses", lang)}</option>
+                <option value="ok">{translateCopy("an.completed", lang)}</option>
+                <option value="failed">{translateCopy("cbm.state.failed", lang)}</option>
+                <option value="unknown">{translateCopy("cbm.state.unknown", lang)}</option>
               </select>
-              <select aria-label={lang === "zh" ? "Provider 筛选" : "Provider filter"} value={logProviderFilter} onChange={(event) => { setLogProviderFilter(event.target.value); if (!nativePagination) setRequestPage(0); }} className="h-9 min-w-0 rounded-md border border-input bg-background px-2 text-xs outline-none focus-visible:ring-2 focus-visible:ring-ring">
-                <option value="all">{lang === "zh" ? "全部 Provider" : "All providers"}</option>
+              <select aria-label={translateCopy("an.providerFilter", lang)} value={logProviderFilter} onChange={(event) => { setLogProviderFilter(event.target.value); if (!nativePagination) setRequestPage(0); }} className="h-9 min-w-0 rounded-md border border-input bg-background px-2 text-xs outline-none focus-visible:ring-2 focus-visible:ring-ring">
+                <option value="all">{translateCopy("an.allProviders", lang)}</option>
                 {logProviders.map((provider) => <option key={provider} value={provider}>{provider}</option>)}
               </select>
               <div className="flex h-9 items-center justify-end whitespace-nowrap text-xs text-muted-foreground">
-                {lang === "zh" ? `显示 ${filteredLogRows.length} / ${requestRows.length}` : `Showing ${filteredLogRows.length} / ${requestRows.length}`}
+                {translateCopy("an.showing", lang, { v1: filteredLogRows.length, v2: requestRows.length })}
               </div>
             </div>
-            {nativePageError && <div role="status" className="mb-2 text-xs text-amber-600 dark:text-amber-400">{nativePageError === "invalid_cursor" ? (lang === "zh" ? "分页游标已失效，已显示第一页数据。" : "The page cursor expired. First-page data is shown.") : nativePageError === "invalid_evidence" ? (lang === "zh" ? "分页结果缺少可信的来源与时效标记，已显示当前摘要快照。" : "The page result lacks trusted source and freshness markers. The current summary snapshot is shown.") : (lang === "zh" ? "请求分页暂不可用，已显示当前摘要快照。" : "Request pagination is unavailable. The current summary snapshot is shown.")}</div>}
-            {nativeRequestPage && <div className="mb-2 text-xs text-muted-foreground">{lang === "zh" ? `明细源 d-token runtime · fresh · r${requestRevision}${summaryRevision === null ? "" : `；摘要 r${summaryRevision}`}${requestRevisionAligned === false ? "。runtime 在两次读取间已更新，明细与摘要需分别解读。" : ""}` : `Detail source d-token runtime · fresh · r${requestRevision}${summaryRevision === null ? "" : `; summary r${summaryRevision}`}${requestRevisionAligned === false ? ". The runtime changed between reads; interpret detail and summary as separate snapshots." : ""}`}</div>}
-            {nativeInitialLoading ? <div role="status" className="rounded-lg border border-dashed border-border/60 bg-muted/15 px-3 py-3 text-xs text-muted-foreground">{lang === "zh" ? "正在加载有界请求明细…" : "Loading bounded request detail…"}</div> : visibleLogRows.length > 0 ? <>
+            {nativePageError && <div role="status" className="mb-2 text-xs text-amber-600 dark:text-amber-400">{nativePageError === "invalid_cursor" ? (translateCopy("an.thePageCursorExpiredFirstPageDataIsShown", lang)) : nativePageError === "invalid_evidence" ? (translateCopy("an.thePageResultLacksTrustedSourceAndFreshnessMarkersTheCurrentSummarySnapshotIsShown", lang)) : (translateCopy("an.requestPaginationIsUnavailableTheCurrentSummarySnapshotIsShown", lang))}</div>}
+            {nativeRequestPage && <div className="mb-2 text-xs text-muted-foreground">{translateCopy("an.detailSourceRuntimeFresh", lang, { v1: requestRevision, v2: summaryRevision === null ? "" : `；摘要 r${summaryRevision}`, v3: requestRevisionAligned === false ? "。runtime 在两次读取间已更新，明细与摘要需分别解读。" : "", v4: summaryRevision === null ? "" : `; summary r${summaryRevision}`, v5: requestRevisionAligned === false ? ". The runtime changed between reads; interpret detail and summary as separate snapshots." : "" })}</div>}
+            {nativeInitialLoading ? <div role="status" className="rounded-lg border border-dashed border-border/60 bg-muted/15 px-3 py-3 text-xs text-muted-foreground">{translateCopy("an.loadingBoundedRequestDetail", lang)}</div> : visibleLogRows.length > 0 ? <>
               <div data-testid="analytics-log-grid" className="grid min-w-0 gap-2">
                 {visibleLogRows.map((row, index) => {
                   const rowKey = `${row.request_id ?? "row"}-${row.timestamp_ms ?? index}`;
@@ -637,8 +633,8 @@ export function Analytics() {
                   return <RequestLogRowView key={rowKey} row={row} rowKey={rowKey} index={index} lang={lang} expanded={expanded} priceCache={priceCache} onToggle={() => setExpandedRequestId(expanded ? null : rowKey)} />;
                 })}
               </div>
-              {nativeRequestPage?.coverage?.complete === false && <div className="mt-2 text-xs text-muted-foreground">{lang === "zh" ? `明细最多覆盖最近 ${nf(nativeRequestPage.coverage.loaded_limit ?? 10_000)} 条 runtime 记录。` : `Detail coverage is limited to the latest ${nf(nativeRequestPage.coverage.loaded_limit ?? 10_000)} runtime records.`}</div>}
-            </> : requestRows.length > 0 ? <NoData title={lang === "zh" ? "没有匹配的请求日志" : "No matching request logs"} detail={lang === "zh" ? "筛选只作用于当前有界页；可继续翻页查看其他 runtime 记录。" : "Filters apply only to the current bounded page; continue paging to inspect other runtime records."} /> : <NoData title={lang === "zh" ? "暂无请求日志" : "No request logs"} detail={lang === "zh" ? "此列表只展示 runtime 提供的有界快照，不代表全量历史" : "This list shows only the bounded runtime snapshot, not full history"} />}
+              {nativeRequestPage?.coverage?.complete === false && <div className="mt-2 text-xs text-muted-foreground">{translateCopy("an.detailCoverageIsLimitedToTheLatestRuntimeRecords", lang, { v1: nf(nativeRequestPage.coverage.loaded_limit ?? 10_000) })}</div>}
+            </> : requestRows.length > 0 ? <NoData title={translateCopy("an.noMatchingRequestLogs", lang)} detail={translateCopy("an.filtersApplyOnlyToTheCurrentBoundedPageContinuePagingToInspectOtherRuntimeRecords", lang)} /> : <NoData title={translateCopy("an.noRequestLogs", lang)} detail={translateCopy("an.thisListShowsOnlyTheBoundedRuntimeSnapshotNotFullHistory", lang)} />}
             {(requestTotal > REQUEST_PAGE_SIZE || (nativePagination && (requestHasMore || currentRequestPage > 0))) && <RequestPaginationBar lang={lang} currentRequestPage={currentLogPage} requestPageCount={logPageCount} requestHasMore={logHasMore} nativePageStatus={nativePageStatus} onPrevious={() => nativePagination ? setNativePendingPageIndex(Math.max(0, currentLogPage - 1)) : setRequestPage(Math.max(0, currentLogPage - 1))} onNext={() => { if (nativePagination) { const next = nativeRequestPage.next_cursor; if (!next) return; setNativeCursors((cursors) => [...cursors.slice(0, nativePageIndex + 1), next]); setNativePendingPageIndex(nativePageIndex + 1); } else { setRequestPage(Math.min(logPageCount - 1, currentLogPage + 1)); } }} />}
           </Surface>
         </TabsContent>
@@ -724,8 +720,8 @@ function BreakdownList({
   if (rows.length === 0) {
     return (
       <NoData
-        title={lang === "zh" ? "暂无真实请求记录" : "No real request records"}
-        detail={lang === "zh" ? "连接本地服务并产生请求后显示" : "Connect the local service and send a request"}
+        title={translateCopy("cap.noRealRequestRecords", lang)}
+        detail={translateCopy("an.connectTheLocalServiceAndSendARequest", lang)}
       />
     );
   }
@@ -737,7 +733,7 @@ function BreakdownList({
           <div className="flex items-center justify-between gap-3 text-sm">
             <span className="min-w-0 truncate">{row.label}</span>
             <span className="shrink-0 text-xs text-muted-foreground">
-              {row.count} {lang === "zh" ? "次请求" : "requests"}
+              {row.count} {translateCopy("an.requests2", lang)}
             </span>
           </div>
           <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-muted">
@@ -748,7 +744,7 @@ function BreakdownList({
           </div>
           {showSaved && (
             <div className="mt-1.5 text-xs text-muted-foreground">
-              {lang === "zh" ? "估算节省 Token" : "Estimated saved tokens"} · {optionalNumber(row.tokensSaved)}
+              {translateCopy("an.estimatedSavedTokens2", lang)} · {optionalNumber(row.tokensSaved)}
             </div>
           )}
         </div>
@@ -773,7 +769,7 @@ function optionalNumber(value: number | null) {
 function metricDetail(value: number | null, fallback: string, lang: "zh" | "en") {
   return value === null
     ? fallback
-    : lang === "zh" ? "按本地请求日志中的 Token 字段估算" : "Estimated from token fields in local request logs";
+    : translateCopy("an.estimatedFromTokenFieldsInLocalRequestLogs", lang);
 }
 
 export function applyRuntimeAggregate(
@@ -797,13 +793,11 @@ export function applyRuntimeAggregate(
     ? Math.max(0, inputBefore - inputAfter)
     : snapshot.estimatedSavedTokens;
   const recentWindowTruncated = requestCount > snapshot.requestCount;
-  const scopeWarning = lang === "zh"
-    ? "总量指标来自持久化聚合；分布、耗时和趋势只覆盖当前返回的最近请求窗口。"
-    : "Totals come from durable aggregates; breakdowns, latency, and trends cover the returned recent-request window.";
+  const scopeWarning = translateCopy("an.totalsComeFromDurableAggregatesBreakdownsLatencyAndTrendsCoverTheReturnedRecentRequestWindow", lang);
   const runtimeDaily = runtimeTrend(analytics.daily);
   const coverage = recordValue(analytics.coverage);
   const coverageWarning = coverage.complete === false
-    ? (lang === "zh" ? `分析聚合最多覆盖最近 ${nf(nonNegativeMetric(coverage.loaded_limit) ?? 10_000)} 条 runtime 记录。` : `Analytics aggregates cover at most the latest ${nf(nonNegativeMetric(coverage.loaded_limit) ?? 10_000)} runtime records.`)
+    ? (translateCopy("an.analyticsAggregatesCoverAtMostTheLatestRuntimeRecords", lang, { v1: nf(nonNegativeMetric(coverage.loaded_limit) ?? 10_000) }))
     : null;
 
   const warnings = recentWindowTruncated && !snapshot.warnings.includes(scopeWarning)
@@ -875,62 +869,54 @@ function nonNegativeMetric(value: unknown): number | null {
 function analyticsSourceLabel(state: string, hasRequests: boolean, lang: "zh" | "en") {
   if (state === "verified") {
     return hasRequests
-      ? lang === "zh" ? "d-token 本地请求数据" : "Local d-token request data"
-      : lang === "zh" ? "本地服务在线 · 暂无请求记录" : "Local service online · no request records";
+      ? translateCopy("an.localDTokenRequestData", lang)
+      : translateCopy("an.localServiceOnlineNoRequestRecords", lang);
   }
-  if (state === "preview") return lang === "zh" ? "浏览器预览 · 未连接真实数据" : "Browser preview · no live data";
-  if (state === "loading") return lang === "zh" ? "正在连接 d-token 本地服务" : "Connecting to the local d-token service";
-  if (state === "stale") return lang === "zh" ? "本地数据已过期" : "Local data is stale";
-  if (state === "partial") return lang === "zh" ? "本地数据不完整" : "Local data is incomplete";
-  return lang === "zh" ? "d-token 本地服务暂不可用" : "Local d-token service unavailable";
+  if (state === "preview") return translateCopy("an.browserPreviewNoLiveData", lang);
+  if (state === "loading") return translateCopy("an.connectingToTheLocalDTokenService", lang);
+  if (state === "stale") return translateCopy("an.localDataIsStale", lang);
+  if (state === "partial") return translateCopy("an.localDataIsIncomplete", lang);
+  return translateCopy("an.localDTokenServiceUnavailable", lang);
 }
 
 function analyticsStatusDetail(state: string, hasRequests: boolean, lang: "zh" | "en") {
   if (state === "verified" && hasRequests) {
-    return lang === "zh"
-      ? "所有指标由同一份 d-token 本地请求快照生成，缺失字段保持为空。"
-      : "Every metric is generated from one local d-token request snapshot.";
+    return translateCopy("an.everyMetricIsGeneratedFromOneLocalDTokenRequestSnapshot", lang);
   }
   if (state === "verified") {
-    return lang === "zh"
-      ? "本地服务已连接；收到真实请求后，这里才会显示指标与分布。"
-      : "The local service is connected; metrics appear after real requests arrive.";
+    return translateCopy("an.theLocalServiceIsConnectedMetricsAppearAfterRealRequestsArrive", lang);
   }
   if (state === "stale") {
-    return lang === "zh"
-      ? "保留上次可验证指标用于追溯；这些数值不代表当前服务状态。"
-      : "The last verified metrics are retained for traceability; they do not represent the current service state.";
+    return translateCopy("an.theLastVerifiedMetricsAreRetainedForTraceabilityTheyDoNotRepresentTheCurrentServiceState", lang);
   }
-  return lang === "zh"
-    ? "当前没有可核验的实时请求数据，缺失指标保持为空。"
-    : "No verifiable live request data is available; missing metrics remain empty.";
+  return translateCopy("an.noVerifiableLiveRequestDataIsAvailableMissingMetricsRemainEmpty", lang);
 }
 
 function coverageRows(snapshot: AnalyticsSnapshot, lang: "zh" | "en", priceCacheStatus: "loading" | "ready" | "unavailable") {
   return [
-    { label: lang === "zh" ? "请求记录" : "Request records", available: snapshot.hasRequests },
-    { label: lang === "zh" ? "输入 Token 估算" : "Estimated input tokens", available: snapshot.estimatedInputTokens !== null },
-    { label: lang === "zh" ? "输出 Token 估算" : "Estimated output tokens", available: snapshot.estimatedOutputTokens !== null },
-    { label: lang === "zh" ? "节省 Token 估算" : "Estimated saved tokens", available: snapshot.estimatedSavedTokens !== null },
-    { label: lang === "zh" ? "压缩耗时" : "Compression latency", available: snapshot.latency !== null },
-    { label: lang === "zh" ? "Agent 标识" : "Agent identity", available: snapshot.agentBreakdown.length > 0 },
-    { label: lang === "zh" ? "路由标识" : "Route identity", available: snapshot.routeBreakdown.length > 0 },
-    { label: lang === "zh" ? "上游标识" : "Provider identity", available: snapshot.upstreamBreakdown.length > 0 },
-    { label: lang === "zh" ? "时间趋势" : "Time trend", available: snapshot.trend30d.length > 0 },
-    { label: lang === "zh" ? "处理步骤" : "Processing steps", available: snapshot.strategyBreakdown.length > 0 },
-    { label: lang === "zh" ? "模型标识" : "Model identity", available: snapshot.modelBreakdown.length > 0 },
-    { label: lang === "zh" ? "输入协议" : "Input protocol", available: snapshot.protocolBreakdown.length > 0 },
-    { label: lang === "zh" ? "项目标识" : "Project identity", available: snapshot.projectBreakdown.length > 0 },
-    { label: lang === "zh" ? "中转链模式" : "Relay chain mode", available: snapshot.chainBreakdown.length > 0 },
-    { label: lang === "zh" ? "失败原因" : "Failure reasons", available: snapshot.errorBreakdown.length > 0 },
-    { label: lang === "zh" ? "缓存读写与对齐" : "Cache alignment", available: snapshot.cache !== null },
-    { label: lang === "zh" ? "流水线分段耗时" : "Pipeline stage timing", available: snapshot.pipeline !== null },
-    { label: lang === "zh" ? "TTFB 与吞吐" : "TTFB and throughput", available: snapshot.pipeline?.upstreamTtfbMs !== null && snapshot.pipeline?.upstreamTtfbMs !== undefined },
-    { label: lang === "zh" ? "缓存失效与未命中归因" : "Cache expiry and miss attribution", available: snapshot.cache !== null && (snapshot.cache.busts > 0 || snapshot.cache.misses > 0) },
-    { label: lang === "zh" ? "成本与定价来源" : "Cost and pricing source", available: priceCacheStatus === "ready" },
-    { label: lang === "zh" ? "输出整形反事实" : "Output-shaping counterfactual", available: false },
-    { label: lang === "zh" ? "工具定义压缩节省" : "Tool definition savings", available: false },
-    { label: lang === "zh" ? "Checkpoint / 周 / 月历史" : "Checkpoint / weekly / monthly history", available: false },
+    { label: translateCopy("an.requestRecords", lang), available: snapshot.hasRequests },
+    { label: translateCopy("an.estimatedInputTokens2", lang), available: snapshot.estimatedInputTokens !== null },
+    { label: translateCopy("an.estimatedOutputTokens2", lang), available: snapshot.estimatedOutputTokens !== null },
+    { label: translateCopy("an.estimatedSavedTokens3", lang), available: snapshot.estimatedSavedTokens !== null },
+    { label: translateCopy("an.compressionLatency", lang), available: snapshot.latency !== null },
+    { label: translateCopy("an.agentIdentity", lang), available: snapshot.agentBreakdown.length > 0 },
+    { label: translateCopy("an.routeIdentity", lang), available: snapshot.routeBreakdown.length > 0 },
+    { label: translateCopy("an.providerIdentity", lang), available: snapshot.upstreamBreakdown.length > 0 },
+    { label: translateCopy("an.timeTrend", lang), available: snapshot.trend30d.length > 0 },
+    { label: translateCopy("hm.processingSteps", lang), available: snapshot.strategyBreakdown.length > 0 },
+    { label: translateCopy("an.modelIdentity", lang), available: snapshot.modelBreakdown.length > 0 },
+    { label: translateCopy("an.inputProtocol", lang), available: snapshot.protocolBreakdown.length > 0 },
+    { label: translateCopy("an.projectIdentity", lang), available: snapshot.projectBreakdown.length > 0 },
+    { label: translateCopy("an.relayChainMode", lang), available: snapshot.chainBreakdown.length > 0 },
+    { label: translateCopy("an.failureReasons", lang), available: snapshot.errorBreakdown.length > 0 },
+    { label: translateCopy("an.cacheAlignment2", lang), available: snapshot.cache !== null },
+    { label: translateCopy("an.pipelineStageTiming", lang), available: snapshot.pipeline !== null },
+    { label: translateCopy("an.ttfbAndThroughput", lang), available: snapshot.pipeline?.upstreamTtfbMs !== null && snapshot.pipeline?.upstreamTtfbMs !== undefined },
+    { label: translateCopy("an.cacheExpiryAndMissAttribution", lang), available: snapshot.cache !== null && (snapshot.cache.busts > 0 || snapshot.cache.misses > 0) },
+    { label: translateCopy("an.costAndPricingSource", lang), available: priceCacheStatus === "ready" },
+    { label: translateCopy("an.outputShapingCounterfactual", lang), available: false },
+    { label: translateCopy("an.toolDefinitionSavings", lang), available: false },
+    { label: translateCopy("an.checkpointWeeklyMonthlyHistory", lang), available: false },
   ];
 }
 
@@ -974,10 +960,10 @@ function RequestPaginationBar({
 }) {
   return (
     <div className="mt-3 flex items-center justify-between">
-      <span className="text-xs text-muted-foreground">{lang === "zh" ? `第 ${currentRequestPage + 1} / ${requestPageCount} 页` : `Page ${currentRequestPage + 1} / ${requestPageCount}`}</span>
+      <span className="text-xs text-muted-foreground">{translateCopy("an.page", lang, { v1: currentRequestPage + 1, v2: requestPageCount })}</span>
       <div className="flex gap-2">
-        <Button size="sm" variant="outline" disabled={currentRequestPage === 0 || nativePageStatus === "loading"} onClick={onPrevious}>{lang === "zh" ? "上一页" : "Previous"}</Button>
-        <Button size="sm" variant="outline" disabled={!requestHasMore || nativePageStatus === "loading"} onClick={onNext}>{nativePageStatus === "loading" ? (lang === "zh" ? "加载中…" : "Loading…") : (lang === "zh" ? "下一页" : "Next")}</Button>
+        <Button size="sm" variant="outline" disabled={currentRequestPage === 0 || nativePageStatus === "loading"} onClick={onPrevious}>{translateCopy("an.previous", lang)}</Button>
+        <Button size="sm" variant="outline" disabled={!requestHasMore || nativePageStatus === "loading"} onClick={onNext}>{nativePageStatus === "loading" ? (translateCopy("an.loading", lang)) : (translateCopy("an.next", lang))}</Button>
       </div>
     </div>
   );
@@ -1017,7 +1003,7 @@ function RequestLogRowView({
       <div className="flex min-w-0 flex-wrap items-start justify-between gap-2">
         <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-muted-foreground">
           <code className="min-w-0 max-w-full truncate font-mono text-[11px]" title={typeof row.request_id === "string" ? row.request_id : undefined}>{typeof row.request_id === "string" ? redactString(row.request_id) : unavailableValue}</code>
-          {status === "failed" ? <Badge variant="destructive">{lang === "zh" ? "失败" : "Error"}</Badge> : status === "ok" ? <Badge variant="secondary">{lang === "zh" ? "完成" : "OK"}</Badge> : <Badge variant="outline">{lang === "zh" ? "未知" : "Unknown"}</Badge>}
+          {status === "failed" ? <Badge variant="destructive">{translateCopy("an.error", lang)}</Badge> : status === "ok" ? <Badge variant="secondary">{translateCopy("an.ok", lang)}</Badge> : <Badge variant="outline">{translateCopy("cbm.state.unknown", lang)}</Badge>}
           <span className="whitespace-nowrap font-mono">{formatTimestamp(row.timestamp_ms)}</span>
           <span className="min-w-0 truncate">{safeCell(row.agent)}</span>
           <span className="min-w-0 truncate">{safeCell(row.model_id ?? row.model)}</span>
@@ -1026,35 +1012,35 @@ function RequestLogRowView({
         </div>
         <Button size="sm" variant="ghost" aria-expanded={expanded} aria-controls={detailId} onClick={onToggle} className="shrink-0 gap-1 px-2 text-xs">
           {expanded ? <ChevronUp className="size-3.5" /> : <ChevronDown className="size-3.5" />}
-          {expanded ? (lang === "zh" ? "收起" : "Collapse") : (lang === "zh" ? "查看详情" : "Details")}
+          {expanded ? (translateCopy("an.collapse", lang)) : (translateCopy("an.details", lang))}
         </Button>
       </div>
 
       <div className="mt-3 grid min-w-0 grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-6">
         <LogValue label="Local Token" value={tokenEvidenceCell(row.input_tokens_before)} />
         <LogValue label="Provider Token" value={tokenEvidenceCell(row.provider_input_tokens)} />
-        <LogValue label={lang === "zh" ? "压缩前后" : "Before → after"} value={beforeAfterCell(row)} />
-        <LogValue label={lang === "zh" ? "节省 Token" : "Saved tokens"} value={tokenEvidenceCell(row.tokens_saved)} />
-        <LogValue label={lang === "zh" ? "耗时" : "Latency"} value={durationCell(row.latency_ms ?? row.end_to_end_ms ?? row.compression_ms)} />
-        <LogValue label={lang === "zh" ? "路由" : "Route"} value={safeCell(row.route_id ?? row.route)} />
+        <LogValue label={translateCopy("an.beforeAfter", lang)} value={beforeAfterCell(row)} />
+        <LogValue label={translateCopy("an.savedTokens", lang)} value={tokenEvidenceCell(row.tokens_saved)} />
+        <LogValue label={translateCopy("an.latency", lang)} value={durationCell(row.latency_ms ?? row.end_to_end_ms ?? row.compression_ms)} />
+        <LogValue label={translateCopy("dr.layer.route", lang)} value={safeCell(row.route_id ?? row.route)} />
       </div>
 
       {expanded && (
         <div id={detailId} className="mt-3 grid min-w-0 gap-3 border-t border-border/50 pt-3 sm:grid-cols-2">
-          <LogDetailSection title={lang === "zh" ? "路由身份" : "Route identity"} rows={routeIdentityRows(row, lang)} />
-          <LogDetailSection title={lang === "zh" ? "Token 证据" : "Token evidence"} rows={tokenDetailRows(row, lang)} />
-          <LogDetailSection title={lang === "zh" ? "性能与费用" : "Performance and cost"} rows={performanceCostRows(row, lang, priceCache)} />
+          <LogDetailSection title={translateCopy("an.routeIdentity2", lang)} rows={routeIdentityRows(row, lang)} />
+          <LogDetailSection title={translateCopy("an.tokenEvidence", lang)} rows={tokenDetailRows(row, lang)} />
+          <LogDetailSection title={translateCopy("an.performanceAndCost", lang)} rows={performanceCostRows(row, lang, priceCache)} />
           <section className="min-w-0 rounded-md bg-muted/20 p-3">
-            <h4 className="text-[11px] font-semibold">{lang === "zh" ? "证据 Receipt" : "Evidence receipt"}</h4>
+            <h4 className="text-[11px] font-semibold">{translateCopy("an.evidenceReceipt", lang)}</h4>
             {row.transforms_applied && row.transforms_applied.length > 0 && (
               <div className="mt-2">
-                <div className="mb-1.5 text-[11px] text-muted-foreground">{lang === "zh" ? "变换证据" : "Transform evidence"}</div>
+                <div className="mb-1.5 text-[11px] text-muted-foreground">{translateCopy("an.transformEvidence", lang)}</div>
                 <div className="flex flex-wrap gap-1.5">
                   {row.transforms_applied.map((transform) => <Badge key={transform} variant="secondary" className="text-[11px]">{safeCell(transform)}</Badge>)}
                 </div>
               </div>
             )}
-            <div className="mt-2 text-[11px] text-muted-foreground">{receipt.length > 0 ? (lang === "zh" ? "Optimization Receipt（脱敏白名单）" : "Optimization Receipt (redacted whitelist)") : (lang === "zh" ? "Optimization Receipt（runtime 未合并 · 暂不可用）" : "Optimization Receipt (runtime unavailable)")}</div>
+            <div className="mt-2 text-[11px] text-muted-foreground">{receipt.length > 0 ? (translateCopy("an.optimizationReceiptRedactedWhitelist", lang)) : (translateCopy("an.optimizationReceiptRuntimeUnavailable", lang))}</div>
             {receipt.length > 0 ? <div className="mt-1.5 grid min-w-0 gap-2 sm:grid-cols-2">{receipt.map((item) => <LogValue key={item.label} label={item.label} value={item.value} mono />)}</div> : <div className="mt-1 text-xs text-muted-foreground">—</div>}
           </section>
         </div>
@@ -1078,60 +1064,58 @@ function evidenceValue(value: unknown, formatter?: (value: number) => string): s
 }
 
 function routeIdentityRows(row: RequestLogRow, lang: "zh" | "en"): LogEvidenceRow[] {
-  const zh = lang === "zh";
   return [
-    { label: zh ? "请求标识" : "Request id", value: evidenceValue(row.request_id) },
-    { label: zh ? "时间" : "Time", value: typeof row.timestamp_ms === "number" ? formatTimestamp(row.timestamp_ms) : unavailableValue },
+    { label: translateCopy("an.requestId", lang), value: evidenceValue(row.request_id) },
+    { label: translateCopy("visual.col.time", lang), value: typeof row.timestamp_ms === "number" ? formatTimestamp(row.timestamp_ms) : unavailableValue },
     { label: "Agent", value: evidenceValue(row.agent) },
-    { label: zh ? "界面（实例）" : "Interface (instance)", value: evidenceValue(row.instance_id) },
-    { label: zh ? "模型" : "Model", value: evidenceValue(row.model_id ?? row.model) },
+    { label: translateCopy("an.interfaceInstance", lang), value: evidenceValue(row.instance_id) },
+    { label: translateCopy("an.model", lang), value: evidenceValue(row.model_id ?? row.model) },
     { label: "Provider", value: evidenceValue(row.provider_id ?? row.provider) },
-    { label: zh ? "路由" : "Route", value: evidenceValue(row.route_id ?? row.route) },
-    { label: zh ? "输入协议" : "Input protocol", value: displayProtocol(row.input_protocol ?? row.protocol) },
-    { label: zh ? "输出协议" : "Output protocol", value: displayProtocol(row.output_protocol) },
-    { label: zh ? "中转链模式" : "Relay chain mode", value: evidenceValue(row.chain_mode) },
+    { label: translateCopy("dr.layer.route", lang), value: evidenceValue(row.route_id ?? row.route) },
+    { label: translateCopy("an.inputProtocol", lang), value: displayProtocol(row.input_protocol ?? row.protocol) },
+    { label: translateCopy("an.outputProtocol", lang), value: displayProtocol(row.output_protocol) },
+    { label: translateCopy("an.relayChainMode", lang), value: evidenceValue(row.chain_mode) },
   ];
 }
 
 function tokenDetailRows(row: RequestLogRow, lang: "zh" | "en"): LogEvidenceRow[] {
   return [
     { label: "Local Token", value: tokenEvidenceCell(row.input_tokens_before) },
-    { label: lang === "zh" ? "Local 压缩后 Token" : "Local compressed tokens", value: tokenEvidenceCell(row.input_tokens_after) },
+    { label: translateCopy("an.localCompressedTokens", lang), value: tokenEvidenceCell(row.input_tokens_after) },
     { label: "Provider Token", value: tokenEvidenceCell(row.provider_input_tokens) },
-    { label: lang === "zh" ? "输出 Token" : "Output tokens", value: tokenEvidenceCell(row.output_tokens) },
-    { label: lang === "zh" ? "节省 Token" : "Saved tokens", value: tokenEvidenceCell(row.tokens_saved) },
+    { label: translateCopy("an.outputTokens", lang), value: tokenEvidenceCell(row.output_tokens) },
+    { label: translateCopy("an.savedTokens", lang), value: tokenEvidenceCell(row.tokens_saved) },
   ];
 }
 
 function performanceCostRows(row: RequestLogRow, lang: "zh" | "en", priceCache: ModelPriceCache | null): LogEvidenceRow[] {
-  const zh = lang === "zh";
   const source = row as RequestLogRow & { cost_usd?: unknown; provider_cost_usd?: unknown };
   const estimate = estimateRequestInputCost(priceCache, row.model_id ?? row.model, row.input_tokens_before, row.input_tokens_after);
   const rows: LogEvidenceRow[] = [
-    { label: zh ? "压缩耗时" : "Compression latency", value: durationCell(row.compression_ms) },
-    { label: zh ? "路由耗时" : "Route latency", value: durationCell(row.route_ms) },
-    { label: zh ? "上游 TTFB" : "Upstream TTFB", value: durationCell(row.upstream_ttfb_ms) },
-    { label: zh ? "端到端耗时" : "End-to-end latency", value: durationCell(row.end_to_end_ms ?? row.latency_ms) },
-    { label: zh ? "上游账单费用" : "Upstream billed cost", value: evidenceValue(source.provider_cost_usd ?? source.cost_usd, (value) => `$${value.toFixed(6)}`) },
+    { label: translateCopy("an.compressionLatency", lang), value: durationCell(row.compression_ms) },
+    { label: translateCopy("an.routeLatency", lang), value: durationCell(row.route_ms) },
+    { label: translateCopy("an.upstreamTtfb", lang), value: durationCell(row.upstream_ttfb_ms) },
+    { label: translateCopy("an.endToEndLatency", lang), value: durationCell(row.end_to_end_ms ?? row.latency_ms) },
+    { label: translateCopy("an.upstreamBilledCost", lang), value: evidenceValue(source.provider_cost_usd ?? source.cost_usd, (value) => `$${value.toFixed(6)}`) },
   ];
   if (estimate.available) {
     const symbol = estimate.currency === "CNY" ? "¥" : "$";
     const money = (value: number) => `${symbol}${value.toFixed(6)}`;
     rows.push(
-      { label: zh ? "估算压缩前输入成本" : "Est. pre-compression input cost", value: money(estimate.preCost) },
-      { label: zh ? "估算压缩后输入成本" : "Est. post-compression input cost", value: money(estimate.postCost) },
-      { label: zh ? "估算费用差额" : "Est. cost difference", value: money(estimate.savedCost) },
-      { label: zh ? "定价依据" : "Pricing basis", value: `${estimate.currency} ${estimate.source} ${estimate.freshness}` },
+      { label: translateCopy("an.estPreCompressionInputCost", lang), value: money(estimate.preCost) },
+      { label: translateCopy("an.estPostCompressionInputCost", lang), value: money(estimate.postCost) },
+      { label: translateCopy("an.estCostDifference", lang), value: money(estimate.savedCost) },
+      { label: translateCopy("an.pricingBasis", lang), value: `${estimate.currency} ${estimate.source} ${estimate.freshness}` },
     );
   } else {
     rows.push(
-      { label: zh ? "估算压缩前输入成本" : "Est. pre-compression input cost", value: unavailableValue },
-      { label: zh ? "估算压缩后输入成本" : "Est. post-compression input cost", value: unavailableValue },
-      { label: zh ? "估算费用差额" : "Est. cost difference", value: unavailableValue },
-      { label: zh ? "定价依据" : "Pricing basis", value: zh ? "价格未知" : "price unknown" },
+      { label: translateCopy("an.estPreCompressionInputCost", lang), value: unavailableValue },
+      { label: translateCopy("an.estPostCompressionInputCost", lang), value: unavailableValue },
+      { label: translateCopy("an.estCostDifference", lang), value: unavailableValue },
+      { label: translateCopy("an.pricingBasis", lang), value: translateCopy("an.priceUnknown", lang) },
     );
   }
-  rows.push({ label: zh ? "失败类型" : "Failure type", value: evidenceValue(row.error_type ?? row.error) });
+  rows.push({ label: translateCopy("an.failureType", lang), value: evidenceValue(row.error_type ?? row.error) });
   return rows;
 }
 
@@ -1144,14 +1128,13 @@ function receiptRows(value: unknown, lang: "zh" | "en"): Array<{ label: string; 
   if (!value || typeof value !== "object") return [];
   const source = value as Record<string, unknown>;
   const rows: Array<{ label: string; value: string }> = [];
-  const zh = lang === "zh";
   const flat: Array<[string, string]> = [
-    ["disposition", zh ? "优化决策" : "Disposition"],
-    ["sent_payload", zh ? "发送载荷" : "Sent payload"],
-    ["upstream_state", zh ? "上游状态" : "Upstream state"],
-    ["attribution_basis", zh ? "归因依据" : "Attribution basis"],
-    ["provider_reconciled_input_savings", zh ? "Provider 对账节省" : "Provider reconciled savings"],
-    ["fallback_reason_code", zh ? "回退原因" : "Fallback reason"],
+    ["disposition", translateCopy("an.disposition", lang)],
+    ["sent_payload", translateCopy("an.sentPayload", lang)],
+    ["upstream_state", translateCopy("an.upstreamState", lang)],
+    ["attribution_basis", translateCopy("an.attributionBasis", lang)],
+    ["provider_reconciled_input_savings", translateCopy("an.providerReconciledSavings", lang)],
+    ["fallback_reason_code", translateCopy("an.fallbackReason", lang)],
   ];
   for (const [key, label] of flat) {
     const raw = source[key];
@@ -1163,7 +1146,7 @@ function receiptRows(value: unknown, lang: "zh" | "en"): Array<{ label: string; 
     const savings = (estimated as Record<string, unknown>)["signed_savings"];
     if (savings && typeof savings === "object") {
       const signed = savings as Record<string, unknown>;
-      for (const [key, label] of [["input_tokens", zh ? "估算节省输入 Token" : "Estimated saved input tokens"], ["total_tokens", zh ? "估算节省总 Token" : "Estimated saved total tokens"]] as Array<[string, string]>) {
+      for (const [key, label] of [["input_tokens", translateCopy("an.estimatedSavedInputTokens", lang)], ["total_tokens", translateCopy("an.estimatedSavedTotalTokens", lang)]] as Array<[string, string]>) {
         const raw = signed[key];
         if (typeof raw === "number" && Number.isFinite(raw)) rows.push({ label, value: String(raw) });
       }

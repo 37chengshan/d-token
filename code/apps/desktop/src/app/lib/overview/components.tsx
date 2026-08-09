@@ -1,5 +1,5 @@
 import { CircleAlert, Clock3, Coins, RefreshCw, type LucideIcon } from "lucide-react";
-import { useT, type Lang } from "../i18n";
+import { useT, type Lang, translateCopy } from "../i18n";
 import { Badge } from "../../components/ui/badge";
 import { AnimatedSegmentedControl } from "../../components/shell/AnimatedSegmentedControl";
 import type { AccountQuotaSummary, CcSwitchStatus, OperationalStatus, OperationalTone } from "./derivations";
@@ -25,11 +25,11 @@ export function OverviewTrendChart({ data, lang }: { data: Array<{ day: string; 
   const area = `${line} L${points[points.length - 1]?.x ?? right},${bottom} L${points[0]?.x ?? left},${bottom} Z`;
   const labelIndexes = Array.from(new Set([0, Math.floor((points.length - 1) / 2), points.length - 1]));
   return <div className="h-44 w-full" data-overview-trend="lightweight-svg">
-    <svg viewBox={`0 0 ${width} ${height}`} className="h-full w-full overflow-visible" role="img" aria-label={lang === "zh" ? "近期开销减少趋势" : "Recent token reduction trend"}>
+    <svg viewBox={`0 0 ${width} ${height}`} className="h-full w-full overflow-visible" role="img" aria-label={translateCopy("ov.recentTokenReductionTrend", lang)}>
       <defs><linearGradient id="overview-trend-fill" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor="var(--chart-accent)" stopOpacity="0.28" /><stop offset="100%" stopColor="var(--chart-accent)" stopOpacity="0.02" /></linearGradient></defs>
       <path d={area} fill="url(#overview-trend-fill)" />
       <path d={line} fill="none" stroke="var(--chart-accent)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" vectorEffect="non-scaling-stroke" />
-      {points.map((point) => <circle key={point.day} cx={point.x} cy={point.y} r="3" fill="var(--background)" stroke="var(--chart-accent)" strokeWidth="2" tabIndex={0} aria-label={`${point.day}: ${point.saved}`}><title>{point.day} · {lang === "zh" ? "物理减少" : "physical reduction"} {point.saved.toLocaleString()}</title></circle>)}
+      {points.map((point) => <circle key={point.day} cx={point.x} cy={point.y} r="3" fill="var(--background)" stroke="var(--chart-accent)" strokeWidth="2" tabIndex={0} aria-label={`${point.day}: ${point.saved}`}><title>{point.day} · {translateCopy("ov.physicalReduction", lang)} {point.saved.toLocaleString()}</title></circle>)}
       {labelIndexes.map((index) => { const point = points[index]; return point ? <text key={point.day} x={point.x} y={height - 7} textAnchor={index === 0 ? "start" : index === points.length - 1 ? "end" : "middle"} fill="var(--muted-foreground)" fontSize="11">{point.day}</text> : null; })}
     </svg>
   </div>;
@@ -59,10 +59,10 @@ export function SavingsWindowCard({
   const tone = window.state === "partial" ? "warning" : window.state === "verified" ? "positive" : "neutral";
   const stateLabel =
     window.state === "verified"
-      ? lang === "zh" ? "已验证" : "Verified"
+      ? translateCopy("cbm.state.ready", lang)
       : window.state === "partial"
-        ? lang === "zh" ? "部分可用" : "Partial"
-        : lang === "zh" ? "不可用" : "Unavailable";
+        ? translateCopy("cbm.state.partial", lang)
+        : translateCopy("cbm.state.unavailable", lang);
   return <div className="overview-kpi min-w-0" data-overview-savings-window="true" data-savings-window={window.key} data-savings-state={window.state} data-testid="overview-savings-window">
     <div className="flex items-center justify-between gap-2 text-xs text-muted-foreground"><span className="min-w-0 break-words">{t("ov.savingsTokens")}</span><Coins className={`size-4 shrink-0 ${tone === "positive" ? "text-emerald-600 dark:text-emerald-400" : "text-muted-foreground"}`} /></div>
     <div className="mt-2 text-2xl font-semibold tracking-tight tabular-nums">{window.tokensSaved === null ? "—" : formatTokenCount(window.tokensSaved)}</div>
@@ -75,7 +75,7 @@ export function SavingsWindowCard({
       className="overview-savings-period-control"
       items={derivation.windows.map((item) => ({ value: item.key, label: item.label }))}
     /></div>
-    <div className="overview-kpi-detail mt-1 text-[11px] text-muted-foreground" title={derivation.cost.detail}>{lang === "zh" ? "费用差额" : "Cost delta"}: {costDeltaText(derivation.cost, lang)}</div>
+    <div className="overview-kpi-detail mt-1 text-[11px] text-muted-foreground" title={derivation.cost.detail}>{translateCopy("ov.costDelta", lang)}: {costDeltaText(derivation.cost, lang)}</div>
   </div>;
 }
 
@@ -98,18 +98,18 @@ export function IssueSummary({ status }: { status: OperationalStatus }) {
 
 export function AccountQuotaCard({ quota, lang }: { quota: AccountQuotaSummary; lang: Lang }) {
   const unavailable = quota.state === "unavailable";
-  const stateLabel = quota.state === "verified" ? (lang === "zh" ? "已验证" : "Verified") : quota.state === "partial" ? (lang === "zh" ? "部分可用" : "Partial") : quota.state === "stale" ? (lang === "zh" ? "已过期" : "Stale") : (lang === "zh" ? "不可用" : "Unavailable");
-  return <div className="flat-status-cell p-4"><div className="flex items-center justify-between gap-2"><div className="min-w-0"><div className="flex items-center gap-2"><Clock3 className="size-4 text-muted-foreground" /><span className="font-medium">{quota.label}</span></div>{quota.accountRef && <div className="mt-0.5 max-w-52 truncate pl-6 font-mono text-[11px] text-muted-foreground" title={quota.accountRef}>{quota.accountRef}</div>}</div><Badge variant={quota.state === "verified" ? "default" : "secondary"}>{stateLabel}</Badge></div><div className="mt-3 grid grid-cols-2 gap-2">{quota.windows.map((window) => <div key={window.key} className="flat-inset p-2.5"><div className="text-xs text-muted-foreground">{window.label}</div><div className="mt-1 text-lg font-semibold tabular-nums">{unavailable || window.usedPercent === null ? "—" : `${window.usedPercent.toFixed(0)}%`}</div><div className="mt-1 truncate text-[11px] text-muted-foreground" title={window.resetsAt ?? quota.source}>{window.resetsAt ? `${lang === "zh" ? "重置" : "Resets"} ${formatQuotaReset(window.resetsAt)}` : quota.source}</div>{!unavailable && window.usedPercent !== null && <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-muted"><div className="h-full rounded-full bg-[var(--chart-accent)]" style={{ width: `${Math.min(100, Math.max(0, window.usedPercent))}%` }} /></div>}</div>)}</div></div>;
+  const stateLabel = quota.state === "verified" ? (translateCopy("cbm.state.ready", lang)) : quota.state === "partial" ? (translateCopy("cbm.state.partial", lang)) : quota.state === "stale" ? (translateCopy("ov.stale", lang)) : (translateCopy("cbm.state.unavailable", lang));
+  return <div className="flat-status-cell p-4"><div className="flex items-center justify-between gap-2"><div className="min-w-0"><div className="flex items-center gap-2"><Clock3 className="size-4 text-muted-foreground" /><span className="font-medium">{quota.label}</span></div>{quota.accountRef && <div className="mt-0.5 max-w-52 truncate pl-6 font-mono text-[11px] text-muted-foreground" title={quota.accountRef}>{quota.accountRef}</div>}</div><Badge variant={quota.state === "verified" ? "default" : "secondary"}>{stateLabel}</Badge></div><div className="mt-3 grid grid-cols-2 gap-2">{quota.windows.map((window) => <div key={window.key} className="flat-inset p-2.5"><div className="text-xs text-muted-foreground">{window.label}</div><div className="mt-1 text-lg font-semibold tabular-nums">{unavailable || window.usedPercent === null ? "—" : `${window.usedPercent.toFixed(0)}%`}</div><div className="mt-1 truncate text-[11px] text-muted-foreground" title={window.resetsAt ?? quota.source}>{window.resetsAt ? `${translateCopy("ov.resets", lang)} ${formatQuotaReset(window.resetsAt)}` : quota.source}</div>{!unavailable && window.usedPercent !== null && <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-muted"><div className="h-full rounded-full bg-[var(--chart-accent)]" style={{ width: `${Math.min(100, Math.max(0, window.usedPercent))}%` }} /></div>}</div>)}</div></div>;
 }
 
 function formatQuotaReset(value: string) { const date = new Date(value); return Number.isFinite(date.getTime()) ? date.toLocaleString() : value; }
 
 /** 费用差额文案：有价格证据时显示币种+估算费用（明确标注估算），否则 — + 缺证据。 */
 function costDeltaText(cost: SavingsCostSummary, lang: Lang): string {
-  if (!cost.available) return `—${lang === "zh" ? " 价格证据缺失" : " no pricing evidence"}`;
+  if (!cost.available) return `—${translateCopy("ov.noPricingEvidence", lang)}`;
   const symbol = cost.currency === "CNY" ? "¥" : "$";
   const estimate = formatCostEstimate(cost.estimatedCost);
-  return lang === "zh" ? `${symbol}${estimate}（估算）` : `${symbol}${estimate} (est.)`;
+  return translateCopy("ov.est", lang, { v1: symbol, v2: estimate });
 }
 
 function formatCostEstimate(value: number): string {

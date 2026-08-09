@@ -8,7 +8,7 @@
 
 | ID | 需求（来源） | current | gap | owner | acceptance | release claim |
 |---|---|---|---|---|---|---|
-| VERSION-0 | 目标版本 v0.0.1 一次性统一（用户已指定；当前 manifest/PRD 为 0.2.0-beta.1） | `tauri.conf.json`/`package.json` = 0.2.0-beta.1；PRD P0.0.7 仍以旧版本为门；PLAN/IMPLEMENTATION_STATUS/CHANGELOG 同口径 | 多版本事实源并存 | V-1 | 全部功能切片后：manifest、PRD 版本门、PLAN、IMPLEMENTATION_STATUS、CHANGELOG、release workflow、`check_release_version.py` 收敛为 v0.0.1；structure 通过；旧版本只存 history/archive/CHANGELOG 历史 | MUST |
+| VERSION-0 | 目标版本 v0.0.1 一次性统一（用户已指定；统一前 manifest/PRD 为 0.2.0-beta.1） | 已统一为 v0.0.1（2026-08-09 V-1 执行：manifest、PRD 版本门、PLAN、IMPLEMENTATION_STATUS、CHANGELOG、`check_release_version.py`） | 已收敛（旧版本仅存 history/archive/CHANGELOG 历史） | V-1 | 全部功能切片后：manifest、PRD 版本门、PLAN、IMPLEMENTATION_STATUS、CHANGELOG、release workflow、`check_release_version.py` 收敛为 v0.0.1；structure 通过；旧版本只存 history/archive/CHANGELOG 历史 | MUST |
 | VERSION-1 | 发布结论绑定版本、C_final 与 source/registry/corpus digests | 旧聚合器 fail-closed 但无完整 candidate binding | 统一 evidence envelope + 显式 artifact manifest | PR-C0C, PR-C8C, N9 | 任一 artifact 缺/mismatch 即 blocked；结论写版本/C_final/digests | MUST |
 
 ## 2. PRODUCT（产品功能）
@@ -155,7 +155,7 @@
 | DOCS-1 | v0.0.1 九文件计划包（本任务） | 本包已建 | 执行期保持同步 | Main | 九文件存在且无断链；`check_structure.py` 通过 | N/A（本包） |
 | DOCS-2 | 入口更新：`docs/index.md`、`docs/DOCS_ORGANIZATION.md`、`docs/PLAN.md`（本任务） | 本任务同步修改 | — | Main | 入口指向本包；DOCS_ORGANIZATION 允许 `docs/releases/<version>`；PLAN 顶部标注本包定位 | N/A（本包） |
 | DOCS-3 | 发布收口文档更新（GOAL 完成定义） | 历史快照 | 最终候选后同步 PRD 版本门/PLAN/IMPLEMENTATION_STATUS/README/发布报告 | PR-9 → N9 | 收口文档与 `C_final` 一致；本包滚动更新 | MUST |
-| DOCS-4 | 版本统一后文档同步（VERSION-0 配套） | 版本未统一 | V-1 执行 | V-1 | 活跃文档无 0.2.0-beta.1 残留（除历史） | MUST |
+| DOCS-4 | 版本统一后文档同步（VERSION-0 配套） | 已统一（V-1 已执行，2026-08-09） | 已执行（2026-08-09） | V-1 | 活跃文档无 0.2.0-beta.1 残留（除历史） | MUST |
 
 ## 14. QUALITY / PERFORMANCE（统一压缩证明门）
 

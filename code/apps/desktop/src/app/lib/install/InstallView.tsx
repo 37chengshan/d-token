@@ -1,4 +1,5 @@
 import { AlertTriangle, ChevronDown, RefreshCw, Rocket, Server, Settings2, ShieldCheck } from "lucide-react";
+import { translateCopy } from "../i18n";
 import { Surface } from "../../components/common/Surface";
 import { StatusBadge } from "../../components/common/StatusBadge";
 import { DataSourceBadge } from "../../components/common/DataSourceBadge";
@@ -113,11 +114,11 @@ export function InstallView(props: InstallViewProps) {
         <div className="flex flex-wrap items-start justify-between gap-4 border-b border-border/60 px-6 py-5">
           <div className="min-w-0">
             <div className="flex flex-wrap items-center gap-2">
-              <h2 className="text-xl font-semibold tracking-tight">{lang === "zh" ? "连接 d-token" : "Connect d-token"}</h2>
+              <h2 className="text-xl font-semibold tracking-tight">{translateCopy("in.connectDToken", lang)}</h2>
               <StatusBadge status={phasePresentation.health} label={phasePresentation.label} />
               <DataSourceBadge
                 mode={snapshot ? "native" : discoveryStatus === "unavailable" ? "unavailable" : "preview"}
-                label={snapshot ? (lang === "zh" ? "本机只读发现" : "Local read-only discovery") : undefined}
+                label={snapshot ? (translateCopy("in.localReadOnlyDiscovery", lang)) : undefined}
               />
             </div>
             <p className="mt-2 max-w-3xl text-sm leading-6 text-muted-foreground">
@@ -125,14 +126,12 @@ export function InstallView(props: InstallViewProps) {
             </p>
             {snapshot && (
               <p className="mt-1 text-xs text-muted-foreground">
-                {lang === "zh"
-                  ? `已自动读取 ${discoveryCounts.agents} 个已安装工具、${discoveryCounts.upstreams} 个可用上游、${discoveryCounts.ccSwitchProfiles} 个 cc-switch profile。`
-                  : `Automatically read ${discoveryCounts.agents} installed tools, ${discoveryCounts.upstreams} available upstreams, and ${discoveryCounts.ccSwitchProfiles} cc-switch profiles.`}
+                {translateCopy("in.automaticallyReadInstalledToolsAvailableUpstreamsAndCcSwitchProfiles", lang, { v1: discoveryCounts.agents, v2: discoveryCounts.upstreams, v3: discoveryCounts.ccSwitchProfiles })}
               </p>
             )}
           </div>
           <div className="flex items-center gap-2">
-            <Button variant="ghost" size="icon" aria-label={lang === "zh" ? "刷新连接状态" : "Refresh connection state"} onClick={() => void refreshAll()} disabled={busy}>
+            <Button variant="ghost" size="icon" aria-label={translateCopy("in.refreshConnectionState", lang)} onClick={() => void refreshAll()} disabled={busy}>
               <RefreshCw className={`size-4 ${pendingAction === "discover" ? "animate-spin" : ""}`} />
             </Button>
             <Button onClick={() => void handlePrimaryAction()} disabled={busy || primaryAction.disabled}>
@@ -147,7 +146,7 @@ export function InstallView(props: InstallViewProps) {
             <div className="flex min-w-0 items-center gap-3">
               <span className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-muted/70"><Server className="size-4" /></span>
               <div className="min-w-0">
-                <div className="font-medium">{lang === "zh" ? "d-token 本地服务" : "d-token local service"}</div>
+                <div className="font-medium">{translateCopy("in.dTokenLocalService", lang)}</div>
                 <div className="mt-0.5 truncate text-xs text-muted-foreground">
                   {serviceInstanceDetail}
                 </div>
@@ -157,12 +156,12 @@ export function InstallView(props: InstallViewProps) {
               <StatusBadge
                 status={servicePresentation.status}
                 label={restartRequired
-                  ? (lang === "zh" ? "需要重启" : "Restart required")
-                  : serviceOnline ? (lang === "zh" ? "运行中" : "Running") : (lang === "zh" ? "未运行" : "Stopped")}
+                  ? (translateCopy("onb.service.restartRequired", lang))
+                  : serviceOnline ? (translateCopy("status.running", lang)) : (translateCopy("in.stopped", lang))}
               />
               {serviceManaged && (
                 <Button variant="ghost" size="sm" onClick={() => { setStopError(""); setConfirmServiceStop(true); }} disabled={busy}>
-                  {lang === "zh" ? "停止" : "Stop"}
+                  {translateCopy("set.stop", lang)}
                 </Button>
               )}
             </div>
@@ -171,15 +170,15 @@ export function InstallView(props: InstallViewProps) {
           <div className="py-4">
             <div className="mb-3 flex items-center justify-between gap-3">
               <div>
-                <div className="font-medium">{lang === "zh" ? "本机 AI 编码工具" : "Local AI coding Agents"}</div>
+                <div className="font-medium">{translateCopy("in.localAiCodingAgents", lang)}</div>
                 <div className="mt-0.5 text-xs text-muted-foreground">
-                  {lang === "zh" ? "每个 Agent 独立保留自己的 provider、模型与协议。" : "Each Agent keeps its own provider, model, and protocol."}
+                  {translateCopy("in.eachAgentKeepsItsOwnProviderModelAndProtocol", lang)}
                 </div>
               </div>
-              <Badge variant="secondary">{visibleBindings.length} {lang === "zh" ? "个已检测" : "detected"}</Badge>
+              <Badge variant="secondary">{visibleBindings.length} {translateCopy("in.detected", lang)}</Badge>
             </div>
             {discoveryStatus === "discovering" && !snapshot ? (
-              <div className="space-y-2 py-2" aria-label={lang === "zh" ? "正在发现 Agent" : "Discovering Agents"}>
+              <div className="space-y-2 py-2" aria-label={translateCopy("in.discoveringAgents", lang)}>
                 {[0, 1, 2].map((item) => <div key={item} className="h-14 animate-pulse rounded-lg bg-muted/50" />)}
               </div>
             ) : (
@@ -198,18 +197,16 @@ export function InstallView(props: InstallViewProps) {
                 ))}
                 {primaryBindings.length === 0 && visibleBindings.length > 0 && (
                   <div className="py-4 text-sm text-muted-foreground">
-                    {lang === "zh"
-                      ? `已检测到 ${visibleBindings.length} 个工具；未发现提供 d-token 写入动作的 Agent，未修改任何配置。`
-                      : `${visibleBindings.length} tools were detected, but none exposes a d-token write action; no configuration was modified.`}
+                    {translateCopy("in.toolsWereDetectedButNoneExposesADTokenWriteActionNoConfigurationWasModified", lang, { v1: visibleBindings.length })}
                   </div>
                 )}
                 </div>
                 {secondaryBindings.length > 0 && (
                   <details className="group border-t border-border/60 py-1">
                     <summary className="flex cursor-pointer list-none items-center justify-between gap-3 py-3 text-sm font-medium">
-                      <span>{lang === "zh" ? `另外检测到 ${secondaryBindings.length} 个工具` : `${secondaryBindings.length} other detected tools`}</span>
+                      <span>{translateCopy("in.otherDetectedTools", lang, { v1: secondaryBindings.length })}</span>
                       <span className="flex items-center gap-1 text-xs font-normal text-muted-foreground">
-                        {lang === "zh" ? "按需展开" : "Expand when needed"}<ChevronDown className="size-3.5 transition-transform group-open:rotate-180" />
+                        {translateCopy("in.expandWhenNeeded", lang)}<ChevronDown className="size-3.5 transition-transform group-open:rotate-180" />
                       </span>
                     </summary>
                     <div className="divide-y divide-border/50 border-t border-border/50">
@@ -229,7 +226,7 @@ export function InstallView(props: InstallViewProps) {
                 )}
                 {visibleBindings.length === 0 && (
                   <div className="py-5 text-sm text-muted-foreground">
-                    {lang === "zh" ? "本机尚未检测到可接入的 AI 编码工具。" : "No connectable AI coding Agent was detected locally."}
+                    {translateCopy("in.noConnectableAiCodingAgentWasDetectedLocally", lang)}
                   </div>
                 )}
               </div>
@@ -241,14 +238,14 @@ export function InstallView(props: InstallViewProps) {
               <div className="font-medium">cc-switch</div>
               <div className="mt-1 truncate text-xs text-muted-foreground">
                 {snapshot?.cc_switch_sync?.detected
-                  ? [snapshot.cc_switch_sync.profile, snapshot.cc_switch_sync.upstream, snapshot.cc_switch_sync.connection_path].filter(Boolean).join(" · ") || (lang === "zh" ? "已只读检测" : "Detected read-only")
-                  : (lang === "zh" ? "未发现 cc-switch；不会自动安装或改写第三方配置。" : "cc-switch was not found; third-party configuration is never installed or rewritten automatically.")}
+                  ? [snapshot.cc_switch_sync.profile, snapshot.cc_switch_sync.upstream, snapshot.cc_switch_sync.connection_path].filter(Boolean).join(" · ") || (translateCopy("in.detectedReadOnly", lang))
+                  : (translateCopy("in.ccSwitchWasNotFoundThirdPartyConfigurationIsNeverInstalledOrRewrittenAutomatically", lang))}
               </div>
             </div>
             <div className="flex items-center gap-2">
               {snapshot?.cc_switch_sync?.status === "out-of-sync" && (
                 <Button size="sm" variant="outline" disabled={busy || ccSwitchSyncBusy} onClick={onPreviewCcSwitchSync}>
-                  {lang === "zh" ? "同步当前上游" : "Sync current upstream"}
+                  {translateCopy("in.syncCurrentUpstream", lang)}
                 </Button>
               )}
               <StatusBadge
@@ -268,7 +265,7 @@ export function InstallView(props: InstallViewProps) {
         <details className="group border-t border-border/60 px-6 py-3 text-xs text-muted-foreground">
           <summary className="flex cursor-pointer list-none items-center gap-2 font-medium text-foreground">
             <ChevronDown className="size-3.5 transition-transform group-open:rotate-180" />
-            {lang === "zh" ? "技术证据与操作记录" : "Technical evidence and action log"}
+            {translateCopy("in.technicalEvidenceAndActionLog", lang)}
           </summary>
           <div className="mt-3 grid gap-2 font-mono text-[11px]">
             <div>revision {snapshot?.revision ?? "—"}</div>
@@ -292,10 +289,10 @@ export function InstallView(props: InstallViewProps) {
       <OperationDialog
         open={Boolean(ccSwitchSyncReview)}
         onOpenChange={(open) => { if (!open) setCcSwitchSyncReview(null); }}
-        title={lang === "zh" ? "同步 cc-switch 当前上游" : "Sync current cc-switch upstream"}
-        summary={lang === "zh" ? "只更新 d-token 自己的路由；不会改写 cc-switch、Agent 现有 provider 或凭据。" : "Only d-token's route changes; cc-switch, existing Agent providers, and credentials are not rewritten."}
+        title={translateCopy("in.syncCurrentCcSwitchUpstream", lang)}
+        summary={translateCopy("in.onlyDTokenSRouteChangesCcSwitchExistingAgentProvidersAndCredentialsAreNotRewritten", lang)}
         impact={ccSwitchSyncReview?.target ?? "d-token active route"}
-        confirmLabel={lang === "zh" ? "确认同步并重新验证" : "Confirm sync and reverify"}
+        confirmLabel={translateCopy("in.confirmSyncAndReverify", lang)}
         cancelLabel={t("common.cancel")}
         pending={ccSwitchSyncBusy}
         confirmDisabled={!ccSwitchSyncReview?.ok}
@@ -311,9 +308,7 @@ export function InstallView(props: InstallViewProps) {
                 className="mt-0.5"
               />
               <span>
-                {lang === "zh"
-                  ? "跟随当前上游：仅自动切换到本次确认且无需新凭据的 provider/endpoint/protocol；新身份会停止并要求重新确认。"
-                  : "Follow current upstream: only identities confirmed in this step and requiring no new credential may sync automatically; a new provider, endpoint, or protocol stops for confirmation."}
+                {translateCopy("in.followCurrentUpstreamOnlyIdentitiesConfirmedInThisStepAndRequiringNoNewCredentialMaySyncAutomaticallyANewProviderEndpointOrProtocolStopsForConfirmation", lang)}
               </span>
             </label>
             <div className="font-mono">
@@ -335,12 +330,12 @@ export function InstallView(props: InstallViewProps) {
             setAgentIntegrationReviews({});
           }
         }}
-        title={lang === "zh" ? "确认连接方案" : "Confirm connection plan"}
-        summary={lang === "zh" ? "d-token 只会应用下方已确认的变更。源配置变化后，本方案会自动失效。" : "d-token applies only the confirmed changes below. Any source-configuration change invalidates this plan."}
+        title={translateCopy("in.confirmConnectionPlan", lang)}
+        summary={translateCopy("in.dTokenAppliesOnlyTheConfirmedChangesBelowAnySourceConfigurationChangeInvalidatesThisPlan", lang)}
         impact={actionableBindings.map((binding) => connectionPath(binding, machine.selections[binding.agent_id], serviceEndpoint)).join("\n")}
         details={(
           <div className="max-h-[46vh] space-y-3 overflow-y-auto pr-1 text-sm">
-            {pendingAction === "preview" && <div className="flex items-center gap-2 text-muted-foreground"><RefreshCw className="size-4 animate-spin" />{lang === "zh" ? "正在生成 hash 绑定的脱敏 diff…" : "Building a hash-bound redacted diff…"}</div>}
+            {pendingAction === "preview" && <div className="flex items-center gap-2 text-muted-foreground"><RefreshCw className="size-4 animate-spin" />{translateCopy("in.buildingAHashBoundRedactedDiff", lang)}</div>}
             <label className="flex items-start gap-2 rounded-md border border-border/60 bg-background p-3 text-xs text-muted-foreground">
               <input
                 type="checkbox"
@@ -350,22 +345,18 @@ export function InstallView(props: InstallViewProps) {
                 className="mt-0.5"
               />
               <span>
-                {lang === "zh"
-                  ? "跟随已确认的 Agent 上游：配置文件中的 provider、model、protocol 或 endpoint 变化后，只更新 d-token 自己的路由并重新验证 runtime；不会自动改写 Agent 或凭据。新身份、歧义或新凭据会停止并要求重新确认。"
-                  : "Follow confirmed Agent upstreams: provider, model, protocol, or endpoint changes update only d-token's route and reverify the runtime. Agent configuration and credentials are not rewritten automatically; new identities, ambiguity, or credentials stop for confirmation."}
+                {translateCopy("in.followConfirmedAgentUpstreamsProviderModelProtocolOrEndpointChangesUpdateOnlyDTokenSRouteAndReverifyTheRuntimeAgentConfigurationAndCredentialsAreNotRewrittenAutomaticallyNewIdentitiesAmbiguityOrCredentialsStopForConfirmation", lang)}
               </span>
             </label>
             <div className="rounded-lg border border-border bg-muted/30 p-3 text-xs text-muted-foreground">
-              <div className="font-medium">{lang === "zh" ? "回退边界" : "Rollback boundary"}</div>
+              <div className="font-medium">{translateCopy("in.rollbackBoundary", lang)}</div>
               <div className="mt-1">
-                {lang === "zh"
-                  ? "应用前会创建备份与回退点；失败时保留 transaction receipt，可回退已应用项。"
-                  : "A backup and rollback point are created before apply; on failure, transaction receipts are kept so applied items can be rolled back."}
+                {translateCopy("in.aBackupAndRollbackPointAreCreatedBeforeApplyOnFailureTransactionReceiptsAreKeptSoAppliedItemsCanBeRolledBack", lang)}
               </div>
             </div>
             {routePlanReview && (
               <div className="rounded-lg border border-border bg-muted/30 p-3">
-                <div className="font-medium">{lang === "zh" ? "d-token 自动路由" : "Automatic d-token routes"}</div>
+                <div className="font-medium">{translateCopy("in.automaticDTokenRoutes", lang)}</div>
                 <div className="mt-1 text-xs text-muted-foreground">{routePlanReview.ok ? routePlanReview.summary : routePlanReview.error}</div>
                 {routePlanReview.ok && (
                   <>
@@ -396,11 +387,11 @@ export function InstallView(props: InstallViewProps) {
               const transportPlan = transport.review;
               return (
                 <div key={`${agentId}-transport`} className="rounded-lg border border-border bg-muted/30 p-3">
-                  <div className="font-medium">{binding?.agent_name ?? agentId} · {lang === "zh" ? "传输配置" : "Transport configuration"}</div>
+                  <div className="font-medium">{binding?.agent_name ?? agentId} · {translateCopy("in.transportConfiguration", lang)}</div>
                   <div className="mt-1 text-xs text-muted-foreground">
                     {transport.ok && transportPlan
-                      ? (lang === "zh" ? "只写入 d-token 托管字段，并保留原配置和精确清除证据。" : "Only d-token-owned fields change, with the original configuration and exact clear evidence preserved.")
-                      : (lang === "zh" ? "当前配置无法安全自动写入，未执行任何变更。" : "This configuration cannot be changed safely, so no write will run.")}
+                      ? (translateCopy("in.onlyDTokenOwnedFieldsChangeWithTheOriginalConfigurationAndExactClearEvidencePreserved", lang))
+                      : (translateCopy("in.thisConfigurationCannotBeChangedSafelySoNoWriteWillRun", lang))}
                   </div>
                   {transportPlan && (
                     <div className="mt-2 font-mono text-[11px] text-muted-foreground">
@@ -416,10 +407,10 @@ export function InstallView(props: InstallViewProps) {
               const binding = actionableBindings.find((item) => item.agent_id === agentId);
               return (
                 <div key={agentId} className="rounded-lg border border-border bg-muted/30 p-3">
-                  <div className="font-medium">{binding?.agent_name ?? agentId} · {lang === "zh" ? "Agent 接入" : "Agent integration"}</div>
+                  <div className="font-medium">{binding?.agent_name ?? agentId} · {translateCopy("in.agentIntegration", lang)}</div>
                   <div className="mt-1 text-xs text-muted-foreground">
                     {review.ok
-                      ? (lang === "zh" ? "指令、Hook/插件与 Skill 将按下方哈希绑定方案写入。" : "Instructions, hook/plugin, and skill changes are bound to the hashes shown below.")
+                      ? (translateCopy("in.instructionsHookPluginAndSkillChangesAreBoundToTheHashesShownBelow", lang))
                       : review.error}
                   </div>
                   {review.plan?.targets.map((target) => (
@@ -436,13 +427,13 @@ export function InstallView(props: InstallViewProps) {
               <div key={binding.agent_id} className="rounded-lg border border-amber-500/25 bg-amber-500/5 p-3">
                 <div className="flex items-center gap-2 font-medium"><AlertTriangle className="size-4 text-amber-600" />{binding.agent_name}</div>
                 <div className="mt-1 text-xs text-muted-foreground">
-                  {lang === "zh" ? "当前适配器只提供已解析的安全连接步骤；不会冒充已自动写入。" : "This adapter currently provides a resolved safe setup step and never pretends the config was auto-written."}
+                  {translateCopy("in.thisAdapterCurrentlyProvidesAResolvedSafeSetupStepAndNeverPretendsTheConfigWasAutoWritten", lang)}
                 </div>
               </div>
             ))}
           </div>
         )}
-        confirmLabel={lang === "zh" ? "确认并连接" : "Confirm and connect"}
+        confirmLabel={translateCopy("cbm.confirmApplyVerify", lang)}
         cancelLabel={t("common.cancel")}
         pending={pendingAction === "apply" || pendingAction === "preview"}
         confirmDisabled={!routePlanReview?.ok
@@ -461,10 +452,10 @@ export function InstallView(props: InstallViewProps) {
             setCredentialError("");
           }
         }}
-        title={lang === "zh" ? "补充所需凭据" : "Add required credential"}
-        summary={lang === "zh" ? "凭据仅写入系统凭据库；配置只保存不透明引用。" : "The credential is stored only in the operating-system credential store; configuration keeps an opaque reference."}
+        title={translateCopy("in.addRequiredCredential", lang)}
+        summary={translateCopy("in.theCredentialIsStoredOnlyInTheOperatingSystemCredentialStoreConfigurationKeepsAnOpaqueReference", lang)}
         impact={credentialBinding ? `${credentialBinding.agent_name} · ${credentialProviderId || "provider"}` : "provider"}
-        confirmLabel={lang === "zh" ? "安全保存并继续" : "Save securely and continue"}
+        confirmLabel={translateCopy("in.saveSecurelyAndContinue", lang)}
         cancelLabel={t("common.cancel")}
         pending={pendingAction === "credential"}
         confirmDisabled={!credentialProviderId || !providerCredential.trim()}
@@ -472,7 +463,7 @@ export function InstallView(props: InstallViewProps) {
         details={(
           <div className="space-y-2 text-sm">
             <label className="grid gap-1">
-              <span>{lang === "zh" ? "凭据" : "Credential"}</span>
+              <span>{translateCopy("in.credential", lang)}</span>
               <input
                 autoComplete="off"
                 className="h-9 rounded-md border border-border bg-background px-3"
@@ -490,12 +481,12 @@ export function InstallView(props: InstallViewProps) {
         <OperationDialog
           open
           onOpenChange={(open) => { setConfirmServiceStop(open); if (!open) setStopError(""); }}
-          title={lang === "zh" ? "停止 d-token 本地服务？" : "Stop the d-token local service?"}
-          summary={lang === "zh" ? "停止后新的 Agent 请求将无法经过 d-token，现有配置与回退点会保留。" : "New Agent requests cannot pass through d-token after stopping; configuration and rollback points remain."}
+          title={translateCopy("set.stopTheDTokenLocalService", lang)}
+          summary={translateCopy("in.newAgentRequestsCannotPassThroughDTokenAfterStoppingConfigurationAndRollbackPointsRemain", lang)}
           impact={serviceStatus?.pid && serviceIdentifiersCurrent
             ? `PID ${serviceStatus.pid}${serviceEndpoint ? ` · ${serviceEndpoint}` : ""}`
-            : serviceEndpoint || (lang === "zh" ? "当前实例" : "Current instance")}
-          confirmLabel={lang === "zh" ? "确认停止" : "Stop service"}
+            : serviceEndpoint || (translateCopy("in.currentInstance", lang))}
+          confirmLabel={translateCopy("set.stopService", lang)}
           cancelLabel={t("common.cancel")}
           risk="warning"
           pending={pendingAction === "stop"}

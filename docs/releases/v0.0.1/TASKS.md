@@ -10,8 +10,8 @@
 
 ## 2. 版本统一（W9）
 
-- [ ] T-V1：全部功能与证据接线切片完成后，一次性统一 manifest、PRD 版本门、PLAN/status/CHANGELOG/workflow/check script 为 v0.0.1；用户已指定目标版本，无需再次确认。REQ：VERSION-0/1, DOCS-4｜依赖：T-C8B、PR-1..14、CBM2/3/4、A｜验证：N0。
-- [ ] T-V2：活跃文档旧版本残留断言（history/archive/CHANGELOG 历史除外）。REQ：VERSION-0｜依赖：T-V1｜验证：N0。
+- [x] T-V1：全部功能与证据接线切片完成后，一次性统一 manifest、PRD 版本门、PLAN/status/CHANGELOG/workflow/check script 为 v0.0.1；用户已指定目标版本，无需再次确认。**已执行（2026-08-09）**：Cargo workspace/desktop package/package-lock/tauri.conf/sdk 均 0.0.1；`check_release_version.py` 接受 0.0.1；CHANGELOG 新增 `## [0.0.1]`；README/README-cn/SECURITY/THIRD_PARTY_NOTICES/docs/index.md/PRD 版本门/PLAN 当前坐标/spec v2 同步。REQ：VERSION-0/1, DOCS-4｜依赖：T-C8B、PR-1..14、CBM2/3/4、A｜验证：N0。
+- [x] T-V2：活跃文档旧版本残留断言（history/archive/CHANGELOG 历史除外）。**已执行（2026-08-09）**：活跃文档仅存历史引用（CHANGELOG 历史条目、docs/releases/v0.0.1 统一前过程记录、EVIDENCE 旧证据索引、PLAN/IMPLEMENTATION_STATUS 历史 progress 日志）。REQ：VERSION-0｜依赖：T-V1｜验证：N0。
 
 ## 3. 在途收口切片（PR-1..9）
 
@@ -23,7 +23,7 @@
 - [~] T-PR6 config-acceptance：隔离临时根 harness（configure→reread→clear→exact restore；原文件仅 hash/权限；逆序回退）。REQ：AGENT-6, CONFIG-1, CONFIG-2, CONFIG-3｜依赖：T-P0｜owner：PR-6 Agent｜output：`support/scripts/run_agent_config_acceptance.py` + 契约测试。验证：N4。
 - [ ] T-PR7 cc-switch-aba + gate wiring：A→B→A artifact harness + 聚合器 `--expected-commit`/`--expected-source-digest` 强绑定 + supplemental evidence + fan-in 接线。REQ：AGENT-5, EVID-1, EVID-3, EVID-6, PLATFORM-3｜依赖：T-PR2, T-PR3, T-PR6｜owner：PR-7 Agent｜output：`run_cc_switch_aba_check.py` + 聚合扩展测试。验证：N5/N9。
 - [ ] T-PR8 upgrade-autostart-credential-wiring：完成 macOS upgrade/rollback、LaunchAgent/HKCU、Keychain/Credential Manager producer/schema/dry-run、唯一 namespace、fake/poison fixture 与 cleanup/exact-restore 故障合同；**N0 前不执行任何真实 OS-managed store round-trip**。REQ：PLATFORM-1, PLATFORM-2, CONFIG-4｜依赖：T-PR7｜owner：PR-8 Agent｜output：两个新脚本 + 契约测试。验证：N7/N8 在 N0 后逐次明确授权执行真实 lane。
-- [ ] T-PR9 verification-orchestration：编排 N0→N1–N8/N10→N9，候选变化使旧证据失效；三结论模板。REQ：EVID-2/3, PLATFORM-4, DOCS-3｜依赖：T-V1, T-C8B｜验证：dry-run + N0–N10。
+- [~] T-PR9 verification-orchestration：编排 N0→N1–N8/N10→N9，候选变化使旧证据失效；三结论模板。**实现完成（2026-08-09）**：`support/scripts/run_final_candidate_verification.py`（envelope 校验、显式 artifact path 绑定、候选/source/registry/corpus digest 强绑定、missing/stale/old-candidate/digest-mismatch/pass-only 拒绝、`--dry-run`、N9 三结论 signed/public-unsigned/blocked、unsigned 恒 release_ready=false）+ `support/tests/test_final_candidate_verification.py` 契约测试 + tracked 模板 `support/scripts/final-candidate-evidence.template.md`（渲染到 `.ai-bridge/release-iteration/final-candidate-evidence.md`）。REQ：EVID-2/3, PLATFORM-4, DOCS-3｜依赖：T-V1, T-C8B｜验证：dry-run + N0–N10（真实 N0–N10 证据待各 producer 在 N0 后生成）。
 - [ ] T-PR10 codex-toml-top-level：`candidate_from_codex_toml` 解析顶层 `openai_base_url`/`model_catalog_json`（无 `[model_providers]` 形态）；两种形态 fixture 单测。REQ：AGENT-8｜依赖：T-P0,T-PR3｜owner：PR-10 Agent｜output：parser 扩展 + fixture 单测。验证：N2。
 - [ ] T-PR11 cc-switch-openclaw：discovery SQL/`agent_ids_for_cc_switch_app` 补 openclaw app type + A→B→A 连续识别 fixture 单测 + 只读断言；**cc-switch sync 与 active route 最终比对（`derive_cc_switch_status`/`enrich_upstream_discovery`）下沉 Rust-owned 合同（`cc_switch_sync_state` 补 enriched 状态/`route_snapshot_identity`，agent 矩阵 H4）**。REQ：AGENT-9（含 H4）｜依赖：T-P0,T-PR3,T-PR10｜owner：PR-11 Agent｜output：SQL/映射扩展 + Rust 合同 + 单测。验证：N5。
 - [ ] T-PR12 native-responses-single-dispatch：Native Responses（`/v1/responses`）接入 canonical pipeline，parity fixture 含 Responses 协议；发送体=验证体。REQ：AGENT-10, RUNTIME-7｜依赖：T-C1C｜owner：PR-12 Agent｜output：single-dispatch 覆盖 + parity fixture。验证：N10/U0。
@@ -89,7 +89,7 @@
 
 - [ ] T-C8A capability-proof-wiring：校验 117 registry 的 owner/dispatch/test/evidence producer/gate 路径全部可解析；N0 前状态只允许 `implemented_unverified`/`blocked`，不得生成 117/117 real-evidence 结论。REQ：QUALITY-1,EVID-6｜依赖：T-C2C,T-C3C,T-C4C,T-C5D,T-C6C,T-C7C｜验证：N10/U1/U9 在 N0 后消费真实 artifact。
 - [ ] T-C8B real-routes-platform-wiring：完成 Provider/Agent/Codex/OpenCode/Optical/macOS/Windows evidence producer、schema、dry-run 与 no-touch fixture；**不在 N0 前执行 N2/N3/N8 或任何真实外部副作用 lane**。REQ：AGENT-1/2,PLATFORM-1..5｜依赖：T-C8A,T-PR2,T-PR6,T-PR7,T-PR8,T-PR10,T-PR11,T-PR12,T-PR13,T-PR14,T-CBM3,T-CBM4｜验证：N2/N3/N7/N8/N10 在 N0 后运行。
-- [ ] T-C8C final-gate：聚合器强绑定 candidate/source/corpus/registry/eval/platform；N10 进入 G8/G9 required evidence；N0 前 real-evidence artifact 一律拒绝。REQ：EVID-1/2/3/6｜依赖：T-V1,T-PR9,T-C8B｜验证：N9。
+- [~] T-C8C final-gate：聚合器强绑定 candidate/source/corpus/registry/eval/platform；N10 进入 G8/G9 required evidence；N0 前 real-evidence artifact 一律拒绝。**实现完成（2026-08-09）**：`generate_release_gate_status.py` 改为显式 evidence manifest + 必填 `--expected-commit/--expected-source-digest/--expected-registry-digest/--expected-corpus-digests`，逐项复算 `artifact_sha256`，G0–G9 按 VERIFICATION §6 节点映射，N10/U9 进入 G8/G9；不再按 mtime/latest 选证。REQ：EVID-1/2/3/6｜依赖：T-V1,T-PR9,T-C8B｜验证：N9（真实 N0–N10 证据待 producer 生成）。
 
 ## 11. 真实验证节点（W10）
 

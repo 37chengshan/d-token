@@ -6,6 +6,8 @@
  * localized label and must never send a label back as a protocol value.
  */
 
+import { translateCopy } from "./i18n";
+
 export type ProtocolId = "openai" | "anthropic";
 export type ProtocolWire = "open_ai" | "anthropic";
 export type ProtocolLanguage = "zh" | "en";
@@ -40,7 +42,7 @@ export function parseProtocol(value: unknown, lang: ProtocolLanguage = "en"): Pa
     : text === "anthropic"
       ? "anthropic"
       : null;
-  if (!id) return { id: null, wire: null, label: lang === "zh" ? "未知" : "Unknown", known: false };
+  if (!id) return { id: null, wire: null, label: translateCopy("protocol.unknown", lang), known: false };
 
   return {
     id,

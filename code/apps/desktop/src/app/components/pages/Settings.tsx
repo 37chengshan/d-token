@@ -172,12 +172,12 @@ export function Settings() {
       })
       .catch((error) => {
         const message = error instanceof Error && error.message === "native_unavailable"
-          ? (lang === "zh" ? "浏览器预览不能读取或保存本机偏好。" : "Browser preview cannot read or save local preferences.")
-          : (lang === "zh" ? "本机偏好读取失败；相关设置暂不可用。" : "Local preferences could not be read; related settings are unavailable.");
+          ? (translateCopy("set.browserPreviewCannotReadOrSaveLocalPreferences", lang))
+          : (translateCopy("set.localPreferencesCouldNotBeReadRelatedSettingsAreUnavailable", lang));
         setPreferencesAvailable(false);
         setPreferencesLoadError(message);
         const failure = presentOperationFailure("settings", error, lang);
-        addNotification({ dedupeKey: "settings-preferences-load-failed", level: "warning", title: lang === "zh" ? "设置暂不可用" : "Settings unavailable", message, details: failure.details });
+        addNotification({ dedupeKey: "settings-preferences-load-failed", level: "warning", title: translateCopy("set.settingsUnavailable", lang), message, details: failure.details });
       });
   }, [addNotification, lang]);
 
@@ -215,7 +215,7 @@ export function Settings() {
           enabled: false,
           source: "unavailable",
           service_argument: "--dtoken-autostart-service",
-          summary: lang === "zh" ? "无法读取自动启动状态。" : "Autostart status could not be read.",
+          summary: translateCopy("set.autostartStatusCouldNotBeRead", lang),
         });
       });
     return () => { cancelled = true; };
@@ -233,7 +233,7 @@ export function Settings() {
         payload: { preferences: next, scope: "d-token-local-settings", no_external_agent_write: true },
       });
       if (!result.ok) throw new Error(result.summary || "settings_save_failed");
-      addNotification({ dedupeKey: "settings-preferences-saved", level: "success", title: lang === "zh" ? "本地偏好已保存" : "Local preferences saved", message: lang === "zh" ? "本地偏好已保存到 d-token。" : "Local preferences were saved to d-token.", persistent: true, receipt: { requestId, targetId: "preferences" } });
+      addNotification({ dedupeKey: "settings-preferences-saved", level: "success", title: translateCopy("set.localPreferencesSaved", lang), message: translateCopy("set.localPreferencesWereSavedToDToken", lang), persistent: true, receipt: { requestId, targetId: "preferences" } });
     } catch (error) {
       setPreferences(preferences);
       const failure = presentOperationFailure("settings", error, lang);
@@ -333,10 +333,10 @@ export function Settings() {
       addNotification({
         dedupeKey: "update-check-result",
         level: result.ok ? "success" : "warning",
-        title: result.ok ? (lang === "zh" ? "更新检查完成" : "Update check complete") : (lang === "zh" ? "更新源不可用" : "Update source unavailable"),
+        title: result.ok ? (translateCopy("set.updateCheckComplete", lang)) : (translateCopy("set.updateSourceUnavailable", lang)),
         message: result.ok
-          ? (lang === "zh" ? "已读取经过签名验证的更新信息；未下载或安装任何内容。" : "Signed update information was read; nothing was downloaded or installed.")
-          : (lang === "zh" ? "尚未配置经过签名验证的发布源；没有下载或安装任何内容。" : "No signed update feed is configured; nothing was downloaded or installed."),
+          ? (translateCopy("set.signedUpdateInformationWasReadNothingWasDownloadedOrInstalled", lang))
+          : (translateCopy("set.noSignedUpdateFeedIsConfiguredNothingWasDownloadedOrInstalled", lang)),
         persistent: !result.ok,
         receipt: { requestId, targetId: `update:${preferences.updateChannel}` },
       });
@@ -367,7 +367,7 @@ export function Settings() {
     addNotification({
       dedupeKey: "appearance-save-failed",
       level: "warning",
-      title: lang === "zh" ? "外观设置保存失败" : "Appearance settings were not saved",
+      title: translateCopy("set.appearanceSettingsWereNotSaved", lang),
       message: describePersistenceNotice(persistenceNotice, lang),
     });
   }, [addNotification, lang, persistenceNotice]);
@@ -381,8 +381,8 @@ export function Settings() {
       );
       if (!result.ok) throw new Error(result.summary || "service_action_failed");
       const success = action === "start"
-        ? (lang === "zh" ? "d-token 本地服务已启动。" : "The local d-token service started.")
-        : (lang === "zh" ? "d-token 本地服务已停止。" : "The local d-token service stopped.");
+        ? (translateCopy("set.theLocalDTokenServiceStarted", lang))
+        : (translateCopy("set.theLocalDTokenServiceStopped", lang));
       setNotice(success);
       addNotification({ dedupeKey: `settings-service-${action}`, level: "success", title: success, message: success });
       await refreshServiceStatus();
@@ -405,16 +405,16 @@ export function Settings() {
       setAutostartStatus(result.status);
       if (!result.ok) throw new Error(result.summary);
       const success = enable
-        ? (lang === "zh" ? "已启用登录后自动启动。" : "Autostart after sign-in is enabled.")
-        : (lang === "zh" ? "已关闭登录后自动启动。" : "Autostart after sign-in is disabled.");
+        ? (translateCopy("set.autostartAfterSignInIsEnabled", lang))
+        : (translateCopy("set.autostartAfterSignInIsDisabled", lang));
       setNotice(success);
       addNotification({
         dedupeKey: enable ? "autostart-enabled" : "autostart-disabled",
         level: "success",
         title: success,
         message: enable
-          ? (lang === "zh" ? "系统登录后会使用受控参数启动 d-token App，并尝试启动 d-token 自有本地服务。" : "After sign-in, the d-token App starts with its controlled service argument and attempts to start its owned local service.")
-          : (lang === "zh" ? "当前用户的 d-token 启动项已移除并验证。" : "The current user's d-token startup entry was removed and verified."),
+          ? (translateCopy("set.afterSignInTheDTokenAppStartsWithItsControlledServiceArgumentAndAttemptsToStartItsOwnedLocalService", lang))
+          : (translateCopy("set.theCurrentUserSDTokenStartupEntryWasRemovedAndVerified", lang)),
         persistent: true,
         receipt: { requestId, targetId: result.status.source },
       });
@@ -423,10 +423,10 @@ export function Settings() {
       addNotification({
         dedupeKey: "autostart-change-failed",
         level: "error",
-        title: lang === "zh" ? "自动启动设置失败" : "Autostart change failed",
+        title: translateCopy("set.autostartChangeFailed", lang),
         message: error instanceof Error && error.message === "native_unavailable"
-          ? (lang === "zh" ? "浏览器预览无法修改系统启动项。" : "The browser preview cannot change system startup entries.")
-          : (lang === "zh" ? "系统启动项未通过写入或验证，已恢复原有状态。" : "The system startup entry did not pass write or verification. The prior state was restored."),
+          ? (translateCopy("set.theBrowserPreviewCannotChangeSystemStartupEntries", lang))
+          : (translateCopy("set.theSystemStartupEntryDidNotPassWriteOrVerificationThePriorStateWasRestored", lang)),
         receipt: { requestId, targetId: "autostart" },
       });
     } finally {
@@ -461,7 +461,7 @@ export function Settings() {
       <Section
         id="appearance"
         title={t("set.appearance")}
-        description={lang === "zh" ? "颜色与主题立即作用于当前窗口。" : "Colors and theme apply to the current window immediately."}
+        description={translateCopy("set.colorsAndThemeApplyToTheCurrentWindowImmediately", lang)}
         icon={Palette}
       >
         <Row title={t("set.accent")} desc={t("set.accentDesc")}>
@@ -522,41 +522,41 @@ export function Settings() {
 
       <Section
         id="runtime"
-        title={lang === "zh" ? "运行与启动" : "Runtime & Startup"}
-        description={lang === "zh" ? "查看并管理 d-token 自有本地服务。" : "Inspect and manage the d-token-owned local service."}
+        title={translateCopy("set.runtimeStartup", lang)}
+        description={translateCopy("set.inspectAndManageTheDTokenOwnedLocalService", lang)}
         icon={Server}
       >
-        <Row title={lang === "zh" ? "本地服务" : "Local service"} desc={serviceView.detail}>
+        <Row title={translateCopy("onb.service.heading", lang)} desc={serviceView.detail}>
           <div className="flex flex-wrap items-center justify-end gap-2">
             <Badge variant={serviceView.badge}>{serviceView.label}</Badge>
             {serviceCommand ? (
               <Button
                 size="sm"
                 variant={serviceCommand === "stop" ? "outline" : "default"}
-                aria-label={serviceCommand === "start" ? (lang === "zh" ? "启动服务" : "Start service") : (lang === "zh" ? "停止服务" : "Stop service")}
+                aria-label={serviceCommand === "start" ? (translateCopy("tray.startService", lang)) : (translateCopy("tray.stopService", lang))}
                 disabled={serviceAction !== null}
                 onClick={() => serviceCommand === "stop" ? setConfirmServiceStop(true) : void runServiceAction("start")}
               >
                 {serviceAction ? <RefreshCw className="size-4 animate-spin" /> : <Power className="size-4" />}
                 {serviceAction
-                  ? (lang === "zh" ? "处理中" : "Working")
+                  ? (translateCopy("set.working", lang))
                   : serviceCommand === "start"
-                    ? (lang === "zh" ? "启动" : "Start")
-                    : (lang === "zh" ? "停止" : "Stop")}
+                    ? (translateCopy("set.start", lang))
+                    : (translateCopy("set.stop", lang))}
               </Button>
             ) : null}
           </div>
         </Row>
         <Row
-          title={lang === "zh" ? "本地服务地址" : "Local service address"}
-          desc={lang === "zh" ? "只监听本机，不接受局域网或公网连接。" : "Loopback-only; no LAN or public connections."}
+          title={translateCopy("set.localServiceAddress", lang)}
+          desc={translateCopy("set.loopbackOnlyNoLanOrPublicConnections", lang)}
         >
           <span className="break-all font-mono text-sm text-muted-foreground">
             {serviceStatus?.service_url || "—"}
           </span>
         </Row>
         <Row
-          title={lang === "zh" ? "自动启动 d-token 服务" : "Start d-token automatically"}
+          title={translateCopy("set.startDTokenAutomatically", lang)}
           desc={describeAutostart(autostartStatus, lang)}
         >
           <div className="flex items-center gap-3">
@@ -564,7 +564,7 @@ export function Settings() {
               {autostartBadge(autostartStatus, lang)}
             </Badge>
             <Switch
-              aria-label={lang === "zh" ? "自动启动 d-token 服务" : "Start d-token automatically"}
+              aria-label={translateCopy("set.startDTokenAutomatically", lang)}
               checked={autostartStatus?.enabled === true}
               disabled={!autostartStatus?.supported || autostartStatus.state === "error" || autostartPending}
               onCheckedChange={(checked) => setAutostartReview(checked)}
@@ -575,77 +575,77 @@ export function Settings() {
 
       <Section
         id="privacy"
-        title={lang === "zh" ? "隐私与数据" : "Privacy & Data"}
-        description={lang === "zh" ? "控制本机记录保留；日志始终高级隐藏，不上传诊断。" : "Control local retention; logs stay high-redaction and diagnostics are never uploaded."}
+        title={translateCopy("set.privacyData", lang)}
+        description={translateCopy("set.controlLocalRetentionLogsStayHighRedactionAndDiagnosticsAreNeverUploaded", lang)}
         icon={ShieldCheck}
       >
         {preferencesLoadError ? (
           <div className="mb-3 rounded-lg border border-amber-500/25 bg-amber-500/[0.06] p-3 text-sm text-amber-800 dark:text-amber-200" role="status">
-            <strong>{lang === "zh" ? "本机偏好暂不可用" : "Local preferences unavailable"}</strong>
-            <p className="mt-1 text-xs text-muted-foreground">{preferencesLoadError} {lang === "zh" ? "请在桌面窗口重试，或打开 Doctor 检查本地控制面。" : "Retry in the desktop app or open Doctor to inspect the local control plane."}</p>
+            <strong>{translateCopy("set.localPreferencesUnavailable", lang)}</strong>
+            <p className="mt-1 text-xs text-muted-foreground">{preferencesLoadError} {translateCopy("set.retryInTheDesktopAppOrOpenDoctorToInspectTheLocalControlPlane", lang)}</p>
           </div>
         ) : null}
         <Row
-          title={lang === "zh" ? "数据保留时间" : "Data retention"}
-          desc={lang === "zh" ? "供 Event Ledger 清理与导出边界使用。" : "Used for Event Ledger cleanup and export boundaries."}
+          title={translateCopy("set.dataRetention", lang)}
+          desc={translateCopy("set.usedForEventLedgerCleanupAndExportBoundaries", lang)}
         >
           <AnimatedSegmentedControl
-            ariaLabel={lang === "zh" ? "数据保留时间" : "Data retention"}
+            ariaLabel={translateCopy("set.dataRetention", lang)}
             reducedMotion={reducedMotion}
             value={String(preferences.retentionDays) as "7" | "30"}
             onValueChange={(next) => void savePreferences({ retentionDays: Number(next) as 7 | 30 })}
             items={[
               {
                 value: "7",
-                label: `7 ${lang === "zh" ? "天" : "days"}`,
+                label: `7 ${translateCopy("set.days", lang)}`,
                 disabled: preferencesSaving || !preferencesAvailable,
               },
               {
                 value: "30",
-                label: `30 ${lang === "zh" ? "天" : "days"}`,
+                label: `30 ${translateCopy("set.days", lang)}`,
                 disabled: preferencesSaving || !preferencesAvailable,
               },
             ] as const}
           />
         </Row>
         <Row
-          title={lang === "zh" ? "日志与上传边界" : "Log & upload boundary"}
-          desc={lang === "zh" ? "密钥、路径与敏感地址始终隐藏；不上传提示词、代码或完整输出。" : "Keys, paths, and sensitive addresses stay redacted; prompts, code, and full outputs are never uploaded."}
+          title={translateCopy("set.logUploadBoundary", lang)}
+          desc={translateCopy("set.keysPathsAndSensitiveAddressesStayRedactedPromptsCodeAndFullOutputsAreNeverUploaded", lang)}
         >
-          <Badge variant="secondary">{lang === "zh" ? "高隐藏 · 上传关闭" : "High redaction · upload off"}</Badge>
+          <Badge variant="secondary">{translateCopy("set.highRedactionUploadOff", lang)}</Badge>
         </Row>
       </Section>
 
       <Section
         id="learning"
-        title={lang === "zh" ? "智能学习" : "Smart Learning"}
-        description={lang === "zh" ? "本地聚合指标学习；项目扫描在「安装与连接 → 智能学习」。" : "Local aggregate learning; project scan lives under Install → Smart Learning."}
+        title={translateCopy("sl.title", lang)}
+        description={translateCopy("set.localAggregateLearningProjectScanLivesUnderInstallSmartLearning", lang)}
         icon={BrainCircuit}
       >
         <Row
-          title={lang === "zh" ? "智能学习全面扫描" : "Smart Learning full scan"}
-          desc={lang === "zh" ? "启用本地聚合指标学习；不会读取原始提示词、响应或凭据。" : "Enables learning from local aggregate metrics without reading raw prompts, responses, or credentials."}
+          title={translateCopy("set.smartLearningFullScan", lang)}
+          desc={translateCopy("set.enablesLearningFromLocalAggregateMetricsWithoutReadingRawPromptsResponsesOrCredentials", lang)}
         >
-          <Switch aria-label={lang === "zh" ? "智能学习全面扫描" : "Smart Learning full scan"} checked={preferences.learningEnabled} disabled={preferencesSaving || !preferencesAvailable} onCheckedChange={(checked) => void savePreferences({ learningEnabled: checked })} />
+          <Switch aria-label={translateCopy("set.smartLearningFullScan", lang)} checked={preferences.learningEnabled} disabled={preferencesSaving || !preferencesAvailable} onCheckedChange={(checked) => void savePreferences({ learningEnabled: checked })} />
         </Row>
         <Row
-          title={lang === "zh" ? "扫描强度" : "Scan depth"}
-          desc={lang === "zh" ? "决定识别范围与本机资源占用。" : "Controls discovery scope and local resource use."}
+          title={translateCopy("set.scanDepth", lang)}
+          desc={translateCopy("set.controlsDiscoveryScopeAndLocalResourceUse", lang)}
         >
           <AnimatedSegmentedControl
-            ariaLabel={lang === "zh" ? "扫描强度" : "Scan depth"}
+            ariaLabel={translateCopy("set.scanDepth", lang)}
             reducedMotion={reducedMotion}
             value={preferences.scanDepth}
             onValueChange={(next) => void savePreferences({ scanDepth: next })}
             items={[
               {
                 value: "standard",
-                label: lang === "zh" ? "标准" : "Standard",
+                label: translateCopy("set.standard", lang),
                 disabled: preferencesSaving || !preferencesAvailable,
               },
               {
                 value: "deep",
-                label: lang === "zh" ? "深入" : "Deep",
+                label: translateCopy("set.deep", lang),
                 disabled: preferencesSaving || !preferencesAvailable,
               },
             ] as const}
@@ -655,40 +655,40 @@ export function Settings() {
 
       <Section
         id="updates"
-        title={lang === "zh" ? "更新" : "Updates"}
-        description={lang === "zh" ? "只接受经过签名验证的发布源；当前未配置发布源时会明确显示不可用。" : "Only signed release feeds are accepted; unavailable is shown when no feed is configured."}
+        title={translateCopy("set.updates", lang)}
+        description={translateCopy("set.onlySignedReleaseFeedsAreAcceptedUnavailableIsShownWhenNoFeedIsConfigured", lang)}
         icon={RefreshCw}
       >
-        <Row title={lang === "zh" ? "更新通道" : "Update channel"} desc={lang === "zh" ? "选择会保存到 d-token 本地设置；检查时只使用经过签名验证的对应发布源。" : "Saved locally; checks only use the matching signed release feed."}>
+        <Row title={translateCopy("set.updateChannel", lang)} desc={translateCopy("set.savedLocallyChecksOnlyUseTheMatchingSignedReleaseFeed", lang)}>
           <AnimatedSegmentedControl
-            ariaLabel={lang === "zh" ? "更新通道" : "Update channel"}
+            ariaLabel={translateCopy("set.updateChannel", lang)}
             reducedMotion={reducedMotion}
             value={preferences.updateChannel}
             onValueChange={(next) => void savePreferences({ updateChannel: next })}
             items={[
               {
                 value: "stable",
-                label: lang === "zh" ? "稳定版" : "Stable",
+                label: translateCopy("set.stable", lang),
                 disabled: preferencesSaving || !preferencesAvailable,
               },
               {
                 value: "preview",
-                label: lang === "zh" ? "预览版" : "Preview",
+                label: translateCopy("set.preview", lang),
                 disabled: preferencesSaving || !preferencesAvailable,
               },
             ] as const}
           />
         </Row>
         <Row
-          title={lang === "zh" ? "自动检查更新" : "Check for updates automatically"}
-          desc={lang === "zh" ? "应用启动后按所选通道检查；没有签名发布源时明确记录为不可用。" : "Checks the selected channel after app launch; records unavailable when no signed feed exists."}
+          title={translateCopy("set.checkForUpdatesAutomatically", lang)}
+          desc={translateCopy("set.checksTheSelectedChannelAfterAppLaunchRecordsUnavailableWhenNoSignedFeedExists", lang)}
         >
-          <Switch aria-label={lang === "zh" ? "自动检查更新" : "Check for updates automatically"} checked={preferences.autoUpdateCheck} disabled={preferencesSaving || !preferencesAvailable} onCheckedChange={(checked) => void savePreferences({ autoUpdateCheck: checked })} />
+          <Switch aria-label={translateCopy("set.checkForUpdatesAutomatically", lang)} checked={preferences.autoUpdateCheck} disabled={preferencesSaving || !preferencesAvailable} onCheckedChange={(checked) => void savePreferences({ autoUpdateCheck: checked })} />
         </Row>
-        <Row title={lang === "zh" ? "立即检查" : "Check now"} desc={updateCheck ? `${updateCheck.state} · ${updateCheck.summary}` : (lang === "zh" ? "读取原生更新控制面的真实状态。" : "Read the native update control-plane state.")}>
+        <Row title={translateCopy("set.checkNow", lang)} desc={updateCheck ? `${updateCheck.state} · ${updateCheck.summary}` : (translateCopy("set.readTheNativeUpdateControlPlaneState", lang))}>
           <Button size="sm" variant="outline" disabled={checkingUpdates || !preferencesAvailable} onClick={() => void checkUpdates()}>
             <RefreshCw className={cn("size-4", checkingUpdates && "animate-spin")} />
-            {checkingUpdates ? (lang === "zh" ? "检查中" : "Checking") : (lang === "zh" ? "检查更新" : "Check updates")}
+            {checkingUpdates ? (translateCopy("set.checking", lang)) : (translateCopy("set.checkUpdates", lang))}
           </Button>
         </Row>
       </Section>
@@ -803,7 +803,7 @@ export function Settings() {
       <Section
         id="about"
         title={t("set.about")}
-        description={lang === "zh" ? "版本信息；设置仅保存在 d-token 本地。" : "Version info; settings stay in d-token local state only."}
+        description={translateCopy("set.versionInfoSettingsStayInDTokenLocalStateOnly", lang)}
         icon={Info}
       >
         <Row title={t("set.versionLabel")}>
@@ -813,10 +813,10 @@ export function Settings() {
       <OperationDialog
         open={confirmServiceStop}
         onOpenChange={setConfirmServiceStop}
-        title={lang === "zh" ? "停止 d-token 本地服务？" : "Stop the d-token local service?"}
-        summary={lang === "zh" ? "停止后新的 Agent 请求将无法通过 d-token。" : "New agent requests cannot route through d-token after it stops."}
+        title={translateCopy("set.stopTheDTokenLocalService", lang)}
+        summary={translateCopy("set.newAgentRequestsCannotRouteThroughDTokenAfterItStops", lang)}
         impact={serviceStatus?.service_url ?? "127.0.0.1"}
-        confirmLabel={lang === "zh" ? "确认停止" : "Stop service"}
+        confirmLabel={translateCopy("set.stopService", lang)}
         cancelLabel={t("common.cancel")}
         risk="warning"
         pending={serviceAction === "stop"}
@@ -826,13 +826,13 @@ export function Settings() {
         open={autostartReview !== null}
         onOpenChange={(open) => { if (!open) setAutostartReview(null); }}
         title={autostartReview
-          ? (lang === "zh" ? "启用登录后自动启动？" : "Enable autostart after sign-in?")
-          : (lang === "zh" ? "关闭登录后自动启动？" : "Disable autostart after sign-in?")}
+          ? (translateCopy("set.enableAutostartAfterSignIn", lang))
+          : (translateCopy("set.disableAutostartAfterSignIn", lang))}
         summary={autostartReview
-          ? (lang === "zh" ? "将为当前用户创建 d-token 系统启动项。它只启动 d-token App，并携带受控参数来尝试启动 d-token 自有服务。" : "Creates a current-user system startup entry for d-token. It starts only the d-token App with a controlled argument that attempts to start the d-token-owned service.")
-          : (lang === "zh" ? "将移除并验证当前用户的 d-token 系统启动项，不会停止当前正在运行的服务。" : "Removes and verifies the current user's d-token startup entry without stopping the currently running service.")}
-        impact={lang === "zh" ? "不会读取或修改第三方 Agent、cc-switch 或上游配置。" : "No third-party Agent, cc-switch, or upstream configuration is read or changed."}
-        confirmLabel={autostartReview ? (lang === "zh" ? "确认启用" : "Enable") : (lang === "zh" ? "确认关闭" : "Disable")}
+          ? (translateCopy("set.createsACurrentUserSystemStartupEntryForDTokenItStartsOnlyTheDTokenAppWithAControlledArgumentThatAttemptsToStartTheDTokenOwnedService", lang))
+          : (translateCopy("set.removesAndVerifiesTheCurrentUserSDTokenStartupEntryWithoutStoppingTheCurrentlyRunningService", lang))}
+        impact={translateCopy("set.noThirdPartyAgentCcSwitchOrUpstreamConfigurationIsReadOrChanged", lang)}
+        confirmLabel={autostartReview ? (translateCopy("set.enable", lang)) : (translateCopy("set.disable", lang))}
         cancelLabel={t("common.cancel")}
         risk={autostartStatus?.state === "drift" ? "warning" : "normal"}
         pending={autostartPending}
@@ -910,77 +910,75 @@ function describeService(
 ): { label: string; detail: string; badge: "default" | "secondary" | "outline" | "destructive" } {
   if (state === "running") {
     return {
-      label: lang === "zh" ? "服务正在运行" : "Service running",
-      detail: lang === "zh" ? "由当前 d-token 桌面窗口管理。" : "Managed by this d-token desktop window.",
+      label: translateCopy("set.serviceRunning", lang),
+      detail: translateCopy("set.managedByThisDTokenDesktopWindow", lang),
       badge: "default",
     };
   }
   if (state === "unmanaged_running") {
     return {
-      label: lang === "zh" ? "服务已在运行" : "Service already running",
-      detail: lang === "zh" ? "该进程不是由当前窗口启动，因此这里不会强行停止。" : "This process was not started by this window and will not be force-stopped here.",
+      label: translateCopy("set.serviceAlreadyRunning", lang),
+      detail: translateCopy("set.thisProcessWasNotStartedByThisWindowAndWillNotBeForceStoppedHere", lang),
       badge: "secondary",
     };
   }
   if (state === "stopped") {
     return {
-      label: lang === "zh" ? "服务未启动" : "Service stopped",
-      detail: lang === "zh" ? "启动后，Agent 才能通过 d-token 连接上游。" : "Start it before agents can connect upstream through d-token.",
+      label: translateCopy("set.serviceStopped", lang),
+      detail: translateCopy("set.startItBeforeAgentsCanConnectUpstreamThroughDToken", lang),
       badge: "outline",
     };
   }
   if (state === "preview") {
     return {
-      label: lang === "zh" ? "浏览器预览" : "Browser preview",
-      detail: lang === "zh" ? "没有读取或控制真实本地服务。" : "No real local service is read or controlled.",
+      label: translateCopy("cp.source.preview", lang),
+      detail: translateCopy("set.noRealLocalServiceIsReadOrControlled", lang),
       badge: "outline",
     };
   }
   if (state === "error") {
     return {
-      label: lang === "zh" ? "状态读取失败" : "Status unavailable",
-      detail: lang === "zh" ? "无法确认服务是否运行，请打开 Doctor。" : "Service state could not be confirmed; open Doctor.",
+      label: translateCopy("set.statusUnavailable", lang),
+      detail: translateCopy("set.serviceStateCouldNotBeConfirmedOpenDoctor", lang),
       badge: "destructive",
     };
   }
   return {
-    label: lang === "zh" ? "正在检查" : "Checking",
-    detail: lang === "zh" ? "正在读取本地服务状态。" : "Reading local service state.",
+    label: translateCopy("set.checking2", lang),
+    detail: translateCopy("set.readingLocalServiceState", lang),
     badge: "outline",
   };
 }
 
 function settingsBadge(state: SettingsState, saving: boolean, lang: "zh" | "en") {
-  if (saving) return lang === "zh" ? "保存中" : "Saving";
-  if (state === "loading") return lang === "zh" ? "读取中" : "Loading";
-  if (state === "loaded") return lang === "zh" ? "本地设置已连接" : "Local settings connected";
-  if (state === "missing") return lang === "zh" ? "首次使用" : "First use";
-  if (state === "preview") return lang === "zh" ? "浏览器预览" : "Browser preview";
-  return lang === "zh" ? "读取失败" : "Load failed";
+  if (saving) return translateCopy("set.pricingSaving", lang);
+  if (state === "loading") return translateCopy("adv.preferenceLoading", lang);
+  if (state === "loaded") return translateCopy("set.localSettingsConnected", lang);
+  if (state === "missing") return translateCopy("set.firstUse", lang);
+  if (state === "preview") return translateCopy("cp.source.preview", lang);
+  return translateCopy("set.loadFailed", lang);
 }
 
 function autostartBadge(status: AutostartStatus | null, lang: "zh" | "en") {
-  if (!status) return lang === "zh" ? "正在检查" : "Checking";
-  if (status.state === "enabled") return lang === "zh" ? "已启用" : "Enabled";
-  if (status.state === "disabled") return lang === "zh" ? "已关闭" : "Disabled";
-  if (status.state === "drift") return lang === "zh" ? "需要确认" : "Confirmation required";
-  if (status.state === "preview") return lang === "zh" ? "浏览器预览" : "Browser preview";
-  if (status.state === "unsupported") return lang === "zh" ? "当前平台不支持" : "Unsupported platform";
-  return lang === "zh" ? "状态读取失败" : "Status unavailable";
+  if (!status) return translateCopy("set.checking2", lang);
+  if (status.state === "enabled") return translateCopy("common.enabled", lang);
+  if (status.state === "disabled") return translateCopy("set.disabled", lang);
+  if (status.state === "drift") return translateCopy("set.confirmationRequired", lang);
+  if (status.state === "preview") return translateCopy("cp.source.preview", lang);
+  if (status.state === "unsupported") return translateCopy("set.unsupportedPlatform", lang);
+  return translateCopy("set.statusUnavailable", lang);
 }
 
 function describeAutostart(status: AutostartStatus | null, lang: "zh" | "en") {
-  if (!status) return lang === "zh" ? "正在读取当前用户的系统启动项。" : "Reading the current user's system startup entry.";
+  if (!status) return translateCopy("set.readingTheCurrentUserSSystemStartupEntry", lang);
   if (status.state === "enabled") {
-    return lang === "zh"
-      ? "登录后启动 d-token App，并仅通过受控参数尝试启动 d-token 自有本地服务。"
-      : "Starts the d-token App after sign-in and attempts its owned local service only through a controlled argument.";
+    return translateCopy("set.startsTheDTokenAppAfterSignInAndAttemptsItsOwnedLocalServiceOnlyThroughAControlledArgument", lang);
   }
-  if (status.state === "disabled") return lang === "zh" ? "当前用户登录后不会自动启动 d-token。" : "d-token will not start automatically after this user signs in.";
-  if (status.state === "drift") return lang === "zh" ? "检测到内容不匹配的 d-token 启动项；不会把它误报为已启用。" : "A mismatched d-token startup entry was found and is not reported as enabled.";
-  if (status.state === "preview") return lang === "zh" ? "浏览器预览不能读取或修改系统启动项。" : "The browser preview cannot read or change system startup entries.";
-  if (status.state === "unsupported") return lang === "zh" ? "自动启动仅支持 macOS 与 Windows。" : "Autostart is supported on macOS and Windows only.";
-  return lang === "zh" ? "无法验证系统启动项；暂不能修改。" : "The system startup entry could not be verified. Changes are unavailable.";
+  if (status.state === "disabled") return translateCopy("set.dTokenWillNotStartAutomaticallyAfterThisUserSignsIn", lang);
+  if (status.state === "drift") return translateCopy("set.aMismatchedDTokenStartupEntryWasFoundAndIsNotReportedAsEnabled", lang);
+  if (status.state === "preview") return translateCopy("set.theBrowserPreviewCannotReadOrChangeSystemStartupEntries", lang);
+  if (status.state === "unsupported") return translateCopy("set.autostartIsSupportedOnMacosAndWindowsOnly", lang);
+  return translateCopy("set.theSystemStartupEntryCouldNotBeVerifiedChangesAreUnavailable", lang);
 }
 
 type DtokenServiceStatus = {
@@ -1003,14 +1001,12 @@ type UpdateCheckResult = {
 
 function describePersistenceNotice(notice: string, lang: "zh" | "en") {
   if (notice === "session_only") {
-    return lang === "zh"
-      ? "浏览器预览：外观只在当前会话生效，没有伪装成本地已保存。"
-      : "Browser preview: appearance applies to this session only and is not presented as saved.";
+    return translateCopy("set.browserPreviewAppearanceAppliesToThisSessionOnlyAndIsNotPresentedAsSaved", lang);
   }
   if (notice.startsWith("save_failed:")) {
-    return lang === "zh" ? "保存失败；当前窗口的外观选择仍会保留。" : "Save failed; the current window keeps your appearance choice.";
+    return translateCopy("set.saveFailedTheCurrentWindowKeepsYourAppearanceChoice", lang);
   }
-  return lang === "zh" ? "设置已保存。" : "Settings saved.";
+  return translateCopy("set.settingsSaved", lang);
 }
 
 function normalizeProductPreferences(value: unknown): ProductPreferences {

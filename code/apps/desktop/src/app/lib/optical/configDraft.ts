@@ -1,4 +1,5 @@
 /** Pure draft helpers for visual-compression (Optical) product config. */
+import { translateCopy } from "../i18n";
 
 export type OpticalSafeMode = "off" | "shadow_preview";
 
@@ -157,18 +158,12 @@ export function opticalDraftsEqual(a: OpticalConfigDraft, b: OpticalConfigDraft)
 
 export function summarizeOpticalDraft(draft: OpticalConfigDraft, lang: "zh" | "en"): string {
   const enabledRoutes = draft.routes.filter((route) => route.enabled).length;
-  if (lang === "zh") {
-    return [
-      `全局引擎：${draft.global.enabled ? "开启" : "关闭"}`,
-      `默认模式：${draft.global.default_mode === "off" ? "关闭" : "Shadow 预览"}`,
-      `已启用 route 策略：${enabledRoutes}/${draft.routes.length}`,
-      "Active 改写：强制关闭",
-    ].join(" · ");
-  }
+  const state = draft.global.enabled ? translateCopy("optical.summary.on", lang) : translateCopy("optical.summary.off", lang);
+  const mode = draft.global.default_mode === "off" ? translateCopy("optical.summary.off", lang) : translateCopy("optical.summary.shadowPreview", lang);
   return [
-    `Global engine: ${draft.global.enabled ? "on" : "off"}`,
-    `Default mode: ${draft.global.default_mode === "off" ? "off" : "shadow preview"}`,
-    `Enabled route policies: ${enabledRoutes}/${draft.routes.length}`,
-    "Active transform: forced off",
+    translateCopy("optical.summary.globalEngine", lang, { state }),
+    translateCopy("optical.summary.defaultMode", lang, { mode }),
+    translateCopy("optical.summary.enabledRoutes", lang, { enabled: enabledRoutes, total: draft.routes.length }),
+    translateCopy("optical.summary.activeForcedOff", lang),
   ].join(" · ");
 }

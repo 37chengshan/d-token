@@ -2,7 +2,7 @@
 
 - 计划日期：2026-08-09（首次 2026-08-08；2026-08-09 依四份审计 + OMP 交叉评审修订基线/日期口径）
 - 目标版本：**v0.0.1**（用户指定最终发布目标）
-- 当前事实版本：`0.2.0-beta.1`（manifest / PRD 现行口径，见 [版本冲突](#2-版本冲突v0-0-1-vs-0-2-0-beta-1)）
+- 当前事实版本：`0.0.1`（V-1 已执行，2026-08-09；统一前为 `0.2.0-beta.1`，见 [版本冲突](#2-版本冲突v0-0-1-vs-0-2-0-beta-1)）
 - 执行基线：分支 `codex/final-release-iteration`；历史 freeze/HEAD 仅作过程事实，真正执行从 [TASKS.md](./TASKS.md) T-P0 重新冻结 clean `C_final` 开始。
 - 权威输入：`docs/PRD.md`（唯一产品真理源）、`docs/d-token_AI_product_target_spec_v2.md`、`docs/PLAN.md`（唯一 Living Plan）、`docs/product/IMPLEMENTATION_STATUS.md`（代码事实快照）、`.ai-bridge/release-iteration/*`（过程输入，非权威链接）
 
@@ -24,9 +24,9 @@
 
 ## 2. 版本冲突：v0.0.1 vs 0.2.0-beta.1
 
-用户指定目标版本 **v0.0.1**，但当前仓库事实版本为 `0.2.0-beta.1`：
+用户指定目标版本 **v0.0.1**；V-1 已于 2026-08-09 执行，manifest、PRD 版本门、PLAN/IMPLEMENTATION_STATUS/CHANGELOG/workflow、`check_release_version.py` 已统一为 v0.0.1。下表为统一前事实，保留作过程记录：
 
-| 事实源 | 当前值 |
+| 事实源 | 统一前值 |
 |---|---|
 | `code/apps/desktop/src-tauri/tauri.conf.json` | `0.2.0-beta.1` |
 | `code/apps/desktop/package.json` | `0.2.0-beta.1` |

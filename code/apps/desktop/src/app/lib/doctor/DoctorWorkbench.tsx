@@ -363,37 +363,31 @@ export function resolveActiveConfigEvidence(
   desktopStatus: Record<string, any> | null,
   lang: "zh" | "en" = "zh",
 ): ActiveConfigEvidence {
-  const zh = lang === "zh";
   const runtimeEnvelope = payload?.runtime_active_config ?? payload?.active_config;
   const runtimeConfig = runtimeEnvelope?.config;
   if (runtimeConfig && typeof runtimeConfig === "object") {
     const routeCount = finiteCountOrNull(runtimeConfig.route_count);
     const providerCount = finiteCountOrNull(runtimeConfig.provider_count);
     const fallbackDisabled = runtimeConfig.fallback_disabled === true;
-    const source = safeStatusText(runtimeConfig.source, zh ? "来源未知" : "source unknown");
+    const source = safeStatusText(runtimeConfig.source, translateCopy("dr.sourceUnknown", lang));
     return {
       ok: runtimeEnvelope?.source === "dtoken-owned-runtime" && runtimeConfig.loaded === true && (routeCount ?? 0) > 0 && (providerCount ?? 0) > 0 && fallbackDisabled,
-      summary: zh
-        ? `来源=${source} · 路由=${routeCount ?? "—"} · 上游=${providerCount ?? "—"} · 回退=${fallbackDisabled ? "已禁用" : "未证明已禁用"}`
-        : `source=${source} · routes=${routeCount ?? "—"} · providers=${providerCount ?? "—"} · fallback=${fallbackDisabled ? "disabled" : "not proven disabled"}`,
+      summary: translateCopy("dr.sourceRoutesProvidersFallback", lang, { v1: source, v2: routeCount ?? "—", v3: providerCount ?? "—", v4: fallbackDisabled ? "已禁用" : "未证明已禁用", v5: fallbackDisabled ? "disabled" : "not proven disabled" }),
     };
   }
-  const state = safeStatusText(desktopStatus?.state, zh ? "未知" : "unknown");
-  const source = safeStatusText(desktopStatus?.source, zh ? "未知" : "unknown");
+  const state = safeStatusText(desktopStatus?.state, translateCopy("dr.unknown", lang));
+  const source = safeStatusText(desktopStatus?.source, translateCopy("dr.unknown", lang));
   const routeCount = finiteCountOrNull(desktopStatus?.route_count);
   const providerCount = finiteCountOrNull(desktopStatus?.provider_count);
   const fallbackDisabled = desktopStatus?.fallback_disabled === true;
   return {
     ok: source === "d-token-desktop" && state === "loaded" && (routeCount ?? 0) > 0 && (providerCount ?? 0) > 0 && fallbackDisabled,
-    summary: zh
-      ? `来源=${source} · 状态=${state} · 路由=${routeCount ?? "—"} · 上游=${providerCount ?? "—"} · 回退=${fallbackDisabled ? "已禁用" : "未证明已禁用"}`
-      : `source=${source} · state=${state} · routes=${routeCount ?? "—"} · providers=${providerCount ?? "—"} · fallback=${fallbackDisabled ? "disabled" : "not proven disabled"}`,
+    summary: translateCopy("dr.sourceStateRoutesProvidersFallback", lang, { v1: source, v2: state, v3: routeCount ?? "—", v4: providerCount ?? "—", v5: fallbackDisabled ? "已禁用" : "未证明已禁用", v6: fallbackDisabled ? "disabled" : "not proven disabled" }),
   };
 }
 
 export function Doctor({ setPage }: { setPage: (page: PageId) => void }) {
   const { lang } = useI18n();
-  const zh = lang === "zh";
   const { addNotification } = useNotifications();
   const [snapshot, setSnapshot] = useState<DoctorSnapshot | null>(null);
   const [source, setSource] = useState<DoctorSource>("unavailable");
@@ -474,7 +468,7 @@ export function Doctor({ setPage }: { setPage: (page: PageId) => void }) {
     requestedModuleId: DoctorModuleId = module.module_id,
   ) => {
     if (!isV3SnapshotComplete(current) || isDoctorSnapshotExpired(current)) {
-      setNotice(zh ? "诊断快照不完整或已过期，请重新扫描。" : "The diagnostic snapshot is incomplete or stale. Scan again.");
+      setNotice(translateCopy("dr.theDiagnosticSnapshotIsIncompleteOrStaleScanAgain", lang));
       setNoticeTone("error");
       return;
     }
@@ -497,7 +491,7 @@ export function Doctor({ setPage }: { setPage: (page: PageId) => void }) {
       setV3Receipt(null);
     } catch {
       setV3Plan(null);
-      setNotice(zh ? "无法生成当前模块的修复计划，请重新扫描后再试。" : "The module repair plan is unavailable. Scan again and retry.");
+      setNotice(translateCopy("dr.theModuleRepairPlanIsUnavailableScanAgainAndRetry", lang));
       setNoticeTone("error");
     } finally {
       setPhase("idle");
@@ -507,7 +501,7 @@ export function Doctor({ setPage }: { setPage: (page: PageId) => void }) {
   const runScan = async (intent: "scan" | "repair" = "scan") => {
     const requestId = createOperationRequestId("doctor-scan");
     setPhase("scanning");
-    setNotice(zh ? "正在扫描本地服务、端口、Agent、路由与安全边界…" : "Scanning local services, ports, agents, routes, and safety boundaries…");
+    setNotice(translateCopy("dr.scanningLocalServicesPortsAgentsRoutesAndSafetyBoundaries", lang));
     setNoticeTone("warning");
     try {
       const next = await invokeNative<unknown>("run_doctor_scan");
@@ -522,9 +516,9 @@ export function Doctor({ setPage }: { setPage: (page: PageId) => void }) {
         const complete = isV3SnapshotComplete(normalizedV3) && !isDoctorSnapshotExpired(normalizedV3);
         setNotice(complete
           ? normalizedV3.counts.repairable > 0
-            ? (zh ? `扫描完成，发现 ${normalizedV3.counts.repairable} 个可准备修复的模块。` : `Scan complete. ${normalizedV3.counts.repairable} module(s) can be prepared for repair.`)
-            : (zh ? "扫描完成，当前没有可自动准备的修复。" : "Scan complete. No repairs can be prepared automatically.")
-          : (zh ? "扫描完成，但证据不完整或已过期；修复保持锁定。" : "Scan complete, but evidence is incomplete or stale; repairs remain locked."));
+            ? (translateCopy("dr.scanCompleteModuleSCanBePreparedForRepair", lang, { v1: normalizedV3.counts.repairable }))
+            : (translateCopy("dr.scanCompleteNoRepairsCanBePreparedAutomatically", lang))
+          : (translateCopy("dr.scanCompleteButEvidenceIsIncompleteOrStaleRepairsRemainLocked", lang)));
         const clean = complete
           && normalizedV3.state === "healthy"
           && normalizedV3.counts.repairable === 0
@@ -534,8 +528,8 @@ export function Doctor({ setPage }: { setPage: (page: PageId) => void }) {
         addNotification({
           dedupeKey: `doctor-scan-${normalizedV3.revision}`,
           level: clean ? "success" : "warning",
-          title: clean ? (zh ? "Doctor 扫描已通过" : "Doctor scan passed") : (zh ? "Doctor 扫描完成" : "Doctor scan complete"),
-          message: zh ? `覆盖 ${normalizedV3.coverage?.completed ?? 0}/${normalizedV3.coverage?.total ?? normalizedV3.modules.length} 个模块。` : `Covered ${normalizedV3.coverage?.completed ?? 0}/${normalizedV3.coverage?.total ?? normalizedV3.modules.length} modules.`,
+          title: clean ? (translateCopy("dr.doctorScanPassed", lang)) : (translateCopy("dr.doctorScanComplete", lang)),
+          message: translateCopy("dr.coveredModules", lang, { v1: normalizedV3.coverage?.completed ?? 0, v2: normalizedV3.coverage?.total ?? normalizedV3.modules.length }),
           receipt: { requestId, targetId: normalizedV3.revision },
         });
         if (intent === "repair" && complete) {
@@ -552,14 +546,14 @@ export function Doctor({ setPage }: { setPage: (page: PageId) => void }) {
         const nextSelection = defaultRepairSelection(next);
         setSelected(nextSelection);
         setNotice(next.ok
-          ? (zh ? "扫描完成，当前未发现需要处理的常规问题。" : "Scan complete. No common issues need attention.")
-          : (zh ? `扫描完成，发现 ${next.issues.length} 项需要处理的问题。` : `Scan complete. ${next.issues.length} issue(s) need attention.`));
+          ? (translateCopy("dr.scanCompleteNoCommonIssuesNeedAttention", lang))
+          : (translateCopy("dr.scanCompleteIssueSNeedAttention", lang, { v1: next.issues.length })));
         setNoticeTone(next.ok ? "success" : "warning");
         addNotification({
           dedupeKey: `doctor-scan-${next.revision}`,
           level: next.ok ? "success" : "warning",
-          title: next.ok ? (zh ? "Doctor 扫描已通过" : "Doctor scan passed") : (zh ? "Doctor 发现问题" : "Doctor found issues"),
-          message: next.ok ? (zh ? "常规检查全部通过。" : "All common checks passed.") : (zh ? `发现 ${next.issues.length} 项问题，其中 ${next.counts.repairable} 项可常规修复。` : `${next.issues.length} issue(s) found; ${next.counts.repairable} can be repaired safely.`),
+          title: next.ok ? (translateCopy("dr.doctorScanPassed", lang)) : (translateCopy("dr.doctorFoundIssues", lang)),
+          message: next.ok ? (translateCopy("dr.allCommonChecksPassed", lang)) : (translateCopy("dr.issueSFoundCanBeRepairedSafely", lang, { v1: next.issues.length, v2: next.counts.repairable })),
           receipt: { requestId, targetId: next.revision },
         });
         if (intent === "repair" && nextSelection.size > 0) {
@@ -577,7 +571,7 @@ export function Doctor({ setPage }: { setPage: (page: PageId) => void }) {
       setSource(error instanceof Error && error.message === "native_unavailable" ? "preview" : "unavailable");
       setNotice(doctorFailureSummary(error, lang));
       setNoticeTone("error");
-      addNotification({ dedupeKey: "doctor-scan-failed", level: "error", title: zh ? "Doctor 扫描失败" : "Doctor scan failed", message: doctorFailureSummary(error, lang), receipt: { requestId, targetId: "doctor" } });
+      addNotification({ dedupeKey: "doctor-scan-failed", level: "error", title: translateCopy("dr.doctorScanFailed", lang), message: doctorFailureSummary(error, lang), receipt: { requestId, targetId: "doctor" } });
     } finally {
       setPhase("idle");
     }
@@ -593,9 +587,9 @@ export function Doctor({ setPage }: { setPage: (page: PageId) => void }) {
       });
       if (!nextPlan.ok || nextPlan.report_revision !== report.revision) throw new Error("stale_doctor_repair_plan");
       setPlan(nextPlan);
-      addNotification({ dedupeKey: `doctor-repair-preview-${nextPlan.report_revision}`, level: "info", title: zh ? "修复预览已准备" : "Repair preview ready", message: zh ? "请确认修复摘要；确认前不会修改配置。" : "Confirm the repair summary; no configuration changes happen before confirmation.", receipt: { requestId, targetId: nextPlan.report_revision } });
+      addNotification({ dedupeKey: `doctor-repair-preview-${nextPlan.report_revision}`, level: "info", title: translateCopy("dr.repairPreviewReady", lang), message: translateCopy("dr.confirmTheRepairSummaryNoConfigurationChangesHappenBeforeConfirmation", lang), receipt: { requestId, targetId: nextPlan.report_revision } });
     } catch (error) {
-      const failure = zh ? "无法生成当前修复计划，请重新扫描后再试。" : "The repair plan is unavailable. Scan again and retry.";
+      const failure = translateCopy("dr.theRepairPlanIsUnavailableScanAgainAndRetry", lang);
       setNotice(failure);
       setNoticeTone("error");
       setPlan(null);
@@ -620,13 +614,13 @@ export function Doctor({ setPage }: { setPage: (page: PageId) => void }) {
       setPlan(null);
       const verified = receipt.ok && receipt.report.ok;
       setNotice(verified
-        ? (zh ? "常规问题已修复并通过复检" : "Common issues were repaired and verified")
-        : (zh ? "修复已执行，但复检仍有未通过项。" : "Repair ran, but verification still needs attention."));
+        ? (translateCopy("dr.commonIssuesWereRepairedAndVerified", lang))
+        : (translateCopy("dr.repairRanButVerificationStillNeedsAttention", lang)));
       setNoticeTone(verified ? "success" : "warning");
-      addNotification({ dedupeKey: `doctor-repair-${report.revision}`, level: verified ? "success" : "warning", title: verified ? (zh ? "Doctor 修复已验证" : "Doctor repair verified") : (zh ? "Doctor 修复需要处理" : "Doctor repair needs attention"), message: verified ? (zh ? "修复和复检均已完成。" : "Repair and verification completed.") : (zh ? "修复已执行，但仍有检查项需要处理。" : "Repair ran, but some checks still need attention."), receipt: { requestId, targetId: report.revision } });
+      addNotification({ dedupeKey: `doctor-repair-${report.revision}`, level: verified ? "success" : "warning", title: verified ? (translateCopy("dr.doctorRepairVerified", lang)) : (translateCopy("dr.doctorRepairNeedsAttention", lang)), message: verified ? (translateCopy("dr.repairAndVerificationCompleted", lang)) : (translateCopy("dr.repairRanButSomeChecksStillNeedAttention", lang)), receipt: { requestId, targetId: report.revision } });
     } catch (error) {
       setPlan(null);
-      const failure = zh ? "修复结果未确认，请重新扫描当前状态。" : "The repair result is unconfirmed. Scan the current state again.";
+      const failure = translateCopy("dr.theRepairResultIsUnconfirmedScanTheCurrentStateAgain", lang);
       setNotice(failure);
       setNoticeTone("error");
       const presentation = presentOperationFailure("doctor", error, lang);
@@ -640,7 +634,7 @@ export function Doctor({ setPage }: { setPage: (page: PageId) => void }) {
     const module = v3Snapshot?.modules.find((item) => item.module_id === "agent");
     if (!v3Snapshot || !module || !v3Actionable || selectedAgents.size === 0) return;
     if (agentScope === "project" && projectRoot.trim().length === 0) {
-      setNotice(zh ? "项目作用域需要填写绝对路径。" : "Project scope requires an absolute path.");
+      setNotice(translateCopy("dr.projectScopeRequiresAnAbsolutePath", lang));
       setNoticeTone("error");
       return;
     }
@@ -658,7 +652,7 @@ export function Doctor({ setPage }: { setPage: (page: PageId) => void }) {
 
   const applyV3Repair = async () => {
     if (!v3Snapshot || !v3Plan || !v3Actionable || v3Plan.expires_at_ms <= Date.now()) {
-      setNotice(zh ? "修复计划已过期，请重新扫描并生成计划。" : "The repair plan expired. Scan and prepare it again.");
+      setNotice(translateCopy("dr.theRepairPlanExpiredScanAndPrepareItAgain", lang));
       setNoticeTone("error");
       setV3Plan(null);
       return;
@@ -692,16 +686,16 @@ export function Doctor({ setPage }: { setPage: (page: PageId) => void }) {
       }
       const receiptStatus = doctorReceiptStatus(receipt);
       setNotice(receiptStatus === "verified"
-        ? (zh ? "修复已完成并通过复检。" : "Repair completed and passed verification.")
+        ? (translateCopy("dr.repairCompletedAndPassedVerification", lang))
         : receiptStatus === "partial"
-          ? (zh ? "修复部分完成；请查看逐项结果。" : "Repair partially completed; view the per-item results.")
-          : (zh ? "修复未完成；当前状态仍保持保护性锁定。" : "Repair did not complete; the current state remains safely locked."));
+          ? (translateCopy("dr.repairPartiallyCompletedViewThePerItemResults", lang))
+          : (translateCopy("dr.repairDidNotCompleteTheCurrentStateRemainsSafelyLocked", lang)));
       setNoticeTone(receiptStatus === "verified" ? "success" : "warning");
-      addNotification({ dedupeKey: `doctor-v3-repair-${v3Plan.plan_id}`, level: receiptStatus === "verified" ? "success" : "warning", title: receiptStatus === "verified" ? (zh ? "专项修复已验证" : "Specialized repair verified") : (zh ? "专项修复需要处理" : "Specialized repair needs attention"), message: receiptStatus === "verified" ? (zh ? "修复和复检均已完成。" : "Repair and verification completed.") : (zh ? "修复已执行，但请查看逐项结果。" : "Repair ran; view the per-item results."), receipt: { requestId, targetId: v3Plan.plan_id } });
+      addNotification({ dedupeKey: `doctor-v3-repair-${v3Plan.plan_id}`, level: receiptStatus === "verified" ? "success" : "warning", title: receiptStatus === "verified" ? (translateCopy("dr.specializedRepairVerified", lang)) : (translateCopy("dr.specializedRepairNeedsAttention", lang)), message: receiptStatus === "verified" ? (translateCopy("dr.repairAndVerificationCompleted", lang)) : (translateCopy("dr.repairRanViewThePerItemResults", lang)), receipt: { requestId, targetId: v3Plan.plan_id } });
     } catch (error) {
       setV3Plan(null);
       setV3Receipt(null);
-      const failure = zh ? "修复结果未确认，请重新扫描当前状态。" : "The repair result is unconfirmed. Scan the current state again.";
+      const failure = translateCopy("dr.theRepairResultIsUnconfirmedScanTheCurrentStateAgain", lang);
       setNotice(failure);
       setNoticeTone("error");
       const presentation = presentOperationFailure("doctor", error, lang);
@@ -714,12 +708,12 @@ export function Doctor({ setPage }: { setPage: (page: PageId) => void }) {
   const sourceLabel = v3Snapshot
     ? doctorV3EvidenceLabel(v3Snapshot, lang)
     : source === "native"
-      ? (zh ? "本地诊断快照" : "Local diagnostic snapshot")
+      ? (translateCopy("dr.localDiagnosticSnapshot", lang))
     : source === "stale"
-      ? (zh ? "诊断快照已过期" : "Diagnostic snapshot is stale")
+      ? (translateCopy("dr.diagnosticSnapshotIsStale", lang))
     : source === "preview"
-      ? (zh ? "浏览器预览" : "Browser preview")
-      : (zh ? "诊断数据不可用" : "Diagnostic data unavailable");
+      ? (translateCopy("cp.source.preview", lang))
+      : (translateCopy("dr.diagnosticDataUnavailable", lang));
   const busy = phase !== "idle";
   const phaseLabel = doctorPhaseLabel(phase, Boolean(snapshot), lang);
 
@@ -728,26 +722,26 @@ export function Doctor({ setPage }: { setPage: (page: PageId) => void }) {
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
           <div className="flex items-center gap-3">
-            <h1 className="sr-only">{zh ? "Doctor" : "Doctor"}</h1>
+            <h1 className="sr-only">{"Doctor"}</h1>
             <DataSourceBadge mode={source === "native" ? "native" : source === "preview" ? "preview" : "unavailable"} label={sourceLabel} />
           </div>
           <p className="mt-2 max-w-2xl text-sm text-muted-foreground">
-            {zh ? "主动扫描常见的本地服务、连接与配置问题；扫描只读取本机状态，不调用 Provider，也不会自动修改外部 Agent 配置。" : "Scan common local service, connection, and configuration issues. Scans are local and read-only, with no Provider calls or silent Agent changes."}
+            {translateCopy("dr.scanCommonLocalServiceConnectionAndConfigurationIssuesScansAreLocalAndReadOnlyWithNoProviderCallsOrSilentAgentChanges", lang)}
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
           <Button onClick={() => void runScan("repair")} disabled={busy || loadingSnapshot} aria-busy={phase === "scanning"}>
             {phase === "scanning" ? <RefreshCw className="size-4 animate-spin" aria-hidden /> : <Wrench className="size-4" />}
-            {phase === "scanning" ? (zh ? "扫描中…" : "Scanning…") : (zh ? "自动扫描并修复" : "Scan & prepare repairs")}
+            {phase === "scanning" ? (translateCopy("adv.scanning", lang)) : (translateCopy("dr.scanPrepareRepairs", lang))}
           </Button>
           <Button
             variant="outline"
             onClick={() => void runScan("scan")}
             disabled={busy || loadingSnapshot}
-            aria-label={zh ? "扫描常规问题" : "Scan common issues"}
+            aria-label={translateCopy("dr.scanCommonIssues", lang)}
           >
             <RefreshCw className={`size-4 ${phase === "scanning" ? "animate-spin" : ""}`} />
-            {zh ? "仅扫描" : "Scan only"}
+            {translateCopy("dr.scanOnly", lang)}
           </Button>
         </div>
       </div>
@@ -759,7 +753,7 @@ export function Doctor({ setPage }: { setPage: (page: PageId) => void }) {
             <span>{phaseLabel}</span>
           </div>
           <div className="flex flex-wrap gap-2 text-xs text-muted-foreground">
-            {[zh ? "扫描" : "Scan", zh ? "计划" : "Plan", zh ? "确认" : "Confirm", zh ? "执行" : "Apply", zh ? "复检" : "Verify"].map((item) => (
+            {[translateCopy("in.step.scan", lang), translateCopy("in.step.plan", lang), translateCopy("common.confirm", lang), translateCopy("dr.apply", lang), translateCopy("dr.verify", lang)].map((item) => (
               <span key={item} className="rounded-full border border-border/70 px-2 py-1">{item}</span>
             ))}
           </div>
@@ -775,8 +769,8 @@ export function Doctor({ setPage }: { setPage: (page: PageId) => void }) {
       {!snapshot && !loadingSnapshot && (
         <Surface className="p-8 text-center">
           <Stethoscope className="mx-auto size-8 text-muted-foreground" />
-          <h2 className="mt-3 text-base">{zh ? "尚未扫描常规问题" : "Common issues have not been scanned"}</h2>
-          <p className="mt-1 text-sm text-muted-foreground">{zh ? "点击“仅扫描”生成一份统一、本地、可复验的诊断快照。" : "Choose Scan only to create one unified, local, verifiable diagnostic snapshot."}</p>
+          <h2 className="mt-3 text-base">{translateCopy("dr.commonIssuesHaveNotBeenScanned", lang)}</h2>
+          <p className="mt-1 text-sm text-muted-foreground">{translateCopy("dr.chooseScanOnlyToCreateOneUnifiedLocalVerifiableDiagnosticSnapshot", lang)}</p>
         </Surface>
       )}
 
@@ -785,9 +779,9 @@ export function Doctor({ setPage }: { setPage: (page: PageId) => void }) {
           <div className="flex items-start gap-3">
             <AlertTriangle className="mt-0.5 size-5 shrink-0 text-amber-500" aria-hidden />
             <div>
-              <h2 className="text-base">{zh ? "旧诊断快照不可用于修复" : "Legacy diagnostic snapshot cannot be used for repair"}</h2>
+              <h2 className="text-base">{translateCopy("dr.legacyDiagnosticSnapshotCannotBeUsedForRepair", lang)}</h2>
               <p className="mt-1 text-sm text-muted-foreground">
-                {zh ? "该 Doctor v2 快照已过期或时间证据无效。请重新扫描生成 v3 快照；旧快照中的字面量 fresh 不会被信任。" : "This Doctor v2 snapshot is stale or has invalid time evidence. Scan again for a v3 snapshot; a persisted literal fresh value is not trusted."}
+                {translateCopy("dr.thisDoctorV2SnapshotIsStaleOrHasInvalidTimeEvidenceScanAgainForAV3SnapshotAPersistedLiteralFreshValueIsNotTrusted", lang)}
               </p>
             </div>
           </div>
@@ -802,7 +796,7 @@ export function Doctor({ setPage }: { setPage: (page: PageId) => void }) {
                 {v3Snapshot.counts.repairable === 0 && v3Actionable
                   ? <CheckCircle2 className="size-5 text-emerald-500" />
                   : <AlertTriangle className="size-5 text-amber-500" />}
-                <h2 className="text-base">{zh ? "统一诊断快照" : "Unified diagnostic snapshot"}</h2>
+                <h2 className="text-base">{translateCopy("dr.unifiedDiagnosticSnapshot", lang)}</h2>
               </div>
               <p className="mt-1 text-xs text-muted-foreground">
                 {formatTimestampMs(v3Snapshot.collected_at_ms)} · revision {v3Snapshot.revision.slice(0, 12)}
@@ -810,17 +804,17 @@ export function Doctor({ setPage }: { setPage: (page: PageId) => void }) {
             </div>
             <div className="flex flex-wrap gap-2">
               <Badge variant="outline">
-                {zh ? "覆盖" : "Coverage"} {v3Snapshot.coverage?.completed ?? 0}/{v3Snapshot.coverage?.total ?? v3Snapshot.modules.length}
+                {translateCopy("dr.coverage", lang)} {v3Snapshot.coverage?.completed ?? 0}/{v3Snapshot.coverage?.total ?? v3Snapshot.modules.length}
               </Badge>
-              <Badge variant={v3Actionable ? "secondary" : "outline"}>{v3Expired ? (zh ? "已过期" : "Stale") : (zh ? "新鲜" : "Fresh")}</Badge>
-              <Badge variant="secondary">{zh ? "可修复" : "Repairable"} {v3Snapshot.counts.repairable}</Badge>
-              <Badge variant="outline">{zh ? "需手动" : "Manual"} {v3Snapshot.counts.manual}</Badge>
-              <Badge variant="outline">{zh ? "已阻止" : "Blocked"} {v3Snapshot.counts.blocked}</Badge>
+              <Badge variant={v3Actionable ? "secondary" : "outline"}>{v3Expired ? (translateCopy("ov.stale", lang)) : (translateCopy("dr.fresh", lang))}</Badge>
+              <Badge variant="secondary">{translateCopy("dr.repairable", lang)} {v3Snapshot.counts.repairable}</Badge>
+              <Badge variant="outline">{translateCopy("dr.manual", lang)} {v3Snapshot.counts.manual}</Badge>
+              <Badge variant="outline">{translateCopy("dr.blocked", lang)} {v3Snapshot.counts.blocked}</Badge>
             </div>
           </div>
           {!v3Actionable ? (
             <p className="mt-3 text-sm text-amber-700 dark:text-amber-300">
-              {zh ? "证据不完整或已过期；所有修复动作已锁定，只允许重新扫描。" : "Evidence is incomplete or stale. All repair actions are locked; only rescanning is allowed."}
+              {translateCopy("dr.evidenceIsIncompleteOrStaleAllRepairActionsAreLockedOnlyRescanningIsAllowed", lang)}
             </p>
           ) : null}
         </Surface>
@@ -828,9 +822,9 @@ export function Doctor({ setPage }: { setPage: (page: PageId) => void }) {
 
       <Surface className="overflow-hidden p-0">
         <div className="border-b border-border/70 px-5 py-4">
-          <h2 className="text-base font-medium">{zh ? "预制诊断任务" : "Diagnostic task modules"}</h2>
+          <h2 className="text-base font-medium">{translateCopy("dr.diagnosticTaskModules", lang)}</h2>
           <p className="mt-1 text-xs text-muted-foreground">
-            {zh ? "按模块检查和准备修复；任何写入仍需先查看逐项 diff 并明确确认。" : "Inspect and prepare repairs by module. Every write still requires per-item diffs and explicit confirmation."}
+            {translateCopy("dr.inspectAndPrepareRepairsByModuleEveryWriteStillRequiresPerItemDiffsAndExplicitConfirmation", lang)}
           </p>
         </div>
         <div className="divide-y divide-border/60">
@@ -840,16 +834,16 @@ export function Doctor({ setPage }: { setPage: (page: PageId) => void }) {
             const Icon = preset.icon;
             const canPrepare = Boolean(module && module.state === "repairable" && v3Actionable);
             const actionLabel = preset.id === "agent"
-              ? (zh ? "配置 Agent 修复" : "Configure Agent repair")
+              ? (translateCopy("dr.configureAgentRepair", lang))
               : canPrepare
-                ? (zh ? "准备修复" : "Prepare repair")
+                ? (translateCopy("dr.prepareRepair", lang))
                 : preset.id === "optical"
-                  ? (zh ? "前往视觉压缩" : "Open Visual Compression")
+                  ? (translateCopy("dr.openVisualCompression", lang))
                   : preset.id === "recovery"
-                    ? (zh ? "查看备份与回退" : "Open backups & rollback")
+                    ? (translateCopy("dr.openBackupsRollback", lang))
                     : preset.id === "platform"
-                      ? (zh ? "前往安装与连接" : "Open Install & Connect")
-                      : (zh ? "重新检查" : "Check again");
+                      ? (translateCopy("ch.openInstallConnect", lang))
+                      : (translateCopy("dr.checkAgain", lang));
             const actionDisabled = preset.id === "agent" && !canPrepare;
             return (
               <div key={preset.id} className="grid gap-3 px-5 py-4 md:grid-cols-[minmax(0,1fr)_auto] md:items-center">
@@ -888,9 +882,9 @@ export function Doctor({ setPage }: { setPage: (page: PageId) => void }) {
 
       <Surface className="overflow-hidden p-0">
         <div className="border-b border-border/70 px-5 py-4">
-          <h2 className="text-base font-medium">{zh ? "专项修复工具" : "Specialized repair tools"}</h2>
+          <h2 className="text-base font-medium">{translateCopy("dr.specializedRepairTools", lang)}</h2>
           <p className="mt-1 text-xs text-muted-foreground">
-            {zh ? "每个工具都复用其来源事务执行器；Agent 类工具会先让你选择 Agent 和作用域。" : "Each tool reuses its source transaction executor. Agent tools ask for Agents and scope first."}
+            {translateCopy("dr.eachToolReusesItsSourceTransactionExecutorAgentToolsAskForAgentsAndScopeFirst", lang)}
           </p>
         </div>
         <div className="divide-y divide-border/60">
@@ -927,7 +921,7 @@ export function Doctor({ setPage }: { setPage: (page: PageId) => void }) {
                     else void runScan("scan");
                   }}
                 >
-                  {item.action === "agent" ? (zh ? "选择 Agent" : "Select Agents") : item.action === "scan" ? (zh ? "重新检查" : "Check again") : item.action === "core" ? (zh ? "准备修复" : "Prepare repair") : (zh ? "打开" : "Open")}
+                  {item.action === "agent" ? (translateCopy("dr.selectAgents", lang)) : item.action === "scan" ? (translateCopy("dr.checkAgain", lang)) : item.action === "core" ? (translateCopy("dr.prepareRepair", lang)) : (translateCopy("dr.open", lang))}
                   <ChevronRight className="size-3.5" aria-hidden />
                 </Button>
               </div>
@@ -943,20 +937,20 @@ export function Doctor({ setPage }: { setPage: (page: PageId) => void }) {
               <div>
                 <div className="flex items-center gap-2">
                   {report.ok ? <CheckCircle2 className="size-5 text-emerald-500" /> : <AlertTriangle className="size-5 text-amber-500" />}
-                  <h2 className="text-base">{report.ok ? (zh ? "常规检查已通过" : "Common checks passed") : (zh ? "发现需要处理的问题" : "Issues need attention")}</h2>
+                  <h2 className="text-base">{report.ok ? (translateCopy("dr.commonChecksPassed", lang)) : (translateCopy("dr.issuesNeedAttention", lang))}</h2>
                 </div>
-                <p className="mt-1 text-xs text-muted-foreground">{zh ? "快照时间" : "Snapshot"}：{formatTimestamp(report.collected_at)} · revision {report.revision.slice(0, 12)}</p>
+                <p className="mt-1 text-xs text-muted-foreground">{translateCopy("dr.snapshot", lang)}：{formatTimestamp(report.collected_at)} · revision {report.revision.slice(0, 12)}</p>
               </div>
               <div className="flex flex-wrap gap-2">
-                <Badge variant="secondary">{zh ? "可修复" : "Repairable"} {report.counts.repairable}</Badge>
-                <Badge variant="outline">{zh ? "需手动" : "Manual"} {report.counts.manual}</Badge>
-                <Badge variant="outline">{zh ? "已阻止" : "Blocked"} {report.counts.blocked}</Badge>
+                <Badge variant="secondary">{translateCopy("dr.repairable", lang)} {report.counts.repairable}</Badge>
+                <Badge variant="outline">{translateCopy("dr.manual", lang)} {report.counts.manual}</Badge>
+                <Badge variant="outline">{translateCopy("dr.blocked", lang)} {report.counts.blocked}</Badge>
               </div>
             </div>
           </Surface>
 
           {report.issues.length === 0 ? (
-            <Surface className="p-6 text-sm text-muted-foreground">{zh ? "当前未发现需要处理的常规问题。" : "No common issues currently need attention."}</Surface>
+            <Surface className="p-6 text-sm text-muted-foreground">{translateCopy("dr.noCommonIssuesCurrentlyNeedAttention", lang)}</Surface>
           ) : (
             <div className="space-y-4">
               {LAYERS.map((category) => {
@@ -975,7 +969,7 @@ export function Doctor({ setPage }: { setPage: (page: PageId) => void }) {
                                 <input
                                   type="checkbox"
                                   className="mt-1 size-4 accent-primary"
-                                  aria-label={`${zh ? "选择" : "Select"} ${issue.title}`}
+                                  aria-label={`${translateCopy("dr.select", lang)} ${issue.title}`}
                                   checked={selected.has(issue.id)}
                                   onChange={(event) => setSelected((current) => {
                                     const next = new Set(current);
@@ -987,12 +981,12 @@ export function Doctor({ setPage }: { setPage: (page: PageId) => void }) {
                               <div className="min-w-0">
                                 <div className="flex flex-wrap items-center gap-2">
                                   <h3 className="text-sm font-medium">{issue.title}</h3>
-                                  <StatusBadge status={issue.severity === "error" ? "error" : "warning"} label={issue.state === "repairable" ? (zh ? "可常规修复" : "Repairable") : issue.state === "blocked" ? (zh ? "已保护性阻止" : "Blocked safely") : (zh ? "需手动处理" : "Manual action")} />
+                                  <StatusBadge status={issue.severity === "error" ? "error" : "warning"} label={issue.state === "repairable" ? (translateCopy("dr.repairable2", lang)) : issue.state === "blocked" ? (translateCopy("dr.blockedSafely", lang)) : (translateCopy("dr.manualAction", lang))} />
                                 </div>
                                 <dl className="mt-2 grid gap-2 text-xs leading-5 text-muted-foreground">
-                                  <div><dt className="inline font-medium text-foreground">{zh ? "影响" : "Impact"}：</dt><dd className="inline">{issue.impact}</dd></div>
-                                  <div><dt className="inline font-medium text-foreground">{zh ? "原因" : "Cause"}：</dt><dd className="inline">{issue.cause}</dd></div>
-                                  <div><dt className="inline font-medium text-foreground">{zh ? "证据" : "Evidence"}：</dt><dd className="inline break-words">{issue.evidence}</dd></div>
+                                  <div><dt className="inline font-medium text-foreground">{translateCopy("ch.impact", lang)}：</dt><dd className="inline">{issue.impact}</dd></div>
+                                  <div><dt className="inline font-medium text-foreground">{translateCopy("dr.cause", lang)}：</dt><dd className="inline">{issue.cause}</dd></div>
+                                  <div><dt className="inline font-medium text-foreground">{translateCopy("dr.evidence", lang)}：</dt><dd className="inline break-words">{issue.evidence}</dd></div>
                                 </dl>
                               </div>
                             </div>
@@ -1013,9 +1007,9 @@ export function Doctor({ setPage }: { setPage: (page: PageId) => void }) {
 
           {repairableIssues.length > 0 && (
             <div className="sticky bottom-4 z-10 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-border/80 bg-background/95 p-4 shadow-lg backdrop-blur">
-              <div className="text-sm"><strong>{selected.size}</strong> {zh ? "项低风险常规修复已选择；每次修改都需要再次确认。" : "low-risk repair(s) selected; changes always require confirmation."}</div>
+              <div className="text-sm"><strong>{selected.size}</strong> {translateCopy("dr.lowRiskRepairSSelectedChangesAlwaysRequireConfirmation", lang)}</div>
               <Button onClick={() => void previewRepair()} disabled={busy || selected.size === 0}>
-                <Wrench className="size-4" />{phase === "planning" ? (zh ? "正在生成计划" : "Preparing plan") : (zh ? "修复所选问题" : "Repair selected")}
+                <Wrench className="size-4" />{phase === "planning" ? (translateCopy("dr.preparingPlan", lang)) : (translateCopy("dr.repairSelected", lang))}
               </Button>
             </div>
           )}
@@ -1025,14 +1019,14 @@ export function Doctor({ setPage }: { setPage: (page: PageId) => void }) {
       <OperationDialog
         open={plan !== null}
         onOpenChange={(open) => { if (!open && phase !== "applying") setPlan(null); }}
-        title={zh ? "确认常规修复" : "Confirm common repairs"}
-        summary={zh ? "只会启动或重启身份已验证的 d-token 自有服务，并在操作后自动重新扫描。不会停止外部进程，也不会改写 Agent、Hook、Provider 或 cc-switch 配置。" : "Only verified d-token-owned services may be started or restarted, followed by an automatic rescan. External processes and Agent, Hook, Provider, or cc-switch configuration remain untouched."}
-        confirmLabel={zh ? "确认修复并复检" : "Repair and verify"}
-        cancelLabel={zh ? "取消" : "Cancel"}
+        title={translateCopy("dr.confirmCommonRepairs", lang)}
+        summary={translateCopy("dr.onlyVerifiedDTokenOwnedServicesMayBeStartedOrRestartedFollowedByAnAutomaticRescanExternalProcessesAndAgentHookProviderOrCcSwitchConfigurationRemainUntouched", lang)}
+        confirmLabel={translateCopy("dr.repairAndVerify", lang)}
+        cancelLabel={translateCopy("common.cancel", lang)}
         risk="warning"
         pending={phase === "applying"}
         onConfirm={() => void applyRepair()}
-        details={plan ? <div className="rounded-lg border border-border bg-muted/30 p-3 text-sm text-muted-foreground">{zh ? `将处理 ${plan.issue_ids.length} 项问题，风险等级：${plan.risk}。` : `${plan.issue_ids.length} issue(s), risk: ${plan.risk}.`}</div> : null}
+        details={plan ? <div className="rounded-lg border border-border bg-muted/30 p-3 text-sm text-muted-foreground">{translateCopy("dr.issueSRisk", lang, { v1: plan.issue_ids.length, v2: plan.risk })}</div> : null}
       />
 
       <OperationDialog
@@ -1043,11 +1037,11 @@ export function Doctor({ setPage }: { setPage: (page: PageId) => void }) {
             setV3Receipt(null);
           }
         }}
-        title={zh ? "确认模块修复" : "Confirm module repair"}
-        summary={v3Plan?.summary ?? (zh ? "请查看当前计划。" : "View the current plan.")}
+        title={translateCopy("dr.confirmModuleRepair", lang)}
+        summary={v3Plan?.summary ?? (translateCopy("dr.viewTheCurrentPlan", lang))}
         impact={v3Plan ? `${moduleTitle(v3Plan.module_id, lang)} · ${v3Plan.risk}` : undefined}
-        confirmLabel={zh ? "确认、执行并复检" : "Confirm, apply & verify"}
-        cancelLabel={zh ? "取消" : "Cancel"}
+        confirmLabel={translateCopy("dr.confirmApplyVerify", lang)}
+        cancelLabel={translateCopy("common.cancel", lang)}
         risk="warning"
         pending={phase === "applying" || phase === "verifying"}
         confirmDisabled={!v3Plan || Boolean(v3Receipt)}
@@ -1068,11 +1062,9 @@ export function Doctor({ setPage }: { setPage: (page: PageId) => void }) {
       >
         <DialogContent className="max-h-[88vh] overflow-y-auto sm:max-w-3xl">
           <DialogHeader>
-            <DialogTitle>{zh ? "Agent 接入诊断与修复" : "Agent integration diagnosis & repair"}</DialogTitle>
+            <DialogTitle>{translateCopy("dr.agentIntegrationDiagnosisRepair", lang)}</DialogTitle>
             <DialogDescription>
-              {zh
-                ? "选择 Agent 与作用域后先生成逐 Agent 差异。只有当前内容与计划摘要仍一致时，确认按钮才可执行写入。"
-                : "Select Agents and scope, then generate per-Agent differences. Writes are enabled only while the displayed content still matches the plan digest."}
+              {translateCopy("dr.selectAgentsAndScopeThenGeneratePerAgentDifferencesWritesAreEnabledOnlyWhileTheDisplayedContentStillMatchesThePlanDigest", lang)}
             </DialogDescription>
           </DialogHeader>
 
@@ -1080,7 +1072,7 @@ export function Doctor({ setPage }: { setPage: (page: PageId) => void }) {
             <div className="space-y-4">
               <div className="rounded-xl border border-border/70 bg-muted/25 p-4">
                 <div className="flex flex-wrap items-center justify-between gap-2">
-                  <h3 className="text-sm font-medium">{zh ? "逐 Agent 结果" : "Per-Agent results"}</h3>
+                  <h3 className="text-sm font-medium">{translateCopy("dr.perAgentResults", lang)}</h3>
                   <Badge variant={doctorReceiptStatus(v3Receipt) === "verified" ? "default" : "secondary"}>
                     {receiptOutcomeLabel(doctorReceiptStatus(v3Receipt), lang)}
                   </Badge>
@@ -1095,10 +1087,10 @@ export function Doctor({ setPage }: { setPage: (page: PageId) => void }) {
                 </div>
               </div>
               <DialogFooter>
-                <Button variant="outline" onClick={() => setAgentDialogOpen(false)}>{zh ? "关闭" : "Close"}</Button>
+                <Button variant="outline" onClick={() => setAgentDialogOpen(false)}>{translateCopy("common.close", lang)}</Button>
                 <Button onClick={() => void runScan("scan")} disabled={busy} aria-busy={phase === "scanning"}>
                   {phase === "scanning" ? <RefreshCw className="size-4 animate-spin" aria-hidden /> : null}
-                  {phase === "scanning" ? (zh ? "扫描中…" : "Scanning…") : (zh ? "重新扫描" : "Scan again")}
+                  {phase === "scanning" ? (translateCopy("adv.scanning", lang)) : (translateCopy("in.scanAgain", lang))}
                 </Button>
               </DialogFooter>
             </div>
@@ -1106,16 +1098,14 @@ export function Doctor({ setPage }: { setPage: (page: PageId) => void }) {
             <div className="space-y-4">
               <V3PlanDetails plan={v3Plan} lang={lang} receipt={null} />
               <div className="rounded-lg border border-amber-500/25 bg-amber-500/[0.06] p-3 text-xs text-amber-800 dark:text-amber-200">
-                {zh
-                  ? "确认后只应用上方显示的差异；Provider 凭据不会被修改，元数据诊断 MCP 仍按你的选择保持默认关闭。"
-                  : "Confirmation applies only the differences shown above. Provider credentials remain unchanged, and metadata diagnostics MCP stays off unless explicitly selected."}
+                {translateCopy("dr.confirmationAppliesOnlyTheDifferencesShownAboveProviderCredentialsRemainUnchangedAndMetadataDiagnosticsMcpStaysOffUnlessExplicitlySelected", lang)}
               </div>
               <DialogFooter>
-                <Button variant="outline" disabled={busy} onClick={() => setV3Plan(null)}>{zh ? "返回选择" : "Back"}</Button>
+                <Button variant="outline" disabled={busy} onClick={() => setV3Plan(null)}>{translateCopy("dr.back", lang)}</Button>
                 <Button disabled={busy || !agentPlanDiffsComplete(v3Plan)} onClick={() => void applyV3Repair()}>
                   {phase === "applying" || phase === "verifying"
-                    ? (zh ? "正在应用并复检…" : "Applying & verifying…")
-                    : (zh ? "确认、应用并验证" : "Confirm, apply & verify")}
+                    ? (translateCopy("dr.applyingVerifying", lang))
+                    : (translateCopy("dr.confirmApplyVerify2", lang))}
                 </Button>
               </DialogFooter>
             </div>
@@ -1129,13 +1119,13 @@ export function Doctor({ setPage }: { setPage: (page: PageId) => void }) {
                       <span>
                         <span className="block font-medium">{agent.name}</span>
                         <span className="block text-[11px] text-muted-foreground">
-                          {selectable ? (zh ? "已有受管目标 · 可配置" : "Managed target · configurable") : (zh ? "当前作用域无受管目标" : "No managed target in this scope")}
+                          {selectable ? (translateCopy("dr.managedTargetConfigurable", lang)) : (translateCopy("dr.noManagedTargetInThisScope", lang))}
                         </span>
                       </span>
                       <input
                         type="checkbox"
                         className="size-4 accent-primary"
-                        aria-label={`${zh ? "选择" : "Select"} ${agent.name}`}
+                        aria-label={`${translateCopy("dr.select", lang)} ${agent.name}`}
                         checked={selectedAgents.has(agent.id)}
                         disabled={!selectable || busy}
                         onChange={(event) => {
@@ -1155,9 +1145,9 @@ export function Doctor({ setPage }: { setPage: (page: PageId) => void }) {
 
               <div className="grid gap-3 sm:grid-cols-[180px_1fr]">
                 <label className="space-y-1 text-sm">
-                  <span className="text-xs text-muted-foreground">{zh ? "作用域" : "Scope"}</span>
+                  <span className="text-xs text-muted-foreground">{translateCopy("visual.scope", lang)}</span>
                   <select
-                    aria-label={zh ? "作用域" : "Scope"}
+                    aria-label={translateCopy("visual.scope", lang)}
                     className="h-9 w-full rounded-md border border-border bg-background px-2 text-sm"
                     value={agentScope}
                     disabled={busy}
@@ -1172,15 +1162,15 @@ export function Doctor({ setPage }: { setPage: (page: PageId) => void }) {
                       setV3Plan(null);
                     }}
                   >
-                    <option value="global">{zh ? "全局" : "Global"}</option>
-                    <option value="project">{zh ? "当前项目" : "Current project"}</option>
+                    <option value="global">{translateCopy("visual.global", lang)}</option>
+                    <option value="project">{translateCopy("cbm.scopeProject", lang)}</option>
                   </select>
                 </label>
                 {agentScope === "project" ? (
                   <label className="space-y-1 text-sm">
-                    <span className="text-xs text-muted-foreground">{zh ? "项目绝对路径" : "Absolute project path"}</span>
+                    <span className="text-xs text-muted-foreground">{translateCopy("visual.absoluteProjectPath", lang)}</span>
                     <input
-                      aria-label={zh ? "项目绝对路径" : "Absolute project path"}
+                      aria-label={translateCopy("visual.absoluteProjectPath", lang)}
                       className="h-9 w-full rounded-md border border-border bg-background px-3 text-sm"
                       value={projectRoot}
                       disabled={busy}
@@ -1193,26 +1183,26 @@ export function Doctor({ setPage }: { setPage: (page: PageId) => void }) {
                   </label>
                 ) : (
                   <p className="self-end pb-2 text-xs text-muted-foreground">
-                    {zh ? "全局目标仍会逐 Agent 展示 diff。" : "Global targets still show per-Agent diffs."}
+                    {translateCopy("dr.globalTargetsStillShowPerAgentDiffs", lang)}
                   </p>
                 )}
               </div>
 
               <div className="grid gap-2 sm:grid-cols-3">
-                <SurfaceToggle label={zh ? "Instructions" : "Instructions"} checked={installInstructions} disabled={busy} onChange={(checked) => { setInstallInstructions(checked); setV3Plan(null); }} />
-                <SurfaceToggle label={zh ? "Hook / Plugin" : "Hook / Plugin"} checked={installHookOrPlugin} disabled={busy} onChange={(checked) => { setInstallHookOrPlugin(checked); setV3Plan(null); }} />
-                <SurfaceToggle label={zh ? "Recovery Skill" : "Recovery Skill"} checked={installSkill} disabled={busy} onChange={(checked) => { setInstallSkill(checked); setV3Plan(null); }} />
+                <SurfaceToggle label={"Instructions"} checked={installInstructions} disabled={busy} onChange={(checked) => { setInstallInstructions(checked); setV3Plan(null); }} />
+                <SurfaceToggle label={"Hook / Plugin"} checked={installHookOrPlugin} disabled={busy} onChange={(checked) => { setInstallHookOrPlugin(checked); setV3Plan(null); }} />
+                <SurfaceToggle label={"Recovery Skill"} checked={installSkill} disabled={busy} onChange={(checked) => { setInstallSkill(checked); setV3Plan(null); }} />
               </div>
 
               <label className="flex items-center justify-between gap-3 rounded-lg border border-border/70 px-3 py-2 text-sm">
                 <span>
-                  <span className="block font-medium">{zh ? "元数据诊断 MCP（默认关闭）" : "Metadata diagnostics MCP (off by default)"}</span>
-                  <span className="block text-[11px] text-muted-foreground">{zh ? "只提供状态与恢复诊断，不参与真实压缩。" : "Provides status and recovery diagnostics only; never performs compression."}</span>
+                  <span className="block font-medium">{translateCopy("dr.metadataDiagnosticsMcpOffByDefault", lang)}</span>
+                  <span className="block text-[11px] text-muted-foreground">{translateCopy("dr.providesStatusAndRecoveryDiagnosticsOnlyNeverPerformsCompression", lang)}</span>
                 </span>
                 <input
                   type="checkbox"
                   className="size-4 accent-primary"
-                  aria-label={zh ? "元数据诊断 MCP（默认关闭）" : "Metadata diagnostics MCP (off by default)"}
+                  aria-label={translateCopy("dr.metadataDiagnosticsMcpOffByDefault", lang)}
                   checked={installMcp}
                   disabled={busy}
                   onChange={(event) => {
@@ -1223,9 +1213,9 @@ export function Doctor({ setPage }: { setPage: (page: PageId) => void }) {
               </label>
 
               <DialogFooter>
-                <Button variant="outline" disabled={busy} onClick={() => setAgentDialogOpen(false)}>{zh ? "取消" : "Cancel"}</Button>
+                <Button variant="outline" disabled={busy} onClick={() => setAgentDialogOpen(false)}>{translateCopy("common.cancel", lang)}</Button>
                 <Button disabled={busy || selectedAgents.size === 0 || (!installInstructions && !installHookOrPlugin && !installSkill && !installMcp) || (agentScope === "project" && projectRoot.trim().length === 0)} onClick={() => void previewAgentRepair()}>
-                  {phase === "planning" ? (zh ? "正在生成计划…" : "Preparing plan…") : (zh ? "生成修复计划" : "Prepare repair plan")}
+                  {phase === "planning" ? (translateCopy("dr.preparingPlan2", lang)) : (translateCopy("dr.prepareRepairPlan", lang))}
                 </Button>
               </DialogFooter>
             </div>
@@ -1284,8 +1274,8 @@ function V3PlanDetails({
   return (
     <div className="max-h-[48vh] space-y-3 overflow-auto pr-1 text-xs text-muted-foreground">
       <div className="rounded-lg border border-border/70 bg-muted/20 p-3">
-        <div>{lang === "zh" ? "计划" : "Plan"}：{plan.plan_id}</div>
-        <div className="mt-1">{lang === "zh" ? "变更摘要" : "Change digest"} {shortHashV3(plan.review_digest)} · {lang === "zh" ? "有效期至" : "expires"} {formatTimestampMs(plan.expires_at_ms)}</div>
+        <div>{translateCopy("in.step.plan", lang)}：{plan.plan_id}</div>
+        <div className="mt-1">{translateCopy("dr.changeDigest", lang)} {shortHashV3(plan.review_digest)} · {translateCopy("dr.expires", lang)} {formatTimestampMs(plan.expires_at_ms)}</div>
       </div>
       {(plan.agents ?? []).map((agent) => (
         <div key={agent.agent_id} className="rounded-lg border border-border/70 p-3">
@@ -1305,12 +1295,12 @@ function V3PlanDetails({
       ))}
       {targets.length === 0 ? (
         <div className="rounded-lg border border-border/70 p-3">
-          {lang === "zh" ? "该计划不写配置文件；执行前仍会重新校验快照与运行身份。" : "This plan does not write config files; snapshot and runtime identity are still revalidated before execution."}
+          {translateCopy("dr.thisPlanDoesNotWriteConfigFilesSnapshotAndRuntimeIdentityAreStillRevalidatedBeforeExecution", lang)}
         </div>
       ) : null}
       {receipt ? (
         <div className="rounded-lg border border-border/70 bg-muted/20 p-3 font-medium text-foreground">
-          {lang === "zh" ? "结果" : "Result"}：{receiptOutcomeLabel(doctorReceiptStatus(receipt), lang)}
+          {translateCopy("dr.result", lang)}：{receiptOutcomeLabel(doctorReceiptStatus(receipt), lang)}
         </div>
       ) : null}
     </div>
@@ -1514,18 +1504,18 @@ function doctorV3Source(snapshot: DoctorSnapshotV3): DoctorSource {
 function doctorV3EvidenceLabel(snapshot: DoctorSnapshotV3, lang: "zh" | "en"): string {
   const expired = isDoctorSnapshotExpired(snapshot) || snapshot.state === "stale";
   const partial = !isV3SnapshotComplete(snapshot) && snapshot.state !== "stale";
-  if (partial && expired) return lang === "zh" ? "部分证据 · 已过期" : "Partial evidence · stale";
-  if (partial) return lang === "zh" ? "部分证据" : "Partial evidence";
-  if (expired) return lang === "zh" ? "本地诊断快照 · 已过期" : "Local diagnostic snapshot · stale";
-  return lang === "zh" ? "本地诊断快照" : "Local diagnostic snapshot";
+  if (partial && expired) return translateCopy("dr.partialEvidenceStale", lang);
+  if (partial) return translateCopy("dr.partialEvidence", lang);
+  if (expired) return translateCopy("dr.localDiagnosticSnapshotStale", lang);
+  return translateCopy("dr.localDiagnosticSnapshot", lang);
 }
 
 function doctorPhaseLabel(phase: DoctorPhase, hasSnapshot: boolean, lang: "zh" | "en"): string {
-  if (phase === "scanning") return lang === "zh" ? "正在生成统一诊断快照" : "Creating a unified diagnostic snapshot";
-  if (phase === "planning") return lang === "zh" ? "正在生成修复计划" : "Preparing a repair plan";
-  if (phase === "applying") return lang === "zh" ? "正在执行已确认计划" : "Applying the confirmed plan";
-  if (phase === "verifying") return lang === "zh" ? "正在复检结果" : "Verifying results";
-  return hasSnapshot ? (lang === "zh" ? "等待下一次操作" : "Waiting for the next action") : (lang === "zh" ? "尚未开始" : "Not started");
+  if (phase === "scanning") return translateCopy("dr.creatingAUnifiedDiagnosticSnapshot", lang);
+  if (phase === "planning") return translateCopy("dr.preparingARepairPlan", lang);
+  if (phase === "applying") return translateCopy("dr.applyingTheConfirmedPlan", lang);
+  if (phase === "verifying") return translateCopy("dr.verifyingResults", lang);
+  return hasSnapshot ? (translateCopy("dr.waitingForTheNextAction", lang)) : (translateCopy("dr.notStarted", lang));
 }
 
 function managedAgentScopes(agent: DoctorAgentOption): Array<"global" | "project"> {
@@ -1588,13 +1578,13 @@ function moduleTitle(moduleId: DoctorModuleId, lang: "zh" | "en"): string {
 }
 
 function moduleStateLabel(state: string | undefined, lang: "zh" | "en"): string {
-  if (!state) return lang === "zh" ? "未扫描" : "Not scanned";
-  if (["healthy", "verified", "passed", "ok"].includes(state)) return lang === "zh" ? "已通过" : "Passed";
-  if (state === "repairable") return lang === "zh" ? "可准备修复" : "Repairable";
-  if (state === "blocked") return lang === "zh" ? "已保护性阻止" : "Blocked safely";
-  if (state === "manual") return lang === "zh" ? "需手动处理" : "Manual action";
-  if (state === "partial" || state === "stale") return lang === "zh" ? "证据不完整" : "Incomplete evidence";
-  return lang === "zh" ? "需要关注" : "Needs attention";
+  if (!state) return translateCopy("dr.notScanned", lang);
+  if (["healthy", "verified", "passed", "ok"].includes(state)) return translateCopy("dr.passed", lang);
+  if (state === "repairable") return translateCopy("dr.repairable3", lang);
+  if (state === "blocked") return translateCopy("dr.blockedSafely", lang);
+  if (state === "manual") return translateCopy("dr.manualAction", lang);
+  if (state === "partial" || state === "stale") return translateCopy("dr.incompleteEvidence", lang);
+  return translateCopy("dr.needsAttention", lang);
 }
 
 function moduleStatusTone(state: string | undefined): DoctorCheck["status"] {
@@ -1604,12 +1594,12 @@ function moduleStatusTone(state: string | undefined): DoctorCheck["status"] {
 }
 
 function receiptOutcomeLabel(outcome: string, lang: "zh" | "en"): string {
-  if (outcome === "verified") return lang === "zh" ? "已验证" : "Verified";
-  if (outcome === "partial") return lang === "zh" ? "部分完成" : "Partially completed";
-  if (outcome === "blocked") return lang === "zh" ? "已阻止" : "Blocked";
-  if (outcome === "rolled_back") return lang === "zh" ? "已回退" : "Rolled back";
-  if (outcome === "failed") return lang === "zh" ? "失败" : "Failed";
-  return lang === "zh" ? "未知" : "Unknown";
+  if (outcome === "verified") return translateCopy("cbm.state.ready", lang);
+  if (outcome === "partial") return translateCopy("dr.partiallyCompleted", lang);
+  if (outcome === "blocked") return translateCopy("dr.blocked", lang);
+  if (outcome === "rolled_back") return translateCopy("in.rolledBack", lang);
+  if (outcome === "failed") return translateCopy("cbm.state.failed", lang);
+  return translateCopy("cbm.state.unknown", lang);
 }
 
 function doctorReceiptStatus(receipt: DoctorActionReceiptV3): string {
@@ -1658,15 +1648,16 @@ function formatTimestamp(value: string): string {
   return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
 }
 
+const LAYER_COPY_KEYS: Record<DoctorCheck["layer"], string> = {
+  runtime: "dr.layerTitle.runtime",
+  port: "dr.layerTitle.port",
+  route: "dr.layerTitle.route",
+  provider: "dr.layerTitle.provider",
+  security: "dr.layerTitle.security",
+};
+
 function layerLabel(layer: DoctorCheck["layer"], lang: "zh" | "en"): string {
-  const labels: Record<DoctorCheck["layer"], { zh: string; en: string }> = {
-    runtime: { zh: "本地运行时", en: "Local runtime" },
-    port: { zh: "端口与进程", en: "Ports and processes" },
-    route: { zh: "Agent 与路由", en: "Agents and routes" },
-    provider: { zh: "Provider", en: "Provider" },
-    security: { zh: "安全边界", en: "Safety boundaries" },
-  };
-  return labels[layer][lang];
+  return translateCopy(LAYER_COPY_KEYS[layer], lang);
 }
 
 function isNonNegativeFiniteNumber(value: unknown): boolean {

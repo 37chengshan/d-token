@@ -14,7 +14,7 @@
 | 分支 | `codex/final-release-iteration`（2026-08-09 实测 HEAD `dc647af`；preflight 曾记 `1ddb30e`、FINAL_BLUEPRINT 曾记 `f0a9bed`、旧计划曾写 `51941806`） |
 | 执行基线 | **无硬编码**——由 P0 执行时 `git rev-parse HEAD` 采集、干净后冻结为 `C_final` 前置基线；此前所有 HEAD 数字仅历史 |
 | dirty（2026-08-09 实测） | `support/git-operations.json`（M）；`code/crates/dtoken-compress/examples/_diag_tmp.rs`（untracked，诊断临时文件，P0 需裁决删除或忽略）；9 个 release 文档 M（本计划包修订中） |
-| 版本事实 | manifest/PRD = 0.2.0-beta.1；目标 v0.0.1（VERSION-0） |
+| 版本事实 | manifest/PRD = 0.2.0-beta.1；目标 v0.0.1（VERSION-0）。**V-1 已执行（2026-08-09）：manifest/PRD 版本门/PLAN/status/CHANGELOG/workflow/check script 已统一为 v0.0.1** |
 | 外部克隆 | `/Users/cc/Documents/d-token-external/`（rtk-v0.45.0、pxpipe-main-2026-08-08、lean-ctx-main-2026-08-08、spleen-2.2.0、codebase-memory-mcp-v0.9.1-rc.1、`headroom/headroom-main-2026-08-08` HEAD `7f6950be`、aimami-pinned-297c7af5 等；见 [OSS_MIGRATION.md](./OSS_MIGRATION.md)） |
 | 切片独立分支 | **尚未创建**（截至 2026-08-09 无 P0 独立分支；§3 表内分支名均为计划名，执行时由主代理新建，不得指向/借用任何现有分支） |
 

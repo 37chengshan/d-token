@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
-import { useI18n, useT } from "../../lib/i18n";
+import { useI18n, useT, translateCopy } from "../../lib/i18n";
 import { invokeNative, type NativeActionLog, type NativeActionResult } from "../../lib/native";
 import { useRuntimeDashboardSelector, shallowEqualSlice, type RuntimeDashboardState } from "../../lib/useRuntimeDashboard";
 import { createOperationRequestId, useNotifications } from "../../lib/notifications";
@@ -142,10 +142,8 @@ export function Install({ onOpenAdvanced }: { onOpenAdvanced?: () => void; initi
   const phasePresentation = restartRequired
     ? {
         health: "warning" as const,
-        label: lang === "zh" ? "需要重启" : "Restart required",
-        description: lang === "zh"
-          ? "磁盘中的 runtime 已更新，但当前进程仍是旧版本；重启并重新验证后才能继续使用。"
-          : "The runtime on disk was updated, but the current process is stale. Restart and reverify it before continuing.",
+        label: translateCopy("onb.service.restartRequired", lang),
+        description: translateCopy("in.theRuntimeOnDiskWasUpdatedButTheCurrentProcessIsStaleRestartAndReverifyItBeforeContinuing", lang),
       }
     : presentInstallPhase(machine.phase, lang);
   const primaryAction = derivePrimaryAction(machine.phase, serviceOnline, reviewReady, lang, restartRequired);
@@ -169,9 +167,7 @@ export function Install({ onOpenAdvanced }: { onOpenAdvanced?: () => void; initi
         : null);
     setAgentIntegrationReviews({});
     const sources = snapshot.external_config_refresh.changed_sources.join(", ");
-    setNotice(lang === "zh"
-      ? `外部配置已变化${sources ? `（${sources}）` : ""}，旧计划已失效；请重新扫描并确认。`
-      : `External configuration changed${sources ? ` (${sources})` : ""}. The old plan is stale; rescan and review again.`);
+    setNotice(translateCopy("in.externalConfigurationChangedTheOldPlanIsStaleRescanAndReviewAgain", lang, { v1: sources ? `（${sources}）` : "", v2: sources ? ` (${sources})` : "" }));
   }, [lang, snapshot?.external_config_refresh]);
 
   useEffect(() => {
@@ -190,18 +186,18 @@ export function Install({ onOpenAdvanced }: { onOpenAdvanced?: () => void; initi
   const refreshAll = async () => {
     setPendingAction("discover");
     const requestId = createOperationRequestId("connection-refresh");
-    setNotice(lang === "zh" ? "正在重新读取 Agent、上游、cc-switch 与 d-token 状态…" : "Refreshing Agents, upstreams, cc-switch, and d-token state…");
+    setNotice(translateCopy("in.refreshingAgentsUpstreamsCcSwitchAndDTokenState", lang));
     dispatch({ type: "DISCOVER_START" });
     try {
       const [discovery] = await Promise.all([refreshDiscovery(), refreshRuntime()]);
       setNotice(discovery
-        ? (lang === "zh" ? "本机连接状态已更新。" : "Local connection state refreshed.")
-        : (lang === "zh" ? "当前是浏览器预览，不读取或改写本机配置。" : "Browser preview does not read or modify local configuration."));
+        ? (translateCopy("in.localConnectionStateRefreshed", lang))
+        : (translateCopy("in.browserPreviewDoesNotReadOrModifyLocalConfiguration", lang)));
       addNotification({
         dedupeKey: "connection-refresh",
         level: discovery ? "success" : "info",
-        title: discovery ? (lang === "zh" ? "连接状态已更新" : "Connection state refreshed") : (lang === "zh" ? "连接状态不可用" : "Connection state unavailable"),
-        message: discovery ? (lang === "zh" ? "Agent、上游、cc-switch 与 d-token 状态已重新读取。" : "Agent, upstream, cc-switch, and d-token state were refreshed.") : (lang === "zh" ? "浏览器预览不会读取本机配置。" : "Browser preview does not read local configuration."),
+        title: discovery ? (translateCopy("in.connectionStateRefreshed", lang)) : (translateCopy("in.connectionStateUnavailable", lang)),
+        message: discovery ? (translateCopy("in.agentUpstreamCcSwitchAndDTokenStateWereRefreshed", lang)) : (translateCopy("in.browserPreviewDoesNotReadLocalConfiguration", lang)),
         receipt: { requestId, targetId: "connection-discovery" },
       });
     } catch (error) {
@@ -306,7 +302,7 @@ export function Install({ onOpenAdvanced }: { onOpenAdvanced?: () => void; initi
         dispatch({ type: "SET_PHASE", phase: "blocked", message: failure.message });
         addNotification({ dedupeKey: "connection-preview-failed", level: "error", title: failure.title, message: failure.message, details: failure.details, receipt: { requestId, targetId: "connection-plan" } });
       } else {
-        addNotification({ dedupeKey: `connection-preview-${routeReview.after_sha256 ?? "ready"}`, level: "info", title: lang === "zh" ? "连接变更已准备" : "Connection changes are ready", message: lang === "zh" ? "差异和验证证据已准备。请查看当前变更后再应用。" : "Differences and verification evidence are ready. View the current changes before applying.", receipt: { requestId, targetId: "connection-plan" } });
+        addNotification({ dedupeKey: `connection-preview-${routeReview.after_sha256 ?? "ready"}`, level: "info", title: translateCopy("in.connectionChangesAreReady", lang), message: translateCopy("in.differencesAndVerificationEvidenceAreReadyViewTheCurrentChangesBeforeApplying", lang), receipt: { requestId, targetId: "connection-plan" } });
       }
     } catch (error) {
       const failure = presentOperationFailure("connection", error, lang);
@@ -322,7 +318,7 @@ export function Install({ onOpenAdvanced }: { onOpenAdvanced?: () => void; initi
     if (!snapshot || machine.reviewDiscoveryRevision !== snapshot.revision) {
       setShowReview(false);
       setConnectionReview(null);
-      setNotice(lang === "zh" ? "源配置已变化，旧方案已失效，正在重新读取。" : "Source configuration changed; the old plan was invalidated and will be rebuilt.");
+      setNotice(translateCopy("in.sourceConfigurationChangedTheOldPlanWasInvalidatedAndWillBeRebuilt", lang));
       await refreshAll();
       return;
     }
@@ -341,7 +337,7 @@ export function Install({ onOpenAdvanced }: { onOpenAdvanced?: () => void; initi
         throw new Error("connection_preview_incomplete");
       }
       if (routeChanges && serviceOnline && !serviceManaged) {
-        throw new Error(lang === "zh" ? "18001 端口由非本应用启动的 d-token 服务占用，无法安全重载路由。" : "Port 18001 is owned by an unmanaged d-token service, so the route cannot be reloaded safely.");
+        throw new Error(translateCopy("in.port18001IsOwnedByAnUnmanagedDTokenServiceSoTheRouteCannotBeReloadedSafely", lang));
       }
       if (routeChanges && serviceManaged) {
         const stopped = await invokeNative<NativeActionResult>("stop_dtoken_service");
@@ -476,16 +472,16 @@ export function Install({ onOpenAdvanced }: { onOpenAdvanced?: () => void; initi
       });
       setShowReview(false);
       setNotice(fullyVerified
-        ? (lang === "zh" ? "已确认配置生效、本地服务健康且路由可用。" : "Configuration is active, the local service is healthy, and the route is available.")
-        : (lang === "zh" ? "d-token 服务已就绪；未通过安全 adapter 的 Agent 保持原配置。" : "d-token is ready; Agents without a verified safe adapter retain their existing configuration."));
+        ? (translateCopy("in.configurationIsActiveTheLocalServiceIsHealthyAndTheRouteIsAvailable", lang))
+        : (translateCopy("in.dTokenIsReadyAgentsWithoutAVerifiedSafeAdapterRetainTheirExistingConfiguration", lang)));
       addNotification({
         dedupeKey: `connection-plan-${fullyVerified ? "verified" : "partial"}`,
         receipt: { requestId },
         level: fullyVerified ? "success" : "warning",
-        title: fullyVerified ? (lang === "zh" ? "Agent 连接已验证" : "Agent connection verified") : (lang === "zh" ? "连接部分完成" : "Connection partially complete"),
+        title: fullyVerified ? (translateCopy("in.agentConnectionVerified", lang)) : (translateCopy("in.connectionPartiallyComplete", lang)),
         message: fullyVerified
-          ? (lang === "zh" ? "配置、服务和路由证据已通过验证。" : "Configuration, service, and route evidence passed verification.")
-          : (lang === "zh" ? "已保留服务与已验证配置，未支持的 Agent 没有被静默写入。" : "The service and verified changes were kept; unsupported Agent configs were not silently modified."),
+          ? (translateCopy("in.configurationServiceAndRouteEvidencePassedVerification", lang))
+          : (translateCopy("in.theServiceAndVerifiedChangesWereKeptUnsupportedAgentConfigsWereNotSilentlyModified", lang)),
         persistent: !fullyVerified,
       });
       await Promise.all([refreshRuntime(), refreshDiscovery()]);
@@ -573,15 +569,13 @@ export function Install({ onOpenAdvanced }: { onOpenAdvanced?: () => void; initi
       } else {
         dispatch({ type: "SET_PHASE", phase: "partial", message: "connection_setup_unavailable" });
       }
-      const message = lang === "zh"
-        ? "d-token 服务已使用当前 runtime 重启，连接状态已重新读取。"
-        : "The d-token service restarted with the current runtime and connection state was refreshed.";
+      const message = translateCopy("in.theDTokenServiceRestartedWithTheCurrentRuntimeAndConnectionStateWasRefreshed", lang);
       setNotice(message);
       addNotification({
         dedupeKey: "service-restarted",
         receipt: { requestId },
         level: nextSnapshot ? "success" : "warning",
-        title: lang === "zh" ? "服务已重启" : "Service restarted",
+        title: translateCopy("in.serviceRestarted", lang),
         message,
         persistent: !nextSnapshot,
       });
@@ -614,7 +608,7 @@ export function Install({ onOpenAdvanced }: { onOpenAdvanced?: () => void; initi
       const summary = presentRouteVerificationSummary(verification, lang);
       dispatch({ type: "SET_PHASE", phase: verification.ok ? "verified" : "partial", message: summary });
       setNotice(summary);
-      addNotification({ dedupeKey: "connection-verify", level: verification.ok ? "success" : "warning", title: verification.ok ? (lang === "zh" ? "连接验证完成" : "Connection verified") : (lang === "zh" ? "连接验证需要处理" : "Connection verification needs attention"), message: summary, receipt: { requestId, targetId: "agent-route" } });
+      addNotification({ dedupeKey: "connection-verify", level: verification.ok ? "success" : "warning", title: verification.ok ? (translateCopy("in.connectionVerified", lang)) : (translateCopy("in.connectionVerificationNeedsAttention", lang)), message: summary, receipt: { requestId, targetId: "agent-route" } });
       await refreshRuntime();
     } catch (error) {
       const failure = presentOperationFailure("connection", error, lang);
@@ -641,7 +635,7 @@ export function Install({ onOpenAdvanced }: { onOpenAdvanced?: () => void; initi
 
   const saveInlineCredential = async () => {
     if (!credentialProviderId || !providerCredential.trim()) {
-      setCredentialError(lang === "zh" ? "请输入有效凭据。" : "Enter a valid credential.");
+      setCredentialError(translateCopy("in.enterAValidCredential", lang));
       return;
     }
     setPendingAction("credential");
@@ -659,7 +653,7 @@ export function Install({ onOpenAdvanced }: { onOpenAdvanced?: () => void; initi
       setProviderCredential("");
       // Native/keychain errors can include provider-supplied text. Do not let
       // an error from this sensitive boundary echo the submitted credential.
-      setCredentialError(lang === "zh" ? "未能安全保存凭据，请检查后重试。" : "The credential could not be stored securely. Check it and try again.");
+      setCredentialError(translateCopy("in.theCredentialCouldNotBeStoredSecurelyCheckItAndTryAgain", lang));
     } finally {
       setPendingAction(null);
     }
@@ -673,15 +667,13 @@ export function Install({ onOpenAdvanced }: { onOpenAdvanced?: () => void; initi
       const result = await invokeNative<NativeActionResult>("stop_dtoken_service");
       assertNativeActionSucceeded(result);
       setTransactionLogs(result.logs);
-      setNotice(lang === "zh" ? "d-token 本地服务已停止，配置与回退点仍会保留。" : "The d-token local service stopped; configuration and rollback points remain.");
-      addNotification({ dedupeKey: "service-stopped", level: "success", title: lang === "zh" ? "本地服务已停止" : "Local service stopped", message: lang === "zh" ? "配置与回退点仍会保留，可在需要时重新启动。" : "Configuration and rollback points remain available for the next start.", receipt: { requestId, targetId: "local-service" } });
+      setNotice(translateCopy("in.theDTokenLocalServiceStoppedConfigurationAndRollbackPointsRemain", lang));
+      addNotification({ dedupeKey: "service-stopped", level: "success", title: translateCopy("tray.localServiceStopped", lang), message: translateCopy("in.configurationAndRollbackPointsRemainAvailableForTheNextStart", lang), receipt: { requestId, targetId: "local-service" } });
       setConfirmServiceStop(false);
       // Stopping succeeded already. Let this handler return so React commits
       // the closed dialog before the now-offline refresh waits on loopback.
       void refreshRuntime().catch(() => {
-        setNotice(lang === "zh"
-          ? "d-token 本地服务已停止；状态刷新暂不可用，可稍后手动刷新。"
-          : "The d-token local service stopped; status refresh is temporarily unavailable.");
+        setNotice(translateCopy("in.theDTokenLocalServiceStoppedStatusRefreshIsTemporarilyUnavailable", lang));
       });
     } catch (error) {
       const failure = presentOperationFailure("service", error, lang);
@@ -696,7 +688,7 @@ export function Install({ onOpenAdvanced }: { onOpenAdvanced?: () => void; initi
   const previewCcSwitchSync = async () => {
     const ccSwitchEvidence = snapshot?.external_config_snapshot?.cc_switch;
     if (!snapshot || !ccSwitchEvidence?.fingerprint || !ccSwitchEvidence.revision) {
-      setNotice(lang === "zh" ? "cc-switch 配置证据尚未准备好，请重新扫描。" : "cc-switch configuration evidence is not ready; rescan first.");
+      setNotice(translateCopy("in.ccSwitchConfigurationEvidenceIsNotReadyRescanFirst", lang));
       return;
     }
     setPendingAction("sync");
@@ -709,7 +701,7 @@ export function Install({ onOpenAdvanced }: { onOpenAdvanced?: () => void; initi
       });
       if (!review.ok) throw new Error(review.error || review.summary || "cc_switch_sync_preview_failed");
       setCcSwitchSyncReview(review);
-      setNotice(lang === "zh" ? "已生成 cc-switch 同步差异，请确认后应用。" : "cc-switch sync changes are ready to apply.");
+      setNotice(translateCopy("in.ccSwitchSyncChangesAreReadyToApply", lang));
     } catch (error) {
       const failure = presentOperationFailure("connection", error, lang);
       setNotice(failure.message);
@@ -722,7 +714,7 @@ export function Install({ onOpenAdvanced }: { onOpenAdvanced?: () => void; initi
     const ccSwitchEvidence = snapshot?.external_config_snapshot?.cc_switch;
     if (!snapshot || !ccSwitchEvidence?.fingerprint || !ccSwitchEvidence.revision || !ccSwitchSyncReview?.ok || !ccSwitchSyncReview.before_sha256 || !ccSwitchSyncReview.after_sha256) {
       setCcSwitchSyncReview(null);
-      setNotice(lang === "zh" ? "同步计划已失效，请重新扫描。" : "The sync changes are no longer current; rescan and try again.");
+      setNotice(translateCopy("in.theSyncChangesAreNoLongerCurrentRescanAndTryAgain", lang));
       return;
     }
     setPendingAction("sync");
@@ -744,13 +736,13 @@ export function Install({ onOpenAdvanced }: { onOpenAdvanced?: () => void; initi
       setCcSwitchSyncReview(null);
       setNotice(reload.ok
         ? (ccSwitchAutoFollow && receipt.auto_follow?.enabled === true
-          ? (lang === "zh" ? "已同步当前上游；以后只会自动跟随本次确认的 cc-switch 上游身份。" : "The current upstream is synced; future auto-follow stays within the cc-switch identities confirmed in this step.")
+          ? (translateCopy("in.theCurrentUpstreamIsSyncedFutureAutoFollowStaysWithinTheCcSwitchIdentitiesConfirmedInThisStep", lang))
           : ccSwitchAutoFollow
-            ? (lang === "zh" ? "当前上游已同步，但自动跟随未获授权；请检查 runtime reload receipt 后重试。" : "The current upstream is synced, but auto-follow was not authorized; check the runtime reload receipt and retry.")
-          : (lang === "zh" ? "已同步当前 cc-switch 上游并重新验证 d-token runtime。" : "Current cc-switch upstream was synced and the d-token runtime was reverified."))
+            ? (translateCopy("in.theCurrentUpstreamIsSyncedButAutoFollowWasNotAuthorizedCheckTheRuntimeReloadReceiptAndRetry", lang))
+          : (translateCopy("in.currentCcSwitchUpstreamWasSyncedAndTheDTokenRuntimeWasReverified", lang)))
         : (reload.state === "restart_required"
-          ? (lang === "zh" ? "路由已同步；当前服务不受 d-token 管理，请手动重启后验证。" : "The route was synced; restart the unmanaged service manually, then verify.")
-          : (lang === "zh" ? "路由已同步，但受管 runtime 重载失败；请重试重启并验证。" : "The route was synced, but managed runtime reload failed; retry restart and verification.")));
+          ? (translateCopy("in.theRouteWasSyncedRestartTheUnmanagedServiceManuallyThenVerify", lang))
+          : (translateCopy("in.theRouteWasSyncedButManagedRuntimeReloadFailedRetryRestartAndVerification", lang))));
       await refreshAll();
     } catch (error) {
       const failure = presentOperationFailure("connection", error, lang);
@@ -770,18 +762,16 @@ export function Install({ onOpenAdvanced }: { onOpenAdvanced?: () => void; initi
       ? binding.can_configure === true
       : binding.can_clear === true;
     if (!canOperate) {
-      setNotice(lang === "zh"
-        ? `${binding.agent_name} 未提供可执行的 d-token 写入动作；未修改任何配置。`
-        : `${binding.agent_name} exposes no executable d-token write action; no configuration was modified.`);
+      setNotice(translateCopy("in.exposesNoExecutableDTokenWriteActionNoConfigurationWasModified", lang, { v1: binding.agent_name }));
       return;
     }
     const targetPath = binding.config_path;
     if (!targetPath || targetPath.startsWith("<local>/")) {
-      setNotice(lang === "zh" ? `${binding.agent_name} 的配置路径不可安全定位，未写入任何文件。` : `${binding.agent_name} has no safe local config path, so no file was written.`);
+      setNotice(translateCopy("in.hasNoSafeLocalConfigPathSoNoFileWasWritten", lang, { v1: binding.agent_name }));
       return;
     }
     if (operation === "configure" && !serviceEndpoint.startsWith("http://127.0.0.1:") && !serviceEndpoint.startsWith("http://localhost:")) {
-      setNotice(lang === "zh" ? "请先启动并验证 d-token 本地服务，再配置 Agent。" : "Start and verify the d-token local service before configuring an Agent.");
+      setNotice(translateCopy("in.startAndVerifyTheDTokenLocalServiceBeforeConfiguringAnAgent", lang));
       return;
     }
     setTransportBusyAgent(binding.agent_id);
@@ -796,9 +786,7 @@ export function Install({ onOpenAdvanced }: { onOpenAdvanced?: () => void; initi
           ? machine.selections[binding.agent_id]?.model
           : undefined;
         if (operation === "configure" && !model) {
-          setNotice(lang === "zh"
-            ? `${binding.agent_name} 的上游/模型无法唯一解析，连接计划已被阻断；请修复来源配置后重新扫描。`
-            : `${binding.agent_name}'s upstream/model cannot be uniquely resolved, so the plan is blocked. Fix the source configuration and rescan.`);
+          setNotice(translateCopy("in.sUpstreamModelCannotBeUniquelyResolvedSoThePlanIsBlockedFixTheSourceConfigurationAndRescan", lang, { v1: binding.agent_name }));
           return;
         }
         const request = {
@@ -820,8 +808,8 @@ export function Install({ onOpenAdvanced }: { onOpenAdvanced?: () => void; initi
         }
         const confirmed = typeof window === "undefined" || window.confirm(
           operation === "configure"
-            ? (lang === "zh" ? `将仅在 ${targetPath} 及其相邻 ownership receipt 写入 d-token 托管配置。已生成可验证计划，是否应用？` : `A verifiable d-token-owned plan was generated for ${targetPath} and its adjacent ownership receipt. Apply it?`)
-            : (lang === "zh" ? `将仅清除 ${targetPath} 中有 ownership receipt 证明属于 d-token 的配置。已生成可验证计划，是否应用？` : `A verifiable plan will remove only configuration proven d-token-owned by its ownership receipt in ${targetPath}. Apply it?`),
+            ? (translateCopy("in.aVerifiableDTokenOwnedPlanWasGeneratedForAndItsAdjacentOwnershipReceiptApplyIt", lang, { v1: targetPath }))
+            : (translateCopy("in.aVerifiablePlanWillRemoveOnlyConfigurationProvenDTokenOwnedByItsOwnershipReceiptInApplyIt", lang, { v1: targetPath })),
         );
         if (!confirmed) return;
         result = await invokeNative<Record<string, unknown>>("apply_reviewed_managed_agent_transport", {
@@ -839,15 +827,15 @@ export function Install({ onOpenAdvanced }: { onOpenAdvanced?: () => void; initi
       const changed = result.changed !== false;
       const outcomeNotice = ok && (operation !== "clear" || changed)
         ? (operation === "configure"
-          ? (lang === "zh" ? `${binding.agent_name} 已完成 d-token 传输配置并验证。` : `${binding.agent_name} now uses a verified d-token transport.`)
-          : (lang === "zh" ? `${binding.agent_name} 的 d-token 托管传输已清除。` : `The d-token-owned transport for ${binding.agent_name} was cleared.`))
+          ? (translateCopy("in.nowUsesAVerifiedDTokenTransport", lang, { v1: binding.agent_name }))
+          : (translateCopy("in.theDTokenOwnedTransportForWasCleared", lang, { v1: binding.agent_name })))
         : (operation === "clear" && !changed
-          ? (lang === "zh" ? "未发现可安全清除的 d-token 托管标记，未修改用户配置。" : "No d-token-owned marker was found; user configuration was not changed.")
-          : (lang === "zh" ? "操作未完成，用户配置未被修改；请重新扫描后重试。" : "The operation did not complete and user configuration was not changed. Rescan and try again."));
+          ? (translateCopy("in.noDTokenOwnedMarkerWasFoundUserConfigurationWasNotChanged", lang))
+          : (translateCopy("in.theOperationDidNotCompleteAndUserConfigurationWasNotChangedRescanAndTryAgain", lang)));
       await refreshAll();
       setNotice(outcomeNotice);
     } catch (error) {
-      setNotice(lang === "zh" ? "操作未完成，用户配置未被修改；请重新扫描后重试。" : "The operation did not complete and user configuration was not changed. Rescan and try again.");
+      setNotice(translateCopy("in.theOperationDidNotCompleteAndUserConfigurationWasNotChangedRescanAndTryAgain", lang));
     } finally {
       setTransportBusyAgent(null);
     }
@@ -856,13 +844,11 @@ export function Install({ onOpenAdvanced }: { onOpenAdvanced?: () => void; initi
   const runManagedMcpIntegration = async (binding: AgentUpstreamBinding, operation: "configure" | "clear") => {
     const configPath = binding.mcp_config_path;
     if (!configPath || configPath.startsWith("<local>/")) {
-      setNotice(lang === "zh"
-        ? `${binding.agent_name} 的 MCP 配置路径不可安全定位，未写入任何文件。`
-        : `${binding.agent_name} MCP config path is not safely resolvable; no file was written.`);
+      setNotice(translateCopy("in.mcpConfigPathIsNotSafelyResolvableNoFileWasWritten", lang, { v1: binding.agent_name }));
       return;
     }
     if (operation === "configure" && !serviceEndpoint.startsWith("http://127.0.0.1:") && !serviceEndpoint.startsWith("http://localhost:")) {
-      setNotice(lang === "zh" ? "请先启动并验证 d-token 本地服务，再配置 MCP。" : "Start and verify the d-token local service before configuring MCP.");
+      setNotice(translateCopy("in.startAndVerifyTheDTokenLocalServiceBeforeConfiguringMcp", lang));
       return;
     }
     setTransportBusyAgent(binding.agent_id);
@@ -879,12 +865,8 @@ export function Install({ onOpenAdvanced }: { onOpenAdvanced?: () => void; initi
       }
       const confirmed = typeof window === "undefined" || window.confirm(
         operation === "configure"
-          ? (lang === "zh"
-            ? `将在 ${configPath} 注册 d-token-agent-bridge MCP 工具。此集成仅提供 MCP 工具，不改变模型上游。是否应用？`
-            : `Register the d-token-agent-bridge MCP tool in ${configPath}. This integration provides MCP tools only and does not change the model upstream. Apply it?`)
-          : (lang === "zh"
-            ? `将清除 ${configPath} 中的 d-token MCP 条目。仅移除 MCP 工具，不影响上游配置。是否应用？`
-            : `Remove the d-token MCP entry from ${configPath}. Only the MCP tool is removed; upstream configuration is unaffected. Apply it?`),
+          ? (translateCopy("in.registerTheDTokenAgentBridgeMcpToolInThisIntegrationProvidesMcpToolsOnlyAndDoesNotChangeTheModelUpstreamApplyIt", lang, { v1: configPath }))
+          : (translateCopy("in.removeTheDTokenMcpEntryFromOnlyTheMcpToolIsRemovedUpstreamConfigurationIsUnaffectedApplyIt", lang, { v1: configPath })),
       );
       if (!confirmed) return;
       const result = await invokeNative<Record<string, unknown>>("apply_managed_agent_mcp_integration", {
@@ -896,13 +878,13 @@ export function Install({ onOpenAdvanced }: { onOpenAdvanced?: () => void; initi
       const ok = result.ok !== false && result.state !== "failed" && verify?.ok !== false;
       const outcomeNotice = ok
         ? (operation === "configure"
-          ? (lang === "zh" ? `${binding.agent_name} MCP 工具已配置并验证。` : `${binding.agent_name} MCP tool configured and verified.`)
-          : (lang === "zh" ? `${binding.agent_name} MCP 条目已清除。` : `${binding.agent_name} MCP entry cleared.`))
-        : (lang === "zh" ? "MCP 操作未完成，用户配置未被修改。" : "MCP operation did not complete; user configuration was not changed.");
+          ? (translateCopy("in.mcpToolConfiguredAndVerified", lang, { v1: binding.agent_name }))
+          : (translateCopy("in.mcpEntryCleared", lang, { v1: binding.agent_name })))
+        : (translateCopy("in.mcpOperationDidNotCompleteUserConfigurationWasNotChanged", lang));
       await refreshAll();
       setNotice(outcomeNotice);
     } catch (error) {
-      setNotice(lang === "zh" ? "MCP 操作未完成，用户配置未被修改。" : "MCP operation did not complete; user configuration was not changed.");
+      setNotice(translateCopy("in.mcpOperationDidNotCompleteUserConfigurationWasNotChanged", lang));
     } finally {
       setTransportBusyAgent(null);
     }

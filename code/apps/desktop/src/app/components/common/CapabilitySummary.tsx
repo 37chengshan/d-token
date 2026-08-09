@@ -2,7 +2,7 @@ import { Activity, Brain, Database, FileText, Gauge, Route, ShieldCheck, Sparkle
 import { Surface } from "./Surface";
 import { StatusBadge } from "./StatusBadge";
 import { Badge } from "../ui/badge";
-import { useI18n } from "../../lib/i18n";
+import { translateCopy, useI18n, type Lang } from "../../lib/i18n";
 import { classifyEvidence } from "../../lib/state/evidence";
 
 type CapabilitySummaryProps = {
@@ -49,124 +49,122 @@ export function CapabilitySummary({ payload, status, compact = false }: Capabili
     {
       key: "compression",
       icon: Gauge,
-      title: lang === "zh" ? "请求压缩" : "Request compression",
+      title: translateCopy("cap.requestCompression", lang),
       value: verified && requestTotal !== null && requestTotal > 0 && tokensSaved !== null
-        ? lang === "zh" ? `估算节省 ${tokensSaved.toLocaleString("en-US")} Token` : `Estimated ${tokensSaved.toLocaleString("en-US")} tokens saved`
+        ? translateCopy("cap.estimatedTokensSaved", lang, { v1: tokensSaved.toLocaleString("en-US") })
         : "—",
       detail: verified && requestTotal !== null && requestTotal > 0
-        ? lang === "zh"
-          ? `${requestTotal} 条本地请求${transforms === null ? "" : ` · ${transforms} 类处理步骤`}`
-          : `${requestTotal} local requests${transforms === null ? "" : ` · ${transforms} processing steps`}`
-        : verified ? (lang === "zh" ? "暂无真实请求记录" : "No real request records") : noEvidence,
+        ? translateCopy("cap.localRequests", lang, { v1: requestTotal, v2: transforms === null ? "" : ` · ${transforms} 类处理步骤`, v3: transforms === null ? "" : ` · ${transforms} processing steps` })
+        : verified ? (translateCopy("cap.noRealRequestRecords", lang)) : noEvidence,
       status: verified && requestTotal !== null && requestTotal > 0 && tokensSaved !== null ? "healthy" : "warning",
       statusLabel: verified && requestTotal !== null && requestTotal > 0 && tokensSaved !== null
-        ? lang === "zh" ? "有运行记录" : "Recorded"
-        : lang === "zh" ? "待有请求" : "Waiting",
+        ? translateCopy("cap.recorded", lang)
+        : translateCopy("cap.waiting", lang),
     },
     {
       key: "ccr",
       icon: Database,
-      title: lang === "zh" ? "可恢复压缩索引" : "Recoverable compression index",
-      value: ccrEntries === null ? "—" : lang === "zh" ? `${ccrEntries} 条索引` : `${ccrEntries} indexes`,
+      title: translateCopy("cap.recoverableCompressionIndex", lang),
+      value: ccrEntries === null ? "—" : translateCopy("cap.indexes", lang, { v1: ccrEntries }),
       detail: cache
         ? rawAvailabilityDetail(cache, lang)
-        : verified ? (lang === "zh" ? "本地服务未返回索引状态" : "No local index status returned") : noEvidence,
+        : verified ? (translateCopy("cap.noLocalIndexStatusReturned", lang)) : noEvidence,
       status: rawAvailable(cache) === true ? "error" : rawAvailable(cache) === false ? "healthy" : "warning",
       statusLabel: cache
         ? rawAvailable(cache) === true
-          ? lang === "zh" ? "需要处理" : "Needs attention"
+          ? translateCopy("cap.needsAttention", lang)
           : rawAvailable(cache) === false
-            ? lang === "zh" ? "已验证" : "Verified"
-            : lang === "zh" ? "待验证" : "Unverified"
-        : lang === "zh" ? "无证据" : "No evidence",
+            ? translateCopy("cbm.state.ready", lang)
+            : translateCopy("cap.unverified", lang)
+        : translateCopy("cap.noEvidence", lang),
     },
     {
       key: "memory",
       icon: Brain,
-      title: lang === "zh" ? "项目记忆" : "Project memory",
-      value: memoryEntries === null ? "—" : lang === "zh" ? `${memoryEntries} 条记录` : `${memoryEntries} records`,
+      title: translateCopy("cap.projectMemory", lang),
+      value: memoryEntries === null ? "—" : translateCopy("cap.records", lang, { v1: memoryEntries }),
       detail: memory
         ? rawAvailabilityDetail(memory, lang)
-        : verified ? (lang === "zh" ? "本地服务未返回项目记忆状态" : "No project memory status returned") : noEvidence,
+        : verified ? (translateCopy("cap.noProjectMemoryStatusReturned", lang)) : noEvidence,
       status: rawAvailable(memory) === true ? "error" : rawAvailable(memory) === false ? "healthy" : "warning",
       statusLabel: memory
         ? rawAvailable(memory) === true
-          ? lang === "zh" ? "需要处理" : "Needs attention"
+          ? translateCopy("cap.needsAttention", lang)
           : rawAvailable(memory) === false
-            ? lang === "zh" ? "已验证" : "Verified"
-            : lang === "zh" ? "待验证" : "Unverified"
-        : lang === "zh" ? "无证据" : "No evidence",
+            ? translateCopy("cbm.state.ready", lang)
+            : translateCopy("cap.unverified", lang)
+        : translateCopy("cap.noEvidence", lang),
     },
     {
       key: "output",
       icon: Sparkles,
-      title: lang === "zh" ? "输出精简" : "Output reduction",
-      value: outputShape ? (lang === "zh" ? "已返回本地状态" : "Local status returned") : "—",
+      title: translateCopy("cap.outputReduction", lang),
+      value: outputShape ? (translateCopy("cap.localStatusReturned", lang)) : "—",
       detail: outputShape
-        ? lang === "zh" ? "依据当前项目策略与本地偏好" : "Based on current project policy and local preferences"
-        : verified ? (lang === "zh" ? "暂无可核验的输出精简状态" : "No verifiable output reduction status") : noEvidence,
+        ? translateCopy("cap.basedOnCurrentProjectPolicyAndLocalPreferences", lang)
+        : verified ? (translateCopy("cap.noVerifiableOutputReductionStatus", lang)) : noEvidence,
       status: outputShape ? "healthy" : "warning",
       statusLabel: outputShape
-        ? lang === "zh" ? "已读取" : "Loaded"
-        : lang === "zh" ? "无证据" : "No evidence",
+        ? translateCopy("cap.loaded", lang)
+        : translateCopy("cap.noEvidence", lang),
     },
     {
       key: "rtk",
       icon: Activity,
-      title: lang === "zh" ? "命令输出精简" : "Command output reduction",
-      value: rtkMode === "integrated" ? (lang === "zh" ? "产品内置能力" : "Built-in capability") : "—",
+      title: translateCopy("cap.commandOutputReduction", lang),
+      value: rtkMode === "integrated" ? (translateCopy("cap.builtInCapability", lang)) : "—",
       detail: rtkMode === "integrated"
-        ? lang === "zh" ? "这是实现能力声明，不代表本机已有运行记录" : "Implementation capability; not proof of local activity"
-        : verified ? (lang === "zh" ? "本地服务未返回能力声明" : "No capability declaration returned") : noEvidence,
+        ? translateCopy("cap.implementationCapabilityNotProofOfLocalActivity", lang)
+        : verified ? (translateCopy("cap.noCapabilityDeclarationReturned", lang)) : noEvidence,
       status: "warning",
       statusLabel: rtkMode === "integrated"
-        ? lang === "zh" ? "能力声明" : "Catalog"
-        : lang === "zh" ? "无证据" : "No evidence",
+        ? translateCopy("cap.catalog", lang)
+        : translateCopy("cap.noEvidence", lang),
     },
     {
       key: "route",
       icon: Route,
-      title: lang === "zh" ? "连接路径" : "Connection paths",
+      title: translateCopy("cap.connectionPaths", lang),
       value: routeRows !== null && routeRows > 0
-        ? lang === "zh" ? `${routeRows} 条有记录路径` : `${routeRows} recorded paths`
+        ? translateCopy("cap.recordedPaths", lang, { v1: routeRows })
         : "—",
       detail: routeRows !== null && routeRows > 0
-        ? lang === "zh" ? "来自本地请求的路由统计" : "Route statistics from local requests"
-        : verified ? (lang === "zh" ? "暂无真实路由记录" : "No real route records") : noEvidence,
+        ? translateCopy("cap.routeStatisticsFromLocalRequests", lang)
+        : verified ? (translateCopy("cap.noRealRouteRecords", lang)) : noEvidence,
       status: routeRows !== null && routeRows > 0 ? "healthy" : "warning",
       statusLabel: routeRows !== null && routeRows > 0
-        ? lang === "zh" ? "有运行记录" : "Recorded"
-        : lang === "zh" ? "待有请求" : "Waiting",
+        ? translateCopy("cap.recorded", lang)
+        : translateCopy("cap.waiting", lang),
     },
     {
       key: "dashboard",
       icon: FileText,
-      title: lang === "zh" ? "本地数据面板" : "Local data surface",
+      title: translateCopy("cap.localDataSurface", lang),
       value: sections.length > 0
-        ? lang === "zh" ? `${sections.length} 类数据` : `${sections.length} data groups`
+        ? translateCopy("cap.dataGroups", lang, { v1: sections.length })
         : "—",
       detail: sections.length > 0
-        ? lang === "zh" ? "本地服务已返回可展示的数据范围" : "The local service returned its available data scope"
-        : verified ? (lang === "zh" ? "本地服务未返回数据范围" : "No data scope returned") : noEvidence,
+        ? translateCopy("cap.theLocalServiceReturnedItsAvailableDataScope", lang)
+        : verified ? (translateCopy("cap.noDataScopeReturned", lang)) : noEvidence,
       status: sections.length > 0 ? "healthy" : "warning",
       statusLabel: sections.length > 0
-        ? lang === "zh" ? "已读取" : "Loaded"
-        : lang === "zh" ? "无证据" : "No evidence",
+        ? translateCopy("cap.loaded", lang)
+        : translateCopy("cap.noEvidence", lang),
     },
     {
       key: "privacy",
       icon: ShieldCheck,
-      title: lang === "zh" ? "隐私边界" : "Privacy boundary",
+      title: translateCopy("cap.privacyBoundary", lang),
       value: privacyVerified(cache, memory)
-        ? lang === "zh" ? "原始内容默认不可用" : "Raw content unavailable by default"
+        ? translateCopy("cap.rawContentUnavailableByDefault", lang)
         : "—",
       detail: privacyVerified(cache, memory)
-        ? lang === "zh" ? "界面不展示原始提示词、回复或凭据" : "Raw prompts, responses, and credentials are not shown"
-        : verified ? (lang === "zh" ? "缺少完整的本地隐私状态" : "Complete local privacy state is missing") : noEvidence,
+        ? translateCopy("cap.rawPromptsResponsesAndCredentialsAreNotShown", lang)
+        : verified ? (translateCopy("cap.completeLocalPrivacyStateIsMissing", lang)) : noEvidence,
       status: privacyVerified(cache, memory) ? "healthy" : "warning",
       statusLabel: privacyVerified(cache, memory)
-        ? lang === "zh" ? "已验证" : "Verified"
-        : lang === "zh" ? "待验证" : "Unverified",
+        ? translateCopy("cbm.state.ready", lang)
+        : translateCopy("cap.unverified", lang),
     },
   ];
 
@@ -174,7 +172,7 @@ export function CapabilitySummary({ payload, status, compact = false }: Capabili
     <Surface className={compact ? "p-4" : "p-5"} hover={false}>
       <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
         <div>
-          <h3 className="text-sm font-semibold">{lang === "zh" ? "本地能力状态" : "Local capability status"}</h3>
+          <h3 className="text-sm font-semibold">{translateCopy("cap.localCapabilityStatus", lang)}</h3>
           <div className="text-xs text-muted-foreground">{capabilitySourceDetail(evidenceState, lang)}</div>
         </div>
         <Badge variant={verified ? "default" : "secondary"}>{capabilitySourceLabel(evidenceState, lang)}</Badge>
@@ -218,32 +216,32 @@ function privacyVerified(cache: Record<string, any> | null, memory: Record<strin
   return rawAvailable(cache) === false && rawAvailable(memory) === false;
 }
 
-function rawAvailabilityDetail(value: Record<string, any>, lang: string) {
-  if (rawAvailable(value) === false) return lang === "zh" ? "默认只返回脱敏索引与摘要" : "Redacted indexes and summaries only by default";
-  if (rawAvailable(value) === true) return lang === "zh" ? "本地状态允许原始内容，需要检查隐私设置" : "Raw content is locally available; check privacy settings";
-  return lang === "zh" ? "未说明原始内容是否可用" : "Raw-content availability was not reported";
+function rawAvailabilityDetail(value: Record<string, any>, lang: Lang) {
+  if (rawAvailable(value) === false) return translateCopy("cap.redactedIndexesAndSummariesOnlyByDefault", lang);
+  if (rawAvailable(value) === true) return translateCopy("cap.rawContentIsLocallyAvailableCheckPrivacySettings", lang);
+  return translateCopy("cap.rawContentAvailabilityWasNotReported", lang);
 }
 
-function unavailableCopy(state: string, lang: string) {
-  if (state === "preview") return lang === "zh" ? "浏览器预览不读取本机能力状态" : "Browser preview does not read local capability status";
-  if (state === "loading") return lang === "zh" ? "正在读取本地服务状态" : "Loading local service status";
-  if (state === "stale") return lang === "zh" ? "本地能力数据已过期" : "Local capability data is stale";
-  if (state === "partial") return lang === "zh" ? "本地能力数据不完整" : "Local capability data is incomplete";
-  return lang === "zh" ? "本地能力状态暂不可用" : "Local capability status unavailable";
+function unavailableCopy(state: string, lang: Lang) {
+  if (state === "preview") return translateCopy("cap.browserPreviewDoesNotReadLocalCapabilityStatus", lang);
+  if (state === "loading") return translateCopy("cap.loadingLocalServiceStatus", lang);
+  if (state === "stale") return translateCopy("cap.localCapabilityDataIsStale", lang);
+  if (state === "partial") return translateCopy("cap.localCapabilityDataIsIncomplete", lang);
+  return translateCopy("cap.localCapabilityStatusUnavailable", lang);
 }
 
-function capabilitySourceDetail(state: string, lang: string) {
-  if (state === "verified") return lang === "zh" ? "只展示 d-token 本地服务已经返回的运行证据。" : "Only runtime evidence returned by the local d-token service is shown.";
+function capabilitySourceDetail(state: string, lang: Lang) {
+  if (state === "verified") return translateCopy("cap.onlyRuntimeEvidenceReturnedByTheLocalDTokenServiceIsShown", lang);
   return unavailableCopy(state, lang);
 }
 
-function capabilitySourceLabel(state: string, lang: string) {
-  if (state === "verified") return lang === "zh" ? "实时本地数据" : "Live local data";
-  if (state === "preview") return lang === "zh" ? "浏览器预览" : "Browser preview";
-  if (state === "loading") return lang === "zh" ? "读取中" : "Loading";
-  if (state === "stale") return lang === "zh" ? "数据已过期" : "Stale data";
-  if (state === "partial") return lang === "zh" ? "数据不完整" : "Partial data";
-  return lang === "zh" ? "数据不可用" : "Unavailable";
+function capabilitySourceLabel(state: string, lang: Lang) {
+  if (state === "verified") return translateCopy("cap.liveLocalData", lang);
+  if (state === "preview") return translateCopy("cp.source.preview", lang);
+  if (state === "loading") return translateCopy("adv.preferenceLoading", lang);
+  if (state === "stale") return translateCopy("cap.staleData", lang);
+  if (state === "partial") return translateCopy("cap.partialData", lang);
+  return translateCopy("cap.unavailable", lang);
 }
 
 function isRecord(value: unknown): value is Record<string, any> {

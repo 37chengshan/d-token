@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { AlertTriangle, CheckCircle2, ClipboardCopy, Copy, RefreshCw, Rocket, ShieldAlert } from "lucide-react";
-import { useI18n, useT } from "../../lib/i18n";
+import { useI18n, useT, translateCopy } from "../../lib/i18n";
 import { useConnectionSetup, type AgentUpstreamBinding, type ConnectionSetupSnapshot } from "../../lib/connectionSetup";
 import { useRuntimeDashboardSelector, shallowEqualSlice, type RuntimeDashboardState } from "../../lib/useRuntimeDashboard";
 import { connectionDiscoveryCounts, presentServiceInstance, safeText } from "../../lib/install/presentation";
@@ -130,26 +130,26 @@ function buildDetectionSummary(
   visibleBindings: AgentUpstreamBinding[],
   lang: "zh" | "en",
 ): string {
-  const lines: string[] = [lang === "zh" ? "d-token 检测摘要（元数据，不含凭据）" : "d-token detection summary (metadata only, no credentials)"];
-  lines.push(`${lang === "zh" ? "来源" : "Source"}: ${safeText(snapshot?.source, "—")}`);
-  lines.push(`${lang === "zh" ? "修订" : "Revision"}: ${safeText(snapshot?.revision, "—")}`);
-  const batchLabel = lang === "zh" ? "自动纳入批次" : "Automatic batch";
+  const lines: string[] = [translateCopy("onb.dTokenDetectionSummaryMetadataOnlyNoCredentials", lang)];
+  lines.push(`${translateCopy("onb.source", lang)}: ${safeText(snapshot?.source, "—")}`);
+  lines.push(`${translateCopy("onb.revision", lang)}: ${safeText(snapshot?.revision, "—")}`);
+  const batchLabel = translateCopy("onb.automaticBatch", lang);
   const batch = visibleBindings.map((binding) => {
     const facts = bindingRouteFacts(binding);
     const resolved = binding.resolved_candidate ?? binding.candidates?.[0] ?? null;
     const route = resolved || binding.follow?.current_upstream
       ? `${facts.providerModel} / ${facts.protocol} / ${facts.endpoint}`
       : binding.already_connected
-        ? lang === "zh" ? "已接入" : "connected"
-        : lang === "zh" ? "来源冲突" : "source conflict";
+        ? translateCopy("onb.connected", lang)
+        : translateCopy("onb.sourceConflict", lang);
     return `${binding.agent_name || binding.agent_id} → ${route}`;
   }).join("; ");
   lines.push(`${batchLabel}: ${batch || "—"}`);
   const candidates = snapshot?.candidates ?? [];
-  lines.push(`${lang === "zh" ? "相关上游候选" : "Related upstream candidates"}: ${candidates.map((candidate) => candidate.name || candidate.id).join(", ") || "—"}`);
+  lines.push(`${translateCopy("onb.relatedUpstreamCandidates", lang)}: ${candidates.map((candidate) => candidate.name || candidate.id).join(", ") || "—"}`);
   const ccSwitch = snapshot?.cc_switch_sync?.detected
-    ? lang === "zh" ? "已检测到" : "Detected"
-    : lang === "zh" ? "未检测到" : "Not detected";
+    ? translateCopy("onb.upstream.ccSwitchDetected", lang)
+    : translateCopy("onb.upstream.ccSwitchNone", lang);
   lines.push(`cc-switch: ${ccSwitch}`);
   return lines.join("\n");
 }

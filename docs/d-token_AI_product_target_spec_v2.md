@@ -10,7 +10,7 @@ audience:
   - implementation-agent
   - review-agent
 target_versions:
-  - 0.2.0-beta.1
+  - 0.0.1
   - 0.3
   - 0.4
 updated_at: 2026-08-05
@@ -763,7 +763,7 @@ Agent Identification
 
 ## 10. 版本路线与优先级
 
-### 10.1 `v0.2.0-beta.1`：可信连接与可信压缩
+### 10.1 `v0.0.1`：可信连接与可信压缩
 
 #### P0 / MUST
 
@@ -1115,7 +1115,7 @@ PR-12 双平台发布与证据
 
 | 决策项 | 当前约束 |
 |---|---|
-| 首发支持的完整 Agent 清单 | `v0.2.0-beta.1` 至少需要 OpenCode 与 Codex 真实 routed-flow；其他 Agent 需按证据确认 |
+| 首发支持的完整 Agent 清单 | `v0.0.1` 至少需要 OpenCode 与 Codex 真实 routed-flow；其他 Agent 需按证据确认 |
 | cc-switch 支持范围 | 必须先识别实际配置格式、路径和变更行为，再决定写入与跟随策略 |
 | 默认配置模式 | 跟随、锁定、观察三种模式均保留；默认值需结合首次使用风险评估决定 |
 | 默认压缩策略 | 必须优先安全和可降级；不得直接默认启用高风险增强变换 |

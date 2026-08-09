@@ -1,6 +1,6 @@
 import { AnimatePresence, motion } from "motion/react";
 import { useEffect, useMemo, useState } from "react";
-import { useI18n } from "../../lib/i18n";
+import { translateCopy, useI18n, type Lang } from "../../lib/i18n";
 import { AnimatedSegmentedControl } from "../shell/AnimatedSegmentedControl";
 
 const LEVELS = [0, 1, 2, 3, 4] as const;
@@ -20,18 +20,12 @@ const rangeDays: Record<Range, number> = { week: 7, month: 31, year: 365 };
 const EMPTY_ACTIVITY_DAYS: ActivityDay[] = [];
 const EMPTY_TOOL_USAGE: ToolUsageRow[] = [];
 
-function rangeLabel(range: Range, lang: string) {
-  if (lang === "zh") return range === "week" ? "本周" : range === "month" ? "本月" : "年";
-  return range === "week" ? "Week" : range === "month" ? "Month" : "Year";
+function rangeLabel(range: Range, lang: Lang) {
+  return translateCopy(`hm.range.${range}`, lang);
 }
 
-function viewLabel(view: View, lang: string) {
-  const labels: Record<View, { zh: string; en: string }> = {
-    activity: { zh: "活动趋势", en: "Activity trend" },
-    tokens: { zh: "Token", en: "Token" },
-    tools: { zh: "处理步骤", en: "Processing Steps" },
-  };
-  return lang === "zh" ? labels[view].zh : labels[view].en;
+function viewLabel(view: View, lang: Lang) {
+  return translateCopy(`hm.view.${view}`, lang);
 }
 
 function formatNumber(value: number) {
@@ -66,7 +60,7 @@ function pathFromPoints(points: { x: number; y: number }[]) {
 export function Heatmap({
   activityDays = EMPTY_ACTIVITY_DAYS,
   tools = EMPTY_TOOL_USAGE,
-  source = "等待真实本地请求记录",
+  source,
   now = new Date(),
 }: {
   activityDays?: ActivityDay[];
@@ -75,6 +69,7 @@ export function Heatmap({
   now?: Date;
 }) {
   const { lang } = useI18n();
+  const resolvedSource = source ?? translateCopy("hm.waitingForRealLocalRequestRecords", lang);
   const [range, setRange] = useState<Range>("year");
   const [view, setView] = useState<View>("activity");
   const [reducedMotion, setReducedMotion] = useState(
@@ -123,7 +118,7 @@ export function Heatmap({
           items={viewItems}
           value={view}
           onValueChange={setView}
-          ariaLabel={lang === "zh" ? "统计视图" : "Metric view"}
+          ariaLabel={translateCopy("hm.metricView", lang)}
           reducedMotion={reducedMotion}
           className="activity-tabs"
         />
@@ -132,12 +127,12 @@ export function Heatmap({
           items={rangeItems}
           value={range}
           onValueChange={setRange}
-          ariaLabel={lang === "zh" ? "时间范围" : "Time range"}
+          ariaLabel={translateCopy("hm.timeRange", lang)}
           reducedMotion={reducedMotion}
           className="activity-range-tabs"
         />
 
-        <span className="rounded-full border border-border/60 px-2 py-1 text-xs text-muted-foreground">{source}</span>
+        <span className="rounded-full border border-border/60 px-2 py-1 text-xs text-muted-foreground">{resolvedSource}</span>
       </div>
 
       <AnimatePresence mode="wait">
@@ -158,22 +153,22 @@ export function Heatmap({
 
       <div className="activity-summary">
           <div className="activity-summary-item">
-            <div className="text-xs text-muted-foreground">{lang === "zh" ? "会话数" : "Sessions"}</div>
+            <div className="text-xs text-muted-foreground">{translateCopy("hm.sessions", lang)}</div>
             <div className="mt-1 text-lg font-semibold">{totalSessions}</div>
           </div>
           <div className="activity-summary-item">
-            <div className="text-xs text-muted-foreground">{lang === "zh" ? "Token 处理量" : "Tokens"}</div>
+            <div className="text-xs text-muted-foreground">{translateCopy("hm.tokens", lang)}</div>
             <div className="mt-1 text-lg font-semibold">{formatNumber(totalTokens)}</div>
           </div>
           <div className="activity-summary-item">
-            <div className="text-xs text-muted-foreground">{lang === "zh" ? "处理步骤" : "Processing steps"}</div>
+            <div className="text-xs text-muted-foreground">{translateCopy("hm.processingSteps", lang)}</div>
             <div className="mt-1 text-lg font-semibold">{totalSteps}</div>
           </div>
           <div className="activity-summary-item">
-            <div className="text-xs text-muted-foreground">{lang === "zh" ? "活跃天数" : "Active days"}</div>
+            <div className="text-xs text-muted-foreground">{translateCopy("hm.activeDays", lang)}</div>
             <div className="mt-1 text-lg font-semibold">
               {activeDays}
-              {lang === "zh" ? " 天" : " days"}
+              {translateCopy("hm.days", lang)}
             </div>
           </div>
       </div>
@@ -181,17 +176,17 @@ export function Heatmap({
   );
 }
 
-function NoRequestEvidence({ lang }: { lang: string }) {
+function NoRequestEvidence({ lang }: { lang: Lang }) {
   return (
     <div
       className="flex min-h-[250px] flex-col items-center justify-center rounded-2xl border border-border/50 bg-background/25 px-6 text-center"
       role="status"
     >
       <div className="text-sm font-semibold text-foreground">
-        {lang === "zh" ? "暂无真实请求记录" : "No real request records yet"}
+        {translateCopy("hm.noRealRequestRecordsYet", lang)}
       </div>
       <div className="mt-2 text-xs text-muted-foreground">
-        {lang === "zh" ? "连接本地服务后显示" : "Connect the local service to view them"}
+        {translateCopy("hm.connectTheLocalServiceToViewThem", lang)}
       </div>
     </div>
   );
@@ -270,34 +265,34 @@ export function buildYearMonthLabelColumns(cells: DateCell[], year: number): num
   });
 }
 
-function ActivityDateSkeleton({ range, activityDays, now, lang }: { range: Range; activityDays: ActivityDay[]; now: Date; lang: string }) {
+function ActivityDateSkeleton({ range, activityDays, now, lang }: { range: Range; activityDays: ActivityDay[]; now: Date; lang: Lang }) {
   const weekdays = localizedWeekdays(lang);
   const today = localDateKey(now);
   const empty = activityDays.every((day) => day.sessions === 0);
   return (
     <div className="activity-date-skeleton" data-activity-range={range}>
-      <div className="activity-section-title">{lang === "zh" ? "活动趋势" : "Activity trend"}</div>
+      <div className="activity-section-title">{translateCopy("hm.activityTrend", lang)}</div>
       {range === "week" && <WeekActivity cells={buildWeekDays(now, activityDays)} weekdays={weekdays} today={today} lang={lang} />}
       {range === "month" && <MonthActivity cells={buildMonthCells(now, activityDays)} weekdays={weekdays} today={today} now={now} lang={lang} />}
       {range === "year" && <YearActivity cells={buildYearCells(now, activityDays)} weekdays={weekdays} today={today} now={now} lang={lang} />}
-      {empty && <p className="activity-empty-note" role="status">{lang === "zh" ? "暂无活动" : "No activity yet"}</p>}
+      {empty && <p className="activity-empty-note" role="status">{translateCopy("hm.noActivityYet", lang)}</p>}
       <ActivityLegend lang={lang} />
     </div>
   );
 }
 
-function WeekActivity({ cells, weekdays, today, lang }: { cells: DateCell[]; weekdays: string[]; today: string; lang: string }) {
+function WeekActivity({ cells, weekdays, today, lang }: { cells: DateCell[]; weekdays: string[]; today: string; lang: Lang }) {
   return <div className="activity-week-grid activity-week-strip" data-testid="activity-week">{cells.map((cell, index) => (
     <div key={cell.key} className="activity-week-day" data-date={cell.key} data-today={cell.key === today ? "true" : "false"}>
       <span className="activity-weekday">{weekdays[index]}</span>
       <span className="activity-week-date">{cell.date.getMonth() + 1}/{cell.date.getDate()}</span>
       <ActivityCell cell={cell} lang={lang} />
-      <span className="activity-week-count">{cell.activity.sessions}{lang === "zh" ? " 次" : ""}</span>
+      <span className="activity-week-count">{cell.activity.sessions}{translateCopy("hm.copy", lang)}</span>
     </div>
   ))}</div>;
 }
 
-function MonthActivity({ cells, weekdays, today, now, lang }: { cells: DateCell[]; weekdays: string[]; today: string; now: Date; lang: string }) {
+function MonthActivity({ cells, weekdays, today, now, lang }: { cells: DateCell[]; weekdays: string[]; today: string; now: Date; lang: Lang }) {
   const title = new Intl.DateTimeFormat(lang === "zh" ? "zh-CN" : "en-US", { year: "numeric", month: "long" }).format(now);
   return <div className="activity-month activity-compact-calendar" data-testid="activity-month">
     <div className="activity-calendar-title">{title}</div>
@@ -305,7 +300,7 @@ function MonthActivity({ cells, weekdays, today, now, lang }: { cells: DateCell[
   </div>;
 }
 
-function YearActivity({ cells, weekdays, today, now, lang }: { cells: DateCell[]; weekdays: string[]; today: string; now: Date; lang: string }) {
+function YearActivity({ cells, weekdays, today, now, lang }: { cells: DateCell[]; weekdays: string[]; today: string; now: Date; lang: Lang }) {
   const monthColumns = buildYearMonthLabelColumns(cells, now.getFullYear());
   return <div className="activity-year activity-compact-calendar" data-testid="activity-year">
     <div className="activity-year-month-labels" aria-hidden="true">
@@ -324,34 +319,34 @@ function YearActivity({ cells, weekdays, today, now, lang }: { cells: DateCell[]
   </div>;
 }
 
-function CompactGrid({ cells, weekdays, today, lang }: { cells: DateCell[]; weekdays: string[]; today: string; lang: string }) {
+function CompactGrid({ cells, weekdays, today, lang }: { cells: DateCell[]; weekdays: string[]; today: string; lang: Lang }) {
   return <div className="activity-compact-layout">
     <div className="activity-compact-weekdays" aria-hidden="true">
       {weekdays.map((day, index) => <span key={day}>{index % 2 === 0 ? (lang === "zh" ? day.slice(-1) : day.slice(0, 1)) : ""}</span>)}
     </div>
     <div className="activity-compact-scroll">
-      <div className="activity-compact-grid" role="grid" aria-label={lang === "zh" ? "活动日期热力图" : "Activity date heatmap"}>
+      <div className="activity-compact-grid" role="grid" aria-label={translateCopy("hm.activityDateHeatmap", lang)}>
         {cells.map((cell) => <ActivityCell key={cell.key} cell={cell} lang={lang} today={today} outside={!cell.inRange} />)}
       </div>
     </div>
   </div>;
 }
 
-function ActivityCell({ cell, lang, today = "", outside = false }: { cell: DateCell; lang: string; today?: string; outside?: boolean }) {
-  const label = lang === "zh" ? `${cell.key} · ${cell.activity.sessions} 次活动` : `${cell.key} · ${cell.activity.sessions} activities`;
+function ActivityCell({ cell, lang, today = "", outside = false }: { cell: DateCell; lang: Lang; today?: string; outside?: boolean }) {
+  const label = translateCopy("hm.activities", lang, { v1: cell.key, v2: cell.activity.sessions });
   return <span role="gridcell" tabIndex={0} className="activity-date-cell" data-date={cell.key} data-level={activityLevel(cell.activity)} data-outside={outside ? "true" : "false"} data-today={cell.key === today ? "true" : "false"} aria-label={label} title={label} />;
 }
 
-function ActivityLegend({ lang }: { lang: string }) {
-  return <div className="activity-legend"><span>{lang === "zh" ? "少" : "Less"}</span>{LEVELS.map((level) => <span key={level} className="activity-legend-cell" data-level={level} />)}<span>{lang === "zh" ? "多" : "More"}</span></div>;
+function ActivityLegend({ lang }: { lang: Lang }) {
+  return <div className="activity-legend"><span>{translateCopy("an.less", lang)}</span>{LEVELS.map((level) => <span key={level} className="activity-legend-cell" data-level={level} />)}<span>{translateCopy("an.more", lang)}</span></div>;
 }
 
-function localizedWeekdays(lang: string): string[] {
+function localizedWeekdays(lang: Lang): string[] {
   const monday = localDate(2024, 0, 1);
   return Array.from({ length: 7 }, (_, index) => new Intl.DateTimeFormat(lang === "zh" ? "zh-CN" : "en-US", { weekday: "short" }).format(addLocalDays(monday, index)));
 }
 
-function TokenTrend({ range, lang, activityDays }: { range: Range; lang: string; activityDays: ActivityDay[] }) {
+function TokenTrend({ range, lang, activityDays }: { range: Range; lang: Lang; activityDays: ActivityDay[] }) {
   const series = activityDays.slice(-rangeDays[range]).reduce<Array<{ date: string; period: number; cumulative: number }>>(
     (rows, day) => {
       const period = Math.max(0, day.tokens / 1000);
@@ -386,10 +381,10 @@ function TokenTrend({ range, lang, activityDays }: { range: Range; lang: string;
   return (
     <div className="token-trend-layout">
       <div className="token-chart">
-        <div className="activity-section-title">{lang === "zh" ? "Token 趋势" : "Token trend"}</div>
+        <div className="activity-section-title">{translateCopy("hm.tokenTrend", lang)}</div>
         <div className="token-legend">
-          <span><i className="bar" />{lang === "zh" ? "时段 Token 用量" : "Period token usage"}</span>
-          <span><i className="line" />{lang === "zh" ? "累计 Token 用量" : "Cumulative tokens"}</span>
+          <span><i className="bar" />{translateCopy("hm.periodTokenUsage", lang)}</span>
+          <span><i className="line" />{translateCopy("hm.cumulativeTokens", lang)}</span>
         </div>
         <svg viewBox={`0 0 ${chartWidth} ${chartHeight}`} className="token-svg" role="img">
           {[0, 1, 2].map((line) => (
@@ -426,17 +421,17 @@ function TokenTrend({ range, lang, activityDays }: { range: Range; lang: string;
       </div>
 
       <div className="rounded-2xl border border-border/60 bg-background/25 px-4 py-6 text-center">
-        <div className="text-xs text-muted-foreground">{lang === "zh" ? "已记录 Token" : "Recorded tokens"}</div>
+        <div className="text-xs text-muted-foreground">{translateCopy("hm.recordedTokens", lang)}</div>
         <strong className="mt-2 block text-xl">{formatNumber(Math.round(total * 1_000))}</strong>
         <div className="mt-2 text-xs text-muted-foreground">
-          {lang === "zh" ? "来自本地请求记录" : "From local request records"}
+          {translateCopy("hm.fromLocalRequestRecords", lang)}
         </div>
       </div>
     </div>
   );
 }
 
-function ToolRanking({ lang, tools }: { lang: string; tools: ToolUsageRow[] }) {
+function ToolRanking({ lang, tools }: { lang: Lang; tools: ToolUsageRow[] }) {
   if (tools.length === 0) return <NoRequestEvidence lang={lang} />;
 
   const rankedTools = tools.map((item, index) => ({
@@ -450,7 +445,7 @@ function ToolRanking({ lang, tools }: { lang: string; tools: ToolUsageRow[] }) {
   return (
     <div className="activity-tools-layout">
       <div className="activity-tools-list">
-        <div className="activity-section-title">{lang === "zh" ? "处理步骤排行" : "Processing step ranking"}</div>
+        <div className="activity-section-title">{translateCopy("hm.processingStepRanking", lang)}</div>
         {rankedTools.map((tool) => (
           <div key={tool.name} className="activity-tool-row">
             <div className="activity-tool-name">{tool.name}</div>
@@ -470,12 +465,12 @@ function ToolRanking({ lang, tools }: { lang: string; tools: ToolUsageRow[] }) {
 
       <div
         className="rounded-2xl border border-border/60 bg-background/25 px-4 py-6 text-center"
-        aria-label={lang === "zh" ? "处理步骤总量" : "Total processing steps"}
+        aria-label={translateCopy("hm.totalProcessingSteps", lang)}
       >
-        <div className="text-xs text-muted-foreground">{lang === "zh" ? "记录总调用" : "Recorded calls"}</div>
+        <div className="text-xs text-muted-foreground">{translateCopy("hm.recordedCalls", lang)}</div>
         <strong className="mt-2 block text-xl">{totalToolCalls}</strong>
         <div className="mt-2 text-xs text-muted-foreground">
-          {lang === "zh" ? "来自本地请求记录" : "From local request records"}
+          {translateCopy("hm.fromLocalRequestRecords", lang)}
         </div>
       </div>
     </div>
