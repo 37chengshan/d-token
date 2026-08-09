@@ -39,7 +39,7 @@
 
 1. 用户已明确指定目标版本 **v0.0.1**，无需再次确认。当前 `0.2.0-beta.1` 仅是尚未执行 V-1 的事实，不构成范围降级。
 2. 切片 V-1 必须在 C0–C8、既有功能/平台切片完成后一次性统一 manifest、PRD 版本门、PLAN/status/CHANGELOG/workflow/check script。
-3. V-1 前不得生成最终候选；V-1 后新证据只能绑定 v0.0.1 `C_final`，旧版本证据全部过期。
+3. V-1 前不得生成最终候选；V-1 统一版本身份，PR-9/C8C 完成编排与 gate wiring，N0 才冻结 v0.0.1 `C_final`。所有真实候选证据只能在 N0 通过后生成并绑定该 `C_final`；旧版本、旧 commit 或 pre-N0 evidence 全部过期/拒绝。
 4. 旧版本字符串只允许存在于 history/archive/CHANGELOG 历史条目。
 
 ## 3. 完成定义（Definition of Done）

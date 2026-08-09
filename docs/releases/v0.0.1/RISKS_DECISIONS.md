@@ -13,7 +13,7 @@
 | D4 | **Optical production active** | 已决策 | UI 永无 active 开关；planner 在 exact attestation + economics + paired eval + resource + validation 全绿时自动 active，任一门不绿 PreserveText | “自动 stage”与“无用户 engine chooser”同时成立 | OPTICAL-1..6, N10 |
 | D5 | **LeanCTX domain 归属** | 已决策 | 新建 `dtoken-context-bus`；从 compress/context-store **搬移**策略，不复制；store 只实现 persistence port，compress 消费 domain decision | 防止双权威；raw CCR 继续私有独立 | CONTEXT-1..4, PR-C3* |
 | D6 | **公开 prerelease**（GitHub public unsigned prerelease 聚合 workflow） | 已决策（保持现状边界） | 同一 tag/同一 commit 聚合 macOS ARM64 + Windows x64，双端门禁全绿才创建；产物标 unsigned/unnotarized；不宣称签名、公证或系统信誉；V-1 后 tag 与版本号 v0.0.1 绑定 | workflow 接线只允许 PR-7；不围绕 GitHub PR #6 云端 CI 失败修 CI | PLATFORM-3/4, PR-7, K2 |
-| D7 | **no-touch 开发边界** | 已决策（保持） | 开发默认不触碰真实 Agent 配置/凭据；fixture/fake-bin/poison-bin、临时 HOME/PATH/端口为 gate；真实写操作只在用户明确授权与受控边界内 | M1 不变量；任何 managed 写穿视为返工 | INV-4, SECURITY-9, PR-6 |
+| D7 | **no-touch 开发边界** | 已决策（保持） | 开发默认不触碰真实 Agent 配置/凭据；fixture/fake-bin/poison-bin、临时 HOME/PATH/端口为 gate；PR-13 仅在 PR-6 隔离副本验证 managed preview/apply/verify/rollback。真实用户环境写入只允许 N0 通过后的 N4 授权 lane，且每次必须有用户可读摘要/diff/backup/明确确认/verify/exact restore evidence | M1 不变量；任何未授权 managed 写穿视为返工 | INV-4, SECURITY-9, PR-6/13, N0/N4 |
 | D8 | **cc-switch 只读** | 已决策（保持） | 只读 DB/WAL/SHM watcher；首次 hash-bound 授权后仅自动更新 d-token 自有 route/runtime；绝不写 cc-switch；A→B→A 由主代理 Computer 完成 | 真实 UI 切换不由实现 Agent 操控 | AGENT-5, SECURITY-7, N5 |
 | D9 | **Codex 路由不替代** | 已决策 | Codex 必须独立真实 routed-flow（N2）；配置恢复/MCP/Hook 接入不得替代 | PRD P0.0.7/P0.0.10.5 | K5, AGENT-1 |
 | D10 | **证据治理** | 已决策 | 过期证据隔离；全部机器证据绑定 `C_final` + source digest；聚合器 fail-closed；旧 pass artifact 不可穿透 | 2026-08-04 G7、旧 DMG、browser preview 不得绑定最终候选 | EVID-1/2/3, K6 |
@@ -35,7 +35,7 @@
 | R7 | 多文档版本事实源继续漂移（PRD/PLAN/本包/IMPLEMENTATION_STATUS） | Medium | 文档优先级（README §4）；本包随执行滚动；收口统一更新（DOCS-3） | Main |
 | R8 | 侧栏/UI 真实窗口证据不足（浏览器 preview 冒充） | Medium | N6 主代理 Computer 全组合；PR-4 Playwright 只作 layout 前置 | Main/PR-4 |
 | R9 | LeanCTX/Headroom/RTK/Optical 被部分实现或 metadata 误报完成 | High | 全部 MUST；任何 no-op/preview-only/无 hook/无 exact active 仍阻断 | PR-C0..C8 |
-| R10 | 配置/凭据验收污染真实用户环境 | High | 隔离临时根副本 + 唯一 namespace + exact restore；故障注入 | PR-6/8 |
+| R10 | 配置/凭据/平台验收污染真实用户环境或产生 pre-candidate evidence | High | PR-6/8/13/CBM4 仅接 producer/schema/dry-run 与隔离 fake/poison 合同；N0 通过后 N4/N7/N8 才可逐次明确授权真实 lane，使用唯一 namespace + exact restore，失败阻断 | PR-6/8/13/CBM4, N4/N7/N8 |
 | R11 | 当前分支 HEAD 仍在变动（CI 稳定化提交链） | Medium | P0 复核冻结 commit；N0 以 `C_final` 为准；证据绑定禁止漂移 | Main/P0 |
 
 ## 3. 执行期固定裁决

@@ -7,6 +7,7 @@
 ## 1. 证据公共 envelope（所有 N0–N10 必填）
 
 每个机器 artifact 顶层必须包含：`schema_version`、`node_id`、`status`、`reason_codes[]`、`candidate_commit`、`source_digest`、`dirty=false`、`registry_digest`、`corpus_digests{}`、`started_at`、`finished_at`、`platform{os,arch,toolchain}`、`producer_revision`、`artifact_sha256`。Optical/benchmark/paired eval 还必须包含对应 `route_decision_digest`、`capability_digest`、`renderer/profile/font/tokenizer/pricing/cache/eval` digests；不适用字段显式为 `null` 并给 reason，不能省略后被当作通过。
+`artifact_sha256` 的计算规则固定为：先从 artifact 顶层移除 `artifact_sha256` 字段，再按 UTF-8、对象键字典序、无多余空白的 canonical JSON 序列化，计算 SHA-256 小写十六进制；随后把该值写回 `artifact_sha256`。聚合器必须执行同一「移除字段→canonical JSON→SHA-256」流程复算并精确比较，禁止哈希包含自身字段的最终文件、信任 producer 自报值或使用非规范序列化。
 
 `source_digest` 由 tracked source manifest 计算：按 UTF-8 path 排序，对每个 tracked 文件记录 SHA-256，canonical JSON 序列化后再 SHA-256；gitignored artifact、target/node_modules/build 输出不进入。`dirty=true`、commit/digest 缺失或任一 artifact 与期望不匹配，聚合立即 blocked。
 
