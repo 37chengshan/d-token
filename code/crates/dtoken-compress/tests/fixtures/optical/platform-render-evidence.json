@@ -1,0 +1,22 @@
+{
+  "base64_bytes": 3816,
+  "contract_digest": "2c06ea7f8652aa07516f059af1613b26fab17109c5189ef152a189fdd1e1af99",
+  "corpus_revision": "dtoken-platform-evidence-corpus-v1",
+  "evidence_digest": "0cc735524cb6a9448dab876c5723b71aa5e2c9f71676204d904709f65f8cbfcd",
+  "font_digest": "a8a9941fd5f0096dacea34b144305ddbe4a70c6749677fd90395b15220fdffd5",
+  "pages": [
+    {
+      "digest": "e93c5d55214e4d905322655bdad2752ddc993497c0f89e0daea3396da14a8864",
+      "fallback_glyphs": 16,
+      "height": 40,
+      "png_bytes": 2861,
+      "source_chars": 289,
+      "width": 1568
+    }
+  ],
+  "png_bytes": 2861,
+  "profile_digest": "2c06ea7f8652aa07516f059af1613b26fab17109c5189ef152a189fdd1e1af99",
+  "schema": "dtoken-platform-render-evidence-v1",
+  "source_digest": "8451185ddcf45d8c32966f06ddf15bacfd392e37b4036227ce13fae708479682",
+  "total_fallback_glyphs": 16
+}

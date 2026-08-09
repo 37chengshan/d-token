@@ -278,6 +278,7 @@ pub struct RenderedPage {
     png: Vec<u8>,
     digest: String,
     source_chars: usize,
+    fallback_glyphs: usize,
 }
 
 impl std::fmt::Debug for RenderedPage {
@@ -289,6 +290,7 @@ impl std::fmt::Debug for RenderedPage {
             .field("png_bytes", &self.png.len())
             .field("digest", &self.digest)
             .field("source_chars", &self.source_chars)
+            .field("fallback_glyphs", &self.fallback_glyphs)
             .finish()
     }
 }
@@ -312,6 +314,14 @@ impl RenderedPage {
 
     pub fn source_chars(&self) -> usize {
         self.source_chars
+    }
+
+    /// Number of glyphs on this page substituted by the fail-closed
+    /// Unicode/CJK fallback placeholder. Non-zero only when the Spleen font
+    /// is in use and the source contains code points outside the ASCII atlas;
+    /// the count is deterministic evidence of lossy substitution.
+    pub fn fallback_glyphs(&self) -> usize {
+        self.fallback_glyphs
     }
 
     pub fn base64(&self) -> String {
@@ -403,7 +413,7 @@ impl DeterministicPngRenderer {
         limits: &RenderLimits,
         cancellation: &RenderCancellation,
     ) -> Result<RenderedArtifact, RenderError> {
-        self.render_internal(text, profile, None, limits, cancellation)
+        self.render_internal(text, profile, None, false, limits, cancellation)
     }
 
     pub fn render_eval_profile(
@@ -432,6 +442,33 @@ impl DeterministicPngRenderer {
             text,
             &contract.geometry,
             Some((&contract.font, &contract.layout, &contract.revision)),
+            false,
+            limits,
+            cancellation,
+        )
+    }
+
+    /// Render arbitrary text (including Unicode/CJK) through the production
+    /// Spleen contract with the per-glyph fail-closed fallback: every code
+    /// point outside the ASCII atlas is deterministically substituted with
+    /// the box placeholder and the substitution is recorded as evidence on
+    /// the returned pages. Unlike the eval-profile path, non-ASCII input is
+    /// not rejected as a whole script — the loss is per glyph and visible.
+    /// The reflow newline marker (`↵`) remains rejected in source text
+    /// because it is ambiguous with rendered reflow markers.
+    pub fn render_spleen_fallback(
+        &self,
+        text: &str,
+        profile: &RenderGeometryProfile,
+        limits: &RenderLimits,
+        cancellation: &RenderCancellation,
+    ) -> Result<RenderedArtifact, RenderError> {
+        let contract = production_render_contract(profile);
+        self.render_internal(
+            text,
+            &contract.geometry,
+            Some((&contract.font, &contract.layout, &contract.revision)),
+            true,
             limits,
             cancellation,
         )
@@ -442,6 +479,7 @@ impl DeterministicPngRenderer {
         text: &str,
         profile: &RenderGeometryProfile,
         eval: Option<(&RenderFontId, &RenderLayoutPolicy, &str)>,
+        unicode_fallback: bool,
         limits: &RenderLimits,
         cancellation: &RenderCancellation,
     ) -> Result<RenderedArtifact, RenderError> {
@@ -454,14 +492,13 @@ impl DeterministicPngRenderer {
         }
 
         if let Some((_, layout, _)) = eval {
-            if !supports_render_script(text)
-                || layout
-                    .newline_marker
-                    .is_some_and(|marker| text.contains(marker))
-            {
+            let contains_reflow_marker =
+                layout.newline_marker.is_some_and(|marker| text.contains(marker));
+            if contains_reflow_marker || (!unicode_fallback && !supports_render_script(text)) {
                 return Err(RenderError::UnsupportedScript);
             }
         }
+        let use_spleen = eval.is_some_and(|(font, _, _)| *font == RenderFontId::Spleen5x8V220Ascii);
         let renderable = renderable_text(text, eval.map(|(_, layout, _)| layout));
         if renderable.chars().count() > limits.max_candidate_chars {
             return Err(RenderError::CandidateTooLarge);
@@ -569,6 +606,11 @@ impl DeterministicPngRenderer {
                 height,
                 digest: sha256_hex(&png),
                 source_chars: page.iter().map(|line| line.chars().count()).sum(),
+                fallback_glyphs: if use_spleen {
+                    count_fallback_glyphs(&page)
+                } else {
+                    0
+                },
                 png,
             });
         }
@@ -587,6 +629,207 @@ impl DeterministicPngRenderer {
             _memory_lease: byte_permit,
         })
     }
+}
+
+/// Deterministic, platform-independent corpus for cross-platform renderer
+/// digest comparison (PR-C5A). The corpus mixes ASCII, CJK (which exercises
+/// the per-glyph fail-closed fallback) and a literal `?` (which must keep its
+/// atlas glyph). Rendering is pure arithmetic over the embedded Spleen atlas
+/// with a fixed PNG encoder configuration, so the evidence digests are
+/// byte-identical on macOS and Windows and can be compared against the pinned
+/// fixture in `crates/dtoken-compress/tests/fixtures/optical/`.
+pub const PLATFORM_EVIDENCE_CORPUS_REVISION: &str = "dtoken-platform-evidence-corpus-v1";
+pub const PLATFORM_EVIDENCE_CORPUS: &str = "\
+INFO deterministic optical payload completed
+WARN retry scheduled after 3 attempts
+INFO 中文日志处理完成
+WARN 重试将在 30 秒后开始
+INFO build step 1 of 4 completed
+INFO build step 2 of 4 completed
+INFO build step 3 of 4 completed
+INFO build step 4 of 4 completed
+INFO question mark ? stays an atlas glyph
+";
+
+/// Per-page evidence for one rendered page of the platform corpus.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlatformPageEvidence {
+    pub width: u32,
+    pub height: u32,
+    pub digest: String,
+    pub png_bytes: usize,
+    pub source_chars: usize,
+    pub fallback_glyphs: usize,
+}
+
+/// Byte-stable renderer evidence intended for cross-platform (macOS/Windows)
+/// digest comparison: every field is produced by deterministic, pure-Rust
+/// rendering with no platform-dependent code or external runtime dependency.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlatformRenderEvidence {
+    pub corpus_revision: String,
+    pub source_digest: String,
+    pub profile_digest: String,
+    pub font_digest: String,
+    pub contract_digest: String,
+    pub pages: Vec<PlatformPageEvidence>,
+    pub png_bytes: u64,
+    pub base64_bytes: u64,
+    pub total_fallback_glyphs: usize,
+    pub evidence_digest: String,
+}
+
+impl PlatformRenderEvidence {
+    pub fn evidence_digest(&self) -> &str {
+        &self.evidence_digest
+    }
+
+    /// Canonical JSON projection used to persist and compare the evidence.
+    pub fn as_json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "schema": "dtoken-platform-render-evidence-v1",
+            "corpus_revision": self.corpus_revision,
+            "source_digest": self.source_digest,
+            "profile_digest": self.profile_digest,
+            "font_digest": self.font_digest,
+            "contract_digest": self.contract_digest,
+            "pages": self.pages.iter().map(|page| serde_json::json!({
+                "width": page.width,
+                "height": page.height,
+                "digest": page.digest,
+                "png_bytes": page.png_bytes,
+                "source_chars": page.source_chars,
+                "fallback_glyphs": page.fallback_glyphs,
+            })).collect::<Vec<_>>(),
+            "png_bytes": self.png_bytes,
+            "base64_bytes": self.base64_bytes,
+            "total_fallback_glyphs": self.total_fallback_glyphs,
+            "evidence_digest": self.evidence_digest,
+        })
+    }
+
+    pub fn from_json(value: &serde_json::Value) -> Option<Self> {
+        let pages = value
+            .get("pages")?
+            .as_array()?
+            .iter()
+            .map(|page| {
+                Some(PlatformPageEvidence {
+                    width: page.get("width")?.as_u64()?.try_into().ok()?,
+                    height: page.get("height")?.as_u64()?.try_into().ok()?,
+                    digest: page.get("digest")?.as_str()?.to_string(),
+                    png_bytes: page.get("png_bytes")?.as_u64()?.try_into().ok()?,
+                    source_chars: page.get("source_chars")?.as_u64()?.try_into().ok()?,
+                    fallback_glyphs: page.get("fallback_glyphs")?.as_u64()?.try_into().ok()?,
+                })
+            })
+            .collect::<Option<Vec<_>>>()?;
+        Some(Self {
+            corpus_revision: value.get("corpus_revision")?.as_str()?.to_string(),
+            source_digest: value.get("source_digest")?.as_str()?.to_string(),
+            profile_digest: value.get("profile_digest")?.as_str()?.to_string(),
+            font_digest: value.get("font_digest")?.as_str()?.to_string(),
+            contract_digest: value.get("contract_digest")?.as_str()?.to_string(),
+            pages,
+            png_bytes: value.get("png_bytes")?.as_u64()?,
+            base64_bytes: value.get("base64_bytes")?.as_u64()?,
+            total_fallback_glyphs: value
+                .get("total_fallback_glyphs")?
+                .as_u64()?
+                .try_into()
+                .ok()?,
+            evidence_digest: value.get("evidence_digest")?.as_str()?.to_string(),
+        })
+    }
+
+    /// Single digest over the canonical evidence payload (excluding itself),
+    /// used to pin the whole evidence set for later platform comparison.
+    fn compute_evidence_digest(&self) -> String {
+        let payload = format!(
+            "{}|{}|{}|{}|{}|{}|{}|{}|{}",
+            self.corpus_revision,
+            self.source_digest,
+            self.profile_digest,
+            self.font_digest,
+            self.contract_digest,
+            self.pages
+                .iter()
+                .map(|page| {
+                    format!(
+                        "{}:{}:{}:{}:{}:{}",
+                        page.width,
+                        page.height,
+                        page.digest,
+                        page.png_bytes,
+                        page.source_chars,
+                        page.fallback_glyphs
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(","),
+            self.png_bytes,
+            self.base64_bytes,
+            self.total_fallback_glyphs,
+        );
+        sha256_hex(payload.as_bytes())
+    }
+}
+
+/// Produce the deterministic cross-platform evidence for `profile` by
+/// rendering [`PLATFORM_EVIDENCE_CORPUS`] through the Spleen per-glyph
+/// fallback path. All digests are pure functions of the corpus, the profile
+/// and the embedded atlas, so macOS and Windows must produce identical bytes.
+pub fn platform_render_evidence(
+    profile: &RenderGeometryProfile,
+) -> Result<PlatformRenderEvidence, RenderError> {
+    let renderer = DeterministicPngRenderer::new(1, Duration::from_millis(250));
+    let limits = RenderLimits {
+        max_pages: 4,
+        max_candidate_chars: 100_000,
+        max_total_pixels: u64::try_from(profile.width_px * profile.max_height_px)
+            .unwrap_or(u64::MAX)
+            .saturating_mul(4),
+        max_png_bytes: 8 * 1024 * 1024,
+        max_base64_bytes: 12 * 1024 * 1024,
+        max_memory_bytes: 32 * 1024 * 1024,
+        deadline: Duration::from_secs(5),
+    };
+    let artifact = renderer.render_spleen_fallback(
+        PLATFORM_EVIDENCE_CORPUS,
+        profile,
+        &limits,
+        &RenderCancellation::default(),
+    )?;
+    let contract = production_render_contract(profile);
+    let mut evidence = PlatformRenderEvidence {
+        corpus_revision: PLATFORM_EVIDENCE_CORPUS_REVISION.to_string(),
+        source_digest: artifact.source_digest().to_string(),
+        profile_digest: artifact.profile_digest().to_string(),
+        font_digest: artifact.font_digest().to_string(),
+        contract_digest: render_contract_digest(&contract),
+        pages: artifact
+            .pages()
+            .iter()
+            .map(|page| PlatformPageEvidence {
+                width: page.width(),
+                height: page.height(),
+                digest: page.digest().to_string(),
+                png_bytes: page.png_bytes().len(),
+                source_chars: page.source_chars(),
+                fallback_glyphs: page.fallback_glyphs(),
+            })
+            .collect(),
+        png_bytes: artifact.png_bytes(),
+        base64_bytes: artifact.base64_bytes(),
+        total_fallback_glyphs: artifact
+            .pages()
+            .iter()
+            .map(|page| page.fallback_glyphs())
+            .sum(),
+        evidence_digest: String::new(),
+    };
+    evidence.evidence_digest = evidence.compute_evidence_digest();
+    Ok(evidence)
 }
 
 pub fn profile_digest(profile: &RenderGeometryProfile) -> String {
@@ -642,6 +885,10 @@ pub fn font_digest_for(font: RenderFontId) -> String {
                 .flat_map(|glyph| glyph.iter().copied())
                 .collect::<Vec<_>>();
             bytes.extend_from_slice(SPLEEN_5X8_AA_REVISION.as_bytes());
+            // The per-glyph Unicode/CJK fallback kernel changes what non-ASCII
+            // input renders to, so it is part of the font identity an
+            // attestation binds to.
+            bytes.extend_from_slice(super::spleen5x8::SPLEEN_5X8_FALLBACK_REVISION.as_bytes());
             sha256_hex(&bytes)
         }
     }
@@ -922,6 +1169,16 @@ fn spleen_pixel(glyph: &[u8; 8], x: usize, y: usize) -> bool {
     x < 5 && y < 8 && glyph[y] & (0x80 >> x) != 0
 }
 
+/// Count glyphs in `lines` that the Spleen atlas cannot represent and that
+/// therefore render as the fail-closed Unicode/CJK box placeholder.
+fn count_fallback_glyphs(lines: &[String]) -> usize {
+    lines
+        .iter()
+        .flat_map(|line| line.chars())
+        .filter(|character| !super::spleen5x8::is_supported(*character))
+        .count()
+}
+
 fn encode_png(width: u32, height: u32, pixels: &[u8]) -> Result<Vec<u8>, RenderError> {
     let mut encoded = Vec::new();
     {
@@ -1155,5 +1412,135 @@ mod tests {
             ),
             Err(RenderError::SecretDetected)
         ));
+    }
+
+    #[test]
+    fn unicode_cjk_fallback_is_per_glyph_fail_closed_and_deterministic() {
+        let renderer = DeterministicPngRenderer::new(1, Duration::from_millis(50));
+        let profile = fixture_profile();
+        let limits = fixture_limits(&profile);
+        let text = "INFO 中文日志 completed\nWARN 重试 scheduled\n";
+        let cancellation = RenderCancellation::default();
+
+        let first = renderer
+            .render_spleen_fallback(text, &profile, &limits, &cancellation)
+            .expect("CJK text renders through the per-glyph fallback");
+        let second = renderer
+            .render_spleen_fallback(text, &profile, &limits, &cancellation)
+            .expect("second fallback render");
+
+        // Substitution is per glyph: every non-ASCII code point is recorded.
+        // (Newlines are reflow markers in the rendered page, not glyphs.)
+        let expected_fallback = text
+            .chars()
+            .filter(|character| {
+                !crate::optical::spleen5x8::is_supported(*character)
+                    && !matches!(character, '\n' | '\r')
+            })
+            .count();
+        assert!(expected_fallback > 0);
+        assert_eq!(
+            first.pages().iter().map(|p| p.fallback_glyphs()).sum::<usize>(),
+            expected_fallback
+        );
+
+        // Byte-identical across runs and self-decodable: the deterministic
+        // basis for the later macOS/Windows digest comparison.
+        assert_eq!(first.source_digest(), second.source_digest());
+        for (left, right) in first.pages().iter().zip(second.pages()) {
+            assert_eq!(left.digest(), right.digest());
+            assert_eq!(left.fallback_glyphs(), right.fallback_glyphs());
+            validate_png(left.png_bytes(), left.width(), left.height())
+                .expect("fallback page decodes with expected geometry");
+        }
+
+        // The box placeholder must render differently from real question
+        // marks, so the loss is visible and never confusable.
+        let as_question_marks = renderer
+            .render_spleen_fallback(
+                "INFO ?? ?? ????\nWARN ?? ?????\n",
+                &profile,
+                &limits,
+                &RenderCancellation::default(),
+            )
+            .expect("question-mark render");
+        assert_ne!(
+            first.pages()[0].digest(),
+            as_question_marks.pages()[0].digest()
+        );
+        assert_eq!(as_question_marks.pages()[0].fallback_glyphs(), 0);
+
+        // The reflow marker stays rejected in source text (fail-closed
+        // ambiguity), even on the fallback path.
+        assert!(matches!(
+            renderer.render_spleen_fallback(
+                "INFO ↵ ambiguous",
+                &profile,
+                &limits,
+                &RenderCancellation::default(),
+            ),
+            Err(RenderError::UnsupportedScript)
+        ));
+    }
+
+    #[test]
+    fn platform_render_evidence_is_deterministic_and_captures_fallback() {
+        let profile = fixture_profile();
+        let first =
+            platform_render_evidence(&profile).expect("first platform evidence render");
+        let second =
+            platform_render_evidence(&profile).expect("second platform evidence render");
+
+        // The corpus exercises the CJK fallback so the evidence proves lossy
+        // substitution is captured, not hidden.
+        assert!(first.total_fallback_glyphs > 0);
+        assert!(first.pages.iter().any(|page| page.fallback_glyphs > 0));
+        assert_eq!(first, second);
+        assert_eq!(first.evidence_digest(), second.evidence_digest());
+        assert_eq!(first.evidence_digest().len(), 64);
+
+        // JSON projection round-trips and pins a stable digest.
+        let json = first.as_json();
+        let parsed = PlatformRenderEvidence::from_json(&json).expect("fixture parses");
+        assert_eq!(parsed, first);
+        assert_eq!(parsed.evidence_digest(), first.evidence_digest());
+
+        // Mutating any evidence field breaks the pinned digest.
+        let mut tampered = first.clone();
+        tampered.total_fallback_glyphs = 0;
+        assert_ne!(tampered.compute_evidence_digest(), first.evidence_digest());
+        // (compute_evidence_digest is private to this module; re-derive via
+        // the public construction path to prove digest sensitivity.)
+        let rebuilt = {
+            let mut evidence = PlatformRenderEvidence {
+                corpus_revision: first.corpus_revision.clone(),
+                source_digest: first.source_digest.clone(),
+                profile_digest: first.profile_digest.clone(),
+                font_digest: first.font_digest.clone(),
+                contract_digest: first.contract_digest.clone(),
+                pages: first.pages.clone(),
+                png_bytes: first.png_bytes,
+                base64_bytes: first.base64_bytes,
+                total_fallback_glyphs: 0,
+                evidence_digest: String::new(),
+            };
+            evidence.evidence_digest = evidence.compute_evidence_digest();
+            evidence
+        };
+        assert_ne!(rebuilt.evidence_digest(), first.evidence_digest());
+    }
+
+    #[test]
+    fn platform_evidence_matches_pinned_fixture_digest() {
+        // Deterministic evidence pin: the same corpus + profile must produce
+        // this digest on any platform. The committed fixture JSON in
+        // tests/fixtures/optical/ is the comparison record for later
+        // macOS/Windows runs.
+        let profile = fixture_profile();
+        let evidence = platform_render_evidence(&profile).expect("evidence renders");
+        assert_eq!(
+            evidence.evidence_digest(),
+            "0cc735524cb6a9448dab876c5723b71aa5e2c9f71676204d904709f65f8cbfcd"
+        );
     }
 }
