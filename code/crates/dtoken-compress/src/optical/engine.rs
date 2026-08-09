@@ -1469,4 +1469,74 @@ mod tests {
                 .expect("second messages")[..6]
         );
     }
+
+    #[test]
+    fn unsupported_protocol_never_activates_even_with_full_active_policies() {
+        // OpenAI Chat with allow_active + a signed-looking fixture registry
+        // must still preserve text: the Anthropic-only contract keeps every
+        // unsupported-protocol surface on the passthrough path (OPTICAL-2).
+        let openai_context = ResolvedOptimizationContext {
+            route_id: "route-openai".to_string(),
+            provider_id: "openai-main".to_string(),
+            model: "gpt-5.6-sol".to_string(),
+            input_protocol: dtoken_types::Protocol::OpenAi,
+            output_protocol: dtoken_types::Protocol::OpenAi,
+            endpoint: OpticalEndpoint::OpenAiChatCompletions,
+        };
+        let body = json!({
+            "model": "gpt-5.6-sol",
+            "messages": [
+                {"role":"system","content":"instructions"},
+                {"role":"user","content":"current turn"}
+            ]
+        });
+        let raw = serde_json::to_vec(&body).expect("fixture serializes");
+        let (global, route) = active_policies();
+        let prepared = HybridContextEngine::new(&global).prepare(
+            "openai-request",
+            &openai_context,
+            CompressionPolicy::Balanced,
+            body.clone(),
+            Some(&raw),
+            &global,
+            &route,
+            &active_registry(),
+            &RenderCancellation::default(),
+        );
+        assert_eq!(prepared.kind(), HybridPreparationKind::Passthrough);
+        assert_eq!(prepared.body(), &body);
+        assert_eq!(prepared.report().reason_code, "unsupported_or_cross_protocol_surface");
+        assert_eq!(
+            prepared.accounting().sent_payload,
+            SentPayloadVariant::Original
+        );
+    }
+
+    #[test]
+    fn active_text_is_preserved_until_attestation_gates_are_complete() {
+        // allow_active without a signed capability must keep the original
+        // body: Optical planning is evidence-only until PR-C5C attestation.
+        let body = request_body();
+        let raw = serde_json::to_vec(&body).expect("fixture serializes");
+        let (global, route) = active_policies();
+        let prepared = HybridContextEngine::new(&global).prepare(
+            "unsigned-request",
+            &context(),
+            CompressionPolicy::Balanced,
+            body.clone(),
+            Some(&raw),
+            &global,
+            &route,
+            &OpticalCapabilityRegistry::default(),
+            &RenderCancellation::default(),
+        );
+        assert_eq!(prepared.kind(), HybridPreparationKind::Shadow);
+        assert_eq!(prepared.body(), &body);
+        assert_eq!(
+            prepared.accounting().sent_payload,
+            SentPayloadVariant::Original
+        );
+        assert!(prepared.report().optical_candidate_count > 0);
+        assert_eq!(prepared.report().image_count, prepared.report().optical_candidate_count);
+    }
 }
