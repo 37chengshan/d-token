@@ -2250,6 +2250,15 @@
       "summary": "Push release-plan merge audit ledger",
       "head_before": "88c7f189c3b183a132828da83683e3e0c32ee4e3",
       "remote": "origin"
+    },
+    {
+      "id": "dbfc37c7-945a-43bb-b9a0-d570cf08f527",
+      "timestamp": "2026-08-09T17:26:12+08:00",
+      "operation": "branch-create",
+      "branch": "codex/final/provenance-batch-reconciled",
+      "summary": "Create serialized provenance integration branch from merged release plan",
+      "head_before": "5486068d3f80d0d7103d64e0b48715a535a40008",
+      "remote": null
     }
   ]
 }
