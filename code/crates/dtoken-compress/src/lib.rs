@@ -7,6 +7,7 @@ pub mod diff_codec;
 pub mod hybrid;
 pub mod optical;
 pub mod output_shaper;
+pub mod rtk_planner;
 pub mod text_codec;
 pub mod tool_schema;
 
