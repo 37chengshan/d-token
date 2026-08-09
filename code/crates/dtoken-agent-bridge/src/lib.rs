@@ -995,7 +995,10 @@ mod tests {
         let error =
             write_usage_record(&usage_dir, &manifest, &record).expect_err("exposed usage dir");
         assert!(error.to_string().contains("not private"));
-        assert!(std::fs::read_dir(&usage_dir).expect("usage dir").next().is_none());
+        assert!(std::fs::read_dir(&usage_dir)
+            .expect("usage dir")
+            .next()
+            .is_none());
     }
 
     #[test]

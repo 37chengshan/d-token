@@ -280,16 +280,9 @@ fn filter_text_family(
     input: &str,
     config: &CommandFilterConfig,
 ) -> CommandFilterResult {
-    let settings = config
-        .settings_for(family)
-        .cloned()
-        .unwrap_or_default();
+    let settings = config.settings_for(family).cloned().unwrap_or_default();
     if !settings.enabled {
-        return preserved_with(
-            Some(family),
-            input,
-            format!("{}:disabled", family.label()),
-        );
+        return preserved_with(Some(family), input, format!("{}:disabled", family.label()));
     }
     let mut transforms = Vec::new();
     let mut output = input.to_string();
@@ -329,11 +322,7 @@ fn filter_text_family(
         );
     }
     if output == input {
-        return preserved_with(
-            Some(family),
-            input,
-            format!("{}:no_change", family.label()),
-        );
+        return preserved_with(Some(family), input, format!("{}:no_change", family.label()));
     }
     let output_bytes = output.len();
     CommandFilterResult {
@@ -356,7 +345,11 @@ fn filter_json(input: &str, config: &CommandFilterConfig) -> CommandFilterResult
         return preserved_with(Some(CommandFamily::Json), input, "json:unparsed_preserve");
     };
     if settings.preserve_secret_keys && json_has_secret_keys(&value) {
-        return preserved_with(Some(CommandFamily::Json), input, "json:secret_keys_preserve");
+        return preserved_with(
+            Some(CommandFamily::Json),
+            input,
+            "json:secret_keys_preserve",
+        );
     }
     let minified = serde_json::to_string(&value).unwrap_or_default();
     if let Some(limit) = settings.max_output_bytes {
@@ -366,11 +359,7 @@ fn filter_json(input: &str, config: &CommandFilterConfig) -> CommandFilterResult
         }
     }
     if minified.len() >= input.len() {
-        return preserved_with(
-            Some(CommandFamily::Json),
-            input,
-            "json:negative_benefit",
-        );
+        return preserved_with(Some(CommandFamily::Json), input, "json:negative_benefit");
     }
     let minified_bytes = minified.len();
     CommandFilterResult {
@@ -397,9 +386,7 @@ fn fold_exact_repeated_lines(text: &str) -> String {
             continue;
         }
         if repeats > 0 {
-            lines.push(format!(
-                "[d-token: previous line repeated {repeats} times]"
-            ));
+            lines.push(format!("[d-token: previous line repeated {repeats} times]"));
             repeats = 0;
         }
         lines.push(line.to_string());
@@ -472,13 +459,14 @@ fn looks_secret_like(text: &str) -> bool {
             return false;
         }
         let uppercase = key.to_ascii_uppercase();
-        uppercase.bytes().all(|byte| {
-            byte.is_ascii_uppercase() || byte.is_ascii_digit() || byte == b'_'
-        }) && (uppercase.ends_with("_TOKEN")
-            || uppercase.ends_with("_KEY")
-            || uppercase.ends_with("_SECRET")
-            || uppercase.ends_with("_PASSWORD")
-            || uppercase.ends_with("_PASSWD"))
+        uppercase
+            .bytes()
+            .all(|byte| byte.is_ascii_uppercase() || byte.is_ascii_digit() || byte == b'_')
+            && (uppercase.ends_with("_TOKEN")
+                || uppercase.ends_with("_KEY")
+                || uppercase.ends_with("_SECRET")
+                || uppercase.ends_with("_PASSWORD")
+                || uppercase.ends_with("_PASSWD"))
     })
 }
 
@@ -506,9 +494,7 @@ const TEXT_SECRET_MARKERS: &[&str] = &[
 /// caller sees the original failure output.
 fn looks_error_like(text: &str) -> bool {
     let lower = text.to_ascii_lowercase();
-    ERROR_MARKERS
-        .iter()
-        .any(|marker| lower.contains(marker))
+    ERROR_MARKERS.iter().any(|marker| lower.contains(marker))
 }
 
 const ERROR_MARKERS: &[&str] = &[
@@ -583,10 +569,7 @@ mod tests {
             CommandFamily::from_output(r#"{"a": 1}"#),
             Some(CommandFamily::Json)
         );
-        assert_eq!(
-            CommandFamily::from_output("not json at all"),
-            None
-        );
+        assert_eq!(CommandFamily::from_output("not json at all"), None);
         assert_eq!(CommandFamily::from_output(""), None);
     }
 
@@ -641,12 +624,7 @@ mod tests {
     #[test]
     fn pytest_filter_keeps_summary_and_folds_repeats() {
         let input = "test_a PASSED\n".repeat(6) + "1 passed in 0.01s\n";
-        let result = filter_command_output(
-            &["pytest".to_string()],
-            &input,
-            Some(0),
-            &config(),
-        );
+        let result = filter_command_output(&["pytest".to_string()], &input, Some(0), &config());
         assert!(!result.preserved);
         assert!(result.output.contains("1 passed in 0.01s"));
         assert!(result.output.contains("previous line repeated 5 times"));
@@ -681,7 +659,9 @@ mod tests {
         );
         assert!(result.preserved);
         assert_eq!(result.output, secret);
-        assert!(result.transforms.contains(&"json:secret_keys_preserve".to_string()));
+        assert!(result
+            .transforms
+            .contains(&"json:secret_keys_preserve".to_string()));
     }
 
     #[test]
@@ -704,19 +684,16 @@ mod tests {
             max_output_bytes: Some(16),
         });
         let big = serde_json::to_string(&json!({"a": "x".repeat(64)})).expect("JSON");
-        let result = filter_command_output(
-            &["jq".to_string(), ".".to_string()],
-            &big,
-            Some(0),
-            &config,
-        );
+        let result =
+            filter_command_output(&["jq".to_string(), ".".to_string()], &big, Some(0), &config);
         assert!(result.preserved);
         assert_eq!(result.output, big);
     }
 
     #[test]
     fn failed_and_error_shaped_output_is_never_rewritten() {
-        let input = "error: could not compile `demo`\nCompiling demo v0.1.0\nCompiling demo v0.1.0\n";
+        let input =
+            "error: could not compile `demo`\nCompiling demo v0.1.0\nCompiling demo v0.1.0\n";
         let failed = filter_command_output(
             &["cargo".to_string(), "build".to_string()],
             input,
@@ -752,8 +729,7 @@ mod tests {
             CommandFamily::Pytest,
         ] {
             let argv = vec![family.label().to_string()];
-            let result =
-                filter_command_output(&argv, input, Some(0), &config());
+            let result = filter_command_output(&argv, input, Some(0), &config());
             assert!(result.preserved, "{family:?}");
             assert_eq!(result.output, input);
             assert!(result
@@ -867,7 +843,7 @@ enabled = true
         let git = parsed.git.expect("git table");
         assert!(!git.fold_repeated_lines);
         assert_eq!(git.max_output_bytes, Some(131_072));
-        assert_eq!(parsed.cargo.expect("cargo table").enabled, true);
+        assert!(parsed.cargo.expect("cargo table").enabled);
 
         let invalid = "schema_version = 1\n[git]\nunknown_setting = true\n";
         assert!(CommandFilterConfig::from_toml(invalid).is_err());
@@ -901,8 +877,7 @@ enabled = true
                 CommandFamily::Json,
             ] {
                 let argv = vec![family.label().to_string()];
-                let result =
-                    filter_command_output(&argv, input, Some(0), &config());
+                let result = filter_command_output(&argv, input, Some(0), &config());
                 if result.preserved {
                     assert_eq!(result.output, input);
                 } else {

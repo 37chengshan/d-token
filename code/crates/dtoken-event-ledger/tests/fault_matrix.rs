@@ -45,7 +45,9 @@ fn assert_all_lines_complete(path: &PathBuf) {
 /// present-or-absent but never torn, and recovery is lossless and ordered.
 #[test]
 fn crash_matrix_leaves_only_complete_records_at_every_crash_point() {
-    let _guard = FAILPOINT_TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let _guard = FAILPOINT_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
     for point in [
         "jsonl:crash_after_write_before_flush",
         "jsonl:crash_after_flush_before_sync",
@@ -115,12 +117,17 @@ fn process_crash_mid_append_recovers_with_acked_records_only() {
         std::process::abort();
     }
 
-    let _guard = FAILPOINT_TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let _guard = FAILPOINT_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
     clear_all();
     let path = test_path("process-crash");
     let current = std::env::current_exe().expect("test binary path");
     let status = std::process::Command::new(current)
-        .args(["--exact", "process_crash_mid_append_recovers_with_acked_records_only"])
+        .args([
+            "--exact",
+            "process_crash_mid_append_recovers_with_acked_records_only",
+        ])
         .env("DTK_CRASH_CHILD", "1")
         .env("DTK_CRASH_PATH", &path)
         .status()
@@ -161,7 +168,9 @@ fn process_crash_mid_append_recovers_with_acked_records_only() {
 fn concurrent_appends_with_failpoint_never_torn_or_duplicated() {
     const THREADS: usize = 6;
     const RECORDS_PER_THREAD: usize = 10;
-    let _guard = FAILPOINT_TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let _guard = FAILPOINT_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
     clear_all();
     let path = test_path("concurrent-crash");
     let store = Arc::new(JsonlStore::new(&path));
@@ -213,7 +222,9 @@ fn concurrent_appends_with_failpoint_never_torn_or_duplicated() {
 /// once and disarming restores normal operation.
 #[test]
 fn failpoint_registry_hits_are_deterministic() {
-    let _guard = FAILPOINT_TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let _guard = FAILPOINT_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
     clear_all();
     arm("test:once", 2);
     assert!(maybe_crash("test:once").is_err(), "first hit fires");

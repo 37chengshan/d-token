@@ -148,7 +148,9 @@ impl RequestDeadline {
         if budget_ms == 0 {
             return Err(PipelineError::InvalidDeadline);
         }
-        let deadline_at_ms = now_ms.checked_add(budget_ms).ok_or(PipelineError::InvalidDeadline)?;
+        let deadline_at_ms = now_ms
+            .checked_add(budget_ms)
+            .ok_or(PipelineError::InvalidDeadline)?;
         Ok(Self { deadline_at_ms })
     }
 
@@ -369,39 +371,33 @@ impl BoundedWorkerPool {
         for _ in 0..limits.max_workers() {
             let receiver = Arc::clone(&receiver);
             let budget = Arc::clone(&budget);
-            let deadline = deadline;
             let cancel = cancel.clone();
-            workers.push(std::thread::spawn(move || {
-                loop {
-                    let task = {
-                        let guard = receiver
-                            .lock()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner);
-                        guard.recv()
-                    };
-                    let (bytes, task) = match task {
-                        Ok(task) => task,
-                        Err(_) => break,
-                    };
-                    if !budget.acquire(bytes) {
-                        continue;
-                    }
-                    let outcome = if cancel
-                        .as_ref()
-                        .is_some_and(CancellationToken::is_cancelled)
-                    {
-                        TaskOutcome::Cancelled
-                    } else if deadline
-                        .as_ref()
-                        .is_some_and(|deadline| deadline.is_expired(now_ms()))
-                    {
-                        TaskOutcome::DeadlineExceeded
-                    } else {
-                        task()
-                    };
-                    let _ = outcome;
-                    budget.release(bytes);
+            workers.push(std::thread::spawn(move || loop {
+                let task = {
+                    let guard = receiver
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    guard.recv()
+                };
+                let (bytes, task) = match task {
+                    Ok(task) => task,
+                    Err(_) => break,
+                };
+                if !budget.acquire(bytes) {
+                    continue;
                 }
+                let outcome = if cancel.as_ref().is_some_and(CancellationToken::is_cancelled) {
+                    TaskOutcome::Cancelled
+                } else if deadline
+                    .as_ref()
+                    .is_some_and(|deadline| deadline.is_expired(now_ms()))
+                {
+                    TaskOutcome::DeadlineExceeded
+                } else {
+                    task()
+                };
+                let _ = outcome;
+                budget.release(bytes);
             }));
         }
         Ok(Self { sender, workers })

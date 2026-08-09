@@ -5,10 +5,10 @@ pub mod contract;
 pub mod decision;
 pub mod economics;
 pub mod engine;
-pub mod evidence;
 pub mod eval;
 pub mod eval_hybrid;
 pub mod eval_profile;
+pub mod evidence;
 pub mod history_collapse;
 pub mod inventory;
 pub mod patcher;
@@ -55,7 +55,6 @@ pub use engine::{
 pub use eval::{
     eval_corpus_digest, EvalBuildError, EvalSampleObservation, EvalThresholds, OpticalEvalBuilder,
 };
-pub use evidence::optical_exact_route_evidence;
 pub use eval_hybrid::{
     partition_eval_hybrid, EvalHybridBlock, EvalHybridBlockKind, EvalHybridDecision,
     EvalHybridPartition,
@@ -66,6 +65,7 @@ pub use eval_profile::{
     RenderLayoutPolicy, OPENAI_VISION_RULES_RETRIEVED_AT, OPENAI_VISION_RULES_URL,
     PXPIPE_SOURCE_COMMIT,
 };
+pub use evidence::optical_exact_route_evidence;
 pub use history_collapse::{
     frozen_prefix_is_byte_identical, pin_reason_for, plan_history_collapse, BillingBoundary,
     CacheAnchor, CollapseCandidate, FreezeGrid, FrozenRow, HistoryCollapsePlan, PinReason,

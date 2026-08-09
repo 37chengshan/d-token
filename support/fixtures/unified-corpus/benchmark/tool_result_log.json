@@ -1,0 +1,21 @@
+{
+  "id": "benchmark-tool-result-log",
+  "kind": "request-body",
+  "protocol": "openai",
+  "description": "Tool-result-heavy request body with repetitive build log lines (log_fold candidate).",
+  "privacy": "synthetic fixture; no credentials, paths, or real prompts",
+  "body": {
+    "model": "bench-model",
+    "messages": [
+      {"role": "user", "content": "current user message"}
+    ]
+  },
+  "tool_result_log": [
+    "INFO build complete in 1.234s",
+    "WARN unused import: std::fs (1)",
+    "ERROR test bench::case_42 failed: assertion `left == right` failed",
+    "INFO build complete in 1.234s",
+    "WARN unused import: std::fs (1)",
+    "ERROR test bench::case_42 failed: assertion `left == right` failed"
+  ]
+}

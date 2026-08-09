@@ -103,8 +103,14 @@ mod tests {
             avoided_bytes: 4096,
             hit_at_ms: 1_000,
         });
-        assert_eq!(receipt.savings_kind(), BusSavingsKind::RelayAvoidedRetransmission);
-        assert_eq!(receipt.savings_kind().as_str(), "relay_avoided_retransmission");
+        assert_eq!(
+            receipt.savings_kind(),
+            BusSavingsKind::RelayAvoidedRetransmission
+        );
+        assert_eq!(
+            receipt.savings_kind().as_str(),
+            "relay_avoided_retransmission"
+        );
         assert_eq!(receipt.avoided_bytes(), 4096);
         // 明确断言：receipt 不携带任何 compression 字段。
         assert_ne!(receipt.savings_kind().as_str(), "compression");

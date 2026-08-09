@@ -79,7 +79,11 @@ pub struct RecoveryManifest {
 }
 
 impl RecoveryManifest {
-    pub fn new(project_id: impl Into<String>, created_at_ms: u64, entries: Vec<ManifestEntry>) -> Self {
+    pub fn new(
+        project_id: impl Into<String>,
+        created_at_ms: u64,
+        entries: Vec<ManifestEntry>,
+    ) -> Self {
         Self {
             manifest_id: format!("manifest-{}", Uuid::new_v4().simple()),
             project_id: project_id.into(),
@@ -120,7 +124,9 @@ impl RecoveryIndex {
     /// 登记 manifest 并返回其指针。
     pub fn record(&mut self, manifest: RecoveryManifest) -> Result<RecoveryPointer, ScopeError> {
         if !manifest.is_valid() {
-            return Err(ScopeError("recovery manifest must reference valid scope identifiers".to_string()));
+            return Err(ScopeError(
+                "recovery manifest must reference valid scope identifiers".to_string(),
+            ));
         }
         let manifest_id = manifest.manifest_id.clone();
         let project_id = manifest.project_id.clone();
@@ -147,14 +153,21 @@ impl RecoveryIndex {
         }
         let _ = project_id;
         self.pointers.extend(pointers);
-        Ok(self.pointers.last().cloned().expect("pointer list is non-empty"))
+        Ok(self
+            .pointers
+            .last()
+            .cloned()
+            .expect("pointer list is non-empty"))
     }
 
     /// 解析指针 → manifest 条目元数据。
     /// manifest 缺失 / 校验失败 → None（不可解析 → miss）。
     pub fn resolve(&self, pointer: &str) -> Option<&ManifestEntry> {
         let pointer = self.pointers.iter().find(|p| p.pointer == pointer)?;
-        let manifest = self.manifests.iter().find(|m| m.manifest_id == pointer.manifest_id)?;
+        let manifest = self
+            .manifests
+            .iter()
+            .find(|m| m.manifest_id == pointer.manifest_id)?;
         manifest
             .entries
             .iter()
@@ -186,10 +199,17 @@ impl RecoveryIndex {
                 .manifests
                 .iter()
                 .find(|m| m.manifest_id == pointer.manifest_id)
-                .and_then(|m| m.entries.iter().find(|e| e.digest() == pointer.entry_digest))
+                .and_then(|m| {
+                    m.entries
+                        .iter()
+                        .find(|e| e.digest() == pointer.entry_digest)
+                })
                 .is_some_and(|e| {
                     let hydrated = Self::rehydrate_entry(e);
-                    matches!(hydrated.state_at(now_ms, source_fingerprint), EntryState::Fresh)
+                    matches!(
+                        hydrated.state_at(now_ms, source_fingerprint),
+                        EntryState::Fresh
+                    )
                 });
             if keep {
                 kept_pointers.push(pointer);
@@ -267,7 +287,13 @@ mod tests {
         assert_eq!(index.prune(70_000, None), 1);
         assert_eq!(index.pointer_count(), 0);
         // source 变化 → superseded → prune 移除。
-        index.record(RecoveryManifest::new("proj", 1_000, vec![ManifestEntry::from(&e)])).unwrap();
+        index
+            .record(RecoveryManifest::new(
+                "proj",
+                1_000,
+                vec![ManifestEntry::from(&e)],
+            ))
+            .unwrap();
         let changed = source_fingerprint(&"a".repeat(64), Some("new-digest"));
         assert_eq!(index.prune(1_000, Some(&changed)), 1);
     }

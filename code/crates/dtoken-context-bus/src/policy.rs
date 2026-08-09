@@ -87,8 +87,10 @@ pub fn validate_provider_cache_evidence(
 pub fn strategy_matches_protocol(strategy: ProviderCacheStrategy, protocol: &Protocol) -> bool {
     matches!(
         (strategy, protocol),
-        (ProviderCacheStrategy::AnthropicExplicit, Protocol::Anthropic)
-            | (ProviderCacheStrategy::OpenAiAutomatic, Protocol::OpenAi)
+        (
+            ProviderCacheStrategy::AnthropicExplicit,
+            Protocol::Anthropic
+        ) | (ProviderCacheStrategy::OpenAiAutomatic, Protocol::OpenAi)
             | (ProviderCacheStrategy::GoogleExplicit, Protocol::OpenAi)
     )
 }
@@ -99,10 +101,7 @@ pub fn is_fresh(observed_at_ms: u64, ttl_seconds: Option<u64>, now_ms: u64) -> b
     let Some(ttl) = ttl_seconds else {
         return now_ms >= observed_at_ms;
     };
-    let Some(expires_at_ms) = observed_at_ms.checked_add(ttl.checked_mul(1_000).unwrap_or(u64::MAX))
-    else {
-        return now_ms >= observed_at_ms;
-    };
+    let expires_at_ms = observed_at_ms.saturating_add(ttl.saturating_mul(1_000));
     now_ms >= observed_at_ms && now_ms <= expires_at_ms
 }
 
@@ -127,16 +126,34 @@ mod tests {
         let source = "a".repeat(64);
         let valid = evidence("route-1", &source);
         assert_eq!(
-            validate_provider_cache_evidence("route-1", "provider-a", "model-a", &Protocol::Anthropic, &valid),
+            validate_provider_cache_evidence(
+                "route-1",
+                "provider-a",
+                "model-a",
+                &Protocol::Anthropic,
+                &valid
+            ),
             Ok(())
         );
         // route/provider/model/protocol 不匹配 → mismatch。
         assert_eq!(
-            validate_provider_cache_evidence("route-x", "provider-a", "model-a", &Protocol::Anthropic, &valid),
+            validate_provider_cache_evidence(
+                "route-x",
+                "provider-a",
+                "model-a",
+                &Protocol::Anthropic,
+                &valid
+            ),
             Err(CachePolicyError::ProviderCacheEvidenceMismatch)
         );
         assert_eq!(
-            validate_provider_cache_evidence("route-1", "provider-a", "model-a", &Protocol::OpenAi, &valid),
+            validate_provider_cache_evidence(
+                "route-1",
+                "provider-a",
+                "model-a",
+                &Protocol::OpenAi,
+                &valid
+            ),
             Err(CachePolicyError::ProviderCacheEvidenceMismatch)
         );
         // 形态非法 → invalid。
@@ -146,7 +163,13 @@ mod tests {
             bad
         };
         assert_eq!(
-            validate_provider_cache_evidence("route-1", "provider-a", "model-a", &Protocol::Anthropic, &bad_revision),
+            validate_provider_cache_evidence(
+                "route-1",
+                "provider-a",
+                "model-a",
+                &Protocol::Anthropic,
+                &bad_revision
+            ),
             Err(CachePolicyError::InvalidProviderCacheEvidence)
         );
         let zero_ttl = {
@@ -155,18 +178,39 @@ mod tests {
             bad
         };
         assert_eq!(
-            validate_provider_cache_evidence("route-1", "provider-a", "model-a", &Protocol::Anthropic, &zero_ttl),
+            validate_provider_cache_evidence(
+                "route-1",
+                "provider-a",
+                "model-a",
+                &Protocol::Anthropic,
+                &zero_ttl
+            ),
             Err(CachePolicyError::InvalidProviderCacheEvidence)
         );
     }
 
     #[test]
     fn strategy_protocol_matrix() {
-        assert!(strategy_matches_protocol(ProviderCacheStrategy::AnthropicExplicit, &Protocol::Anthropic));
-        assert!(strategy_matches_protocol(ProviderCacheStrategy::OpenAiAutomatic, &Protocol::OpenAi));
-        assert!(strategy_matches_protocol(ProviderCacheStrategy::GoogleExplicit, &Protocol::OpenAi));
-        assert!(!strategy_matches_protocol(ProviderCacheStrategy::AnthropicExplicit, &Protocol::OpenAi));
-        assert!(!strategy_matches_protocol(ProviderCacheStrategy::OpenAiAutomatic, &Protocol::Anthropic));
+        assert!(strategy_matches_protocol(
+            ProviderCacheStrategy::AnthropicExplicit,
+            &Protocol::Anthropic
+        ));
+        assert!(strategy_matches_protocol(
+            ProviderCacheStrategy::OpenAiAutomatic,
+            &Protocol::OpenAi
+        ));
+        assert!(strategy_matches_protocol(
+            ProviderCacheStrategy::GoogleExplicit,
+            &Protocol::OpenAi
+        ));
+        assert!(!strategy_matches_protocol(
+            ProviderCacheStrategy::AnthropicExplicit,
+            &Protocol::OpenAi
+        ));
+        assert!(!strategy_matches_protocol(
+            ProviderCacheStrategy::OpenAiAutomatic,
+            &Protocol::Anthropic
+        ));
     }
 
     #[test]

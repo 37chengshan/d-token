@@ -6,8 +6,8 @@
 //! - size：条目 body 字节上限与缓存总量上限（超限即拒写/淘汰）；
 //! - freshness：TTL 过期即 stale，source 变化即 superseded（miss）。
 
-use crate::scope::{validate_scope_identifier, ScopeError};
 use crate::policy::is_fresh;
+use crate::scope::{validate_scope_identifier, ScopeError};
 
 /// 条目可见状态。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -59,11 +59,8 @@ impl CacheEntry {
         self.agent_id == agent_id && self.session_id == session_id
     }
 
-    pub fn is_visible_to(&self, project_id: &str, agent_id: &str) -> bool {
+    pub fn is_visible_to(&self, project_id: &str, _agent_id: &str) -> bool {
         self.project_id == project_id
-            && (self.agent_id == agent_id
-                || self.agent_id.is_empty()
-                || self.project_id == project_id && !self.agent_id.is_empty())
     }
 }
 
@@ -119,10 +116,14 @@ impl SessionCache {
             validate_scope_identifier("session_id", &entry.session_id)?;
         }
         if entry.map_signature.len() != 64 || entry.source_fingerprint.len() != 64 {
-            return Err(ScopeError("cache entry signatures must be 64 hex".to_string()));
+            return Err(ScopeError(
+                "cache entry signatures must be 64 hex".to_string(),
+            ));
         }
         if entry.body_bytes > policy.max_entry_bytes {
-            return Err(ScopeError("cache entry exceeds max entry bytes".to_string()));
+            return Err(ScopeError(
+                "cache entry exceeds max entry bytes".to_string(),
+            ));
         }
         if let Some(body) = entry.body.as_deref() {
             if crate::signature::is_secret_shaped(body) {
@@ -137,7 +138,12 @@ impl SessionCache {
     }
 
     /// 写入条目（幂等：同 map-signature 覆盖）。失败返回 Err 时不做任何变更。
-    pub fn put(&mut self, entry: CacheEntry, policy: &CachePolicy, now_ms: u64) -> Result<(), ScopeError> {
+    pub fn put(
+        &mut self,
+        entry: CacheEntry,
+        policy: &CachePolicy,
+        now_ms: u64,
+    ) -> Result<(), ScopeError> {
         Self::validate_entry(&entry, policy, now_ms)?;
         if let Some(existing) = self
             .entries
@@ -172,6 +178,7 @@ impl SessionCache {
 
     /// 会话内 map-signature 查询：命中 fresh 条目返回候选 body。
     /// `self_hit` 为 true 时拒绝命中（自命中=0）。
+    #[allow(clippy::too_many_arguments)]
     pub fn get(
         &self,
         project_id: &str,
@@ -192,10 +199,17 @@ impl SessionCache {
     }
 
     /// 清理过期条目，返回移除数量。
-    pub fn prune_expired(&mut self, now_ms: u64, current_source_fingerprint: Option<&str>) -> usize {
+    pub fn prune_expired(
+        &mut self,
+        now_ms: u64,
+        current_source_fingerprint: Option<&str>,
+    ) -> usize {
         let before = self.entries.len();
         self.entries.retain(|e| {
-            matches!(e.state_at(now_ms, current_source_fingerprint), EntryState::Fresh)
+            matches!(
+                e.state_at(now_ms, current_source_fingerprint),
+                EntryState::Fresh
+            )
         });
         before - self.entries.len()
     }
@@ -206,13 +220,7 @@ mod tests {
     use super::*;
     use crate::signature::{map_signature, source_fingerprint};
 
-    fn entry(
-        project: &str,
-        agent: &str,
-        session: &str,
-        content: &str,
-        at_ms: u64,
-    ) -> CacheEntry {
+    fn entry(project: &str, agent: &str, session: &str, content: &str, at_ms: u64) -> CacheEntry {
         CacheEntry {
             map_signature: map_signature(project, content),
             project_id: project.to_string(),
@@ -237,10 +245,20 @@ mod tests {
         let policy = CachePolicy::default();
         let mut cache = SessionCache::new();
         let at = 1_000;
-        cache.put(entry("proj", "agent-a", "sess-1", "hello", at), &policy, at).unwrap();
+        cache
+            .put(entry("proj", "agent-a", "sess-1", "hello", at), &policy, at)
+            .unwrap();
         // 同 session 同签名 → 命中（允许 self-hit：session cache 本会话复用）。
         let hit = cache
-            .get("proj", "agent-a", "sess-1", &entry("proj", "agent-a", "sess-1", "hello", at).map_signature, &fp(), 1_000, true)
+            .get(
+                "proj",
+                "agent-a",
+                "sess-1",
+                &entry("proj", "agent-a", "sess-1", "hello", at).map_signature,
+                &fp(),
+                1_000,
+                true,
+            )
             .expect("same-session hit expected");
         assert_eq!(hit.body.as_deref(), Some("candidate:hello"));
     }
@@ -273,7 +291,15 @@ mod tests {
         cache.put(e, &policy, at).unwrap();
         // 不同项目即使内容/签名相同也查不到；签名本身含 project，双保险。
         assert!(cache
-            .get("proj-b", "agent-b", "sess-1", &signature, &fp(), 1_000, true)
+            .get(
+                "proj-b",
+                "agent-b",
+                "sess-1",
+                &signature,
+                &fp(),
+                1_000,
+                true
+            )
             .is_none());
     }
 
@@ -292,19 +318,35 @@ mod tests {
         // source 变化（file digest 变化）→ superseded → miss。
         let changed_fingerprint = source_fingerprint(&"a".repeat(64), Some("new-file-digest"));
         assert!(cache
-            .get("proj", "agent-a", "sess-1", &signature, &changed_fingerprint, 1_000, true)
+            .get(
+                "proj",
+                "agent-a",
+                "sess-1",
+                &signature,
+                &changed_fingerprint,
+                1_000,
+                true
+            )
             .is_none());
         // prune 清理过期。
-        cache.put(entry("proj", "agent-a", "sess-1", "content", at), &policy, at).unwrap();
+        cache
+            .put(
+                entry("proj", "agent-a", "sess-1", "content", at),
+                &policy,
+                at,
+            )
+            .unwrap();
         assert_eq!(cache.prune_expired(70_000, Some(&fp())), 1);
         assert!(cache.is_empty());
     }
 
     #[test]
     fn size_limits_reject_oversized_and_evict_oldest() {
-        let mut policy = CachePolicy::default();
-        policy.max_entry_bytes = 100;
-        policy.max_total_bytes = 150;
+        let policy = CachePolicy {
+            max_entry_bytes: 100,
+            max_total_bytes: 150,
+            ..Default::default()
+        };
         let mut cache = SessionCache::new();
         let at = 1_000;
         let big = entry("proj", "agent-a", "sess-1", &"x".repeat(200), at);
@@ -318,7 +360,15 @@ mod tests {
         // 总量预算 150 < 两条之和 → 淘汰最旧。
         assert_eq!(cache.len(), 1);
         assert!(cache
-            .get("proj", "agent-a", "sess-1", &entry("proj", "agent-a", "sess-1", &"x".repeat(90), at).map_signature, &fp(), at, true)
+            .get(
+                "proj",
+                "agent-a",
+                "sess-1",
+                &entry("proj", "agent-a", "sess-1", &"x".repeat(90), at).map_signature,
+                &fp(),
+                at,
+                true
+            )
             .is_none());
     }
 

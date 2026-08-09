@@ -37,7 +37,7 @@ fn percentiles_use_nearest_rank() {
 
 #[test]
 fn replay_is_deterministic_across_independent_passes() {
-        let config = RunConfig {
+    let config = RunConfig {
         corpus_root: corpus_root(),
         iterations: 1,
         load_test_requests: 0,
@@ -60,8 +60,7 @@ fn replay_is_deterministic_across_independent_passes() {
         "same input must produce identical decision digests"
     );
     assert_eq!(
-        first.corpus_manifest_digest,
-        second.corpus_manifest_digest,
+        first.corpus_manifest_digest, second.corpus_manifest_digest,
         "corpus identity must be stable"
     );
 }
@@ -75,7 +74,10 @@ fn allocation_instrumentation_counts_real_work() {
     };
     let report = run_serialized(config);
     // The runner resets the counters around the measured work itself.
-    assert!(report.metrics.alloc_count > 0, "resolved path must allocate");
+    assert!(
+        report.metrics.alloc_count > 0,
+        "resolved path must allocate"
+    );
     assert!(report.metrics.alloc_bytes > 0);
     assert!(report.metrics.item_count >= 10);
     assert!(
@@ -108,7 +110,7 @@ fn queue_load_metrics_are_deterministic_and_honest() {
 #[test]
 fn paired_contract_binds_one_model_route_and_provider() {
     let corpus = Corpus::load(corpus_root()).unwrap();
-        let config = RunConfig {
+    let config = RunConfig {
         corpus_root: corpus_root(),
         iterations: 1,
         load_test_requests: 0,
@@ -116,7 +118,10 @@ fn paired_contract_binds_one_model_route_and_provider() {
     let report = run_serialized(config);
     let contract = build_paired_contract(&corpus, &report.metrics.items).unwrap();
     assert_eq!(contract.schema_version, 1);
-    assert_eq!(contract.corpus_manifest_digest, report.corpus_manifest_digest);
+    assert_eq!(
+        contract.corpus_manifest_digest,
+        report.corpus_manifest_digest
+    );
     assert!(contract.tasks.len() >= 5, "coding tasks must be paired");
     for task in &contract.tasks {
         assert!(task.same_model && task.same_route && task.same_provider);
@@ -131,14 +136,17 @@ fn paired_contract_binds_one_model_route_and_provider() {
 
 #[test]
 fn fallback_measurement_is_honest_zero_savings_items_are_counted() {
-        let config = RunConfig {
+    let config = RunConfig {
         corpus_root: corpus_root(),
         iterations: 1,
         load_test_requests: 0,
     };
     let report = run_serialized(config);
     let metrics = &report.metrics;
-    assert!(metrics.fallback_rate > 0.0, "fallbacks must be measured, not hidden");
+    assert!(
+        metrics.fallback_rate > 0.0,
+        "fallbacks must be measured, not hidden"
+    );
     assert!(metrics.benefit_rate > 0.0);
     for item in &metrics.items {
         assert_eq!(item.fallback, item.saved_tokens == 0);
@@ -148,19 +156,18 @@ fn fallback_measurement_is_honest_zero_savings_items_are_counted() {
 
 #[test]
 fn baseline_self_check_passes_without_regression() {
-        let config = RunConfig {
+    let config = RunConfig {
         corpus_root: corpus_root(),
         iterations: 1,
         load_test_requests: 0,
     };
     let report = run_serialized(config);
-    let baseline = BaselineRecord::from_report(
-        &report,
-        1.25,
-        0.8,
-        dtoken_benchmark::DEFAULT_PRODUCT_FLOOR,
+    let baseline =
+        BaselineRecord::from_report(&report, 1.25, 0.8, dtoken_benchmark::DEFAULT_PRODUCT_FLOOR);
+    assert_eq!(
+        baseline.corpus_manifest_digest,
+        report.corpus_manifest_digest
     );
-    assert_eq!(baseline.corpus_manifest_digest, report.corpus_manifest_digest);
     let checks = check_no_regression(&report.metrics, &baseline).unwrap();
     let failed = checks
         .iter()

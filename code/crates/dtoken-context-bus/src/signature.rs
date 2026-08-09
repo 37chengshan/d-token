@@ -78,9 +78,12 @@ pub fn is_secret_shaped(value: &str) -> bool {
     }
     // JWT 形态（header.payload.signature）。
     if value.split('.').count() == 3
-        && value
-            .split('.')
-            .all(|part| part.len() >= 4 && part.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_'))
+        && value.split('.').all(|part| {
+            part.len() >= 4
+                && part
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+        })
     {
         return true;
     }
@@ -104,8 +107,14 @@ mod tests {
     #[test]
     fn source_fingerprint_changes_with_revision_or_file_digest() {
         let fingerprint = source_fingerprint("a".repeat(64).as_str(), None);
-        assert_eq!(fingerprint, source_fingerprint("a".repeat(64).as_str(), None));
-        assert_ne!(fingerprint, source_fingerprint("b".repeat(64).as_str(), None));
+        assert_eq!(
+            fingerprint,
+            source_fingerprint("a".repeat(64).as_str(), None)
+        );
+        assert_ne!(
+            fingerprint,
+            source_fingerprint("b".repeat(64).as_str(), None)
+        );
         assert_ne!(
             fingerprint,
             source_fingerprint("a".repeat(64).as_str(), Some("file-digest"))

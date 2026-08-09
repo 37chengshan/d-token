@@ -16,7 +16,11 @@ pub struct BusScope {
 }
 
 impl BusScope {
-    pub fn new(project_id: impl Into<String>, agent_id: impl Into<String>, session_id: impl Into<String>) -> Self {
+    pub fn new(
+        project_id: impl Into<String>,
+        agent_id: impl Into<String>,
+        session_id: impl Into<String>,
+    ) -> Self {
         Self {
             project_id: project_id.into(),
             agent_id: agent_id.into(),

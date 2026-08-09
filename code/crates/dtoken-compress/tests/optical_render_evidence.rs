@@ -44,7 +44,10 @@ fn regenerated_platform_evidence_matches_the_pinned_fixture() {
     // lossy substitution is captured (and therefore visible to a later
     // attestation) rather than silently hidden.
     assert!(regenerated.total_fallback_glyphs > 0);
-    assert!(regenerated.pages.iter().any(|page| page.fallback_glyphs > 0));
+    assert!(regenerated
+        .pages
+        .iter()
+        .any(|page| page.fallback_glyphs > 0));
 }
 
 #[test]

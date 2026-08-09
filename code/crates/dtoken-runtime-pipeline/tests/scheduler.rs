@@ -94,7 +94,10 @@ fn gate_admission_is_stable_and_saturation_preserves_the_baseline() {
 
     let first: StableAdmission<'_> = gate.decide(40).expect("admit within budget");
     let second = gate.decide(30).expect("admit within budget");
-    assert!(first.sequence() < second.sequence(), "stable admission order");
+    assert!(
+        first.sequence() < second.sequence(),
+        "stable admission order"
+    );
 
     // 40 + 30 leaves 30 free; a 40-byte request saturates.
     let saturated = gate.decide(40).unwrap_err();
@@ -161,8 +164,7 @@ fn bounded_queue_is_fifo_and_saturation_is_reported_not_blocked() {
             TaskOutcome::Completed
         }) as Box<dyn FnOnce() -> TaskOutcome + Send>
     };
-    pool.try_submit(16, first)
-        .expect("first task admitted");
+    pool.try_submit(16, first).expect("first task admitted");
     started_rx
         .recv_timeout(std::time::Duration::from_secs(5))
         .expect("worker started");

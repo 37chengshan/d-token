@@ -77,9 +77,7 @@ pub enum AccountingError {
 impl std::fmt::Display for AccountingError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let text = match self {
-            AccountingError::UnsupportedSchema => {
-                "accounting entry schema version is unsupported"
-            }
+            AccountingError::UnsupportedSchema => "accounting entry schema version is unsupported",
             AccountingError::InvalidDigest => "accounting entry source digest is not sha256 hex",
             AccountingError::InvalidBytes => "accounting entry byte accounting is inconsistent",
             AccountingError::DuplicateClaim => {
@@ -146,12 +144,9 @@ impl SavingsLedger {
         }
         // Cross-bucket conflicts are checked before any mutation so a
         // rejected claim can never leave a partial claim behind.
-        let conflict = self
-            .buckets()
-            .into_iter()
-            .any(|(bucket, ledger)| {
-                bucket != entry.bucket && ledger.digests.contains(&entry.source_digest)
-            });
+        let conflict = self.buckets().into_iter().any(|(bucket, ledger)| {
+            bucket != entry.bucket && ledger.digests.contains(&entry.source_digest)
+        });
         if conflict {
             return Err(AccountingError::CrossBucketConflict);
         }
@@ -160,7 +155,10 @@ impl SavingsLedger {
             return Err(AccountingError::DuplicateClaim);
         }
         target.totals.input_bytes = target.totals.input_bytes.saturating_add(entry.input_bytes);
-        target.totals.output_bytes = target.totals.output_bytes.saturating_add(entry.output_bytes);
+        target.totals.output_bytes = target
+            .totals
+            .output_bytes
+            .saturating_add(entry.output_bytes);
         target.totals.saved_bytes = target.totals.saved_bytes.saturating_add(entry.saved_bytes);
         target.totals.entries = target.totals.entries.saturating_add(1);
         Ok(())
@@ -260,12 +258,7 @@ fn is_sha256_hex(value: &str) -> bool {
 mod tests {
     use super::*;
 
-    fn entry(
-        bucket: AccountingBucket,
-        digest: &str,
-        input: u64,
-        output: u64,
-    ) -> AccountingEntry {
+    fn entry(bucket: AccountingBucket, digest: &str, input: u64, output: u64) -> AccountingEntry {
         AccountingEntry {
             schema_version: ACCOUNTING_ENTRY_SCHEMA_VERSION,
             bucket,
@@ -341,7 +334,9 @@ mod tests {
         assert_eq!(ledger.provider_cache_savings(), 0);
         assert_eq!(ledger.relay_savings(), 0);
         assert_eq!(
-            ledger.bucket_totals(AccountingBucket::CommandOutput).entries,
+            ledger
+                .bucket_totals(AccountingBucket::CommandOutput)
+                .entries,
             1
         );
     }
@@ -351,27 +346,12 @@ mod tests {
         let mut ledger = SavingsLedger::new();
         let digest = "b".repeat(64);
         ledger
-            .record(entry(
-                AccountingBucket::CommandOutput,
-                &digest,
-                100,
-                40,
-            ))
+            .record(entry(AccountingBucket::CommandOutput, &digest, 100, 40))
             .expect("first claim");
-        let duplicate = ledger.record(entry(
-            AccountingBucket::CommandOutput,
-            &digest,
-            100,
-            40,
-        ));
+        let duplicate = ledger.record(entry(AccountingBucket::CommandOutput, &digest, 100, 40));
         assert_eq!(duplicate, Err(AccountingError::DuplicateClaim));
 
-        let cross_bucket = ledger.record(entry(
-            AccountingBucket::Compression,
-            &digest,
-            200,
-            100,
-        ));
+        let cross_bucket = ledger.record(entry(AccountingBucket::Compression, &digest, 200, 100));
         assert_eq!(cross_bucket, Err(AccountingError::CrossBucketConflict));
         assert_eq!(ledger.compression_savings(), 0, "conflict leaves no claim");
         assert_eq!(ledger.command_output_savings(), 60);
@@ -387,29 +367,14 @@ mod tests {
         assert_eq!(action, NodeAction::RtkCommandOutput);
         let mut ledger = SavingsLedger::new();
         ledger
-            .record(entry(
-                AccountingBucket::CommandOutput,
-                &digest,
-                100,
-                40,
-            ))
+            .record(entry(AccountingBucket::CommandOutput, &digest, 100, 40))
             .expect("RTK claim");
         assert_eq!(
-            ledger.record(entry(
-                AccountingBucket::Compression,
-                &digest,
-                100,
-                40,
-            )),
+            ledger.record(entry(AccountingBucket::Compression, &digest, 100, 40,)),
             Err(AccountingError::CrossBucketConflict)
         );
         assert_eq!(
-            ledger.record(entry(
-                AccountingBucket::Relay,
-                &digest,
-                100,
-                40,
-            )),
+            ledger.record(entry(AccountingBucket::Relay, &digest, 100, 40,)),
             Err(AccountingError::CrossBucketConflict)
         );
         assert_eq!(ledger.command_output_savings(), 60);
@@ -450,12 +415,7 @@ mod tests {
         let mut ledger = SavingsLedger::new();
         let digest = "d".repeat(64);
         ledger
-            .record(entry(
-                AccountingBucket::CommandOutput,
-                &digest,
-                100,
-                40,
-            ))
+            .record(entry(AccountingBucket::CommandOutput, &digest, 100, 40))
             .expect("claim");
         ledger
             .record(entry(
@@ -472,12 +432,7 @@ mod tests {
 
         // The digest is free again after cleanup.
         ledger
-            .record(entry(
-                AccountingBucket::CommandOutput,
-                &digest,
-                10,
-                4,
-            ))
+            .record(entry(AccountingBucket::CommandOutput, &digest, 10, 4))
             .expect("re-record after uninstall cleanup");
 
         ledger.clear();

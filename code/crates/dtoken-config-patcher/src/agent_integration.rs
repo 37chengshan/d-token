@@ -1817,7 +1817,9 @@ mod tests {
                     == Some("dtoken-hybrid-session-start-v1")
             })
             .expect("d-token managed hook entry");
-        let command = managed["hooks"][0]["command"].as_str().expect("hook command");
+        let command = managed["hooks"][0]["command"]
+            .as_str()
+            .expect("hook command");
         assert!(command.contains("dtoken-agent-bridge"));
         assert!(command.contains("hook session-start"));
         assert_eq!(managed["matcher"].as_str(), Some("startup|resume|compact"));
@@ -1827,8 +1829,7 @@ mod tests {
             verify_agent_integration_transaction(&receipt.transaction_id, &backups).unwrap();
         assert!(verification.ok);
 
-        let restored =
-            rollback_agent_integration(&receipt.transaction_id, &backups).unwrap();
+        let restored = rollback_agent_integration(&receipt.transaction_id, &backups).unwrap();
         let mut restored_sorted = restored.clone();
         restored_sorted.sort();
         let mut verified_sorted = verification.verified_targets.clone();

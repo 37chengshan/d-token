@@ -119,10 +119,7 @@ pub(crate) fn bounded_truncate_marker(output: &str, limit: usize) -> (String, bo
         let marker = format!("~{omitted}");
         let next_end = boundary.saturating_sub(marker.len());
         if next_end >= body_end {
-            return (
-                format!("{}{}", &output[..body_end], marker),
-                true,
-            );
+            return (format!("{}{}", &output[..body_end], marker), true);
         }
         body_end = next_end;
         while body_end > 0 && !output.is_char_boundary(body_end) {
@@ -318,8 +315,7 @@ impl ManagedRtkLifecycle {
                 ManagedRtkTransactionState::Configured
             }
             (
-                ManagedRtkTransactionState::Installed
-                | ManagedRtkTransactionState::Configured,
+                ManagedRtkTransactionState::Installed | ManagedRtkTransactionState::Configured,
                 ManagedRtkOperation::Verify,
             ) => ManagedRtkTransactionState::Verified,
             (
@@ -1827,11 +1823,8 @@ mod tests {
 
         let root = tempdir().expect("managed RTK tempdir");
         let managed_root = root.path().join("managed-rtk");
-        let mut lifecycle = ManagedRtkLifecycle::plan(
-            "rtk-transaction.acl",
-            HostPlatform::Macos,
-            &"8".repeat(64),
-        );
+        let mut lifecycle =
+            ManagedRtkLifecycle::plan("rtk-transaction.acl", HostPlatform::Macos, &"8".repeat(64));
         lifecycle
             .install_hook(ManagedHookPaths {
                 managed_root: managed_root.clone(),

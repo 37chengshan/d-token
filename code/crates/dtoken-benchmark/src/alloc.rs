@@ -74,7 +74,8 @@ unsafe impl GlobalAlloc for CountingAllocator {
                 .fetch_add(new_size as u64, Ordering::Relaxed);
             self.live_bytes
                 .fetch_sub(layout.size() as u64, Ordering::Relaxed);
-            self.live_bytes.fetch_add(new_size as u64, Ordering::Relaxed);
+            self.live_bytes
+                .fetch_add(new_size as u64, Ordering::Relaxed);
         }
         new_pointer
     }

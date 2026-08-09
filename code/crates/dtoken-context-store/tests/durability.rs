@@ -3,9 +3,7 @@
 //! crash mid-rebuild leaves either the old view or the new view — never a
 //! partial one (unique safe terminal state across JSONL + SQLite).
 
-use dtoken_context_store::{
-    CcrMetadataProjection, ContextStore, RequestProjection,
-};
+use dtoken_context_store::{CcrMetadataProjection, ContextStore, RequestProjection};
 use dtoken_event_ledger::JsonlStore;
 use uuid::Uuid;
 
@@ -180,7 +178,9 @@ mod fault_matrix {
 
     #[test]
     fn crash_before_projection_replace_commit_keeps_the_previous_view() {
-        let _guard = FAILPOINT_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+        let _guard = FAILPOINT_LOCK
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         clear_all();
         let root = temp_root("crash-replace");
         let db_path = root.join("runtime-state.sqlite3");
@@ -229,7 +229,9 @@ mod fault_matrix {
 
     #[test]
     fn crash_before_ccr_replace_commit_keeps_the_previous_view() {
-        let _guard = FAILPOINT_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+        let _guard = FAILPOINT_LOCK
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         clear_all();
         let root = temp_root("crash-ccr");
         let db_path = root.join("runtime-state.sqlite3");
@@ -249,9 +251,7 @@ mod fault_matrix {
             .expect("journal append");
         arm("context_store:crash_before_ccr_replace_commit", 1);
         assert!(
-            store
-                .rebuild_ccr_metadata_from_journal(&journal)
-                .is_err(),
+            store.rebuild_ccr_metadata_from_journal(&journal).is_err(),
             "armed failpoint must abort the ccr rebuild"
         );
         assert_eq!(

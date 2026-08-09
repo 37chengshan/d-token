@@ -25,8 +25,7 @@ fn main() -> Result<()> {
     let mut total_baseline = 0usize;
     let mut total_final = 0usize;
     for item in corpus.items() {
-        let body: Value =
-            serde_json::from_slice(corpus.bodies.get(&item.id).expect("body"))?;
+        let body: Value = serde_json::from_slice(corpus.bodies.get(&item.id).expect("body"))?;
         let context = scope_for(item)?;
         let metric = run_item(&engine, item, &body, &context)?;
         total_baseline += metric.baseline_tokens;
@@ -51,9 +50,7 @@ fn main() -> Result<()> {
     );
     println!(
         "aggregate e2e_savings_ratio = {:.4}, benefit_rate = {:.4}, fallback_rate = {:.4}",
-        report.metrics.e2e_savings_ratio,
-        report.metrics.benefit_rate,
-        report.metrics.fallback_rate
+        report.metrics.e2e_savings_ratio, report.metrics.benefit_rate, report.metrics.fallback_rate
     );
     Ok(())
 }

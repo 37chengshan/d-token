@@ -1,0 +1,14 @@
+{
+  "id": "benchmark-code-fence-envelope",
+  "kind": "request-body",
+  "protocol": "anthropic",
+  "description": "Anthropic body with large code fence content (code_fence_envelope_trim candidate).",
+  "privacy": "synthetic fixture; no credentials, paths, or real prompts",
+  "body": {
+    "model": "bench-model",
+    "messages": [
+      {"role": "user", "content": "please fold this"},
+      {"role": "assistant", "content": "```rust\nfn example() -> u32 {\n    // repeated body lines for envelope trim benchmarking\n    let value = 1;\n    value + 1\n}\n```"}
+    ]
+  }
+}

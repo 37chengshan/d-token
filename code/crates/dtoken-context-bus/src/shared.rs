@@ -51,11 +51,15 @@ impl SharedContext {
     /// grant（幂等 upsert：同 revision 且未撤销 → 原样返回；否则覆盖/新建）。
     pub fn grant(&mut self, request: &GrantRequest) -> Result<SharedGrant, ScopeError> {
         if !request.scope.is_valid() {
-            return Err(ScopeError("memory share grant requires a valid scope".to_string()));
+            return Err(ScopeError(
+                "memory share grant requires a valid scope".to_string(),
+            ));
         }
         validate_revision("memory share grant revision", &request.grant_revision)?;
         if request.granted_at_ms == 0 {
-            return Err(ScopeError("memory share grant time must be positive".to_string()));
+            return Err(ScopeError(
+                "memory share grant time must be positive".to_string(),
+            ));
         }
         let scope = &request.scope;
         if let Some(existing) = self.grant_for_scope(
@@ -64,7 +68,8 @@ impl SharedContext {
             &scope.grantee_agent_id,
             &scope.session_id,
         ) {
-            if existing.grant_revision == request.grant_revision && existing.revoked_at_ms.is_none() {
+            if existing.grant_revision == request.grant_revision && existing.revoked_at_ms.is_none()
+            {
                 return Ok(existing.clone());
             }
             let updated = SharedGrant {
@@ -108,11 +113,15 @@ impl SharedContext {
         revoked_at_ms: u64,
     ) -> Result<bool, ScopeError> {
         if !scope.is_valid() {
-            return Err(ScopeError("memory share revoke requires a valid scope".to_string()));
+            return Err(ScopeError(
+                "memory share revoke requires a valid scope".to_string(),
+            ));
         }
         validate_revision("expected grant revision", expected_revision)?;
         if revoked_at_ms == 0 {
-            return Err(ScopeError("memory share revoke time must be positive".to_string()));
+            return Err(ScopeError(
+                "memory share revoke time must be positive".to_string(),
+            ));
         }
         let Some(grant) = self.grant_for_scope_mut(
             &scope.project_id,
@@ -130,7 +139,13 @@ impl SharedContext {
     }
 
     /// grant 是否有效（未撤销 + revision 匹配可省略：见 store 语义）。
-    pub fn is_granted(&self, project_id: &str, owner: &str, grantee: &str, session_id: &str) -> bool {
+    pub fn is_granted(
+        &self,
+        project_id: &str,
+        owner: &str,
+        grantee: &str,
+        session_id: &str,
+    ) -> bool {
         self.grant_for_scope(project_id, owner, grantee, session_id)
             .is_some_and(|g| g.revoked_at_ms.is_none())
     }
@@ -200,12 +215,20 @@ mod tests {
     fn grant_update_replaces_revision_and_clears_revocation() {
         let mut shared = SharedContext::new();
         shared
-            .grant(&GrantRequest { scope: scope(), grant_revision: "rev-1".to_string(), granted_at_ms: 1_000 })
+            .grant(&GrantRequest {
+                scope: scope(),
+                grant_revision: "rev-1".to_string(),
+                granted_at_ms: 1_000,
+            })
             .unwrap();
         shared.revoke(&scope(), "rev-1", 2_000).unwrap();
         // 新 revision 重新授权 → 撤销被清除。
         let renewed = shared
-            .grant(&GrantRequest { scope: scope(), grant_revision: "rev-2".to_string(), granted_at_ms: 3_000 })
+            .grant(&GrantRequest {
+                scope: scope(),
+                grant_revision: "rev-2".to_string(),
+                granted_at_ms: 3_000,
+            })
             .unwrap();
         assert_eq!(renewed.grant_revision, "rev-2");
         assert!(renewed.revoked_at_ms.is_none());

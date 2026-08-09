@@ -484,10 +484,7 @@ impl ContextStore {
     /// the table is replaced atomically, so the SQLite view is always a
     /// rebuildable projection of the journal and a crash mid-rebuild leaves
     /// either the old view or the new view, never a partial one.
-    pub fn rebuild_request_projections_from_journal(
-        &mut self,
-        journal: &JsonlStore,
-    ) -> Result<()> {
+    pub fn rebuild_request_projections_from_journal(&mut self, journal: &JsonlStore) -> Result<()> {
         let mut projections = Vec::new();
         journal.visit_all(|projection| {
             projections.push(projection);
@@ -679,10 +676,7 @@ impl ContextStore {
     /// reference is retained (the journal is append-only and may hold
     /// multiple lifecycle states per reference); raw CCR bytes stay in the
     /// private store and are never materialized here.
-    pub fn rebuild_ccr_metadata_from_journal(
-        &mut self,
-        journal: &JsonlStore,
-    ) -> Result<()> {
+    pub fn rebuild_ccr_metadata_from_journal(&mut self, journal: &JsonlStore) -> Result<()> {
         let mut by_reference = std::collections::BTreeMap::<String, CcrMetadataProjection>::new();
         journal.visit_all(|projection: CcrMetadataProjection| {
             by_reference.insert(projection.recovery_ref.clone(), projection);

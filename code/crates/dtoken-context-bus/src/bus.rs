@@ -26,9 +26,15 @@ use anyhow::Result;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ConsultOutcome {
     /// Session Cache 命中（会话内复用）→ CacheReuse receipt。
-    CacheHit { entry: CacheEntry, receipt: CacheReuseReceipt },
+    CacheHit {
+        entry: CacheEntry,
+        receipt: CacheReuseReceipt,
+    },
     /// Context Relay 命中（跨 Agent）→ RelayHit receipt。
-    RelayHit { entry: CacheEntry, receipt: RelayHitReceipt },
+    RelayHit {
+        entry: CacheEntry,
+        receipt: RelayHitReceipt,
+    },
     /// 未命中（调用方正常压缩）。
     Miss,
 }
@@ -174,7 +180,8 @@ impl ContextBus {
             self.shared.is_granted(project, owner, grantee, session)
         };
         match self.relay.query(&query, &granted) {
-            crate::relay::RelayOutcome::SignatureHit(entry) | crate::relay::RelayOutcome::QueryHit(entry) => {
+            crate::relay::RelayOutcome::SignatureHit(entry)
+            | crate::relay::RelayOutcome::QueryHit(entry) => {
                 let receipt = RelayHitReceipt {
                     project_id: scope.project_id.clone(),
                     owner_agent_id: entry.agent_id.clone(),
@@ -195,6 +202,7 @@ impl ContextBus {
     ///
     /// `body` 必须为脱敏后的候选内容（secret-shape gate 由 [`CacheEntry`] 校验执行；
     /// 校验失败返回 Err，调用方丢弃，不降级存储）。
+    #[allow(clippy::too_many_arguments)]
     pub fn record(
         &mut self,
         scope: &BusScope,
@@ -224,11 +232,8 @@ impl ContextBus {
         // relay 写入（同项目跨 Agent 可复用；secret/size gate 再次执行）。
         self.relay.put(entry.clone())?;
         // Recovery manifest 登记。
-        let manifest = RecoveryManifest::new(
-            &scope.project_id,
-            now_ms,
-            vec![ManifestEntry::from(&entry)],
-        );
+        let manifest =
+            RecoveryManifest::new(&scope.project_id, now_ms, vec![ManifestEntry::from(&entry)]);
         let pointer = self.recovery.record(manifest.clone())?;
         // 持久化 port。
         self.persistence.save_entry(&entry)?;
@@ -250,7 +255,9 @@ impl ContextBus {
         expected_revision: &str,
         revoked_at_ms: u64,
     ) -> Result<bool, ScopeError> {
-        let revoked = self.shared.revoke(scope, expected_revision, revoked_at_ms)?;
+        let revoked = self
+            .shared
+            .revoke(scope, expected_revision, revoked_at_ms)?;
         if revoked {
             // 持久化撤销状态：将 grant 的 revoked_at 落盘。
             if let Some(grant) = self.shared_grants().into_iter().find(|g| {
@@ -373,22 +380,41 @@ mod tests {
     fn session_cache_reuse_within_same_session() {
         let mut bus = ContextBus::new(BusConfig::default());
         let scope = scope("proj", "agent-a", "sess-1");
-        bus.record(&scope, r#"{"q":"route"}"#, &"a".repeat(64), None, Some("candidate".to_string()), &["route".to_string()], 1_000)
-            .unwrap();
-        let outcome = bus.consult(&scope, &map_signature("proj", r#"{"q":"route"}"#), &source_fingerprint(&"a".repeat(64), None), &["route".to_string()], 1_000);
+        bus.record(
+            &scope,
+            r#"{"q":"route"}"#,
+            &"a".repeat(64),
+            None,
+            Some("candidate".to_string()),
+            &["route".to_string()],
+            1_000,
+        )
+        .unwrap();
+        let outcome = bus.consult(
+            &scope,
+            &map_signature("proj", r#"{"q":"route"}"#),
+            &source_fingerprint(&"a".repeat(64), None),
+            &["route".to_string()],
+            1_000,
+        );
         assert!(matches!(outcome, ConsultOutcome::CacheHit { .. }));
-        assert!(matches!(
-            outcome.receipt(),
-            Some(BusReceipt::CacheReuse(_))
-        ));
+        assert!(matches!(outcome.receipt(), Some(BusReceipt::CacheReuse(_))));
     }
 
     #[test]
     fn relay_hit_requires_grant_and_different_agent() {
         let mut bus = ContextBus::new(BusConfig::default());
         let owner = scope("proj", "agent-a", "sess-1");
-        bus.record(&owner, "shared-content", &"a".repeat(64), None, Some("candidate".to_string()), &[], 1_000)
-            .unwrap();
+        bus.record(
+            &owner,
+            "shared-content",
+            &"a".repeat(64),
+            None,
+            Some("candidate".to_string()),
+            &[],
+            1_000,
+        )
+        .unwrap();
         // 无 grant → miss。
         let consumer = scope("proj", "agent-b", "sess-2");
         let signature = map_signature("proj", "shared-content");
@@ -406,10 +432,7 @@ mod tests {
         .unwrap();
         let outcome = bus.consult(&consumer, &signature, &fingerprint, &[], 1_000);
         assert!(matches!(outcome, ConsultOutcome::RelayHit { .. }));
-        assert!(matches!(
-            outcome.receipt(),
-            Some(BusReceipt::RelayHit(_))
-        ));
+        assert!(matches!(outcome.receipt(), Some(BusReceipt::RelayHit(_))));
         // revoke 后 → miss（权限变化即 miss）。
         bus.revoke(
             &GrantScope::new("proj", "agent-a", "agent-b", "sess-1"),
@@ -426,8 +449,16 @@ mod tests {
     #[test]
     fn self_hit_and_cross_project_are_zero() {
         let mut bus = ContextBus::new(BusConfig::default());
-        bus.record(&scope("proj-a", "agent-a", "sess-1"), "same", &"a".repeat(64), None, Some("candidate".to_string()), &[], 1_000)
-            .unwrap();
+        bus.record(
+            &scope("proj-a", "agent-a", "sess-1"),
+            "same",
+            &"a".repeat(64),
+            None,
+            Some("candidate".to_string()),
+            &[],
+            1_000,
+        )
+        .unwrap();
         let signature = map_signature("proj-a", "same");
         let fingerprint = source_fingerprint(&"a".repeat(64), None);
         // 同一 agent 同 session：session cache 允许（CacheReuse），但不是 RelayHit。
@@ -442,8 +473,16 @@ mod tests {
     #[test]
     fn recovery_roundtrip_restores_entries() {
         let mut bus = ContextBus::new(BusConfig::default());
-        bus.record(&scope("proj", "agent-a", "sess-1"), "content", &"a".repeat(64), None, Some("candidate".to_string()), &["route".to_string()], 1_000)
-            .unwrap();
+        bus.record(
+            &scope("proj", "agent-a", "sess-1"),
+            "content",
+            &"a".repeat(64),
+            None,
+            Some("candidate".to_string()),
+            &["route".to_string()],
+            1_000,
+        )
+        .unwrap();
         let signature = map_signature("proj", "content");
         let fingerprint = source_fingerprint(&"a".repeat(64), None);
         // 新 bus 实例（同 InMemory persistence 不行——默认 port 各自独立；
@@ -453,7 +492,13 @@ mod tests {
         assert_eq!(restored, 0);
         // 原 bus 仍可命中（同会话 CacheReuse）。
         assert!(matches!(
-            bus.consult(&scope("proj", "agent-a", "sess-1"), &signature, &fingerprint, &["route".to_string()], 1_000),
+            bus.consult(
+                &scope("proj", "agent-a", "sess-1"),
+                &signature,
+                &fingerprint,
+                &["route".to_string()],
+                1_000
+            ),
             ConsultOutcome::CacheHit { .. }
         ));
     }

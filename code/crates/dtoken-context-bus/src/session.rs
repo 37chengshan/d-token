@@ -3,8 +3,8 @@
 //! 九边界之一：Session Cache。会话由 project/agent/session 三元组唯一标识，
 //! 携带创建时间与 TTL；会话过期后其 cache 条目全部变为 stale（miss）。
 
-use crate::scope::{validate_scope_identifier, ScopeError};
 use crate::policy::is_fresh;
+use crate::scope::{validate_scope_identifier, ScopeError};
 
 /// 一个 Context Bus 会话。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -59,9 +59,14 @@ impl SessionRegistry {
     /// 登记会话（幂等：同 session_id 覆盖）。
     pub fn register(&mut self, session: Session) -> Result<(), ScopeError> {
         if !session.is_valid() {
-            return Err(ScopeError("session must be a bounded opaque identifier".to_string()));
+            return Err(ScopeError(
+                "session must be a bounded opaque identifier".to_string(),
+            ));
         }
-        if let Some(existing) = self.sessions.iter_mut().find(|s| s.session_id == session.session_id)
+        if let Some(existing) = self
+            .sessions
+            .iter_mut()
+            .find(|s| s.session_id == session.session_id)
         {
             *existing = session;
         } else {
@@ -106,11 +111,17 @@ mod tests {
     #[test]
     fn registry_register_get_and_prune() {
         let mut registry = SessionRegistry::new();
-        registry.register(Session::new("sess-1", "agent-a", "proj", 1_000, Some(1))).unwrap();
-        registry.register(Session::new("sess-2", "agent-b", "proj", 1_000, None)).unwrap();
+        registry
+            .register(Session::new("sess-1", "agent-a", "proj", 1_000, Some(1)))
+            .unwrap();
+        registry
+            .register(Session::new("sess-2", "agent-b", "proj", 1_000, None))
+            .unwrap();
         assert_eq!(registry.len(), 2);
         // 幂等覆盖（保持相同 TTL）。
-        registry.register(Session::new("sess-1", "agent-a", "proj", 1_000, Some(1))).unwrap();
+        registry
+            .register(Session::new("sess-1", "agent-a", "proj", 1_000, Some(1)))
+            .unwrap();
         assert_eq!(registry.len(), 2);
         assert!(registry.get("sess-1").unwrap().is_fresh(1_000));
         // 过期清理：sess-1（ttl=1s）过期，sess-2（无 ttl）保留。
@@ -118,6 +129,8 @@ mod tests {
         assert_eq!(registry.len(), 1);
         assert!(registry.get("sess-2").is_some());
         // 非法 session 拒绝。
-        assert!(registry.register(Session::new("bad session", "agent-a", "proj", 1, None)).is_err());
+        assert!(registry
+            .register(Session::new("bad session", "agent-a", "proj", 1, None))
+            .is_err());
     }
 }

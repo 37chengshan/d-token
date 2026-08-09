@@ -28,10 +28,7 @@ impl FloorCheck {
 /// Fails (returns `Err`) whenever end-to-end savings fall below the floor —
 /// "no regression vs baseline" is never an acceptable substitute (QUALITY-8 /
 /// RISKS_DECISIONS D14).
-pub fn enforce_product_floor(
-    metrics: &PerfMetrics,
-    floor: f64,
-) -> Result<FloorCheck> {
+pub fn enforce_product_floor(metrics: &PerfMetrics, floor: f64) -> Result<FloorCheck> {
     if floor <= 0.0 {
         bail!("product floor must be strictly positive, got {floor}");
     }

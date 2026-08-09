@@ -8,8 +8,8 @@
 // text, PNG/base64 bytes, credentials or secrets.
 
 use dtoken_types::{
-    OpticalCapabilityLifecycle, OpticalEconomicsAttestation, OpticalEndpoint,
-    OpticalEvalArtifact, OpticalExactRouteEvidence, OpticalRuntimeConfig,
+    OpticalCapabilityLifecycle, OpticalEconomicsAttestation, OpticalEndpoint, OpticalEvalArtifact,
+    OpticalExactRouteEvidence, OpticalRuntimeConfig,
 };
 use sha2::Digest;
 
@@ -70,14 +70,11 @@ pub fn optical_exact_route_evidence(
         .iter()
         .map(|snapshot| {
             let attestation = snapshot.attestation.as_ref();
-            let verified = registry
-                .verified_snapshot(&snapshot.snapshot_id)
-                .is_some();
+            let verified = registry.verified_snapshot(&snapshot.snapshot_id).is_some();
             let eval = attestation
                 .and_then(|attestation| bound_eval(config, &attestation.eval_artifact_digest));
             let eval_gate_passed = eval.is_some_and(|artifact| {
-                artifact.passes_derived_quality_gate()
-                    && !artifact.corpus_digest.trim().is_empty()
+                artifact.passes_derived_quality_gate() && !artifact.corpus_digest.trim().is_empty()
             });
             let economics_present = economics_bound(&snapshot.economics);
             let identity_exact = exact_identity(
@@ -85,8 +82,8 @@ pub fn optical_exact_route_evidence(
                 &snapshot.route_id,
                 &snapshot.model_base,
             );
-            let not_expired = attestation
-                .is_none_or(|attestation| attestation.expires_at_ms > now_ms);
+            let not_expired =
+                attestation.is_none_or(|attestation| attestation.expires_at_ms > now_ms);
             let active_reachable = verified
                 && eval_gate_passed
                 && economics_present
@@ -145,9 +142,7 @@ pub fn optical_exact_route_evidence(
                 eval_exact_failures: eval.map(|artifact| artifact.exact_failures).unwrap_or(0),
                 eval_unsafe_failures: eval.map(|artifact| artifact.unsafe_failures).unwrap_or(0),
                 eval_baseline_passes: eval.map(|artifact| artifact.baseline_passes).unwrap_or(0),
-                eval_candidate_passes: eval
-                    .map(|artifact| artifact.candidate_passes)
-                    .unwrap_or(0),
+                eval_candidate_passes: eval.map(|artifact| artifact.candidate_passes).unwrap_or(0),
                 eval_quality_delta: eval
                     .map(|artifact| artifact.quality_delta)
                     .unwrap_or_default(),
@@ -185,8 +180,7 @@ mod tests {
     #[test]
     fn green_exact_route_emits_active_reachable_evidence() {
         let config = signed_runtime_config_fixture();
-        let registry =
-            OpticalCapabilityRegistry::from_runtime_config(&config, 200);
+        let registry = OpticalCapabilityRegistry::from_runtime_config(&config, 200);
         assert_eq!(registry.verified_rule_count(), 1);
 
         let evidence = optical_exact_route_evidence(&config, &registry, 200);

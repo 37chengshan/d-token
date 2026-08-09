@@ -2,10 +2,10 @@ use std::collections::{HashMap, HashSet};
 
 use base64::Engine as _;
 use dtoken_types::{
-    CapabilityStatus, OpticalCapabilityLifecycle, OpticalCapabilitySnapshot, OpticalEconomicsAttestation,
-    OpticalEndpoint, OpticalEvalArtifact, OpticalMode, OpticalModelCapability,
-    OpticalRuntimeConfig, OpticalTrustedAuthority, Protocol, ProviderFamily, VisionExactnessClass,
-    VisionTokenFormula,
+    CapabilityStatus, OpticalCapabilityLifecycle, OpticalCapabilitySnapshot,
+    OpticalEconomicsAttestation, OpticalEndpoint, OpticalEvalArtifact, OpticalMode,
+    OpticalModelCapability, OpticalRuntimeConfig, OpticalTrustedAuthority, Protocol,
+    ProviderFamily, VisionExactnessClass, VisionTokenFormula,
 };
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use sha2::{Digest, Sha256};
@@ -683,8 +683,7 @@ pub fn sign_capability_snapshot(
         .attestation
         .as_mut()
         .expect("attestation was just set")
-        .signature_base64 =
-        base64::engine::general_purpose::STANDARD.encode(signature.to_bytes());
+        .signature_base64 = base64::engine::general_purpose::STANDARD.encode(signature.to_bytes());
     Ok(())
 }
 
@@ -979,69 +978,69 @@ fn signed_runtime_config() -> OpticalRuntimeConfig {
         100,
         "fixture-eval",
     );
-        let geometry = geometry_for_capability(&snapshot.capability)
-            .expect("experimental capability must have geometry");
-        let render_contract = production_render_contract(&geometry);
-        let renderer_digest = render_contract_digest(&render_contract);
-        let economics = snapshot
-            .economics
-            .as_ref()
-            .and_then(economics_contract_from_attested)
-            .expect("fixture snapshot must carry attested economics");
-        let transform_contract_digest = OpticalTransformContractV2::current_with_economics(
-            &renderer_digest,
-            &economics.tokenizer_revision,
-            &economics.pricing_revision,
-            &economics.cache_policy_revision,
-        )
-        .digest();
-        let eval = OpticalEvalArtifact {
-            schema_version: 2,
-            artifact_id: "eval-v1".to_string(),
-            model_base: "claude-fable-5".to_string(),
-            endpoint: OpticalEndpoint::AnthropicMessages,
-            renderer_profile_digest: renderer_digest.clone(),
-            font_digest: font_digest_for(render_contract.font),
-            transform_contract_digest: transform_contract_digest.clone(),
-            corpus_digest: "fixture-corpus-digest".to_string(),
-            evaluated_at_ms: 90,
-            sample_count: 20,
-            exact_failures: 0,
-            unsafe_failures: 0,
-            baseline_passes: 20,
-            candidate_passes: 20,
-            quality_delta: 0.0,
-            signed_input_token_delta: 10_000,
-            signed_cost_delta_microusd: 5_000,
-            latency_p95_delta_ms: 100,
-            passed: true,
-        };
-        sign_capability_snapshot(
-            &mut snapshot,
-            &[7u8; 32],
-            "fixture-authority",
-            "fixture-key-v1",
-            150,
-            1_000,
-            &eval_artifact_digest(&eval),
-        )
-        .expect("fixture snapshot must sign");
-        let _ = (renderer_digest, transform_contract_digest);
+    let geometry = geometry_for_capability(&snapshot.capability)
+        .expect("experimental capability must have geometry");
+    let render_contract = production_render_contract(&geometry);
+    let renderer_digest = render_contract_digest(&render_contract);
+    let economics = snapshot
+        .economics
+        .as_ref()
+        .and_then(economics_contract_from_attested)
+        .expect("fixture snapshot must carry attested economics");
+    let transform_contract_digest = OpticalTransformContractV2::current_with_economics(
+        &renderer_digest,
+        &economics.tokenizer_revision,
+        &economics.pricing_revision,
+        &economics.cache_policy_revision,
+    )
+    .digest();
+    let eval = OpticalEvalArtifact {
+        schema_version: 2,
+        artifact_id: "eval-v1".to_string(),
+        model_base: "claude-fable-5".to_string(),
+        endpoint: OpticalEndpoint::AnthropicMessages,
+        renderer_profile_digest: renderer_digest.clone(),
+        font_digest: font_digest_for(render_contract.font),
+        transform_contract_digest: transform_contract_digest.clone(),
+        corpus_digest: "fixture-corpus-digest".to_string(),
+        evaluated_at_ms: 90,
+        sample_count: 20,
+        exact_failures: 0,
+        unsafe_failures: 0,
+        baseline_passes: 20,
+        candidate_passes: 20,
+        quality_delta: 0.0,
+        signed_input_token_delta: 10_000,
+        signed_cost_delta_microusd: 5_000,
+        latency_p95_delta_ms: 100,
+        passed: true,
+    };
+    sign_capability_snapshot(
+        &mut snapshot,
+        &[7u8; 32],
+        "fixture-authority",
+        "fixture-key-v1",
+        150,
+        1_000,
+        &eval_artifact_digest(&eval),
+    )
+    .expect("fixture snapshot must sign");
+    let _ = (renderer_digest, transform_contract_digest);
 
-        OpticalRuntimeConfig {
-            capability_snapshots: vec![snapshot],
-            trusted_authorities: vec![OpticalTrustedAuthority {
-                authority_id: "fixture-authority".to_string(),
-                key_id: "fixture-key-v1".to_string(),
-                public_key_base64: base64::engine::general_purpose::STANDARD.encode(
-                    ed25519_dalek::SigningKey::from_bytes(&[7u8; 32])
-                        .verifying_key()
-                        .as_bytes(),
-                ),
-            }],
-            eval_artifacts: vec![eval],
-            ..Default::default()
-        }
+    OpticalRuntimeConfig {
+        capability_snapshots: vec![snapshot],
+        trusted_authorities: vec![OpticalTrustedAuthority {
+            authority_id: "fixture-authority".to_string(),
+            key_id: "fixture-key-v1".to_string(),
+            public_key_base64: base64::engine::general_purpose::STANDARD.encode(
+                ed25519_dalek::SigningKey::from_bytes(&[7u8; 32])
+                    .verifying_key()
+                    .as_bytes(),
+            ),
+        }],
+        eval_artifacts: vec![eval],
+        ..Default::default()
+    }
 }
 
 /// Re-signs the fixture attestation after mutating the snapshot/eval so the
@@ -1062,8 +1061,7 @@ pub(crate) fn resign_runtime_config_fixture(config: &mut OpticalRuntimeConfig) {
         .attestation
         .as_mut()
         .expect("attestation")
-        .signature_base64 =
-        base64::engine::general_purpose::STANDARD.encode(signature.to_bytes());
+        .signature_base64 = base64::engine::general_purpose::STANDARD.encode(signature.to_bytes());
 }
 
 #[cfg(test)]

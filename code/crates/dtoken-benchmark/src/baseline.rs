@@ -93,15 +93,13 @@ impl BaselineRecord {
             std::fs::create_dir_all(parent)
                 .with_context(|| format!("create baseline directory {}", parent.display()))?;
         }
-        std::fs::write(path, json)
-            .with_context(|| format!("write baseline {}", path.display()))
+        std::fs::write(path, json).with_context(|| format!("write baseline {}", path.display()))
     }
 
     pub fn read_json(path: &std::path::Path) -> Result<Self> {
         let text = std::fs::read_to_string(path)
             .with_context(|| format!("read baseline {}", path.display()))?;
-        let record: Self =
-            serde_json::from_str(&text).context("parse baseline JSON")?;
+        let record: Self = serde_json::from_str(&text).context("parse baseline JSON")?;
         if record.schema_version != BASELINE_SCHEMA_VERSION {
             bail!(
                 "baseline schema {} unsupported (expected {})",
@@ -130,7 +128,10 @@ pub struct BandCheck {
 
 /// Compare a current run's metrics against a recorded baseline's frozen
 /// bands.  Corpus identity must match or the comparison is invalid.
-pub fn check_no_regression(current: &PerfMetrics, baseline: &BaselineRecord) -> Result<Vec<BandCheck>> {
+pub fn check_no_regression(
+    current: &PerfMetrics,
+    baseline: &BaselineRecord,
+) -> Result<Vec<BandCheck>> {
     if current.item_count == 0 {
         bail!("current run has no measured items");
     }

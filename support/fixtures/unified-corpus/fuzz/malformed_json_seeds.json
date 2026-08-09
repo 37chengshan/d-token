@@ -1,0 +1,14 @@
+{
+  "id": "fuzz-malformed-json",
+  "kind": "fuzz-seed",
+  "description": "Malformed JSON byte seeds: truncated objects, bad escapes, trailing tokens.",
+  "privacy": "synthetic fixture; no credentials, paths, or real prompts",
+  "seeds": [
+    "{\"messages\":[",
+    "{\"role\":\"user\",\"content\":\"\\u",
+    "{\"model\":\"x\",\"messages\":[{\"role\":",
+    "}}]]]]",
+    "{\"messages\":[{\"role\":\"user\",\"content\":\"a\"}]} trailing",
+    "{\"model\":\"x\",\"messages\":null}"
+  ]
+}

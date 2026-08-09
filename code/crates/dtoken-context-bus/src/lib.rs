@@ -22,15 +22,15 @@
 
 pub mod bus;
 pub mod cache;
-pub mod policy;
 pub mod persistence;
+pub mod policy;
 pub mod receipt;
 pub mod recovery;
 pub mod relay;
 pub mod scope;
 pub mod session;
-pub mod signature;
 pub mod shared;
+pub mod signature;
 
 pub use bus::{BusConfig, ConsultOutcome, ContextBus};
 pub use policy::{CacheEvidenceStatus, ProviderCacheEvidence, ProviderCacheStrategy};

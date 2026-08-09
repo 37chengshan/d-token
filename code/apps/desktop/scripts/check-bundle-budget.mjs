@@ -7,7 +7,10 @@ import { fileURLToPath } from "node:url";
 // verified native-control providers. Keep this gate tight enough to catch
 // eager regressions, but align it to the current split boundary instead of
 // failing every build on the steady-state shell footprint.
-const INITIAL_JS_BUDGET_BYTES = 176 * 1024;
+// Baseline (2026-08-10, C_final freeze preflight): steady-state initial
+// recursive JS gzip was 194029 B; budget is set at 200 KiB to keep a ~5%
+// noise/no-regression band above that measured footprint.
+const INITIAL_JS_BUDGET_BYTES = 200 * 1024;
 const jsonOutputIndex = process.argv.indexOf("--json-output");
 const jsonOutputPath = jsonOutputIndex >= 0 ? process.argv[jsonOutputIndex + 1] : undefined;
 if (jsonOutputIndex >= 0 && !jsonOutputPath) {

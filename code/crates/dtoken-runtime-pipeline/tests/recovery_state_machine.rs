@@ -51,10 +51,7 @@ fn pre_commit_candidate_failure_sends_baseline_exactly_once() {
     )
     .unwrap();
     assert_eq!(
-        prepared
-            .clone()
-            .with_candidate(artifact, None)
-            .unwrap_err(),
+        prepared.clone().with_candidate(artifact, None).unwrap_err(),
         PipelineError::SourceDigestMismatch
     );
 
@@ -101,7 +98,10 @@ fn post_commit_is_terminal_no_retry_no_second_receipt() {
         .validate(|baseline, transformed| baseline != transformed)
         .unwrap()
         .into_ready_to_send();
-    assert_eq!(tracker.record_candidate_dispatch(), Ok(RecoveryPhase::CandidateDispatched));
+    assert_eq!(
+        tracker.record_candidate_dispatch(),
+        Ok(RecoveryPhase::CandidateDispatched)
+    );
 
     // Commit: one terminal receipt, then the machine is absorbing.
     let receipt = ready.mark_committed(101);
@@ -201,7 +201,10 @@ fn provider_identity_is_bound_at_ingress_and_never_switchable_after_commit() {
 fn pre_send_fault_is_terminal_without_a_send() {
     let (request_id, prepared) = prepared_request();
     let mut tracker = RecoveryTracker::new(request_id);
-    assert_eq!(tracker.record_baseline_dispatch(), Ok(RecoveryPhase::BaselineDispatched));
+    assert_eq!(
+        tracker.record_baseline_dispatch(),
+        Ok(RecoveryPhase::BaselineDispatched)
+    );
     let receipt = prepared
         .into_baseline_ready("transport_unavailable")
         .mark_committed(0);

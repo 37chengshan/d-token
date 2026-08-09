@@ -55,10 +55,9 @@ use dtoken_types::{
     InputTokenUsage, LayeredSavingsReport, LayeredStage, ModalityTokens, OpticalApplicabilityInput,
     OpticalCapabilitiesPublicSummary, OpticalCapabilityLifecyclePublicSummary, OpticalEndpoint,
     OpticalEventMetadataPublicSummary, OpticalEventPublicSummary, OpticalExactRouteEvidence,
-    OpticalMode,
-    OpticalPlanPublicSummary, OpticalPlanStatus, OpticalPreviewRequest, OpticalStatusPublicSummary,
-    PayloadByteUsage, Protocol, ProtocolInjectionProfile, RequestLog, RequestScope,
-    RequestScopeError, RouteDecision, SupportLevel, UpstreamSendState, UsageEvidence,
+    OpticalMode, OpticalPlanPublicSummary, OpticalPlanStatus, OpticalPreviewRequest,
+    OpticalStatusPublicSummary, PayloadByteUsage, Protocol, ProtocolInjectionProfile, RequestLog,
+    RequestScope, RequestScopeError, RouteDecision, SupportLevel, UpstreamSendState, UsageEvidence,
     UsageEvidenceKind, UsageMeasurement, UsageVector,
 };
 use futures_util::{Stream, TryStreamExt};
@@ -1175,15 +1174,18 @@ fn backend_capability_registry(
             AvailabilityState::ImplementedDisabled
         },
         OPTICAL_SHADOW_EVIDENCE_REVISION,
-        &[if optical_active_configured {
-            "exact_attested_route_configured"
-        } else {
-            "policy_shadow_only"
-        }, if optical_active_configured {
-            "release_gate_enabled"
-        } else {
-            "release_gate_disabled"
-        }],
+        &[
+            if optical_active_configured {
+                "exact_attested_route_configured"
+            } else {
+                "policy_shadow_only"
+            },
+            if optical_active_configured {
+                "release_gate_enabled"
+            } else {
+                "release_gate_disabled"
+            },
+        ],
     ));
 
     capabilities.push(
@@ -1633,9 +1635,9 @@ impl AppState {
         let mut state = Self::new_with_config_status(config, config_status);
         // PR-C3A..C3C: production 启动即接入 LeanCTX Context Bus（内存 port；
         // store 只保留 persistence port，bus 域 policy 单一 authority）。
-        state.context_bus = Some(Arc::new(Mutex::new(
-            dtoken_context_bus::ContextBus::new(dtoken_context_bus::BusConfig::default()),
-        )));
+        state.context_bus = Some(Arc::new(Mutex::new(dtoken_context_bus::ContextBus::new(
+            dtoken_context_bus::BusConfig::default(),
+        ))));
         state.ccr_private_store = ccr_private_store;
         // G3: the terminal-commit recovery sweep needs the journal installed
         // before any load, and every subsequent load must filter the requests
@@ -5385,42 +5387,91 @@ fn compress_for_route_with_relay(
 ) -> CompressionSummary {
     // bus 未配置 → 原路径（行为不变）。
     let Some(bus) = state.context_bus.as_ref() else {
-        return compress_for_route_with_ir(context, policy, body, cache_evidence, frozen_message_count, ir);
+        return compress_for_route_with_ir(
+            context,
+            policy,
+            body,
+            cache_evidence,
+            frozen_message_count,
+            ir,
+        );
     };
     // scope 缺少 project/agent → 无法投影 BusScope → 回退原文路径。
-    let (Some(project_id), Some(agent_id)) = (
-        scope.project.value.clone(),
-        scope.agent.value.clone(),
-    ) else {
-        return compress_for_route_with_ir(context, policy, body, cache_evidence, frozen_message_count, ir);
+    let (Some(project_id), Some(agent_id)) =
+        (scope.project.value.clone(), scope.agent.value.clone())
+    else {
+        return compress_for_route_with_ir(
+            context,
+            policy,
+            body,
+            cache_evidence,
+            frozen_message_count,
+            ir,
+        );
     };
     let session_id = scope.session.value.clone().unwrap_or_default();
     let bus_scope = dtoken_context_bus::BusScope::new(project_id, agent_id, session_id);
     if !bus_scope.is_valid() {
-        return compress_for_route_with_ir(context, policy, body, cache_evidence, frozen_message_count, ir);
+        return compress_for_route_with_ir(
+            context,
+            policy,
+            body,
+            cache_evidence,
+            frozen_message_count,
+            ir,
+        );
     }
     // map-signature：canonical JSON of body；source fingerprint：evidence 的
     // source_revision + 无 file digest（HTTP body 无文件粒度）。
     let Ok(canonical_content) = serde_json::to_string(&body) else {
-        return compress_for_route_with_ir(context, policy, body, cache_evidence, frozen_message_count, ir);
+        return compress_for_route_with_ir(
+            context,
+            policy,
+            body,
+            cache_evidence,
+            frozen_message_count,
+            ir,
+        );
     };
     let source_revision = cache_evidence
         .map(|evidence| evidence.source_revision.as_str())
         .unwrap_or_default();
-    let source_fingerprint = dtoken_context_bus::signature::source_fingerprint(source_revision, None);
+    let source_fingerprint =
+        dtoken_context_bus::signature::source_fingerprint(source_revision, None);
     let query_tokens = vec![scope.route_id.clone(), scope.model.clone()];
     let now_ms = dtoken_event_ledger::now_ms().max(1);
     let map_signature =
         dtoken_context_bus::signature::map_signature(&bus_scope.project_id, &canonical_content);
     let Ok(mut bus) = bus.lock() else {
-        return compress_for_route_with_ir(context, policy, body, cache_evidence, frozen_message_count, ir);
+        return compress_for_route_with_ir(
+            context,
+            policy,
+            body,
+            cache_evidence,
+            frozen_message_count,
+            ir,
+        );
     };
-    match bus.consult(&bus_scope, &map_signature, &source_fingerprint, &query_tokens, now_ms) {
+    match bus.consult(
+        &bus_scope,
+        &map_signature,
+        &source_fingerprint,
+        &query_tokens,
+        now_ms,
+    ) {
         dtoken_context_bus::bus::ConsultOutcome::CacheHit { entry, receipt } => {
-            relay_hit_compression_summary(&body, entry.body.as_deref(), vec![dtoken_context_bus::BusReceipt::CacheReuse(receipt)])
+            relay_hit_compression_summary(
+                &body,
+                entry.body.as_deref(),
+                vec![dtoken_context_bus::BusReceipt::CacheReuse(receipt)],
+            )
         }
         dtoken_context_bus::bus::ConsultOutcome::RelayHit { entry, receipt } => {
-            relay_hit_compression_summary(&body, entry.body.as_deref(), vec![dtoken_context_bus::BusReceipt::RelayHit(receipt)])
+            relay_hit_compression_summary(
+                &body,
+                entry.body.as_deref(),
+                vec![dtoken_context_bus::BusReceipt::RelayHit(receipt)],
+            )
         }
         dtoken_context_bus::bus::ConsultOutcome::Miss => {
             // 未命中：走 canonical resolved path 压缩。
@@ -20419,9 +20470,8 @@ mod tests {
             attestation: None,
             economics: Some(optical_exact_economics()),
         };
-        let profile =
-            dtoken_compress::optical::geometry_for_capability(&snapshot.capability)
-                .expect("exact capability must have geometry");
+        let profile = dtoken_compress::optical::geometry_for_capability(&snapshot.capability)
+            .expect("exact capability must have geometry");
         let mut builder = dtoken_compress::optical::OpticalEvalBuilder::new(
             "eval-c5d-v1",
             "claude-fable-5",
@@ -20468,10 +20518,7 @@ mod tests {
                 protocol: Protocol::Anthropic,
                 base_url: "https://api.anthropic.com".to_string(),
                 api_key_ref: None,
-                models: vec![
-                    "claude-fable-5".to_string(),
-                    "claude-other-5".to_string(),
-                ],
+                models: vec!["claude-fable-5".to_string(), "claude-other-5".to_string()],
                 timeout_ms: 30_000,
                 healthcheck_path: None,
                 wire_api: dtoken_types::ProviderWireApi::OpenAiChat,
@@ -20606,13 +20653,14 @@ mod tests {
         apply_hybrid_preparation(&mut payload, &prepared);
         assert_ne!(payload.upstream_body, original_body);
         assert_eq!(
-            payload.request_log.context_accounting.as_ref().map(|accounting| accounting.disposition),
+            payload
+                .request_log
+                .context_accounting
+                .as_ref()
+                .map(|accounting| accounting.disposition),
             Some(dtoken_types::OptimizationDisposition::Active)
         );
-        assert_eq!(
-            payload.upstream_body["model"],
-            json!("claude-fable-5")
-        );
+        assert_eq!(payload.upstream_body["model"], json!("claude-fable-5"));
         // Protected fields survive; only the approved historical tool result
         // is replaced by the rendered capsule.
         assert_eq!(payload.upstream_body["system"], body["system"]);

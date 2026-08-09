@@ -492,8 +492,9 @@ impl DeterministicPngRenderer {
         }
 
         if let Some((_, layout, _)) = eval {
-            let contains_reflow_marker =
-                layout.newline_marker.is_some_and(|marker| text.contains(marker));
+            let contains_reflow_marker = layout
+                .newline_marker
+                .is_some_and(|marker| text.contains(marker));
             if contains_reflow_marker || (!unicode_fallback && !supports_render_script(text)) {
                 return Err(RenderError::UnsupportedScript);
             }
@@ -1440,7 +1441,11 @@ mod tests {
             .count();
         assert!(expected_fallback > 0);
         assert_eq!(
-            first.pages().iter().map(|p| p.fallback_glyphs()).sum::<usize>(),
+            first
+                .pages()
+                .iter()
+                .map(|p| p.fallback_glyphs())
+                .sum::<usize>(),
             expected_fallback
         );
 
@@ -1486,10 +1491,8 @@ mod tests {
     #[test]
     fn platform_render_evidence_is_deterministic_and_captures_fallback() {
         let profile = fixture_profile();
-        let first =
-            platform_render_evidence(&profile).expect("first platform evidence render");
-        let second =
-            platform_render_evidence(&profile).expect("second platform evidence render");
+        let first = platform_render_evidence(&profile).expect("first platform evidence render");
+        let second = platform_render_evidence(&profile).expect("second platform evidence render");
 
         // The corpus exercises the CJK fallback so the evidence proves lossy
         // substitution is captured, not hidden.

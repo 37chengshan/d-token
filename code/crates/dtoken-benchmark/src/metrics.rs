@@ -145,7 +145,10 @@ impl PerfMetrics {
 
         let input_bytes_total = items.iter().map(|item| item.input_bytes).sum::<usize>();
         let nodes_total = items.iter().map(|item| item.ir_nodes).sum::<usize>();
-        let total_latency_us = items.iter().map(|item| item.latency_us as u128).sum::<u128>();
+        let total_latency_us = items
+            .iter()
+            .map(|item| item.latency_us as u128)
+            .sum::<u128>();
 
         Self {
             item_count,

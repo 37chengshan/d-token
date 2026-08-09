@@ -77,7 +77,9 @@ impl ContextRelay {
             validate_scope_identifier("session_id", &entry.session_id)?;
         }
         if entry.map_signature.len() != 64 || entry.source_fingerprint.len() != 64 {
-            return Err(ScopeError("relay entry signatures must be 64 hex".to_string()));
+            return Err(ScopeError(
+                "relay entry signatures must be 64 hex".to_string(),
+            ));
         }
         if let Some(body) = entry.body.as_deref() {
             if crate::signature::is_secret_shaped(body) {
@@ -101,21 +103,33 @@ impl ContextRelay {
     ///
     /// `is_granted(project, owner, grantee, session)` 由 SharedContext 提供
     /// （默认实现为无 grant → 仅当条目是「共享条目」时允许，见 [`RelayAccess`]）。
-    pub fn query(&self, query: &RelayQuery<'_>, is_granted: &impl Fn(&str, &str, &str, &str) -> bool) -> RelayOutcome {
+    pub fn query(
+        &self,
+        query: &RelayQuery<'_>,
+        is_granted: &impl Fn(&str, &str, &str, &str) -> bool,
+    ) -> RelayOutcome {
         if !query.project_id.is_empty()
             && !self.entries.is_empty()
-            && self.entries.iter().all(|e| e.project_id != query.project_id)
+            && self
+                .entries
+                .iter()
+                .all(|e| e.project_id != query.project_id)
         {
             // 快速路径：本项目没有任何条目。
             return RelayOutcome::Miss;
         }
         // 精确签名路径。
         if let Some(signature) = query.map_signature {
-            for entry in self.entries.iter().filter(|e| e.project_id == query.project_id) {
+            for entry in self
+                .entries
+                .iter()
+                .filter(|e| e.project_id == query.project_id)
+            {
                 if entry.map_signature != signature {
                     continue;
                 }
-                if entry.state_at(query.now_ms, Some(query.source_fingerprint)) != EntryState::Fresh {
+                if entry.state_at(query.now_ms, Some(query.source_fingerprint)) != EntryState::Fresh
+                {
                     continue;
                 }
                 if entry.is_self_hit(query.agent_id, query.session_id) {
@@ -140,7 +154,11 @@ impl ContextRelay {
             return RelayOutcome::Miss;
         }
         let mut best: Option<CacheEntry> = None;
-        for entry in self.entries.iter().filter(|e| e.project_id == query.project_id) {
+        for entry in self
+            .entries
+            .iter()
+            .filter(|e| e.project_id == query.project_id)
+        {
             if entry.state_at(query.now_ms, Some(query.source_fingerprint)) != EntryState::Fresh {
                 continue;
             }
@@ -165,10 +183,9 @@ impl ContextRelay {
                 continue;
             }
             let candidate = entry.clone();
-            if best
-                .as_ref()
-                .is_none_or(|current: &CacheEntry| candidate.recorded_at_ms > current.recorded_at_ms)
-            {
+            if best.as_ref().is_none_or(|current: &CacheEntry| {
+                candidate.recorded_at_ms > current.recorded_at_ms
+            }) {
                 best = Some(candidate);
             }
         }
@@ -176,10 +193,18 @@ impl ContextRelay {
     }
 
     /// 清理过期条目，返回移除数量。
-    pub fn prune_expired(&mut self, now_ms: u64, current_source_fingerprint: Option<&str>) -> usize {
+    pub fn prune_expired(
+        &mut self,
+        now_ms: u64,
+        current_source_fingerprint: Option<&str>,
+    ) -> usize {
         let before = self.entries.len();
-        self.entries
-            .retain(|e| matches!(e.state_at(now_ms, current_source_fingerprint), EntryState::Fresh));
+        self.entries.retain(|e| {
+            matches!(
+                e.state_at(now_ms, current_source_fingerprint),
+                EntryState::Fresh
+            )
+        });
         before - self.entries.len()
     }
 }
@@ -199,7 +224,14 @@ mod tests {
     use super::*;
     use crate::signature::{map_signature, source_fingerprint};
 
-    fn entry(project: &str, agent: &str, session: &str, content: &str, at_ms: u64, tokens: &[&str]) -> CacheEntry {
+    fn entry(
+        project: &str,
+        agent: &str,
+        session: &str,
+        content: &str,
+        at_ms: u64,
+        tokens: &[&str],
+    ) -> CacheEntry {
         CacheEntry {
             map_signature: map_signature(project, content),
             project_id: project.to_string(),
@@ -226,28 +258,53 @@ mod tests {
     #[test]
     fn two_agents_same_project_can_hit() {
         let mut relay = ContextRelay::new();
-        relay.put(entry("proj", "agent-a", "sess-1", "shared plan", 1_000, &["plan"])).unwrap();
+        relay
+            .put(entry(
+                "proj",
+                "agent-a",
+                "sess-1",
+                "shared plan",
+                1_000,
+                &["plan"],
+            ))
+            .unwrap();
         let query = RelayQuery {
             project_id: "proj",
             agent_id: "agent-b",
             session_id: "sess-2",
-            map_signature: Some(&entry("proj", "agent-a", "sess-1", "shared plan", 1_000, &["plan"]).map_signature),
+            map_signature: Some(
+                &entry("proj", "agent-a", "sess-1", "shared plan", 1_000, &["plan"]).map_signature,
+            ),
             source_fingerprint: &fp(),
             query_tokens: &[],
             now_ms: 1_000,
         };
-        assert!(matches!(relay.query(&query, &grant_all), RelayOutcome::SignatureHit(_)));
+        assert!(matches!(
+            relay.query(&query, &grant_all),
+            RelayOutcome::SignatureHit(_)
+        ));
     }
 
     #[test]
     fn cross_project_pollution_is_zero() {
         let mut relay = ContextRelay::new();
-        relay.put(entry("proj-a", "agent-a", "sess-1", "same content", 1_000, &[])).unwrap();
+        relay
+            .put(entry(
+                "proj-a",
+                "agent-a",
+                "sess-1",
+                "same content",
+                1_000,
+                &[],
+            ))
+            .unwrap();
         let query = RelayQuery {
             project_id: "proj-b",
             agent_id: "agent-b",
             session_id: "sess-2",
-            map_signature: Some(&entry("proj-a", "agent-a", "sess-1", "same content", 1_000, &[]).map_signature),
+            map_signature: Some(
+                &entry("proj-a", "agent-a", "sess-1", "same content", 1_000, &[]).map_signature,
+            ),
             source_fingerprint: &fp(),
             query_tokens: &[],
             now_ms: 1_000,
@@ -258,13 +315,17 @@ mod tests {
     #[test]
     fn self_hit_is_zero() {
         let mut relay = ContextRelay::new();
-        relay.put(entry("proj", "agent-a", "sess-1", "content", 1_000, &[])).unwrap();
+        relay
+            .put(entry("proj", "agent-a", "sess-1", "content", 1_000, &[]))
+            .unwrap();
         // 同一 agent 查询 → self-hit → miss（即使有 grant）。
         let query = RelayQuery {
             project_id: "proj",
             agent_id: "agent-a",
             session_id: "sess-1",
-            map_signature: Some(&entry("proj", "agent-a", "sess-1", "content", 1_000, &[]).map_signature),
+            map_signature: Some(
+                &entry("proj", "agent-a", "sess-1", "content", 1_000, &[]).map_signature,
+            ),
             source_fingerprint: &fp(),
             query_tokens: &[],
             now_ms: 1_000,
@@ -275,26 +336,38 @@ mod tests {
     #[test]
     fn permission_change_makes_miss() {
         let mut relay = ContextRelay::new();
-        relay.put(entry("proj", "agent-a", "sess-1", "content", 1_000, &[])).unwrap();
+        relay
+            .put(entry("proj", "agent-a", "sess-1", "content", 1_000, &[]))
+            .unwrap();
         let query = RelayQuery {
             project_id: "proj",
             agent_id: "agent-b",
             session_id: "sess-2",
-            map_signature: Some(&entry("proj", "agent-a", "sess-1", "content", 1_000, &[]).map_signature),
+            map_signature: Some(
+                &entry("proj", "agent-a", "sess-1", "content", 1_000, &[]).map_signature,
+            ),
             source_fingerprint: &fp(),
             query_tokens: &[],
             now_ms: 1_000,
         };
         // 无 grant（fail-closed 默认）→ miss。
-        assert_eq!(relay.query(&query, &RelayAccess::default_grant), RelayOutcome::Miss);
+        assert_eq!(
+            relay.query(&query, &RelayAccess::default_grant),
+            RelayOutcome::Miss
+        );
         // 有 grant → hit。
-        assert!(matches!(relay.query(&query, &grant_all), RelayOutcome::SignatureHit(_)));
+        assert!(matches!(
+            relay.query(&query, &grant_all),
+            RelayOutcome::SignatureHit(_)
+        ));
     }
 
     #[test]
     fn ttl_and_source_change_make_miss() {
         let mut relay = ContextRelay::new();
-        relay.put(entry("proj", "agent-a", "sess-1", "content", 1_000, &[])).unwrap();
+        relay
+            .put(entry("proj", "agent-a", "sess-1", "content", 1_000, &[]))
+            .unwrap();
         let signature = entry("proj", "agent-a", "sess-1", "content", 1_000, &[]).map_signature;
         // TTL 过期。
         let stale_query = RelayQuery {
@@ -323,8 +396,26 @@ mod tests {
     #[test]
     fn query_aware_retrieval_hits_by_tokens() {
         let mut relay = ContextRelay::new();
-        relay.put(entry("proj", "agent-a", "sess-1", "a", 1_000, &["route", "auth"])).unwrap();
-        relay.put(entry("proj", "agent-a", "sess-1", "b", 2_000, &["route", "logging"])).unwrap();
+        relay
+            .put(entry(
+                "proj",
+                "agent-a",
+                "sess-1",
+                "a",
+                1_000,
+                &["route", "auth"],
+            ))
+            .unwrap();
+        relay
+            .put(entry(
+                "proj",
+                "agent-a",
+                "sess-1",
+                "b",
+                2_000,
+                &["route", "logging"],
+            ))
+            .unwrap();
         let query = RelayQuery {
             project_id: "proj",
             agent_id: "agent-b",

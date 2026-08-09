@@ -27,7 +27,10 @@ fn tracked_corpus_manifest_is_valid_and_digests_match() {
     let corpus = Corpus::load(corpus_root()).expect("corpus must load and verify");
     assert_eq!(corpus.manifest.schema_version, 1);
     assert_eq!(corpus.manifest.id, "product-level-corpus-v1");
-    assert!(corpus.items().len() >= 10, "product corpus must be substantial");
+    assert!(
+        corpus.items().len() >= 10,
+        "product corpus must be substantial"
+    );
     assert!(!corpus.manifest_digest.is_empty());
 
     let partitions = corpus
@@ -37,7 +40,10 @@ fn tracked_corpus_manifest_is_valid_and_digests_match() {
         .collect::<std::collections::BTreeSet<_>>();
     assert!(partitions.contains("train"));
     assert!(partitions.contains("replay"));
-    assert!(partitions.contains("holdout"), "holdout partition must exist");
+    assert!(
+        partitions.contains("holdout"),
+        "holdout partition must exist"
+    );
 
     // Corpus digest is stable across manifest item ordering.
     let mut reordered = corpus.manifest.clone();
@@ -51,8 +57,7 @@ fn product_corpus_is_resolved_path_not_the_noop_compress() {
     let engine = CompressionEngine::new();
     let mut transformed_items = 0usize;
     for item in corpus.items() {
-        let body: Value =
-            serde_json::from_slice(corpus.bodies.get(&item.id).unwrap()).unwrap();
+        let body: Value = serde_json::from_slice(corpus.bodies.get(&item.id).unwrap()).unwrap();
         let context = scope_for(item).unwrap();
         let metric = run_item(&engine, item, &body, &context).unwrap();
         if metric.saved_tokens > 0 {

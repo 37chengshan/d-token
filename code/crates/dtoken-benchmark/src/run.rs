@@ -5,12 +5,10 @@
 //! end-to-end token reductions.
 
 use anyhow::{bail, Context, Result};
-use dtoken_compress::hybrid::{
-    lower_hybrid_context, HybridContextIr, ResolvedOptimizationContext,
-};
+use dtoken_compress::hybrid::{lower_hybrid_context, HybridContextIr, ResolvedOptimizationContext};
 use dtoken_compress::CompressionEngine;
 use dtoken_runtime_pipeline::{
-    ByteBudget, BoundedWorkerPool, CancellationToken, ConcurrencyLimits, SchedulerGate,
+    BoundedWorkerPool, ByteBudget, CancellationToken, ConcurrencyLimits, SchedulerGate,
     SubmitError, TaskOutcome,
 };
 use dtoken_types::{CompressionPolicy, OpticalEndpoint, Protocol};
@@ -19,10 +17,10 @@ use sha2::{Digest, Sha256};
 use std::sync::Arc;
 use std::time::Instant;
 
+use crate::alloc;
 use crate::corpus::{Corpus, CorpusItem};
 use crate::metrics::{ItemMetric, PerfMetrics, QueueMetrics};
 use crate::system::{platform_id, process_stats, ProcessStats};
-use crate::alloc;
 
 /// Measurement configuration for a corpus run.
 #[derive(Debug, Clone)]
@@ -84,7 +82,10 @@ pub fn run_item(
     context: &ResolvedOptimizationContext,
 ) -> Result<ItemMetric> {
     if !context.supports_safe_text_codec() {
-        bail!("item {} protocol cannot run the resolved safe-text path", item.id);
+        bail!(
+            "item {} protocol cannot run the resolved safe-text path",
+            item.id
+        );
     }
     let ir: Option<HybridContextIr> = lower_hybrid_context(context, body);
     let ir_nodes = ir.as_ref().map_or(0, |ir| ir.nodes().len());
@@ -147,10 +148,9 @@ pub fn run_corpus(config: &RunConfig, allocator: &alloc::CountingAllocator) -> R
     let mut items = Vec::new();
     for _ in 0..config.iterations.max(1) {
         for item in corpus.items() {
-            let body: Value = serde_json::from_slice(
-                corpus.bodies.get(&item.id).expect("verified body present"),
-            )
-            .with_context(|| format!("parse corpus item {}", item.id))?;
+            let body: Value =
+                serde_json::from_slice(corpus.bodies.get(&item.id).expect("verified body present"))
+                    .with_context(|| format!("parse corpus item {}", item.id))?;
             let context = scope_for(item)?;
             items.push(run_item(&engine, item, &body, &context)?);
         }
@@ -187,19 +187,17 @@ pub fn run_corpus(config: &RunConfig, allocator: &alloc::CountingAllocator) -> R
 fn replay_is_deterministic(corpus: &Corpus, engine: &CompressionEngine) -> Result<bool> {
     let mut first = Vec::new();
     for item in corpus.items() {
-        let body: Value = serde_json::from_slice(
-            corpus.bodies.get(&item.id).expect("verified body present"),
-        )
-        .context("parse corpus item for replay")?;
+        let body: Value =
+            serde_json::from_slice(corpus.bodies.get(&item.id).expect("verified body present"))
+                .context("parse corpus item for replay")?;
         let context = scope_for(item)?;
         first.push(run_item(engine, item, &body, &context)?.decision_digest);
     }
     let mut second = Vec::new();
     for item in corpus.items() {
-        let body: Value = serde_json::from_slice(
-            corpus.bodies.get(&item.id).expect("verified body present"),
-        )
-        .context("parse corpus item for replay")?;
+        let body: Value =
+            serde_json::from_slice(corpus.bodies.get(&item.id).expect("verified body present"))
+                .context("parse corpus item for replay")?;
         let context = scope_for(item)?;
         second.push(run_item(engine, item, &body, &context)?.decision_digest);
     }

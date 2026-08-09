@@ -33,7 +33,10 @@ use serde_json::json;
 use std::path::PathBuf;
 
 #[derive(Debug, Parser)]
-#[command(name = "dtoken-bench", about = "Fixed-corpus resolved-path benchmark runner")]
+#[command(
+    name = "dtoken-bench",
+    about = "Fixed-corpus resolved-path benchmark runner"
+)]
 struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -194,7 +197,13 @@ fn main() -> Result<()> {
                     summary.replay_deterministic
                 );
                 for check in &band_checks {
-                    println!("  {}: observed {} allowed {} -> {}", check.id, check.observed, check.allowed, if check.ok { "ok" } else { "FAIL" });
+                    println!(
+                        "  {}: observed {} allowed {} -> {}",
+                        check.id,
+                        check.observed,
+                        check.allowed,
+                        if check.ok { "ok" } else { "FAIL" }
+                    );
                 }
             }
             if !summary.all_gates_ok() {
@@ -239,8 +248,7 @@ fn main() -> Result<()> {
             let report = run_corpus(&config, &ALLOC)?;
             println!(
                 "replay_deterministic={} items={}",
-                report.replay_deterministic,
-                report.metrics.item_count
+                report.replay_deterministic, report.metrics.item_count
             );
             if !report.replay_deterministic {
                 bail!("deterministic replay FAILED");
@@ -256,7 +264,8 @@ fn main() -> Result<()> {
             let report = run_corpus(&config, &ALLOC)?;
             let loaded = Corpus::load(&corpus)?;
             let contract = build_paired_contract(&loaded, &report.metrics.items)?;
-            let json = serde_json::to_string_pretty(&contract).context("serialize paired contract")?;
+            let json =
+                serde_json::to_string_pretty(&contract).context("serialize paired contract")?;
             if let Some(parent) = out.parent() {
                 std::fs::create_dir_all(parent)
                     .with_context(|| format!("create directory {}", parent.display()))?;
@@ -319,6 +328,9 @@ fn print_metrics(metrics: &PerfMetrics) {
     );
     println!(
         "queue admitted={} saturated={} cancelled={} deadline_exceeded={}",
-        metrics.queue.admitted, metrics.queue.saturated, metrics.queue.cancelled, metrics.queue.deadline_exceeded
+        metrics.queue.admitted,
+        metrics.queue.saturated,
+        metrics.queue.cancelled,
+        metrics.queue.deadline_exceeded
     );
 }

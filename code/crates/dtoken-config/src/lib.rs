@@ -324,36 +324,42 @@ mod tests {
         // switch (OPTICAL-1 / PR-C5D).
         let mut config = DtokenConfig::default();
         config.optical.global_policy.allow_active = true;
-        config.optical.trusted_authorities.push(
-            dtoken_types::OpticalTrustedAuthority {
+        config
+            .optical
+            .trusted_authorities
+            .push(dtoken_types::OpticalTrustedAuthority {
                 authority_id: "fixture-authority".to_string(),
                 key_id: "fixture-key-v1".to_string(),
                 public_key_base64: "QUJD".to_string(),
-            },
-        );
-        config.optical.eval_artifacts.push(dtoken_types::OpticalEvalArtifact {
-            schema_version: 2,
-            artifact_id: "eval-green".to_string(),
-            model_base: "claude-fable-5".to_string(),
-            endpoint: dtoken_types::OpticalEndpoint::AnthropicMessages,
-            renderer_profile_digest: "renderer".to_string(),
-            font_digest: "font".to_string(),
-            transform_contract_digest: "contract".to_string(),
-            corpus_digest: "corpus".to_string(),
-            evaluated_at_ms: 1,
-            sample_count: 20,
-            exact_failures: 0,
-            unsafe_failures: 0,
-            baseline_passes: 19,
-            candidate_passes: 20,
-            quality_delta: 0.05,
-            signed_input_token_delta: 1,
-            signed_cost_delta_microusd: 1,
-            latency_p95_delta_ms: 0,
-            passed: false,
-        });
-        config.optical.capability_snapshots.push(
-            dtoken_types::OpticalCapabilitySnapshot {
+            });
+        config
+            .optical
+            .eval_artifacts
+            .push(dtoken_types::OpticalEvalArtifact {
+                schema_version: 2,
+                artifact_id: "eval-green".to_string(),
+                model_base: "claude-fable-5".to_string(),
+                endpoint: dtoken_types::OpticalEndpoint::AnthropicMessages,
+                renderer_profile_digest: "renderer".to_string(),
+                font_digest: "font".to_string(),
+                transform_contract_digest: "contract".to_string(),
+                corpus_digest: "corpus".to_string(),
+                evaluated_at_ms: 1,
+                sample_count: 20,
+                exact_failures: 0,
+                unsafe_failures: 0,
+                baseline_passes: 19,
+                candidate_passes: 20,
+                quality_delta: 0.05,
+                signed_input_token_delta: 1,
+                signed_cost_delta_microusd: 1,
+                latency_p95_delta_ms: 0,
+                passed: false,
+            });
+        config
+            .optical
+            .capability_snapshots
+            .push(dtoken_types::OpticalCapabilitySnapshot {
                 schema_version: 1,
                 snapshot_id: "snapshot-green".to_string(),
                 revision: 1,
@@ -401,8 +407,7 @@ mod tests {
                     cache_create_rate: 1.25,
                     cache_read_rate: 0.1,
                 }),
-            },
-        );
+            });
 
         let issues = config.normalize_optical_fail_closed();
 

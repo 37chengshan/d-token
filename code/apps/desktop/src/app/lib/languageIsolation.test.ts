@@ -92,18 +92,12 @@ describe("language isolation contract", () => {
             }
           }
         }
-        if (ts.isPropertyAssignment(node) && ts.isIdentifier(node.name) && node.name.text === "zh"
-          && ts.isPropertyAssignment(node.parent)
-          && ts.isIdentifier((node.parent as ts.PropertyAssignment).name)
-          && (node.parent as ts.PropertyAssignment).name.text === "en") {
-          const object = node.parent.parent;
-          if (ts.isObjectLiteralExpression(object)) {
-            const zh = propertyString(object, "zh");
-            const en = propertyString(object, "en");
-            if (zh !== null && en !== null && zh !== en && !(LOCALE_TAG.test(zh) && LOCALE_TAG.test(en))) {
-              const position = source.getLineAndCharacterOfPosition(object.getStart(source));
-              violations.push(`${rel}:${position.line + 1}: label map "${zh}" / "${en}"`);
-            }
+        if (ts.isPropertyAssignment(node) && ts.isObjectLiteralExpression(node.initializer)) {
+          const zh = propertyString(node.initializer, "zh");
+          const en = propertyString(node.initializer, "en");
+          if (zh !== null && en !== null && zh !== en && !(LOCALE_TAG.test(zh) && LOCALE_TAG.test(en))) {
+            const position = source.getLineAndCharacterOfPosition(node.initializer.getStart(source));
+            violations.push(`${rel}:${position.line + 1}: label map "${zh}" / "${en}"`);
           }
         }
         ts.forEachChild(node, visit);

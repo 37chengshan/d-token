@@ -49,10 +49,7 @@ pub const PAIRED_SCHEMA_VERSION: u64 = 1;
 /// tasks, not arbitrary traffic).  The contract fails if any task's
 /// baseline and optimized sides would differ in identity — which the runner
 /// structure makes impossible, but the gate still asserts it.
-pub fn build_paired_contract(
-    corpus: &Corpus,
-    items: &[ItemMetric],
-) -> Result<PairedContract> {
+pub fn build_paired_contract(corpus: &Corpus, items: &[ItemMetric]) -> Result<PairedContract> {
     let mut tasks = Vec::new();
     for item in items {
         if item.kind != "coding-task" {
@@ -104,7 +101,9 @@ pub fn build_paired_contract(
     })
 }
 
-pub fn item_protocol_name(context: &dtoken_compress::hybrid::ResolvedOptimizationContext) -> String {
+pub fn item_protocol_name(
+    context: &dtoken_compress::hybrid::ResolvedOptimizationContext,
+) -> String {
     match context.endpoint {
         dtoken_types::OpticalEndpoint::AnthropicMessages => "anthropic_messages".to_string(),
         dtoken_types::OpticalEndpoint::OpenAiChatCompletions => "openai_chat".to_string(),

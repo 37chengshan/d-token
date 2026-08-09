@@ -1,0 +1,18 @@
+{
+  "id": "replay-decision-body",
+  "kind": "replay-case",
+  "description": "Deterministic replay case: bound request + decision digest + baseline body.",
+  "privacy": "synthetic fixture; no credentials, paths, or real prompts",
+  "request_id": "11111111-2222-3333-4444-555555555555",
+  "route_id": "route-primary",
+  "provider_id": "provider-primary",
+  "input_protocol": "openai",
+  "body": {
+    "model": "replay-model",
+    "messages": [
+      {"role": "user", "content": "deterministic replay input"},
+      {"role": "assistant", "content": "previous turn"},
+      {"role": "user", "content": "current turn"}
+    ]
+  }
+}

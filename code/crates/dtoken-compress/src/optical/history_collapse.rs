@@ -29,7 +29,9 @@ use dtoken_types::RouteOpticalPolicy;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
-use crate::optical::render_geometry::{estimate_image_tokens, images_required, RenderGeometryProfile};
+use crate::optical::render_geometry::{
+    estimate_image_tokens, images_required, RenderGeometryProfile,
+};
 use crate::optical::volatility::{detect_volatile_kind, VolatileKind};
 use crate::{
     ApprovedHybridAction, HybridContextIr, HybridNodeKind, HybridProtection, HybridProtectionReason,
@@ -186,11 +188,8 @@ pub fn plan_history_collapse(
     let cache_anchor = detect_cache_anchor(ir, body, frozen_end);
     let billing_boundary = detect_billing_boundary(ir, body);
     let (pinned_block_ids, protected_text_block_ids) = partition_pins(ir);
-    let current_recent_open_exact_secret_native_text = verify_protected_text(
-        ir,
-        &candidates,
-        &protected_text_block_ids,
-    );
+    let current_recent_open_exact_secret_native_text =
+        verify_protected_text(ir, &candidates, &protected_text_block_ids);
 
     let plan = HistoryCollapsePlan {
         frozen_turn_range: (0, frozen_end),
@@ -382,12 +381,8 @@ fn detect_billing_boundary(ir: &HybridContextIr, body: &Value) -> BillingBoundar
                         first_billing_row = Some((node.source_path().to_string(), row_index));
                     }
                 }
-                Some(kind) => {
-                    if !volatile_kinds.contains(&kind) {
-                        volatile_kinds.push(kind);
-                    }
-                }
-                None => {}
+                Some(kind) if !volatile_kinds.contains(&kind) => volatile_kinds.push(kind),
+                Some(_) | None => {}
             }
         }
     }
@@ -463,10 +458,10 @@ fn verify_protected_text(
         .collect::<HashSet<_>>();
     for node in ir.nodes() {
         match node.protection() {
-            HybridProtection::AlwaysText | HybridProtection::Exact | HybridProtection::Secret => {
-                if !protected.contains(node.source_path()) {
-                    return false;
-                }
+            HybridProtection::AlwaysText | HybridProtection::Exact | HybridProtection::Secret
+                if !protected.contains(node.source_path()) =>
+            {
+                return false;
             }
             _ => {}
         }
@@ -538,13 +533,16 @@ fn plan_digest(plan: &HistoryCollapsePlan) -> String {
 /// Text at a node path with the Anthropic item fallbacks (`/content`,
 /// `/text`) and deterministic serialization for structured values.
 fn text_at<'a>(body: &'a Value, source_path: &str) -> Option<&'a str> {
-    body.pointer(source_path).and_then(Value::as_str).or_else(|| {
-        body.pointer(&format!("{source_path}/content"))
-            .and_then(Value::as_str)
-    }).or_else(|| {
-        body.pointer(&format!("{source_path}/text"))
-            .and_then(Value::as_str)
-    })
+    body.pointer(source_path)
+        .and_then(Value::as_str)
+        .or_else(|| {
+            body.pointer(&format!("{source_path}/content"))
+                .and_then(Value::as_str)
+        })
+        .or_else(|| {
+            body.pointer(&format!("{source_path}/text"))
+                .and_then(Value::as_str)
+        })
 }
 
 /// Slab text: like [`text_at`] but structured values (tool definitions,
@@ -699,21 +697,17 @@ mod tests {
             "/system",
             "/tools/0",
         ] {
-            let is_protected = plan.protected_text_block_ids.iter().any(|path| path == protected)
-                || plan.pinned_block_ids.iter().any(|path| path == protected);
-            assert!(
-                is_protected,
-                "{protected} must be pinned or protected text"
-            );
-        }
-        assert!(
-            plan.collapse_candidates
+            let is_protected = plan
+                .protected_text_block_ids
                 .iter()
-                .all(|c| !plan
-                    .protected_text_block_ids
-                    .iter()
-                    .any(|path| block_path_of(&c.source_path) == path))
-        );
+                .any(|path| path == protected)
+                || plan.pinned_block_ids.iter().any(|path| path == protected);
+            assert!(is_protected, "{protected} must be pinned or protected text");
+        }
+        assert!(plan.collapse_candidates.iter().all(|c| !plan
+            .protected_text_block_ids
+            .iter()
+            .any(|path| block_path_of(&c.source_path) == path)));
     }
 
     #[test]
@@ -744,7 +738,8 @@ mod tests {
         assert_eq!(same.digest, plan.static_slab.digest);
 
         let mut changed = collapse_body();
-        changed["system"] = json!("# CLAUDE.md\n\nChanged instructions.\nX-Billing-Account: acct-123\n");
+        changed["system"] =
+            json!("# CLAUDE.md\n\nChanged instructions.\nX-Billing-Account: acct-123\n");
         let changed_ir = lower_hybrid_context(&context, &changed).expect("lowers");
         let changed_slab = plan_static_slab(&changed_ir, &changed);
         assert_ne!(changed_slab.digest, plan.static_slab.digest);
@@ -761,7 +756,8 @@ mod tests {
 
         // Any pinned-row mutation breaks the contract.
         let mut mutated = body.clone();
-        mutated["system"] = json!("# CLAUDE.md\n\nMutated instructions.\nX-Billing-Account: acct-123\n");
+        mutated["system"] =
+            json!("# CLAUDE.md\n\nMutated instructions.\nX-Billing-Account: acct-123\n");
         assert!(!frozen_prefix_is_byte_identical(&body, &mutated, &ir));
 
         // Collapse candidates are never part of the freeze grid.
@@ -770,12 +766,11 @@ mod tests {
             .iter()
             .map(|c| c.source_path.as_str())
             .collect::<HashSet<_>>();
-        assert!(
-            plan.freeze_grid
-                .frozen_rows
-                .iter()
-                .all(|row| !candidate_paths.contains(row.source_path.as_str()))
-        );
+        assert!(plan
+            .freeze_grid
+            .frozen_rows
+            .iter()
+            .all(|row| !candidate_paths.contains(row.source_path.as_str())));
     }
 
     #[test]
@@ -798,11 +793,10 @@ mod tests {
         assert_eq!(source_path, "/system");
         assert!(plan.billing_boundary.volatile_billing_chars > 0);
         // Billing rows live in the pinned system slab, never in candidates.
-        assert!(
-            plan.collapse_candidates
-                .iter()
-                .all(|candidate| !candidate.source_path.starts_with("/system"))
-        );
+        assert!(plan
+            .collapse_candidates
+            .iter()
+            .all(|candidate| !candidate.source_path.starts_with("/system")));
     }
 
     #[test]
@@ -867,11 +861,10 @@ mod tests {
             .pinned_block_ids
             .iter()
             .any(|path| path == "/messages/19/content/0"));
-        assert!(
-            plan.collapse_candidates
-                .iter()
-                .all(|candidate| !candidate.source_path.contains("/messages/19/content/0"))
-        );
+        assert!(plan
+            .collapse_candidates
+            .iter()
+            .all(|candidate| !candidate.source_path.contains("/messages/19/content/0")));
     }
 
     #[test]
@@ -906,13 +899,9 @@ mod tests {
         let mut changed = collapse_body();
         changed["system"] = json!("# CLAUDE.md\n\nChanged.\nX-Billing-Account: acct-123\n");
         let changed_ir = lower_hybrid_context(&context, &changed).expect("lowers");
-        let changed_plan = plan_history_collapse(
-            &changed_ir,
-            &changed,
-            &profile(),
-            &history_route(),
-        )
-        .expect("still collapseable");
+        let changed_plan =
+            plan_history_collapse(&changed_ir, &changed, &profile(), &history_route())
+                .expect("still collapseable");
         assert_ne!(changed_plan.digest(), plan.digest());
     }
 

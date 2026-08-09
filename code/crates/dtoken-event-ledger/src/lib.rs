@@ -38,16 +38,11 @@ mod failpoint {
 ///   this mode; a crash can lose the last un-synced records but never tears a
 ///   record, and [`JsonlStore::visit_all`]/`recent` always observe complete
 ///   records only.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum DurabilityMode {
     Normal,
+    #[default]
     Full,
-}
-
-impl Default for DurabilityMode {
-    fn default() -> Self {
-        Self::Full
-    }
 }
 
 #[derive(Debug, Clone, Default)]

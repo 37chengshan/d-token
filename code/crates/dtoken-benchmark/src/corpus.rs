@@ -60,12 +60,10 @@ impl Corpus {
     pub fn load(root: impl Into<PathBuf>) -> Result<Self> {
         let root = root.into();
         let manifest_path = root.join("manifest.json");
-        let manifest_text =
-            std::fs::read_to_string(&manifest_path).with_context(|| {
-                format!("read corpus manifest {}", manifest_path.display())
-            })?;
-        let manifest: CorpusManifest = serde_json::from_str(&manifest_text)
-            .context("parse corpus manifest")?;
+        let manifest_text = std::fs::read_to_string(&manifest_path)
+            .with_context(|| format!("read corpus manifest {}", manifest_path.display()))?;
+        let manifest: CorpusManifest =
+            serde_json::from_str(&manifest_text).context("parse corpus manifest")?;
         if manifest.schema_version != CORPUS_SCHEMA_VERSION {
             bail!(
                 "corpus manifest schema {} unsupported (expected {})",

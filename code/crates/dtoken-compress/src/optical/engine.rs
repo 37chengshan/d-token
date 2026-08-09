@@ -1505,7 +1505,10 @@ mod tests {
         );
         assert_eq!(prepared.kind(), HybridPreparationKind::Passthrough);
         assert_eq!(prepared.body(), &body);
-        assert_eq!(prepared.report().reason_code, "unsupported_or_cross_protocol_surface");
+        assert_eq!(
+            prepared.report().reason_code,
+            "unsupported_or_cross_protocol_surface"
+        );
         assert_eq!(
             prepared.accounting().sent_payload,
             SentPayloadVariant::Original
@@ -1537,7 +1540,10 @@ mod tests {
             SentPayloadVariant::Original
         );
         assert!(prepared.report().optical_candidate_count > 0);
-        assert_eq!(prepared.report().image_count, prepared.report().optical_candidate_count);
+        assert_eq!(
+            prepared.report().image_count,
+            prepared.report().optical_candidate_count
+        );
     }
 
     #[test]
@@ -1683,7 +1689,10 @@ mod tests {
             &RenderCancellation::default(),
         );
         assert_eq!(prepared.kind(), HybridPreparationKind::FallbackPreSend);
-        assert_eq!(prepared.report().reason_code, "economics_contract_unavailable");
+        assert_eq!(
+            prepared.report().reason_code,
+            "economics_contract_unavailable"
+        );
         assert_eq!(prepared.body(), &body);
         assert_eq!(
             prepared.accounting().sent_payload,
