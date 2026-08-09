@@ -1,0 +1,57 @@
+{
+  "schema_version": 1,
+  "id": "fault-registry-v1",
+  "description": "Named durability crash points (PR-C6B). Each entry binds a failpoint id to its owner crate, the exact byte/operation boundary it fires at, and the unique safe terminal state after a crash at that point. Registry ids must appear as string literals in the owner crate source.",
+  "terminal_state_vocabulary": [
+    "acked_records_survive_unacked_absent_or_complete",
+    "previous_projection_intact_never_partial",
+    "operation_aborts_before_ack"
+  ],
+  "failpoints": [
+    {
+      "id": "jsonl:crash_after_write_before_flush",
+      "owner": "dtoken-event-ledger",
+      "crash_point": "JsonlStore::append after write_all, before flush/sync",
+      "durability_mode": "full|normal",
+      "terminal_state": "acked_records_survive_unacked_absent_or_complete",
+      "test": "crash_matrix_leaves_only_complete_records_at_every_crash_point",
+      "test_kind": "in-process fault matrix"
+    },
+    {
+      "id": "jsonl:crash_after_flush_before_sync",
+      "owner": "dtoken-event-ledger",
+      "crash_point": "JsonlStore::append after flush, before sync_data (FULL only)",
+      "durability_mode": "full",
+      "terminal_state": "acked_records_survive_unacked_absent_or_complete",
+      "test": "crash_matrix_leaves_only_complete_records_at_every_crash_point",
+      "test_kind": "in-process fault matrix"
+    },
+    {
+      "id": "jsonl:crash_after_sync_before_ack",
+      "owner": "dtoken-event-ledger",
+      "crash_point": "JsonlStore::append after sync_data, before the in-memory ack offset",
+      "durability_mode": "full|normal",
+      "terminal_state": "acked_records_survive_unacked_absent_or_complete",
+      "test": "concurrent_appends_with_failpoint_never_torn_or_duplicated",
+      "test_kind": "concurrent crash matrix"
+    },
+    {
+      "id": "context_store:crash_before_projection_replace_commit",
+      "owner": "dtoken-context-store",
+      "crash_point": "replace_request_projections: staged DELETE+INSERT inside the transaction, before commit",
+      "durability_mode": "n/a",
+      "terminal_state": "previous_projection_intact_never_partial",
+      "test": "crash_before_projection_replace_commit_keeps_the_previous_view",
+      "test_kind": "projection rebuild fault matrix"
+    },
+    {
+      "id": "context_store:crash_before_ccr_replace_commit",
+      "owner": "dtoken-context-store",
+      "crash_point": "replace_ccr_metadata: staged DELETE+INSERT inside the transaction, before commit",
+      "durability_mode": "n/a",
+      "terminal_state": "previous_projection_intact_never_partial",
+      "test": "crash_before_ccr_replace_commit_keeps_the_previous_view",
+      "test_kind": "projection rebuild fault matrix"
+    }
+  ]
+}

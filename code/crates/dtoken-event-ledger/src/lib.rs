@@ -10,6 +10,46 @@ use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::time::{SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
 
+#[cfg(feature = "failpoints")]
+pub mod failpoints;
+
+/// Feature-gated crash-point shim: real injection under `failpoints`, a
+/// compile-time no-op otherwise, so durability code reads the same at both
+/// call sites.
+#[cfg(feature = "failpoints")]
+mod failpoint {
+    pub(super) use super::failpoints::maybe_crash;
+}
+
+#[cfg(not(feature = "failpoints"))]
+mod failpoint {
+    pub(super) fn maybe_crash(_name: &'static str) -> anyhow::Result<()> {
+        Ok(())
+    }
+}
+
+/// Durability contract for JSONL stores (QUALITY-5 / PR-C6B).
+///
+/// - `FULL`: a record is acknowledged only after `sync_data` returns, so an
+///   acknowledged record survives process death.  This is the default and the
+///   only mode CCR private state may use.
+/// - `Normal`: the record is flushed to the OS but not fsynced before the
+///   acknowledgment.  Projections that are rebuildable from a journal may use
+///   this mode; a crash can lose the last un-synced records but never tears a
+///   record, and [`JsonlStore::visit_all`]/`recent` always observe complete
+///   records only.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DurabilityMode {
+    Normal,
+    Full,
+}
+
+impl Default for DurabilityMode {
+    fn default() -> Self {
+        Self::Full
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct EventLedger {
     events: Vec<DtokenEvent>,
@@ -82,6 +122,18 @@ impl JsonlEventLedger {
         }
     }
 
+    /// Create a ledger with an explicit durability contract (default is
+    /// [`DurabilityMode::Full`], required for CCR private state).
+    pub fn new_with_durability(path: impl Into<PathBuf>, durability: DurabilityMode) -> Self {
+        Self {
+            store: JsonlStore::new_with_durability(path, durability),
+        }
+    }
+
+    pub fn durability(&self) -> DurabilityMode {
+        self.store.durability()
+    }
+
     pub fn append(&self, event: &DtokenEvent) -> Result<()> {
         self.store.append(event)
     }
@@ -107,13 +159,36 @@ impl JsonlEventLedger {
 pub struct JsonlStore {
     path: PathBuf,
     io_lock: Arc<LedgerIoLock>,
+    durability: DurabilityMode,
 }
 
 impl JsonlStore {
     pub fn new(path: impl Into<PathBuf>) -> Self {
         let path = path.into();
         let io_lock = shared_path_lock(&path);
-        Self { path, io_lock }
+        Self {
+            path,
+            io_lock,
+            durability: DurabilityMode::Full,
+        }
+    }
+
+    /// Create a store with an explicit durability contract.  CCR private
+    /// state must stay on the default [`DurabilityMode::Full`]; rebuildable
+    /// projections may opt into [`DurabilityMode::Normal`].
+    pub fn new_with_durability(path: impl Into<PathBuf>, durability: DurabilityMode) -> Self {
+        let mut store = Self::new(path);
+        store.durability = durability;
+        store
+    }
+
+    pub fn with_durability(mut self, durability: DurabilityMode) -> Self {
+        self.durability = durability;
+        self
+    }
+
+    pub fn durability(&self) -> DurabilityMode {
+        self.durability
     }
 
     pub fn append<T: Serialize + DeserializeOwned>(&self, value: &T) -> Result<()> {
@@ -151,10 +226,24 @@ impl JsonlStore {
         io_state.known_good_len = None;
         file.write_all(&record)
             .with_context(|| format!("append JSONL record to {}", self.path.display()))?;
+        // Crash point: the record bytes reached the OS page cache but were
+        // neither flushed nor synced.  A crash here leaves the record either
+        // absent or complete-on-recovery (tail repair isolates any torn tail),
+        // never acknowledged.
+        failpoint::maybe_crash("jsonl:crash_after_write_before_flush")?;
         file.flush()
             .with_context(|| format!("flush JSONL store {}", self.path.display()))?;
-        file.sync_data()
-            .with_context(|| format!("sync JSONL store {}", self.path.display()))?;
+        // Crash point: flushed to the OS but not fsynced.  Only meaningful in
+        // FULL mode where the ack is the sync.
+        failpoint::maybe_crash("jsonl:crash_after_flush_before_sync")?;
+        if self.durability == DurabilityMode::Full {
+            file.sync_data()
+                .with_context(|| format!("sync JSONL store {}", self.path.display()))?;
+        }
+        // Crash point: the record is durable but not yet acknowledged.  A
+        // crash here must not duplicate the record (appends are position
+        // based, so recovery observes it exactly once).
+        failpoint::maybe_crash("jsonl:crash_after_sync_before_ack")?;
         io_state.known_good_len = Some(append_offset + record.len() as u64);
         Ok(())
     }

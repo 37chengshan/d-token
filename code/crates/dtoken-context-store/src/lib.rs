@@ -2,6 +2,7 @@
 //! encrypted private store and are never columns in this database.
 
 use anyhow::{bail, Context, Result};
+use dtoken_event_ledger::JsonlStore;
 use dtoken_types::{
     agent::{AgentDiscoverySnapshot, DetectedAgent},
     CapabilityEvidence, Protocol, ProviderCacheObservation,
@@ -11,6 +12,20 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 use std::{path::Path, time::Duration};
+
+/// Feature-gated crash-point shim: real injection under `failpoints`, a
+/// compile-time no-op otherwise.
+#[cfg(feature = "failpoints")]
+mod failpoint {
+    pub(super) use dtoken_event_ledger::failpoints::maybe_crash;
+}
+
+#[cfg(not(feature = "failpoints"))]
+mod failpoint {
+    pub(super) fn maybe_crash(_name: &'static str) -> anyhow::Result<()> {
+        Ok(())
+    }
+}
 
 #[cfg(any(unix, windows))]
 use std::{ffi::OsString, path::PathBuf};
@@ -43,7 +58,7 @@ pub struct ContextStore {
     path: PathBuf,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RequestProjection {
     pub request_id: String,
     pub route_id: String,
@@ -57,7 +72,7 @@ pub struct RequestProjection {
     pub observed_at_ms: u64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CcrMetadataProjection {
     pub recovery_ref: String,
     pub request_id: String,
@@ -455,8 +470,30 @@ impl ContextStore {
                 ])?;
             }
         }
+        // Crash point: the DELETE + INSERTs are staged inside the transaction
+        // but not committed.  A crash here rolls back, leaving the previous
+        // projection intact — the unique safe terminal state for a rebuild.
+        failpoint::maybe_crash("context_store:crash_before_projection_replace_commit")?;
         transaction.commit()?;
         Ok(())
+    }
+
+    /// Rebuilds the disposable SQLite request view from the append-only
+    /// request journal (PR-C6B).  The JSONL journal is the durable source of
+    /// truth; `visit_all` replays every complete record in journal order and
+    /// the table is replaced atomically, so the SQLite view is always a
+    /// rebuildable projection of the journal and a crash mid-rebuild leaves
+    /// either the old view or the new view, never a partial one.
+    pub fn rebuild_request_projections_from_journal(
+        &mut self,
+        journal: &JsonlStore,
+    ) -> Result<()> {
+        let mut projections = Vec::new();
+        journal.visit_all(|projection| {
+            projections.push(projection);
+            Ok(())
+        })?;
+        self.replace_request_projections(&projections)
     }
 
     /// Records only an allowlisted failure classification and redacted route
@@ -630,8 +667,29 @@ impl ContextStore {
                 ])?;
             }
         }
+        // Crash point: staged but not committed — rolls back to the previous
+        // CCR view, the unique safe terminal state for a rebuild.
+        failpoint::maybe_crash("context_store:crash_before_ccr_replace_commit")?;
         transaction.commit()?;
         Ok(())
+    }
+
+    /// Rebuilds the disposable SQLite CCR view from the append-only CCR
+    /// journal (PR-C6B).  Only the latest redacted record per recovery
+    /// reference is retained (the journal is append-only and may hold
+    /// multiple lifecycle states per reference); raw CCR bytes stay in the
+    /// private store and are never materialized here.
+    pub fn rebuild_ccr_metadata_from_journal(
+        &mut self,
+        journal: &JsonlStore,
+    ) -> Result<()> {
+        let mut by_reference = std::collections::BTreeMap::<String, CcrMetadataProjection>::new();
+        journal.visit_all(|projection: CcrMetadataProjection| {
+            by_reference.insert(projection.recovery_ref.clone(), projection);
+            Ok(())
+        })?;
+        let projections = by_reference.into_values().collect::<Vec<_>>();
+        self.replace_ccr_metadata(&projections)
     }
 
     /// Reads only the durable lifecycle state for a CCR reference.  The

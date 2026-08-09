@@ -19,6 +19,7 @@ members = [
   "crates/dtoken-codebase-memory",
   "crates/dtoken-core-api",
   "crates/dtoken-proxy",
+  "crates/dtoken-benchmark",
   "apps/desktop/src-tauri",
 ]
 resolver = "2"

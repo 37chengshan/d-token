@@ -1,0 +1,114 @@
+{
+  "schema_version": 1,
+  "id": "product-level-corpus-v1",
+  "items": [
+    {
+      "id": "claude-code-build-session",
+      "path": "items/claude-code-build-session.json",
+      "sha256": "a4bcf57ce47209725f8aa10299c2ffbc89ae9df0896b7102f6e03db5cc22ed4f",
+      "bytes": 29786,
+      "partition": "train",
+      "protocol": "anthropic",
+      "kind": "coding-task"
+    },
+    {
+      "id": "claude-code-log-analysis",
+      "path": "items/claude-code-log-analysis.json",
+      "sha256": "5dff0f42d87148792769d45850dc91cede22c736c6c1255551a1d65408011f09",
+      "bytes": 15856,
+      "partition": "train",
+      "protocol": "anthropic",
+      "kind": "coding-task"
+    },
+    {
+      "id": "claude-code-test-iteration",
+      "path": "items/claude-code-test-iteration.json",
+      "sha256": "cab0b752e74caa9a97f60932f1900146f3db268d9ee7fd6d3d93d6fe4b275c9c",
+      "bytes": 18292,
+      "partition": "train",
+      "protocol": "anthropic",
+      "kind": "coding-task"
+    },
+    {
+      "id": "claude-code-repeated-warnings",
+      "path": "items/claude-code-repeated-warnings.json",
+      "sha256": "74a2abb6036ee82d4e8105590d40cc940c3df5b8d683596cc7c096f780f342b8",
+      "bytes": 13462,
+      "partition": "train",
+      "protocol": "anthropic",
+      "kind": "coding-task"
+    },
+    {
+      "id": "claude-code-plain-repeat",
+      "path": "items/claude-code-plain-repeat.json",
+      "sha256": "46757a3153fe269d0ab11c3dfc7883cb1e8bd874a5eb078bb26b222a825a3eb8",
+      "bytes": 12496,
+      "partition": "train",
+      "protocol": "anthropic",
+      "kind": "coding-task"
+    },
+    {
+      "id": "claude-code-json-output",
+      "path": "items/claude-code-json-output.json",
+      "sha256": "98f28e5060eae7ce6f1b674a4e6e9ee01f92f7683f43f49f3bd70b785083c0b6",
+      "bytes": 12090,
+      "partition": "train",
+      "protocol": "anthropic",
+      "kind": "coding-task"
+    },
+    {
+      "id": "claude-code-mixed-session",
+      "path": "items/claude-code-mixed-session.json",
+      "sha256": "585286f07fa8082d187816abb57a3445adb213e1a6d5482124073f26ba153f3c",
+      "bytes": 12010,
+      "partition": "train",
+      "protocol": "anthropic",
+      "kind": "coding-task"
+    },
+    {
+      "id": "openai-chat-build-session",
+      "path": "items/openai-chat-build-session.json",
+      "sha256": "b39fab9a5f0943101d6f85e5dfcce1d2841f0dbe6382c9f4501f5c440961203f",
+      "bytes": 28128,
+      "partition": "replay",
+      "protocol": "openai_chat",
+      "kind": "coding-task"
+    },
+    {
+      "id": "fallback-recent-only",
+      "path": "items/fallback-recent-only.json",
+      "sha256": "4ec6a5793371b803a906677844c8eae1620e8ad95146354b5b4eeea18ce4cd3c",
+      "bytes": 993,
+      "partition": "train",
+      "protocol": "anthropic",
+      "kind": "general"
+    },
+    {
+      "id": "fallback-secret-session",
+      "path": "items/fallback-secret-session.json",
+      "sha256": "9ed794d8d39102f2984c8db11b0a63c47c7008050c77b7b26e908d2c8bea33f6",
+      "bytes": 3126,
+      "partition": "train",
+      "protocol": "anthropic",
+      "kind": "general"
+    },
+    {
+      "id": "large-mixed-product-session",
+      "path": "items/large-mixed-product-session.json",
+      "sha256": "346979e104cb2a78cbfab378b1749598e3e15fbc44e967b4f886bb29ea1d53c4",
+      "bytes": 13762,
+      "partition": "holdout",
+      "protocol": "anthropic",
+      "kind": "coding-task"
+    },
+    {
+      "id": "holdout-openai-log-analysis",
+      "path": "items/holdout-openai-log-analysis.json",
+      "sha256": "e6da17f1616c1e07dc9f81a1da10479f48554483cd437c4f43dbd34205ff8239",
+      "bytes": 14198,
+      "partition": "holdout",
+      "protocol": "openai_chat",
+      "kind": "coding-task"
+    }
+  ]
+}

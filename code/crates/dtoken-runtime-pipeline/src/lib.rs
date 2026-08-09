@@ -6,6 +6,16 @@ use sha2::{Digest, Sha256};
 
 pub use dtoken_types::{SentPayloadVariant, UpstreamSendState as SendCommitState};
 
+pub mod recovery;
+pub mod scheduler;
+
+pub use recovery::{RecoveryPhase, RecoveryTracker, RecoveryTransitionError};
+pub use scheduler::{
+    BoundedWorkerPool, ByteBudget, CancellationToken, ConcurrencyLimits, DispatchDecision,
+    PreserveReason, RequestDeadline, SchedulerGate, StableAdmission, StableOrder, SubmitError,
+    TaskOutcome,
+};
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PipelineError {
     EmptyIngress,
@@ -18,6 +28,24 @@ pub enum PipelineError {
     InvalidRecoveryReceipt,
     ValidatorRejected,
     InvalidCommitTimestamp,
+    /// Concurrency bounds must all be strictly positive.
+    InvalidConcurrencyLimits,
+    /// Byte budget capacity must be strictly positive.
+    InvalidByteBudget,
+    /// Request deadline budget must be strictly positive.
+    InvalidDeadline,
+    /// The admission queue was full; the caller preserves the baseline.
+    QueueSaturated,
+    /// The request-wide deadline passed before commit.
+    DeadlineExceeded,
+    /// The request was cancelled before commit.
+    Cancelled,
+    /// A second baseline dispatch was attempted for one request.
+    BaselineAlreadyDispatched,
+    /// A dispatch or receipt was attempted after the request was terminal.
+    AlreadyTerminal,
+    /// A terminal receipt did not belong to the request identity.
+    ReceiptIdentityMismatch,
 }
 
 #[derive(Debug, Clone)]
@@ -139,6 +167,10 @@ impl PreparedRequest {
         &self.baseline_digest
     }
 
+    pub fn scope(&self) -> &RequestScope {
+        &self.scope
+    }
+
     pub fn with_candidate(
         self,
         artifact: TransformArtifact,
@@ -165,6 +197,14 @@ impl PreparedRequest {
             recovery: None,
             transforms: Vec::new(),
         }
+    }
+
+    /// Preserve path for saturation, expired deadlines, and cancellation
+    /// (PR-C6A): the request still goes out as its original baseline,
+    /// exactly once, with an evidence-bearing reason code.  The caller never
+    /// drops a request because optimization could not run.
+    pub fn into_preserved(self, reason: PreserveReason) -> ReadyToSend {
+        self.into_baseline_ready(reason.as_reason_code())
     }
 }
 
@@ -245,6 +285,8 @@ impl ReadyToSend {
             variant: self.variant,
             recovery: self.recovery,
             transforms: self.transforms,
+            reason_code: self.reason_code,
+            scope: self.scope,
         }
     }
 }
@@ -257,6 +299,8 @@ pub struct SendReceipt {
     variant: SentPayloadVariant,
     recovery: Option<RecoveryPrepareReceipt>,
     transforms: Vec<String>,
+    reason_code: String,
+    scope: RequestScope,
 }
 
 impl SendReceipt {
@@ -282,6 +326,31 @@ impl SendReceipt {
 
     pub fn transforms(&self) -> &[String] {
         &self.transforms
+    }
+
+    /// Evidence-bearing reason code for the terminal state (e.g.
+    /// `queue_saturated_preserve`, `validated_optimized_candidate`).
+    pub fn reason_code(&self) -> &str {
+        &self.reason_code
+    }
+
+    /// The full ingress identity.  The receipt is bound to the original
+    /// route/provider/model; there is no setter, so a post-commit provider
+    /// switch is structurally impossible.
+    pub fn scope(&self) -> &RequestScope {
+        &self.scope
+    }
+
+    pub fn provider_id(&self) -> &str {
+        &self.scope.provider_id
+    }
+
+    pub fn route_id(&self) -> &str {
+        &self.scope.route_id
+    }
+
+    pub fn model(&self) -> &str {
+        &self.scope.model
     }
 }
 

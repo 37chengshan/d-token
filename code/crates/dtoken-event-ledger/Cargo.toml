@@ -11,3 +11,10 @@ dtoken-types = { path = "../dtoken-types" }
 serde.workspace = true
 serde_json.workspace = true
 uuid.workspace = true
+
+[features]
+# Fault-injection registry for the crash/restart/fault matrix (PR-C6B).
+# Compile-time gated so release builds never carry test-only injection
+# points; enabled by `cargo test --features failpoints` or by consumers that
+# need deterministic crash simulation (the benchmark crate's fault matrix).
+failpoints = []

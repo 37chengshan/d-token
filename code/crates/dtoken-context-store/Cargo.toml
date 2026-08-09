@@ -6,12 +6,19 @@ license.workspace = true
 
 [dependencies]
 anyhow.workspace = true
+dtoken-event-ledger = { path = "../dtoken-event-ledger" }
 dtoken-types = { path = "../dtoken-types" }
 rusqlite = { version = "0.32", features = ["bundled"] }
 serde.workspace = true
 serde_json.workspace = true
 sha2 = "0.10"
 uuid.workspace = true
+
+[features]
+# Deterministic fault injection for the projection-rebuild crash matrix
+# (PR-C6B).  Compile-time gated so release builds carry no test-only
+# injection points.
+failpoints = ["dtoken-event-ledger/failpoints"]
 
 [target.'cfg(target_os = "windows")'.dependencies]
 windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_System_Threading", "Win32_System_SystemServices"] }
