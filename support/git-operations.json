@@ -2412,6 +2412,24 @@
       "summary": "完成 durability performance fault replay pack",
       "head_before": "9da94eb",
       "remote": null
+    },
+    {
+      "id": "45178f8a-1a15-44ac-944b-1be9f1fcb24e",
+      "timestamp": "2026-08-09T23:56:45+08:00",
+      "operation": "commit",
+      "branch": "codex/final/stage-pack-integrated",
+      "summary": "统一 v0.0.1 发布编排并收口桌面文案语言隔离",
+      "head_before": "0a44a48",
+      "remote": null
+    },
+    {
+      "id": "6a5cb40e-085d-4b24-b718-842ea51dfe02",
+      "timestamp": "2026-08-09T23:58:05+08:00",
+      "operation": "commit",
+      "branch": "codex/final/stage-pack-integrated",
+      "summary": "记录 v0.0.1 编排提交的必需 Git 审计条目",
+      "head_before": "c01e901",
+      "remote": null
     }
   ]
 }
