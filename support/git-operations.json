@@ -2268,6 +2268,33 @@
       "summary": "Record C0A branch creation audit before provenance review PR",
       "head_before": "082f00125683e18ebe1604b484bd8a1c0213356f",
       "remote": null
+    },
+    {
+      "id": "c824dcd0-5245-4ebb-94aa-cb3f406063bc",
+      "timestamp": "2026-08-09T17:36:14+08:00",
+      "operation": "branch-create",
+      "branch": "codex/final/agent-experience-pack",
+      "summary": "Create Agent experience macro delivery branch from provenance baseline",
+      "head_before": "f8b3db00353e24ecd206c0894ec6350a207c340a",
+      "remote": null
+    },
+    {
+      "id": "00fbc311-1640-433b-a48c-756863813ab2",
+      "timestamp": "2026-08-09T17:36:14+08:00",
+      "operation": "branch-create",
+      "branch": "codex/final/platform-cbm-pack",
+      "summary": "Create platform and Codebase Memory macro delivery branch from provenance baseline",
+      "head_before": "f8b3db00353e24ecd206c0894ec6350a207c340a",
+      "remote": null
+    },
+    {
+      "id": "6d0ed96f-8442-4092-9376-f7f66186cfdc",
+      "timestamp": "2026-08-09T17:36:15+08:00",
+      "operation": "commit",
+      "branch": "codex/final/provenance-batch-reconciled",
+      "summary": "Record Agent experience and platform macro branch audits",
+      "head_before": "f8b3db00353e24ecd206c0894ec6350a207c340a",
+      "remote": null
     }
   ]
 }
