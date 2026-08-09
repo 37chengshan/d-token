@@ -15,9 +15,9 @@ pub struct OpticalTransformContractV2 {
     pub selector_revision: &'static str,
     pub patcher_revision: &'static str,
     pub post_validator_revision: &'static str,
-    pub tokenizer_revision: &'static str,
-    pub pricing_revision: &'static str,
-    pub cache_policy_revision: &'static str,
+    pub tokenizer_revision: String,
+    pub pricing_revision: String,
+    pub cache_policy_revision: String,
 }
 
 impl OpticalTransformContractV2 {
@@ -32,22 +32,22 @@ impl OpticalTransformContractV2 {
             selector_revision: "hybrid-selector-v3-single-page-active",
             patcher_revision: "sealed-anthropic-patcher-v2",
             post_validator_revision: "artifact-post-validator-v2",
-            tokenizer_revision: "unbound-tokenizer",
-            pricing_revision: "unbound-pricing",
-            cache_policy_revision: "cold-warm-unknown-max-burn-v1",
+            tokenizer_revision: "unbound-tokenizer".to_string(),
+            pricing_revision: "unbound-pricing".to_string(),
+            cache_policy_revision: "cold-warm-unknown-max-burn-v1".to_string(),
         }
     }
 
     pub fn current_with_economics(
         renderer_contract_digest: impl Into<String>,
-        tokenizer_revision: &'static str,
-        pricing_revision: &'static str,
-        cache_policy_revision: &'static str,
+        tokenizer_revision: impl Into<String>,
+        pricing_revision: impl Into<String>,
+        cache_policy_revision: impl Into<String>,
     ) -> Self {
         Self {
-            tokenizer_revision,
-            pricing_revision,
-            cache_policy_revision,
+            tokenizer_revision: tokenizer_revision.into(),
+            pricing_revision: pricing_revision.into(),
+            cache_policy_revision: cache_policy_revision.into(),
             ..Self::current(renderer_contract_digest)
         }
     }

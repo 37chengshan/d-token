@@ -1096,6 +1096,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "dtoken-benchmark"
+version = "0.2.0-beta.1"
+dependencies = [
+ "anyhow",
+ "clap",
+ "dtoken-compress",
+ "dtoken-runtime-pipeline",
+ "dtoken-types",
+ "libc",
+ "serde",
+ "serde_json",
+ "sha2",
+ "uuid",
+]
+
+[[package]]
 name = "dtoken-codebase-memory"
 version = "0.2.0-beta.1"
 dependencies = [
@@ -1187,6 +1203,7 @@ name = "dtoken-context-store"
 version = "0.2.0-beta.1"
 dependencies = [
  "anyhow",
+ "dtoken-event-ledger",
  "dtoken-types",
  "rusqlite",
  "serde",
@@ -1202,6 +1219,7 @@ version = "0.2.0-beta.1"
 dependencies = [
  "anyhow",
  "axum",
+ "base64 0.22.1",
  "dtoken-compress",
  "dtoken-config",
  "dtoken-config-patcher",
@@ -1215,6 +1233,7 @@ dependencies = [
  "dtoken-project-policy",
  "dtoken-runtime-pipeline",
  "dtoken-types",
+ "ed25519-dalek",
  "futures-util",
  "keyring",
  "reqwest 0.12.28",
@@ -1393,6 +1412,7 @@ checksum = "70e796c081cee67dc755e1a36a0a172b897fab85fc3f6bc48307991f64e4eca9"
 dependencies = [
  "curve25519-dalek",
  "ed25519",
+ "rand_core 0.6.4",
  "serde",
  "sha2",
  "subtle",

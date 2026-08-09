@@ -1857,6 +1857,12 @@ pub struct OpticalCapabilitySnapshot {
     pub notes: Option<String>,
     #[serde(default)]
     pub attestation: Option<OpticalCapabilityAttestation>,
+    /// Attested economics bound by the Ed25519 signature. Active-capable
+    /// snapshots must carry a well-formed economics attestation; the signed
+    /// transform contract digest is derived from these revisions, so tampering
+    /// with tokenizer/pricing/cache parameters breaks the attestation.
+    #[serde(default)]
+    pub economics: Option<OpticalEconomicsAttestation>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1880,6 +1886,59 @@ pub struct OpticalTrustedAuthority {
     pub authority_id: String,
     pub key_id: String,
     pub public_key_base64: String,
+}
+
+fn default_optical_economics_schema_version() -> u32 {
+    1
+}
+
+/// Model-bound economics parameters attested by the capability authority.
+/// Only a well-formed, signature-bound economics attestation may authorize an
+/// active Optical transform; any unattested or malformed economics contract
+/// keeps the request on the preserve-text path.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct OpticalEconomicsAttestation {
+    #[serde(default = "default_optical_economics_schema_version")]
+    pub schema_version: u32,
+    pub tokenizer_revision: String,
+    pub pricing_revision: String,
+    pub cache_policy_revision: String,
+    pub chars_per_text_token: f64,
+    pub cache_create_rate: f64,
+    pub cache_read_rate: f64,
+}
+
+impl Default for OpticalEconomicsAttestation {
+    fn default() -> Self {
+        Self {
+            schema_version: default_optical_economics_schema_version(),
+            tokenizer_revision: String::new(),
+            pricing_revision: String::new(),
+            cache_policy_revision: String::new(),
+            chars_per_text_token: 0.0,
+            cache_create_rate: 0.0,
+            cache_read_rate: 0.0,
+        }
+    }
+}
+
+impl OpticalEconomicsAttestation {
+    /// A well-formed economics attestation is required before any active
+    /// economics contract may be derived from it.
+    pub fn is_well_formed(&self) -> bool {
+        self.schema_version == 1
+            && !self.tokenizer_revision.trim().is_empty()
+            && !self.pricing_revision.trim().is_empty()
+            && !self.cache_policy_revision.trim().is_empty()
+            && self.chars_per_text_token.is_finite()
+            && self.chars_per_text_token > 0.0
+            && self.cache_create_rate.is_finite()
+            && self.cache_read_rate.is_finite()
+            && self.cache_create_rate >= 0.0
+            && self.cache_read_rate >= 0.0
+            && self.cache_create_rate >= self.cache_read_rate
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -2113,6 +2172,59 @@ pub struct OpticalCapabilityLifecyclePublicSummary {
     pub eval_artifacts: usize,
     pub passing_eval_artifacts: usize,
     pub attestation_required: bool,
+}
+
+/// Bounded, non-sensitive exact-route evidence for the N10 U7 gate. It carries
+/// route/provider/model/API identity, renderer/font/profile/corpus/tokenizer/
+/// pricing/cache/eval digests, lifecycle times and the paired fidelity/cost/
+/// latency eval numbers. It never contains signatures, request bodies, source
+/// text, PNG/base64 bytes, credentials or raw secrets.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct OpticalExactRouteEvidence {
+    pub schema_version: u32,
+    pub snapshot_id: String,
+    pub revision: u64,
+    pub lifecycle: OpticalCapabilityLifecycle,
+    pub provider_family: ProviderFamily,
+    pub provider_id: String,
+    pub route_id: String,
+    pub model_base: String,
+    pub endpoint: OpticalEndpoint,
+    /// Exact wire API revision bound by the snapshot, e.g. `anthropic-messages-v1`.
+    pub api_revision: String,
+    pub verified_at_ms: u64,
+    pub issued_at_ms: Option<u64>,
+    pub expires_at_ms: Option<u64>,
+    pub renderer_profile_digest: String,
+    pub font_digest: String,
+    /// Digest over the transform contract, including tokenizer/pricing/cache revisions.
+    pub transform_contract_digest: String,
+    pub tokenizer_revision: String,
+    pub pricing_revision: String,
+    pub cache_policy_revision: String,
+    pub corpus_digest: String,
+    pub eval_artifact_digest: String,
+    pub eval_sample_count: u64,
+    pub eval_exact_failures: u64,
+    pub eval_unsafe_failures: u64,
+    pub eval_baseline_passes: u64,
+    pub eval_candidate_passes: u64,
+    pub eval_quality_delta: f64,
+    /// Paired (same model/API revision) baseline vs candidate input-token delta.
+    pub paired_input_token_delta: i64,
+    /// Paired cost delta in micro-USD (positive = candidate cheaper).
+    pub paired_cost_delta_microusd: i64,
+    /// Paired p95 latency delta in ms (positive = candidate faster).
+    pub paired_latency_p95_delta_ms: i64,
+    pub attested: bool,
+    pub eval_gate_passed: bool,
+    pub economics_bound: bool,
+    /// True when provider/route/model identity is exact (no wildcard).
+    pub exact_identity: bool,
+    /// True only when every gate is green: verified attestation, passing
+    /// paired eval, bound economics, exact identity, Active lifecycle and
+    /// unexpired attestation.
+    pub active_reachable: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

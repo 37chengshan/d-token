@@ -11,7 +11,7 @@ use super::capability::{
 };
 use super::decision::build_shadow_plan_detailed_with_registry;
 use super::economics::{
-    evaluate_materialized_capsule, resolve_active_economics_contract, CacheEvidenceState,
+    economics_contract_from_attested, evaluate_materialized_capsule, CacheEvidenceState,
 };
 use super::patcher::{OpticalPatchOperation, OpticalPatchSet, PatchError};
 use super::post_validate::{validate_patched_request, PostValidationError, ValidatedActiveRequest};
@@ -611,16 +611,14 @@ impl HybridContextEngine {
             context.endpoint.clone(),
             registry,
         );
-        let economics_contract =
-            resolve_active_economics_contract(&context.model, capability_revision)
-                .filter(|contract| {
-                    !contract.tokenizer_revision.is_empty()
-                        && !contract.pricing_revision.is_empty()
-                        && !contract.cache_policy_revision.is_empty()
-                        && contract.chars_per_text_token.is_finite()
-                        && contract.chars_per_text_token > 0.0
-                })
-                .ok_or(HybridEngineError::MissingEconomicsContract)?;
+        // Active economics must come from the signature-bound snapshot; a
+        // wildcard, unattested or malformed economics contract stays
+        // fail-closed (PR-C5C).
+        let economics_contract = resolved
+            .economics
+            .as_ref()
+            .and_then(economics_contract_from_attested)
+            .ok_or(HybridEngineError::MissingEconomicsContract)?;
         let geometry = geometry_for_capability(&resolved.capability)
             .ok_or(HybridEngineError::MissingGeometry)?;
         let render_contract = production_render_contract(&geometry);
@@ -1200,8 +1198,10 @@ fn engine_error_code(error: &HybridEngineError) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::optical::capability::experimental_anthropic_active_snapshot_for_route;
-    use dtoken_types::{CompressionPolicy, OpticalEndpoint, Protocol};
+    use crate::optical::capability::{
+        experimental_anthropic_active_snapshot_for_route, signed_runtime_config_fixture,
+    };
+    use dtoken_types::{CompressionPolicy, OpticalCapabilityLifecycle, OpticalEndpoint, Protocol};
     use serde_json::json;
 
     fn context() -> ResolvedOptimizationContext {
@@ -1538,5 +1538,245 @@ mod tests {
         );
         assert!(prepared.report().optical_candidate_count > 0);
         assert_eq!(prepared.report().image_count, prepared.report().optical_candidate_count);
+    }
+
+    #[test]
+    fn attested_production_registry_drives_automatic_active_without_ui_switch() {
+        // PR-C5D: a config-loaded, Ed25519-attested snapshot (not the
+        // from_snapshots test helper) plus green gates makes the exact direct
+        // Anthropic route go automatic active. No UI switch exists.
+        let config = signed_runtime_config_fixture();
+        let registry = OpticalCapabilityRegistry::from_runtime_config(&config, 200);
+        assert_eq!(registry.verified_rule_count(), 1);
+
+        let body = request_body();
+        let raw = serde_json::to_vec(&body).expect("fixture serializes");
+        let (global, route) = active_policies();
+        let prepared = HybridContextEngine::new(&global).prepare(
+            "attested-active-request",
+            &context(),
+            CompressionPolicy::Balanced,
+            body.clone(),
+            Some(&raw),
+            &global,
+            &route,
+            &registry,
+            &RenderCancellation::default(),
+        );
+        assert_eq!(
+            prepared.kind(),
+            HybridPreparationKind::Active,
+            "{}",
+            prepared.report().reason_code
+        );
+        assert_eq!(prepared.report().capability_revision, Some(1));
+        assert!(prepared.report().artifact_validated);
+        assert_eq!(
+            prepared.accounting().disposition,
+            OptimizationDisposition::Active
+        );
+    }
+
+    #[test]
+    fn expired_attestation_preserves_text_on_the_same_request() {
+        let config = signed_runtime_config_fixture();
+        let registry = OpticalCapabilityRegistry::from_runtime_config(&config, 1_001);
+        assert_eq!(registry.verified_rule_count(), 0);
+        assert_eq!(registry.rejected_rule_count(), 1);
+
+        let body = request_body();
+        let raw = serde_json::to_vec(&body).expect("fixture serializes");
+        let (global, route) = active_policies();
+        let prepared = HybridContextEngine::new(&global).prepare(
+            "expired-request",
+            &context(),
+            CompressionPolicy::Balanced,
+            body.clone(),
+            Some(&raw),
+            &global,
+            &route,
+            &registry,
+            &RenderCancellation::default(),
+        );
+        assert_eq!(prepared.kind(), HybridPreparationKind::Shadow);
+        assert_eq!(prepared.body(), &body);
+        assert_eq!(
+            prepared.accounting().sent_payload,
+            SentPayloadVariant::Original
+        );
+    }
+
+    #[test]
+    fn revoked_or_superseded_snapshot_preserves_text_on_the_same_request() {
+        for lifecycle in [
+            OpticalCapabilityLifecycle::Revoked,
+            OpticalCapabilityLifecycle::Superseded,
+        ] {
+            let mut snapshot = experimental_anthropic_active_snapshot_for_route(
+                "lifecycle-fixture",
+                1,
+                "anthropic-main",
+                "route-main",
+                "claude-fable-5",
+                100,
+                "engine-fixture",
+            );
+            snapshot.lifecycle = lifecycle;
+            if lifecycle == OpticalCapabilityLifecycle::Revoked {
+                snapshot.revoked_at_ms = Some(250);
+                snapshot.revocation_reason = Some("fixture revocation".to_string());
+            } else {
+                snapshot.supersedes_snapshot_id = Some("older-snapshot".to_string());
+            }
+            let registry = OpticalCapabilityRegistry::from_snapshots([snapshot]);
+            assert_eq!(registry.verified_rule_count(), 0);
+
+            let body = request_body();
+            let raw = serde_json::to_vec(&body).expect("fixture serializes");
+            let (global, route) = active_policies();
+            let prepared = HybridContextEngine::new(&global).prepare(
+                "lifecycle-request",
+                &context(),
+                CompressionPolicy::Balanced,
+                body.clone(),
+                Some(&raw),
+                &global,
+                &route,
+                &registry,
+                &RenderCancellation::default(),
+            );
+            assert_eq!(prepared.kind(), HybridPreparationKind::Shadow);
+            assert_eq!(prepared.body(), &body);
+            assert_eq!(
+                prepared.accounting().sent_payload,
+                SentPayloadVariant::Original
+            );
+        }
+    }
+
+    #[test]
+    fn missing_attested_economics_preserves_text_on_the_same_request() {
+        let mut snapshot = experimental_anthropic_active_snapshot_for_route(
+            "no-economics-fixture",
+            1,
+            "anthropic-main",
+            "route-main",
+            "claude-fable-5",
+            100,
+            "engine-fixture",
+        );
+        snapshot.economics = None;
+        let registry = OpticalCapabilityRegistry::from_snapshots([snapshot]);
+
+        let body = request_body();
+        let raw = serde_json::to_vec(&body).expect("fixture serializes");
+        let (global, route) = active_policies();
+        let prepared = HybridContextEngine::new(&global).prepare(
+            "no-economics-request",
+            &context(),
+            CompressionPolicy::Balanced,
+            body.clone(),
+            Some(&raw),
+            &global,
+            &route,
+            &registry,
+            &RenderCancellation::default(),
+        );
+        assert_eq!(prepared.kind(), HybridPreparationKind::FallbackPreSend);
+        assert_eq!(prepared.report().reason_code, "economics_contract_unavailable");
+        assert_eq!(prepared.body(), &body);
+        assert_eq!(
+            prepared.accounting().sent_payload,
+            SentPayloadVariant::Original
+        );
+    }
+
+    #[test]
+    fn wildcard_snapshot_identity_preserves_text_on_the_same_request() {
+        for field in ["provider", "route", "model"] {
+            let mut snapshot = experimental_anthropic_active_snapshot_for_route(
+                "wildcard-fixture",
+                1,
+                "anthropic-main",
+                "route-main",
+                "claude-fable-5",
+                100,
+                "engine-fixture",
+            );
+            match field {
+                "provider" => {
+                    snapshot.provider_id = Some("*".to_string());
+                }
+                "route" => {
+                    snapshot.route_id = Some("*".to_string());
+                }
+                _ => {
+                    snapshot.model_base = "*".to_string();
+                }
+            }
+            let registry = OpticalCapabilityRegistry::from_snapshots([snapshot]);
+            assert_eq!(registry.verified_rule_count(), 0, "wildcard {field}");
+
+            let body = request_body();
+            let raw = serde_json::to_vec(&body).expect("fixture serializes");
+            let (global, route) = active_policies();
+            let prepared = HybridContextEngine::new(&global).prepare(
+                "wildcard-request",
+                &context(),
+                CompressionPolicy::Balanced,
+                body.clone(),
+                Some(&raw),
+                &global,
+                &route,
+                &registry,
+                &RenderCancellation::default(),
+            );
+            assert_eq!(prepared.kind(), HybridPreparationKind::Shadow);
+            assert_eq!(prepared.body(), &body);
+            assert_eq!(
+                prepared.accounting().sent_payload,
+                SentPayloadVariant::Original
+            );
+        }
+    }
+
+    #[test]
+    fn ordinary_user_image_never_creates_an_optical_render_entry() {
+        // OPTICAL-2: Optical only renders approved code/context text targets
+        // from the closed historical tool results. An ordinary user-supplied
+        // image block must never become an Optical image entry.
+        let body = json!({
+            "model": "claude-fable-5",
+            "system": "protected system instruction",
+            "tools": [{"name":"read","input_schema":{"type":"object"}}],
+            "messages": [
+                {"role":"user","content":[
+                    {"type":"image","source":{"type":"base64","media_type":"image/png","data":"iVBORw0KGgo="}}
+                ]},
+                {"role":"user","content":[{"type":"text","text":"current turn"}]}
+            ]
+        });
+        let raw = serde_json::to_vec(&body).expect("fixture serializes");
+        let (global, route) = active_policies();
+        let prepared = HybridContextEngine::new(&global).prepare(
+            "ordinary-image-request",
+            &context(),
+            CompressionPolicy::Balanced,
+            body.clone(),
+            Some(&raw),
+            &global,
+            &route,
+            &active_registry(),
+            &RenderCancellation::default(),
+        );
+        assert_ne!(prepared.kind(), HybridPreparationKind::Active);
+        assert_eq!(prepared.body(), &body);
+        assert_eq!(prepared.report().image_count, 0);
+        assert!(prepared.report().capsule_digests.is_empty());
+        assert_eq!(prepared.report().optical_candidate_count, 0);
+        assert_eq!(
+            prepared.accounting().sent_payload,
+            SentPayloadVariant::Original
+        );
     }
 }

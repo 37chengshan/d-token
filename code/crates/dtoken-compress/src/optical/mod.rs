@@ -5,6 +5,7 @@ pub mod contract;
 pub mod decision;
 pub mod economics;
 pub mod engine;
+pub mod evidence;
 pub mod eval;
 pub mod eval_hybrid;
 pub mod eval_profile;
@@ -34,7 +35,8 @@ pub use capability::{
     provider_family_for_protocol, resolve_model_capability,
     resolve_model_capability_record_for_route_with_registry,
     resolve_model_capability_record_with_registry, resolve_model_capability_with_registry,
-    CapabilityRegistryError, OpticalCapabilityRegistry, ResolvedOpticalCapability,
+    sign_capability_snapshot, CapabilityRegistryError, OpticalCapabilityRegistry,
+    ResolvedOpticalCapability,
 };
 pub use context_graph::{
     build_context_graph, ContextEdge, ContextEdgeKind, ContextGraph, ContextGraphSummary,
@@ -53,6 +55,7 @@ pub use engine::{
 pub use eval::{
     eval_corpus_digest, EvalBuildError, EvalSampleObservation, EvalThresholds, OpticalEvalBuilder,
 };
+pub use evidence::optical_exact_route_evidence;
 pub use eval_hybrid::{
     partition_eval_hybrid, EvalHybridBlock, EvalHybridBlockKind, EvalHybridDecision,
     EvalHybridPartition,

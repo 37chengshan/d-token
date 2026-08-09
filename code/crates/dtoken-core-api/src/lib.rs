@@ -54,7 +54,8 @@ use dtoken_types::{
     EventSource, EventStatus, EvidenceFreshness, EvidenceSource, EvidenceValue, HealthResponse,
     InputTokenUsage, LayeredSavingsReport, LayeredStage, ModalityTokens, OpticalApplicabilityInput,
     OpticalCapabilitiesPublicSummary, OpticalCapabilityLifecyclePublicSummary, OpticalEndpoint,
-    OpticalEventMetadataPublicSummary, OpticalEventPublicSummary, OpticalMode,
+    OpticalEventMetadataPublicSummary, OpticalEventPublicSummary, OpticalExactRouteEvidence,
+    OpticalMode,
     OpticalPlanPublicSummary, OpticalPlanStatus, OpticalPreviewRequest, OpticalStatusPublicSummary,
     PayloadByteUsage, Protocol, ProtocolInjectionProfile, RequestLog, RequestScope,
     RequestScopeError, RouteDecision, SupportLevel, UpstreamSendState, UsageEvidence,
@@ -972,6 +973,7 @@ fn backend_capability_registry(
     context_store: ContextStoreCapabilityState,
     ccr_private_store_ready: bool,
     managed_rtk: Option<&ManagedRtkRuntimeEvidence>,
+    optical_active_configured: bool,
 ) -> CapabilityRegistrySnapshot {
     let verified_at_ms = dtoken_event_ledger::now_ms().max(1);
     let verified =
@@ -1167,9 +1169,21 @@ fn backend_capability_registry(
     }
     capabilities.push(verified(
         "optical-active",
-        AvailabilityState::ImplementedDisabled,
+        if optical_active_configured {
+            AvailabilityState::Ready
+        } else {
+            AvailabilityState::ImplementedDisabled
+        },
         OPTICAL_SHADOW_EVIDENCE_REVISION,
-        &["policy_shadow_only", "release_gate_disabled"],
+        &[if optical_active_configured {
+            "exact_attested_route_configured"
+        } else {
+            "policy_shadow_only"
+        }, if optical_active_configured {
+            "release_gate_enabled"
+        } else {
+            "release_gate_disabled"
+        }],
     ));
 
     capabilities.push(
@@ -1555,11 +1569,13 @@ impl AppState {
         let optical_config_issues = Arc::new(config.normalize_optical_fail_closed());
         let hybrid_engine = Arc::new(HybridContextEngine::new(&config.optical.global_policy));
         let agent_discovery = scan_current_process_agents().ok();
+        let optical_active_configured = optical_active_configured(&config);
         let capabilities = Arc::new(backend_capability_registry(
             agent_discovery.as_ref(),
             ContextStoreCapabilityState::NotConfigured,
             false,
             None,
+            optical_active_configured,
         ));
         let capability_read_model = Arc::new(Mutex::new((*capabilities).clone()));
         Self {
@@ -1714,11 +1730,13 @@ impl AppState {
         match ContextStore::open(runtime_dir.join("runtime-state.sqlite3")) {
             Ok(mut context_store) => {
                 let schema_version = context_store.schema_version().unwrap_or_default();
+                let optical_active_configured = optical_active_configured(&state.config);
                 let capabilities = Arc::new(backend_capability_registry(
                     state.agent_discovery.as_ref().as_ref(),
                     ContextStoreCapabilityState::Ready { schema_version },
                     state.ccr_private_store.is_some(),
                     Some(&managed_rtk_evidence),
+                    optical_active_configured,
                 ));
                 if persist_context_store_evidence(
                     &mut context_store,
@@ -1735,6 +1753,7 @@ impl AppState {
                         ContextStoreCapabilityState::Failed,
                         state.ccr_private_store.is_some(),
                         Some(&managed_rtk_evidence),
+                        optical_active_configured,
                     ));
                 }
             }
@@ -1744,6 +1763,7 @@ impl AppState {
                     ContextStoreCapabilityState::Failed,
                     state.ccr_private_store.is_some(),
                     Some(&managed_rtk_evidence),
+                    optical_active_configured(&state.config),
                 ));
             }
         }
@@ -1907,6 +1927,7 @@ impl AppState {
             context_store,
             self.ccr_private_store.is_some(),
             Some(&managed_rtk),
+            optical_active_configured(&self.config),
         );
         let Ok(mut current) = self.capability_read_model.lock() else {
             return candidate;
@@ -3989,6 +4010,10 @@ pub fn build_router_with_mcp_server(state: AppState, mcp_server: Arc<mcp::McpSer
             get(optical_capability_lifecycle),
         )
         .route(
+            "/compression/optical/exact-evidence",
+            get(optical_exact_evidence),
+        )
+        .route(
             "/compression/optical/events/recent",
             get(optical_recent_events),
         )
@@ -4199,6 +4224,24 @@ async fn optical_capabilities(
     })
 }
 
+/// True when the current config carries a fully green exact direct Anthropic
+/// active lane: allow_active survives normalization, the configured registry
+/// verified at least one attested capability, and at least one exact route is
+/// bound to it. This drives the honest `optical-active` capability state.
+fn optical_active_configured(config: &DtokenConfig) -> bool {
+    if !config.optical.global_policy.allow_active {
+        return false;
+    }
+    if !config.optical_config_issues().is_empty() {
+        return false;
+    }
+    let registry = OpticalCapabilityRegistry::from_runtime_config(
+        &config.optical,
+        dtoken_event_ledger::now_ms(),
+    );
+    registry.verified_rule_count() > 0 && active_direct_anthropic_route_count(config, &registry) > 0
+}
+
 fn active_direct_anthropic_route_count(
     config: &DtokenConfig,
     registry: &OpticalCapabilityRegistry,
@@ -4231,6 +4274,21 @@ fn active_direct_anthropic_route_count(
                         && policy.confirmed_experimental_lossy
                 })
     }).count()
+}
+
+/// Bounded, non-sensitive exact-route evidence for the N10 U7 gate: route/
+/// provider/model/API identity, digests, lifecycle and paired eval numbers.
+/// Never contains signatures, bodies, PNG/base64 or secrets.
+async fn optical_exact_evidence(
+    State(state): State<AppState>,
+) -> Json<Vec<OpticalExactRouteEvidence>> {
+    let now_ms = dtoken_event_ledger::now_ms();
+    let registry = OpticalCapabilityRegistry::from_runtime_config(&state.config.optical, now_ms);
+    Json(dtoken_compress::optical::optical_exact_route_evidence(
+        &state.config.optical,
+        &registry,
+        now_ms,
+    ))
 }
 
 async fn optical_capability_lifecycle(
@@ -14833,6 +14891,7 @@ fn protocol_injection_profiles() -> Vec<ProtocolInjectionProfile> {
 mod tests {
     use super::*;
     use axum::http::Request;
+    use base64::Engine as _;
     use tower::ServiceExt;
 
     fn optical_test_event(
@@ -19119,6 +19178,7 @@ mod tests {
             ContextStoreCapabilityState::NotConfigured,
             false,
             None,
+            false,
         );
         for id in [
             "cache-aligner",
@@ -19194,6 +19254,7 @@ mod tests {
             ContextStoreCapabilityState::NotConfigured,
             true,
             None,
+            false,
         );
         assert_eq!(
             ccr_ready
@@ -19211,6 +19272,7 @@ mod tests {
             ContextStoreCapabilityState::Ready { schema_version: 6 },
             true,
             None,
+            false,
         );
         let expected = [
             ("compression", AvailabilityState::Ready),
@@ -19262,6 +19324,7 @@ mod tests {
             ContextStoreCapabilityState::NotConfigured,
             false,
             Some(&installed_only),
+            false,
         );
         assert_eq!(
             installed_registry
@@ -19290,6 +19353,7 @@ mod tests {
             ContextStoreCapabilityState::NotConfigured,
             false,
             Some(&invoked),
+            false,
         );
         assert_eq!(
             invoked_registry
@@ -19320,6 +19384,7 @@ mod tests {
             ContextStoreCapabilityState::NotConfigured,
             false,
             None,
+            false,
         );
         let capability = registry
             .find("agent-registry")
@@ -19414,6 +19479,7 @@ mod tests {
             ContextStoreCapabilityState::Ready { schema_version: 2 },
             false,
             None,
+            false,
         );
         let mut store =
             ContextStore::open(dir.join("runtime-state.sqlite3")).expect("open context store");
@@ -20286,6 +20352,395 @@ mod tests {
             "anthropic_cache_upstream_unverified"
         );
         server.await.expect("mock upstream task");
+        drop(state);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    fn optical_exact_capability() -> dtoken_types::OpticalModelCapability {
+        dtoken_types::OpticalModelCapability {
+            provider_family: dtoken_types::ProviderFamily::Anthropic,
+            provider_id: Some("anthropic-main".to_string()),
+            model_base: Some("claude-fable-5".to_string()),
+            endpoint: dtoken_types::OpticalEndpoint::AnthropicMessages,
+            status: dtoken_types::CapabilityStatus::Supported,
+            max_mode: dtoken_types::OpticalMode::ToolResultsOnly,
+            supports_image_input: true,
+            supports_anthropic_image_block: true,
+            supports_openai_image_url: false,
+            supports_openai_input_image: false,
+            supports_data_url: true,
+            max_images_per_request: 10,
+            max_image_width_px: 1_568,
+            max_image_height_px: 728,
+            vision_token_formula: dtoken_types::VisionTokenFormula::PatchGrid {
+                patch_size_px: 28,
+                max_tokens: 1_568,
+                safety_margin_percent: 105.0,
+            },
+            exactness_class: dtoken_types::VisionExactnessClass::TechnicalReadable,
+        }
+    }
+
+    fn optical_exact_economics() -> dtoken_types::OpticalEconomicsAttestation {
+        dtoken_types::OpticalEconomicsAttestation {
+            schema_version: 1,
+            tokenizer_revision: "test-char4-tokenizer-v1".to_string(),
+            pricing_revision: "test-anthropic-cache-pricing-v1".to_string(),
+            cache_policy_revision: "cold-warm-unknown-max-burn-v1".to_string(),
+            chars_per_text_token: 4.0,
+            cache_create_rate: 1.25,
+            cache_read_rate: 0.1,
+        }
+    }
+
+    /// Fully green fixture config: Ed25519-attested exact route capability,
+    /// passing bound paired eval, attested economics, explicit route policy
+    /// and an Anthropic cache policy, so the direct send path can go
+    /// automatic active with no UI switch (PR-C5D).
+    fn optical_exact_active_test_config() -> DtokenConfig {
+        let mut snapshot = dtoken_types::OpticalCapabilitySnapshot {
+            schema_version: 1,
+            snapshot_id: "signed-route-capability-v1".to_string(),
+            revision: 1,
+            enabled: true,
+            lifecycle: dtoken_types::OpticalCapabilityLifecycle::Active,
+            revoked_at_ms: None,
+            revocation_reason: None,
+            supersedes_snapshot_id: None,
+            provider_family: dtoken_types::ProviderFamily::Anthropic,
+            provider_id: Some("anthropic-main".to_string()),
+            route_id: Some("route-main".to_string()),
+            model_base: "claude-fable-5".to_string(),
+            endpoint: dtoken_types::OpticalEndpoint::AnthropicMessages,
+            capability: optical_exact_capability(),
+            verified_at_ms: 1,
+            source: "c5d-test-fixture".to_string(),
+            notes: None,
+            attestation: None,
+            economics: Some(optical_exact_economics()),
+        };
+        let profile =
+            dtoken_compress::optical::geometry_for_capability(&snapshot.capability)
+                .expect("exact capability must have geometry");
+        let mut builder = dtoken_compress::optical::OpticalEvalBuilder::new(
+            "eval-c5d-v1",
+            "claude-fable-5",
+            dtoken_types::OpticalEndpoint::AnthropicMessages,
+            &profile,
+            "fixture-corpus-digest",
+            1,
+            dtoken_compress::optical::EvalThresholds::default(),
+            snapshot.economics.as_ref(),
+        );
+        for _ in 0..20 {
+            builder.record(dtoken_compress::optical::EvalSampleObservation {
+                baseline_passed: true,
+                candidate_passed: true,
+                exact_failure: false,
+                unsafe_failure: false,
+                baseline_input_tokens: 2_000,
+                candidate_input_tokens: 1_000,
+                baseline_cost_microusd: 2_000,
+                candidate_cost_microusd: 1_000,
+                baseline_latency_ms: 100,
+                candidate_latency_ms: 90,
+            });
+        }
+        let eval = builder.finalize().expect("fixture eval artifact");
+        let eval_digest = dtoken_compress::optical::eval_artifact_digest(&eval);
+        let now_ms = dtoken_event_ledger::now_ms().max(1);
+        dtoken_compress::optical::sign_capability_snapshot(
+            &mut snapshot,
+            &[7u8; 32],
+            "fixture-authority",
+            "fixture-key-v1",
+            now_ms.saturating_sub(1).max(1),
+            now_ms.saturating_add(3_600_000),
+            &eval_digest,
+        )
+        .expect("fixture capability must sign");
+
+        DtokenConfig {
+            providers: vec![dtoken_types::ProviderProfile {
+                id: "anthropic-main".to_string(),
+                name: "Anthropic main".to_string(),
+                kind: dtoken_types::ProviderKind::Custom,
+                protocol: Protocol::Anthropic,
+                base_url: "https://api.anthropic.com".to_string(),
+                api_key_ref: None,
+                models: vec![
+                    "claude-fable-5".to_string(),
+                    "claude-other-5".to_string(),
+                ],
+                timeout_ms: 30_000,
+                healthcheck_path: None,
+                wire_api: dtoken_types::ProviderWireApi::OpenAiChat,
+            }],
+            routes: vec![dtoken_types::RouteProfile {
+                id: "route-main".to_string(),
+                name: "Exact Optical route".to_string(),
+                input_protocol: Protocol::Anthropic,
+                instance_id: "anthropic-main-instance".to_string(),
+                target_provider_id: "anthropic-main".to_string(),
+                fallback_provider_id: None,
+                chain_mode: ChainMode::Direct,
+                compression_policy: CompressionPolicy::Balanced,
+                bind_host: "127.0.0.1".to_string(),
+                local_port: 18003,
+            }],
+            instances: vec![],
+            provider_cache_policies: vec![
+                dtoken_types::ProviderCachePolicy {
+                    route_id: "route-main".to_string(),
+                    provider_id: "anthropic-main".to_string(),
+                    model: "claude-fable-5".to_string(),
+                    strategy: dtoken_types::ProviderCachePolicyStrategy::AnthropicExplicit,
+                    ttl_seconds: 300,
+                    min_prefix_bytes: 1,
+                },
+                dtoken_types::ProviderCachePolicy {
+                    route_id: "route-main".to_string(),
+                    provider_id: "anthropic-main".to_string(),
+                    model: "claude-other-5".to_string(),
+                    strategy: dtoken_types::ProviderCachePolicyStrategy::AnthropicExplicit,
+                    ttl_seconds: 300,
+                    min_prefix_bytes: 1,
+                },
+            ],
+            output_shaping_policies: vec![],
+            optical: dtoken_types::OpticalRuntimeConfig {
+                schema_version: 1,
+                global_policy: dtoken_types::OpticalGlobalPolicy {
+                    enabled: true,
+                    allow_active: true,
+                    max_plan_time_ms: 5_000,
+                    max_render_time_ms: 5_000,
+                    ..Default::default()
+                },
+                route_policies: vec![dtoken_types::RouteOpticalPolicyEntry {
+                    route_id: "route-main".to_string(),
+                    policy: dtoken_types::RouteOpticalPolicy {
+                        enabled: true,
+                        mode: dtoken_types::OpticalMode::ToolResultsOnly,
+                        allow_tool_result: true,
+                        min_net_saved_tokens: 1,
+                        confirmed_experimental_lossy: true,
+                        ..Default::default()
+                    },
+                }],
+                capability_snapshots: vec![snapshot],
+                trusted_authorities: vec![dtoken_types::OpticalTrustedAuthority {
+                    authority_id: "fixture-authority".to_string(),
+                    key_id: "fixture-key-v1".to_string(),
+                    public_key_base64: base64::engine::general_purpose::STANDARD.encode(
+                        ed25519_dalek::SigningKey::from_bytes(&[7u8; 32])
+                            .verifying_key()
+                            .as_bytes(),
+                    ),
+                }],
+                eval_artifacts: vec![eval],
+            },
+        }
+    }
+
+    fn optical_exact_request_body(model: &str) -> Value {
+        let log = format!("INFO {} \n", "historical operation completed ".repeat(16));
+        let log = log.repeat(40);
+        let mut messages = vec![
+            json!({"role":"assistant","content":[{"type":"tool_use","id":"tool-1","name":"read","input":{"path":"/tmp/a"}}]}),
+            json!({"role":"user","content":[{"type":"tool_result","tool_use_id":"tool-1","content":log}]}),
+        ];
+        for index in 0..6 {
+            messages.push(json!({"role":"assistant","content":[{"type":"tool_use","id":format!("recent-{index}"),"name":"read","input":{}}]}));
+            messages.push(json!({"role":"user","content":[{"type":"tool_result","tool_use_id":format!("recent-{index}"),"content":"recent"}]}));
+        }
+        messages.push(json!({"role":"user","content":[{"type":"text","text":"current turn"}]}));
+        json!({
+            "model": model,
+            "system": "protected system instruction",
+            "tools": [{"name":"read","input_schema":{"type":"object"}}],
+            "messages": messages
+        })
+    }
+
+    #[tokio::test]
+    async fn optical_exact_attested_route_auto_activates_on_direct_send_path() {
+        let dir = std::env::temp_dir().join(format!("dtoken-c5d-green-{}", Uuid::new_v4()));
+        let state = AppState::new_persistent(optical_exact_active_test_config(), &dir);
+
+        // The capability registry must reflect the green exact route.
+        assert_eq!(
+            state
+                .capabilities
+                .find("optical-active")
+                .expect("optical-active capability")
+                .state,
+            AvailabilityState::Ready
+        );
+        let Json(status) = optical_status(State(state.clone())).await;
+        assert!(status.allow_active);
+        assert!(status.active_reachable);
+        assert_eq!(status.active_direct_routes, 1);
+
+        let body = optical_exact_request_body("claude-fable-5");
+        let raw = serde_json::to_vec(&body).expect("fixture serializes");
+        let mut payload = anthropic_route_payload(&state, body.clone(), RouteEvidence::default())
+            .expect("exact Anthropic route payload");
+        persist_anthropic_cache_evidence(&state, &payload.scope);
+
+        let prepared = prepare_direct_anthropic_hybrid(&state, &payload, raw)
+            .await
+            .expect("hybrid preparation must run with fresh cache evidence");
+        assert_eq!(
+            prepared.kind(),
+            HybridPreparationKind::Active,
+            "{}",
+            prepared.report().reason_code
+        );
+        assert!(prepared.report().artifact_validated);
+        assert!(prepared.report().image_count > 0);
+        assert_eq!(prepared.report().capability_revision, Some(1));
+        assert!(!prepared.report().capsule_digests.is_empty());
+
+        let original_body = payload.upstream_body.clone();
+        apply_hybrid_preparation(&mut payload, &prepared);
+        assert_ne!(payload.upstream_body, original_body);
+        assert_eq!(
+            payload.request_log.context_accounting.as_ref().map(|accounting| accounting.disposition),
+            Some(dtoken_types::OptimizationDisposition::Active)
+        );
+        assert_eq!(
+            payload.upstream_body["model"],
+            json!("claude-fable-5")
+        );
+        // Protected fields survive; only the approved historical tool result
+        // is replaced by the rendered capsule.
+        assert_eq!(payload.upstream_body["system"], body["system"]);
+        assert_eq!(payload.upstream_body["tools"], body["tools"]);
+        assert_eq!(payload.upstream_body["messages"][0], body["messages"][0]);
+        let patched_content = payload
+            .upstream_body
+            .pointer("/messages/1/content/0/content")
+            .and_then(Value::as_array)
+            .expect("approved tool result is replaced by typed content blocks");
+        assert_eq!(patched_content[0]["type"], "text");
+        assert_eq!(patched_content[1]["type"], "image");
+        drop(state);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn optical_exact_expired_attestation_preserves_original_body_on_send_path() {
+        let dir = std::env::temp_dir().join(format!("dtoken-c5d-expired-{}", Uuid::new_v4()));
+        let mut config = optical_exact_active_test_config();
+        config.optical.capability_snapshots[0]
+            .attestation
+            .as_mut()
+            .expect("attestation")
+            .expires_at_ms = 1;
+        let state = AppState::new_persistent(config, &dir);
+
+        let body = optical_exact_request_body("claude-fable-5");
+        let raw = serde_json::to_vec(&body).expect("fixture serializes");
+        let mut payload = anthropic_route_payload(&state, body.clone(), RouteEvidence::default())
+            .expect("exact Anthropic route payload");
+        persist_anthropic_cache_evidence(&state, &payload.scope);
+
+        let prepared = prepare_direct_anthropic_hybrid(&state, &payload, raw)
+            .await
+            .expect("hybrid preparation must run with fresh cache evidence");
+        assert_eq!(prepared.kind(), HybridPreparationKind::Shadow);
+        assert_eq!(prepared.body(), &body);
+        assert_eq!(
+            prepared.accounting().sent_payload,
+            dtoken_types::SentPayloadVariant::Original
+        );
+
+        apply_hybrid_preparation(&mut payload, &prepared);
+        assert_eq!(payload.upstream_body, body);
+        drop(state);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn optical_exact_revoked_snapshot_preserves_original_body_on_send_path() {
+        let dir = std::env::temp_dir().join(format!("dtoken-c5d-revoked-{}", Uuid::new_v4()));
+        let mut config = optical_exact_active_test_config();
+        let snapshot = &mut config.optical.capability_snapshots[0];
+        snapshot.lifecycle = dtoken_types::OpticalCapabilityLifecycle::Revoked;
+        snapshot.revoked_at_ms = Some(dtoken_event_ledger::now_ms());
+        snapshot.revocation_reason = Some("fixture revocation".to_string());
+        let state = AppState::new_persistent(config, &dir);
+
+        let body = optical_exact_request_body("claude-fable-5");
+        let raw = serde_json::to_vec(&body).expect("fixture serializes");
+        let mut payload = anthropic_route_payload(&state, body.clone(), RouteEvidence::default())
+            .expect("exact Anthropic route payload");
+        persist_anthropic_cache_evidence(&state, &payload.scope);
+
+        let prepared = prepare_direct_anthropic_hybrid(&state, &payload, raw)
+            .await
+            .expect("hybrid preparation must run with fresh cache evidence");
+        assert_eq!(prepared.kind(), HybridPreparationKind::Shadow);
+        assert_eq!(prepared.body(), &body);
+        assert_eq!(
+            prepared.accounting().sent_payload,
+            dtoken_types::SentPayloadVariant::Original
+        );
+
+        apply_hybrid_preparation(&mut payload, &prepared);
+        assert_eq!(payload.upstream_body, body);
+        drop(state);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn optical_exact_evidence_endpoint_emits_bounded_active_reachable_evidence() {
+        let state = AppState::new(optical_exact_active_test_config());
+        let Json(evidence) = optical_exact_evidence(State(state)).await;
+        assert_eq!(evidence.len(), 1);
+        let entry = &evidence[0];
+        assert!(entry.active_reachable);
+        assert!(entry.attested);
+        assert!(entry.eval_gate_passed);
+        assert!(entry.economics_bound);
+        assert!(entry.exact_identity);
+        assert_eq!(entry.route_id, "route-main");
+        assert_eq!(entry.provider_id, "anthropic-main");
+        assert_eq!(entry.model_base, "claude-fable-5");
+        assert_eq!(entry.api_revision, "anthropic-messages-v1");
+        let encoded = serde_json::to_string(&evidence).expect("evidence serializes");
+        assert!(!encoded.contains("signature"));
+        assert!(!encoded.contains("secret"));
+        assert!(!encoded.contains("base64"));
+    }
+
+    #[tokio::test]
+    async fn optical_exact_unknown_model_economics_preserves_original_body_on_send_path() {
+        // The snapshot attests claude-fable-5; a request for claude-other-5
+        // has no attested economics and must keep the original text even
+        // though the cache evidence for that model is fresh.
+        let dir = std::env::temp_dir().join(format!("dtoken-c5d-econ-{}", Uuid::new_v4()));
+        let state = AppState::new_persistent(optical_exact_active_test_config(), &dir);
+
+        let body = optical_exact_request_body("claude-other-5");
+        let raw = serde_json::to_vec(&body).expect("fixture serializes");
+        let mut payload = anthropic_route_payload(&state, body.clone(), RouteEvidence::default())
+            .expect("exact Anthropic route payload");
+        persist_anthropic_cache_evidence(&state, &payload.scope);
+
+        let prepared = prepare_direct_anthropic_hybrid(&state, &payload, raw)
+            .await
+            .expect("hybrid preparation must run with fresh cache evidence");
+        assert_eq!(prepared.kind(), HybridPreparationKind::Shadow);
+        assert_eq!(prepared.body(), &body);
+        assert_eq!(
+            prepared.accounting().sent_payload,
+            dtoken_types::SentPayloadVariant::Original
+        );
+
+        apply_hybrid_preparation(&mut payload, &prepared);
+        assert_eq!(payload.upstream_body, body);
         drop(state);
         let _ = std::fs::remove_dir_all(dir);
     }

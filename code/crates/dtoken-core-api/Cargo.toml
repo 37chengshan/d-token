@@ -37,4 +37,6 @@ keyring = { version = "3", default-features = false, features = ["windows-native
 keyring = { version = "3", default-features = false, features = ["apple-native"] }
 
 [dev-dependencies]
+base64 = "0.22"
+ed25519-dalek = { version = "2", features = ["rand_core"] }
 tower = { version = "0.5", features = ["util"] }
