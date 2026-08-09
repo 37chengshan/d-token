@@ -2250,6 +2250,24 @@
       "summary": "Push release-plan merge audit ledger",
       "head_before": "88c7f189c3b183a132828da83683e3e0c32ee4e3",
       "remote": "origin"
+    },
+    {
+      "id": "ca32542d-f500-4ecc-8996-7ec5d1db1999",
+      "timestamp": "2026-08-09T17:30:17+08:00",
+      "operation": "branch-create",
+      "branch": "codex/final/c0a-schema-policy",
+      "summary": "Create C0A schema policy implementation branch from reconciled provenance baseline",
+      "head_before": "082f00125683e18ebe1604b484bd8a1c0213356f",
+      "remote": null
+    },
+    {
+      "id": "b683742f-c8fa-4ffd-8233-76d9adbad6c9",
+      "timestamp": "2026-08-09T17:30:17+08:00",
+      "operation": "commit",
+      "branch": "codex/final/provenance-batch-reconciled",
+      "summary": "Record C0A branch creation audit before provenance review PR",
+      "head_before": "082f00125683e18ebe1604b484bd8a1c0213356f",
+      "remote": null
     }
   ]
 }
