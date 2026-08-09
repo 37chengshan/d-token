@@ -4853,6 +4853,7 @@ struct CompressionSummary {
 enum RouteAdapterKind {
     OpenAiChatPassthrough,
     OpenAiResponsesToChat,
+    OpenAiResponsesPassthrough,
     AnthropicMessagesPassthrough,
     AnthropicMessagesToOpenAiChat,
 }
@@ -4862,6 +4863,7 @@ impl RouteAdapterKind {
         match self {
             Self::OpenAiChatPassthrough => "open_ai_chat_passthrough",
             Self::OpenAiResponsesToChat => "open_ai_responses_to_chat",
+            Self::OpenAiResponsesPassthrough => "open_ai_responses_passthrough",
             Self::AnthropicMessagesPassthrough => "anthropic_messages_passthrough",
             Self::AnthropicMessagesToOpenAiChat => "anthropic_messages_to_open_ai_chat",
         }
@@ -4887,6 +4889,16 @@ impl RouteAdapterKind {
                 OptimizationSurface {
                     protocol: Protocol::OpenAi,
                     endpoint: OpticalEndpoint::OpenAiChatCompletions,
+                },
+            ),
+            Self::OpenAiResponsesPassthrough => (
+                OptimizationSurface {
+                    protocol: Protocol::OpenAi,
+                    endpoint: OpticalEndpoint::OpenAiResponses,
+                },
+                OptimizationSurface {
+                    protocol: Protocol::OpenAi,
+                    endpoint: OpticalEndpoint::OpenAiResponses,
                 },
             ),
             Self::AnthropicMessagesToOpenAiChat => (
@@ -5205,17 +5217,48 @@ fn compress_for_route_with_frozen(
     cache_evidence: Option<&dtoken_compress::context_pipeline::ProviderCacheEvidence>,
     frozen_message_count: Option<usize>,
 ) -> CompressionSummary {
+    compress_for_route_with_ir(
+        context,
+        policy,
+        body,
+        cache_evidence,
+        frozen_message_count,
+        None,
+    )
+}
+
+/// Single resolved production compression entry (PR-C1A/PR-C1C). All surfaces
+/// (HTTP chat, Anthropic, Responses, MCP/Rust) route through this function:
+/// it invokes the resolved engine exactly once and never falls back to the
+/// no-op `CompressionEngine::compress` (PR-12: no second/no-op engine).
+///
+/// `ir` is the canonical IR the caller already lowered from `body`
+/// (pre-plan lower once); `None` lets the pipeline lower a single time.
+fn compress_for_route_with_ir(
+    context: Option<&ResolvedRouteOptimizationContext>,
+    policy: CompressionPolicy,
+    body: Value,
+    cache_evidence: Option<&dtoken_compress::context_pipeline::ProviderCacheEvidence>,
+    frozen_message_count: Option<usize>,
+    ir: Option<&dtoken_compress::HybridContextIr>,
+) -> CompressionSummary {
     let result = context
         .map(|context| {
-            CompressionEngine::new().compress_resolved_with_cache_evidence(
+            CompressionEngine::new().compress_resolved_with_ir(
                 &context.compression_context,
                 policy.clone(),
                 body.clone(),
                 cache_evidence,
                 frozen_message_count,
+                ir,
             )
         })
-        .unwrap_or_else(|| CompressionEngine::new().compress(policy, body.clone()))
+        // No resolved context: produce an honest baseline summary directly
+        // (body untouched, zero transforms) instead of invoking the no-op
+        // engine. The send path seals this baseline through the same
+        // `prepare_json_pipeline_payload` envelope, so the sent body is the
+        // validated body even on the un-resolvable path.
+        .unwrap_or_else(|| Ok(baseline_compression_result(policy, body.clone())))
         .map(|result| (result, None))
         .unwrap_or_else(|_| {
             (
@@ -5251,8 +5294,31 @@ fn compress_for_route_with_frozen(
     }
 }
 
-fn compression_inventory_diagnostics(
+/// Direct baseline summary: body untouched, zero transforms, honest token
+/// estimate. Never routes through a no-op engine (PR-12).
+fn baseline_compression_result(
+    _policy: CompressionPolicy,
+    body: Value,
+) -> dtoken_types::CompressionResult {
+    let original_tokens = dtoken_compress::estimate_tokens(&body);
+    dtoken_types::CompressionResult {
+        original_tokens,
+        compressed_tokens: original_tokens,
+        tokens_saved: 0,
+        elapsed_us: 1,
+        transforms_applied: Vec::new(),
+        body,
+        context_accounting: None,
+    }
+}
+
+/// Shadow inventory diagnostics that reuse an already-lowered canonical IR
+/// (PR-C1A pre-plan lower once). `ir` is the exact IR lowered from `body` by
+/// the caller; `None` falls back to a single internal lowering so the
+/// metadata stays available for surfaces without a pre-lowered IR.
+fn compression_inventory_diagnostics_with_ir(
     context: &dtoken_compress::ResolvedOptimizationContext,
+    ir: Option<&dtoken_compress::HybridContextIr>,
     body: &Value,
 ) -> Value {
     let conversation_items = body
@@ -5285,13 +5351,22 @@ fn compression_inventory_diagnostics(
         })
         .collect::<Vec<_>>();
 
-    let Some(inventory) = dtoken_compress::lower_hybrid_context(context, body) else {
-        return json!({
-            "state": "unsupported_context",
-            "role_sequence": role_sequence,
-            "content_kinds": content_kinds,
-            "raw_available": false
-        });
+    // Pre-plan lower once (PR-C1A): reuse the caller-supplied IR when present
+    // so the same body is never lowered twice (shadow inventory + plan). Only
+    // when no IR was supplied does the diagnostics lower on its own.
+    let inventory = match ir {
+        Some(ir) => ir.clone(),
+        None => match dtoken_compress::lower_hybrid_context(context, body) {
+            Some(inventory) => inventory,
+            None => {
+                return json!({
+                    "state": "unsupported_context",
+                    "role_sequence": role_sequence,
+                    "content_kinds": content_kinds,
+                    "raw_available": false
+                });
+            }
+        },
     };
     let tool_nodes = inventory
         .nodes()
@@ -9276,30 +9351,41 @@ fn anthropic_route_payload(
         provider.protocol.clone(),
     )
     .map_err(|_| RouteSelectionError::InvalidOptimizationContext)?;
-    // Authorized memory is retrieved exactly once, then injected only into
-    // the final wire body after compression: memory blocks never enter the
-    // compression pipeline, never enter stored artifacts, and never distort
-    // token accounting.  Fail-closed: no retrievable scope -> no injection.
+    // PR-C1B: authorized memory is retrieved exactly once and enters the
+    // upstream body BEFORE the transform plan, so the Direct Anthropic hybrid
+    // planner and the Anthropic -> Chat pipeline both see it and the final
+    // wire body carries it exactly once. Fail-closed: no retrievable scope ->
+    // no injection.
     let memory_blocks = request_scope_memory_access(&scope)
         .as_ref()
         .map(|access| memory_context_blocks(&authorized_memory_records(state, access)))
         .unwrap_or_default();
+    let memory_block_count = memory_blocks.len();
+    let upstream_body = if memory_blocks.is_empty() {
+        upstream_body
+    } else {
+        inject_memory_into_body(upstream_body, &provider.protocol, &memory_blocks)
+    };
     let compression = if provider.protocol == Protocol::Anthropic {
-        // Direct Anthropic routes are planned by HybridContextEngine in the handler.
-        // Keeping this preliminary body untouched prevents semantic+optical stacking.
-        compress_for_route(None, CompressionPolicy::Off, upstream_body)
+        // Direct Anthropic routes are planned by HybridContextEngine in the
+        // handler; this preliminary baseline keeps the body untouched.
+        compress_for_route(None, CompressionPolicy::Off, upstream_body.clone())
     } else {
         let cache_evidence = configured_provider_cache_evidence(state, &scope);
-        compress_for_route_with_frozen(
+        // PR-C1A: lower once (route-bound) and share the IR with the plan.
+        let ir = dtoken_compress::lower_hybrid_context(
+            &optimization_context.compression_context,
+            &upstream_body,
+        );
+        compress_for_route_with_ir(
             Some(&optimization_context),
             decision.compression_policy.clone(),
-            upstream_body,
+            upstream_body.clone(),
             cache_evidence.as_ref(),
             None,
+            ir.as_ref(),
         )
     };
-    let memory_injected_body =
-        inject_memory_into_body(compression.body.clone(), &provider.protocol, &memory_blocks);
     let attribution = request_attribution_from_scope(&scope);
     let request_log = build_request_log(
         request_id,
@@ -9320,14 +9406,15 @@ fn anthropic_route_payload(
         &attribution,
     );
     attach_request_scope(&mut event, &scope);
-    if !memory_blocks.is_empty() {
+    if memory_block_count > 0 {
         if let Some(metadata) = event.metadata.as_object_mut() {
             metadata.insert(
                 "memory_injection".to_string(),
                 json!({
                     "injected": true,
-                    "block_count": memory_blocks.len(),
+                    "block_count": memory_block_count,
                     "protocol": provider.protocol,
+                    "timing": "pre_plan",
                     "raw_available": false,
                     "privacy": "typed memory summaries only; raw prompt, response, source and secrets are never persisted"
                 }),
@@ -9336,7 +9423,7 @@ fn anthropic_route_payload(
     }
     Ok(RoutedBridgePayload {
         scope,
-        upstream_body: memory_injected_body,
+        upstream_body,
         decision,
         request_log,
         event,
@@ -11162,18 +11249,40 @@ async fn openai_chat_completions(
                 return (status, Json(response)).into_response();
             }
         };
-        let inventory_diagnostics = compression_inventory_diagnostics(
+        // PR-C1B: authorized memory is retrieved exactly once and enters the
+        // body BEFORE the transform plan, so the canonical IR (and the final
+        // validated envelope) includes it. Memory blocks stay frozen
+        // (`cache_control: ephemeral`) and never enter stored artifacts.
+        let memory_blocks = request_scope_memory_access(&scope)
+            .as_ref()
+            .map(|access| memory_context_blocks(&authorized_memory_records(&state, access)))
+            .unwrap_or_default();
+        let memory_block_count = memory_blocks.len();
+        let ingress_body = if memory_blocks.is_empty() {
+            original_body
+        } else {
+            inject_memory_into_body(original_body, &Protocol::OpenAi, &memory_blocks)
+        };
+        // PR-C1A: lower the request into the canonical IR exactly once and
+        // share it between the shadow inventory and the production plan.
+        let ir = dtoken_compress::lower_hybrid_context(
             &optimization_context.compression_context,
-            &original_body,
+            &ingress_body,
         );
-        let baseline_body = original_body.clone();
+        let inventory_diagnostics = compression_inventory_diagnostics_with_ir(
+            &optimization_context.compression_context,
+            ir.as_ref(),
+            &ingress_body,
+        );
+        let baseline_body = ingress_body.clone();
         let cache_evidence = configured_provider_cache_evidence(&state, &scope);
-        let mut compression = compress_for_route_with_frozen(
+        let mut compression = compress_for_route_with_ir(
             Some(&optimization_context),
             decision.compression_policy.clone(),
-            original_body,
+            ingress_body,
             cache_evidence.as_ref(),
             None,
+            ir.as_ref(),
         );
         let attribution = request_attribution_from_scope(&scope);
         let mut request_log = build_request_log(
@@ -11198,6 +11307,21 @@ async fn openai_chat_completions(
                 "compression_inventory".to_string(),
                 inventory_diagnostics.clone(),
             );
+        }
+        if memory_block_count > 0 {
+            if let Some(metadata) = event.metadata.as_object_mut() {
+                metadata.insert(
+                    "memory_injection".to_string(),
+                    json!({
+                        "injected": true,
+                        "block_count": memory_block_count,
+                        "protocol": "open_ai",
+                        "timing": "pre_plan",
+                        "raw_available": false,
+                        "privacy": "typed memory summaries only; raw prompt, response, source and secrets are never persisted"
+                    }),
+                );
+            }
         }
         let prepared_ccr =
             match state.prepare_ccr_for_request(&decision, &request_log, &ccr_original_body) {
@@ -11285,32 +11409,11 @@ async fn openai_chat_completions(
                 metadata.insert("pipeline_fallback_reason".to_string(), json!(reason));
             }
         }
-        let mut upstream_body = serde_json::from_slice::<Value>(pipeline_payload.ready.body())
+        // PR-C1B: memory entered the body BEFORE the transform plan (above),
+        // so the sealed pipeline payload already carries it exactly once. The
+        // wire body is the validated envelope: no post-plan mutation.
+        let upstream_body = serde_json::from_slice::<Value>(pipeline_payload.ready.body())
             .unwrap_or_else(|_| baseline_body.clone());
-        // Authorized memory is injected into the final wire body after
-        // compression: memory blocks never enter the compression pipeline,
-        // never enter stored artifacts, and never distort token accounting.
-        let memory_blocks = request_scope_memory_access(&scope)
-            .as_ref()
-            .map(|access| memory_context_blocks(&authorized_memory_records(&state, access)))
-            .unwrap_or_default();
-        if !memory_blocks.is_empty() {
-            let injected =
-                inject_memory_into_body(upstream_body.clone(), &Protocol::OpenAi, &memory_blocks);
-            upstream_body = injected;
-            if let Some(metadata) = event.metadata.as_object_mut() {
-                metadata.insert(
-                    "memory_injection".to_string(),
-                    json!({
-                        "injected": true,
-                        "block_count": memory_blocks.len(),
-                        "protocol": "open_ai",
-                        "raw_available": false,
-                        "privacy": "typed memory summaries only; raw prompt, response, source and secrets are never persisted"
-                    }),
-                );
-            }
-        }
         if let Some(metadata) = event.metadata.as_object_mut() {
             metadata.insert(
                 "pipeline_payload_variant".to_string(),
@@ -11573,12 +11676,13 @@ async fn openai_responses(
         let request_id = Uuid::new_v4();
         let decision = build_configured_route_decision(request_id, route, provider);
         if provider.wire_api == dtoken_types::ProviderWireApi::OpenAiResponses {
-            // Native Responses passthrough: forward the inbound Responses body
-            // verbatim to the provider's /v1/responses wire endpoint, bypassing
-            // the Responses -> Chat semantic bridge and all compression
-            // transforms. The route decision, request log and ledger event are
-            // still recorded with CompressionPolicy::Off over the original
-            // request so Dashboard/Doctor/Event Ledger stay consistent.
+            // Native Responses passthrough (PR-12/C1A/C1C): forward the inbound
+            // Responses body to the provider's /v1/responses wire endpoint with
+            // no Responses -> Chat conversion. The request now flows through the
+            // same resolved optimization context, pre-plan memory (fail-closed
+            // for the Responses shape), lower-once IR and sealed pipeline
+            // payload as every other surface; the success response body and the
+            // SSE bytes are untouched.
             let scope = match resolve_configured_request_scope(
                 &state.config,
                 route,
@@ -11605,14 +11709,73 @@ async fn openai_responses(
                     return (status, Json(response)).into_response();
                 }
             };
-            let compression = compress_for_route(None, CompressionPolicy::Off, body.clone());
+            let optimization_context = match resolve_optimization_context(
+                &decision,
+                route,
+                provider,
+                RouteAdapterKind::OpenAiResponsesPassthrough,
+                &body,
+                &body,
+            ) {
+                Ok(context) => context,
+                Err(_) => {
+                    record_route_selection_error(
+                        &state,
+                        request_id,
+                        "openai_responses",
+                        RouteSelectionError::InvalidOptimizationContext,
+                    );
+                    let (status, response) = route_selection_error_response(
+                        request_id,
+                        "openai_responses",
+                        RouteSelectionError::InvalidOptimizationContext,
+                        &state.config_status,
+                    );
+                    return (status, Json(response)).into_response();
+                }
+            };
+            // PR-C1B: authorized memory is retrieved exactly once and enters
+            // the body BEFORE the transform plan. The native Responses wire
+            // shape (`input` items, no Chat `messages` array) does not support
+            // the Chat-style injector, so injection fails closed: the body is
+            // never mutated and no synthetic Chat items are fabricated.
+            let memory_blocks = request_scope_memory_access(&scope)
+                .as_ref()
+                .map(|access| memory_context_blocks(&authorized_memory_records(&state, access)))
+                .unwrap_or_default();
+            let memory_block_count = memory_blocks.len();
+            let requested_model = body
+                .get("model")
+                .and_then(Value::as_str)
+                .map(ToString::to_string);
+            let stream_requested = body.get("stream").and_then(Value::as_bool).unwrap_or(false);
+            let ingress_body = inject_memory_into_body(body, &Protocol::OpenAi, &memory_blocks);
+            // PR-C1A: lower the request into the canonical IR exactly once and
+            // share it between the shadow inventory and the production plan.
+            let ir = dtoken_compress::lower_hybrid_context(
+                &optimization_context.compression_context,
+                &ingress_body,
+            );
+            let inventory_diagnostics = compression_inventory_diagnostics_with_ir(
+                &optimization_context.compression_context,
+                ir.as_ref(),
+                &ingress_body,
+            );
+            let baseline_body = ingress_body.clone();
+            let cache_evidence = configured_provider_cache_evidence(&state, &scope);
+            let mut compression = compress_for_route_with_ir(
+                Some(&optimization_context),
+                decision.compression_policy.clone(),
+                ingress_body,
+                cache_evidence.as_ref(),
+                None,
+                ir.as_ref(),
+            );
             let attribution = request_attribution_from_scope(&scope);
             let mut request_log = build_request_log(
                 request_id,
                 &decision,
-                body.get("model")
-                    .and_then(Value::as_str)
-                    .map(ToString::to_string),
+                requested_model.clone(),
                 Protocol::OpenAi,
                 &compression,
                 &attribution,
@@ -11628,35 +11791,165 @@ async fn openai_responses(
             attach_request_scope(&mut event, &scope);
             if let Some(metadata) = event.metadata.as_object_mut() {
                 metadata.insert(
+                    "adapter".to_string(),
+                    json!(optimization_context.adapter.adapter_label()),
+                );
+                metadata.insert(
                     "native_responses_passthrough".to_string(),
                     json!({
                         "conversion": "none",
-                        "compression": "off",
-                        "original_request_preserved": true,
+                        "compression": compression_policy_as_str(&decision.compression_policy),
+                        "original_request_preserved": compression.transforms_applied.is_empty(),
                         "raw_available": false,
                         "privacy": "native Responses body is forwarded verbatim and never stored"
                     }),
                 );
+                metadata.insert(
+                    "responses_shadow_inventory".to_string(),
+                    inventory_diagnostics.clone(),
+                );
+            }
+            if memory_block_count > 0 {
+                // Fail-closed: the Responses shape cannot carry Chat-style
+                // memory blocks, so nothing was injected; the ledger records
+                // the honest outcome instead of claiming injection.
+                if let Some(metadata) = event.metadata.as_object_mut() {
+                    metadata.insert(
+                        "memory_injection".to_string(),
+                        json!({
+                            "injected": false,
+                            "block_count": memory_block_count,
+                            "protocol": "open_ai",
+                            "timing": "pre_plan",
+                            "reason": "responses_shape_unsupported",
+                            "raw_available": false,
+                            "privacy": "typed memory summaries only; raw prompt, response, source and secrets are never persisted"
+                        }),
+                    );
+                }
             }
             let prepared_ccr =
                 match state.prepare_ccr_for_request(&decision, &request_log, &ccr_original_body) {
                     Ok(prepared) => prepared,
                     Err(_) => {
-                        let (status, response) = route_selection_error_response(
+                        // CCR baseline fallback: the store is unavailable, so
+                        // the summary is demoted to an honest baseline (body
+                        // untouched, zero transforms) and the pipeline still
+                        // seals the envelope before the send.
+                        compression =
+                            compress_for_route(None, CompressionPolicy::Off, baseline_body.clone());
+                        request_log = build_request_log(
                             request_id,
-                            "openai_responses",
-                            RouteSelectionError::InvalidOptimizationContext,
-                            &state.config_status,
+                            &decision,
+                            requested_model.clone(),
+                            Protocol::OpenAi,
+                            &compression,
+                            &attribution,
                         );
-                        return (status, Json(response)).into_response();
+                        event = build_ledger_event(
+                            request_id,
+                            &decision,
+                            Protocol::OpenAi,
+                            Protocol::OpenAi,
+                            &compression,
+                            &attribution,
+                        );
+                        attach_request_scope(&mut event, &scope);
+                        if let Some(metadata) = event.metadata.as_object_mut() {
+                            metadata.insert(
+                                "responses_shadow_inventory".to_string(),
+                                inventory_diagnostics.clone(),
+                            );
+                            metadata.insert(
+                                "ccr_pre_send".to_string(),
+                                json!("baseline_fallback_store_unavailable"),
+                            );
+                        }
+                        state
+                            .prepare_ccr_for_request(&decision, &request_log, &ccr_original_body)
+                            .expect("baseline request does not require CCR storage")
                     }
                 };
-            if body.get("stream").and_then(Value::as_bool).unwrap_or(false) {
+            // PR-C1C: the request is sealed through the same pipeline payload
+            // envelope as every other surface, then sent from the validated
+            // envelope body (never a raw post-plan mutation).
+            let pipeline_payload = match prepare_json_pipeline_payload(
+                scope.clone(),
+                &baseline_body,
+                &compression.body,
+                &request_log.transforms_applied,
+                &prepared_ccr,
+            ) {
+                Ok(payload) => payload,
+                Err(_) => PreparedPipelinePayload {
+                    ready: PipelineInput::new(
+                        scope.clone(),
+                        serde_json::to_vec(&baseline_body).unwrap_or_default(),
+                        MAX_REQUEST_BODY_BYTES,
+                    )
+                    .map(|input| {
+                        input
+                            .prepare()
+                            .into_baseline_ready("pipeline_input_invalid")
+                    })
+                    .unwrap_or_else(|_| {
+                        PipelineInput::new(scope.clone(), b"{}".to_vec(), MAX_REQUEST_BODY_BYTES)
+                            .expect("static JSON baseline is valid")
+                            .prepare()
+                            .into_baseline_ready("pipeline_input_invalid")
+                    }),
+                    fallback_reason: Some("pipeline_input_invalid"),
+                },
+            };
+            if let Some(reason) = pipeline_payload.fallback_reason {
+                compression =
+                    compress_for_route(None, CompressionPolicy::Off, baseline_body.clone());
+                request_log = build_request_log(
+                    request_id,
+                    &decision,
+                    requested_model.clone(),
+                    Protocol::OpenAi,
+                    &compression,
+                    &attribution,
+                );
+                event = build_ledger_event(
+                    request_id,
+                    &decision,
+                    Protocol::OpenAi,
+                    Protocol::OpenAi,
+                    &compression,
+                    &attribution,
+                );
+                attach_request_scope(&mut event, &scope);
+                if let Some(metadata) = event.metadata.as_object_mut() {
+                    metadata.insert(
+                        "responses_shadow_inventory".to_string(),
+                        inventory_diagnostics,
+                    );
+                    metadata.insert("pipeline_fallback_reason".to_string(), json!(reason));
+                }
+            }
+            // PR-C1C: the wire body is the validated envelope: no post-plan
+            // mutation. The success response body and SSE bytes are untouched.
+            let upstream_body = serde_json::from_slice::<Value>(pipeline_payload.ready.body())
+                .unwrap_or_else(|_| baseline_body.clone());
+            if let Some(metadata) = event.metadata.as_object_mut() {
+                metadata.insert(
+                    "pipeline_payload_variant".to_string(),
+                    json!(pipeline_payload.ready.variant()),
+                );
+                metadata.insert(
+                    "pipeline_reason_code".to_string(),
+                    json!(pipeline_payload.ready.reason_code()),
+                );
+            }
+            drop(ccr_original_body);
+            if stream_requested {
                 let quota_account_ref = opaque_codex_account_ref(&headers);
                 let upstream = forward_openai_responses_stream(
                     &state.http_client,
                     provider,
-                    body,
+                    upstream_body.clone(),
                     Some(&headers),
                 )
                 .await;
@@ -11769,8 +12062,13 @@ async fn openai_responses(
                     }
                 }
             }
-            let mut upstream =
-                forward_openai_responses(&state.http_client, provider, body, Some(&headers)).await;
+            let mut upstream = forward_openai_responses(
+                &state.http_client,
+                provider,
+                upstream_body.clone(),
+                Some(&headers),
+            )
+            .await;
             attach_quota_account_ref(
                 &mut upstream.quota_metadata,
                 opaque_codex_account_ref(&headers).as_deref(),
@@ -11925,24 +12223,40 @@ async fn openai_responses(
                 return (status, Json(response)).into_response();
             }
         };
-        let responses_shadow_context = ResolvedOptimizationContext {
-            route_id: decision.route_id.clone(),
-            provider_id: decision.provider_id.clone(),
-            model: optimization_context.effective_model.clone(),
-            input_protocol: Protocol::OpenAi,
-            output_protocol: Protocol::OpenAi,
-            endpoint: OpticalEndpoint::OpenAiResponses,
+        // PR-C1B: authorized memory enters the converted Chat body BEFORE the
+        // transform plan, so the canonical IR (and the sealed envelope)
+        // includes it exactly once.
+        let memory_blocks = request_scope_memory_access(&scope)
+            .as_ref()
+            .map(|access| memory_context_blocks(&authorized_memory_records(&state, access)))
+            .unwrap_or_default();
+        let memory_block_count = memory_blocks.len();
+        let ingress_body = if memory_blocks.is_empty() {
+            original_body
+        } else {
+            inject_memory_into_body(original_body, &Protocol::OpenAi, &memory_blocks)
         };
-        let inventory_diagnostics =
-            compression_inventory_diagnostics(&responses_shadow_context, &body);
-        let baseline_body = original_body.clone();
+        // PR-C1A: lower the converted request into the canonical IR exactly
+        // once (route-bound context) and share it between the shadow
+        // inventory and the production plan.
+        let ir = dtoken_compress::lower_hybrid_context(
+            &optimization_context.compression_context,
+            &ingress_body,
+        );
+        let inventory_diagnostics = compression_inventory_diagnostics_with_ir(
+            &optimization_context.compression_context,
+            ir.as_ref(),
+            &ingress_body,
+        );
+        let baseline_body = ingress_body.clone();
         let cache_evidence = configured_provider_cache_evidence(&state, &scope);
-        let mut compression = compress_for_route_with_frozen(
+        let mut compression = compress_for_route_with_ir(
             Some(&optimization_context),
             decision.compression_policy.clone(),
-            original_body,
+            ingress_body,
             cache_evidence.as_ref(),
             None,
+            ir.as_ref(),
         );
         let attribution = request_attribution_from_scope(&scope);
         let mut request_log = build_request_log(
@@ -11967,6 +12281,21 @@ async fn openai_responses(
                 "responses_shadow_inventory".to_string(),
                 inventory_diagnostics.clone(),
             );
+        }
+        if memory_block_count > 0 {
+            if let Some(metadata) = event.metadata.as_object_mut() {
+                metadata.insert(
+                    "memory_injection".to_string(),
+                    json!({
+                        "injected": true,
+                        "block_count": memory_block_count,
+                        "protocol": "open_ai",
+                        "timing": "pre_plan",
+                        "raw_available": false,
+                        "privacy": "typed memory summaries only; raw prompt, response, source and secrets are never persisted"
+                    }),
+                );
+            }
         }
         let prepared_ccr =
             match state.prepare_ccr_for_request(&decision, &request_log, &ccr_original_body) {
@@ -12061,32 +12390,11 @@ async fn openai_responses(
                 metadata.insert("pipeline_fallback_reason".to_string(), json!(reason));
             }
         }
-        let mut upstream_body = serde_json::from_slice::<Value>(pipeline_payload.ready.body())
+        // PR-C1B: memory entered the converted body before the plan (above),
+        // so the sealed pipeline payload already carries it exactly once. The
+        // wire body is the validated envelope: no post-plan mutation.
+        let upstream_body = serde_json::from_slice::<Value>(pipeline_payload.ready.body())
             .unwrap_or_else(|_| baseline_body.clone());
-        // Authorized memory is injected into the final wire body after
-        // compression: memory blocks never enter the compression pipeline,
-        // never enter stored artifacts, and never distort token accounting.
-        let memory_blocks = request_scope_memory_access(&scope)
-            .as_ref()
-            .map(|access| memory_context_blocks(&authorized_memory_records(&state, access)))
-            .unwrap_or_default();
-        if !memory_blocks.is_empty() {
-            let injected =
-                inject_memory_into_body(upstream_body.clone(), &Protocol::OpenAi, &memory_blocks);
-            upstream_body = injected;
-            if let Some(metadata) = event.metadata.as_object_mut() {
-                metadata.insert(
-                    "memory_injection".to_string(),
-                    json!({
-                        "injected": true,
-                        "block_count": memory_blocks.len(),
-                        "protocol": "open_ai",
-                        "raw_available": false,
-                        "privacy": "typed memory summaries only; raw prompt, response, source and secrets are never persisted"
-                    }),
-                );
-            }
-        }
         if let Some(metadata) = event.metadata.as_object_mut() {
             metadata.insert(
                 "pipeline_payload_variant".to_string(),
@@ -15094,7 +15402,7 @@ mod tests {
             endpoint: dtoken_types::OpticalEndpoint::OpenAiChatCompletions,
         };
 
-        let diagnostics = compression_inventory_diagnostics(&context, &body);
+        let diagnostics = compression_inventory_diagnostics_with_ir(&context, None, &body);
         assert_eq!(diagnostics["state"], "resolved");
         assert!(diagnostics["approved_target_count"].as_u64().unwrap_or(0) > 0);
         assert_eq!(diagnostics["raw_available"], false);
@@ -15163,7 +15471,7 @@ mod tests {
             endpoint: OpticalEndpoint::OpenAiResponses,
         };
 
-        let diagnostics = compression_inventory_diagnostics(&context, &body);
+        let diagnostics = compression_inventory_diagnostics_with_ir(&context, None, &body);
         assert_eq!(diagnostics["state"], "resolved");
         assert_eq!(diagnostics["message_count"], 17);
         assert_eq!(diagnostics["recent_tail_start"], 5);
@@ -20107,6 +20415,189 @@ mod tests {
         server.await.expect("mock upstream task");
     }
 
+    /// PR-12/C1A/C1C native Responses contract: the native /v1/responses
+    /// passthrough must seal the request through `prepare_json_pipeline_payload`
+    /// before any upstream send (resolved adapter `OpenAiResponsesPassthrough`,
+    /// pipeline variant + reason code recorded in the Event Ledger, wire body
+    /// byte-identical to the validated envelope body).
+    #[tokio::test]
+    async fn native_responses_passthrough_seals_pipeline_payload_and_records_resolved_adapter() {
+        use axum::body::to_bytes;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        // Keys are pre-sorted so the handler's `Json(...)` re-serialization is
+        // byte-identical to the upstream document (exact passthrough contract).
+        const UPSTREAM_BODY: &str = r#"{"id":"resp_123","object":"response","output":[{"content":[{"annotations":[],"text":"hello","type":"output_text"}],"id":"msg_1","role":"assistant","status":"completed","type":"message"}],"status":"completed","usage":{"input_tokens":2,"output_tokens":1,"total_tokens":3}}"#;
+
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind mock upstream");
+        let addr = listener.local_addr().expect("mock addr");
+        let upstream_body = UPSTREAM_BODY.to_string();
+        // Capture the exact request body the mock upstream receives so the
+        // test can prove the wire body equals the validated pipeline body.
+        let received = std::sync::Arc::new(std::sync::Mutex::new(None::<Vec<u8>>));
+        let received_for_server = received.clone();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.expect("accept request");
+            let mut request = Vec::new();
+            let mut buffer = [0_u8; 4096];
+            let expected_request_bytes = loop {
+                let read = socket.read(&mut buffer).await.expect("read request");
+                assert!(read > 0, "request closed before headers completed");
+                request.extend_from_slice(&buffer[..read]);
+                let Some(header_end) = request.windows(4).position(|window| window == b"\r\n\r\n")
+                else {
+                    continue;
+                };
+                let headers =
+                    std::str::from_utf8(&request[..header_end]).expect("request headers are UTF-8");
+                let content_length = headers
+                    .lines()
+                    .find_map(|line| {
+                        let (name, value) = line.split_once(':')?;
+                        if !name.trim().eq_ignore_ascii_case("content-length") {
+                            return None;
+                        }
+                        value.trim().parse::<usize>().ok()
+                    })
+                    .expect("request content length");
+                break header_end + 4 + content_length;
+            };
+            while request.len() < expected_request_bytes {
+                let read = socket.read(&mut buffer).await.expect("read request body");
+                assert!(read > 0, "request closed before body completed");
+                request.extend_from_slice(&buffer[..read]);
+            }
+            if let Some(header_end) = request.windows(4).position(|window| window == b"\r\n\r\n") {
+                *received_for_server.lock().expect("lock") =
+                    Some(request[header_end + 4..].to_vec());
+            }
+            let response = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                upstream_body.len(),
+                upstream_body
+            );
+            socket
+                .write_all(response.as_bytes())
+                .await
+                .expect("write json");
+        });
+
+        let provider = dtoken_types::ProviderProfile {
+            id: "responses-upstream".to_string(),
+            name: "Responses upstream".to_string(),
+            kind: dtoken_types::ProviderKind::Custom,
+            protocol: Protocol::OpenAi,
+            base_url: format!("http://{addr}/v1"),
+            api_key_ref: None,
+            models: vec!["mock/model".to_string()],
+            timeout_ms: 30_000,
+            healthcheck_path: None,
+            wire_api: dtoken_types::ProviderWireApi::OpenAiResponses,
+        };
+        let route = dtoken_types::RouteProfile {
+            id: "route-responses".to_string(),
+            name: "route-responses".to_string(),
+            input_protocol: Protocol::OpenAi,
+            instance_id: "instance-responses".to_string(),
+            target_provider_id: "responses-upstream".to_string(),
+            fallback_provider_id: None,
+            chain_mode: ChainMode::Direct,
+            compression_policy: CompressionPolicy::Off,
+            bind_host: "127.0.0.1".to_string(),
+            local_port: 18001,
+        };
+        let config = DtokenConfig {
+            providers: vec![provider],
+            routes: vec![route],
+            instances: vec![],
+            provider_cache_policies: vec![],
+            output_shaping_policies: vec![],
+            optical: Default::default(),
+        };
+        let state = AppState::new(config);
+        let app = build_router(state.clone());
+        let ingress = json!({"model":"mock/model","input":"hello"});
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/responses")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_vec(&ingress).expect("serialize ingress"),
+                    ))
+                    .expect("request"),
+            )
+            .await
+            .expect("router response");
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body bytes");
+        let body = String::from_utf8(bytes.to_vec()).expect("UTF-8 JSON");
+        // Native passthrough must preserve the upstream Responses JSON exactly:
+        // no dtoken envelope, no evidence keys inserted (Codex schema contract).
+        assert_eq!(body, UPSTREAM_BODY, "body={body}");
+        assert!(!body.contains("\"dtoken\""), "no dtoken key: body={body}");
+        // PR-C1C: the wire body the upstream received is exactly the validated
+        // envelope body (Off policy seals the baseline byte-for-byte).
+        let received = received
+            .lock()
+            .expect("lock")
+            .clone()
+            .expect("captured body");
+        assert_eq!(
+            received,
+            serde_json::to_vec(&ingress).expect("serialize expected wire body"),
+            "wire body must equal the validated pipeline body"
+        );
+        // PR-C1A/C1C ledger evidence: resolved adapter and the sealed
+        // pipeline variant + reason code land in the Event Ledger.
+        let events = state.recent_events(20);
+        let ledger_event = events
+            .iter()
+            .find(|event| event.metadata.get("native_responses_passthrough").is_some())
+            .expect("native passthrough ledger event present");
+        assert_eq!(
+            ledger_event.metadata["adapter"], "open_ai_responses_passthrough",
+            "resolved adapter must be recorded in the ledger"
+        );
+        assert_eq!(
+            ledger_event.metadata["pipeline_payload_variant"], "original",
+            "pipeline variant must land in the ledger"
+        );
+        assert_eq!(
+            ledger_event.metadata["pipeline_reason_code"], "no_transform_selected",
+            "pipeline reason code must land in the ledger"
+        );
+        server.await.expect("mock upstream task");
+    }
+
+    /// Fail-closed contract: the native Responses wire shape (`input` items,
+    /// no Chat `messages` array) never receives Chat-style memory injection.
+    /// Memory is retrieved but must not mutate a Responses body.
+    #[test]
+    fn responses_shape_memory_injection_fails_closed_without_messages() {
+        let blocks = vec![
+            json!({"type": "text", "text": "MEMONLY", "cache_control": {"type": "ephemeral"}}),
+        ];
+        let responses = json!({
+            "model": "m",
+            "input": [{"type": "message", "role": "user", "content": [{"type": "input_text", "text": "hi"}]}]
+        });
+        let injected = inject_memory_into_body(responses.clone(), &Protocol::OpenAi, &blocks);
+        assert_eq!(
+            injected, responses,
+            "Responses input shape must not receive Chat-style memory injection"
+        );
+        assert!(!serde_json::to_string(&injected)
+            .expect("serialize")
+            .contains("MEMONLY"));
+    }
+
     #[tokio::test]
     async fn responses_passthrough_stream_defers_terminal_record_until_terminal_event() {
         use futures_util::stream;
@@ -20654,5 +21145,148 @@ mod tests {
             .expect("compress_resolved_with_cache_evidence");
         // tokens_saved is u64, always non-negative; the assertion is that
         // the call completed without error (demonstrated above).
+    }
+
+    /// Observable contract: each surface injects the same authorized memory
+    /// exactly once, before any transform. A second injection would double
+    /// the memory block on the wire, which the surface flow must never do.
+    #[test]
+    fn contract_single_memory_injection_per_surface() {
+        let blocks = vec![
+            json!({"type": "text", "text": "MEMONLY", "cache_control": {"type": "ephemeral"}}),
+        ];
+        let count = |value: &serde_json::Value| {
+            serde_json::to_string(value)
+                .expect("serialize")
+                .matches("MEMONLY")
+                .count()
+        };
+        // Chat surface ingress (PR-C1B pre-plan injection).
+        let chat = json!({"model": "m", "messages": [{"role": "user", "content": "hi"}]});
+        let once = inject_memory_into_body(chat, &Protocol::OpenAi, &blocks);
+        assert_eq!(count(&once), 1);
+        // Responses -> Chat bridge ingress (same Chat wire shape).
+        let responses = json!({
+            "model": "m",
+            "input": [{"type": "message", "role": "user", "content": [{"type": "input_text", "text": "hi"}]}]
+        });
+        let converted = responses_to_openai_chat_body(&responses).expect("responses conversion");
+        let once_responses = inject_memory_into_body(converted, &Protocol::OpenAi, &blocks);
+        assert_eq!(count(&once_responses), 1);
+        // Anthropic surface ingress.
+        let anthropic =
+            json!({"model": "claude-x", "messages": [{"role": "user", "content": "hi"}]});
+        let once_anthropic = inject_memory_into_body(anthropic, &Protocol::Anthropic, &blocks);
+        assert_eq!(count(&once_anthropic), 1);
+    }
+
+    /// Observable contract: the pre-lowered IR is reused (metadata before the
+    /// planner) and the sealed pipeline envelope is byte-identical to the
+    /// candidate the planner produced — the sent body is the verified body.
+    #[test]
+    fn contract_prelowered_ir_reuse_and_prepared_body_parity() {
+        let config = route_test_config();
+        let route = config.routes[0].clone();
+        let provider = config
+            .providers
+            .iter()
+            .find(|provider| provider.id == route.target_provider_id)
+            .expect("route provider present")
+            .clone();
+        let model = provider.models[0].clone();
+        let body = json!({"model": model, "messages": [{"role": "user", "content": "hi"}]});
+        let decision = build_configured_route_decision(Uuid::new_v4(), &route, &provider);
+        let ctx = resolve_optimization_context(
+            &decision,
+            &route,
+            &provider,
+            RouteAdapterKind::OpenAiChatPassthrough,
+            &body,
+            &body,
+        )
+        .expect("resolved optimization context");
+        let scope = resolve_configured_request_scope(
+            &config,
+            &route,
+            &provider,
+            decision.request_id,
+            Some(&model),
+            Protocol::OpenAi,
+            Protocol::OpenAi,
+        )
+        .expect("resolved request scope");
+        let blocks = vec![
+            json!({"type": "text", "text": "MEMONLY", "cache_control": {"type": "ephemeral"}}),
+        ];
+        let ingress = inject_memory_into_body(body, &Protocol::OpenAi, &blocks);
+        let count = |value: &serde_json::Value| {
+            serde_json::to_string(value)
+                .expect("serialize")
+                .matches("MEMONLY")
+                .count()
+        };
+        assert_eq!(count(&ingress), 1);
+        // PR-C1A: lower exactly once and reuse the IR for the shadow
+        // inventory (metadata) before the planner runs.
+        let ir = dtoken_compress::lower_hybrid_context(&ctx.compression_context, &ingress);
+        let inventory_reuse = compression_inventory_diagnostics_with_ir(
+            &ctx.compression_context,
+            ir.as_ref(),
+            &ingress,
+        );
+        let inventory_fresh =
+            compression_inventory_diagnostics_with_ir(&ctx.compression_context, None, &ingress);
+        assert_eq!(inventory_reuse, inventory_fresh);
+        // The pre-lowered IR must produce the same plan output as a fresh
+        // internal lower: reuse never changes the observable body.
+        let policy = decision.compression_policy.clone();
+        let planned = compress_for_route_with_ir(
+            Some(&ctx),
+            policy.clone(),
+            ingress.clone(),
+            None,
+            None,
+            ir.as_ref(),
+        );
+        let replanned =
+            compress_for_route_with_ir(Some(&ctx), policy, ingress.clone(), None, None, None);
+        assert_eq!(planned.body, replanned.body);
+        assert_eq!(planned.original_tokens, replanned.original_tokens);
+        assert_eq!(planned.transforms_applied, replanned.transforms_applied);
+        // Prepared body byte parity: the validated envelope is the candidate.
+        let state = AppState::new(config);
+        let attribution = request_attribution_from_scope(&scope);
+        let request_log = build_request_log(
+            decision.request_id,
+            &decision,
+            Some(model),
+            Protocol::OpenAi,
+            &planned,
+            &attribution,
+        );
+        let prepared_ccr = state
+            .prepare_ccr_for_request(
+                &decision,
+                &request_log,
+                &serde_json::to_vec(&ingress).expect("serialize ingress"),
+            )
+            .expect("ccr preparation");
+        let payload = prepare_json_pipeline_payload(
+            scope,
+            &ingress,
+            &planned.body,
+            &request_log.transforms_applied,
+            &prepared_ccr,
+        )
+        .expect("pipeline payload");
+        if payload.fallback_reason.is_none() {
+            assert_eq!(
+                payload.ready.body(),
+                serde_json::to_vec(&planned.body).expect("serialize candidate")
+            );
+        }
+        let sealed: serde_json::Value =
+            serde_json::from_slice(payload.ready.body()).expect("sealed envelope json");
+        assert_eq!(count(&sealed), 1);
     }
 }

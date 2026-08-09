@@ -395,13 +395,36 @@ pub fn prepare_context_transform_with_cache_evidence(
     }
     let ir = lower_hybrid_context(context, &original_body)
         .ok_or(ContextTransformError::UnsupportedContext)?;
+    prepare_context_transform_with_ir(
+        context,
+        policy,
+        &ir,
+        original_body,
+        evidence,
+        frozen_message_count,
+    )
+}
+
+/// Lower-once transform planning: the caller already lowered the request into
+/// the canonical IR and supplies it here, so the same request body is never
+/// lowered twice (PR-C1A parse/lower once). The IR must come from this exact
+/// `context` and `original_body`; callers that lower once for both shadow
+/// inventory and the production plan use this entry.
+pub fn prepare_context_transform_with_ir(
+    context: &ResolvedOptimizationContext,
+    policy: CompressionPolicy,
+    ir: &HybridContextIr,
+    original_body: Value,
+    evidence: Option<&ProviderCacheEvidence>,
+    frozen_message_count: Option<usize>,
+) -> Result<Option<PreparedContextTransform>, ContextTransformError> {
     // A request-level `frozen_message_count` override wins over marker-derived
     // floor detection: the caller owns the cache prefix contract for this
     // request. `None` falls back to `compute_frozen_message_count`.
     let frozen_message_floor = resolve_frozen_message_count(&original_body, frozen_message_count);
     let plan = apply_cache_evidence(
         context,
-        build_context_plan_with_frozen_floor(&ir, &original_body, frozen_message_floor),
+        build_context_plan_with_frozen_floor(ir, &original_body, frozen_message_floor),
         evidence,
     )?;
     let mut transforms = Vec::new();
@@ -416,7 +439,7 @@ pub fn prepare_context_transform_with_cache_evidence(
         return Ok(None);
     }
 
-    let entries = build_manifest_entries(&ir, &original_body, &candidate_body)?;
+    let entries = build_manifest_entries(ir, &original_body, &candidate_body)?;
     if entries.is_empty() {
         return Err(ContextTransformError::MutationOutsideManifest);
     }

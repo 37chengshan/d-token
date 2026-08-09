@@ -2304,6 +2304,15 @@
       "summary": "Reconcile provenance completion facts across active release documents",
       "head_before": "a9e8f9c7fe89013fce06be2b331f2dd812245b9a",
       "remote": null
+    },
+    {
+      "id": "e8858575-47c1-4a7f-af9b-bf26c1f8e726",
+      "timestamp": "2026-08-09T20:54:54+08:00",
+      "operation": "commit",
+      "branch": "codex/final/provenance-batch-reconciled",
+      "summary": "完成 canonical production pipeline 与 Native Responses 单一发送路径",
+      "head_before": "4b892ea92995df6b4e79f7047cd2b69d44dedfc7",
+      "remote": null
     }
   ]
 }
