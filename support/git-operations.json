@@ -2439,6 +2439,24 @@
       "summary": "N0 候选冻结预检：Cargo.lock 版本对齐、fmt/clippy 修复、bundle budget 对齐、fake-bin 脚本代理隔离、新增 N0 producer",
       "head_before": "9cf01f3",
       "remote": null
+    },
+    {
+      "id": "7858b7fe-7cfa-452b-ae6c-998f85a371af",
+      "timestamp": "2026-08-10T00:40:29+08:00",
+      "operation": "commit",
+      "branch": "codex/final/stage-pack-integrated",
+      "summary": "记录 N0 候选冻结执行报告（N0-EXECUTION.md）",
+      "head_before": "25241e5",
+      "remote": null
+    },
+    {
+      "id": "4a5ffa65-1154-406a-bacb-930ed7376c5d",
+      "timestamp": "2026-08-10T00:42:16+08:00",
+      "operation": "commit",
+      "branch": "codex/final/stage-pack-integrated",
+      "summary": "提交 N0 候选审计账本追加记录",
+      "head_before": "25241e5",
+      "remote": null
     }
   ]
 }
