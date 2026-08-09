@@ -5,6 +5,7 @@ members = [
   "crates/dtoken-router",
   "crates/dtoken-compress",
   "crates/dtoken-context-store",
+  "crates/dtoken-context-bus",
   "crates/dtoken-process",
   "crates/dtoken-doctor",
   "crates/dtoken-event-ledger",

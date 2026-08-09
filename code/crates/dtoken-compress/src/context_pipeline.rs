@@ -4,7 +4,7 @@ use crate::hybrid::{
     lower_hybrid_context, ApprovedHybridTarget, HybridContextIr, HybridProtectionReason,
     ResolvedOptimizationContext,
 };
-use dtoken_types::{CompressionPolicy, Protocol};
+use dtoken_types::CompressionPolicy;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
@@ -117,30 +117,12 @@ impl CacheAlignmentPlan {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ProviderCacheStrategy {
-    AnthropicExplicit,
-    OpenAiAutomatic,
-    GoogleExplicit,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CacheEvidenceStatus {
-    Unavailable,
-    VerifiedBelowMinimum,
-    VerifiedEligible,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ProviderCacheEvidence {
-    pub route_id: String,
-    pub provider_id: String,
-    pub model: String,
-    pub strategy: ProviderCacheStrategy,
-    pub ttl_seconds: Option<u64>,
-    pub min_prefix_bytes: usize,
-    pub source_revision: String,
-}
+// Provider cache policy 类型已搬移至 `dtoken-context-bus`（单一 domain authority，
+// RISKS_DECISIONS D5 / PR-C3A）。此处仅 re-export 保持公开路径不变，
+// 不再本地持有定义（搬移而非复制）。
+pub use dtoken_context_bus::policy::{
+    CacheEvidenceStatus, ProviderCacheEvidence, ProviderCacheStrategy,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ContextPlan {
@@ -678,35 +660,23 @@ fn validate_provider_cache_evidence(
     context: &ResolvedOptimizationContext,
     evidence: &ProviderCacheEvidence,
 ) -> Result<(), ContextTransformError> {
-    if evidence.route_id != context.route_id
-        || evidence.provider_id != context.provider_id
-        || evidence.model != context.model
-        || !strategy_matches_protocol(evidence.strategy, &context.input_protocol)
-    {
-        return Err(ContextTransformError::ProviderCacheEvidenceMismatch);
-    }
-    if evidence.min_prefix_bytes == 0
-        || evidence.ttl_seconds == Some(0)
-        || evidence.source_revision.len() != 64
-        || !evidence
-            .source_revision
-            .bytes()
-            .all(|byte| byte.is_ascii_hexdigit())
-    {
-        return Err(ContextTransformError::InvalidProviderCacheEvidence);
-    }
-    Ok(())
-}
-
-fn strategy_matches_protocol(strategy: ProviderCacheStrategy, protocol: &Protocol) -> bool {
-    matches!(
-        (strategy, protocol),
-        (
-            ProviderCacheStrategy::AnthropicExplicit,
-            Protocol::Anthropic
-        ) | (ProviderCacheStrategy::OpenAiAutomatic, Protocol::OpenAi)
-            | (ProviderCacheStrategy::GoogleExplicit, Protocol::OpenAi)
+    // PR-C3A：policy 校验搬移至 `dtoken-context-bus`（单一 authority）。
+    // 此处仅映射错误变体，不再持有校验规则副本。
+    dtoken_context_bus::policy::validate_provider_cache_evidence(
+        &context.route_id,
+        &context.provider_id,
+        &context.model,
+        &context.input_protocol,
+        evidence,
     )
+    .map_err(|error| match error {
+        dtoken_context_bus::policy::CachePolicyError::ProviderCacheEvidenceMismatch => {
+            ContextTransformError::ProviderCacheEvidenceMismatch
+        }
+        dtoken_context_bus::policy::CachePolicyError::InvalidProviderCacheEvidence => {
+            ContextTransformError::InvalidProviderCacheEvidence
+        }
+    })
 }
 
 fn build_manifest_entries(

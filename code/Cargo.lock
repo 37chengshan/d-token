@@ -1118,6 +1118,7 @@ version = "0.2.0-beta.1"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
+ "dtoken-context-bus",
  "dtoken-types",
  "ed25519-dalek",
  "font8x8",
@@ -1170,6 +1171,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "dtoken-context-bus"
+version = "0.2.0-beta.1"
+dependencies = [
+ "anyhow",
+ "dtoken-types",
+ "serde",
+ "serde_json",
+ "sha2",
+ "uuid",
+]
+
+[[package]]
 name = "dtoken-context-store"
 version = "0.2.0-beta.1"
 dependencies = [
@@ -1192,6 +1205,7 @@ dependencies = [
  "dtoken-compress",
  "dtoken-config",
  "dtoken-config-patcher",
+ "dtoken-context-bus",
  "dtoken-context-store",
  "dtoken-doctor",
  "dtoken-event-ledger",
