@@ -10,8 +10,8 @@
 | 轨道 | 上游 | 当前登记 pin | 新事实/漂移 | 许可证 | 分发边界 | 收敛切片 |
 |---|---|---|---|---|---|---|
 | Headroom | `headroomlabs-ai/headroom` | `v0.34.0` / `9fd5ae3d`（唯一 current comparison pin，2026-08-08 PR-H1 决议） | **D2 已闭合（PR-H1）**：三候选审计完成——`01df2452`→`v0.34.0`（33 commit/129 文件/+8936 −1021）、`v0.34.0`→main `7f6950be`（33 commit/74 文件/+4874 −428）；许可证无差异、NOTICE 增量（#2734 vendored dashboard assets）已登记；无必须采用 main 的实际证据，main 只作 post-release delta 跟踪 | Apache-2.0 + NOTICE | 行为对照；`code/runtimes/headroom/` 为 provenance/迁移边界，非 Python sidecar/外部 8787 依赖 | PR-H1✅, PR-H2, PR-H3 |
-| LeanCTX | `yvgude/lean-ctx` | `v3.9.17` / `cf8fce6b`（2026-08-04 release） | **pin 漂移候选**：新克隆 `lean-ctx-main-2026-08-08` HEAD `95a1b7bc`（main）未评估 | Apache-2.0（`clients/python`、`rust/crates/grammar-addons/lua` 子包 MIT） | 行为对照；九边界由 d-token-owned Rust service 提供 | PR-L0, PR-L1..L3 |
-| RTK | `rtk-ai/rtk` | managed RTK（receipt 2026-07-31）；未登记 release pin | **pin 待审计**：新克隆 `rtk-v0.45.0` HEAD `b34be37`（v0.45.0，PR #3468） | Apache-2.0（已核对官方 `LICENSE`；无根 NOTICE，PR-R1 仍需登记） | d-token 内建 managed 能力；不独立分发；`rtk gain` 不作为产品轮询路径 | PR-R1, PR-R2, PR-R3 |
+| LeanCTX | `yvgude/lean-ctx` | `v3.9.17` / `cf8fce6b`（唯一参考 pin，2026-08-08 决议） | **D4 已闭合**：main `95a1b7bc` 的 93 commit 增量已评估；版本未升、开发线含 WIP/enterprise 变更，故仅作 post-pin 研究；许可证与 NOTICE 无变化 | Apache-2.0（`clients/python`、`rust/crates/grammar-addons/lua` 子包 MIT） | 行为对照；九边界由 d-token-owned Rust service 提供 | PR-L0✅, PR-L1..L3 |
+| RTK | `rtk-ai/rtk` | `v0.45.0` / `b34be37`（唯一行为参考 pin，2026-08-08 登记） | **D5 已闭合**：release/tag/Cargo 版本一致；Apache-2.0；上游无 NOTICE；不引入或分发外部 runtime | Apache-2.0 | d-token 内建 managed 能力；不独立分发；`rtk gain` 不作为产品轮询路径 | PR-R1✅, PR-R2, PR-R3 |
 | pxpipe | `teamchong/pxpipe` | `0ceabbed` / v0.12.0（2026-08-06 release；法律声明、代码常量、计划文档已同步） | **已闭合（PR-O1，2026-08-08）**：v0.12.0 评估完成并固定为唯一参考 pin；旧 pin `7b7d6efa`/v0.8.0 标注为历史；1928×1928 非生产 profile 声明保留 | MIT（代码）；Spleen 字体 BSD-2-Clause | 评测配方参考；d-token Rust renderer 独立实现 | PR-O1 已闭合（PR-O2 管 Spleen） |
 | Codebase Memory | `DeusData/codebase-memory-mcp` | `v0.9.1-rc.1` / `ee9833df`（manifest） | **provenance 漂移（阻断级）**：根 `THIRD_PARTY_NOTICES.md` 仍 pin `v0.9.0` / `b637e333`，与 manifest 不一致 | MIT | 可选外部 sidecar：用户显式导入 pinned archive，App 不携带大文件；Cosign/OIDC 校验 | PR-CBM1, PR-CBM2 |
 | AiMaMi | `borawong/AiMaMi` | `297c7af5` | 无漂移（LICENSE 副本在 `docs/legal/AIMAMI_APACHE_2_0_LICENSE.txt`）；该 commit 无根 NOTICE | Apache-2.0 | 适配声明（PageStage/AnimatedSegmentedControl 等，见 legal notices 适配范围表）；不复制品牌资产 | PR-A |
@@ -45,7 +45,7 @@
 
 | 层 | 内容 | 验收 | 依赖 |
 |---|---|---|---|
-| PR-L0 | 评估 main `95a1b7bc` 相对 v3.9.17 增量；决定唯一 pin；更新登记 | pin/NOTICE/license/行为差异单一 | P0 |
+| PR-L0 | ✅ 已完成：main `95a1b7bc` 相对 v3.9.17 的增量、版本、许可证和 NOTICE 已评估；唯一 pin 保持 `v3.9.17` / `cf8fce6b`，main 仅作 post-pin 研究 | pin/NOTICE/license/行为差异单一 | P0 |
 | PR-C3A | Context Bus、Session Cache、map/signature、自命中/scope/size；从旧模块搬移 policy | 新 crate 单一 domain authority；store 仅 persistence；secret/raw 禁入 | PR-L0, PR-C0A |
 | PR-C3B | Context Relay、Query-aware Retrieval、RelayHit/CacheReuse accounting | 两 Agent 同项目命中；跨项目污染=0；Relay 不算 compression | PR-C3A, PR-C1C |
 | PR-C3C | Recovery Pointer/Manifest、Stale/Superseded、SharedContext grant/revoke | 文件/TTL/权限/source 变化拒绝；失败正常读取 | PR-C3B, PR-C2C |
@@ -54,7 +54,7 @@
 
 | 层 | 内容 | 验收 | 依赖 |
 |---|---|---|---|
-| PR-O1 | pxpipe v0.12.0/`0ceabbe` 相对旧 pin 的 8 项差异、archive/license/NOTICE | pin 唯一；1928×1928 历史 profile 非生产；零 runtime dependency | P0 |
+| PR-O1 | ✅ 已完成：pxpipe v0.12.0/`0ceabbed` 相对旧 pin 的 8 项差异及 license/NOTICE 已评估；旧 pin 仅作历史 | pin 唯一；1928×1928 历史 profile 非生产；零 runtime dependency | P0 |
 | PR-O2 | Spleen 2.2.0 字体/provenance/字形差异 | 字体声明完整；实现不复制 pxpipe runtime | PR-O1 |
 | PR-C5A | deterministic renderer、Unicode/CJK fallback、resource/self-decode、双平台 digest | macOS/Windows 同 fixture digest；secret/exact 不入图 | PR-O1/O2, PR-C0C |
 | PR-C5B | history collapse/static slab/freeze grid/cache anchor/billing boundary/pin semantics | current/recent/open/exact 文本不变；frozen prefix byte-identical | PR-C5A, PR-C2B |
@@ -103,9 +103,9 @@
 |---|---|---|---|
 | D1 | CBM 根 NOTICE v0.9.0 vs manifest v0.9.1-rc.1 | 根 `THIRD_PARTY_NOTICES.md` 第 52–56 行 pin v0.9.0/`b637e333`；manifest pin v0.9.1-rc.1/`ee9833df` | PR-CBM1 |
 | D2 | Headroom 基线 pin 冲突 | ✅ 已闭合（PR-H1，2026-08-08）：唯一 current comparison pin = `v0.34.0`/`9fd5ae3d`；旧基线 `01df2452` 标历史；main `7f6950be` 作 post-release delta 跟踪（无必须采用证据）；三候选漂移审计记录在 `code/runtimes/headroom/README.md` | PR-H1 |
-| D3 | pxpipe 旧 pin 未评估 | 法律声明 pin `7b7d6efa`；上游已发布 v0.12.0/`0ceabbe` | PR-O1 |
-| D4 | lean-ctx release vs main | 登记 pin v3.9.17/`cf8fce6b`；新克隆 main `95a1b7bc` 未评估 | PR-L0 |
-| D5 | RTK 无 release pin 登记 | managed probe 有 receipt 但无来源 pin；新克隆 v0.45.0/`b34be37` 待审计 | PR-R1 |
+| D3 | pxpipe 旧 pin 未评估 | ✅ 已闭合：唯一 pin `0ceabbed`/v0.12.0；法律声明、代码常量与计划事实一致；旧 pin `7b7d6efa` 仅作历史 | PR-O1 |
+| D4 | lean-ctx release vs main | ✅ 已闭合：唯一 pin `v3.9.17`/`cf8fce6b`；main `95a1b7bc` 增量已评估且仅作 post-pin 研究 | PR-L0 |
+| D5 | RTK 无 release pin 登记 | ✅ 已闭合：唯一参考 pin `v0.45.0`/`b34be37`，Apache-2.0，上游无 NOTICE，不分发外部 runtime | PR-R1 |
 
 ## 9. 与发布门的绑定
 

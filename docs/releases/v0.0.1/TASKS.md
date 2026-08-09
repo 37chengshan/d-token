@@ -32,10 +32,10 @@
 
 ## 4. Provenance / 迁移差异（W1）
 
-- [ ] T-H1：Headroom 三候选增量评估并唯一 pin；NOTICE/license 统一。REQ：OSS-1/2｜验证：N0。
-- [ ] T-L0：LeanCTX v3.9.17 vs main 增量评估并唯一 pin。REQ：OSS-1｜验证：N0。
-- [ ] T-R1：RTK v0.45.0 `b34be37` pin/license/差异矩阵。REQ：OSS-1, PLATFORM-5｜验证：N0/N10。
-- [ ] T-O1：pxpipe v0.12.0 `0ceabbe` pin/archive/license/8 项差异矩阵。REQ：OPTICAL-3, OSS-1｜验证：N0/N10。
+- [x] Headroom 来源已统一为 `v0.34.0` / `9fd5ae3d`；旧基线与 main 只保留为历史和发布后研究参考。验证：N0。
+- [x] LeanCTX 来源已统一为 `v3.9.17` / `cf8fce6b`；main 增量已评估。验证：N0。
+- [x] RTK 来源已统一为 `v0.45.0` / `b34be37`，许可证与无 NOTICE 事实已登记。验证：N0/N10。
+- [x] pxpipe 来源已统一为 `v0.12.0` / `0ceabbed`，差异、许可证及非生产历史 profile 已登记。验证：N0/N10。
 - [ ] T-O2：Spleen 2.2.0 provenance 与字形/渲染差异。REQ：OPTICAL-3/4, OSS-2｜依赖：T-O1｜验证：N10。
 - [ ] T-CBM1：根 NOTICE 与 v0.9.1-rc.1 manifest 单一化。REQ：OSS-1/4｜验证：N0。
 - [ ] T-CBM2：v0.9.0 配置 Bug 先红后绿；Windows SHA/Cosign/thumbprint producer/schema/dry-run；仅在 PR-6 临时 Agent 配置副本验证 preview/apply/verify/rollback 与 exact restore。REQ：PRODUCT-6, OSS-4, CONFIG-1/2｜依赖：T-CBM1,T-PR6｜验证：N4/N8 在 N0 后执行真实 Windows/candidate lane。**N0 前不得生成真实 Windows 或 candidate evidence。**

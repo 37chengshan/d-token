@@ -7,8 +7,8 @@
 ## Headroom 行为对照基线
 
 - 项目：[`headroomlabs-ai/headroom`](https://github.com/headroomlabs-ai/headroom)
-- 当前固定对照：[`main`](https://github.com/headroomlabs-ai/headroom/tree/main) / [`01df2452529a86c689cf226fecd5918cc5d19676`](https://github.com/headroomlabs-ai/headroom/commit/01df2452529a86c689cf226fecd5918cc5d19676)（2026-08-02 获取；截至 2026-08-06 仍为本仓库评估基线）
-- 最新稳定 tag：[`v0.34.0`](https://github.com/headroomlabs-ai/headroom/releases/tag/v0.34.0) / [`9fd5ae3d530b5d9eb9e9127e413235a5a3b2faf6`](https://github.com/headroomlabs-ai/headroom/commit/9fd5ae3d530b5d9eb9e9127e413235a5a3b2faf6)（2026-08-05 已发布，晚于当前固定对照；其增量尚未评估，未纳入能力矩阵，不作为完成口径）
+- 当前唯一固定对照：[`v0.34.0`](https://github.com/headroomlabs-ai/headroom/releases/tag/v0.34.0) / [`9fd5ae3d530b5d9eb9e9127e413235a5a3b2faf6`](https://github.com/headroomlabs-ai/headroom/commit/9fd5ae3d530b5d9eb9e9127e413235a5a3b2faf6)（2026-08-05 发布；已完成相对旧基线 `01df2452` 与后续 main `7f6950be` 的增量、许可证和 NOTICE 对比）
+- 决议：旧基线 `01df2452529a86c689cf226fecd5918cc5d19676` 仅保留为历史复现；main `7f6950be` 只作发布后差异跟踪，不构成第二 pin
 - 前一发布对照：[`v0.33.0`](https://github.com/headroomlabs-ai/headroom/releases/tag/v0.33.0) / [`28aa53dc7ca51e687cc719c3fe160f3be50c6570`](https://github.com/headroomlabs-ai/headroom/commit/28aa53dc7ca51e687cc719c3fe160f3be50c6570)
 - 历史对照：[`1725cd1f8376828849c0e48fd9008afa25d24fff`](https://github.com/headroomlabs-ai/headroom/commit/1725cd1f8376828849c0e48fd9008afa25d24fff)，仅用于解释 2026-07 的旧证据
 - 上游许可证：Apache License 2.0；固定 commit 包含根目录 `NOTICE`

@@ -66,10 +66,9 @@ The projects below informed behavior studies or evaluation design. Their source 
 ### Headroom
 
 - Upstream: `headroomlabs-ai/headroom`
-- Pinned comparison tag/commit: `v0.33.0` / `28aa53dc7ca51e687cc719c3fe160f3be50c6570`
-- Current comparison baseline (main HEAD, fetched 2026-08-02): `01df2452529a86c689cf226fecd5918cc5d19676`
-- Latest stable tag (released 2026-08-05, after the current baseline, not yet evaluated): `v0.34.0` / `9fd5ae3d530b5d9eb9e9127e413235a5a3b2faf6`
-- Historical comparison commit: `1725cd1f8376828849c0e48fd9008afa25d24fff`
+- Current comparison pin: `v0.34.0` / `9fd5ae3d530b5d9eb9e9127e413235a5a3b2faf6` (selected after comparing the prior `01df2452529a86c689cf226fecd5918cc5d19676` baseline and main `7f6950be`; both are retained as historical or post-release research references only)
+- Historical release comparison: `v0.33.0` / `28aa53dc7ca51e687cc719c3fe160f3be50c6570`
+- Historical comparison commits: `01df2452529a86c689cf226fecd5918cc5d19676`, `1725cd1f8376828849c0e48fd9008afa25d24fff`
 - License: Apache License 2.0
 
 Versioned `headroom-*/` directories are local reference workspaces and are excluded from release source scope and desktop packages. d-token's Rust runtime is not a Python Headroom sidecar and does not silently install or launch Headroom. The CCR reversible-compression capability is a Headroom-internal component (not an independent upstream project); its provenance is covered by the Headroom pinned commit above.
