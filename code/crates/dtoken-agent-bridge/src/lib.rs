@@ -536,6 +536,7 @@ fn write_usage_record(
     if metadata.file_type().is_symlink() || !metadata.is_dir() {
         bail!("managed usage directory must be a real directory");
     }
+    validate_private_directory(dir, "managed usage directory")?;
     let bytes = serde_json::to_vec_pretty(record).context("serialize usage record")?;
     if bytes.len() > MAX_MANAGED_RTK_USAGE_RECORD_BYTES {
         bail!("managed usage record exceeds its size limit");
@@ -706,6 +707,27 @@ fn is_safe_metadata_text(value: &str, max_len: usize) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_'))
 }
 
+/// Rejects a managed usage directory exposed to group/other users. Usage
+/// receipts are metadata-only (no argv, output, or credentials), but they
+/// still describe the caller's command workload and must stay private.
+/// No-op on platforms without POSIX permission bits.
+fn validate_private_directory(path: &Path, label: &str) -> Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = fs::metadata(path)
+            .with_context(|| format!("{label} metadata is unavailable: {}", path.display()))?
+            .permissions()
+            .mode();
+        if mode & 0o077 != 0 {
+            bail!(
+                "{label} is not private (mode {mode:o}); d-token usage receipts must not be exposed to group or other users"
+            );
+        }
+    }
+    Ok(())
+}
+
 fn is_allowed_usage_transform(value: &str) -> bool {
     matches!(
         value,
@@ -874,6 +896,109 @@ mod tests {
     }
 
     #[test]
+    fn normalized_exit_code_reports_timeout_as_124() {
+        let success = std::process::Command::new("true")
+            .status()
+            .expect("true status");
+        assert_eq!(normalized_exit_code(&success, false), 0);
+        assert_eq!(normalized_exit_code(&success, true), RTK_TIMEOUT_EXIT_CODE);
+        assert_eq!(RTK_TIMEOUT_EXIT_CODE, 124);
+    }
+
+    #[test]
+    fn usage_records_cannot_carry_argv_or_raw_output_fields() {
+        let manifest = ManagedHookManifest {
+            schema_version: 1,
+            transaction_id: "rtk-argv-reject".to_string(),
+            platform: dtoken_types::agent::HostPlatform::Macos,
+            host_config_fingerprint: "a".repeat(64),
+            managed_root: "/tmp/managed-rtk".to_string(),
+            bridge_path: "/tmp/bridge".to_string(),
+            bridge: dtoken_preprocessor::ManagedHookBridgeIdentity {
+                component: BRIDGE_COMPONENT.to_string(),
+                protocol_version: 1,
+                version: "0.2.0-beta.1".to_string(),
+                arch: "fixture".to_string(),
+                os: "fixture".to_string(),
+                sha256: "b".repeat(64),
+            },
+            max_output_bytes: Some(MIN_MANAGED_RTK_OUTPUT_BYTES),
+            usage_dir: "usage".to_string(),
+        };
+        let secret_argv = serde_json::json!({
+            "schema_version": USAGE_RECORD_SCHEMA_VERSION,
+            "transaction_id": "rtk-argv-reject",
+            "exit_code": 0,
+            "input_bytes": 10,
+            "output_bytes": 5,
+            "saved_bytes": 5,
+            "transforms": [],
+            "disposition": "filtered_verified_hook",
+            "command_basename": "cargo",
+            "command_sha256": "c".repeat(64),
+            "bridge_sha256": manifest.bridge.sha256,
+            "bridge_version": manifest.bridge.version,
+            "recorded_at_ms": 1,
+            "argv": ["cargo", "build", "--release"],
+            "raw_output": "SECRET=must-not-persist"
+        });
+        let parsed: Result<UsageRecord, _> = serde_json::from_value(secret_argv);
+        assert!(
+            parsed.is_err(),
+            "an argv/raw-output carrying record must never deserialize"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn usage_writer_rejects_an_exposed_usage_directory() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = tempfile::tempdir().expect("usage tempdir");
+        let usage_dir = root.path().join("usage");
+        std::fs::create_dir_all(&usage_dir).expect("usage directory");
+        std::fs::set_permissions(&usage_dir, std::fs::Permissions::from_mode(0o755))
+            .expect("expose usage directory");
+        let manifest = ManagedHookManifest {
+            schema_version: 1,
+            transaction_id: "rtk-acl".to_string(),
+            platform: dtoken_types::agent::HostPlatform::Macos,
+            host_config_fingerprint: "a".repeat(64),
+            managed_root: root.path().display().to_string(),
+            bridge_path: root.path().join("bridge").display().to_string(),
+            bridge: dtoken_preprocessor::ManagedHookBridgeIdentity {
+                component: BRIDGE_COMPONENT.to_string(),
+                protocol_version: 1,
+                version: "0.2.0-beta.1".to_string(),
+                arch: "fixture".to_string(),
+                os: "fixture".to_string(),
+                sha256: "b".repeat(64),
+            },
+            max_output_bytes: Some(MIN_MANAGED_RTK_OUTPUT_BYTES),
+            usage_dir: "usage".to_string(),
+        };
+        let record = UsageRecord {
+            schema_version: USAGE_RECORD_SCHEMA_VERSION,
+            transaction_id: manifest.transaction_id.clone(),
+            exit_code: Some(0),
+            input_bytes: 10,
+            output_bytes: 5,
+            saved_bytes: 5,
+            transforms: vec![],
+            disposition: "filtered_verified_hook".to_string(),
+            command_basename: "cargo".to_string(),
+            command_sha256: "c".repeat(64),
+            bridge_sha256: manifest.bridge.sha256.clone(),
+            bridge_version: manifest.bridge.version.clone(),
+            recorded_at_ms: 1,
+        };
+        let error =
+            write_usage_record(&usage_dir, &manifest, &record).expect_err("exposed usage dir");
+        assert!(error.to_string().contains("not private"));
+        assert!(std::fs::read_dir(&usage_dir).expect("usage dir").next().is_none());
+    }
+
+    #[test]
     fn hook_and_mcp_never_echo_untrusted_input() {
         let secret = b"{\"transcript\":\"DO_NOT_ECHO_secret_value\"}";
         let mut hook_output = Vec::new();
@@ -938,6 +1063,14 @@ mod tests {
         let root = tempfile::tempdir().expect("usage tempdir");
         let usage_dir = root.path().join("usage");
         std::fs::create_dir_all(&usage_dir).expect("usage directory");
+        // The preprocessor creates the managed usage directory private; the
+        // writer now rejects exposed directories, so mirror that here.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&usage_dir, std::fs::Permissions::from_mode(0o700))
+                .expect("private usage directory");
+        }
         let manifest = ManagedHookManifest {
             schema_version: 1,
             transaction_id: "rtk-usage-prune".to_string(),

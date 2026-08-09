@@ -125,8 +125,11 @@ pub enum ManagedRtkOperation {
 }
 
 /// A managed RTK transaction is only successful after a versioned host hook
-/// adapter has verified its own write and rollback. `Blocked` is an expected,
-/// safe state while no such adapter is shipped for the host platform.
+/// adapter has verified its own write and rollback. `Unavailable` is the
+/// expected state while the managed runtime is not configured (no verified
+/// d-token-owned wrapper for the operation); it is never a hard platform
+/// lock. The adapter may transition from a valid `Planned` transaction into
+/// `Installed`/`Configured`/`Verified` on any supported host platform.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ManagedRtkTransactionState {
@@ -136,7 +139,7 @@ pub enum ManagedRtkTransactionState {
     Verified,
     RolledBack,
     Uninstalled,
-    Blocked,
+    Unavailable,
     Failed,
 }
 
@@ -191,6 +194,50 @@ pub struct ManagedRtkUsageEvidence {
     pub saved_bytes: usize,
     pub transforms: Vec<String>,
     pub disposition: String,
+}
+
+/// Four-dimension savings accounting (RUNTIME-5/9, CONTEXT-3). Compression
+/// (Headroom/Optical text transforms), command-output (RTK), provider-cache,
+/// and relay savings are independently attributable: entries in different
+/// buckets may never share a source digest, and no two buckets may be summed
+/// as if they were one savings pool.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum AccountingBucket {
+    Compression,
+    CommandOutput,
+    ProviderCache,
+    Relay,
+}
+
+/// One attributed savings claim. `source_digest` binds the claim to the exact
+/// bytes it transformed; the same digest may never appear in two buckets
+/// (exclusive attribution, no double count).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct AccountingEntry {
+    pub schema_version: u8,
+    pub bucket: AccountingBucket,
+    pub source_digest: String,
+    pub input_bytes: u64,
+    pub output_bytes: u64,
+    pub saved_bytes: u64,
+    pub disposition: String,
+    pub recorded_at_ms: u64,
+}
+
+/// Exclusive canonical planner action for one context node (RUNTIME-7). A
+/// node is assigned exactly one action; `RtkCommandOutput` nodes are never
+/// also `HeadroomSemantic`/`Optical`/`Reuse`, so their byte savings cannot be
+/// double counted into another dimension.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NodeAction {
+    Preserve,
+    Reuse,
+    HeadroomSemantic,
+    RtkCommandOutput,
+    Optical,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
