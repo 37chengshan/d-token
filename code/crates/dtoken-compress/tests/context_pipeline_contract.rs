@@ -998,3 +998,124 @@ fn frozen_override_flows_into_prepared_plan_floor() {
     .expect("candidate: override=None should produce a candidate");
     assert_eq!(fallback.plan().cache_alignment().frozen_message_floor(), 1);
 }
+
+#[test]
+fn nonrepetitive_historical_tool_result_without_durable_receipt_stays_verbatim() {
+    // Non-repetitive scan/compile-style output: every line distinct, no
+    // adjacent duplicates, no secret-like material, no code fences, no diff.
+    // This is exactly the shape the interrupted `<<ccr:pending,...>>` slice
+    // tried to collapse into a digest-only retrieval marker.  That slice
+    // violated the durable store -> receipt -> marker -> restore invariant:
+    // the compress layer has no durable store access and produces no receipt,
+    // so a `<<ccr:pending,sha256=...>>` marker is a dangling handle that can
+    // never be restored (a sha256 digest is one-way) and the runtime's
+    // `ccr_bare_marker_guard` would reject it before send.  The correct
+    // contract is fail-closed: without a durable recovery receipt the text
+    // must stay byte-identical.
+    let mut scan_lines = Vec::new();
+    for index in 0..180 {
+        scan_lines.push(format!(
+            "[scan] path=src/scan/{index:03}.rs matched={} kind={} bytes={}",
+            40 + (index % 30),
+            ["rust", "go", "ts"][index % 3],
+            900 + index * 7,
+        ));
+    }
+    let historical_result = scan_lines.join("\n");
+    assert!(
+        historical_result.len() >= 8 * 1024,
+        "fixture must be at least 8KB, got {} bytes",
+        historical_result.len()
+    );
+
+    // Tools stay sorted by name so the tool-schema pass is a byte no-op and
+    // the frozen/protected sections remain exactly comparable.
+    let tools = json!([
+        {"type":"function","function":{"name":"compile","parameters":{"type":"object","properties":{"path":{"type":"string"}},"required":["path"]}}},
+        {"type":"function","function":{"name":"read","parameters":{"type":"object"}}}
+    ]);
+    let mut messages = vec![
+        json!({"role":"assistant","tool_calls":[{"id":"call-0","type":"function","function":{"name":"compile","arguments":"{\"path\":\"src/scan/000.rs\"}"}}]}),
+        json!({"role":"tool","tool_call_id":"call-0","content":historical_result}),
+    ];
+    for index in 0..6 {
+        messages.push(json!({
+            "role":"assistant",
+            "tool_calls":[{"id":format!("recent-{index}"),"type":"function","function":{"name":"read","arguments":format!("{{\"path\":\"recent-{index}\"}}")}}]
+        }));
+        messages.push(json!({
+            "role":"tool",
+            "tool_call_id":format!("recent-{index}"),
+            "content":"recent"
+        }));
+    }
+    messages.push(json!({"role":"user","content":"current"}));
+    let body = json!({
+        "model":"model-openai-revision",
+        "system":"system remains exact",
+        "tools":tools,
+        "messages":messages,
+        "extension":{"must_remain":"exact"}
+    });
+
+    let result = CompressionEngine::new()
+        .compress_resolved(
+            &openai_context(OpticalEndpoint::OpenAiChatCompletions),
+            CompressionPolicy::Balanced,
+            body.clone(),
+        )
+        .expect("compression must not fail on a non-repetitive historical tool result");
+
+    // Frozen/protected sections must stay byte-exact.
+    assert_eq!(result.body["system"], body["system"]);
+    assert_eq!(result.body["extension"], body["extension"]);
+    assert_eq!(result.body["tools"], body["tools"]);
+    let historical_args = result
+        .body
+        .pointer("/messages/0/tool_calls/0/function/arguments")
+        .expect("historical tool arguments");
+    assert_eq!(historical_args, &Value::String("{\"path\":\"src/scan/000.rs\"}".to_string()));
+    for index in 0..6 {
+        let assistant_index = 2 + index * 2;
+        let result_index = 3 + index * 2;
+        let args = result
+            .body
+            .pointer(&format!("/messages/{assistant_index}/tool_calls/0/function/arguments"))
+            .expect("recent tool arguments");
+        assert_eq!(args, &Value::String(format!("{{\"path\":\"recent-{index}\"}}")));
+        let recent = result
+            .body
+            .pointer(&format!("/messages/{result_index}/content"))
+            .expect("recent tool result");
+        assert_eq!(recent, &Value::String("recent".to_string()));
+    }
+    let current = result
+        .body
+        .pointer("/messages/14/content")
+        .expect("current user");
+    assert_eq!(current, &Value::String("current".to_string()));
+
+    // Without a durable recovery receipt the historical tool result must stay
+    // byte-identical: never a `<<ccr:` marker, never a claimed CCR transform.
+    let historical = result
+        .body
+        .pointer("/messages/1/content")
+        .and_then(Value::as_str)
+        .expect("historical tool result must remain present");
+    assert_eq!(
+        historical, historical_result,
+        "historical tool result must stay verbatim without a durable receipt"
+    );
+    assert!(
+        !historical.contains("<<ccr:"),
+        "no pseudo retrieval marker may be emitted without a durable receipt"
+    );
+    assert!(
+        !result
+            .transforms_applied
+            .iter()
+            .any(|item| item == "live_zone_ccr_v1"),
+        "no CCR transform may be claimed without a durable receipt, got: {:?}",
+        result.transforms_applied
+    );
+}
