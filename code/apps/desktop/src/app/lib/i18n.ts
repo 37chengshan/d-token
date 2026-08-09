@@ -32,7 +32,7 @@ export const DICT: Dict = {
   "onb.service.start": { zh: "启动并检查本地服务", en: "Start & check local service" },
   "onb.service.starting": { zh: "正在启动并检查本地服务…", en: "Starting and checking local service…" },
   "onb.service.retry": { zh: "重试", en: "Retry" },
-  "onb.service.startSuccess": { zh: "服务已启动，状态已刷新", en: "Service started and state refreshed" },
+  "onb.service.startSuccess": { zh: "服务已启动，尚未完成 Agent 接入", en: "Service started; Agent integration is not yet complete" },
   "onb.service.startFailed": {
     zh: "启动失败或状态刷新未确认，未做任何写入；请重试。",
     en: "Start failed or the state refresh was not confirmed; nothing was written. Try again.",
@@ -96,13 +96,12 @@ export const DICT: Dict = {
   "onb.backOverview": { zh: "返回总体概览", en: "Back to Overview" },
   "onb.entryTitle": { zh: "首次配置", en: "First-run setup" },
 
-  // 6-step onboarding wizard
+  // 5-step onboarding wizard
   "onb.step.welcome": { zh: "欢迎", en: "Welcome" },
-  "onb.step.service": { zh: "本地服务", en: "Service" },
-  "onb.step.agents": { zh: "Agent", en: "Agents" },
-  "onb.step.upstream": { zh: "上游", en: "Upstream" },
+  "onb.step.service": { zh: "服务启动", en: "Start service" },
+  "onb.step.agents": { zh: "扫描 Agent", en: "Scan agents" },
   "onb.step.config": { zh: "配置", en: "Config" },
-  "onb.step.verify": { zh: "验证", en: "Verify" },
+  "onb.step.verify": { zh: "开始使用", en: "Start using" },
   "onb.next": { zh: "下一步", en: "Next" },
   "onb.prev": { zh: "上一步", en: "Back" },
   "onb.stepOf": { zh: "第 {current} 步，共 {total} 步", en: "Step {current} of {total}" },
@@ -463,6 +462,41 @@ export const DICT: Dict = {
   "common.confidence": { zh: "置信度", en: "Confidence" },
   "common.enabled": { zh: "已启用", en: "Enabled" },
   "common.disabled": { zh: "已停用", en: "Disabled" },
+
+  // install & connect managed operations (UI-11 unified OperationDialog)
+  "install.transportConfigureTitle": { zh: "确认配置托管传输", en: "Confirm managed transport" },
+  "install.transportConfigureSummary": {
+    zh: "将仅在 {path} 及其相邻 ownership receipt 写入 d-token 托管配置。已生成可验证计划。",
+    en: "A verifiable d-token-owned plan was generated for {path} and its adjacent ownership receipt. Only those files will be written.",
+  },
+  "install.transportClearTitle": { zh: "确认清除托管传输", en: "Confirm clearing managed transport" },
+  "install.transportClearSummary": {
+    zh: "将仅清除 {path} 中有 ownership receipt 证明属于 d-token 的配置。",
+    en: "Only configuration proven d-token-owned by its ownership receipt in {path} will be removed.",
+  },
+  "install.mcpConfigureTitle": { zh: "确认注册 MCP 工具", en: "Confirm MCP tool registration" },
+  "install.mcpConfigureSummary": {
+    zh: "将在 {path} 注册 d-token-agent-bridge MCP 工具。此集成仅提供 MCP 工具，不改变模型上游。",
+    en: "Register the d-token-agent-bridge MCP tool in {path}. This integration provides MCP tools only and does not change the model upstream.",
+  },
+  "install.mcpClearTitle": { zh: "确认清除 MCP 条目", en: "Confirm clearing MCP entry" },
+  "install.mcpClearSummary": {
+    zh: "将清除 {path} 中的 d-token MCP 条目。仅移除 MCP 工具，不影响上游配置。",
+    en: "Remove the d-token MCP entry from {path}. Only the MCP tool is removed; upstream configuration is unaffected.",
+  },
+  "install.reviewRevision": { zh: "计划修订", en: "Plan revision" },
+  "install.reviewHashes": { zh: "校验", en: "Hashes" },
+
+  // onboarding service step phases (UI-8)
+  "onb.service.phases": { zh: "服务启动阶段", en: "Service start phases" },
+  "onb.service.phase.check": { zh: "检查", en: "Check" },
+  "onb.service.phase.backup": { zh: "备份", en: "Backup" },
+  "onb.service.phase.start": { zh: "启动", en: "Start" },
+  "onb.service.phase.verify": { zh: "验证", en: "Verify" },
+  "onb.service.runningNote": {
+    zh: "服务运行中 ≠ 已连接；Agent 接入与验证以「开始使用」步骤的证据为准。",
+    en: "Running ≠ connected; Agent integration and verification are judged by the evidence on the Start-using step.",
+  },
 
   // overview
   "ov.title": { zh: "总体概览", en: "Overview" },

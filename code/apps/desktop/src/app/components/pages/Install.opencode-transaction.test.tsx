@@ -1,6 +1,6 @@
 import React from "react";
 import "@testing-library/jest-dom/vitest";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 const invokeNative = vi.fn();
@@ -102,7 +102,7 @@ describe("Install OpenCode guarded transaction", () => {
           }],
           sources: [],
           cc_switch_sync: null,
-          selection_required: false,
+          has_resolution_gap: false,
           writes_performed: false,
           privacy: "redacted",
         };
@@ -269,5 +269,101 @@ describe("Install OpenCode guarded transaction", () => {
       request: { transaction_id: "agent-transaction-1" },
     }));
     expect(await screen.findByText(/已确认配置生效、本地服务健康且路由可用/)).toBeInTheDocument();
+  });
+});
+
+describe("Install managed operation confirm (UI-11)", () => {
+  it("uses the unified OperationDialog instead of window.confirm and applies only after explicit confirm", async () => {
+    const confirmSpy = vi.spyOn(window, "confirm").mockImplementation(() => true);
+    invokeNative.mockImplementation(async (command: string) => {
+      if (command === "get_dtoken_service_status") {
+        return { ok: true, state: "running", managed: true, service_url: "http://127.0.0.1:18001", summary: "running" };
+      }
+      if (command === "detect_tools") {
+        return {
+          ok: true,
+          summary: "detected",
+          logs: [],
+          tools: [{ id: "opencode", label: "OpenCode", installed: true, version: "1.14.51", path: "/usr/local/bin/opencode", status: "installed", detail: "installed" }],
+        };
+      }
+      if (command === "discover_upstream_candidates") {
+        const candidate = { id: "deepseek", name: "DeepSeek", protocol: "open_ai", base_url: "https://example.test/v1", models: ["deepseek-chat"], source: "opencode-normal-config", freshness: "unix:1", auth_mode: "none", active: true, state: "discovered", agent_ids: ["opencode"], confidence: 98, reasons: ["current"] };
+        return {
+          source: "dtoken-desktop-read-only-discovery",
+          freshness: "unix:1",
+          revision: "setup-1",
+          state: "loaded",
+          candidates: [candidate],
+          agent_bindings: [{
+            agent_id: "opencode",
+            agent_name: "OpenCode",
+            installed: true,
+            binary_path: "/usr/local/bin/opencode",
+            config_path: "~/.config/opencode/opencode.json",
+            current_config_source: "opencode-normal-config",
+            candidates: [candidate],
+            resolved_candidate: candidate,
+            resolution: "auto-resolved",
+            confidence: 98,
+            reasons: ["current"],
+            capability: "one-click",
+            can_configure: true,
+            can_clear: false,
+            transport_supported: true,
+            transport_status: "configure_only",
+            already_connected: false,
+          }],
+          sources: [],
+          cc_switch_sync: null,
+          has_resolution_gap: false,
+          writes_performed: false,
+          privacy: "redacted",
+        };
+      }
+      if (command === "preview_managed_agent_transport") {
+        return {
+          ok: true,
+          state: "review_required",
+          review: {
+            revision: "transport-rev-1",
+            before_sha256: "transport-before",
+            after_sha256: "transport-after",
+          },
+          summary: "review managed transport",
+          target: "~/.config/opencode/opencode.json",
+        };
+      }
+      if (command === "apply_reviewed_managed_agent_transport") {
+        return { ok: true, state: "applied_verified", verification: { ok: true }, changed: true, summary: "applied" };
+      }
+      throw new Error(`unexpected command: ${command}`);
+    });
+
+    render(<Install />);
+    await screen.findByText("OpenCode");
+    fireEvent.click(screen.getByRole("button", { name: "一键配置" }));
+
+    // The preview must have been read before any confirm dialog can appear.
+    await waitFor(() => expect(invokeNative).toHaveBeenCalledWith("preview_managed_agent_transport", expect.anything()));
+
+    // The shared OperationDialog shows the reviewed plan; window.confirm is never used.
+    expect(await screen.findByRole("alertdialog")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "确认配置托管传输" })).toBeInTheDocument();
+    expect(screen.getByText(/已生成可验证计划/)).toBeInTheDocument();
+    expect(confirmSpy).not.toHaveBeenCalled();
+    expect(invokeNative).not.toHaveBeenCalledWith("apply_reviewed_managed_agent_transport", expect.anything());
+
+    // Apply runs only after the explicit confirm inside the unified dialog.
+    fireEvent.click(within(screen.getByRole("alertdialog")).getByRole("button", { name: "应用" }));
+    await waitFor(() => expect(invokeNative).toHaveBeenCalledWith("apply_reviewed_managed_agent_transport", {
+      request: expect.objectContaining({ agent_id: "opencode", enabled: true }),
+      operation: "configure",
+      reviewedRevision: "transport-rev-1",
+      reviewedBeforeSha256: "transport-before",
+      reviewedAfterSha256: "transport-after",
+    }));
+    expect(confirmSpy).not.toHaveBeenCalled();
+    confirmSpy.mockRestore();
   });
 });

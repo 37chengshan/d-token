@@ -74,7 +74,7 @@ export type AgentUpstreamBinding = {
   current_config_source: string;
   candidates: UpstreamCandidate[];
   resolved_candidate?: UpstreamCandidate | null;
-  resolution: "auto-resolved" | "already-connected" | "needs-choice" | "needs-credential" | "unsupported" | "unavailable";
+  resolution: "auto-resolved" | "already-connected" | "needs-source-fix" | "needs-credential" | "unsupported" | "unavailable";
   confidence: number;
   reasons: string[];
   capability: "one-click" | "confirm-required" | "prompt-only" | "manual-only";
@@ -107,7 +107,7 @@ export type ConnectionSetupSnapshot = {
   candidates: UpstreamCandidate[];
   agent_bindings: AgentUpstreamBinding[];
   sources: Array<Record<string, unknown>>;
-  selection_required: boolean;
+  has_resolution_gap: boolean;
   cc_switch_sync?: {
     detected: boolean;
     status: string;

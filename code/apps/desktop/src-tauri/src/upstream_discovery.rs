@@ -534,11 +534,11 @@ pub fn discover() -> Value {
             }),
         ),
     };
-    let selection_required = agent_bindings.iter().any(|binding| {
+    let has_resolution_gap = agent_bindings.iter().any(|binding| {
         binding.installed
             && matches!(
                 binding.resolution.as_str(),
-                "needs-choice" | "needs-credential"
+                "needs-source-fix" | "needs-credential"
             )
     });
     let cc_switch_sync = cc_switch_sync_state(&sources, &candidates);
@@ -553,7 +553,7 @@ pub fn discover() -> Value {
         "agent_bindings": agent_bindings,
         "agent_scan": agent_scan,
         "sources": sources,
-        "selection_required": selection_required,
+        "has_resolution_gap": has_resolution_gap,
         "cc_switch_sync": cc_switch_sync,
         "external_config_snapshot": external_config_snapshot,
         "external_config_refresh": external_config_refresh,
@@ -1984,7 +1984,7 @@ fn candidate_from_codex_toml(path: &Path) -> Result<Option<UpstreamCandidate>, &
         .and_then(|profile| profile.get("model_provider").and_then(toml::Value::as_str))
         .unwrap_or(root_provider_id)
         .to_string();
-    let model = active_profile
+    let explicit_model = active_profile
         .and_then(|profile| profile.get("model").and_then(toml::Value::as_str))
         .map(str::to_string)
         .or(root_model);
@@ -1992,9 +1992,13 @@ fn candidate_from_codex_toml(path: &Path) -> Result<Option<UpstreamCandidate>, &
         .get("model_providers")
         .and_then(toml::Value::as_table)
         .and_then(|providers| providers.get(&provider_id));
+    // A provider-table base URL wins; the top-level `openai_base_url` form is
+    // the compatibility fallback for configs without a `[model_providers]`
+    // table (Codex still routes through an OpenAI-compatible endpoint).
     let base_url = provider
         .and_then(|provider| provider.get("base_url"))
         .and_then(toml::Value::as_str)
+        .or_else(|| value.get("openai_base_url").and_then(toml::Value::as_str))
         .and_then(redact_base_url);
     let protocol = provider
         .and_then(|provider| provider.get("wire_api"))
@@ -2012,7 +2016,17 @@ fn candidate_from_codex_toml(path: &Path) -> Result<Option<UpstreamCandidate>, &
         .and_then(|provider| provider.get("requires_openai_auth"))
         .and_then(toml::Value::as_bool)
         .unwrap_or(false);
-    if base_url.is_none() && model.is_none() {
+    // Model selection: an explicit root/profile `model` wins; otherwise the
+    // top-level `model_catalog_json` (path to a model catalog JSON) supplies
+    // the model list metadata. A declared catalog that cannot be parsed fails
+    // closed instead of guessing models.
+    let mut models = explicit_model.into_iter().collect::<Vec<_>>();
+    if models.is_empty() {
+        if let Some(catalog_path) = value.get("model_catalog_json").and_then(toml::Value::as_str) {
+            models = read_codex_model_catalog(catalog_path)?;
+        }
+    }
+    if base_url.is_none() && models.is_empty() {
         return Ok(None);
     }
     Ok(Some(UpstreamCandidate {
@@ -2020,7 +2034,7 @@ fn candidate_from_codex_toml(path: &Path) -> Result<Option<UpstreamCandidate>, &
         name: format!("Codex {provider_id}"),
         protocol,
         base_url,
-        models: model.into_iter().collect(),
+        models,
         source: "agent-config:codex".to_string(),
         freshness: now_timestamp(),
         auth_mode: if has_env_key || requires_openai_auth {
@@ -2036,6 +2050,45 @@ fn candidate_from_codex_toml(path: &Path) -> Result<Option<UpstreamCandidate>, &
         confidence: 96,
         reasons: vec!["Codex currently selects this model provider".to_string()],
     }))
+}
+
+/// Reads the model list from a Codex model catalog JSON (`model_catalog_json`).
+/// Metadata only: model names are collected, credentials are never read.
+/// Supports both the object shape (`{"models": {"<name>": {...}}}`) and the
+/// array shape (`{"models": [{"model": "<name>", ...}]}`); any other shape
+/// fails closed (`unsupported_schema`) instead of guessing models.
+fn read_codex_model_catalog(path: &str) -> Result<Vec<String>, &'static str> {
+    let expanded = if let Some(rest) = path.strip_prefix("~/") {
+        let Some(home) = env::var_os("HOME").map(PathBuf::from) else {
+            return Err("unavailable");
+        };
+        home.join(rest)
+    } else {
+        PathBuf::from(path)
+    };
+    let metadata = fs::metadata(&expanded).map_err(|_| "unavailable")?;
+    if metadata.len() > 2 * 1024 * 1024 {
+        return Err("too_large");
+    }
+    let file = fs::File::open(&expanded).map_err(|_| "unavailable")?;
+    let value: Value = serde_json::from_reader(file).map_err(|_| "unsupported_schema")?;
+    let models = value.get("models").ok_or("unsupported_schema")?;
+    let names = if let Some(table) = models.as_object() {
+        table.keys().cloned().collect()
+    } else if let Some(array) = models.as_array() {
+        let mut names = Vec::with_capacity(array.len());
+        for entry in array {
+            let name = entry
+                .get("model")
+                .and_then(Value::as_str)
+                .ok_or("unsupported_schema")?;
+            names.push(name.to_string());
+        }
+        names
+    } else {
+        return Err("unsupported_schema");
+    };
+    Ok(names)
 }
 
 fn discover_cc_switch(candidates: &mut Vec<UpstreamCandidate>, sources: &mut Vec<Value>) {
@@ -2129,7 +2182,7 @@ fn discover_cc_switch_at(
                 COALESCE(json_extract(settings_config,'$.protocol'), json_extract(settings_config,'$.apiFormat'), json_extract(settings_config,'$.api_format')),
                 COALESCE(json_extract(settings_config,'$.model'), json_extract(settings_config,'$.model_name'), json_extract(settings_config,'$.env.ANTHROPIC_MODEL'), json_extract(settings_config,'$.env.OPENAI_MODEL'), json_extract(settings_config,'$.env.GEMINI_MODEL')),
                 CASE WHEN json_type(settings_config,'$.api_key') IS NOT NULL OR json_type(settings_config,'$.apiKey') IS NOT NULL OR json_type(settings_config,'$.token') IS NOT NULL OR json_type(settings_config,'$.auth') IS NOT NULL OR json_type(settings_config,'$.env.ANTHROPIC_AUTH_TOKEN') IS NOT NULL OR json_type(settings_config,'$.env.OPENAI_API_KEY') IS NOT NULL OR json_type(settings_config,'$.env.GEMINI_API_KEY') IS NOT NULL THEN 1 ELSE 0 END
-         FROM providers WHERE app_type IN ('claude','codex','gemini','opencode') ORDER BY app_type, sort_index, id"
+         FROM providers WHERE app_type IN ('claude','codex','gemini','opencode','openclaw') ORDER BY app_type, sort_index, id"
     ) {
         Ok(statement) => statement,
         Err(_) => {
@@ -2720,16 +2773,19 @@ fn resolve_binding_state(
     }
     if selected.is_none() && (active.len() > 1 || (active.is_empty() && eligible.len() > 1)) {
         return (
-            "needs-choice".to_string(),
+            "needs-source-fix".to_string(),
             0,
             vec!["Multiple equally plausible upstreams were found".to_string()],
         );
     }
     let Some(candidate) = selected else {
         return (
-            "needs-choice".to_string(),
+            "needs-source-fix".to_string(),
             0,
-            vec!["Select one discovered upstream".to_string()],
+            vec![
+                "The discovered upstream cannot be uniquely resolved; fix the source configuration and rescan"
+                    .to_string(),
+            ],
         );
     };
     if candidate.protocol == "unknown" {
@@ -2762,9 +2818,12 @@ fn resolve_binding_state(
     }
     if candidate.models.len() != 1 {
         return (
-            "needs-choice".to_string(),
+            "needs-source-fix".to_string(),
             candidate.confidence,
-            vec!["Select the model to keep for this Agent".to_string()],
+            vec![
+                "Multiple models are configured for this Agent; fix the source configuration and rescan"
+                    .to_string(),
+            ],
         );
     }
     (
@@ -2951,6 +3010,7 @@ fn agent_ids_for_cc_switch_app(app: &str) -> Vec<String> {
         "codex" => vec!["codex".to_string()],
         "gemini" => vec!["gemini-cli".to_string()],
         "opencode" => vec!["opencode".to_string()],
+        "openclaw" => vec!["openclaw".to_string()],
         _ => vec![],
     }
 }
@@ -3121,7 +3181,9 @@ mod tests {
     #[test]
     fn official_catalog_shape_is_no_auth_and_explicit() {
         let value = discover();
-        assert!(value["selection_required"].is_boolean());
+        assert!(value["has_resolution_gap"].is_boolean());
+        // The cutover renamed the flag: the legacy key must never be emitted.
+        assert!(value.get("selection_required").is_none());
         assert!(value["agent_bindings"].is_array());
         assert!(value["revision"]
             .as_str()
@@ -3139,6 +3201,25 @@ mod tests {
         assert!(value["external_config_snapshot"]["fingerprint"]
             .as_str()
             .is_some_and(|fingerprint| fingerprint.starts_with("external-config-")));
+        // Default review-gated hot sync contract (T-PR13): the discover()
+        // output must never claim automatic apply, and the refresh event must
+        // carry an explicit review-required decision plus the always-false
+        // automatic_apply_allowed flag regardless of current state.
+        assert_eq!(
+            value["external_config_refresh"]["automatic_apply_allowed"],
+            false
+        );
+        assert!(value["external_config_refresh"]["review_required"].is_boolean());
+        assert!(value["external_config_refresh"]["state"]
+            .as_str()
+            .is_some_and(|state| matches!(
+                state,
+                "external_config_snapshot"
+                    | "change_pending_debounce"
+                    | "external_config_review_required"
+                    | "unchanged"
+                    | "metadata_unavailable"
+            )));
     }
 
     fn test_external_snapshot(
@@ -3842,6 +3923,138 @@ model_provider = "beta-provider"
     }
 
     #[test]
+    fn codex_toml_top_level_openai_base_url_form_resolves_endpoint() {
+        // Top-level form without a `[model_providers]` table: Codex still
+        // routes through an OpenAI-compatible endpoint declared directly as
+        // `openai_base_url`. Discovery must resolve the redacted endpoint and
+        // the explicit model without inventing a provider table.
+        let root = tempfile::tempdir().expect("temporary directory");
+        let path = root.path().join("config.toml");
+        fs::write(
+            &path,
+            r#"
+model_provider = "openai"
+model = "gpt-top-level"
+openai_base_url = "https://top-level.example/v1"
+"#,
+        )
+        .expect("Codex config");
+
+        let candidate = candidate_from_codex_toml(&path)
+            .expect("parse")
+            .expect("candidate");
+        assert_eq!(candidate.id, "codex-openai");
+        assert_eq!(
+            candidate.base_url.as_deref(),
+            Some("https://top-level.example/v1")
+        );
+        assert_eq!(candidate.models, ["gpt-top-level"]);
+        assert_eq!(candidate.protocol, "responses");
+        assert_eq!(candidate.auth_mode, "none");
+        assert!(candidate.active);
+        assert_eq!(candidate.agent_ids, ["codex"]);
+    }
+
+    #[test]
+    fn codex_toml_top_level_model_catalog_json_form_supplies_models() {
+        // Top-level form without a `[model_providers]` table: models come from
+        // the `model_catalog_json` file path (metadata only — names are read,
+        // credentials are never read). An explicit root model still wins.
+        let root = tempfile::tempdir().expect("temporary directory");
+        let catalog = root.path().join("catalog.json");
+        fs::write(
+            &catalog,
+            r#"{
+              "models": {
+                "catalog-model-a": { "provider": "openai" },
+                "catalog-model-b": { "provider": "openai" }
+              }
+            }"#,
+        )
+        .expect("Codex catalog");
+        let path = root.path().join("config.toml");
+        let catalog_path = catalog.display().to_string();
+        fs::write(
+            &path,
+            format!(
+                "model_provider = \"openai\"\nopenai_base_url = \"https://top-level.example/v1\"\nmodel_catalog_json = \"{catalog_path}\"\n"
+            ),
+        )
+        .expect("Codex config");
+
+        let candidate = candidate_from_codex_toml(&path)
+            .expect("parse")
+            .expect("candidate");
+        assert_eq!(candidate.id, "codex-openai");
+        assert_eq!(
+            candidate.base_url.as_deref(),
+            Some("https://top-level.example/v1")
+        );
+        assert_eq!(
+            candidate.models,
+            ["catalog-model-a", "catalog-model-b"]
+        );
+
+        // An explicit root model overrides the catalog list.
+        let pinned = root.path().join("config-pinned.toml");
+        fs::write(
+            &pinned,
+            format!(
+                "model_provider = \"openai\"\nmodel = \"gpt-pinned\"\nmodel_catalog_json = \"{catalog_path}\"\n"
+            ),
+        )
+        .expect("Codex config");
+        let candidate = candidate_from_codex_toml(&pinned)
+            .expect("parse")
+            .expect("candidate");
+        assert_eq!(candidate.models, ["gpt-pinned"]);
+    }
+
+    #[test]
+    fn codex_toml_model_catalog_array_shape_and_fail_closed() {
+        // Array shape (`models: [{"model": ...}]`) is also supported, and a
+        // declared catalog that cannot be parsed fails closed instead of
+        // guessing models.
+        let root = tempfile::tempdir().expect("temporary directory");
+        let catalog = root.path().join("catalog.json");
+        fs::write(
+            &catalog,
+            r#"{
+              "models": [
+                { "model": "array-model-a" },
+                { "model": "array-model-b" }
+              ]
+            }"#,
+        )
+        .expect("Codex catalog");
+        let path = root.path().join("config.toml");
+        let catalog_path = catalog.display().to_string();
+        fs::write(
+            &path,
+            format!(
+                "model_provider = \"openai\"\nmodel_catalog_json = \"{catalog_path}\"\n"
+            ),
+        )
+        .expect("Codex config");
+        let candidate = candidate_from_codex_toml(&path)
+            .expect("parse")
+            .expect("candidate");
+        assert_eq!(candidate.models, ["array-model-a", "array-model-b"]);
+
+        // Unparseable catalog: fail closed with no candidate.
+        let bad = root.path().join("bad.json");
+        fs::write(&bad, "{ not json").expect("bad catalog");
+        let bad_path = root.path().join("config-bad.toml");
+        let bad_display = bad.display().to_string();
+        fs::write(
+            &bad_path,
+            format!("model_catalog_json = \"{bad_display}\"\n"),
+        )
+        .expect("Codex config");
+        assert!(candidate_from_codex_toml(&bad_path).is_err());
+    }
+
+    #[test]
     fn unverified_json_agent_is_not_recursively_guessed_as_an_upstream() {
         let root = tempfile::tempdir().expect("temporary directory");
         let path = root.path().join("config.json");
@@ -4199,7 +4412,7 @@ wire_api = "responses"
         assert_ne!(candidates[0].id, candidates[1].id);
         let bindings = resolve_agent_bindings(&candidates, &detected);
         assert_eq!(bindings[0].config_paths.len(), 2);
-        assert_eq!(bindings[0].resolution, "needs-choice");
+        assert_eq!(bindings[0].resolution, "needs-source-fix");
         assert!(bindings[0].resolved_candidate.is_none());
     }
 
@@ -4243,7 +4456,72 @@ wire_api = "responses"
         };
         let (resolution, _, _) =
             resolve_binding_state(spec, true, false, &[current, second], &[], None, true);
-        assert_eq!(resolution, "needs-choice");
+        assert_eq!(resolution, "needs-source-fix");
+    }
+
+    #[test]
+    fn ambiguous_upstream_reasons_instruct_source_fix_instead_of_selection() {
+        let spec = AGENT_REGISTRY
+            .iter()
+            .find(|spec| spec.id == "opencode")
+            .unwrap();
+        let single = UpstreamCandidate {
+            id: "only".to_string(),
+            name: "Only candidate".to_string(),
+            protocol: "open_ai".to_string(),
+            base_url: Some("https://example.test/v1".to_string()),
+            models: vec!["model-a".to_string()],
+            source: "agent-config:opencode".to_string(),
+            freshness: "unix:1".to_string(),
+            auth_mode: "none".to_string(),
+            active: false,
+            port: None,
+            state: "discovered".to_string(),
+            agent_ids: vec!["opencode".to_string()],
+            confidence: 90,
+            reasons: vec![],
+        };
+        // A single eligible candidate without a resolved selection fails
+        // closed, and the EN reason directs the user to fix the source and
+        // rescan instead of picking one upstream.
+        let (resolution, _, reasons) = resolve_binding_state(
+            spec,
+            true,
+            false,
+            std::slice::from_ref(&single),
+            &[],
+            None,
+            true,
+        );
+        assert_eq!(resolution, "needs-source-fix");
+        assert_eq!(
+            reasons[0],
+            "The discovered upstream cannot be uniquely resolved; fix the source configuration and rescan"
+        );
+
+        // One selected candidate exposing multiple models uses the same
+        // fail-closed copy: fix the source, never select a model.
+        let multi_model = UpstreamCandidate {
+            id: "multi".to_string(),
+            name: "Multi model".to_string(),
+            models: vec!["model-a".to_string(), "model-b".to_string()],
+            active: true,
+            ..single.clone()
+        };
+        let (resolution, _, reasons) = resolve_binding_state(
+            spec,
+            true,
+            false,
+            std::slice::from_ref(&multi_model),
+            std::slice::from_ref(&multi_model),
+            Some(&multi_model),
+            true,
+        );
+        assert_eq!(resolution, "needs-source-fix");
+        assert_eq!(
+            reasons[0],
+            "Multiple models are configured for this Agent; fix the source configuration and rescan"
+        );
     }
 
     #[test]
@@ -4710,6 +4988,111 @@ wire_api = "responses"
         );
         assert_ne!(after.fingerprint, before.fingerprint);
         assert_ne!(after.revision, before.revision);
+    }
+
+    #[test]
+    fn cc_switch_openclaw_aba_continuous_recognition_is_readonly() {
+        // OpenClaw providers are discovered through the same read-only
+        // cc-switch contract as the other backend apps: an A -> B -> A switch
+        // is recognized on every scan, the candidate always binds to the
+        // openclaw agent id, and discovery never writes the database.
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let path = temporary.path().join("cc-switch.db");
+        let connection = create_schema_12(&path);
+        for (id, model, is_current) in [
+            ("openclaw-a", "model-a", true),
+            ("openclaw-b", "model-b", false),
+        ] {
+            connection
+                .execute(
+                    "INSERT INTO providers
+                     (id, app_type, name, settings_config, is_current, sort_index)
+                     VALUES (?1, 'openclaw', ?2, ?3, ?4, ?5)",
+                    params![
+                        id,
+                        id,
+                        json!({
+                            "baseUrl": "https://openclaw.example.test/v1",
+                            "protocol": "open_ai",
+                            "model": model
+                        })
+                        .to_string(),
+                        is_current,
+                        if is_current { 1 } else { 2 },
+                    ],
+                )
+                .expect("insert openclaw provider");
+        }
+        drop(connection);
+
+        let discover_snapshot = || {
+            let mut candidates = Vec::new();
+            let mut sources = Vec::new();
+            discover_cc_switch_at(&path, &mut candidates, &mut sources);
+            (cc_switch_snapshot(sources.first(), &candidates), sources)
+        };
+        let (before, before_sources) = discover_snapshot();
+        assert_eq!(source_state(&before_sources), "loaded");
+        assert_eq!(before.selection_state, "resolved");
+        assert_eq!(before.active_upstreams.len(), 1);
+        assert_eq!(before.active_upstreams[0].app_type, "openclaw");
+        assert_eq!(before.active_upstreams[0].provider_id, "openclaw-a");
+        assert_eq!(
+            before.active_upstreams[0].model.as_deref(),
+            Some("model-a")
+        );
+
+        // Switch A -> B (the Main agent's real cc-switch action is mirrored
+        // here by updating the fixture database; discovery itself never
+        // writes).
+        let connection = Connection::open(&path).expect("reopen cc-switch fixture");
+        connection
+            .execute(
+                "UPDATE providers SET is_current = CASE id
+                    WHEN 'openclaw-a' THEN 0
+                    WHEN 'openclaw-b' THEN 1
+                    ELSE is_current END
+                 WHERE app_type = 'openclaw'",
+                [],
+            )
+            .expect("switch to openclaw-b");
+        drop(connection);
+        let (middle, middle_sources) = discover_snapshot();
+        assert_eq!(source_state(&middle_sources), "loaded");
+        assert_eq!(middle.active_upstreams[0].app_type, "openclaw");
+        assert_eq!(
+            middle.active_upstreams[0].model.as_deref(),
+            Some("model-b")
+        );
+        assert_ne!(middle.fingerprint, before.fingerprint);
+
+        // Switch B -> A: the route identity observed after switching back
+        // matches the identity observed before the switch (A-B-A invariant).
+        let connection = Connection::open(&path).expect("reopen cc-switch fixture");
+        connection
+            .execute(
+                "UPDATE providers SET is_current = CASE id
+                    WHEN 'openclaw-a' THEN 1
+                    WHEN 'openclaw-b' THEN 0
+                    ELSE is_current END
+                 WHERE app_type = 'openclaw'",
+                [],
+            )
+            .expect("switch back to openclaw-a");
+        drop(connection);
+        let (after, after_sources) = discover_snapshot();
+        assert_eq!(source_state(&after_sources), "loaded");
+        assert_eq!(after.active_upstreams[0].app_type, "openclaw");
+        assert_eq!(after.active_upstreams[0].provider_id, "openclaw-a");
+        assert_eq!(
+            after.active_upstreams[0].model.as_deref(),
+            Some("model-a")
+        );
+        // A-B-A invariant: the identity before the switch and after the
+        // round-trip are the same (the B snapshot differed).
+        assert_eq!(after.fingerprint, before.fingerprint);
+        assert_eq!(after.revision, before.revision);
+        assert_ne!(after.fingerprint, middle.fingerprint);
     }
 
     #[test]

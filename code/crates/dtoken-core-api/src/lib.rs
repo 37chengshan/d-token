@@ -1612,7 +1612,7 @@ impl AppState {
         let store = Arc::new(RuntimeStore::new(runtime_dir));
         let mut state = Self::new_with_config_status(config, config_status);
         state.ccr_private_store = ccr_private_store;
-        // G3: the terminal-commit recovery sweep needs the journal installed
+        // The terminal-commit recovery sweep needs the journal installed
         // before any load, and every subsequent load must filter the requests
         // it explicitly left pending.
         state.runtime_store = Some(Arc::clone(&store));
@@ -1785,7 +1785,7 @@ impl AppState {
         Ok(state)
     }
 
-    /// G3 cross-store terminal commit recovery.  Called once during
+    /// Cross-store terminal commit recovery.  Called once during
     /// persistent startup, after `runtime_store` is installed and before any
     /// journal load.  A dangling `Intent` marker is rolled forward to
     /// `Committed` when the four fan-out journals already hold the complete
@@ -2802,7 +2802,7 @@ impl AppState {
         let route_decision = route_decision_to_value(decision);
         let mut sync_count = 0_u64;
         if let Some(store) = &self.runtime_store {
-            // G3 cross-store terminal commit: the durable intent marker is
+            // Cross-store terminal commit: the durable intent marker is
             // synced before any fan-out append, so a failure here aborts the
             // commit with no partial durable state anywhere.
             let marker_started_at = Instant::now();
@@ -2880,7 +2880,7 @@ impl AppState {
                 );
                 return;
             }
-            // G3: the committed marker is synced only after all four fan-out
+            // The committed marker is synced only after all four fan-out
             // appends are durable.  A crash before this point is healed by
             // the restart recovery sweep; a crash after it is a normal
             // committed request whose SQLite view is rebuilt from the
@@ -9126,7 +9126,7 @@ impl Stream for ResponsesSseStream {
 /// byte unchanged while watching for the terminal event (`response.completed` /
 /// `response.incomplete` / `response.failed` / error payload) so the ledger
 /// event and CCR receipt are finalized only when the stream reaches a terminal
-/// state (G4). A clean EOF without a terminal event fails closed instead of
+/// state. A clean EOF without a terminal event fails closed instead of
 /// synthesizing success; a dropped body records `provider_stream_dropped` via
 /// the guard's `Drop` impl. Bytes are never rewritten.
 struct ResponsesPassthroughStream {
@@ -11669,7 +11669,7 @@ async fn openai_responses(
                             metadata.insert("stream".to_string(), json!(true));
                             metadata.insert("upstream_status".to_string(), json!(status_code));
                         }
-                        // G4: the terminal ledger event and CCR receipt are
+                        // The terminal ledger event and CCR receipt are
                         // finalized only when the passthrough stream reaches a
                         // terminal state (completed / failed / dropped). The
                         // body guard observes native Responses SSE events
@@ -20153,7 +20153,7 @@ mod tests {
         let mut passthrough = std::pin::pin!(passthrough);
 
         // Non-terminal delta arrives first: bytes pass through unchanged and
-        // nothing is committed yet (G4 defers the terminal record).
+        // nothing is committed yet (the terminal record is deferred).
         let first = passthrough.next().await.expect("first chunk");
         assert_eq!(first.expect("ok chunk"), delta_chunk);
         assert!(

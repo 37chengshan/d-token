@@ -65,7 +65,7 @@ const connectedSnapshot = {
     already_connected: true,
   }],
   sources: [],
-  selection_required: false,
+  has_resolution_gap: false,
   cc_switch_sync: null,
   writes_performed: false as const,
   privacy: "redacted",
@@ -137,7 +137,7 @@ const credentialRequiredSnapshot = {
     already_connected: false,
   }],
   sources: [],
-  selection_required: false,
+  has_resolution_gap: false,
   cc_switch_sync: null,
   writes_performed: false as const,
   privacy: "redacted",
@@ -580,6 +580,79 @@ describe("Install", () => {
     expect(screen.getByText("OpenCode")).toBeInTheDocument();
   });
 
+  it("marks an ambiguous upstream as needs-source-fix and fails closed without a chooser", async () => {
+    const firstSourceCandidate = {
+      id: "profile-one",
+      name: "Profile one",
+      protocol: "open_ai",
+      base_url: "https://one.example.test/v1",
+      models: ["model-a"],
+      source: "agent-config:opencode",
+      freshness: "unix:5",
+      auth_mode: "none",
+      active: true,
+      state: "discovered",
+      agent_ids: ["opencode"],
+      confidence: 95,
+      reasons: ["current"],
+    };
+    const secondSourceCandidate = {
+      id: "profile-two",
+      name: "Profile two",
+      protocol: "open_ai",
+      base_url: "https://two.example.test/v1",
+      models: ["model-b"],
+      source: "cc-switch:profile-two",
+      freshness: "unix:5",
+      auth_mode: "none",
+      active: true,
+      state: "discovered",
+      agent_ids: ["opencode"],
+      confidence: 92,
+      reasons: ["active profile"],
+    };
+    const conflictBinding = {
+      ...connectedSnapshot.agent_bindings[0],
+      candidates: [firstSourceCandidate, secondSourceCandidate],
+      resolved_candidate: null,
+      resolution: "needs-source-fix" as const,
+      confidence: 40,
+      reasons: ["multiple sources claim the same Agent"],
+      can_configure: true,
+      can_clear: true,
+      already_connected: false,
+    };
+    const conflictSnapshot = {
+      ...connectedSnapshot,
+      revision: "source-conflict-1",
+      candidates: [firstSourceCandidate, secondSourceCandidate],
+      agent_bindings: [conflictBinding],
+      has_resolution_gap: true,
+    };
+    mocks.invokeNative.mockImplementation(async (command: string) => {
+      if (command === "discover_upstream_candidates") return conflictSnapshot;
+      throw new Error(`unexpected command: ${command}`);
+    });
+
+    const { container } = render(<Install />);
+
+    // The conflict is surfaced as source-conflict copy: fix the source and
+    // rescan. No chooser is offered for the ambiguous upstream.
+    expect(await screen.findByText("来源冲突")).toBeInTheDocument();
+    expect(screen.getByText(/无法唯一解析；请修复来源配置后重新扫描/)).toBeInTheDocument();
+
+    // The whole plan fails closed: no review path exists while the source is
+    // ambiguous; rescan is the only primary action.
+    expect(screen.getByText("需要处理")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "重新扫描" })).toBeEnabled();
+    expect(screen.queryByRole("button", { name: "查看变更" })).not.toBeInTheDocument();
+
+    // No select or checkbox chooser is rendered on the page.
+    expect(screen.queryByRole("checkbox")).not.toBeInTheDocument();
+    expect(screen.queryByRole("combobox")).not.toBeInTheDocument();
+    expect(container.querySelector("select")).toBeNull();
+  });
+
   it("rescans instead of redirecting a detection-only Agent to Advanced setup", async () => {
     const onOpenAdvanced = vi.fn();
     const detectionOnlySnapshot = {
@@ -684,7 +757,7 @@ describe("Install", () => {
       ],
       agent_bindings: [{ agent_id: "opencode", agent_name: "OpenCode", installed: true, current_config_source: "agent-config:opencode", candidates: [], resolution: "auto-resolved", confidence: 98, reasons: [], capability: "one-click", already_connected: false }],
       sources: [{ id: "cc-switch-sqlite", profile_count: 3 }],
-      selection_required: false,
+      has_resolution_gap: false,
       cc_switch_sync: null,
       writes_performed: false,
       privacy: "redacted",
@@ -1003,13 +1076,14 @@ describe("Install", () => {
       }
       throw new Error(`unexpected command: ${command}`);
     });
-    vi.spyOn(window, "confirm").mockReturnValueOnce(true);
 
     render(<Install />);
     expect(await screen.findByText("Agent MCP")).toBeInTheDocument();
     // MCP/Hook integrations are labeled truthfully: tool capability only.
     expect(screen.getByText("工具能力，不改变模型上游")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "配置工具集成" }));
+    expect(await screen.findByRole("alertdialog")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "应用" }));
 
     await waitFor(() => {
       expect(mocks.invokeNative).toHaveBeenCalledWith(

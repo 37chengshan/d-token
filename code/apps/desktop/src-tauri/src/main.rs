@@ -10877,7 +10877,7 @@ async fn discover_upstream_candidates() -> Value {
                 "candidates": [],
                 "agent_bindings": [],
                 "sources": [],
-                "selection_required": false,
+                "has_resolution_gap": false,
                 "cc_switch_sync": null,
                 "writes_performed": false,
                 "privacy": "No credential values were read or returned",
@@ -15953,6 +15953,32 @@ mod tests {
 
         assert_eq!(result.unwrap_err(), "untrusted bridge signature");
         assert!(!executed.load(Ordering::SeqCst));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn bridge_identity_mismatch_fails_closed() {
+        // T-PR13: the desktop-managed write surface only opens after the
+        // d-token-owned bridge proves its identity (component, protocol
+        // version, OS, arch, version). A bridge whose `identity` response
+        // does not match the pinned constants must fail closed before any
+        // MCP/Hook write can use it.
+        use std::os::unix::fs::PermissionsExt;
+        let root = tempfile::tempdir().expect("temporary directory");
+        let bridge = root.path().join("dtoken-agent-bridge");
+        fs::write(
+            &bridge,
+            "#!/bin/sh\nprintf '%s' '{\"component\":\"wrong-bridge\",\"protocol_version\":1,\"arch\":\"x86_64\",\"os\":\"linux\",\"version\":\"0.0.0\"}'\n",
+        )
+        .expect("write fake bridge");
+        fs::set_permissions(&bridge, fs::Permissions::from_mode(0o755))
+            .expect("make fake bridge executable");
+
+        let result = verify_dtoken_agent_bridge(&bridge);
+        assert_eq!(
+            result.unwrap_err(),
+            "dtoken-agent-bridge bundle identity mismatch"
+        );
     }
 
     fn with_isolated_app_state<T>(name: &str, run: impl FnOnce() -> T) -> T {

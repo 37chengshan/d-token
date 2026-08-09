@@ -17,10 +17,26 @@ import {
 } from "../../lib/installMachine";
 import { useConnectionSetup, type AgentUpstreamBinding, type ConnectionSetupSnapshot, type UpstreamCandidate } from "../../lib/connectionSetup";
 import { InstallView } from "../../lib/install/InstallView";
+import { OperationDialog } from "../common/OperationDialog";
 import { buildConnectionRoutePlanRequest, connectionDiscoveryCounts, derivePrimaryAction, desktopInstallRoot, hasRealAgentAction, hybridAgentIntegrationDraft, presentCcSwitch, presentInstallPhase, presentRouteVerificationSummary, presentServiceInstance, safeText, supportsAutomaticAgentIntegration } from "../../lib/install/presentation";
 import type { ConnectionRoutePlanReceipt, ConnectionRoutePlanReview, DtokenServiceStatus, HybridAgentIntegrationApply, HybridAgentIntegrationReview, HybridAgentIntegrationVerification, ManagedAgentTransportReceipt, ManagedAgentTransportReview, OpenCodeConnectionReceipt, OpenCodeConnectionReview, RouteVerification } from "../../lib/install/presentation";
 export { connectionDiscoveryCounts, desktopInstallRoot, presentConnectionPrivacy, presentRouteVerificationSummary, presentServiceInstance } from "../../lib/install/presentation";
 export { buildConnectionRoutePlanRequest } from "../../lib/install/presentation";
+
+/**
+ * UI-11: per-agent managed operations (managed transport / MCP) confirm
+ * through the shared OperationDialog instead of the native `window.confirm`.
+ * Preview populates this state; the native apply runs only after the user
+ * explicitly confirms the exact reviewed plan (hashes/revision).
+ */
+type ManagedOperationReview = { revision?: string; before_sha256: string; after_sha256: string };
+type ManagedOperationConfirm =
+  | { kind: "transport"; binding: AgentUpstreamBinding; operation: "configure" | "clear"; request: Record<string, unknown>; review: ManagedOperationReview }
+  | { kind: "mcp"; binding: AgentUpstreamBinding; operation: "configure" | "clear"; request: Record<string, unknown>; review: ManagedOperationReview };
+
+function shortHash(value: string | undefined): string {
+  return value ? `${value.slice(0, 8)}…` : "—";
+}
 
 export function assertNativeActionSucceeded(result: NativeActionResult): void {
   if (!result.ok) throw new Error(result.summary || "native_action_failed");
@@ -81,6 +97,7 @@ export function Install({ onOpenAdvanced }: { onOpenAdvanced?: () => void; initi
   const [notice, setNotice] = useState("");
   const [pendingAction, setPendingAction] = useState<"discover" | "preview" | "apply" | "verify" | "restart" | "stop" | "credential" | "sync" | null>(null);
   const [transportBusyAgent, setTransportBusyAgent] = useState<string | null>(null);
+  const [managedConfirm, setManagedConfirm] = useState<ManagedOperationConfirm | null>(null);
 
   const serviceStatus = operational?.service?.data as DtokenServiceStatus | null;
   const serviceManifestStale = serviceStatus?.manifest_stale === true;
@@ -786,66 +803,46 @@ export function Install({ onOpenAdvanced }: { onOpenAdvanced?: () => void; initi
     }
     setTransportBusyAgent(binding.agent_id);
     try {
-      let result: Record<string, unknown>;
-      {
-        // Model comes only from the uniquely auto-resolved model stored in the
-        // machine selection, or the Codex Responses passthrough marker ("").
-        // Multi-model or unresolvable Agents block the whole batch; the plan
-        // fails closed rather than guessing a first model.
-        const model = operation === "configure"
-          ? machine.selections[binding.agent_id]?.model
-          : undefined;
-        if (operation === "configure" && !model) {
-          setNotice(lang === "zh"
-            ? `${binding.agent_name} 的上游/模型无法唯一解析，连接计划已被阻断；请修复来源配置后重新扫描。`
-            : `${binding.agent_name}'s upstream/model cannot be uniquely resolved, so the plan is blocked. Fix the source configuration and rescan.`);
-          return;
-        }
-        const request = {
-          agent_id: binding.agent_id,
-          target_path: targetPath,
-          // Clear is ownership-only and must remain available while the
-          // service is offline; the endpoint is ignored by the clear parser.
-          endpoint: serviceEndpoint || "http://127.0.0.1:18001",
-          enabled: operation === "configure",
-          model,
-        };
-        const preview = await invokeNative<Record<string, unknown>>("preview_managed_agent_transport", {
-          request,
-          operation,
-        });
-        const review = preview.review as Record<string, unknown> | undefined;
-        if (preview.ok !== true || !review || typeof review.revision !== "string" || typeof review.before_sha256 !== "string" || typeof review.after_sha256 !== "string") {
-          throw new Error("managed_transport_preview_failed");
-        }
-        const confirmed = typeof window === "undefined" || window.confirm(
-          operation === "configure"
-            ? (lang === "zh" ? `将仅在 ${targetPath} 及其相邻 ownership receipt 写入 d-token 托管配置。已生成可验证计划，是否应用？` : `A verifiable d-token-owned plan was generated for ${targetPath} and its adjacent ownership receipt. Apply it?`)
-            : (lang === "zh" ? `将仅清除 ${targetPath} 中有 ownership receipt 证明属于 d-token 的配置。已生成可验证计划，是否应用？` : `A verifiable plan will remove only configuration proven d-token-owned by its ownership receipt in ${targetPath}. Apply it?`),
-        );
-        if (!confirmed) return;
-        result = await invokeNative<Record<string, unknown>>("apply_reviewed_managed_agent_transport", {
-          request: {
-            ...request,
-          },
-          operation,
-          reviewedRevision: review.revision,
-          reviewedBeforeSha256: review.before_sha256,
-          reviewedAfterSha256: review.after_sha256,
-        });
+      // Model comes only from the uniquely auto-resolved model stored in the
+      // machine selection, or the Codex Responses passthrough marker ("").
+      // Multi-model or unresolvable Agents block the whole batch; the plan
+      // fails closed rather than guessing a first model.
+      const model = operation === "configure"
+        ? machine.selections[binding.agent_id]?.model
+        : undefined;
+      if (operation === "configure" && !model) {
+        setNotice(lang === "zh"
+          ? `${binding.agent_name} 的上游/模型无法唯一解析，连接计划已被阻断；请修复来源配置后重新扫描。`
+          : `${binding.agent_name}'s upstream/model cannot be uniquely resolved, so the plan is blocked. Fix the source configuration and rescan.`);
+        return;
       }
-      const verification = result.verification as Record<string, unknown> | undefined;
-      const ok = result.ok !== false && result.state !== "failed" && verification?.ok !== false;
-      const changed = result.changed !== false;
-      const outcomeNotice = ok && (operation !== "clear" || changed)
-        ? (operation === "configure"
-          ? (lang === "zh" ? `${binding.agent_name} 已完成 d-token 传输配置并验证。` : `${binding.agent_name} now uses a verified d-token transport.`)
-          : (lang === "zh" ? `${binding.agent_name} 的 d-token 托管传输已清除。` : `The d-token-owned transport for ${binding.agent_name} was cleared.`))
-        : (operation === "clear" && !changed
-          ? (lang === "zh" ? "未发现可安全清除的 d-token 托管标记，未修改用户配置。" : "No d-token-owned marker was found; user configuration was not changed.")
-          : (lang === "zh" ? "操作未完成，用户配置未被修改；请重新扫描后重试。" : "The operation did not complete and user configuration was not changed. Rescan and try again."));
-      await refreshAll();
-      setNotice(outcomeNotice);
+      const request = {
+        agent_id: binding.agent_id,
+        target_path: targetPath,
+        // Clear is ownership-only and must remain available while the
+        // service is offline; the endpoint is ignored by the clear parser.
+        endpoint: serviceEndpoint || "http://127.0.0.1:18001",
+        enabled: operation === "configure",
+        model,
+      };
+      const preview = await invokeNative<Record<string, unknown>>("preview_managed_agent_transport", {
+        request,
+        operation,
+      });
+      const review = preview.review as Record<string, unknown> | undefined;
+      if (preview.ok !== true || !review || typeof review.revision !== "string" || typeof review.before_sha256 !== "string" || typeof review.after_sha256 !== "string") {
+        throw new Error("managed_transport_preview_failed");
+      }
+      // The unified OperationDialog replaces the native confirm (UI-11): the
+      // reviewed plan (revision + hashes) is shown and the apply below runs
+      // only after an explicit confirm.
+      setManagedConfirm({
+        kind: "transport",
+        binding,
+        operation,
+        request,
+        review: { revision: review.revision, before_sha256: review.before_sha256, after_sha256: review.after_sha256 },
+      });
     } catch (error) {
       setNotice(lang === "zh" ? "操作未完成，用户配置未被修改；请重新扫描后重试。" : "The operation did not complete and user configuration was not changed. Rescan and try again.");
     } finally {
@@ -877,30 +874,15 @@ export function Install({ onOpenAdvanced }: { onOpenAdvanced?: () => void; initi
       if (preview.ok !== true || !review || typeof review.before_sha256 !== "string" || typeof review.after_sha256 !== "string") {
         throw new Error("mcp_preview_failed");
       }
-      const confirmed = typeof window === "undefined" || window.confirm(
-        operation === "configure"
-          ? (lang === "zh"
-            ? `将在 ${configPath} 注册 d-token-agent-bridge MCP 工具。此集成仅提供 MCP 工具，不改变模型上游。是否应用？`
-            : `Register the d-token-agent-bridge MCP tool in ${configPath}. This integration provides MCP tools only and does not change the model upstream. Apply it?`)
-          : (lang === "zh"
-            ? `将清除 ${configPath} 中的 d-token MCP 条目。仅移除 MCP 工具，不影响上游配置。是否应用？`
-            : `Remove the d-token MCP entry from ${configPath}. Only the MCP tool is removed; upstream configuration is unaffected. Apply it?`),
-      );
-      if (!confirmed) return;
-      const result = await invokeNative<Record<string, unknown>>("apply_managed_agent_mcp_integration", {
+      // The unified OperationDialog replaces the native confirm (UI-11): the
+      // reviewed plan is shown and the apply runs only after explicit confirm.
+      setManagedConfirm({
+        kind: "mcp",
+        binding,
+        operation,
         request,
-        reviewed_before_sha256: review.before_sha256,
-        reviewed_after_sha256: review.after_sha256,
+        review: { before_sha256: review.before_sha256, after_sha256: review.after_sha256 },
       });
-      const verify = result.verification as Record<string, unknown> | undefined;
-      const ok = result.ok !== false && result.state !== "failed" && verify?.ok !== false;
-      const outcomeNotice = ok
-        ? (operation === "configure"
-          ? (lang === "zh" ? `${binding.agent_name} MCP 工具已配置并验证。` : `${binding.agent_name} MCP tool configured and verified.`)
-          : (lang === "zh" ? `${binding.agent_name} MCP 条目已清除。` : `${binding.agent_name} MCP entry cleared.`))
-        : (lang === "zh" ? "MCP 操作未完成，用户配置未被修改。" : "MCP operation did not complete; user configuration was not changed.");
-      await refreshAll();
-      setNotice(outcomeNotice);
     } catch (error) {
       setNotice(lang === "zh" ? "MCP 操作未完成，用户配置未被修改。" : "MCP operation did not complete; user configuration was not changed.");
     } finally {
@@ -908,5 +890,103 @@ export function Install({ onOpenAdvanced }: { onOpenAdvanced?: () => void; initi
     }
   };
 
-  return <InstallView {...{ lang, t, snapshot, discoveryStatus, phasePresentation, discoveryCounts, refreshAll, busy, pendingAction, handlePrimaryAction, primaryAction, serviceInstanceDetail, servicePresentation, restartRequired, serviceOnline, serviceManaged, setStopError, setConfirmServiceStop, visibleBindings, primaryBindings, machine, dispatch, secondaryBindings, ccSwitchPresentation, notice, transactionLogs, agentIntegrationReceipts, routeVerification, showReview, setShowReview, setConnectionReview, setRoutePlanReview, setManagedTransportReviews, setAgentIntegrationReviews, actionableBindings, serviceEndpoint, routePlanReview, connectionReview, managedTransportReviews, agentIntegrationReviews, openCodeSelection, applyConnectionPlan, credentialDialogOpen, setCredentialDialogOpen, setProviderCredential, setCredentialError, credentialBinding, credentialProviderId, providerCredential, credentialError, saveInlineCredential, confirmServiceStop, stopError, serviceStatus, serviceIdentifiersCurrent, stopService, transportBusyAgent, onConfigureAgent: (binding: AgentUpstreamBinding) => { void runManagedTransport(binding, "configure"); }, onClearAgent: (binding: AgentUpstreamBinding) => { void runManagedTransport(binding, "clear"); }, agentAutoFollow, setAgentAutoFollow, ccSwitchSyncReview, setCcSwitchSyncReview, ccSwitchAutoFollow, setCcSwitchAutoFollow, ccSwitchSyncBusy: pendingAction === "sync", onPreviewCcSwitchSync: () => { void previewCcSwitchSync(); }, onApplyCcSwitchSync: () => { void applyCcSwitchSync(); } }} />;
+  /**
+   * Applies the reviewed managed operation after the unified OperationDialog
+   * confirm (UI-11). The dialog stays open with a pending spinner while the
+   * native apply runs, so the confirm→apply boundary is explicit.
+   */
+  const applyManagedOperation = async () => {
+    const confirm = managedConfirm;
+    if (!confirm) return;
+    setTransportBusyAgent(confirm.binding.agent_id);
+    try {
+      if (confirm.kind === "transport") {
+        const result = await invokeNative<Record<string, unknown>>("apply_reviewed_managed_agent_transport", {
+          request: {
+            ...confirm.request,
+          },
+          operation: confirm.operation,
+          reviewedRevision: confirm.review.revision,
+          reviewedBeforeSha256: confirm.review.before_sha256,
+          reviewedAfterSha256: confirm.review.after_sha256,
+        });
+        const verification = result.verification as Record<string, unknown> | undefined;
+        const ok = result.ok !== false && result.state !== "failed" && verification?.ok !== false;
+        const changed = result.changed !== false;
+        const outcomeNotice = ok && (confirm.operation !== "clear" || changed)
+          ? (confirm.operation === "configure"
+            ? (lang === "zh" ? `${confirm.binding.agent_name} 已完成 d-token 传输配置并验证。` : `${confirm.binding.agent_name} now uses a verified d-token transport.`)
+            : (lang === "zh" ? `${confirm.binding.agent_name} 的 d-token 托管传输已清除。` : `The d-token-owned transport for ${confirm.binding.agent_name} was cleared.`))
+          : (confirm.operation === "clear" && !changed
+            ? (lang === "zh" ? "未发现可安全清除的 d-token 托管标记，未修改用户配置。" : "No d-token-owned marker was found; user configuration was not changed.")
+            : (lang === "zh" ? "操作未完成，用户配置未被修改；请重新扫描后重试。" : "The operation did not complete and user configuration was not changed. Rescan and try again."));
+        await refreshAll();
+        setNotice(outcomeNotice);
+      } else {
+        const result = await invokeNative<Record<string, unknown>>("apply_managed_agent_mcp_integration", {
+          request: confirm.request,
+          reviewed_before_sha256: confirm.review.before_sha256,
+          reviewed_after_sha256: confirm.review.after_sha256,
+        });
+        const verify = result.verification as Record<string, unknown> | undefined;
+        const ok = result.ok !== false && result.state !== "failed" && verify?.ok !== false;
+        const outcomeNotice = ok
+          ? (confirm.operation === "configure"
+            ? (lang === "zh" ? `${confirm.binding.agent_name} MCP 工具已配置并验证。` : `${confirm.binding.agent_name} MCP tool configured and verified.`)
+            : (lang === "zh" ? `${confirm.binding.agent_name} MCP 条目已清除。` : `${confirm.binding.agent_name} MCP entry cleared.`))
+          : (lang === "zh" ? "MCP 操作未完成，用户配置未被修改。" : "MCP operation did not complete; user configuration was not changed.");
+        await refreshAll();
+        setNotice(outcomeNotice);
+      }
+    } catch (error) {
+      setNotice(confirm.kind === "mcp"
+        ? (lang === "zh" ? "MCP 操作未完成，用户配置未被修改。" : "MCP operation did not complete; user configuration was not changed.")
+        : (lang === "zh" ? "操作未完成，用户配置未被修改；请重新扫描后重试。" : "The operation did not complete and user configuration was not changed. Rescan and try again."));
+    } finally {
+      setTransportBusyAgent(null);
+      setManagedConfirm(null);
+    }
+  };
+
+  return (
+    <>
+      <InstallView {...{ lang, t, snapshot, discoveryStatus, phasePresentation, discoveryCounts, refreshAll, busy, pendingAction, handlePrimaryAction, primaryAction, serviceInstanceDetail, servicePresentation, restartRequired, serviceOnline, serviceManaged, setStopError, setConfirmServiceStop, visibleBindings, primaryBindings, machine, dispatch, secondaryBindings, ccSwitchPresentation, notice, transactionLogs, agentIntegrationReceipts, routeVerification, showReview, setShowReview, setConnectionReview, setRoutePlanReview, setManagedTransportReviews, setAgentIntegrationReviews, actionableBindings, serviceEndpoint, routePlanReview, connectionReview, managedTransportReviews, agentIntegrationReviews, openCodeSelection, applyConnectionPlan, credentialDialogOpen, setCredentialDialogOpen, setProviderCredential, setCredentialError, credentialBinding, credentialProviderId, providerCredential, credentialError, saveInlineCredential, confirmServiceStop, stopError, serviceStatus, serviceIdentifiersCurrent, stopService, transportBusyAgent, onConfigureAgent: (binding: AgentUpstreamBinding) => { void runManagedTransport(binding, "configure"); }, onClearAgent: (binding: AgentUpstreamBinding) => { void runManagedTransport(binding, "clear"); }, agentAutoFollow, setAgentAutoFollow, ccSwitchSyncReview, setCcSwitchSyncReview, ccSwitchAutoFollow, setCcSwitchAutoFollow, ccSwitchSyncBusy: pendingAction === "sync", onPreviewCcSwitchSync: () => { void previewCcSwitchSync(); }, onApplyCcSwitchSync: () => { void applyCcSwitchSync(); } }} />
+      <OperationDialog
+        open={managedConfirm !== null}
+        onOpenChange={(open) => { if (!open && transportBusyAgent === null) setManagedConfirm(null); }}
+        title={managedConfirm
+          ? (managedConfirm.operation === "configure"
+            ? (managedConfirm.kind === "mcp" ? t("install.mcpConfigureTitle") : t("install.transportConfigureTitle"))
+            : (managedConfirm.kind === "mcp" ? t("install.mcpClearTitle") : t("install.transportClearTitle")))
+          : ""}
+        summary={managedConfirm
+          ? (managedConfirm.operation === "configure"
+            ? (managedConfirm.kind === "mcp"
+              ? t("install.mcpConfigureSummary", { path: String(managedConfirm.request.config_path ?? "") })
+              : t("install.transportConfigureSummary", { path: String(managedConfirm.request.target_path ?? "") }))
+            : (managedConfirm.kind === "mcp"
+              ? t("install.mcpClearSummary", { path: String(managedConfirm.request.config_path ?? "") })
+              : t("install.transportClearSummary", { path: String(managedConfirm.request.target_path ?? "") })))
+          : ""}
+        impact={managedConfirm
+          ? (managedConfirm.kind === "mcp" ? String(managedConfirm.request.config_path ?? "") : String(managedConfirm.request.target_path ?? ""))
+          : undefined}
+        details={managedConfirm ? (
+          <div className="space-y-1 font-mono text-xs text-muted-foreground">
+            {managedConfirm.review.revision && (
+              <div>{t("install.reviewRevision")}: {managedConfirm.review.revision}</div>
+            )}
+            <div>
+              {t("install.reviewHashes")}: before {shortHash(managedConfirm.review.before_sha256)} → after {shortHash(managedConfirm.review.after_sha256)}
+            </div>
+          </div>
+        ) : null}
+        confirmLabel={t("common.apply")}
+        cancelLabel={t("common.cancel")}
+        risk={managedConfirm?.operation === "clear" ? "warning" : "normal"}
+        pending={transportBusyAgent !== null}
+        onConfirm={() => { void applyManagedOperation(); }}
+      />
+    </>
+  );
 }
