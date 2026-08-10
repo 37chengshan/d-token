@@ -21089,6 +21089,7 @@ mod tests {
             fallback_reason_code: None,
             body: json!({}),
             context_accounting: None,
+            bus_receipts: vec![],
         };
         let attribution = RequestAttribution {
             agent: Some("test-agent".to_string()),
@@ -22797,6 +22798,8 @@ mod tests {
             timestamp_ms: 1,
             agent: None,
             instance_id: None,
+            project_id: None,
+            user_target_model: None,
             input_protocol: Protocol::OpenAi,
             provider_id: Some("provider-a".to_string()),
             route_id: Some("route-a".to_string()),
@@ -22805,6 +22808,8 @@ mod tests {
             input_tokens_before: None,
             input_tokens_after: None,
             output_tokens: None,
+            provider_input_tokens: None,
+            provider_output_tokens: None,
             tokens_saved: None,
             transforms_applied: vec![],
             latency_ms: None,
@@ -23539,6 +23544,7 @@ mod tests {
         let request_log = build_request_log(
             decision.request_id,
             &decision,
+            Some(model.clone()),
             Some(model),
             Protocol::OpenAi,
             &planned,

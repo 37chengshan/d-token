@@ -2772,6 +2772,15 @@
       "summary": "合并 C8 证据生产与注册表修复 37ce2a1 到 stage 集成 HEAD 526fb4437d0f52dd21169b3fcf2ea6ab49fe5c37",
       "head_before": "526fb4437d0f52dd21169b3fcf2ea6ab49fe5c37",
       "remote": null
+    },
+    {
+      "id": "bd2c29dd-a0ef-4b90-a770-8efba1c56ca1",
+      "timestamp": "2026-08-10T14:45:51+08:00",
+      "operation": "merge",
+      "branch": "codex/final/stage-pack-integrated",
+      "summary": "整合完成：C0-C8 全序列后恢复候选 rich OptimizationReceipt/RequestLog 字段并修复编译调用点（HEAD 2f9e1d4 后核心库测试编译修复）",
+      "head_before": "2f9e1d4413d82174226bca68ab35de14a049b617",
+      "remote": null
     }
   ]
 }

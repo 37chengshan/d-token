@@ -4,9 +4,8 @@
 //! the sendable unit at the observable commit point.
 
 use dtoken_runtime_pipeline::{
-    ContextEnvelope, PipelineError, PipelineInput, RecoveryPhase, RecoveryReceipt,
-    RecoveryTracker, RecoveryTransitionError, SendCommitState, SentPayloadVariant,
-    TransformArtifact,
+    PipelineError, PipelineInput, RecoveryPhase, RecoveryReceipt, RecoveryTracker,
+    RecoveryTransitionError, SendCommitState, SentPayloadVariant, TransformArtifact,
 };
 use dtoken_types::{EvidenceSource, EvidenceValue, Protocol, RequestScope};
 use uuid::Uuid;
