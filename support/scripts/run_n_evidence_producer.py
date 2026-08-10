@@ -261,9 +261,9 @@ def local_node_commands(node_id: str, root: Path) -> list[list[str]]:
         ]
     if node_id == "N10-U4":
         return [
-            bench_run(["Replay", "--corpus", str(bench_corpus)], root),
+            bench_run(["replay", "--corpus", str(bench_corpus)], root),
             bench_run(
-                ["PairedContract", "--corpus", str(bench_corpus), "--out",
+                ["paired-contract", "--corpus", str(bench_corpus), "--out",
                  str(root / "support" / "artifacts" / "paired-contract.json")],
                 root,
             ),
@@ -331,7 +331,11 @@ def validate_local_output(node_id: str, records: list[dict[str, Any]]) -> tuple[
                 )
     if node_id == "N10-U4":
         replay = json_tail(records[0]) if records else None
-        if not replay or replay.get("replay_deterministic") is not True:
+        replay_text = " ".join(records[0]["output_tail"]) if records else ""
+        replay_ok = (replay or {}).get("replay_deterministic") is True or (
+            "replay_deterministic=true" in replay_text
+        )
+        if not replay_ok:
             reasons.append("Replay did not report replay_deterministic=true")
         paired = json_tail(records[1]) if len(records) > 1 else None
         if not paired or not paired.get("tasks") or paired.get("same_model_contract") is not True:

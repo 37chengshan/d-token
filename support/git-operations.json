@@ -3033,6 +3033,15 @@
       "summary": "fix(evidence): pin dtoken-bench binary in N evidence producer bench runs",
       "head_before": "686fff402e7db227cdf9226633e7cb07cff94ade",
       "remote": null
+    },
+    {
+      "id": "53638294-e1ea-4c34-9efe-f3076b5cc8ad",
+      "timestamp": "2026-08-11T00:06:10+08:00",
+      "operation": "commit",
+      "branch": "codex/final/stage-pack-integrated",
+      "summary": "fix(evidence): parse replay text output and fix bench subcommand casing",
+      "head_before": "6595845e1948f61e9b1f1460d4ddbf6e638eb5a8",
+      "remote": null
     }
   ]
 }
