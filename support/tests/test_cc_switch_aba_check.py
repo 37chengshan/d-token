@@ -121,16 +121,27 @@ def repo_commit() -> str:
 
 
 def repo_digest() -> str:
-    """Content-bearing source digest anchor: sha256 of the commit tree id hex.
+    """Unified N0 source digest: SHA-256 of the canonical JSON of
+    {tracked path: blob sha256} over every tracked file at HEAD (shared
+    producer generate_n0_candidate_evidence.compute_source_manifest).
 
     Must mirror the harness's source_tree_digest exactly so bound-mode tests
     reproduce the producer value (invariant to worktree dirtiness).
     """
-    tree_id = subprocess.run(
-        ["git", "rev-parse", "HEAD^{tree}"], cwd=str(REPO_ROOT),
-        capture_output=True, text=True, check=True,
-    ).stdout.strip()
-    return hashlib.sha256(tree_id.encode("ascii")).hexdigest()
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+    from generate_n0_candidate_evidence import compute_source_manifest
+
+    _, digest = compute_source_manifest(REPO_ROOT, "HEAD")
+    return digest
+
+
+def recompute_artifact_sha256(data: dict) -> str:
+    """artifact_sha256 rule: SHA-256 of the canonical JSON without the field."""
+    body = {key: value for key, value in data.items() if key != "artifact_sha256"}
+    canonical = json.dumps(
+        body, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+    ).encode("utf-8")
+    return hashlib.sha256(canonical).hexdigest()
 
 
 def stable_hash(content: str) -> str:
@@ -264,7 +275,12 @@ class CcSwitchAbaHarnessContractTests(unittest.TestCase):
             self.assertIs(data["candidate"]["resolved"], True)
             self.assertEqual(data["source_digest"]["value"], repo_digest())
             self.assertIs(data["source_digest"]["resolved"], True)
-            self.assertEqual(data["source_digest"]["scope"], "commit-tree-object-sha256")
+            self.assertEqual(data["source_digest"]["scope"], "n0-canonical-source-manifest")
+            self.assertEqual(
+                data["artifact_sha256"],
+                recompute_artifact_sha256(data),
+                "artifact_sha256 must equal SHA-256 of the canonical JSON without itself",
+            )
             self.assertEqual(data["db"]["writes_attempted"], 0)
             self.assertIs(data["db"]["db_unchanged_during_verify"], True)
             self.assertEqual(len(data["ledger"]["computer_actions"]), 2)
