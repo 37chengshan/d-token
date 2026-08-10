@@ -3024,6 +3024,15 @@
       "summary": "fix(evidence): run cargo commands from workspace root in N evidence producer",
       "head_before": "e9d4c11ecc9596baf61f36773f3d6d407ada80c2",
       "remote": null
+    },
+    {
+      "id": "ccf471ad-b45c-4892-8c85-358f389e203c",
+      "timestamp": "2026-08-10T23:52:49+08:00",
+      "operation": "commit",
+      "branch": "codex/final/stage-pack-integrated",
+      "summary": "fix(evidence): pin dtoken-bench binary in N evidence producer bench runs",
+      "head_before": "686fff402e7db227cdf9226633e7cb07cff94ade",
+      "remote": null
     }
   ]
 }

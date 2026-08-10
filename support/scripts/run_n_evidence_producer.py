@@ -219,6 +219,7 @@ def bench_run(args: list[str], root: Path) -> list[str]:
     return [
         "cargo", "run", "-q",
         "--manifest-path", str(root / "code" / "crates" / "dtoken-benchmark" / "Cargo.toml"),
+        "--bin", "dtoken-bench",
         "--", *args,
     ]
 
