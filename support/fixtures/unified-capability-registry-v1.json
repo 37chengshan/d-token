@@ -225,8 +225,8 @@
     {
       "id": "aggregate.relay",
       "source_capability": "Context Relay aggregate (query-aware retrieval, avoided-retransmission accounting)",
-      "owner_crate": "dtoken-context-store",
-      "dispatch_symbol": "dtoken_context_store::relay::RelayRegistry",
+      "owner_crate": "dtoken-context-bus",
+      "dispatch_symbol": "dtoken_context_bus::relay::ContextRelay",
       "tests": {
         "normal": ["code/crates/dtoken-context-store/tests/durability.rs"],
         "error": ["code/crates/dtoken-context-store/tests/durability.rs"],
@@ -1079,8 +1079,8 @@
     {
       "id": "c3.context-bus",
       "source_capability": "Context Bus: shared Rust-owned domain for cache/reuse policy (not copied into other crates)",
-      "owner_crate": "dtoken-context-store",
-      "dispatch_symbol": "dtoken_context_store::SharedContext",
+      "owner_crate": "dtoken-context-bus",
+      "dispatch_symbol": "dtoken_context_bus::bus::ContextBus",
       "tests": {
         "normal": ["code/crates/dtoken-context-store/tests/durability.rs"],
         "error": ["code/crates/dtoken-context-store/tests/durability.rs"],
@@ -1093,8 +1093,8 @@
     {
       "id": "c3.session-cache",
       "source_capability": "Session Cache: map/signature/self-hit/scope/size state machine",
-      "owner_crate": "dtoken-context-store",
-      "dispatch_symbol": "dtoken_context_store::SessionCache",
+      "owner_crate": "dtoken-context-bus",
+      "dispatch_symbol": "dtoken_context_bus::cache::SessionCache",
       "tests": {
         "normal": ["code/crates/dtoken-context-store/tests/durability.rs"],
         "error": ["code/crates/dtoken-context-store/tests/durability.rs"],
@@ -1107,8 +1107,8 @@
     {
       "id": "c3.context-relay",
       "source_capability": "Context Relay: cross-agent query-aware retrieval with independent relay accounting",
-      "owner_crate": "dtoken-context-store",
-      "dispatch_symbol": "dtoken_context_store::ContextRelay",
+      "owner_crate": "dtoken-context-bus",
+      "dispatch_symbol": "dtoken_context_bus::relay::ContextRelay",
       "tests": {
         "normal": ["code/crates/dtoken-context-store/tests/durability.rs"],
         "error": ["code/crates/dtoken-context-store/tests/durability.rs"],
@@ -1121,8 +1121,8 @@
     {
       "id": "c3.query-aware-retrieval",
       "source_capability": "Query-aware retrieval: query-derived reuse without cross-project pollution",
-      "owner_crate": "dtoken-context-store",
-      "dispatch_symbol": "dtoken_context_store::retrieve",
+      "owner_crate": "dtoken-context-bus",
+      "dispatch_symbol": "dtoken_context_bus::relay::ContextRelay::query",
       "tests": {
         "normal": ["code/crates/dtoken-context-store/tests/durability.rs"],
         "error": ["code/crates/dtoken-context-store/tests/durability.rs"],
@@ -1149,8 +1149,8 @@
     {
       "id": "c3.stale-superseded",
       "source_capability": "Stale/Superseded: changes in file/TTL/permission/source invalidate reuse",
-      "owner_crate": "dtoken-context-store",
-      "dispatch_symbol": "dtoken_context_store::SharedContext",
+      "owner_crate": "dtoken-context-bus",
+      "dispatch_symbol": "dtoken_context_bus::cache::CacheEntry::state_at",
       "tests": {
         "normal": ["code/crates/dtoken-context-store/tests/durability.rs"],
         "error": ["code/crates/dtoken-context-store/tests/durability.rs"],
@@ -1163,8 +1163,8 @@
     {
       "id": "c3.shared-context-authorization",
       "source_capability": "SharedContext grant/revoke authorization boundary",
-      "owner_crate": "dtoken-context-store",
-      "dispatch_symbol": "dtoken_context_store::SharedContext",
+      "owner_crate": "dtoken-context-bus",
+      "dispatch_symbol": "dtoken_context_bus::shared::SharedContext",
       "tests": {
         "normal": ["code/crates/dtoken-context-store/tests/durability.rs"],
         "error": ["code/crates/dtoken-context-store/tests/durability.rs"],
@@ -1500,7 +1500,7 @@
       "id": "context-store.persistence",
       "source_capability": "Context store persistence port: durable persistence behind the store boundary",
       "owner_crate": "dtoken-context-store",
-      "dispatch_symbol": "dtoken_context_store::SharedContext",
+      "dispatch_symbol": "dtoken_context_store::bus_persistence::SqlitePersistence",
       "tests": {
         "normal": ["code/crates/dtoken-context-store/tests/durability.rs"],
         "error": ["code/crates/dtoken-context-store/tests/durability.rs"],
