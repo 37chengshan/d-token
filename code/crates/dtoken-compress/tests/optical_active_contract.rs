@@ -63,7 +63,7 @@ fn signed_snapshot() -> OpticalCapabilitySnapshot {
 }
 
 fn demo_authority() -> OpticalTrustedAuthority {
-    load_fixture("demo-authority.json")
+    load_fixture("demo-verification-key.json")
 }
 
 fn bound_eval() -> OpticalEvalArtifact {

@@ -2427,7 +2427,7 @@
         "docs/releases/v0.0.1/REQUIREMENTS.md",
         "docs/releases/v0.0.1/VERIFICATION.md",
         "support/fixtures/optical/anthropic-snapshot-claude-sonnet-4-5-signed.json",
-        "support/fixtures/optical/demo-authority.json"
+        "support/fixtures/optical/demo-verification-key.json"
       ],
       "gates": [
         "U7",
