@@ -12290,12 +12290,20 @@ async fn openai_chat_completions(
                         .into_response();
                 }
                 Err(upstream) => {
-                    // Transport never accepted the body: honest pre-commit
-                    // failure receipt from the sealed unit (T-C0B).
+                    // Mint the terminal transport receipt from the sealed
+                    // sendable unit (T-C0B). A request the transport never
+                    // accepted is honest prior to commit (committed_at = 0);
+                    // an after-commit failure (timeout / response started /
+                    // non-success status) proves the body crossed the wire and
+                    // must be stamped committed, matching the non-stream path.
                     match mint_transport_send_commit(
                         pipeline_payload.ready,
                         pipeline_payload.validation.as_ref(),
-                        0,
+                        if transport_not_committed(&upstream) {
+                            0
+                        } else {
+                            dtoken_event_ledger::now_ms()
+                        },
                         &mut request_log,
                         &mut event,
                     ) {
@@ -12915,10 +12923,18 @@ async fn openai_responses(
                             .into_response();
                     }
                     Err(upstream) => {
+                        // T-C0B: after-commit failures (timeout / response
+                        // started / non-success status) crossed the wire and
+                        // are stamped committed; only transport-not-accepted
+                        // failures stay at committed_at = 0.
                         match mint_transport_send_commit(
                             pipeline_payload.ready,
                             pipeline_payload.validation.as_ref(),
-                            0,
+                            if transport_not_committed(&upstream) {
+                                0
+                            } else {
+                                dtoken_event_ledger::now_ms()
+                            },
                             &mut request_log,
                             &mut event,
                         ) {
@@ -13509,10 +13525,18 @@ async fn openai_responses(
                         .into_response();
                 }
                 Err(upstream) => {
+                    // T-C0B: after-commit failures (timeout / response
+                    // started / non-success status) crossed the wire and are
+                    // stamped committed; only transport-not-accepted failures
+                    // stay at committed_at = 0.
                     match mint_transport_send_commit(
                         pipeline_payload.ready,
                         pipeline_payload.validation.as_ref(),
-                        0,
+                        if transport_not_committed(&upstream) {
+                            0
+                        } else {
+                            dtoken_event_ledger::now_ms()
+                        },
                         &mut request_log,
                         &mut event,
                     ) {
@@ -14062,10 +14086,18 @@ async fn anthropic_messages(
                 }
                 Err(upstream) => {
                     if let Some(ready) = sealed_ready {
+                        // T-C0B: after-commit failures (timeout / response
+                        // started / non-success status) crossed the wire and
+                        // are stamped committed; only transport-not-accepted
+                        // failures stay at committed_at = 0.
                         match mint_transport_send_commit(
                             ready,
                             sealed_validation.as_ref(),
-                            0,
+                            if transport_not_committed(&upstream) {
+                                0
+                            } else {
+                                dtoken_event_ledger::now_ms()
+                            },
                             &mut payload.request_log,
                             &mut payload.event,
                         ) {
@@ -18834,6 +18866,414 @@ mod tests {
         assert!(text.contains("data:"));
         assert!(text.contains("[DONE]"));
         server.await.expect("mock upstream task");
+    }
+
+    /// T-C0B: the OpenAI Chat stream Err path must mint the terminal
+    /// send-commit receipt from the upstream `send_state`, not from a
+    /// hardcoded timestamp 0. A post-commit failure (upstream accepted the
+    /// body, e.g. HTTP 401) must never be recorded as pre-commit.
+    #[tokio::test]
+    async fn stream_terminal_send_state_derives_from_upstream_after_commit() {
+        let (addr, server) = spawn_json_upstream(
+            "401 Unauthorized",
+            r#"{"error":{"message":"invalid local test credential"}}"#,
+            0,
+        )
+        .await;
+        let state = configured_openai_test_state(format!("http://{addr}/v1"), 1_000);
+
+        let response = openai_chat_completions(
+            State(state.clone()),
+            HeaderMap::new(),
+            request_bytes(json!({
+                "model": "mock/model",
+                "messages": [{"role": "user", "content": "hello"}],
+                "stream": true
+            })),
+        )
+        .await
+        .into_response();
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        let event = state
+            .recent_events(20)
+            .into_iter()
+            .find(|event| event.metadata.get("send_commit_state").is_some())
+            .expect("stream failure event must carry the terminal send-commit receipt");
+        assert_eq!(
+            event.metadata["send_commit_state"], "send_committed",
+            "upstream accepted the stream body; the terminal receipt must not claim pre-commit failure"
+        );
+        assert_eq!(event.status, EventStatus::Failed);
+        assert_eq!(event.error_code.as_deref(), Some("provider_auth"));
+        assert_eq!(event.metadata["terminal"], true);
+        assert_eq!(event.metadata["optical_phase"], "upstream_completed");
+        server.await.expect("local mock upstream task");
+    }
+
+    /// T-C0B: a true pre-commit stream failure (connection refused) must
+    /// still mint a pre-commit receipt; the send-state derivation must not
+    /// turn honest pre-commit failures into post-commit ones.
+    #[tokio::test]
+    async fn stream_terminal_send_state_preserves_pre_commit_failure() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind then release a port");
+        let addr = listener.local_addr().expect("local address");
+        drop(listener);
+
+        let state = configured_openai_test_state(format!("http://{addr}/v1"), 1_000);
+        let response = openai_chat_completions(
+            State(state.clone()),
+            HeaderMap::new(),
+            request_bytes(json!({
+                "model": "mock/model",
+                "messages": [{"role": "user", "content": "hello"}],
+                "stream": true
+            })),
+        )
+        .await
+        .into_response();
+
+        assert!(response.status().is_server_error());
+        let event = state
+            .recent_events(20)
+            .into_iter()
+            .find(|event| event.metadata.get("send_commit_state").is_some())
+            .expect("stream failure event must carry the terminal send-commit receipt");
+        assert_eq!(
+            event.metadata["send_commit_state"], "failed_before_commit",
+            "connection refusal stays a pre-commit failure"
+        );
+        assert_eq!(event.metadata["terminal"], true);
+        assert_eq!(event.metadata["optical_phase"], "upstream_failed");
+    }
+
+    /// T-C0B: a timeout is an ambiguous send failure (reqwest cannot prove
+    /// the failure happened before the write); it must stay post-commit so
+    /// the baseline is never retried.
+    #[tokio::test]
+    async fn stream_terminal_send_state_preserves_failed_after_commit_ambiguity() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        // The client times out at 1 ms while the upstream sleeps 200 ms. The
+        // mock must tolerate the client aborting mid-read (read() may return
+        // 0) and must not panic when the write silently fails after close.
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind mock upstream");
+        let addr = listener.local_addr().expect("mock addr");
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.expect("accept");
+            let mut buffer = [0_u8; 4096];
+            let _ = socket.read(&mut buffer).await;
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            let _ = socket
+                .write_all(b"HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\n\r\ndata: [DONE]\n\n")
+                .await;
+        });
+
+        let state = configured_openai_test_state(format!("http://{addr}/v1"), 1);
+        let response = openai_chat_completions(
+            State(state.clone()),
+            HeaderMap::new(),
+            request_bytes(json!({
+                "model": "mock/model",
+                "messages": [{"role": "user", "content": "hello"}],
+                "stream": true
+            })),
+        )
+        .await
+        .into_response();
+
+        assert_eq!(response.status(), StatusCode::GATEWAY_TIMEOUT);
+        let event = state
+            .recent_events(20)
+            .into_iter()
+            .find(|event| event.metadata.get("send_commit_state").is_some())
+            .expect("stream failure event must carry the terminal send-commit receipt");
+        assert_eq!(
+            event.metadata["send_commit_state"], "send_committed",
+            "ambiguous timeout must not be downgraded to pre-commit"
+        );
+        assert_eq!(event.metadata["terminal"], true);
+        assert_eq!(event.metadata["optical_phase"], "upstream_failed");
+        server.await.expect("local mock upstream task");
+    }
+
+    /// T-C0B: the native Responses stream Err path derives the terminal
+    /// send-commit receipt from the upstream `send_state` as well.
+    #[tokio::test]
+    async fn native_responses_stream_send_state_derives_from_upstream_after_commit() {
+        use axum::body::to_bytes;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind mock upstream");
+        let addr = listener.local_addr().expect("mock addr");
+        let error_body = r#"{"error":{"message":"invalid local test credential"}}"#;
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.expect("accept request");
+            let mut request = Vec::new();
+            let mut buffer = [0_u8; 4096];
+            let (header_end, content_length) = loop {
+                let read = socket.read(&mut buffer).await.expect("read request");
+                assert!(read > 0, "request closed before headers completed");
+                request.extend_from_slice(&buffer[..read]);
+                if let Some(index) = request.windows(4).position(|window| window == b"\r\n\r\n") {
+                    let header_end = index + 4;
+                    let headers = String::from_utf8_lossy(&request[..header_end]);
+                    let content_length = headers
+                        .lines()
+                        .find_map(|line| {
+                            let (name, value) = line.split_once(':')?;
+                            name.eq_ignore_ascii_case("content-length")
+                                .then(|| value.trim().parse::<usize>().ok())
+                                .flatten()
+                        })
+                        .expect("serialized body has a content length");
+                    break (header_end, content_length);
+                }
+            };
+            while request.len() < header_end + content_length {
+                let read = socket.read(&mut buffer).await.expect("read request body");
+                assert!(read > 0, "request closed before body completed");
+                request.extend_from_slice(&buffer[..read]);
+            }
+            let response = format!(
+                "HTTP/1.1 401 Unauthorized\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{error_body}",
+                error_body.len()
+            );
+            socket
+                .write_all(response.as_bytes())
+                .await
+                .expect("write error response");
+        });
+
+        let provider = dtoken_types::ProviderProfile {
+            id: "responses-upstream".to_string(),
+            name: "Responses upstream".to_string(),
+            kind: dtoken_types::ProviderKind::Custom,
+            protocol: Protocol::OpenAi,
+            base_url: format!("http://{addr}/v1"),
+            api_key_ref: None,
+            models: vec!["mock/model".to_string()],
+            timeout_ms: 30_000,
+            healthcheck_path: None,
+            wire_api: dtoken_types::ProviderWireApi::OpenAiResponses,
+        };
+        let route = dtoken_types::RouteProfile {
+            id: "route-responses".to_string(),
+            name: "route-responses".to_string(),
+            input_protocol: Protocol::OpenAi,
+            instance_id: "instance-responses".to_string(),
+            target_provider_id: "responses-upstream".to_string(),
+            fallback_provider_id: None,
+            chain_mode: ChainMode::Direct,
+            compression_policy: CompressionPolicy::Off,
+            bind_host: "127.0.0.1".to_string(),
+            local_port: 18001,
+        };
+        let config = DtokenConfig {
+            providers: vec![provider],
+            routes: vec![route],
+            instances: vec![],
+            provider_cache_policies: vec![],
+            output_shaping_policies: vec![],
+            optical: Default::default(),
+        };
+        let state = AppState::new(config);
+        let app = build_router(state.clone());
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/responses")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"model":"mock/model","input":"hello","stream":true}"#,
+                    ))
+                    .expect("request"),
+            )
+            .await
+            .expect("router response");
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        let bytes = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("error body bytes");
+        let payload: Value = serde_json::from_slice(&bytes).expect("dtoken error JSON");
+        assert_eq!(payload["error"]["type"], "provider_auth");
+        let event = state
+            .recent_events(20)
+            .into_iter()
+            .find(|event| event.metadata.get("send_commit_state").is_some())
+            .expect("stream failure event must carry the terminal send-commit receipt");
+        assert_eq!(
+            event.metadata["send_commit_state"], "send_committed",
+            "native Responses upstream accepted the stream body; receipt must not claim pre-commit failure"
+        );
+        assert_eq!(event.status, EventStatus::Failed);
+        server.await.expect("mock upstream task");
+    }
+
+    /// T-C0B: the Responses-to-Chat SSE bridge Err path derives the terminal
+    /// send-commit receipt from the upstream `send_state` as well.
+    #[tokio::test]
+    async fn responses_to_chat_stream_send_state_derives_from_upstream_after_commit() {
+        use axum::body::to_bytes;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind mock upstream");
+        let addr = listener.local_addr().expect("mock addr");
+        let error_body = r#"{"error":{"message":"invalid local test credential"}}"#;
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.expect("accept request");
+            let mut request = Vec::new();
+            let mut buffer = [0_u8; 4096];
+            let (header_end, content_length) = loop {
+                let read = socket.read(&mut buffer).await.expect("read request");
+                assert!(read > 0, "request closed before headers completed");
+                request.extend_from_slice(&buffer[..read]);
+                if let Some(index) = request.windows(4).position(|window| window == b"\r\n\r\n") {
+                    let header_end = index + 4;
+                    let headers = String::from_utf8_lossy(&request[..header_end]);
+                    let content_length = headers
+                        .lines()
+                        .find_map(|line| {
+                            let (name, value) = line.split_once(':')?;
+                            name.eq_ignore_ascii_case("content-length")
+                                .then(|| value.trim().parse::<usize>().ok())
+                                .flatten()
+                        })
+                        .expect("serialized body has a content length");
+                    break (header_end, content_length);
+                }
+            };
+            while request.len() < header_end + content_length {
+                let read = socket.read(&mut buffer).await.expect("read request body");
+                assert!(read > 0, "request closed before body completed");
+                request.extend_from_slice(&buffer[..read]);
+            }
+            let response = format!(
+                "HTTP/1.1 401 Unauthorized\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{error_body}",
+                error_body.len()
+            );
+            socket
+                .write_all(response.as_bytes())
+                .await
+                .expect("write error response");
+        });
+
+        let provider = dtoken_types::ProviderProfile {
+            id: "bridge-upstream".to_string(),
+            name: "Bridge upstream".to_string(),
+            kind: dtoken_types::ProviderKind::Custom,
+            protocol: Protocol::OpenAi,
+            base_url: format!("http://{addr}/v1"),
+            api_key_ref: None,
+            models: vec!["mock/model".to_string()],
+            timeout_ms: 30_000,
+            healthcheck_path: None,
+            wire_api: dtoken_types::ProviderWireApi::OpenAiChat,
+        };
+        let route = dtoken_types::RouteProfile {
+            id: "route-bridge".to_string(),
+            name: "route-bridge".to_string(),
+            input_protocol: Protocol::OpenAi,
+            instance_id: "instance-bridge".to_string(),
+            target_provider_id: "bridge-upstream".to_string(),
+            fallback_provider_id: None,
+            chain_mode: ChainMode::Direct,
+            compression_policy: CompressionPolicy::Off,
+            bind_host: "127.0.0.1".to_string(),
+            local_port: 18001,
+        };
+        let config = DtokenConfig {
+            providers: vec![provider],
+            routes: vec![route],
+            instances: vec![],
+            provider_cache_policies: vec![],
+            output_shaping_policies: vec![],
+            optical: Default::default(),
+        };
+        let state = AppState::new(config);
+        let app = build_router(state.clone());
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/responses")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"model":"mock/model","input":"hello","stream":true}"#,
+                    ))
+                    .expect("request"),
+            )
+            .await
+            .expect("router response");
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        let bytes = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("error body bytes");
+        let payload: Value = serde_json::from_slice(&bytes).expect("dtoken error JSON");
+        assert_eq!(payload["error"]["type"], "provider_auth");
+        let event = state
+            .recent_events(20)
+            .into_iter()
+            .find(|event| event.metadata.get("send_commit_state").is_some())
+            .expect("stream failure event must carry the terminal send-commit receipt");
+        assert_eq!(
+            event.metadata["send_commit_state"], "send_committed",
+            "Responses bridge upstream accepted the stream body; receipt must not claim pre-commit failure"
+        );
+        assert_eq!(event.status, EventStatus::Failed);
+        server.await.expect("mock upstream task");
+    }
+
+    /// T-C0B: the Anthropic stream Err path derives the terminal
+    /// send-commit receipt from the upstream `send_state` as well.
+    #[tokio::test]
+    async fn anthropic_stream_send_state_derives_from_upstream_after_commit() {
+        let (addr, server) = spawn_json_upstream(
+            "401 Unauthorized",
+            r#"{"error":{"message":"invalid local test credential"}}"#,
+            0,
+        )
+        .await;
+        let state = AppState::new(direct_anthropic_cache_test_config(format!("http://{addr}")));
+
+        let response = anthropic_messages(
+            State(state.clone()),
+            HeaderMap::new(),
+            Bytes::from_static(
+                br#"{"model":"claude-cache-test","messages":[{"role":"user","content":"hello"}],"stream":true}"#,
+            ),
+        )
+        .await
+        .into_response();
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        let event = state
+            .recent_events(20)
+            .into_iter()
+            .find(|event| event.metadata.get("send_commit_state").is_some())
+            .expect("stream failure event must carry the terminal send-commit receipt");
+        assert_eq!(
+            event.metadata["send_commit_state"], "send_committed",
+            "Anthropic upstream accepted the stream body; the terminal receipt must not claim pre-commit failure"
+        );
+        assert_eq!(event.status, EventStatus::Failed);
+        assert_eq!(event.metadata["terminal"], true);
+        assert_eq!(event.metadata["optical_phase"], "upstream_completed");
+        server.await.expect("local mock upstream task");
     }
 
     #[test]
