@@ -2511,6 +2511,15 @@
       "summary": "N6 Tauri UI acceptance producer: receipt-driven, fail-closed native window contract + tests",
       "head_before": "5e19e7d5fa0a84000300ea579c9683caceed04b1",
       "remote": null
+    },
+    {
+      "id": "7113f264-a25f-4086-abe9-2d734d64b00d",
+      "timestamp": "2026-08-10T12:49:08+08:00",
+      "operation": "commit",
+      "branch": "codex/final/product-closure-remediation",
+      "summary": "product closure: Agent acceptance N0 digest envelopes, Codex top-level TOML + OpenClaw cc-switch mapping, bridge identity gate, generated Agent integration matrix",
+      "head_before": "563360884914",
+      "remote": null
     }
   ]
 }
