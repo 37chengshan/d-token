@@ -185,6 +185,7 @@ pub(crate) fn preserved_pipeline_payload(
     PreparedPipelinePayload {
         ready,
         fallback_reason: Some(reason.as_reason_code()),
+        validation: None,
     }
 }
 
@@ -229,6 +230,9 @@ pub(crate) async fn run_gated_compression(
     let owned_policy = policy.clone();
     let owned_body = body.clone();
     let task: PoolTask = Box::new(move || {
+        let baseline_digest = dtoken_context_bus::signature::sha256_hex(
+            &serde_json::to_vec(&owned_body).unwrap_or_default(),
+        );
         let summary = compress_for_route_with_relay(
             &owned_state,
             &scope,
@@ -238,6 +242,7 @@ pub(crate) async fn run_gated_compression(
             cache_evidence.as_ref(),
             frozen_message_count,
             ir.as_ref(),
+            &baseline_digest,
         );
         let _ = summary_tx.send(summary);
         TaskOutcome::Completed

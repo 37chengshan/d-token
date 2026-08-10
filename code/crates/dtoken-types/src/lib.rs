@@ -1379,9 +1379,10 @@ fn saturating_i64_difference_u128(baseline: u128, candidate: u128) -> i64 {
     }
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum OptimizationDisposition {
+    #[default]
     Passthrough,
     Shadow,
     Active,
@@ -1556,6 +1557,14 @@ pub struct RequestLog {
     pub timestamp_ms: u64,
     pub agent: Option<String>,
     pub instance_id: Option<String>,
+    /// Project identity evidence from the resolved request scope; None when
+    /// identity is unavailable (never fabricated).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<String>,
+    /// Model the user requested in the original request body, parsed before
+    /// any routing; never derived from the actual routed model.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user_target_model: Option<String>,
     pub input_protocol: Protocol,
     pub provider_id: Option<String>,
     pub route_id: Option<String>,
@@ -1564,6 +1573,12 @@ pub struct RequestLog {
     pub input_tokens_before: Option<usize>,
     pub input_tokens_after: Option<usize>,
     pub output_tokens: Option<usize>,
+    /// Actual provider-reported input tokens from the upstream response; never derived.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_input_tokens: Option<usize>,
+    /// Actual provider-reported output tokens from the upstream response; never derived.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_output_tokens: Option<usize>,
     pub tokens_saved: Option<usize>,
     pub transforms_applied: Vec<String>,
     pub latency_ms: Option<u64>,
@@ -1576,93 +1591,147 @@ pub struct RequestLog {
     pub context_accounting: Option<HybridContextAccounting>,
 }
 
-/// Minimal optimization receipt (PRD P0.0.7 / PRODUCT-1 / RUNTIME-9).
+/// Minimal, safe projection of a request's optimization outcome (spec v2
+/// §7.2 field parity plus PRD P0.0.7 Local/Provider/claimable separation).
 ///
-/// Local estimates, provider actuals and claimable status are separated: a
-/// claim is claimable only when paired Provider evidence exists, and a bare
-/// Local estimate never claims provider savings. The receipt never carries
-/// the full accounting state or raw request bytes (INV-7 / RUNTIME-4).
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
+/// `savings_estimated` is display-only; `savings_claimable` is only populated
+/// from `PairedActual` or a complete `ProviderReconciledActual` attribution
+/// chain (provider usage alone or `EstimatedActive` never makes savings
+/// claimable). `physical_tokens_saved` is projected from local before/after
+/// input measurements only when both exist and the change is non-negative;
+/// it never copies the legacy positive `tokens_saved` field. `project_scope`,
+/// `user_target_model` and `provider_or_model_changed` are populated only
+/// from explicit request-scope/request-body evidence; `user_target_provider`,
+/// `protected_content`, `recovery_status` and `recovery_pointer` have no
+/// evidence source on this path and stay `None` (never guessed).
+/// `validation_status` projects the accounting record's own validation result
+/// when accounting evidence exists. This struct never carries
+/// prompt/response bodies, credentials or local paths.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
 pub struct OptimizationReceipt {
-    request_id: Uuid,
-    route_id: Option<String>,
-    provider_id: Option<String>,
-    model: Option<String>,
-    source_digest: String,
-    local_estimate_tokens_saved: Option<usize>,
-    provider_actual_tokens_saved: Option<usize>,
-    claimable: bool,
-    created_at_ms: u64,
+    pub request_id: Uuid,
+    pub timestamp_ms: u64,
+    pub agent: Option<String>,
+    pub provider_id: Option<String>,
+    pub route_id: Option<String>,
+    pub model: Option<String>,
+    pub project_scope: Option<String>,
+    pub user_target_provider: Option<String>,
+    pub user_target_model: Option<String>,
+    pub provider_or_model_changed: Option<bool>,
+    pub local_input_tokens_before: Option<usize>,
+    pub local_input_tokens_after: Option<usize>,
+    pub provider_input_tokens: Option<usize>,
+    pub provider_output_tokens: Option<usize>,
+    pub protected_content: Option<bool>,
+    pub physical_tokens_saved: Option<usize>,
+    pub savings_estimated: Option<i64>,
+    pub savings_claimable: Option<i64>,
+    pub recovery_status: Option<String>,
+    pub recovery_pointer: Option<String>,
+    pub validation_status: Option<String>,
+    pub disposition: OptimizationDisposition,
+    pub failure_type: Option<String>,
+    pub transforms_applied: Vec<String>,
+    pub latency_ms: Option<u64>,
 }
 
 impl OptimizationReceipt {
-    /// Build the minimal receipt from a RequestLog (PR-C0A / T-PR1).
+    /// Safe projection from a `&RequestLog`.
     ///
-    /// Provider actuals come from the validated upstream outcome evidence;
-    /// without paired Provider evidence the receipt is not claimable
-    /// (PRODUCT-1: Provider usage 单独不提升 claimable).
-    pub fn from_request_log(log: &RequestLog, source_digest: impl Into<String>) -> Self {
-        let source_digest = source_digest.into();
-        let accounting = log.context_accounting.as_ref();
-        let claimable = accounting
-            .and_then(|item| item.claimable_signed_savings())
-            .is_some();
-        let provider_actual_tokens_saved = accounting
-            .and_then(|item| item.claimable_signed_savings())
-            .and_then(|savings| savings.total_tokens.or(savings.input_tokens))
-            .and_then(|tokens| usize::try_from(tokens).ok());
+    /// Claimable savings require the full, validated, declarable
+    /// `HybridContextAccounting` path; a request with only provider usage
+    /// recorded is never claimable.
+    pub fn from_request_log(request_log: &RequestLog) -> Self {
+        let accounting = request_log.context_accounting.as_ref();
+        // Claimable savings require complete, validated, declarable attribution:
+        // PairedActual, or the full ProviderReconciledActual chain (counterfactual
+        // baseline + provider actual + reconciled savings). EstimatedActive and
+        // provider-usage-only never produce claimable savings.
+        let savings_claimable = match accounting {
+            Some(accounting) => match accounting.attribution_basis {
+                SavingsAttribution::PairedActual => accounting
+                    .claimable_signed_savings()
+                    .and_then(|savings| savings.total_tokens),
+                SavingsAttribution::ProviderReconciledActual => accounting
+                    .provider_reconciled_signed_savings()
+                    .and_then(|savings| savings.total_tokens),
+                SavingsAttribution::None | SavingsAttribution::EstimatedActive => None,
+            },
+            None => None,
+        };
+        let savings_estimated = accounting
+            .and_then(|accounting| accounting.estimated.as_ref())
+            .and_then(|comparison| comparison.signed_savings.total_tokens);
+        // Physical local-input savings are only projected when both before and
+        // after measurements exist and the signed change is non-negative;
+        // missing measurements or growth stay None (no negative truncation,
+        // never copied from the legacy positive-only `tokens_saved` field).
+        let physical_tokens_saved = match (
+            request_log.input_tokens_before,
+            request_log.input_tokens_after,
+        ) {
+            (Some(before), Some(after)) if before >= after => Some(before - after),
+            _ => None,
+        };
+        // provider_or_model_changed is only provable when both the user's
+        // requested model and the routed actual model are recorded; either
+        // missing (e.g. dynamic model passthrough without a request model)
+        // stays None — never guessed.
+        let provider_or_model_changed = match (
+            request_log.user_target_model.as_deref(),
+            request_log.model.as_deref(),
+        ) {
+            (Some(user_target), Some(actual)) => Some(user_target != actual),
+            _ => None,
+        };
+        // validation_status projects the accounting record's own validation
+        // result (existing accounting evidence); no accounting -> None.
+        let validation_status = accounting.map(|accounting| {
+            if accounting.validate().is_ok() {
+                "validated".to_string()
+            } else {
+                "invalid".to_string()
+            }
+        });
         Self {
-            request_id: log.request_id,
-            route_id: log.route_id.clone(),
-            provider_id: log.provider_id.clone(),
-            model: log.model.clone(),
-            source_digest,
-            local_estimate_tokens_saved: log.tokens_saved,
-            provider_actual_tokens_saved,
-            claimable,
-            created_at_ms: log.timestamp_ms,
+            request_id: request_log.request_id,
+            timestamp_ms: request_log.timestamp_ms,
+            agent: request_log.agent.clone(),
+            provider_id: request_log.provider_id.clone(),
+            route_id: request_log.route_id.clone(),
+            model: request_log.model.clone(),
+            project_scope: request_log.project_id.clone(),
+            // No request-level provider-target evidence exists on any routed
+            // path (requests name a model, never a provider); stays None.
+            user_target_provider: None,
+            user_target_model: request_log.user_target_model.clone(),
+            provider_or_model_changed,
+            local_input_tokens_before: request_log.input_tokens_before,
+            local_input_tokens_after: request_log.input_tokens_after,
+            provider_input_tokens: request_log.provider_input_tokens,
+            provider_output_tokens: request_log.provider_output_tokens,
+            // No protected-content evidence is recorded on this path; stays
+            // None (never guessed).
+            protected_content: None,
+            physical_tokens_saved,
+            savings_estimated,
+            savings_claimable,
+            // CCR/recovery evidence (raw_recovery_ref) is not recorded on
+            // RequestLog; stays None until a recovery slice populates it.
+            recovery_status: None,
+            recovery_pointer: None,
+            validation_status,
+            disposition: accounting
+                .map(|accounting| accounting.disposition)
+                .unwrap_or_default(),
+            failure_type: request_log.error.clone().or_else(|| {
+                accounting.and_then(|accounting| accounting.fallback_reason_code.clone())
+            }),
+            transforms_applied: request_log.transforms_applied.clone(),
+            latency_ms: request_log.latency_ms,
         }
-    }
-
-    pub fn request_id(&self) -> Uuid {
-        self.request_id
-    }
-
-    pub fn route_id(&self) -> Option<&str> {
-        self.route_id.as_deref()
-    }
-
-    pub fn provider_id(&self) -> Option<&str> {
-        self.provider_id.as_deref()
-    }
-
-    pub fn model(&self) -> Option<&str> {
-        self.model.as_deref()
-    }
-
-    pub fn source_digest(&self) -> &str {
-        &self.source_digest
-    }
-
-    /// Local compression estimate only; never a provider claim.
-    pub fn local_estimate_tokens_saved(&self) -> Option<usize> {
-        self.local_estimate_tokens_saved
-    }
-
-    /// Provider actual tokens saved; `Some` only when paired Provider
-    /// evidence exists.
-    pub fn provider_actual_tokens_saved(&self) -> Option<usize> {
-        self.provider_actual_tokens_saved
-    }
-
-    /// True only when paired Provider evidence makes the claim claimable.
-    pub fn is_claimable(&self) -> bool {
-        self.claimable
-    }
-
-    pub fn created_at_ms(&self) -> u64 {
-        self.created_at_ms
     }
 }
 

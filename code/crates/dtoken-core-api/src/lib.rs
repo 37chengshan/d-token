@@ -12131,6 +12131,7 @@ async fn openai_chat_completions(
                             .into_baseline_ready("pipeline_input_invalid")
                     }),
                     fallback_reason: Some("pipeline_input_invalid"),
+                    validation: None,
                 },
             }
         };
@@ -12698,6 +12699,7 @@ async fn openai_responses(
                             request_id,
                             &decision,
                             requested_model.clone(),
+                            requested_model.clone(),
                             Protocol::OpenAi,
                             &compression,
                             &attribution,
@@ -12771,6 +12773,7 @@ async fn openai_responses(
                 request_log = build_request_log(
                     request_id,
                     &decision,
+                    requested_model.clone(),
                     requested_model.clone(),
                     Protocol::OpenAi,
                     &compression,
@@ -13334,6 +13337,7 @@ async fn openai_responses(
                             .into_baseline_ready("pipeline_input_invalid")
                     }),
                     fallback_reason: Some("pipeline_input_invalid"),
+                    validation: None,
                 },
             }
         };
