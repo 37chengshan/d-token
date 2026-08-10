@@ -2880,6 +2880,15 @@
       "summary": "merge deadline-terminal 8ed1e98 into stage-pack-integrated (deadline terminal receipt + persistence)",
       "head_before": "5638f7ac9e8e1f92d3aa2b644d67759e419e1e7e",
       "remote": null
+    },
+    {
+      "id": "3b360d5d-a35d-41ff-b9fd-c9da277abe65",
+      "timestamp": "2026-08-10T19:13:02+08:00",
+      "operation": "merge",
+      "branch": "codex/final/stage-pack-integrated",
+      "summary": "merge pending-recovery aa0fc56 into stage-pack-integrated (Pending terminal recovery promotion)",
+      "head_before": "ee43fb74954638acc81ff0e6c028d6893b662678",
+      "remote": null
     }
   ]
 }
