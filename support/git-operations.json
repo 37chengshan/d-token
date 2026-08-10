@@ -2511,6 +2511,15 @@
       "summary": "C2/C3 privacy fix: SQLite persistence stores metadata/signatures only, never body (plaintext prompt/source absent from context-bus.sqlite3); restarted entries are metadata projections that never substitute bodies",
       "head_before": "1e309ce",
       "remote": null
+    },
+    {
+      "id": "4d1f36e9-d8b8-494f-98ca-b0fe5ffc2c56",
+      "timestamp": "2026-08-10T16:41:40+08:00",
+      "operation": "commit",
+      "branch": "codex/final/c2-c3-remediation",
+      "summary": "C2/C3 upgrade migration: legacy bus_entry body TEXT column detected on open, table rebuilt without body, legacy plaintext rows dropped, WAL checkpoint TRUNCATE + secure_delete VACUUM scrub; regression seeds legacy schema+plaintext WAL and asserts absence in DB/WAL/SHM",
+      "head_before": "e27efa0",
+      "remote": null
     }
   ]
 }

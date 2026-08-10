@@ -90,6 +90,8 @@ impl SqlitePersistence {
              CREATE INDEX IF NOT EXISTS bus_manifest_project_idx ON bus_manifest(project_id);
              CREATE INDEX IF NOT EXISTS bus_grant_project_idx ON bus_grant(project_id);",
         )?;
+        // 旧 schema（body TEXT 列）迁移：检测 + 重建 + WAL/VACUUM 擦除。
+        migrate_legacy_body_column(&connection)?;
         crate::restrict_store_permissions(path)?;
         crate::restrict_store_sidecar_permissions(path)?;
         Ok(Self {
@@ -107,6 +109,67 @@ impl SqlitePersistence {
 fn tokens_from_row(value: String) -> Result<Vec<String>> {
     serde_json::from_str(&value)
         .map_err(|_| anyhow::anyhow!("query_tokens must be a JSON string array"))
+}
+
+/// 旧 schema 迁移：首个 C2/C3 集成 commit 创建的 `bus_entry` 带
+/// `body TEXT` 列，可能落盘明文 prompt/source。`CREATE TABLE IF NOT EXISTS`
+/// 无法改变既有表，因此打开时检测 body 列并重建为无 body 的新表
+/// （旧明文行不复制），随后 checkpoint+TRUNCATE WAL、secure_delete+VACUUM
+/// 擦除释放页中的明文。全新数据库（无 body 列）为 no-op。
+fn migrate_legacy_body_column(connection: &Connection) -> Result<()> {
+    let has_body = {
+        let mut statement = connection.prepare("PRAGMA table_info(bus_entry)")?;
+        let mut rows = statement.query([])?;
+        let mut found = false;
+        while let Some(row) = rows.next()? {
+            let name: String = row.get(1)?;
+            if name == "body" {
+                found = true;
+            }
+        }
+        found
+    };
+    if !has_body {
+        return Ok(());
+    }
+    connection
+        .execute_batch(
+            "BEGIN IMMEDIATE;
+             CREATE TABLE bus_entry_migrated (
+                 map_signature TEXT PRIMARY KEY,
+                 project_id TEXT NOT NULL,
+                 agent_id TEXT NOT NULL,
+                 session_id TEXT NOT NULL,
+                 source_fingerprint TEXT NOT NULL,
+                 recorded_at_ms INTEGER NOT NULL,
+                 ttl_seconds INTEGER,
+                 body_bytes INTEGER NOT NULL,
+                 query_tokens TEXT NOT NULL
+             );
+             INSERT INTO bus_entry_migrated (
+                 map_signature, project_id, agent_id, session_id, source_fingerprint,
+                 recorded_at_ms, ttl_seconds, body_bytes, query_tokens
+             ) SELECT map_signature, project_id, agent_id, session_id, source_fingerprint,
+                 recorded_at_ms, ttl_seconds, body_bytes, query_tokens
+               FROM bus_entry;
+             DROP TABLE bus_entry;
+             ALTER TABLE bus_entry_migrated RENAME TO bus_entry;
+             CREATE INDEX IF NOT EXISTS bus_entry_project_idx ON bus_entry(project_id);
+             COMMIT;",
+        )
+        .context("rebuild legacy bus_entry without body column")?;
+    // 擦除：先 checkpoint+TRUNCATE WAL（可能持有旧明文帧），再以
+    // secure_delete 重写主库（释放页清零），最后截断 VACUUM 产生的 WAL。
+    connection
+        .execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")
+        .context("truncate WAL after legacy migration")?;
+    connection
+        .execute_batch("PRAGMA secure_delete = ON; VACUUM;")
+        .context("vacuum legacy database with secure_delete")?;
+    connection
+        .execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")
+        .context("truncate post-vacuum WAL")?;
+    Ok(())
 }
 
 impl PersistencePort for SqlitePersistence {
@@ -456,6 +519,97 @@ mod tests {
         assert!(rows[0].body.is_none());
         assert_eq!(rows[0].body_bytes, plaintext.len());
         assert_eq!(reopened.load_manifests("proj").unwrap().len(), 1);
+        for suffix in ["", "-wal", "-shm"] {
+            let mut sidecar = path.clone().into_os_string();
+            sidecar.push(suffix);
+            let _ = std::fs::remove_file(sidecar);
+        }
+    }
+
+    #[test]
+    fn sqlite_port_migrates_legacy_body_column_and_scrubs_plaintext() {
+        // 升级回归（security re-review of e27efa0）：旧 schema（首个集成
+        // commit 的 bus_entry 含 body TEXT 列 + 明文行）在 open 时被迁移：
+        // body 列移除、明文行不复制、WAL 截断 + secure_delete VACUUM 擦除。
+        let path = temp_db("legacy");
+        let plaintext = "user: TOP_SECRET_PROMPT_CONTENT_LEGACY";
+        let wal_path = {
+            let mut p = path.clone().into_os_string();
+            p.push("-wal");
+            PathBuf::from(p)
+        };
+        {
+            // 种子旧 schema + 明文行；writer 保持打开 → WAL 持有未
+            // checkpoint 的明文帧（模拟崩溃/升级前状态）。
+            let legacy = Connection::open(&path).unwrap();
+            legacy
+                .execute_batch(
+                    "PRAGMA journal_mode = WAL;
+                     CREATE TABLE bus_entry (
+                         map_signature TEXT PRIMARY KEY,
+                         project_id TEXT NOT NULL,
+                         agent_id TEXT NOT NULL,
+                         session_id TEXT NOT NULL,
+                         source_fingerprint TEXT NOT NULL,
+                         recorded_at_ms INTEGER NOT NULL,
+                         ttl_seconds INTEGER,
+                         body_bytes INTEGER NOT NULL,
+                         query_tokens TEXT NOT NULL,
+                         body TEXT
+                     );
+                     INSERT INTO bus_entry VALUES (
+                         '1111111111111111111111111111111111111111111111111111111111111111',
+                         'proj', 'agent-a', 'sess-1',
+                         '2222222222222222222222222222222222222222222222222222222222222222',
+                         1000, 60, 33, '[\"route\"]',
+                         'TOP_SECRET_PROMPT_CONTENT_LEGACY'
+                     );",
+                )
+                .unwrap();
+            // 种子有效性：WAL 文件存在且含明文。
+            let wal_raw = std::fs::read(&wal_path).unwrap();
+            let wal_text = String::from_utf8_lossy(&wal_raw);
+            assert!(
+                wal_text.contains("TOP_SECRET_PROMPT_CONTENT_LEGACY"),
+                "seed WAL must hold plaintext frames"
+            );
+
+            // 第二个连接打开 → 触发迁移（writer 空闲，checkpoint 可完成）。
+            let port = SqlitePersistence::open(&path).unwrap();
+            // body 列已不存在。
+            let check = Connection::open(&path).unwrap();
+            let columns: Vec<String> = check
+                .prepare("PRAGMA table_info(bus_entry)")
+                .unwrap()
+                .query_map([], |row| row.get(1))
+                .unwrap()
+                .collect::<Result<_, _>>()
+                .unwrap();
+            assert!(
+                !columns.iter().any(|name| name == "body"),
+                "legacy body column must be migrated away"
+            );
+            // 元数据恢复可用、body 恒 None。
+            let rows = port.load_entries("proj").unwrap();
+            assert_eq!(rows.len(), 1);
+            assert!(rows[0].body.is_none());
+            assert_eq!(rows[0].map_signature, "1".repeat(64));
+            drop(port);
+            drop(legacy);
+        }
+        // DB / WAL / SHM 均不含明文（迁移擦除）。
+        for suffix in ["", "-wal", "-shm"] {
+            let mut p = path.clone().into_os_string();
+            p.push(suffix);
+            let p = PathBuf::from(p);
+            if let Ok(raw) = std::fs::read(&p) {
+                let text = String::from_utf8_lossy(&raw);
+                assert!(
+                    !text.contains("TOP_SECRET_PROMPT_CONTENT_LEGACY"),
+                    "plaintext must be scrubbed from {suffix:?}"
+                );
+            }
+        }
         for suffix in ["", "-wal", "-shm"] {
             let mut sidecar = path.clone().into_os_string();
             sidecar.push(suffix);
