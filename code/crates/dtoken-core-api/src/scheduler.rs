@@ -243,8 +243,15 @@ pub(crate) async fn run_gated_compression(
         TaskOutcome::Completed
     });
 
+    let admission_sequence = admission.sequence();
     let outcome = tokio::task::spawn_blocking(move || {
-        production_pool().submit_with_permit(bytes, Some(deadline), Some(owned_cancel), task)
+        production_pool().submit_with_permit(
+            bytes,
+            Some(deadline),
+            Some(owned_cancel),
+            admission_sequence,
+            task,
+        )
     })
     .await;
 

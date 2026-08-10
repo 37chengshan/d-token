@@ -2484,6 +2484,33 @@
       "summary": "修复统一能力注册表虚构测试路径并强制 tracked-file fail-closed 校验",
       "head_before": "decd0016ca8c6312ac57033d1d577b91eefa1c1b",
       "remote": null
+    },
+    {
+      "id": "2c79f579-3aa5-4f25-bcdc-8bc029ed1b6f",
+      "timestamp": "2026-08-10T12:32:35+08:00",
+      "operation": "commit",
+      "branch": "codex/final/c6-c7-remediation",
+      "summary": "C6C7 remediation: production SchedulerGate wiring, per-task deadline/cancel pool, tracked U5 thresholds manifest + perf gate fail-closed consumption, deterministic queue load barrier",
+      "head_before": "15f98cfb9861c3f9ad87b1d0dc5f8e6f1844063d",
+      "remote": null
+    },
+    {
+      "id": "9282d383-508c-4493-bdf6-3f5ea5eefb7a",
+      "timestamp": "2026-08-10T12:33:02+08:00",
+      "operation": "commit",
+      "branch": "codex/final/c6-c7-remediation",
+      "summary": "C6C7 remediation report .ai-bridge/release-iteration/C6-C7-REMEDIATION.md",
+      "head_before": "aa2e186",
+      "remote": null
+    },
+    {
+      "id": "9dd215c9-be88-4ce3-9336-eaee10024520",
+      "timestamp": "2026-08-10T12:54:50+08:00",
+      "operation": "commit",
+      "branch": "codex/final/c6-c7-remediation",
+      "summary": "C6C7 final: integrator FIFO pool + deadline guard, corpus identity unification (12-item product-level-corpus-v1), U5 perf-gate test import fix",
+      "head_before": "aa2e186",
+      "remote": null
     }
   ]
 }

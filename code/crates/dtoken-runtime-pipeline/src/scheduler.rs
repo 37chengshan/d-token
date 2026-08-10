@@ -399,11 +399,12 @@ pub enum SubmitError {
 
 /// A bounded worker pool with a bounded FIFO queue.
 ///
-/// - `max_workers` threads consume a `sync_channel(max_queue_depth)` queue,
-///   so the aggregate of queued + running tasks is `max_workers +
-///   max_queue_depth` — never unbounded.
-/// - Dispatch order is admission order: the channel is FIFO and every task
-///   carries its stable sequence.
+/// - `max_workers` threads consume a bounded pending set of
+///   `max_queue_depth` queued tasks, so the aggregate of queued + running
+///   tasks is `max_workers + max_queue_depth` — never unbounded.
+/// - Dispatch order is admission order: every task carries a stable sequence
+///   and workers always dequeue the lowest sequence first, so concurrent
+///   submitters can never invert FIFO order (PR-C6A stable order).
 /// - Workers hold a byte permit for the task duration, so the pool enforces
 ///   the in-flight byte bound independently of admission.
 /// - A request-wide deadline and cancellation token are evaluated before a
@@ -411,7 +412,8 @@ pub enum SubmitError {
 ///   candidate work; it reports [`TaskOutcome::DeadlineExceeded`] or
 ///   [`TaskOutcome::Cancelled`] and the transport preserves the baseline.
 pub struct BoundedWorkerPool {
-    sender: mpsc::SyncSender<QueuedTask>,
+    inner: std::sync::Arc<Mutex<PoolInner>>,
+    condition: Arc<Condvar>,
     budget: Arc<ByteBudget>,
     queue_capacity: usize,
     workers: Vec<std::thread::JoinHandle<()>>,
@@ -419,9 +421,16 @@ pub struct BoundedWorkerPool {
 
 impl std::fmt::Debug for BoundedWorkerPool {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let queued = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .pending
+            .len();
         formatter
             .debug_struct("BoundedWorkerPool")
             .field("queue_capacity", &self.queue_capacity)
+            .field("queued", &queued)
             .field("workers", &self.workers.len())
             .field("byte_budget_capacity", &self.budget.capacity())
             .finish()
@@ -437,12 +446,27 @@ impl std::fmt::Debug for BoundedWorkerPool {
 /// the byte permit is owned by the admission, so the worker must not acquire
 /// (or release) the pool budget again — there is exactly one admission
 /// authority per request.
+///
+/// The task's stable sequence is the `BTreeMap` key it is stored under;
+/// no duplicate field is kept.
 struct QueuedTask {
     bytes: usize,
     deadline: Option<RequestDeadline>,
     cancel: Option<CancellationToken>,
     permit_held: bool,
     task: PoolTask,
+}
+
+/// Pool state: the bounded pending set keyed by stable sequence, plus the
+/// next local sequence for tasks submitted without an admission.
+///
+/// The [`Condvar`] is a sibling of the mutex (not a field of [`PoolInner`]):
+/// workers wait on it while holding the guard, which requires the condition
+/// variable to outlive the guard's borrow.
+struct PoolInner {
+    pending: std::collections::BTreeMap<u64, QueuedTask>,
+    next_sequence: u64,
+    closed: bool,
 }
 
 impl BoundedWorkerPool {
@@ -453,24 +477,43 @@ impl BoundedWorkerPool {
         _cancel: Option<CancellationToken>,
     ) -> Result<Self, PipelineError> {
         // The pool-level deadline/cancel parameters are retained for API
-        // compatibility; per-request contracts are attached at submit time
-        // via [`BoundedWorkerPool::submit`]/[`BoundedWorkerPool::try_submit`].
-        let (sender, receiver) = mpsc::sync_channel::<QueuedTask>(limits.max_queue_depth());
-        let receiver = Arc::new(Mutex::new(receiver));
-        let mut workers = Vec::with_capacity(limits.max_workers());
+        // compatibility; per-request contracts are attached at submit time.
+        let inner = Mutex::new(PoolInner {
+            pending: std::collections::BTreeMap::new(),
+            next_sequence: 0,
+            closed: false,
+        });
+        let inner = std::sync::Arc::new(inner);
+        let condition = Arc::new(Condvar::new());
+        let mut spawned = Vec::with_capacity(limits.max_workers());
         for _ in 0..limits.max_workers() {
-            let receiver = Arc::clone(&receiver);
+            let inner = Arc::clone(&inner);
+            let condition = Arc::clone(&condition);
             let budget = Arc::clone(&budget);
-            workers.push(std::thread::spawn(move || loop {
-                let task = {
-                    let guard = receiver
+            spawned.push(std::thread::spawn(move || loop {
+                let queued = {
+                    let mut guard = inner
                         .lock()
                         .unwrap_or_else(std::sync::PoisonError::into_inner);
-                    guard.recv()
-                };
-                let queued = match task {
-                    Ok(task) => task,
-                    Err(_) => break,
+                    let dequeued = loop {
+                        if let Some(queued) = guard
+                            .pending
+                            .pop_first()
+                            .map(|(_sequence, queued)| queued)
+                        {
+                            break Some(queued);
+                        }
+                        if guard.closed {
+                            break None;
+                        }
+                        guard = condition
+                            .wait(guard)
+                            .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    };
+                    let Some(queued) = dequeued else {
+                        break;
+                    };
+                    queued
                 };
                 if !queued.permit_held && !budget.acquire(queued.bytes) {
                     continue;
@@ -496,10 +539,11 @@ impl BoundedWorkerPool {
             }));
         }
         Ok(Self {
-            sender,
+            inner,
+            condition,
             budget,
             queue_capacity: limits.max_queue_depth(),
-            workers,
+            workers: spawned,
         })
     }
 
@@ -518,20 +562,22 @@ impl BoundedWorkerPool {
         cancel: Option<CancellationToken>,
         task: PoolTask,
     ) -> Result<TaskOutcome, SubmitError> {
-        self.submit_impl(bytes, deadline, cancel, false, task)
+        self.submit_impl(bytes, deadline, cancel, false, None, task)
     }
 
     /// Like [`BoundedWorkerPool::submit`], for tasks whose byte permit is
-    /// already held by a gate admission.  The worker skips the pool budget
-    /// acquire/release entirely, so the request is admitted exactly once.
+    /// already held by a gate admission.  `sequence` is the admission's
+    /// stable sequence, which pins FIFO dispatch order against concurrent
+    /// submitters.
     pub fn submit_with_permit(
         &self,
         bytes: usize,
         deadline: Option<RequestDeadline>,
         cancel: Option<CancellationToken>,
+        sequence: u64,
         task: PoolTask,
     ) -> Result<TaskOutcome, SubmitError> {
-        self.submit_impl(bytes, deadline, cancel, true, task)
+        self.submit_impl(bytes, deadline, cancel, true, Some(sequence), task)
     }
 
     fn submit_impl(
@@ -540,6 +586,7 @@ impl BoundedWorkerPool {
         deadline: Option<RequestDeadline>,
         cancel: Option<CancellationToken>,
         permit_held: bool,
+        sequence: Option<u64>,
         task: PoolTask,
     ) -> Result<TaskOutcome, SubmitError> {
         let (done_tx, done_rx) = mpsc::channel::<TaskOutcome>();
@@ -548,7 +595,7 @@ impl BoundedWorkerPool {
             let _ = done_tx.send(outcome);
             outcome
         });
-        self.try_submit_impl(bytes, deadline, cancel, permit_held, wrapped)?;
+        self.try_submit_impl(bytes, deadline, cancel, permit_held, sequence, wrapped)?;
         done_rx.recv().map_err(|_| SubmitError::Closed)
     }
 
@@ -562,7 +609,7 @@ impl BoundedWorkerPool {
         cancel: Option<CancellationToken>,
         task: PoolTask,
     ) -> Result<(), SubmitError> {
-        self.try_submit_impl(bytes, deadline, cancel, false, task)
+        self.try_submit_impl(bytes, deadline, cancel, false, None, task)
     }
 
     /// Like [`BoundedWorkerPool::try_submit`], for tasks whose byte permit
@@ -572,9 +619,10 @@ impl BoundedWorkerPool {
         bytes: usize,
         deadline: Option<RequestDeadline>,
         cancel: Option<CancellationToken>,
+        sequence: u64,
         task: PoolTask,
     ) -> Result<(), SubmitError> {
-        self.try_submit_impl(bytes, deadline, cancel, true, task)
+        self.try_submit_impl(bytes, deadline, cancel, true, Some(sequence), task)
     }
 
     fn try_submit_impl(
@@ -583,32 +631,58 @@ impl BoundedWorkerPool {
         deadline: Option<RequestDeadline>,
         cancel: Option<CancellationToken>,
         permit_held: bool,
+        sequence: Option<u64>,
         task: PoolTask,
     ) -> Result<(), SubmitError> {
-        // The worker's byte permit is bounded by the budget capacity; a
-        // payload that can never fit must fail immediately instead of
-        // queueing bytes that can never run.  Permit-held tasks already
-        // passed the gate's byte admission, so the pool budget does not
-        // apply to them.
         if !permit_held && bytes > self.budget.capacity() {
             return Err(SubmitError::PayloadExceedsCapacity);
         }
-        self.sender
-            .try_send(QueuedTask {
+        let mut guard = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if guard.closed {
+            return Err(SubmitError::Closed);
+        }
+        if guard.pending.len() >= self.queue_capacity {
+            return Err(SubmitError::QueueSaturated);
+        }
+        let sequence = sequence.unwrap_or_else(|| {
+            let sequence = guard.next_sequence;
+            guard.next_sequence += 1;
+            sequence
+        });
+        // The gate's admission sequences and the pool-local sequence space
+        // are both monotonic, but they can overlap when a process mixes
+        // gated and ungated submits.  A duplicate key would silently replace
+        // a pending task, so treat it as saturation: the transport preserves
+        // the baseline and the pending task is untouched.
+        if guard.pending.contains_key(&sequence) {
+            return Err(SubmitError::QueueSaturated);
+        }
+        guard.pending.insert(
+            sequence,
+            QueuedTask {
                 bytes,
                 deadline,
                 cancel,
                 permit_held,
                 task,
-            })
-            .map_err(|error| match error {
-                mpsc::TrySendError::Full(_) => SubmitError::QueueSaturated,
-                mpsc::TrySendError::Disconnected(_) => SubmitError::Closed,
-            })
+            },
+        );
+        self.condition.notify_one();
+        Ok(())
     }
 
     pub fn shutdown(self) {
-        drop(self.sender);
+        {
+            let mut guard = self
+                .inner
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            guard.closed = true;
+            self.condition.notify_all();
+        }
         for worker in self.workers {
             let _ = worker.join();
         }

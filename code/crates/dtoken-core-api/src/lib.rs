@@ -11553,6 +11553,7 @@ async fn openai_chat_completions(
         // capacity seat), then releases on handler return.
         let _scheduler_admission = gated._admission;
         let _request_cancel = gated.cancel;
+        let scheduler_deadline = gated.deadline;
         let attribution = request_attribution_from_scope(&scope);
         let mut request_log = build_request_log(
             request_id,
@@ -11709,6 +11710,13 @@ async fn openai_chat_completions(
             "elapsed_us": compression.elapsed_us,
             "transforms_applied": compression.transforms_applied,
         });
+        if let Some(response) = scheduler::scheduler_deadline_guard(
+            &state,
+            request_id,
+            scheduler_deadline,
+        ) {
+            return response;
+        }
         if request.stream.unwrap_or(false) {
             let quota_account_ref = opaque_codex_account_ref(&headers);
             let upstream = forward_openai_chat_stream(
@@ -11828,6 +11836,13 @@ async fn openai_chat_completions(
                     return (response_status, Json(response)).into_response();
                 }
             }
+        }
+        if let Some(response) = scheduler::scheduler_deadline_guard(
+            &state,
+            request_id,
+            scheduler_deadline,
+        ) {
+            return response;
         }
         let mut upstream =
             forward_openai_chat(&state.http_client, provider, upstream_body, Some(&headers)).await;
@@ -12058,6 +12073,7 @@ async fn openai_responses(
             let mut compression = gated.summary;
             let _scheduler_admission = gated._admission;
             let _request_cancel = gated.cancel;
+            let scheduler_deadline = gated.deadline;
             let attribution = request_attribution_from_scope(&scope);
             let mut request_log = build_request_log(
                 request_id,
@@ -12238,6 +12254,13 @@ async fn openai_responses(
             }
             drop(ccr_original_body);
             if stream_requested {
+                if let Some(response) = scheduler::scheduler_deadline_guard(
+                    &state,
+                    request_id,
+                    scheduler_deadline,
+                ) {
+                    return response;
+                }
                 let quota_account_ref = opaque_codex_account_ref(&headers);
                 let upstream = forward_openai_responses_stream(
                     &state.http_client,
@@ -12354,6 +12377,13 @@ async fn openai_responses(
                         return (response_status, Json(response)).into_response();
                     }
                 }
+            }
+            if let Some(response) = scheduler::scheduler_deadline_guard(
+                &state,
+                request_id,
+                scheduler_deadline,
+            ) {
+                return response;
             }
             let mut upstream = forward_openai_responses(
                 &state.http_client,
@@ -12563,6 +12593,7 @@ async fn openai_responses(
         let mut compression = gated.summary;
         let _scheduler_admission = gated._admission;
         let _request_cancel = gated.cancel;
+        let scheduler_deadline = gated.deadline;
         let attribution = request_attribution_from_scope(&scope);
         let mut request_log = build_request_log(
             request_id,
@@ -12862,6 +12893,13 @@ async fn openai_responses(
                     return (response_status, Json(response)).into_response();
                 }
             }
+        }
+        if let Some(response) = scheduler::scheduler_deadline_guard(
+            &state,
+            request_id,
+            scheduler_deadline,
+        ) {
+            return response;
         }
         let mut upstream = require_openai_message(
             forward_openai_chat(&state.http_client, provider, upstream_body, Some(&headers)).await,
