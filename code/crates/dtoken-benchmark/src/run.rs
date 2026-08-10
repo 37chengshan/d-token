@@ -8,8 +8,8 @@ use anyhow::{bail, Context, Result};
 use dtoken_compress::hybrid::{lower_hybrid_context, HybridContextIr, ResolvedOptimizationContext};
 use dtoken_compress::CompressionEngine;
 use dtoken_runtime_pipeline::{
-    BoundedWorkerPool, ByteBudget, CancellationToken, ConcurrencyLimits, SchedulerGate,
-    SubmitError, TaskOutcome,
+    BoundedWorkerPool, ByteBudget, CancellationToken, ConcurrencyLimits, DispatchDecision,
+    PreserveReason, RequestDeadline, SchedulerGate, SubmitError, TaskOutcome,
 };
 use dtoken_types::{CompressionPolicy, OpticalEndpoint, Protocol};
 use serde_json::Value;
@@ -227,40 +227,65 @@ pub fn queue_load_metrics(requests: u64) -> QueueMetrics {
         Err(_) => return QueueMetrics::default(),
     };
 
+    // Deterministic load barrier: admitted tasks block until the producer
+    // finishes submitting, so workers stay occupied and saturation is
+    // measured, never timing luck.
+    let (barrier_tx, barrier_rx) = std::sync::mpsc::channel::<()>();
+    let barrier = Arc::new(std::sync::Mutex::new(barrier_rx));
+
     let mut metrics = QueueMetrics::default();
     for sequence in 0..requests {
         let bytes = BYTES_PER_TASK + (sequence as usize % 7) * 128;
-        let Ok(admission) = gate.decide(bytes) else {
-            metrics.saturated += 1;
-            continue;
+        // Every 11th request is cancelled before candidate work; every 13th
+        // carries an already-expired deadline.  Both take the Preserve path
+        // through the real gate/pool machinery.
+        let cancel = if sequence % 11 == 0 {
+            let token = CancellationToken::new();
+            token.cancel();
+            Some(token)
+        } else {
+            None
+        };
+        let deadline = if sequence % 13 == 0 {
+            RequestDeadline::new(1, 1).ok()
+        } else {
+            None
+        };
+        let admission = match gate.decide(bytes, deadline, cancel.as_ref()) {
+            Ok(admission) => admission,
+            Err(DispatchDecision::Preserve(PreserveReason::Cancelled)) => {
+                metrics.cancelled += 1;
+                continue;
+            }
+            Err(DispatchDecision::Preserve(PreserveReason::DeadlineExceeded)) => {
+                metrics.deadline_exceeded += 1;
+                continue;
+            }
+            Err(DispatchDecision::Preserve(PreserveReason::QueueSaturated)) => {
+                metrics.saturated += 1;
+                continue;
+            }
+            Err(DispatchDecision::Optimize) => continue,
         };
         let _sequence = admission.sequence();
 
-        // Every 11th request is cancelled before candidate work; every 13th
-        // carries an already-expired deadline.  Both take the Preserve path.
-        if sequence % 11 == 0 {
-            let token = CancellationToken::new();
-            token.cancel();
-            metrics.cancelled += 1;
-            continue;
-        }
-        if sequence % 13 == 0 {
-            metrics.deadline_exceeded += 1;
-            continue;
-        }
-
-        match pool.try_submit(
-            bytes,
-            Box::new(move || {
-                std::hint::black_box(sequence);
-                TaskOutcome::Completed
-            }),
-        ) {
+        let barrier = Arc::clone(&barrier);
+        match pool.try_submit(bytes, deadline, cancel, Box::new(move || {
+            let guard = barrier
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let _ = guard.recv();
+            std::hint::black_box(sequence);
+            TaskOutcome::Completed
+        })) {
             Ok(()) => metrics.admitted += 1,
             Err(SubmitError::QueueSaturated) => metrics.saturated += 1,
+            Err(SubmitError::PayloadExceedsCapacity) => metrics.saturated += 1,
             Err(SubmitError::Closed) => break,
         }
     }
+    // Release every blocked worker, then drain.
+    drop(barrier_tx);
     pool.shutdown();
     metrics
 }

@@ -266,6 +266,49 @@ def send_client_disconnect(port: int) -> None:
         client.shutdown(socket.SHUT_RDWR)
 
 
+THRESHOLDS_SCHEMA_VERSION = 1
+THRESHOLDS_REQUIRED_KEYS = [
+    "min_request_count",
+    "max_p95_ms",
+    "max_p99_ms",
+    "max_failure_rate_percent",
+    "max_peak_rss_mib",
+]
+
+
+def sha256_file(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def load_thresholds(path: Path) -> dict[str, Any]:
+    """Load the tracked C7A thresholds manifest fail-closed.
+
+    Missing, unparseable, wrong-schema, or key-incomplete manifests exit the
+    runner with a nonzero status; the tracked file is the only threshold
+    source (no environment-variable default caps).
+    """
+    if not path.is_file():
+        raise SystemExit(f"tracked thresholds manifest is missing: {path}")
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise SystemExit(f"tracked thresholds manifest is not valid JSON: {exc}") from exc
+    if data.get("schema_version") != THRESHOLDS_SCHEMA_VERSION:
+        raise SystemExit(
+            f"tracked thresholds schema {data.get('schema_version')} unsupported "
+            f"(expected {THRESHOLDS_SCHEMA_VERSION})"
+        )
+    thresholds = data.get("thresholds")
+    if not isinstance(thresholds, dict):
+        raise SystemExit("tracked thresholds manifest is missing 'thresholds'")
+    missing = [key for key in THRESHOLDS_REQUIRED_KEYS if key not in thresholds]
+    if missing:
+        raise SystemExit(
+            f"tracked thresholds manifest is missing required keys: {', '.join(sorted(missing))}"
+        )
+    return thresholds
+
+
 def evaluate_checks(metrics: dict[str, Any], thresholds: dict[str, Any]) -> list[dict[str, Any]]:
     return [
         {
@@ -312,19 +355,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--candidate-id", required=True)
     parser.add_argument("--candidate-revision", required=True)
     parser.add_argument("--output", required=True)
+    # The tracked C7A thresholds manifest is mandatory: the gate must never
+    # fall back to environment defaults or hardcoded caps (U5).
+    parser.add_argument("--thresholds-file", required=True)
     parser.add_argument("--measured-requests", type=int, default=env_int("DTOKEN_PERF_MEASURED_REQUESTS", 48))
     parser.add_argument("--concurrency", type=int, default=env_int("DTOKEN_PERF_CONCURRENCY", 8))
     parser.add_argument("--soak-seconds", type=float, default=env_float("DTOKEN_PERF_SOAK_SECONDS", 5.0))
     parser.add_argument("--soak-concurrency", type=int, default=env_int("DTOKEN_PERF_SOAK_CONCURRENCY", 4))
-    parser.add_argument("--max-p95-ms", type=float, default=env_float("DTOKEN_PERF_MAX_P95_MS", 250.0))
-    parser.add_argument("--max-p99-ms", type=float, default=env_float("DTOKEN_PERF_MAX_P99_MS", 500.0))
-    parser.add_argument(
-        "--max-failure-rate-percent",
-        type=float,
-        default=env_float("DTOKEN_PERF_MAX_FAILURE_RATE_PERCENT", 0.0),
-    )
-    parser.add_argument("--max-peak-rss-mib", type=float, default=env_float("DTOKEN_PERF_MAX_PEAK_RSS_MIB", 256.0))
-    parser.add_argument("--min-request-count", type=int, default=env_int("DTOKEN_PERF_MIN_REQUEST_COUNT", 64))
     return parser.parse_args()
 
 
@@ -334,6 +371,10 @@ def main() -> int:
         raise SystemExit("measured requests must cover at least one concurrent wave and concurrency must be >= 2")
     if args.soak_seconds < 1.0 or args.soak_concurrency < 2:
         raise SystemExit("short soak must run for at least one second with concurrency >= 2")
+
+    thresholds_path = Path(args.thresholds_file).resolve()
+    thresholds = load_thresholds(thresholds_path)
+    thresholds_sha256 = sha256_file(thresholds_path)
 
     proxy_path = Path(args.proxy).resolve()
     if not proxy_path.is_file():
@@ -525,13 +566,6 @@ def main() -> int:
                     if line.strip()
                 )
 
-            thresholds = {
-                "max_p95_ms": args.max_p95_ms,
-                "max_p99_ms": args.max_p99_ms,
-                "max_failure_rate_percent": args.max_failure_rate_percent,
-                "max_peak_rss_mib": args.max_peak_rss_mib,
-                "min_request_count": args.min_request_count,
-            }
             metrics = {
                 "request_count": request_count,
                 "success_count": successes,
@@ -590,6 +624,11 @@ def main() -> int:
                     "percentile_method": "nearest_rank",
                     "rss_sample_interval_ms": 50,
                     "success_contract": "http_200_and_expected_metadata_marker",
+                },
+                "thresholds_source": {
+                    "path": str(thresholds_path),
+                    "sha256": thresholds_sha256,
+                    "schema_version": THRESHOLDS_SCHEMA_VERSION,
                 },
                 "thresholds": thresholds,
                 "checks": checks,

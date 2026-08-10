@@ -1,5 +1,6 @@
 pub mod ccr_store;
 pub mod mcp;
+pub(crate) mod scheduler;
 
 use anyhow::Context as _;
 use axum::response::Response;
@@ -11530,17 +11531,28 @@ async fn openai_chat_completions(
         );
         let baseline_body = ingress_body.clone();
         let cache_evidence = configured_provider_cache_evidence(&state, &scope);
-        // PR-C3A..C3C: relay-aware canonical resolved path（bus 失败回退原文）。
-        let mut compression = compress_for_route_with_relay(
+        // PR-C6A: production scheduler gate — admission (pipeline capacity,
+        // byte permit, request deadline, cancel) happens BEFORE candidate
+        // work; a refused request is preserved as its exact baseline without
+        // running a plan.
+        let gated = scheduler::run_gated_compression(
             &state,
-            &scope,
-            Some(&optimization_context),
+            scope.clone(),
+            Some(optimization_context.clone()),
             decision.compression_policy.clone(),
             ingress_body,
-            cache_evidence.as_ref(),
+            cache_evidence.clone(),
             None,
-            ir.as_ref(),
-        );
+            ir.clone(),
+            scheduler::request_deadline(),
+        )
+        .await;
+        let preserve_reason = gated.preserve_reason;
+        let mut compression = gated.summary;
+        // The admission stays alive through the send commit (byte permit +
+        // capacity seat), then releases on handler return.
+        let _scheduler_admission = gated._admission;
+        let _request_cancel = gated.cancel;
         let attribution = request_attribution_from_scope(&scope);
         let mut request_log = build_request_log(
             request_id,
@@ -11614,33 +11626,39 @@ async fn openai_chat_completions(
                         .expect("baseline request does not require CCR storage")
                 }
             };
-        let pipeline_payload = match prepare_json_pipeline_payload(
-            scope.clone(),
-            &baseline_body,
-            &compression.body,
-            &request_log.transforms_applied,
-            &prepared_ccr,
-        ) {
-            Ok(payload) => payload,
-            Err(_) => PreparedPipelinePayload {
-                ready: PipelineInput::new(
-                    scope.clone(),
-                    serde_json::to_vec(&baseline_body).unwrap_or_default(),
-                    MAX_REQUEST_BODY_BYTES,
-                )
-                .map(|input| {
-                    input
-                        .prepare()
-                        .into_baseline_ready("pipeline_input_invalid")
-                })
-                .unwrap_or_else(|_| {
-                    PipelineInput::new(scope.clone(), b"{}".to_vec(), MAX_REQUEST_BODY_BYTES)
-                        .expect("static JSON baseline is valid")
-                        .prepare()
-                        .into_baseline_ready("pipeline_input_invalid")
-                }),
-                fallback_reason: Some("pipeline_input_invalid"),
-            },
+        let pipeline_payload = if let Some(reason) = preserve_reason {
+            // PR-C6A preserve path: the exact baseline is sealed with the
+            // evidence-bearing reason code; no candidate plan ran.
+            scheduler::preserved_pipeline_payload(scope.clone(), &baseline_body, reason)
+        } else {
+            match prepare_json_pipeline_payload(
+                scope.clone(),
+                &baseline_body,
+                &compression.body,
+                &request_log.transforms_applied,
+                &prepared_ccr,
+            ) {
+                Ok(payload) => payload,
+                Err(_) => PreparedPipelinePayload {
+                    ready: PipelineInput::new(
+                        scope.clone(),
+                        serde_json::to_vec(&baseline_body).unwrap_or_default(),
+                        MAX_REQUEST_BODY_BYTES,
+                    )
+                    .map(|input| {
+                        input
+                            .prepare()
+                            .into_baseline_ready("pipeline_input_invalid")
+                    })
+                    .unwrap_or_else(|_| {
+                        PipelineInput::new(scope.clone(), b"{}".to_vec(), MAX_REQUEST_BODY_BYTES)
+                            .expect("static JSON baseline is valid")
+                            .prepare()
+                            .into_baseline_ready("pipeline_input_invalid")
+                    }),
+                    fallback_reason: Some("pipeline_input_invalid"),
+                },
+            }
         };
         if let Some(reason) = pipeline_payload.fallback_reason {
             compression = compress_for_route(None, CompressionPolicy::Off, baseline_body.clone());
@@ -12020,17 +12038,26 @@ async fn openai_responses(
             );
             let baseline_body = ingress_body.clone();
             let cache_evidence = configured_provider_cache_evidence(&state, &scope);
-            // PR-C3A..C3C: relay-aware canonical resolved path（bus 失败回退原文）。
-            let mut compression = compress_for_route_with_relay(
+            // PR-C6A: production scheduler gate — admission (pipeline
+            // capacity, byte permit, request deadline, cancel) happens
+            // BEFORE candidate work; a refused request is preserved as its
+            // exact baseline without running a plan.
+            let gated = scheduler::run_gated_compression(
                 &state,
-                &scope,
-                Some(&optimization_context),
+                scope.clone(),
+                Some(optimization_context.clone()),
                 decision.compression_policy.clone(),
                 ingress_body,
-                cache_evidence.as_ref(),
+                cache_evidence.clone(),
                 None,
-                ir.as_ref(),
-            );
+                ir.clone(),
+                scheduler::request_deadline(),
+            )
+            .await;
+            let preserve_reason = gated.preserve_reason;
+            let mut compression = gated.summary;
+            let _scheduler_admission = gated._admission;
+            let _request_cancel = gated.cancel;
             let attribution = request_attribution_from_scope(&scope);
             let mut request_log = build_request_log(
                 request_id,
@@ -12133,7 +12160,12 @@ async fn openai_responses(
             // PR-C1C: the request is sealed through the same pipeline payload
             // envelope as every other surface, then sent from the validated
             // envelope body (never a raw post-plan mutation).
-            let pipeline_payload = match prepare_json_pipeline_payload(
+            let pipeline_payload = if let Some(reason) = preserve_reason {
+                // PR-C6A preserve path: the exact baseline is sealed with the
+                // evidence-bearing reason code; no candidate plan ran.
+                scheduler::preserved_pipeline_payload(scope.clone(), &baseline_body, reason)
+            } else {
+                match prepare_json_pipeline_payload(
                 scope.clone(),
                 &baseline_body,
                 &compression.body,
@@ -12160,6 +12192,7 @@ async fn openai_responses(
                     }),
                     fallback_reason: Some("pipeline_input_invalid"),
                 },
+                            }
             };
             if let Some(reason) = pipeline_payload.fallback_reason {
                 compression =
@@ -12510,17 +12543,26 @@ async fn openai_responses(
         );
         let baseline_body = ingress_body.clone();
         let cache_evidence = configured_provider_cache_evidence(&state, &scope);
-        // PR-C3A..C3C: relay-aware canonical resolved path（bus 失败回退原文）。
-        let mut compression = compress_for_route_with_relay(
+        // PR-C6A: production scheduler gate — admission (pipeline capacity,
+        // byte permit, request deadline, cancel) happens BEFORE candidate
+        // work; a refused request is preserved as its exact baseline without
+        // running a plan.
+        let gated = scheduler::run_gated_compression(
             &state,
-            &scope,
-            Some(&optimization_context),
+            scope.clone(),
+            Some(optimization_context.clone()),
             decision.compression_policy.clone(),
             ingress_body,
-            cache_evidence.as_ref(),
+            cache_evidence.clone(),
             None,
-            ir.as_ref(),
-        );
+            ir.clone(),
+            scheduler::request_deadline(),
+        )
+        .await;
+        let preserve_reason = gated.preserve_reason;
+        let mut compression = gated.summary;
+        let _scheduler_admission = gated._admission;
+        let _request_cancel = gated.cancel;
         let attribution = request_attribution_from_scope(&scope);
         let mut request_log = build_request_log(
             request_id,
@@ -12598,33 +12640,39 @@ async fn openai_responses(
                         .expect("baseline request does not require CCR storage")
                 }
             };
-        let pipeline_payload = match prepare_json_pipeline_payload(
-            scope.clone(),
-            &baseline_body,
-            &compression.body,
-            &request_log.transforms_applied,
-            &prepared_ccr,
-        ) {
-            Ok(payload) => payload,
-            Err(_) => PreparedPipelinePayload {
-                ready: PipelineInput::new(
-                    scope.clone(),
-                    serde_json::to_vec(&baseline_body).unwrap_or_default(),
-                    MAX_REQUEST_BODY_BYTES,
-                )
-                .map(|input| {
-                    input
-                        .prepare()
-                        .into_baseline_ready("pipeline_input_invalid")
-                })
-                .unwrap_or_else(|_| {
-                    PipelineInput::new(scope.clone(), b"{}".to_vec(), MAX_REQUEST_BODY_BYTES)
-                        .expect("static JSON baseline is valid")
-                        .prepare()
-                        .into_baseline_ready("pipeline_input_invalid")
-                }),
-                fallback_reason: Some("pipeline_input_invalid"),
-            },
+        let pipeline_payload = if let Some(reason) = preserve_reason {
+            // PR-C6A preserve path: the exact baseline is sealed with the
+            // evidence-bearing reason code; no candidate plan ran.
+            scheduler::preserved_pipeline_payload(scope.clone(), &baseline_body, reason)
+        } else {
+            match prepare_json_pipeline_payload(
+                scope.clone(),
+                &baseline_body,
+                &compression.body,
+                &request_log.transforms_applied,
+                &prepared_ccr,
+            ) {
+                Ok(payload) => payload,
+                Err(_) => PreparedPipelinePayload {
+                    ready: PipelineInput::new(
+                        scope.clone(),
+                        serde_json::to_vec(&baseline_body).unwrap_or_default(),
+                        MAX_REQUEST_BODY_BYTES,
+                    )
+                    .map(|input| {
+                        input
+                            .prepare()
+                            .into_baseline_ready("pipeline_input_invalid")
+                    })
+                    .unwrap_or_else(|_| {
+                        PipelineInput::new(scope.clone(), b"{}".to_vec(), MAX_REQUEST_BODY_BYTES)
+                            .expect("static JSON baseline is valid")
+                            .prepare()
+                            .into_baseline_ready("pipeline_input_invalid")
+                    }),
+                    fallback_reason: Some("pipeline_input_invalid"),
+                },
+            }
         };
         if let Some(reason) = pipeline_payload.fallback_reason {
             compression = compress_for_route(None, CompressionPolicy::Off, baseline_body.clone());

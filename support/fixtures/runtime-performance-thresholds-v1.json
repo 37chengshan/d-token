@@ -1,0 +1,20 @@
+{
+  "schema": "runtime-performance-thresholds",
+  "schema_version": 1,
+  "revision": "c7a-thresholds-v1",
+  "description": "Tracked release thresholds for the runtime performance gate (U5/G6). Values are derived from a fresh local baseline plus the C7A noise/no-regression band definition (latency ceiling = fresh baseline p95/p99 x 1.25; RSS/failure floors are absolute product caps). The runner consumes this file fail-closed: missing, invalid, or digest-mismatched thresholds exit nonzero and no report is emitted. No environment-variable default caps exist; the tracked file is the only source.",
+  "license": "Apache-2.0",
+  "privacy": "Metadata-only thresholds; no prompts, credentials, or request bodies.",
+  "derived_from": {
+    "baseline_source": "fresh local baseline recorded on candidate hardware",
+    "latency_noise_multiplier": 1.25,
+    "band_definition": "no-regression band derived from fresh baseline; absolute floor separate (QUALITY-8)"
+  },
+  "thresholds": {
+    "min_request_count": 64,
+    "max_p95_ms": 250.0,
+    "max_p99_ms": 500.0,
+    "max_failure_rate_percent": 0.0,
+    "max_peak_rss_mib": 256.0
+  }
+}
