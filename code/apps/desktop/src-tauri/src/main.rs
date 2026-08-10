@@ -4363,6 +4363,7 @@ fn apply_managed_rtk_install(request: ApplyManagedRtkRequest) -> Value {
         managed_root: managed_rtk_root_path(),
         bridge_path,
         max_output_bytes: Some(max_output_bytes),
+        filter_dsl: None,
     }) {
         Ok(receipt) => receipt,
         Err(error) => {

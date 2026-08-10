@@ -21,6 +21,7 @@ use dtoken_compress::output_shaper::{
     shape_output_for_policy, OutputSafety, OutputShapingAccounting, OutputShapingDisposition,
     OutputShapingResult,
 };
+use dtoken_compress::rtk_planner::SavingsLedger;
 use dtoken_compress::{CompressionEngine, ResolvedOptimizationContext};
 use dtoken_config::DtokenConfig;
 use dtoken_config_patcher::{
@@ -38,8 +39,9 @@ use dtoken_event_ledger::{EventLedger, JsonlEventLedger, JsonlStore};
 use dtoken_headroom_adapter::detect_headroom_status;
 use dtoken_learning::LEARNING_CAPABILITY_REVISION;
 use dtoken_preprocessor::{
-    detect_rtk_status, inspect_managed_rtk_runtime, list_preprocessors, rtk_discover_report,
-    rtk_gain_mock, rtk_session_report, ManagedRtkRuntimeEvidence,
+    command_output_accounting_entry, detect_rtk_status, inspect_managed_rtk_runtime,
+    list_preprocessors, rtk_discover_report, rtk_gain_mock, rtk_session_report,
+    verified_managed_rtk_usage, verified_usage_claim_digest, ManagedRtkRuntimeEvidence,
 };
 use dtoken_project_policy::{
     default_policy, RecommendationInput, RuleBasedRecommendationEngine,
@@ -404,6 +406,14 @@ struct RuntimeSummaryReadModel {
     ccr_tokens_saved: u64,
     recent_ccr: VecDeque<Value>,
     latest_account_quotas: BTreeMap<String, Value>,
+    /// Independent command-output (RTK) savings dimension (PR-C4C). Populated
+    /// from verified managed-RTK usage receipts via the exclusive
+    /// SavingsLedger; never merged into compression totals.
+    rtk_savings_bytes: u64,
+    rtk_input_bytes: u64,
+    rtk_output_bytes: u64,
+    rtk_entries: u64,
+    rtk_available: bool,
 }
 
 impl RuntimeSummaryReadModel {
@@ -416,6 +426,31 @@ impl RuntimeSummaryReadModel {
             model.record_ccr(metadata);
         }
         model
+    }
+
+    /// Replaces the RTK dimension with a freshly derived ledger so repeated
+    /// rebuilds can never double-count: the ledger admits each source digest
+    /// exactly once and the projection is recomputed from the verified
+    /// receipts every time.
+    fn record_rtk_ledger(&mut self, ledger: &SavingsLedger) {
+        let totals = ledger.bucket_totals(dtoken_types::AccountingBucket::CommandOutput);
+        self.rtk_savings_bytes = totals.saved_bytes;
+        self.rtk_input_bytes = totals.input_bytes;
+        self.rtk_output_bytes = totals.output_bytes;
+        self.rtk_entries = totals.entries as u64;
+        self.rtk_available = true;
+    }
+
+    fn rtk_available_note(&self) -> String {
+        if self.rtk_available {
+            format!(
+                "RTK command-output savings derived from {} verified receipts; prompt, response, and command bodies are not stored.",
+                self.rtk_entries
+            )
+        } else {
+            "RTK command-output dimension unavailable: no verified managed RTK root is configured."
+                .to_string()
+        }
     }
 
     fn record_request(&mut self, log: &RequestLog) {
@@ -603,7 +638,7 @@ impl RuntimeSummaryReadModel {
         let latency_breakdown = self.latency_breakdown();
         let route_overhead = self.route_overhead();
         let layered = LayeredSavingsReport {
-            rtk_savings: 0,
+            rtk_savings: self.rtk_savings_bytes,
             headroom_savings: self.tokens_saved,
             end_to_end_savings: self.tokens_saved,
             attribution_confidence: if self.total_requests == 0 {
@@ -611,7 +646,7 @@ impl RuntimeSummaryReadModel {
             } else {
                 "runtime_estimated".to_string()
             },
-            note: "Aggregated from d-token-owned runtime request logs; prompt and response bodies are not stored.".to_string(),
+            note: self.rtk_available_note(),
         };
         let analytics_daily = self
             .analytics_daily
@@ -653,6 +688,20 @@ impl RuntimeSummaryReadModel {
                 "savings_percent": savings_percent
             },
             "layered": layered,
+            "rtk": {
+                "source": "dtoken-managed-rtk",
+                "available": self.rtk_available,
+                "entries": self.rtk_entries,
+                "input_bytes": self.rtk_input_bytes,
+                "output_bytes": self.rtk_output_bytes,
+                "saved_bytes": self.rtk_savings_bytes,
+                "reason": if self.rtk_available {
+                    "verified_usage_receipts"
+                } else {
+                    "managed_rtk_not_configured"
+                },
+                "privacy": "Metadata-only aggregated byte accounting; no command argv or output is retained."
+            },
             "account_quotas": self.latest_account_quotas,
             "analytics": {
                 "source": "dtoken-owned-runtime",
@@ -2496,10 +2545,13 @@ impl AppState {
 
     pub(crate) fn mcp_stats(&self) -> Value {
         let logs = self.recent_request_logs(10_000);
+        let rtk = rtk_command_output_accounting(
+            self.managed_rtk_root.as_deref().map(|root| root.as_path()),
+        );
         json!({
             "source": "dtoken-owned-runtime",
             "state": "runtime",
-            "stats": runtime_stats_payload(&logs),
+            "stats": runtime_stats_payload_with_rtk(&logs, rtk),
             "cache_summary": runtime_cache_summary_for_state(self),
             "raw_available": false,
         })
@@ -2516,9 +2568,77 @@ impl AppState {
             .lock()
             .map(|items| items.clone())
             .unwrap_or_default();
+        let rtk = rtk_command_output_accounting(
+            self.managed_rtk_root.as_deref().map(|root| root.as_path()),
+        );
         if let Ok(mut summary) = self.runtime_summary.lock() {
             *summary = RuntimeSummaryReadModel::from_records(&logs, &ccr_metadata);
+            if let Ok(Some(accounting)) = &rtk {
+                summary.record_rtk_ledger(&accounting.ledger);
+            }
         }
+        self.emit_rtk_ledger_events(&rtk);
+    }
+
+    /// Emits one aggregate RtkRewrite event (a verified managed RTK root is
+    /// bound to the bridge wrap pipeline) and one aggregate RtkFilter event
+    /// (verified usage receipts were projected) per rebuild. Both carry
+    /// metadata-only byte accounting — no command argv, raw output, or
+    /// credential material ever enters the ledger.
+    fn emit_rtk_ledger_events(&self, rtk: &Result<Option<RtkCommandOutputAccounting>, String>) {
+        let Ok(Some(accounting)) = rtk else {
+            return;
+        };
+        let now_ms = dtoken_event_ledger::now_ms();
+        let _ = self.try_append_event(DtokenEvent {
+            event_id: Uuid::new_v4(),
+            timestamp_ms: now_ms,
+            project_id: Some("dtoken-runtime".to_string()),
+            agent_id: None,
+            instance_id: None,
+            command_id: None,
+            request_id: None,
+            stage: LayeredStage::RtkRewrite,
+            source: EventSource::Rtk,
+            status: EventStatus::Ok,
+            input_tokens: None,
+            output_tokens: None,
+            saved_tokens: None,
+            baseline_kind: None,
+            error_code: None,
+            metadata: json!({
+                "verified": true,
+                "entries": accounting.entries,
+                "saved_bytes": accounting.ledger.command_output_savings(),
+                "privacy": "Metadata-only; no command argv or output is retained."
+            }),
+            context_accounting: None,
+        });
+        let _ = self.try_append_event(DtokenEvent {
+            event_id: Uuid::new_v4(),
+            timestamp_ms: now_ms,
+            project_id: Some("dtoken-runtime".to_string()),
+            agent_id: None,
+            instance_id: None,
+            command_id: None,
+            request_id: None,
+            stage: LayeredStage::RtkFilter,
+            source: EventSource::Rtk,
+            status: EventStatus::Ok,
+            input_tokens: None,
+            output_tokens: None,
+            saved_tokens: None,
+            baseline_kind: None,
+            error_code: None,
+            metadata: json!({
+                "entries": accounting.entries,
+                "input_bytes": accounting.input_bytes,
+                "output_bytes": accounting.output_bytes,
+                "saved_bytes": accounting.ledger.command_output_savings(),
+                "privacy": "Metadata-only; no command argv or output is retained."
+            }),
+            context_accounting: None,
+        });
     }
 
     fn record_runtime_performance(
@@ -10578,7 +10698,7 @@ fn routed_openai_payload(
     (response, decision, log, event)
 }
 
-fn runtime_stats_payload(logs: &[RequestLog]) -> Value {
+fn runtime_stats_payload(logs: &[RequestLog], rtk: Option<&SavingsLedger>) -> Value {
     let total_requests = logs.len() as u64;
     let failed_requests = logs.iter().filter(|log| log.error.is_some()).count() as u64;
     let input_before: u64 = logs
@@ -10644,7 +10764,7 @@ fn runtime_stats_payload(logs: &[RequestLog]) -> Value {
             .or_insert_with(|| quota.clone());
     }
     let layered = LayeredSavingsReport {
-        rtk_savings: 0,
+        rtk_savings: rtk.map(SavingsLedger::command_output_savings).unwrap_or_default(),
         headroom_savings: tokens_saved,
         end_to_end_savings: tokens_saved,
         attribution_confidence: if total_requests == 0 {
@@ -10652,7 +10772,7 @@ fn runtime_stats_payload(logs: &[RequestLog]) -> Value {
         } else {
             "runtime_estimated".to_string()
         },
-        note: "Aggregated from d-token-owned runtime request logs; prompt and response bodies are not stored.".to_string(),
+        note: "Aggregated from d-token-owned runtime request logs and verified RTK usage receipts; prompt and response bodies are not stored.".to_string(),
     };
     let analytics = RuntimeSummaryReadModel::from_records(logs, &[]).stats()["analytics"].clone();
 
@@ -10712,7 +10832,139 @@ fn signed_context_savings(log: &RequestLog) -> i64 {
 
 fn runtime_stats_for_state(state: &AppState) -> Value {
     let logs = state.recent_request_logs(10_000);
-    runtime_stats_payload(&logs)
+    let rtk = rtk_command_output_accounting(state.managed_rtk_root.as_deref().map(|root| root.as_path()));
+    runtime_stats_payload_with_rtk(&logs, rtk)
+}
+
+/// Independent command-output (RTK) accounting projection (PR-C4C).
+///
+/// Availability is explicit, never an indistinguishable zero:
+/// - `Ok(Some(...))` — a verified managed root produced `entries` claims;
+///   `entries == 0` means verified-but-no-usage (honest zero).
+/// - `Ok(None)` — no managed RTK root is configured (unavailable).
+/// - `Err(reason)` — the receipt set is unreadable/invalid and fails closed:
+///   no claim is ever made on partial evidence.
+///
+/// Claims are source-digest bound to a single verified receipt invocation
+/// (`verified_usage_claim_digest`), so a legitimate repeated command is its
+/// own distinct claim while a replayed/copied receipt collapses to a
+/// duplicate and is rejected by the exclusive ledger.
+fn rtk_command_output_accounting(
+    root: Option<&StdPath>,
+) -> Result<Option<RtkCommandOutputAccounting>, String> {
+    let Some(root) = root else {
+        return Ok(None);
+    };
+    let records = verified_managed_rtk_usage(root).map_err(|error| format!("{error:#}"))?;
+    let mut ledger = SavingsLedger::new();
+    for record in records {
+        let source_digest = verified_usage_claim_digest(&record);
+        let entry = command_output_accounting_entry(
+            &record.evidence,
+            &source_digest,
+            record.recorded_at_ms,
+        )
+        .map_err(|error| format!("{error:#}"))?;
+        ledger.record(entry).map_err(|error| {
+            format!("duplicate or conflicting RTK claim rejected: {error}")
+        })?;
+    }
+    let entries = ledger.total_entries();
+    let totals = ledger.bucket_totals(dtoken_types::AccountingBucket::CommandOutput);
+    Ok(Some(RtkCommandOutputAccounting {
+        ledger,
+        entries,
+        input_bytes: totals.input_bytes,
+        output_bytes: totals.output_bytes,
+    }))
+}
+
+/// The independent command-output (RTK) accounting projection.
+#[derive(Debug, Clone)]
+struct RtkCommandOutputAccounting {
+    ledger: SavingsLedger,
+    entries: usize,
+    input_bytes: u64,
+    output_bytes: u64,
+}
+
+fn accounting_note(accounting: &RtkCommandOutputAccounting) -> String {
+    format!(
+        "RTK command-output savings derived from {} verified receipts; prompt, response, and command bodies are not stored.",
+        accounting.entries
+    )
+}
+
+fn runtime_stats_payload_with_rtk(
+    logs: &[RequestLog],
+    rtk: Result<Option<RtkCommandOutputAccounting>, String>,
+) -> Value {
+    let layered = match &rtk {
+        Ok(Some(accounting)) => LayeredSavingsReport {
+            rtk_savings: accounting.ledger.command_output_savings(),
+            headroom_savings: runtime_headroom_savings(logs),
+            end_to_end_savings: runtime_headroom_savings(logs),
+            attribution_confidence: if logs.is_empty() {
+                "empty_runtime".to_string()
+            } else {
+                "runtime_estimated".to_string()
+            },
+            note: accounting_note(accounting),
+        },
+        Ok(None) => LayeredSavingsReport {
+            rtk_savings: 0,
+            headroom_savings: runtime_headroom_savings(logs),
+            end_to_end_savings: runtime_headroom_savings(logs),
+            attribution_confidence: if logs.is_empty() {
+                "empty_runtime".to_string()
+            } else {
+                "runtime_estimated".to_string()
+            },
+            note: "RTK command-output dimension unavailable: no verified managed RTK root is configured."
+                .to_string(),
+        },
+        Err(reason) => LayeredSavingsReport {
+            rtk_savings: 0,
+            headroom_savings: runtime_headroom_savings(logs),
+            end_to_end_savings: runtime_headroom_savings(logs),
+            attribution_confidence: "rtk_unavailable".to_string(),
+            note: format!("RTK accounting failed closed: {reason}"),
+        },
+    };
+    let rtk_ledger = rtk
+        .as_ref()
+        .ok()
+        .and_then(|option| option.as_ref())
+        .map(|accounting| &accounting.ledger);
+    let mut payload = runtime_stats_payload(logs, rtk_ledger);
+    if let Some(object) = payload.as_object_mut() {
+        object.insert("layered".to_string(), json!(layered));
+        object.insert(
+            "rtk".to_string(),
+            json!({
+                "source": "dtoken-managed-rtk",
+                "available": rtk.as_ref().is_ok_and(|option| option.is_some()),
+                "entries": rtk.as_ref().ok().and_then(|option| option.as_ref()).map(|a| a.entries).unwrap_or(0),
+                "input_bytes": rtk.as_ref().ok().and_then(|option| option.as_ref()).map(|a| a.input_bytes).unwrap_or(0),
+                "output_bytes": rtk.as_ref().ok().and_then(|option| option.as_ref()).map(|a| a.output_bytes).unwrap_or(0),
+                "saved_bytes": rtk.as_ref().ok().and_then(|option| option.as_ref()).map(|a| a.ledger.command_output_savings()).unwrap_or(0),
+                "reason": match &rtk {
+                    Ok(Some(_)) => "verified_usage_receipts",
+                    Ok(None) => "managed_rtk_not_configured",
+                    Err(_) => "rtk_evidence_invalid_failed_closed",
+                },
+                "privacy": "Metadata-only aggregated byte accounting; no command argv or output is retained."
+            }),
+        );
+    }
+    payload
+}
+
+fn runtime_headroom_savings(logs: &[RequestLog]) -> u64 {
+    logs.iter()
+        .filter_map(|log| log.tokens_saved)
+        .map(|value| value as u64)
+        .sum()
 }
 
 fn runtime_stats_history_payload(logs: &[RequestLog]) -> Value {
@@ -10764,7 +11016,7 @@ fn runtime_stats_history_for_state(state: &AppState) -> Value {
 }
 
 fn runtime_metrics_text(logs: &[RequestLog]) -> String {
-    let stats = runtime_stats_payload(logs);
+    let stats = runtime_stats_payload(logs, None);
     runtime_metrics_text_from_stats(&stats)
 }
 
@@ -10986,7 +11238,7 @@ fn runtime_export_json_payload(state: &AppState) -> Value {
         "redacted": true,
         "raw_available": false,
         "privacy": "No raw prompt, raw response, API key, auth header, cookie, CCR body, or full command output is included.",
-        "stats": runtime_stats_payload(&logs),
+        "stats": runtime_stats_for_state(&state),
         "history": runtime_stats_history_payload(&logs),
         "metrics": runtime_metrics_payload(&logs),
         "events": state.recent_events(10_000),
@@ -11339,7 +11591,7 @@ pub fn dashboard_payload_for_config(config: &DtokenConfig) -> Value {
     let state = AppState::new(config.clone());
     with_active_config(
         build_dashboard_payload(DashboardPayloadInput {
-            stats: runtime_stats_payload(&[]),
+            stats: runtime_stats_payload(&[], None),
             history: runtime_stats_history_payload(&[]),
             metrics: runtime_metrics_payload(&[]),
             cache_summary: runtime_cache_summary_payload(),
@@ -11363,9 +11615,10 @@ pub fn dashboard_payload_for_state(state: &AppState) -> Value {
         .iter()
         .map(OptimizationReceipt::from_request_log)
         .collect();
+    let rtk = rtk_command_output_accounting(state.managed_rtk_root.as_deref().map(|root| root.as_path()));
     let mut payload = with_cached_account_quota(with_active_config(
         build_dashboard_payload(DashboardPayloadInput {
-            stats: runtime_stats_payload(&all_logs),
+            stats: runtime_stats_payload_with_rtk(&all_logs, rtk),
             history: runtime_stats_history_payload(&all_logs),
             metrics: runtime_metrics_payload(&all_logs),
             cache_summary: runtime_cache_summary_for_state(state),
@@ -15010,7 +15263,7 @@ async fn headroom_stats(State(state): State<AppState>) -> Json<Value> {
         "source": "dtoken-owned-runtime",
         "runtime_kind": "headroom-derived",
         "external_headroom_dependency": false,
-        "stats": runtime_stats_payload(&logs),
+        "stats": runtime_stats_for_state(&state),
         "history": runtime_stats_history_payload(&logs),
         "metrics": runtime_metrics_payload(&logs),
         "output_shape": output_shape_for_state(&state, None, None),
@@ -20820,7 +21073,7 @@ mod tests {
         state.record_routed_request(&decision, request_log, event);
 
         let logs = state.recent_request_logs(10_000);
-        let stats = runtime_stats_payload(&logs);
+        let stats = runtime_stats_payload(&logs, None);
         let metrics = runtime_metrics_payload(&logs);
         let cache = runtime_cache_summary_for_state(&state);
         let memory = memory_summary_for_state(&state);

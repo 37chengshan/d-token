@@ -1,6 +1,7 @@
 use anyhow::{bail, Context, Result};
 use dtoken_preprocessor::{
-    preprocess_command_output, verify_managed_hook_root, ManagedHookManifest,
+    bounded_truncate_marker, filters, filters::CommandFilterConfig, managed_filter_config,
+    verify_managed_hook_root, ManagedHookManifest,
     MAX_MANAGED_RTK_OUTPUT_BYTES, MAX_MANAGED_RTK_USAGE_ENTRIES,
     MAX_MANAGED_RTK_USAGE_RECORD_BYTES, MAX_MANAGED_RTK_USAGE_TOTAL_BYTES,
     MIN_MANAGED_RTK_OUTPUT_BYTES,
@@ -32,6 +33,26 @@ const USAGE_RECORD_SCHEMA_VERSION: u8 = 1;
 const DEFAULT_RTK_OUTPUT_BYTES: usize = 64 * 1024;
 const RTK_COMMAND_TIMEOUT: Duration = Duration::from_secs(120);
 const RTK_TIMEOUT_EXIT_CODE: i32 = 124;
+/// Optional override for the wrapped-command timeout. Honored only in
+/// debug/test builds, so an untrusted Agent environment can never silently
+/// weaken the reviewed production timeout policy: release bridge binaries
+/// always use the reviewed default. Bounded to 1..=3600 seconds; an invalid
+/// value fails closed to the reviewed default.
+const RTK_TIMEOUT_ENV: &str = "D_TOKEN_RTK_WRAP_TIMEOUT_SECONDS";
+
+fn rtk_command_timeout() -> Duration {
+    #[cfg(debug_assertions)]
+    {
+        if let Ok(value) = std::env::var(RTK_TIMEOUT_ENV) {
+            if let Ok(seconds) = value.parse::<u64>() {
+                if (1..=3600).contains(&seconds) {
+                    return Duration::from_secs(seconds);
+                }
+            }
+        }
+    }
+    RTK_COMMAND_TIMEOUT
+}
 static USAGE_RECORD_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -129,10 +150,41 @@ pub fn run_rtk_wrap(
         return run_wrapped_command_passthrough(&command.command, &mut stdout, &mut stderr);
     };
     let output_limit = reviewed_output_limit(&command, &hook.manifest)?;
-    let output = run_wrapped_command_bounded(&command.command, output_limit, RTK_COMMAND_TIMEOUT)?;
+    let output = run_wrapped_command_bounded(&command.command, output_limit, rtk_command_timeout())?;
     let exit_code = normalized_exit_code(&output.status, output.timed_out);
-    let stdout_filtered = filter_bounded_capture(&output.stdout, output_limit);
-    let stderr_filtered = filter_bounded_capture(&output.stderr, output_limit);
+    // The d-token-owned structured command filter (PR-C4A) applies only when
+    // the reviewed filter binding is intact. A tampered or unreadable binding
+    // fails closed: the captured output is delivered verbatim and no usage
+    // claim is recorded.
+    let filter_config = match managed_filter_config(&hook.manifest) {
+        Ok(config) => config,
+        Err(error) => {
+            let stdout_text = render_verbatim_capture(&output.stdout, output_limit);
+            let stderr_text = render_verbatim_capture(&output.stderr, output_limit);
+            stdout.write_all(stdout_text.as_bytes())?;
+            stderr.write_all(stderr_text.as_bytes())?;
+            stderr.write_all(
+                format!("\n~ d-token filter binding unavailable: {error:#} ~\n").as_bytes(),
+            )?;
+            stdout.flush()?;
+            stderr.flush()?;
+            return Ok(exit_code);
+        }
+    };
+    let stdout_filtered = filter_bounded_capture(
+        &output.stdout,
+        output_limit,
+        &command.command,
+        exit_code,
+        &filter_config,
+    );
+    let stderr_filtered = filter_bounded_capture(
+        &output.stderr,
+        output_limit,
+        &command.command,
+        exit_code,
+        &filter_config,
+    );
     let mut transforms = stdout_filtered
         .transforms
         .iter()
@@ -362,11 +414,14 @@ impl BoundedCapture {
 fn filter_bounded_capture(
     capture: &BoundedCapture,
     output_limit: usize,
-) -> dtoken_preprocessor::BuiltinPreprocessResult {
+    argv: &[String],
+    exit_code: i32,
+    config: &CommandFilterConfig,
+) -> filters::CommandFilterResult {
     const CAPTURE_MARKER: &str = "~ d-token bounded capture truncated ~";
     let text = capture.render();
     if !capture.truncated {
-        return preprocess_command_output(&text, Some(output_limit));
+        return filters::filter_command_output(argv, &text, Some(exit_code), config);
     }
 
     let separator = if text.is_empty() || text.ends_with('\n') {
@@ -375,13 +430,42 @@ fn filter_bounded_capture(
         "\n"
     };
     let suffix_bytes = separator.len() + CAPTURE_MARKER.len();
-    let body_limit = output_limit.saturating_sub(suffix_bytes);
-    let mut filtered = preprocess_command_output(&text, Some(body_limit));
+    let body_cap = output_limit.saturating_sub(suffix_bytes);
+    let mut filtered = filters::filter_command_output(argv, &text, Some(exit_code), config);
+    if filtered.output.len() > body_cap {
+        let (bounded, _) = bounded_truncate_marker(&filtered.output, body_cap);
+        filtered.output = bounded;
+    }
     filtered.output.push_str(separator);
     filtered.output.push_str(CAPTURE_MARKER);
     filtered.output_bytes = filtered.output.len();
     filtered.truncated = true;
     filtered
+}
+
+/// Renders a captured stream verbatim (with its truncation marker) when the
+/// reviewed filter binding is unusable. Never claims savings.
+fn render_verbatim_capture(capture: &BoundedCapture, output_limit: usize) -> String {
+    const CAPTURE_MARKER: &str = "~ d-token bounded capture truncated ~";
+    let text = capture.render();
+    if !capture.truncated {
+        return text;
+    }
+    let separator = if text.is_empty() || text.ends_with('\n') {
+        ""
+    } else {
+        "\n"
+    };
+    let suffix_bytes = separator.len() + CAPTURE_MARKER.len();
+    let body_limit = output_limit.saturating_sub(suffix_bytes);
+    let mut output = text;
+    if output.len() > body_limit {
+        let (bounded, _) = bounded_truncate_marker(&output, body_limit);
+        output = bounded;
+    }
+    output.push_str(separator);
+    output.push_str(CAPTURE_MARKER);
+    output
 }
 
 #[derive(Debug)]
@@ -394,13 +478,48 @@ struct BoundedCommandOutput {
 
 fn spawn_wrapped_command(command: &[String]) -> Result<Child> {
     let program = command.first().context("wrapped command is empty")?;
-    Command::new(program)
+    let mut builder = Command::new(program);
+    builder
         .args(&command[1..])
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+        .stderr(Stdio::piped());
+    // The wrapped command runs in its own process group so a timeout can
+    // terminate the whole tree (e.g. a shell whose children still hold the
+    // output pipes) instead of leaving the capture threads blocked.
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        builder.process_group(0);
+    }
+    builder
         .spawn()
         .with_context(|| format!("failed to spawn wrapped command {}", program))
+}
+
+/// Terminates the wrapped command and its process group/tree. On Unix the
+/// child was placed in its own process group, so killing the group reaps
+/// grandchildren that would otherwise keep the capture pipes open. On
+/// Windows the process tree is terminated with `taskkill /T`.
+fn terminate_wrapped_command(child: &mut Child) -> Result<()> {
+    #[cfg(unix)]
+    {
+        let pid = i32::try_from(child.id()).context("wrapped command pid overflow")?;
+        // SIGKILL the whole group; fall back to the direct child so a
+        // missing group never leaks the process.
+        let group_result = unsafe { libc::kill(-pid, libc::SIGKILL) };
+        if group_result != 0 {
+            child.kill().context("terminate timed-out wrapped command")?;
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = Command::new("taskkill")
+            .args(["/PID", &child.id().to_string(), "/T", "/F"])
+            .status();
+        child.kill().context("terminate timed-out wrapped command")?;
+    }
+    Ok(())
 }
 
 fn wait_for_wrapped_command(child: &mut Child, timeout: Duration) -> Result<(ExitStatus, bool)> {
@@ -410,9 +529,7 @@ fn wait_for_wrapped_command(child: &mut Child, timeout: Duration) -> Result<(Exi
             return Ok((status, false));
         }
         if started.elapsed() >= timeout {
-            child
-                .kill()
-                .context("terminate timed-out wrapped command")?;
+            terminate_wrapped_command(child)?;
             return child
                 .wait()
                 .map(|status| (status, true))
@@ -456,7 +573,7 @@ fn run_wrapped_command_passthrough(
     let (status_result, stdout_result, stderr_result) = thread::scope(|scope| {
         let stdout_copy = scope.spawn(|| std::io::copy(&mut child_stdout, stdout));
         let stderr_copy = scope.spawn(|| std::io::copy(&mut child_stderr, stderr));
-        let status = wait_for_wrapped_command(&mut child, RTK_COMMAND_TIMEOUT);
+        let status = wait_for_wrapped_command(&mut child, rtk_command_timeout());
         (status, stdout_copy.join(), stderr_copy.join())
     });
     let (status, timed_out) = status_result?;
@@ -729,18 +846,44 @@ fn validate_private_directory(path: &Path, label: &str) -> Result<()> {
 }
 
 fn is_allowed_usage_transform(value: &str) -> bool {
-    matches!(
-        value,
-        "stdout:ansi_strip"
-            | "stdout:blank_and_repeat_fold"
-            | "stdout:bounded_truncate"
-            | "stdout:bounded_capture"
-            | "stderr:ansi_strip"
-            | "stderr:blank_and_repeat_fold"
-            | "stderr:bounded_truncate"
-            | "stderr:bounded_capture"
-            | "process:timeout"
-    )
+    if matches!(value, "stdout:bounded_capture" | "stderr:bounded_capture" | "process:timeout") {
+        return true;
+    }
+    let Some((stream, transform)) = value.split_once(':') else {
+        return false;
+    };
+    if !matches!(stream, "stdout" | "stderr") {
+        return false;
+    }
+    is_known_filter_transform(transform)
+}
+
+/// Accepts every transform the d-token-owned structured filters (PR-C4A) and
+/// the reviewed builtin can emit.
+fn is_known_filter_transform(transform: &str) -> bool {
+    if matches!(transform, "unknown-family" | "ansi_strip" | "blank_and_repeat_fold" | "bounded_truncate") {
+        return true;
+    }
+    let Some((family, action)) = transform.split_once(':') else {
+        return false;
+    };
+    matches!(family, "git" | "cargo" | "npm" | "pytest" | "json")
+        && matches!(
+            action,
+            "failure_preserve"
+                | "secret_preserve"
+                | "error_preserve"
+                | "disabled"
+                | "ansi_strip"
+                | "fold_repeated_lines"
+                | "bounded_truncate"
+                | "negative_benefit"
+                | "no_change"
+                | "unparsed_preserve"
+                | "secret_keys_preserve"
+                | "oversize_preserve"
+                | "minify"
+        )
 }
 
 fn command_digest(command: &[String]) -> String {
@@ -923,7 +1066,7 @@ mod tests {
                 sha256: "b".repeat(64),
             },
             max_output_bytes: Some(MIN_MANAGED_RTK_OUTPUT_BYTES),
-            usage_dir: "usage".to_string(),
+            filter_dsl_sha256: None,            usage_dir: "usage".to_string(),
         };
         let secret_argv = serde_json::json!({
             "schema_version": USAGE_RECORD_SCHEMA_VERSION,
@@ -975,7 +1118,7 @@ mod tests {
                 sha256: "b".repeat(64),
             },
             max_output_bytes: Some(MIN_MANAGED_RTK_OUTPUT_BYTES),
-            usage_dir: "usage".to_string(),
+            filter_dsl_sha256: None,            usage_dir: "usage".to_string(),
         };
         let record = UsageRecord {
             schema_version: USAGE_RECORD_SCHEMA_VERSION,
@@ -1090,7 +1233,7 @@ mod tests {
                 sha256: "b".repeat(64),
             },
             max_output_bytes: Some(MIN_MANAGED_RTK_OUTPUT_BYTES),
-            usage_dir: "usage".to_string(),
+            filter_dsl_sha256: None,            usage_dir: "usage".to_string(),
         };
         for index in 0..MAX_MANAGED_RTK_USAGE_ENTRIES {
             let record = UsageRecord {

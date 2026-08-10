@@ -11,6 +11,29 @@ if "%MODE%"=="large" (
   exit /b 0
 )
 
+if "%MODE%"=="sleep" (
+  timeout /t %~2 /nobreak >nul
+  exit /b 0
+)
+
+if "%MODE%"=="git" (
+  echo Receiving objects:  10%%
+  echo Receiving objects:  10%%
+  echo Receiving objects:  10%%
+  echo Receiving objects:  10%%
+  echo up to date
+  exit /b 0
+)
+
+if "%MODE%"=="json" (
+  echo {
+  echo   "name": "fixture",
+  echo   "ok": true,
+  echo   "count": 3
+  echo }
+  exit /b 0
+)
+
 echo [31merror[0m
 echo.
 echo error
