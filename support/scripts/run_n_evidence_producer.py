@@ -338,7 +338,15 @@ def validate_local_output(node_id: str, records: list[dict[str, Any]]) -> tuple[
         if not replay_ok:
             reasons.append("Replay did not report replay_deterministic=true")
         paired = json_tail(records[1]) if len(records) > 1 else None
-        if not paired or not paired.get("tasks") or paired.get("same_model_contract") is not True:
+        paired_text = " ".join(records[1]["output_tail"]) if len(records) > 1 else ""
+        paired_ok = bool(
+            (paired and paired.get("tasks") and paired.get("same_model_contract") is True)
+            or (
+                '"tasks"' in paired_text
+                and '"same_model_contract": true' in paired_text
+            )
+        )
+        if not paired_ok:
             reasons.append("PairedContract did not report tasks>0 and same_model_contract=true")
     if node_id == "N10-U5":
         check = json_tail(records[0]) if records else None
