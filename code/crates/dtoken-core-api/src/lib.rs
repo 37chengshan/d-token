@@ -24819,12 +24819,19 @@ mod tests {
             json!({"model": "model-a", "messages": [{"role": "user", "content": "repeat repeat"}]});
         let candidate = json!({"model": "model-a", "messages": [{"role": "user", "content": "repeat"}]});
         let transforms = vec!["safe-text".to_string()];
+        let authority = dtoken_runtime_pipeline::RecoveryProofAuthority::new([31_u8; 32]);
         let prepared = PreparedCcr {
             receipt: Some(CcrStoreReceipt {
                 recovery_ref: format!("ccr:{}", decision.request_id),
-                expires_at_unix: 9_999,
+                expires_at_unix: 1_000_000_000_000,
                 plaintext_bytes: baseline.to_string().len(),
             }),
+            proof: Some(
+                authority
+                    .issue(format!("ccr:{}", decision.request_id), 1_000_000_000_000)
+                    .expect("store-issued proof"),
+            ),
+            authority: Some(authority),
             store_configured: true,
         };
         let payload = prepare_json_pipeline_payload(

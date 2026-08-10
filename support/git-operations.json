@@ -2916,6 +2916,15 @@
       "summary": "merge pending-recovery aa0fc56 into stage-pack-integrated (Pending terminal recovery promotion)",
       "head_before": "ee43fb74954638acc81ff0e6c028d6893b662678",
       "remote": null
+    },
+    {
+      "id": "1ca61c33-f6c6-45d9-8462-86f59cb05be5",
+      "timestamp": "2026-08-10T19:17:05+08:00",
+      "operation": "commit",
+      "branch": "codex/final/stage-pack-integrated",
+      "summary": "fix(core-api): update deadline terminate test to store-issued PreparedCcr proof after merge",
+      "head_before": "6aac34c5380aad2d0077d2f168933ecbe3f78426",
+      "remote": null
     }
   ]
 }
