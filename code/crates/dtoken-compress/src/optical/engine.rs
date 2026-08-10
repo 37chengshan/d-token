@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::time::{Duration, Instant};
 
 use serde_json::Value;
@@ -6,6 +7,7 @@ use sha2::{Digest, Sha256};
 use crate::{lower_hybrid_context, ApprovedHybridAction, ResolvedOptimizationContext};
 
 use super::applicability::evaluate_applicability_with_policies_and_registry;
+use super::history_collapse::plan_history_collapse;
 use super::capability::{
     resolve_model_capability_record_for_route_with_registry, OpticalCapabilityRegistry,
 };
@@ -101,6 +103,11 @@ pub struct HybridExecutionReport {
     pub profile_digest: Option<String>,
     pub font_digest: Option<String>,
     pub capsule_digests: Vec<String>,
+    /// Set when the history-collapse planner scoped the active candidates:
+    /// the byte-stable static slab / freeze grid / cache anchor / billing
+    /// boundary plan digest (PR-C5B). `None` means no collapse scope was
+    /// applied and no frozen history was collapsed.
+    pub history_collapse_digest: Option<String>,
     pub artifact_validated: bool,
     pub raw_available: bool,
     pub transforms_applied: Vec<String>,
@@ -135,6 +142,7 @@ impl HybridExecutionReport {
             profile_digest: None,
             font_digest: None,
             capsule_digests: Vec::new(),
+            history_collapse_digest: None,
             artifact_validated: false,
             raw_available,
             transforms_applied: Vec::new(),
@@ -263,12 +271,20 @@ fn select_hybrid_plan_v2(
     geometry: &super::render_geometry::RenderGeometryProfile,
     global: &OpticalGlobalPolicy,
     chars_per_text_token: f64,
+    collapse_scope: Option<&HashSet<String>>,
 ) -> HybridPlanV2 {
     let mut candidates = ir
         .approved_text_targets()
         .iter()
         .filter(|target| {
             target.action() == ApprovedHybridAction::OpticalImage && target.cache_stable()
+        })
+        .filter(|target| {
+            // PR-C5B: when history collapse is enabled, only blocks the
+            // planner approved (frozen history below the recent tail, outside
+            // the static slab, freeze grid and billing boundary) may collapse.
+            // A missing/empty scope means nothing may collapse.
+            collapse_scope.is_none_or(|scope| scope.contains(target.node_id()))
         })
         .filter_map(|target| {
             let text = body.pointer(target.patch_path()).and_then(Value::as_str)?;
@@ -622,12 +638,37 @@ impl HybridContextEngine {
         let geometry = geometry_for_capability(&resolved.capability)
             .ok_or(HybridEngineError::MissingGeometry)?;
         let render_contract = production_render_contract(&geometry);
+        // PR-C5B: history collapse is scoped by the d-token-owned planner.
+        // When the route allows it, the active candidate set is restricted to
+        // the planner's approved frozen-history blocks; a plan that fails its
+        // own integrity (freeze grid not byte-stable, protected text not
+        // native) collapses nothing (empty scope) so the request preserves
+        // original bytes. `None` keeps the legacy cache-stable selection.
+        let (collapse_scope, history_collapse_digest) = if route.allow_history {
+            match plan_history_collapse(&ir, original_body, &render_contract.geometry, route) {
+                Some(plan)
+                    if plan.freeze_grid.byte_stable
+                        && plan.current_recent_open_exact_secret_native_text =>
+                {
+                    let scope = plan
+                        .collapse_candidates
+                        .iter()
+                        .map(|candidate| candidate.block_id.clone())
+                        .collect::<HashSet<_>>();
+                    (Some(scope), Some(plan.digest().to_string()))
+                }
+                _ => (Some(HashSet::new()), None),
+            }
+        } else {
+            (None, None)
+        };
         let hybrid_plan = select_hybrid_plan_v2(
             &ir,
             original_body,
             &render_contract.geometry,
             global,
             economics_contract.chars_per_text_token,
+            collapse_scope.as_ref(),
         );
         if hybrid_plan.selected_node_ids.is_empty() {
             return Err(HybridEngineError::NoApprovedCandidate);
@@ -892,6 +933,10 @@ impl HybridContextEngine {
             first_artifact.map(|artifact| artifact.profile_digest().to_string());
         report.font_digest = first_artifact.map(|artifact| artifact.font_digest().to_string());
         report.capsule_digests = capsule_digests;
+        report.history_collapse_digest = history_collapse_digest;
+        if report.history_collapse_digest.is_some() {
+            report.transforms_applied.push("history_collapse_v1".to_string());
+        }
         report.artifact_validated = validated.report().artifact_evidence_derived;
         Ok((validated, report, comparison))
     }

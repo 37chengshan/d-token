@@ -1,0 +1,21 @@
+{
+  "schema_version": 2,
+  "artifact_id": "anthropic-sonnet-4-5-eval-v1",
+  "model_base": "claude-sonnet-4-5",
+  "endpoint": "anthropic_messages",
+  "renderer_profile_digest": "2c06ea7f8652aa07516f059af1613b26fab17109c5189ef152a189fdd1e1af99",
+  "font_digest": "a8a9941fd5f0096dacea34b144305ddbe4a70c6749677fd90395b15220fdffd5",
+  "transform_contract_digest": "41e5f2813590e10dae0c5e33c10f70e00337c19e8b5fcab224597fbb8ff93bf6",
+  "corpus_digest": "45dcd9d54b285c6e71ba37127656898a5ac9217fdfb21e7d1cc08b7af9ec0bbe",
+  "evaluated_at_ms": 1784000000000,
+  "sample_count": 20,
+  "exact_failures": 0,
+  "unsafe_failures": 0,
+  "baseline_passes": 20,
+  "candidate_passes": 20,
+  "quality_delta": 0.0,
+  "signed_input_token_delta": 20000,
+  "signed_cost_delta_microusd": 20000,
+  "latency_p95_delta_ms": -10,
+  "passed": true
+}
