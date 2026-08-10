@@ -2781,6 +2781,33 @@
       "summary": "整合完成：C0-C8 全序列后恢复候选 rich OptimizationReceipt/RequestLog 字段并修复编译调用点（HEAD 2f9e1d4 后核心库测试编译修复）",
       "head_before": "2f9e1d4413d82174226bca68ab35de14a049b617",
       "remote": null
+    },
+    {
+      "id": "4c78bee6-26a5-4212-9010-1328b8478a34",
+      "timestamp": "2026-08-10T18:02:47+08:00",
+      "operation": "branch-create",
+      "branch": "codex/final/deadline-terminal",
+      "summary": "Create isolated deadline-terminal durability slice from final-stage-pack-integrated candidate b408a52",
+      "head_before": "b408a5248313b88669e4a2565330ff0d0ad00b1c",
+      "remote": null
+    },
+    {
+      "id": "4c6d2767-82d1-4547-a162-8cc231df13ce",
+      "timestamp": "2026-08-10T18:02:48+08:00",
+      "operation": "branch-use",
+      "branch": "codex/final/deadline-terminal",
+      "summary": "Attach worktree final-deadline-terminal for SCHEDULER-DEADLINE-TERMINAL-DURABILITY fix",
+      "head_before": "b408a5248313b88669e4a2565330ff0d0ad00b1c",
+      "remote": null
+    },
+    {
+      "id": "74d5c8d8-82fd-43a6-888b-0af5d68b7fff",
+      "timestamp": "2026-08-10T18:02:48+08:00",
+      "operation": "commit",
+      "branch": "codex/final/deadline-terminal",
+      "summary": "fix: deadline expiry consumes sendable unit and persists terminal bundle",
+      "head_before": "b408a5248313b88669e4a2565330ff0d0ad00b1c",
+      "remote": null
     }
   ]
 }
