@@ -2484,6 +2484,24 @@
       "summary": "修复统一能力注册表虚构测试路径并强制 tracked-file fail-closed 校验",
       "head_before": "decd0016ca8c6312ac57033d1d577b91eefa1c1b",
       "remote": null
+    },
+    {
+      "id": "a33e2ff0-91a9-4f15-a6e8-69cc77d531c5",
+      "timestamp": "2026-08-10T12:28:24+08:00",
+      "operation": "commit",
+      "branch": "codex/final/c8-evidence-remediation",
+      "summary": "C8 evidence remediation: registry validator hardening + symbol source index, fixed-name N1-N8/N10-U0..U9 evidence producer/stager, aggregator U9 content validation + managed RTK G5 roles, N0 pure gate specs, tests",
+      "head_before": "15f98cfb9861",
+      "remote": null
+    },
+    {
+      "id": "bc70c829-9744-4aab-866e-240c88c03b08",
+      "timestamp": "2026-08-10T12:28:33+08:00",
+      "operation": "commit",
+      "branch": "codex/final/c8-evidence-remediation",
+      "summary": "record git-operations.json audit entry for C8 evidence remediation commit ebf897f",
+      "head_before": "ebf897f8ff3b",
+      "remote": null
     }
   ]
 }
