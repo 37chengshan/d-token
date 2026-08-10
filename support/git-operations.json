@@ -2970,6 +2970,15 @@
       "summary": "migrate DoctorWorkbench bilingual copy to translateCopy (165 violations)",
       "head_before": "fb5aa07c6b6aff4cd4f90316937f05a270e5581f",
       "remote": null
+    },
+    {
+      "id": "3cd8a05b-f4a7-4413-b433-f2afb5e10b09",
+      "timestamp": "2026-08-10T22:35:06+08:00",
+      "operation": "commit",
+      "branch": "codex/final/stage-pack-integrated",
+      "summary": "chore(desktop): realign bundle budget to measured steady state after i18n DICT growth",
+      "head_before": "fda91db069819a4c7d0cc61a85732feac823a5f7",
+      "remote": null
     }
   ]
 }
