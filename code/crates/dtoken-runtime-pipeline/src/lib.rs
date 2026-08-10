@@ -328,10 +328,18 @@ impl RecoveryReceipt {
     }
 
     /// The receipt is usable only while it matches the exact prepared
-    /// request identity and source digest, and only before expiry.
-    pub fn is_valid_for(&self, request: &PreparedRequest, now_unix: u64) -> bool {
+    /// request identity, source digest and active route decision (the
+    /// stable digest is compared here, so a stale or mutated decision can
+    /// never be paired with a receipt), and only before expiry.
+    pub fn is_valid_for(
+        &self,
+        request: &PreparedRequest,
+        decision: &RouteDecision,
+        now_unix: u64,
+    ) -> bool {
         self.request_id == request.scope.request_id
             && self.source_digest == request.baseline_digest
+            && self.decision_digest == decision.stable_digest()
             && self.expires_at_unix > now_unix
     }
 }

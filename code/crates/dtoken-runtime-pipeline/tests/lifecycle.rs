@@ -254,7 +254,7 @@ fn recovery_receipt_rejects_non_durable_refs_and_forged_bindings() {
         .with_durable_candidate(other_artifact, &decision_for(&other), proof(), &authority())
         .expect("foreign request binds its own receipt");
     let foreign = foreign_candidate.recovery_receipt().clone();
-    assert!(!foreign.is_valid_for(&prepared, 50));
+    assert!(!foreign.is_valid_for(&prepared, &decision_for(&prepared), 50));
     let bound = prepared
         .clone()
         .with_candidate(artifact(prepared.baseline_digest()), Some(foreign));
@@ -303,8 +303,8 @@ fn recovery_receipt_expiry_is_enforced() {
         )
         .unwrap();
     let receipt = candidate.recovery_receipt();
-    assert!(receipt.is_valid_for(&prepared, 50));
-    assert!(!receipt.is_valid_for(&prepared, 1_000_000_000_001));
+    assert!(receipt.is_valid_for(&prepared, &decision_for(&prepared), 50));
+    assert!(!receipt.is_valid_for(&prepared, &decision_for(&prepared), 1_000_000_000_001));
 }
 
 #[test]
