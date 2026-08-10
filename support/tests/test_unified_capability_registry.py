@@ -101,6 +101,27 @@ class UnifiedCapabilityRegistryContractTest(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0, "forged status must fail closed")
             self.assertIn("not allowed before N0", result.stdout)
 
+    def test_validator_rejects_unresolved_test_path_fail_closed(self) -> None:
+        data = self.load_registry()
+        data["entries"][0]["tests"]["normal"] = ["code/does-not-exist/test.rs"]
+        with tempfile.TemporaryDirectory() as tmp:
+            bad = Path(tmp) / "registry.json"
+            bad.write_text(json.dumps(data), encoding="utf-8")
+            result = run_validator(bad)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("does not resolve", result.stdout)
+
+    def test_validator_rejects_unresolved_evidence_path_fail_closed(self) -> None:
+        data = self.load_registry()
+        data["entries"][0]["real_evidence"] = ["/tmp/external-evidence.json"]
+        with tempfile.TemporaryDirectory() as tmp:
+            bad = Path(tmp) / "registry.json"
+            bad.write_text(json.dumps(data), encoding="utf-8")
+            result = run_validator(bad)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("must be repo-relative", result.stdout)
+
+
 
 if __name__ == "__main__":
     unittest.main()

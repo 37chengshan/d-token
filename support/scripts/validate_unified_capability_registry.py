@@ -21,6 +21,35 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 REGISTRY = REPO_ROOT / "support" / "fixtures" / "unified-capability-registry-v1.json"
+TRACKED_PATHS: set[str] | None = None
+
+def tracked_paths() -> set[str]:
+    global TRACKED_PATHS
+    if TRACKED_PATHS is None:
+        import subprocess
+        result = subprocess.run(
+            ["git", "ls-files", "-z"],
+            cwd=REPO_ROOT,
+            check=False,
+            capture_output=True,
+        )
+        if result.returncode != 0:
+            return set()
+        TRACKED_PATHS = {
+            path for path in result.stdout.decode("utf-8").split("\0") if path
+        }
+    return TRACKED_PATHS
+
+def validate_repo_path(path_value: object, field: str, entry_id: str, errors: list[str]) -> None:
+    if not isinstance(path_value, str) or not path_value:
+        errors.append(f"{entry_id}: {field} path must be a non-empty string")
+        return
+    path = Path(path_value)
+    if path.is_absolute() or ".." in path.parts:
+        errors.append(f"{entry_id}: {field} path must be repo-relative: {path_value}")
+        return
+    if path_value not in tracked_paths() or not (REPO_ROOT / path).is_file():
+        errors.append(f"{entry_id}: {field} path does not resolve to a tracked file: {path_value}")
 
 REQUIRED_ENTRY_KEYS = [
     "id",
@@ -79,6 +108,13 @@ def validate(registry_path: Path) -> list[str]:
                 values = tests.get(key)
                 if not isinstance(values, list) or not values:
                     errors.append(f"{entry_id}: tests.{key} must be a non-empty list")
+                else:
+                    for path_value in values:
+                        validate_repo_path(path_value, f"tests.{key}", entry_id, errors)
+        evidence = entry.get("real_evidence")
+        if isinstance(evidence, list):
+            for path_value in evidence:
+                validate_repo_path(path_value, "real_evidence", entry_id, errors)
         for field in ("id", "source_capability", "dispatch_symbol", "owner_crate"):
             text = entry.get(field)
             if isinstance(text, str) and any(

@@ -144,9 +144,9 @@
       "owner_crate": "dtoken-types",
       "dispatch_symbol": "dtoken_types::contract::NodeAction::HeadroomSemantic",
       "tests": {
-        "normal": ["code/crates/dtoken-types/tests/canonical_contract.rs"],
-        "error": ["code/crates/dtoken-types/tests/canonical_contract.rs"],
-        "recovery": ["code/crates/dtoken-types/tests/canonical_contract.rs"]
+        "normal": ["code/crates/dtoken-types/tests/hybrid_accounting.rs"],
+        "error": ["code/crates/dtoken-types/tests/hybrid_accounting.rs"],
+        "recovery": ["code/crates/dtoken-types/tests/hybrid_accounting.rs"]
       },
       "real_evidence": ["docs/releases/v0.0.1/REQUIREMENTS.md", "docs/releases/v0.0.1/VERIFICATION.md"],
       "gates": ["U0", "G1", "U1"],
@@ -158,9 +158,9 @@
       "owner_crate": "dtoken-types",
       "dispatch_symbol": "dtoken_types::contract::NodeAction::Reuse",
       "tests": {
-        "normal": ["code/crates/dtoken-types/tests/canonical_contract.rs"],
-        "error": ["code/crates/dtoken-types/tests/canonical_contract.rs"],
-        "recovery": ["code/crates/dtoken-types/tests/canonical_contract.rs"]
+        "normal": ["code/crates/dtoken-types/tests/hybrid_accounting.rs"],
+        "error": ["code/crates/dtoken-types/tests/hybrid_accounting.rs"],
+        "recovery": ["code/crates/dtoken-types/tests/hybrid_accounting.rs"]
       },
       "real_evidence": ["docs/releases/v0.0.1/REQUIREMENTS.md", "docs/releases/v0.0.1/VERIFICATION.md"],
       "gates": ["U0", "G1", "U1"],
@@ -172,9 +172,9 @@
       "owner_crate": "dtoken-types",
       "dispatch_symbol": "dtoken_types::contract::NodeAction::RtkCommandOutput",
       "tests": {
-        "normal": ["code/crates/dtoken-types/tests/canonical_contract.rs"],
-        "error": ["code/crates/dtoken-types/tests/canonical_contract.rs"],
-        "recovery": ["code/crates/dtoken-types/tests/canonical_contract.rs"]
+        "normal": ["code/crates/dtoken-types/tests/hybrid_accounting.rs"],
+        "error": ["code/crates/dtoken-types/tests/hybrid_accounting.rs"],
+        "recovery": ["code/crates/dtoken-types/tests/hybrid_accounting.rs"]
       },
       "real_evidence": ["docs/releases/v0.0.1/REQUIREMENTS.md", "docs/releases/v0.0.1/VERIFICATION.md"],
       "gates": ["U0", "G1", "U1"],
@@ -186,9 +186,9 @@
       "owner_crate": "dtoken-types",
       "dispatch_symbol": "dtoken_types::contract::NodeAction::Optical",
       "tests": {
-        "normal": ["code/crates/dtoken-types/tests/canonical_contract.rs"],
-        "error": ["code/crates/dtoken-types/tests/canonical_contract.rs"],
-        "recovery": ["code/crates/dtoken-types/tests/canonical_contract.rs"]
+        "normal": ["code/crates/dtoken-types/tests/hybrid_accounting.rs"],
+        "error": ["code/crates/dtoken-types/tests/hybrid_accounting.rs"],
+        "recovery": ["code/crates/dtoken-types/tests/hybrid_accounting.rs"]
       },
       "real_evidence": ["docs/releases/v0.0.1/REQUIREMENTS.md", "docs/releases/v0.0.1/VERIFICATION.md"],
       "gates": ["U0", "G1", "U1"],
@@ -200,9 +200,9 @@
       "owner_crate": "dtoken-types",
       "dispatch_symbol": "dtoken_types::contract::NodeAction::Preserve",
       "tests": {
-        "normal": ["code/crates/dtoken-types/tests/canonical_contract.rs"],
-        "error": ["code/crates/dtoken-types/tests/canonical_contract.rs"],
-        "recovery": ["code/crates/dtoken-types/tests/canonical_contract.rs"]
+        "normal": ["code/crates/dtoken-types/tests/hybrid_accounting.rs"],
+        "error": ["code/crates/dtoken-types/tests/hybrid_accounting.rs"],
+        "recovery": ["code/crates/dtoken-types/tests/hybrid_accounting.rs"]
       },
       "real_evidence": ["docs/releases/v0.0.1/REQUIREMENTS.md", "docs/releases/v0.0.1/VERIFICATION.md"],
       "gates": ["U0", "G1", "U1"],
@@ -214,9 +214,9 @@
       "owner_crate": "dtoken-runtime-pipeline",
       "dispatch_symbol": "dtoken_runtime_pipeline::RecoveryReceipt",
       "tests": {
-        "normal": ["code/crates/dtoken-runtime-pipeline/tests/sealed_receipts.rs"],
-        "error": ["code/crates/dtoken-runtime-pipeline/tests/sealed_receipts.rs"],
-        "recovery": ["code/crates/dtoken-runtime-pipeline/tests/sealed_receipts.rs"]
+        "normal": ["code/crates/dtoken-runtime-pipeline/tests/recovery_state_machine.rs"],
+        "error": ["code/crates/dtoken-runtime-pipeline/tests/recovery_state_machine.rs"],
+        "recovery": ["code/crates/dtoken-runtime-pipeline/tests/recovery_state_machine.rs"]
       },
       "real_evidence": ["docs/releases/v0.0.1/REQUIREMENTS.md", "docs/releases/v0.0.1/VERIFICATION.md"],
       "gates": ["U3", "G3", "U1"],
@@ -228,9 +228,9 @@
       "owner_crate": "dtoken-context-store",
       "dispatch_symbol": "dtoken_context_store::relay::RelayRegistry",
       "tests": {
-        "normal": ["code/crates/dtoken-context-store/tests/relay_contract.rs"],
-        "error": ["code/crates/dtoken-context-store/tests/relay_contract.rs"],
-        "recovery": ["code/crates/dtoken-context-store/tests/relay_contract.rs"]
+        "normal": ["code/crates/dtoken-context-store/tests/durability.rs"],
+        "error": ["code/crates/dtoken-context-store/tests/durability.rs"],
+        "recovery": ["code/crates/dtoken-context-store/tests/durability.rs"]
       },
       "real_evidence": ["docs/releases/v0.0.1/REQUIREMENTS.md", "docs/releases/v0.0.1/VERIFICATION.md"],
       "gates": ["G5", "U1", "N1"],
@@ -242,9 +242,9 @@
       "owner_crate": "dtoken-types",
       "dispatch_symbol": "dtoken_types::ProviderCachePolicy",
       "tests": {
-        "normal": ["code/crates/dtoken-types/tests/canonical_contract.rs"],
-        "error": ["code/crates/dtoken-types/tests/canonical_contract.rs"],
-        "recovery": ["code/crates/dtoken-types/tests/canonical_contract.rs"]
+        "normal": ["code/crates/dtoken-types/tests/hybrid_accounting.rs"],
+        "error": ["code/crates/dtoken-types/tests/hybrid_accounting.rs"],
+        "recovery": ["code/crates/dtoken-types/tests/hybrid_accounting.rs"]
       },
       "real_evidence": ["docs/releases/v0.0.1/REQUIREMENTS.md", "docs/releases/v0.0.1/VERIFICATION.md"],
       "gates": ["G2", "U1", "N1"],
@@ -256,9 +256,9 @@
       "owner_crate": "dtoken-types",
       "dispatch_symbol": "dtoken_types::RouteDecision::stable_digest",
       "tests": {
-        "normal": ["code/crates/dtoken-types/tests/route_decision_digest.rs"],
-        "error": ["code/crates/dtoken-types/tests/route_decision_digest.rs"],
-        "recovery": ["code/crates/dtoken-types/tests/route_decision_digest.rs"]
+        "normal": ["code/crates/dtoken-router/tests/route_decision.rs"],
+        "error": ["code/crates/dtoken-router/tests/route_decision.rs"],
+        "recovery": ["code/crates/dtoken-router/tests/route_decision.rs"]
       },
       "real_evidence": ["docs/releases/v0.0.1/REQUIREMENTS.md", "docs/releases/v0.0.1/VERIFICATION.md"],
       "gates": ["U0", "G1", "U1"],
@@ -270,9 +270,9 @@
       "owner_crate": "dtoken-types",
       "dispatch_symbol": "dtoken_types::contract::SafetyPolicy",
       "tests": {
-        "normal": ["code/crates/dtoken-types/tests/canonical_contract.rs"],
-        "error": ["code/crates/dtoken-types/tests/canonical_contract.rs"],
-        "recovery": ["code/crates/dtoken-types/tests/canonical_contract.rs"]
+        "normal": ["code/crates/dtoken-types/tests/hybrid_accounting.rs"],
+        "error": ["code/crates/dtoken-types/tests/hybrid_accounting.rs"],
+        "recovery": ["code/crates/dtoken-types/tests/hybrid_accounting.rs"]
       },
       "real_evidence": ["docs/releases/v0.0.1/REQUIREMENTS.md", "docs/releases/v0.0.1/VERIFICATION.md"],
       "gates": ["U0", "G1", "N6"],
@@ -284,9 +284,9 @@
       "owner_crate": "dtoken-runtime-pipeline",
       "dispatch_symbol": "dtoken_runtime_pipeline::ValidationReceipt",
       "tests": {
-        "normal": ["code/crates/dtoken-runtime-pipeline/tests/sealed_receipts.rs"],
-        "error": ["code/crates/dtoken-runtime-pipeline/tests/sealed_receipts.rs"],
-        "recovery": ["code/crates/dtoken-runtime-pipeline/tests/sealed_receipts.rs"]
+        "normal": ["code/crates/dtoken-runtime-pipeline/tests/recovery_state_machine.rs"],
+        "error": ["code/crates/dtoken-runtime-pipeline/tests/recovery_state_machine.rs"],
+        "recovery": ["code/crates/dtoken-runtime-pipeline/tests/recovery_state_machine.rs"]
       },
       "real_evidence": ["docs/releases/v0.0.1/REQUIREMENTS.md", "docs/releases/v0.0.1/VERIFICATION.md"],
       "gates": ["U0", "U3", "G1"],
@@ -298,9 +298,9 @@
       "owner_crate": "dtoken-types",
       "dispatch_symbol": "dtoken_types::contract::AccountingBuckets",
       "tests": {
-        "normal": ["code/crates/dtoken-types/tests/canonical_contract.rs"],
-        "error": ["code/crates/dtoken-types/tests/canonical_contract.rs"],
-        "recovery": ["code/crates/dtoken-types/tests/canonical_contract.rs"]
+        "normal": ["code/crates/dtoken-types/tests/hybrid_accounting.rs"],
+        "error": ["code/crates/dtoken-types/tests/hybrid_accounting.rs"],
+        "recovery": ["code/crates/dtoken-types/tests/hybrid_accounting.rs"]
       },
       "real_evidence": ["docs/releases/v0.0.1/REQUIREMENTS.md", "docs/releases/v0.0.1/VERIFICATION.md"],
       "gates": ["U0", "G1", "N1"],
@@ -312,9 +312,9 @@
       "owner_crate": "dtoken-types",
       "dispatch_symbol": "dtoken_types::contract::BoundRequest::new",
       "tests": {
-        "normal": ["code/crates/dtoken-types/tests/canonical_contract.rs"],
-        "error": ["code/crates/dtoken-types/tests/canonical_contract.rs"],
-        "recovery": ["code/crates/dtoken-types/tests/canonical_contract.rs"]
+        "normal": ["code/crates/dtoken-types/tests/hybrid_accounting.rs"],
+        "error": ["code/crates/dtoken-types/tests/hybrid_accounting.rs"],
+        "recovery": ["code/crates/dtoken-types/tests/hybrid_accounting.rs"]
       },
       "real_evidence": ["docs/releases/v0.0.1/REQUIREMENTS.md", "docs/releases/v0.0.1/VERIFICATION.md"],
       "gates": ["U0", "G1", "N10"],
@@ -326,9 +326,9 @@
       "owner_crate": "dtoken-types",
       "dispatch_symbol": "dtoken_types::contract::IrNode::new",
       "tests": {
-        "normal": ["code/crates/dtoken-types/tests/canonical_contract.rs"],
-        "error": ["code/crates/dtoken-types/tests/canonical_contract.rs"],
-        "recovery": ["code/crates/dtoken-types/tests/canonical_contract.rs"]
+        "normal": ["code/crates/dtoken-types/tests/hybrid_accounting.rs"],
+        "error": ["code/crates/dtoken-types/tests/hybrid_accounting.rs"],
+        "recovery": ["code/crates/dtoken-types/tests/hybrid_accounting.rs"]
       },
       "real_evidence": ["docs/releases/v0.0.1/REQUIREMENTS.md", "docs/releases/v0.0.1/VERIFICATION.md"],
       "gates": ["U0", "G1", "N10"],
@@ -340,9 +340,9 @@
       "owner_crate": "dtoken-types",
       "dispatch_symbol": "dtoken_types::contract::NodeAction::Preserve",
       "tests": {
-        "normal": ["code/crates/dtoken-types/tests/canonical_contract.rs"],
-        "error": ["code/crates/dtoken-types/tests/canonical_contract.rs"],
-        "recovery": ["code/crates/dtoken-types/tests/canonical_contract.rs"]
+        "normal": ["code/crates/dtoken-types/tests/hybrid_accounting.rs"],
+        "error": ["code/crates/dtoken-types/tests/hybrid_accounting.rs"],
+        "recovery": ["code/crates/dtoken-types/tests/hybrid_accounting.rs"]
       },
       "real_evidence": ["docs/releases/v0.0.1/REQUIREMENTS.md", "docs/releases/v0.0.1/VERIFICATION.md"],
       "gates": ["U0", "U2", "N10"],
@@ -354,9 +354,9 @@
       "owner_crate": "dtoken-types",
       "dispatch_symbol": "dtoken_types::contract::NodeAction::Reuse",
       "tests": {
-        "normal": ["code/crates/dtoken-types/tests/canonical_contract.rs"],
-        "error": ["code/crates/dtoken-types/tests/canonical_contract.rs"],
-        "recovery": ["code/crates/dtoken-types/tests/canonical_contract.rs"]
+        "normal": ["code/crates/dtoken-types/tests/hybrid_accounting.rs"],
+        "error": ["code/crates/dtoken-types/tests/hybrid_accounting.rs"],
+        "recovery": ["code/crates/dtoken-types/tests/hybrid_accounting.rs"]
       },
       "real_evidence": ["docs/releases/v0.0.1/REQUIREMENTS.md", "docs/releases/v0.0.1/VERIFICATION.md"],
       "gates": ["U0", "U2", "N10"],
@@ -368,9 +368,9 @@
       "owner_crate": "dtoken-types",
       "dispatch_symbol": "dtoken_types::contract::NodeAction::HeadroomSemantic",
       "tests": {
-        "normal": ["code/crates/dtoken-types/tests/canonical_contract.rs"],
-        "error": ["code/crates/dtoken-types/tests/canonical_contract.rs"],
-        "recovery": ["code/crates/dtoken-types/tests/canonical_contract.rs"]
+        "normal": ["code/crates/dtoken-types/tests/hybrid_accounting.rs"],
+        "error": ["code/crates/dtoken-types/tests/hybrid_accounting.rs"],
+        "recovery": ["code/crates/dtoken-types/tests/hybrid_accounting.rs"]
       },
       "real_evidence": ["docs/releases/v0.0.1/REQUIREMENTS.md", "docs/releases/v0.0.1/VERIFICATION.md"],
       "gates": ["U0", "U2", "N10"],
@@ -382,9 +382,9 @@
       "owner_crate": "dtoken-types",
       "dispatch_symbol": "dtoken_types::contract::NodeAction::RtkCommandOutput",
       "tests": {
-        "normal": ["code/crates/dtoken-types/tests/canonical_contract.rs"],
-        "error": ["code/crates/dtoken-types/tests/canonical_contract.rs"],
-        "recovery": ["code/crates/dtoken-types/tests/canonical_contract.rs"]
+        "normal": ["code/crates/dtoken-types/tests/hybrid_accounting.rs"],
+        "error": ["code/crates/dtoken-types/tests/hybrid_accounting.rs"],
+        "recovery": ["code/crates/dtoken-types/tests/hybrid_accounting.rs"]
       },
       "real_evidence": ["docs/releases/v0.0.1/REQUIREMENTS.md", "docs/releases/v0.0.1/VERIFICATION.md"],
       "gates": ["U0", "U2", "N10"],
@@ -396,9 +396,9 @@
       "owner_crate": "dtoken-types",
       "dispatch_symbol": "dtoken_types::contract::NodeAction::Optical",
       "tests": {
-        "normal": ["code/crates/dtoken-types/tests/canonical_contract.rs"],
-        "error": ["code/crates/dtoken-types/tests/canonical_contract.rs"],
-        "recovery": ["code/crates/dtoken-types/tests/canonical_contract.rs"]
+        "normal": ["code/crates/dtoken-types/tests/hybrid_accounting.rs"],
+        "error": ["code/crates/dtoken-types/tests/hybrid_accounting.rs"],
+        "recovery": ["code/crates/dtoken-types/tests/hybrid_accounting.rs"]
       },
       "real_evidence": ["docs/releases/v0.0.1/REQUIREMENTS.md", "docs/releases/v0.0.1/VERIFICATION.md"],
       "gates": ["U0", "U2", "N10"],
@@ -410,9 +410,9 @@
       "owner_crate": "dtoken-types",
       "dispatch_symbol": "dtoken_types::contract::NodePlan::new",
       "tests": {
-        "normal": ["code/crates/dtoken-types/tests/canonical_contract.rs"],
-        "error": ["code/crates/dtoken-types/tests/canonical_contract.rs"],
-        "recovery": ["code/crates/dtoken-types/tests/canonical_contract.rs"]
+        "normal": ["code/crates/dtoken-types/tests/hybrid_accounting.rs"],
+        "error": ["code/crates/dtoken-types/tests/hybrid_accounting.rs"],
+        "recovery": ["code/crates/dtoken-types/tests/hybrid_accounting.rs"]
       },
       "real_evidence": ["docs/releases/v0.0.1/REQUIREMENTS.md", "docs/releases/v0.0.1/VERIFICATION.md"],
       "gates": ["U0", "G1", "N10"],
@@ -424,9 +424,9 @@
       "owner_crate": "dtoken-types",
       "dispatch_symbol": "dtoken_types::contract::StageArtifact::new",
       "tests": {
-        "normal": ["code/crates/dtoken-types/tests/canonical_contract.rs"],
-        "error": ["code/crates/dtoken-types/tests/canonical_contract.rs"],
-        "recovery": ["code/crates/dtoken-types/tests/canonical_contract.rs"]
+        "normal": ["code/crates/dtoken-types/tests/hybrid_accounting.rs"],
+        "error": ["code/crates/dtoken-types/tests/hybrid_accounting.rs"],
+        "recovery": ["code/crates/dtoken-types/tests/hybrid_accounting.rs"]
       },
       "real_evidence": ["docs/releases/v0.0.1/REQUIREMENTS.md", "docs/releases/v0.0.1/VERIFICATION.md"],
       "gates": ["U0", "G1", "N10"],
@@ -438,9 +438,9 @@
       "owner_crate": "dtoken-types",
       "dispatch_symbol": "dtoken_types::contract::OptimizationManifest::new",
       "tests": {
-        "normal": ["code/crates/dtoken-types/tests/canonical_contract.rs"],
-        "error": ["code/crates/dtoken-types/tests/canonical_contract.rs"],
-        "recovery": ["code/crates/dtoken-types/tests/canonical_contract.rs"]
+        "normal": ["code/crates/dtoken-types/tests/hybrid_accounting.rs"],
+        "error": ["code/crates/dtoken-types/tests/hybrid_accounting.rs"],
+        "recovery": ["code/crates/dtoken-types/tests/hybrid_accounting.rs"]
       },
       "real_evidence": ["docs/releases/v0.0.1/REQUIREMENTS.md", "docs/releases/v0.0.1/VERIFICATION.md"],
       "gates": ["U0", "G1", "N10"],
@@ -452,9 +452,9 @@
       "owner_crate": "dtoken-types",
       "dispatch_symbol": "dtoken_types::contract::SafetyPolicy::default",
       "tests": {
-        "normal": ["code/crates/dtoken-types/tests/canonical_contract.rs"],
-        "error": ["code/crates/dtoken-types/tests/canonical_contract.rs"],
-        "recovery": ["code/crates/dtoken-types/tests/canonical_contract.rs"]
+        "normal": ["code/crates/dtoken-types/tests/hybrid_accounting.rs"],
+        "error": ["code/crates/dtoken-types/tests/hybrid_accounting.rs"],
+        "recovery": ["code/crates/dtoken-types/tests/hybrid_accounting.rs"]
       },
       "real_evidence": ["docs/releases/v0.0.1/REQUIREMENTS.md", "docs/releases/v0.0.1/VERIFICATION.md"],
       "gates": ["U0", "G1", "N6"],
@@ -466,9 +466,9 @@
       "owner_crate": "dtoken-types",
       "dispatch_symbol": "dtoken_types::contract::SafetyPolicy::enhanced",
       "tests": {
-        "normal": ["code/crates/dtoken-types/tests/canonical_contract.rs"],
-        "error": ["code/crates/dtoken-types/tests/canonical_contract.rs"],
-        "recovery": ["code/crates/dtoken-types/tests/canonical_contract.rs"]
+        "normal": ["code/crates/dtoken-types/tests/hybrid_accounting.rs"],
+        "error": ["code/crates/dtoken-types/tests/hybrid_accounting.rs"],
+        "recovery": ["code/crates/dtoken-types/tests/hybrid_accounting.rs"]
       },
       "real_evidence": ["docs/releases/v0.0.1/REQUIREMENTS.md", "docs/releases/v0.0.1/VERIFICATION.md"],
       "gates": ["U0", "G1", "N6"],
@@ -480,9 +480,9 @@
       "owner_crate": "dtoken-types",
       "dispatch_symbol": "dtoken_types::contract::SafetyPolicy::lossy",
       "tests": {
-        "normal": ["code/crates/dtoken-types/tests/canonical_contract.rs"],
-        "error": ["code/crates/dtoken-types/tests/canonical_contract.rs"],
-        "recovery": ["code/crates/dtoken-types/tests/canonical_contract.rs"]
+        "normal": ["code/crates/dtoken-types/tests/hybrid_accounting.rs"],
+        "error": ["code/crates/dtoken-types/tests/hybrid_accounting.rs"],
+        "recovery": ["code/crates/dtoken-types/tests/hybrid_accounting.rs"]
       },
       "real_evidence": ["docs/releases/v0.0.1/REQUIREMENTS.md", "docs/releases/v0.0.1/VERIFICATION.md"],
       "gates": ["U0", "G1", "N6"],
@@ -494,9 +494,9 @@
       "owner_crate": "dtoken-types",
       "dispatch_symbol": "dtoken_types::contract::AccountingBuckets",
       "tests": {
-        "normal": ["code/crates/dtoken-types/tests/canonical_contract.rs"],
-        "error": ["code/crates/dtoken-types/tests/canonical_contract.rs"],
-        "recovery": ["code/crates/dtoken-types/tests/canonical_contract.rs"]
+        "normal": ["code/crates/dtoken-types/tests/hybrid_accounting.rs"],
+        "error": ["code/crates/dtoken-types/tests/hybrid_accounting.rs"],
+        "recovery": ["code/crates/dtoken-types/tests/hybrid_accounting.rs"]
       },
       "real_evidence": ["docs/releases/v0.0.1/REQUIREMENTS.md", "docs/releases/v0.0.1/VERIFICATION.md"],
       "gates": ["U0", "G1", "N1"],
@@ -508,9 +508,9 @@
       "owner_crate": "dtoken-types",
       "dispatch_symbol": "dtoken_types::contract::AccountingBuckets",
       "tests": {
-        "normal": ["code/crates/dtoken-types/tests/canonical_contract.rs"],
-        "error": ["code/crates/dtoken-types/tests/canonical_contract.rs"],
-        "recovery": ["code/crates/dtoken-types/tests/canonical_contract.rs"]
+        "normal": ["code/crates/dtoken-types/tests/hybrid_accounting.rs"],
+        "error": ["code/crates/dtoken-types/tests/hybrid_accounting.rs"],
+        "recovery": ["code/crates/dtoken-types/tests/hybrid_accounting.rs"]
       },
       "real_evidence": ["docs/releases/v0.0.1/REQUIREMENTS.md", "docs/releases/v0.0.1/VERIFICATION.md"],
       "gates": ["U0", "G1", "N1"],
@@ -522,9 +522,9 @@
       "owner_crate": "dtoken-types",
       "dispatch_symbol": "dtoken_types::contract::AccountingBuckets",
       "tests": {
-        "normal": ["code/crates/dtoken-types/tests/canonical_contract.rs"],
-        "error": ["code/crates/dtoken-types/tests/canonical_contract.rs"],
-        "recovery": ["code/crates/dtoken-types/tests/canonical_contract.rs"]
+        "normal": ["code/crates/dtoken-types/tests/hybrid_accounting.rs"],
+        "error": ["code/crates/dtoken-types/tests/hybrid_accounting.rs"],
+        "recovery": ["code/crates/dtoken-types/tests/hybrid_accounting.rs"]
       },
       "real_evidence": ["docs/releases/v0.0.1/REQUIREMENTS.md", "docs/releases/v0.0.1/VERIFICATION.md"],
       "gates": ["U0", "G1", "N1"],
@@ -536,9 +536,9 @@
       "owner_crate": "dtoken-types",
       "dispatch_symbol": "dtoken_types::contract::AccountingBuckets",
       "tests": {
-        "normal": ["code/crates/dtoken-types/tests/canonical_contract.rs"],
-        "error": ["code/crates/dtoken-types/tests/canonical_contract.rs"],
-        "recovery": ["code/crates/dtoken-types/tests/canonical_contract.rs"]
+        "normal": ["code/crates/dtoken-types/tests/hybrid_accounting.rs"],
+        "error": ["code/crates/dtoken-types/tests/hybrid_accounting.rs"],
+        "recovery": ["code/crates/dtoken-types/tests/hybrid_accounting.rs"]
       },
       "real_evidence": ["docs/releases/v0.0.1/REQUIREMENTS.md", "docs/releases/v0.0.1/VERIFICATION.md"],
       "gates": ["U0", "G1", "N1"],
@@ -550,9 +550,9 @@
       "owner_crate": "dtoken-types",
       "dispatch_symbol": "dtoken_types::RequestScope::new",
       "tests": {
-        "normal": ["code/crates/dtoken-types/tests/canonical_contract.rs"],
-        "error": ["code/crates/dtoken-types/tests/canonical_contract.rs"],
-        "recovery": ["code/crates/dtoken-types/tests/canonical_contract.rs"]
+        "normal": ["code/crates/dtoken-types/tests/hybrid_accounting.rs"],
+        "error": ["code/crates/dtoken-types/tests/hybrid_accounting.rs"],
+        "recovery": ["code/crates/dtoken-types/tests/hybrid_accounting.rs"]
       },
       "real_evidence": ["docs/releases/v0.0.1/REQUIREMENTS.md", "docs/releases/v0.0.1/VERIFICATION.md"],
       "gates": ["U0", "G1", "N10"],
@@ -564,9 +564,9 @@
       "owner_crate": "dtoken-types",
       "dispatch_symbol": "dtoken_types::EvidenceValue::known",
       "tests": {
-        "normal": ["code/crates/dtoken-types/tests/canonical_contract.rs"],
-        "error": ["code/crates/dtoken-types/tests/canonical_contract.rs"],
-        "recovery": ["code/crates/dtoken-types/tests/canonical_contract.rs"]
+        "normal": ["code/crates/dtoken-types/tests/hybrid_accounting.rs"],
+        "error": ["code/crates/dtoken-types/tests/hybrid_accounting.rs"],
+        "recovery": ["code/crates/dtoken-types/tests/hybrid_accounting.rs"]
       },
       "real_evidence": ["docs/releases/v0.0.1/REQUIREMENTS.md", "docs/releases/v0.0.1/VERIFICATION.md"],
       "gates": ["U0", "G1", "N10"],
@@ -578,9 +578,9 @@
       "owner_crate": "dtoken-types",
       "dispatch_symbol": "dtoken_types::ProviderCachePolicy::is_well_formed",
       "tests": {
-        "normal": ["code/crates/dtoken-types/tests/canonical_contract.rs"],
-        "error": ["code/crates/dtoken-types/tests/canonical_contract.rs"],
-        "recovery": ["code/crates/dtoken-types/tests/canonical_contract.rs"]
+        "normal": ["code/crates/dtoken-types/tests/hybrid_accounting.rs"],
+        "error": ["code/crates/dtoken-types/tests/hybrid_accounting.rs"],
+        "recovery": ["code/crates/dtoken-types/tests/hybrid_accounting.rs"]
       },
       "real_evidence": ["docs/releases/v0.0.1/REQUIREMENTS.md", "docs/releases/v0.0.1/VERIFICATION.md"],
       "gates": ["G2", "U1", "N10"],
@@ -592,9 +592,9 @@
       "owner_crate": "dtoken-types",
       "dispatch_symbol": "dtoken_types::ProviderCacheObservation::new",
       "tests": {
-        "normal": ["code/crates/dtoken-types/tests/canonical_contract.rs"],
-        "error": ["code/crates/dtoken-types/tests/canonical_contract.rs"],
-        "recovery": ["code/crates/dtoken-types/tests/canonical_contract.rs"]
+        "normal": ["code/crates/dtoken-types/tests/hybrid_accounting.rs"],
+        "error": ["code/crates/dtoken-types/tests/hybrid_accounting.rs"],
+        "recovery": ["code/crates/dtoken-types/tests/hybrid_accounting.rs"]
       },
       "real_evidence": ["docs/releases/v0.0.1/REQUIREMENTS.md", "docs/releases/v0.0.1/VERIFICATION.md"],
       "gates": ["G2", "U1", "N10"],
@@ -606,9 +606,9 @@
       "owner_crate": "dtoken-types",
       "dispatch_symbol": "dtoken_types::CapabilityEvidence::new",
       "tests": {
-        "normal": ["code/crates/dtoken-types/tests/canonical_contract.rs"],
-        "error": ["code/crates/dtoken-types/tests/canonical_contract.rs"],
-        "recovery": ["code/crates/dtoken-types/tests/canonical_contract.rs"]
+        "normal": ["code/crates/dtoken-types/tests/hybrid_accounting.rs"],
+        "error": ["code/crates/dtoken-types/tests/hybrid_accounting.rs"],
+        "recovery": ["code/crates/dtoken-types/tests/hybrid_accounting.rs"]
       },
       "real_evidence": ["docs/releases/v0.0.1/REQUIREMENTS.md", "docs/releases/v0.0.1/VERIFICATION.md"],
       "gates": ["U0", "G1", "N10"],
@@ -620,9 +620,9 @@
       "owner_crate": "dtoken-types",
       "dispatch_symbol": "dtoken_types::CapabilityRegistrySnapshot::new",
       "tests": {
-        "normal": ["code/crates/dtoken-types/tests/canonical_contract.rs"],
-        "error": ["code/crates/dtoken-types/tests/canonical_contract.rs"],
-        "recovery": ["code/crates/dtoken-types/tests/canonical_contract.rs"]
+        "normal": ["code/crates/dtoken-types/tests/hybrid_accounting.rs"],
+        "error": ["code/crates/dtoken-types/tests/hybrid_accounting.rs"],
+        "recovery": ["code/crates/dtoken-types/tests/hybrid_accounting.rs"]
       },
       "real_evidence": ["docs/releases/v0.0.1/REQUIREMENTS.md", "docs/releases/v0.0.1/VERIFICATION.md"],
       "gates": ["U1", "G0", "N10"],
@@ -662,9 +662,9 @@
       "owner_crate": "dtoken-types",
       "dispatch_symbol": "dtoken_types::RequestLog",
       "tests": {
-        "normal": ["code/crates/dtoken-types/tests/canonical_contract.rs"],
-        "error": ["code/crates/dtoken-types/tests/canonical_contract.rs"],
-        "recovery": ["code/crates/dtoken-types/tests/canonical_contract.rs"]
+        "normal": ["code/crates/dtoken-types/tests/hybrid_accounting.rs"],
+        "error": ["code/crates/dtoken-types/tests/hybrid_accounting.rs"],
+        "recovery": ["code/crates/dtoken-types/tests/hybrid_accounting.rs"]
       },
       "real_evidence": ["docs/releases/v0.0.1/REQUIREMENTS.md", "docs/releases/v0.0.1/VERIFICATION.md"],
       "gates": ["N1", "G6", "N10"],
@@ -676,9 +676,9 @@
       "owner_crate": "dtoken-types",
       "dispatch_symbol": "dtoken_types::OptimizationReceipt::from_request_log",
       "tests": {
-        "normal": ["code/crates/dtoken-types/tests/receipt_projection.rs"],
-        "error": ["code/crates/dtoken-types/tests/receipt_projection.rs"],
-        "recovery": ["code/crates/dtoken-types/tests/receipt_projection.rs"]
+        "normal": ["code/crates/dtoken-types/tests/hybrid_accounting.rs"],
+        "error": ["code/crates/dtoken-types/tests/hybrid_accounting.rs"],
+        "recovery": ["code/crates/dtoken-types/tests/hybrid_accounting.rs"]
       },
       "real_evidence": ["docs/releases/v0.0.1/REQUIREMENTS.md", "docs/releases/v0.0.1/VERIFICATION.md"],
       "gates": ["N1", "G6", "N10"],
@@ -830,9 +830,9 @@
       "owner_crate": "dtoken-types",
       "dispatch_symbol": "dtoken_types::RouteDecision::stable_digest",
       "tests": {
-        "normal": ["code/crates/dtoken-types/tests/route_decision_digest.rs"],
-        "error": ["code/crates/dtoken-types/tests/route_decision_digest.rs"],
-        "recovery": ["code/crates/dtoken-types/tests/route_decision_digest.rs"]
+        "normal": ["code/crates/dtoken-router/tests/route_decision.rs"],
+        "error": ["code/crates/dtoken-router/tests/route_decision.rs"],
+        "recovery": ["code/crates/dtoken-router/tests/route_decision.rs"]
       },
       "real_evidence": ["docs/releases/v0.0.1/REQUIREMENTS.md", "docs/releases/v0.0.1/VERIFICATION.md"],
       "gates": ["U0", "G1", "N10"],
@@ -844,9 +844,9 @@
       "owner_crate": "dtoken-router",
       "dispatch_symbol": "dtoken_router::Router::decide",
       "tests": {
-        "normal": ["code/crates/dtoken-types/tests/canonical_contract.rs"],
-        "error": ["code/crates/dtoken-types/tests/canonical_contract.rs"],
-        "recovery": ["code/crates/dtoken-types/tests/canonical_contract.rs"]
+        "normal": ["code/crates/dtoken-types/tests/hybrid_accounting.rs"],
+        "error": ["code/crates/dtoken-types/tests/hybrid_accounting.rs"],
+        "recovery": ["code/crates/dtoken-types/tests/hybrid_accounting.rs"]
       },
       "real_evidence": ["docs/releases/v0.0.1/REQUIREMENTS.md", "docs/releases/v0.0.1/VERIFICATION.md"],
       "gates": ["U0", "G1", "N10"],
@@ -914,9 +914,9 @@
       "owner_crate": "dtoken-runtime-pipeline",
       "dispatch_symbol": "dtoken_runtime_pipeline::SendCommitReceipt::mint",
       "tests": {
-        "normal": ["code/crates/dtoken-runtime-pipeline/tests/sealed_receipts.rs"],
-        "error": ["code/crates/dtoken-runtime-pipeline/tests/sealed_receipts.rs"],
-        "recovery": ["code/crates/dtoken-runtime-pipeline/tests/sealed_receipts.rs"]
+        "normal": ["code/crates/dtoken-runtime-pipeline/tests/recovery_state_machine.rs"],
+        "error": ["code/crates/dtoken-runtime-pipeline/tests/recovery_state_machine.rs"],
+        "recovery": ["code/crates/dtoken-runtime-pipeline/tests/recovery_state_machine.rs"]
       },
       "real_evidence": ["docs/releases/v0.0.1/REQUIREMENTS.md", "docs/releases/v0.0.1/VERIFICATION.md"],
       "gates": ["U0", "U3", "N10"],
@@ -928,9 +928,9 @@
       "owner_crate": "dtoken-runtime-pipeline",
       "dispatch_symbol": "dtoken_runtime_pipeline::ValidationReceipt::mint",
       "tests": {
-        "normal": ["code/crates/dtoken-runtime-pipeline/tests/sealed_receipts.rs"],
-        "error": ["code/crates/dtoken-runtime-pipeline/tests/sealed_receipts.rs"],
-        "recovery": ["code/crates/dtoken-runtime-pipeline/tests/sealed_receipts.rs"]
+        "normal": ["code/crates/dtoken-runtime-pipeline/tests/recovery_state_machine.rs"],
+        "error": ["code/crates/dtoken-runtime-pipeline/tests/recovery_state_machine.rs"],
+        "recovery": ["code/crates/dtoken-runtime-pipeline/tests/recovery_state_machine.rs"]
       },
       "real_evidence": ["docs/releases/v0.0.1/REQUIREMENTS.md", "docs/releases/v0.0.1/VERIFICATION.md"],
       "gates": ["U0", "U3", "N10"],
@@ -942,9 +942,9 @@
       "owner_crate": "dtoken-runtime-pipeline",
       "dispatch_symbol": "dtoken_runtime_pipeline::RecoveryReceipt::mint",
       "tests": {
-        "normal": ["code/crates/dtoken-runtime-pipeline/tests/sealed_receipts.rs"],
-        "error": ["code/crates/dtoken-runtime-pipeline/tests/sealed_receipts.rs"],
-        "recovery": ["code/crates/dtoken-runtime-pipeline/tests/sealed_receipts.rs"]
+        "normal": ["code/crates/dtoken-runtime-pipeline/tests/recovery_state_machine.rs"],
+        "error": ["code/crates/dtoken-runtime-pipeline/tests/recovery_state_machine.rs"],
+        "recovery": ["code/crates/dtoken-runtime-pipeline/tests/recovery_state_machine.rs"]
       },
       "real_evidence": ["docs/releases/v0.0.1/REQUIREMENTS.md", "docs/releases/v0.0.1/VERIFICATION.md"],
       "gates": ["U3", "G3", "N10"],
@@ -956,9 +956,9 @@
       "owner_crate": "dtoken-runtime-pipeline",
       "dispatch_symbol": "dtoken_runtime_pipeline::SendCommitReceipt",
       "tests": {
-        "normal": ["code/crates/dtoken-runtime-pipeline/tests/sealed_receipts.rs"],
-        "error": ["code/crates/dtoken-runtime-pipeline/tests/sealed_receipts.rs"],
-        "recovery": ["code/crates/dtoken-runtime-pipeline/tests/sealed_receipts.rs"]
+        "normal": ["code/crates/dtoken-runtime-pipeline/tests/recovery_state_machine.rs"],
+        "error": ["code/crates/dtoken-runtime-pipeline/tests/recovery_state_machine.rs"],
+        "recovery": ["code/crates/dtoken-runtime-pipeline/tests/recovery_state_machine.rs"]
       },
       "real_evidence": ["docs/releases/v0.0.1/REQUIREMENTS.md", "docs/releases/v0.0.1/VERIFICATION.md"],
       "gates": ["U0", "U3", "N10"],
@@ -1082,9 +1082,9 @@
       "owner_crate": "dtoken-context-store",
       "dispatch_symbol": "dtoken_context_store::SharedContext",
       "tests": {
-        "normal": ["code/crates/dtoken-context-store/tests/shared_context.rs"],
-        "error": ["code/crates/dtoken-context-store/tests/shared_context.rs"],
-        "recovery": ["code/crates/dtoken-context-store/tests/shared_context.rs"]
+        "normal": ["code/crates/dtoken-context-store/tests/durability.rs"],
+        "error": ["code/crates/dtoken-context-store/tests/durability.rs"],
+        "recovery": ["code/crates/dtoken-context-store/tests/durability.rs"]
       },
       "real_evidence": ["docs/releases/v0.0.1/REQUIREMENTS.md", "docs/releases/v0.0.1/VERIFICATION.md"],
       "gates": ["G1", "U2", "N10"],
@@ -1096,9 +1096,9 @@
       "owner_crate": "dtoken-context-store",
       "dispatch_symbol": "dtoken_context_store::SessionCache",
       "tests": {
-        "normal": ["code/crates/dtoken-context-store/tests/shared_context.rs"],
-        "error": ["code/crates/dtoken-context-store/tests/shared_context.rs"],
-        "recovery": ["code/crates/dtoken-context-store/tests/shared_context.rs"]
+        "normal": ["code/crates/dtoken-context-store/tests/durability.rs"],
+        "error": ["code/crates/dtoken-context-store/tests/durability.rs"],
+        "recovery": ["code/crates/dtoken-context-store/tests/durability.rs"]
       },
       "real_evidence": ["docs/releases/v0.0.1/REQUIREMENTS.md", "docs/releases/v0.0.1/VERIFICATION.md"],
       "gates": ["G1", "U2", "N10"],
@@ -1110,9 +1110,9 @@
       "owner_crate": "dtoken-context-store",
       "dispatch_symbol": "dtoken_context_store::ContextRelay",
       "tests": {
-        "normal": ["code/crates/dtoken-context-store/tests/shared_context.rs"],
-        "error": ["code/crates/dtoken-context-store/tests/shared_context.rs"],
-        "recovery": ["code/crates/dtoken-context-store/tests/shared_context.rs"]
+        "normal": ["code/crates/dtoken-context-store/tests/durability.rs"],
+        "error": ["code/crates/dtoken-context-store/tests/durability.rs"],
+        "recovery": ["code/crates/dtoken-context-store/tests/durability.rs"]
       },
       "real_evidence": ["docs/releases/v0.0.1/REQUIREMENTS.md", "docs/releases/v0.0.1/VERIFICATION.md"],
       "gates": ["G5", "U2", "N10"],
@@ -1124,9 +1124,9 @@
       "owner_crate": "dtoken-context-store",
       "dispatch_symbol": "dtoken_context_store::retrieve",
       "tests": {
-        "normal": ["code/crates/dtoken-context-store/tests/shared_context.rs"],
-        "error": ["code/crates/dtoken-context-store/tests/shared_context.rs"],
-        "recovery": ["code/crates/dtoken-context-store/tests/shared_context.rs"]
+        "normal": ["code/crates/dtoken-context-store/tests/durability.rs"],
+        "error": ["code/crates/dtoken-context-store/tests/durability.rs"],
+        "recovery": ["code/crates/dtoken-context-store/tests/durability.rs"]
       },
       "real_evidence": ["docs/releases/v0.0.1/REQUIREMENTS.md", "docs/releases/v0.0.1/VERIFICATION.md"],
       "gates": ["G5", "U2", "N10"],
@@ -1138,9 +1138,9 @@
       "owner_crate": "dtoken-runtime-pipeline",
       "dispatch_symbol": "dtoken_runtime_pipeline::RecoveryReceipt",
       "tests": {
-        "normal": ["code/crates/dtoken-runtime-pipeline/tests/sealed_receipts.rs"],
-        "error": ["code/crates/dtoken-runtime-pipeline/tests/sealed_receipts.rs"],
-        "recovery": ["code/crates/dtoken-runtime-pipeline/tests/sealed_receipts.rs"]
+        "normal": ["code/crates/dtoken-runtime-pipeline/tests/recovery_state_machine.rs"],
+        "error": ["code/crates/dtoken-runtime-pipeline/tests/recovery_state_machine.rs"],
+        "recovery": ["code/crates/dtoken-runtime-pipeline/tests/recovery_state_machine.rs"]
       },
       "real_evidence": ["docs/releases/v0.0.1/REQUIREMENTS.md", "docs/releases/v0.0.1/VERIFICATION.md"],
       "gates": ["U3", "G3", "N10"],
@@ -1152,9 +1152,9 @@
       "owner_crate": "dtoken-context-store",
       "dispatch_symbol": "dtoken_context_store::SharedContext",
       "tests": {
-        "normal": ["code/crates/dtoken-context-store/tests/shared_context.rs"],
-        "error": ["code/crates/dtoken-context-store/tests/shared_context.rs"],
-        "recovery": ["code/crates/dtoken-context-store/tests/shared_context.rs"]
+        "normal": ["code/crates/dtoken-context-store/tests/durability.rs"],
+        "error": ["code/crates/dtoken-context-store/tests/durability.rs"],
+        "recovery": ["code/crates/dtoken-context-store/tests/durability.rs"]
       },
       "real_evidence": ["docs/releases/v0.0.1/REQUIREMENTS.md", "docs/releases/v0.0.1/VERIFICATION.md"],
       "gates": ["G3", "U3", "N10"],
@@ -1166,9 +1166,9 @@
       "owner_crate": "dtoken-context-store",
       "dispatch_symbol": "dtoken_context_store::SharedContext",
       "tests": {
-        "normal": ["code/crates/dtoken-context-store/tests/shared_context.rs"],
-        "error": ["code/crates/dtoken-context-store/tests/shared_context.rs"],
-        "recovery": ["code/crates/dtoken-context-store/tests/shared_context.rs"]
+        "normal": ["code/crates/dtoken-context-store/tests/durability.rs"],
+        "error": ["code/crates/dtoken-context-store/tests/durability.rs"],
+        "recovery": ["code/crates/dtoken-context-store/tests/durability.rs"]
       },
       "real_evidence": ["docs/releases/v0.0.1/REQUIREMENTS.md", "docs/releases/v0.0.1/VERIFICATION.md"],
       "gates": ["G3", "U3", "N10"],
@@ -1180,9 +1180,9 @@
       "owner_crate": "dtoken-preprocessor",
       "dispatch_symbol": "dtoken_preprocessor::rtk::classify",
       "tests": {
-        "normal": ["code/crates/dtoken-preprocessor/tests/rtk_filters.rs"],
-        "error": ["code/crates/dtoken-preprocessor/tests/rtk_filters.rs"],
-        "recovery": ["code/crates/dtoken-preprocessor/tests/rtk_filters.rs"]
+        "normal": ["code/crates/dtoken-preprocessor/src/filters.rs"],
+        "error": ["code/crates/dtoken-preprocessor/src/filters.rs"],
+        "recovery": ["code/crates/dtoken-preprocessor/src/filters.rs"]
       },
       "real_evidence": ["docs/releases/v0.0.1/REQUIREMENTS.md", "docs/releases/v0.0.1/VERIFICATION.md"],
       "gates": ["G5", "U2", "N10"],
@@ -1194,9 +1194,9 @@
       "owner_crate": "dtoken-preprocessor",
       "dispatch_symbol": "dtoken_preprocessor::rtk::ManagedRtkLifecycle",
       "tests": {
-        "normal": ["code/crates/dtoken-preprocessor/tests/rtk_hook_tee.rs"],
-        "error": ["code/crates/dtoken-preprocessor/tests/rtk_hook_tee.rs"],
-        "recovery": ["code/crates/dtoken-preprocessor/tests/rtk_hook_tee.rs"]
+        "normal": ["code/crates/dtoken-preprocessor/src/lib.rs"],
+        "error": ["code/crates/dtoken-preprocessor/src/lib.rs"],
+        "recovery": ["code/crates/dtoken-preprocessor/src/lib.rs"]
       },
       "real_evidence": ["docs/releases/v0.0.1/REQUIREMENTS.md", "docs/releases/v0.0.1/VERIFICATION.md"],
       "gates": ["G5", "U2", "N10"],
@@ -1208,9 +1208,9 @@
       "owner_crate": "dtoken-preprocessor",
       "dispatch_symbol": "dtoken_preprocessor::rtk::RtkCommandOutput",
       "tests": {
-        "normal": ["code/crates/dtoken-preprocessor/tests/rtk_planner_accounting.rs"],
-        "error": ["code/crates/dtoken-preprocessor/tests/rtk_planner_accounting.rs"],
-        "recovery": ["code/crates/dtoken-preprocessor/tests/rtk_planner_accounting.rs"]
+        "normal": ["code/crates/dtoken-preprocessor/src/lib.rs"],
+        "error": ["code/crates/dtoken-preprocessor/src/lib.rs"],
+        "recovery": ["code/crates/dtoken-preprocessor/src/lib.rs"]
       },
       "real_evidence": ["docs/releases/v0.0.1/REQUIREMENTS.md", "docs/releases/v0.0.1/VERIFICATION.md"],
       "gates": ["G5", "U2", "N10"],
@@ -1222,9 +1222,9 @@
       "owner_crate": "dtoken-compress",
       "dispatch_symbol": "dtoken_compress::optical::render",
       "tests": {
-        "normal": ["code/crates/dtoken-compress/tests/optical_render.rs"],
-        "error": ["code/crates/dtoken-compress/tests/optical_render.rs"],
-        "recovery": ["code/crates/dtoken-compress/tests/optical_render.rs"]
+        "normal": ["code/crates/dtoken-compress/tests/optical_render_evidence.rs"],
+        "error": ["code/crates/dtoken-compress/tests/optical_render_evidence.rs"],
+        "recovery": ["code/crates/dtoken-compress/tests/optical_render_evidence.rs"]
       },
       "real_evidence": ["docs/releases/v0.0.1/REQUIREMENTS.md", "docs/releases/v0.0.1/VERIFICATION.md"],
       "gates": ["U7", "U8", "N10"],
@@ -1236,9 +1236,9 @@
       "owner_crate": "dtoken-compress",
       "dispatch_symbol": "dtoken_compress::optical::history",
       "tests": {
-        "normal": ["code/crates/dtoken-compress/tests/optical_history.rs"],
-        "error": ["code/crates/dtoken-compress/tests/optical_history.rs"],
-        "recovery": ["code/crates/dtoken-compress/tests/optical_history.rs"]
+        "normal": ["code/crates/dtoken-compress/tests/optical_render_evidence.rs"],
+        "error": ["code/crates/dtoken-compress/tests/optical_render_evidence.rs"],
+        "recovery": ["code/crates/dtoken-compress/tests/optical_render_evidence.rs"]
       },
       "real_evidence": ["docs/releases/v0.0.1/REQUIREMENTS.md", "docs/releases/v0.0.1/VERIFICATION.md"],
       "gates": ["U7", "U2", "N10"],
@@ -1250,9 +1250,9 @@
       "owner_crate": "dtoken-compress",
       "dispatch_symbol": "dtoken_compress::optical::attest",
       "tests": {
-        "normal": ["code/crates/dtoken-compress/tests/optical_attestation.rs"],
-        "error": ["code/crates/dtoken-compress/tests/optical_attestation.rs"],
-        "recovery": ["code/crates/dtoken-compress/tests/optical_attestation.rs"]
+        "normal": ["code/crates/dtoken-compress/tests/optical_phase_a.rs"],
+        "error": ["code/crates/dtoken-compress/tests/optical_phase_a.rs"],
+        "recovery": ["code/crates/dtoken-compress/tests/optical_phase_a.rs"]
       },
       "real_evidence": ["docs/releases/v0.0.1/REQUIREMENTS.md", "docs/releases/v0.0.1/VERIFICATION.md"],
       "gates": ["U7", "G8", "N10"],
@@ -1264,9 +1264,9 @@
       "owner_crate": "dtoken-compress",
       "dispatch_symbol": "dtoken_compress::optical::active",
       "tests": {
-        "normal": ["code/crates/dtoken-compress/tests/optical_active.rs"],
-        "error": ["code/crates/dtoken-compress/tests/optical_active.rs"],
-        "recovery": ["code/crates/dtoken-compress/tests/optical_active.rs"]
+        "normal": ["code/crates/dtoken-compress/tests/optical_phase_a.rs"],
+        "error": ["code/crates/dtoken-compress/tests/optical_phase_a.rs"],
+        "recovery": ["code/crates/dtoken-compress/tests/optical_phase_a.rs"]
       },
       "real_evidence": ["docs/releases/v0.0.1/REQUIREMENTS.md", "docs/releases/v0.0.1/VERIFICATION.md"],
       "gates": ["U7", "G8", "N10"],
@@ -1278,9 +1278,9 @@
       "owner_crate": "dtoken-compress",
       "dispatch_symbol": "dtoken_compress::optical::shadow",
       "tests": {
-        "normal": ["code/crates/dtoken-compress/tests/optical_shadow.rs"],
-        "error": ["code/crates/dtoken-compress/tests/optical_shadow.rs"],
-        "recovery": ["code/crates/dtoken-compress/tests/optical_shadow.rs"]
+        "normal": ["code/crates/dtoken-compress/tests/optical_phase_a.rs"],
+        "error": ["code/crates/dtoken-compress/tests/optical_phase_a.rs"],
+        "recovery": ["code/crates/dtoken-compress/tests/optical_phase_a.rs"]
       },
       "real_evidence": ["docs/releases/v0.0.1/REQUIREMENTS.md", "docs/releases/v0.0.1/VERIFICATION.md"],
       "gates": ["U7", "U1", "N10"],
@@ -1348,9 +1348,9 @@
       "owner_crate": "dtoken-compress",
       "dispatch_symbol": "dtoken_compress::replay::replay",
       "tests": {
-        "normal": ["code/crates/dtoken-compress/tests/replay.rs"],
-        "error": ["code/crates/dtoken-compress/tests/replay.rs"],
-        "recovery": ["code/crates/dtoken-compress/tests/replay.rs"]
+        "normal": ["code/crates/dtoken-compress/tests/context_pipeline_contract.rs"],
+        "error": ["code/crates/dtoken-compress/tests/context_pipeline_contract.rs"],
+        "recovery": ["code/crates/dtoken-compress/tests/context_pipeline_contract.rs"]
       },
       "real_evidence": ["docs/releases/v0.0.1/REQUIREMENTS.md", "docs/releases/v0.0.1/VERIFICATION.md"],
       "gates": ["U4", "G7", "N10"],
@@ -1362,9 +1362,9 @@
       "owner_crate": "dtoken-compress",
       "dispatch_symbol": "dtoken_compress::eval::paired",
       "tests": {
-        "normal": ["code/crates/dtoken-compress/tests/paired_eval.rs"],
-        "error": ["code/crates/dtoken-compress/tests/paired_eval.rs"],
-        "recovery": ["code/crates/dtoken-compress/tests/paired_eval.rs"]
+        "normal": ["code/crates/dtoken-compress/tests/hybrid_safe_baseline.rs"],
+        "error": ["code/crates/dtoken-compress/tests/hybrid_safe_baseline.rs"],
+        "recovery": ["code/crates/dtoken-compress/tests/hybrid_safe_baseline.rs"]
       },
       "real_evidence": ["docs/releases/v0.0.1/REQUIREMENTS.md", "docs/releases/v0.0.1/VERIFICATION.md"],
       "gates": ["U6", "U4", "N10"],
@@ -1474,9 +1474,9 @@
       "owner_crate": "dtoken-proxy",
       "dispatch_symbol": "dtoken_proxy::parse_loopback_host",
       "tests": {
-        "normal": ["code/crates/dtoken-proxy/tests/loopback.rs"],
-        "error": ["code/crates/dtoken-proxy/tests/loopback.rs"],
-        "recovery": ["code/crates/dtoken-proxy/tests/loopback.rs"]
+        "normal": ["code/crates/dtoken-proxy/tests/memory_capability_stdio.rs"],
+        "error": ["code/crates/dtoken-proxy/tests/memory_capability_stdio.rs"],
+        "recovery": ["code/crates/dtoken-proxy/tests/memory_capability_stdio.rs"]
       },
       "real_evidence": ["docs/releases/v0.0.1/REQUIREMENTS.md", "docs/releases/v0.0.1/VERIFICATION.md"],
       "gates": ["G6", "N0", "N10"],
@@ -1488,9 +1488,9 @@
       "owner_crate": "dtoken-doctor",
       "dispatch_symbol": "dtoken_doctor::DoctorReport",
       "tests": {
-        "normal": ["code/crates/dtoken-doctor/tests/doctor.rs"],
-        "error": ["code/crates/dtoken-doctor/tests/doctor.rs"],
-        "recovery": ["code/crates/dtoken-doctor/tests/doctor.rs"]
+        "normal": ["code/crates/dtoken-doctor/tests/basic.rs"],
+        "error": ["code/crates/dtoken-doctor/tests/basic.rs"],
+        "recovery": ["code/crates/dtoken-doctor/tests/basic.rs"]
       },
       "real_evidence": ["docs/releases/v0.0.1/REQUIREMENTS.md", "docs/releases/v0.0.1/VERIFICATION.md"],
       "gates": ["G6", "N0", "N10"],
@@ -1502,9 +1502,9 @@
       "owner_crate": "dtoken-context-store",
       "dispatch_symbol": "dtoken_context_store::SharedContext",
       "tests": {
-        "normal": ["code/crates/dtoken-context-store/tests/shared_context.rs"],
-        "error": ["code/crates/dtoken-context-store/tests/shared_context.rs"],
-        "recovery": ["code/crates/dtoken-context-store/tests/shared_context.rs"]
+        "normal": ["code/crates/dtoken-context-store/tests/durability.rs"],
+        "error": ["code/crates/dtoken-context-store/tests/durability.rs"],
+        "recovery": ["code/crates/dtoken-context-store/tests/durability.rs"]
       },
       "real_evidence": ["docs/releases/v0.0.1/REQUIREMENTS.md", "docs/releases/v0.0.1/VERIFICATION.md"],
       "gates": ["G3", "U3", "N10"],
@@ -1516,9 +1516,9 @@
       "owner_crate": "dtoken-learning",
       "dispatch_symbol": "dtoken_learning::LearningStore",
       "tests": {
-        "normal": ["code/crates/dtoken-learning/tests/learning.rs"],
-        "error": ["code/crates/dtoken-learning/tests/learning.rs"],
-        "recovery": ["code/crates/dtoken-learning/tests/learning.rs"]
+        "normal": ["code/crates/dtoken-learning/src/lib.rs"],
+        "error": ["code/crates/dtoken-learning/src/lib.rs"],
+        "recovery": ["code/crates/dtoken-learning/src/lib.rs"]
       },
       "real_evidence": ["docs/releases/v0.0.1/REQUIREMENTS.md", "docs/releases/v0.0.1/VERIFICATION.md"],
       "gates": ["G6", "N1", "N10"],
@@ -1530,9 +1530,9 @@
       "owner_crate": "dtoken-process",
       "dispatch_symbol": "dtoken_process::stop",
       "tests": {
-        "normal": ["code/crates/dtoken-process/tests/process.rs"],
-        "error": ["code/crates/dtoken-process/tests/process.rs"],
-        "recovery": ["code/crates/dtoken-process/tests/process.rs"]
+        "normal": ["code/crates/dtoken-process/tests/identity.rs"],
+        "error": ["code/crates/dtoken-process/tests/identity.rs"],
+        "recovery": ["code/crates/dtoken-process/tests/identity.rs"]
       },
       "real_evidence": ["docs/releases/v0.0.1/REQUIREMENTS.md", "docs/releases/v0.0.1/VERIFICATION.md"],
       "gates": ["G6", "N0", "N10"],
@@ -1544,9 +1544,9 @@
       "owner_crate": "dtoken-config-patcher",
       "dispatch_symbol": "dtoken_config_patcher::ConfigPatcher",
       "tests": {
-        "normal": ["code/crates/dtoken-config-patcher/tests/config_patcher.rs"],
-        "error": ["code/crates/dtoken-config-patcher/tests/config_patcher.rs"],
-        "recovery": ["code/crates/dtoken-config-patcher/tests/config_patcher.rs"]
+        "normal": ["code/crates/dtoken-config-patcher/tests/patch_plan.rs"],
+        "error": ["code/crates/dtoken-config-patcher/tests/patch_plan.rs"],
+        "recovery": ["code/crates/dtoken-config-patcher/tests/patch_plan.rs"]
       },
       "real_evidence": ["docs/releases/v0.0.1/REQUIREMENTS.md", "docs/releases/v0.0.1/VERIFICATION.md"],
       "gates": ["G5", "N4", "N10"],
@@ -1558,9 +1558,9 @@
       "owner_crate": "dtoken-compress",
       "dispatch_symbol": "dtoken_compress::optical::secret::classify",
       "tests": {
-        "normal": ["code/crates/dtoken-compress/tests/secret_classifier.rs"],
-        "error": ["code/crates/dtoken-compress/tests/secret_classifier.rs"],
-        "recovery": ["code/crates/dtoken-compress/tests/secret_classifier.rs"]
+        "normal": ["code/crates/dtoken-compress/tests/hybrid_safe_baseline.rs"],
+        "error": ["code/crates/dtoken-compress/tests/hybrid_safe_baseline.rs"],
+        "recovery": ["code/crates/dtoken-compress/tests/hybrid_safe_baseline.rs"]
       },
       "real_evidence": ["docs/releases/v0.0.1/REQUIREMENTS.md", "docs/releases/v0.0.1/VERIFICATION.md"],
       "gates": ["G6", "N0", "N10"],
@@ -1572,9 +1572,9 @@
       "owner_crate": "dtoken-agent-bridge",
       "dispatch_symbol": "dtoken_agent_bridge::identity",
       "tests": {
-        "normal": ["code/crates/dtoken-agent-bridge/tests/identity.rs"],
-        "error": ["code/crates/dtoken-agent-bridge/tests/identity.rs"],
-        "recovery": ["code/crates/dtoken-agent-bridge/tests/identity.rs"]
+        "normal": ["code/crates/dtoken-agent-bridge/tests/subprocess_contract.rs"],
+        "error": ["code/crates/dtoken-agent-bridge/tests/subprocess_contract.rs"],
+        "recovery": ["code/crates/dtoken-agent-bridge/tests/subprocess_contract.rs"]
       },
       "real_evidence": ["docs/releases/v0.0.1/REQUIREMENTS.md", "docs/releases/v0.0.1/VERIFICATION.md"],
       "gates": ["G5", "N4", "N10"],
@@ -1618,7 +1618,7 @@
         "error": ["support/tests/test_unified_corpus_manifests.py"],
         "recovery": ["support/tests/test_unified_corpus_manifests.py"]
       },
-      "real_evidence": ["support/fixtures/unified-corpus/README.md", "docs/releases/v0.0.1/REQUIREMENTS.md"],
+      "real_evidence": ["support/fixtures/unified-corpus/manifest.json", "docs/releases/v0.0.1/REQUIREMENTS.md"],
       "gates": ["U1", "G0", "N10"],
       "status": "implemented_unverified"
     },
@@ -1642,9 +1642,9 @@
       "owner_crate": "dtoken-types",
       "dispatch_symbol": "dtoken_types::ManagedRtkTransactionReceipt",
       "tests": {
-        "normal": ["code/crates/dtoken-types/tests/canonical_contract.rs"],
-        "error": ["code/crates/dtoken-types/tests/canonical_contract.rs"],
-        "recovery": ["code/crates/dtoken-types/tests/canonical_contract.rs"]
+        "normal": ["code/crates/dtoken-types/tests/hybrid_accounting.rs"],
+        "error": ["code/crates/dtoken-types/tests/hybrid_accounting.rs"],
+        "recovery": ["code/crates/dtoken-types/tests/hybrid_accounting.rs"]
       },
       "real_evidence": ["docs/releases/v0.0.1/REQUIREMENTS.md", "docs/releases/v0.0.1/VERIFICATION.md"],
       "gates": ["G5", "U2", "N10"],

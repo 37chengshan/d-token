@@ -2475,6 +2475,15 @@
       "summary": "修复 N0 完整门、浏览器 fallback、跳过门 fail-closed 与冻结 fixture digest 绑定",
       "head_before": "22076a1",
       "remote": null
+    },
+    {
+      "id": "c0add228-5c31-4725-b1fb-3671e5a0e7b3",
+      "timestamp": "2026-08-10T09:59:55+08:00",
+      "operation": "commit",
+      "branch": "codex/final/stage-pack-integrated",
+      "summary": "修复统一能力注册表虚构测试路径并强制 tracked-file fail-closed 校验",
+      "head_before": "decd0016ca8c6312ac57033d1d577b91eefa1c1b",
+      "remote": null
     }
   ]
 }
