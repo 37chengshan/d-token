@@ -21662,7 +21662,110 @@ mod tests {
             ledger_event.metadata["pipeline_reason_code"], "no_transform_selected",
             "pipeline reason code must land in the ledger"
         );
+        // T-C0B: the production transport consumed the sealed unit and the
+        // terminal SendCommitReceipt evidence lands in the ledger.
+        assert_eq!(
+            ledger_event.metadata["send_commit_state"], "send_committed",
+            "transport-observable commit receipt state must land in the ledger"
+        );
+        assert_eq!(
+            ledger_event.metadata["send_commit_variant"], "original",
+            "commit receipt variant must match the sealed unit"
+        );
         server.await.expect("mock upstream task");
+    }
+
+    /// Fail-closed negative (T-C1B / RUNTIME-8): the shared transport mint
+    /// refuses to commit when the sendable unit's body digest does not match
+    /// the sealed validation receipt. A body mutated after validation can
+    /// never be paired with the original receipt: the types are sealed, so
+    /// the only way to reach the mint with mismatched digests is to present
+    /// a different sendable unit, and that is rejected.
+    #[test]
+    fn transport_mint_rejects_post_validation_mutation() {
+        use dtoken_runtime_pipeline::PipelineError;
+        let scope = cache_test_scope(Protocol::OpenAi);
+        let decision = cache_test_decision(&scope);
+        let baseline =
+            json!({"model": "model-a", "messages": [{"role": "user", "content": "repeat repeat"}]});
+        let candidate = json!({"model": "model-a", "messages": [{"role": "user", "content": "repeat"}]});
+        let transforms = vec!["safe-text".to_string()];
+        let prepared = PreparedCcr {
+            receipt: Some(CcrStoreReceipt {
+                recovery_ref: "ccr:00000000-0000-4000-8000-000000000000".to_string(),
+                expires_at_unix: 9_999,
+                plaintext_bytes: baseline.to_string().len() as u64,
+            }),
+            store_configured: true,
+        };
+        let payload = prepare_json_pipeline_payload(
+            scope.clone(),
+            &decision,
+            &baseline,
+            &candidate,
+            &transforms,
+            &prepared,
+        )
+        .expect("validated payload");
+        let validation = payload.validation.expect("validation receipt present");
+        // The sealed unit's body digest equals the validated digest.
+        assert_eq!(validation.validated_digest(), payload.ready.body_digest());
+
+        // A different sendable unit — one sealed over MUTATED bytes — cannot
+        // be committed under the original validation receipt.
+        let mutated =
+            json!({"model": "model-a", "messages": [{"role": "user", "content": "MUTATED"}]});
+        let mutated_ready = PipelineInput::new(
+            scope.clone(),
+            serde_json::to_vec(&mutated).unwrap(),
+            MAX_REQUEST_BODY_BYTES,
+        )
+        .expect("bounded mutated ingress")
+        .prepare()
+        .into_baseline_ready("mutated");
+        assert_ne!(
+            mutated_ready.body_digest(),
+            validation.validated_digest(),
+            "mutation changes the digest"
+        );
+        let mut request_log = RequestLog {
+            request_id: scope.request_id,
+            timestamp_ms: 1,
+            agent: None,
+            instance_id: None,
+            input_protocol: Protocol::OpenAi,
+            provider_id: Some("provider-a".to_string()),
+            route_id: Some("route-a".to_string()),
+            chain_mode: None,
+            model: Some("model-a".to_string()),
+            input_tokens_before: None,
+            input_tokens_after: None,
+            output_tokens: None,
+            tokens_saved: None,
+            transforms_applied: vec![],
+            latency_ms: None,
+            error: None,
+            config_source: None,
+            quota_metadata: None,
+            context_accounting: None,
+        };
+        let mut event = DtokenEvent::default();
+        let refused = mint_transport_send_commit(
+            mutated_ready,
+            Some(&validation),
+            1,
+            &mut request_log,
+            &mut event,
+        );
+        assert_eq!(
+            refused.unwrap_err(),
+            PipelineError::SourceDigestMismatch,
+            "a mutated body must never commit under the validated receipt"
+        );
+        assert!(
+            event.metadata.get("send_commit_state").is_none(),
+            "no terminal receipt evidence may be recorded on refusal"
+        );
     }
 
     /// Fail-closed contract: the native Responses wire shape (`input` items,
