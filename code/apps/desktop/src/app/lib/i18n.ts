@@ -1354,6 +1354,9 @@ export const DICT: Dict = {
   "ch.visualCompressionChangesCommitted": { zh: "视觉压缩配置已提交", en: "Visual compression changes committed" },
   "ch.projectLearningChangesCommitted": { zh: "项目学习配置已提交", en: "Project learning changes committed" },
   "ch.localConfigurationChanged": { zh: "本地配置已变更", en: "Local configuration changed" },
+  "ch.refresh": { zh: "刷新", en: "Refresh" },
+  "ch.confirmRollback": { zh: "确认回退", en: "Confirm rollback" },
+  "ch.failed": { zh: "失败", en: "Failed" },
   // components/pages/Settings.tsx
   "set.browserPreviewCannotReadOrSaveLocalPreferences": { zh: "浏览器预览不能读取或保存本机偏好。", en: "Browser preview cannot read or save local preferences." },
   "set.localPreferencesCouldNotBeReadRelatedSettingsAreUnavailable": { zh: "本机偏好读取失败；相关设置暂不可用。", en: "Local preferences could not be read; related settings are unavailable." },

@@ -18,12 +18,6 @@ import { presentOperationFailure } from "../../lib/userCopy";
 const CHANGES_TABS = ["backup", "history"] as const;
 // Rollback points and change history grow with use; render a bounded window.
 const CHANGES_PAGE_SIZE = 40;
-// Locale-keyed copy for helper fallbacks; kept out of inline ternaries so the
-// copy policy AST scan can enforce the typed-map pattern.
-const PREFLIGHT_BLOCKED_REASON: Record<"zh" | "en", string> = {
-  zh: "当前状态尚未通过可恢复性预检。",
-  en: "This point has not passed the restorability preflight.",
-};
 
 type ChangeSource = "loading" | "desktop" | "browser-preview" | "unavailable" | "stale" | "partial";
 
@@ -83,7 +77,6 @@ type ChangeHistoryEntry = {
 
 export function Changes({ setPage }: { setPage?: (page: PageId) => void } = {}) {
   const { lang } = useI18n();
-  const zh = lang === "zh";
   const { addNotification } = useNotifications();
   const [tab, setTab] = useSessionTab("d-token.changes.tab", CHANGES_TABS, "backup");
   const { payload, status, error, refresh } = useRuntimeDashboardDetail();
@@ -115,12 +108,12 @@ export function Changes({ setPage }: { setPage?: (page: PageId) => void } = {}) 
     addNotification({
       dedupeKey: available ? "changes-refresh" : stale ? "changes-refresh-stale" : "changes-refresh-failed",
       level: available ? "success" : stale ? "warning" : "error",
-      title: available ? (zh ? "变更记录已更新" : "Change records refreshed") : stale ? (zh ? "变更记录刷新不完整" : "Change refresh incomplete") : (zh ? "变更记录刷新失败" : "Change refresh failed"),
-      message: available ? (zh ? "回退点与事务记录已重新读取。" : "Rollback points and transaction records were refreshed.") : stale ? (zh ? "仍显示上一份可验证记录。" : "The last verified records remain visible.") : sourceBlockedReason(source, lang),
+      title: available ? translateCopy("ch.changeRecordsRefreshed", lang) : stale ? translateCopy("ch.changeRefreshIncomplete", lang) : translateCopy("ch.changeRefreshFailed", lang),
+      message: available ? translateCopy("ch.rollbackPointsAndTransactionRecordsWereRefreshed", lang) : stale ? translateCopy("ch.theLastVerifiedRecordsRemainVisible", lang) : sourceBlockedReason(source, lang),
       receipt: { requestId: refreshRequestId, targetId: "changes" },
     });
     setRefreshRequestId("");
-  }, [addNotification, error, lang, refreshRequestId, refreshing, source, zh]);
+  }, [addNotification, error, lang, refreshRequestId, refreshing, source]);
 
   const refreshChanges = async () => {
     setRefreshRequestId(createOperationRequestId("changes-refresh"));
@@ -136,7 +129,7 @@ export function Changes({ setPage }: { setPage?: (page: PageId) => void } = {}) 
     if (!point.currentlyRestorable || (source !== "desktop" && source !== "partial")) {
       const failure = point.blockedReason || sourceBlockedReason(source, lang);
       setNotice(failure);
-      addNotification({ dedupeKey: `rollback-preview-${point.id}-blocked`, level: "warning", title: zh ? "回退预览不可用" : "Rollback preview unavailable", message: failure, receipt: { requestId: createOperationRequestId("rollback-preview"), rollbackId: point.id } });
+      addNotification({ dedupeKey: `rollback-preview-${point.id}-blocked`, level: "warning", title: translateCopy("ch.rollbackPreviewUnavailable", lang), message: failure, receipt: { requestId: createOperationRequestId("rollback-preview"), rollbackId: point.id } });
       return;
     }
     const requestId = createOperationRequestId("rollback-preview");
@@ -145,13 +138,13 @@ export function Changes({ setPage }: { setPage?: (page: PageId) => void } = {}) 
     try {
       const next = await invokeNative<RollbackPreview>("preview_rollback", { request: { rollback_id: point.id } });
       if (!isUsableRollbackPreview(next, point.id)) {
-        const failure = zh ? "当前回滚点已不可恢复，请刷新后重试。" : "This rollback point is no longer restorable. Refresh and retry.";
+        const failure = translateCopy("ch.thisRollbackPointIsNoLongerRestorableRefreshAndRetry", lang);
         setNotice(failure);
-        addNotification({ dedupeKey: `rollback-preview-${point.id}-failed`, level: "error", title: zh ? "回退预览失败" : "Rollback preview failed", message: failure, receipt: { requestId, rollbackId: point.id } });
+        addNotification({ dedupeKey: `rollback-preview-${point.id}-failed`, level: "error", title: translateCopy("ch.rollbackPreviewFailed", lang), message: failure, receipt: { requestId, rollbackId: point.id } });
         return;
       }
       setPreview(next);
-      addNotification({ dedupeKey: `rollback-preview-${point.id}-${next.revision}`, level: "info", title: zh ? "回退预览已准备" : "Rollback preview ready", message: zh ? "已读取当前完整性证据；确认前不会修改配置。" : "Integrity evidence is ready; no configuration changes happen before confirmation.", receipt: { requestId, rollbackId: point.id } });
+      addNotification({ dedupeKey: `rollback-preview-${point.id}-${next.revision}`, level: "info", title: translateCopy("ch.rollbackPreviewReady", lang), message: translateCopy("ch.integrityEvidenceIsReadyNoConfigurationChangesHappenBeforeConfirmation", lang), receipt: { requestId, rollbackId: point.id } });
     } catch (error) {
       const failure = presentOperationFailure("rollback", error, lang);
       setNotice(failure.message);
@@ -182,14 +175,14 @@ export function Changes({ setPage }: { setPage?: (page: PageId) => void } = {}) 
         return;
       }
       const message = receipt.verification_state === "verified"
-        ? (zh ? "回退完成，文件与运行时复检均已通过。" : "Rollback completed; file and runtime verification passed.")
-        : (zh ? "文件已恢复，但运行时当前离线；请启动服务后运行 Doctor 复检。" : "Files were restored, but the runtime is offline. Start it and run Doctor." );
+        ? translateCopy("ch.rollbackCompletedFileAndRuntimeVerificationPassed", lang)
+        : translateCopy("ch.filesWereRestoredButTheRuntimeIsOfflineStartItAndRunDoctor", lang);
       setNotice(message);
-      addNotification({ dedupeKey: `rollback-${preview.rollback_id}`, level: receipt.verification_state === "verified" ? "success" : "warning", title: zh ? "回退已执行" : "Rollback applied", message, persistent: true, receipt: { requestId, rollbackId: preview.rollback_id } });
+      addNotification({ dedupeKey: `rollback-${preview.rollback_id}`, level: receipt.verification_state === "verified" ? "success" : "warning", title: translateCopy("ch.rollbackApplied", lang), message, persistent: true, receipt: { requestId, rollbackId: preview.rollback_id } });
       await refresh();
     } catch (error) {
       setPreview(null);
-      const failure = zh ? "回退结果未确认，请刷新列表并运行 Doctor 检查当前状态。" : "The rollback result is unconfirmed. Refresh and run Doctor.";
+      const failure = translateCopy("ch.theRollbackResultIsUnconfirmedRefreshAndRunDoctor", lang);
       setNotice(failure);
       const presentation = presentOperationFailure("rollback", error, lang);
       addNotification({ dedupeKey: `rollback-${preview.rollback_id}-error`, level: "error", title: presentation.title, message: failure, details: presentation.details, receipt: { requestId, rollbackId: preview.rollback_id } });
@@ -199,16 +192,16 @@ export function Changes({ setPage }: { setPage?: (page: PageId) => void } = {}) 
   };
 
   const sourceLabel = source === "desktop"
-    ? (zh ? `实时桌面数据 · ${rollbackPoints.length} 个回滚点` : `Live desktop data · ${rollbackPoints.length} rollback point(s)`)
+    ? translateCopy("ch.liveDesktopDataRollbackPointS", lang, { v1: rollbackPoints.length })
     : source === "loading"
-      ? (zh ? "正在读取本地记录" : "Loading local records")
+      ? translateCopy("ch.loadingLocalRecords", lang)
       : source === "browser-preview"
-        ? (zh ? "浏览器预览 · 只读" : "Browser preview · read-only")
+        ? translateCopy("ch.browserPreviewReadOnly", lang)
         : source === "partial"
-          ? (zh ? "运行时离线 · 仅显示本地事务证据" : "Runtime offline · local transaction evidence only")
+          ? translateCopy("ch.runtimeOfflineLocalTransactionEvidenceOnly", lang)
           : source === "stale"
-            ? (zh ? "数据已过期 · 操作锁定" : "Data stale · actions locked")
-            : (zh ? "本地变更数据不可用" : "Local change data unavailable");
+            ? translateCopy("ch.dataStaleActionsLocked", lang)
+            : translateCopy("ch.localChangeDataUnavailable", lang);
 
   return (
     <div className="space-y-6">
@@ -219,11 +212,11 @@ export function Changes({ setPage }: { setPage?: (page: PageId) => void } = {}) 
             <DataSourceBadge mode={source === "desktop" ? "native" : source === "browser-preview" ? "preview" : "unavailable"} label={sourceLabel} />
           </div>
           <p className="mt-2 max-w-2xl text-sm text-muted-foreground">
-            {zh ? "查看已提交的持久变更与可恢复点。配置差异仍在每次写入前的确认流程和变更记录详情中展示。" : "View committed changes and recovery points. Configuration differences remain in pre-write confirmation and history details."}
+            {translateCopy("ch.viewCommittedChangesAndRecoveryPointsConfigurationDifferencesRemainInPreWriteConfirmationAndHistoryDetails", lang)}
           </p>
         </div>
         <Button variant="outline" onClick={() => void refreshChanges()} disabled={status === "loading" || refreshing} aria-busy={refreshing}>
-          <RefreshCw className={`size-4 ${status === "loading" || refreshing ? "animate-spin" : ""}`} />{refreshing ? (zh ? "刷新中…" : "Refreshing…") : (zh ? "刷新" : "Refresh")}
+          <RefreshCw className={`size-4 ${status === "loading" || refreshing ? "animate-spin" : ""}`} />{refreshing ? translateCopy("ch.refreshing", lang) : translateCopy("ch.refresh", lang)}
         </Button>
       </div>
 
@@ -239,22 +232,22 @@ export function Changes({ setPage }: { setPage?: (page: PageId) => void } = {}) 
       {unfinishedDrafts > 0 && (
         <Surface className="flex flex-wrap items-center justify-between gap-4 p-4">
           <div>
-            <div className="font-medium">{zh ? `有 ${unfinishedDrafts} 项未完成配置` : `${unfinishedDrafts} unfinished configuration item(s)`}</div>
-            <div className="mt-1 text-sm text-muted-foreground">{zh ? "请返回安装与连接流程查看当前变更；差异会在写入前由本机预览生成。" : "Return to Install & Connect to view the current changes; the local preview is generated before writing."}</div>
+            <div className="font-medium">{translateCopy("ch.unfinishedConfigurationItemS", lang, { v1: unfinishedDrafts })}</div>
+            <div className="mt-1 text-sm text-muted-foreground">{translateCopy("ch.returnToInstallConnectToViewTheCurrentChangesTheLocalPreviewIsGeneratedBeforeWriting", lang)}</div>
           </div>
-          {setPage ? <Button size="sm" variant="outline" onClick={() => setPage("install")}>{zh ? "前往安装与连接" : "Open Install & Connect"}<ArrowRight className="size-3.5" /></Button> : null}
+          {setPage ? <Button size="sm" variant="outline" onClick={() => setPage("install")}>{translateCopy("ch.openInstallConnect", lang)}<ArrowRight className="size-3.5" /></Button> : null}
         </Surface>
       )}
 
       <Tabs value={tab} onValueChange={setTab}>
         <TabsList>
-          <TabsTrigger value="backup">{zh ? "备份与回滚" : "Backup & Rollback"}</TabsTrigger>
-          <TabsTrigger value="history">{zh ? "变更记录" : "Change history"}</TabsTrigger>
+          <TabsTrigger value="backup">{translateCopy("ch.tab.backup", lang)}</TabsTrigger>
+          <TabsTrigger value="history">{translateCopy("ch.changeHistory", lang)}</TabsTrigger>
         </TabsList>
 
         <TabsContent value="backup" className="mt-4 space-y-4">
           {rollbackPoints.length === 0 ? (
-            <Surface className="p-6 text-sm text-muted-foreground">{zh ? "当前没有可用回滚点" : "No rollback points are available"}</Surface>
+            <Surface className="p-6 text-sm text-muted-foreground">{translateCopy("ch.noRollbackPointsAreAvailable", lang)}</Surface>
           ) : visibleRollbackPoints.map((point) => (
             <Surface key={point.id} variant="row" className="p-4">
               <div className="flex flex-wrap items-start justify-between gap-4">
@@ -264,33 +257,31 @@ export function Changes({ setPage }: { setPage?: (page: PageId) => void } = {}) 
                     <h2 className="text-sm font-medium">{point.label}</h2>
                     <Badge variant={point.currentlyRestorable ? "secondary" : "outline"}>{scopeLabel(point.scope, lang)}</Badge>
                   </div>
-                  <div className="mt-1 text-xs text-muted-foreground">{point.time} · {point.files ?? "—"} {zh ? "个文件" : "file(s)"}</div>
-                  {point.transactionId && <div className="mt-1 break-all text-xs text-muted-foreground">{zh ? "事务编号" : "Transaction"} <span className="font-mono">{point.transactionId}</span></div>}
+                  <div className="mt-1 text-xs text-muted-foreground">{point.time} · {point.files ?? "—"} {translateCopy("ch.fileS", lang)}</div>
+                  {point.transactionId && <div className="mt-1 break-all text-xs text-muted-foreground">{translateCopy("ch.transaction", lang)} <span className="font-mono">{point.transactionId}</span></div>}
                   {point.target && <div className="mt-2 break-all font-mono text-xs text-muted-foreground">{point.target}</div>}
                 </div>
                 <Button
                   size="sm"
                   variant="outline"
                   disabled={!point.currentlyRestorable || Boolean(previewingId) || executing || (source !== "desktop" && source !== "partial")}
-                  title={point.currentlyRestorable ? (zh ? "先执行完整性与当前状态预检" : "Run integrity and current-state preflight first") : point.blockedReason}
+                  title={point.currentlyRestorable ? translateCopy("ch.runIntegrityAndCurrentStatePreflightFirst", lang) : point.blockedReason}
                   onClick={() => void previewRollback(point)}
                 >
                   {previewingId === point.id ? <RefreshCw className="size-3.5 animate-spin" /> : <RotateCcw className="size-3.5" />}
-                  {previewingId === point.id ? (zh ? "正在预检" : "Preflighting") : (zh ? "预览回退" : "Preview rollback")}
+                  {previewingId === point.id ? translateCopy("ch.preflighting", lang) : translateCopy("ch.previewRollback", lang)}
                 </Button>
               </div>
               <div className="mt-3 grid gap-2 text-xs sm:grid-cols-2">
-                <EvidenceRow label={zh ? "备份完整性" : "Backup integrity"} ok={point.integrityVerified} detail={point.integrityVerified ? (zh ? "元数据与备份内容已验证" : "Metadata and content verified") : (zh ? "完整性未验证" : "Integrity unverified")} />
-                <EvidenceRow label={zh ? "当前可恢复性" : "Currently restorable"} ok={point.currentlyRestorable} detail={point.currentlyRestorable ? (zh ? "当前哈希与事务前置条件匹配" : "Current hash and transaction preconditions match") : point.blockedReason} />
+                <EvidenceRow label={translateCopy("ch.backupIntegrity", lang)} ok={point.integrityVerified} detail={point.integrityVerified ? translateCopy("ch.metadataAndContentVerified", lang) : translateCopy("ch.integrityUnverified", lang)} />
+                <EvidenceRow label={translateCopy("ch.currentlyRestorable", lang)} ok={point.currentlyRestorable} detail={point.currentlyRestorable ? translateCopy("ch.currentHashAndTransactionPreconditionsMatch", lang) : point.blockedReason} />
               </div>
             </Surface>
           ))}
           {rollbackPoints.length > visibleRollbackPoints.length && (
             <div className="flex justify-center pt-2">
               <Button variant="outline" size="sm" onClick={() => setVisibleRollbackCount((count) => count + CHANGES_PAGE_SIZE)}>
-                {zh
-                  ? `加载更多（已显示 ${visibleRollbackPoints.length}/${rollbackPoints.length}）`
-                  : `Load more (${visibleRollbackPoints.length}/${rollbackPoints.length})`}
+                {translateCopy("ch.loadMore", lang, { v1: visibleRollbackPoints.length, v2: rollbackPoints.length })}
               </Button>
             </div>
           )}
@@ -298,7 +289,7 @@ export function Changes({ setPage }: { setPage?: (page: PageId) => void } = {}) 
 
         <TabsContent value="history" className="mt-4 space-y-3">
           {historyEntries.length === 0 ? (
-            <Surface className="p-6 text-sm text-muted-foreground">{zh ? "尚无已提交的持久变更记录" : "No committed persistent changes are recorded"}</Surface>
+            <Surface className="p-6 text-sm text-muted-foreground">{translateCopy("ch.noCommittedPersistentChangesAreRecorded", lang)}</Surface>
           ) : visibleHistoryEntries.map((entry) => (
             <Surface key={entry.id} variant="row" className="p-4">
               <div className="flex items-start gap-3">
@@ -310,10 +301,10 @@ export function Changes({ setPage }: { setPage?: (page: PageId) => void } = {}) 
                   </div>
                   <div className="mt-1 text-xs text-muted-foreground">{entry.timestamp} · {entry.kind}</div>
                   {entry.target && <div className="mt-2 break-all font-mono text-xs text-muted-foreground">{entry.target}</div>}
-                  {entry.rollbackId && <div className="mt-1 break-all text-xs text-muted-foreground">{zh ? "回退点" : "Rollback point"} <span className="font-mono">{entry.rollbackId}</span></div>}
+                  {entry.rollbackId && <div className="mt-1 break-all text-xs text-muted-foreground">{translateCopy("ch.rollbackPoint", lang)} <span className="font-mono">{entry.rollbackId}</span></div>}
                   {entry.diff && (
                     <details className="mt-3 text-xs">
-                      <summary className="cursor-pointer font-medium text-foreground">{zh ? "查看变更详情" : "View change details"}</summary>
+                      <summary className="cursor-pointer font-medium text-foreground">{translateCopy("ch.viewChangeDetails", lang)}</summary>
                       <pre className="mt-2 max-h-56 overflow-auto whitespace-pre-wrap break-words rounded-md border border-border/70 bg-background p-3 font-mono text-muted-foreground">{entry.diff}</pre>
                     </details>
                   )}
@@ -324,9 +315,7 @@ export function Changes({ setPage }: { setPage?: (page: PageId) => void } = {}) 
           {historyEntries.length > visibleHistoryEntries.length && (
             <div className="flex justify-center pt-2">
               <Button variant="outline" size="sm" onClick={() => setVisibleHistoryCount((count) => count + CHANGES_PAGE_SIZE)}>
-                {zh
-                  ? `加载更多（已显示 ${visibleHistoryEntries.length}/${historyEntries.length}）`
-                  : `Load more (${visibleHistoryEntries.length}/${historyEntries.length})`}
+                {translateCopy("ch.loadMore", lang, { v1: visibleHistoryEntries.length, v2: historyEntries.length })}
               </Button>
             </div>
           )}
@@ -336,19 +325,19 @@ export function Changes({ setPage }: { setPage?: (page: PageId) => void } = {}) 
       <OperationDialog
         open={preview !== null}
         onOpenChange={(open) => { if (!open && !executing) setPreview(null); }}
-        title={zh ? "确认回退" : "Confirm rollback"}
-        summary={zh ? "确认后会先备份当前状态，再按原事务恢复，并执行文件与运行时专项复检。并发修改、未知范围或损坏备份会被拒绝。" : "Confirmation first protects the current state, then restores the transaction and verifies files and runtime. Concurrent edits, unknown scope, or damaged backups are rejected."}
-        confirmLabel={zh ? "确认回退并复检" : "Rollback and verify"}
-        cancelLabel={zh ? "取消" : "Cancel"}
+        title={translateCopy("ch.confirmRollback", lang)}
+        summary={translateCopy("ch.confirmationFirstProtectsTheCurrentStateThenRestoresTheTransactionAndVerifiesFilesAndRuntimeConcurrentEditsUnknownScopeOrDamagedBackupsAreRejected", lang)}
+        confirmLabel={translateCopy("ch.rollbackAndVerify", lang)}
+        cancelLabel={translateCopy("common.cancel", lang)}
         risk="danger"
         pending={executing}
         onConfirm={() => void applyRollback()}
         details={preview ? (
           <div className="space-y-2 rounded-lg border border-border bg-muted/30 p-4 text-sm text-muted-foreground">
-            <div><strong className="text-foreground">{zh ? "影响" : "Impact"}：</strong>{preview.files} {zh ? "个文件" : "file(s)"} · {preview.target}</div>
-            <div><strong className="text-foreground">{zh ? "完整性" : "Integrity"}：</strong>{preview.integrity_verified ? (zh ? "已验证" : "verified") : (zh ? "未验证" : "unverified")}</div>
-            <div><strong className="text-foreground">{zh ? "当前状态" : "Current state"}：</strong>{preview.currently_restorable ? (zh ? "允许恢复" : "restorable") : preview.blocked_reason}</div>
-            {preview.transaction_id ? <div><strong className="text-foreground">{zh ? "事务" : "Transaction"}：</strong><span className="break-all font-mono">{preview.transaction_id}</span></div> : null}
+            <div><strong className="text-foreground">{translateCopy("ch.impact", lang)}：</strong>{preview.files} {translateCopy("ch.fileS", lang)} · {preview.target}</div>
+            <div><strong className="text-foreground">{translateCopy("ch.integrity", lang)}：</strong>{preview.integrity_verified ? translateCopy("ch.verified", lang) : translateCopy("ch.unverified", lang)}</div>
+            <div><strong className="text-foreground">{translateCopy("ch.currentState", lang)}：</strong>{preview.currently_restorable ? translateCopy("ch.restorable", lang) : preview.blocked_reason}</div>
+            {preview.transaction_id ? <div><strong className="text-foreground">{translateCopy("ch.transaction2", lang)}：</strong><span className="break-all font-mono">{preview.transaction_id}</span></div> : null}
           </div>
         ) : null}
       />
@@ -375,12 +364,11 @@ function sourceFromPayload(payload: Record<string, any> | null, status: string):
 }
 
 function sourceBlockedReason(source: ChangeSource, lang: "zh" | "en"): string {
-  const zh = lang === "zh";
-  if (source === "browser-preview") return zh ? "浏览器预览仅展示结构，不提供本机备份证据，回退已锁定。" : "Browser preview has no local backup evidence; rollback is locked.";
-  if (source === "partial") return zh ? "运行时离线；仅当桌面控制面能重新验证备份完整性与当前哈希时才允许回退。" : "The runtime is offline; rollback is allowed only when the desktop control plane revalidates integrity and current hashes.";
-  if (source === "stale") return zh ? "数据已过期，不能证明当前文件状态，回退已锁定。" : "Data is stale and cannot prove current file state; rollback is locked.";
-  if (source === "loading") return zh ? "正在读取本地事务数据。" : "Loading local transaction data.";
-  return zh ? "无法读取可信的本地事务证据，回退已锁定。" : "Trusted local transaction evidence is unavailable; rollback is locked.";
+  if (source === "browser-preview") return translateCopy("ch.browserPreviewHasNoLocalBackupEvidenceRollbackIsLocked", lang);
+  if (source === "partial") return translateCopy("ch.theRuntimeIsOfflineRollbackIsAllowedOnlyWhenTheDesktopControlPlaneRevalidatesIntegrityAndCurrentHashes", lang);
+  if (source === "stale") return translateCopy("ch.dataIsStaleAndCannotProveCurrentFileStateRollbackIsLocked", lang);
+  if (source === "loading") return translateCopy("ch.loadingLocalTransactionData", lang);
+  return translateCopy("ch.trustedLocalTransactionEvidenceIsUnavailableRollbackIsLocked", lang);
 }
 
 function buildRollbackPoints(payload: Record<string, any> | null, source: ChangeSource, lang: "zh" | "en"): UiRollbackPoint[] {
@@ -403,7 +391,7 @@ function buildRollbackPoints(payload: Record<string, any> | null, source: Change
       currentlyRestorable,
       blockedReason: safeText(
         row.blocked_reason ?? row.reason,
-        currentlyRestorable ? "" : PREFLIGHT_BLOCKED_REASON[lang],
+        currentlyRestorable ? "" : translateCopy("ch.thisPointHasNotPassedTheRestorabilityPreflight", lang),
       ),
       expectedCurrentSha256: safeText(row.expected_current_sha256 ?? row.expectedCurrentSha256, ""),
     };
@@ -483,36 +471,39 @@ function safeText(value: unknown, fallback: string): string {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : fallback;
 }
 
+const SCOPE_LABEL_KEYS: Record<RollbackScope, string> = {
+  "opencode-config": "ch.scope.opencodeConfig",
+  "dtoken-active-config": "ch.scope.dtokenActiveConfig",
+  "learning-managed-block": "ch.scope.learningManagedBlock",
+  "optical-config": "ch.scope.opticalConfig",
+  "agent-integration": "ch.scope.agentIntegration",
+  unknown: "ch.scope.unknown",
+};
+
 function scopeLabel(scope: RollbackScope, lang: "zh" | "en"): string {
-  const labels: Record<RollbackScope, { zh: string; en: string }> = {
-    "opencode-config": { zh: "OpenCode 配置", en: "OpenCode config" },
-    "dtoken-active-config": { zh: "d-token 路由", en: "d-token route" },
-    "learning-managed-block": { zh: "学习文档", en: "Learning document" },
-    "optical-config": { zh: "视觉压缩事务", en: "Optical transaction" },
-    "agent-integration": { zh: "Agent 集成事务", en: "Agent integration" },
-    unknown: { zh: "未知范围", en: "Unknown scope" },
-  };
-  return labels[scope][lang];
+  return translateCopy(SCOPE_LABEL_KEYS[scope], lang);
 }
+
+const HISTORY_STATUS_KEYS: Record<string, string> = {
+  ok: "ch.committed",
+  recovered: "ch.recovered",
+  failed: "ch.failed",
+  unknown: "ch.unknown",
+};
 
 function historyStatusLabel(status: string, lang: "zh" | "en"): string {
-  const labels: Record<string, { zh: string; en: string }> = {
-    ok: { zh: "已提交", en: "Committed" },
-    recovered: { zh: "已恢复", en: "Recovered" },
-    failed: { zh: "失败", en: "Failed" },
-    unknown: { zh: "结果未知", en: "Unknown" },
-  };
-  return (labels[status] ?? labels.unknown)[lang];
+  return translateCopy(HISTORY_STATUS_KEYS[status] ?? HISTORY_STATUS_KEYS.unknown, lang);
 }
 
+const CHANGE_SUMMARY_KEYS: Record<string, string> = {
+  rollback: "ch.configurationRolledBack",
+  install: "ch.installAndConnectionChangesCommitted",
+  optical: "ch.visualCompressionChangesCommitted",
+  learning: "ch.projectLearningChangesCommitted",
+  other: "ch.localConfigurationChanged",
+};
+
 function changeSummary(kind: string, lang: "zh" | "en"): string {
-  const summaries: Record<string, { zh: string; en: string }> = {
-    rollback: { zh: "配置已回退", en: "Configuration rolled back" },
-    install: { zh: "安装与连接配置已提交", en: "Install and connection changes committed" },
-    optical: { zh: "视觉压缩配置已提交", en: "Visual compression changes committed" },
-    learning: { zh: "项目学习配置已提交", en: "Project learning changes committed" },
-    other: { zh: "本地配置已变更", en: "Local configuration changed" },
-  };
   const key = ["rollback", "install", "optical", "learning"].find((candidate) => kind.includes(candidate)) ?? "other";
-  return summaries[key][lang];
+  return translateCopy(CHANGE_SUMMARY_KEYS[key], lang);
 }
