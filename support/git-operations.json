@@ -2484,6 +2484,78 @@
       "summary": "修复统一能力注册表虚构测试路径并强制 tracked-file fail-closed 校验",
       "head_before": "decd0016ca8c6312ac57033d1d577b91eefa1c1b",
       "remote": null
+    },
+    {
+      "id": "d25511e8-c81b-4f52-8b7b-547ab613bc02",
+      "timestamp": "2026-08-10T10:54:38+08:00",
+      "operation": "branch-create",
+      "branch": "codex/final/c0-c1-remediation",
+      "summary": "创建 C0 C1 合同与传输回执修复分支",
+      "head_before": "15f98cfb9861c3f9ad87b1d0dc5f8e6f1844063d",
+      "remote": null
+    },
+    {
+      "id": "8c7e1260-8027-4dda-8309-2365ca9f3d31",
+      "timestamp": "2026-08-10T10:56:17+08:00",
+      "operation": "branch-create",
+      "branch": "codex/final/c2-c3-remediation",
+      "summary": "创建 C2 C3 持久化与 Relay 修复分支",
+      "head_before": "15f98cfb9861c3f9ad87b1d0dc5f8e6f1844063d",
+      "remote": null
+    },
+    {
+      "id": "83652463-1b3c-4b64-9ba9-cd072122eb2d",
+      "timestamp": "2026-08-10T10:56:17+08:00",
+      "operation": "branch-create",
+      "branch": "codex/final/c4-remediation",
+      "summary": "创建 C4 RTK 生产接线修复分支",
+      "head_before": "15f98cfb9861c3f9ad87b1d0dc5f8e6f1844063d",
+      "remote": null
+    },
+    {
+      "id": "14dafee9-f316-4ff1-97c4-d25a159518cc",
+      "timestamp": "2026-08-10T10:56:18+08:00",
+      "operation": "branch-create",
+      "branch": "codex/final/c5-remediation",
+      "summary": "创建 C5 Optical active 修复分支",
+      "head_before": "15f98cfb9861c3f9ad87b1d0dc5f8e6f1844063d",
+      "remote": null
+    },
+    {
+      "id": "9dcf94ab-a7f4-4cef-96ec-84e2755a658f",
+      "timestamp": "2026-08-10T10:57:50+08:00",
+      "operation": "branch-create",
+      "branch": "codex/final/c8-evidence-remediation",
+      "summary": "创建 C8 证据生产与注册表修复分支",
+      "head_before": "15f98cfb9861c3f9ad87b1d0dc5f8e6f1844063d",
+      "remote": null
+    },
+    {
+      "id": "8d014571-4d99-4db5-b7d8-97a22eaa623e",
+      "timestamp": "2026-08-10T10:59:32+08:00",
+      "operation": "branch-create",
+      "branch": "codex/final/c6-c7-remediation",
+      "summary": "创建 C6 C7 调度与性能修复分支",
+      "head_before": "15f98cfb9861c3f9ad87b1d0dc5f8e6f1844063d",
+      "remote": null
+    },
+    {
+      "id": "79508676-b076-4595-abfb-76dd3bedf1ce",
+      "timestamp": "2026-08-10T11:09:57+08:00",
+      "operation": "branch-create",
+      "branch": "codex/final/product-closure-remediation",
+      "summary": "创建 Agent 与桌面产品闭环修复分支",
+      "head_before": "15f98cfb9861c3f9ad87b1d0dc5f8e6f1844063d",
+      "remote": null
+    },
+    {
+      "id": "d6fe030f-6357-4640-bebb-8936f5faa0f1",
+      "timestamp": "2026-08-10T13:05:03+08:00",
+      "operation": "merge",
+      "branch": "codex/final/stage-pack-integrated",
+      "summary": "合并候选功能基线 96033c6 到当前 stage HEAD 15f98cf",
+      "head_before": "15f98cfb9861c3f9ad87b1d0dc5f8e6f1844063d",
+      "remote": null
     }
   ]
 }
