@@ -3302,6 +3302,11 @@ fn hybrid_agent_integration_request(
         _ => return Err("Agent integration scope must be global or project".to_string()),
     };
     let bridge_path = resolve_dtoken_agent_bridge_exe()?;
+    // AGENT-7 / H3 authority gate: managed MCP/Hook writes are only opened
+    // after the bridge identity is verified (embedded hash where required,
+    // platform signature, and the bundled component/protocol/OS/arch/version
+    // identity). A path resolution alone is never authority to write.
+    verify_dtoken_agent_bridge(&bridge_path)?;
     Ok(AgentIntegrationRequest {
         agent_ids: draft.agent_ids.clone(),
         scope,
@@ -16294,6 +16299,46 @@ mod tests {
                 Some(value) => env::set_var("DTOKEN_PROXY_EXE", value),
                 None => env::remove_var("DTOKEN_PROXY_EXE"),
             }
+            match previous_bridge {
+                Some(value) => env::set_var("DTOKEN_AGENT_BRIDGE_EXE", value),
+                None => env::remove_var("DTOKEN_AGENT_BRIDGE_EXE"),
+            }
+        });
+    }
+
+    #[test]
+    fn hybrid_agent_integration_request_fails_closed_on_unverified_bridge() {
+        // AGENT-7 / H3 authority gate: managed MCP/Hook request construction
+        // must never proceed on a path-resolved bridge whose identity is not
+        // verified (hash where required, platform signature, component/
+        // protocol/OS/arch/version). A fake bridge file fails closed before
+        // any AgentIntegrationRequest is produced.
+        with_isolated_app_state("hybrid-bridge-gate", || {
+            let root = app_state_dir();
+            let fake_bridge = root.join("fake-dtoken-agent-bridge");
+            fs::write(&fake_bridge, b"not a real bridge binary").expect("write fake bridge");
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                fs::set_permissions(&fake_bridge, fs::Permissions::from_mode(0o755))
+                    .expect("make fake bridge executable");
+            }
+            let previous_bridge = env::var_os("DTOKEN_AGENT_BRIDGE_EXE");
+            env::set_var("DTOKEN_AGENT_BRIDGE_EXE", &fake_bridge);
+            let draft = HybridAgentIntegrationDraftRequest {
+                agent_ids: vec!["codex".to_string()],
+                scope: "project".to_string(),
+                project_root: Some(root.display().to_string()),
+                install_instructions: false,
+                install_hook_or_plugin: false,
+                install_skill: false,
+                install_mcp: true,
+            };
+            let result = hybrid_agent_integration_request(&draft, BTreeMap::new());
+            assert!(
+                result.is_err(),
+                "an unverified bridge must never construct an Agent integration request"
+            );
             match previous_bridge {
                 Some(value) => env::set_var("DTOKEN_AGENT_BRIDGE_EXE", value),
                 None => env::remove_var("DTOKEN_AGENT_BRIDGE_EXE"),

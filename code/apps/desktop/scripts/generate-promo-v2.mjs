@@ -3,6 +3,7 @@ import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { chromium } from "@playwright/test";
 import { createServer } from "vite";
+import { cbmVersionLabel, loadCbmManifest } from "./cbm-promo-version.mjs";
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const desktopRoot = path.resolve(scriptDir, "..");
@@ -10,6 +11,7 @@ const repoRoot = path.resolve(desktopRoot, "../../..");
 const outputRoot = path.join(repoRoot, "docs/media/promo/v2");
 const screenshotsRoot = path.join(outputRoot, "screenshots");
 const iconPath = path.join(desktopRoot, "src/assets/dtoken-cat-icon.png");
+const promoManifest = await loadCbmManifest();
 
 const WIDTH = 1600;
 const HEIGHT = 900;
@@ -96,7 +98,7 @@ const copy = {
       eyebrow: "代码图谱 · 实验性",
       title: ["固定版本导入，", "显式连接与只读图谱。"],
       lede: [
-        "用户自行导入 Codebase Memory MCP v0.9.1-rc.1，完成平台、架构与",
+        `用户自行导入 Codebase Memory MCP ${cbmVersionLabel(promoManifest)}，完成平台、架构与`,
         "SHA-256 校验后，再按明确项目范围连接 Agent、建立索引并打开只读图谱。",
       ],
       screenTitle: "代码图谱工作台",
@@ -172,7 +174,7 @@ const copy = {
       eyebrow: "CODE GRAPH · EXPERIMENTAL",
       title: ["Pinned import, explicit setup,", "and a read-only graph."],
       lede: [
-        "Import Codebase Memory MCP v0.9.1-rc.1 yourself, verify platform, architecture,",
+        `Import Codebase Memory MCP ${cbmVersionLabel(promoManifest)} yourself, verify platform, architecture,`,
         "and pinned SHA-256, then connect agents, build indexes, and open the d-token read-only graph.",
       ],
       screenTitle: "CODE GRAPH WORKBENCH",

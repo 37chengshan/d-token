@@ -1,5 +1,17 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
+  "manifest_revision": "v2-2026-08-10",
+  "generated_at": "2026-08-10T00:00:00Z",
+  "identity_policy": {
+    "identity_sources": [
+      "tag",
+      "commit",
+      "sha256"
+    ],
+    "server_json_version_used": false,
+    "distribution": "user_downloads_official_assets",
+    "d_token_downloads_updates": false
+  },
   "upstream": {
     "repository": "https://github.com/DeusData/codebase-memory-mcp",
     "tag": "v0.9.1-rc.1",
@@ -68,5 +80,213 @@
     "auto_update": false,
     "auto_watch": false,
     "repository_persistence": false
-  }
+  },
+  "counts": {
+    "official": 5,
+    "approved_prerelease": 1,
+    "runtime_verified": 1,
+    "source_tag_only": 3
+  },
+  "versions": [
+    {
+      "version": "v0.9.1-rc.1",
+      "kind": "approved-prerelease",
+      "tag": "v0.9.1-rc.1",
+      "commit": "ee9833df2c72b750378273897ffec9410fc2c4f2",
+      "release_published_at": "2026-07-30T03:15:15Z",
+      "release_immutable": true,
+      "release_prerelease": true,
+      "license": "MIT",
+      "asset_status": "verified",
+      "runtime_status": "verified",
+      "note": "User-approved prerelease pin. Not counted among the five official versions; UI labels it pre-release and requires exactly this tag/commit.",
+      "platform_matrix": {
+        "aarch64-apple-darwin": "compatible",
+        "x86_64-apple-darwin": "compatible",
+        "x86_64-pc-windows-msvc": "compatible",
+        "aarch64-pc-windows-msvc": "compatible"
+      },
+      "artifacts": [
+        {
+          "target": "aarch64-apple-darwin",
+          "archive": "codebase-memory-mcp-darwin-arm64.tar.gz",
+          "archive_sha256": "5a93a7a02a5de4f91d6d5ce4bc9a8dc471a0b141fdb9062dc1d5779205266996",
+          "binary_sha256": "e4fe1cf4f764308f19a65e98b6cc2fcad5d8996b0745af321e75aacfd0c9bb1b",
+          "sigstore_bundle": "codebase-memory-mcp-darwin-arm64.tar.gz.bundle"
+        },
+        {
+          "target": "x86_64-apple-darwin",
+          "archive": "codebase-memory-mcp-darwin-amd64.tar.gz",
+          "archive_sha256": "82b66ad5b4663552191ac7ae229cbca0e4fed2eb767d2cf9f46e4c9573e4348c",
+          "binary_sha256": "661bd7320b4b3ec9b681b38860d283d40f6a94d972821a60010999b04ff449a1",
+          "sigstore_bundle": "codebase-memory-mcp-darwin-amd64.tar.gz.bundle"
+        },
+        {
+          "target": "x86_64-pc-windows-msvc",
+          "archive": "codebase-memory-mcp-windows-amd64.zip",
+          "archive_sha256": "c6f65d94ac039e3a8fdc7bffac2e20fb0b0bc1d2d8d36de72ef34c531b8d4cbd",
+          "binary_sha256": "7d82ca2faedce72113b17f749a63a11860b9d78cbfc73691fab9b31cb7e71c22",
+          "sigstore_bundle": "codebase-memory-mcp-windows-amd64.zip.bundle"
+        },
+        {
+          "target": "aarch64-pc-windows-msvc",
+          "archive": "codebase-memory-mcp-windows-arm64.zip",
+          "archive_sha256": "75f8823ba5f9c608d1e2b41b2c95e2621ed8070d42620d71b11b3f98cef27c9c",
+          "binary_sha256": "af0e9c551e9d418273b7fea1f0b4cca2e3dc5a9ddec573b019fde7ad1ba3869d",
+          "sigstore_bundle": "codebase-memory-mcp-windows-arm64.zip.bundle"
+        }
+      ]
+    },
+    {
+      "version": "v0.9.0",
+      "kind": "official",
+      "tag": "v0.9.0",
+      "commit": "b637e3330c96cfe452da623db068c241aaa3ec01",
+      "release_published_at": "2026-07-08T11:16:08Z",
+      "release_immutable": true,
+      "release_prerelease": false,
+      "license": "MIT",
+      "asset_status": "assets_available",
+      "runtime_status": "blocked",
+      "note": "Official release with official binaries on all four desktop targets and fully recorded hashes. Historical reproduction baseline for the user-reported v0.9.0 import failure; the launcher_unavailable blocker is truthfully reported (cbm.launcherRequired) and the isolated preview/apply/verify/rollback transaction contract is covered. Not offered for new imports; runtime stays blocked until N4/N8 per-version real verification binds C_final evidence.",
+      "platform_matrix": {
+        "aarch64-apple-darwin": "compatible",
+        "x86_64-apple-darwin": "compatible",
+        "x86_64-pc-windows-msvc": "compatible",
+        "aarch64-pc-windows-msvc": "compatible"
+      },
+      "artifacts": [
+        {
+          "target": "aarch64-apple-darwin",
+          "archive": "codebase-memory-mcp-darwin-arm64.tar.gz",
+          "archive_sha256": "faa02f0404230c451a9812230394481948f80183801fa5bf67044b41c2f25ed4",
+          "binary_sha256": "d9fbdd7d8570a77b2fb32453e00bd52a02627281309cd56003a4eccfcfe878d6",
+          "sigstore_bundle": "codebase-memory-mcp-darwin-arm64.tar.gz.bundle"
+        },
+        {
+          "target": "x86_64-apple-darwin",
+          "archive": "codebase-memory-mcp-darwin-amd64.tar.gz",
+          "archive_sha256": "6af3d02a27f589901fa763d3971089337bc8c9838bbed5d0cf543ca9f1a9e543",
+          "binary_sha256": "04ee3048810c19099502adc8bb83039423f02f2553d17677892a7f03b924e01f",
+          "sigstore_bundle": "codebase-memory-mcp-darwin-amd64.tar.gz.bundle"
+        },
+        {
+          "target": "x86_64-pc-windows-msvc",
+          "archive": "codebase-memory-mcp-windows-amd64.zip",
+          "archive_sha256": "92f96896f952e539f0d6cb34d7892a25064b677ccbf808b8f8310ad897e86f2c",
+          "binary_sha256": "9a205fa5ae759fbc866bfe1554f0c05a303be9ae6e0a00f94d875dc0c25e0680",
+          "sigstore_bundle": "codebase-memory-mcp-windows-amd64.zip.bundle"
+        },
+        {
+          "target": "aarch64-pc-windows-msvc",
+          "archive": "codebase-memory-mcp-windows-arm64.zip",
+          "archive_sha256": "63994fcfd15bf5e3f03cbf368cce86261713c7d7802e31469ae81a3939e4fae6",
+          "binary_sha256": "a299150de19bb4da9a880a6139757076bd4139b2f6a7e7cf31bdd431d53aed9c",
+          "sigstore_bundle": "codebase-memory-mcp-windows-arm64.zip.bundle"
+        }
+      ]
+    },
+    {
+      "version": "v0.8.1",
+      "kind": "official",
+      "tag": "v0.8.1",
+      "commit": "f0c9be19c5d74b84f418d807bfdce7b5d6a261ff",
+      "release_published_at": "2026-06-12T06:36:49Z",
+      "release_immutable": true,
+      "release_prerelease": false,
+      "license": "MIT",
+      "asset_status": "assets_available",
+      "runtime_status": "blocked",
+      "note": "Official release with official binaries on macOS amd64/arm64 and Windows amd64. No official windows-arm64 asset: that target is explicitly incompatible. Archive SHA-256 values are from the official GitHub release digest; extracted binary verification is pending N4/N8 real verification, so runtime use stays blocked until verified.",
+      "platform_matrix": {
+        "aarch64-apple-darwin": "compatible",
+        "x86_64-apple-darwin": "compatible",
+        "x86_64-pc-windows-msvc": "compatible",
+        "aarch64-pc-windows-msvc": "incompatible"
+      },
+      "artifacts": [
+        {
+          "target": "aarch64-apple-darwin",
+          "archive": "codebase-memory-mcp-darwin-arm64.tar.gz",
+          "archive_sha256": "fbd047509852021b5446a11141bcb0a3d1dcaebf6e5112460960f29f052c1c58",
+          "binary_sha256": null,
+          "sigstore_bundle": "codebase-memory-mcp-darwin-arm64.tar.gz.bundle"
+        },
+        {
+          "target": "x86_64-apple-darwin",
+          "archive": "codebase-memory-mcp-darwin-amd64.tar.gz",
+          "archive_sha256": "fb62da3016ea12b948351208759b5c083fb1446cf6e78d6db8b7cd28fe86fd54",
+          "binary_sha256": null,
+          "sigstore_bundle": "codebase-memory-mcp-darwin-amd64.tar.gz.bundle"
+        },
+        {
+          "target": "x86_64-pc-windows-msvc",
+          "archive": "codebase-memory-mcp-windows-amd64.zip",
+          "archive_sha256": "a602ad090ed3f49d86c55472f73f27ad7055222806a82358f2e08513e027f00f",
+          "binary_sha256": null,
+          "sigstore_bundle": "codebase-memory-mcp-windows-amd64.zip.bundle"
+        }
+      ]
+    },
+    {
+      "version": "0.8.0",
+      "kind": "official",
+      "tag": "0.8.0",
+      "commit": "244039e6cef9382d9fdb0eeb991e8948c8e09ebc",
+      "release_published_at": "2026-06-12T07:49:10Z",
+      "release_immutable": false,
+      "release_prerelease": false,
+      "license": "MIT",
+      "asset_status": "source_tag_only",
+      "runtime_status": "blocked",
+      "note": "Official release with assets=0 (archived). Source-tag registration only; never claimed runtime-compatible. Fail-closed: incompatible/untrusted until official assets or evidence exist.",
+      "platform_matrix": {
+        "aarch64-apple-darwin": "incompatible",
+        "x86_64-apple-darwin": "incompatible",
+        "x86_64-pc-windows-msvc": "incompatible",
+        "aarch64-pc-windows-msvc": "incompatible"
+      },
+      "artifacts": []
+    },
+    {
+      "version": "0.7.0",
+      "kind": "official",
+      "tag": "0.7.0",
+      "commit": "b133a204d224f644ade0c07adaac3f5a04ead90b",
+      "release_published_at": "2026-06-12T07:49:08Z",
+      "release_immutable": false,
+      "release_prerelease": false,
+      "license": "MIT",
+      "asset_status": "source_tag_only",
+      "runtime_status": "blocked",
+      "note": "Official release with assets=0 (archived). Source-tag registration only; never claimed runtime-compatible. Fail-closed: incompatible/untrusted until official assets or evidence exist.",
+      "platform_matrix": {
+        "aarch64-apple-darwin": "incompatible",
+        "x86_64-apple-darwin": "incompatible",
+        "x86_64-pc-windows-msvc": "incompatible",
+        "aarch64-pc-windows-msvc": "incompatible"
+      },
+      "artifacts": []
+    },
+    {
+      "version": "0.6.1",
+      "kind": "official",
+      "tag": "0.6.1",
+      "commit": "6aab9d569365aa18638644aef2e9c482ff350a5c",
+      "release_published_at": "2026-06-12T07:49:07Z",
+      "release_immutable": false,
+      "release_prerelease": false,
+      "license": "MIT",
+      "asset_status": "source_tag_only",
+      "runtime_status": "blocked",
+      "note": "Official release with assets=0 (archived). Source-tag registration only; never claimed runtime-compatible. Fail-closed: incompatible/untrusted until official assets or evidence exist.",
+      "platform_matrix": {
+        "aarch64-apple-darwin": "incompatible",
+        "x86_64-apple-darwin": "incompatible",
+        "x86_64-pc-windows-msvc": "incompatible",
+        "aarch64-pc-windows-msvc": "incompatible"
+      },
+      "artifacts": []
+    }
+  ]
 }

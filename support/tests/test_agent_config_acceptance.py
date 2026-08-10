@@ -82,16 +82,15 @@ def expected_bindings() -> tuple[str, str]:
     """Independently compute the N9 bound-mode values for the worktree.
 
     Mirrors the runner's resolve_git_bindings: the HEAD commit and the
-    sha256 of the HEAD tree id (`git rev-parse HEAD^{tree}` output without
-    its trailing newline).
+    unified N0 source digest — SHA-256 of the canonical JSON of
+    {tracked path: blob sha256} over every tracked file at the candidate
+    commit (shared producer compute_source_manifest).
     """
     head = subprocess.check_output(
         ["git", "-C", str(MODULE.REPO_ROOT), "rev-parse", "HEAD"]
     ).decode("utf-8", errors="replace").strip()
-    tree = subprocess.check_output(
-        ["git", "-C", str(MODULE.REPO_ROOT), "rev-parse", "HEAD^{tree}"]
-    )
-    return head, MODULE.sha256_bytes(tree.removesuffix(b"\n"))
+    _, digest = MODULE.compute_source_manifest(MODULE.REPO_ROOT, "HEAD")
+    return head, digest
 
 
 class AgentConfigAcceptanceTests(unittest.TestCase):
@@ -276,6 +275,10 @@ class AgentConfigAcceptanceTests(unittest.TestCase):
         self.assertEqual(set(data), MODULE.ARTIFACT_KEYS)
         self.assertEqual(data["candidate_commit"], head)
         self.assertEqual(data["source_digest"], digest)
+        self.assertEqual(
+            data["artifact_sha256"], MODULE.artifact_sha256(data),
+            "artifact_sha256 must equal SHA-256 of the canonical JSON without itself",
+        )
         self.assertEqual(MODULE.check_artifact_schema(self.artifact), [])
         # the binding is stable across two resolutions of the same tree
         self.assertEqual(

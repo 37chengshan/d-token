@@ -80,7 +80,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-SCHEMA_VERSION = "1.0"
+SCHEMA_VERSION = "1.1"
 
 # --- Status enums -----------------------------------------------------------
 SNAPSHOT_STATUS_LOADED = "loaded"
@@ -134,12 +134,13 @@ SNAPSHOT_KEYS = frozenset({
 })
 ARTIFACT_KEYS = frozenset({
     "schema_version", "mode", "status", "ok", "generated_at", "host_platform",
-    "candidate", "source_digest", "phases", "route", "db", "wrote_cc_switch",
-    "identity_restored", "observed_b_differs", "ledger", "failure",
-    "restore", "redacted",
+    "candidate", "source_digest", "artifact_sha256", "phases", "route", "db",
+    "wrote_cc_switch", "identity_restored", "observed_b_differs", "ledger",
+    "failure", "restore", "redacted",
 })
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
+SCRIPTS_DIR = Path(__file__).resolve().parent
 FIXTURE_DB = REPO_ROOT / "support" / "fixtures" / "cc-switch" / "cc-switch.db"
 
 
@@ -153,6 +154,16 @@ def now_iso() -> str:
 
 def sha256_hex(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
+
+
+def artifact_sha256(artifact: dict) -> str:
+    """artifact_sha256 rule (generate_release_gate_status): SHA-256 of the
+    canonical JSON of the artifact WITHOUT the artifact_sha256 field."""
+    body = {key: value for key, value in artifact.items() if key != "artifact_sha256"}
+    canonical = json.dumps(
+        body, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+    ).encode("utf-8")
+    return sha256_hex(canonical)
 
 
 def file_sha256(path: Path) -> str:
@@ -501,32 +512,26 @@ def git_head(repo_root: Path) -> tuple[str, bool]:
 
 
 def source_tree_digest(repo_root: Path) -> tuple[str, bool]:
-    """Content-bearing source digest anchor: sha256 of the commit tree object id.
-
-    ``git rev-parse HEAD^{tree}`` yields the content-addressed tree id of the
-    candidate commit. The digest is sha256 of that tree id's ASCII hex bytes,
-    so it is (a) invariant to worktree dirtiness — reproducible at any clean
-    checkout of the same commit — and (b) content-bearing: two commits with
-    different source trees always produce different digests.  This replaces
-    the former ``git diff --binary HEAD -- .`` anchor, which is the constant
-    sha256 of an empty diff at any clean checkout (and can never be reproduced
-    for an uncommitted evidence worktree).
+    """Unified N0 source digest anchor: SHA-256 of the canonical JSON of
+    {tracked path: blob sha256} over every tracked file at the candidate
+    commit, computed by the shared producer
+    generate_n0_candidate_evidence.compute_source_manifest (git ls-tree +
+    git cat-file --batch, paths sorted by UTF-8). This is the exact digest
+    definition the release aggregator (generate_release_gate_status) and the
+    N0 freeze producer use; the former commit-tree-object-sha256 anchor is
+    retired because it can never match the aggregator's frozen source digest.
     """
     try:
-        result = subprocess.run(
-            ["git", "rev-parse", "HEAD^{tree}"],
-            cwd=str(repo_root),
-            capture_output=True,
-            text=True,
-            timeout=15,
-            check=False,
-        )
-    except (OSError, subprocess.SubprocessError):
+        if str(SCRIPTS_DIR) not in sys.path:
+            sys.path.insert(0, str(SCRIPTS_DIR))
+        from generate_n0_candidate_evidence import compute_source_manifest
+
+        _, digest = compute_source_manifest(repo_root, "HEAD")
+    except Exception:
         return "", False
-    tree_id = result.stdout.strip()
-    if result.returncode != 0 or not re.fullmatch(r"[0-9a-fA-F]{40}", tree_id):
+    if not re.fullmatch(r"[0-9a-f]{64}", digest):
         return "", False
-    return sha256_hex(tree_id.encode("ascii")), True
+    return digest, True
 
 
 # --- Actions ledger ---------------------------------------------------------
@@ -614,6 +619,13 @@ def check_artifact_schema(data: dict) -> list[str]:
     digest = data.get("source_digest")
     if not isinstance(digest, dict) or not DIGEST_RE.fullmatch(digest.get("value", "")):
         violations.append("artifact source_digest.value must be a 64-hex sha256")
+    declared_sha = data.get("artifact_sha256")
+    recomputed = artifact_sha256(data)
+    if not isinstance(declared_sha, str) or declared_sha != recomputed:
+        violations.append(
+            "artifact_sha256 mismatch (must equal SHA-256 of the canonical "
+            "JSON without the artifact_sha256 field)"
+        )
     ledger = data.get("ledger")
     if not isinstance(ledger, dict) or ledger.get("writes_attempted") != 0:
         violations.append("artifact ledger writes_attempted must be 0")
@@ -804,7 +816,7 @@ def cmd_verify(args: argparse.Namespace) -> int:
             "algorithm": "sha256",
             "value": digest,
             "resolved": digest_resolved,
-            "scope": "commit-tree-object-sha256",
+            "scope": "n0-canonical-source-manifest",
         },
         "phases": {
             "pre": str(Path(args.pre)),
@@ -845,6 +857,7 @@ def cmd_verify(args: argparse.Namespace) -> int:
         },
         "redacted": True,
     }
+    artifact["artifact_sha256"] = artifact_sha256(artifact)
 
     artifact_path = Path(args.artifact)
     artifact_path.parent.mkdir(parents=True, exist_ok=True)

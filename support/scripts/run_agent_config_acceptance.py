@@ -22,17 +22,21 @@ paths.
 
 Evidence contract
 -----------------
-The JSON artifact is a single top-level object with exactly seven keys:
-schema_version, status, mode, candidate_commit, source_digest, agents,
-restore_order. schema_version is the artifact schema version; status is one
-of verified|failed|blocked; mode is always executed (--dry-run and
+The JSON artifact is a single top-level object with exactly eight keys:
+schema_version, status, mode, candidate_commit, source_digest, artifact_sha256,
+agents, restore_order. schema_version is the artifact schema version; status
+is one of verified|failed|blocked; mode is always executed (--dry-run and
 --check-schema never write an artifact); candidate_commit is the repository
-HEAD commit and source_digest is the sha256 of the HEAD tree id (the
-`git rev-parse HEAD^{tree}` output without its trailing newline) — a
-content-bearing clean anchor that never hashes to empty input, binding the
-evidence to the candidate's exact committed tree (N9 bound mode, resolved
-fail-closed before any executed artifact); agents is an
-array of per-agent records containing exactly agent_id, adapter,
+HEAD commit and source_digest is the unified N0 definition — SHA-256 of the
+canonical JSON of {tracked path: blob sha256} over every tracked file at the
+candidate commit (git ls-tree + git cat-file --batch, paths sorted by UTF-8;
+gitignored/untracked content never enters), computed by the shared producer
+generate_n0_candidate_evidence.compute_source_manifest so every evidence
+artifact binds the exact same candidate tree (N9 bound mode, resolved
+fail-closed before any executed artifact); artifact_sha256 is SHA-256 of the
+canonical JSON of the artifact WITHOUT the artifact_sha256 field (the
+aggregator recomputes this exactly, generate_release_gate_status rule);
+agents is an array of per-agent records containing exactly agent_id, adapter,
 source_fingerprint, source_mode, status, error_class, steps; restore_order is
 the list of agent ids exact-restored during a rollback, in the actual
 reverse order in which they were restored. The artifact never contains file
@@ -87,9 +91,12 @@ _O_BINARY = getattr(os, "O_BINARY", 0)
 # --check-schema never write an artifact. candidate_commit and source_digest
 # bind the evidence to a concrete candidate revision (N9 bound mode):
 # candidate_commit is the repository HEAD commit and source_digest is the
-# sha256 of the HEAD tree id (git rev-parse HEAD^{tree} output without the
-# trailing newline), a content-bearing anchor that is never empty; both are
-# resolved before any run.
+# unified N0 definition — SHA-256 of the canonical JSON of
+# {tracked path: blob sha256} over every tracked file at the candidate commit
+# (generate_n0_candidate_evidence.compute_source_manifest), a content-bearing
+# anchor that is never empty; both are resolved before any run.
+# artifact_sha256 is SHA-256 of the canonical JSON of the artifact WITHOUT the
+# artifact_sha256 field (aggregator recompute rule).
 SCHEMA_VERSION = "1.1"
 STATUS_VERIFIED = "verified"
 STATUS_BLOCKED = "blocked"
@@ -101,6 +108,7 @@ ARTIFACT_KEYS = frozenset(
         "mode",
         "candidate_commit",
         "source_digest",
+        "artifact_sha256",
         "agents",
         "restore_order",
     }
@@ -196,6 +204,15 @@ ENV_REJECT_MARKERS = (
 REPO_ROOT = Path(__file__).resolve().parents[2]
 CARGO_DIR = REPO_ROOT / "code"
 
+# Shared N0 candidate-evidence producer (VERIFICATION.md §1): the single
+# source of truth for the canonical source_digest over tracked blobs at the
+# candidate commit. Imported as a module so this runner and the N0 freeze
+# producer can never drift into two digest definitions.
+_SCRIPTS_DIR = Path(__file__).resolve().parent
+if str(_SCRIPTS_DIR) not in sys.path:
+    sys.path.insert(0, str(_SCRIPTS_DIR))
+from generate_n0_candidate_evidence import compute_source_manifest  # noqa: E402
+
 
 class AcceptanceError(Exception):
     error_class = "AcceptanceError"
@@ -235,6 +252,16 @@ class GitBindingUnresolved(AcceptanceError):
 
 def sha256_bytes(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
+
+
+def artifact_sha256(artifact: dict[str, Any]) -> str:
+    """artifact_sha256 rule (generate_release_gate_status): SHA-256 of the
+    canonical JSON of the artifact WITHOUT the artifact_sha256 field."""
+    body = {key: value for key, value in artifact.items() if key != "artifact_sha256"}
+    canonical = json.dumps(
+        body, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+    ).encode("utf-8")
+    return sha256_bytes(canonical)
 
 
 def hash_file(path: Path) -> str:
@@ -690,13 +717,16 @@ def resolve_git_bindings(repo_root: Path) -> tuple[str, str]:
     """Resolve the N9 bound-mode evidence for the artifact.
 
     Returns (candidate_commit, source_digest): the repository HEAD commit
-    and the sha256 of the HEAD tree id — ``git rev-parse HEAD^{tree}``
-    output without its trailing newline. The tree id is a content-bearing
-    clean anchor: it identifies the exact committed tree of the candidate
-    and is never empty, unlike a working-tree diff. The digest is computed
-    over the raw subprocess bytes. Any failure — git missing, the path not
-    being a repository, a non-zero exit, or a hang — fails closed with
-    GitBindingUnresolved, and no executed artifact may be written.
+    and the unified N0 source digest — SHA-256 of the canonical JSON of
+    {tracked path: blob sha256} over every tracked file at the candidate
+    commit, computed by the shared producer
+    generate_n0_candidate_evidence.compute_source_manifest. This is the exact
+    digest definition the release aggregator (generate_release_gate_status)
+    and the N0 freeze producer use; no second digest definition exists. The
+    manifest is content-bearing and never empty (every candidate has tracked
+    files). Any failure — git missing, the path not being a repository, a
+    non-zero exit, or a hang — fails closed with GitBindingUnresolved, and no
+    executed artifact may be written.
     """
     try:
         head = subprocess.run(
@@ -713,22 +743,14 @@ def resolve_git_bindings(repo_root: Path) -> tuple[str, str]:
             "cannot resolve git HEAD (not a repository?)"
         )
     try:
-        tree = subprocess.run(
-            ["git", "-C", str(repo_root), "rev-parse", "HEAD^{tree}"],
-            capture_output=True,
-            timeout=60,
-        )
-    except (OSError, subprocess.TimeoutExpired) as exc:
+        _, source_digest = compute_source_manifest(repo_root, "HEAD")
+    except Exception as exc:  # the shared producer raises RuntimeError on git failure
         raise GitBindingUnresolved(
             f"cannot resolve source digest: {exc}"
         ) from exc
-    if tree.returncode != 0 or not tree.stdout.strip():
-        raise GitBindingUnresolved(
-            "cannot resolve source digest (HEAD^{tree} unresolved)"
-        )
     return (
         head.stdout.decode("utf-8", errors="replace").strip(),
-        sha256_bytes(tree.stdout.removesuffix(b"\n")),
+        source_digest,
     )
 
 
@@ -911,6 +933,7 @@ def run_acceptance(
         "agents": records,
         "restore_order": restore_order,
     }
+    artifact["artifact_sha256"] = artifact_sha256(artifact)
     write_artifact_atomic(artifact_path, artifact)
     return artifact["status"], records, restore_order
 
@@ -951,7 +974,7 @@ def check_artifact_schema(artifact_path: Path) -> list[str]:
         return [
             "artifact must be a top-level JSON object with exactly "
             "schema_version/status/mode/candidate_commit/source_digest/"
-            "agents/restore_order"
+            "artifact_sha256/agents/restore_order"
         ]
 
     extra = sorted(set(data) - ARTIFACT_KEYS)
@@ -983,6 +1006,13 @@ def check_artifact_schema(artifact_path: Path) -> list[str]:
     ):
         violations.append(
             "source_digest must be a sha256 hex digest (64 hex chars)"
+        )
+    declared_sha = data.get("artifact_sha256")
+    recomputed = artifact_sha256(data)
+    if not isinstance(declared_sha, str) or declared_sha != recomputed:
+        violations.append(
+            "artifact_sha256 mismatch (must equal SHA-256 of the canonical "
+            "JSON without the artifact_sha256 field)"
         )
 
     agents = data.get("agents")
@@ -1307,6 +1337,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             "agents": records,
             "restore_order": [],
         }
+        artifact["artifact_sha256"] = artifact_sha256(artifact)
         try:
             write_artifact_atomic(artifact_path, artifact)
         except OSError as exc:

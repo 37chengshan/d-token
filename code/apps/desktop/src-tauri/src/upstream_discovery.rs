@@ -1992,10 +1992,21 @@ fn candidate_from_codex_toml(path: &Path) -> Result<Option<UpstreamCandidate>, &
         .get("model_providers")
         .and_then(toml::Value::as_table)
         .and_then(|providers| providers.get(&provider_id));
+    // Top-level form (agent-integration audit B1): real Codex configs carry
+    // `openai_base_url` and `model_catalog_json` at the root with no
+    // [model_providers] table. The base URL is the same routing surface as a
+    // provider-table base_url; the model catalog is metadata only (a
+    // credentials-free model list source) and never enables auth.
     let base_url = provider
         .and_then(|provider| provider.get("base_url"))
         .and_then(toml::Value::as_str)
-        .and_then(redact_base_url);
+        .and_then(redact_base_url)
+        .or_else(|| {
+            value
+                .get("openai_base_url")
+                .and_then(toml::Value::as_str)
+                .and_then(redact_base_url)
+        });
     let protocol = provider
         .and_then(|provider| provider.get("wire_api"))
         .and_then(toml::Value::as_str)
@@ -2011,9 +2022,24 @@ fn candidate_from_codex_toml(path: &Path) -> Result<Option<UpstreamCandidate>, &
     let requires_openai_auth = provider
         .and_then(|provider| provider.get("requires_openai_auth"))
         .and_then(toml::Value::as_bool)
-        .unwrap_or(false);
+        .unwrap_or(false)
+        // A top-level openai_base_url with an openai provider is the
+        // opencodex-managed local shape; it still requires its own credential
+        // resolution and is never treated as d-token-owned.
+        && provider.is_some();
+    // model_catalog_json is a credential-free model list file; it is only
+    // evidence that the top-level form is active (merged into the source
+    // reasons), never an auth source and never read here.
+    let has_model_catalog = value
+        .get("model_catalog_json")
+        .and_then(toml::Value::as_str)
+        .is_some();
     if base_url.is_none() && model.is_none() {
         return Ok(None);
+    }
+    let mut reasons = vec!["Codex currently selects this model provider".to_string()];
+    if has_model_catalog {
+        reasons.push("Codex top-level model_catalog_json present (metadata only)".to_string());
     }
     Ok(Some(UpstreamCandidate {
         id: format!("codex-{provider_id}"),
@@ -2034,7 +2060,7 @@ fn candidate_from_codex_toml(path: &Path) -> Result<Option<UpstreamCandidate>, &
         state: "discovered".to_string(),
         agent_ids: vec!["codex".to_string()],
         confidence: 96,
-        reasons: vec!["Codex currently selects this model provider".to_string()],
+        reasons,
     }))
 }
 
@@ -2126,10 +2152,10 @@ fn discover_cc_switch_at(
     let mut statement = match connection.prepare(
         "SELECT id, app_type, name, is_current,
                 COALESCE(json_extract(settings_config,'$.base_url'), json_extract(settings_config,'$.baseUrl'), json_extract(settings_config,'$.options.baseURL'), json_extract(settings_config,'$.env.ANTHROPIC_BASE_URL'), json_extract(settings_config,'$.env.OPENAI_BASE_URL'), json_extract(settings_config,'$.env.GEMINI_BASE_URL')),
-                COALESCE(json_extract(settings_config,'$.protocol'), json_extract(settings_config,'$.apiFormat'), json_extract(settings_config,'$.api_format')),
+                COALESCE(json_extract(settings_config,'$.protocol'), json_extract(settings_config,'$.api'), json_extract(settings_config,'$.apiFormat'), json_extract(settings_config,'$.api_format')),
                 COALESCE(json_extract(settings_config,'$.model'), json_extract(settings_config,'$.model_name'), json_extract(settings_config,'$.env.ANTHROPIC_MODEL'), json_extract(settings_config,'$.env.OPENAI_MODEL'), json_extract(settings_config,'$.env.GEMINI_MODEL')),
                 CASE WHEN json_type(settings_config,'$.api_key') IS NOT NULL OR json_type(settings_config,'$.apiKey') IS NOT NULL OR json_type(settings_config,'$.token') IS NOT NULL OR json_type(settings_config,'$.auth') IS NOT NULL OR json_type(settings_config,'$.env.ANTHROPIC_AUTH_TOKEN') IS NOT NULL OR json_type(settings_config,'$.env.OPENAI_API_KEY') IS NOT NULL OR json_type(settings_config,'$.env.GEMINI_API_KEY') IS NOT NULL THEN 1 ELSE 0 END
-         FROM providers WHERE app_type IN ('claude','codex','gemini','opencode') ORDER BY app_type, sort_index, id"
+         FROM providers WHERE app_type IN ('claude','codex','gemini','opencode','openclaw') ORDER BY app_type, sort_index, id"
     ) {
         Ok(statement) => statement,
         Err(_) => {
@@ -2957,6 +2983,7 @@ fn agent_ids_for_cc_switch_app(app: &str) -> Vec<String> {
         "codex" => vec!["codex".to_string()],
         "gemini" => vec!["gemini-cli".to_string()],
         "opencode" => vec!["opencode".to_string()],
+        "openclaw" => vec!["openclaw".to_string()],
         _ => vec![],
     }
 }
@@ -3047,6 +3074,11 @@ fn probe_cc_switch_schema(connection: &Connection) -> bool {
 
 fn protocol_for_app(app: &str) -> &'static str {
     if app == "claude" {
+        "anthropic"
+    } else if app == "openclaw" {
+        // OpenClaw providers carry the anthropic-messages api shape (or an
+        // explicit protocol in settings_config); the anthropic family is the
+        // honest default for an unknown openclaw payload.
         "anthropic"
     } else {
         "open_ai"
@@ -3850,6 +3882,194 @@ model_provider = "beta-provider"
     }
 
     #[test]
+    fn codex_toml_top_level_openai_base_url_and_model_catalog_produce_candidate() {
+        // Real Codex shape (agent-integration audit B1): top-level
+        // openai_base_url + model_catalog_json with no [model_providers]
+        // table. Discovery must read the top-level base URL as the upstream,
+        // keep the responses protocol, treat the model catalog as metadata
+        // only (never auth), and never read the catalog file.
+        let root = tempfile::tempdir().expect("temporary directory");
+        let path = root.path().join("config.toml");
+        fs::write(
+            &path,
+            r#"
+approval_policy = "on-request"
+model_catalog_json = "/tmp/opencodex-catalog.json"
+openai_base_url = "http://127.0.0.1:10100/v1"
+"#,
+        )
+        .expect("Codex top-level config");
+
+        let candidate = candidate_from_codex_toml(&path)
+            .expect("parse")
+            .expect("candidate");
+        assert_eq!(candidate.id, "codex-openai");
+        assert_eq!(
+            candidate.base_url.as_deref(),
+            Some("http://127.0.0.1:10100/v1")
+        );
+        assert_eq!(candidate.protocol, "responses");
+        assert_eq!(candidate.auth_mode, "none");
+        assert!(candidate.active);
+        assert!(candidate.models.is_empty());
+        assert_eq!(candidate.agent_ids, ["codex"]);
+        assert!(
+            candidate
+                .reasons
+                .iter()
+                .any(|reason| reason.contains("model_catalog_json")),
+            "catalog presence must be recorded as metadata evidence: {:?}",
+            candidate.reasons
+        );
+        let encoded = serde_json::to_string(&candidate).expect("serialize candidate");
+        assert!(!encoded.contains("opencodex-catalog"), "catalog path must never leak");
+    }
+
+    #[test]
+    fn codex_toml_top_level_without_base_url_fails_closed() {
+        // A top-level model_catalog_json alone is metadata, not an upstream:
+        // without a base URL or model there is no routing surface, so no
+        // candidate is produced.
+        let root = tempfile::tempdir().expect("temporary directory");
+        let path = root.path().join("config.toml");
+        fs::write(
+            &path,
+            r#"
+model_catalog_json = "/tmp/opencodex-catalog.json"
+"#,
+        )
+        .expect("Codex top-level config");
+
+        let candidate = candidate_from_codex_toml(&path).expect("parse");
+        assert!(candidate.is_none());
+    }
+
+    #[test]
+    fn cc_switch_openclaw_candidates_bind_to_the_backend_openclaw_adapter() {
+        assert_eq!(agent_ids_for_cc_switch_app("openclaw"), ["openclaw"]);
+        assert_eq!(protocol_for_app("openclaw"), "anthropic");
+    }
+
+    #[test]
+    fn cc_switch_openclaw_app_type_is_discovered_with_redacted_credentials() {
+        const SECRET_MARKER: &str = "OPENCLAW_SECRET_MUST_NOT_ESCAPE_9c21";
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let path = temporary.path().join("cc-switch.db");
+        let connection = create_schema_12(&path);
+        connection
+            .execute(
+                "INSERT INTO providers
+                 (id, app_type, name, settings_config, is_current, sort_index)
+                 VALUES (?1, 'openclaw', ?2, ?3, 1, 1)",
+                params![
+                    "openclaw-kimi",
+                    "OpenClaw Kimi",
+                    json!({
+                        "baseUrl": "https://coding.example.test/apps/anthropic",
+                        "apiKey": SECRET_MARKER,
+                        "api": "anthropic-messages",
+                        "models": [{"id": "kimi-k2.5"}]
+                    })
+                    .to_string(),
+                ],
+            )
+            .expect("insert openclaw provider");
+        drop(connection);
+
+        let mut candidates = Vec::new();
+        let mut sources = Vec::new();
+        discover_cc_switch_at(&path, &mut candidates, &mut sources);
+
+        assert_eq!(source_state(&sources), "loaded");
+        let openclaw = candidates
+            .iter()
+            .find(|candidate| candidate.id == "openclaw-kimi")
+            .expect("openclaw candidate");
+        assert_eq!(openclaw.agent_ids, ["openclaw"]);
+        assert_eq!(openclaw.protocol, "anthropic-messages");
+        assert_eq!(
+            openclaw.base_url.as_deref(),
+            Some("https://coding.example.test/apps/anthropic")
+        );
+        assert_eq!(openclaw.auth_mode, "unavailable");
+        assert!(openclaw.active);
+        let returned = serde_json::to_string(&(candidates, sources)).expect("serialize discovery");
+        assert!(!returned.contains(SECRET_MARKER), "openclaw credential leaked");
+    }
+
+    #[test]
+    fn codex_toml_top_level_openai_base_url_and_model_catalog_form() {
+        // agent-integration audit B1: real Codex configs carry top-level
+        // `openai_base_url` + `model_catalog_json` with no [model_providers]
+        // table. Discovery must parse the base URL as the routing surface and
+        // treat the model catalog as metadata only (never auth).
+        let root = tempfile::tempdir().expect("temporary directory");
+        let path = root.path().join("config.toml");
+        fs::write(
+            &path,
+            r#"
+approval_policy = "on-request"
+model_catalog_json = "/Users/fixture/.codex/opencodex-catalog.json"
+openai_base_url = "http://127.0.0.1:10100/v1"
+"#,
+        )
+        .expect("Codex config");
+
+        let candidate = candidate_from_codex_toml(&path)
+            .expect("parse")
+            .expect("top-level candidate");
+        assert_eq!(candidate.id, "codex-openai");
+        assert_eq!(
+            candidate.base_url.as_deref(),
+            Some("http://127.0.0.1:10100/v1")
+        );
+        assert_eq!(candidate.protocol, "responses");
+        assert_eq!(candidate.auth_mode, "none");
+        assert_eq!(candidate.agent_ids, ["codex"]);
+        assert!(
+            candidate
+                .reasons
+                .iter()
+                .any(|reason| reason.contains("model_catalog_json")),
+            "model catalog must be recorded as metadata evidence: {candidate:?}"
+        );
+        // The catalog path is never read, never emitted, and never treated as
+        // an auth source.
+        let serialized = serde_json::to_string(&candidate).expect("serialize");
+        assert!(!serialized.contains("opencodex-catalog.json"));
+    }
+
+    #[test]
+    fn codex_toml_provider_table_form_takes_precedence_over_top_level() {
+        // When both shapes are present, the explicit [model_providers] entry
+        // selected by model_provider is authoritative over the top-level
+        // openai_base_url fallback.
+        let root = tempfile::tempdir().expect("temporary directory");
+        let path = root.path().join("config.toml");
+        fs::write(
+            &path,
+            r#"
+model_provider = "custom"
+openai_base_url = "http://127.0.0.1:10100/v1"
+
+[model_providers.custom]
+base_url = "https://custom.example/v1"
+wire_api = "responses"
+"#,
+        )
+        .expect("Codex config");
+
+        let candidate = candidate_from_codex_toml(&path)
+            .expect("parse")
+            .expect("candidate");
+        assert_eq!(candidate.id, "codex-custom");
+        assert_eq!(
+            candidate.base_url.as_deref(),
+            Some("https://custom.example/v1")
+        );
+    }
+
+    #[test]
     fn unverified_json_agent_is_not_recursively_guessed_as_an_upstream() {
         let root = tempfile::tempdir().expect("temporary directory");
         let path = root.path().join("config.json");
@@ -4517,6 +4737,50 @@ wire_api = "responses"
     #[test]
     fn cc_switch_gemini_candidates_bind_to_the_backend_gemini_adapter() {
         assert_eq!(agent_ids_for_cc_switch_app("gemini"), ["gemini-cli"]);
+    }
+
+    #[test]
+    fn cc_switch_openclaw_app_type_maps_to_the_openclaw_adapter() {
+        // agent-integration audit B2: the real cc-switch DB (user_version 16)
+        // carries an openclaw app type; discovery must map it to the backend
+        // openclaw adapter and use the anthropic protocol family.
+        assert_eq!(agent_ids_for_cc_switch_app("openclaw"), ["openclaw"]);
+        assert_eq!(protocol_for_app("openclaw"), "anthropic");
+    }
+
+    #[test]
+    fn cc_switch_openclaw_provider_is_enumerated_from_the_database() {
+        // An active openclaw provider (api-shaped settings_config) must be
+        // surfaced as a candidate bound to the openclaw agent.
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let path = temporary.path().join("cc-switch.db");
+        let connection = create_schema_12(&path);
+        connection
+            .execute(
+                "INSERT INTO providers (id, app_type, name, settings_config, is_current, sort_index)
+                 VALUES ('openclaw-provider', 'openclaw', 'OpenClaw custom', ?, 1, 1)",
+                params![
+                    r#"{"baseUrl":"https://openclaw.example.test/v1","apiKey":"fixture-openclaw-token-marker","api":"anthropic-messages","model":"claude-kimi","models":[{"id":"claude-kimi"}]}"#
+                ],
+            )
+            .expect("insert openclaw provider");
+        drop(connection);
+
+        let mut candidates = Vec::new();
+        let mut sources = Vec::new();
+        discover_cc_switch_at(&path, &mut candidates, &mut sources);
+
+        let openclaw = candidates
+            .iter()
+            .find(|candidate| candidate.id == "openclaw-provider")
+            .expect("openclaw provider enumerated");
+        assert_eq!(openclaw.agent_ids, ["openclaw"]);
+        // The settings_config carries an apiKey-shaped field: auth_mode must
+        // be unavailable (credential never read) and the payload never leaks.
+        assert_eq!(openclaw.auth_mode, "unavailable");
+        let serialized = serde_json::to_string(&candidates).expect("serialize");
+        assert!(!serialized.contains("fixture-openclaw-token-marker"));
+        assert!(!serialized.contains("apiKey"));
     }
 
     #[test]
