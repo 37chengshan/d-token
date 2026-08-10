@@ -2511,6 +2511,15 @@
       "summary": "C4 remediation report",
       "head_before": "427d366",
       "remote": null
+    },
+    {
+      "id": "8ca9fffd-ef62-44ed-a101-63d431c1861b",
+      "timestamp": "2026-08-10T13:09:28+08:00",
+      "operation": "commit",
+      "branch": "codex/final/c4-remediation",
+      "summary": "core-api: add rtk_accounting_projection availability/replay-guarded test (PR-C4C)",
+      "head_before": "1c668038275997fbd8e9609623cb5232bf50cf11",
+      "remote": null
     }
   ]
 }

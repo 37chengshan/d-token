@@ -1613,6 +1613,13 @@ impl AppState {
         Self::new_with_config_status(config, RuntimeConfigStatus::empty())
     }
 
+    #[cfg(test)]
+    fn new_with_managed_rtk(config: DtokenConfig, managed_rtk_root: PathBuf) -> Self {
+        let mut state = Self::new(config);
+        state.managed_rtk_root = Some(Arc::new(managed_rtk_root));
+        state
+    }
+
     pub fn new_with_config_status(
         mut config: DtokenConfig,
         config_status: RuntimeConfigStatus,
@@ -17886,6 +17893,163 @@ mod tests {
         assert!(text.contains("data:"));
         assert!(text.contains("[DONE]"));
         server.await.expect("mock upstream task");
+    }
+
+    /// Removes a test directory tree on drop.
+    struct TestDirGuard(std::path::PathBuf);
+    impl TestDirGuard {
+        fn new(path: std::path::PathBuf) -> Self {
+            TestDirGuard(path)
+        }
+    }
+    impl Drop for TestDirGuard {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// Writes a fake dtoken-agent-bridge executable whose `identity` command
+    /// returns a valid managed-bridge identity, so install/verify can bind it
+    /// without a real bridge binary.
+    #[cfg(unix)]
+    fn fake_bridge_identity_script(dir: &std::path::Path) -> std::path::PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let path = dir.join("fake-dtoken-agent-bridge");
+        std::fs::write(
+            &path,
+            "#!/bin/sh\nprintf '%s' '{\"component\":\"dtoken-agent-bridge\",\"protocol_version\":1,\"version\":\"9.9.9\",\"arch\":\"test\",\"os\":\"test\"}'\n",
+        )
+        .expect("write fake bridge");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700))
+            .expect("fake bridge mode");
+        path
+    }
+
+    /// Writes a verified-shaped usage receipt into a managed RTK root's
+    /// private usage directory so the accounting projection can read it.
+    fn write_usage_receipt_for_test(
+        managed_root: &std::path::Path,
+        record: &dtoken_preprocessor::VerifiedRtkUsageRecord,
+    ) {
+        let usage_dir = managed_root.join("usage");
+        std::fs::create_dir_all(&usage_dir).expect("usage dir");
+        let bridge_sha256 = std::fs::read_to_string(managed_root.join("managed-rtk-hook.json"))
+            .ok()
+            .and_then(|text| serde_json::from_str::<Value>(&text).ok())
+            .and_then(|value| {
+                value
+                    .pointer("/bridge/sha256")
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+            })
+            .unwrap_or_default();
+        let bridge_version = std::fs::read_to_string(managed_root.join("managed-rtk-hook.json"))
+            .ok()
+            .and_then(|text| serde_json::from_str::<Value>(&text).ok())
+            .and_then(|value| {
+                value
+                    .pointer("/bridge/version")
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+            })
+            .unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_string());
+        let receipt = json!({
+            "schema_version": 1,
+            "transaction_id": record.evidence.transaction_id,
+            "exit_code": record.evidence.exit_code,
+            "input_bytes": record.evidence.input_bytes,
+            "output_bytes": record.evidence.output_bytes,
+            "saved_bytes": record.evidence.saved_bytes,
+            "transforms": record.evidence.transforms,
+            "disposition": record.evidence.disposition,
+            "command_basename": "fixture",
+            "command_sha256": record.command_sha256,
+            "bridge_sha256": bridge_sha256,
+            "bridge_version": bridge_version,
+            "recorded_at_ms": record.recorded_at_ms,
+        });
+        let path = usage_dir.join(format!("{}-fixture.json", record.recorded_at_ms));
+        std::fs::write(path, serde_json::to_vec_pretty(&receipt).expect("receipt json"))
+            .expect("write receipt");
+    }
+
+    #[test]
+    fn rtk_accounting_projection_reports_availability_and_verified_receipts() {
+        let stats = runtime_stats_for_state(&AppState::new(DtokenConfig::empty()));
+        assert_eq!(stats["rtk"]["available"], false);
+        assert_eq!(stats["rtk"]["reason"], "managed_rtk_not_configured");
+        assert_eq!(stats["rtk"]["entries"], 0);
+        assert_eq!(stats["layered"]["rtk_savings"], 0);
+
+        // An invalid (unreadable) receipt set fails closed with an explicit
+        // reason instead of an indistinguishable zero.
+        let dir = std::env::temp_dir().join(format!("dtoken-rtk-{}", Uuid::new_v4()));
+        let managed_root = dir.join("managed-rtk");
+        std::fs::create_dir_all(&managed_root).expect("managed root");
+        let _guard = TestDirGuard::new(dir);
+        let stats = runtime_stats_for_state(&AppState::new_with_managed_rtk(
+            DtokenConfig::empty(),
+            managed_root.clone(),
+        ));
+        assert_eq!(stats["rtk"]["available"], false);
+        assert_eq!(stats["rtk"]["reason"], "rtk_evidence_invalid_failed_closed");
+
+        // A verified root with a usage receipt is aggregated into the
+        // command-output dimension and the layered report.
+        let mut lifecycle = dtoken_preprocessor::ManagedRtkLifecycle::plan(
+            "rtk-stats.1",
+            if cfg!(windows) {
+                dtoken_types::agent::HostPlatform::Windows
+            } else {
+                dtoken_types::agent::HostPlatform::Macos
+            },
+            &"a".repeat(64),
+        );
+        lifecycle
+            .install_hook(dtoken_preprocessor::ManagedHookPaths {
+                managed_root: managed_root.clone(),
+                bridge_path: fake_bridge_identity_script(&managed_root.parent().expect("parent")),
+                max_output_bytes: Some(1_024),
+                filter_dsl: None,
+            })
+            .expect("install managed hook");
+        lifecycle.verify_hook().expect("verify managed hook");
+        let evidence = dtoken_types::ManagedRtkUsageEvidence {
+            schema_version: 1,
+            transaction_id: "rtk-stats.1".to_string(),
+            exit_code: Some(0),
+            input_bytes: 200,
+            output_bytes: 80,
+            saved_bytes: 120,
+            transforms: vec!["stdout:json:minify".to_string()],
+            disposition: "filtered_verified_hook".to_string(),
+        };
+        let receipt = dtoken_preprocessor::VerifiedRtkUsageRecord {
+            evidence,
+            command_sha256: "4".repeat(64),
+            recorded_at_ms: 1_000,
+        };
+        write_usage_receipt_for_test(&managed_root, &receipt);
+
+        let stats = runtime_stats_for_state(&AppState::new_with_managed_rtk(
+            DtokenConfig::empty(),
+            managed_root.clone(),
+        ));
+        assert_eq!(stats["rtk"]["available"], true);
+        assert_eq!(stats["rtk"]["reason"], "verified_usage_receipts");
+        assert_eq!(stats["rtk"]["entries"], 1);
+        assert_eq!(stats["rtk"]["saved_bytes"], 120);
+        assert_eq!(stats["layered"]["rtk_savings"], 120);
+
+        // Replaying the identical receipt (same timestamp/content) is
+        // rejected by the exclusive ledger: entries stay at one claim.
+        write_usage_receipt_for_test(&managed_root, &receipt);
+        let stats = runtime_stats_for_state(&AppState::new_with_managed_rtk(
+            DtokenConfig::empty(),
+            managed_root.clone(),
+        ));
+        assert_eq!(stats["rtk"]["entries"], 1);
+        assert_eq!(stats["rtk"]["saved_bytes"], 120);
     }
 
     #[test]
