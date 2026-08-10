@@ -200,7 +200,7 @@ def run_command(argv: list[str], cwd: Path) -> dict[str, Any]:
         stderr=subprocess.STDOUT,
     )
     output = proc.stdout.decode("utf-8", errors="replace")
-    tail = output.strip().splitlines()[-400:]
+    tail = output.strip().splitlines()
     return {
         "argv": " ".join(str(item) for item in argv),
         "exit_code": proc.returncode,
@@ -295,22 +295,18 @@ def local_node_commands(node_id: str, root: Path) -> list[list[str]]:
 
 def json_tail(record: dict[str, Any]) -> dict[str, Any] | None:
     lines = record.get("output_tail", [])
+    decoder = json.JSONDecoder()
+    # Walk backwards; for every line that may open a JSON object, try
+    # raw_decode on the join from that line upward. The first complete object
+    # wins (latest output block, e.g. the pretty-printed benchmark summary).
     for index in range(len(lines) - 1, -1, -1):
         if "{" not in lines[index]:
             continue
-        # Collect the JSON block starting at the first line that opens a brace
-        # at column zero OR at the indented "key": { marker; expand upward and
-        # downward until the block parses as a complete JSON object.
-        start = index
-        while start > 0 and "{" not in lines[start - 1]:
-            start -= 1
-        for end in range(index + 1, len(lines) + 1):
-            candidate = "\n".join(lines[start:end])
+        for start in range(index, -1, -1):
+            candidate = "\n".join(lines[start:])
             try:
-                value = json.loads(candidate)
+                value, _ = decoder.raw_decode(candidate)
             except ValueError:
-                if end == len(lines):
-                    break
                 continue
             if isinstance(value, dict):
                 return value

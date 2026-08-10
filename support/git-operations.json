@@ -3123,6 +3123,15 @@
       "summary": "fix(evidence): parse multi-line pretty JSON output in N evidence producer",
       "head_before": "9d3bca83980cf6c42e850c8bec0ab07eea5ec62a",
       "remote": null
+    },
+    {
+      "id": "631e0473-8d27-4023-bf84-7820025e1ff2",
+      "timestamp": "2026-08-11T04:57:07+08:00",
+      "operation": "commit",
+      "branch": "codex/final/stage-pack-integrated",
+      "summary": "fix(evidence): robust JSON tail parsing with full output capture",
+      "head_before": "2fc304b104a6237a2a1886c4cfb96b5ea078dcd2",
+      "remote": null
     }
   ]
 }
