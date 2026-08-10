@@ -2783,6 +2783,24 @@
       "remote": null
     },
     {
+      "id": "dcd8ba0e-7a06-462c-b05b-76c0215d79ec",
+      "timestamp": "2026-08-10T17:47:04+08:00",
+      "operation": "commit",
+      "branch": "codex/final/receipt-authority",
+      "summary": "fix(runtime): close PIPELINE-RECEIPT-AUTHENTICITY/BINDING with store-issued RecoveryProof + active RouteDecision binding (52318b2)",
+      "head_before": "52318b25ff4e313b6236870275112a44b0cfaf87",
+      "remote": null
+    },
+    {
+      "id": "ebefdca8-79ef-4f97-a096-c37522560fa1",
+      "timestamp": "2026-08-10T18:51:41+08:00",
+      "operation": "commit",
+      "branch": "codex/final/receipt-authority",
+      "summary": "fix(runtime): enforce active RouteDecision digest at recovery-receipt binding",
+      "head_before": "e254c4010fcd1212e783c4b21fb8401baf4459d5",
+      "remote": null
+    },
+    {
       "id": "5a3dbc2d-a9f5-499c-b949-17d5428a6052",
       "timestamp": "2026-08-10T18:53:51+08:00",
       "operation": "merge",

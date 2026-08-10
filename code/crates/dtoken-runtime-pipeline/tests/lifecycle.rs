@@ -7,10 +7,13 @@
 //! cannot be forged by callers.
 
 use dtoken_runtime_pipeline::{
-    PipelineError, PipelineInput, RecoveryReceipt, SendCommitState, SentPayloadVariant,
-    TransformArtifact, ValidatedRequest,
+    PipelineError, PipelineInput, RecoveryProof, RecoveryProofAuthority, RecoveryReceipt,
+    SendCommitState, SentPayloadVariant, TransformArtifact, ValidatedRequest,
 };
-use dtoken_types::{EvidenceSource, EvidenceValue, Protocol, RequestScope};
+use dtoken_types::{
+    ChainMode, CompressionPolicy, EvidenceSource, EvidenceValue, Protocol, RequestScope,
+    RouteDecision,
+};
 use uuid::Uuid;
 
 fn scope() -> RequestScope {
@@ -33,6 +36,34 @@ fn scope() -> RequestScope {
     .unwrap()
 }
 
+/// Test stand-in for the production store authority.  Only the CCR store
+/// holds the key in production; tests stand in for the store issuance side.
+fn authority() -> RecoveryProofAuthority {
+    RecoveryProofAuthority::new([7_u8; 32])
+}
+
+/// Active route decision for the prepared request.
+fn decision_for(prepared: &dtoken_runtime_pipeline::PreparedRequest) -> RouteDecision {
+    let scope = prepared.scope();
+    RouteDecision {
+        request_id: scope.request_id,
+        route_id: scope.route_id.clone(),
+        provider_id: scope.provider_id.clone(),
+        chain_mode: ChainMode::Direct,
+        compression_policy: CompressionPolicy::Balanced,
+        reason: "test decision".to_string(),
+        input_protocol: Some(scope.input_protocol.clone()),
+        output_protocol: Some(scope.output_protocol.clone()),
+    }
+}
+
+/// Store-issued proof for the durable test reference.
+fn proof() -> RecoveryProof {
+    authority()
+        .issue("ccr:durable-ref-1", 1_000_000_000_000)
+        .expect("store-issued proof")
+}
+
 fn recovery_for(prepared: &dtoken_runtime_pipeline::PreparedRequest) -> RecoveryReceipt {
     let artifact = TransformArtifact::new(
         prepared.baseline_digest(),
@@ -42,7 +73,7 @@ fn recovery_for(prepared: &dtoken_runtime_pipeline::PreparedRequest) -> Recovery
     .unwrap();
     let candidate = prepared
         .clone()
-        .with_durable_candidate(artifact, "decision-digest", "ccr:durable-ref-1", 1_000_000)
+        .with_durable_candidate(artifact, &decision_for(prepared), proof(), &authority())
         .expect("valid durable recovery receipt");
     candidate.recovery_receipt().clone()
 }
@@ -60,7 +91,7 @@ fn prepared_with_candidate(
     .unwrap();
     let candidate = prepared
         .clone()
-        .with_durable_candidate(artifact, "decision-digest", "ccr:durable-ref-1", 1_000_000)
+        .with_durable_candidate(artifact, &decision_for(&prepared), proof(), &authority())
         .expect("candidate bound");
     (prepared, candidate)
 }
@@ -79,7 +110,7 @@ fn optimized_send_requires_matching_source_validation_and_recovery_receipt() {
     assert_eq!(
         prepared
             .clone()
-            .with_candidate(mismatched, None)
+            .with_candidate(mismatched, &decision_for(&prepared), None)
             .unwrap_err(),
         PipelineError::SourceDigestMismatch
     );
@@ -93,14 +124,15 @@ fn optimized_send_requires_matching_source_validation_and_recovery_receipt() {
     assert_eq!(
         prepared
             .clone()
-            .with_candidate(artifact.clone(), None)
+            .with_candidate(artifact.clone(), &decision_for(&prepared), None)
             .unwrap_err(),
         PipelineError::MissingRecoveryReceipt
     );
 
     let recovery = recovery_for(&prepared);
+    let decision = decision_for(&prepared);
     let candidate = prepared
-        .with_candidate(artifact, Some(recovery))
+        .with_candidate(artifact, &decision, Some(recovery))
         .expect("candidate bound");
     let validated = candidate
         .validate(|baseline, transformed| baseline != transformed)
@@ -169,29 +201,40 @@ fn recovery_receipt_rejects_non_durable_refs_and_forged_bindings() {
         .unwrap()
     };
 
-    // Old prefix-sentinel forgery: free-form string without the durable
-    // store prefix is rejected by the public pipeline flow.
+    // Issuance is the single gate (PIPELINE-RECEIPT-AUTHENTICITY): the
+    // store authority refuses free-form strings, bare prefixes and zero
+    // expiry, so an invented `ccr:` string can never become a proof.
     assert_eq!(
-        prepared
-            .clone()
-            .with_durable_candidate(artifact(prepared.baseline_digest()), "decision-digest", "plain-ref", 100)
-            .unwrap_err(),
+        authority().issue("plain-ref", 1_000).unwrap_err(),
         PipelineError::InvalidRecoveryReceipt
     );
     assert_eq!(
-        prepared
-            .clone()
-            .with_durable_candidate(artifact(prepared.baseline_digest()), "decision-digest", "ccr:", 100)
-            .unwrap_err(),
+        authority().issue("ccr:", 1_000).unwrap_err(),
         PipelineError::InvalidRecoveryReceipt,
         "bare prefix with no ref is not durable"
     );
     assert_eq!(
+        authority().issue("ccr:no-expiry", 0).unwrap_err(),
+        PipelineError::InvalidRecoveryReceipt
+    );
+
+    // A proof minted under a different store key (a caller that does not
+    // hold the store authority) must fail closed at candidate binding.
+    let forged = RecoveryProofAuthority::new([9_u8; 32])
+        .issue("ccr:forged", 1_000_000_000_000)
+        .expect("foreign-key proof");
+    assert_eq!(
         prepared
             .clone()
-            .with_durable_candidate(artifact(prepared.baseline_digest()), "decision-digest", "ccr:no-expiry", 0)
+            .with_durable_candidate(
+                artifact(prepared.baseline_digest()),
+                &decision_for(&prepared),
+                forged,
+                &authority(),
+            )
             .unwrap_err(),
-        PipelineError::InvalidRecoveryReceipt
+        PipelineError::InvalidRecoveryReceipt,
+        "a proof from a foreign authority is not store-issued"
     );
 
     // A receipt minted for a different prepared request (different source
@@ -209,13 +252,17 @@ fn recovery_receipt_rejects_non_durable_refs_and_forged_bindings() {
     .unwrap();
     let foreign_candidate = other
         .clone()
-        .with_durable_candidate(other_artifact, "decision-digest", "ccr:foreign", 100)
+        .with_durable_candidate(other_artifact, &decision_for(&other), proof(), &authority())
         .expect("foreign request binds its own receipt");
     let foreign = foreign_candidate.recovery_receipt().clone();
-    assert!(!foreign.is_valid_for(&prepared, 50));
+    assert!(!foreign.is_valid_for(&prepared, &decision_for(&prepared), 50));
     let bound = prepared
         .clone()
-        .with_candidate(artifact(prepared.baseline_digest()), Some(foreign));
+        .with_candidate(
+            artifact(prepared.baseline_digest()),
+            &decision_for(&prepared),
+            Some(foreign),
+        );
     assert_eq!(
         bound.unwrap_err(),
         PipelineError::ReceiptIdentityMismatch
@@ -232,13 +279,185 @@ fn recovery_receipt_expiry_is_enforced() {
         vec!["safe-text".to_string()],
     )
     .unwrap();
+
+    // Expired store proof fails closed at binding time: the pipeline reads
+    // its own trusted clock, so a caller cannot revive an expired proof by
+    // claiming an old time (RUNTIME-8).
+    let expired = authority()
+        .issue("ccr:expired", 1)
+        .expect("store-issued proof");
+    assert_eq!(
+        prepared
+            .clone()
+            .with_durable_candidate(artifact.clone(), &decision_for(&prepared), expired, &authority())
+            .unwrap_err(),
+        PipelineError::InvalidRecoveryReceipt,
+        "an expired proof must fail closed"
+    );
+
+    // A live proof binds and the receipt enforces the same boundary.
     let candidate = prepared
         .clone()
-        .with_durable_candidate(artifact, "decision-digest", "ccr:expiring", 100)
+        .with_durable_candidate(
+            artifact,
+            &decision_for(&prepared),
+            authority()
+                .issue("ccr:expiring", 1_000_000_000_000)
+                .expect("store-issued proof"),
+            &authority(),
+        )
         .unwrap();
     let receipt = candidate.recovery_receipt();
-    assert!(receipt.is_valid_for(&prepared, 50));
-    assert!(!receipt.is_valid_for(&prepared, 101));
+    assert!(receipt.is_valid_for(&prepared, &decision_for(&prepared), 50));
+    assert!(!receipt.is_valid_for(&prepared, &decision_for(&prepared), 1_000_000_000_001));
+}
+
+#[test]
+fn recovery_receipt_rejects_inactive_route_decisions() {
+    let input = PipelineInput::new(scope(), br#"{"messages":["baseline"]}"#.to_vec(), 1024)
+        .expect("bounded input");
+    let prepared = input.prepare();
+    let artifact = TransformArtifact::new(
+        prepared.baseline_digest(),
+        b"candidate".to_vec(),
+        vec!["safe-text".to_string()],
+    )
+    .unwrap();
+    let live_proof = || {
+        authority()
+            .issue("ccr:bound", 1_000_000_000_000)
+            .expect("store-issued proof")
+    };
+
+    // Decision for a different request identity must never bind.
+    let foreign_decision = {
+        let mut decision = decision_for(&prepared);
+        decision.request_id = Uuid::new_v4();
+        decision
+    };
+    assert_eq!(
+        prepared
+            .clone()
+            .with_durable_candidate(artifact.clone(), &foreign_decision, live_proof(), &authority())
+            .unwrap_err(),
+        PipelineError::RouteDecisionMismatch,
+        "a decision for another request is not active"
+    );
+
+    // Decision for the same request but a different active route/provider.
+    let wrong_route = {
+        let mut decision = decision_for(&prepared);
+        decision.route_id = "route-forged".to_string();
+        decision
+    };
+    assert_eq!(
+        prepared
+            .clone()
+            .with_durable_candidate(artifact.clone(), &wrong_route, live_proof(), &authority())
+            .unwrap_err(),
+        PipelineError::RouteDecisionMismatch,
+        "a mutated route identity is not active"
+    );
+    let wrong_provider = {
+        let mut decision = decision_for(&prepared);
+        decision.provider_id = "provider-forged".to_string();
+        decision
+    };
+    assert_eq!(
+        prepared
+            .clone()
+            .with_durable_candidate(artifact, &wrong_provider, live_proof(), &authority())
+            .unwrap_err(),
+        PipelineError::RouteDecisionMismatch,
+        "a mutated provider identity is not active"
+    );
+}
+
+#[test]
+fn recovery_receipt_binding_rejects_inactive_route_decisions() {
+    // Mint a valid receipt for the active decision, then bind the same
+    // candidate under a different (mutated) current decision: the binding
+    // layer compares the receipt's bound stable digest against the supplied
+    // decision and fails closed (PIPELINE-RECEIPT-BINDING), so a stale or
+    // foreign decision can never be paired with a candidate even when the
+    // receipt itself was correctly issued.
+    let input = PipelineInput::new(scope(), br#"{"messages":["baseline"]}"#.to_vec(), 1024)
+        .expect("bounded input");
+    let prepared = input.prepare();
+    let artifact = TransformArtifact::new(
+        prepared.baseline_digest(),
+        b"candidate".to_vec(),
+        vec!["safe-text".to_string()],
+    )
+    .unwrap();
+    let active = decision_for(&prepared);
+    let receipt = prepared
+        .clone()
+        .with_durable_candidate(
+            artifact.clone(),
+            &active,
+            authority()
+                .issue("ccr:bound", 1_000_000_000_000)
+                .expect("store-issued proof"),
+            &authority(),
+        )
+        .expect("active-decision receipt")
+        .recovery_receipt()
+        .clone();
+
+    // Wrong request identity at binding.
+    let foreign_decision = {
+        let mut decision = active.clone();
+        decision.request_id = Uuid::new_v4();
+        decision
+    };
+    assert_eq!(
+        prepared
+            .clone()
+            .with_candidate(artifact.clone(), &foreign_decision, Some(receipt.clone()))
+            .unwrap_err(),
+        PipelineError::RouteDecisionMismatch,
+        "with_candidate rejects a decision for another request"
+    );
+    assert!(!receipt.is_valid_for(&prepared, &foreign_decision, 500));
+
+    // Wrong route identity at binding.
+    let wrong_route = {
+        let mut decision = active.clone();
+        decision.route_id = "route-forged".to_string();
+        decision
+    };
+    assert_eq!(
+        prepared
+            .clone()
+            .with_candidate(artifact.clone(), &wrong_route, Some(receipt.clone()))
+            .unwrap_err(),
+        PipelineError::RouteDecisionMismatch,
+        "with_candidate rejects a mutated route identity"
+    );
+    assert!(!receipt.is_valid_for(&prepared, &wrong_route, 500));
+
+    // Wrong provider identity at binding.
+    let wrong_provider = {
+        let mut decision = active.clone();
+        decision.provider_id = "provider-forged".to_string();
+        decision
+    };
+    assert_eq!(
+        prepared
+            .clone()
+            .with_candidate(artifact.clone(), &wrong_provider, Some(receipt.clone()))
+            .unwrap_err(),
+        PipelineError::RouteDecisionMismatch,
+        "with_candidate rejects a mutated provider identity"
+    );
+    assert!(!receipt.is_valid_for(&prepared, &wrong_provider, 500));
+
+    // The same receipt under the active decision binds and validates.
+    assert!(receipt.is_valid_for(&prepared, &active, 500));
+    assert!(prepared
+        .with_candidate(artifact, &active, Some(receipt))
+        .is_ok());
 }
 
 #[test]
