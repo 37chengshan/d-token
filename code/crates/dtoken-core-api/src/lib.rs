@@ -1633,11 +1633,23 @@ impl AppState {
     ) -> Self {
         let store = Arc::new(RuntimeStore::new(runtime_dir));
         let mut state = Self::new_with_config_status(config, config_status);
-        // PR-C3A..C3C: production 启动即接入 LeanCTX Context Bus（内存 port；
-        // store 只保留 persistence port，bus 域 policy 单一 authority）。
-        state.context_bus = Some(Arc::new(Mutex::new(dtoken_context_bus::ContextBus::new(
-            dtoken_context_bus::BusConfig::default(),
-        ))));
+        // PR-C3A..C3C: production 启动即接入 LeanCTX Context Bus（SQLite
+        // persistence port；bus 域 policy 单一 authority）。恢复失败不阻断
+        // （fail-open：调用方正常读取原文）。
+        let bus_persistence = dtoken_context_store::SqlitePersistence::open(
+            runtime_dir.join("context-bus.sqlite3"),
+        )
+        .map(|port| Box::new(port) as Box<dyn dtoken_context_bus::persistence::PersistencePort>)
+        .ok();
+        let mut bus = dtoken_context_bus::ContextBus::new(dtoken_context_bus::BusConfig::default());
+        if let Some(port) = bus_persistence {
+            bus = dtoken_context_bus::ContextBus::with_persistence(
+                dtoken_context_bus::BusConfig::default(),
+                port,
+            );
+            let _ = bus.recover(dtoken_event_ledger::now_ms().max(1));
+        }
+        state.context_bus = Some(Arc::new(Mutex::new(bus)));
         state.ccr_private_store = ccr_private_store;
         // G3: the terminal-commit recovery sweep needs the journal installed
         // before any load, and every subsequent load must filter the requests
@@ -5384,6 +5396,7 @@ fn compress_for_route_with_relay(
     cache_evidence: Option<&dtoken_compress::context_pipeline::ProviderCacheEvidence>,
     frozen_message_count: Option<usize>,
     ir: Option<&dtoken_compress::HybridContextIr>,
+    baseline_digest: &str,
 ) -> CompressionSummary {
     // bus 未配置 → 原路径（行为不变）。
     let Some(bus) = state.context_bus.as_ref() else {
@@ -5483,9 +5496,15 @@ fn compress_for_route_with_relay(
                 frozen_message_count,
                 ir,
             );
-            // record 失败静默忽略（不影响发送路径）。
+            // record_bound 失败静默忽略（不影响发送路径）；manifest 绑定
+            // request_id + 验证基线 digest（raw wire bytes 的 sha256，由调用方计算），
+            // 供 C0C1 的 recovery receipt 交叉绑定。
             if let Ok(candidate_body) = serde_json::to_string(&summary.body) {
-                let _ = bus.record(
+                let decision_digest = dtoken_context_bus::signature::sha256_hex(
+                    &serde_json::to_vec(&(scope.route_id.clone(), scope.provider_id.clone()))
+                        .unwrap_or_default(),
+                );
+                let _ = bus.record_bound(
                     &bus_scope,
                     &canonical_content,
                     source_revision,
@@ -5493,6 +5512,9 @@ fn compress_for_route_with_relay(
                     Some(candidate_body),
                     &query_tokens,
                     now_ms,
+                    &scope.request_id.to_string(),
+                    baseline_digest,
+                    &decision_digest,
                 );
             }
             summary
@@ -5699,6 +5721,8 @@ struct RouteEvidence<'a> {
     route_id: Option<&'a str>,
     instance_id: Option<&'a str>,
     model: Option<&'a str>,
+    project_id: Option<&'a str>,
+    session_id: Option<&'a str>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -5717,6 +5741,8 @@ fn resolve_configured_request_scope(
     model: Option<&str>,
     input_protocol: Protocol,
     output_protocol: Protocol,
+    project_id: Option<&str>,
+    session_id: Option<&str>,
 ) -> Result<RequestScope, RequestScopeError> {
     let config_json =
         serde_json::to_string(config).map_err(|_| RequestScopeError::ConfigSerialization)?;
@@ -5743,12 +5769,24 @@ fn resolve_configured_request_scope(
                 .map(String::as_str)
         })
         .unwrap_or_default();
+    // PR-C3A..C3C: project/session identity comes from the caller (typed
+    // `x-dtoken-project-id` / `x-dtoken-session-id` headers in the HTTP
+    // handlers; typed values in the Rust/MCP surface).  Unknown identity
+    // keeps the bus scope unprojected (miss), never an unsafe projection.
+    let project = project_id
+        .filter(|value| !value.trim().is_empty())
+        .map(|value| EvidenceValue::known(value.to_string(), EvidenceSource::Derived))
+        .unwrap_or_else(|| EvidenceValue::unknown("project_identity_unavailable"));
+    let session = session_id
+        .filter(|value| !value.trim().is_empty())
+        .map(|value| EvidenceValue::known(value.to_string(), EvidenceSource::Derived))
+        .unwrap_or_else(|| EvidenceValue::unknown("session_identity_unavailable"));
 
     RequestScope::new(
         request_id,
         agent,
-        EvidenceValue::unknown("project_identity_unavailable"),
-        EvidenceValue::unknown("session_identity_unavailable"),
+        project,
+        session,
         instance,
         route.id.clone(),
         provider.id.clone(),
@@ -5786,6 +5824,14 @@ fn header_evidence<'a>(headers: &'a HeaderMap, model: Option<&'a str>) -> RouteE
             .and_then(|value| value.to_str().ok())
             .filter(|value| !value.trim().is_empty()),
         model,
+        project_id: headers
+            .get("x-dtoken-project-id")
+            .and_then(|value| value.to_str().ok())
+            .filter(|value| !value.trim().is_empty()),
+        session_id: headers
+            .get("x-dtoken-session-id")
+            .and_then(|value| value.to_str().ok())
+            .filter(|value| !value.trim().is_empty()),
     }
 }
 
@@ -9600,6 +9646,8 @@ fn anthropic_route_payload(
         upstream_body.get("model").and_then(Value::as_str),
         Protocol::Anthropic,
         provider.protocol.clone(),
+        evidence.project_id,
+        evidence.session_id,
     )
     .map_err(|_| RouteSelectionError::InvalidOptimizationContext)?;
     // PR-C1B: authorized memory is retrieved exactly once and enters the
@@ -9617,12 +9665,30 @@ fn anthropic_route_payload(
     } else {
         inject_memory_into_body(upstream_body, &provider.protocol, &memory_blocks)
     };
+    let cache_evidence = configured_provider_cache_evidence(state, &scope);
     let compression = if provider.protocol == Protocol::Anthropic {
         // Direct Anthropic routes are planned by HybridContextEngine in the
-        // handler; this preliminary baseline keeps the body untouched.
-        compress_for_route(None, CompressionPolicy::Off, upstream_body.clone())
+        // handler; the preliminary baseline keeps the body untouched UNLESS
+        // the Context Bus has a reuse candidate (session cache / relay), in
+        // which case the candidate body replaces the wire body and the
+        // `bus_receipts` are carried into the ledger (CONTEXT-3; the handler
+        // skips hybrid planning when a bus reuse is present).
+        let baseline_digest =
+            dtoken_context_bus::signature::sha256_hex(&serde_json::to_vec(&upstream_body).unwrap_or_default());
+        compress_for_route_with_relay(
+            state,
+            &scope,
+            None,
+            CompressionPolicy::Off,
+            upstream_body.clone(),
+            cache_evidence.as_ref(),
+            None,
+            None,
+            &baseline_digest,
+        )
     } else {
-        let cache_evidence = configured_provider_cache_evidence(state, &scope);
+        let baseline_digest =
+            dtoken_context_bus::signature::sha256_hex(&serde_json::to_vec(&upstream_body).unwrap_or_default());
         // PR-C1A: lower once (route-bound) and share the IR with the plan.
         let ir = dtoken_compress::lower_hybrid_context(
             &optimization_context.compression_context,
@@ -9638,6 +9704,7 @@ fn anthropic_route_payload(
             cache_evidence.as_ref(),
             None,
             ir.as_ref(),
+            &baseline_digest,
         )
     };
     let attribution = request_attribution_from_scope(&scope);
@@ -11485,6 +11552,8 @@ async fn openai_chat_completions(
             request.model.as_deref(),
             Protocol::OpenAi,
             Protocol::OpenAi,
+            header_evidence(&headers, request.model.as_deref()).project_id,
+            header_evidence(&headers, request.model.as_deref()).session_id,
         ) {
             Ok(scope) => scope,
             Err(_) => {
@@ -11530,6 +11599,9 @@ async fn openai_chat_completions(
         );
         let baseline_body = ingress_body.clone();
         let cache_evidence = configured_provider_cache_evidence(&state, &scope);
+        let baseline_digest = dtoken_context_bus::signature::sha256_hex(
+            &serde_json::to_vec(&baseline_body).unwrap_or_default(),
+        );
         // PR-C3A..C3C: relay-aware canonical resolved path（bus 失败回退原文）。
         let mut compression = compress_for_route_with_relay(
             &state,
@@ -11540,6 +11612,7 @@ async fn openai_chat_completions(
             cache_evidence.as_ref(),
             None,
             ir.as_ref(),
+            &baseline_digest,
         );
         let attribution = request_attribution_from_scope(&scope);
         let mut request_log = build_request_log(
@@ -11948,6 +12021,10 @@ async fn openai_responses(
                 body.get("model").and_then(Value::as_str),
                 Protocol::OpenAi,
                 Protocol::OpenAi,
+                header_evidence(&headers, body.get("model").and_then(Value::as_str))
+                    .project_id,
+                header_evidence(&headers, body.get("model").and_then(Value::as_str))
+                    .session_id,
             ) {
                 Ok(scope) => scope,
                 Err(_) => {
@@ -12020,6 +12097,9 @@ async fn openai_responses(
             );
             let baseline_body = ingress_body.clone();
             let cache_evidence = configured_provider_cache_evidence(&state, &scope);
+            let baseline_digest = dtoken_context_bus::signature::sha256_hex(
+                &serde_json::to_vec(&baseline_body).unwrap_or_default(),
+            );
             // PR-C3A..C3C: relay-aware canonical resolved path（bus 失败回退原文）。
             let mut compression = compress_for_route_with_relay(
                 &state,
@@ -12030,6 +12110,7 @@ async fn openai_responses(
                 cache_evidence.as_ref(),
                 None,
                 ir.as_ref(),
+                &baseline_digest,
             );
             let attribution = request_attribution_from_scope(&scope);
             let mut request_log = build_request_log(
@@ -12465,6 +12546,8 @@ async fn openai_responses(
             request.model.as_deref(),
             Protocol::OpenAi,
             Protocol::OpenAi,
+            header_evidence(&headers, request.model.as_deref()).project_id,
+            header_evidence(&headers, request.model.as_deref()).session_id,
         ) {
             Ok(scope) => scope,
             Err(_) => {
@@ -12510,6 +12593,9 @@ async fn openai_responses(
         );
         let baseline_body = ingress_body.clone();
         let cache_evidence = configured_provider_cache_evidence(&state, &scope);
+        let baseline_digest = dtoken_context_bus::signature::sha256_hex(
+            &serde_json::to_vec(&baseline_body).unwrap_or_default(),
+        );
         // PR-C3A..C3C: relay-aware canonical resolved path（bus 失败回退原文）。
         let mut compression = compress_for_route_with_relay(
             &state,
@@ -12520,6 +12606,7 @@ async fn openai_responses(
             cache_evidence.as_ref(),
             None,
             ir.as_ref(),
+            &baseline_digest,
         );
         let attribution = request_attribution_from_scope(&scope);
         let mut request_log = build_request_log(
@@ -13002,11 +13089,37 @@ async fn anthropic_messages(
                 evidence.strategy
                     == dtoken_compress::context_pipeline::ProviderCacheStrategy::AnthropicExplicit
             });
-        // Without fresh, exact provider evidence, Direct Anthropic must retain
-        // the inbound representation all the way to the wire.  In particular,
-        // do not let a JSON re-serialization or a Hybrid candidate turn an
-        // unverified cache optimization into an observable request mutation.
-        let raw_wire_required = direct_cache_evidence.is_none();
+        // PR-C3A..C3C: 仅当 Context Bus 真正替换了 body（avoided_bytes > 0，
+        // 精确签名命中）时跳过 hybrid 规划；query-aware 信号（0 字节）不改变
+        // wire body，继续走 hybrid/raw-wire 逻辑。
+        let bus_substituted = !payload.compression.bus_receipts.is_empty()
+            && payload
+                .compression
+                .bus_receipts
+                .iter()
+                .any(|receipt| receipt.avoided_bytes() > 0);
+        if bus_substituted {
+            append_stage_event(
+                &state,
+                payload.decision.request_id,
+                LayeredStage::RouteForward,
+                EventStatus::Ok,
+                json!({
+                    "source": "context_bus",
+                    "kind": payload.compression.bus_receipts[0].savings_kind().as_str(),
+                    "avoided_bytes": payload.compression.bus_receipts[0].avoided_bytes(),
+                    "transform_applied": false,
+                    "raw_available": false,
+                    "privacy": "metadata only; prompt, response and credentials are never persisted"
+                }),
+                None,
+            );
+        } else {
+            // Without fresh, exact provider evidence, Direct Anthropic must retain
+            // the inbound representation all the way to the wire.  In particular,
+            // do not let a JSON re-serialization or a Hybrid candidate turn an
+            // unverified cache optimization into an observable request mutation.
+            let raw_wire_required = direct_cache_evidence.is_none();
         // Active preparation owns the request-wide byte lease. Keep it alive
         // until the upstream operation reaches a terminal return.
         let mut _retained_hybrid_request = None;
@@ -13077,6 +13190,7 @@ async fn anthropic_messages(
                 Some("provider_cache_evidence_unavailable"),
             );
         }
+        } // else: bus reuse 分支跳过 hybrid/raw-wire 规划。
 
         let (prepared_ccr, pipeline_variant, cache_wire) =
             prepare_direct_anthropic_pipeline_for_send(
@@ -15325,6 +15439,109 @@ mod tests {
         .unwrap()
     }
 
+    #[tokio::test]
+    async fn context_bus_relay_reuses_across_two_app_states_without_cross_body_pollution() {
+        // 两个 AppState（两个运行实例）共享同一持久目录：实例 A 记录候选，
+        // 实例 B 经 SQLite persistence 启动恢复后按精确签名命中。
+        let dir = std::env::temp_dir().join(format!(
+            "dtoken-c2c3-two-appstate-{}",
+            Uuid::new_v4()
+        ));
+        {
+            let instance_a = AppState::new_persistent(route_test_config(), dir.clone());
+            let bus = instance_a.context_bus.as_ref().unwrap().clone();
+            let mut bus = bus.lock().unwrap();
+            let bus_scope = dtoken_context_bus::BusScope::new("proj", "agent-a", "sess-a");
+            bus.grant(&dtoken_context_bus::GrantRequest {
+                scope: dtoken_context_bus::GrantScope::new(
+                    "proj",
+                    "agent-a",
+                    "agent-b",
+                    "sess-a",
+                ),
+                grant_revision: "rev-1".to_string(),
+                granted_at_ms: dtoken_event_ledger::now_ms().max(1),
+            })
+            .unwrap();
+            bus.record(
+                &bus_scope,
+                r#"{"messages":[{"role":"user","content":"hello"}]}"#,
+                &"a".repeat(64),
+                None,
+                Some(r#"{"messages":[{"role":"user","content":"hello"}]}"#.to_string()),
+                &["route-a".to_string(), "model-a".to_string()],
+                dtoken_event_ledger::now_ms().max(1),
+            )
+            .unwrap();
+        }
+        // 实例 B 重启：从同一 SQLite 恢复。
+        let instance_b = AppState::new_persistent(route_test_config(), dir.clone());
+        // 恢复后应能从共享 persistence 读到条目。
+        {
+            let bus = instance_b.context_bus.as_ref().unwrap().clone();
+            let bus = bus.lock().unwrap();
+            let entries = bus.persistence().load_entries("proj").unwrap();
+            assert_eq!(
+                entries.len(),
+                1,
+                "SQLite persistence restored across restart"
+            );
+        }
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn context_bus_same_route_model_different_body_no_cross_body_reuse() {
+        // 安全回归（PipelineSecurityReview）：相同 route/model 查询 token、
+        // 无 cache evidence（source fingerprint 为空），agent-b 查询不同内容
+        // 时，bus 绝不能把 agent-a 的变换 body 替换进 agent-b 的请求。
+        let mut bus = dtoken_context_bus::ContextBus::new(dtoken_context_bus::BusConfig::default());
+        let owner_scope = dtoken_context_bus::BusScope::new("proj", "agent-a", "sess-a");
+        bus.record(
+            &owner_scope,
+            r#"{"q":"content-a"}"#,
+            "",
+            None,
+            Some(r#"{"q":"content-a","transformed":true}"#.to_string()),
+            &["route-a".to_string(), "model-a".to_string()],
+            1_000,
+        )
+        .unwrap();
+        bus.grant(&dtoken_context_bus::GrantRequest {
+            scope: dtoken_context_bus::GrantScope::new(
+                "proj",
+                "agent-a",
+                "agent-b",
+                "sess-a",
+            ),
+            grant_revision: "rev-1".to_string(),
+            granted_at_ms: 1_000,
+        })
+        .unwrap();
+        let consumer = dtoken_context_bus::BusScope::new("proj", "agent-b", "sess-b");
+        let outcome = bus.consult(
+            &consumer,
+            &dtoken_context_bus::signature::map_signature("proj", r#"{"q":"content-b"}"#),
+            &dtoken_context_bus::signature::source_fingerprint("", None),
+            &["route-a".to_string(), "model-a".to_string()],
+            1_000,
+        );
+        assert!(
+            matches!(
+                outcome,
+                dtoken_context_bus::bus::ConsultOutcome::RelayHit { .. }
+            ),
+            "query-aware signal expected"
+        );
+        match outcome {
+            dtoken_context_bus::bus::ConsultOutcome::RelayHit { entry, receipt } => {
+                assert!(entry.body.is_none(), "no cross-body substitution allowed");
+                assert_eq!(receipt.avoided_bytes, 0);
+            }
+            other => panic!("unexpected outcome {other:?}"),
+        }
+    }
+
     #[test]
     fn provider_cache_observation_uses_only_protocol_specific_usage_fields() {
         let anthropic = provider_cache_observation_from_response(
@@ -15588,6 +15805,8 @@ mod tests {
             Some("model-a"),
             Protocol::OpenAi,
             Protocol::OpenAi,
+            None,
+            None,
         )
         .unwrap();
         let state = AppState::new_persistent(config, &dir);
@@ -16127,6 +16346,8 @@ mod tests {
             Some("model-a"),
             Protocol::OpenAi,
             Protocol::OpenAi,
+            None,
+            None,
         )
         .expect("configured route should produce a scope");
 
@@ -20032,6 +20253,69 @@ mod tests {
     }
 
     #[test]
+    fn context_bus_relay_survives_restart_across_two_app_states() {
+        // C3B: 两个 AppState 实例（模拟两次进程启动）共享同一持久目录：
+        // 第一个实例写入 session cache / relay 条目 + grant；第二个实例
+        // 启动时从 SQLite 恢复，跨 Agent 命中 relay 且跨项目仍为零。
+        let dir = std::env::temp_dir().join(format!("dtoken-bus-relay-restart-{}", Uuid::new_v4()));
+        let config = route_test_config();
+        let now = dtoken_event_ledger::now_ms().max(1);
+        {
+            let first = AppState::new_persistent(config.clone(), &dir);
+            let mut bus = first.context_bus.as_ref().expect("bus configured").lock().unwrap();
+            let owner = dtoken_context_bus::BusScope::new("proj-a", "agent-a", "sess-1");
+            bus.record(
+                &owner,
+                r#"{"q":"shared"}"#,
+                &"a".repeat(64),
+                None,
+                Some("candidate-body".to_string()),
+                &["route-a".to_string()],
+                now,
+            )
+            .expect("record");
+            bus.grant(&dtoken_context_bus::shared::GrantRequest {
+                scope: dtoken_context_bus::GrantScope::new("proj-a", "agent-a", "agent-b", "sess-1"),
+                grant_revision: "rev-1".to_string(),
+                granted_at_ms: now,
+            })
+            .expect("grant");
+        }
+        // 第二个实例：从同一持久目录恢复。
+        let second = AppState::new_persistent(config, &dir);
+        let mut bus = second.context_bus.as_ref().expect("bus configured").lock().unwrap();
+        assert_eq!(bus.cache_entry_count(), 1, "session cache recovered");
+        assert_eq!(bus.relay_entry_count(), 1, "relay recovered");
+        assert_eq!(bus.shared_grant_count(), 1, "grant recovered");
+        let consumer = dtoken_context_bus::BusScope::new("proj-a", "agent-b", "sess-2");
+        let signature = dtoken_context_bus::signature::map_signature("proj-a", r#"{"q":"shared"}"#);
+        let fingerprint = dtoken_context_bus::signature::source_fingerprint(&"a".repeat(64), None);
+        let outcome = bus.consult(
+            &consumer,
+            &signature,
+            &fingerprint,
+            &["route-a".to_string()],
+            now,
+        );
+        match outcome {
+            dtoken_context_bus::bus::ConsultOutcome::RelayHit { entry, .. } => {
+                assert_eq!(entry.body.as_deref(), Some("candidate-body"));
+            }
+            other => panic!("expected relay hit after restart, got {other:?}"),
+        }
+        // 跨项目隔离：proj-b 同内容 → miss（跨项目污染 = 0）。
+        let other = dtoken_context_bus::BusScope::new("proj-b", "agent-c", "sess-3");
+        let other_signature = dtoken_context_bus::signature::map_signature("proj-b", r#"{"q":"shared"}"#);
+        assert!(matches!(
+            bus.consult(&other, &other_signature, &fingerprint, &["route-a".to_string()], now),
+            dtoken_context_bus::bus::ConsultOutcome::Miss
+        ));
+        drop(bus);
+        drop(second);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
     fn direct_anthropic_verified_evidence_inserts_one_frozen_tool_breakpoint() {
         let dir = std::env::temp_dir().join(format!("dtoken-anthropic-cache-{}", Uuid::new_v4()));
         let state = AppState::new_persistent(
@@ -21871,6 +22155,8 @@ mod tests {
             Some(&model),
             Protocol::OpenAi,
             Protocol::OpenAi,
+            None,
+            None,
         )
         .expect("resolved request scope");
         let blocks = vec![

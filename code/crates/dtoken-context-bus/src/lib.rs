@@ -36,3 +36,4 @@ pub use bus::{BusConfig, ConsultOutcome, ContextBus};
 pub use policy::{CacheEvidenceStatus, ProviderCacheEvidence, ProviderCacheStrategy};
 pub use receipt::{BusReceipt, BusSavingsKind, CacheReuseReceipt, RelayHitReceipt};
 pub use scope::{BusScope, GrantScope, ScopeError};
+pub use shared::GrantRequest;

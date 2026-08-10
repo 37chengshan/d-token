@@ -20,7 +20,7 @@ pub enum EntryState {
 /// 一个可复用的 cache/relay 条目。
 /// `body` 只允许承载**脱敏后**的候选内容：写入前必须通过 secret-shape gate；
 /// 若 gate 拒绝，调用方应丢弃条目而不是降级存储（AGENTS.md §4.6）。
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct CacheEntry {
     pub map_signature: String,
     pub project_id: String,
