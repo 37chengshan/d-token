@@ -2520,6 +2520,15 @@
       "summary": "product closure: Agent acceptance N0 digest envelopes, Codex top-level TOML + OpenClaw cc-switch mapping, bridge identity gate, generated Agent integration matrix",
       "head_before": "563360884914",
       "remote": null
+    },
+    {
+      "id": "d308fa1e-918e-4c15-a9c3-c2794e2195ea",
+      "timestamp": "2026-08-10T13:02:08+08:00",
+      "operation": "commit",
+      "branch": "codex/final/product-closure-remediation",
+      "summary": "commit PR-13 observer evidence cf0f155",
+      "head_before": "f5a6069e2cb87dec49ae328fb8f03240e2641c90",
+      "remote": null
     }
   ]
 }

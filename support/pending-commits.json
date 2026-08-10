@@ -591,6 +591,40 @@
       "submitted": false,
       "submitted_at": null,
       "commit_hash": null
+    },
+    {
+      "id": "51e2bf46-7dfc-48a6-829d-e047705e348b",
+      "created_at": "2026-08-10T13:01:52+08:00",
+      "updated_at": "2026-08-10T13:01:52+08:00",
+      "branch": "codex/final/product-closure-remediation",
+      "phase": "N4/PR-13",
+      "status": "pending",
+      "title": "hot-sync review gate + bridge identity observer evidence",
+      "summary": "PR-13 observer scripts + tests for hot-config review gate and bridge identity authority",
+      "commit_message": "feat: add hot-sync review-gate and bridge identity observer evidence (PR-13)",
+      "head_before": "f5a6069e2cb87dec49ae328fb8f03240e2641c90",
+      "files": [
+        "support/scripts/run_bridge_identity_check.py",
+        "support/scripts/run_hot_sync_review_gate_evidence.py",
+        "support/tests/test_hot_sync_and_bridge_gates.py"
+      ],
+      "tests": [
+        "python3 -m pytest support/tests/test_hot_sync_and_bridge_gates.py -q"
+      ],
+      "dependencies": [],
+      "notes": [],
+      "staging_mode": "whole-file",
+      "shared_files": [],
+      "verification": {
+        "status": "passed",
+        "checks": [
+          "python3 -m pytest support/tests/test_hot_sync_and_bridge_gates.py -q"
+        ]
+      },
+      "blockers": [],
+      "submitted": false,
+      "submitted_at": null,
+      "commit_hash": null
     }
   ]
 }
