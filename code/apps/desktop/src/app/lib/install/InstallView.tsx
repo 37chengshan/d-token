@@ -95,6 +95,32 @@ export type InstallViewProps = {
   transportBusyAgent: string | null;
   onConfigureAgent: (binding: AgentUpstreamBinding) => void;
   onClearAgent: (binding: AgentUpstreamBinding) => void;
+  transportConfirm: {
+    binding: AgentUpstreamBinding;
+    operation: "configure" | "clear";
+    request: { agent_id: string; target_path: string; endpoint: string; enabled: boolean; model?: string };
+    review: { revision: string; before_sha256: string; after_sha256: string };
+  } | null;
+  setTransportConfirm: (value: {
+    binding: AgentUpstreamBinding;
+    operation: "configure" | "clear";
+    request: { agent_id: string; target_path: string; endpoint: string; enabled: boolean; model?: string };
+    review: { revision: string; before_sha256: string; after_sha256: string };
+  } | null) => void;
+  applyManagedTransport: () => Promise<void>;
+  mcpConfirm: {
+    binding: AgentUpstreamBinding;
+    operation: "configure" | "clear";
+    request: { agent_id: string; config_path: string; operation: "configure" | "clear" };
+    review: { before_sha256: string; after_sha256: string };
+  } | null;
+  setMcpConfirm: (value: {
+    binding: AgentUpstreamBinding;
+    operation: "configure" | "clear";
+    request: { agent_id: string; config_path: string; operation: "configure" | "clear" };
+    review: { before_sha256: string; after_sha256: string };
+  } | null) => void;
+  applyManagedMcpIntegration: () => Promise<void>;
   agentAutoFollow: boolean;
   setAgentAutoFollow: (value: boolean) => void;
   ccSwitchSyncReview: ConnectionRoutePlanReview | null;
@@ -107,7 +133,7 @@ export type InstallViewProps = {
 };
 
 export function InstallView(props: InstallViewProps) {
-  const { lang, t, snapshot, discoveryStatus, phasePresentation, discoveryCounts, refreshAll, busy, pendingAction, handlePrimaryAction, primaryAction, serviceInstanceDetail, servicePresentation, restartRequired, serviceOnline, serviceManaged, setStopError, setConfirmServiceStop, visibleBindings, primaryBindings, machine, dispatch, secondaryBindings, ccSwitchPresentation, notice, transactionLogs, agentIntegrationReceipts, routeVerification, showReview, setShowReview, setConnectionReview, setRoutePlanReview, setManagedTransportReviews, setAgentIntegrationReviews, actionableBindings, serviceEndpoint, routePlanReview, connectionReview, managedTransportReviews, agentIntegrationReviews, openCodeSelection, applyConnectionPlan, credentialDialogOpen, setCredentialDialogOpen, setProviderCredential, setCredentialError, credentialBinding, credentialProviderId, providerCredential, credentialError, saveInlineCredential, confirmServiceStop, stopError, serviceStatus, serviceIdentifiersCurrent, stopService, transportBusyAgent, onConfigureAgent, onClearAgent, agentAutoFollow, setAgentAutoFollow, ccSwitchSyncReview, setCcSwitchSyncReview, ccSwitchAutoFollow, setCcSwitchAutoFollow, ccSwitchSyncBusy, onPreviewCcSwitchSync, onApplyCcSwitchSync } = props;
+  const { lang, t, snapshot, discoveryStatus, phasePresentation, discoveryCounts, refreshAll, busy, pendingAction, handlePrimaryAction, primaryAction, serviceInstanceDetail, servicePresentation, restartRequired, serviceOnline, serviceManaged, setStopError, setConfirmServiceStop, visibleBindings, primaryBindings, machine, dispatch, secondaryBindings, ccSwitchPresentation, notice, transactionLogs, agentIntegrationReceipts, routeVerification, showReview, setShowReview, setConnectionReview, setRoutePlanReview, setManagedTransportReviews, setAgentIntegrationReviews, actionableBindings, serviceEndpoint, routePlanReview, connectionReview, managedTransportReviews, agentIntegrationReviews, openCodeSelection, applyConnectionPlan, credentialDialogOpen, setCredentialDialogOpen, setProviderCredential, setCredentialError, credentialBinding, credentialProviderId, providerCredential, credentialError, saveInlineCredential, confirmServiceStop, stopError, serviceStatus, serviceIdentifiersCurrent, stopService, transportBusyAgent, onConfigureAgent, onClearAgent, transportConfirm, setTransportConfirm, applyManagedTransport, mcpConfirm, setMcpConfirm, applyManagedMcpIntegration, agentAutoFollow, setAgentAutoFollow, ccSwitchSyncReview, setCcSwitchSyncReview, ccSwitchAutoFollow, setCcSwitchAutoFollow, ccSwitchSyncBusy, onPreviewCcSwitchSync, onApplyCcSwitchSync } = props;
   return (
     <div className="page-enter mx-auto w-full max-w-6xl space-y-4">
       <Surface className="overflow-hidden">
@@ -476,6 +502,55 @@ export function InstallView(props: InstallViewProps) {
           </div>
         )}
       />
+
+      {transportConfirm && (
+        <OperationDialog
+          open
+          onOpenChange={(open) => { if (!open && transportBusyAgent === null) setTransportConfirm(null); }}
+          title={transportConfirm.operation === "configure"
+            ? translateCopy("in.configureManagedTransport", lang, { v1: transportConfirm.binding.agent_name })
+            : translateCopy("in.clearManagedTransport", lang, { v1: transportConfirm.binding.agent_name })}
+          summary={transportConfirm.operation === "configure"
+            ? translateCopy("in.aVerifiableDTokenOwnedPlanWasGeneratedForAndItsAdjacentOwnershipReceiptApplyIt", lang, { v1: transportConfirm.request.target_path })
+            : translateCopy("in.aVerifiablePlanWillRemoveOnlyConfigurationProvenDTokenOwnedByItsOwnershipReceiptInApplyIt", lang, { v1: transportConfirm.request.target_path })}
+          impact={transportConfirm.binding.config_path || transportConfirm.binding.agent_name}
+          confirmLabel={translateCopy("in.applyPlan", lang)}
+          cancelLabel={t("common.cancel")}
+          risk={transportConfirm.operation === "clear" ? "warning" : "normal"}
+          pending={transportBusyAgent !== null}
+          onConfirm={applyManagedTransport}
+          details={(
+            <div className="font-mono text-[11px] text-muted-foreground">
+              <div>revision {shortHash(transportConfirm.review.revision)}</div>
+              <div>before {shortHash(transportConfirm.review.before_sha256)} → after {shortHash(transportConfirm.review.after_sha256)}</div>
+            </div>
+          )}
+        />
+      )}
+
+      {mcpConfirm && (
+        <OperationDialog
+          open
+          onOpenChange={(open) => { if (!open && transportBusyAgent === null) setMcpConfirm(null); }}
+          title={mcpConfirm.operation === "configure"
+            ? translateCopy("in.configureTools", lang)
+            : translateCopy("in.clearTools", lang)}
+          summary={mcpConfirm.operation === "configure"
+            ? translateCopy("in.registerTheDTokenAgentBridgeMcpToolInThisIntegrationProvidesMcpToolsOnlyAndDoesNotChangeTheModelUpstreamApplyIt", lang, { v1: mcpConfirm.binding.mcp_config_path ?? mcpConfirm.binding.agent_name })
+            : translateCopy("in.removeTheDTokenMcpEntryFromOnlyTheMcpToolIsRemovedUpstreamConfigurationIsUnaffectedApplyIt", lang, { v1: mcpConfirm.binding.mcp_config_path ?? mcpConfirm.binding.agent_name })}
+          impact={mcpConfirm.binding.mcp_config_path || mcpConfirm.binding.agent_name}
+          confirmLabel={translateCopy("in.applyPlan", lang)}
+          cancelLabel={t("common.cancel")}
+          risk={mcpConfirm.operation === "clear" ? "warning" : "normal"}
+          pending={transportBusyAgent !== null}
+          onConfirm={applyManagedMcpIntegration}
+          details={(
+            <div className="font-mono text-[11px] text-muted-foreground">
+              <div>before {shortHash(mcpConfirm.review.before_sha256)} → after {shortHash(mcpConfirm.review.after_sha256)}</div>
+            </div>
+          )}
+        />
+      )}
 
       {confirmServiceStop && (
         <OperationDialog

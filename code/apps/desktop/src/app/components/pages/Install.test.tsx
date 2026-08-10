@@ -1,6 +1,6 @@
 import React from "react";
 import "@testing-library/jest-dom/vitest";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
@@ -1010,6 +1010,12 @@ describe("Install", () => {
     // MCP/Hook integrations are labeled truthfully: tool capability only.
     expect(screen.getByText("工具能力，不改变模型上游")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "配置工具集成" }));
+
+    // The preview opens the unified OperationDialog (M-3); the apply write
+    // happens only after the user confirms the reviewed plan.
+    const dialog = await screen.findByRole("alertdialog");
+    expect(dialog).toHaveTextContent("d-token-agent-bridge MCP 工具");
+    fireEvent.click(within(dialog).getByRole("button", { name: "应用方案" }));
 
     await waitFor(() => {
       expect(mocks.invokeNative).toHaveBeenCalledWith(

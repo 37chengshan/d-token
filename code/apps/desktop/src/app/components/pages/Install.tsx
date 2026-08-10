@@ -81,6 +81,21 @@ export function Install({ onOpenAdvanced }: { onOpenAdvanced?: () => void; initi
   const [notice, setNotice] = useState("");
   const [pendingAction, setPendingAction] = useState<"discover" | "preview" | "apply" | "verify" | "restart" | "stop" | "credential" | "sync" | null>(null);
   const [transportBusyAgent, setTransportBusyAgent] = useState<string | null>(null);
+  // Previewed managed write confirmations (M-3): the preview → confirm →
+  // apply step for a single Agent's transport or MCP integration now goes
+  // through the unified OperationDialog instead of the browser window.confirm.
+  const [transportConfirm, setTransportConfirm] = useState<{
+    binding: AgentUpstreamBinding;
+    operation: "configure" | "clear";
+    request: { agent_id: string; target_path: string; endpoint: string; enabled: boolean; model?: string };
+    review: { revision: string; before_sha256: string; after_sha256: string };
+  } | null>(null);
+  const [mcpConfirm, setMcpConfirm] = useState<{
+    binding: AgentUpstreamBinding;
+    operation: "configure" | "clear";
+    request: { agent_id: string; config_path: string; operation: "configure" | "clear" };
+    review: { before_sha256: string; after_sha256: string };
+  } | null>(null);
 
   const serviceStatus = operational?.service?.data as DtokenServiceStatus | null;
   const serviceManifestStale = serviceStatus?.manifest_stale === true;
@@ -776,7 +791,6 @@ export function Install({ onOpenAdvanced }: { onOpenAdvanced?: () => void; initi
     }
     setTransportBusyAgent(binding.agent_id);
     try {
-      let result: Record<string, unknown>;
       {
         // Model comes only from the uniquely auto-resolved model stored in the
         // machine selection, or the Codex Responses passthrough marker ("").
@@ -806,30 +820,43 @@ export function Install({ onOpenAdvanced }: { onOpenAdvanced?: () => void; initi
         if (preview.ok !== true || !review || typeof review.revision !== "string" || typeof review.before_sha256 !== "string" || typeof review.after_sha256 !== "string") {
           throw new Error("managed_transport_preview_failed");
         }
-        const confirmed = typeof window === "undefined" || window.confirm(
-          operation === "configure"
-            ? (translateCopy("in.aVerifiableDTokenOwnedPlanWasGeneratedForAndItsAdjacentOwnershipReceiptApplyIt", lang, { v1: targetPath }))
-            : (translateCopy("in.aVerifiablePlanWillRemoveOnlyConfigurationProvenDTokenOwnedByItsOwnershipReceiptInApplyIt", lang, { v1: targetPath })),
-        );
-        if (!confirmed) return;
-        result = await invokeNative<Record<string, unknown>>("apply_reviewed_managed_agent_transport", {
-          request: {
-            ...request,
-          },
+        // Unified OperationDialog confirmation (M-3); the write happens only
+        // from applyManagedTransport after the user confirms the plan.
+        setTransportConfirm({
+          binding,
           operation,
-          reviewedRevision: review.revision,
-          reviewedBeforeSha256: review.before_sha256,
-          reviewedAfterSha256: review.after_sha256,
+          request: request as { agent_id: string; target_path: string; endpoint: string; enabled: boolean; model?: string },
+          review: { revision: review.revision, before_sha256: review.before_sha256, after_sha256: review.after_sha256 },
         });
+        return;
       }
+    } catch (error) {
+      setNotice(translateCopy("in.theOperationDidNotCompleteAndUserConfigurationWasNotChangedRescanAndTryAgain", lang));
+    } finally {
+      setTransportBusyAgent(null);
+    }
+  };
+
+  const applyManagedTransport = async () => {
+    const pending = transportConfirm;
+    if (!pending) return;
+    setTransportBusyAgent(pending.binding.agent_id);
+    try {
+      const result = await invokeNative<Record<string, unknown>>("apply_reviewed_managed_agent_transport", {
+        request: pending.request,
+        operation: pending.operation,
+        reviewedRevision: pending.review.revision,
+        reviewedBeforeSha256: pending.review.before_sha256,
+        reviewedAfterSha256: pending.review.after_sha256,
+      });
       const verification = result.verification as Record<string, unknown> | undefined;
       const ok = result.ok !== false && result.state !== "failed" && verification?.ok !== false;
       const changed = result.changed !== false;
-      const outcomeNotice = ok && (operation !== "clear" || changed)
-        ? (operation === "configure"
-          ? (translateCopy("in.nowUsesAVerifiedDTokenTransport", lang, { v1: binding.agent_name }))
-          : (translateCopy("in.theDTokenOwnedTransportForWasCleared", lang, { v1: binding.agent_name })))
-        : (operation === "clear" && !changed
+      const outcomeNotice = ok && (pending.operation !== "clear" || changed)
+        ? (pending.operation === "configure"
+          ? (translateCopy("in.nowUsesAVerifiedDTokenTransport", lang, { v1: pending.binding.agent_name }))
+          : (translateCopy("in.theDTokenOwnedTransportForWasCleared", lang, { v1: pending.binding.agent_name })))
+        : (pending.operation === "clear" && !changed
           ? (translateCopy("in.noDTokenOwnedMarkerWasFoundUserConfigurationWasNotChanged", lang))
           : (translateCopy("in.theOperationDidNotCompleteAndUserConfigurationWasNotChangedRescanAndTryAgain", lang)));
       await refreshAll();
@@ -838,6 +865,7 @@ export function Install({ onOpenAdvanced }: { onOpenAdvanced?: () => void; initi
       setNotice(translateCopy("in.theOperationDidNotCompleteAndUserConfigurationWasNotChangedRescanAndTryAgain", lang));
     } finally {
       setTransportBusyAgent(null);
+      setTransportConfirm(null);
     }
   };
 
@@ -863,26 +891,15 @@ export function Install({ onOpenAdvanced }: { onOpenAdvanced?: () => void; initi
       if (preview.ok !== true || !review || typeof review.before_sha256 !== "string" || typeof review.after_sha256 !== "string") {
         throw new Error("mcp_preview_failed");
       }
-      const confirmed = typeof window === "undefined" || window.confirm(
-        operation === "configure"
-          ? (translateCopy("in.registerTheDTokenAgentBridgeMcpToolInThisIntegrationProvidesMcpToolsOnlyAndDoesNotChangeTheModelUpstreamApplyIt", lang, { v1: configPath }))
-          : (translateCopy("in.removeTheDTokenMcpEntryFromOnlyTheMcpToolIsRemovedUpstreamConfigurationIsUnaffectedApplyIt", lang, { v1: configPath })),
-      );
-      if (!confirmed) return;
-      const result = await invokeNative<Record<string, unknown>>("apply_managed_agent_mcp_integration", {
-        request,
-        reviewed_before_sha256: review.before_sha256,
-        reviewed_after_sha256: review.after_sha256,
+      // Unified OperationDialog confirmation (M-3); the write happens only
+      // from applyManagedMcpIntegration after the user confirms the plan.
+      setMcpConfirm({
+        binding,
+        operation,
+        request: request as { agent_id: string; config_path: string; operation: "configure" | "clear" },
+        review: { before_sha256: review.before_sha256, after_sha256: review.after_sha256 },
       });
-      const verify = result.verification as Record<string, unknown> | undefined;
-      const ok = result.ok !== false && result.state !== "failed" && verify?.ok !== false;
-      const outcomeNotice = ok
-        ? (operation === "configure"
-          ? (translateCopy("in.mcpToolConfiguredAndVerified", lang, { v1: binding.agent_name }))
-          : (translateCopy("in.mcpEntryCleared", lang, { v1: binding.agent_name })))
-        : (translateCopy("in.mcpOperationDidNotCompleteUserConfigurationWasNotChanged", lang));
-      await refreshAll();
-      setNotice(outcomeNotice);
+      return;
     } catch (error) {
       setNotice(translateCopy("in.mcpOperationDidNotCompleteUserConfigurationWasNotChanged", lang));
     } finally {
@@ -890,5 +907,32 @@ export function Install({ onOpenAdvanced }: { onOpenAdvanced?: () => void; initi
     }
   };
 
-  return <InstallView {...{ lang, t, snapshot, discoveryStatus, phasePresentation, discoveryCounts, refreshAll, busy, pendingAction, handlePrimaryAction, primaryAction, serviceInstanceDetail, servicePresentation, restartRequired, serviceOnline, serviceManaged, setStopError, setConfirmServiceStop, visibleBindings, primaryBindings, machine, dispatch, secondaryBindings, ccSwitchPresentation, notice, transactionLogs, agentIntegrationReceipts, routeVerification, showReview, setShowReview, setConnectionReview, setRoutePlanReview, setManagedTransportReviews, setAgentIntegrationReviews, actionableBindings, serviceEndpoint, routePlanReview, connectionReview, managedTransportReviews, agentIntegrationReviews, openCodeSelection, applyConnectionPlan, credentialDialogOpen, setCredentialDialogOpen, setProviderCredential, setCredentialError, credentialBinding, credentialProviderId, providerCredential, credentialError, saveInlineCredential, confirmServiceStop, stopError, serviceStatus, serviceIdentifiersCurrent, stopService, transportBusyAgent, onConfigureAgent: (binding: AgentUpstreamBinding) => { void runManagedTransport(binding, "configure"); }, onClearAgent: (binding: AgentUpstreamBinding) => { void runManagedTransport(binding, "clear"); }, agentAutoFollow, setAgentAutoFollow, ccSwitchSyncReview, setCcSwitchSyncReview, ccSwitchAutoFollow, setCcSwitchAutoFollow, ccSwitchSyncBusy: pendingAction === "sync", onPreviewCcSwitchSync: () => { void previewCcSwitchSync(); }, onApplyCcSwitchSync: () => { void applyCcSwitchSync(); } }} />;
+  const applyManagedMcpIntegration = async () => {
+    const pending = mcpConfirm;
+    if (!pending) return;
+    setTransportBusyAgent(pending.binding.agent_id);
+    try {
+      const result = await invokeNative<Record<string, unknown>>("apply_managed_agent_mcp_integration", {
+        request: pending.request,
+        reviewed_before_sha256: pending.review.before_sha256,
+        reviewed_after_sha256: pending.review.after_sha256,
+      });
+      const verify = result.verification as Record<string, unknown> | undefined;
+      const ok = result.ok !== false && result.state !== "failed" && verify?.ok !== false;
+      const outcomeNotice = ok
+        ? (pending.operation === "configure"
+          ? (translateCopy("in.mcpToolConfiguredAndVerified", lang, { v1: pending.binding.agent_name }))
+          : (translateCopy("in.mcpEntryCleared", lang, { v1: pending.binding.agent_name })))
+        : (translateCopy("in.mcpOperationDidNotCompleteUserConfigurationWasNotChanged", lang));
+      await refreshAll();
+      setNotice(outcomeNotice);
+    } catch (error) {
+      setNotice(translateCopy("in.mcpOperationDidNotCompleteUserConfigurationWasNotChanged", lang));
+    } finally {
+      setTransportBusyAgent(null);
+      setMcpConfirm(null);
+    }
+  };
+
+  return <InstallView {...{ lang, t, snapshot, discoveryStatus, phasePresentation, discoveryCounts, refreshAll, busy, pendingAction, handlePrimaryAction, primaryAction, serviceInstanceDetail, servicePresentation, restartRequired, serviceOnline, serviceManaged, setStopError, setConfirmServiceStop, visibleBindings, primaryBindings, machine, dispatch, secondaryBindings, ccSwitchPresentation, notice, transactionLogs, agentIntegrationReceipts, routeVerification, showReview, setShowReview, setConnectionReview, setRoutePlanReview, setManagedTransportReviews, setAgentIntegrationReviews, actionableBindings, serviceEndpoint, routePlanReview, connectionReview, managedTransportReviews, agentIntegrationReviews, openCodeSelection, applyConnectionPlan, credentialDialogOpen, setCredentialDialogOpen, setProviderCredential, setCredentialError, credentialBinding, credentialProviderId, providerCredential, credentialError, saveInlineCredential, confirmServiceStop, stopError, serviceStatus, serviceIdentifiersCurrent, stopService, transportBusyAgent, onConfigureAgent: (binding: AgentUpstreamBinding) => { void runManagedTransport(binding, "configure"); }, onClearAgent: (binding: AgentUpstreamBinding) => { void runManagedTransport(binding, "clear"); }, transportConfirm, setTransportConfirm, applyManagedTransport: () => applyManagedTransport(), mcpConfirm, setMcpConfirm, applyManagedMcpIntegration: () => applyManagedMcpIntegration(), agentAutoFollow, setAgentAutoFollow, ccSwitchSyncReview, setCcSwitchSyncReview, ccSwitchAutoFollow, setCcSwitchAutoFollow, ccSwitchSyncBusy: pendingAction === "sync", onPreviewCcSwitchSync: () => { void previewCcSwitchSync(); }, onApplyCcSwitchSync: () => { void applyCcSwitchSync(); } }} />;
 }

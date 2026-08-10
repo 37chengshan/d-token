@@ -2493,6 +2493,15 @@
       "summary": "product closure: CBM v2 manifest registry, per-version acceptance harness, manifest-driven promo",
       "head_before": "15f98cf",
       "remote": null
+    },
+    {
+      "id": "560d014e-e75c-42a6-abac-a116d84a3662",
+      "timestamp": "2026-08-10T12:08:22+08:00",
+      "operation": "commit",
+      "branch": "product-closure-remediation",
+      "summary": "UI product closure: onboarding 5-seg, service progress/reduce motion, order gate, OperationDialog confirm, honest running copy",
+      "head_before": "9ef2151d86faa55ad438570ca815426250515796",
+      "remote": null
     }
   ]
 }

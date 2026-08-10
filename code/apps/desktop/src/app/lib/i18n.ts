@@ -26,13 +26,23 @@ export const DICT: Dict = {
   "onb.section.agents": { zh: "Agent 发现", en: "Agent discovery" },
   "onb.section.upstream": { zh: "上游与模型服务商", en: "Upstreams & model providers" },
   "onb.service.running": { zh: "服务运行中", en: "Service running" },
+  // onboarding service step phases (UI-8)
+  "onb.service.phases": { zh: "服务启动阶段", en: "Service start phases" },
+  "onb.service.phase.check": { zh: "检查", en: "Check" },
+  "onb.service.phase.backup": { zh: "备份", en: "Backup" },
+  "onb.service.phase.start": { zh: "启动", en: "Start" },
+  "onb.service.phase.verify": { zh: "验证", en: "Verify" },
+  "onb.service.runningNote": {
+    zh: "服务运行中 ≠ 已连接；Agent 接入与验证以「开始使用」步骤的证据为准。",
+    en: "Running ≠ connected; Agent integration and verification are judged by the evidence on the Start-using step.",
+  },
   "onb.service.stopped": { zh: "服务未运行", en: "Service not running" },
   "onb.service.restartRequired": { zh: "需要重启", en: "Restart required" },
   "onb.service.unavailable": { zh: "服务状态不可用", en: "Service status unavailable" },
   "onb.service.start": { zh: "启动并检查本地服务", en: "Start & check local service" },
   "onb.service.starting": { zh: "正在启动并检查本地服务…", en: "Starting and checking local service…" },
   "onb.service.retry": { zh: "重试", en: "Retry" },
-  "onb.service.startSuccess": { zh: "服务已启动，状态已刷新", en: "Service started and state refreshed" },
+  "onb.service.startSuccess": { zh: "服务已启动，尚未完成 Agent 接入", en: "Service started; Agent integration is not yet complete" },
   "onb.service.startFailed": {
     zh: "启动失败或状态刷新未确认，未做任何写入；请重试。",
     en: "Start failed or the state refresh was not confirmed; nothing was written. Try again.",
@@ -96,7 +106,7 @@ export const DICT: Dict = {
   "onb.backOverview": { zh: "返回总体概览", en: "Back to Overview" },
   "onb.entryTitle": { zh: "首次配置", en: "First-run setup" },
 
-  // 6-step onboarding wizard
+  // 5-step onboarding wizard
   "onb.step.welcome": { zh: "欢迎", en: "Welcome" },
   "onb.step.service": { zh: "本地服务", en: "Service" },
   "onb.step.agents": { zh: "Agent", en: "Agents" },
@@ -1119,7 +1129,10 @@ export const DICT: Dict = {
   "in.removeTheDTokenMcpEntryFromOnlyTheMcpToolIsRemovedUpstreamConfigurationIsUnaffectedApplyIt": { zh: "将清除 {v1} 中的 d-token MCP 条目。仅移除 MCP 工具，不影响上游配置。是否应用？", en: "Remove the d-token MCP entry from {v1}. Only the MCP tool is removed; upstream configuration is unaffected. Apply it?" },
   "in.mcpToolConfiguredAndVerified": { zh: "{v1} MCP 工具已配置并验证。", en: "{v1} MCP tool configured and verified." },
   "in.mcpEntryCleared": { zh: "{v1} MCP 条目已清除。", en: "{v1} MCP entry cleared." },
-  "in.mcpOperationDidNotCompleteUserConfigurationWasNotChanged": { zh: "MCP 操作未完成，用户配置未被修改。", en: "MCP operation did not complete; user configuration was not changed." },
+  "in.mcpOperationDidNotCompleteUserConfigurationWasNotChanged": { zh: "MCP 操作未完成，用户配置未被修改。", en: "The MCP operation did not complete; user configuration was not changed." },
+  "in.applyPlan": { zh: "应用方案", en: "Apply plan" },
+  "in.configureManagedTransport": { zh: "配置 {v1} 的 d-token 托管传输", en: "Configure d-token managed transport for {v1}" },
+  "in.clearManagedTransport": { zh: "清除 {v1} 的 d-token 托管传输", en: "Clear d-token managed transport for {v1}" },
   // components/pages/Analytics.tsx
   "an.fromTheLastVerifiedLocalDTokenRequestRecords": { zh: "来自上次验证的 d-token 本地请求记录", en: "From the last verified local d-token request records" },
   "an.analyticsDataStatus": { zh: "分析数据状态", en: "Analytics data status" },
