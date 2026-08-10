@@ -2567,6 +2567,15 @@
       "remote": null
     },
     {
+      "id": "60ee3516-c6cf-41dc-ac44-36d9c81bb01c",
+      "timestamp": "2026-08-10T12:45:28+08:00",
+      "operation": "commit",
+      "branch": "codex/final/c2-c3-remediation",
+      "summary": "C2/C3 remediation: SQLite PersistencePort, bus recovery/record_bound, HTTP ingress bus routing (incl direct Anthropic), two-AppState relay tests, report",
+      "head_before": "15f98cf",
+      "remote": null
+    },
+    {
       "id": "d6fe030f-6357-4640-bebb-8936f5faa0f1",
       "timestamp": "2026-08-10T13:05:03+08:00",
       "operation": "merge",

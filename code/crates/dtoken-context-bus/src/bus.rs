@@ -81,7 +81,8 @@ pub struct ContextBus {
     relay: ContextRelay,
     recovery: RecoveryIndex,
     shared: SharedContext,
-    persistence: Box<dyn PersistencePort>,
+    /// 持久化 port（store 实现；bus 域 policy 单一 authority）。
+    pub persistence: Box<dyn PersistencePort>,
 }
 
 impl Default for ContextBus {
@@ -180,8 +181,9 @@ impl ContextBus {
             self.shared.is_granted(project, owner, grantee, session)
         };
         match self.relay.query(&query, &granted) {
-            crate::relay::RelayOutcome::SignatureHit(entry)
-            | crate::relay::RelayOutcome::QueryHit(entry) => {
+            crate::relay::RelayOutcome::SignatureHit(entry) => {
+                // 精确 map-signature 命中：canonical 内容与 source fingerprint
+                // 完全一致 → 同一变换对同一内容确定成立 → 允许 body 替换。
                 let receipt = RelayHitReceipt {
                     project_id: scope.project_id.clone(),
                     owner_agent_id: entry.agent_id.clone(),
@@ -190,6 +192,25 @@ impl ContextBus {
                     map_signature: entry.map_signature.clone(),
                     source_fingerprint: entry.source_fingerprint.clone(),
                     avoided_bytes: entry.body_bytes,
+                    hit_at_ms: now_ms,
+                };
+                ConsultOutcome::RelayHit { entry, receipt }
+            }
+            crate::relay::RelayOutcome::QueryHit(mut entry) => {
+                // query-aware retrieval 只提供「存在可复用条目」的信号，不提供
+                // body：无精确 map-signature 绑定时替换 body 会把请求 A 的
+                // 变换内容发到请求 B 的线上（跨请求污染，RUNTIME-7/CONTEXT-4）。
+                // 因此剥离 body 并把 avoided_bytes 置 0；调用方回退到对当前
+                // 请求自身内容的压缩（负收益 fallback，零替换）。
+                entry.body = None;
+                let receipt = RelayHitReceipt {
+                    project_id: scope.project_id.clone(),
+                    owner_agent_id: entry.agent_id.clone(),
+                    grantee_agent_id: scope.agent_id.clone(),
+                    session_id: entry.session_id.clone(),
+                    map_signature: entry.map_signature.clone(),
+                    source_fingerprint: entry.source_fingerprint.clone(),
+                    avoided_bytes: 0,
                     hit_at_ms: now_ms,
                 };
                 ConsultOutcome::RelayHit { entry, receipt }
@@ -213,6 +234,38 @@ impl ContextBus {
         query_tokens: &[String],
         now_ms: u64,
     ) -> Result<RecoveryPointer> {
+        self.record_bound(
+            scope,
+            canonical_content,
+            source_revision,
+            file_digest,
+            body,
+            query_tokens,
+            now_ms,
+            "",
+            "",
+            "",
+        )
+    }
+
+    /// 请求绑定记录：与 [`Self::record`] 相同，但 manifest 携带
+    /// request_id / source_digest / decision_digest（跨绑定校验见
+    /// [`RecoveryManifest::binding_matches`]）。`source_digest` 必须是对
+    /// 验证基线 bytes（相同 source → 相同 digest，见 `signature::sha256_hex`）。
+    #[allow(clippy::too_many_arguments)]
+    pub fn record_bound(
+        &mut self,
+        scope: &BusScope,
+        canonical_content: &str,
+        source_revision: &str,
+        file_digest: Option<&str>,
+        body: Option<String>,
+        query_tokens: &[String],
+        now_ms: u64,
+        request_id: &str,
+        source_digest: &str,
+        decision_digest: &str,
+    ) -> Result<RecoveryPointer> {
         let body_bytes = body.as_deref().map(str::len).unwrap_or(0);
         let entry = CacheEntry {
             map_signature: map_signature(&scope.project_id, canonical_content),
@@ -231,9 +284,15 @@ impl ContextBus {
             .put(entry.clone(), &self.config.cache_policy, now_ms)?;
         // relay 写入（同项目跨 Agent 可复用；secret/size gate 再次执行）。
         self.relay.put(entry.clone())?;
-        // Recovery manifest 登记。
-        let manifest =
-            RecoveryManifest::new(&scope.project_id, now_ms, vec![ManifestEntry::from(&entry)]);
+        // Recovery manifest 登记（请求绑定）。
+        let manifest = RecoveryManifest::new_bound(
+            &scope.project_id,
+            request_id,
+            source_digest,
+            decision_digest,
+            now_ms,
+            vec![ManifestEntry::from(&entry)],
+        );
         let pointer = self.recovery.record(manifest.clone())?;
         // 持久化 port。
         self.persistence.save_entry(&entry)?;
@@ -272,36 +331,40 @@ impl ContextBus {
         Ok(revoked)
     }
 
-    /// 崩溃恢复：从 persistence 重建 session cache / relay / recovery 索引，
+    /// 崩溃恢复：从 persistence 重建 session cache / relay / recovery 索引。
     /// 返回恢复的条目数量。失败不阻断（调用方继续 fail-open）。
+    ///
+    /// 语义：
+    /// - TTL/stale 条目在启动时跳过并从持久层删除（重启不复活）；
+    /// - manifest 仅在其全部条目 fresh 时登记指针，否则删除；
+    /// - grant/revoke 状态按持久化四元组还原（revoked 保持 revoked）。
     pub fn recover(&mut self, now_ms: u64) -> Result<usize> {
         let mut restored = 0usize;
-        // 按项目去重加载（port 已经按项目隔离）。
-        let mut projects: Vec<String> = self
-            .persistence
-            .load_entries("")
-            .unwrap_or_default()
-            .iter()
-            .map(|e| e.project_id.clone())
-            .collect();
-        // load_entries("") 返回空 → 需要枚举项目：从 manifests 收集。
-        let mut seen: Vec<String> = Vec::new();
-        for entry in self.entries_from_manifests() {
-            if !seen.contains(&entry.project_id) {
-                seen.push(entry.project_id.clone());
-            }
-        }
-        projects.extend(seen);
+        let projects = self.persistence.project_ids().unwrap_or_default();
         for project in projects {
             for entry in self.persistence.load_entries(&project)? {
+                if entry.state_at(now_ms, None) != crate::cache::EntryState::Fresh {
+                    // stale（TTL 过期）：跳过且删除，避免重启后复活。
+                    let _ = self.persistence.delete_entry(&project, &entry.map_signature);
+                    continue;
+                }
                 self.session_cache
                     .put(entry.clone(), &self.config.cache_policy, now_ms)
                     .ok();
                 let _ = self.relay.put(entry.clone());
-                let manifest =
-                    RecoveryManifest::new(&project, now_ms, vec![ManifestEntry::from(&entry)]);
-                self.recovery.record(manifest).ok();
                 restored += 1;
+            }
+            for manifest in self.persistence.load_manifests(&project)? {
+                let all_fresh = manifest.entries.iter().all(|entry| {
+                    crate::recovery::RecoveryIndex::rehydrate_entry(entry)
+                        .state_at(now_ms, None)
+                        == crate::cache::EntryState::Fresh
+                });
+                if !all_fresh || manifest.entries.is_empty() {
+                    let _ = self.persistence.delete_manifest(&manifest.manifest_id);
+                    continue;
+                }
+                let _ = self.recovery.record(manifest);
             }
             for grant in self.persistence.load_grants(&project)? {
                 let request = GrantRequest {
@@ -332,7 +395,8 @@ impl ContextBus {
         Ok(restored)
     }
 
-    /// 清理过期（会话/条目/指针），返回移除总数。
+    /// 清理过期（会话/条目/指针），返回移除总数；持久层同步删除
+    /// （TTL/stale/superseded 的 delete 语义，重启不复活）。
     pub fn prune(&mut self, now_ms: u64, current_source_fingerprint: Option<&str>) -> usize {
         let sessions = self.sessions.prune_expired(now_ms);
         let entries = self
@@ -340,6 +404,31 @@ impl ContextBus {
             .prune_expired(now_ms, current_source_fingerprint);
         let relay = self.relay.prune_expired(now_ms, current_source_fingerprint);
         let pointers = self.recovery.prune(now_ms, current_source_fingerprint);
+        // 持久层同步：非 fresh 条目/全部失效的 manifest 一并删除。
+        let projects = self.persistence.project_ids().unwrap_or_default();
+        for project in projects {
+            if let Ok(persisted) = self.persistence.load_entries(&project) {
+                for entry in persisted {
+                    if entry.state_at(now_ms, current_source_fingerprint)
+                        != crate::cache::EntryState::Fresh
+                    {
+                        let _ = self.persistence.delete_entry(&project, &entry.map_signature);
+                    }
+                }
+            }
+            if let Ok(manifests) = self.persistence.load_manifests(&project) {
+                for manifest in manifests {
+                    let stale = manifest.entries.iter().any(|entry| {
+                        crate::recovery::RecoveryIndex::rehydrate_entry(entry)
+                            .state_at(now_ms, current_source_fingerprint)
+                            != crate::cache::EntryState::Fresh
+                    });
+                    if stale || manifest.entries.is_empty() {
+                        let _ = self.persistence.delete_manifest(&manifest.manifest_id);
+                    }
+                }
+            }
+        }
         sessions + entries + relay + pointers
     }
 
@@ -355,15 +444,14 @@ impl ContextBus {
         self.session_cache.len()
     }
 
-    fn entries_from_manifests(&self) -> Vec<CacheEntry> {
-        // 通过 recovery index 的 manifests 枚举条目（无 body 的元数据投影）。
-        // 用于收集项目清单；具体恢复仍走 persistence port。
-        Vec::new()
+    /// 持久化 port 只读访问（审计/测试：验证跨重启恢复）。
+    pub fn persistence(&self) -> &dyn PersistencePort {
+        self.persistence.as_ref()
     }
 
+    /// 全部 grant 的只读投影（持久化撤销状态用）。
     fn shared_grants(&self) -> Vec<SharedGrant> {
-        // 测试/持久化辅助：通过公开读取路径获取 grant 列表。
-        Vec::new()
+        self.shared.grants()
     }
 }
 
@@ -516,5 +604,196 @@ mod tests {
             1_000,
         );
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn record_bound_binds_request_and_digests() {
+        let mut bus = ContextBus::new(BusConfig::default());
+        let bus_scope = scope("proj", "agent-a", "sess-1");
+        let request_id = "req-123";
+        let source_digest = crate::signature::sha256_hex(b"baseline-bytes");
+        let decision_digest = "decision-abc";
+        let pointer = bus
+            .record_bound(
+                &bus_scope,
+                r#"{"q":"route"}"#,
+                &"a".repeat(64),
+                None,
+                Some("candidate".to_string()),
+                &["route".to_string()],
+                1_000,
+                request_id,
+                &source_digest,
+                decision_digest,
+            )
+            .unwrap();
+        // 持久化 manifest 携带绑定字段。
+        let manifest = bus
+            .persistence
+            .load_manifests("proj")
+            .unwrap()
+            .into_iter()
+            .find(|m| m.manifest_id == pointer.manifest_id)
+            .expect("manifest persisted");
+        assert_eq!(manifest.request_id, request_id);
+        assert_eq!(manifest.source_digest, source_digest);
+        assert_eq!(manifest.decision_digest, decision_digest);
+        assert!(manifest.binding_matches(request_id, &source_digest));
+        assert!(!manifest.binding_matches("other-request", &source_digest));
+        assert!(!manifest.binding_matches(request_id, "other-digest"));
+        // 未绑定 record 的 manifest 绑定为空串。
+        bus.record(
+            &scope("proj", "agent-a", "sess-2"),
+            "unbound",
+            &"a".repeat(64),
+            None,
+            Some("candidate".to_string()),
+            &[],
+            1_000,
+        )
+        .unwrap();        let unbound = bus
+            .persistence
+            .load_manifests("proj")
+            .unwrap()
+            .into_iter()
+            .find(|m| m.request_id.is_empty())
+            .expect("unbound manifest persisted");
+        assert!(unbound.binding_matches("", ""));
+        assert!(!unbound.binding_matches("req", ""));
+    }
+
+    #[test]
+    fn recover_skips_and_deletes_stale_entries() {
+        // 直接向 port 写入一个 stale 条目（TTL 已过期）与一个 fresh 条目。
+        let mut port = InMemoryPersistence::new();
+        let stale = crate::cache::CacheEntry {
+            map_signature: map_signature("proj", "stale"),
+            project_id: "proj".to_string(),
+            agent_id: "agent-a".to_string(),
+            session_id: "sess-1".to_string(),
+            source_fingerprint: source_fingerprint(&"a".repeat(64), None),
+            recorded_at_ms: 1_000,
+            ttl_seconds: Some(60),
+            body_bytes: 5,
+            query_tokens: vec![],
+            body: Some("stale".to_string()),
+        };
+        let fresh = crate::cache::CacheEntry {
+            map_signature: map_signature("proj", "fresh"),
+            recorded_at_ms: 60_000,
+            ..stale.clone()
+        };
+        port.save_entry(&stale).unwrap();
+        port.save_entry(&fresh).unwrap();
+        let mut bus = ContextBus::with_persistence(BusConfig::default(), Box::new(port));
+        // 1_000 + 60s TTL → 61_000 仍 fresh（闭区间）；61_001 时 stale 过期。
+        let restored = bus.recover(61_001).unwrap();
+        assert_eq!(restored, 1);
+        assert_eq!(bus.cache_entry_count(), 1);
+        // stale 已从持久层删除（重启不复活）。
+        let remaining = bus.persistence.load_entries("proj").unwrap();
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].map_signature, fresh.map_signature);
+    }
+
+    #[test]
+    fn prune_deletes_stale_entries_from_persistence() {
+        let mut port = InMemoryPersistence::new();
+        let stale = crate::cache::CacheEntry {
+            map_signature: map_signature("proj", "stale"),
+            project_id: "proj".to_string(),
+            agent_id: "agent-a".to_string(),
+            session_id: "sess-1".to_string(),
+            source_fingerprint: source_fingerprint(&"a".repeat(64), None),
+            recorded_at_ms: 1_000,
+            ttl_seconds: Some(60),
+            body_bytes: 5,
+            query_tokens: vec![],
+            body: Some("stale".to_string()),
+        };
+        port.save_entry(&stale).unwrap();
+        let manifest = RecoveryManifest::new("proj", 1_000, vec![ManifestEntry::from(&stale)]);
+        port.save_manifest(&manifest).unwrap();
+        let mut bus = ContextBus::with_persistence(BusConfig::default(), Box::new(port));
+        let removed = bus.prune(70_000, None);
+        // sessions 0 + entries 0 + relay 0 + pointers 0（未恢复，仅持久层清理）。
+        assert_eq!(removed, 0);
+        // 持久层条目与 manifest 已被删除。
+        assert!(bus.persistence.load_entries("proj").unwrap().is_empty());
+        assert!(bus.persistence.load_manifests("proj").unwrap().is_empty());
+    }
+
+    #[test]
+    fn revocation_persists_durably() {
+        let mut bus = ContextBus::new(BusConfig::default());
+        bus.grant(&GrantRequest {
+            scope: GrantScope::new("proj", "agent-a", "agent-b", "sess-1"),
+            grant_revision: "rev-1".to_string(),
+            granted_at_ms: 1_000,
+        })
+        .unwrap();
+        bus.revoke(
+            &GrantScope::new("proj", "agent-a", "agent-b", "sess-1"),
+            "rev-1",
+            2_000,
+        )
+        .unwrap();
+        // 撤销状态已持久化。
+        let grants = bus.persistence.load_grants("proj").unwrap();
+        assert_eq!(grants.len(), 1);
+        assert_eq!(grants[0].revoked_at_ms, Some(2_000));
+        // 经持久化恢复：revoked grant 不会重新授权。
+        let mut restored = ContextBus::with_persistence(
+            BusConfig::default(),
+            Box::new(InMemoryPersistence::new()),
+        );
+        restored
+            .persistence
+            .save_grant(&bus.persistence.load_grants("proj").unwrap()[0])
+            .unwrap();
+        let _ = restored.recover(3_000).unwrap();
+        assert!(!restored
+            .shared
+            .is_granted("proj", "agent-a", "agent-b", "sess-1"));
+    }
+
+    #[test]
+    fn query_hit_never_substitutes_another_requests_body() {
+        let mut bus = ContextBus::new(BusConfig::default());
+        // agent-a 记录「内容 A」的变换候选。
+        let owner = scope("proj", "agent-a", "sess-1");
+        bus.record(
+            &owner,
+            r#"{"q":"content-a"}"#,
+            "",
+            None,
+            Some(r#"{"q":"content-a","transformed":true}"#.to_string()),
+            &["route-1".to_string(), "model-x".to_string()],
+            1_000,
+        )
+        .unwrap();
+        // grant agent-a → agent-b。
+        bus.grant(&GrantRequest {
+            scope: GrantScope::new("proj", "agent-a", "agent-b", "sess-1"),
+            grant_revision: "rev-1".to_string(),
+            granted_at_ms: 1_000,
+        })
+        .unwrap();
+        // agent-b 发起「内容 B」（相同 route/model 查询 token，不同 body）。
+        let consumer = scope("proj", "agent-b", "sess-2");
+        let outcome = bus.consult(
+            &consumer,
+            &map_signature("proj", r#"{"q":"content-b"}"#),
+            &source_fingerprint("", None),
+            &["route-1".to_string(), "model-x".to_string()],
+            1_000,
+        );
+        // query-aware 命中只提供信号：绝不提供 A 的 body。
+        let ConsultOutcome::RelayHit { entry, receipt } = outcome else {
+            panic!("query-aware retrieval signal expected");
+        };
+        assert!(entry.body.is_none(), "query hit must not carry a body");
+        assert_eq!(receipt.avoided_bytes, 0);
+        assert_eq!(entry.map_signature, map_signature("proj", r#"{"q":"content-a"}"#));
     }
 }

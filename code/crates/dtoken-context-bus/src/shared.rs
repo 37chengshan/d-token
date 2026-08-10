@@ -9,7 +9,7 @@ use crate::scope::{validate_revision, GrantScope, ScopeError};
 use uuid::Uuid;
 
 /// 一条 SharedContext grant。
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SharedGrant {
     pub grant_id: String,
     pub project_id: String,
@@ -46,6 +46,11 @@ impl SharedContext {
 
     pub fn is_empty(&self) -> bool {
         self.grants.is_empty()
+    }
+
+    /// 全部 grant 的只读投影（持久化撤销状态 / 审计用）。
+    pub fn grants(&self) -> Vec<SharedGrant> {
+        self.grants.clone()
     }
 
     /// grant（幂等 upsert：同 revision 且未撤销 → 原样返回；否则覆盖/新建）。

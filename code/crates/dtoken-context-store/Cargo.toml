@@ -6,6 +6,7 @@ license.workspace = true
 
 [dependencies]
 anyhow.workspace = true
+dtoken-context-bus = { path = "../dtoken-context-bus" }
 dtoken-event-ledger = { path = "../dtoken-event-ledger" }
 dtoken-types = { path = "../dtoken-types" }
 rusqlite = { version = "0.32", features = ["bundled"] }

@@ -11,14 +11,20 @@ use anyhow::Result;
 
 /// bus 的持久化契约。实现必须保证：
 /// - 不持久化 raw/secret（条目 body 必须已经过 secret-shape gate）；
-/// - 按 project 隔离读取（跨项目污染 = 0）。
+/// - 按 project 隔离读取（跨项目污染 = 0）；
+/// - delete 语义（TTL/stale/superseded 清理后从持久层移除，重启不复活）。
 pub trait PersistencePort: Send + Sync {
     fn save_entry(&mut self, entry: &CacheEntry) -> Result<()>;
     fn load_entries(&self, project_id: &str) -> Result<Vec<CacheEntry>>;
+    fn delete_entry(&mut self, project_id: &str, map_signature: &str) -> Result<()>;
     fn save_manifest(&mut self, manifest: &RecoveryManifest) -> Result<()>;
     fn load_manifests(&self, project_id: &str) -> Result<Vec<RecoveryManifest>>;
+    fn delete_manifest(&mut self, manifest_id: &str) -> Result<()>;
     fn save_grant(&mut self, grant: &SharedGrant) -> Result<()>;
     fn load_grants(&self, project_id: &str) -> Result<Vec<SharedGrant>>;
+    fn delete_grant(&mut self, grant_id: &str) -> Result<()>;
+    /// 全部项目 id（entries/manifests/grants 去重并集）；启动恢复用。
+    fn project_ids(&self) -> Result<Vec<String>>;
 }
 
 /// 内存实现（默认；进程内生效，重启后清空）。
@@ -58,6 +64,12 @@ impl PersistencePort for InMemoryPersistence {
             .collect())
     }
 
+    fn delete_entry(&mut self, project_id: &str, map_signature: &str) -> Result<()> {
+        self.entries
+            .retain(|e| !(e.project_id == project_id && e.map_signature == map_signature));
+        Ok(())
+    }
+
     fn save_manifest(&mut self, manifest: &RecoveryManifest) -> Result<()> {
         if let Some(existing) = self
             .manifests
@@ -80,6 +92,11 @@ impl PersistencePort for InMemoryPersistence {
             .collect())
     }
 
+    fn delete_manifest(&mut self, manifest_id: &str) -> Result<()> {
+        self.manifests.retain(|m| m.manifest_id != manifest_id);
+        Ok(())
+    }
+
     fn save_grant(&mut self, grant: &SharedGrant) -> Result<()> {
         if let Some(existing) = self
             .grants
@@ -100,6 +117,27 @@ impl PersistencePort for InMemoryPersistence {
             .filter(|g| g.project_id == project_id)
             .cloned()
             .collect())
+    }
+
+    fn delete_grant(&mut self, grant_id: &str) -> Result<()> {
+        self.grants.retain(|g| g.grant_id != grant_id);
+        Ok(())
+    }
+
+    fn project_ids(&self) -> Result<Vec<String>> {
+        let mut ids: Vec<String> = Vec::new();
+        for project in self
+            .entries
+            .iter()
+            .map(|e| e.project_id.as_str())
+            .chain(self.manifests.iter().map(|m| m.project_id.as_str()))
+            .chain(self.grants.iter().map(|g| g.project_id.as_str()))
+        {
+            if !ids.iter().any(|id| id == project) {
+                ids.push(project.to_string());
+            }
+        }
+        Ok(ids)
     }
 }
 

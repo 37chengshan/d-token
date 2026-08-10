@@ -35,6 +35,14 @@ pub fn is_hex64(value: &str) -> bool {
     value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
+/// 任意字节的 SHA-256 十六进制摘要（64 hex）。供 manifest 绑定
+/// （request/source digest）与核心层校验使用：相同 bytes → 相同 digest。
+pub fn sha256_hex(bytes: &[u8]) -> String {
+    let mut digest = Sha256::new();
+    digest.update(bytes);
+    format!("{:x}", digest.finalize())
+}
+
 /// query tokens 规范化（与 store `normalized_keywords` 同规则：小写、排序、去重）。
 pub fn normalize_query_tokens(tokens: &[String]) -> Vec<String> {
     let mut normalized = Vec::with_capacity(tokens.len());

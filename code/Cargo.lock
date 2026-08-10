@@ -1204,6 +1204,7 @@ name = "dtoken-context-store"
 version = "0.0.1"
 dependencies = [
  "anyhow",
+ "dtoken-context-bus",
  "dtoken-event-ledger",
  "dtoken-types",
  "rusqlite",

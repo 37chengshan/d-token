@@ -35,6 +35,9 @@ mod windows_private_acl;
 
 mod memory_capability;
 
+pub mod bus_persistence;
+
+pub use bus_persistence::SqlitePersistence;
 pub use memory_capability::{
     prepare_memory_capability_transaction_for_runtime, MemoryCapabilityPermission,
     MemoryCapabilityRouteBinding, MemoryCapabilityTransactionPlan,

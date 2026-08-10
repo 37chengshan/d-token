@@ -20,7 +20,7 @@ pub struct RecoveryPointer {
 }
 
 /// Manifest 条目（元数据投影，不含 body 原文）。
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ManifestEntry {
     pub map_signature: String,
     pub project_id: String,
@@ -70,26 +70,64 @@ impl ManifestEntry {
 }
 
 /// Recovery Manifest：一次写入事务的条目集合。
+///
+/// 绑定字段（request_id / source_digest / decision_digest）把 manifest 锚定到
+/// 产生它的请求与验证基线：跨请求/跨 source 的指针解析必须 `binding_matches`，
+/// 否则视为不可解析（miss）。绑定是结构性的——相同 source bytes 得到相同
+/// digest（见 `dtoken_context_bus::signature::sha256_hex`）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RecoveryManifest {
     pub manifest_id: String,
     pub project_id: String,
+    pub request_id: String,
+    pub source_digest: String,
+    pub decision_digest: String,
     pub created_at_ms: u64,
     pub entries: Vec<ManifestEntry>,
 }
 
 impl RecoveryManifest {
+    /// 无绑定 manifest（会话级 record 与旧测试路径；绑定字段为空串）。
     pub fn new(
         project_id: impl Into<String>,
+        created_at_ms: u64,
+        entries: Vec<ManifestEntry>,
+    ) -> Self {
+        Self::new_bound(
+            project_id,
+            "",
+            "",
+            "",
+            created_at_ms,
+            entries,
+        )
+    }
+
+    /// 请求绑定 manifest：request_id + source_digest（验证基线摘要）+
+    /// decision_digest（route 决策摘要）。跨绑定解析必须 `binding_matches`。
+    pub fn new_bound(
+        project_id: impl Into<String>,
+        request_id: impl Into<String>,
+        source_digest: impl Into<String>,
+        decision_digest: impl Into<String>,
         created_at_ms: u64,
         entries: Vec<ManifestEntry>,
     ) -> Self {
         Self {
             manifest_id: format!("manifest-{}", Uuid::new_v4().simple()),
             project_id: project_id.into(),
+            request_id: request_id.into(),
+            source_digest: source_digest.into(),
+            decision_digest: decision_digest.into(),
             created_at_ms,
             entries,
         }
+    }
+
+    /// 绑定校验：request_id 与 source_digest 完全一致才可解析/复用。
+    /// 未绑定 manifest（两个空串）只对同样未绑定的请求匹配。
+    pub fn binding_matches(&self, request_id: &str, source_digest: &str) -> bool {
+        self.request_id == request_id && self.source_digest == source_digest
     }
 
     pub fn is_valid(&self) -> bool {
