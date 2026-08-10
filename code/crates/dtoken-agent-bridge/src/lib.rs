@@ -1046,12 +1046,13 @@ mod tests {
             "sleep 30".to_string(),
         ])
         .expect("spawn wrapped sleep");
-        let (status, timed_out) = wait_for_wrapped_command(
-            &mut child,
-            std::time::Duration::from_secs(1),
-        )
-        .expect("bounded wait");
-        assert!(timed_out, "1s budget must expire before the 30s sleep finishes");
+        let (status, timed_out) =
+            wait_for_wrapped_command(&mut child, std::time::Duration::from_secs(1))
+                .expect("bounded wait");
+        assert!(
+            timed_out,
+            "1s budget must expire before the 30s sleep finishes"
+        );
         assert_eq!(normalized_exit_code(&status, timed_out), 124);
     }
 
@@ -1063,11 +1064,9 @@ mod tests {
             "exit 3".to_string(),
         ])
         .expect("spawn wrapped exit");
-        let (status, timed_out) = wait_for_wrapped_command(
-            &mut child,
-            std::time::Duration::from_secs(10),
-        )
-        .expect("bounded wait");
+        let (status, timed_out) =
+            wait_for_wrapped_command(&mut child, std::time::Duration::from_secs(10))
+                .expect("bounded wait");
         assert!(!timed_out, "completed command is not a timeout");
         assert_eq!(normalized_exit_code(&status, timed_out), 3);
     }
