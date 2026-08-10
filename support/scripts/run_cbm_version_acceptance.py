@@ -66,6 +66,32 @@ PROBES = (
     ("impact", "run impact/scope queries against the indexed graph"),
 )
 
+# Upstream CLI tool surfaces per pinned version, verified against the actual
+# binaries. v0.9.1-rc.1 renamed its CLI tools to the MCP-style surface
+# (index_repository/query_graph/trace_path/get_architecture/search_code);
+# older versions (v0.9.0/v0.8.1) expose the legacy probe names. Every probe
+# id must be covered by every surface.
+CLI_SURFACES: Dict[str, Dict[str, List[str]]] = {
+    "v0.9.1-rc.1": {
+        "indexing": ["index_repository", "--repo-path", "{project}"],
+        "graph_query": [
+            "query_graph", "--project", "{project}",
+            "--query", "MATCH (n) RETURN count(n) LIMIT 1",
+        ],
+        "call_chain": [
+            "trace_path", "--project", "{project}",
+            "--function-name", "main", "--mode", "calls",
+        ],
+        "dependency": [
+            "get_architecture", "--project", "{project}", "--aspects", "overview",
+        ],
+        "impact": ["search_code", "--project", "{project}", "--pattern", "main"],
+    },
+}
+LEGACY_CLI_SURFACE: Dict[str, List[str]] = {
+    probe_id: [probe_id, "--project", "{project}"] for probe_id, _ in PROBES
+}
+
 # Only GitHub is an allowed host; every concrete URL is derived from the
 # manifest (repository + pinned tag + pinned asset names), never from input.
 ALLOWED_HOSTS = frozenset({"github.com"})
@@ -185,8 +211,18 @@ def endpoint_allowlist(manifest: Dict[str, Any]) -> List[str]:
     return sorted(set(urls))
 
 
-def probe_command(probe_id: str, binary: Path, project: Path) -> List[str]:
-    return [str(binary), "cli", probe_id, "--project", str(project)]
+def probe_command(probe_id: str, binary: Path, project: Path, version: str) -> List[str]:
+    """Build the probe argv for a version's real CLI tool surface.
+
+    Templates use ``{project}`` placeholders; the legacy surface keeps the
+    probe id as the tool name (v0.9.0/v0.8.1), the modern surface maps each
+    probe to the renamed MCP-style tool (v0.9.1-rc.1).
+    """
+    surface = CLI_SURFACES.get(version, LEGACY_CLI_SURFACE)
+    template = surface[probe_id]
+    return [str(binary), "cli"] + [
+        argument.format(project=str(project)) for argument in template
+    ]
 
 
 def version_acceptance(manifest: Dict[str, Any], target: str) -> List[Dict[str, Any]]:
@@ -223,7 +259,7 @@ def version_acceptance(manifest: Dict[str, Any], target: str) -> List[Dict[str, 
                     {
                         "id": probe_id,
                         "description": description,
-                        "command": probe_command(probe_id, Path("codebase-memory-mcp"), Path("{project}")),
+                        "command": probe_command(probe_id, Path("codebase-memory-mcp"), Path("{project}"), version),
                         "env": {
                             "CBM_PERSISTENCE": "false",
                             "CBM_REPO_WRITE_DENY": "true",
@@ -574,6 +610,9 @@ def run_execute(args: argparse.Namespace, manifest: Dict[str, Any], repo_root: P
     (project / "README.md").write_text(
         "# synthetic acceptance project (no real prompts/code)\n", encoding="utf-8"
     )
+    # Synthetic single-function source so the call-chain and impact probes
+    # exercise real graph behavior (trace_path/search_code need code nodes).
+    (project / "main.rs").write_text("fn main() {}\n", encoding="utf-8")
     env = dict(os.environ)
     env.update(
         {
@@ -585,7 +624,7 @@ def run_execute(args: argparse.Namespace, manifest: Dict[str, Any], repo_root: P
     probe_results: List[Dict[str, Any]] = []
     try:
         for probe_id, description in PROBES:
-            command = probe_command(probe_id, binary, project)
+            command = probe_command(probe_id, binary, project, version)
             try:
                 completed = subprocess.run(
                     command,

@@ -62,7 +62,46 @@ class ProducerContractTests(unittest.TestCase):
             commands = [" ".join(probe["command"]) for probe in entry["plan"]["probes"]]
             for command in commands:
                 self.assertTrue(command.startswith("codebase-memory-mcp cli "), command)
-                self.assertIn("--project", command, command)
+            # Commands reflect each version's real CLI tool surface: the
+            # legacy surface keeps the probe names, v0.9.1-rc.1 uses the
+            # renamed MCP-style tools.
+            surface = MODULE.CLI_SURFACES.get(version, MODULE.LEGACY_CLI_SURFACE)
+            for probe, command in zip(probes, commands):
+                for token in surface[probe]:
+                    if token != "{project}":
+                        self.assertIn(token, command, (version, probe))
+            self.assertTrue(
+                all("--project" in command or "--repo-path" in command for command in commands),
+                commands,
+            )
+
+    def test_cli_surfaces_cover_every_probe_id(self):
+        # Every version surface must cover all five probe ids, and the
+        # modern v0.9.1-rc.1 surface must map to the renamed MCP-style
+        # tools (verified against the official binary).
+        probe_ids = [probe_id for probe_id, _ in MODULE.PROBES]
+        for version, surface in MODULE.CLI_SURFACES.items():
+            self.assertEqual(sorted(surface), sorted(probe_ids), version)
+        self.assertEqual(
+            MODULE.CLI_SURFACES["v0.9.1-rc.1"]["indexing"][0],
+            "index_repository",
+        )
+        self.assertEqual(
+            MODULE.CLI_SURFACES["v0.9.1-rc.1"]["graph_query"][0],
+            "query_graph",
+        )
+        self.assertEqual(
+            MODULE.CLI_SURFACES["v0.9.1-rc.1"]["call_chain"][0],
+            "trace_path",
+        )
+        self.assertEqual(
+            MODULE.CLI_SURFACES["v0.9.1-rc.1"]["dependency"][0],
+            "get_architecture",
+        )
+        self.assertEqual(
+            MODULE.CLI_SURFACES["v0.9.1-rc.1"]["impact"][0],
+            "search_code",
+        )
 
     def test_producer_blocks_source_tag_only_versions(self):
         manifest = load_real_manifest()
