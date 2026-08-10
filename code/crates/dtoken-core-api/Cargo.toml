@@ -26,6 +26,7 @@ reqwest.workspace = true
 ring = "0.17"
 serde.workspace = true
 serde_json.workspace = true
+sha2 = "0.10"
 tokio.workspace = true
 uuid.workspace = true
 url = "2"

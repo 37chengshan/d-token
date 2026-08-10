@@ -10095,6 +10095,25 @@ fn mint_transport_send_commit(
     Ok(receipt)
 }
 
+
+/// Pre-send wire boundary check (T-C1B fail-closed): the exact bytes that
+/// will be handed to reqwest MUST equal the validated envelope digest.
+/// Called BEFORE any network side effect; a mutated/re-serialized send
+/// buffer is rejected here, never at (or after) the upstream call.
+fn assert_wire_matches_validation(
+    wire_bytes: &[u8],
+    validation: Option<&ValidationReceipt>,
+) -> Result<(), PipelineError> {
+    if let Some(validation) = validation {
+        use sha2::{Digest, Sha256};
+        let wire_digest = format!("{:x}", Sha256::digest(wire_bytes));
+        if validation.validated_digest() != wire_digest {
+            return Err(PipelineError::SourceDigestMismatch);
+        }
+    }
+    Ok(())
+}
+
 /// True when the upstream result proves the transport never accepted the
 /// body (no request bytes were handed over / the request was not attempted).
 fn transport_not_committed(upstream: &UpstreamResult) -> bool {
@@ -11789,6 +11808,23 @@ async fn openai_chat_completions(
         });
         if request.stream.unwrap_or(false) {
             let quota_account_ref = opaque_codex_account_ref(&headers);
+            let wire_bytes = serde_json::to_vec(&upstream_body).unwrap_or_default();
+            match assert_wire_matches_validation(&wire_bytes, pipeline_payload.validation.as_ref())
+            {
+                Ok(()) => {}
+                Err(_) => {
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(json!({
+                            "error": {
+                                "type": "validated_body_mismatch",
+                                "message": "send body digest differs from the validated envelope; send aborted before transport"
+                            }
+                        })),
+                    )
+                        .into_response();
+                }
+            }
             let upstream = forward_openai_chat_stream(
                 &state.http_client,
                 provider,
@@ -11953,6 +11989,20 @@ async fn openai_chat_completions(
                     return (response_status, Json(response)).into_response();
                 }
             }
+        }
+        let wire_bytes = serde_json::to_vec(&upstream_body).unwrap_or_default();
+        if let Err(_) = assert_wire_matches_validation(&wire_bytes, pipeline_payload.validation.as_ref())
+        {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({
+                    "error": {
+                        "type": "validated_body_mismatch",
+                        "message": "send body digest differs from the validated envelope; send aborted before transport"
+                    }
+                })),
+            )
+                .into_response();
         }
         let mut upstream =
             forward_openai_chat(&state.http_client, provider, upstream_body, Some(&headers)).await;
@@ -12378,6 +12428,25 @@ async fn openai_responses(
             drop(ccr_original_body);
             if stream_requested {
                 let quota_account_ref = opaque_codex_account_ref(&headers);
+                let wire_bytes = serde_json::to_vec(&upstream_body).unwrap_or_default();
+                match assert_wire_matches_validation(
+                    &wire_bytes,
+                    pipeline_payload.validation.as_ref(),
+                ) {
+                    Ok(()) => {}
+                    Err(_) => {
+                        return (
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            Json(json!({
+                                "error": {
+                                    "type": "validated_body_mismatch",
+                                    "message": "send body digest differs from the validated envelope; send aborted before transport"
+                                }
+                            })),
+                        )
+                            .into_response();
+                    }
+                }
                 let upstream = forward_openai_responses_stream(
                     &state.http_client,
                     provider,
@@ -12538,6 +12607,22 @@ async fn openai_responses(
                         return (response_status, Json(response)).into_response();
                     }
                 }
+            }
+            let wire_bytes = serde_json::to_vec(&upstream_body).unwrap_or_default();
+            if let Err(_) = assert_wire_matches_validation(
+                &wire_bytes,
+                pipeline_payload.validation.as_ref(),
+            ) {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({
+                        "error": {
+                            "type": "validated_body_mismatch",
+                            "message": "send body digest differs from the validated envelope; send aborted before transport"
+                        }
+                    })),
+                )
+                    .into_response();
             }
             let mut upstream = forward_openai_responses(
                 &state.http_client,
@@ -12919,6 +13004,23 @@ async fn openai_responses(
             // Real Chat SSE -> Responses SSE event conversion; never a silent
             // downgrade of stream:true to a non-streaming call.
             let quota_account_ref = opaque_codex_account_ref(&headers);
+            let wire_bytes = serde_json::to_vec(&upstream_body).unwrap_or_default();
+            match assert_wire_matches_validation(&wire_bytes, pipeline_payload.validation.as_ref())
+            {
+                Ok(()) => {}
+                Err(_) => {
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(json!({
+                            "error": {
+                                "type": "validated_body_mismatch",
+                                "message": "send body digest differs from the validated envelope; send aborted before transport"
+                            }
+                        })),
+                    )
+                        .into_response();
+                }
+            }
             let upstream = forward_openai_chat_stream(
                 &state.http_client,
                 provider,
@@ -13104,6 +13206,20 @@ async fn openai_responses(
                     return (response_status, Json(response)).into_response();
                 }
             }
+        }
+        let wire_bytes = serde_json::to_vec(&upstream_body).unwrap_or_default();
+        if let Err(_) = assert_wire_matches_validation(&wire_bytes, pipeline_payload.validation.as_ref())
+        {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({
+                    "error": {
+                        "type": "validated_body_mismatch",
+                        "message": "send body digest differs from the validated envelope; send aborted before transport"
+                    }
+                })),
+            )
+                .into_response();
         }
         let mut upstream = require_openai_message(
             forward_openai_chat(&state.http_client, provider, upstream_body, Some(&headers)).await,
@@ -13426,6 +13542,26 @@ async fn anthropic_messages(
             .get("stream")
             .and_then(Value::as_bool)
             .unwrap_or(false);
+        let anthropic_wire_bytes: Vec<u8> = if send_raw_body {
+            raw_body.clone()
+        } else {
+            serde_json::to_vec(&payload.upstream_body).unwrap_or_default()
+        };
+        if let Err(_) = assert_wire_matches_validation(
+            &anthropic_wire_bytes,
+            sealed_validation.as_ref(),
+        ) {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({
+                    "error": {
+                        "type": "validated_body_mismatch",
+                        "message": "send body digest differs from the validated envelope; send aborted before transport"
+                    }
+                })),
+            )
+                .into_response();
+        }
         if stream {
             match forward_anthropic_messages_stream(
                 &state.http_client,
@@ -21673,6 +21809,103 @@ mod tests {
             "commit receipt variant must match the sealed unit"
         );
         server.await.expect("mock upstream task");
+    }
+
+    /// Fail-closed, no-network regression (T-C1B): the pre-send wire boundary
+    /// rejects a mutated separate send buffer BEFORE any transport call.
+    #[test]
+    fn wire_boundary_rejects_mutated_send_buffer_before_transport() {
+        use dtoken_runtime_pipeline::PipelineError;
+        let scope = cache_test_scope(Protocol::OpenAi);
+        let decision = cache_test_decision(&scope);
+        let baseline =
+            json!({"model": "model-a", "messages": [{"role": "user", "content": "repeat repeat"}]});
+        let candidate = json!({"model": "model-a", "messages": [{"role": "user", "content": "repeat"}]});
+        let prepared = PreparedCcr {
+            receipt: Some(CcrStoreReceipt {
+                recovery_ref: "ccr:00000000-0000-4000-8000-000000000000".to_string(),
+                expires_at_unix: 9_999,
+                plaintext_bytes: baseline.to_string().len(),
+            }),
+            store_configured: true,
+        };
+        let payload = prepare_json_pipeline_payload(
+            scope.clone(),
+            &decision,
+            &baseline,
+            &candidate,
+            &vec!["safe-text".to_string()],
+            &prepared,
+        )
+        .expect("validated payload");
+        let validation = payload.validation.expect("validation receipt");
+        // A mutated separate send buffer (bytes the transport would have sent)
+        // fails the boundary BEFORE any network side effect.
+        let mutated =
+            serde_json::to_vec(&json!({"model": "model-a", "messages": [{"role": "user", "content": "MUTATED"}]}))
+                .unwrap();
+        assert_eq!(
+            assert_wire_matches_validation(&mutated, Some(&validation)).unwrap_err(),
+            PipelineError::SourceDigestMismatch
+        );
+        // The exact validated envelope bytes pass the boundary.
+        let ready_bytes = serde_json::to_vec(&candidate).unwrap();
+        assert!(
+            assert_wire_matches_validation(&ready_bytes, Some(&validation)).is_ok(),
+            "validated bytes pass the boundary"
+        );
+        // No receipt evidence may exist on refusal.
+        let mut request_log = RequestLog {
+            request_id: scope.request_id,
+            timestamp_ms: 1,
+            agent: None,
+            instance_id: None,
+            input_protocol: Protocol::OpenAi,
+            provider_id: Some("provider-a".to_string()),
+            route_id: Some("route-a".to_string()),
+            chain_mode: None,
+            model: Some("model-a".to_string()),
+            input_tokens_before: None,
+            input_tokens_after: None,
+            output_tokens: None,
+            tokens_saved: None,
+            transforms_applied: vec![],
+            latency_ms: None,
+            error: None,
+            config_source: None,
+            quota_metadata: None,
+            context_accounting: None,
+        };
+        let mut event = build_ledger_event(
+            scope.request_id,
+            &decision,
+            Protocol::OpenAi,
+            Protocol::OpenAi,
+            &CompressionSummary {
+                original_tokens: 0,
+                compressed_tokens: 0,
+                tokens_saved: 0,
+                savings_percent: 0.0,
+                elapsed_us: 0,
+                transforms_applied: vec![],
+                fallback_reason_code: None,
+                body: baseline.clone(),
+                context_accounting: None,
+                bus_receipts: vec![],
+            },
+            &RequestAttribution {
+                agent: None,
+                instance_id: None,
+                project_id: None,
+            },
+        );
+        let _ = mint_transport_send_commit(
+            payload.ready,
+            Some(&validation),
+            1,
+            &mut request_log,
+            &mut event,
+        );
     }
 
     /// Fail-closed negative (T-C1B / RUNTIME-8): the shared transport mint
