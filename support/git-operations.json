@@ -2583,6 +2583,15 @@
       "summary": "合并 C0 合同与传输回执修复 c66568c 到 stage 集成 HEAD af622af",
       "head_before": "af622af55260d948de3c629dd8ed91608e13e262",
       "remote": null
+    },
+    {
+      "id": "aa595ec6-b901-4530-9b6f-54e5156c7147",
+      "timestamp": "2026-08-10T13:34:07+08:00",
+      "operation": "merge",
+      "branch": "codex/final/stage-pack-integrated",
+      "summary": "合并 C2 C3 持久化与 Relay 修复 ad6f2c5 到 stage 集成 HEAD cfb8a51a66c4f7d6da173a66389c9ef4bf978657",
+      "head_before": "cfb8a51a66c4f7d6da173a66389c9ef4bf978657",
+      "remote": null
     }
   ]
 }
