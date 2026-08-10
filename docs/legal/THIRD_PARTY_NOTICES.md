@@ -6,13 +6,16 @@
 
 ## Headroom 行为对照基线
 
-- 项目：[`headroomlabs-ai/headroom`](https://github.com/headroomlabs-ai/headroom)
-- 当前唯一固定对照：[`v0.34.0`](https://github.com/headroomlabs-ai/headroom/releases/tag/v0.34.0) / [`9fd5ae3d530b5d9eb9e9127e413235a5a3b2faf6`](https://github.com/headroomlabs-ai/headroom/commit/9fd5ae3d530b5d9eb9e9127e413235a5a3b2faf6)（2026-08-05 发布；已完成相对旧基线 `01df2452` 与后续 main `7f6950be` 的增量、许可证和 NOTICE 对比）
-- 决议：旧基线 `01df2452529a86c689cf226fecd5918cc5d19676` 仅保留为历史复现；main `7f6950be` 只作发布后差异跟踪，不构成第二 pin
-- 前一发布对照：[`v0.33.0`](https://github.com/headroomlabs-ai/headroom/releases/tag/v0.33.0) / [`28aa53dc7ca51e687cc719c3fe160f3be50c6570`](https://github.com/headroomlabs-ai/headroom/commit/28aa53dc7ca51e687cc719c3fe160f3be50c6570)
+- 项目：[`headroomlabs-ai/headroom`](https://github.com/headroomlabs-ai/headroom)（官方 remote：`https://github.com/headroomlabs-ai/headroom.git`）
+- **当前比较 pin（唯一）**：[`v0.34.0`](https://github.com/headroomlabs-ai/headroom/releases/tag/v0.34.0) / [`9fd5ae3d530b5d9eb9e9127e413235a5a3b2faf6`](https://github.com/headroomlabs-ai/headroom/commit/9fd5ae3d530b5d9eb9e9127e413235a5a3b2faf6)（2026-08-05 发布；2026-08-08 完成三候选漂移审计后定为唯一 current comparison pin；`pyproject.toml` version 0.34.0）
+- 历史 pin：[`01df2452529a86c689cf226fecd5918cc5d19676`](https://github.com/headroomlabs-ai/headroom/commit/01df2452529a86c689cf226fecd5918cc5d19676)（2026-08-02 获取的 main HEAD，`pyproject.toml` version 0.33.0；被 v0.34.0 取代，仅用于解释旧证据，不再作为完成口径）
+- 前一发布对照（历史）：[`v0.33.0`](https://github.com/headroomlabs-ai/headroom/releases/tag/v0.33.0) / [`28aa53dc7ca51e687cc719c3fe160f3be50c6570`](https://github.com/headroomlabs-ai/headroom/commit/28aa53dc7ca51e687cc719c3fe160f3be50c6570)
 - 历史对照：[`1725cd1f8376828849c0e48fd9008afa25d24fff`](https://github.com/headroomlabs-ai/headroom/commit/1725cd1f8376828849c0e48fd9008afa25d24fff)，仅用于解释 2026-07 的旧证据
-- 上游许可证：Apache License 2.0；固定 commit 包含根目录 `NOTICE`
-- 当前使用边界：只进行公开行为、接口和测试语义对照；`dtoken-learning`、Rust compressor registry、route-bound gateway compression 与现有 d-token runtime 均为本仓库独立实现，没有从该 commit 复制源码
+- **main post-release delta（跟踪，不 pin）**：[`7f6950be34e29304deae0fa5138b852491b092fe`](https://github.com/headroomlabs-ai/headroom/commit/7f6950be34e29304deae0fa5138b852491b092fe)（2026-08-08 获取；`pyproject.toml` version 仍为 0.34.0，未发布）
+- 上游许可证：Apache License 2.0（三个候选 pin 的根 `LICENSE` 均为 Apache-2.0 原文，无差异）
+- 上游 NOTICE：v0.34.0 起新增 "Vendored dashboard assets" 段（`headroom/dashboard/static/`：Tailwind CSS 3.4.17 MIT、htmx 1.9.10 Zero-Clause BSD、Alpine.js 3.13.3 MIT，来自 #2734）；v0.34.0 → main 无 NOTICE 变化
+- 漂移审计决议（2026-08-08）：`01df2452` → `v0.34.0` 为 33 commit / 129 文件 / +8936 −1021（含 `/v1/compress` 契约文档化 #2743、qualified CCR 名称 #2698、retrieve 二次压缩修复 #2654、CVE 依赖升级 #2753、NOTICE 静态资源段 #2734；无新 codec、无 registry 结构变化）；`v0.34.0` → main `7f6950be` 为 33 commit / 74 文件 / +4874 −428（proxy 行为修复、CCR 内部 TTL/marker 策略、telemetry/perf、上游自身依赖 CVE 升级；许可证与 NOTICE 无变化、无 codec、无 `/v1/compress` 契约变化）。无必须采用 main 的实际证据，main 只作 post-release delta 跟踪
+- 当前使用边界：只进行公开行为、接口和测试语义对照；不复制上游源码，不启动、不依赖外部 Headroom 8787 服务；`dtoken-learning`、Rust compressor registry、route-bound gateway compression 与现有 d-token runtime 均为本仓库独立实现
 - 后续边界：若迁移或修改上游源码，必须在代码进入仓库前补充许可证副本、NOTICE、逐文件来源、修改范围和保留版权声明；仅有同名接口、metadata endpoint 或布尔字段不得算作能力迁移
 
 ## LeanCTX / Context Bus / Context Relay 行为对照基线
@@ -80,10 +83,11 @@ d-token 未复制或分发 AiMaMi 的名称、Logo、应用图标、截图、人
 ## pxpipe 评测配方参考
 
 - 项目：[`teamchong/pxpipe`](https://github.com/teamchong/pxpipe)
-- 固定来源：[`7b7d6efa42926a73b1bd709b5f6d1af1ae679947`](https://github.com/teamchong/pxpipe/commit/7b7d6efa42926a73b1bd709b5f6d1af1ae679947)
+- 固定来源：[`0ceabbed941cf7e95d395153825e944ea9f82e2c`](https://github.com/teamchong/pxpipe/commit/0ceabbed941cf7e95d395153825e944ea9f82e2c)（release v0.12.0，2026-08-06；取代旧固定来源 [`7b7d6efa42926a73b1bd709b5f6d1af1ae679947`](https://github.com/teamchong/pxpipe/commit/7b7d6efa42926a73b1bd709b5f6d1af1ae679947) / v0.8.0）
 - 上游版权声明：`Copyright (c) 2026 claude-image-proxy contributors`
-- 上游许可证：MIT
-- 使用边界：参考 768×1932、Spleen 5×8、reflow/newline marker、IDS、factsheet、recent-six 保护，以及“本地代理在转发前将旧上下文替换为图片并保留当前请求”的公开行为；d-token 的 Rust renderer、灰度 AA、请求 IR/patcher、Agent bridge、Hybrid 分区、grader和运行器为独立实现，不是 pxpipe 的像素级或 TypeScript 实现复制。
+- 上游许可证：MIT（v0.8.0→v0.12.0 的 LICENSE 未变更；两个 pin 上游均无 NOTICE 文件）
+- 使用边界：参考 OpenAI 兜底 768×1932、Claude 312 列 1568×728 Spleen 5×8、Sol/Grok 原生 14px JetBrains Mono 84 列条带（v0.10.0 起）、reflow/newline marker、IDS、factsheet（≤96 个 precision-critical token）、recent-six 保护，以及“本地代理在转发前将旧上下文替换为图片并保留当前请求”的公开行为；d-token 的 Rust renderer、灰度 AA、请求 IR/patcher、Agent bridge、Hybrid 分区、grader和运行器为独立实现，不是 pxpipe 的像素级或 TypeScript 实现复制。
+- 版本差异（7b7d6efa/v0.8.0 → 0ceabbed/v0.12.0，依据上游 CHANGELOG）：新增 Gemini 3.6 Flash 默认 reader、Messages→Responses/Chat 桥与 OpenAI/Cloudflare 精确路由；Sol/Grok 从 152 列 5×8 Spleen 改为原生 14px JetBrains Mono；Spleen 5×8 `K` 字形修正（H/K 错误率 47.2%→18.7%）；缺失字形转义为 `[U+HEX]`；per-turn billing 行不再进入缓存前缀/成像 slab；recent-six 保护、factsheet、reflow/newline marker、IDS 均保留。
 - 1928×1928 profile只作为历史headline研究轨道，不声明为当前pxpipe生产profile。
 
 ## Spleen 5×8

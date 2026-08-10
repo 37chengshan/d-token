@@ -103,6 +103,12 @@ function Get-ReleaseCandidateProvenance {
   $GitHeadResult = Invoke-ReleaseMetadataCommand -WorkingDirectory $RootPath -FilePath "git" -ArgumentList @("rev-parse", "HEAD")
   $GitStatusResult = Invoke-ReleaseMetadataCommand -WorkingDirectory $RootPath -FilePath "git" -ArgumentList @("-c", "core.quotepath=false", "status", "--porcelain=v1", "--untracked-files=all")
   $TrackedDiffResult = Invoke-ReleaseMetadataCommand -WorkingDirectory $RootPath -FilePath "git" -ArgumentList @("diff", "--binary", "HEAD", "--", ".")
+  # System-wide source digest anchor (PR-7 contract): content-bearing and
+  # worktree-invariant — sha256 of the ASCII hex bytes of the commit's tree
+  # object id.  The legacy tracked_diff_sha256 (git-diff anchor) is retained
+  # as-is for backward compatibility; the tree-anchor value is stamped
+  # separately in `source_digest` and is empty when unresolvable.
+  $TreeIdResult = Invoke-ReleaseMetadataCommand -WorkingDirectory $RootPath -FilePath "git" -ArgumentList @("rev-parse", "HEAD^{tree}")
   $UntrackedResult = Invoke-ReleaseMetadataCommand -WorkingDirectory $RootPath -FilePath "git" -ArgumentList @("-c", "core.quotepath=false", "ls-files", "--others", "--exclude-standard")
 
   $AdditionalExcludedPrefixes = @()
@@ -128,6 +134,11 @@ function Get-ReleaseCandidateProvenance {
   }
 
   $TrackedDiffSha256 = Get-ReleaseSha256Text $TrackedDiffResult.text
+  $SourceDigest = if ($TreeIdResult.ok -and $TreeIdResult.text -match "^[0-9a-fA-F]{40}$") {
+    Get-ReleaseSha256Text $TreeIdResult.text
+  } else {
+    ""
+  }
   $UntrackedManifestText = $UntrackedManifest -join "`n"
   $UntrackedManifestSha256 = Get-ReleaseSha256Text $UntrackedManifestText
   $NodeResult = Invoke-ReleaseMetadataCommand -WorkingDirectory $RootPath -FilePath "node" -ArgumentList @("--version") -AllowFailure
@@ -162,6 +173,7 @@ function Get-ReleaseCandidateProvenance {
     git_status_sha256 = Get-ReleaseSha256Text $GitStatusResult.text
     candidate_dirty = (-not [string]::IsNullOrWhiteSpace($TrackedDiffResult.text)) -or ($UntrackedManifest.Count -gt 0)
     tracked_diff_sha256 = $TrackedDiffSha256
+    source_digest = $SourceDigest
     untracked_file_count = $UntrackedManifest.Count
     untracked_manifest_sha256 = $UntrackedManifestSha256
     platform = $Platform

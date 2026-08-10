@@ -153,5 +153,6 @@ cargo test --workspace
 - Responses 主证据与 Codex CLI transport sentinel 分轨；原子 attempt、outcome-unknown 禁重放、身份/usage fail-closed。
 - arithmetic、gist/state、never-stated、dense hex、coding history 和 max/medium reasoning 分层报告，不能用算术成绩替代综合质量。
 - 图片调用、provider usage、文字离线反事实、中转原始金额和缓存趋势在产物中分别标注。
+- 评测参考 pin：pxpipe `0ceabbed941cf7e95d395153825e944ea9f82e2c`（v0.12.0 release，2026-08-06；MIT，上游无 NOTICE；取代 v0.8.0 `7b7d6efa`）。V3 harness 为独立实现，不复制上游 TypeScript 源码；profile/geometry/font 事实按公开 README/文档核对：Sol/Grok 自 v0.10.0 起为原生 14px JetBrains Mono 84 列条带，768×1932 仍为 OpenAI 兜底，1928×1928 仅为上游历史 audit 页。
 
 当前状态：V3 medium base arithmetic 为 Luna `96/100`、Terra `90/100`、Sol `93/100`；gist 为 `82/98`、`85/98`、`91/98`；state 为 `16/18`、`17/18`、`18/18`；三模型 dense hex 均 `0/15`。Max Prompted 当前 `130/143` 合同有效，剩余 13 个是 Luna outcome-unknown 与 Terra HTTP 200 但缺 output/usage 的 transport failure，不计入模型质量分。现有 evidence 未通过安全生产门，默认 Capability registry 仍为空，OpenAI active 路径仍不可达。

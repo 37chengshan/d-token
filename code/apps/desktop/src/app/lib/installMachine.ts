@@ -195,7 +195,7 @@ export function canReviewInstall(snapshot: ConnectionSetupSnapshot, selections: 
     if (binding.already_connected) return true;
     if (binding.resolution === "needs-credential") return false;
     // Ambiguity is never resolvable by the user; the plan fails closed.
-    if (binding.resolution === "needs-choice") return false;
+    if (binding.resolution === "needs-source-fix") return false;
     // A selection exists only when the resolved candidate exposes exactly one
     // model (or the Codex Responses passthrough marker). Multi-model or
     // unresolvable bindings have no selection and block the plan.
@@ -216,7 +216,7 @@ export function deriveInstallPhase(snapshot: ConnectionSetupSnapshot, selections
   if (actionable.some((binding) => binding.resolution === "needs-credential")) return "needs-credential";
   // A genuinely ambiguous upstream/model blocks the whole plan until the
   // source is fixed and rescanned; no chooser is offered.
-  if (actionable.some((binding) => binding.resolution === "needs-choice")) return "blocked";
+  if (actionable.some((binding) => binding.resolution === "needs-source-fix")) return "blocked";
   return canReviewInstall(snapshot, selections, selectedAgentIds) ? "ready" : "blocked";
 }
 

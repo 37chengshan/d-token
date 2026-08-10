@@ -57,9 +57,11 @@ export function Topbar({
         />
       </button>
       <span className="shell-topbar-separator" aria-hidden="true" />
-      <span className="shell-topbar-context truncate text-[12px] font-medium text-muted-foreground" data-tauri-drag-region>
-        {t(current.labelKey)}
-      </span>
+      {collapsed && (
+        <span className="shell-topbar-context truncate text-[12px] font-medium text-muted-foreground" data-tauri-drag-region>
+          {t(current.labelKey)}
+        </span>
+      )}
       <span className="sr-only">{t("app.name")}</span>
       <div className="ml-auto flex items-center gap-2">
         {onOpenOnboarding && (

@@ -731,30 +731,12 @@
       "remote": null
     },
     {
-      "id": "68f18cfa-3a6e-4bbc-89aa-2313f2cf4ede",
-      "timestamp": "2026-08-06T21:19:26+08:00",
+      "id": "6a3c7964-004c-49ee-bada-4e338867536c",
+      "timestamp": "2026-08-04T21:46:32+08:00",
       "operation": "commit",
-      "branch": "main",
-      "summary": "docs: v2.1 README 文案与宣传图更新（hero 横幅 + 社交预览图 + 01-06 SVG 横幅）",
-      "head_before": "76fe8838fa290514c13a20514e5c7d63c8ae75f3",
-      "remote": null
-    },
-    {
-      "id": "9f8d2c54-a794-467f-82d2-b644d1446c2a",
-      "timestamp": "2026-08-06T21:19:54+08:00",
-      "operation": "push",
-      "branch": "main",
-      "summary": "push README v2.1 文案与宣传图更新到 main",
-      "head_before": "d7b8ca1",
-      "remote": "origin"
-    },
-    {
-      "id": "bf2b5a2a-e172-4860-949a-2d6f27804689",
-      "timestamp": "2026-08-06T21:22:50+08:00",
-      "operation": "merge",
-      "branch": "main",
-      "summary": "merge origin/main（含 CI 修复与 Code Graph MCP 合入）后推送 README 更新",
-      "head_before": "1963913",
+      "branch": "detached",
+      "summary": "fix: tauri-specta single invoke_handler regression, bindings fail-closed, AGENTS.md corrections, sidecar CI",
+      "head_before": "922b86632c0d",
       "remote": null
     },
     {
@@ -764,15 +746,6 @@
       "branch": "codex/code-graph-mcp-integration",
       "summary": "cherry-pick a0720cd from isolated worktree: fix specta scaffolding regression — single invoke_handler, fail-closed bindings",
       "head_before": "922b866",
-      "remote": null
-    },
-    {
-      "id": "6a3c7964-004c-49ee-bada-4e338867536c",
-      "timestamp": "2026-08-04T21:46:32+08:00",
-      "operation": "commit",
-      "branch": "detached",
-      "summary": "fix: tauri-specta single invoke_handler regression, bindings fail-closed, AGENTS.md corrections, sidecar CI",
-      "head_before": "922b86632c0d",
       "remote": null
     },
     {
@@ -810,69 +783,6 @@
       "summary": "Push dynamic route and release gate candidate for CI and Windows validation",
       "head_before": "f707114473d268c5dec15bdd83416ef943aa4038",
       "remote": "origin"
-    },
-    {
-      "id": "5d7053df-a6f9-4882-ad6d-08dd1386a078",
-      "timestamp": "2026-08-06T23:52:30+08:00",
-      "operation": "commit",
-      "branch": "main",
-      "summary": "docs: README 顶部图标替换为应用真实图标（app-icon.png，替换错误的 icons/logo.svg）",
-      "head_before": "c88c8e91b186bac804a0137523ab1c5b9b3e53e2",
-      "remote": null
-    },
-    {
-      "id": "9cb966ef-1d6e-4f2f-b7fa-5209ce34ed65",
-      "timestamp": "2026-08-06T23:52:36+08:00",
-      "operation": "push",
-      "branch": "main",
-      "summary": "push README 图标替换（app-icon.png）到 main",
-      "head_before": "e7fb6a0",
-      "remote": "origin"
-    },
-    {
-      "id": "7d53f8e1-95b3-4c9c-980c-a7f8f17cbdd0",
-      "timestamp": "2026-08-06T23:57:24+08:00",
-      "operation": "merge",
-      "branch": "main",
-      "summary": "merge origin/main（用户手动 README 改动不保留，以应用真实图标版本为准）",
-      "head_before": "7acf7fd",
-      "remote": null
-    },
-    {
-      "id": "bf132f51-905a-4e67-a31a-210164124bcc",
-      "timestamp": "2026-08-06T23:58:13+08:00",
-      "operation": "push",
-      "branch": "main",
-      "summary": "push README 图标替换（app-icon.png，采用应用真实图标版本）到 main",
-      "head_before": "89b2546",
-      "remote": "origin"
-    },
-    {
-      "id": "73fbf4e6-54b2-422a-8889-ef870346087c",
-      "timestamp": "2026-08-07T09:06:58+08:00",
-      "operation": "commit",
-      "branch": "main",
-      "summary": "docs: 重写 README 为发布宣传文案（证据前置、冲突开场、去汇报腔）",
-      "head_before": "2e3fe53c3987363a105fc417dda3e38e27444e59",
-      "remote": null
-    },
-    {
-      "id": "1574d5cf-28b2-49cb-b439-11a7c3a50138",
-      "timestamp": "2026-08-07T09:07:06+08:00",
-      "operation": "push",
-      "branch": "main",
-      "summary": "push README 发布宣传文案重写（证据前置）到 main",
-      "head_before": "c0f50b8",
-      "remote": "origin"
-    },
-    {
-      "id": "c2750bc9-b19e-443c-962b-ae436ebdc076",
-      "timestamp": "2026-08-07T10:05:21+08:00",
-      "operation": "commit",
-      "branch": "main",
-      "summary": "docs: README 改为开源项目范式（首屏定位 + Highlights + Quick start，未签名声明压缩为 NOTE）",
-      "head_before": "5a0fa0fcef646daa099b44478cad459274d28780",
-      "remote": null
     },
     {
       "id": "18457dfc-53bd-4670-93db-0a03b4eebff7",
@@ -934,15 +844,6 @@
       "operation": "branch-create",
       "branch": "codex/release-runtime-logs",
       "summary": "为真实请求日志费用数据合同创建隔离分支",
-      "head_before": "f1b89dcc8db8",
-      "remote": null
-    },
-    {
-      "id": "5001c0b7-4f1c-46bb-a8ed-7cb611071e22",
-      "timestamp": "2026-08-06T21:13:12+08:00",
-      "operation": "commit",
-      "branch": "codex/release-model-pricing",
-      "summary": "完成模型价格表与本地费用设置",
       "head_before": "f1b89dcc8db8",
       "remote": null
     },
@@ -1019,30 +920,39 @@
       "remote": null
     },
     {
-      "id": "0fd82147-6b04-41ac-99c5-d0cab3912cf3",
-      "timestamp": "2026-08-06T21:17:08+08:00",
-      "operation": "branch-create",
-      "branch": "codex/release-protocol-normalization",
-      "summary": "为运行时协议 wire 与 UI 展示正规化创建隔离分支",
-      "head_before": "f1b89dcc8db8",
-      "remote": null
-    },
-    {
-      "id": "65d368fe-199d-4d2c-8a73-4287a3c61969",
-      "timestamp": "2026-08-06T23:26:41+08:00",
+      "id": "cecfcf5c-7f30-428b-b7fe-b7b6e3aa4bc9",
+      "timestamp": "2026-08-06T21:03:35+08:00",
       "operation": "commit",
-      "branch": "codex/release-optical-implementation",
-      "summary": "Complete Optical desktop research slice with runtime status truth, explicit preview gates, rollback distinction, and route-safe preview contract",
+      "branch": "codex/release-codebase-memory",
+      "summary": "fix: truthful Codebase Memory untrusted reason and block v0.9.1-rc.1 pin drift",
       "head_before": "f1b89dc",
+      "remote": "null"
+    },
+    {
+      "id": "567ccbce-c6a9-4b1e-837e-91ce9c1d9962",
+      "timestamp": "2026-08-06T21:04:15+08:00",
+      "operation": "commit",
+      "branch": "codex/release-overview-savings",
+      "summary": "feat(overview): 首页累计/当周/当月/当天节省区间，本地时区窗口与费用 unavailable 诚实口径",
+      "head_before": "f1b89dcc8db810b6d2373e9d1d4b5f57f1c6f40e",
       "remote": null
     },
     {
-      "id": "a58fb8e1-6ab6-434c-91e1-a9469d85798e",
-      "timestamp": "2026-08-06T23:56:32+08:00",
-      "operation": "merge",
-      "branch": "codex/code-graph-mcp-integration",
-      "summary": "合并已审查的开源 provenance 修正分支",
-      "head_before": "190e1e5",
+      "id": "2a9db348-d7b0-4d87-b284-8cf618591f50",
+      "timestamp": "2026-08-06T21:09:56+08:00",
+      "operation": "commit",
+      "branch": "codex/release-log-view",
+      "summary": "P0 fix: Analytics log Provider Token column reads provider_input_tokens only; RequestLogRow contract + tests + report update",
+      "head_before": "192935f",
+      "remote": null
+    },
+    {
+      "id": "5001c0b7-4f1c-46bb-a8ed-7cb611071e22",
+      "timestamp": "2026-08-06T21:13:12+08:00",
+      "operation": "commit",
+      "branch": "codex/release-model-pricing",
+      "summary": "完成模型价格表与本地费用设置",
+      "head_before": "f1b89dcc8db8",
       "remote": null
     },
     {
@@ -1052,15 +962,6 @@
       "branch": "codex/release-macos-sidebar",
       "summary": "fix(sidebar): stable press hit rect, per-item render isolation, cat-ear nav icons + report",
       "head_before": "f1b89dcc8db810b6d2373e9d1d4b5f57f1c6f40e",
-      "remote": null
-    },
-    {
-      "id": "b30c2c18-3ecb-450d-a8fd-d31008adc557",
-      "timestamp": "2026-08-06T21:21:55+08:00",
-      "operation": "commit",
-      "branch": "codex/release-open-source",
-      "summary": "fix: correct LeanCTX license to Apache-2.0 and headroom v0.34.0 release date",
-      "head_before": "378261c",
       "remote": null
     },
     {
@@ -1082,31 +983,49 @@
       "remote": null
     },
     {
-      "id": "4e6aa2a1-7ed2-4813-96e7-2abc2cf7ead4",
-      "timestamp": "2026-08-07T00:24:00+08:00",
-      "operation": "merge",
-      "branch": "codex/code-graph-mcp-integration",
-      "summary": "合并 Codebase Memory v0.9.1-rc.1 分支，待主树测试",
-      "head_before": "facad18",
+      "id": "0fd82147-6b04-41ac-99c5-d0cab3912cf3",
+      "timestamp": "2026-08-06T21:17:08+08:00",
+      "operation": "branch-create",
+      "branch": "codex/release-protocol-normalization",
+      "summary": "为运行时协议 wire 与 UI 展示正规化创建隔离分支",
+      "head_before": "f1b89dcc8db8",
       "remote": null
     },
     {
-      "id": "cecfcf5c-7f30-428b-b7fe-b7b6e3aa4bc9",
-      "timestamp": "2026-08-06T21:03:35+08:00",
+      "id": "68f18cfa-3a6e-4bbc-89aa-2313f2cf4ede",
+      "timestamp": "2026-08-06T21:19:26+08:00",
       "operation": "commit",
-      "branch": "codex/release-codebase-memory",
-      "summary": "fix: truthful Codebase Memory untrusted reason and block v0.9.1-rc.1 pin drift",
-      "head_before": "f1b89dc",
-      "remote": "null"
+      "branch": "main",
+      "summary": "docs: v2.1 README 文案与宣传图更新（hero 横幅 + 社交预览图 + 01-06 SVG 横幅）",
+      "head_before": "76fe8838fa290514c13a20514e5c7d63c8ae75f3",
+      "remote": null
     },
     {
-      "id": "e045f5f2-68c6-4527-9e0f-6429513ff174",
-      "timestamp": "2026-08-06T23:24:02+08:00",
+      "id": "9f8d2c54-a794-467f-82d2-b644d1446c2a",
+      "timestamp": "2026-08-06T21:19:54+08:00",
+      "operation": "push",
+      "branch": "main",
+      "summary": "push README v2.1 文案与宣传图更新到 main",
+      "head_before": "d7b8ca1",
+      "remote": "origin"
+    },
+    {
+      "id": "b30c2c18-3ecb-450d-a8fd-d31008adc557",
+      "timestamp": "2026-08-06T21:21:55+08:00",
       "operation": "commit",
-      "branch": "codex/release-codebase-memory",
-      "summary": "upgrade Codebase Memory pin to v0.9.1-rc.1 and fix launcher_unavailable blocked reason",
-      "head_before": "902930c",
-      "remote": "null"
+      "branch": "codex/release-open-source",
+      "summary": "fix: correct LeanCTX license to Apache-2.0 and headroom v0.34.0 release date",
+      "head_before": "378261c",
+      "remote": null
+    },
+    {
+      "id": "bf2b5a2a-e172-4860-949a-2d6f27804689",
+      "timestamp": "2026-08-06T21:22:50+08:00",
+      "operation": "merge",
+      "branch": "main",
+      "summary": "merge origin/main（含 CI 修复与 Code Graph MCP 合入）后推送 README 更新",
+      "head_before": "1963913",
+      "remote": null
     },
     {
       "id": "7035aad1-eb61-4ad7-8610-5263af06a8ff",
@@ -1136,6 +1055,15 @@
       "remote": null
     },
     {
+      "id": "7deeb248-ff24-4a63-9d81-5a1eee3b51b1",
+      "timestamp": "2026-08-06T23:22:04+08:00",
+      "operation": "commit",
+      "branch": "codex/release-macos-sidebar",
+      "summary": "Fix sidebar tooltip refs, CSS hit rect, local pulse rendering, canonical cat-face mark",
+      "head_before": "4015a75",
+      "remote": null
+    },
+    {
       "id": "6c236a37-5091-4ab2-9137-1a3f1b409634",
       "timestamp": "2026-08-06T23:22:08+08:00",
       "operation": "commit",
@@ -1145,13 +1073,13 @@
       "remote": null
     },
     {
-      "id": "2a9db348-d7b0-4d87-b284-8cf618591f50",
-      "timestamp": "2026-08-06T21:09:56+08:00",
+      "id": "e045f5f2-68c6-4527-9e0f-6429513ff174",
+      "timestamp": "2026-08-06T23:24:02+08:00",
       "operation": "commit",
-      "branch": "codex/release-log-view",
-      "summary": "P0 fix: Analytics log Provider Token column reads provider_input_tokens only; RequestLogRow contract + tests + report update",
-      "head_before": "192935f",
-      "remote": null
+      "branch": "codex/release-codebase-memory",
+      "summary": "upgrade Codebase Memory pin to v0.9.1-rc.1 and fix launcher_unavailable blocked reason",
+      "head_before": "902930c",
+      "remote": "null"
     },
     {
       "id": "97d9e50d-23a7-4f80-92be-baa041c43dea",
@@ -1172,30 +1100,12 @@
       "remote": null
     },
     {
-      "id": "60cba030-76d1-4415-8956-29170ca898f5",
-      "timestamp": "2026-08-07T00:41:05+08:00",
-      "operation": "merge",
-      "branch": "codex/code-graph-mcp-integration",
-      "summary": "合并首页节省区间分支",
-      "head_before": "3064b0b",
-      "remote": null
-    },
-    {
-      "id": "567ccbce-c6a9-4b1e-837e-91ce9c1d9962",
-      "timestamp": "2026-08-06T21:04:15+08:00",
+      "id": "65d368fe-199d-4d2c-8a73-4287a3c61969",
+      "timestamp": "2026-08-06T23:26:41+08:00",
       "operation": "commit",
-      "branch": "codex/release-overview-savings",
-      "summary": "feat(overview): 首页累计/当周/当月/当天节省区间，本地时区窗口与费用 unavailable 诚实口径",
-      "head_before": "f1b89dcc8db810b6d2373e9d1d4b5f57f1c6f40e",
-      "remote": null
-    },
-    {
-      "id": "7deeb248-ff24-4a63-9d81-5a1eee3b51b1",
-      "timestamp": "2026-08-06T23:22:04+08:00",
-      "operation": "commit",
-      "branch": "codex/release-macos-sidebar",
-      "summary": "Fix sidebar tooltip refs, CSS hit rect, local pulse rendering, canonical cat-face mark",
-      "head_before": "4015a75",
+      "branch": "codex/release-optical-implementation",
+      "summary": "Complete Optical desktop research slice with runtime status truth, explicit preview gates, rollback distinction, and route-safe preview contract",
+      "head_before": "f1b89dc",
       "remote": null
     },
     {
@@ -1205,6 +1115,96 @@
       "branch": "codex/release-optical-implementation",
       "summary": "Commit audit ledger entry for Optical release slice",
       "head_before": "2fa1b92",
+      "remote": null
+    },
+    {
+      "id": "5d7053df-a6f9-4882-ad6d-08dd1386a078",
+      "timestamp": "2026-08-06T23:52:30+08:00",
+      "operation": "commit",
+      "branch": "main",
+      "summary": "docs: README 顶部图标替换为应用真实图标（app-icon.png，替换错误的 icons/logo.svg）",
+      "head_before": "c88c8e91b186bac804a0137523ab1c5b9b3e53e2",
+      "remote": null
+    },
+    {
+      "id": "9cb966ef-1d6e-4f2f-b7fa-5209ce34ed65",
+      "timestamp": "2026-08-06T23:52:36+08:00",
+      "operation": "push",
+      "branch": "main",
+      "summary": "push README 图标替换（app-icon.png）到 main",
+      "head_before": "e7fb6a0",
+      "remote": "origin"
+    },
+    {
+      "id": "a58fb8e1-6ab6-434c-91e1-a9469d85798e",
+      "timestamp": "2026-08-06T23:56:32+08:00",
+      "operation": "merge",
+      "branch": "codex/code-graph-mcp-integration",
+      "summary": "合并已审查的开源 provenance 修正分支",
+      "head_before": "190e1e5",
+      "remote": null
+    },
+    {
+      "id": "7d53f8e1-95b3-4c9c-980c-a7f8f17cbdd0",
+      "timestamp": "2026-08-06T23:57:24+08:00",
+      "operation": "merge",
+      "branch": "main",
+      "summary": "merge origin/main（用户手动 README 改动不保留，以应用真实图标版本为准）",
+      "head_before": "7acf7fd",
+      "remote": null
+    },
+    {
+      "id": "bf132f51-905a-4e67-a31a-210164124bcc",
+      "timestamp": "2026-08-06T23:58:13+08:00",
+      "operation": "push",
+      "branch": "main",
+      "summary": "push README 图标替换（app-icon.png，采用应用真实图标版本）到 main",
+      "head_before": "89b2546",
+      "remote": "origin"
+    },
+    {
+      "id": "4e6aa2a1-7ed2-4813-96e7-2abc2cf7ead4",
+      "timestamp": "2026-08-07T00:24:00+08:00",
+      "operation": "merge",
+      "branch": "codex/code-graph-mcp-integration",
+      "summary": "合并 Codebase Memory v0.9.1-rc.1 分支，待主树测试",
+      "head_before": "facad18",
+      "remote": null
+    },
+    {
+      "id": "60cba030-76d1-4415-8956-29170ca898f5",
+      "timestamp": "2026-08-07T00:41:05+08:00",
+      "operation": "merge",
+      "branch": "codex/code-graph-mcp-integration",
+      "summary": "合并首页节省区间分支",
+      "head_before": "3064b0b",
+      "remote": null
+    },
+    {
+      "id": "73fbf4e6-54b2-422a-8889-ef870346087c",
+      "timestamp": "2026-08-07T09:06:58+08:00",
+      "operation": "commit",
+      "branch": "main",
+      "summary": "docs: 重写 README 为发布宣传文案（证据前置、冲突开场、去汇报腔）",
+      "head_before": "2e3fe53c3987363a105fc417dda3e38e27444e59",
+      "remote": null
+    },
+    {
+      "id": "1574d5cf-28b2-49cb-b439-11a7c3a50138",
+      "timestamp": "2026-08-07T09:07:06+08:00",
+      "operation": "push",
+      "branch": "main",
+      "summary": "push README 发布宣传文案重写（证据前置）到 main",
+      "head_before": "c0f50b8",
+      "remote": "origin"
+    },
+    {
+      "id": "c2750bc9-b19e-443c-962b-ae436ebdc076",
+      "timestamp": "2026-08-07T10:05:21+08:00",
+      "operation": "commit",
+      "branch": "main",
+      "summary": "docs: README 改为开源项目范式（首屏定位 + Highlights + Quick start，未签名声明压缩为 NOTE）",
+      "head_before": "5a0fa0fcef646daa099b44478cad459274d28780",
       "remote": null
     },
     {
@@ -1530,6 +1530,15 @@
       "summary": "push round-3 CI stabilization fixes",
       "head_before": "16bb7ad",
       "remote": "origin"
+    },
+    {
+      "id": "bc113092-d635-4454-bcf5-1d40933679c0",
+      "timestamp": "2026-08-08T17:56:41+08:00",
+      "operation": "commit",
+      "branch": "codex/final/runtime-receipt",
+      "summary": "Add runtime optimization receipt projection and provider usage evidence",
+      "head_before": "1ddb30edcf0c12f5172c800a182b18e8cdadb61b",
+      "remote": null
     },
     {
       "id": "3d176f09-492b-4121-8366-28b2c4ede115",
@@ -2153,6 +2162,15 @@
       "remote": "origin"
     },
     {
+      "id": "c8c71e00-8825-46b4-9fda-aaf82131bf07",
+      "timestamp": "2026-08-09T00:47:02+08:00",
+      "operation": "commit",
+      "branch": "codex/final/candidate-integration",
+      "summary": "Stabilize fake binary smoke readiness and secret classifier lint",
+      "head_before": "927958de9fe0cfbbee1640e2c1ac4d5a66dc0768",
+      "remote": null
+    },
+    {
       "id": "8e7cdfa7-eed6-485f-a715-bd463594341b",
       "timestamp": "2026-08-09T11:17:35+08:00",
       "operation": "branch-create",
@@ -2315,6 +2333,42 @@
       "remote": null
     },
     {
+      "id": "ac5644fb-4368-479b-b516-e846dfd8f958",
+      "timestamp": "2026-08-09T21:31:22+08:00",
+      "operation": "commit",
+      "branch": "codex/final/headroom-ccr-stage",
+      "summary": "完成 Headroom cache CCR stage pack",
+      "head_before": "649d2ed",
+      "remote": null
+    },
+    {
+      "id": "4a0216c8-3faa-488f-a32e-1ca67404fd2b",
+      "timestamp": "2026-08-09T21:31:44+08:00",
+      "operation": "commit",
+      "branch": "codex/final/rtk-production-stage",
+      "summary": "完成 RTK production stage pack",
+      "head_before": "649d2ed",
+      "remote": null
+    },
+    {
+      "id": "c65c7bb8-775c-4d3f-9d95-8bfce61ccefa",
+      "timestamp": "2026-08-09T21:32:10+08:00",
+      "operation": "commit",
+      "branch": "codex/final/optical-renderer-history",
+      "summary": "完成 Optical renderer history stage pack",
+      "head_before": "649d2ed",
+      "remote": null
+    },
+    {
+      "id": "5334dafa-7358-4c29-8c6e-a651677b4d74",
+      "timestamp": "2026-08-09T21:36:13+08:00",
+      "operation": "commit",
+      "branch": "codex/final/context-relay-recovery",
+      "summary": "完成 Context Relay recovery stage pack",
+      "head_before": "649d2ed",
+      "remote": null
+    },
+    {
       "id": "b59225a7-da71-4d1f-b12b-58eaa544728d",
       "timestamp": "2026-08-09T21:36:39+08:00",
       "operation": "merge",
@@ -2333,30 +2387,12 @@
       "remote": null
     },
     {
-      "id": "ac5644fb-4368-479b-b516-e846dfd8f958",
-      "timestamp": "2026-08-09T21:31:22+08:00",
-      "operation": "commit",
-      "branch": "codex/final/headroom-ccr-stage",
-      "summary": "完成 Headroom cache CCR stage pack",
-      "head_before": "649d2ed",
-      "remote": null
-    },
-    {
       "id": "471aeba9-3479-4506-b559-5f794ffce25c",
       "timestamp": "2026-08-09T21:39:23+08:00",
       "operation": "merge",
       "branch": "codex/final/stage-pack-integrated",
       "summary": "合并 Context Relay recovery stage pack",
       "head_before": "38d2747",
-      "remote": null
-    },
-    {
-      "id": "5334dafa-7358-4c29-8c6e-a651677b4d74",
-      "timestamp": "2026-08-09T21:36:13+08:00",
-      "operation": "commit",
-      "branch": "codex/final/context-relay-recovery",
-      "summary": "完成 Context Relay recovery stage pack",
-      "head_before": "649d2ed",
       "remote": null
     },
     {
@@ -2369,30 +2405,12 @@
       "remote": null
     },
     {
-      "id": "4a0216c8-3faa-488f-a32e-1ca67404fd2b",
-      "timestamp": "2026-08-09T21:31:44+08:00",
-      "operation": "commit",
-      "branch": "codex/final/rtk-production-stage",
-      "summary": "完成 RTK production stage pack",
-      "head_before": "649d2ed",
-      "remote": null
-    },
-    {
       "id": "fef2fd1f-f7b8-4a6e-8a47-1e69ba80164d",
       "timestamp": "2026-08-09T21:42:18+08:00",
       "operation": "merge",
       "branch": "codex/final/stage-pack-integrated",
       "summary": "合并 Optical renderer history stage pack",
       "head_before": "c6a0bf9",
-      "remote": null
-    },
-    {
-      "id": "c65c7bb8-775c-4d3f-9d95-8bfce61ccefa",
-      "timestamp": "2026-08-09T21:32:10+08:00",
-      "operation": "commit",
-      "branch": "codex/final/optical-renderer-history",
-      "summary": "完成 Optical renderer history stage pack",
-      "head_before": "649d2ed",
       "remote": null
     },
     {

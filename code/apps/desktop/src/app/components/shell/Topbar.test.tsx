@@ -11,12 +11,19 @@ describe("Topbar", () => {
     const { container } = render(<Topbar collapsed={false} setCollapsed={vi.fn()} />);
 
     expect(screen.queryByRole("heading")).not.toBeInTheDocument();
-    expect(container.querySelector(".shell-topbar-context")).toHaveTextContent("总体概览");
+    expect(container.querySelector(".shell-topbar-context")).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "收起侧栏" })).toBeVisible();
     for (const name of ["AI Agent 连接", "GitHub", "本地服务工具", "连接路径监控"]) {
       expect(screen.queryByRole("button", { name })).not.toBeInTheDocument();
     }
     expect(screen.getByRole("button", { name: "通知" })).toBeVisible();
+  });
+
+  it("shows the page context in the window bar only when the sidebar is collapsed", () => {
+    const { container } = render(<Topbar collapsed setCollapsed={vi.fn()} />);
+
+    expect(container.querySelector(".shell-topbar-context")).toHaveTextContent("总体概览");
+    expect(container.querySelector(".shell-topbar-context")).toBeVisible();
   });
 
   it("restores the sidebar from the integrated workspace header", () => {

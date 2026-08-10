@@ -56,7 +56,8 @@ use dtoken_types::{
     OpticalCapabilitiesPublicSummary, OpticalCapabilityLifecyclePublicSummary, OpticalEndpoint,
     OpticalEventMetadataPublicSummary, OpticalEventPublicSummary, OpticalExactRouteEvidence,
     OpticalMode, OpticalPlanPublicSummary, OpticalPlanStatus, OpticalPreviewRequest,
-    OpticalStatusPublicSummary, PayloadByteUsage, Protocol, ProtocolInjectionProfile, RequestLog,
+    OpticalStatusPublicSummary, OptimizationReceipt, PayloadByteUsage, Protocol,
+    ProtocolInjectionProfile, RequestLog,
     RequestScope, RequestScopeError, RouteDecision, SupportLevel, UpstreamSendState, UsageEvidence,
     UsageEvidenceKind, UsageMeasurement, UsageVector,
 };
@@ -4725,12 +4726,30 @@ fn compression_decision_error_code(error: CompressionDecisionError) -> &'static 
     }
 }
 
+/// Export-safe projection of [`RuntimeConfigStatus`]: every field local
+/// runtime logic consumes is preserved (`source`, `error`, route/instance
+/// counts, `fallback_disabled`, ...), while the on-disk absolute `path` is
+/// deliberately omitted so no JSON export, CSV export, dashboard, or
+/// config-active payload can leak host filesystem layout.
+fn config_status_export_payload(status: &RuntimeConfigStatus) -> Value {
+    json!({
+        "source": status.source,
+        "loaded": status.loaded,
+        "exists": status.exists,
+        "provider_count": status.provider_count,
+        "route_count": status.route_count,
+        "instance_count": status.instance_count,
+        "fallback_disabled": status.fallback_disabled,
+        "error": status.error,
+    })
+}
+
 fn active_config_payload(state: &AppState) -> Value {
     json!({
         "source": "dtoken-owned-runtime",
         "runtime_kind": "headroom-derived",
         "external_headroom_dependency": false,
-        "config": &*state.config_status,
+        "config": config_status_export_payload(&state.config_status),
         "providers": provider_metadata_payload(&state.config.providers),
         "routes": state.config.routes,
         "instances": state.config.instances,
@@ -4757,6 +4776,7 @@ fn provider_metadata_payload(providers: &[dtoken_types::ProviderProfile]) -> Val
                     "models": provider.models,
                     "timeout_ms": provider.timeout_ms,
                     "healthcheck_path": provider.healthcheck_path,
+                    "wire_api": provider.wire_api,
                     "credential_configured": provider.api_key_ref.as_deref().is_some_and(|value| !value.trim().is_empty())
                 })
             })
@@ -5882,6 +5902,7 @@ fn build_request_log(
     request_id: Uuid,
     decision: &RouteDecision,
     model: Option<String>,
+    user_target_model: Option<String>,
     input_protocol: Protocol,
     compression: &CompressionSummary,
     attribution: &RequestAttribution,
@@ -5891,6 +5912,11 @@ fn build_request_log(
         timestamp_ms: dtoken_event_ledger::now_ms(),
         agent: attribution.agent.clone(),
         instance_id: attribution.instance_id.clone(),
+        project_id: attribution
+            .project_id
+            .clone()
+            .filter(|value| !value.trim().is_empty()),
+        user_target_model,
         input_protocol,
         provider_id: Some(decision.provider_id.clone()),
         route_id: Some(decision.route_id.clone()),
@@ -5899,6 +5925,8 @@ fn build_request_log(
         input_tokens_before: Some(compression.original_tokens as usize),
         input_tokens_after: Some(compression.compressed_tokens as usize),
         output_tokens: None,
+        provider_input_tokens: None,
+        provider_output_tokens: None,
         tokens_saved: Some(if compression.context_accounting.is_some() {
             0
         } else {
@@ -6444,11 +6472,17 @@ fn mark_upstream_outcome(
     event: &mut DtokenEvent,
 ) {
     let provider_usage = provider_usage_measurement(&upstream.response);
+    let provider_input_tokens = provider_usage
+        .as_ref()
+        .and_then(|measurement| measurement.usage.input.normalized_total)
+        .and_then(|tokens| usize::try_from(tokens).ok());
     let output_tokens = provider_usage
         .as_ref()
         .and_then(|measurement| measurement.usage.output_tokens)
         .and_then(|tokens| usize::try_from(tokens).ok());
     request_log.quota_metadata = upstream.quota_metadata.clone();
+    request_log.provider_input_tokens = provider_input_tokens;
+    request_log.provider_output_tokens = output_tokens;
 
     if let Some(accounting) = request_log.context_accounting.as_mut() {
         accounting.upstream_state = upstream.send_state;
@@ -9647,6 +9681,9 @@ fn anthropic_route_payload(
         body.get("model")
             .and_then(Value::as_str)
             .map(ToString::to_string),
+        body.get("model")
+            .and_then(Value::as_str)
+            .map(ToString::to_string),
         Protocol::Anthropic,
         &compression,
         &attribution,
@@ -9963,6 +10000,7 @@ fn force_payload_ccr_pre_send_baseline(
     let request_log = build_request_log(
         request_id,
         &payload.decision,
+        model.clone(),
         model,
         Protocol::Anthropic,
         &compression,
@@ -10329,6 +10367,7 @@ fn routed_openai_payload(
     let log = build_request_log(
         request_id,
         &decision,
+        request.model.clone(),
         request.model.clone(),
         Protocol::OpenAi,
         &compression,
@@ -10776,6 +10815,10 @@ fn route_overhead_payload(logs: &[RequestLog]) -> Value {
 
 fn runtime_export_json_payload(state: &AppState) -> Value {
     let logs = state.recent_request_logs(10_000);
+    let optimization_receipts: Vec<OptimizationReceipt> = logs
+        .iter()
+        .map(OptimizationReceipt::from_request_log)
+        .collect();
     json!({
         "source": "dtoken-owned-runtime",
         "runtime_kind": "headroom-derived",
@@ -10788,6 +10831,7 @@ fn runtime_export_json_payload(state: &AppState) -> Value {
         "events": state.recent_events(10_000),
         "route_decisions": state.recent_route_decisions(10_000),
         "request_logs": logs,
+        "optimization_receipts": optimization_receipts,
         "active_config": active_config_payload(state),
         "ccr": runtime_cache_summary_for_state(state),
         "memory": memory_summary_for_state(state),
@@ -10808,7 +10852,7 @@ fn runtime_export_csv_payload(state: &AppState) -> String {
         "kind,request_id,timestamp_ms,agent,route_id,provider_id,input_protocol,chain_mode,tokens_before,tokens_after,tokens_saved,latency_ms,error".to_string(),
     ];
     rows.push(format!(
-        "config_status,,0,d-token,{},{},,,0,0,0,0,source={};loaded={};fallback_disabled={};path={}",
+        "config_status,,0,d-token,{},{},,,0,0,0,0,source={};loaded={};fallback_disabled={}",
         csv_escape(
             state
                 .config
@@ -10828,7 +10872,6 @@ fn runtime_export_csv_payload(state: &AppState) -> String {
         csv_escape(&state.config_status.source),
         state.config_status.loaded,
         state.config_status.fallback_disabled,
-        csv_escape(state.config_status.path.clone().unwrap_or_default()),
     ));
     for log in state.recent_request_logs(10_000) {
         rows.push(format!(
@@ -11155,7 +11198,11 @@ pub fn dashboard_payload_for_state(state: &AppState) -> Value {
     let route_decisions = state.recent_route_decisions(20);
     let request_logs = state.recent_request_logs(20);
     let all_logs = state.recent_request_logs(10_000);
-    with_cached_account_quota(with_active_config(
+    let optimization_receipts: Vec<OptimizationReceipt> = request_logs
+        .iter()
+        .map(OptimizationReceipt::from_request_log)
+        .collect();
+    let mut payload = with_cached_account_quota(with_active_config(
         build_dashboard_payload(DashboardPayloadInput {
             stats: runtime_stats_payload(&all_logs),
             history: runtime_stats_history_payload(&all_logs),
@@ -11170,7 +11217,14 @@ pub fn dashboard_payload_for_state(state: &AppState) -> Value {
             memory: memory_summary_for_state(state),
         }),
         active_config_payload(state),
-    ))
+    ));
+    if let Some(object) = payload.as_object_mut() {
+        object.insert(
+            "optimization_receipts".to_string(),
+            json!(optimization_receipts),
+        );
+    }
+    payload
 }
 
 pub fn dashboard_summary_for_state(state: &AppState) -> Value {
@@ -11546,6 +11600,7 @@ async fn openai_chat_completions(
             request_id,
             &decision,
             request.model.clone(),
+            request.model.clone(),
             Protocol::OpenAi,
             &compression,
             &attribution,
@@ -11589,6 +11644,7 @@ async fn openai_chat_completions(
                     request_log = build_request_log(
                         request_id,
                         &decision,
+                        request.model.clone(),
                         request.model.clone(),
                         Protocol::OpenAi,
                         &compression,
@@ -11647,6 +11703,7 @@ async fn openai_chat_completions(
             request_log = build_request_log(
                 request_id,
                 &decision,
+                request.model.clone(),
                 request.model.clone(),
                 Protocol::OpenAi,
                 &compression,
@@ -12035,6 +12092,7 @@ async fn openai_responses(
             let mut request_log = build_request_log(
                 request_id,
                 &decision,
+                requested_model.clone(),
                 requested_model.clone(),
                 Protocol::OpenAi,
                 &compression,
@@ -12526,6 +12584,7 @@ async fn openai_responses(
             request_id,
             &decision,
             request.model.clone(),
+            request.model.clone(),
             Protocol::OpenAi,
             &compression,
             &attribution,
@@ -12569,6 +12628,7 @@ async fn openai_responses(
                     request_log = build_request_log(
                         request_id,
                         &decision,
+                        request.model.clone(),
                         request.model.clone(),
                         Protocol::OpenAi,
                         &compression,
@@ -12631,6 +12691,7 @@ async fn openai_responses(
             request_log = build_request_log(
                 request_id,
                 &decision,
+                request.model.clone(),
                 request.model.clone(),
                 Protocol::OpenAi,
                 &compression,
@@ -16072,6 +16133,7 @@ mod tests {
             decision.request_id,
             &decision,
             Some("model-a".to_string()),
+            Some("model-a".to_string()),
             Protocol::OpenAi,
             &compression,
             &RequestAttribution::default(),
@@ -17302,6 +17364,173 @@ mod tests {
         assert!(csv_export.contains("source=desktop_active_config"));
         assert!(!json_export.to_string().contains("sk-"));
         assert!(!csv_export.contains("sk-"));
+    }
+
+    #[test]
+    fn provider_metadata_payload_exports_actual_configured_wire_api() {
+        // Routed acceptance (PR-2/PR-5 evidence loop) must be able to read the
+        // actual configured wire_api from the runtime metadata payload: the
+        // value comes from the provider's own enum, never inferred from
+        // protocol/base_url, and uses the canonical snake_case serde names.
+        let mut config = route_test_config();
+        config.providers.push(dtoken_types::ProviderProfile {
+            id: "ocxlocal".to_string(),
+            name: "OpenCodex Local".to_string(),
+            kind: dtoken_types::ProviderKind::LocalChain,
+            protocol: Protocol::OpenAi,
+            base_url: "http://127.0.0.1:10100/v1".to_string(),
+            api_key_ref: None,
+            models: vec![],
+            timeout_ms: 30_000,
+            healthcheck_path: None,
+            wire_api: dtoken_types::ProviderWireApi::OpenAiResponses,
+        });
+        let payload = provider_metadata_payload(&config.providers);
+        let by_id: std::collections::HashMap<String, serde_json::Value> = payload
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|entry| (entry["id"].as_str().unwrap().to_string(), entry.clone()))
+            .collect();
+        assert_eq!(
+            by_id["ocxlocal"]["wire_api"], "open_ai_responses",
+            "Responses provider must expose canonical wire_api"
+        );
+        assert_eq!(
+            by_id["provider-a"]["wire_api"], "open_ai_chat",
+            "Chat provider must expose canonical wire_api"
+        );
+        // Payload also flows through active_config / export surfaces.
+        let state = AppState::new(config);
+        let config_section = active_config_payload(&state);
+        let exported: Vec<&str> = config_section["providers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|entry| entry["wire_api"].as_str().unwrap())
+            .collect();
+        assert!(exported.contains(&"open_ai_responses"));
+        assert!(exported.contains(&"open_ai_chat"));
+    }
+
+    #[test]
+    fn export_surfaces_never_leak_active_config_absolute_path() {
+        let config = DtokenConfig {
+            providers: vec![dtoken_types::ProviderProfile {
+                id: "export-provider".to_string(),
+                name: "Export Provider".to_string(),
+                kind: dtoken_types::ProviderKind::Custom,
+                protocol: Protocol::OpenAi,
+                base_url: "https://example.invalid/v1".to_string(),
+                api_key_ref: Some("local-secret-ref".to_string()),
+                models: vec!["model-a".to_string()],
+                timeout_ms: 30_000,
+                healthcheck_path: None,
+                wire_api: dtoken_types::ProviderWireApi::OpenAiChat,
+            }],
+            routes: vec![dtoken_types::RouteProfile {
+                id: "export-route".to_string(),
+                name: "Export Route".to_string(),
+                input_protocol: Protocol::OpenAi,
+                instance_id: "export-instance".to_string(),
+                target_provider_id: "export-provider".to_string(),
+                fallback_provider_id: None,
+                chain_mode: ChainMode::Direct,
+                compression_policy: CompressionPolicy::Balanced,
+                bind_host: "127.0.0.1".to_string(),
+                local_port: 18001,
+            }],
+            instances: vec![],
+            provider_cache_policies: vec![],
+            output_shaping_policies: vec![],
+            optical: Default::default(),
+        };
+        for (label, absolute_path) in [
+            (
+                "windows",
+                "C:/Users/example/AppData/Local/d-token/active-config/dtoken-config.json",
+            ),
+            (
+                "macos",
+                "/Users/example/Library/Application Support/d-token/active-config/dtoken-config.json",
+            ),
+        ] {
+            let status = RuntimeConfigStatus::from_config(
+                "desktop_active_config",
+                Some(absolute_path.to_string()),
+                &config,
+            );
+            let state = AppState::new_with_config_status(config.clone(), status.clone());
+            let json_export = runtime_export_json_payload(&state);
+            let csv_export = runtime_export_csv_payload(&state);
+            let dashboard = dashboard_payload_for_state(&state);
+            let config_active = active_config_payload(&state);
+
+            // Internal runtime status keeps the real path for local logic.
+            assert_eq!(
+                state.config_status.path.as_deref(),
+                Some(absolute_path),
+                "{label}: internal path must be preserved"
+            );
+
+            for (surface_name, surface) in [
+                ("json_export", &json_export),
+                ("dashboard", &dashboard),
+                ("config_active", &config_active),
+            ] {
+                let config_section = if surface_name == "config_active" {
+                    surface["config"].clone()
+                } else {
+                    surface["active_config"]["config"].clone()
+                };
+                assert_eq!(
+                    config_section["source"], "desktop_active_config",
+                    "{label} {surface_name}: source enum must be preserved"
+                );
+                assert_eq!(
+                    config_section["route_count"], 1,
+                    "{label} {surface_name}: route_count must be preserved"
+                );
+                assert_eq!(
+                    config_section["fallback_disabled"], true,
+                    "{label} {surface_name}: fallback must be preserved"
+                );
+                assert!(
+                    config_section.get("path").is_none(),
+                    "{label} {surface_name}: path key must be omitted"
+                );
+                let serialized = surface.to_string();
+                assert!(
+                    !serialized.contains(absolute_path),
+                    "{label} {surface_name}: leaked absolute path"
+                );
+                assert!(
+                    !serialized.contains("active-config/dtoken-config.json"),
+                    "{label} {surface_name}: leaked path content"
+                );
+                assert!(
+                    !serialized.contains("Application Support"),
+                    "{label} {surface_name}: leaked macos path content"
+                );
+            }
+
+            assert!(
+                !csv_export.contains("path="),
+                "{label}: CSV must drop the path field"
+            );
+            assert!(
+                !csv_export.contains(absolute_path),
+                "{label}: CSV leaked absolute path"
+            );
+            assert!(
+                !csv_export.contains("active-config/dtoken-config.json"),
+                "{label}: CSV leaked path content"
+            );
+            assert!(
+                csv_export.contains("source=desktop_active_config"),
+                "{label}: CSV must keep the source enum"
+            );
+        }
     }
 
     #[test]
@@ -19628,6 +19857,7 @@ mod tests {
             request_id,
             &decision,
             Some("model-a".to_string()),
+            Some("model-a".to_string()),
             Protocol::OpenAi,
             &compression,
             &attribution,
@@ -19700,6 +19930,227 @@ mod tests {
         assert!(csv.contains("request_log"));
         assert!(csv.contains("dtoken-opencode-local"));
         assert!(!csv.contains("SECRET_PROMPT_SHOULD_NOT_APPEAR"));
+    }
+
+    #[test]
+    fn runtime_export_and_dashboard_expose_same_fact_optimization_receipts() {
+        let state = AppState::new(DtokenConfig::empty());
+        let request = OpenAiChatRequest {
+            model: Some("opencode/deepseek-v4-flash-free".to_string()),
+            messages: Some(vec![json!({
+                "role": "user",
+                "content": "terminal state normal request"
+            })]),
+            stream: Some(false),
+        };
+        let (_response, decision, request_log, event) = routed_openai_payload(&request);
+        state.record_routed_request(&decision, request_log, event);
+
+        let export = runtime_export_json_payload(&state);
+        let receipts = export["optimization_receipts"].as_array().unwrap();
+        let logs = export["request_logs"].as_array().unwrap();
+        assert_eq!(receipts.len(), 1);
+        assert_eq!(receipts.len(), logs.len());
+        // Receipt request_id corresponds 1:1 to request_logs.
+        assert_eq!(receipts[0]["request_id"], logs[0]["request_id"]);
+        assert_eq!(receipts[0]["timestamp_ms"], logs[0]["timestamp_ms"]);
+        // Provider usage was not measured on this passthrough path.
+        assert!(receipts[0]["provider_input_tokens"].is_null());
+        assert!(receipts[0]["provider_output_tokens"].is_null());
+        // Receipt projection never leaks raw payload, bodies, auth or paths.
+        let serialized = export.to_string();
+        assert!(!serialized.contains("raw_prompt"));
+        assert!(!serialized.contains("response_body"));
+        assert!(!serialized.contains("Authorization"));
+        assert!(!serialized.contains("Cookie"));
+        let receipt_object = receipts[0].as_object().unwrap();
+        for key in ["raw", "body", "auth", "path"] {
+            assert!(
+                !receipt_object.contains_key(key),
+                "receipt must not carry {key}"
+            );
+        }
+
+        // Dashboard exposes the same projection (same fact, no duplicated accounting).
+        let dashboard = dashboard_payload_for_state(&state);
+        let dashboard_receipts = dashboard["optimization_receipts"].as_array().unwrap();
+        assert_eq!(dashboard_receipts.len(), 1);
+        assert_eq!(
+            dashboard_receipts[0]["request_id"],
+            receipts[0]["request_id"]
+        );
+        assert_eq!(
+            dashboard["request_logs"].as_array().unwrap().len(),
+            dashboard_receipts.len()
+        );
+    }
+
+    #[test]
+    fn optimization_receipts_cover_compression_fallback() {
+        let state = AppState::new(DtokenConfig::empty());
+        let request = OpenAiChatRequest {
+            model: Some("opencode/deepseek-v4-flash-free".to_string()),
+            messages: Some(vec![json!({"role": "user", "content": "fallback case"})]),
+            stream: Some(false),
+        };
+        let (_response, decision, mut request_log, event) = routed_openai_payload(&request);
+        request_log.context_accounting = Some(dtoken_types::HybridContextAccounting {
+            schema_version: 1,
+            disposition: dtoken_types::OptimizationDisposition::FallbackPreSend,
+            sent_payload: dtoken_types::SentPayloadVariant::Original,
+            upstream_state: dtoken_types::UpstreamSendState::Completed,
+            estimated: None,
+            provider_counterfactual_baseline: None,
+            provider_actual_sent: dtoken_types::ProviderActualUsage { measurement: None },
+            provider_reconciled_input_savings: None,
+            paired_actual: None,
+            attribution_basis: dtoken_types::SavingsAttribution::None,
+            fallback_reason_code: Some("compression_failed".to_string()),
+        });
+        state.record_routed_request(&decision, request_log, event);
+
+        let export = runtime_export_json_payload(&state);
+        let receipt = &export["optimization_receipts"][0];
+        assert_eq!(receipt["disposition"], "fallback_pre_send");
+        assert_eq!(receipt["failure_type"], "compression_failed");
+        assert!(receipt["savings_claimable"].is_null());
+        assert!(receipt["savings_estimated"].is_null());
+    }
+
+    #[test]
+    fn mark_upstream_outcome_records_provider_actual_usage() {
+        let upstream = UpstreamResult {
+            response: json!({
+                "usage": {
+                    "prompt_tokens": 900,
+                    "completion_tokens": 120
+                }
+            }),
+            status: Some(200),
+            error_category: None,
+            send_state: UpstreamSendState::Completed,
+            quota_metadata: None,
+        };
+        let mut request_log = RequestLog {
+            request_id: Uuid::new_v4(),
+            timestamp_ms: 1,
+            agent: Some("test-agent".to_string()),
+            instance_id: None,
+            project_id: None,
+            user_target_model: None,
+            input_protocol: dtoken_types::Protocol::OpenAi,
+            provider_id: Some("test-provider".to_string()),
+            route_id: Some("test-route".to_string()),
+            chain_mode: None,
+            model: Some("test-model".to_string()),
+            input_tokens_before: Some(1000),
+            input_tokens_after: Some(400),
+            output_tokens: None,
+            provider_input_tokens: None,
+            provider_output_tokens: None,
+            tokens_saved: None,
+            transforms_applied: vec![],
+            latency_ms: None,
+            error: None,
+            config_source: None,
+            quota_metadata: None,
+            context_accounting: Some(completed_active_accounting()),
+        };
+        let mut event = optical_test_event(
+            LayeredStage::HeadroomRetrieve,
+            EventStatus::Ok,
+            1,
+            json!({}),
+            None,
+        );
+        mark_upstream_outcome(&upstream, &mut request_log, &mut event);
+
+        // Projected from normalized provider-reported usage, never derived.
+        assert_eq!(request_log.provider_input_tokens, Some(900));
+        assert_eq!(request_log.provider_output_tokens, Some(120));
+        let accounting = request_log.context_accounting.as_ref().unwrap();
+        let provider_actual = accounting
+            .provider_actual_sent
+            .measurement
+            .as_ref()
+            .expect("mark_upstream_outcome must record provider actual usage");
+        assert_eq!(
+            provider_actual.evidence.kind,
+            UsageEvidenceKind::ProviderActual
+        );
+        assert_eq!(provider_actual.usage.input.normalized_total, Some(900));
+        assert_eq!(provider_actual.usage.output_tokens, Some(120));
+        assert_eq!(event.context_accounting, request_log.context_accounting);
+    }
+
+    #[test]
+    fn build_request_log_projects_scope_and_user_target_into_receipt() {
+        // Request-scope project identity and the user-requested model are
+        // explicit evidence captured at build time; the receipt projection
+        // must carry them and derive provider_or_model_changed from them.
+        let decision = RouteDecision {
+            request_id: Uuid::new_v4(),
+            route_id: "route-a".to_string(),
+            provider_id: "provider-a".to_string(),
+            chain_mode: ChainMode::Direct,
+            compression_policy: CompressionPolicy::Balanced,
+            reason: "test".to_string(),
+            input_protocol: Some(Protocol::OpenAi),
+            output_protocol: Some(Protocol::OpenAi),
+        };
+        let compression = CompressionSummary {
+            original_tokens: 1000,
+            compressed_tokens: 400,
+            tokens_saved: 600,
+            savings_percent: 60.0,
+            elapsed_us: 1000,
+            transforms_applied: vec!["repeat_line_fold".to_string()],
+            fallback_reason_code: None,
+            body: json!({}),
+            context_accounting: None,
+        };
+        let attribution = RequestAttribution {
+            agent: Some("test-agent".to_string()),
+            instance_id: Some("instance-a".to_string()),
+            project_id: Some("project-a".to_string()),
+        };
+        let log = build_request_log(
+            decision.request_id,
+            &decision,
+            Some("routed-model".to_string()),
+            Some("user-model".to_string()),
+            Protocol::OpenAi,
+            &compression,
+            &attribution,
+        );
+        assert_eq!(log.project_id.as_deref(), Some("project-a"));
+        assert_eq!(log.user_target_model.as_deref(), Some("user-model"));
+
+        let receipt = OptimizationReceipt::from_request_log(&log);
+        assert_eq!(receipt.project_scope.as_deref(), Some("project-a"));
+        assert_eq!(receipt.user_target_model.as_deref(), Some("user-model"));
+        assert_eq!(receipt.model.as_deref(), Some("routed-model"));
+        assert_eq!(receipt.provider_or_model_changed, Some(true));
+        // Blank project identity stays None on the log and the receipt.
+        let blank_attribution = RequestAttribution {
+            agent: None,
+            instance_id: None,
+            project_id: Some("   ".to_string()),
+        };
+        let blank_log = build_request_log(
+            decision.request_id,
+            &decision,
+            None,
+            None,
+            Protocol::OpenAi,
+            &compression,
+            &blank_attribution,
+        );
+        assert_eq!(blank_log.project_id, None);
+        assert_eq!(
+            OptimizationReceipt::from_request_log(&blank_log).project_scope,
+            None
+        );
     }
 
     #[test]

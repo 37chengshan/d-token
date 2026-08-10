@@ -17,6 +17,7 @@ use codebase_memory_control::{
 use tray::show_control_plane;
 
 use dtoken_agent_bridge::{BRIDGE_COMPONENT, BRIDGE_PROTOCOL_VERSION, BRIDGE_VERSION};
+use dtoken_compress::optical::contains_secret_like;
 use dtoken_config::DtokenConfig;
 use dtoken_config_patcher::agent_transport::{
     apply_reviewed_agent_transport, preview_clear_agent_transport,
@@ -2225,7 +2226,7 @@ fn read_active_config_value() -> Result<Value, String> {
     }
     let content =
         fs::read_to_string(&path).map_err(|err| format!("Active config is unreadable: {err}"))?;
-    if content.contains("sk-") {
+    if contains_secret_like(&content) {
         return Err("Active config contains a plaintext-looking secret".to_string());
     }
     serde_json::from_str(&content).map_err(|err| format!("Active config is invalid JSON: {err}"))
@@ -2378,7 +2379,7 @@ fn merge_optical_into_active_config(
     }
     let serialized = serde_json::to_string(&config)
         .map_err(|err| format!("failed to serialize merged config: {err}"))?;
-    if serialized.contains("sk-") {
+    if contains_secret_like(&serialized) {
         return Err("merged config contains a plaintext-looking secret".to_string());
     }
     Ok(config)
@@ -5852,7 +5853,7 @@ fn prepare_route_profile_draft_apply(
     let Some(config) = draft.get("config").cloned() else {
         return Err("Route draft has no config section".to_string());
     };
-    if config.to_string().contains("sk-") {
+    if contains_secret_like(&config.to_string()) {
         return Err("Route draft contains a plaintext-looking secret".to_string());
     }
     let serialized_config = serde_json::to_string_pretty(&config)
@@ -10877,7 +10878,7 @@ async fn discover_upstream_candidates() -> Value {
                 "candidates": [],
                 "agent_bindings": [],
                 "sources": [],
-                "selection_required": false,
+                "has_resolution_gap": false,
                 "cc_switch_sync": null,
                 "writes_performed": false,
                 "privacy": "No credential values were read or returned",
@@ -18329,6 +18330,236 @@ mod tests {
             assert!(!result.ok);
             assert!(result.summary.contains("credential reference"));
             assert_eq!(list_route_profile_drafts()["count"], 0);
+        });
+    }
+
+    #[test]
+    fn active_config_rejects_credential_shapes_beyond_sk_prefix() {
+        with_isolated_app_state("active-config-secret-shapes", || {
+            fs::create_dir_all(
+                active_config_path()
+                    .parent()
+                    .expect("active config has a parent"),
+            )
+            .expect("create active config directory");
+            for value in [
+                "Authorization: Bearer abcdef123456",
+                "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.signature123",
+                "ghp_abcdefghijklmnopqrstuvwxyz012345",
+                "AIzaSyA1234567890abcdefghijklmnopqrstuv",
+                "GOCSPX-abcdefghijklmnopqrstuvwxyz123456",
+                "ya29.abcdefghijklmnopqrstuvwxyz1234567890",
+                "-----BEGIN PRIVATE KEY-----",
+                "session_id=opaque-session",
+                "ｔｏｋｅｎ＝abc123secret",
+                "to\u{200b}ken=abc123secret",
+            ] {
+                fs::write(active_config_path(), format!(r#"{{"note": "{value}"}}"#))
+                    .expect("write active config");
+                let err = read_active_config_value().expect_err("secret shape must be rejected");
+                assert!(
+                    err.contains("plaintext-looking secret"),
+                    "vector {value:?} -> {err}"
+                );
+            }
+        });
+    }
+
+    #[test]
+    fn merged_optical_config_rejects_credential_shapes_beyond_sk_prefix() {
+        with_isolated_app_state("merged-config-secret-shapes", || {
+            for value in [
+                "Bearer abcdef123456",
+                "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.signature123",
+                "ghp_abcdefghijklmnopqrstuvwxyz012345",
+                "AIzaSyA1234567890abcdefghijklmnopqrstuv",
+                "GOCSPX-abcdefghijklmnopqrstuvwxyz123456",
+                "ya29.abcdefghijklmnopqrstuvwxyz1234567890",
+                "-----BEGIN PRIVATE KEY-----",
+                "session_id=opaque-session",
+                "ｔｏｋｅｎ＝abc123secret",
+                "to\u{200b}ken=abc123secret",
+            ] {
+                let config = json!({
+                    "routes": [],
+                    "providers": [{
+                        "id": "leaky-provider",
+                        "name": "Leaky provider",
+                        "kind": "custom",
+                        "protocol": "open_ai",
+                        "base_url": "https://example.invalid/v1",
+                        "api_key_ref": value,
+                        "models": ["model"],
+                        "timeout_ms": 120000,
+                        "healthcheck_path": "/health"
+                    }],
+                });
+                let err = merge_optical_into_active_config(
+                    config,
+                    json!({
+                        "schema_version": 1,
+                        "global_policy": {
+                            "enabled": true,
+                            "default_mode": "shadow_preview",
+                            "allow_active": false,
+                            "public_summary_only": true
+                        },
+                        "route_policies": []
+                    }),
+                )
+                .expect_err("secret shape must be rejected");
+                assert!(
+                    err.contains("plaintext-looking secret"),
+                    "vector {value:?} -> {err}"
+                );
+            }
+        });
+    }
+
+    #[test]
+    fn route_draft_apply_rejects_credential_shapes_beyond_sk_prefix() {
+        with_isolated_app_state("route-draft-secret-shapes", || {
+            fs::create_dir_all(app_state_dir().join("routing")).expect("create routing directory");
+            for value in [
+                "Bearer abcdef123456",
+                "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.signature123",
+                "ghp_abcdefghijklmnopqrstuvwxyz012345",
+                "AIzaSyA1234567890abcdefghijklmnopqrstuv",
+                "GOCSPX-abcdefghijklmnopqrstuvwxyz123456",
+                "ya29.abcdefghijklmnopqrstuvwxyz1234567890",
+                "-----BEGIN PRIVATE KEY-----",
+                "session_id=opaque-session",
+                "ｔｏｋｅｎ＝abc123secret",
+                "to\u{200b}ken=abc123secret",
+            ] {
+                let draft = json!({
+                    "config": {
+                        "providers": [{
+                            "id": "leaky-provider",
+                            "name": "Leaky provider",
+                            "kind": "custom",
+                            "protocol": "open_ai",
+                            "base_url": "https://example.invalid/v1",
+                            "api_key_ref": value,
+                            "models": ["model"],
+                            "timeout_ms": 120000,
+                            "healthcheck_path": "/health"
+                        }],
+                        "routes": [],
+                    }
+                });
+                fs::write(
+                    app_state_dir().join("routing").join("leaky-route.json"),
+                    serde_json::to_vec(&draft).expect("serialize draft"),
+                )
+                .expect("write route draft");
+                let err =
+                    prepare_route_profile_draft_apply("leaky-route").expect_err("must be rejected");
+                assert!(
+                    err.contains("plaintext-looking secret"),
+                    "vector {value:?} -> {err}"
+                );
+            }
+        });
+    }
+
+    #[test]
+    fn active_config_rejects_compact_structured_plaintext_credentials() {
+        with_isolated_app_state("active-config-compact-secret", || {
+            fs::create_dir_all(
+                active_config_path()
+                    .parent()
+                    .expect("active config has a parent"),
+            )
+            .expect("create active config directory");
+            // Compact JSON written straight to disk: the credential key is
+            // not the first key, so the leading base_url must not hide the
+            // api_key_ref value from classification.
+            fs::write(
+                active_config_path(),
+                r#"{"base_url":"https://one.example.test/v1","api_key_ref":"sk-abcdefghijklmnop","routes":[]}"#,
+            )
+            .expect("write active config");
+            let err = read_active_config_value().expect_err("compact secret must be rejected");
+            assert!(
+                err.contains("plaintext-looking secret"),
+                "compact active config -> {err}"
+            );
+        });
+    }
+
+    #[test]
+    fn merged_optical_config_rejects_compact_structured_plaintext_credentials() {
+        with_isolated_app_state("merged-config-compact-secret", || {
+            // Compact provider config serialized without pre-formatting: the
+            // credential value sits under a non-sensitive label after a
+            // URL-bearing key and must still be rejected.
+            let config = json!({
+                "routes": [],
+                "providers": [{
+                    "id": "leaky-provider",
+                    "name": "Leaky provider",
+                    "kind": "custom",
+                    "protocol": "open_ai",
+                    "base_url": "https://example.invalid/v1",
+                    "openai_api_key": "sk-abcdefghijklmnop",
+                    "models": ["model"],
+                    "timeout_ms": 120000,
+                    "healthcheck_path": "/health"
+                }],
+            });
+            let err = merge_optical_into_active_config(
+                config,
+                json!({
+                    "schema_version": 1,
+                    "global_policy": {
+                        "enabled": true,
+                        "default_mode": "shadow_preview",
+                        "allow_active": false,
+                        "public_summary_only": true
+                    },
+                    "route_policies": []
+                }),
+            )
+            .expect_err("compact secret must be rejected");
+            assert!(
+                err.contains("plaintext-looking secret"),
+                "compact merged config -> {err}"
+            );
+        });
+    }
+
+    #[test]
+    fn route_draft_apply_rejects_compact_structured_plaintext_credentials() {
+        with_isolated_app_state("route-draft-compact-secret", || {
+            fs::create_dir_all(app_state_dir().join("routing")).expect("create routing directory");
+            let draft = json!({
+                "config": {
+                    "providers": [{
+                        "id": "leaky-provider",
+                        "name": "Leaky provider",
+                        "kind": "custom",
+                        "protocol": "open_ai",
+                        "base_url": "https://example.invalid/v1",
+                        "openai_api_key": "sk-abcdefghijklmnop",
+                        "models": ["model"],
+                        "timeout_ms": 120000,
+                        "healthcheck_path": "/health"
+                    }],
+                    "routes": [],
+                }
+            });
+            fs::write(
+                app_state_dir().join("routing").join("leaky-route.json"),
+                serde_json::to_vec(&draft).expect("serialize draft"),
+            )
+            .expect("write route draft");
+            let err =
+                prepare_route_profile_draft_apply("leaky-route").expect_err("must be rejected");
+            assert!(
+                err.contains("plaintext-looking secret"),
+                "compact route draft -> {err}"
+            );
         });
     }
 

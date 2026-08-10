@@ -371,3 +371,16 @@ jobs:
             code/target/x86_64-pc-windows-msvc/release/UNSIGNED-TECHNICAL-PREVIEW.txt
             code/target/release/metadata/*
             support/artifacts/*.json
+
+      # PR-7 evidence wiring (upload only): fan any evidence produced on this
+      # runner into the publish job so the fan-in job can aggregate it.
+      # Pure wiring — an empty evidence dir must never fail the build
+      # (if-no-files-found: warn); the fan-in artifact contract is the hard
+      # gate and the full fail-closed aggregation runs as N9 on Main.
+      - name: Upload local evidence artifacts (fan-in wiring)
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.resolve_artifact.outputs.artifact_name }}-evidence
+          if-no-files-found: warn
+          path: |
+            support/artifacts/**/*.json

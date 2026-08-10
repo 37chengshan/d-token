@@ -2,6 +2,7 @@ import "@testing-library/jest-dom/vitest";
 import { cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it } from "vitest";
+import { translateCopy } from "../../lib/i18n";
 import { activityLevel, buildMonthCells, buildWeekDays, buildYearCells, buildYearMonthLabelColumns, Heatmap } from "./Heatmap";
 
 afterEach(cleanup);
@@ -115,5 +116,11 @@ describe("Heatmap runtime evidence", () => {
     expect(await screen.findByText("真实工具")).toBeInTheDocument();
     expect(container.querySelector<HTMLElement>(".activity-tool-bar")?.style.width).toBe("0%");
     expect(screen.queryByText("1")).not.toBeInTheDocument();
+  });
+
+  it("keeps the heatmap terminology in both languages", () => {
+    expect(translateCopy("an.heatmap", "zh")).toContain("活动趋势");
+    expect(translateCopy("an.heatmap", "zh")).not.toContain("活跃趋势");
+    expect(translateCopy("an.heatmap", "en")).toContain("Activity trend");
   });
 });
