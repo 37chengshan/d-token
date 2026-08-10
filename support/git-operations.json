@@ -2567,6 +2567,15 @@
       "remote": null
     },
     {
+      "id": "ce66d522-e66e-48d5-95d7-6121bb749731",
+      "timestamp": "2026-08-10T11:42:15+08:00",
+      "operation": "commit",
+      "branch": "codex/final/c5-remediation",
+      "summary": "C5 optical remediation: history collapse wiring, signer example, signed active contract tests, registry c5 entries, docs",
+      "head_before": "15f98cfb9861c3f9ad87b1d0dc5f8e6f1844063d",
+      "remote": null
+    },
+    {
       "id": "0ac7f136-d624-4319-85d0-53766d39e9a6",
       "timestamp": "2026-08-10T12:35:48+08:00",
       "operation": "commit",

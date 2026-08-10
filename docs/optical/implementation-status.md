@@ -11,7 +11,7 @@ Optical/Hybrid 后端执行链已经实现，但仍默认关闭。运行时可�
 已实现：protected Context IR / semantic codec / deterministic PNG / sealed patch / post-transform validation
 已接入：direct Anthropic JSON+SSE / raw-byte shadow+passthrough / accounting / Ledger / metrics / Doctor
 默认行为：active off；未知模型、跨协议、无签名证据、资源超限或校验失败均保留原请求
-仍禁止：未经真实模型评测的默认 active、history collapse、对外节省承诺
+仍禁止：未经真实模型评测的默认 active、市场化的对外节省承诺；history collapse 已接入 active plan path 但默认 route 关闭（N10 E2E 证据待 N0 后运行）
 ```
 
 ## 2. 已实现的规划基础
@@ -96,10 +96,10 @@ Preview 与 recent events 可以公开：
 
 ## 6. 尚未闭环
 
-1. 真实 Provider 上的 fidelity/cost/latency corpus 与签名 eval artifact；仓库不内置任何默认可信模型。
-2. Capability/lifecycle 的用户操作写 API 与 authority 运维流程；当前只从受校验配置加载。
+1. 真实 Provider 上的 fidelity/cost/latency corpus 与签名 eval artifact；仓库不内置任何默认可信模型。C5 已交付 d-token 自有的 Ed25519 权威生命周期工具与测试自有 signed demo 正例（`examples/optical_capability_signer.rs`、`support/fixtures/optical/`、`tests/optical_active_contract.rs`），demo fixture 只能用于自动化合同与工具链验证，不得冒充真实 Provider eval 证据。
+2. Capability/lifecycle 的用户操作写 API 与 authority 运维流程；当前只从受校验配置加载，签名由 tracked example 工具生成。
 3. OpenAI Chat/Responses Optical active patcher；跨协议 bridge 明确只能 passthrough/shadow。
-4. history collapse、cache-zone 持久恢复与独立 summary/drop 策略。
+4. history collapse/cache-zone 的 N10 E2E 证据与持久恢复、独立 summary/drop 策略；collapse planner 已接入 active plan path（`plan_history_collapse` 作用域 + plan digest 绑定），默认 route 关闭。
 5. post-commit rollback 不可能安全自动重试；当前保证 pre-send 原文回退，commit 后只记录失败并禁止重复发送。
 6. 正式桌面已提供「视觉压缩（Beta）」一级页（一键启用 + 高级配置 + 状态与预览）：可写 Shadow 策略（强制 `allow_active=false`）与只读 status/capabilities/lifecycle/events / shadow preview public summary；一键区另有 Claude Code/Codex/OpenCode Agent 接入事务和 `dtoken-agent-bridge`，但它们与请求压缩/Active 独立。不得渲染 PNG/base64/raw body，不得 UI 开启 production active，不得把 estimator 标为 verified savings。除该 Beta 入口外不得再扩张 Optical Lab 式工程化顶级导航。
 
@@ -111,8 +111,9 @@ Preview 与 recent events 可以公开：
 | Metadata-only Preview API | 可作为实验可观测面 |
 | Capability lifecycle visibility | 可作为实验状态面 |
 | Provider dependency analysis | 可用于 fail-closed 规划 |
-| Active execution code | 已实现，默认关闭且只限同协议 Anthropic closed historical tool result |
-| Production active default | 禁止，缺少本地真实模型签名 eval 与候选版路由证据 |
+| Active execution code | 已实现，默认关闭且只限同协议 Anthropic closed historical tool result；测试自有 signed 精确路由正例 + mutation/secret/quality/economics/cache/resource PreserveText 负例通过 |
+| History collapse planner | 已实现并接入 active plan path（freeze grid/static slab/cache anchor/billing boundary/pin semantics），默认 route 关闭，N10 E2E 证据待 N0 后运行 |
+| Production active default | 禁止，缺少本地真实模型签名 eval 与候选版路由证据；demo fixture 不构成 provider 证据 |
 | 对外成本节省承诺 | 禁止；本地 estimator 与第三方数据都不能替代 provider actual/paired evidence |
 
 ## 8. 验证

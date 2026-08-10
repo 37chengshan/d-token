@@ -111,7 +111,7 @@ Conservative net savings exceeds route threshold.
 Cache stability gate passes.
 ```
 
-当前状态：active executor 已实现并保持默认关闭。只有受信 runtime config 加载的签名 Capability、通过的绑定 eval 和全部运行时门同时满足时才可达；仓库没有默认可信模型，真实 Provider eval 未完成，因此 production default 仍 BLOCKED。
+当前状态：active executor 已实现并保持默认关闭。只有受信 runtime config 加载的签名 Capability、通过的绑定 eval 和全部运行时门同时满足时才可达。C5 切片（PR-C5C/C5D）已交付 d-token 自有的 Ed25519 capability/eval 权威生命周期工具（`examples/optical_capability_signer.rs`）、带签名的精确 Anthropic 路由演示 snapshot/eval/权威 fixture，以及通过生产 `from_runtime_config` 加载路径的测试自有 signed route 自动 active 正例与 mutation/secret/quality/economics/cache/resource PreserveText 负例（`tests/optical_active_contract.rs`）。仓库默认配置仍然 fail-closed（`allow_active=false`、空 registry）；真实 Provider 付费 eval 与双平台 N10 U7 证据未完成前，production default 保持 BLOCKED，发布结论不得使用 demo fixture 冒充真实 Provider 证据。
 
 ## 6. Metadata-only Event Gates
 
@@ -276,8 +276,9 @@ Signed multimodal accounting           PASS
 Desktop Visual Compression Beta UI     IMPLEMENTED; REAL WINDOWS/AGENT ACCEPTANCE PENDING
 Hybrid Agent integration transaction   IMPLEMENTED; ISOLATED CONFIG EVIDENCE ONLY
 Agent bridge Hook/MCP metadata path     IMPLEMENTED; SIGNATURE-BEFORE-EXECUTION CONTRACT PASS; REAL AGENT TRUST/ROUTE EVIDENCE PENDING
-OpenAI Optical active patcher          NOT IMPLEMENTED
-History collapse/cache-zone            NOT IMPLEMENTED
-Real-provider signed fidelity eval     BLOCKED BY EXTERNAL CREDENTIAL/EVIDENCE
-Production active default              BLOCKED UNTIL REAL-PROVIDER GATE
+OpenAI Optical active patcher          NOT IMPLEMENTED (shadow-only contract)
+History collapse/cache-zone            IMPLEMENTED; WIRED INTO ACTIVE PLAN PATH; N10 E2E EVIDENCE PENDING
+Signed capability/eval lifecycle tool  IMPLEMENTED (examples/optical_capability_signer + signed demo fixtures);
+                                       N0 后真实 Provider 付费 eval 证据 PENDING
+Production active default              BLOCKED UNTIL REAL-PROVIDER GATE (demo fixtures are not provider evidence)
 ```
