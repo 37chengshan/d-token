@@ -2502,6 +2502,15 @@
       "summary": "UI product closure: onboarding 5-seg, service progress/reduce motion, order gate, OperationDialog confirm, honest running copy",
       "head_before": "9ef2151d86faa55ad438570ca815426250515796",
       "remote": null
+    },
+    {
+      "id": "41fab61a-25ae-459e-87ba-863f031a953d",
+      "timestamp": "2026-08-10T12:20:41+08:00",
+      "operation": "commit",
+      "branch": "product-closure-remediation",
+      "summary": "N6 Tauri UI acceptance producer: receipt-driven, fail-closed native window contract + tests",
+      "head_before": "5e19e7d5fa0a84000300ea579c9683caceed04b1",
+      "remote": null
     }
   ]
 }
