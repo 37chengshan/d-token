@@ -2934,6 +2934,15 @@
       "summary": "style: rustfmt workspace + clippy fixes (needless borrow, too-many-arguments allow)",
       "head_before": "a1bcd5f253828cc6e18aadc5d50f82460d0c691e",
       "remote": null
+    },
+    {
+      "id": "d750ad76-5349-40fb-a149-ba91eeec4782",
+      "timestamp": "2026-08-10T21:27:34+08:00",
+      "operation": "commit",
+      "branch": "codex/final/stage-pack-integrated",
+      "summary": "fix(optical): rebuild signed capability/eval fixtures for current transform contract digest",
+      "head_before": "abc96ad10498eb983b8f87a19f81539b3ccdf959",
+      "remote": null
     }
   ]
 }

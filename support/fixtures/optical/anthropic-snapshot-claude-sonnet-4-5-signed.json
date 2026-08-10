@@ -48,9 +48,9 @@
     "expires_at_ms": 1815536000000,
     "renderer_profile_digest": "2c06ea7f8652aa07516f059af1613b26fab17109c5189ef152a189fdd1e1af99",
     "font_digest": "a8a9941fd5f0096dacea34b144305ddbe4a70c6749677fd90395b15220fdffd5",
-    "transform_contract_digest": "41e5f2813590e10dae0c5e33c10f70e00337c19e8b5fcab224597fbb8ff93bf6",
-    "eval_artifact_digest": "b0d248bff195081863faa0eaecf58b3d996b8ba41c0ccf3799a75a9245a56740",
-    "signature_base64": "YOTpPiHXNP/1HqPoIX4dtZrzAj0PzlgcsT0Z9oBw9/EqSDHhEMRi3uSlQwKUFLi2K7+LJfBK9K7CXI41adEnAw=="
+    "transform_contract_digest": "1c9e5a64ae4e6f2e3df07c4e05b664a82fb71ceb06eb1344bf83f21f284bf0d4",
+    "eval_artifact_digest": "9f1f1772265f2081d8a4ea7e127c8c0fc701b4dae39889eeb66bacf61e28076b",
+    "signature_base64": "cy0fsi5RlTwoOsntGSmsz921kz7uvpUvOEWRxbYeMGeoFkV0fD+mA4n5cPgpm153EBSzwMQuPV0Lvcb5mIBJBQ=="
   },
   "economics": {
     "schema_version": 1,

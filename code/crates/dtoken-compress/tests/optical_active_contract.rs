@@ -32,7 +32,7 @@ use serde_json::{json, Value};
 
 /// Digest of `anthropic-eval-claude-sonnet-4-5.json` produced by the signer
 /// example; a signer/atlas/contract drift breaks this pin and the test.
-const PINNED_EVAL_DIGEST: &str = "b0d248bff195081863faa0eaecf58b3d996b8ba41c0ccf3799a75a9245a56740";
+const PINNED_EVAL_DIGEST: &str = "9f1f1772265f2081d8a4ea7e127c8c0fc701b4dae39889eeb66bacf61e28076b";
 /// The unified optical corpus digest (support/fixtures/unified-corpus/
 /// manifest.json corpora.optical.digest) bound into the signed eval artifact.
 const OPTICAL_CORPUS_DIGEST: &str =
