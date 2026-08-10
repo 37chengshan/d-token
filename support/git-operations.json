@@ -2655,6 +2655,15 @@
       "summary": "合并 C5 Optical active 修复 1ad92b0 到 stage 集成 HEAD f5abe0a25e8ee6b2b8557bebdea0ae9d12f9d309",
       "head_before": "f5abe0a25e8ee6b2b8557bebdea0ae9d12f9d309",
       "remote": null
+    },
+    {
+      "id": "a1f70cde-e04d-4994-bc52-9a30ea103197",
+      "timestamp": "2026-08-10T13:39:06+08:00",
+      "operation": "merge",
+      "branch": "codex/final/stage-pack-integrated",
+      "summary": "合并 C6 C7 调度与性能修复 400138c 到 stage 集成 HEAD 25b34784ffad62778755d98167146d035bef4d13",
+      "head_before": "25b34784ffad62778755d98167146d035bef4d13",
+      "remote": null
     }
   ]
 }
