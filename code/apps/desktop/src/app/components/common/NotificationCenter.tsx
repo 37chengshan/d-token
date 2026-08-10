@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { AnimatePresence, motion } from "motion/react";
 import { Bell, CheckCheck, ChevronRight, X } from "lucide-react";
 import { useI18n, translateCopy } from "../../lib/i18n";
 import { useNotifications, type AppNotification } from "../../lib/notifications";
@@ -34,18 +35,24 @@ export function NotificationCenter() {
           <div className="max-h-[360px] overflow-y-auto">
             {notifications.length === 0 ? (
               <div className="px-4 py-8 text-center text-sm text-muted-foreground">{translateCopy("notif.noNotifications", lang)}</div>
-            ) : notifications.map((item) => (
-              <NotificationRow
+            ) : notifications.map((item, index) => (
+              <motion.div
                 key={item.id}
-                item={item}
-                expanded={expanded === item.id}
-                onToggle={() => {
-                  markRead(item.id);
-                  setExpanded((current) => current === item.id ? null : item.id);
-                }}
-                onDismiss={() => dismiss(item.id)}
-                lang={lang}
-              />
+                initial={{ opacity: 0, y: 4 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ duration: 0.18, ease: "easeOut", delay: Math.min(index * 0.03, 0.3) }}
+              >
+                <NotificationRow
+                  item={item}
+                  expanded={expanded === item.id}
+                  onToggle={() => {
+                    markRead(item.id);
+                    setExpanded((current) => current === item.id ? null : item.id);
+                  }}
+                  onDismiss={() => dismiss(item.id)}
+                  lang={lang}
+                />
+              </motion.div>
             ))}
           </div>
         </PopoverContent>
@@ -66,14 +73,26 @@ function NotificationRow({ item, expanded, onToggle, onDismiss, lang }: { item: 
         </div>
         <p className="mt-1 line-clamp-2 text-xs leading-5 text-muted-foreground">{item.message}</p>
         <time className="mt-1 block text-[10px] text-muted-foreground">{new Date(item.timestamp).toLocaleTimeString()}</time>
-        {expanded && item.details && <p className="mt-2 rounded-md bg-muted/55 p-2 text-xs leading-5 text-muted-foreground">{item.details}</p>}
-        {expanded && item.receipt && (
-          <dl className="mt-2 grid grid-cols-[auto_1fr] gap-x-2 rounded-md bg-muted/55 p-2 text-[11px] text-muted-foreground">
-            <dt>{translateCopy("notif.request", lang)}</dt><dd className="truncate font-mono">{item.receipt.requestId}</dd>
-            {item.receipt.rollbackId && <><dt>{translateCopy("notif.rollback", lang)}</dt><dd className="truncate font-mono">{item.receipt.rollbackId}</dd></>}
-            {item.receipt.targetId && <><dt>{translateCopy("notif.target", lang)}</dt><dd className="truncate font-mono">{item.receipt.targetId}</dd></>}
-          </dl>
-        )}
+        <AnimatePresence initial={false}>
+          {expanded && (
+            <motion.div
+              initial={{ opacity: 0, height: 0 }}
+              animate={{ opacity: 1, height: "auto" }}
+              exit={{ opacity: 0, height: 0 }}
+              transition={{ duration: 0.16, ease: "easeOut" }}
+              className="overflow-hidden"
+            >
+              {item.details && <p className="mt-2 rounded-md bg-muted/55 p-2 text-xs leading-5 text-muted-foreground">{item.details}</p>}
+              {item.receipt && (
+                <dl className="mt-2 grid grid-cols-[auto_1fr] gap-x-2 rounded-md bg-muted/55 p-2 text-[11px] text-muted-foreground">
+                  <dt>{translateCopy("notif.request", lang)}</dt><dd className="truncate font-mono">{item.receipt.requestId}</dd>
+                  {item.receipt.rollbackId && <><dt>{translateCopy("notif.rollback", lang)}</dt><dd className="truncate font-mono">{item.receipt.rollbackId}</dd></>}
+                  {item.receipt.targetId && <><dt>{translateCopy("notif.target", lang)}</dt><dd className="truncate font-mono">{item.receipt.targetId}</dd></>}
+                </dl>
+              )}
+            </motion.div>
+          )}
+        </AnimatePresence>
       </button>
       <button type="button" onClick={onDismiss} aria-label={translateCopy("notif.dismissNotification", lang)} className="mt-0.5 text-muted-foreground hover:text-foreground"><X className="size-3.5" /></button>
     </article>

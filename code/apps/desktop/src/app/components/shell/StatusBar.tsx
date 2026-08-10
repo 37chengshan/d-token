@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { AnimatePresence, motion } from "motion/react";
 import { ChevronUp } from "lucide-react";
 import { useI18n, useT, translateCopy } from "../../lib/i18n";
 import { StatusDot } from "../common/StatusBadge";
@@ -90,16 +91,24 @@ export function StatusBar() {
           <span className={`transition-transform duration-200 motion-reduce:rotate-0 motion-reduce:transition-none ${open ? "rotate-0" : "rotate-180"}`}><ChevronUp className="size-4" /></span>
         </button>
       </div>
-      {open && (
-          <div className="overflow-hidden animate-in fade-in duration-200">
+      <AnimatePresence initial={false}>
+        {open && (
+          <motion.div
+            initial={{ opacity: 0, height: 0 }}
+            animate={{ opacity: 1, height: "auto" }}
+            exit={{ opacity: 0, height: 0 }}
+            transition={{ duration: 0.18, ease: "easeOut" }}
+            className="overflow-hidden"
+          >
             <div className="mt-2 grid grid-cols-2 gap-2 border-t border-sidebar-border/70 pt-2 text-muted-foreground md:grid-cols-4">
               <span>{t("status.source")}: {summary.sourceLabel}</span>
               <span>{t("status.requests")}: {summary.requestCount}</span>
               <span>{t("status.routes")}: {summary.routeCount}</span>
               <span>{t("status.updated")}: {summary.updatedLabel}</span>
             </div>
-          </div>
-      )}
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }

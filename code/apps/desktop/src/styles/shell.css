@@ -161,6 +161,7 @@
   min-height: 100%;
   margin-inline: auto;
   padding: 8px 16px calc(24px + env(safe-area-inset-bottom, 0px));
+  animation: page-in var(--duration-slow) var(--ease-decelerate);
 }
 
 .shell-segmented {
@@ -607,10 +608,13 @@
 @media (prefers-reduced-motion: reduce) {
   .app-shell,
   .shell-sidebar,
-  .shell-segmented-indicator,
-  .shell-page-stage {
+  .shell-segmented-indicator {
     animation: none !important;
     transition-duration: 0ms !important;
+  }
+
+  .shell-page-stage {
+    animation: page-in-fade var(--duration-fast) ease-out;
   }
 
   .animated-nav-icon .icon-part,

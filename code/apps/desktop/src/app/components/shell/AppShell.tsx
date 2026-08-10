@@ -1,4 +1,5 @@
 import { lazy, Suspense, useCallback, useEffect, useState } from "react";
+import { MotionConfig } from "motion/react";
 import { Sidebar } from "./Sidebar";
 import { Topbar } from "./Topbar";
 import { StatusBar } from "./StatusBar";
@@ -207,7 +208,8 @@ export function AppShell() {
   };
 
   return (
-    <div className={`app-shell ${collapsed ? "is-sidebar-collapsed" : ""}`}>
+    <MotionConfig reducedMotion="user">
+      <div className={`app-shell ${collapsed ? "is-sidebar-collapsed" : ""}`}>
         <Sidebar page={page} setPage={handleSetPage} collapsed={collapsed} setCollapsed={setCollapsed} reducedMotion={reduceMotion} />
         <section className="shell-workspace">
           <Topbar page={page} collapsed={collapsed} setCollapsed={setCollapsed} reducedMotion={reduceMotion} onOpenOnboarding={openOnboarding} onboardingActive={showOnboarding} />
@@ -243,7 +245,8 @@ export function AppShell() {
           </div>
           <NotificationLiveRegion />
         </section>
-    </div>
+      </div>
+    </MotionConfig>
   );
 }
 

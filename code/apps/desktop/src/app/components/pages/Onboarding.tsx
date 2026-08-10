@@ -382,6 +382,9 @@ export function OnboardingPage({
                     ? t("onb.service.retry")
                     : t("onb.service.start")}
               </Button>
+              {serviceAction.phase === "loading" && (
+                <span className="service-breathe-bar" role="status" aria-label={t("onb.service.starting")} />
+              )}
               <p className="min-w-0 flex-1 text-xs text-muted-foreground" role="status" aria-live="polite">
                 {serviceAction.phase === "success"
                   ? t("onb.service.startSuccess")

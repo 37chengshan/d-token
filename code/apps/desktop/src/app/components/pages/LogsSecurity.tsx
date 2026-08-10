@@ -275,7 +275,7 @@ export function LogsSecurity() {
                   key={row.id}
                   initial={{ opacity: 0, y: 6 }}
                   animate={{ opacity: 1, y: 0 }}
-                  transition={{ delay: Math.min(index * 0.025, 0.2) }}
+                  transition={{ duration: 0.28, ease: "easeOut", delay: Math.min(index * 0.025, 0.2) }}
                   className="flat-inset grid gap-3 p-3 text-sm md:grid-cols-[140px_1fr_auto]"
                 >
                   <div>
@@ -351,7 +351,7 @@ export function LogsSecurity() {
               key={row.id}
               initial={{ opacity: 0, x: -8 }}
               animate={{ opacity: 1, x: 0 }}
-              transition={{ delay: i * 0.05 }}
+              transition={{ duration: 0.28, ease: "easeOut", delay: i * 0.05 }}
             >
               <Surface className="flex flex-wrap items-center justify-between gap-3 p-4">
                 <div className="flex items-center gap-3">

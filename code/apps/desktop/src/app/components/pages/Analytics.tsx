@@ -659,7 +659,7 @@ function Metric({
   color: string;
 }) {
   return (
-    <motion.div data-analytics-metric initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: index * 0.035 }}>
+    <motion.div data-analytics-metric initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.28, ease: "easeOut", delay: index * 0.035 }}>
       <div className="flex items-center gap-1.5 text-xs text-muted-foreground">{icon}{label}</div>
       <div className="mt-1.5 text-xl font-semibold tracking-tight tabular-nums" style={{ color }}>{value}</div>
       <div className="mt-0.5 truncate text-xs text-muted-foreground" title={detail}>{detail}</div>

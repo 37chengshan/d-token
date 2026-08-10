@@ -894,7 +894,7 @@ function Swatch({ color, active, label, onClick }: { color: string; active: bool
       aria-pressed={active}
       title={label}
       className={cn(
-        "flex size-7 items-center justify-center rounded-full ring-2 ring-offset-2 ring-offset-background transition-all",
+        "flex size-7 items-center justify-center rounded-full ring-2 ring-offset-2 ring-offset-background transition-colors",
         active ? "ring-foreground/40" : "ring-transparent hover:ring-border",
       )}
       style={{ background: color }}

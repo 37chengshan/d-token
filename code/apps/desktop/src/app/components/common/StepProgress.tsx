@@ -63,7 +63,11 @@ export function StepProgress({
             <div className="flex flex-col items-center gap-1.5">
               {reducedMotion
                 ? circle
-                : <motion.div animate={{ scale: isActive ? 1.1 : 1 }}>{circle}</motion.div>}
+                : <motion.div
+                    animate={{ scale: isActive ? 1.1 : 1 }}
+                    transition={{ duration: 0.28, ease: "easeOut" }}
+                    className={cn(isActive && "step-active-pulse")}
+                  >{circle}</motion.div>}
               <span className={cn("text-xs", isActive ? "text-foreground" : "text-muted-foreground")}>{s.label}</span>
             </div>
             {i < steps.length - 1 && (
