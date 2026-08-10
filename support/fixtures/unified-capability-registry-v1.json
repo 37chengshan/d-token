@@ -2651,7 +2651,7 @@
         "U2",
         "N10"
       ],
-      "status": "blocked",
+      "status": "implemented_unverified",
       "implementation_refs": [
         "docs/releases/v0.0.1/REQUIREMENTS.md",
         "docs/releases/v0.0.1/VERIFICATION.md"
@@ -2682,7 +2682,7 @@
         "U2",
         "N10"
       ],
-      "status": "blocked",
+      "status": "implemented_unverified",
       "implementation_refs": [
         "docs/releases/v0.0.1/REQUIREMENTS.md",
         "docs/releases/v0.0.1/VERIFICATION.md"
@@ -2693,7 +2693,7 @@
       "id": "c4.rtk-planner-accounting",
       "source_capability": "RTK planner/accounting: RtkCommandOutput production dispatch with dedicated bucket, no double counting",
       "owner_crate": "dtoken-preprocessor",
-      "dispatch_symbol": "dtoken_preprocessor::command_output_accounting_entry",
+      "dispatch_symbol": "dtoken_compress::rtk_planner::plan_exclusive_action",
       "tests": {
         "normal": [
           "code/crates/dtoken-preprocessor/src/lib.rs"
@@ -2713,7 +2713,7 @@
         "U2",
         "N10"
       ],
-      "status": "blocked",
+      "status": "implemented_unverified",
       "implementation_refs": [
         "docs/releases/v0.0.1/REQUIREMENTS.md",
         "docs/releases/v0.0.1/VERIFICATION.md"

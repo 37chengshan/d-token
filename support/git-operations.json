@@ -2502,6 +2502,15 @@
       "summary": "record git-operations.json audit entry for C8 evidence remediation commit ebf897f",
       "head_before": "ebf897f8ff3b",
       "remote": null
+    },
+    {
+      "id": "b903c83e-30f8-41fd-b493-df738417d78e",
+      "timestamp": "2026-08-10T12:38:16+08:00",
+      "operation": "commit",
+      "branch": "codex/final/c8-evidence-remediation",
+      "summary": "C8 evidence remediation: registry validator hardening, symbol source index, fixed-name evidence producer/stager, U9 117/117 coverage, managed RTK roles, N0 pure gate specs",
+      "head_before": "15f98cfb9861c3f9ad87b1d0dc5f8e6f1844063d",
+      "remote": null
     }
   ]
 }
