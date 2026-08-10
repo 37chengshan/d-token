@@ -21694,7 +21694,7 @@ mod tests {
             receipt: Some(CcrStoreReceipt {
                 recovery_ref: "ccr:00000000-0000-4000-8000-000000000000".to_string(),
                 expires_at_unix: 9_999,
-                plaintext_bytes: baseline.to_string().len() as u64,
+                plaintext_bytes: baseline.to_string().len(),
             }),
             store_configured: true,
         };
@@ -21749,7 +21749,29 @@ mod tests {
             quota_metadata: None,
             context_accounting: None,
         };
-        let mut event = DtokenEvent::default();
+        let mut event = build_ledger_event(
+            scope.request_id,
+            &decision,
+            Protocol::OpenAi,
+            Protocol::OpenAi,
+            &CompressionSummary {
+                original_tokens: 0,
+                compressed_tokens: 0,
+                tokens_saved: 0,
+                savings_percent: 0.0,
+                elapsed_us: 0,
+                transforms_applied: vec![],
+                fallback_reason_code: None,
+                body: baseline.clone(),
+                context_accounting: None,
+                bus_receipts: vec![],
+            },
+            &RequestAttribution {
+                agent: None,
+                instance_id: None,
+                project_id: None,
+            },
+        );
         let refused = mint_transport_send_commit(
             mutated_ready,
             Some(&validation),

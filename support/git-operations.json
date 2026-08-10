@@ -2511,6 +2511,15 @@
       "summary": "T-C0B ledger commit-evidence assertions + post-validation mutation negative test",
       "head_before": "25b85b0994ac",
       "remote": null
+    },
+    {
+      "id": "3b3d5999-e9c7-4b48-ae7a-c19b19b014c7",
+      "timestamp": "2026-08-10T12:50:58+08:00",
+      "operation": "commit",
+      "branch": "codex/final/c0-c1-remediation",
+      "summary": "complete mutation-negative test with real ledger event + type fix",
+      "head_before": "736873410761",
+      "remote": null
     }
   ]
 }
