@@ -1135,6 +1135,48 @@ class AgentConfigAcceptanceTests(unittest.TestCase):
         )
         self.assertEqual(copy_path.read_bytes(), b"[core]\n")
 
+    def test_atomic_replace_restore_new_inode_accepted(self) -> None:
+        # The real candidate probe restores atomically (temp file + rename),
+        # which legitimately replaces the staged copy's inode on POSIX. The
+        # verify must accept any non-source inode while still checking bytes
+        # and mode; only an alias to the source inode is rejected.
+        source = self.write_config("config.toml", b"[core]\n")
+
+        def atomic_replace_side_effect(
+            argv: list[str], **kwargs: object
+        ) -> subprocess.CompletedProcess:
+            copy_path = Path(argv[8])
+            original_mode = source.stat().st_mode & 0o777
+            # replace the staged copy with a fresh file (new inode) carrying
+            # the same bytes and mode, exactly like an atomic-replace restore
+            copy_path.unlink()
+            copy_path.write_bytes(b"[core]\n")
+            os.chmod(copy_path, original_mode)
+            return probe_result(copy_path, argv[7])
+
+        with patch.object(
+            MODULE, "_communicate_probe", side_effect=atomic_replace_side_effect
+        ):
+            code, out, err = self.run_cli(
+                *self.agent_args(f"codex={source}"),
+                "--temp-root",
+                str(self.temp_root),
+                "--artifact",
+                str(self.artifact),
+            )
+        self.assertEqual(code, 0, msg=out + err)
+        data = json.loads(self.artifact.read_text(encoding="utf-8"))
+        self.assertEqual(data["status"], "verified")
+        self.assertEqual(data["agents"][0]["error_class"], None)
+        self.assertEqual(data["agents"][0]["status"], "ok")
+        self.assertEqual(data["agents"][0]["steps"], [
+            {"step": "copy", "status": "ok"},
+            {"step": "probe", "status": "ok"},
+            {"step": "verify", "status": "ok"},
+        ])
+        self.assertEqual(data["restore_order"], [])
+        self.assertEqual(source.read_bytes(), b"[core]\n")
+
     def test_preseeded_source_hard_link_slot_fails_closed(self) -> None:
         # temp root is the sources directory and the staging slot is
         # pre-seeded as a hard link to the source itself: the runner must

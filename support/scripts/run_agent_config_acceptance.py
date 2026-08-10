@@ -540,10 +540,18 @@ def verify_probe_report(
     copy_path: Path,
     pristine: bytes,
     mode: int,
-    dev: int,
-    ino: int,
+    source_dev: int,
+    source_ino: int,
 ) -> None:
-    """Verify the public booleans/hashes of a probe report; fail-closed."""
+    """Verify the public booleans/hashes of a probe report; fail-closed.
+
+    The staged copy must be byte- and mode-exact after the probe and must
+    never alias the source inode (a hard-link substitution to the real
+    config would make a later rollback write through to the source). The
+    copy's own inode is intentionally NOT compared: the candidate probe
+    restores atomically (temp file + rename), which legitimately replaces
+    the inode on POSIX. Only an alias to the source is rejected.
+    """
     configure = report.get("configure")
     clear = report.get("clear")
     restore = report.get("restore")
@@ -570,9 +578,9 @@ def verify_probe_report(
         raise ProbeReportInvalid("staged copy not byte-exact after probe")
     if current_mode != mode:
         raise ProbeReportInvalid("staged copy mode not preserved after probe")
-    if (current_dev, current_ino) != (dev, ino):
+    if (current_dev, current_ino) == (source_dev, source_ino):
         raise ProbeReportInvalid(
-            "staged copy replaced by a different inode after probe"
+            "staged copy aliases the source inode after probe"
         )
 
 
@@ -593,9 +601,10 @@ def run_agent(
     the staged copy is written from those bytes as a fresh file (never
     through an existing entry), so it can never reflect a later source
     mutation or follow a link. The probe is verified against the same
-    pre-run bytes, mode and inode. If the staging slot already resolves to
-    the source or aliases its inode, the agent fails closed before
-    anything is unlinked or written.
+    pre-run bytes and mode; the post-probe copy must not alias the source
+    inode (atomic-replace restore legitimately replaces the copy inode).
+    If the staging slot already resolves to the source or aliases its
+    inode, the agent fails closed before anything is unlinked or written.
 
     Raises AcceptanceError on any failure; the failing staged copy is
     best-effort restored to its pre-run bytes before the error propagates.
@@ -651,8 +660,8 @@ def run_agent(
             copy_path,
             original,
             mode,
-            copy_st.st_dev,
-            copy_st.st_ino,
+            dev,
+            ino,
         )
         record["steps"].append({"step": "verify", "status": STATUS_OK})
     except AcceptanceError:
