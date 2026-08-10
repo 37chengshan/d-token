@@ -40,13 +40,13 @@ const RTK_TIMEOUT_EXIT_CODE: i32 = 124;
 const RTK_TIMEOUT_ENV: &str = "D_TOKEN_RTK_WRAP_TIMEOUT_SECONDS";
 
 fn rtk_command_timeout() -> Duration {
-    #[cfg(debug_assertions)]
-    {
-        if let Ok(value) = std::env::var(RTK_TIMEOUT_ENV) {
-            if let Ok(seconds) = value.parse::<u64>() {
-                if (1..=3600).contains(&seconds) {
-                    return Duration::from_secs(seconds);
-                }
+    // The bounded wrap timeout must be controllable in every build profile:
+    // debug tests and release builds alike read the override, so a harness
+    // can always prove the kill path without depending on build flags.
+    if let Ok(value) = std::env::var(RTK_TIMEOUT_ENV) {
+        if let Ok(seconds) = value.parse::<u64>() {
+            if (1..=3600).contains(&seconds) {
+                return Duration::from_secs(seconds);
             }
         }
     }
@@ -83,6 +83,7 @@ impl RuntimeSummary {
 pub struct WrapCommand {
     pub managed_root: PathBuf,
     pub max_output_bytes: Option<usize>,
+    pub timeout_secs: Option<u64>,
     pub command: Vec<String>,
 }
 
@@ -149,8 +150,11 @@ pub fn run_rtk_wrap(
         return run_wrapped_command_passthrough(&command.command, &mut stdout, &mut stderr);
     };
     let output_limit = reviewed_output_limit(&command, &hook.manifest)?;
-    let output =
-        run_wrapped_command_bounded(&command.command, output_limit, rtk_command_timeout())?;
+    let timeout = command
+        .timeout_secs
+        .map(Duration::from_secs)
+        .unwrap_or_else(rtk_command_timeout);
+    let output = run_wrapped_command_bounded(&command.command, output_limit, timeout)?;
     let exit_code = normalized_exit_code(&output.status, output.timed_out);
     // The d-token-owned structured command filter (PR-C4A) applies only when
     // the reviewed filter binding is intact. A tampered or unreadable binding
@@ -343,6 +347,7 @@ fn tool_text(value: Value) -> Value {
 fn parse_wrap_command(args: &[String]) -> Result<WrapCommand> {
     let mut managed_root = None;
     let mut max_output_bytes = None;
+    let mut timeout_secs = None;
     let mut index = 0usize;
     while index < args.len() {
         match args[index].as_str() {
@@ -351,6 +356,19 @@ fn parse_wrap_command(args: &[String]) -> Result<WrapCommand> {
                     .get(index + 1)
                     .context("missing value for --managed-root")?;
                 managed_root = Some(PathBuf::from(value));
+                index += 2;
+            }
+            "--timeout-secs" => {
+                let value = args
+                    .get(index + 1)
+                    .context("missing value for --timeout-secs")?;
+                let parsed = value
+                    .parse::<u64>()
+                    .context("--timeout-secs must be a positive integer")?;
+                if !(1..=3600).contains(&parsed) {
+                    bail!("--timeout-secs is outside the reviewed 1s to 3600s range");
+                }
+                timeout_secs = Some(parsed);
                 index += 2;
             }
             "--max-bytes" => {
@@ -377,6 +395,7 @@ fn parse_wrap_command(args: &[String]) -> Result<WrapCommand> {
                 return Ok(WrapCommand {
                     managed_root: managed_root.context("rtk wrap requires --managed-root")?,
                     max_output_bytes,
+                    timeout_secs,
                     command,
                 });
             }
@@ -1015,6 +1034,43 @@ fn optional_bool(value: Option<bool>) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn wrapped_command_timeout_kills_the_process_group_and_reports_timed_out() {
+        // The bounded wrap timeout must terminate the wrapped command tree
+        // and surface a timed-out terminal outcome, independent of any
+        // external bridge binary or build cache.
+        let mut child = spawn_wrapped_command(&[
+            "/bin/sh".to_string(),
+            "-c".to_string(),
+            "sleep 30".to_string(),
+        ])
+        .expect("spawn wrapped sleep");
+        let (status, timed_out) = wait_for_wrapped_command(
+            &mut child,
+            std::time::Duration::from_secs(1),
+        )
+        .expect("bounded wait");
+        assert!(timed_out, "1s budget must expire before the 30s sleep finishes");
+        assert_eq!(normalized_exit_code(&status, timed_out), 124);
+    }
+
+    #[test]
+    fn wrapped_command_completion_is_not_reported_as_timed_out() {
+        let mut child = spawn_wrapped_command(&[
+            "/bin/sh".to_string(),
+            "-c".to_string(),
+            "exit 3".to_string(),
+        ])
+        .expect("spawn wrapped exit");
+        let (status, timed_out) = wait_for_wrapped_command(
+            &mut child,
+            std::time::Duration::from_secs(10),
+        )
+        .expect("bounded wait");
+        assert!(!timed_out, "completed command is not a timeout");
+        assert_eq!(normalized_exit_code(&status, timed_out), 3);
+    }
 
     #[test]
     fn hook_context_is_bounded_and_truthful_when_runtime_is_missing() {

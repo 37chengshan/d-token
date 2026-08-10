@@ -3069,6 +3069,15 @@
       "summary": "fix(evidence): correlate N2 codex route_forward events by configured agent",
       "head_before": "943d4a1deb03c2423084d2ad3074b13c741f2f43",
       "remote": null
+    },
+    {
+      "id": "f17ac036-19c2-4cf4-a8cb-19c771bc584d",
+      "timestamp": "2026-08-11T04:39:12+08:00",
+      "operation": "commit",
+      "branch": "codex/final/stage-pack-integrated",
+      "summary": "fix(agent-bridge): deterministic wrap timeout via explicit flag + profile-independent env; unit-test the kill path",
+      "head_before": "ad1c87608de1086af013c977bb309b21e3f99d10",
+      "remote": null
     }
   ]
 }

@@ -192,13 +192,16 @@ def corpus_digests(root: Path, commit: str) -> dict[str, str]:
 def run_gate(root: Path, spec: dict[str, Any]) -> dict[str, Any]:
     """Execute one gate spec and record the observed outcome (never a self-report)."""
     started = utc_now()
+    gate_env = dict(os.environ)
+    if spec.get("env"):
+        gate_env.update(spec["env"])
     proc = subprocess.run(
         spec["argv"],
         cwd=spec.get("cwd", root),
         check=False,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
-        env=spec.get("env"),
+        env=gate_env,
     )
     tail = proc.stdout.decode("utf-8", errors="replace").strip().splitlines()[-5:]
     return {
@@ -246,7 +249,9 @@ def preflight_gate_specs(root: Path, skip: bool) -> list[dict[str, Any]]:
         {"id": "run_fake_binary_tests", "argv": ["bash", str(root / "support/scripts/run_fake_binary_tests.sh")], "cwd": root},
         {"id": "cargo_fmt", "argv": ["cargo", "fmt", "--all", "--", "--check"], "cwd": root / "code"},
         {"id": "cargo_clippy", "argv": ["cargo", "clippy", "--workspace", "--all-targets", "--", "-D", "warnings"], "cwd": root / "code"},
-        {"id": "cargo_test_workspace", "argv": ["cargo", "test", "--workspace"], "cwd": root / "code"},
+        {"id": "cargo_clean_bridge", "argv": ["cargo", "clean", "-p", "dtoken-agent-bridge"], "cwd": root / "code"},
+        {"id": "cargo_build_bridge", "argv": ["cargo", "build", "-p", "dtoken-agent-bridge", "--bin", "dtoken-agent-bridge"], "cwd": root / "code"},
+        {"id": "cargo_test_workspace", "argv": ["cargo", "test", "--workspace"], "cwd": root / "code", "env": {"CARGO_INCREMENTAL": "0"}},
         {"id": "vitest", "argv": ["npm", "run", "test:run"], "cwd": desktop},
         {"id": "tsc", "argv": [str(desktop / "node_modules/.bin/tsc"), "--noEmit", "--pretty", "false"], "cwd": desktop},
         {"id": "npm_build", "argv": ["npm", "run", "build"], "cwd": desktop},
