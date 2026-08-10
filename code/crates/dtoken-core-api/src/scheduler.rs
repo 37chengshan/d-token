@@ -100,22 +100,75 @@ pub(crate) struct GatedCompression {
     pub deadline: RequestDeadline,
 }
 
-/// Terminal guard for the upstream send window (PR-C6A security): the
+/// True when the request-wide deadline is already exhausted at the current
+/// clock.  A pure predicate so handlers can branch to
+/// [`scheduler_deadline_terminate`] without touching the transport.
+pub(crate) fn scheduler_deadline_expired(deadline: RequestDeadline) -> bool {
+    deadline.is_expired(dtoken_event_ledger::now_ms())
+}
+
+/// Terminal outcome for the upstream send window (PR-C6A security): the
 /// request-wide deadline bounds the total request time, so before any
 /// upstream send/stream the transport must re-check it.  When expired, the
 /// request is NOT forwarded — it terminates with the deadline reason and a
 /// `FailedBeforeCommit` send state, keeping total time within one budget.
 ///
-/// Returns `Some(response)` when the deadline expired (caller must return it
-/// immediately without touching the transport), `None` otherwise.
-pub(crate) fn scheduler_deadline_guard(
+/// The sealed sendable unit is consumed exactly once here ([`ReadyToSend`]
+/// is only usable to mint one terminal receipt), producing exactly one
+/// `FailedBeforeCommit` receipt that binds the exact sent-body digest.  The
+/// terminal request/route/CCR bundle is durably recorded through the same
+/// cross-store commit as every other terminal path
+/// (`record_routed_request_with_ccr_receipt`), so an already-expired
+/// deadline is restart-visible and never a silent drop.
+///
+/// Returns the `503` response the caller must return immediately without
+/// touching the transport (the upstream is never invoked).
+pub(crate) fn scheduler_deadline_terminate(
     state: &AppState,
     request_id: Uuid,
-    deadline: RequestDeadline,
-) -> Option<Response> {
-    if !deadline.is_expired(dtoken_event_ledger::now_ms()) {
-        return None;
+    decision: &RouteDecision,
+    mut request_log: RequestLog,
+    mut event: DtokenEvent,
+    prepared_ccr: &PreparedCcr,
+    pipeline_payload: PreparedPipelinePayload,
+) -> Response {
+    match mint_transport_send_commit(
+        pipeline_payload.ready,
+        pipeline_payload.validation.as_ref(),
+        0,
+        &mut request_log,
+        &mut event,
+    ) {
+        Ok(_receipt) => {}
+        Err(_) => {
+            // Fail-closed validation binding (T-C1B): the sealed unit could
+            // not pair with its validation receipt, so no terminal receipt
+            // is minted and the request must not be forwarded.
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({
+                    "error": {
+                        "type": "validated_body_mismatch",
+                        "message": "send body digest differs from the validated envelope; send aborted"
+                    }
+                })),
+            )
+                .into_response();
+        }
+    };
+    event.status = EventStatus::Failed;
+    if let Some(metadata) = event.metadata.as_object_mut() {
+        metadata.insert(
+            "deadline_before_upstream".to_string(),
+            json!({
+                "reason_code": "deadline_exceeded_preserve",
+                "upstream_send_attempted": false,
+                "raw_available": false,
+                "privacy": "request-wide deadline expired before the upstream send window; nothing was forwarded"
+            }),
+        );
     }
+    state.record_routed_request_with_ccr_receipt(decision, request_log, event, prepared_ccr);
     append_stage_event(
         state,
         request_id,
@@ -130,24 +183,22 @@ pub(crate) fn scheduler_deadline_guard(
         }),
         Some("deadline_exceeded_preserve"),
     );
-    Some(
-        (
-            StatusCode::SERVICE_UNAVAILABLE,
-            Json(json!({
-                "error": {
-                    "type": "request_timeout",
-                    "message": "request-wide deadline expired before the upstream send window"
-                },
-                "dtoken": {
-                    "source": "dtoken-owned-runtime",
-                    "request_id": request_id,
-                    "reason_code": "deadline_exceeded_preserve",
-                    "upstream_send_attempted": false
-                }
-            })),
-        )
-            .into_response(),
+    (
+        StatusCode::SERVICE_UNAVAILABLE,
+        Json(json!({
+            "error": {
+                "type": "request_timeout",
+                "message": "request-wide deadline expired before the upstream send window"
+            },
+            "dtoken": {
+                "source": "dtoken-owned-runtime",
+                "request_id": request_id,
+                "reason_code": "deadline_exceeded_preserve",
+                "upstream_send_attempted": false
+            }
+        })),
     )
+        .into_response()
 }
 
 /// A baseline (body untouched, zero transforms) summary carrying the

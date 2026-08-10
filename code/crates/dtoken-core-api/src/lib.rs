@@ -12200,12 +12200,16 @@ async fn openai_chat_completions(
             "elapsed_us": compression.elapsed_us,
             "transforms_applied": compression.transforms_applied,
         });
-        if let Some(response) = scheduler::scheduler_deadline_guard(
-            &state,
-            request_id,
-            scheduler_deadline,
-        ) {
-            return response;
+        if scheduler::scheduler_deadline_expired(scheduler_deadline) {
+            return scheduler::scheduler_deadline_terminate(
+                &state,
+                request_id,
+                &decision,
+                request_log,
+                event,
+                &prepared_ccr,
+                pipeline_payload,
+            );
         }
         if request.stream.unwrap_or(false) {
             let quota_account_ref = opaque_codex_account_ref(&headers);
@@ -12382,12 +12386,16 @@ async fn openai_chat_completions(
                 }
             }
         }
-        if let Some(response) = scheduler::scheduler_deadline_guard(
-            &state,
-            request_id,
-            scheduler_deadline,
-        ) {
-            return response;
+        if scheduler::scheduler_deadline_expired(scheduler_deadline) {
+            return scheduler::scheduler_deadline_terminate(
+                &state,
+                request_id,
+                &decision,
+                request_log,
+                event,
+                &prepared_ccr,
+                pipeline_payload,
+            );
         }
         let mut upstream =
             forward_openai_chat(&state.http_client, provider, upstream_body, Some(&headers)).await;
@@ -12835,12 +12843,16 @@ async fn openai_responses(
             }
             drop(ccr_original_body);
             if stream_requested {
-                if let Some(response) = scheduler::scheduler_deadline_guard(
-                    &state,
-                    request_id,
-                    scheduler_deadline,
-                ) {
-                    return response;
+                if scheduler::scheduler_deadline_expired(scheduler_deadline) {
+                    return scheduler::scheduler_deadline_terminate(
+                        &state,
+                        request_id,
+                        &decision,
+                        request_log,
+                        event,
+                        &prepared_ccr,
+                        pipeline_payload,
+                    );
                 }
                 let quota_account_ref = opaque_codex_account_ref(&headers);
                 let upstream = forward_openai_responses_stream(
@@ -13012,12 +13024,16 @@ async fn openai_responses(
                     }
                 }
             }
-            if let Some(response) = scheduler::scheduler_deadline_guard(
-                &state,
-                request_id,
-                scheduler_deadline,
-            ) {
-                return response;
+            if scheduler::scheduler_deadline_expired(scheduler_deadline) {
+                return scheduler::scheduler_deadline_terminate(
+                    &state,
+                    request_id,
+                    &decision,
+                    request_log,
+                    event,
+                    &prepared_ccr,
+                    pipeline_payload,
+                );
             }
             let mut upstream = forward_openai_responses(
                 &state.http_client,
@@ -13614,12 +13630,16 @@ async fn openai_responses(
                 }
             }
         }
-        if let Some(response) = scheduler::scheduler_deadline_guard(
-            &state,
-            request_id,
-            scheduler_deadline,
-        ) {
-            return response;
+        if scheduler::scheduler_deadline_expired(scheduler_deadline) {
+            return scheduler::scheduler_deadline_terminate(
+                &state,
+                request_id,
+                &decision,
+                request_log,
+                event,
+                &prepared_ccr,
+                pipeline_payload,
+            );
         }
         let mut upstream = require_openai_message(
             forward_openai_chat(&state.http_client, provider, upstream_body, Some(&headers)).await,
@@ -24065,5 +24085,294 @@ mod tests {
         let sealed: serde_json::Value =
             serde_json::from_slice(payload.ready.body()).expect("sealed envelope json");
         assert_eq!(count(&sealed), 1);
+    }
+
+    /// RED/GREEN core of the deadline terminal fix: an already-expired
+    /// request-wide deadline must consume the sealed sendable unit into
+    /// exactly one `FailedBeforeCommit` receipt, persist the
+    /// request/route/CCR terminal bundle durably (restart-visible), and
+    /// never invoke the upstream (503 response, no forward).
+    #[tokio::test]
+    async fn scheduler_deadline_terminate_consumes_unit_persists_bundle_and_never_forwards() {
+        use dtoken_runtime_pipeline::RequestDeadline;
+
+        let dir = std::env::temp_dir().join(format!("dtoken-deadline-term-{}", Uuid::new_v4()));
+        let state = AppState::new_persistent(DtokenConfig::empty(), &dir);
+        let scope = cache_test_scope(Protocol::OpenAi);
+        let decision = cache_test_decision(&scope);
+        let baseline = json!({
+            "model": "model-a",
+            "messages": [{"role": "user", "content": "repeat repeat deadline"}]
+        });
+        let attribution = RequestAttribution {
+            agent: Some("test-agent".to_string()),
+            instance_id: Some("instance-a".to_string()),
+            project_id: Some("project-a".to_string()),
+        };
+        let compression = compress_for_route(None, CompressionPolicy::Off, baseline.clone());
+        let request_log = build_request_log(
+            decision.request_id,
+            &decision,
+            Some("model-a".to_string()),
+            Some("model-a".to_string()),
+            Protocol::OpenAi,
+            &compression,
+            &attribution,
+        );
+        let mut event = build_ledger_event(
+            decision.request_id,
+            &decision,
+            Protocol::OpenAi,
+            Protocol::OpenAi,
+            &compression,
+            &attribution,
+        );
+        let prepared_ccr = state
+            .prepare_ccr_for_request(
+                &decision,
+                &request_log,
+                &serde_json::to_vec(&baseline).expect("serialize baseline"),
+            )
+            .expect("ccr preparation");
+        let payload = prepare_json_pipeline_payload(
+            scope,
+            &decision,
+            &baseline,
+            &baseline,
+            &request_log.transforms_applied,
+            &prepared_ccr,
+        )
+        .expect("sealed baseline payload");
+        assert!(payload.validation.is_none(), "baseline payload has no validation");
+        let sealed_digest = payload.ready.body_digest();
+        // Handlers insert the pipeline provenance into the ledger event
+        // before the deadline check; the terminal record must preserve it.
+        let pipeline_reason = payload
+            .fallback_reason
+            .unwrap_or("no_transform_selected")
+            .to_string();
+        if let Some(metadata) = event.metadata.as_object_mut() {
+            metadata.insert(
+                "pipeline_payload_variant".to_string(),
+                json!(payload.ready.variant()),
+            );
+            metadata.insert("pipeline_reason_code".to_string(), json!(pipeline_reason));
+        }
+
+        // Expired deadline: must never reach an upstream.  Deadline anchored
+        // at the Unix epoch is already long past.
+        let deadline = RequestDeadline::new(0, 30_000).expect("epoch deadline with valid budget");
+        assert!(scheduler::scheduler_deadline_expired(deadline));
+        let response = scheduler::scheduler_deadline_terminate(
+            &state,
+            decision.request_id,
+            &decision,
+            request_log,
+            event,
+            &prepared_ccr,
+            payload,
+        );
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let body = response_json(response).await;
+        assert_eq!(body["error"]["type"], "request_timeout");
+        assert_eq!(body["dtoken"]["reason_code"], "deadline_exceeded_preserve");
+        assert_eq!(body["dtoken"]["upstream_send_attempted"], false);
+
+        // Exactly one terminal receipt, bound to the sealed body digest.
+        // The newest-first ledger also holds the ProviderForward stage event
+        // (`send_state`, no `send_commit_state`), so select the terminal
+        // event that actually carries the receipt metadata.
+        let terminal = state
+            .recent_events(100)
+            .into_iter()
+            .find(|event| {
+                event.request_id == Some(decision.request_id)
+                    && event.metadata.get("send_commit_state").is_some()
+            })
+            .expect("terminal ledger event recorded");
+        assert_eq!(terminal.status, EventStatus::Failed);
+        assert_eq!(terminal.metadata["send_commit_state"], "failed_before_commit");
+        assert_eq!(
+            terminal.metadata["send_commit_digest"].as_str(),
+            Some(sealed_digest.as_str()),
+            "receipt binds the exact sealed body digest"
+        );
+        assert_eq!(
+            terminal.metadata["send_commit_reason"], "no_transform_selected",
+            "receipt reason is the sealed unit's own (T-C0B), not the deadline reason"
+        );
+        assert_eq!(
+            terminal.metadata["deadline_before_upstream"]["reason_code"],
+            "deadline_exceeded_preserve"
+        );
+        assert_eq!(
+            terminal.metadata["deadline_before_upstream"]["upstream_send_attempted"],
+            false
+        );
+        assert_eq!(
+            terminal.metadata["pipeline_reason_code"], pipeline_reason,
+            "pipeline fallback reason preserved"
+        );
+
+        // Request/route/CCR bundle persisted (restart-visible).
+        assert_eq!(state.recent_route_decisions(10).len(), 1);
+        let logs = state.recent_request_logs(10);
+        assert_eq!(logs.len(), 1);
+        assert_eq!(logs[0].request_id, decision.request_id);
+        assert_eq!(logs[0].error.as_deref(), None, "no fabricated upstream error");
+        let ccr = state
+            .retrieve_ccr_metadata(&format!("ccr:{}", decision.request_id))
+            .expect("ccr metadata");
+        assert_eq!(ccr["state"], "not_required");
+        assert_eq!(ccr["raw_available"], false);
+
+        // Restart: the same terminal bundle is visible from the journals.
+        let restarted = AppState::new_persistent(DtokenConfig::empty(), &dir);
+        let restarted_events = restarted.recent_events(100);
+        assert!(
+            restarted_events.iter().any(|event| {
+                event.request_id == Some(decision.request_id)
+                    && event.metadata["send_commit_state"] == "failed_before_commit"
+            }),
+            "terminal event survives restart"
+        );
+        assert_eq!(restarted.recent_route_decisions(10).len(), 1);
+        assert_eq!(restarted.recent_request_logs(10).len(), 1);
+        assert_eq!(
+            restarted
+                .retrieve_ccr_metadata(&format!("ccr:{}", decision.request_id))
+                .expect("restart ccr metadata")["state"],
+            "not_required"
+        );
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// The deadline terminate must fail closed when the sealed sendable unit
+    /// cannot pair with its validation receipt: no terminal receipt is
+    /// minted, nothing is forwarded, and the fail-closed response is
+    /// returned instead of a deadline 503.
+    #[tokio::test]
+    async fn scheduler_deadline_terminate_rejects_mutated_unit_without_minting() {
+        let dir = std::env::temp_dir().join(format!("dtoken-deadline-mut-{}", Uuid::new_v4()));
+        let state = AppState::new_persistent(DtokenConfig::empty(), &dir);
+        let scope = cache_test_scope(Protocol::OpenAi);
+        let decision = cache_test_decision(&scope);
+        let baseline =
+            json!({"model": "model-a", "messages": [{"role": "user", "content": "repeat repeat"}]});
+        let candidate = json!({"model": "model-a", "messages": [{"role": "user", "content": "repeat"}]});
+        let transforms = vec!["safe-text".to_string()];
+        let prepared = PreparedCcr {
+            receipt: Some(CcrStoreReceipt {
+                recovery_ref: format!("ccr:{}", decision.request_id),
+                expires_at_unix: 9_999,
+                plaintext_bytes: baseline.to_string().len(),
+            }),
+            store_configured: true,
+        };
+        let payload = prepare_json_pipeline_payload(
+            scope.clone(),
+            &decision,
+            &baseline,
+            &candidate,
+            &transforms,
+            &prepared,
+        )
+        .expect("validated payload");
+        let validation = payload.validation.expect("validation receipt present");
+        // A different sendable unit — one sealed over MUTATED bytes — cannot
+        // be committed under the original validation receipt.
+        let mutated =
+            json!({"model": "model-a", "messages": [{"role": "user", "content": "MUTATED"}]});
+        let mutated_ready = PipelineInput::new(
+            scope.clone(),
+            serde_json::to_vec(&mutated).unwrap(),
+            MAX_REQUEST_BODY_BYTES,
+        )
+        .expect("bounded mutated ingress")
+        .prepare()
+        .into_baseline_ready("mutated");
+        assert_ne!(
+            mutated_ready.body_digest(),
+            validation.validated_digest(),
+            "mutation changes the digest"
+        );
+        let request_log = RequestLog {
+            request_id: scope.request_id,
+            timestamp_ms: 1,
+            agent: None,
+            instance_id: None,
+            project_id: None,
+            user_target_model: None,
+            input_protocol: Protocol::OpenAi,
+            provider_id: Some("provider-a".to_string()),
+            route_id: Some("route-a".to_string()),
+            chain_mode: None,
+            model: Some("model-a".to_string()),
+            input_tokens_before: None,
+            input_tokens_after: None,
+            output_tokens: None,
+            provider_input_tokens: None,
+            provider_output_tokens: None,
+            tokens_saved: None,
+            transforms_applied: vec![],
+            latency_ms: None,
+            error: None,
+            config_source: None,
+            quota_metadata: None,
+            context_accounting: None,
+        };
+        let event = build_ledger_event(
+            scope.request_id,
+            &decision,
+            Protocol::OpenAi,
+            Protocol::OpenAi,
+            &CompressionSummary {
+                original_tokens: 0,
+                compressed_tokens: 0,
+                tokens_saved: 0,
+                savings_percent: 0.0,
+                elapsed_us: 0,
+                transforms_applied: vec![],
+                fallback_reason_code: None,
+                body: baseline.clone(),
+                context_accounting: None,
+                bus_receipts: vec![],
+            },
+            &RequestAttribution {
+                agent: None,
+                instance_id: None,
+                project_id: None,
+            },
+        );
+        // Deadline anchored at the Unix epoch: already long expired.
+        let response = scheduler::scheduler_deadline_terminate(
+            &state,
+            decision.request_id,
+            &decision,
+            request_log,
+            event,
+            &prepared,
+            PreparedPipelinePayload {
+                ready: mutated_ready,
+                fallback_reason: None,
+                validation: Some(validation),
+            },
+        );
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        let body = response_json(response).await;
+        assert_eq!(body["error"]["type"], "validated_body_mismatch");
+        // No terminal receipt, no request/route/CCR bundle.
+        assert!(
+            state
+                .recent_events(100)
+                .iter()
+                .all(|event| event.request_id != Some(decision.request_id)),
+            "no terminal event when the unit cannot be consumed"
+        );
+        assert!(state.recent_request_logs(10).is_empty());
+        assert!(state.recent_route_decisions(10).is_empty());
+
+        let _ = std::fs::remove_dir_all(dir);
     }
 }
