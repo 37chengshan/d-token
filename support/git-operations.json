@@ -3114,6 +3114,15 @@
       "summary": "fix(evidence): lowercase check subcommand in U5 perf producer",
       "head_before": "ffe2ac6ce2e500077b12abf11c0f4c78d66fd0a1",
       "remote": null
+    },
+    {
+      "id": "d4a971d8-9ddd-4fa9-b016-a79db48c4a03",
+      "timestamp": "2026-08-11T04:55:35+08:00",
+      "operation": "commit",
+      "branch": "codex/final/stage-pack-integrated",
+      "summary": "fix(evidence): parse multi-line pretty JSON output in N evidence producer",
+      "head_before": "9d3bca83980cf6c42e850c8bec0ab07eea5ec62a",
+      "remote": null
     }
   ]
 }

@@ -200,7 +200,7 @@ def run_command(argv: list[str], cwd: Path) -> dict[str, Any]:
         stderr=subprocess.STDOUT,
     )
     output = proc.stdout.decode("utf-8", errors="replace")
-    tail = output.strip().splitlines()[-8:]
+    tail = output.strip().splitlines()[-400:]
     return {
         "argv": " ".join(str(item) for item in argv),
         "exit_code": proc.returncode,
@@ -294,15 +294,26 @@ def local_node_commands(node_id: str, root: Path) -> list[list[str]]:
 
 
 def json_tail(record: dict[str, Any]) -> dict[str, Any] | None:
-    for line in reversed(record.get("output_tail", [])):
-        line = line.strip()
-        if line.startswith("{"):
+    lines = record.get("output_tail", [])
+    for index in range(len(lines) - 1, -1, -1):
+        if "{" not in lines[index]:
+            continue
+        # Collect the JSON block starting at the first line that opens a brace
+        # at column zero OR at the indented "key": { marker; expand upward and
+        # downward until the block parses as a complete JSON object.
+        start = index
+        while start > 0 and "{" not in lines[start - 1]:
+            start -= 1
+        for end in range(index + 1, len(lines) + 1):
+            candidate = "\n".join(lines[start:end])
             try:
-                value = json.loads(line)
-                if isinstance(value, dict):
-                    return value
+                value = json.loads(candidate)
             except ValueError:
+                if end == len(lines):
+                    break
                 continue
+            if isinstance(value, dict):
+                return value
     return None
 
 
