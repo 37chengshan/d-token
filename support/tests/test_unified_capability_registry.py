@@ -112,6 +112,9 @@ class UnifiedCapabilityRegistryContractTest(unittest.TestCase):
             self.assertIn("does not resolve", result.stdout)
 
     def test_validator_rejects_unresolved_evidence_path_fail_closed(self) -> None:
+        # real_evidence must be a fixed runtime artifact NAME for the entry's
+        # producer node — repo paths (absolute or relative) are never runtime
+        # evidence (EVIDENCE.md §4); implementation refs live elsewhere.
         data = self.load_registry()
         data["entries"][0]["real_evidence"] = ["/tmp/external-evidence.json"]
         with tempfile.TemporaryDirectory() as tmp:
@@ -119,7 +122,110 @@ class UnifiedCapabilityRegistryContractTest(unittest.TestCase):
             bad.write_text(json.dumps(data), encoding="utf-8")
             result = run_validator(bad)
             self.assertNotEqual(result.returncode, 0)
-            self.assertIn("must be repo-relative", result.stdout)
+            self.assertIn("must be a fixed artifact name", result.stdout)
+
+    def test_validator_rejects_source_path_as_runtime_evidence_fail_closed(self) -> None:
+        data = self.load_registry()
+        data["entries"][0]["real_evidence"] = [
+            "code/crates/dtoken-compress/src/compressor_registry.rs"
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            bad = Path(tmp) / "registry.json"
+            bad.write_text(json.dumps(data), encoding="utf-8")
+            result = run_validator(bad)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("must be a fixed artifact name", result.stdout)
+
+    def test_validator_rejects_unresolved_dispatch_symbol_fail_closed(self) -> None:
+        data = self.load_registry()
+        data["entries"][0]["dispatch_symbol"] = "dtoken_missing::NoSuchSymbol::nowhere"
+        with tempfile.TemporaryDirectory() as tmp:
+            bad = Path(tmp) / "registry.json"
+            bad.write_text(json.dumps(data), encoding="utf-8")
+            result = run_validator(bad)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("absent from the tracked symbol source index", result.stdout)
+
+    def test_validator_rejects_non_test_target_path_fail_closed(self) -> None:
+        data = self.load_registry()
+        data["entries"][0]["tests"]["normal"] = [
+            "code/crates/dtoken-compress/src/code_codec.rs"
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            bad = Path(tmp) / "registry.json"
+            bad.write_text(json.dumps(data), encoding="utf-8")
+            result = run_validator(bad)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("not an actual test target", result.stdout)
+
+    def test_validator_rejects_unknown_owner_fail_closed(self) -> None:
+        data = self.load_registry()
+        data["entries"][0]["owner_crate"] = "dtoken-not-a-workspace-crate"
+        with tempfile.TemporaryDirectory() as tmp:
+            bad = Path(tmp) / "registry.json"
+            bad.write_text(json.dumps(data), encoding="utf-8")
+            result = run_validator(bad)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("is not a workspace owner", result.stdout)
+
+    def test_validator_rejects_invalid_gate_fail_closed(self) -> None:
+        data = self.load_registry()
+        data["entries"][0]["gates"] = ["G2", "U1", "G99"]
+        with tempfile.TemporaryDirectory() as tmp:
+            bad = Path(tmp) / "registry.json"
+            bad.write_text(json.dumps(data), encoding="utf-8")
+            result = run_validator(bad)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("not in the gate vocabulary", result.stdout)
+
+    def test_validator_rejects_invalid_producer_role_fail_closed(self) -> None:
+        data = self.load_registry()
+        data["entries"][0]["producer"] = "entry-producer:N11"
+        with tempfile.TemporaryDirectory() as tmp:
+            bad = Path(tmp) / "registry.json"
+            bad.write_text(json.dumps(data), encoding="utf-8")
+            result = run_validator(bad)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("is not an entry-producer:<node> role", result.stdout)
+
+    def test_validator_rejects_missing_implementation_refs_fail_closed(self) -> None:
+        data = self.load_registry()
+        data["entries"][0]["implementation_refs"] = []
+        with tempfile.TemporaryDirectory() as tmp:
+            bad = Path(tmp) / "registry.json"
+            bad.write_text(json.dumps(data), encoding="utf-8")
+            result = run_validator(bad)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("missing or empty field 'implementation_refs'", result.stdout)
+
+    def test_every_dispatch_symbol_resolves_through_tracked_index(self) -> None:
+        # No registry entry may bypass the symbol source index (C8 contract:
+        # production dispatch resolves through an explicit tracked manifest).
+        data = self.load_registry()
+        index_path = REPO_ROOT / "support" / "scripts" / "symbol_source_index_v1.json"
+        self.assertTrue(index_path.is_file(), "symbol source index must be tracked")
+        index = json.loads(index_path.read_text(encoding="utf-8"))["symbols"]
+        for entry in data["entries"]:
+            self.assertIn(
+                entry["dispatch_symbol"],
+                index,
+                f"{entry['id']} dispatch_symbol must be in the symbol source index",
+            )
+
+    def test_every_entry_producer_maps_to_fixed_artifact_name(self) -> None:
+        data = self.load_registry()
+        for entry in data["entries"]:
+            node = entry["producer"].split(":", 1)[1]
+            self.assertTrue(
+                entry["real_evidence"],
+                f"{entry['id']} must declare runtime evidence for node {node}",
+            )
+            for name in entry["real_evidence"]:
+                self.assertNotIn(
+                    "/",
+                    name,
+                    f"{entry['id']} real_evidence must be a fixed artifact name, got {name!r}",
+                )
 
 
 

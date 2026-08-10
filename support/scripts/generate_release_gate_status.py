@@ -1,165 +1,216 @@
 #!/usr/bin/env python3
-"""Cross-platform G0-G8 release gate status aggregator (fail-closed).
+"""G0-G9 release gate status aggregator (fail-closed, explicit evidence only).
 
-This aggregator maps the Headroom-migration release gates defined in
-docs/PLAN.md §1C.2 (G0-G8) to concrete evidence artifacts under
-support/artifacts/ and reports each gate as one of:
-
-  passed      - the required evidence exists and is ok=true
-  partial     - some evidence passed but platform/runner evidence is missing
-  unavailable - required evidence could not be produced on this host
-                (e.g. PowerShell gates on a macOS host without pwsh)
-  blocked     - evidence exists but failed, or required evidence is absent
-
-PR-7 extension (docs/releases/v0.0.1/REQUIREMENTS.md EVID-1/EVID-3/EVID-6):
-
-* Supplemental required evidence is aggregated in a separate top-level
-  ``supplemental`` section (Codex routed acceptance, agent config acceptance,
-  cc-switch A->B->A, macOS upgrade/rollback, autostart/credential round-trip).
-  Any missing or non-green supplemental evidence blocks the release
-  (exit 1).  Supplemental evidence NEVER feeds G0-G8: G7 still means "Real
-  OpenCode" only, and the other gates keep their exact semantics.
-* ``--expected-commit`` and ``--expected-source-digest`` enable bound mode:
-  every supplemental artifact must carry a candidate commit (and, when the
-  digest flag is given, a source digest) matching the expected values.  In
-  bound mode the aggregator never accepts "the newest file" alone: it only
-  considers artifacts bound to the expected candidate, so stale pass
-  artifacts cannot leak through (EVID-1).  G8 additionally requires the
-  fan-in report's ``expected_commit`` to match ``--expected-commit``.
-  Without the flags the aggregator keeps the legacy "latest artifact" mode
-  and records binding_mode=latest; N9 release mode MUST pass both flags.
-* The source digest anchor is content-bearing and worktree-invariant:
-  sha256 of the ASCII hex bytes of ``git rev-parse HEAD^{tree}`` (the
-  candidate commit's tree object id).  Unlike the old ``git diff --binary
-  HEAD -- .`` anchor — a constant at any clean checkout — the tree anchor
-  discriminates candidate content and is reproducible at a clean C_final
-  checkout even when evidence was collected from a dirty worktree.  The
-  fan-in contract script independently computes the same tree digest for the
-  expected commit, so G8 and ``--expected-source-digest`` share one anchor.
+This aggregator maps the release gates defined in docs/PLAN.md §1C.2 and
+docs/releases/v0.0.1/VERIFICATION.md §6 (G0-G9) to concrete evidence
+artifacts.  It NEVER discovers evidence by scanning directories, mtime, or
+"latest" files: every consumed artifact must be listed explicitly in an
+evidence manifest (--evidence-manifest), and every N0-N10 artifact must carry
+the unified evidence envelope (VERIFICATION.md §1) whose digests are bound to
+the frozen candidate.
 
 Fail-closed contract (do not weaken):
-  1. A gate NEVER passes on "script parses", "metadata-only", or "unsigned"
-     presence alone.  Every passed gate requires an executed report artifact
-     with ok=true (or the equivalent status field).
-  2. G6 (Ops) requires the PowerShell `release-verification-*.json` report and
-     the `release-handoff-manifest-*.json`.  On a host where PowerShell could
-     not run, G6 is `unavailable` and the aggregate `release_ready` is false.
-  3. G8 (Candidate) requires `fan-in-artifact-contract-*.json` ok=true, which
-     binds BOTH platforms to the same non-empty git commit and the same source
-     digest.  Missing or failed fan-in evidence => G8 `blocked`.
-  4. Default exit code is 1 whenever any gate is not `passed` or any
-     supplemental evidence is not `passed`.  `--report-only` writes the
-     report and exits 0 for diagnostics; it never marks a release ready and
-     must never be used as a release pass.
+  1. --expected-commit, --expected-source-digest, --expected-registry-digest
+     and --expected-corpus-digests are REQUIRED.  A gate NEVER passes on
+     "script parses", metadata-only presence, an unsigned notice, or a
+     status=pass stamp alone: each N0-N10 artifact is envelope-validated
+     (fields, candidate binding, dirty=false, digest match, timestamps) and
+     its artifact_sha256 is recomputed with the canonical rule and compared
+     exactly.  Missing, stale, old-candidate, digest-mismatch, or pass-only
+     evidence is rejected.
+  2. G6 (Ops) requires the N0/N1/N6/N7/N8/N10-U5 artifacts plus the executed
+     PowerShell release-verification report (legacy role
+     "release-verification-*") with redaction/cleanup steps and the handoff
+     manifest ok=true.  A host where PowerShell was NOT executed reports G6
+     unavailable - a blocker, never a pass.
+  3. G8 (Candidate) requires N0/N7/N8/N10 plus the fan-in evidence
+     ("fan-in-artifact-contract-*") ok=true with same_commit and
+     same_source_digest, binding both platforms to the same non-empty commit
+     and source digest.  Missing or failed fan-in evidence => G8 blocked
+     (双平台同 commit fan-in 证据缺失).
+  4. G9 (Frontend completeness) opens only after G0-G8 and the N10-U9
+     117/117 coverage seal are green.
+  5. Default exit code is 1 whenever any gate is not `passed`.  --report-only
+     writes the report and exits 0 for diagnostics; it never marks a release
+     ready and must never be used as a release pass.
 
 Usage:
   python3 support/scripts/generate_release_gate_status.py \
-    [--artifacts-dir support/artifacts] [--output-dir support/artifacts] \
-    [--expected-commit <C_final>] [--expected-source-digest <sha256>] \
-    [--report-only] [--quiet]
+    --evidence-manifest final-candidate-evidence-manifest.json \
+    --expected-commit <C_final> \
+    --expected-source-digest <sha256> \
+    --expected-registry-digest <sha256> \
+    --expected-corpus-digests '{"benchmark": "<sha256>", ...}' \
+    [--expected-version 0.0.1] [--expected-producer-revision <rev>] \
+    [--output-dir support/artifacts] [--report-only] [--quiet]
+
+Evidence manifest schema:
+  {
+    "schema_version": "1",
+    "artifacts": {
+      "N0": ["support/artifacts/final-candidate/<C_final>/N0-preflight.json"],
+      "N1": [".../N1-receipt.json"],
+      ...
+      "N10-U0": [".../N10-U0-contract.json"],
+      ...
+      "release_verification": [".../release-verification-*.json"],
+      "release_handoff_manifest": [".../release-handoff-manifest-*.json"],
+      "windows_dacl_acl": [".../windows-dacl-acl-tests-*.json"],
+      "managed_rtk": [".../managed-rtk-candidate/candidate-*.json"],
+      "opencode_real_routed": [".../opencode-real-routed/real-routed-*.json"],
+      "fan_in_artifact_contract": [".../fan-in-artifact-contract-*.json"]
+    }
+  }
+Node roles (N0-N8, N10-U0..N10-U9) must be envelope artifacts.  Legacy roles
+may be old-schema reports; they are validated with ok/status when the envelope
+is absent and only feed the legacy portions of G3/G5/G6/G8.
 """
 from __future__ import annotations
 
 import argparse
 import datetime
+import hashlib
 import json
-import re
 import sys
 from pathlib import Path
+from typing import Any
 
-# Gate ids and labels mirror docs/PLAN.md §1C.2 items 1-9 (G9 is out of scope:
-# it is the frontend-completeness gate that only opens after G0-G8 are green).
+# Gate ids and labels mirror docs/PLAN.md §1C.2 and VERIFICATION.md §6
+# (G9 is the frontend-completeness gate that only opens after G0-G8 and the
+# N10-U9 117/117 coverage seal are green).
 GATES = [
     ("G0", "Truth"),
     ("G1", "Contracts"),
-    ("G2", "Pipeline"),
-    ("G3", "Stores"),
+    ("G2", "Codec"),
+    ("G3", "CCR/ACL"),
     ("G4", "Surfaces"),
-    ("G5", "Agent/RTK"),
+    ("G5", "Agent/cc-switch/RTK"),
     ("G6", "Ops"),
     ("G7", "Real OpenCode"),
     ("G8", "Candidate"),
+    ("G9", "Frontend completeness"),
 ]
 
-# Supplemental required evidence (PR-7).  Each spec lists artifact globs
-# relative to the artifacts dir (top level and/or one subdir), a green
-# predicate, and whether the artifact is expected to carry candidate binding.
-# Missing evidence is always `blocked`, never `unavailable`: these artifacts
-# are produced by Main / the candidate verification nodes, not by host
-# capability.
-_SUPPLEMENTAL_SPECS: list[dict] = [
-    {
-        "id": "codex",
-        "label": "Codex routed acceptance (N2)",
-        "patterns": ["codex-ocxlocal-routed/*.json", "codex-ocxlocal-routed-*.json"],
-        "green": "ok_and_status",
-        "ok_statuses": {"routed-verified", "passed", "pass", "ok"},
-        "binding": True,
-    },
-    {
-        "id": "config",
-        "label": "Agent config acceptance (N4)",
-        "patterns": ["agent-config-acceptance/*.json", "agent-config-acceptance-*.json"],
-        "green": "status_ok",
-        "ok_statuses": {"ok", "passed", "pass"},
-        "binding": True,
-    },
-    {
-        "id": "cc-switch",
-        "label": "cc-switch A->B->A evidence (N5)",
-        "patterns": ["cc-switch-aba/*.json", "cc-switch-aba-*.json"],
-        "green": "cc_switch_aba",
-        "ok_statuses": set(),
-        "binding": True,
-    },
-    {
-        "id": "upgrade-rollback",
-        "label": "macOS upgrade/rollback audit (N7)",
-        "patterns": ["upgrade-autostart-credential/upgrade-rollback-audit-*.json",
-                     "upgrade-rollback-audit-*.json"],
-        "green": "ok_and_status",
-        "ok_statuses": {"verified", "passed", "pass", "ok"},
-        "binding": True,
-    },
-    {
-        "id": "autostart-credential",
-        "label": "Autostart/credential round-trip (N7)",
-        "patterns": ["upgrade-autostart-credential/autostart-credential-roundtrip-*.json",
-                     "autostart-credential-roundtrip-*.json"],
-        "green": "ok_and_status",
-        "ok_statuses": {"verified", "passed", "pass", "ok"},
-        "binding": True,
-    },
+# Envelope fields required on every N0-N10 machine artifact (VERIFICATION.md §1).
+ENVELOPE_FIELDS = [
+    "schema_version",
+    "node_id",
+    "status",
+    "reason_codes",
+    "candidate_commit",
+    "source_digest",
+    "dirty",
+    "registry_digest",
+    "corpus_digests",
+    "started_at",
+    "finished_at",
+    "platform",
+    "producer_revision",
+    "artifact_sha256",
 ]
 
-COMMIT_RE = re.compile(r"[0-9a-fA-F]{40,64}")
-DIGEST_RE = re.compile(r"[0-9a-fA-F]{64}")
+NODE_ROLES = {
+    "N0",
+    "N1",
+    "N2",
+    "N3",
+    "N4",
+    "N5",
+    "N6",
+    "N7",
+    "N8",
+    "N10-U0",
+    "N10-U1",
+    "N10-U2",
+    "N10-U3",
+    "N10-U4",
+    "N10-U5",
+    "N10-U6",
+    "N10-U7",
+    "N10-U8",
+    "N10-U9",
+}
+
+LEGACY_ROLES = {
+    # Executed PowerShell release-verification report (G6).
+    "release_verification",
+    # PowerShell release handoff manifest (G6).
+    "release_handoff_manifest",
+    # Windows MSVC DACL/ACL test report (G3, legacy).
+    "windows_dacl_acl",
+    # managed-RTK candidate receipt (G5, legacy).
+    "managed_rtk",
+    # Independent managed RTK platform receipts (G5): macOS probe evidence,
+    # Windows and WSL runner evidence.  Each must be executed, candidate-bound
+    # and report usage_count > 0; a missing role blocks G5.
+    "managed_rtk_macos",
+    "managed_rtk_windows",
+    "managed_rtk_wsl",
+    # real OpenCode routed report (G7, legacy; candidate_id must equal C_final).
+    "opencode_real_routed",
+    # Dual-platform same-commit/source-digest fan-in contract (G8).
+    "fan_in_artifact_contract",
+}
+
+# Gate -> required node roles (VERIFICATION.md §6).  "U1-registry" is the
+# capability-registry digest binding: it is satisfied only when the expected
+# registry digest is provided (required) and every envelope matches it.
+GATE_ROLES = {
+    "G0": ["N0", "N10-U0", "U1-registry"],
+    "G1": ["N10-U0", "N10-U3", "N4"],
+    "G2": ["U1-registry", "N10-U2", "N10-U5"],
+    "G3": ["N10-U3", "N1", "N8"],
+    "G4": ["N10-U0", "N1", "N2", "N3"],
+    "G5": ["N2", "N3", "N4", "N5", "N7", "N8", "N10-U2",
+           "managed_rtk_macos", "managed_rtk_windows", "managed_rtk_wsl"],
+    "G6": ["N0", "N1", "N6", "N7", "N8", "N10-U5"],
+    "G7": ["N3"],
+    "G8": ["N0", "N7", "N8", "N10"],
+    "G9": ["N6", "N10-U9"],
+}
+
+N10_AGGREGATE_ROLES = [f"N10-U{index}" for index in range(10)]
+
+# Independent managed-RTK platform receipts (G5): each must be executed with
+# usage_count > 0 and candidate binding; missing roles block G5.
+MANAGED_RTK_ROLES = {"managed_rtk_macos", "managed_rtk_windows", "managed_rtk_wsl"}
 
 
-def latest_file(directory: Path, pattern: str) -> Path | None:
-    """Newest file matching pattern (by mtime), or None."""
-    if directory is None or not directory.is_dir():
-        return None
-    matches = sorted(
-        (p for p in directory.glob(pattern) if p.is_file()),
-        key=lambda p: p.stat().st_mtime,
-        reverse=True,
-    )
-    return matches[0] if matches else None
+def canonical_json_bytes(data: dict) -> bytes:
+    """Canonical JSON: UTF-8, object keys sorted, no extra whitespace."""
+    return json.dumps(
+        data, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+    ).encode("utf-8")
 
 
-def load_json(path: Path | None) -> dict | None:
-    if path is None or not path.is_file():
+def recompute_artifact_sha256(data: dict) -> str:
+    """artifact_sha256 rule: remove the field, canonical-JSON, SHA-256 hex."""
+    body = {key: value for key, value in data.items() if key != "artifact_sha256"}
+    return hashlib.sha256(canonical_json_bytes(body)).hexdigest()
+
+
+def parse_iso(timestamp: Any) -> datetime.datetime | None:
+    if not isinstance(timestamp, str):
         return None
     try:
-        data = json.loads(path.read_text(encoding="utf-8-sig"))
-        return data if isinstance(data, dict) else None
-    except (OSError, ValueError):
+        return datetime.datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+    except ValueError:
         return None
+
+
+def report_green(report: dict | None) -> bool | None:
+    """True when a legacy report is an executed pass under either schema it uses."""
+    if not isinstance(report, dict):
+        return None
+    if report.get("ok") is True:
+        return True
+    status = report.get("status")
+    if isinstance(status, str) and status.lower() in ("pass", "passed", "ok", "success"):
+        return True
+    return False
 
 
 def step_ok(report: dict | None, step_id: str) -> bool | None:
-    """True/False when the report has the step; None when the report/step is absent."""
     if not isinstance(report, dict):
         return None
     steps = report.get("steps")
@@ -171,484 +222,496 @@ def step_ok(report: dict | None, step_id: str) -> bool | None:
     return None
 
 
-def report_ok(report: dict | None) -> bool | None:
-    if not isinstance(report, dict):
-        return None
-    value = report.get("ok")
-    return value is True if isinstance(value, bool) else None
-
-
-def report_green(report: dict | None) -> bool | None:
-    """True when a report is an executed pass under either schema it uses.
-
-    Some evidence reports stamp `ok: true` (fan-in, verification, audits);
-    managed-RTK candidate receipts stamp `status: pass` with no `ok` field.
-    Absent report or any non-green status => False.
-    """
-    if not isinstance(report, dict):
-        return None
-    if report.get("ok") is True:
-        return True
-    status = report.get("status")
-    if isinstance(status, str) and status.lower() in ("pass", "passed", "ok", "success"):
-        return True
-    return False
-
-
-def all_steps_ok(report: dict | None, step_ids: list[str]) -> bool | None:
-    """True only when every listed step is present AND ok; None when the report is absent."""
-    if not isinstance(report, dict):
-        return None
-    results = [step_ok(report, step_id) for step_id in step_ids]
-    if any(result is None for result in results):
-        return None
-    return all(results)
-
-
-# --- PR-7 supplemental evidence helpers -------------------------------------
-
-def artifact_binding(artifact: dict | None) -> tuple[str | None, str | None]:
-    """Extract (candidate_commit, source_digest) from an evidence artifact.
-
-    Accepted shapes (anything else yields None for that field, which fails
-    closed in bound mode):
-      - top-level ``candidate_commit`` / ``source_digest``
-      - nested ``candidate: {"commit": ..., "source_digest" | "digest": ...}``
-      - ``source_digest`` as ``{"value": ...}``
-    """
-    if not isinstance(artifact, dict):
-        return None, None
-    commit = artifact.get("candidate_commit")
-    digest = artifact.get("source_digest")
-    candidate = artifact.get("candidate")
-    if isinstance(candidate, dict):
-        if not isinstance(commit, str):
-            commit = candidate.get("commit")
-        if not isinstance(digest, (str, dict)):
-            digest = candidate.get("source_digest") or candidate.get("digest")
-    if isinstance(digest, dict):
-        digest = digest.get("value")
-    if not isinstance(commit, str) or not COMMIT_RE.fullmatch(commit):
-        commit = None
-    if not isinstance(digest, str) or not DIGEST_RE.fullmatch(digest):
-        digest = None
-    return commit, digest
-
-
-def evidence_green(spec: dict, artifact: dict | None) -> bool:
-    """Green predicate per supplemental spec; never green on presence alone."""
-    if not isinstance(artifact, dict):
-        return False
-    if spec["green"] == "cc_switch_aba":
-        return (
-            artifact.get("ok") is True
-            and artifact.get("wrote_cc_switch") is False
-            and artifact.get("identity_restored") is True
+def envelope_violations(artifact: dict, expected: dict) -> list[str]:
+    """Validate the unified evidence envelope; empty list means valid."""
+    violations: list[str] = []
+    for field in ENVELOPE_FIELDS:
+        if field not in artifact:
+            violations.append(f"missing envelope field {field!r}")
+    if violations:
+        return violations
+    if artifact.get("status") != "pass":
+        violations.append(
+            f"status={artifact.get('status')!r} is not 'pass' (a status stamp alone "
+            f"never passes without a valid envelope)"
         )
-    if spec["green"] == "status_ok":
-        status = artifact.get("status")
-        return isinstance(status, str) and status.lower() in spec["ok_statuses"]
-    # ok_and_status: an executed pass requires ok=true AND a pass status.
-    if artifact.get("ok") is not True:
-        return False
-    status = artifact.get("status")
-    return isinstance(status, str) and status.lower() in spec["ok_statuses"]
+    if not isinstance(artifact.get("reason_codes"), list):
+        violations.append("reason_codes must be a list")
+    if artifact.get("dirty") is not False:
+        violations.append(f"dirty={artifact.get('dirty')!r} must be false")
+    if artifact.get("candidate_commit") != expected.get("commit"):
+        violations.append(
+            f"candidate_commit={artifact.get('candidate_commit')!r} != expected "
+            f"{expected.get('commit')!r} (old-candidate evidence is rejected)"
+        )
+    if artifact.get("source_digest") != expected.get("source_digest"):
+        violations.append("source_digest mismatch with frozen candidate")
+    if artifact.get("registry_digest") != expected.get("registry_digest"):
+        violations.append("registry_digest mismatch with frozen candidate")
+    artifact_corpus = artifact.get("corpus_digests")
+    if not isinstance(artifact_corpus, dict):
+        violations.append("corpus_digests must be an object")
+    else:
+        for key, value in (expected.get("corpus_digests") or {}).items():
+            if artifact_corpus.get(key) != value:
+                violations.append(f"corpus_digests[{key!r}] mismatch with frozen candidate")
+    started = parse_iso(artifact.get("started_at"))
+    finished = parse_iso(artifact.get("finished_at"))
+    if started is None or finished is None:
+        violations.append("started_at/finished_at must be ISO-8601 timestamps")
+    elif finished < started:
+        violations.append("finished_at precedes started_at")
+    platform = artifact.get("platform")
+    if not isinstance(platform, dict) or not all(
+        key in platform for key in ("os", "arch", "toolchain")
+    ):
+        violations.append("platform must include os/arch/toolchain")
+    producer_revision = artifact.get("producer_revision")
+    if not isinstance(producer_revision, str) or not producer_revision:
+        violations.append("producer_revision must be a non-empty string")
+    elif expected.get("producer_revision") and producer_revision != expected.get(
+        "producer_revision"
+    ):
+        violations.append("producer_revision mismatch")
+    declared = artifact.get("artifact_sha256")
+    recomputed = recompute_artifact_sha256(artifact)
+    if not isinstance(declared, str) or declared != recomputed:
+        violations.append(
+            "artifact_sha256 mismatch (must equal SHA-256 of canonical JSON without "
+            "the artifact_sha256 field)"
+        )
+    if artifact.get("node_id") == "N0":
+        if "version" not in artifact:
+            violations.append("N0 artifact must carry version (v0.0.1 single source of truth)")
+        elif expected.get("version") and artifact.get("version") != expected.get("version"):
+            violations.append(
+                f"version={artifact.get('version')!r} != expected {expected.get('version')!r}"
+            )
+    return violations
 
 
-def find_evidence_files(directory: Path, patterns: list[str]) -> list[Path]:
-    """All evidence files matching any pattern (top level or one subdir)."""
-    if directory is None or not directory.is_dir():
-        return []
-    found: list[Path] = []
-    for pattern in patterns:
-        if "/" in pattern:
-            subdir, name = pattern.split("/", 1)
-            base = directory / subdir
-            if base.is_dir():
-                found.extend(p for p in base.glob(name) if p.is_file())
+def role_verdicts(role: str, paths: list[str], expected: dict) -> list[dict]:
+    """Validate every declared artifact path for one role."""
+    verdicts: list[dict] = []
+    for raw_path in paths:
+        path = Path(raw_path)
+        if not path.is_file():
+            verdicts.append(
+                {
+                    "role": role,
+                    "path": raw_path,
+                    "ok": False,
+                    "violations": ["artifact file is missing"],
+                    "data": None,
+                }
+            )
+            continue
+        try:
+            data = json.loads(path.read_text(encoding="utf-8-sig"))
+            if not isinstance(data, dict):
+                raise ValueError("artifact root is not an object")
+        except (OSError, ValueError) as exc:
+            verdicts.append(
+                {
+                    "role": role,
+                    "path": raw_path,
+                    "ok": False,
+                    "violations": [f"artifact is not readable JSON: {exc}"],
+                    "data": None,
+                }
+            )
+            continue
+        if role in NODE_ROLES:
+            violations = envelope_violations(data, expected)
         else:
-            found.extend(p for p in directory.glob(pattern) if p.is_file())
-    # Newest first, deterministic order for the evidence list.
-    return sorted(found, key=lambda p: p.stat().st_mtime, reverse=True)
+            # Legacy role: envelope-validate when present, else ok/status.
+            if all(field in data for field in ENVELOPE_FIELDS):
+                violations = envelope_violations(data, expected)
+            else:
+                violations = []
+                if report_green(data) is not True:
+                    violations.append("legacy report is not an executed pass (ok/status)")
+        # Role-specific contract checks apply regardless of envelope presence.
+        if role == "fan_in_artifact_contract":
+            if data.get("same_commit") is not True:
+                violations.append("fan-in same_commit is not true")
+            if data.get("same_source_digest") is not True:
+                violations.append("fan-in same_source_digest is not true")
+        if role == "opencode_real_routed":
+            if data.get("candidate_id") != expected.get("commit"):
+                violations.append(
+                    f"opencode candidate_id={data.get('candidate_id')!r} != "
+                    f"C_final {expected.get('commit')!r} (old-candidate rejected)"
+                )
+        verdicts.append(
+            {
+                "role": role,
+                "path": raw_path,
+                "ok": not violations,
+                "violations": violations,
+                "data": data,
+            }
+        )
+    return verdicts
 
 
-def bound_match(artifact: dict | None, expected_commit: str | None,
-                expected_digest: str | None) -> bool:
-    """True when the artifact binds to the expected candidate (bound mode).
-
-    In bound mode a binding field that is absent counts as a mismatch: a
-    pass artifact without a candidate commit must not leak through (EVID-1).
-    """
-    if expected_commit is None and expected_digest is None:
-        return True
-    commit, digest = artifact_binding(artifact)
-    if expected_commit is not None:
-        if commit is None or commit.lower() != expected_commit.lower():
-            return False
-    if expected_digest is not None:
-        if digest is None or digest.lower() != expected_digest.lower():
-            return False
-    return True
-
-
-def supplemental_checks(artifacts_dir: Path, expected_commit: str | None,
-                        expected_digest: str | None) -> list[dict]:
-    """Evaluate the PR-7 supplemental required evidence (fail-closed)."""
-    checks: list[dict] = []
-    for spec in _SUPPLEMENTAL_SPECS:
-        files = find_evidence_files(artifacts_dir, spec["patterns"])
-        if not files:
-            checks.append({
-                "id": spec["id"],
-                "label": spec["label"],
-                "state": "blocked",
-                "detail": "required supplemental evidence is missing (no matching artifact)",
-                "evidence": [],
-                "binding": None,
-            })
+def stale_violations(verdicts_by_role: dict[str, list[dict]]) -> dict[str, list[str]]:
+    """Timestamp-based staleness: any node artifact started before the N0
+    freeze finished is stale.  File mtime is NEVER consulted."""
+    n0 = None
+    for verdict in verdicts_by_role.get("N0", []):
+        if verdict["ok"] and verdict["data"] is not None:
+            n0 = verdict["data"]
+            break
+    if n0 is None:
+        return {}
+    n0_finished = parse_iso(n0.get("finished_at"))
+    if n0_finished is None:
+        return {}
+    stale: dict[str, list[str]] = {}
+    for role, verdicts in verdicts_by_role.items():
+        if role == "N0" or role not in NODE_ROLES:
             continue
-        # Bound mode: only artifacts bound to the expected candidate count;
-        # stale/unbound artifacts are reported but never accepted.
-        eligible = files
-        if expected_commit is not None or expected_digest is not None:
-            eligible = [
-                path for path in files
-                if bound_match(load_json(path), expected_commit, expected_digest)
-            ]
-        if not eligible:
-            newest = load_json(files[0])
-            commit, digest = artifact_binding(newest)
-            checks.append({
-                "id": spec["id"],
-                "label": spec["label"],
-                "state": "blocked",
-                "detail": (
-                    f"no artifact binds the expected candidate "
-                    f"(expected_commit={expected_commit}, expected_source_digest={expected_digest}); "
-                    f"newest artifact binding: commit={commit}, source_digest={digest} — "
-                    "stale/old pass artifacts are rejected (EVID-1)"
-                ),
-                "evidence": [str(p) for p in files],
-                "binding": {"commit": commit, "source_digest": digest},
-            })
+        for verdict in verdicts:
+            if not verdict["ok"] or verdict["data"] is None:
+                continue
+            started = parse_iso(verdict["data"].get("started_at"))
+            if started is not None and started < n0_finished:
+                stale.setdefault(role, []).append(
+                    f"{verdict['path']} started at {verdict['data'].get('started_at')} "
+                    f"before N0 freeze finished at {n0.get('finished_at')} (stale evidence)"
+                )
+    return stale
+
+
+
+def _u9_registry_mapping() -> tuple[dict[str, str], dict[str, str]]:
+    """Load the tracked registry's entry->producer-node and entry->artifact map
+    so the U9 coverage seal is validated against the real capability registry
+    (VERIFICATION.md U9: coverage report cannot be hand-written)."""
+    registry_path = Path(__file__).resolve().parents[2] / "support" / "fixtures" / "unified-capability-registry-v1.json"
+    try:
+        data = json.loads(registry_path.read_text(encoding="utf-8"))
+        entries = data.get("entries", [])
+    except (OSError, ValueError):
+        return {}, {}
+    fixed = {
+        "N0": "N0-preflight.json", "N1": "N1-receipt.json", "N2": "N2-codex.json",
+        "N3": "N3-opencode.json", "N4": "N4-config.json", "N5": "N5-cc-switch.json",
+        "N6": "N6-ui.json", "N7": "N7-macos.json", "N8": "N8-windows.json",
+        "N9": "N9-release-status.json", "N10": "N10-unified-proof.json",
+        "N10-U0": "N10-U0-contract.json", "N10-U1": "N10-U1-registry.json",
+        "N10-U2": "N10-U2-property-fuzz.json", "N10-U3": "N10-U3-fault.json",
+        "N10-U4": "N10-U4-replay-quality.json", "N10-U5": "N10-U5-perf.json",
+        "N10-U6": "N10-U6-provider-paired.json", "N10-U7": "N10-U7-optical-active.json",
+        "N10-U8": "N10-U8-platform.json", "N10-U9": "N10-U9-coverage.json",
+    }
+    node_by_id: dict[str, str] = {}
+    artifact_by_id: dict[str, str] = {}
+    for entry in entries:
+        producer = entry.get("producer", "")
+        node = producer.split(":", 1)[1] if producer.startswith("entry-producer:") else None
+        node_by_id[entry.get("id")] = node
+        artifact_by_id[entry.get("id")] = fixed.get(node or "")
+    return node_by_id, artifact_by_id
+
+def evaluate(manifest: dict, expected: dict) -> dict:
+    """Aggregate G0-G9 from an explicit evidence manifest (fail-closed)."""
+    manifest_errors: list[str] = []
+    artifacts = manifest.get("artifacts")
+    if not isinstance(artifacts, dict):
+        return {
+            "release_ready": False,
+            "gates": [],
+            "blockers": [f"manifest has no artifacts object: {manifest!r}"],
+            "evidence": {},
+            "artifact_verdicts": {},
+            "manifest_errors": manifest_errors,
+        }
+    unknown_roles = sorted(set(artifacts) - NODE_ROLES - LEGACY_ROLES)
+    if unknown_roles:
+        manifest_errors.append(f"unknown evidence roles in manifest: {unknown_roles}")
+
+    verdicts_by_role: dict[str, list[dict]] = {}
+    for role, paths in artifacts.items():
+        if not isinstance(paths, list) or not all(isinstance(p, str) for p in paths):
+            manifest_errors.append(f"role {role!r} must map to a list of artifact paths")
             continue
-        chosen = eligible[0]
-        artifact = load_json(chosen)
-        green = evidence_green(spec, artifact)
-        commit, digest = artifact_binding(artifact)
-        checks.append({
-            "id": spec["id"],
-            "label": spec["label"],
-            "state": "passed" if green else "blocked",
-            "detail": (
-                f"artifact {chosen.name} is an executed pass bound to the expected candidate"
-                if green else
-                f"latest bound artifact {chosen.name} is not green "
-                f"(ok={artifact.get('ok') if isinstance(artifact, dict) else None}, "
-                f"status={artifact.get('status') if isinstance(artifact, dict) else None}, "
-                f"wrote_cc_switch={artifact.get('wrote_cc_switch') if isinstance(artifact, dict) else None}, "
-                f"identity_restored={artifact.get('identity_restored') if isinstance(artifact, dict) else None})"
-            ),
-            "evidence": [str(p) for p in files],
-            "binding": {"commit": commit, "source_digest": digest},
-        })
-    return checks
+        verdicts_by_role[role] = role_verdicts(role, paths, expected)
 
+    stale = stale_violations(verdicts_by_role)
+    for role, messages in stale.items():
+        for verdict in verdicts_by_role.get(role, []):
+            if verdict["ok"] and verdict["data"] is not None:
+                for message in messages:
+                    if verdict["path"] in message:
+                        verdict["ok"] = False
+                        verdict["violations"].append(message)
 
-def evaluate(artifacts_dir: Path, expected_commit: str | None = None,
-             expected_source_digest: str | None = None) -> dict:
+    def role_ok(role: str) -> tuple[bool, list[str]]:
+        if role == "U1-registry":
+            # Registry digest binding: the expected digest is mandatory and
+            # every envelope above already compared registry_digest exactly.
+            return bool(expected.get("registry_digest")), []
+        if role == "N10":
+            verdicts: list[dict] = []
+            for sub in N10_AGGREGATE_ROLES:
+                verdicts.extend(verdicts_by_role.get(sub, []))
+            failures = [v for v in verdicts if not v["ok"]]
+            if not verdicts:
+                return False, ["N10 unified compression proof has no declared artifacts"]
+            return not failures, [f for v in failures for f in v["violations"]]
+        if role == "N10-U9":
+            # U9 coverage seal: content validation — exactly 117 unique ids
+            # equal to the registry id set, every entry verified, each entry's
+            # producer node/artifact matching the registry mapping, and every
+            # verified entry tracing to an envelope-valid pass artifact of its
+            # producer node (VERIFICATION.md §5 U9).  Cannot be hand-written.
+            verdicts = verdicts_by_role.get(role, [])
+            if not verdicts:
+                return False, ["N10-U9 coverage seal has no declared artifact"]
+            failures = [f for v in verdicts if not v["ok"] for f in v["violations"]]
+            data = verdicts[0].get("data") if verdicts and verdicts[0]["ok"] else None
+            coverage = (data or {}).get("coverage") or {}
+            total = coverage.get("total")
+            verified = coverage.get("verified")
+            if total != 117:
+                failures.append(f"U9 coverage total={total!r} != 117")
+            if verified != 117:
+                failures.append(f"U9 coverage verified={verified!r} != 117 (seal incomplete)")
+            per_entry = coverage.get("per_entry") or []
+            if len(per_entry) != 117:
+                failures.append(
+                    f"U9 per_entry coverage has {len(per_entry)} entries, expected 117"
+                )
+            node_by_id, artifact_by_id = _u9_registry_mapping()
+            if len(node_by_id) != 117:
+                failures.append(
+                    f"U9 cannot validate against registry: {len(node_by_id)} entries loaded"
+                )
+            ids = [item.get("id") for item in per_entry]
+            if len(ids) != len(set(ids)):
+                failures.append("U9 coverage contains duplicate entry ids")
+            if sorted(ids) != sorted(node_by_id):
+                failures.append("U9 coverage entry id set does not match the registry")
+            verified_set = coverage.get("verified_ids") or []
+            if sorted(verified_set) != sorted(node_by_id):
+                failures.append("U9 verified_ids set does not match the registry id set")
+            for item in per_entry:
+                entry_id = item.get("id")
+                if entry_id not in node_by_id:
+                    continue
+                if item.get("producer_node") != node_by_id[entry_id]:
+                    failures.append(
+                        f"U9 entry {entry_id} producer_node {item.get('producer_node')!r} "
+                        f"!= registry {node_by_id[entry_id]!r}"
+                    )
+                if item.get("artifact") != artifact_by_id[entry_id]:
+                    failures.append(
+                        f"U9 entry {entry_id} artifact {item.get('artifact')!r} != "
+                        f"fixed name {artifact_by_id[entry_id]!r}"
+                    )
+                if item.get("verified") is not True:
+                    failures.append(f"U9 entry {entry_id} is not verified")
+                    continue
+                node = item.get("producer_node")
+                entry_art = verdicts_by_role.get(node, []) if node else []
+                if not any(v["ok"] for v in entry_art):
+                    failures.append(
+                        f"U9 entry {entry_id} verified without a valid {node} artifact"
+                    )
+            return not failures, failures
+        if role in MANAGED_RTK_ROLES:
+            # Independent managed-RTK receipt (G5): executed, candidate-bound,
+            # usage_count > 0; missing role blocks.
+            verdicts = verdicts_by_role.get(role, [])
+            if not verdicts:
+                return False, [f"no independent {role} receipt declared (G5 blocks)"]
+            failures: list[str] = []
+            for verdict in verdicts:
+                if not verdict["ok"]:
+                    failures.extend(verdict["violations"])
+                    continue
+                data = verdict.get("data") or {}
+                usage = data.get("usage_count")
+                if not (isinstance(usage, int) and usage > 0):
+                    failures.append(
+                        f"{role}: usage_count={usage!r} must be > 0 (executed receipt)"
+                    )
+                if data.get("fixture") is True or data.get("mock") is True:
+                    failures.append(f"{role}: fixture/mock receipt cannot satisfy G5")
+                if data.get("candidate_commit") not in (None, expected.get("commit")):
+                    failures.append(f"{role}: candidate_commit != C_final")
+                if data.get("candidate_id") not in (None, expected.get("commit")):
+                    failures.append(f"{role}: candidate_id != C_final")
+                if data.get("source_digest") not in (None, expected.get("source_digest")):
+                    failures.append(f"{role}: source_digest != frozen candidate")
+            return not failures, failures
+        verdicts = verdicts_by_role.get(role, [])
+        if not verdicts:
+            return False, [f"no evidence declared for role {role}"]
+        failures = [v for v in verdicts if not v["ok"]]
+        return not failures, [f for v in failures for f in v["violations"]]
+
     checks: list[dict] = []
-
-    def add(gate_id: str, state: str, detail: str, evidence: list[str]) -> None:
+    for gate_id, label in GATES:
+        role_results = {role: role_ok(role) for role in GATE_ROLES[gate_id]}
+        failed = [
+            f"{role}: {'; '.join(reasons)}" for role, (ok, reasons) in role_results.items() if not ok
+        ]
+        evidence_paths = sorted(
+            {
+                str(Path(v["path"]).resolve())
+                for role in GATE_ROLES[gate_id]
+                for v in verdicts_by_role.get(role, [])
+            }
+        )
+        if gate_id == "G6":
+            legacy_ok, legacy_reasons = _g6_legacy(verdicts_by_role, expected)
+            if legacy_ok is False:
+                failed.append(f"release_verification: {'; '.join(legacy_reasons)}")
+        if gate_id == "G8":
+            legacy_ok, legacy_reasons = _g8_fan_in(verdicts_by_role, expected)
+            if legacy_ok is False:
+                failed.append(f"fan_in_artifact_contract: {'; '.join(legacy_reasons)}")
+        if failed:
+            state = "blocked"
+            detail = "; ".join(failed)
+        else:
+            state = "passed"
+            detail = f"all required evidence for {gate_id} {label} is envelope-valid and bound to C_final"
+        if gate_id == "G6" and not verdicts_by_role.get("release_verification"):
+            state = "unavailable"
+            detail = (
+                "PowerShell release-verification report NOT executed on this host "
+                "(role 'release_verification' absent from the explicit evidence "
+                "manifest); this is a blocker, not a pass"
+            )
         checks.append(
             {
                 "gate": gate_id,
                 "state": state,
                 "detail": detail,
-                "evidence": evidence,
+                "evidence": evidence_paths,
             }
         )
-
-    def find(pattern: str, subdir: str = "") -> Path | None:
-        base = artifacts_dir
-        if subdir:
-            base = artifacts_dir / subdir
-        return latest_file(base, pattern)
-
-    # --- Evidence sources ---------------------------------------------------
-    verification_path = find("release-verification-*.json")
-    verification = load_json(verification_path)
-    handoff_path = find("release-handoff-manifest-*.json")
-    handoff = load_json(handoff_path)
-    dacl_path = find("windows-dacl-acl-tests-*.json")
-    dacl = load_json(dacl_path)
-    fanin_path = find("fan-in-artifact-contract-*.json")
-    fanin = load_json(fanin_path)
-
-    def evidence_list(*paths: Path | None) -> list[str]:
-        return [str(p) for p in paths if p is not None]
-
-    # --- G0 Truth: no fixture defaults; candidate provenance bound ----------
-    # Evidence: executed release-verification report with the release-gate
-    # contract and candidate-provenance steps green.  Absent report => the
-    # PowerShell-driven Truth evidence was not produced on this host.
-    g0_contract = step_ok(verification, "release_gate_contract")
-    g0_provenance = step_ok(verification, "release_candidate_provenance")
-    if verification is None:
-        add("G0", "unavailable",
-            "release-verification report absent; PowerShell Truth gate not executed on this host (never counts scripts-parse as Truth)",
-            evidence_list(verification_path))
-    elif report_ok(verification) is False:
-        add("G0", "blocked",
-            "release-verification report exists but ok=false", evidence_list(verification_path))
-    elif g0_contract is True and g0_provenance is True:
-        add("G0", "passed",
-            "release-gate contract and candidate provenance steps green in an executed report",
-            evidence_list(verification_path))
-    else:
-        add("G0", "blocked",
-            f"release-gate contract step={g0_contract}, candidate provenance step={g0_provenance}; both must be ok=true",
-            evidence_list(verification_path))
-
-    # --- G1 Contracts --------------------------------------------------------
-    g1 = all_steps_ok(verification, ["release_gate_contract", "release_candidate_provenance"])
-    if verification is None:
-        add("G1", "unavailable",
-            "release-verification report absent; Contracts evidence not executed on this host",
-            evidence_list(verification_path))
-    elif g1 is True:
-        add("G1", "passed", "contract regression and dynamic provenance tests green",
-            evidence_list(verification_path))
-    else:
-        add("G1", "blocked", "one or more contract/provenance steps missing or failed",
-            evidence_list(verification_path))
-
-    # --- G2 Pipeline ---------------------------------------------------------
-    g2 = all_steps_ok(verification, ["codec_candidate_evidence", "release_performance_gate"])
-    if verification is None:
-        add("G2", "unavailable",
-            "release-verification report absent; codec/performance pipeline gates not executed on this host",
-            evidence_list(verification_path))
-    elif g2 is True:
-        add("G2", "passed",
-            "production codec probe and performance/stability gate green in executed report",
-            evidence_list(verification_path))
-    elif g2 is False:
-        add("G2", "blocked", "codec evidence or performance gate step failed",
-            evidence_list(verification_path))
-    else:
-        add("G2", "blocked", "codec evidence or performance gate step missing from report",
-            evidence_list(verification_path))
-
-    # --- G3 Stores -----------------------------------------------------------
-    g3_workspace = step_ok(verification, "rust_workspace_tests")
-    if dacl is not None and report_ok(dacl) is False:
-        add("G3", "blocked",
-            "windows-dacl-acl-tests report exists but ok=false", evidence_list(dacl_path))
-    elif verification is None:
-        add("G3", "unavailable",
-            "no executed release-verification report and no Windows DACL evidence on this host",
-            evidence_list(verification_path, dacl_path))
-    elif g3_workspace is True and report_ok(dacl) is True:
-        add("G3", "passed",
-            "workspace store tests green and real Windows MSVC DACL/ACL tests green",
-            evidence_list(verification_path, dacl_path))
-    elif g3_workspace is True and dacl is None:
-        add("G3", "partial",
-            "workspace store tests green but Windows MSVC DACL 实测缺失 (no windows-dacl-acl-tests report on this host)",
-            evidence_list(verification_path, dacl_path))
-    else:
-        add("G3", "blocked",
-            f"workspace store tests step={g3_workspace}, DACL report={None if dacl is None else report_ok(dacl)}",
-            evidence_list(verification_path, dacl_path))
-
-    # --- G4 Surfaces ---------------------------------------------------------
-    g4 = all_steps_ok(verification, [
-        "frontend_vitest", "frontend_typecheck", "desktop_build", "rust_workspace_tests",
-    ])
-    if verification is None:
-        add("G4", "unavailable",
-            "release-verification report absent; surface parity steps not executed on this host",
-            evidence_list(verification_path))
-    elif g4 is True:
-        add("G4", "passed", "frontend/desktop/workspace surface steps green",
-            evidence_list(verification_path))
-    elif g4 is False:
-        add("G4", "blocked", "one or more surface steps failed",
-            evidence_list(verification_path))
-    else:
-        add("G4", "blocked", "one or more surface steps missing from report",
-            evidence_list(verification_path))
-
-    # --- G5 Agent/RTK --------------------------------------------------------
-    # macOS managed-RTK receipts stamp status=pass (no ok field); the helper
-    # accepts both schemas.  A green macOS probe is only PARTIAL until the
-    # fan-in report proves Windows/WSL runner test receipts exist.
-    # Evidence may live under managed-rtk-candidate/ or, for the CI fan-in
-    # merge (which flattens evidence into one dir), at the top level.
-    managed_rtk_path = find("candidate-*.json", subdir="managed-rtk-candidate")
-    if managed_rtk_path is None:
-        managed_rtk_path = find("candidate-*.json")
-    managed_rtk = load_json(managed_rtk_path)
-    opencode_path = find("real-routed-*.json", subdir="opencode-real-routed")
-    if opencode_path is None:
-        opencode_path = find("real-routed-*.json")
-    opencode = load_json(opencode_path)
-    mac_rtk_ok = report_green(managed_rtk)
-    win_rtk_receipts_ok = (fanin is not None and report_green(fanin) is True)
-    if mac_rtk_ok is True and win_rtk_receipts_ok:
-        add("G5", "passed",
-            "macOS managed RTK lifecycle probe green and fan-in proves Windows test receipts",
-            evidence_list(managed_rtk_path, fanin_path))
-    elif mac_rtk_ok is True:
-        add("G5", "partial",
-            "macOS managed RTK probe green; Windows/WSL runner receipts not yet proven on this host (no fan-in evidence)",
-            evidence_list(managed_rtk_path, fanin_path))
-    elif managed_rtk is None and fanin is None:
-        add("G5", "unavailable",
-            "no managed RTK or fan-in evidence on this host", evidence_list(managed_rtk_path, fanin_path))
-    elif managed_rtk is not None and mac_rtk_ok is False:
-        add("G5", "blocked", "latest managed RTK receipt is not a pass", evidence_list(managed_rtk_path))
-    else:
-        add("G5", "blocked",
-            f"managed RTK evidence absent (probe={managed_rtk_path})", evidence_list(managed_rtk_path))
-
-    # --- G6 Ops --------------------------------------------------------------
-    # PowerShell gates: verification / gate contract / provenance / performance /
-    # codec / capability / redaction / cleanup / distribution / handoff / signing.
-    # None of them may be replaced by "scripts parse" or metadata-only presence.
-    g6_redaction = step_ok(verification, "release_artifact_redaction_audit")
-    g6_cleanup = step_ok(verification, "release_cleanup_audit")
-    if verification is None:
-        add("G6", "unavailable",
-            "PowerShell Ops gates (verification/handoff/redaction/cleanup/distribution/signing) were NOT executed on this macOS host; no release-verification report.  This is a blocker, not a pass.",
-            evidence_list(verification_path, handoff_path))
-    elif report_ok(verification) is False:
-        add("G6", "blocked",
-            "release-verification report exists but ok=false", evidence_list(verification_path))
-    elif (report_ok(verification) is True and g6_redaction is True and g6_cleanup is True
-          and handoff is not None and report_ok(handoff) is True):
-        add("G6", "passed",
-            "release verification ok, redaction/cleanup steps green, handoff manifest ok=true",
-            evidence_list(verification_path, handoff_path))
-    else:
-        add("G6", "blocked",
-            f"report ok={report_ok(verification)}, redaction={g6_redaction}, cleanup={g6_cleanup}, handoff ok={None if handoff is None else report_ok(handoff)}",
-            evidence_list(verification_path, handoff_path))
-
-    # --- G7 Real OpenCode ----------------------------------------------------
-    opencode_status = None
-    if isinstance(opencode, dict):
-        opencode_status = opencode.get("status") or opencode.get("result")
-        if opencode.get("candidate_id"):
-            opencode_status = opencode.get("status") or opencode_status
-    g7_ok = (isinstance(opencode, dict)
-             and opencode.get("candidate_id")
-             and (opencode.get("status") in ("pass", "passed", "ok")
-                  or opencode.get("gate", {}).get("ok") is True))
-    if g7_ok:
-        add("G7", "passed",
-            "latest real OpenCode routed report bound to a candidate with status pass",
-            evidence_list(opencode_path))
-    elif opencode is None:
-        add("G7", "unavailable", "no opencode-real-routed evidence on this host",
-            evidence_list(opencode_path))
-    else:
-        add("G7", "blocked",
-            f"latest real OpenCode report is not a pass (status={opencode.get('status')!r})",
-            evidence_list(opencode_path))
-
-    # --- G8 Candidate --------------------------------------------------------
-    # PR-7 bound mode: the fan-in report must also be bound to the expected
-    # commit.  G8 semantics are otherwise unchanged (same commit + same source
-    # digest across both platforms is still required).
-    fanin_commit_ok = True
-    if expected_commit is not None and isinstance(fanin, dict):
-        reported = fanin.get("expected_commit")
-        fanin_commit_ok = isinstance(reported, str) and reported.lower() == expected_commit.lower()
-    if fanin is None:
-        add("G8", "blocked",
-            "双平台同 commit fan-in 证据缺失: no fan-in-artifact-contract report on this host; Windows runner and dual-platform same-commit evidence not yet produced",
-            evidence_list(fanin_path))
-    elif report_ok(fanin) is not True:
-        add("G8", "blocked",
-            "fan-in report exists but ok=false (commit/source-digest/platform binding failed)",
-            evidence_list(fanin_path))
-    elif (fanin.get("same_commit") is not True
-          or fanin.get("same_source_digest") is not True):
-        add("G8", "blocked",
-            "fan-in ok but same_commit/same_source_digest not both true", evidence_list(fanin_path))
-    elif not fanin_commit_ok:
-        add("G8", "blocked",
-            f"fan-in expected_commit does not match --expected-commit {expected_commit}",
-            evidence_list(fanin_path))
-    else:
-        add("G8", "passed",
-            "fan-in report green: both platforms bound to the same commit and source digest",
-            evidence_list(fanin_path))
-
-    # --- PR-7 supplemental required evidence --------------------------------
-    supplemental = supplemental_checks(artifacts_dir, expected_commit, expected_source_digest)
 
     blockers = [
         f"{gate['gate']} ({dict(GATES)[gate['gate']]}): {gate['state']} — {gate['detail']}"
         for gate in checks
         if gate["state"] != "passed"
     ]
-    blockers.extend(
-        f"supplemental[{item['id']}] ({item['label']}): {item['state']} — {item['detail']}"
-        for item in supplemental
-        if item["state"] != "passed"
-    )
+    if manifest_errors:
+        blockers.extend(f"manifest error: {message}" for message in manifest_errors)
     release_ready = len(blockers) == 0
     return {
         "release_ready": release_ready,
         "gates": checks,
-        "supplemental": supplemental,
-        "binding": {
-            "mode": "bound" if (expected_commit is not None or expected_source_digest is not None) else "latest",
-            "expected_commit": expected_commit,
-            "expected_source_digest": expected_source_digest,
-        },
         "blockers": blockers,
         "evidence": {
-            "release_verification": str(verification_path) if verification_path else None,
-            "release_handoff_manifest": str(handoff_path) if handoff_path else None,
-            "windows_dacl_acl": str(dacl_path) if dacl_path else None,
-            "managed_rtk": str(managed_rtk_path) if managed_rtk_path else None,
-            "opencode_real_routed": str(opencode_path) if opencode_path else None,
-            "fan_in_artifact_contract": str(fanin_path) if fanin_path else None,
+            role: [str(Path(v["path"]).resolve()) for v in verdicts]
+            for role, verdicts in sorted(verdicts_by_role.items())
         },
+        "artifact_verdicts": verdicts_by_role,
+        "manifest_errors": manifest_errors,
     }
+
+
+def _g6_legacy(verdicts_by_role: dict[str, list[dict]], expected: dict) -> tuple[bool | None, list[str]]:
+    """G6 legacy: executed PowerShell report with redaction/cleanup + handoff ok."""
+    verdicts = verdicts_by_role.get("release_verification", [])
+    if not verdicts:
+        return None, ["release_verification role absent (PowerShell NOT executed on this host)"]
+    if not all(v["ok"] for v in verdicts):
+        return False, [f for v in verdicts if not v["ok"] for f in v["violations"]]
+    report = verdicts[0]["data"]
+    redaction = step_ok(report, "release_artifact_redaction_audit")
+    cleanup = step_ok(report, "release_cleanup_audit")
+    handoff_verdicts = verdicts_by_role.get("release_handoff_manifest", [])
+    handoff_ok = bool(handoff_verdicts) and all(v["ok"] for v in handoff_verdicts)
+    reasons: list[str] = []
+    if redaction is not True:
+        reasons.append(f"release_artifact_redaction_audit step={redaction}")
+    if cleanup is not True:
+        reasons.append(f"release_cleanup_audit step={cleanup}")
+    if not handoff_ok:
+        reasons.append("release-handoff-manifest missing or not ok=true")
+    return (not reasons), reasons
+
+
+def _g8_fan_in(verdicts_by_role: dict[str, list[dict]], expected: dict) -> tuple[bool | None, list[str]]:
+    """G8 legacy fan-in: both platforms bound to the same commit/source digest."""
+    verdicts = verdicts_by_role.get("fan_in_artifact_contract", [])
+    if not verdicts:
+        return False, [
+            "双平台同 commit fan-in 证据缺失: fan_in_artifact_contract role absent "
+            "from the explicit evidence manifest; Windows runner and dual-platform "
+            "same-commit evidence not produced"
+        ]
+    if not all(v["ok"] for v in verdicts):
+        return False, [f for v in verdicts if not v["ok"] for f in v["violations"]]
+    return True, []
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        description="Aggregate G0-G8 release gate status from evidence artifacts (fail-closed).",
+        description="Aggregate G0-G9 release gate status from an explicit evidence "
+                    "manifest (fail-closed).",
     )
-    parser.add_argument("--artifacts-dir", default="support/artifacts",
-                        help="Directory scanned for evidence (default: support/artifacts)")
+    parser.add_argument("--evidence-manifest", required=True,
+                        help="JSON manifest listing every consumed artifact path explicitly")
+    parser.add_argument("--expected-commit", required=True,
+                        help="Frozen candidate commit C_final")
+    parser.add_argument("--expected-source-digest", required=True,
+                        help="Frozen candidate source digest")
+    parser.add_argument("--expected-registry-digest", required=True,
+                        help="Frozen 117 capability registry digest")
+    parser.add_argument("--expected-corpus-digests", required=True,
+                        help='JSON object of corpus revision digests, e.g. {"benchmark": "<sha256>"}')
+    parser.add_argument("--expected-version", default=None,
+                        help="Expected release version (defaults to package.json)")
+    parser.add_argument("--expected-producer-revision", default=None,
+                        help="Optional producer revision every envelope must match")
     parser.add_argument("--output-dir", default="support/artifacts",
-                        help="Where to write the status report (default: same as artifacts-dir)")
-    parser.add_argument("--expected-commit",
-                        help="Required candidate commit (40-64 hex). Bound mode: any evidence not "
-                             "bound to this commit is blocked; the latest-file fallback is disabled.")
-    parser.add_argument("--expected-source-digest",
-                        help="Required source digest sha256 (64 hex). Bound mode: any evidence "
-                             "without a matching source digest is blocked.")
+                        help="Where to write the status report (default: support/artifacts)")
     parser.add_argument("--report-only", action="store_true",
                         help="Write the report and exit 0 even when gates are blocked/unavailable. "
                              "Diagnostics only — never a release pass.")
     parser.add_argument("--quiet", action="store_true", help="Suppress human-readable summary")
     args = parser.parse_args(argv)
 
-    if args.expected_commit is not None and not COMMIT_RE.fullmatch(args.expected_commit):
-        parser.error("--expected-commit must be a 40-64 hex git commit")
-    if args.expected_source_digest is not None and not DIGEST_RE.fullmatch(args.expected_source_digest):
-        parser.error("--expected-source-digest must be a 64-hex sha256")
+    manifest_path = Path(args.evidence_manifest)
+    if not manifest_path.is_file():
+        print(f"Release gate check failed: evidence manifest not found: {manifest_path}")
+        return 1
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        print(f"Release gate check failed: cannot read evidence manifest: {exc}")
+        return 1
+    if not isinstance(manifest, dict):
+        print("Release gate check failed: evidence manifest must be a JSON object")
+        return 1
 
-    artifacts_dir = Path(args.artifacts_dir)
-    result = evaluate(artifacts_dir, args.expected_commit, args.expected_source_digest)
+    try:
+        corpus_digests = json.loads(args.expected_corpus_digests)
+    except ValueError as exc:
+        print(f"Release gate check failed: --expected-corpus-digests is not valid JSON: {exc}")
+        return 1
+    if not isinstance(corpus_digests, dict):
+        print("Release gate check failed: --expected-corpus-digests must be a JSON object")
+        return 1
+
+    expected = {
+        "commit": args.expected_commit,
+        "source_digest": args.expected_source_digest,
+        "registry_digest": args.expected_registry_digest,
+        "corpus_digests": corpus_digests,
+        "version": args.expected_version,
+        "producer_revision": args.expected_producer_revision,
+    }
+
+    result = evaluate(manifest, expected)
 
     report = {
         "ok": result["release_ready"],
@@ -656,14 +719,30 @@ def main(argv: list[str] | None = None) -> int:
         "generated_at": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "host_platform": sys.platform,
         "release_ready": result["release_ready"],
-        "release_ready_hint": "false unless EVERY G0-G8 gate is passed AND every supplemental "
-                              "required evidence item is passed; PowerShell-unexecuted, "
-                              "Windows-runner and Main-hosted evidence are blockers, never passes",
-        "binding": result["binding"],
+        "release_ready_hint": "false unless EVERY G0-G9 gate is passed on envelope-valid, "
+                              "C_final-bound evidence; PowerShell-unexecuted and "
+                              "Windows-runner evidence are blockers, never passes",
+        "candidate_commit": args.expected_commit,
+        "source_digest": args.expected_source_digest,
+        "registry_digest": args.expected_registry_digest,
+        "corpus_digests": corpus_digests,
+        "expected_version": args.expected_version,
+        "manifest_path": str(manifest_path.resolve()),
         "blockers": result["blockers"],
         "gates": result["gates"],
-        "supplemental": result["supplemental"],
         "evidence": result["evidence"],
+        "artifact_verdicts": {
+            role: [
+                {
+                    "path": v["path"],
+                    "ok": v["ok"],
+                    "violations": v["violations"],
+                }
+                for v in verdicts
+            ]
+            for role, verdicts in result["artifact_verdicts"].items()
+        },
+        "manifest_errors": result["manifest_errors"],
     }
 
     output_dir = Path(args.output_dir)

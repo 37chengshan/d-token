@@ -189,26 +189,21 @@ def corpus_digests(root: Path, commit: str) -> dict[str, str]:
     return digests
 
 
-def run_gate(
-    root: Path,
-    argv: list[str],
-    cwd: Path,
-    *,
-    env: dict[str, str] | None = None,
-) -> dict[str, Any]:
+def run_gate(root: Path, spec: dict[str, Any]) -> dict[str, Any]:
+    """Execute one gate spec and record the observed outcome (never a self-report)."""
     started = utc_now()
     proc = subprocess.run(
-        argv,
-        cwd=cwd,
+        spec["argv"],
+        cwd=spec.get("cwd", root),
         check=False,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
-        env=env,
+        env=spec.get("env"),
     )
     tail = proc.stdout.decode("utf-8", errors="replace").strip().splitlines()[-5:]
     return {
-        "id": argv[0] if len(argv) == 1 else argv[-1],
-        "argv": " ".join(str(item) for item in argv),
+        "id": spec["id"],
+        "argv": " ".join(str(item) for item in spec["argv"]),
         "exit_code": proc.returncode,
         "ok": proc.returncode == 0,
         "output_tail": tail,
@@ -217,8 +212,10 @@ def run_gate(
     }
 
 
-def preflight_gates(root: Path, skip: bool) -> list[dict[str, Any]]:
-    """Run the complete N0 preflight defined by VERIFICATION.md §3."""
+def preflight_gate_specs(root: Path, skip: bool) -> list[dict[str, Any]]:
+    """Pure construction of the complete N0 preflight gate specs (VERIFICATION.md
+    §3).  Never executes anything — callers (tests, orchestrators) inspect the
+    specs; actual execution happens only in :func:`preflight_gates`."""
     if skip:
         return []
     import os
@@ -239,29 +236,31 @@ def preflight_gates(root: Path, skip: bool) -> list[dict[str, Any]]:
     if browser:
         e2e_env["E2E_CHROMIUM_EXECUTABLE_PATH"] = browser
     e2e_env["E2E_DISABLE_VIDEO"] = "1"
-    gates = [
-        (["python3", str(root / "support/scripts/check_structure.py")], root, None),
-        (["python3", str(root / "support/scripts/check_release_version.py")], root, None),
-        (["python3", str(root / "support/scripts/check_release_scope.py")], root, None),
-        (["python3", str(root / "support/scripts/generate_release_metadata.py"), "--skip-audits"], root, None),
-        (["python3", str(root / "support/scripts/validate_unified_capability_registry.py")], root, None),
-        (["python3", str(root / "support/scripts/validate_unified_corpus_manifests.py")], root, None),
-        (["bash", str(root / "support/scripts/run_fake_binary_tests.sh")], root, None),
-        (["cargo", "fmt", "--all", "--", "--check"], root / "code", None),
-        (["cargo", "clippy", "--workspace", "--all-targets", "--", "-D", "warnings"], root / "code", None),
-        (["cargo", "test", "--workspace"], root / "code", None),
-        (["npm", "run", "test:run"], desktop, None),
-        ([str(desktop / "node_modules/.bin/tsc"), "--noEmit", "--pretty", "false"], desktop, None),
-        (["npm", "run", "build"], desktop, None),
-        (["npm", "run", "test:e2e"], desktop, e2e_env),
-        (["git", "status", "--porcelain"], root, None),
+    return [
+        {"id": "check_structure", "argv": ["python3", str(root / "support/scripts/check_structure.py")], "cwd": root},
+        {"id": "check_release_version", "argv": ["python3", str(root / "support/scripts/check_release_version.py")], "cwd": root},
+        {"id": "check_release_scope", "argv": ["python3", str(root / "support/scripts/check_release_scope.py")], "cwd": root},
+        {"id": "generate_release_metadata", "argv": ["python3", str(root / "support/scripts/generate_release_metadata.py"), "--skip-audits"], "cwd": root},
+        {"id": "validate_unified_capability_registry", "argv": ["python3", str(root / "support/scripts/validate_unified_capability_registry.py")], "cwd": root},
+        {"id": "validate_unified_corpus_manifests", "argv": ["python3", str(root / "support/scripts/validate_unified_corpus_manifests.py")], "cwd": root},
+        {"id": "run_fake_binary_tests", "argv": ["bash", str(root / "support/scripts/run_fake_binary_tests.sh")], "cwd": root},
+        {"id": "cargo_fmt", "argv": ["cargo", "fmt", "--all", "--", "--check"], "cwd": root / "code"},
+        {"id": "cargo_clippy", "argv": ["cargo", "clippy", "--workspace", "--all-targets", "--", "-D", "warnings"], "cwd": root / "code"},
+        {"id": "cargo_test_workspace", "argv": ["cargo", "test", "--workspace"], "cwd": root / "code"},
+        {"id": "vitest", "argv": ["npm", "run", "test:run"], "cwd": desktop},
+        {"id": "tsc", "argv": [str(desktop / "node_modules/.bin/tsc"), "--noEmit", "--pretty", "false"], "cwd": desktop},
+        {"id": "npm_build", "argv": ["npm", "run", "build"], "cwd": desktop},
+        {"id": "e2e", "argv": ["npm", "run", "test:e2e"], "cwd": desktop, "env": e2e_env},
+        {"id": "git_clean", "argv": ["git", "status", "--porcelain"], "cwd": root},
     ]
-    results = []
-    for argv, cwd, env in gates:
-        results.append(run_gate(root, argv, cwd, env=env))
+
+
+def preflight_gates(root: Path, skip: bool) -> list[dict[str, Any]]:
+    """Run the complete N0 preflight defined by VERIFICATION.md §3."""
+    results = [run_gate(root, spec) for spec in preflight_gate_specs(root, skip)]
     # The git-clean gate must be empty output.
     for result in results:
-        if result["argv"] == "git status --porcelain":
+        if result["id"] == "git_clean":
             result["ok"] = result["exit_code"] == 0 and not result["output_tail"]
             if not result["ok"]:
                 result["output_tail"] = (result["output_tail"] or []) + [

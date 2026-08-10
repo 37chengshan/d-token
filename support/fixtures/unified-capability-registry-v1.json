@@ -2,26 +2,29 @@
   "schema": "unified-capability-registry",
   "schema_version": 1,
   "revision": "c0d-start-117",
-  "description": "Machine-readable capability registry for the v0.0.1 unified-compression proof (QUALITY-1 / U1). Exactly 117 unique entries; before N0 every status is implemented_unverified or blocked; verified status is sealed only by N10/U9.",
+  "description": "Machine-readable capability registry for the v0.0.1 unified-compression proof (QUALITY-1 / U1). Exactly 117 unique entries; before N0 every status is implemented_unverified or blocked; verified status is sealed only by N10/U9. dispatch_symbol resolution via support/scripts/symbol_source_index_v1.json; implementation_refs are tracked implementation references; real_evidence lists only runtime artifact names under evidence_artifact_root with validated envelopes (docs/source existence is never runtime evidence).",
   "owner_crates": [
-    "dtoken-types",
-    "dtoken-config",
-    "dtoken-router",
+    "dtoken-agent-bridge",
+    "dtoken-benchmark",
+    "dtoken-codebase-memory",
     "dtoken-compress",
+    "dtoken-config",
+    "dtoken-config-patcher",
+    "dtoken-context-bus",
     "dtoken-context-store",
-    "dtoken-process",
+    "dtoken-core-api",
     "dtoken-doctor",
     "dtoken-event-ledger",
-    "dtoken-preprocessor",
     "dtoken-headroom-adapter",
-    "dtoken-project-policy",
-    "dtoken-runtime-pipeline",
     "dtoken-learning",
-    "dtoken-config-patcher",
-    "dtoken-agent-bridge",
-    "dtoken-codebase-memory",
-    "dtoken-core-api",
-    "dtoken-proxy"
+    "dtoken-preprocessor",
+    "dtoken-process",
+    "dtoken-project-policy",
+    "dtoken-proxy",
+    "dtoken-router",
+    "dtoken-runtime-pipeline",
+    "dtoken-types",
+    "support"
   ],
   "entries": [
     {
@@ -31,25 +34,32 @@
       "dispatch_symbol": "dtoken_compress::compressor_registry::ProductionCompressorRegistry::select",
       "tests": {
         "normal": [
-          "code/crates/dtoken-compress/tests/hybrid_safe_baseline.rs"
+          "code/crates/dtoken-compress/tests/codec_candidate_evidence.rs",
+          "code/crates/dtoken-compress/tests/code_codec_gate.rs"
         ],
         "error": [
-          "code/crates/dtoken-compress/tests/hybrid_safe_baseline.rs"
+          "code/crates/dtoken-compress/tests/codec_candidate_evidence.rs",
+          "code/crates/dtoken-compress/tests/code_codec_gate.rs"
         ],
         "recovery": [
-          "code/crates/dtoken-compress/tests/hybrid_safe_baseline.rs"
+          "code/crates/dtoken-compress/tests/codec_candidate_evidence.rs",
+          "code/crates/dtoken-compress/tests/code_codec_gate.rs"
         ]
       },
       "real_evidence": [
-        "docs/releases/v0.0.1/REQUIREMENTS.md",
-        "code/crates/dtoken-compress/src/compressor_registry.rs"
+        "N10-U2-property-fuzz.json"
       ],
       "gates": [
         "G2",
         "U1",
         "U2"
       ],
-      "status": "implemented_unverified"
+      "status": "implemented_unverified",
+      "implementation_refs": [
+        "docs/releases/v0.0.1/REQUIREMENTS.md",
+        "code/crates/dtoken-compress/src/compressor_registry.rs"
+      ],
+      "producer": "entry-producer:N10-U2"
     },
     {
       "id": "log-codec",
@@ -58,25 +68,32 @@
       "dispatch_symbol": "dtoken_compress::compressor_registry::ProductionCompressorRegistry::select",
       "tests": {
         "normal": [
-          "code/crates/dtoken-compress/tests/hybrid_safe_baseline.rs"
+          "code/crates/dtoken-compress/tests/codec_candidate_evidence.rs",
+          "code/crates/dtoken-compress/tests/code_codec_gate.rs"
         ],
         "error": [
-          "code/crates/dtoken-compress/tests/hybrid_safe_baseline.rs"
+          "code/crates/dtoken-compress/tests/codec_candidate_evidence.rs",
+          "code/crates/dtoken-compress/tests/code_codec_gate.rs"
         ],
         "recovery": [
-          "code/crates/dtoken-compress/tests/hybrid_safe_baseline.rs"
+          "code/crates/dtoken-compress/tests/codec_candidate_evidence.rs",
+          "code/crates/dtoken-compress/tests/code_codec_gate.rs"
         ]
       },
       "real_evidence": [
-        "docs/releases/v0.0.1/REQUIREMENTS.md",
-        "code/crates/dtoken-compress/src/compressor_registry.rs"
+        "N10-U2-property-fuzz.json"
       ],
       "gates": [
         "G2",
         "U1",
         "U2"
       ],
-      "status": "implemented_unverified"
+      "status": "implemented_unverified",
+      "implementation_refs": [
+        "docs/releases/v0.0.1/REQUIREMENTS.md",
+        "code/crates/dtoken-compress/src/compressor_registry.rs"
+      ],
+      "producer": "entry-producer:N10-U2"
     },
     {
       "id": "search-codec",
@@ -85,25 +102,32 @@
       "dispatch_symbol": "dtoken_compress::compressor_registry::ProductionCompressorRegistry::select",
       "tests": {
         "normal": [
-          "code/crates/dtoken-compress/tests/hybrid_safe_baseline.rs"
+          "code/crates/dtoken-compress/tests/codec_candidate_evidence.rs",
+          "code/crates/dtoken-compress/tests/code_codec_gate.rs"
         ],
         "error": [
-          "code/crates/dtoken-compress/tests/hybrid_safe_baseline.rs"
+          "code/crates/dtoken-compress/tests/codec_candidate_evidence.rs",
+          "code/crates/dtoken-compress/tests/code_codec_gate.rs"
         ],
         "recovery": [
-          "code/crates/dtoken-compress/tests/hybrid_safe_baseline.rs"
+          "code/crates/dtoken-compress/tests/codec_candidate_evidence.rs",
+          "code/crates/dtoken-compress/tests/code_codec_gate.rs"
         ]
       },
       "real_evidence": [
-        "docs/releases/v0.0.1/REQUIREMENTS.md",
-        "code/crates/dtoken-compress/src/compressor_registry.rs"
+        "N10-U2-property-fuzz.json"
       ],
       "gates": [
         "G2",
         "U1",
         "U2"
       ],
-      "status": "implemented_unverified"
+      "status": "implemented_unverified",
+      "implementation_refs": [
+        "docs/releases/v0.0.1/REQUIREMENTS.md",
+        "code/crates/dtoken-compress/src/compressor_registry.rs"
+      ],
+      "producer": "entry-producer:N10-U2"
     },
     {
       "id": "build-codec",
@@ -112,25 +136,32 @@
       "dispatch_symbol": "dtoken_compress::compressor_registry::ProductionCompressorRegistry::select",
       "tests": {
         "normal": [
-          "code/crates/dtoken-compress/tests/hybrid_safe_baseline.rs"
+          "code/crates/dtoken-compress/tests/codec_candidate_evidence.rs",
+          "code/crates/dtoken-compress/tests/code_codec_gate.rs"
         ],
         "error": [
-          "code/crates/dtoken-compress/tests/hybrid_safe_baseline.rs"
+          "code/crates/dtoken-compress/tests/codec_candidate_evidence.rs",
+          "code/crates/dtoken-compress/tests/code_codec_gate.rs"
         ],
         "recovery": [
-          "code/crates/dtoken-compress/tests/hybrid_safe_baseline.rs"
+          "code/crates/dtoken-compress/tests/codec_candidate_evidence.rs",
+          "code/crates/dtoken-compress/tests/code_codec_gate.rs"
         ]
       },
       "real_evidence": [
-        "docs/releases/v0.0.1/REQUIREMENTS.md",
-        "code/crates/dtoken-compress/src/compressor_registry.rs"
+        "N10-U2-property-fuzz.json"
       ],
       "gates": [
         "G2",
         "U1",
         "U2"
       ],
-      "status": "implemented_unverified"
+      "status": "implemented_unverified",
+      "implementation_refs": [
+        "docs/releases/v0.0.1/REQUIREMENTS.md",
+        "code/crates/dtoken-compress/src/compressor_registry.rs"
+      ],
+      "producer": "entry-producer:N10-U2"
     },
     {
       "id": "diff-codec",
@@ -139,25 +170,32 @@
       "dispatch_symbol": "dtoken_compress::compressor_registry::ProductionCompressorRegistry::select",
       "tests": {
         "normal": [
-          "code/crates/dtoken-compress/tests/hybrid_safe_baseline.rs"
+          "code/crates/dtoken-compress/tests/codec_candidate_evidence.rs",
+          "code/crates/dtoken-compress/tests/code_codec_gate.rs"
         ],
         "error": [
-          "code/crates/dtoken-compress/tests/hybrid_safe_baseline.rs"
+          "code/crates/dtoken-compress/tests/codec_candidate_evidence.rs",
+          "code/crates/dtoken-compress/tests/code_codec_gate.rs"
         ],
         "recovery": [
-          "code/crates/dtoken-compress/tests/hybrid_safe_baseline.rs"
+          "code/crates/dtoken-compress/tests/codec_candidate_evidence.rs",
+          "code/crates/dtoken-compress/tests/code_codec_gate.rs"
         ]
       },
       "real_evidence": [
-        "docs/releases/v0.0.1/REQUIREMENTS.md",
-        "code/crates/dtoken-compress/src/compressor_registry.rs"
+        "N10-U2-property-fuzz.json"
       ],
       "gates": [
         "G2",
         "U1",
         "U2"
       ],
-      "status": "implemented_unverified"
+      "status": "implemented_unverified",
+      "implementation_refs": [
+        "docs/releases/v0.0.1/REQUIREMENTS.md",
+        "code/crates/dtoken-compress/src/compressor_registry.rs"
+      ],
+      "producer": "entry-producer:N10-U2"
     },
     {
       "id": "text-codec",
@@ -166,25 +204,32 @@
       "dispatch_symbol": "dtoken_compress::compressor_registry::ProductionCompressorRegistry::select",
       "tests": {
         "normal": [
-          "code/crates/dtoken-compress/tests/hybrid_safe_baseline.rs"
+          "code/crates/dtoken-compress/tests/codec_candidate_evidence.rs",
+          "code/crates/dtoken-compress/tests/code_codec_gate.rs"
         ],
         "error": [
-          "code/crates/dtoken-compress/tests/hybrid_safe_baseline.rs"
+          "code/crates/dtoken-compress/tests/codec_candidate_evidence.rs",
+          "code/crates/dtoken-compress/tests/code_codec_gate.rs"
         ],
         "recovery": [
-          "code/crates/dtoken-compress/tests/hybrid_safe_baseline.rs"
+          "code/crates/dtoken-compress/tests/codec_candidate_evidence.rs",
+          "code/crates/dtoken-compress/tests/code_codec_gate.rs"
         ]
       },
       "real_evidence": [
-        "docs/releases/v0.0.1/REQUIREMENTS.md",
-        "code/crates/dtoken-compress/src/compressor_registry.rs"
+        "N10-U2-property-fuzz.json"
       ],
       "gates": [
         "G2",
         "U1",
         "U2"
       ],
-      "status": "implemented_unverified"
+      "status": "implemented_unverified",
+      "implementation_refs": [
+        "docs/releases/v0.0.1/REQUIREMENTS.md",
+        "code/crates/dtoken-compress/src/compressor_registry.rs"
+      ],
+      "producer": "entry-producer:N10-U2"
     },
     {
       "id": "html-codec",
@@ -193,25 +238,32 @@
       "dispatch_symbol": "dtoken_compress::compressor_registry::ProductionCompressorRegistry::select",
       "tests": {
         "normal": [
-          "code/crates/dtoken-compress/tests/hybrid_safe_baseline.rs"
+          "code/crates/dtoken-compress/tests/codec_candidate_evidence.rs",
+          "code/crates/dtoken-compress/tests/code_codec_gate.rs"
         ],
         "error": [
-          "code/crates/dtoken-compress/tests/hybrid_safe_baseline.rs"
+          "code/crates/dtoken-compress/tests/codec_candidate_evidence.rs",
+          "code/crates/dtoken-compress/tests/code_codec_gate.rs"
         ],
         "recovery": [
-          "code/crates/dtoken-compress/tests/hybrid_safe_baseline.rs"
+          "code/crates/dtoken-compress/tests/codec_candidate_evidence.rs",
+          "code/crates/dtoken-compress/tests/code_codec_gate.rs"
         ]
       },
       "real_evidence": [
-        "docs/releases/v0.0.1/REQUIREMENTS.md",
-        "code/crates/dtoken-compress/src/compressor_registry.rs"
+        "N10-U2-property-fuzz.json"
       ],
       "gates": [
         "G2",
         "U1",
         "U2"
       ],
-      "status": "implemented_unverified"
+      "status": "implemented_unverified",
+      "implementation_refs": [
+        "docs/releases/v0.0.1/REQUIREMENTS.md",
+        "code/crates/dtoken-compress/src/compressor_registry.rs"
+      ],
+      "producer": "entry-producer:N10-U2"
     },
     {
       "id": "config-codec",
@@ -220,25 +272,32 @@
       "dispatch_symbol": "dtoken_compress::compressor_registry::ProductionCompressorRegistry::select",
       "tests": {
         "normal": [
-          "code/crates/dtoken-compress/tests/hybrid_safe_baseline.rs"
+          "code/crates/dtoken-compress/tests/codec_candidate_evidence.rs",
+          "code/crates/dtoken-compress/tests/code_codec_gate.rs"
         ],
         "error": [
-          "code/crates/dtoken-compress/tests/hybrid_safe_baseline.rs"
+          "code/crates/dtoken-compress/tests/codec_candidate_evidence.rs",
+          "code/crates/dtoken-compress/tests/code_codec_gate.rs"
         ],
         "recovery": [
-          "code/crates/dtoken-compress/tests/hybrid_safe_baseline.rs"
+          "code/crates/dtoken-compress/tests/codec_candidate_evidence.rs",
+          "code/crates/dtoken-compress/tests/code_codec_gate.rs"
         ]
       },
       "real_evidence": [
-        "docs/releases/v0.0.1/REQUIREMENTS.md",
-        "code/crates/dtoken-compress/src/compressor_registry.rs"
+        "N10-U2-property-fuzz.json"
       ],
       "gates": [
         "G2",
         "U1",
         "U2"
       ],
-      "status": "implemented_unverified"
+      "status": "implemented_unverified",
+      "implementation_refs": [
+        "docs/releases/v0.0.1/REQUIREMENTS.md",
+        "code/crates/dtoken-compress/src/compressor_registry.rs"
+      ],
+      "producer": "entry-producer:N10-U2"
     },
     {
       "id": "code-compressor",
@@ -247,31 +306,38 @@
       "dispatch_symbol": "dtoken_compress::compressor_registry::ProductionCompressorRegistry::select",
       "tests": {
         "normal": [
-          "code/crates/dtoken-compress/tests/hybrid_safe_baseline.rs"
+          "code/crates/dtoken-compress/tests/codec_candidate_evidence.rs",
+          "code/crates/dtoken-compress/tests/code_codec_gate.rs"
         ],
         "error": [
-          "code/crates/dtoken-compress/tests/hybrid_safe_baseline.rs"
+          "code/crates/dtoken-compress/tests/codec_candidate_evidence.rs",
+          "code/crates/dtoken-compress/tests/code_codec_gate.rs"
         ],
         "recovery": [
-          "code/crates/dtoken-compress/tests/hybrid_safe_baseline.rs"
+          "code/crates/dtoken-compress/tests/codec_candidate_evidence.rs",
+          "code/crates/dtoken-compress/tests/code_codec_gate.rs"
         ]
       },
       "real_evidence": [
-        "docs/releases/v0.0.1/REQUIREMENTS.md",
-        "code/crates/dtoken-compress/src/compressor_registry.rs"
+        "N10-U2-property-fuzz.json"
       ],
       "gates": [
         "G2",
         "U1",
         "U2"
       ],
-      "status": "implemented_unverified"
+      "status": "implemented_unverified",
+      "implementation_refs": [
+        "docs/releases/v0.0.1/REQUIREMENTS.md",
+        "code/crates/dtoken-compress/src/compressor_registry.rs"
+      ],
+      "producer": "entry-producer:N10-U2"
     },
     {
       "id": "aggregate.headroom-semantic",
       "source_capability": "HeadroomSemantic exclusive NodeAction aggregate (codec selection boundary, not an engine chooser)",
       "owner_crate": "dtoken-types",
-      "dispatch_symbol": "dtoken_types::contract::NodeAction::HeadroomSemantic",
+      "dispatch_symbol": "dtoken_types::NodeAction::HeadroomSemantic",
       "tests": {
         "normal": [
           "code/crates/dtoken-types/tests/hybrid_accounting.rs"
@@ -284,21 +350,25 @@
         ]
       },
       "real_evidence": [
-        "docs/releases/v0.0.1/REQUIREMENTS.md",
-        "docs/releases/v0.0.1/VERIFICATION.md"
+        "N10-U0-contract.json"
       ],
       "gates": [
         "U0",
         "G1",
         "U1"
       ],
-      "status": "implemented_unverified"
+      "status": "implemented_unverified",
+      "implementation_refs": [
+        "docs/releases/v0.0.1/REQUIREMENTS.md",
+        "docs/releases/v0.0.1/VERIFICATION.md"
+      ],
+      "producer": "entry-producer:N10-U0"
     },
     {
       "id": "aggregate.reuse",
       "source_capability": "Reuse exclusive NodeAction aggregate (map-signature/session reuse before planning)",
       "owner_crate": "dtoken-types",
-      "dispatch_symbol": "dtoken_types::contract::NodeAction::Reuse",
+      "dispatch_symbol": "dtoken_types::NodeAction::Reuse",
       "tests": {
         "normal": [
           "code/crates/dtoken-types/tests/hybrid_accounting.rs"
@@ -311,21 +381,25 @@
         ]
       },
       "real_evidence": [
-        "docs/releases/v0.0.1/REQUIREMENTS.md",
-        "docs/releases/v0.0.1/VERIFICATION.md"
+        "N10-U0-contract.json"
       ],
       "gates": [
         "U0",
         "G1",
         "U1"
       ],
-      "status": "implemented_unverified"
+      "status": "implemented_unverified",
+      "implementation_refs": [
+        "docs/releases/v0.0.1/REQUIREMENTS.md",
+        "docs/releases/v0.0.1/VERIFICATION.md"
+      ],
+      "producer": "entry-producer:N10-U0"
     },
     {
       "id": "aggregate.rtk-command-output",
       "source_capability": "RtkCommandOutput exclusive NodeAction aggregate (RTK structured filter output bucket)",
       "owner_crate": "dtoken-types",
-      "dispatch_symbol": "dtoken_types::contract::NodeAction::RtkCommandOutput",
+      "dispatch_symbol": "dtoken_types::NodeAction::RtkCommandOutput",
       "tests": {
         "normal": [
           "code/crates/dtoken-types/tests/hybrid_accounting.rs"
@@ -338,21 +412,25 @@
         ]
       },
       "real_evidence": [
-        "docs/releases/v0.0.1/REQUIREMENTS.md",
-        "docs/releases/v0.0.1/VERIFICATION.md"
+        "N10-U0-contract.json"
       ],
       "gates": [
         "U0",
         "G1",
         "U1"
       ],
-      "status": "implemented_unverified"
+      "status": "implemented_unverified",
+      "implementation_refs": [
+        "docs/releases/v0.0.1/REQUIREMENTS.md",
+        "docs/releases/v0.0.1/VERIFICATION.md"
+      ],
+      "producer": "entry-producer:N10-U0"
     },
     {
       "id": "aggregate.optical",
       "source_capability": "Optical exclusive NodeAction aggregate (exact renderer path, shadow-only before attestation)",
       "owner_crate": "dtoken-types",
-      "dispatch_symbol": "dtoken_types::contract::NodeAction::Optical",
+      "dispatch_symbol": "dtoken_types::NodeAction::Optical",
       "tests": {
         "normal": [
           "code/crates/dtoken-types/tests/hybrid_accounting.rs"
@@ -365,21 +443,25 @@
         ]
       },
       "real_evidence": [
-        "docs/releases/v0.0.1/REQUIREMENTS.md",
-        "docs/releases/v0.0.1/VERIFICATION.md"
+        "N10-U0-contract.json"
       ],
       "gates": [
         "U0",
         "G1",
         "U1"
       ],
-      "status": "implemented_unverified"
+      "status": "implemented_unverified",
+      "implementation_refs": [
+        "docs/releases/v0.0.1/REQUIREMENTS.md",
+        "docs/releases/v0.0.1/VERIFICATION.md"
+      ],
+      "producer": "entry-producer:N10-U0"
     },
     {
       "id": "aggregate.preserve",
       "source_capability": "Preserve exclusive NodeAction aggregate (byte-exact passthrough and protected content)",
       "owner_crate": "dtoken-types",
-      "dispatch_symbol": "dtoken_types::contract::NodeAction::Preserve",
+      "dispatch_symbol": "dtoken_types::NodeAction::Preserve",
       "tests": {
         "normal": [
           "code/crates/dtoken-types/tests/hybrid_accounting.rs"
@@ -392,15 +474,19 @@
         ]
       },
       "real_evidence": [
-        "docs/releases/v0.0.1/REQUIREMENTS.md",
-        "docs/releases/v0.0.1/VERIFICATION.md"
+        "N10-U0-contract.json"
       ],
       "gates": [
         "U0",
         "G1",
         "U1"
       ],
-      "status": "implemented_unverified"
+      "status": "implemented_unverified",
+      "implementation_refs": [
+        "docs/releases/v0.0.1/REQUIREMENTS.md",
+        "docs/releases/v0.0.1/VERIFICATION.md"
+      ],
+      "producer": "entry-producer:N10-U0"
     },
     {
       "id": "aggregate.ccr-recovery",
@@ -419,21 +505,25 @@
         ]
       },
       "real_evidence": [
-        "docs/releases/v0.0.1/REQUIREMENTS.md",
-        "docs/releases/v0.0.1/VERIFICATION.md"
+        "N1-receipt.json"
       ],
       "gates": [
         "U3",
         "G3",
         "U1"
       ],
-      "status": "implemented_unverified"
+      "status": "implemented_unverified",
+      "implementation_refs": [
+        "docs/releases/v0.0.1/REQUIREMENTS.md",
+        "docs/releases/v0.0.1/VERIFICATION.md"
+      ],
+      "producer": "entry-producer:N1"
     },
     {
       "id": "aggregate.relay",
       "source_capability": "Context Relay aggregate (query-aware retrieval, avoided-retransmission accounting)",
-      "owner_crate": "dtoken-context-store",
-      "dispatch_symbol": "dtoken_context_store::relay::RelayRegistry",
+      "owner_crate": "dtoken-context-bus",
+      "dispatch_symbol": "dtoken_context_bus::relay::ContextRelay",
       "tests": {
         "normal": [
           "code/crates/dtoken-context-store/tests/durability.rs"
@@ -446,15 +536,19 @@
         ]
       },
       "real_evidence": [
-        "docs/releases/v0.0.1/REQUIREMENTS.md",
-        "docs/releases/v0.0.1/VERIFICATION.md"
+        "N1-receipt.json"
       ],
       "gates": [
         "G5",
         "U1",
         "N1"
       ],
-      "status": "blocked"
+      "status": "blocked",
+      "implementation_refs": [
+        "docs/releases/v0.0.1/REQUIREMENTS.md",
+        "docs/releases/v0.0.1/VERIFICATION.md"
+      ],
+      "producer": "entry-producer:N1"
     },
     {
       "id": "aggregate.provider-cache",
@@ -473,15 +567,19 @@
         ]
       },
       "real_evidence": [
-        "docs/releases/v0.0.1/REQUIREMENTS.md",
-        "docs/releases/v0.0.1/VERIFICATION.md"
+        "N10-U4-replay-quality.json"
       ],
       "gates": [
         "G2",
         "U1",
         "N1"
       ],
-      "status": "implemented_unverified"
+      "status": "implemented_unverified",
+      "implementation_refs": [
+        "docs/releases/v0.0.1/REQUIREMENTS.md",
+        "docs/releases/v0.0.1/VERIFICATION.md"
+      ],
+      "producer": "entry-producer:N10-U4"
     },
     {
       "id": "aggregate.route-decision",
@@ -500,15 +598,19 @@
         ]
       },
       "real_evidence": [
-        "docs/releases/v0.0.1/REQUIREMENTS.md",
-        "docs/releases/v0.0.1/VERIFICATION.md"
+        "N10-U0-contract.json"
       ],
       "gates": [
         "U0",
         "G1",
         "U1"
       ],
-      "status": "implemented_unverified"
+      "status": "implemented_unverified",
+      "implementation_refs": [
+        "docs/releases/v0.0.1/REQUIREMENTS.md",
+        "docs/releases/v0.0.1/VERIFICATION.md"
+      ],
+      "producer": "entry-producer:N10-U0"
     },
     {
       "id": "aggregate.safety-policy",
@@ -527,15 +629,19 @@
         ]
       },
       "real_evidence": [
-        "docs/releases/v0.0.1/REQUIREMENTS.md",
-        "docs/releases/v0.0.1/VERIFICATION.md"
+        "N10-U0-contract.json"
       ],
       "gates": [
         "U0",
         "G1",
         "N6"
       ],
-      "status": "implemented_unverified"
+      "status": "implemented_unverified",
+      "implementation_refs": [
+        "docs/releases/v0.0.1/REQUIREMENTS.md",
+        "docs/releases/v0.0.1/VERIFICATION.md"
+      ],
+      "producer": "entry-producer:N10-U0"
     },
     {
       "id": "aggregate.sealed-receipts",
@@ -554,15 +660,19 @@
         ]
       },
       "real_evidence": [
-        "docs/releases/v0.0.1/REQUIREMENTS.md",
-        "docs/releases/v0.0.1/VERIFICATION.md"
+        "N1-receipt.json"
       ],
       "gates": [
         "U0",
         "U3",
         "G1"
       ],
-      "status": "implemented_unverified"
+      "status": "implemented_unverified",
+      "implementation_refs": [
+        "docs/releases/v0.0.1/REQUIREMENTS.md",
+        "docs/releases/v0.0.1/VERIFICATION.md"
+      ],
+      "producer": "entry-producer:N1"
     },
     {
       "id": "aggregate.accounting",
@@ -581,15 +691,19 @@
         ]
       },
       "real_evidence": [
-        "docs/releases/v0.0.1/REQUIREMENTS.md",
-        "docs/releases/v0.0.1/VERIFICATION.md"
+        "N1-receipt.json"
       ],
       "gates": [
         "U0",
         "G1",
         "N1"
       ],
-      "status": "implemented_unverified"
+      "status": "implemented_unverified",
+      "implementation_refs": [
+        "docs/releases/v0.0.1/REQUIREMENTS.md",
+        "docs/releases/v0.0.1/VERIFICATION.md"
+      ],
+      "producer": "entry-producer:N1"
     },
     {
       "id": "contract.bound-request",
@@ -608,15 +722,19 @@
         ]
       },
       "real_evidence": [
-        "docs/releases/v0.0.1/REQUIREMENTS.md",
-        "docs/releases/v0.0.1/VERIFICATION.md"
+        "N10-U0-contract.json"
       ],
       "gates": [
         "U0",
         "G1",
         "N10"
       ],
-      "status": "implemented_unverified"
+      "status": "implemented_unverified",
+      "implementation_refs": [
+        "docs/releases/v0.0.1/REQUIREMENTS.md",
+        "docs/releases/v0.0.1/VERIFICATION.md"
+      ],
+      "producer": "entry-producer:N10-U0"
     },
     {
       "id": "contract.ir-node",
@@ -635,21 +753,25 @@
         ]
       },
       "real_evidence": [
-        "docs/releases/v0.0.1/REQUIREMENTS.md",
-        "docs/releases/v0.0.1/VERIFICATION.md"
+        "N10-U0-contract.json"
       ],
       "gates": [
         "U0",
         "G1",
         "N10"
       ],
-      "status": "implemented_unverified"
+      "status": "implemented_unverified",
+      "implementation_refs": [
+        "docs/releases/v0.0.1/REQUIREMENTS.md",
+        "docs/releases/v0.0.1/VERIFICATION.md"
+      ],
+      "producer": "entry-producer:N10-U0"
     },
     {
       "id": "contract.node-action-preserve",
       "source_capability": "Preserve NodeAction: byte-exact passthrough and protected content",
       "owner_crate": "dtoken-types",
-      "dispatch_symbol": "dtoken_types::contract::NodeAction::Preserve",
+      "dispatch_symbol": "dtoken_types::NodeAction::Preserve",
       "tests": {
         "normal": [
           "code/crates/dtoken-types/tests/hybrid_accounting.rs"
@@ -662,21 +784,25 @@
         ]
       },
       "real_evidence": [
-        "docs/releases/v0.0.1/REQUIREMENTS.md",
-        "docs/releases/v0.0.1/VERIFICATION.md"
+        "N10-U0-contract.json"
       ],
       "gates": [
         "U0",
         "U2",
         "N10"
       ],
-      "status": "implemented_unverified"
+      "status": "implemented_unverified",
+      "implementation_refs": [
+        "docs/releases/v0.0.1/REQUIREMENTS.md",
+        "docs/releases/v0.0.1/VERIFICATION.md"
+      ],
+      "producer": "entry-producer:N10-U0"
     },
     {
       "id": "contract.node-action-reuse",
       "source_capability": "Reuse NodeAction: map-signature and session cache reuse before planning",
       "owner_crate": "dtoken-types",
-      "dispatch_symbol": "dtoken_types::contract::NodeAction::Reuse",
+      "dispatch_symbol": "dtoken_types::NodeAction::Reuse",
       "tests": {
         "normal": [
           "code/crates/dtoken-types/tests/hybrid_accounting.rs"
@@ -689,21 +815,25 @@
         ]
       },
       "real_evidence": [
-        "docs/releases/v0.0.1/REQUIREMENTS.md",
-        "docs/releases/v0.0.1/VERIFICATION.md"
+        "N10-U0-contract.json"
       ],
       "gates": [
         "U0",
         "U2",
         "N10"
       ],
-      "status": "implemented_unverified"
+      "status": "implemented_unverified",
+      "implementation_refs": [
+        "docs/releases/v0.0.1/REQUIREMENTS.md",
+        "docs/releases/v0.0.1/VERIFICATION.md"
+      ],
+      "producer": "entry-producer:N10-U0"
     },
     {
       "id": "contract.node-action-headroom-semantic",
       "source_capability": "HeadroomSemantic NodeAction: lossless semantic codec selection per content kind",
       "owner_crate": "dtoken-types",
-      "dispatch_symbol": "dtoken_types::contract::NodeAction::HeadroomSemantic",
+      "dispatch_symbol": "dtoken_types::NodeAction::HeadroomSemantic",
       "tests": {
         "normal": [
           "code/crates/dtoken-types/tests/hybrid_accounting.rs"
@@ -716,21 +846,25 @@
         ]
       },
       "real_evidence": [
-        "docs/releases/v0.0.1/REQUIREMENTS.md",
-        "docs/releases/v0.0.1/VERIFICATION.md"
+        "N10-U0-contract.json"
       ],
       "gates": [
         "U0",
         "U2",
         "N10"
       ],
-      "status": "implemented_unverified"
+      "status": "implemented_unverified",
+      "implementation_refs": [
+        "docs/releases/v0.0.1/REQUIREMENTS.md",
+        "docs/releases/v0.0.1/VERIFICATION.md"
+      ],
+      "producer": "entry-producer:N10-U0"
     },
     {
       "id": "contract.node-action-rtk-command-output",
       "source_capability": "RtkCommandOutput NodeAction: structured RTK command-output bucket boundary",
       "owner_crate": "dtoken-types",
-      "dispatch_symbol": "dtoken_types::contract::NodeAction::RtkCommandOutput",
+      "dispatch_symbol": "dtoken_types::NodeAction::RtkCommandOutput",
       "tests": {
         "normal": [
           "code/crates/dtoken-types/tests/hybrid_accounting.rs"
@@ -743,21 +877,25 @@
         ]
       },
       "real_evidence": [
-        "docs/releases/v0.0.1/REQUIREMENTS.md",
-        "docs/releases/v0.0.1/VERIFICATION.md"
+        "N10-U0-contract.json"
       ],
       "gates": [
         "U0",
         "U2",
         "N10"
       ],
-      "status": "implemented_unverified"
+      "status": "implemented_unverified",
+      "implementation_refs": [
+        "docs/releases/v0.0.1/REQUIREMENTS.md",
+        "docs/releases/v0.0.1/VERIFICATION.md"
+      ],
+      "producer": "entry-producer:N10-U0"
     },
     {
       "id": "contract.node-action-optical",
       "source_capability": "Optical NodeAction: exact renderer path, shadow-only before attestation",
       "owner_crate": "dtoken-types",
-      "dispatch_symbol": "dtoken_types::contract::NodeAction::Optical",
+      "dispatch_symbol": "dtoken_types::NodeAction::Optical",
       "tests": {
         "normal": [
           "code/crates/dtoken-types/tests/hybrid_accounting.rs"
@@ -770,15 +908,19 @@
         ]
       },
       "real_evidence": [
-        "docs/releases/v0.0.1/REQUIREMENTS.md",
-        "docs/releases/v0.0.1/VERIFICATION.md"
+        "N10-U0-contract.json"
       ],
       "gates": [
         "U0",
         "U2",
         "N10"
       ],
-      "status": "implemented_unverified"
+      "status": "implemented_unverified",
+      "implementation_refs": [
+        "docs/releases/v0.0.1/REQUIREMENTS.md",
+        "docs/releases/v0.0.1/VERIFICATION.md"
+      ],
+      "producer": "entry-producer:N10-U0"
     },
     {
       "id": "contract.node-plan",
@@ -797,15 +939,19 @@
         ]
       },
       "real_evidence": [
-        "docs/releases/v0.0.1/REQUIREMENTS.md",
-        "docs/releases/v0.0.1/VERIFICATION.md"
+        "N10-U0-contract.json"
       ],
       "gates": [
         "U0",
         "G1",
         "N10"
       ],
-      "status": "implemented_unverified"
+      "status": "implemented_unverified",
+      "implementation_refs": [
+        "docs/releases/v0.0.1/REQUIREMENTS.md",
+        "docs/releases/v0.0.1/VERIFICATION.md"
+      ],
+      "producer": "entry-producer:N10-U0"
     },
     {
       "id": "contract.stage-artifact",
@@ -824,15 +970,19 @@
         ]
       },
       "real_evidence": [
-        "docs/releases/v0.0.1/REQUIREMENTS.md",
-        "docs/releases/v0.0.1/VERIFICATION.md"
+        "N10-U0-contract.json"
       ],
       "gates": [
         "U0",
         "G1",
         "N10"
       ],
-      "status": "implemented_unverified"
+      "status": "implemented_unverified",
+      "implementation_refs": [
+        "docs/releases/v0.0.1/REQUIREMENTS.md",
+        "docs/releases/v0.0.1/VERIFICATION.md"
+      ],
+      "producer": "entry-producer:N10-U0"
     },
     {
       "id": "contract.optimization-manifest",
@@ -851,15 +1001,19 @@
         ]
       },
       "real_evidence": [
-        "docs/releases/v0.0.1/REQUIREMENTS.md",
-        "docs/releases/v0.0.1/VERIFICATION.md"
+        "N10-U0-contract.json"
       ],
       "gates": [
         "U0",
         "G1",
         "N10"
       ],
-      "status": "implemented_unverified"
+      "status": "implemented_unverified",
+      "implementation_refs": [
+        "docs/releases/v0.0.1/REQUIREMENTS.md",
+        "docs/releases/v0.0.1/VERIFICATION.md"
+      ],
+      "producer": "entry-producer:N10-U0"
     },
     {
       "id": "contract.safety-policy-default",
@@ -878,15 +1032,19 @@
         ]
       },
       "real_evidence": [
-        "docs/releases/v0.0.1/REQUIREMENTS.md",
-        "docs/releases/v0.0.1/VERIFICATION.md"
+        "N10-U0-contract.json"
       ],
       "gates": [
         "U0",
         "G1",
         "N6"
       ],
-      "status": "implemented_unverified"
+      "status": "implemented_unverified",
+      "implementation_refs": [
+        "docs/releases/v0.0.1/REQUIREMENTS.md",
+        "docs/releases/v0.0.1/VERIFICATION.md"
+      ],
+      "producer": "entry-producer:N10-U0"
     },
     {
       "id": "contract.safety-policy-enhanced",
@@ -905,15 +1063,19 @@
         ]
       },
       "real_evidence": [
-        "docs/releases/v0.0.1/REQUIREMENTS.md",
-        "docs/releases/v0.0.1/VERIFICATION.md"
+        "N10-U0-contract.json"
       ],
       "gates": [
         "U0",
         "G1",
         "N6"
       ],
-      "status": "implemented_unverified"
+      "status": "implemented_unverified",
+      "implementation_refs": [
+        "docs/releases/v0.0.1/REQUIREMENTS.md",
+        "docs/releases/v0.0.1/VERIFICATION.md"
+      ],
+      "producer": "entry-producer:N10-U0"
     },
     {
       "id": "contract.safety-policy-lossy",
@@ -932,15 +1094,19 @@
         ]
       },
       "real_evidence": [
-        "docs/releases/v0.0.1/REQUIREMENTS.md",
-        "docs/releases/v0.0.1/VERIFICATION.md"
+        "N10-U0-contract.json"
       ],
       "gates": [
         "U0",
         "G1",
         "N6"
       ],
-      "status": "implemented_unverified"
+      "status": "implemented_unverified",
+      "implementation_refs": [
+        "docs/releases/v0.0.1/REQUIREMENTS.md",
+        "docs/releases/v0.0.1/VERIFICATION.md"
+      ],
+      "producer": "entry-producer:N10-U0"
     },
     {
       "id": "contract.accounting-bucket-compression",
@@ -959,15 +1125,19 @@
         ]
       },
       "real_evidence": [
-        "docs/releases/v0.0.1/REQUIREMENTS.md",
-        "docs/releases/v0.0.1/VERIFICATION.md"
+        "N1-receipt.json"
       ],
       "gates": [
         "U0",
         "G1",
         "N1"
       ],
-      "status": "implemented_unverified"
+      "status": "implemented_unverified",
+      "implementation_refs": [
+        "docs/releases/v0.0.1/REQUIREMENTS.md",
+        "docs/releases/v0.0.1/VERIFICATION.md"
+      ],
+      "producer": "entry-producer:N1"
     },
     {
       "id": "contract.accounting-bucket-command-output",
@@ -986,15 +1156,19 @@
         ]
       },
       "real_evidence": [
-        "docs/releases/v0.0.1/REQUIREMENTS.md",
-        "docs/releases/v0.0.1/VERIFICATION.md"
+        "N1-receipt.json"
       ],
       "gates": [
         "U0",
         "G1",
         "N1"
       ],
-      "status": "implemented_unverified"
+      "status": "implemented_unverified",
+      "implementation_refs": [
+        "docs/releases/v0.0.1/REQUIREMENTS.md",
+        "docs/releases/v0.0.1/VERIFICATION.md"
+      ],
+      "producer": "entry-producer:N1"
     },
     {
       "id": "contract.accounting-bucket-provider-cache",
@@ -1013,15 +1187,19 @@
         ]
       },
       "real_evidence": [
-        "docs/releases/v0.0.1/REQUIREMENTS.md",
-        "docs/releases/v0.0.1/VERIFICATION.md"
+        "N1-receipt.json"
       ],
       "gates": [
         "U0",
         "G1",
         "N1"
       ],
-      "status": "implemented_unverified"
+      "status": "implemented_unverified",
+      "implementation_refs": [
+        "docs/releases/v0.0.1/REQUIREMENTS.md",
+        "docs/releases/v0.0.1/VERIFICATION.md"
+      ],
+      "producer": "entry-producer:N1"
     },
     {
       "id": "contract.accounting-bucket-relay",
@@ -1040,15 +1218,19 @@
         ]
       },
       "real_evidence": [
-        "docs/releases/v0.0.1/REQUIREMENTS.md",
-        "docs/releases/v0.0.1/VERIFICATION.md"
+        "N1-receipt.json"
       ],
       "gates": [
         "U0",
         "G1",
         "N1"
       ],
-      "status": "implemented_unverified"
+      "status": "implemented_unverified",
+      "implementation_refs": [
+        "docs/releases/v0.0.1/REQUIREMENTS.md",
+        "docs/releases/v0.0.1/VERIFICATION.md"
+      ],
+      "producer": "entry-producer:N1"
     },
     {
       "id": "types.request-scope",
@@ -1067,15 +1249,19 @@
         ]
       },
       "real_evidence": [
-        "docs/releases/v0.0.1/REQUIREMENTS.md",
-        "docs/releases/v0.0.1/VERIFICATION.md"
+        "N10-U0-contract.json"
       ],
       "gates": [
         "U0",
         "G1",
         "N10"
       ],
-      "status": "implemented_unverified"
+      "status": "implemented_unverified",
+      "implementation_refs": [
+        "docs/releases/v0.0.1/REQUIREMENTS.md",
+        "docs/releases/v0.0.1/VERIFICATION.md"
+      ],
+      "producer": "entry-producer:N10-U0"
     },
     {
       "id": "types.evidence-value",
@@ -1094,15 +1280,19 @@
         ]
       },
       "real_evidence": [
-        "docs/releases/v0.0.1/REQUIREMENTS.md",
-        "docs/releases/v0.0.1/VERIFICATION.md"
+        "N10-U0-contract.json"
       ],
       "gates": [
         "U0",
         "G1",
         "N10"
       ],
-      "status": "implemented_unverified"
+      "status": "implemented_unverified",
+      "implementation_refs": [
+        "docs/releases/v0.0.1/REQUIREMENTS.md",
+        "docs/releases/v0.0.1/VERIFICATION.md"
+      ],
+      "producer": "entry-producer:N10-U0"
     },
     {
       "id": "types.provider-cache-policy",
@@ -1121,15 +1311,19 @@
         ]
       },
       "real_evidence": [
-        "docs/releases/v0.0.1/REQUIREMENTS.md",
-        "docs/releases/v0.0.1/VERIFICATION.md"
+        "N10-U0-contract.json"
       ],
       "gates": [
         "G2",
         "U1",
         "N10"
       ],
-      "status": "implemented_unverified"
+      "status": "implemented_unverified",
+      "implementation_refs": [
+        "docs/releases/v0.0.1/REQUIREMENTS.md",
+        "docs/releases/v0.0.1/VERIFICATION.md"
+      ],
+      "producer": "entry-producer:N10-U0"
     },
     {
       "id": "types.provider-cache-observation",
@@ -1148,15 +1342,19 @@
         ]
       },
       "real_evidence": [
-        "docs/releases/v0.0.1/REQUIREMENTS.md",
-        "docs/releases/v0.0.1/VERIFICATION.md"
+        "N10-U0-contract.json"
       ],
       "gates": [
         "G2",
         "U1",
         "N10"
       ],
-      "status": "implemented_unverified"
+      "status": "implemented_unverified",
+      "implementation_refs": [
+        "docs/releases/v0.0.1/REQUIREMENTS.md",
+        "docs/releases/v0.0.1/VERIFICATION.md"
+      ],
+      "producer": "entry-producer:N10-U0"
     },
     {
       "id": "types.capability-evidence",
@@ -1175,15 +1373,19 @@
         ]
       },
       "real_evidence": [
-        "docs/releases/v0.0.1/REQUIREMENTS.md",
-        "docs/releases/v0.0.1/VERIFICATION.md"
+        "N10-U0-contract.json"
       ],
       "gates": [
         "U0",
         "G1",
         "N10"
       ],
-      "status": "implemented_unverified"
+      "status": "implemented_unverified",
+      "implementation_refs": [
+        "docs/releases/v0.0.1/REQUIREMENTS.md",
+        "docs/releases/v0.0.1/VERIFICATION.md"
+      ],
+      "producer": "entry-producer:N10-U0"
     },
     {
       "id": "types.capability-registry-snapshot",
@@ -1202,15 +1404,19 @@
         ]
       },
       "real_evidence": [
-        "docs/releases/v0.0.1/REQUIREMENTS.md",
-        "docs/releases/v0.0.1/VERIFICATION.md"
+        "N10-U0-contract.json"
       ],
       "gates": [
         "U1",
         "G0",
         "N10"
       ],
-      "status": "implemented_unverified"
+      "status": "implemented_unverified",
+      "implementation_refs": [
+        "docs/releases/v0.0.1/REQUIREMENTS.md",
+        "docs/releases/v0.0.1/VERIFICATION.md"
+      ],
+      "producer": "entry-producer:N10-U0"
     },
     {
       "id": "types.usage-comparison",
@@ -1229,15 +1435,19 @@
         ]
       },
       "real_evidence": [
-        "docs/releases/v0.0.1/REQUIREMENTS.md",
-        "docs/releases/v0.0.1/VERIFICATION.md"
+        "N10-U0-contract.json"
       ],
       "gates": [
         "N1",
         "U6",
         "N10"
       ],
-      "status": "implemented_unverified"
+      "status": "implemented_unverified",
+      "implementation_refs": [
+        "docs/releases/v0.0.1/REQUIREMENTS.md",
+        "docs/releases/v0.0.1/VERIFICATION.md"
+      ],
+      "producer": "entry-producer:N10-U0"
     },
     {
       "id": "types.hybrid-context-accounting",
@@ -1256,15 +1466,19 @@
         ]
       },
       "real_evidence": [
-        "docs/releases/v0.0.1/REQUIREMENTS.md",
-        "docs/releases/v0.0.1/VERIFICATION.md"
+        "N1-receipt.json"
       ],
       "gates": [
         "N1",
         "U6",
         "N10"
       ],
-      "status": "implemented_unverified"
+      "status": "implemented_unverified",
+      "implementation_refs": [
+        "docs/releases/v0.0.1/REQUIREMENTS.md",
+        "docs/releases/v0.0.1/VERIFICATION.md"
+      ],
+      "producer": "entry-producer:N1"
     },
     {
       "id": "types.request-log",
@@ -1283,15 +1497,19 @@
         ]
       },
       "real_evidence": [
-        "docs/releases/v0.0.1/REQUIREMENTS.md",
-        "docs/releases/v0.0.1/VERIFICATION.md"
+        "N10-U0-contract.json"
       ],
       "gates": [
         "N1",
         "G6",
         "N10"
       ],
-      "status": "implemented_unverified"
+      "status": "implemented_unverified",
+      "implementation_refs": [
+        "docs/releases/v0.0.1/REQUIREMENTS.md",
+        "docs/releases/v0.0.1/VERIFICATION.md"
+      ],
+      "producer": "entry-producer:N10-U0"
     },
     {
       "id": "types.optimization-receipt",
@@ -1310,15 +1528,19 @@
         ]
       },
       "real_evidence": [
-        "docs/releases/v0.0.1/REQUIREMENTS.md",
-        "docs/releases/v0.0.1/VERIFICATION.md"
+        "N1-receipt.json"
       ],
       "gates": [
         "N1",
         "G6",
         "N10"
       ],
-      "status": "implemented_unverified"
+      "status": "implemented_unverified",
+      "implementation_refs": [
+        "docs/releases/v0.0.1/REQUIREMENTS.md",
+        "docs/releases/v0.0.1/VERIFICATION.md"
+      ],
+      "producer": "entry-producer:N1"
     },
     {
       "id": "optical.global-policy",
@@ -1337,15 +1559,19 @@
         ]
       },
       "real_evidence": [
-        "docs/releases/v0.0.1/REQUIREMENTS.md",
-        "docs/releases/v0.0.1/VERIFICATION.md"
+        "N10-U7-optical-active.json"
       ],
       "gates": [
         "U7",
         "U1",
         "N10"
       ],
-      "status": "implemented_unverified"
+      "status": "implemented_unverified",
+      "implementation_refs": [
+        "docs/releases/v0.0.1/REQUIREMENTS.md",
+        "docs/releases/v0.0.1/VERIFICATION.md"
+      ],
+      "producer": "entry-producer:N10-U7"
     },
     {
       "id": "optical.capability-snapshot",
@@ -1364,15 +1590,19 @@
         ]
       },
       "real_evidence": [
-        "docs/releases/v0.0.1/REQUIREMENTS.md",
-        "docs/releases/v0.0.1/VERIFICATION.md"
+        "N10-U7-optical-active.json"
       ],
       "gates": [
         "U7",
         "U1",
         "N10"
       ],
-      "status": "implemented_unverified"
+      "status": "implemented_unverified",
+      "implementation_refs": [
+        "docs/releases/v0.0.1/REQUIREMENTS.md",
+        "docs/releases/v0.0.1/VERIFICATION.md"
+      ],
+      "producer": "entry-producer:N10-U7"
     },
     {
       "id": "optical.attestation",
@@ -1391,15 +1621,19 @@
         ]
       },
       "real_evidence": [
-        "docs/releases/v0.0.1/REQUIREMENTS.md",
-        "docs/releases/v0.0.1/VERIFICATION.md"
+        "N10-U7-optical-active.json"
       ],
       "gates": [
         "U7",
         "U1",
         "N10"
       ],
-      "status": "implemented_unverified"
+      "status": "implemented_unverified",
+      "implementation_refs": [
+        "docs/releases/v0.0.1/REQUIREMENTS.md",
+        "docs/releases/v0.0.1/VERIFICATION.md"
+      ],
+      "producer": "entry-producer:N10-U7"
     },
     {
       "id": "optical.eval-artifact",
@@ -1418,15 +1652,19 @@
         ]
       },
       "real_evidence": [
-        "docs/releases/v0.0.1/REQUIREMENTS.md",
-        "docs/releases/v0.0.1/VERIFICATION.md"
+        "N10-U7-optical-active.json"
       ],
       "gates": [
         "U7",
         "U1",
         "N10"
       ],
-      "status": "implemented_unverified"
+      "status": "implemented_unverified",
+      "implementation_refs": [
+        "docs/releases/v0.0.1/REQUIREMENTS.md",
+        "docs/releases/v0.0.1/VERIFICATION.md"
+      ],
+      "producer": "entry-producer:N10-U7"
     },
     {
       "id": "optical.gate-decision",
@@ -1445,15 +1683,19 @@
         ]
       },
       "real_evidence": [
-        "docs/releases/v0.0.1/REQUIREMENTS.md",
-        "docs/releases/v0.0.1/VERIFICATION.md"
+        "N10-U7-optical-active.json"
       ],
       "gates": [
         "U7",
         "U1",
         "N10"
       ],
-      "status": "implemented_unverified"
+      "status": "implemented_unverified",
+      "implementation_refs": [
+        "docs/releases/v0.0.1/REQUIREMENTS.md",
+        "docs/releases/v0.0.1/VERIFICATION.md"
+      ],
+      "producer": "entry-producer:N10-U7"
     },
     {
       "id": "optical.bucket-summary",
@@ -1472,15 +1714,19 @@
         ]
       },
       "real_evidence": [
-        "docs/releases/v0.0.1/REQUIREMENTS.md",
-        "docs/releases/v0.0.1/VERIFICATION.md"
+        "N10-U7-optical-active.json"
       ],
       "gates": [
         "U7",
         "U1",
         "N10"
       ],
-      "status": "implemented_unverified"
+      "status": "implemented_unverified",
+      "implementation_refs": [
+        "docs/releases/v0.0.1/REQUIREMENTS.md",
+        "docs/releases/v0.0.1/VERIFICATION.md"
+      ],
+      "producer": "entry-producer:N10-U7"
     },
     {
       "id": "optical.route-policy",
@@ -1499,15 +1745,19 @@
         ]
       },
       "real_evidence": [
-        "docs/releases/v0.0.1/REQUIREMENTS.md",
-        "docs/releases/v0.0.1/VERIFICATION.md"
+        "N10-U7-optical-active.json"
       ],
       "gates": [
         "U7",
         "U1",
         "N10"
       ],
-      "status": "implemented_unverified"
+      "status": "implemented_unverified",
+      "implementation_refs": [
+        "docs/releases/v0.0.1/REQUIREMENTS.md",
+        "docs/releases/v0.0.1/VERIFICATION.md"
+      ],
+      "producer": "entry-producer:N10-U7"
     },
     {
       "id": "optical.runtime-config",
@@ -1526,15 +1776,19 @@
         ]
       },
       "real_evidence": [
-        "docs/releases/v0.0.1/REQUIREMENTS.md",
-        "docs/releases/v0.0.1/VERIFICATION.md"
+        "N10-U7-optical-active.json"
       ],
       "gates": [
         "U7",
         "U1",
         "N10"
       ],
-      "status": "implemented_unverified"
+      "status": "implemented_unverified",
+      "implementation_refs": [
+        "docs/releases/v0.0.1/REQUIREMENTS.md",
+        "docs/releases/v0.0.1/VERIFICATION.md"
+      ],
+      "producer": "entry-producer:N10-U7"
     },
     {
       "id": "router.decide",
@@ -1553,15 +1807,19 @@
         ]
       },
       "real_evidence": [
-        "docs/releases/v0.0.1/REQUIREMENTS.md",
-        "docs/releases/v0.0.1/VERIFICATION.md"
+        "N10-U0-contract.json"
       ],
       "gates": [
         "U0",
         "G1",
         "N10"
       ],
-      "status": "implemented_unverified"
+      "status": "implemented_unverified",
+      "implementation_refs": [
+        "docs/releases/v0.0.1/REQUIREMENTS.md",
+        "docs/releases/v0.0.1/VERIFICATION.md"
+      ],
+      "producer": "entry-producer:N10-U0"
     },
     {
       "id": "router.ambiguous-reject",
@@ -1580,15 +1838,19 @@
         ]
       },
       "real_evidence": [
-        "docs/releases/v0.0.1/REQUIREMENTS.md",
-        "docs/releases/v0.0.1/VERIFICATION.md"
+        "N10-U0-contract.json"
       ],
       "gates": [
         "U0",
         "G1",
         "N10"
       ],
-      "status": "implemented_unverified"
+      "status": "implemented_unverified",
+      "implementation_refs": [
+        "docs/releases/v0.0.1/REQUIREMENTS.md",
+        "docs/releases/v0.0.1/VERIFICATION.md"
+      ],
+      "producer": "entry-producer:N10-U0"
     },
     {
       "id": "router.route-decision-digest",
@@ -1607,15 +1869,19 @@
         ]
       },
       "real_evidence": [
-        "docs/releases/v0.0.1/REQUIREMENTS.md",
-        "docs/releases/v0.0.1/VERIFICATION.md"
+        "N10-U0-contract.json"
       ],
       "gates": [
         "U0",
         "G1",
         "N10"
       ],
-      "status": "implemented_unverified"
+      "status": "implemented_unverified",
+      "implementation_refs": [
+        "docs/releases/v0.0.1/REQUIREMENTS.md",
+        "docs/releases/v0.0.1/VERIFICATION.md"
+      ],
+      "producer": "entry-producer:N10-U0"
     },
     {
       "id": "router.no-engine-chooser",
@@ -1634,15 +1900,19 @@
         ]
       },
       "real_evidence": [
-        "docs/releases/v0.0.1/REQUIREMENTS.md",
-        "docs/releases/v0.0.1/VERIFICATION.md"
+        "N10-U0-contract.json"
       ],
       "gates": [
         "U0",
         "G1",
         "N10"
       ],
-      "status": "implemented_unverified"
+      "status": "implemented_unverified",
+      "implementation_refs": [
+        "docs/releases/v0.0.1/REQUIREMENTS.md",
+        "docs/releases/v0.0.1/VERIFICATION.md"
+      ],
+      "producer": "entry-producer:N10-U0"
     },
     {
       "id": "pipeline.context-envelope",
@@ -1661,15 +1931,19 @@
         ]
       },
       "real_evidence": [
-        "docs/releases/v0.0.1/REQUIREMENTS.md",
-        "docs/releases/v0.0.1/VERIFICATION.md"
+        "N10-U0-contract.json"
       ],
       "gates": [
         "U0",
         "G1",
         "N10"
       ],
-      "status": "implemented_unverified"
+      "status": "implemented_unverified",
+      "implementation_refs": [
+        "docs/releases/v0.0.1/REQUIREMENTS.md",
+        "docs/releases/v0.0.1/VERIFICATION.md"
+      ],
+      "producer": "entry-producer:N10-U0"
     },
     {
       "id": "pipeline.prepared-request",
@@ -1688,15 +1962,19 @@
         ]
       },
       "real_evidence": [
-        "docs/releases/v0.0.1/REQUIREMENTS.md",
-        "docs/releases/v0.0.1/VERIFICATION.md"
+        "N10-U0-contract.json"
       ],
       "gates": [
         "U0",
         "G1",
         "N10"
       ],
-      "status": "implemented_unverified"
+      "status": "implemented_unverified",
+      "implementation_refs": [
+        "docs/releases/v0.0.1/REQUIREMENTS.md",
+        "docs/releases/v0.0.1/VERIFICATION.md"
+      ],
+      "producer": "entry-producer:N10-U0"
     },
     {
       "id": "pipeline.transform-artifact",
@@ -1715,15 +1993,19 @@
         ]
       },
       "real_evidence": [
-        "docs/releases/v0.0.1/REQUIREMENTS.md",
-        "docs/releases/v0.0.1/VERIFICATION.md"
+        "N10-U0-contract.json"
       ],
       "gates": [
         "U0",
         "G1",
         "N10"
       ],
-      "status": "implemented_unverified"
+      "status": "implemented_unverified",
+      "implementation_refs": [
+        "docs/releases/v0.0.1/REQUIREMENTS.md",
+        "docs/releases/v0.0.1/VERIFICATION.md"
+      ],
+      "producer": "entry-producer:N10-U0"
     },
     {
       "id": "pipeline.ready-to-send",
@@ -1742,15 +2024,19 @@
         ]
       },
       "real_evidence": [
-        "docs/releases/v0.0.1/REQUIREMENTS.md",
-        "docs/releases/v0.0.1/VERIFICATION.md"
+        "N1-receipt.json"
       ],
       "gates": [
         "U0",
         "U3",
         "N10"
       ],
-      "status": "implemented_unverified"
+      "status": "implemented_unverified",
+      "implementation_refs": [
+        "docs/releases/v0.0.1/REQUIREMENTS.md",
+        "docs/releases/v0.0.1/VERIFICATION.md"
+      ],
+      "producer": "entry-producer:N1"
     },
     {
       "id": "pipeline.send-commit-receipt",
@@ -1769,15 +2055,19 @@
         ]
       },
       "real_evidence": [
-        "docs/releases/v0.0.1/REQUIREMENTS.md",
-        "docs/releases/v0.0.1/VERIFICATION.md"
+        "N1-receipt.json"
       ],
       "gates": [
         "U0",
         "U3",
         "N10"
       ],
-      "status": "implemented_unverified"
+      "status": "implemented_unverified",
+      "implementation_refs": [
+        "docs/releases/v0.0.1/REQUIREMENTS.md",
+        "docs/releases/v0.0.1/VERIFICATION.md"
+      ],
+      "producer": "entry-producer:N1"
     },
     {
       "id": "receipt.validation",
@@ -1796,15 +2086,19 @@
         ]
       },
       "real_evidence": [
-        "docs/releases/v0.0.1/REQUIREMENTS.md",
-        "docs/releases/v0.0.1/VERIFICATION.md"
+        "N1-receipt.json"
       ],
       "gates": [
         "U0",
         "U3",
         "N10"
       ],
-      "status": "implemented_unverified"
+      "status": "implemented_unverified",
+      "implementation_refs": [
+        "docs/releases/v0.0.1/REQUIREMENTS.md",
+        "docs/releases/v0.0.1/VERIFICATION.md"
+      ],
+      "producer": "entry-producer:N1"
     },
     {
       "id": "receipt.recovery",
@@ -1823,15 +2117,19 @@
         ]
       },
       "real_evidence": [
-        "docs/releases/v0.0.1/REQUIREMENTS.md",
-        "docs/releases/v0.0.1/VERIFICATION.md"
+        "N1-receipt.json"
       ],
       "gates": [
         "U3",
         "G3",
         "N10"
       ],
-      "status": "implemented_unverified"
+      "status": "implemented_unverified",
+      "implementation_refs": [
+        "docs/releases/v0.0.1/REQUIREMENTS.md",
+        "docs/releases/v0.0.1/VERIFICATION.md"
+      ],
+      "producer": "entry-producer:N1"
     },
     {
       "id": "receipt.send-commit",
@@ -1850,15 +2148,19 @@
         ]
       },
       "real_evidence": [
-        "docs/releases/v0.0.1/REQUIREMENTS.md",
-        "docs/releases/v0.0.1/VERIFICATION.md"
+        "N1-receipt.json"
       ],
       "gates": [
         "U0",
         "U3",
         "N10"
       ],
-      "status": "implemented_unverified"
+      "status": "implemented_unverified",
+      "implementation_refs": [
+        "docs/releases/v0.0.1/REQUIREMENTS.md",
+        "docs/releases/v0.0.1/VERIFICATION.md"
+      ],
+      "producer": "entry-producer:N1"
     },
     {
       "id": "engine.compress-resolved",
@@ -1877,15 +2179,19 @@
         ]
       },
       "real_evidence": [
-        "docs/releases/v0.0.1/REQUIREMENTS.md",
-        "docs/releases/v0.0.1/VERIFICATION.md"
+        "N10-U5-perf.json"
       ],
       "gates": [
         "G2",
         "U2",
         "N10"
       ],
-      "status": "implemented_unverified"
+      "status": "implemented_unverified",
+      "implementation_refs": [
+        "docs/releases/v0.0.1/REQUIREMENTS.md",
+        "docs/releases/v0.0.1/VERIFICATION.md"
+      ],
+      "producer": "entry-producer:N10-U5"
     },
     {
       "id": "engine.compressor-registry",
@@ -1904,15 +2210,19 @@
         ]
       },
       "real_evidence": [
-        "docs/releases/v0.0.1/REQUIREMENTS.md",
-        "docs/releases/v0.0.1/VERIFICATION.md"
+        "N10-U1-registry.json"
       ],
       "gates": [
         "G2",
         "U1",
         "N10"
       ],
-      "status": "implemented_unverified"
+      "status": "implemented_unverified",
+      "implementation_refs": [
+        "docs/releases/v0.0.1/REQUIREMENTS.md",
+        "docs/releases/v0.0.1/VERIFICATION.md"
+      ],
+      "producer": "entry-producer:N10-U1"
     },
     {
       "id": "engine.content-router",
@@ -1931,15 +2241,19 @@
         ]
       },
       "real_evidence": [
-        "docs/releases/v0.0.1/REQUIREMENTS.md",
-        "docs/releases/v0.0.1/VERIFICATION.md"
+        "N10-U5-perf.json"
       ],
       "gates": [
         "G2",
         "U2",
         "N10"
       ],
-      "status": "implemented_unverified"
+      "status": "implemented_unverified",
+      "implementation_refs": [
+        "docs/releases/v0.0.1/REQUIREMENTS.md",
+        "docs/releases/v0.0.1/VERIFICATION.md"
+      ],
+      "producer": "entry-producer:N10-U5"
     },
     {
       "id": "engine.single-production-path",
@@ -1958,15 +2272,19 @@
         ]
       },
       "real_evidence": [
-        "docs/releases/v0.0.1/REQUIREMENTS.md",
-        "docs/releases/v0.0.1/VERIFICATION.md"
+        "N10-U5-perf.json"
       ],
       "gates": [
         "U0",
         "G4",
         "N10"
       ],
-      "status": "blocked"
+      "status": "blocked",
+      "implementation_refs": [
+        "docs/releases/v0.0.1/REQUIREMENTS.md",
+        "docs/releases/v0.0.1/VERIFICATION.md"
+      ],
+      "producer": "entry-producer:N10-U5"
     },
     {
       "id": "c1.route-lowering",
@@ -1985,15 +2303,19 @@
         ]
       },
       "real_evidence": [
-        "docs/releases/v0.0.1/REQUIREMENTS.md",
-        "docs/releases/v0.0.1/VERIFICATION.md"
+        "N10-U0-contract.json"
       ],
       "gates": [
         "U0",
         "G1",
         "N10"
       ],
-      "status": "blocked"
+      "status": "blocked",
+      "implementation_refs": [
+        "docs/releases/v0.0.1/REQUIREMENTS.md",
+        "docs/releases/v0.0.1/VERIFICATION.md"
+      ],
+      "producer": "entry-producer:N10-U0"
     },
     {
       "id": "c1.single-dispatch-native-responses",
@@ -2012,15 +2334,19 @@
         ]
       },
       "real_evidence": [
-        "docs/releases/v0.0.1/REQUIREMENTS.md",
-        "docs/releases/v0.0.1/VERIFICATION.md"
+        "N10-U0-contract.json"
       ],
       "gates": [
         "U0",
         "G4",
         "N10"
       ],
-      "status": "blocked"
+      "status": "blocked",
+      "implementation_refs": [
+        "docs/releases/v0.0.1/REQUIREMENTS.md",
+        "docs/releases/v0.0.1/VERIFICATION.md"
+      ],
+      "producer": "entry-producer:N10-U0"
     },
     {
       "id": "c2.cache-live-zone",
@@ -2039,15 +2365,19 @@
         ]
       },
       "real_evidence": [
-        "docs/releases/v0.0.1/REQUIREMENTS.md",
-        "docs/releases/v0.0.1/VERIFICATION.md"
+        "N10-U4-replay-quality.json"
       ],
       "gates": [
         "G2",
         "U2",
         "N10"
       ],
-      "status": "blocked"
+      "status": "blocked",
+      "implementation_refs": [
+        "docs/releases/v0.0.1/REQUIREMENTS.md",
+        "docs/releases/v0.0.1/VERIFICATION.md"
+      ],
+      "producer": "entry-producer:N10-U4"
     },
     {
       "id": "c2.ccr-memory-learning",
@@ -2066,21 +2396,25 @@
         ]
       },
       "real_evidence": [
-        "docs/releases/v0.0.1/REQUIREMENTS.md",
-        "docs/releases/v0.0.1/VERIFICATION.md"
+        "N1-receipt.json"
       ],
       "gates": [
         "G3",
         "U3",
         "N10"
       ],
-      "status": "blocked"
+      "status": "blocked",
+      "implementation_refs": [
+        "docs/releases/v0.0.1/REQUIREMENTS.md",
+        "docs/releases/v0.0.1/VERIFICATION.md"
+      ],
+      "producer": "entry-producer:N1"
     },
     {
       "id": "c3.context-bus",
       "source_capability": "Context Bus: shared Rust-owned domain for cache/reuse policy (not copied into other crates)",
-      "owner_crate": "dtoken-context-store",
-      "dispatch_symbol": "dtoken_context_store::SharedContext",
+      "owner_crate": "dtoken-context-bus",
+      "dispatch_symbol": "dtoken_context_bus::bus::ContextBus",
       "tests": {
         "normal": [
           "code/crates/dtoken-context-store/tests/durability.rs"
@@ -2093,21 +2427,25 @@
         ]
       },
       "real_evidence": [
-        "docs/releases/v0.0.1/REQUIREMENTS.md",
-        "docs/releases/v0.0.1/VERIFICATION.md"
+        "N10-U4-replay-quality.json"
       ],
       "gates": [
         "G1",
         "U2",
         "N10"
       ],
-      "status": "blocked"
+      "status": "blocked",
+      "implementation_refs": [
+        "docs/releases/v0.0.1/REQUIREMENTS.md",
+        "docs/releases/v0.0.1/VERIFICATION.md"
+      ],
+      "producer": "entry-producer:N10-U4"
     },
     {
       "id": "c3.session-cache",
       "source_capability": "Session Cache: map/signature/self-hit/scope/size state machine",
-      "owner_crate": "dtoken-context-store",
-      "dispatch_symbol": "dtoken_context_store::SessionCache",
+      "owner_crate": "dtoken-context-bus",
+      "dispatch_symbol": "dtoken_context_bus::cache::SessionCache",
       "tests": {
         "normal": [
           "code/crates/dtoken-context-store/tests/durability.rs"
@@ -2120,21 +2458,25 @@
         ]
       },
       "real_evidence": [
-        "docs/releases/v0.0.1/REQUIREMENTS.md",
-        "docs/releases/v0.0.1/VERIFICATION.md"
+        "N10-U4-replay-quality.json"
       ],
       "gates": [
         "G1",
         "U2",
         "N10"
       ],
-      "status": "blocked"
+      "status": "blocked",
+      "implementation_refs": [
+        "docs/releases/v0.0.1/REQUIREMENTS.md",
+        "docs/releases/v0.0.1/VERIFICATION.md"
+      ],
+      "producer": "entry-producer:N10-U4"
     },
     {
       "id": "c3.context-relay",
       "source_capability": "Context Relay: cross-agent query-aware retrieval with independent relay accounting",
-      "owner_crate": "dtoken-context-store",
-      "dispatch_symbol": "dtoken_context_store::ContextRelay",
+      "owner_crate": "dtoken-context-bus",
+      "dispatch_symbol": "dtoken_context_bus::relay::ContextRelay",
       "tests": {
         "normal": [
           "code/crates/dtoken-context-store/tests/durability.rs"
@@ -2147,21 +2489,25 @@
         ]
       },
       "real_evidence": [
-        "docs/releases/v0.0.1/REQUIREMENTS.md",
-        "docs/releases/v0.0.1/VERIFICATION.md"
+        "N10-U4-replay-quality.json"
       ],
       "gates": [
         "G5",
         "U2",
         "N10"
       ],
-      "status": "blocked"
+      "status": "blocked",
+      "implementation_refs": [
+        "docs/releases/v0.0.1/REQUIREMENTS.md",
+        "docs/releases/v0.0.1/VERIFICATION.md"
+      ],
+      "producer": "entry-producer:N10-U4"
     },
     {
       "id": "c3.query-aware-retrieval",
       "source_capability": "Query-aware retrieval: query-derived reuse without cross-project pollution",
-      "owner_crate": "dtoken-context-store",
-      "dispatch_symbol": "dtoken_context_store::retrieve",
+      "owner_crate": "dtoken-context-bus",
+      "dispatch_symbol": "dtoken_context_bus::relay::ContextRelay::query",
       "tests": {
         "normal": [
           "code/crates/dtoken-context-store/tests/durability.rs"
@@ -2174,15 +2520,19 @@
         ]
       },
       "real_evidence": [
-        "docs/releases/v0.0.1/REQUIREMENTS.md",
-        "docs/releases/v0.0.1/VERIFICATION.md"
+        "N10-U4-replay-quality.json"
       ],
       "gates": [
         "G5",
         "U2",
         "N10"
       ],
-      "status": "blocked"
+      "status": "blocked",
+      "implementation_refs": [
+        "docs/releases/v0.0.1/REQUIREMENTS.md",
+        "docs/releases/v0.0.1/VERIFICATION.md"
+      ],
+      "producer": "entry-producer:N10-U4"
     },
     {
       "id": "c3.recovery-pointer-manifest",
@@ -2201,21 +2551,25 @@
         ]
       },
       "real_evidence": [
-        "docs/releases/v0.0.1/REQUIREMENTS.md",
-        "docs/releases/v0.0.1/VERIFICATION.md"
+        "N10-U3-fault.json"
       ],
       "gates": [
         "U3",
         "G3",
         "N10"
       ],
-      "status": "blocked"
+      "status": "blocked",
+      "implementation_refs": [
+        "docs/releases/v0.0.1/REQUIREMENTS.md",
+        "docs/releases/v0.0.1/VERIFICATION.md"
+      ],
+      "producer": "entry-producer:N10-U3"
     },
     {
       "id": "c3.stale-superseded",
       "source_capability": "Stale/Superseded: changes in file/TTL/permission/source invalidate reuse",
-      "owner_crate": "dtoken-context-store",
-      "dispatch_symbol": "dtoken_context_store::SharedContext",
+      "owner_crate": "dtoken-context-bus",
+      "dispatch_symbol": "dtoken_context_bus::shared::SharedContext",
       "tests": {
         "normal": [
           "code/crates/dtoken-context-store/tests/durability.rs"
@@ -2228,21 +2582,25 @@
         ]
       },
       "real_evidence": [
-        "docs/releases/v0.0.1/REQUIREMENTS.md",
-        "docs/releases/v0.0.1/VERIFICATION.md"
+        "N10-U3-fault.json"
       ],
       "gates": [
         "G3",
         "U3",
         "N10"
       ],
-      "status": "blocked"
+      "status": "blocked",
+      "implementation_refs": [
+        "docs/releases/v0.0.1/REQUIREMENTS.md",
+        "docs/releases/v0.0.1/VERIFICATION.md"
+      ],
+      "producer": "entry-producer:N10-U3"
     },
     {
       "id": "c3.shared-context-authorization",
       "source_capability": "SharedContext grant/revoke authorization boundary",
-      "owner_crate": "dtoken-context-store",
-      "dispatch_symbol": "dtoken_context_store::SharedContext",
+      "owner_crate": "dtoken-context-bus",
+      "dispatch_symbol": "dtoken_context_bus::relay::relay_authorized",
       "tests": {
         "normal": [
           "code/crates/dtoken-context-store/tests/durability.rs"
@@ -2255,21 +2613,25 @@
         ]
       },
       "real_evidence": [
-        "docs/releases/v0.0.1/REQUIREMENTS.md",
-        "docs/releases/v0.0.1/VERIFICATION.md"
+        "N10-U4-replay-quality.json"
       ],
       "gates": [
         "G3",
         "U3",
         "N10"
       ],
-      "status": "blocked"
+      "status": "blocked",
+      "implementation_refs": [
+        "docs/releases/v0.0.1/REQUIREMENTS.md",
+        "docs/releases/v0.0.1/VERIFICATION.md"
+      ],
+      "producer": "entry-producer:N10-U4"
     },
     {
       "id": "c4.rtk-structured-filters",
       "source_capability": "RTK structured filters: git/cargo/npm/pytest/json classification with TOML DSL; secret/error/unknown preserved",
       "owner_crate": "dtoken-preprocessor",
-      "dispatch_symbol": "dtoken_preprocessor::rtk::classify",
+      "dispatch_symbol": "dtoken_preprocessor::filters::filter_command_output",
       "tests": {
         "normal": [
           "code/crates/dtoken-preprocessor/src/filters.rs"
@@ -2282,21 +2644,25 @@
         ]
       },
       "real_evidence": [
-        "docs/releases/v0.0.1/REQUIREMENTS.md",
-        "docs/releases/v0.0.1/VERIFICATION.md"
+        "N10-U2-property-fuzz.json"
       ],
       "gates": [
         "G5",
         "U2",
         "N10"
       ],
-      "status": "blocked"
+      "status": "implemented_unverified",
+      "implementation_refs": [
+        "docs/releases/v0.0.1/REQUIREMENTS.md",
+        "docs/releases/v0.0.1/VERIFICATION.md"
+      ],
+      "producer": "entry-producer:N10-U2"
     },
     {
       "id": "c4.rtk-managed-hook-tee",
       "source_capability": "RTK managed hook/tee lifecycle across macOS/Windows/WSL with exact restore",
       "owner_crate": "dtoken-preprocessor",
-      "dispatch_symbol": "dtoken_preprocessor::rtk::ManagedRtkLifecycle",
+      "dispatch_symbol": "dtoken_preprocessor::ManagedRtkLifecycle",
       "tests": {
         "normal": [
           "code/crates/dtoken-preprocessor/src/lib.rs"
@@ -2309,21 +2675,25 @@
         ]
       },
       "real_evidence": [
-        "docs/releases/v0.0.1/REQUIREMENTS.md",
-        "docs/releases/v0.0.1/VERIFICATION.md"
+        "N7-macos.json"
       ],
       "gates": [
         "G5",
         "U2",
         "N10"
       ],
-      "status": "blocked"
+      "status": "implemented_unverified",
+      "implementation_refs": [
+        "docs/releases/v0.0.1/REQUIREMENTS.md",
+        "docs/releases/v0.0.1/VERIFICATION.md"
+      ],
+      "producer": "entry-producer:N7"
     },
     {
       "id": "c4.rtk-planner-accounting",
       "source_capability": "RTK planner/accounting: RtkCommandOutput production dispatch with dedicated bucket, no double counting",
       "owner_crate": "dtoken-preprocessor",
-      "dispatch_symbol": "dtoken_preprocessor::rtk::RtkCommandOutput",
+      "dispatch_symbol": "dtoken_compress::rtk_planner::plan_exclusive_action",
       "tests": {
         "normal": [
           "code/crates/dtoken-preprocessor/src/lib.rs"
@@ -2336,139 +2706,149 @@
         ]
       },
       "real_evidence": [
-        "docs/releases/v0.0.1/REQUIREMENTS.md",
-        "docs/releases/v0.0.1/VERIFICATION.md"
+        "N1-receipt.json"
       ],
       "gates": [
         "G5",
         "U2",
         "N10"
       ],
-      "status": "blocked"
+      "status": "implemented_unverified",
+      "implementation_refs": [
+        "docs/releases/v0.0.1/REQUIREMENTS.md",
+        "docs/releases/v0.0.1/VERIFICATION.md"
+      ],
+      "producer": "entry-producer:N1"
     },
     {
       "id": "c5.optical-renderer",
       "source_capability": "Optical renderer: pxpipe/Spleen single pin, Unicode/CJK fallback, deterministic cross-platform digest",
       "owner_crate": "dtoken-compress",
-      "dispatch_symbol": "dtoken_compress::optical::renderer::DeterministicPngRenderer::render_with_contract",
+      "dispatch_symbol": "dtoken_compress::optical::render",
       "tests": {
         "normal": [
-          "code/crates/dtoken-compress/tests/optical_render_evidence.rs",
-          "code/crates/dtoken-compress/src/optical/renderer.rs"
+          "code/crates/dtoken-compress/tests/optical_render_evidence.rs"
         ],
         "error": [
-          "code/crates/dtoken-compress/tests/optical_active_contract.rs",
-          "code/crates/dtoken-compress/src/optical/renderer.rs"
+          "code/crates/dtoken-compress/tests/optical_render_evidence.rs"
         ],
         "recovery": [
-          "code/crates/dtoken-compress/tests/optical_active_contract.rs",
-          "code/crates/dtoken-compress/src/optical/renderer.rs"
+          "code/crates/dtoken-compress/tests/optical_render_evidence.rs"
         ]
       },
       "real_evidence": [
-        "docs/releases/v0.0.1/REQUIREMENTS.md",
-        "docs/releases/v0.0.1/VERIFICATION.md"
+        "N10-U8-platform.json"
       ],
       "gates": [
         "U7",
         "U8",
         "N10"
       ],
-      "status": "implemented_unverified"
+      "status": "blocked",
+      "implementation_refs": [
+        "docs/releases/v0.0.1/REQUIREMENTS.md",
+        "docs/releases/v0.0.1/VERIFICATION.md"
+      ],
+      "producer": "entry-producer:N10-U8"
     },
     {
       "id": "c5.optical-history-cache",
       "source_capability": "Optical history/cache: collapse, static slab, freeze grid, cache anchor, billing boundary",
       "owner_crate": "dtoken-compress",
-      "dispatch_symbol": "dtoken_compress::optical::history_collapse::plan_history_collapse",
+      "dispatch_symbol": "dtoken_compress::optical::history",
       "tests": {
         "normal": [
-          "code/crates/dtoken-compress/tests/optical_active_contract.rs",
-          "code/crates/dtoken-compress/src/optical/history_collapse.rs"
+          "code/crates/dtoken-compress/tests/optical_render_evidence.rs"
         ],
         "error": [
-          "code/crates/dtoken-compress/tests/optical_active_contract.rs",
-          "code/crates/dtoken-compress/src/optical/history_collapse.rs"
+          "code/crates/dtoken-compress/tests/optical_render_evidence.rs"
         ],
         "recovery": [
-          "code/crates/dtoken-compress/tests/optical_active_contract.rs",
-          "code/crates/dtoken-compress/src/optical/history_collapse.rs"
+          "code/crates/dtoken-compress/tests/optical_render_evidence.rs"
         ]
       },
       "real_evidence": [
-        "docs/releases/v0.0.1/REQUIREMENTS.md",
-        "docs/releases/v0.0.1/VERIFICATION.md"
+        "N10-U4-replay-quality.json"
       ],
       "gates": [
         "U7",
         "U2",
         "N10"
       ],
-      "status": "implemented_unverified"
+      "status": "blocked",
+      "implementation_refs": [
+        "docs/releases/v0.0.1/REQUIREMENTS.md",
+        "docs/releases/v0.0.1/VERIFICATION.md"
+      ],
+      "producer": "entry-producer:N10-U4"
     },
     {
       "id": "c5.optical-attestation",
       "source_capability": "Optical attestation: exact Ed25519 capability with digests; expired/revoked rejected",
       "owner_crate": "dtoken-compress",
-      "dispatch_symbol": "dtoken_compress::optical::capability::sign_capability_snapshot",
+      "dispatch_symbol": "dtoken_compress::optical::attest",
       "tests": {
         "normal": [
-          "code/crates/dtoken-compress/tests/optical_active_contract.rs",
-          "code/crates/dtoken-compress/examples/optical_capability_signer.rs"
+          "code/crates/dtoken-compress/tests/optical_phase_a.rs"
         ],
         "error": [
-          "code/crates/dtoken-compress/tests/optical_active_contract.rs"
+          "code/crates/dtoken-compress/tests/optical_phase_a.rs"
         ],
         "recovery": [
-          "code/crates/dtoken-compress/tests/optical_active_contract.rs"
+          "code/crates/dtoken-compress/tests/optical_phase_a.rs"
         ]
       },
       "real_evidence": [
-        "docs/releases/v0.0.1/REQUIREMENTS.md",
-        "docs/releases/v0.0.1/VERIFICATION.md",
-        "support/fixtures/optical/anthropic-snapshot-claude-sonnet-4-5-signed.json",
-        "support/fixtures/optical/demo-verification-key.json"
+        "N10-U7-optical-active.json"
       ],
       "gates": [
         "U7",
         "G8",
         "N10"
       ],
-      "status": "implemented_unverified"
+      "status": "blocked",
+      "implementation_refs": [
+        "docs/releases/v0.0.1/REQUIREMENTS.md",
+        "docs/releases/v0.0.1/VERIFICATION.md"
+      ],
+      "producer": "entry-producer:N10-U7"
     },
     {
       "id": "c5.optical-exact-active",
       "source_capability": "Optical exact active: at least one exact Anthropic route automatic active; other routes PreserveText",
       "owner_crate": "dtoken-compress",
-      "dispatch_symbol": "dtoken_compress::optical::engine::HybridContextEngine::prepare",
+      "dispatch_symbol": "dtoken_compress::optical::active",
       "tests": {
         "normal": [
-          "code/crates/dtoken-compress/tests/optical_active_contract.rs"
+          "code/crates/dtoken-compress/tests/optical_phase_a.rs"
         ],
         "error": [
-          "code/crates/dtoken-compress/tests/optical_active_contract.rs"
+          "code/crates/dtoken-compress/tests/optical_phase_a.rs"
         ],
         "recovery": [
-          "code/crates/dtoken-compress/tests/optical_active_contract.rs"
+          "code/crates/dtoken-compress/tests/optical_phase_a.rs"
         ]
       },
       "real_evidence": [
-        "docs/releases/v0.0.1/REQUIREMENTS.md",
-        "docs/releases/v0.0.1/VERIFICATION.md",
-        "support/fixtures/optical/anthropic-eval-claude-sonnet-4-5.json"
+        "N10-U7-optical-active.json"
       ],
       "gates": [
         "U7",
         "G8",
         "N10"
       ],
-      "status": "implemented_unverified"
+      "status": "blocked",
+      "implementation_refs": [
+        "docs/releases/v0.0.1/REQUIREMENTS.md",
+        "docs/releases/v0.0.1/VERIFICATION.md"
+      ],
+      "producer": "entry-producer:N10-U7"
     },
     {
       "id": "c5.optical-shadow-preview",
       "source_capability": "Optical shadow preview: metadata-only observability, never active transform",
       "owner_crate": "dtoken-compress",
-      "dispatch_symbol": "dtoken_compress::optical::decision::build_shadow_plan_detailed_with_registry",
+      "dispatch_symbol": "dtoken_compress::optical::shadow",
       "tests": {
         "normal": [
           "code/crates/dtoken-compress/tests/optical_phase_a.rs"
@@ -2481,15 +2861,19 @@
         ]
       },
       "real_evidence": [
-        "docs/releases/v0.0.1/REQUIREMENTS.md",
-        "docs/releases/v0.0.1/VERIFICATION.md"
+        "N10-U7-optical-active.json"
       ],
       "gates": [
         "U7",
         "U1",
         "N10"
       ],
-      "status": "implemented_unverified"
+      "status": "blocked",
+      "implementation_refs": [
+        "docs/releases/v0.0.1/REQUIREMENTS.md",
+        "docs/releases/v0.0.1/VERIFICATION.md"
+      ],
+      "producer": "entry-producer:N10-U7"
     },
     {
       "id": "c6.bounded-concurrency",
@@ -2508,15 +2892,19 @@
         ]
       },
       "real_evidence": [
-        "docs/releases/v0.0.1/REQUIREMENTS.md",
-        "docs/releases/v0.0.1/VERIFICATION.md"
+        "N10-U5-perf.json"
       ],
       "gates": [
         "G6",
         "U5",
         "N10"
       ],
-      "status": "blocked"
+      "status": "blocked",
+      "implementation_refs": [
+        "docs/releases/v0.0.1/REQUIREMENTS.md",
+        "docs/releases/v0.0.1/VERIFICATION.md"
+      ],
+      "producer": "entry-producer:N10-U5"
     },
     {
       "id": "c6.ccr-full-durability",
@@ -2535,15 +2923,19 @@
         ]
       },
       "real_evidence": [
-        "docs/releases/v0.0.1/REQUIREMENTS.md",
-        "docs/releases/v0.0.1/VERIFICATION.md"
+        "N1-receipt.json"
       ],
       "gates": [
         "U3",
         "G3",
         "N10"
       ],
-      "status": "blocked"
+      "status": "blocked",
+      "implementation_refs": [
+        "docs/releases/v0.0.1/REQUIREMENTS.md",
+        "docs/releases/v0.0.1/VERIFICATION.md"
+      ],
+      "producer": "entry-producer:N1"
     },
     {
       "id": "c6.recovery-state-machine",
@@ -2562,15 +2954,19 @@
         ]
       },
       "real_evidence": [
-        "docs/releases/v0.0.1/REQUIREMENTS.md",
-        "docs/releases/v0.0.1/VERIFICATION.md"
+        "N1-receipt.json"
       ],
       "gates": [
         "U3",
         "G3",
         "N10"
       ],
-      "status": "blocked"
+      "status": "blocked",
+      "implementation_refs": [
+        "docs/releases/v0.0.1/REQUIREMENTS.md",
+        "docs/releases/v0.0.1/VERIFICATION.md"
+      ],
+      "producer": "entry-producer:N1"
     },
     {
       "id": "c7.benchmark-corpus",
@@ -2589,15 +2985,19 @@
         ]
       },
       "real_evidence": [
-        "docs/releases/v0.0.1/REQUIREMENTS.md",
-        "docs/releases/v0.0.1/VERIFICATION.md"
+        "N10-U5-perf.json"
       ],
       "gates": [
         "U5",
         "G6",
         "N10"
       ],
-      "status": "blocked"
+      "status": "blocked",
+      "implementation_refs": [
+        "docs/releases/v0.0.1/REQUIREMENTS.md",
+        "docs/releases/v0.0.1/VERIFICATION.md"
+      ],
+      "producer": "entry-producer:N10-U5"
     },
     {
       "id": "c7.deterministic-replay",
@@ -2616,15 +3016,19 @@
         ]
       },
       "real_evidence": [
-        "docs/releases/v0.0.1/REQUIREMENTS.md",
-        "docs/releases/v0.0.1/VERIFICATION.md"
+        "N10-U4-replay-quality.json"
       ],
       "gates": [
         "U4",
         "G7",
         "N10"
       ],
-      "status": "blocked"
+      "status": "blocked",
+      "implementation_refs": [
+        "docs/releases/v0.0.1/REQUIREMENTS.md",
+        "docs/releases/v0.0.1/VERIFICATION.md"
+      ],
+      "producer": "entry-producer:N10-U4"
     },
     {
       "id": "c7.paired-quality-eval",
@@ -2643,15 +3047,19 @@
         ]
       },
       "real_evidence": [
-        "docs/releases/v0.0.1/REQUIREMENTS.md",
-        "docs/releases/v0.0.1/VERIFICATION.md"
+        "N10-U4-replay-quality.json"
       ],
       "gates": [
         "U6",
         "U4",
         "N10"
       ],
-      "status": "blocked"
+      "status": "blocked",
+      "implementation_refs": [
+        "docs/releases/v0.0.1/REQUIREMENTS.md",
+        "docs/releases/v0.0.1/VERIFICATION.md"
+      ],
+      "producer": "entry-producer:N10-U4"
     },
     {
       "id": "core-api.prepare-json-pipeline-payload",
@@ -2670,15 +3078,19 @@
         ]
       },
       "real_evidence": [
-        "docs/releases/v0.0.1/REQUIREMENTS.md",
-        "docs/releases/v0.0.1/VERIFICATION.md"
+        "N10-U0-contract.json"
       ],
       "gates": [
         "U0",
         "G4",
         "N10"
       ],
-      "status": "implemented_unverified"
+      "status": "implemented_unverified",
+      "implementation_refs": [
+        "docs/releases/v0.0.1/REQUIREMENTS.md",
+        "docs/releases/v0.0.1/VERIFICATION.md"
+      ],
+      "producer": "entry-producer:N10-U0"
     },
     {
       "id": "core-api.ccr-store",
@@ -2697,15 +3109,19 @@
         ]
       },
       "real_evidence": [
-        "docs/releases/v0.0.1/REQUIREMENTS.md",
-        "docs/releases/v0.0.1/VERIFICATION.md"
+        "N1-receipt.json"
       ],
       "gates": [
         "U3",
         "G3",
         "N10"
       ],
-      "status": "implemented_unverified"
+      "status": "implemented_unverified",
+      "implementation_refs": [
+        "docs/releases/v0.0.1/REQUIREMENTS.md",
+        "docs/releases/v0.0.1/VERIFICATION.md"
+      ],
+      "producer": "entry-producer:N1"
     },
     {
       "id": "core-api.mcp-surface",
@@ -2724,15 +3140,19 @@
         ]
       },
       "real_evidence": [
-        "docs/releases/v0.0.1/REQUIREMENTS.md",
-        "docs/releases/v0.0.1/VERIFICATION.md"
+        "N10-U0-contract.json"
       ],
       "gates": [
         "G4",
         "U0",
         "N10"
       ],
-      "status": "implemented_unverified"
+      "status": "implemented_unverified",
+      "implementation_refs": [
+        "docs/releases/v0.0.1/REQUIREMENTS.md",
+        "docs/releases/v0.0.1/VERIFICATION.md"
+      ],
+      "producer": "entry-producer:N10-U0"
     },
     {
       "id": "core-api.export-redaction",
@@ -2751,15 +3171,19 @@
         ]
       },
       "real_evidence": [
-        "docs/releases/v0.0.1/REQUIREMENTS.md",
-        "docs/releases/v0.0.1/VERIFICATION.md"
+        "N1-receipt.json"
       ],
       "gates": [
         "G6",
         "N1",
         "N0"
       ],
-      "status": "implemented_unverified"
+      "status": "implemented_unverified",
+      "implementation_refs": [
+        "docs/releases/v0.0.1/REQUIREMENTS.md",
+        "docs/releases/v0.0.1/VERIFICATION.md"
+      ],
+      "producer": "entry-producer:N1"
     },
     {
       "id": "core-api.native-responses",
@@ -2778,15 +3202,19 @@
         ]
       },
       "real_evidence": [
-        "docs/releases/v0.0.1/REQUIREMENTS.md",
-        "docs/releases/v0.0.1/VERIFICATION.md"
+        "N10-U0-contract.json"
       ],
       "gates": [
         "U0",
         "G4",
         "N10"
       ],
-      "status": "blocked"
+      "status": "blocked",
+      "implementation_refs": [
+        "docs/releases/v0.0.1/REQUIREMENTS.md",
+        "docs/releases/v0.0.1/VERIFICATION.md"
+      ],
+      "producer": "entry-producer:N10-U0"
     },
     {
       "id": "ledger.events",
@@ -2805,21 +3233,25 @@
         ]
       },
       "real_evidence": [
-        "docs/releases/v0.0.1/REQUIREMENTS.md",
-        "docs/releases/v0.0.1/VERIFICATION.md"
+        "N1-receipt.json"
       ],
       "gates": [
         "G6",
         "N1",
         "N10"
       ],
-      "status": "implemented_unverified"
+      "status": "implemented_unverified",
+      "implementation_refs": [
+        "docs/releases/v0.0.1/REQUIREMENTS.md",
+        "docs/releases/v0.0.1/VERIFICATION.md"
+      ],
+      "producer": "entry-producer:N1"
     },
     {
       "id": "ledger.metrics",
       "source_capability": "Ledger metrics: latency/cost/savings projections without double counting",
-      "owner_crate": "dtoken-event-ledger",
-      "dispatch_symbol": "dtoken_event_ledger::EventLedger::metrics",
+      "owner_crate": "dtoken-core-api",
+      "dispatch_symbol": "dtoken_core_api::metrics",
       "tests": {
         "normal": [
           "code/crates/dtoken-event-ledger/tests/ledger.rs"
@@ -2832,15 +3264,19 @@
         ]
       },
       "real_evidence": [
-        "docs/releases/v0.0.1/REQUIREMENTS.md",
-        "docs/releases/v0.0.1/VERIFICATION.md"
+        "N1-receipt.json"
       ],
       "gates": [
         "G6",
         "N1",
         "N10"
       ],
-      "status": "implemented_unverified"
+      "status": "implemented_unverified",
+      "implementation_refs": [
+        "docs/releases/v0.0.1/REQUIREMENTS.md",
+        "docs/releases/v0.0.1/VERIFICATION.md"
+      ],
+      "producer": "entry-producer:N1"
     },
     {
       "id": "proxy.loopback-only",
@@ -2859,21 +3295,26 @@
         ]
       },
       "real_evidence": [
-        "docs/releases/v0.0.1/REQUIREMENTS.md",
-        "docs/releases/v0.0.1/VERIFICATION.md"
+        "N0-preflight.json",
+        "N0-provenance.json"
       ],
       "gates": [
         "G6",
         "N0",
         "N10"
       ],
-      "status": "implemented_unverified"
+      "status": "implemented_unverified",
+      "implementation_refs": [
+        "docs/releases/v0.0.1/REQUIREMENTS.md",
+        "docs/releases/v0.0.1/VERIFICATION.md"
+      ],
+      "producer": "entry-producer:N0"
     },
     {
       "id": "doctor.checks",
       "source_capability": "Doctor checks: capability health with fail-closed unavailable semantics",
       "owner_crate": "dtoken-doctor",
-      "dispatch_symbol": "dtoken_doctor::DoctorReport",
+      "dispatch_symbol": "dtoken_types::DoctorReport",
       "tests": {
         "normal": [
           "code/crates/dtoken-doctor/tests/basic.rs"
@@ -2886,21 +3327,25 @@
         ]
       },
       "real_evidence": [
-        "docs/releases/v0.0.1/REQUIREMENTS.md",
-        "docs/releases/v0.0.1/VERIFICATION.md"
+        "N6-ui.json"
       ],
       "gates": [
         "G6",
         "N0",
         "N10"
       ],
-      "status": "implemented_unverified"
+      "status": "implemented_unverified",
+      "implementation_refs": [
+        "docs/releases/v0.0.1/REQUIREMENTS.md",
+        "docs/releases/v0.0.1/VERIFICATION.md"
+      ],
+      "producer": "entry-producer:N6"
     },
     {
       "id": "context-store.persistence",
       "source_capability": "Context store persistence port: durable persistence behind the store boundary",
-      "owner_crate": "dtoken-context-store",
-      "dispatch_symbol": "dtoken_context_store::SharedContext",
+      "owner_crate": "dtoken-context-bus",
+      "dispatch_symbol": "dtoken_context_bus::persistence::PersistencePort",
       "tests": {
         "normal": [
           "code/crates/dtoken-context-store/tests/durability.rs"
@@ -2913,21 +3358,25 @@
         ]
       },
       "real_evidence": [
-        "docs/releases/v0.0.1/REQUIREMENTS.md",
-        "docs/releases/v0.0.1/VERIFICATION.md"
+        "N1-receipt.json"
       ],
       "gates": [
         "G3",
         "U3",
         "N10"
       ],
-      "status": "implemented_unverified"
+      "status": "implemented_unverified",
+      "implementation_refs": [
+        "docs/releases/v0.0.1/REQUIREMENTS.md",
+        "docs/releases/v0.0.1/VERIFICATION.md"
+      ],
+      "producer": "entry-producer:N1"
     },
     {
       "id": "learning.patterns",
       "source_capability": "Learning: typed failure patterns with terminal-only recording",
       "owner_crate": "dtoken-learning",
-      "dispatch_symbol": "dtoken_learning::LearningStore",
+      "dispatch_symbol": "dtoken_learning::LearningCache",
       "tests": {
         "normal": [
           "code/crates/dtoken-learning/src/lib.rs"
@@ -2940,21 +3389,25 @@
         ]
       },
       "real_evidence": [
-        "docs/releases/v0.0.1/REQUIREMENTS.md",
-        "docs/releases/v0.0.1/VERIFICATION.md"
+        "N1-receipt.json"
       ],
       "gates": [
         "G6",
         "N1",
         "N10"
       ],
-      "status": "implemented_unverified"
+      "status": "implemented_unverified",
+      "implementation_refs": [
+        "docs/releases/v0.0.1/REQUIREMENTS.md",
+        "docs/releases/v0.0.1/VERIFICATION.md"
+      ],
+      "producer": "entry-producer:N1"
     },
     {
       "id": "process.identity-verified-stop",
       "source_capability": "Process stop verifies PID/executable/port/identity before termination",
       "owner_crate": "dtoken-process",
-      "dispatch_symbol": "dtoken_process::stop",
+      "dispatch_symbol": "dtoken_process::lifecycle::ProcessManager::stop_verified",
       "tests": {
         "normal": [
           "code/crates/dtoken-process/tests/identity.rs"
@@ -2967,15 +3420,19 @@
         ]
       },
       "real_evidence": [
-        "docs/releases/v0.0.1/REQUIREMENTS.md",
-        "docs/releases/v0.0.1/VERIFICATION.md"
+        "N7-macos.json"
       ],
       "gates": [
         "G6",
         "N0",
         "N10"
       ],
-      "status": "implemented_unverified"
+      "status": "implemented_unverified",
+      "implementation_refs": [
+        "docs/releases/v0.0.1/REQUIREMENTS.md",
+        "docs/releases/v0.0.1/VERIFICATION.md"
+      ],
+      "producer": "entry-producer:N7"
     },
     {
       "id": "config-patcher.transaction",
@@ -2994,21 +3451,25 @@
         ]
       },
       "real_evidence": [
-        "docs/releases/v0.0.1/REQUIREMENTS.md",
-        "docs/releases/v0.0.1/VERIFICATION.md"
+        "N4-config.json"
       ],
       "gates": [
         "G5",
         "N4",
         "N10"
       ],
-      "status": "implemented_unverified"
+      "status": "implemented_unverified",
+      "implementation_refs": [
+        "docs/releases/v0.0.1/REQUIREMENTS.md",
+        "docs/releases/v0.0.1/VERIFICATION.md"
+      ],
+      "producer": "entry-producer:N4"
     },
     {
       "id": "preprocessor.secret-classifier",
       "source_capability": "Shared SecretClassifier: single production secret/path validation classifier, no fork copies",
       "owner_crate": "dtoken-compress",
-      "dispatch_symbol": "dtoken_compress::optical::secret::classify",
+      "dispatch_symbol": "dtoken_compress::optical::secret::SecretClassifier::classify",
       "tests": {
         "normal": [
           "code/crates/dtoken-compress/tests/hybrid_safe_baseline.rs"
@@ -3021,21 +3482,25 @@
         ]
       },
       "real_evidence": [
-        "docs/releases/v0.0.1/REQUIREMENTS.md",
-        "docs/releases/v0.0.1/VERIFICATION.md"
+        "N1-receipt.json"
       ],
       "gates": [
         "G6",
         "N0",
         "N10"
       ],
-      "status": "implemented_unverified"
+      "status": "implemented_unverified",
+      "implementation_refs": [
+        "docs/releases/v0.0.1/REQUIREMENTS.md",
+        "docs/releases/v0.0.1/VERIFICATION.md"
+      ],
+      "producer": "entry-producer:N1"
     },
     {
       "id": "agent-bridge.identity",
       "source_capability": "Agent bridge identity: component/protocol/OS/arch/version verification before managed writes",
       "owner_crate": "dtoken-agent-bridge",
-      "dispatch_symbol": "dtoken_agent_bridge::identity",
+      "dispatch_symbol": "dtoken_agent_bridge::query_runtime",
       "tests": {
         "normal": [
           "code/crates/dtoken-agent-bridge/tests/subprocess_contract.rs"
@@ -3048,21 +3513,25 @@
         ]
       },
       "real_evidence": [
-        "docs/releases/v0.0.1/REQUIREMENTS.md",
-        "docs/releases/v0.0.1/VERIFICATION.md"
+        "N4-config.json"
       ],
       "gates": [
         "G5",
         "N4",
         "N10"
       ],
-      "status": "implemented_unverified"
+      "status": "implemented_unverified",
+      "implementation_refs": [
+        "docs/releases/v0.0.1/REQUIREMENTS.md",
+        "docs/releases/v0.0.1/VERIFICATION.md"
+      ],
+      "producer": "entry-producer:N4"
     },
     {
       "id": "codebase-memory.indexing",
       "source_capability": "CBM indexing/graph: official-binary indexing with fail-closed behavior when platform assets are unavailable",
       "owner_crate": "dtoken-codebase-memory",
-      "dispatch_symbol": "dtoken_codebase_memory::index",
+      "dispatch_symbol": "dtoken_codebase_memory::ui_host::run_index_controlled",
       "tests": {
         "normal": [
           "support/tests/test_prepare_codebase_memory_artifact.py"
@@ -3075,20 +3544,24 @@
         ]
       },
       "real_evidence": [
-        "docs/releases/v0.0.1/REQUIREMENTS.md",
-        "docs/releases/v0.0.1/VERIFICATION.md"
+        "N4-config.json"
       ],
       "gates": [
         "G5",
         "N4",
         "N10"
       ],
-      "status": "blocked"
+      "status": "blocked",
+      "implementation_refs": [
+        "docs/releases/v0.0.1/REQUIREMENTS.md",
+        "docs/releases/v0.0.1/VERIFICATION.md"
+      ],
+      "producer": "entry-producer:N4"
     },
     {
       "id": "support.registry-validator",
       "source_capability": "Capability registry validator: 117 unique entries, complete fields, allowed statuses",
-      "owner_crate": "dtoken-core-api",
+      "owner_crate": "support",
       "dispatch_symbol": "support/scripts/validate_unified_capability_registry.py",
       "tests": {
         "normal": [
@@ -3102,20 +3575,24 @@
         ]
       },
       "real_evidence": [
-        "support/fixtures/unified-capability-registry-v1.json",
-        "docs/releases/v0.0.1/REQUIREMENTS.md"
+        "N10-U1-registry.json"
       ],
       "gates": [
         "U1",
         "G0",
         "N10"
       ],
-      "status": "implemented_unverified"
+      "status": "implemented_unverified",
+      "implementation_refs": [
+        "support/fixtures/unified-capability-registry-v1.json",
+        "docs/releases/v0.0.1/REQUIREMENTS.md"
+      ],
+      "producer": "entry-producer:N10-U1"
     },
     {
       "id": "support.corpus-validator",
       "source_capability": "Corpus manifest validator: schema/revision/digest/license/privacy, path resolvable and digest matches",
-      "owner_crate": "dtoken-core-api",
+      "owner_crate": "support",
       "dispatch_symbol": "support/scripts/validate_unified_corpus_manifests.py",
       "tests": {
         "normal": [
@@ -3129,20 +3606,24 @@
         ]
       },
       "real_evidence": [
-        "support/fixtures/unified-corpus/manifest.json",
-        "docs/releases/v0.0.1/REQUIREMENTS.md"
+        "N10-U1-registry.json"
       ],
       "gates": [
         "U1",
         "G0",
         "N10"
       ],
-      "status": "implemented_unverified"
+      "status": "implemented_unverified",
+      "implementation_refs": [
+        "support/fixtures/unified-corpus/manifest.json",
+        "docs/releases/v0.0.1/REQUIREMENTS.md"
+      ],
+      "producer": "entry-producer:N10-U1"
     },
     {
       "id": "support.gate-aggregator",
       "source_capability": "Release gate aggregator: fail-closed, expected commit/source digest binding, no latest-file selection",
-      "owner_crate": "dtoken-core-api",
+      "owner_crate": "support",
       "dispatch_symbol": "support/scripts/generate_release_gate_status.py",
       "tests": {
         "normal": [
@@ -3156,15 +3637,19 @@
         ]
       },
       "real_evidence": [
-        "docs/releases/v0.0.1/VERIFICATION.md",
-        "docs/releases/v0.0.1/REQUIREMENTS.md"
+        "N10-U1-registry.json"
       ],
       "gates": [
         "G8",
         "N9",
         "N10"
       ],
-      "status": "implemented_unverified"
+      "status": "implemented_unverified",
+      "implementation_refs": [
+        "docs/releases/v0.0.1/VERIFICATION.md",
+        "docs/releases/v0.0.1/REQUIREMENTS.md"
+      ],
+      "producer": "entry-producer:N10-U1"
     },
     {
       "id": "types.managed-rtk-transaction",
@@ -3183,15 +3668,86 @@
         ]
       },
       "real_evidence": [
-        "docs/releases/v0.0.1/REQUIREMENTS.md",
-        "docs/releases/v0.0.1/VERIFICATION.md"
+        "N7-macos.json"
       ],
       "gates": [
         "G5",
         "U2",
         "N10"
       ],
-      "status": "implemented_unverified"
+      "status": "implemented_unverified",
+      "implementation_refs": [
+        "docs/releases/v0.0.1/REQUIREMENTS.md",
+        "docs/releases/v0.0.1/VERIFICATION.md"
+      ],
+      "producer": "entry-producer:N7"
     }
-  ]
+  ],
+  "evidence_nodes": [
+    "N0",
+    "N1",
+    "N2",
+    "N3",
+    "N4",
+    "N5",
+    "N6",
+    "N7",
+    "N8",
+    "N9",
+    "N10",
+    "N10-U0",
+    "N10-U1",
+    "N10-U2",
+    "N10-U3",
+    "N10-U4",
+    "N10-U5",
+    "N10-U6",
+    "N10-U7",
+    "N10-U8",
+    "N10-U9"
+  ],
+  "gate_vocabulary": [
+    "G0",
+    "G1",
+    "G2",
+    "G3",
+    "G4",
+    "G5",
+    "G6",
+    "G7",
+    "G8",
+    "G9",
+    "N0",
+    "N1",
+    "N10",
+    "N10-U0",
+    "N10-U1",
+    "N10-U2",
+    "N10-U3",
+    "N10-U4",
+    "N10-U5",
+    "N10-U6",
+    "N10-U7",
+    "N10-U8",
+    "N10-U9",
+    "N2",
+    "N3",
+    "N4",
+    "N5",
+    "N6",
+    "N7",
+    "N8",
+    "N9",
+    "U0",
+    "U1",
+    "U2",
+    "U3",
+    "U4",
+    "U5",
+    "U6",
+    "U7",
+    "U8",
+    "U9"
+  ],
+  "evidence_artifact_root": "support/artifacts/final-candidate/<C_final>"
 }

@@ -2603,6 +2603,24 @@
       "remote": null
     },
     {
+      "id": "a33e2ff0-91a9-4f15-a6e8-69cc77d531c5",
+      "timestamp": "2026-08-10T12:28:24+08:00",
+      "operation": "commit",
+      "branch": "codex/final/c8-evidence-remediation",
+      "summary": "C8 evidence remediation: registry validator hardening + symbol source index, fixed-name N1-N8/N10-U0..U9 evidence producer/stager, aggregator U9 content validation + managed RTK G5 roles, N0 pure gate specs, tests",
+      "head_before": "15f98cfb9861",
+      "remote": null
+    },
+    {
+      "id": "bc70c829-9744-4aab-866e-240c88c03b08",
+      "timestamp": "2026-08-10T12:28:33+08:00",
+      "operation": "commit",
+      "branch": "codex/final/c8-evidence-remediation",
+      "summary": "record git-operations.json audit entry for C8 evidence remediation commit ebf897f",
+      "head_before": "ebf897f8ff3b",
+      "remote": null
+    },
+    {
       "id": "2c79f579-3aa5-4f25-bcdc-8bc029ed1b6f",
       "timestamp": "2026-08-10T12:32:35+08:00",
       "operation": "commit",
@@ -2645,6 +2663,15 @@
       "branch": "codex/final/c4-remediation",
       "summary": "C4 remediation report",
       "head_before": "427d366",
+      "remote": null
+    },
+    {
+      "id": "b903c83e-30f8-41fd-b493-df738417d78e",
+      "timestamp": "2026-08-10T12:38:16+08:00",
+      "operation": "commit",
+      "branch": "codex/final/c8-evidence-remediation",
+      "summary": "C8 evidence remediation: registry validator hardening, symbol source index, fixed-name evidence producer/stager, U9 117/117 coverage, managed RTK roles, N0 pure gate specs",
+      "head_before": "15f98cfb9861c3f9ad87b1d0dc5f8e6f1844063d",
       "remote": null
     },
     {
