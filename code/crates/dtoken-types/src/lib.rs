@@ -1,4 +1,5 @@
 pub mod agent;
+pub mod contract;
 pub mod time;
 
 use serde::{Deserialize, Serialize};
@@ -1167,6 +1168,12 @@ pub struct RollbackPoint {
     pub patch_ids: Vec<String>,
 }
 
+/// Canonical route decision (T-C1A: RouteDecision 唯一权威).
+///
+/// Production construction flows through `dtoken_router::Router`
+/// (`decide`/`decide_for_request`) — the single selection authority — and
+/// the stable digest is derived from the canonical fields, so a caller can
+/// never inject a forged decision digest into a receipt.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RouteDecision {
     pub request_id: Uuid,
@@ -1179,6 +1186,29 @@ pub struct RouteDecision {
     pub input_protocol: Option<Protocol>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output_protocol: Option<Protocol>,
+}
+
+impl RouteDecision {
+    /// Stable canonical digest of the decision identity (T-C0A).
+    ///
+    /// The same decision always produces the same digest across processes
+    /// and surfaces; `reason` is human prose and deliberately excluded. This
+    /// is the single authority for route-decision evidence
+    /// (registry `aggregate.route-decision` / `router.route-decision-digest`).
+    pub fn stable_digest(&self) -> String {
+        use sha2::{Digest, Sha256};
+        let canonical = serde_json::to_vec(&(
+            &self.request_id,
+            &self.route_id,
+            &self.provider_id,
+            &self.chain_mode,
+            &self.compression_policy,
+            &self.input_protocol,
+            &self.output_protocol,
+        ))
+        .expect("canonical decision serialization cannot fail");
+        format!("{:x}", Sha256::digest(&canonical))
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1544,6 +1574,96 @@ pub struct RequestLog {
     pub quota_metadata: Option<serde_json::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_accounting: Option<HybridContextAccounting>,
+}
+
+/// Minimal optimization receipt (PRD P0.0.7 / PRODUCT-1 / RUNTIME-9).
+///
+/// Local estimates, provider actuals and claimable status are separated: a
+/// claim is claimable only when paired Provider evidence exists, and a bare
+/// Local estimate never claims provider savings. The receipt never carries
+/// the full accounting state or raw request bytes (INV-7 / RUNTIME-4).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct OptimizationReceipt {
+    request_id: Uuid,
+    route_id: Option<String>,
+    provider_id: Option<String>,
+    model: Option<String>,
+    source_digest: String,
+    local_estimate_tokens_saved: Option<usize>,
+    provider_actual_tokens_saved: Option<usize>,
+    claimable: bool,
+    created_at_ms: u64,
+}
+
+impl OptimizationReceipt {
+    /// Build the minimal receipt from a RequestLog (PR-C0A / T-PR1).
+    ///
+    /// Provider actuals come from the validated upstream outcome evidence;
+    /// without paired Provider evidence the receipt is not claimable
+    /// (PRODUCT-1: Provider usage 单独不提升 claimable).
+    pub fn from_request_log(log: &RequestLog, source_digest: impl Into<String>) -> Self {
+        let source_digest = source_digest.into();
+        let accounting = log.context_accounting.as_ref();
+        let claimable = accounting
+            .and_then(|item| item.claimable_signed_savings())
+            .is_some();
+        let provider_actual_tokens_saved = accounting
+            .and_then(|item| item.claimable_signed_savings())
+            .and_then(|savings| savings.total_tokens.or(savings.input_tokens))
+            .and_then(|tokens| usize::try_from(tokens).ok());
+        Self {
+            request_id: log.request_id,
+            route_id: log.route_id.clone(),
+            provider_id: log.provider_id.clone(),
+            model: log.model.clone(),
+            source_digest,
+            local_estimate_tokens_saved: log.tokens_saved,
+            provider_actual_tokens_saved,
+            claimable,
+            created_at_ms: log.timestamp_ms,
+        }
+    }
+
+    pub fn request_id(&self) -> Uuid {
+        self.request_id
+    }
+
+    pub fn route_id(&self) -> Option<&str> {
+        self.route_id.as_deref()
+    }
+
+    pub fn provider_id(&self) -> Option<&str> {
+        self.provider_id.as_deref()
+    }
+
+    pub fn model(&self) -> Option<&str> {
+        self.model.as_deref()
+    }
+
+    pub fn source_digest(&self) -> &str {
+        &self.source_digest
+    }
+
+    /// Local compression estimate only; never a provider claim.
+    pub fn local_estimate_tokens_saved(&self) -> Option<usize> {
+        self.local_estimate_tokens_saved
+    }
+
+    /// Provider actual tokens saved; `Some` only when paired Provider
+    /// evidence exists.
+    pub fn provider_actual_tokens_saved(&self) -> Option<usize> {
+        self.provider_actual_tokens_saved
+    }
+
+    /// True only when paired Provider evidence makes the claim claimable.
+    pub fn is_claimable(&self) -> bool {
+        self.claimable
+    }
+
+    pub fn created_at_ms(&self) -> u64 {
+        self.created_at_ms
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

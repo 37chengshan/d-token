@@ -13,7 +13,22 @@ impl Router {
         Self { config }
     }
 
+    /// Canonical route-selection authority (T-C1A).
+    ///
+    /// Every surface (HTTP Chat/Responses/Anthropic, MCP, TS SDK, Proxy, Rust
+    /// callers) must obtain its [`RouteDecision`] from here — there is no
+    /// other production constructor. Ambiguity fails closed.
     pub fn decide(&self, instance_id: &str, input_protocol: Protocol) -> Result<RouteDecision> {
+        self.decide_for_request(Uuid::new_v4(), instance_id, input_protocol)
+    }
+
+    /// Canonical route-selection authority with an explicit request identity.
+    pub fn decide_for_request(
+        &self,
+        request_id: Uuid,
+        instance_id: &str,
+        input_protocol: Protocol,
+    ) -> Result<RouteDecision> {
         let matches = self
             .config
             .routes
@@ -43,7 +58,7 @@ impl Router {
             })?;
 
         Ok(RouteDecision {
-            request_id: Uuid::new_v4(),
+            request_id,
             route_id: route.id.clone(),
             provider_id: provider.id.clone(),
             chain_mode: route.chain_mode.clone(),

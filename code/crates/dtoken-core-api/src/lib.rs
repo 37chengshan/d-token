@@ -46,7 +46,8 @@ use dtoken_project_policy::{
     PROJECT_POLICY_CAPABILITY_REVISION,
 };
 use dtoken_runtime_pipeline::{
-    PipelineInput, ReadyToSend, RecoveryPrepareReceipt, TransformArtifact,
+    PipelineError, PipelineInput, ReadyToSend, SendCommitReceipt, TransformArtifact,
+    ValidationReceipt,
 };
 use dtoken_types::{
     AgentSupportProfile, AvailabilityState, BaselineKind, CacheTokens, CapabilityEvidence,
@@ -80,7 +81,7 @@ use uuid::Uuid;
 use ccr_store::{CcrEntryInspection, CcrStore, CcrStoreReceipt};
 
 #[derive(Debug, Clone)]
-struct PreparedCcr {
+pub struct PreparedCcr {
     receipt: Option<CcrStoreReceipt>,
     store_configured: bool,
 }
@@ -298,9 +299,10 @@ impl EvaluatedCompressionDecision {
 }
 
 #[derive(Debug)]
-struct PreparedPipelinePayload {
+pub struct PreparedPipelinePayload {
     ready: ReadyToSend,
     fallback_reason: Option<&'static str>,
+    validation: Option<ValidationReceipt>,
 }
 
 type RuntimeTransformGroup = (u64, u64, u64, u64);
@@ -768,8 +770,9 @@ fn percent(numerator: u64, denominator: u64) -> f64 {
     }
 }
 
-fn prepare_json_pipeline_payload(
+pub fn prepare_json_pipeline_payload(
     scope: RequestScope,
+    decision: &RouteDecision,
     baseline: &Value,
     candidate: &Value,
     transforms: &[String],
@@ -784,6 +787,7 @@ fn prepare_json_pipeline_payload(
         return Ok(PreparedPipelinePayload {
             ready: prepared.into_baseline_ready("no_transform_selected"),
             fallback_reason: None,
+            validation: None,
         });
     }
     // Bare-marker persistence guard: a transformed candidate that carries a
@@ -797,15 +801,16 @@ fn prepare_json_pipeline_payload(
         return Ok(PreparedPipelinePayload {
             ready: prepared.into_baseline_ready(reason),
             fallback_reason: Some(reason),
+            validation: None,
         });
     }
-    let recovery = prepared_ccr.receipt.as_ref().and_then(|receipt| {
-        RecoveryPrepareReceipt::new(receipt.recovery_ref.clone(), receipt.expires_at_unix).ok()
-    });
-    let Some(recovery) = recovery else {
+    // The recovery receipt is minted inside the pipeline from the durable
+    // CCR store reference — never by caller-supplied bytes (T-C0B).
+    let Some(receipt) = prepared_ccr.receipt.as_ref() else {
         return Ok(PreparedPipelinePayload {
             ready: prepared.into_baseline_ready("pipeline_recovery_unavailable"),
             fallback_reason: Some("pipeline_recovery_unavailable"),
+            validation: None,
         });
     };
     let artifact = match TransformArtifact::new(
@@ -818,21 +823,32 @@ fn prepare_json_pipeline_payload(
             return Ok(PreparedPipelinePayload {
                 ready: prepared.into_baseline_ready("pipeline_artifact_invalid"),
                 fallback_reason: Some("pipeline_artifact_invalid"),
+                validation: None,
             });
         }
     };
     match prepared
         .clone()
-        .with_candidate(artifact, Some(recovery))
+        .with_durable_candidate(
+            artifact,
+            decision.stable_digest(),
+            receipt.recovery_ref.clone(),
+            receipt.expires_at_unix,
+        )
         .and_then(|candidate| candidate.validate(valid_json_pipeline_transition))
     {
-        Ok(validated) => Ok(PreparedPipelinePayload {
-            ready: validated.into_ready_to_send(),
-            fallback_reason: None,
-        }),
+        Ok(validated) => {
+            let validation = validated.mint_validation_receipt(dtoken_event_ledger::now_ms());
+            Ok(PreparedPipelinePayload {
+                ready: validated.into_ready_to_send(),
+                fallback_reason: None,
+                validation: Some(validation),
+            })
+        }
         Err(_) => Ok(PreparedPipelinePayload {
             ready: prepared.into_baseline_ready("pipeline_validation_failed"),
             fallback_reason: Some("pipeline_validation_failed"),
+            validation: None,
         }),
     }
 }
@@ -9992,13 +10008,18 @@ fn apply_routed_pipeline_payload(
     payload: &mut RoutedBridgePayload,
     original_anthropic_body: &Value,
     prepared_ccr: &PreparedCcr,
-) -> anyhow::Result<dtoken_types::SentPayloadVariant> {
+) -> anyhow::Result<(
+    dtoken_types::SentPayloadVariant,
+    Option<ReadyToSend>,
+    Option<ValidationReceipt>,
+)> {
     let protocol_baseline = match payload.provider.protocol {
         Protocol::Anthropic => original_anthropic_body.clone(),
         Protocol::OpenAi => anthropic_to_openai_body(original_anthropic_body, &payload.provider),
     };
     let mut selection = prepare_json_pipeline_payload(
         payload.scope.clone(),
+        &payload.decision,
         &protocol_baseline,
         &payload.upstream_body,
         &payload.request_log.transforms_applied,
@@ -10008,6 +10029,7 @@ fn apply_routed_pipeline_payload(
         force_payload_ccr_pre_send_baseline(payload, original_anthropic_body, reason);
         selection = prepare_json_pipeline_payload(
             payload.scope.clone(),
+            &payload.decision,
             &protocol_baseline,
             &payload.upstream_body,
             &[],
@@ -10026,7 +10048,60 @@ fn apply_routed_pipeline_payload(
             json!(selection.ready.reason_code()),
         );
     }
-    Ok(variant)
+    Ok((variant, Some(selection.ready), selection.validation))
+}
+
+/// Mint the terminal transport-observable `SendCommitReceipt` (T-C0B /
+/// RUNTIME-8). Called ONLY at the point where the transport (reqwest/hyper)
+/// has accepted the exact body bytes (`committed_at_ms != 0`) or failed
+/// before commit (`committed_at_ms == 0`). Consuming the sendable unit makes
+/// a second terminal receipt for the request structurally impossible; the
+/// receipt binds the exact sent-body digest, and the terminal evidence is
+/// recorded into the ledger event metadata.
+///
+/// Fail-closed validation binding (T-C1B): when a sealed validation receipt
+/// exists for this sendable unit, its validated digest MUST equal the digest
+/// of the body about to be sent. A mismatch means the body was mutated after
+/// validation — the send is aborted with [`PipelineError::SourceDigestMismatch`]
+/// and the unit is never consumed, so no terminal receipt is minted.
+fn mint_transport_send_commit(
+    ready: ReadyToSend,
+    validation: Option<&ValidationReceipt>,
+    committed_at_ms: u64,
+    _request_log: &mut RequestLog,
+    event: &mut DtokenEvent,
+) -> Result<SendCommitReceipt, PipelineError> {
+    let ready_digest = ready.body_digest();
+    if let Some(validation) = validation {
+        if validation.request_id() != ready.scope().request_id
+            || validation.validated_digest() != ready_digest
+        {
+            return Err(PipelineError::SourceDigestMismatch);
+        }
+    }
+    let receipt = ready.mint_send_commit(committed_at_ms);
+    if let Some(metadata) = event.metadata.as_object_mut() {
+        metadata.insert(
+            "send_commit_digest".to_string(),
+            json!(receipt.sent_digest()),
+        );
+        metadata.insert("send_commit_state".to_string(), json!(receipt.state()));
+        metadata.insert("send_commit_variant".to_string(), json!(receipt.variant()));
+        metadata.insert(
+            "send_commit_reason".to_string(),
+            json!(receipt.reason_code()),
+        );
+    }
+    Ok(receipt)
+}
+
+/// True when the upstream result proves the transport never accepted the
+/// body (no request bytes were handed over / the request was not attempted).
+fn transport_not_committed(upstream: &UpstreamResult) -> bool {
+    matches!(
+        upstream.send_state,
+        UpstreamSendState::NotAttempted | UpstreamSendState::FailedBeforeCommit
+    )
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -10253,6 +10328,8 @@ fn prepare_direct_anthropic_pipeline_for_send(
     PreparedCcr,
     dtoken_types::SentPayloadVariant,
     DirectAnthropicCacheWire,
+    Option<ReadyToSend>,
+    Option<ValidationReceipt>,
 ) {
     let mut cache_wire = apply_direct_anthropic_cache_breakpoint(payload, cache_evidence);
     let prepared_ccr = match state.prepare_ccr_for_request(
@@ -10276,9 +10353,9 @@ fn prepare_direct_anthropic_pipeline_for_send(
                 .expect("baseline request does not require CCR storage")
         }
     };
-    let pipeline_variant =
+    let (pipeline_variant, sealed_ready, sealed_validation) =
         match apply_routed_pipeline_payload(payload, original_body, &prepared_ccr) {
-            Ok(variant) => variant,
+            Ok((variant, ready, validation)) => (variant, ready, validation),
             Err(_) => {
                 force_payload_ccr_pre_send_baseline(
                     payload,
@@ -10295,7 +10372,11 @@ fn prepare_direct_anthropic_pipeline_for_send(
                         json!(dtoken_types::SentPayloadVariant::Original),
                     );
                 }
-                dtoken_types::SentPayloadVariant::Original
+                (
+                    dtoken_types::SentPayloadVariant::Original,
+                    None,
+                    None,
+                )
             }
         };
     if cache_wire.breakpoint_inserted
@@ -10306,7 +10387,13 @@ fn prepare_direct_anthropic_pipeline_for_send(
             "cache_breakpoint_pipeline_fallback",
         );
     }
-    (prepared_ccr, pipeline_variant, cache_wire)
+    (
+        prepared_ccr,
+        pipeline_variant,
+        cache_wire,
+        sealed_ready,
+        sealed_validation,
+    )
 }
 
 fn direct_anthropic_uses_raw_body(variant: dtoken_types::SentPayloadVariant) -> bool {
@@ -10772,6 +10859,13 @@ fn route_overhead_payload(logs: &[RequestLog]) -> Value {
         "percent": null,
         "fallback_policy": "disabled_unless_route_explicitly_configures_fallback"
     })
+}
+
+/// Public redacted runtime export summary (registry `core-api.export-redaction`).
+/// Never includes raw prompts/responses, secrets, absolute config paths, or
+/// full command output.
+pub fn export_runtime_summary(state: &AppState) -> Value {
+    runtime_export_json_payload(state)
 }
 
 fn runtime_export_json_payload(state: &AppState) -> Value {
@@ -11616,6 +11710,7 @@ async fn openai_chat_completions(
             };
         let pipeline_payload = match prepare_json_pipeline_payload(
             scope.clone(),
+            &decision,
             &baseline_body,
             &compression.body,
             &request_log.transforms_applied,
@@ -11640,6 +11735,7 @@ async fn openai_chat_completions(
                         .into_baseline_ready("pipeline_input_invalid")
                 }),
                 fallback_reason: Some("pipeline_input_invalid"),
+                validation: None,
             },
         };
         if let Some(reason) = pipeline_payload.fallback_reason {
@@ -11704,6 +11800,30 @@ async fn openai_chat_completions(
                 Ok((status_code, response_headers, body, mut quota_metadata)) => {
                     attach_quota_account_ref(&mut quota_metadata, quota_account_ref.as_deref());
                     request_log.quota_metadata = quota_metadata;
+                    // Transport-observable commit: the stream request was
+                    // accepted by reqwest/hyper; mint the terminal receipt
+                    // from the sealed sendable unit (T-C0B).
+                    match mint_transport_send_commit(
+                        pipeline_payload.ready,
+                        pipeline_payload.validation.as_ref(),
+                        dtoken_event_ledger::now_ms(),
+                        &mut request_log,
+                        &mut event,
+                    ) {
+                        Ok(_send_commit) => _send_commit,
+                        Err(_) => {
+                            return (
+                                StatusCode::INTERNAL_SERVER_ERROR,
+                                Json(json!({
+                                    "error": {
+                                        "type": "validated_body_mismatch",
+                                        "message": "send body digest differs from the validated envelope; send aborted"
+                                    }
+                                })),
+                            )
+                                .into_response();
+                        }
+                    };
                     attach_output_shaping_evidence(
                         &mut request_log,
                         &mut event,
@@ -11765,6 +11885,29 @@ async fn openai_chat_completions(
                         .into_response();
                 }
                 Err(upstream) => {
+                    // Transport never accepted the body: honest pre-commit
+                    // failure receipt from the sealed unit (T-C0B).
+                    match mint_transport_send_commit(
+                        pipeline_payload.ready,
+                        pipeline_payload.validation.as_ref(),
+                        0,
+                        &mut request_log,
+                        &mut event,
+                    ) {
+                        Ok(_send_commit) => _send_commit,
+                        Err(_) => {
+                            return (
+                                StatusCode::INTERNAL_SERVER_ERROR,
+                                Json(json!({
+                                    "error": {
+                                        "type": "validated_body_mismatch",
+                                        "message": "send body digest differs from the validated envelope; send aborted"
+                                    }
+                                })),
+                            )
+                                .into_response();
+                        }
+                    };
                     mark_upstream_outcome(&upstream, &mut request_log, &mut event);
                     let response_status = upstream_response_status(&upstream);
                     let response = json!({
@@ -11817,6 +11960,33 @@ async fn openai_chat_completions(
             &mut upstream.quota_metadata,
             opaque_codex_account_ref(&headers).as_deref(),
         );
+        // Transport-observable commit point: reqwest accepted (or rejected
+        // pre-commit) the exact sealed body; mint the terminal receipt.
+        match mint_transport_send_commit(
+            pipeline_payload.ready,
+            pipeline_payload.validation.as_ref(),
+            if transport_not_committed(&upstream) {
+                0
+            } else {
+                dtoken_event_ledger::now_ms()
+            },
+            &mut request_log,
+            &mut event,
+        ) {
+            Ok(_send_commit) => _send_commit,
+            Err(_) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({
+                        "error": {
+                            "type": "validated_body_mismatch",
+                            "message": "send body digest differs from the validated envelope; send aborted"
+                        }
+                    })),
+                )
+                    .into_response();
+            }
+        };
         let output_shaping = if upstream.error_category.is_some() {
             output_shaping_passthrough_evidence(
                 "error_response_passthrough",
@@ -12135,6 +12305,7 @@ async fn openai_responses(
             // envelope body (never a raw post-plan mutation).
             let pipeline_payload = match prepare_json_pipeline_payload(
                 scope.clone(),
+                &decision,
                 &baseline_body,
                 &compression.body,
                 &request_log.transforms_applied,
@@ -12159,6 +12330,7 @@ async fn openai_responses(
                             .into_baseline_ready("pipeline_input_invalid")
                     }),
                     fallback_reason: Some("pipeline_input_invalid"),
+                    validation: None,
                 },
             };
             if let Some(reason) = pipeline_payload.fallback_reason {
@@ -12217,6 +12389,30 @@ async fn openai_responses(
                     Ok((status_code, response_headers, stream_body, mut quota_metadata)) => {
                         attach_quota_account_ref(&mut quota_metadata, quota_account_ref.as_deref());
                         request_log.quota_metadata = quota_metadata;
+                        // Transport-observable commit: the native Responses
+                        // stream was accepted; mint the terminal receipt from
+                        // the sealed sendable unit (T-C0B).
+                        match mint_transport_send_commit(
+                            pipeline_payload.ready,
+                            pipeline_payload.validation.as_ref(),
+                            dtoken_event_ledger::now_ms(),
+                            &mut request_log,
+                            &mut event,
+                        ) {
+                            Ok(_send_commit) => _send_commit,
+                            Err(_) => {
+                                return (
+                                    StatusCode::INTERNAL_SERVER_ERROR,
+                                    Json(json!({
+                                        "error": {
+                                            "type": "validated_body_mismatch",
+                                            "message": "send body digest differs from the validated envelope; send aborted"
+                                        }
+                                    })),
+                                )
+                                    .into_response();
+                            }
+                        };
                         event.saved_tokens = Some(0);
                         if let Some(metadata) = event.metadata.as_object_mut() {
                             metadata.insert("stream".to_string(), json!(true));
@@ -12277,6 +12473,27 @@ async fn openai_responses(
                             .into_response();
                     }
                     Err(upstream) => {
+                        match mint_transport_send_commit(
+                            pipeline_payload.ready,
+                            pipeline_payload.validation.as_ref(),
+                            0,
+                            &mut request_log,
+                            &mut event,
+                        ) {
+                            Ok(_send_commit) => _send_commit,
+                            Err(_) => {
+                                return (
+                                    StatusCode::INTERNAL_SERVER_ERROR,
+                                    Json(json!({
+                                        "error": {
+                                            "type": "validated_body_mismatch",
+                                            "message": "send body digest differs from the validated envelope; send aborted"
+                                        }
+                                    })),
+                                )
+                                    .into_response();
+                            }
+                        };
                         mark_upstream_outcome(&upstream, &mut request_log, &mut event);
                         let response_status = upstream_response_status(&upstream);
                         let response = json!({
@@ -12333,6 +12550,33 @@ async fn openai_responses(
                 &mut upstream.quota_metadata,
                 opaque_codex_account_ref(&headers).as_deref(),
             );
+            // Transport-observable commit point: reqwest accepted (or
+            // rejected pre-commit) the exact sealed body.
+            match mint_transport_send_commit(
+                pipeline_payload.ready,
+                pipeline_payload.validation.as_ref(),
+                if transport_not_committed(&upstream) {
+                    0
+                } else {
+                    dtoken_event_ledger::now_ms()
+                },
+                &mut request_log,
+                &mut event,
+            ) {
+                Ok(_send_commit) => _send_commit,
+                Err(_) => {
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(json!({
+                            "error": {
+                                "type": "validated_body_mismatch",
+                                "message": "send body digest differs from the validated envelope; send aborted"
+                            }
+                        })),
+                    )
+                        .into_response();
+                }
+            };
             mark_upstream_outcome(&upstream, &mut request_log, &mut event);
             let response_status = upstream_response_status(&upstream);
             let provider_status = if upstream.error_category.is_some() {
@@ -12600,6 +12844,7 @@ async fn openai_responses(
             };
         let pipeline_payload = match prepare_json_pipeline_payload(
             scope.clone(),
+            &decision,
             &baseline_body,
             &compression.body,
             &request_log.transforms_applied,
@@ -12624,6 +12869,7 @@ async fn openai_responses(
                         .into_baseline_ready("pipeline_input_invalid")
                 }),
                 fallback_reason: Some("pipeline_input_invalid"),
+                validation: None,
             },
         };
         if let Some(reason) = pipeline_payload.fallback_reason {
@@ -12684,6 +12930,29 @@ async fn openai_responses(
                 Ok((status_code, mut response_headers, body, mut quota_metadata)) => {
                     attach_quota_account_ref(&mut quota_metadata, quota_account_ref.as_deref());
                     request_log.quota_metadata = quota_metadata;
+                    // Transport-observable commit: the bridged SSE request was
+                    // accepted; mint the terminal receipt (T-C0B).
+                    match mint_transport_send_commit(
+                        pipeline_payload.ready,
+                        pipeline_payload.validation.as_ref(),
+                        dtoken_event_ledger::now_ms(),
+                        &mut request_log,
+                        &mut event,
+                    ) {
+                        Ok(_send_commit) => _send_commit,
+                        Err(_) => {
+                            return (
+                                StatusCode::INTERNAL_SERVER_ERROR,
+                                Json(json!({
+                                    "error": {
+                                        "type": "validated_body_mismatch",
+                                        "message": "send body digest differs from the validated envelope; send aborted"
+                                    }
+                                })),
+                            )
+                                .into_response();
+                        }
+                    };
                     attach_output_shaping_evidence(
                         &mut request_log,
                         &mut event,
@@ -12770,6 +13039,27 @@ async fn openai_responses(
                         .into_response();
                 }
                 Err(upstream) => {
+                    match mint_transport_send_commit(
+                        pipeline_payload.ready,
+                        pipeline_payload.validation.as_ref(),
+                        0,
+                        &mut request_log,
+                        &mut event,
+                    ) {
+                        Ok(_send_commit) => _send_commit,
+                        Err(_) => {
+                            return (
+                                StatusCode::INTERNAL_SERVER_ERROR,
+                                Json(json!({
+                                    "error": {
+                                        "type": "validated_body_mismatch",
+                                        "message": "send body digest differs from the validated envelope; send aborted"
+                                    }
+                                })),
+                            )
+                                .into_response();
+                        }
+                    };
                     mark_upstream_outcome(&upstream, &mut request_log, &mut event);
                     let response_status = upstream_response_status(&upstream);
                     let response = json!({
@@ -12823,6 +13113,32 @@ async fn openai_responses(
             &mut upstream.quota_metadata,
             opaque_codex_account_ref(&headers).as_deref(),
         );
+        // Transport-observable commit point (Responses -> Chat bridge).
+        match mint_transport_send_commit(
+            pipeline_payload.ready,
+            pipeline_payload.validation.as_ref(),
+            if transport_not_committed(&upstream) {
+                0
+            } else {
+                dtoken_event_ledger::now_ms()
+            },
+            &mut request_log,
+            &mut event,
+        ) {
+            Ok(_send_commit) => _send_commit,
+            Err(_) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({
+                        "error": {
+                            "type": "validated_body_mismatch",
+                            "message": "send body digest differs from the validated envelope; send aborted"
+                        }
+                    })),
+                )
+                    .into_response();
+            }
+        };
         let output_shaping = if upstream.error_category.is_some() {
             output_shaping_passthrough_evidence(
                 "error_response_passthrough",
@@ -13078,7 +13394,7 @@ async fn anthropic_messages(
             );
         }
 
-        let (prepared_ccr, pipeline_variant, cache_wire) =
+        let (prepared_ccr, pipeline_variant, cache_wire, sealed_ready, sealed_validation) =
             prepare_direct_anthropic_pipeline_for_send(
                 &state,
                 &mut payload,
@@ -13089,6 +13405,21 @@ async fn anthropic_messages(
         let send_raw_body = direct_anthropic_uses_raw_body(pipeline_variant);
         attach_direct_anthropic_cache_wire_metadata(&mut payload.event, cache_wire, send_raw_body);
         drop(ccr_original_body);
+
+        // The sealed sendable unit for the terminal receipt: the pipeline's
+        // ready unit, or — when the exact raw inbound representation is
+        // forwarded — a baseline unit sealed over the exact raw bytes so the
+        // receipt digest matches what the transport actually sent.
+        let mut sealed_ready = sealed_ready;
+        if sealed_ready.is_none() {
+            sealed_ready = PipelineInput::new(
+                payload.scope.clone(),
+                raw_body.clone(),
+                MAX_REQUEST_BODY_BYTES,
+            )
+            .ok()
+            .map(|input| input.prepare().into_baseline_ready("raw_preserve_forward"));
+        }
 
         let stream = payload
             .upstream_body
@@ -13106,6 +13437,32 @@ async fn anthropic_messages(
             .await
             {
                 Ok((status_code, response_headers, response_stream)) => {
+                    // Transport-observable commit: the Anthropic stream was
+                    // accepted; mint the terminal receipt from the sealed
+                    // sendable unit (T-C0B).
+                    if let Some(ready) = sealed_ready {
+                        match mint_transport_send_commit(
+                            ready,
+                            sealed_validation.as_ref(),
+                            dtoken_event_ledger::now_ms(),
+                            &mut payload.request_log,
+                            &mut payload.event,
+                        ) {
+                            Ok(_send_commit) => _send_commit,
+                            Err(_) => {
+                                return (
+                                    StatusCode::INTERNAL_SERVER_ERROR,
+                                    Json(json!({
+                                        "error": {
+                                            "type": "validated_body_mismatch",
+                                            "message": "send body digest differs from the validated envelope; send aborted"
+                                        }
+                                    })),
+                                )
+                                    .into_response();
+                            }
+                        };
+                    }
                     attach_output_shaping_evidence(
                         &mut payload.request_log,
                         &mut payload.event,
@@ -13200,6 +13557,29 @@ async fn anthropic_messages(
                         .into_response();
                 }
                 Err(upstream) => {
+                    if let Some(ready) = sealed_ready {
+                        match mint_transport_send_commit(
+                            ready,
+                            sealed_validation.as_ref(),
+                            0,
+                            &mut payload.request_log,
+                            &mut payload.event,
+                        ) {
+                            Ok(_send_commit) => _send_commit,
+                            Err(_) => {
+                                return (
+                                    StatusCode::INTERNAL_SERVER_ERROR,
+                                    Json(json!({
+                                        "error": {
+                                            "type": "validated_body_mismatch",
+                                            "message": "send body digest differs from the validated envelope; send aborted"
+                                        }
+                                    })),
+                                )
+                                    .into_response();
+                            }
+                        };
+                    }
                     mark_upstream_outcome(&upstream, &mut payload.request_log, &mut payload.event);
                     let response_status = upstream_response_status(&upstream);
                     let response = json!({
@@ -13252,6 +13632,35 @@ async fn anthropic_messages(
             )
             .await,
         );
+        // Transport-observable commit point: reqwest accepted (or rejected
+        // pre-commit) the exact sealed body.
+        if let Some(ready) = sealed_ready {
+            match mint_transport_send_commit(
+                ready,
+                sealed_validation.as_ref(),
+                if transport_not_committed(&upstream) {
+                    0
+                } else {
+                    dtoken_event_ledger::now_ms()
+                },
+                &mut payload.request_log,
+                &mut payload.event,
+            ) {
+                Ok(_send_commit) => _send_commit,
+                Err(_) => {
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(json!({
+                            "error": {
+                                "type": "validated_body_mismatch",
+                                "message": "send body digest differs from the validated envelope; send aborted"
+                            }
+                        })),
+                    )
+                        .into_response();
+                }
+            };
+        }
         let output_shaping = if upstream.error_category.is_some() {
             output_shaping_passthrough_evidence(
                 "error_response_passthrough",
@@ -13525,7 +13934,7 @@ async fn stats_history(State(state): State<AppState>) -> Json<Value> {
     Json(runtime_stats_history_for_state(&state))
 }
 
-async fn metrics(State(state): State<AppState>) -> String {
+pub async fn metrics(State(state): State<AppState>) -> String {
     let logs = state.recent_request_logs(10_000);
     runtime_metrics_text(&logs)
 }
@@ -15323,6 +15732,19 @@ mod tests {
             "config-a",
         )
         .unwrap()
+    }
+
+    fn cache_test_decision(scope: &RequestScope) -> RouteDecision {
+        RouteDecision {
+            request_id: scope.request_id,
+            route_id: scope.route_id.clone(),
+            provider_id: scope.provider_id.clone(),
+            chain_mode: ChainMode::Direct,
+            compression_policy: CompressionPolicy::Balanced,
+            reason: "test decision".to_string(),
+            input_protocol: Some(scope.input_protocol.clone()),
+            output_protocol: Some(scope.output_protocol.clone()),
+        }
     }
 
     #[test]
@@ -17968,8 +18390,10 @@ mod tests {
         };
 
         // Marker in the candidate with no durable receipt -> baseline fallback.
+        let decision = cache_test_decision(&scope);
         let payload = prepare_json_pipeline_payload(
             scope.clone(),
+            &decision,
             &baseline,
             &candidate,
             &transforms,
@@ -17999,8 +18423,10 @@ mod tests {
             receipt: Some(receipt.clone()),
             store_configured: true,
         };
+        let decision = cache_test_decision(&scope);
         let payload = prepare_json_pipeline_payload(
             scope.clone(),
+            &decision,
             &baseline,
             &candidate,
             &transforms,
@@ -18019,8 +18445,10 @@ mod tests {
             recovery_ref: "ccr:22222222-2222-4222-8222-222222222222".to_string(),
             ..receipt
         };
+        let decision = cache_test_decision(&scope);
         let payload = prepare_json_pipeline_payload(
             scope.clone(),
+            &decision,
             &baseline,
             &candidate,
             &transforms,
@@ -18037,8 +18465,10 @@ mod tests {
 
         // Unverifiable bracket form -> baseline fallback even with a receipt.
         let bracket_candidate = json!({"model": "model-a", "messages": [{"role": "user", "content": "Retrieve original: hash=deadbeef"}]});
+        let decision = cache_test_decision(&scope);
         let payload = prepare_json_pipeline_payload(
             scope.clone(),
+            &decision,
             &baseline,
             &bracket_candidate,
             &transforms,
@@ -19480,6 +19910,7 @@ mod tests {
 
         let fallback = prepare_json_pipeline_payload(
             scope.clone(),
+            &cache_test_decision(&scope),
             &baseline,
             &candidate,
             &transforms,
@@ -19504,7 +19935,7 @@ mod tests {
             store_configured: true,
         };
         let optimized =
-            prepare_json_pipeline_payload(scope, &baseline, &candidate, &transforms, &prepared)
+            prepare_json_pipeline_payload(scope.clone(), &cache_test_decision(&scope), &baseline, &candidate, &transforms, &prepared)
                 .expect("optimized payload");
         assert_eq!(
             optimized.ready.variant(),
@@ -20144,7 +20575,7 @@ mod tests {
         let evidence = configured_provider_cache_evidence(&state, &payload.scope)
             .expect("fresh exact Anthropic evidence");
 
-        let (prepared_ccr, variant, wire) = prepare_direct_anthropic_pipeline_for_send(
+        let (prepared_ccr, variant, wire, _sealed_ready, _sealed_validation) = prepare_direct_anthropic_pipeline_for_send(
             &state,
             &mut payload,
             &body,
@@ -20194,7 +20625,7 @@ mod tests {
         let evidence = configured_provider_cache_evidence(&state, &payload.scope)
             .expect("fresh exact Anthropic evidence");
 
-        let (prepared_ccr, variant, wire) = prepare_direct_anthropic_pipeline_for_send(
+        let (prepared_ccr, variant, wire, _sealed_ready, _sealed_validation) = prepare_direct_anthropic_pipeline_for_send(
             &state,
             &mut payload,
             &body,
@@ -21931,6 +22362,7 @@ mod tests {
             .expect("ccr preparation");
         let payload = prepare_json_pipeline_payload(
             scope,
+            &decision,
             &ingress,
             &planned.body,
             &request_log.transforms_applied,

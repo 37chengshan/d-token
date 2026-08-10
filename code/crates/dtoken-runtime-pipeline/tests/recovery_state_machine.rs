@@ -1,9 +1,10 @@
 //! PR-C6C contract: pre-commit candidate failure sends baseline once,
 //! post-commit never retries or switches provider, one terminal receipt per
-//! request.
+//! request. Receipts are sealed; a transport can only mint them by consuming
+//! the sendable unit at the observable commit point.
 
 use dtoken_runtime_pipeline::{
-    ContextEnvelope, PipelineError, PipelineInput, RecoveryPhase, RecoveryPrepareReceipt,
+    ContextEnvelope, PipelineError, PipelineInput, RecoveryPhase, RecoveryReceipt,
     RecoveryTracker, RecoveryTransitionError, SendCommitState, SentPayloadVariant,
     TransformArtifact,
 };
@@ -38,6 +39,20 @@ fn prepared_request() -> (Uuid, dtoken_runtime_pipeline::PreparedRequest) {
     (request_id, prepared)
 }
 
+fn recovery_for(prepared: &dtoken_runtime_pipeline::PreparedRequest) -> RecoveryReceipt {
+    let artifact = TransformArtifact::new(
+        prepared.baseline_digest(),
+        br#"{"messages":["candidate"]}"#.to_vec(),
+        vec!["safe-text".to_string()],
+    )
+    .unwrap();
+    let candidate = prepared
+        .clone()
+        .with_durable_candidate(artifact, "decision-digest", "ccr:durable-ref-1", 1_000_000)
+        .expect("valid durable recovery receipt");
+    candidate.recovery_receipt().clone()
+}
+
 #[test]
 fn pre_commit_candidate_failure_sends_baseline_exactly_once() {
     let (request_id, prepared) = prepared_request();
@@ -69,7 +84,7 @@ fn pre_commit_candidate_failure_sends_baseline_exactly_once() {
     // The baseline unit itself is the only sendable output of this request.
     let ready = prepared.into_baseline_ready("candidate_failed_preserve");
     assert_eq!(ready.variant(), SentPayloadVariant::Original);
-    let receipt = ready.mark_committed(50);
+    let receipt = ready.mint_send_commit(50);
     assert_eq!(receipt.state(), SendCommitState::SendCommitted);
     assert_eq!(receipt.reason_code(), "candidate_failed_preserve");
     assert_eq!(
@@ -89,11 +104,9 @@ fn post_commit_is_terminal_no_retry_no_second_receipt() {
         vec!["safe-text".to_string()],
     )
     .unwrap();
+    let recovery = recovery_for(&prepared);
     let ready = prepared
-        .with_candidate(
-            artifact,
-            Some(RecoveryPrepareReceipt::new("ccr:prepared", 100).unwrap()),
-        )
+        .with_candidate(artifact, Some(recovery))
         .unwrap()
         .validate(|baseline, transformed| baseline != transformed)
         .unwrap()
@@ -103,8 +116,9 @@ fn post_commit_is_terminal_no_retry_no_second_receipt() {
         Ok(RecoveryPhase::CandidateDispatched)
     );
 
-    // Commit: one terminal receipt, then the machine is absorbing.
-    let receipt = ready.mark_committed(101);
+    // Commit at the observable transport point: one terminal receipt, then
+    // the machine is absorbing.
+    let receipt = ready.mint_send_commit(101);
     assert_eq!(receipt.state(), SendCommitState::SendCommitted);
     assert_eq!(
         tracker.record_terminal(&receipt),
@@ -132,7 +146,7 @@ fn post_commit_is_terminal_no_retry_no_second_receipt() {
         .unwrap()
         .prepare()
         .into_baseline_ready("duplicate")
-        .mark_committed(102);
+        .mint_send_commit(102);
     assert_eq!(
         tracker.record_terminal(&duplicate).unwrap_err(),
         RecoveryTransitionError::AlreadyTerminal
@@ -154,7 +168,7 @@ fn foreign_receipt_cannot_settle_a_request_identity() {
         .unwrap()
         .prepare()
         .into_baseline_ready("foreign")
-        .mark_committed(1);
+        .mint_send_commit(1);
     assert_eq!(
         tracker.record_terminal(&foreign).unwrap_err(),
         RecoveryTransitionError::RequestIdentityMismatch
@@ -178,16 +192,14 @@ fn provider_identity_is_bound_at_ingress_and_never_switchable_after_commit() {
         vec!["safe-text".to_string()],
     )
     .unwrap();
+    let recovery = recovery_for(&prepared);
     let receipt = prepared
-        .with_candidate(
-            artifact,
-            Some(RecoveryPrepareReceipt::new("ccr:prepared", 100).unwrap()),
-        )
+        .with_candidate(artifact, Some(recovery))
         .unwrap()
         .validate(|baseline, transformed| baseline != transformed)
         .unwrap()
         .into_ready_to_send()
-        .mark_committed(101);
+        .mint_send_commit(101);
 
     // The receipt is bound to the exact ingress identity; there is no setter
     // on any public type, so a post-commit provider switch is impossible.
@@ -207,7 +219,7 @@ fn pre_send_fault_is_terminal_without_a_send() {
     );
     let receipt = prepared
         .into_baseline_ready("transport_unavailable")
-        .mark_committed(0);
+        .mint_send_commit(0);
     assert_eq!(receipt.state(), SendCommitState::FailedBeforeCommit);
     assert_eq!(receipt.committed_at_ms(), None);
     assert_eq!(
@@ -219,24 +231,36 @@ fn pre_send_fault_is_terminal_without_a_send() {
 
 #[test]
 fn saturated_and_cancelled_requests_preserve_and_still_commit() {
+    let (request_id, prepared) = prepared_request();
+    let mut tracker = RecoveryTracker::new(request_id);
+    assert_eq!(
+        tracker.record_baseline_dispatch(),
+        Ok(RecoveryPhase::BaselineDispatched)
+    );
     // Saturation Preserve (PR-C6A) still yields one sendable unit and one
     // terminal receipt with the evidence reason code.
-    let ready = PipelineInput::new(scope(), b"original".to_vec(), 32)
-        .unwrap()
-        .prepare()
-        .into_preserved(dtoken_runtime_pipeline::PreserveReason::QueueSaturated);
-    assert_eq!(ready.reason_code(), "queue_saturated_preserve");
-    let receipt = ready.mark_committed(7);
+    let ready = prepared.into_preserved(dtoken_runtime_pipeline::PreserveReason::QueueSaturated);
+    assert_eq!(ready.variant(), SentPayloadVariant::Original);
+    assert!(ready.reason_code().contains("saturated"));
+    let receipt = ready.mint_send_commit(7);
     assert_eq!(receipt.state(), SendCommitState::SendCommitted);
-    assert_eq!(receipt.reason_code(), "queue_saturated_preserve");
-    assert_eq!(receipt.variant(), SentPayloadVariant::Original);
+    assert_eq!(
+        tracker.record_terminal(&receipt),
+        Ok(RecoveryPhase::Terminal)
+    );
 
-    let ready = ContextEnvelope::new(scope(), b"original".to_vec(), 32)
-        .map(dtoken_runtime_pipeline::PipelineInput::from_envelope)
-        .unwrap()
-        .prepare()
-        .into_preserved(dtoken_runtime_pipeline::PreserveReason::Cancelled);
-    let receipt = ready.mark_committed(8);
-    assert_eq!(receipt.reason_code(), "cancelled_preserve");
-    assert_eq!(receipt.variant(), SentPayloadVariant::Original);
+    let (request_id, prepared) = prepared_request();
+    let mut tracker = RecoveryTracker::new(request_id);
+    assert_eq!(
+        tracker.record_baseline_dispatch(),
+        Ok(RecoveryPhase::BaselineDispatched)
+    );
+    let ready = prepared.into_preserved(dtoken_runtime_pipeline::PreserveReason::Cancelled);
+    let receipt = ready.mint_send_commit(8);
+    assert_eq!(receipt.state(), SendCommitState::SendCommitted);
+    assert!(receipt.reason_code().contains("cancelled"));
+    assert_eq!(
+        tracker.record_terminal(&receipt),
+        Ok(RecoveryPhase::Terminal)
+    );
 }
