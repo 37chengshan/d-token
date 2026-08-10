@@ -2736,6 +2736,15 @@
       "summary": "合并 Agent 与桌面产品闭环修复 f5a6069 到 stage 集成 HEAD a315004fd0e837b4850de8934861473f9784cf18",
       "head_before": "a315004fd0e837b4850de8934861473f9784cf18",
       "remote": null
+    },
+    {
+      "id": "7b67c413-8a3d-4c57-9a8c-559c609a8ad7",
+      "timestamp": "2026-08-10T13:46:26+08:00",
+      "operation": "merge",
+      "branch": "codex/final/stage-pack-integrated",
+      "summary": "合并 C8 证据生产与注册表修复 37ce2a1 到 stage 集成 HEAD 526fb4437d0f52dd21169b3fcf2ea6ab49fe5c37",
+      "head_before": "526fb4437d0f52dd21169b3fcf2ea6ab49fe5c37",
+      "remote": null
     }
   ]
 }
