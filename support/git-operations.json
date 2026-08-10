@@ -2502,6 +2502,15 @@
       "summary": "C0/C1 remediation report",
       "head_before": "9722454a787f",
       "remote": null
+    },
+    {
+      "id": "78185349-16f9-4403-b296-ad1abca9f77e",
+      "timestamp": "2026-08-10T12:45:55+08:00",
+      "operation": "commit",
+      "branch": "codex/final/c0-c1-remediation",
+      "summary": "T-C0B ledger commit-evidence assertions + post-validation mutation negative test",
+      "head_before": "25b85b0994ac",
+      "remote": null
     }
   ]
 }
