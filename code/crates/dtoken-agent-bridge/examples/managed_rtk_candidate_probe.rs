@@ -38,6 +38,7 @@ fn main() -> Result<()> {
             managed_root: managed_root.clone(),
             bridge_path: bridge_path.clone(),
             max_output_bytes: Some(1_024),
+            filter_dsl: None,
         })
         .context("install candidate managed RTK hook")?;
     lifecycle
@@ -78,27 +79,25 @@ fn main() -> Result<()> {
 }
 
 fn run_candidate(bridge_path: &Path, managed_root: &Path) -> Result<serde_json::Value> {
-    // The success command emits 8 repeated lines so the managed wrapper's
-    // blank/repeat folding must collapse them. macOS uses /usr/bin/printf;
-    // Windows uses cmd /c with a bounded echo sequence.
+    // The success command emits a complete pretty-printed JSON document so
+    // the managed wrapper's structured JSON family (PR-C4A) minifies it
+    // losslessly. macOS uses /usr/bin/printf; Windows uses cmd /c with a
+    // bounded echo sequence.
     #[cfg(windows)]
     let success_command = {
-        let mut command = vec!["cmd".to_string(), "/c".to_string()];
-        for _ in 0..8 {
-            command.push("echo".to_string());
-            command.push("public candidate line".to_string());
-        }
+        let mut command = vec![
+            "cmd".to_string(),
+            "/c".to_string(),
+            "echo".to_string(),
+            "{\"name\": \"candidate\", \"ok\": true, \"count\": 3}".to_string(),
+        ];
         command
     };
     #[cfg(not(windows))]
-    let success_command = {
-        let mut command = vec![
-            "/usr/bin/printf".to_string(),
-            "%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n".to_string(),
-        ];
-        command.extend(std::iter::repeat_n("public candidate line".to_string(), 8));
-        command
-    };
+    let success_command = vec![
+        "/usr/bin/printf".to_string(),
+        "{\\n  \"name\": \"candidate\",\\n  \"ok\": true,\\n  \"count\": 3\\n}\\n".to_string(),
+    ];
     let mut success_args = vec![
         "rtk".to_string(),
         "wrap".to_string(),
@@ -116,10 +115,17 @@ fn run_candidate(bridge_path: &Path, managed_root: &Path) -> Result<serde_json::
         .args(&success_args)
         .output()
         .context("invoke candidate managed RTK success command")?;
-    if !success.status.success()
-        || !String::from_utf8_lossy(&success.stdout).contains("previous line repeated")
+    if !success.status.success() {
+        bail!("managed RTK filtered candidate output but lost the exit status");
+    }
+    let success_stdout = String::from_utf8_lossy(&success.stdout);
+    // The JSON family minifies the pretty document into a single line.
+    let minified = serde_json::from_str::<serde_json::Value>(&success_stdout.trim())
+        .context("candidate RTK did not return minified JSON output")?;
+    if minified
+        != serde_json::json!({"count": 3, "name": "candidate", "ok": true})
     {
-        bail!("managed RTK did not filter the successful candidate output");
+        bail!("managed RTK did not minify the successful candidate output");
     }
 
     // The failure command exits 1; the wrapper must propagate it exactly.

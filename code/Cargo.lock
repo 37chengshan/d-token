@@ -1089,6 +1089,7 @@ dependencies = [
  "anyhow",
  "dtoken-preprocessor",
  "dtoken-types",
+ "libc",
  "serde",
  "serde_json",
  "sha2",

@@ -163,7 +163,6 @@ impl CommandFilterConfig {
             json: None,
         }
     }
-
     pub fn from_toml(text: &str) -> Result<Self> {
         let config: CommandFilterConfig =
             toml::from_str(text).context("d-token command filter DSL is invalid")?;
@@ -190,6 +189,12 @@ impl CommandFilterConfig {
     /// Effective JSON settings (defaults when the table is absent).
     pub fn json_settings(&self) -> JsonFilterSettings {
         self.json.clone().unwrap_or_default()
+    }
+}
+
+impl Default for CommandFilterConfig {
+    fn default() -> Self {
+        Self::defaults()
     }
 }
 

@@ -2484,6 +2484,15 @@
       "summary": "修复统一能力注册表虚构测试路径并强制 tracked-file fail-closed 校验",
       "head_before": "decd0016ca8c6312ac57033d1d577b91eefa1c1b",
       "remote": null
+    },
+    {
+      "id": "0ac7f136-d624-4319-85d0-53766d39e9a6",
+      "timestamp": "2026-08-10T12:35:48+08:00",
+      "operation": "commit",
+      "branch": "codex/final/c4-remediation",
+      "summary": "C4 RTK remediation: structured family filter dispatch in bridge wrap, manifest-bound filters.toml DSL, debug-gated timeout exit-124, per-invocation claim digest accounting into SavingsLedger replacing rtk_savings hardcode, RtkRewrite/RtkFilter ledger events, timeout/truncation/rollback/secret/accounting tests",
+      "head_before": "15f98cf",
+      "remote": null
     }
   ]
 }
