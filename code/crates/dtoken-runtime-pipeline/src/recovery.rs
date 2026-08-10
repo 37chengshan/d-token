@@ -14,7 +14,7 @@
 
 use uuid::Uuid;
 
-use crate::{PipelineError, SendReceipt};
+use crate::{PipelineError, SendCommitReceipt};
 
 /// Observable recovery phase of a single request.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -105,7 +105,7 @@ impl RecoveryTracker {
     /// rejected so a transport can never settle another request's identity.
     pub fn record_terminal(
         &mut self,
-        receipt: &SendReceipt,
+        receipt: &SendCommitReceipt,
     ) -> Result<RecoveryPhase, RecoveryTransitionError> {
         if self.phase.is_terminal() {
             return Err(RecoveryTransitionError::AlreadyTerminal);
