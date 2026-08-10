@@ -2511,6 +2511,15 @@
       "summary": "C6C7 final: integrator FIFO pool + deadline guard, corpus identity unification (12-item product-level-corpus-v1), U5 perf-gate test import fix",
       "head_before": "aa2e186",
       "remote": null
+    },
+    {
+      "id": "c94c65f1-31a5-41e1-8e78-258ba829a3d5",
+      "timestamp": "2026-08-10T13:15:41+08:00",
+      "operation": "commit",
+      "branch": "codex/final/c6-c7-remediation",
+      "summary": "C6C7 final delta: done-channel on QueuedTask (preserved requests never block submit), two security scheduler tests, fresh C7A baseline, C6-C7 remediation report",
+      "head_before": "400138ca1e83ed4a7bad897db7747f79898579a5",
+      "remote": null
     }
   ]
 }
