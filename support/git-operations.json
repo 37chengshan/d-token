@@ -2925,6 +2925,15 @@
       "summary": "fix(core-api): update deadline terminate test to store-issued PreparedCcr proof after merge",
       "head_before": "6aac34c5380aad2d0077d2f168933ecbe3f78426",
       "remote": null
+    },
+    {
+      "id": "e961f35c-9fa4-4be9-b3c8-0df31fdcf673",
+      "timestamp": "2026-08-10T19:40:29+08:00",
+      "operation": "commit",
+      "branch": "codex/final/stage-pack-integrated",
+      "summary": "style: rustfmt workspace + clippy fixes (needless borrow, too-many-arguments allow)",
+      "head_before": "a1bcd5f253828cc6e18aadc5d50f82460d0c691e",
+      "remote": null
     }
   ]
 }

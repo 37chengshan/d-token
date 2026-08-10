@@ -248,6 +248,10 @@ pub(crate) fn preserved_pipeline_payload(
 /// dispatched to the bounded worker pool *under the same admission*
 /// (`submit_with_permit`): the pool queue is also bounded by the gate's
 /// pipeline capacity, and in-flight bytes never exceed the single budget.
+/// The resolved optimization contract is passed as a compact argument group
+/// (same composition as the existing router call sites); grouping into a
+/// struct would churn every call site for no behavior change.
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn run_gated_compression(
     state: &AppState,
     scope: RequestScope,
@@ -259,7 +263,9 @@ pub(crate) async fn run_gated_compression(
     ir: Option<dtoken_compress::HybridContextIr>,
     deadline: RequestDeadline,
 ) -> GatedCompression {
-    let bytes = serde_json::to_vec(&body).map(|bytes| bytes.len()).unwrap_or(0);
+    let bytes = serde_json::to_vec(&body)
+        .map(|bytes| bytes.len())
+        .unwrap_or(0);
     let cancel = CancellationToken::new();
     let admission = match production_gate().decide(bytes, Some(deadline), Some(&cancel)) {
         Ok(admission) => admission,
@@ -313,9 +319,9 @@ pub(crate) async fn run_gated_compression(
 
     match outcome {
         Ok(Ok(TaskOutcome::Completed)) => {
-            let summary = summary_rx
-                .recv()
-                .unwrap_or_else(|_| preserved_compression_summary(policy, body, PreserveReason::QueueSaturated));
+            let summary = summary_rx.recv().unwrap_or_else(|_| {
+                preserved_compression_summary(policy, body, PreserveReason::QueueSaturated)
+            });
             GatedCompression {
                 summary,
                 preserve_reason: None,
@@ -337,7 +343,11 @@ pub(crate) async fn run_gated_compression(
         Ok(Ok(TaskOutcome::DeadlineExceeded)) => {
             let _ = summary_rx.try_recv();
             GatedCompression {
-                summary: preserved_compression_summary(policy, body, PreserveReason::DeadlineExceeded),
+                summary: preserved_compression_summary(
+                    policy,
+                    body,
+                    PreserveReason::DeadlineExceeded,
+                ),
                 preserve_reason: Some(PreserveReason::DeadlineExceeded),
                 _admission: None,
                 cancel,

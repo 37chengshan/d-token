@@ -93,14 +93,7 @@ impl RecoveryManifest {
         created_at_ms: u64,
         entries: Vec<ManifestEntry>,
     ) -> Self {
-        Self::new_bound(
-            project_id,
-            "",
-            "",
-            "",
-            created_at_ms,
-            entries,
-        )
+        Self::new_bound(project_id, "", "", "", created_at_ms, entries)
     }
 
     /// 请求绑定 manifest：request_id + source_digest（验证基线摘要）+

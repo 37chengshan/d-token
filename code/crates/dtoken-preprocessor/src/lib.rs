@@ -481,8 +481,7 @@ impl ManagedRtkLifecycle {
                 .as_ref()
                 .and_then(|hook| managed_filter_config(&hook.manifest).ok())
                 .unwrap_or_default();
-            let filtered =
-                filters::filter_command_output(&[], output, exit_code, &config);
+            let filtered = filters::filter_command_output(&[], output, exit_code, &config);
             let saved_bytes = filtered.input_bytes.saturating_sub(filtered.output_bytes);
             ManagedCommandOutput {
                 output: filtered.output,
@@ -675,7 +674,9 @@ pub fn managed_hook_manifest_path(root: &Path) -> PathBuf {
 /// managed manifest. Re-verifies the sha256 binding so a tampered or missing
 /// artifact fails closed; a manifest without a bound DSL yields the reviewed
 /// builtin defaults. Callers must have already verified the root.
-pub fn managed_filter_config(manifest: &ManagedHookManifest) -> Result<filters::CommandFilterConfig> {
+pub fn managed_filter_config(
+    manifest: &ManagedHookManifest,
+) -> Result<filters::CommandFilterConfig> {
     match &manifest.filter_dsl_sha256 {
         Some(expected) => {
             let root = Path::new(&manifest.managed_root);
@@ -926,11 +927,7 @@ fn read_managed_usage_evidence(
             last_receipt = Some(receipt);
         }
     }
-    Ok((
-        records.len(),
-        saved_bytes,
-        last_receipt,
-    ))
+    Ok((records.len(), saved_bytes, last_receipt))
 }
 
 /// One verified d-token-owned usage record, bound to its command digest.
@@ -1100,7 +1097,10 @@ fn is_safe_metadata_text(value: &str, max_len: usize) -> bool {
 }
 
 fn is_allowed_usage_transform(value: &str) -> bool {
-    if matches!(value, "stdout:bounded_capture" | "stderr:bounded_capture" | "process:timeout") {
+    if matches!(
+        value,
+        "stdout:bounded_capture" | "stderr:bounded_capture" | "process:timeout"
+    ) {
         return true;
     }
     let Some((stream, transform)) = value.split_once(':') else {
@@ -1116,7 +1116,10 @@ fn is_allowed_usage_transform(value: &str) -> bool {
 /// the reviewed builtin can emit, so a wrapped command's usage record can
 /// never be invalidated by a legitimately reviewed filter action.
 fn is_known_filter_transform(transform: &str) -> bool {
-    if matches!(transform, "unknown-family" | "ansi_strip" | "blank_and_repeat_fold" | "bounded_truncate") {
+    if matches!(
+        transform,
+        "unknown-family" | "ansi_strip" | "blank_and_repeat_fold" | "bounded_truncate"
+    ) {
         return true;
     }
     let Some((family, action)) = transform.split_once(':') else {

@@ -78,8 +78,10 @@ fn recovery_for(prepared: &dtoken_runtime_pipeline::PreparedRequest) -> Recovery
     candidate.recovery_receipt().clone()
 }
 
-fn prepared_with_candidate(
-) -> (dtoken_runtime_pipeline::PreparedRequest, dtoken_runtime_pipeline::CandidateRequest) {
+fn prepared_with_candidate() -> (
+    dtoken_runtime_pipeline::PreparedRequest,
+    dtoken_runtime_pipeline::CandidateRequest,
+) {
     let input = PipelineInput::new(scope(), br#"{"messages":["baseline"]}"#.to_vec(), 1024)
         .expect("bounded input");
     let prepared = input.prepare();
@@ -183,7 +185,10 @@ fn send_commit_receipt_binds_the_exact_sent_body_digest() {
     let receipt = ready.mint_send_commit(101);
     assert_eq!(receipt.sent_digest(), &expected);
     assert_eq!(receipt.variant(), SentPayloadVariant::Optimized);
-    assert_eq!(receipt.recovery().unwrap().recovery_ref(), "ccr:durable-ref-1");
+    assert_eq!(
+        receipt.recovery().unwrap().recovery_ref(),
+        "ccr:durable-ref-1"
+    );
     assert_eq!(receipt.transforms(), &["safe-text".to_string()]);
 }
 
@@ -256,17 +261,12 @@ fn recovery_receipt_rejects_non_durable_refs_and_forged_bindings() {
         .expect("foreign request binds its own receipt");
     let foreign = foreign_candidate.recovery_receipt().clone();
     assert!(!foreign.is_valid_for(&prepared, &decision_for(&prepared), 50));
-    let bound = prepared
-        .clone()
-        .with_candidate(
-            artifact(prepared.baseline_digest()),
-            &decision_for(&prepared),
-            Some(foreign),
-        );
-    assert_eq!(
-        bound.unwrap_err(),
-        PipelineError::ReceiptIdentityMismatch
+    let bound = prepared.clone().with_candidate(
+        artifact(prepared.baseline_digest()),
+        &decision_for(&prepared),
+        Some(foreign),
     );
+    assert_eq!(bound.unwrap_err(), PipelineError::ReceiptIdentityMismatch);
 }
 
 #[test]
@@ -289,7 +289,12 @@ fn recovery_receipt_expiry_is_enforced() {
     assert_eq!(
         prepared
             .clone()
-            .with_durable_candidate(artifact.clone(), &decision_for(&prepared), expired, &authority())
+            .with_durable_candidate(
+                artifact.clone(),
+                &decision_for(&prepared),
+                expired,
+                &authority()
+            )
             .unwrap_err(),
         PipelineError::InvalidRecoveryReceipt,
         "an expired proof must fail closed"
@@ -338,7 +343,12 @@ fn recovery_receipt_rejects_inactive_route_decisions() {
     assert_eq!(
         prepared
             .clone()
-            .with_durable_candidate(artifact.clone(), &foreign_decision, live_proof(), &authority())
+            .with_durable_candidate(
+                artifact.clone(),
+                &foreign_decision,
+                live_proof(),
+                &authority()
+            )
             .unwrap_err(),
         PipelineError::RouteDecisionMismatch,
         "a decision for another request is not active"
@@ -541,7 +551,10 @@ fn post_commit_receipt_is_terminal_and_carries_the_optimized_evidence() {
     assert_eq!(receipt.committed_at_ms(), Some(101));
     assert_eq!(receipt.variant(), SentPayloadVariant::Optimized);
     assert_eq!(receipt.transforms(), &["safe-text".to_string()]);
-    assert_eq!(receipt.recovery().unwrap().recovery_ref(), "ccr:durable-ref-1");
+    assert_eq!(
+        receipt.recovery().unwrap().recovery_ref(),
+        "ccr:durable-ref-1"
+    );
     assert!(receipt.is_terminal());
 }
 

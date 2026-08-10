@@ -270,14 +270,19 @@ pub fn queue_load_metrics(requests: u64) -> QueueMetrics {
         let _sequence = admission.sequence();
 
         let barrier = Arc::clone(&barrier);
-        match pool.try_submit(bytes, deadline, cancel, Box::new(move || {
-            let guard = barrier
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            let _ = guard.recv();
-            std::hint::black_box(sequence);
-            TaskOutcome::Completed
-        })) {
+        match pool.try_submit(
+            bytes,
+            deadline,
+            cancel,
+            Box::new(move || {
+                let guard = barrier
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let _ = guard.recv();
+                std::hint::black_box(sequence);
+                TaskOutcome::Completed
+            }),
+        ) {
             Ok(()) => metrics.admitted += 1,
             Err(SubmitError::QueueSaturated) => metrics.saturated += 1,
             Err(SubmitError::PayloadExceedsCapacity) => metrics.saturated += 1,

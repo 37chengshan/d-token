@@ -3922,7 +3922,10 @@ openai_base_url = "http://127.0.0.1:10100/v1"
             candidate.reasons
         );
         let encoded = serde_json::to_string(&candidate).expect("serialize candidate");
-        assert!(!encoded.contains("opencodex-catalog"), "catalog path must never leak");
+        assert!(
+            !encoded.contains("opencodex-catalog"),
+            "catalog path must never leak"
+        );
     }
 
     #[test]
@@ -3994,7 +3997,10 @@ model_catalog_json = "/tmp/opencodex-catalog.json"
         assert_eq!(openclaw.auth_mode, "unavailable");
         assert!(openclaw.active);
         let returned = serde_json::to_string(&(candidates, sources)).expect("serialize discovery");
-        assert!(!returned.contains(SECRET_MARKER), "openclaw credential leaked");
+        assert!(
+            !returned.contains(SECRET_MARKER),
+            "openclaw credential leaked"
+        );
     }
 
     #[test]

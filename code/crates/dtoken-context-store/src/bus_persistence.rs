@@ -239,8 +239,8 @@ impl PersistencePort for SqlitePersistence {
              FROM bus_manifest WHERE project_id = ?1 ORDER BY created_at_ms",
         )?;
         let rows = statement.query_map(params![project_id], |row| {
-            let entries: Vec<ManifestEntry> =
-                serde_json::from_str(&row.get::<_, String>(6)?).map_err(|error| {
+            let entries: Vec<ManifestEntry> = serde_json::from_str(&row.get::<_, String>(6)?)
+                .map_err(|error| {
                     rusqlite::Error::FromSqlConversionFailure(
                         6,
                         rusqlite::types::Type::Text,
@@ -342,7 +342,10 @@ impl PersistencePort for SqlitePersistence {
             .connection
             .lock()
             .map_err(|_| anyhow::anyhow!("bus persistence lock poisoned"))?;
-        connection.execute("DELETE FROM bus_grant WHERE grant_id = ?1", params![grant_id])?;
+        connection.execute(
+            "DELETE FROM bus_grant WHERE grant_id = ?1",
+            params![grant_id],
+        )?;
         Ok(())
     }
 

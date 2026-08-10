@@ -345,7 +345,9 @@ impl ContextBus {
             for entry in self.persistence.load_entries(&project)? {
                 if entry.state_at(now_ms, None) != crate::cache::EntryState::Fresh {
                     // stale（TTL 过期）：跳过且删除，避免重启后复活。
-                    let _ = self.persistence.delete_entry(&project, &entry.map_signature);
+                    let _ = self
+                        .persistence
+                        .delete_entry(&project, &entry.map_signature);
                     continue;
                 }
                 self.session_cache
@@ -356,8 +358,7 @@ impl ContextBus {
             }
             for manifest in self.persistence.load_manifests(&project)? {
                 let all_fresh = manifest.entries.iter().all(|entry| {
-                    crate::recovery::RecoveryIndex::rehydrate_entry(entry)
-                        .state_at(now_ms, None)
+                    crate::recovery::RecoveryIndex::rehydrate_entry(entry).state_at(now_ms, None)
                         == crate::cache::EntryState::Fresh
                 });
                 if !all_fresh || manifest.entries.is_empty() {
@@ -412,7 +413,9 @@ impl ContextBus {
                     if entry.state_at(now_ms, current_source_fingerprint)
                         != crate::cache::EntryState::Fresh
                     {
-                        let _ = self.persistence.delete_entry(&project, &entry.map_signature);
+                        let _ = self
+                            .persistence
+                            .delete_entry(&project, &entry.map_signature);
                     }
                 }
             }
@@ -651,7 +654,8 @@ mod tests {
             &[],
             1_000,
         )
-        .unwrap();        let unbound = bus
+        .unwrap();
+        let unbound = bus
             .persistence
             .load_manifests("proj")
             .unwrap()
@@ -794,6 +798,9 @@ mod tests {
         };
         assert!(entry.body.is_none(), "query hit must not carry a body");
         assert_eq!(receipt.avoided_bytes, 0);
-        assert_eq!(entry.map_signature, map_signature("proj", r#"{"q":"content-a"}"#));
+        assert_eq!(
+            entry.map_signature,
+            map_signature("proj", r#"{"q":"content-a"}"#)
+        );
     }
 }

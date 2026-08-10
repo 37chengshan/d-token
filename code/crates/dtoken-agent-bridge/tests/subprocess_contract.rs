@@ -228,13 +228,11 @@ fn managed_rtk_wrap_preserves_failure_output_and_tracks_metadata() {
         usage["command_basename"].as_str(),
         command.file_name().and_then(|name| name.to_str())
     );
-    assert!(
-        usage["transforms"]
-            .as_array()
-            .expect("transforms")
-            .iter()
-            .any(|value| value == "stdout:unknown-family")
-    );
+    assert!(usage["transforms"]
+        .as_array()
+        .expect("transforms")
+        .iter()
+        .any(|value| value == "stdout:unknown-family"));
     // ... but raw output and secrets never enter the persisted receipt.
     assert!(!usage_text.contains("SECRET=must-not-persist"));
     assert!(!usage_text.contains("\u{1b}[31m"));
@@ -301,7 +299,8 @@ fn managed_rtk_wrap_applies_structured_json_filter_and_records_capture_evidence(
     assert_eq!(usage["disposition"], "filtered_verified_hook");
     assert_eq!(usage["exit_code"].as_i64(), Some(0));
     assert!(
-        usage["input_bytes"].as_u64().unwrap_or_default() >= usage["output_bytes"].as_u64().unwrap_or_default()
+        usage["input_bytes"].as_u64().unwrap_or_default()
+            >= usage["output_bytes"].as_u64().unwrap_or_default()
     );
     assert!(usage["transforms"]
         .as_array()

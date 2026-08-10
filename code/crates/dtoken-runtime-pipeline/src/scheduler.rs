@@ -496,10 +496,8 @@ impl BoundedWorkerPool {
                         .lock()
                         .unwrap_or_else(std::sync::PoisonError::into_inner);
                     let dequeued = loop {
-                        if let Some(queued) = guard
-                            .pending
-                            .pop_first()
-                            .map(|(_sequence, queued)| queued)
+                        if let Some(queued) =
+                            guard.pending.pop_first().map(|(_sequence, queued)| queued)
                         {
                             break Some(queued);
                         }

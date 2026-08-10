@@ -61,9 +61,9 @@ use dtoken_types::{
     OpticalEventMetadataPublicSummary, OpticalEventPublicSummary, OpticalExactRouteEvidence,
     OpticalMode, OpticalPlanPublicSummary, OpticalPlanStatus, OpticalPreviewRequest,
     OpticalStatusPublicSummary, OptimizationReceipt, PayloadByteUsage, Protocol,
-    ProtocolInjectionProfile, RequestLog,
-    RequestScope, RequestScopeError, RouteDecision, SupportLevel, UpstreamSendState, UsageEvidence,
-    UsageEvidenceKind, UsageMeasurement, UsageVector,
+    ProtocolInjectionProfile, RequestLog, RequestScope, RequestScopeError, RouteDecision,
+    SupportLevel, UpstreamSendState, UsageEvidence, UsageEvidenceKind, UsageMeasurement,
+    UsageVector,
 };
 use futures_util::{Stream, TryStreamExt};
 use reqwest::StatusCode;
@@ -880,7 +880,8 @@ pub fn prepare_json_pipeline_payload(
     // issued opaque proof — never from caller-supplied bytes (T-C0B /
     // PIPELINE-RECEIPT-AUTHENTICITY).  The proof and its issuing authority
     // come from the store's private key material via `prepare_ccr_for_request`.
-    let (Some(proof), Some(authority)) = (prepared_ccr.proof.clone(), prepared_ccr.authority.clone())
+    let (Some(proof), Some(authority)) =
+        (prepared_ccr.proof.clone(), prepared_ccr.authority.clone())
     else {
         return Ok(PreparedPipelinePayload {
             ready: prepared.into_baseline_ready("pipeline_recovery_unavailable"),
@@ -1722,11 +1723,12 @@ impl AppState {
         // PR-C3A..C3C: production 启动即接入 LeanCTX Context Bus（SQLite
         // persistence port；bus 域 policy 单一 authority）。恢复失败不阻断
         // （fail-open：调用方正常读取原文）。
-        let bus_persistence = dtoken_context_store::SqlitePersistence::open(
-            runtime_dir.join("context-bus.sqlite3"),
-        )
-        .map(|port| Box::new(port) as Box<dyn dtoken_context_bus::persistence::PersistencePort>)
-        .ok();
+        let bus_persistence =
+            dtoken_context_store::SqlitePersistence::open(runtime_dir.join("context-bus.sqlite3"))
+                .map(|port| {
+                    Box::new(port) as Box<dyn dtoken_context_bus::persistence::PersistencePort>
+                })
+                .ok();
         let mut bus = dtoken_context_bus::ContextBus::new(dtoken_context_bus::BusConfig::default());
         if let Some(port) = bus_persistence {
             bus = dtoken_context_bus::ContextBus::with_persistence(
@@ -1935,8 +1937,10 @@ impl AppState {
         let mut pending = HashMap::<Uuid, TerminalCommitMarker>::new();
         for (request_id, marker) in store.latest_terminal_commit_markers()? {
             let mut resolved = marker;
-            if matches!(resolved.phase, TerminalCommitPhase::Intent | TerminalCommitPhase::Pending)
-                && store.terminal_bundle_complete(&resolved)?
+            if matches!(
+                resolved.phase,
+                TerminalCommitPhase::Intent | TerminalCommitPhase::Pending
+            ) && store.terminal_bundle_complete(&resolved)?
             {
                 store.append_terminal_commit_marker(&TerminalCommitMarker {
                     phase: TerminalCommitPhase::Committed,
@@ -9911,8 +9915,9 @@ fn anthropic_route_payload(
         // which case the candidate body replaces the wire body and the
         // `bus_receipts` are carried into the ledger (CONTEXT-3; the handler
         // skips hybrid planning when a bus reuse is present).
-        let baseline_digest =
-            dtoken_context_bus::signature::sha256_hex(&serde_json::to_vec(&upstream_body).unwrap_or_default());
+        let baseline_digest = dtoken_context_bus::signature::sha256_hex(
+            &serde_json::to_vec(&upstream_body).unwrap_or_default(),
+        );
         compress_for_route_with_relay(
             state,
             &scope,
@@ -9925,8 +9930,9 @@ fn anthropic_route_payload(
             &baseline_digest,
         )
     } else {
-        let baseline_digest =
-            dtoken_context_bus::signature::sha256_hex(&serde_json::to_vec(&upstream_body).unwrap_or_default());
+        let baseline_digest = dtoken_context_bus::signature::sha256_hex(
+            &serde_json::to_vec(&upstream_body).unwrap_or_default(),
+        );
         // PR-C1A: lower once (route-bound) and share the IR with the plan.
         let ir = dtoken_compress::lower_hybrid_context(
             &optimization_context.compression_context,
@@ -10665,11 +10671,7 @@ fn prepare_direct_anthropic_pipeline_for_send(
                         json!(dtoken_types::SentPayloadVariant::Original),
                     );
                 }
-                (
-                    dtoken_types::SentPayloadVariant::Original,
-                    None,
-                    None,
-                )
+                (dtoken_types::SentPayloadVariant::Original, None, None)
             }
         };
     if cache_wire.breakpoint_inserted
@@ -10900,7 +10902,8 @@ fn signed_context_savings(log: &RequestLog) -> i64 {
 
 fn runtime_stats_for_state(state: &AppState) -> Value {
     let logs = state.recent_request_logs(10_000);
-    let rtk = rtk_command_output_accounting(state.managed_rtk_root.as_deref().map(|root| root.as_path()));
+    let rtk =
+        rtk_command_output_accounting(state.managed_rtk_root.as_deref().map(|root| root.as_path()));
     runtime_stats_payload_with_rtk(&logs, rtk)
 }
 
@@ -10933,9 +10936,9 @@ fn rtk_command_output_accounting(
             record.recorded_at_ms,
         )
         .map_err(|error| format!("{error:#}"))?;
-        ledger.record(entry).map_err(|error| {
-            format!("duplicate or conflicting RTK claim rejected: {error}")
-        })?;
+        ledger
+            .record(entry)
+            .map_err(|error| format!("duplicate or conflicting RTK claim rejected: {error}"))?;
     }
     let entries = ledger.total_entries();
     let totals = ledger.bucket_totals(dtoken_types::AccountingBucket::CommandOutput);
@@ -11306,7 +11309,7 @@ fn runtime_export_json_payload(state: &AppState) -> Value {
         "redacted": true,
         "raw_available": false,
         "privacy": "No raw prompt, raw response, API key, auth header, cookie, CCR body, or full command output is included.",
-        "stats": runtime_stats_for_state(&state),
+        "stats": runtime_stats_for_state(state),
         "history": runtime_stats_history_payload(&logs),
         "metrics": runtime_metrics_payload(&logs),
         "events": state.recent_events(10_000),
@@ -11683,7 +11686,8 @@ pub fn dashboard_payload_for_state(state: &AppState) -> Value {
         .iter()
         .map(OptimizationReceipt::from_request_log)
         .collect();
-    let rtk = rtk_command_output_accounting(state.managed_rtk_root.as_deref().map(|root| root.as_path()));
+    let rtk =
+        rtk_command_output_accounting(state.managed_rtk_root.as_deref().map(|root| root.as_path()));
     let mut payload = with_cached_account_quota(with_active_config(
         build_dashboard_payload(DashboardPayloadInput {
             stats: runtime_stats_payload_with_rtk(&all_logs, rtk),
@@ -12613,10 +12617,8 @@ async fn openai_responses(
                 body.get("model").and_then(Value::as_str),
                 Protocol::OpenAi,
                 Protocol::OpenAi,
-                header_evidence(&headers, body.get("model").and_then(Value::as_str))
-                    .project_id,
-                header_evidence(&headers, body.get("model").and_then(Value::as_str))
-                    .session_id,
+                header_evidence(&headers, body.get("model").and_then(Value::as_str)).project_id,
+                header_evidence(&headers, body.get("model").and_then(Value::as_str)).session_id,
             ) {
                 Ok(scope) => scope,
                 Err(_) => {
@@ -12820,35 +12822,39 @@ async fn openai_responses(
                 scheduler::preserved_pipeline_payload(scope.clone(), &baseline_body, reason)
             } else {
                 match prepare_json_pipeline_payload(
-                scope.clone(),
-                &decision,
-                &baseline_body,
-                &compression.body,
-                &request_log.transforms_applied,
-                &prepared_ccr,
-            ) {
-                Ok(payload) => payload,
-                Err(_) => PreparedPipelinePayload {
-                    ready: PipelineInput::new(
-                        scope.clone(),
-                        serde_json::to_vec(&baseline_body).unwrap_or_default(),
-                        MAX_REQUEST_BODY_BYTES,
-                    )
-                    .map(|input| {
-                        input
-                            .prepare()
-                            .into_baseline_ready("pipeline_input_invalid")
-                    })
-                    .unwrap_or_else(|_| {
-                        PipelineInput::new(scope.clone(), b"{}".to_vec(), MAX_REQUEST_BODY_BYTES)
+                    scope.clone(),
+                    &decision,
+                    &baseline_body,
+                    &compression.body,
+                    &request_log.transforms_applied,
+                    &prepared_ccr,
+                ) {
+                    Ok(payload) => payload,
+                    Err(_) => PreparedPipelinePayload {
+                        ready: PipelineInput::new(
+                            scope.clone(),
+                            serde_json::to_vec(&baseline_body).unwrap_or_default(),
+                            MAX_REQUEST_BODY_BYTES,
+                        )
+                        .map(|input| {
+                            input
+                                .prepare()
+                                .into_baseline_ready("pipeline_input_invalid")
+                        })
+                        .unwrap_or_else(|_| {
+                            PipelineInput::new(
+                                scope.clone(),
+                                b"{}".to_vec(),
+                                MAX_REQUEST_BODY_BYTES,
+                            )
                             .expect("static JSON baseline is valid")
                             .prepare()
                             .into_baseline_ready("pipeline_input_invalid")
-                    }),
-                    fallback_reason: Some("pipeline_input_invalid"),
-                    validation: None,
-                },
-                            }
+                        }),
+                        fallback_reason: Some("pipeline_input_invalid"),
+                        validation: None,
+                    },
+                }
             };
             if let Some(reason) = pipeline_payload.fallback_reason {
                 compression =
@@ -13937,76 +13943,79 @@ async fn anthropic_messages(
             // do not let a JSON re-serialization or a Hybrid candidate turn an
             // unverified cache optimization into an observable request mutation.
             let raw_wire_required = direct_cache_evidence.is_none();
-        // Active preparation owns the request-wide byte lease. Keep it alive
-        // until the upstream operation reaches a terminal return.
-        let mut _retained_hybrid_request = None;
-        if !raw_wire_required {
-            if let Some(mut prepared) =
-                prepare_direct_anthropic_hybrid(&state, &payload, raw_body.clone()).await
-            {
-                let stage_recording =
-                    record_hybrid_pre_send_stages(&state, payload.decision.request_id, &prepared);
-                if stage_recording.is_err()
-                    && matches!(
-                        prepared.kind(),
-                        HybridPreparationKind::Active | HybridPreparationKind::Semantic
-                    )
+            // Active preparation owns the request-wide byte lease. Keep it alive
+            // until the upstream operation reaches a terminal return.
+            let mut _retained_hybrid_request = None;
+            if !raw_wire_required {
+                if let Some(mut prepared) =
+                    prepare_direct_anthropic_hybrid(&state, &payload, raw_body.clone()).await
                 {
-                    prepared = force_hybrid_pre_send_fallback(
-                        prepared,
-                        original_body,
-                        "ledger_pre_send_unavailable",
+                    let stage_recording = record_hybrid_pre_send_stages(
+                        &state,
+                        payload.decision.request_id,
+                        &prepared,
                     );
+                    if stage_recording.is_err()
+                        && matches!(
+                            prepared.kind(),
+                            HybridPreparationKind::Active | HybridPreparationKind::Semantic
+                        )
+                    {
+                        prepared = force_hybrid_pre_send_fallback(
+                            prepared,
+                            original_body,
+                            "ledger_pre_send_unavailable",
+                        );
+                        append_stage_event(
+                            &state,
+                            payload.decision.request_id,
+                            LayeredStage::OpticalFallback,
+                            EventStatus::Failed,
+                            json!({
+                                "reason_code": "ledger_pre_send_unavailable",
+                                "raw_available": false,
+                                "privacy": "baseline selected before upstream send"
+                            }),
+                            Some("ledger_pre_send_unavailable"),
+                        );
+                    }
+                    apply_hybrid_preparation(&mut payload, &prepared);
+                    _retained_hybrid_request = Some(prepared);
+                } else {
                     append_stage_event(
                         &state,
                         payload.decision.request_id,
                         LayeredStage::OpticalFallback,
                         EventStatus::Failed,
                         json!({
-                            "reason_code": "ledger_pre_send_unavailable",
+                            "reason_code": "hybrid_worker_unavailable",
                             "raw_available": false,
-                            "privacy": "baseline selected before upstream send"
+                            "baseline_selected": true,
+                            "automatic_retry": false
                         }),
-                        Some("ledger_pre_send_unavailable"),
+                        Some("hybrid_worker_unavailable"),
                     );
                 }
-                apply_hybrid_preparation(&mut payload, &prepared);
-                _retained_hybrid_request = Some(prepared);
             } else {
+                force_payload_ccr_pre_send_baseline(
+                    &mut payload,
+                    &body,
+                    "provider_cache_evidence_unavailable",
+                );
                 append_stage_event(
                     &state,
                     payload.decision.request_id,
                     LayeredStage::OpticalFallback,
                     EventStatus::Failed,
                     json!({
-                        "reason_code": "hybrid_worker_unavailable",
+                        "reason_code": "provider_cache_evidence_unavailable",
                         "raw_available": false,
                         "baseline_selected": true,
                         "automatic_retry": false
                     }),
-                    Some("hybrid_worker_unavailable"),
+                    Some("provider_cache_evidence_unavailable"),
                 );
             }
-        } else {
-            force_payload_ccr_pre_send_baseline(
-                &mut payload,
-                &body,
-                "provider_cache_evidence_unavailable",
-            );
-            append_stage_event(
-                &state,
-                payload.decision.request_id,
-                LayeredStage::OpticalFallback,
-                EventStatus::Failed,
-                json!({
-                    "reason_code": "provider_cache_evidence_unavailable",
-                    "raw_available": false,
-                    "baseline_selected": true,
-                    "automatic_retry": false
-                }),
-                Some("provider_cache_evidence_unavailable"),
-            );
-        }
         } // else: bus reuse 分支跳过 hybrid/raw-wire 规划。
 
         let (prepared_ccr, pipeline_variant, cache_wire, sealed_ready, sealed_validation) =
@@ -16380,22 +16389,14 @@ mod tests {
     async fn context_bus_relay_reuses_across_two_app_states_without_cross_body_pollution() {
         // 两个 AppState（两个运行实例）共享同一持久目录：实例 A 记录候选，
         // 实例 B 经 SQLite persistence 启动恢复后按精确签名命中。
-        let dir = std::env::temp_dir().join(format!(
-            "dtoken-c2c3-two-appstate-{}",
-            Uuid::new_v4()
-        ));
+        let dir = std::env::temp_dir().join(format!("dtoken-c2c3-two-appstate-{}", Uuid::new_v4()));
         {
             let instance_a = AppState::new_persistent(route_test_config(), dir.clone());
             let bus = instance_a.context_bus.as_ref().unwrap().clone();
             let mut bus = bus.lock().unwrap();
             let bus_scope = dtoken_context_bus::BusScope::new("proj", "agent-a", "sess-a");
             bus.grant(&dtoken_context_bus::GrantRequest {
-                scope: dtoken_context_bus::GrantScope::new(
-                    "proj",
-                    "agent-a",
-                    "agent-b",
-                    "sess-a",
-                ),
+                scope: dtoken_context_bus::GrantScope::new("proj", "agent-a", "agent-b", "sess-a"),
                 grant_revision: "rev-1".to_string(),
                 granted_at_ms: dtoken_event_ledger::now_ms().max(1),
             })
@@ -16445,12 +16446,7 @@ mod tests {
         )
         .unwrap();
         bus.grant(&dtoken_context_bus::GrantRequest {
-            scope: dtoken_context_bus::GrantScope::new(
-                "proj",
-                "agent-a",
-                "agent-b",
-                "sess-a",
-            ),
+            scope: dtoken_context_bus::GrantScope::new("proj", "agent-a", "agent-b", "sess-a"),
             grant_revision: "rev-1".to_string(),
             granted_at_ms: 1_000,
         })
@@ -19063,7 +19059,9 @@ mod tests {
             let _ = socket.read(&mut buffer).await;
             tokio::time::sleep(std::time::Duration::from_millis(200)).await;
             let _ = socket
-                .write_all(b"HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\n\r\ndata: [DONE]\n\n")
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\n\r\ndata: [DONE]\n\n",
+                )
                 .await;
         });
 
@@ -19738,7 +19736,11 @@ mod tests {
             plaintext_bytes: 64,
         };
         let prepared_with_receipt = PreparedCcr {
-            proof: Some(authority.issue(receipt.recovery_ref.clone(), receipt.expires_at_unix).expect("store-issued proof")),
+            proof: Some(
+                authority
+                    .issue(receipt.recovery_ref.clone(), receipt.expires_at_unix)
+                    .expect("store-issued proof"),
+            ),
             receipt: Some(receipt.clone()),
             authority: Some(authority.clone()),
             store_configured: true,
@@ -20330,8 +20332,10 @@ mod tests {
         // Once a complete pending marker is promoted, a second restart must
         // not re-promote, duplicate the committed marker, or resurrect the
         // pending state.
-        let dir = std::env::temp_dir()
-            .join(format!("dtoken-marker-pending-idempotent-{}", Uuid::new_v4()));
+        let dir = std::env::temp_dir().join(format!(
+            "dtoken-marker-pending-idempotent-{}",
+            Uuid::new_v4()
+        ));
         let key = [81_u8; 32];
         let request = OpenAiChatRequest {
             model: Some("pending-idempotent-model".to_string()),
@@ -20405,10 +20409,7 @@ mod tests {
             .lines()
             .filter(|line| {
                 line.contains("\"phase\":\"committed\"")
-                    && line.contains(&format!(
-                        "\"request_id\":\"{}\"",
-                        decision.request_id
-                    ))
+                    && line.contains(&format!("\"request_id\":\"{}\"", decision.request_id))
             })
             .count();
         assert_eq!(
@@ -20430,8 +20431,8 @@ mod tests {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
 
-        let dir = std::env::temp_dir()
-            .join(format!("dtoken-marker-failpoint-intent-{}", Uuid::new_v4()));
+        let dir =
+            std::env::temp_dir().join(format!("dtoken-marker-failpoint-intent-{}", Uuid::new_v4()));
         let key = [82_u8; 32];
         let state = AppState::new_persistent_with_ccr_key(DtokenConfig::empty(), &dir, key)
             .expect("persistent state");
@@ -20452,13 +20453,11 @@ mod tests {
         state.record_routed_request(&decision, request_log.clone(), event.clone());
         disarm("terminal:crash_after_intent_before_fanout");
         drop(state);
-        let marker_lines =
-            std::fs::read_to_string(dir.join("terminal-commits.jsonl")).expect("read marker journal");
+        let marker_lines = std::fs::read_to_string(dir.join("terminal-commits.jsonl"))
+            .expect("read marker journal");
         let request_markers = marker_lines
             .lines()
-            .filter(|line| {
-                line.contains(&format!("\"request_id\":\"{}\"", decision.request_id))
-            })
+            .filter(|line| line.contains(&format!("\"request_id\":\"{}\"", decision.request_id)))
             .collect::<Vec<_>>();
         assert_eq!(
             request_markers.len(),
@@ -20557,8 +20556,8 @@ mod tests {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
 
-        let dir = std::env::temp_dir()
-            .join(format!("dtoken-marker-failpoint-commit-{}", Uuid::new_v4()));
+        let dir =
+            std::env::temp_dir().join(format!("dtoken-marker-failpoint-commit-{}", Uuid::new_v4()));
         let key = [83_u8; 32];
         let state = AppState::new_persistent_with_ccr_key(DtokenConfig::empty(), &dir, key)
             .expect("persistent state");
@@ -20579,13 +20578,11 @@ mod tests {
         state.record_routed_request(&decision, request_log.clone(), event.clone());
         disarm("terminal:crash_before_commit_marker");
         drop(state);
-        let marker_lines =
-            std::fs::read_to_string(dir.join("terminal-commits.jsonl")).expect("read marker journal");
+        let marker_lines = std::fs::read_to_string(dir.join("terminal-commits.jsonl"))
+            .expect("read marker journal");
         let request_markers = marker_lines
             .lines()
-            .filter(|line| {
-                line.contains(&format!("\"request_id\":\"{}\"", decision.request_id))
-            })
+            .filter(|line| line.contains(&format!("\"request_id\":\"{}\"", decision.request_id)))
             .collect::<Vec<_>>();
         assert_eq!(
             request_markers.len(),
@@ -21764,15 +21761,24 @@ mod tests {
             receipt: Some(ccr_receipt.clone()),
             proof: Some(
                 authority
-                    .issue(ccr_receipt.recovery_ref.clone(), ccr_receipt.expires_at_unix)
+                    .issue(
+                        ccr_receipt.recovery_ref.clone(),
+                        ccr_receipt.expires_at_unix,
+                    )
                     .expect("store-issued proof"),
             ),
             authority: Some(authority),
             store_configured: true,
         };
-        let optimized =
-            prepare_json_pipeline_payload(scope.clone(), &cache_test_decision(&scope), &baseline, &candidate, &transforms, &prepared)
-                .expect("optimized payload");
+        let optimized = prepare_json_pipeline_payload(
+            scope.clone(),
+            &cache_test_decision(&scope),
+            &baseline,
+            &candidate,
+            &transforms,
+            &prepared,
+        )
+        .expect("optimized payload");
         assert_eq!(
             optimized.ready.variant(),
             dtoken_types::SentPayloadVariant::Optimized
@@ -22531,7 +22537,12 @@ mod tests {
         let now = dtoken_event_ledger::now_ms().max(1);
         {
             let first = AppState::new_persistent(config.clone(), &dir);
-            let mut bus = first.context_bus.as_ref().expect("bus configured").lock().unwrap();
+            let mut bus = first
+                .context_bus
+                .as_ref()
+                .expect("bus configured")
+                .lock()
+                .unwrap();
             let owner = dtoken_context_bus::BusScope::new("proj-a", "agent-a", "sess-1");
             bus.record(
                 &owner,
@@ -22544,7 +22555,9 @@ mod tests {
             )
             .expect("record");
             bus.grant(&dtoken_context_bus::shared::GrantRequest {
-                scope: dtoken_context_bus::GrantScope::new("proj-a", "agent-a", "agent-b", "sess-1"),
+                scope: dtoken_context_bus::GrantScope::new(
+                    "proj-a", "agent-a", "agent-b", "sess-1",
+                ),
                 grant_revision: "rev-1".to_string(),
                 granted_at_ms: now,
             })
@@ -22552,7 +22565,12 @@ mod tests {
         }
         // 第二个实例：从同一持久目录恢复。
         let second = AppState::new_persistent(config, &dir);
-        let mut bus = second.context_bus.as_ref().expect("bus configured").lock().unwrap();
+        let mut bus = second
+            .context_bus
+            .as_ref()
+            .expect("bus configured")
+            .lock()
+            .unwrap();
         assert_eq!(bus.cache_entry_count(), 1, "session cache recovered");
         assert_eq!(bus.relay_entry_count(), 1, "relay recovered");
         assert_eq!(bus.shared_grant_count(), 1, "grant recovered");
@@ -22574,9 +22592,16 @@ mod tests {
         }
         // 跨项目隔离：proj-b 同内容 → miss（跨项目污染 = 0）。
         let other = dtoken_context_bus::BusScope::new("proj-b", "agent-c", "sess-3");
-        let other_signature = dtoken_context_bus::signature::map_signature("proj-b", r#"{"q":"shared"}"#);
+        let other_signature =
+            dtoken_context_bus::signature::map_signature("proj-b", r#"{"q":"shared"}"#);
         assert!(matches!(
-            bus.consult(&other, &other_signature, &fingerprint, &["route-a".to_string()], now),
+            bus.consult(
+                &other,
+                &other_signature,
+                &fingerprint,
+                &["route-a".to_string()],
+                now
+            ),
             dtoken_context_bus::bus::ConsultOutcome::Miss
         ));
         drop(bus);
@@ -22697,13 +22722,14 @@ mod tests {
         let evidence = configured_provider_cache_evidence(&state, &payload.scope)
             .expect("fresh exact Anthropic evidence");
 
-        let (prepared_ccr, variant, wire, _sealed_ready, _sealed_validation) = prepare_direct_anthropic_pipeline_for_send(
-            &state,
-            &mut payload,
-            &body,
-            &original,
-            Some(&evidence),
-        );
+        let (prepared_ccr, variant, wire, _sealed_ready, _sealed_validation) =
+            prepare_direct_anthropic_pipeline_for_send(
+                &state,
+                &mut payload,
+                &body,
+                &original,
+                Some(&evidence),
+            );
 
         assert!(prepared_ccr.receipt.is_some());
         assert_eq!(variant, dtoken_types::SentPayloadVariant::Optimized);
@@ -22747,13 +22773,14 @@ mod tests {
         let evidence = configured_provider_cache_evidence(&state, &payload.scope)
             .expect("fresh exact Anthropic evidence");
 
-        let (prepared_ccr, variant, wire, _sealed_ready, _sealed_validation) = prepare_direct_anthropic_pipeline_for_send(
-            &state,
-            &mut payload,
-            &body,
-            &original,
-            Some(&evidence),
-        );
+        let (prepared_ccr, variant, wire, _sealed_ready, _sealed_validation) =
+            prepare_direct_anthropic_pipeline_for_send(
+                &state,
+                &mut payload,
+                &body,
+                &original,
+                Some(&evidence),
+            );
 
         assert!(prepared_ccr.receipt.is_none());
         assert_eq!(variant, dtoken_types::SentPayloadVariant::Original);
@@ -23810,7 +23837,8 @@ mod tests {
         let decision = cache_test_decision(&scope);
         let baseline =
             json!({"model": "model-a", "messages": [{"role": "user", "content": "repeat repeat"}]});
-        let candidate = json!({"model": "model-a", "messages": [{"role": "user", "content": "repeat"}]});
+        let candidate =
+            json!({"model": "model-a", "messages": [{"role": "user", "content": "repeat"}]});
         let transforms = vec!["safe-text".to_string()];
         // Store-issued live proof; the old near-epoch expiry was never
         // enforced and would now fail closed at binding.
@@ -23824,7 +23852,10 @@ mod tests {
             receipt: Some(ccr_receipt.clone()),
             proof: Some(
                 authority
-                    .issue(ccr_receipt.recovery_ref.clone(), ccr_receipt.expires_at_unix)
+                    .issue(
+                        ccr_receipt.recovery_ref.clone(),
+                        ccr_receipt.expires_at_unix,
+                    )
                     .expect("store-issued proof"),
             ),
             authority: Some(authority),
@@ -24700,7 +24731,10 @@ mod tests {
             &prepared_ccr,
         )
         .expect("sealed baseline payload");
-        assert!(payload.validation.is_none(), "baseline payload has no validation");
+        assert!(
+            payload.validation.is_none(),
+            "baseline payload has no validation"
+        );
         let sealed_digest = payload.ready.body_digest();
         // Handlers insert the pipeline provenance into the ledger event
         // before the deadline check; the terminal record must preserve it.
@@ -24748,7 +24782,10 @@ mod tests {
             })
             .expect("terminal ledger event recorded");
         assert_eq!(terminal.status, EventStatus::Failed);
-        assert_eq!(terminal.metadata["send_commit_state"], "failed_before_commit");
+        assert_eq!(
+            terminal.metadata["send_commit_state"],
+            "failed_before_commit"
+        );
         assert_eq!(
             terminal.metadata["send_commit_digest"].as_str(),
             Some(sealed_digest.as_str()),
@@ -24776,7 +24813,11 @@ mod tests {
         let logs = state.recent_request_logs(10);
         assert_eq!(logs.len(), 1);
         assert_eq!(logs[0].request_id, decision.request_id);
-        assert_eq!(logs[0].error.as_deref(), None, "no fabricated upstream error");
+        assert_eq!(
+            logs[0].error.as_deref(),
+            None,
+            "no fabricated upstream error"
+        );
         let ccr = state
             .retrieve_ccr_metadata(&format!("ccr:{}", decision.request_id))
             .expect("ccr metadata");
@@ -24817,7 +24858,8 @@ mod tests {
         let decision = cache_test_decision(&scope);
         let baseline =
             json!({"model": "model-a", "messages": [{"role": "user", "content": "repeat repeat"}]});
-        let candidate = json!({"model": "model-a", "messages": [{"role": "user", "content": "repeat"}]});
+        let candidate =
+            json!({"model": "model-a", "messages": [{"role": "user", "content": "repeat"}]});
         let transforms = vec!["safe-text".to_string()];
         let authority = dtoken_runtime_pipeline::RecoveryProofAuthority::new([31_u8; 32]);
         let prepared = PreparedCcr {

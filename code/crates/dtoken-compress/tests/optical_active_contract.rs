@@ -38,7 +38,6 @@ const PINNED_EVAL_DIGEST: &str = "b0d248bff195081863faa0eaecf58b3d996b8ba41c0ccf
 const OPTICAL_CORPUS_DIGEST: &str =
     "45dcd9d54b285c6e71ba37127656898a5ac9217fdfb21e7d1cc08b7af9ec0bbe";
 
-
 fn now_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -55,7 +54,8 @@ fn fixture_path(name: &str) -> PathBuf {
 fn load_fixture<T: serde::de::DeserializeOwned>(name: &str) -> T {
     let raw = std::fs::read_to_string(fixture_path(name))
         .unwrap_or_else(|error| panic!("missing optical fixture {name}: {error}"));
-    serde_json::from_str(&raw).unwrap_or_else(|error| panic!("invalid optical fixture {name}: {error}"))
+    serde_json::from_str(&raw)
+        .unwrap_or_else(|error| panic!("invalid optical fixture {name}: {error}"))
 }
 
 fn signed_snapshot() -> OpticalCapabilitySnapshot {
@@ -184,21 +184,23 @@ fn signed_supported_route_reaches_automatic_active_with_all_gates_green() {
     // protected text preserved byte-for-byte.
     let eval = bound_eval();
     let snapshot = signed_snapshot();
-    let config = signed_runtime_config(
-        snapshot.clone(),
-        eval,
-        active_global(),
-        active_route(false),
+    let config =
+        signed_runtime_config(snapshot.clone(), eval, active_global(), active_route(false));
+    let registry = OpticalCapabilityRegistry::from_runtime_config(&config, now_ms());
+    assert_eq!(
+        registry.verified_rule_count(),
+        1,
+        "signed demo capability must verify"
     );
-    let registry = OpticalCapabilityRegistry::from_runtime_config(
-        &config,
-        now_ms(),
-    );
-    assert_eq!(registry.verified_rule_count(), 1, "signed demo capability must verify");
     assert_eq!(registry.rejected_rule_count(), 0);
 
     let body = exact_request_body();
-    let prepared = prepare(&config.global_policy, &config.route_policies[0].policy, &registry, body.clone());
+    let prepared = prepare(
+        &config.global_policy,
+        &config.route_policies[0].policy,
+        &registry,
+        body.clone(),
+    );
     assert_eq!(
         prepared.kind(),
         HybridPreparationKind::Active,
@@ -247,15 +249,17 @@ fn mutated_snapshot_identity_preserves_original_bytes() {
     let mut snapshot = signed_snapshot();
     snapshot.model_base = "claude-opus-4-6".to_string();
     let config = signed_runtime_config(snapshot, eval, active_global(), active_route(false));
-    let registry = OpticalCapabilityRegistry::from_runtime_config(
-        &config,
-        now_ms(),
-    );
+    let registry = OpticalCapabilityRegistry::from_runtime_config(&config, now_ms());
     assert_eq!(registry.verified_rule_count(), 0);
     assert_eq!(registry.rejected_rule_count(), 1);
 
     let body = exact_request_body();
-    let prepared = prepare(&config.global_policy, &config.route_policies[0].policy, &registry, body.clone());
+    let prepared = prepare(
+        &config.global_policy,
+        &config.route_policies[0].policy,
+        &registry,
+        body.clone(),
+    );
     assert_ne!(prepared.kind(), HybridPreparationKind::Active);
     assert_eq!(prepared.body(), &body);
     assert_eq!(
@@ -272,17 +276,19 @@ fn secret_tool_result_preserves_original_bytes() {
     let eval = bound_eval();
     let snapshot = signed_snapshot();
     let config = signed_runtime_config(snapshot, eval, active_global(), active_route(false));
-    let registry = OpticalCapabilityRegistry::from_runtime_config(
-        &config,
-        now_ms(),
-    );
+    let registry = OpticalCapabilityRegistry::from_runtime_config(&config, now_ms());
     assert_eq!(registry.verified_rule_count(), 1);
 
     let mut body = exact_request_body();
     body["messages"][1]["content"][0]["content"] = json!(
         "Authorization: Bearer sk-ant-fixture-0123456789abcdef0123456789abcdef\nINFO historical operation completed\n".repeat(40)
     );
-    let prepared = prepare(&config.global_policy, &config.route_policies[0].policy, &registry, body.clone());
+    let prepared = prepare(
+        &config.global_policy,
+        &config.route_policies[0].policy,
+        &registry,
+        body.clone(),
+    );
     assert_ne!(prepared.kind(), HybridPreparationKind::Active);
     assert_eq!(prepared.body(), &body);
     assert_eq!(
@@ -302,15 +308,17 @@ fn failing_bound_eval_preserves_original_bytes() {
     eval.passed = true; // self-reported pass must not override derivation
     let snapshot = signed_snapshot();
     let config = signed_runtime_config(snapshot, eval, active_global(), active_route(false));
-    let registry = OpticalCapabilityRegistry::from_runtime_config(
-        &config,
-        now_ms(),
-    );
+    let registry = OpticalCapabilityRegistry::from_runtime_config(&config, now_ms());
     assert_eq!(registry.verified_rule_count(), 0);
     assert_eq!(registry.rejected_rule_count(), 1);
 
     let body = exact_request_body();
-    let prepared = prepare(&config.global_policy, &config.route_policies[0].policy, &registry, body.clone());
+    let prepared = prepare(
+        &config.global_policy,
+        &config.route_policies[0].policy,
+        &registry,
+        body.clone(),
+    );
     assert_ne!(prepared.kind(), HybridPreparationKind::Active);
     assert_eq!(prepared.body(), &body);
     assert_eq!(
@@ -330,15 +338,17 @@ fn missing_attested_economics_preserves_original_bytes() {
     let mut snapshot = signed_snapshot();
     snapshot.economics = None;
     let config = signed_runtime_config(snapshot, eval, active_global(), active_route(false));
-    let registry = OpticalCapabilityRegistry::from_runtime_config(
-        &config,
-        now_ms(),
-    );
+    let registry = OpticalCapabilityRegistry::from_runtime_config(&config, now_ms());
     assert_eq!(registry.verified_rule_count(), 0);
     assert_eq!(registry.rejected_rule_count(), 1);
 
     let body = exact_request_body();
-    let prepared = prepare(&config.global_policy, &config.route_policies[0].policy, &registry, body.clone());
+    let prepared = prepare(
+        &config.global_policy,
+        &config.route_policies[0].policy,
+        &registry,
+        body.clone(),
+    );
     assert_ne!(prepared.kind(), HybridPreparationKind::Active);
     assert_eq!(prepared.body(), &body);
     assert_eq!(
@@ -355,17 +365,19 @@ fn volatile_billing_header_candidate_preserves_original_bytes() {
     let eval = bound_eval();
     let snapshot = signed_snapshot();
     let config = signed_runtime_config(snapshot, eval, active_global(), active_route(false));
-    let registry = OpticalCapabilityRegistry::from_runtime_config(
-        &config,
-        now_ms(),
-    );
+    let registry = OpticalCapabilityRegistry::from_runtime_config(&config, now_ms());
     assert_eq!(registry.verified_rule_count(), 1);
 
     let mut body = exact_request_body();
     body["messages"][1]["content"][0]["content"] = json!(
         "X-Billing-Usage: 1234\nDate: 2026-07-08\nINFO historical operation completed\n".repeat(40)
     );
-    let prepared = prepare(&config.global_policy, &config.route_policies[0].policy, &registry, body.clone());
+    let prepared = prepare(
+        &config.global_policy,
+        &config.route_policies[0].policy,
+        &registry,
+        body.clone(),
+    );
     assert_ne!(prepared.kind(), HybridPreparationKind::Active);
     assert_eq!(prepared.body(), &body);
     assert_eq!(
@@ -386,14 +398,16 @@ fn render_resource_limit_preserves_original_bytes() {
         ..active_global()
     };
     let config = signed_runtime_config(snapshot, eval, global, active_route(false));
-    let registry = OpticalCapabilityRegistry::from_runtime_config(
-        &config,
-        now_ms(),
-    );
+    let registry = OpticalCapabilityRegistry::from_runtime_config(&config, now_ms());
     assert_eq!(registry.verified_rule_count(), 1);
 
     let body = exact_request_body();
-    let prepared = prepare(&config.global_policy, &config.route_policies[0].policy, &registry, body.clone());
+    let prepared = prepare(
+        &config.global_policy,
+        &config.route_policies[0].policy,
+        &registry,
+        body.clone(),
+    );
     assert_eq!(prepared.kind(), HybridPreparationKind::FallbackPreSend);
     assert_eq!(prepared.body(), &body);
     assert_eq!(
@@ -411,14 +425,16 @@ fn history_collapse_scopes_active_candidates_and_binds_plan_digest() {
     let eval = bound_eval();
     let snapshot = signed_snapshot();
     let config = signed_runtime_config(snapshot, eval, active_global(), active_route(true));
-    let registry = OpticalCapabilityRegistry::from_runtime_config(
-        &config,
-        now_ms(),
-    );
+    let registry = OpticalCapabilityRegistry::from_runtime_config(&config, now_ms());
     assert_eq!(registry.verified_rule_count(), 1);
 
     let body = exact_request_body();
-    let prepared = prepare(&config.global_policy, &config.route_policies[0].policy, &registry, body.clone());
+    let prepared = prepare(
+        &config.global_policy,
+        &config.route_policies[0].policy,
+        &registry,
+        body.clone(),
+    );
     assert_eq!(
         prepared.kind(),
         HybridPreparationKind::Active,
@@ -452,10 +468,7 @@ fn history_collapse_without_approved_frozen_history_preserves_original_bytes() {
     let eval = bound_eval();
     let snapshot = signed_snapshot();
     let config = signed_runtime_config(snapshot, eval, active_global(), active_route(true));
-    let registry = OpticalCapabilityRegistry::from_runtime_config(
-        &config,
-        now_ms(),
-    );
+    let registry = OpticalCapabilityRegistry::from_runtime_config(&config, now_ms());
     assert_eq!(registry.verified_rule_count(), 1);
 
     // Move the dense tool result into the recent tail: no frozen history
@@ -466,8 +479,16 @@ fn history_collapse_without_approved_frozen_history_preserves_original_bytes() {
     body["messages"].as_array_mut().expect("messages").push(
         json!({"role":"assistant","content":[{"type":"tool_use","id":"tool-recent","name":"read","input":{}}]}),
     );
-    body["messages"].as_array_mut().expect("messages").push(dense);
-    let prepared = prepare(&config.global_policy, &config.route_policies[0].policy, &registry, body.clone());
+    body["messages"]
+        .as_array_mut()
+        .expect("messages")
+        .push(dense);
+    let prepared = prepare(
+        &config.global_policy,
+        &config.route_policies[0].policy,
+        &registry,
+        body.clone(),
+    );
     assert_ne!(prepared.kind(), HybridPreparationKind::Active);
     assert_eq!(prepared.body(), &body);
     assert!(prepared.report().history_collapse_digest.is_none());

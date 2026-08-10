@@ -7,7 +7,6 @@ use sha2::{Digest, Sha256};
 use crate::{lower_hybrid_context, ApprovedHybridAction, ResolvedOptimizationContext};
 
 use super::applicability::evaluate_applicability_with_policies_and_registry;
-use super::history_collapse::plan_history_collapse;
 use super::capability::{
     resolve_model_capability_record_for_route_with_registry, OpticalCapabilityRegistry,
 };
@@ -15,6 +14,7 @@ use super::decision::build_shadow_plan_detailed_with_registry;
 use super::economics::{
     economics_contract_from_attested, evaluate_materialized_capsule, CacheEvidenceState,
 };
+use super::history_collapse::plan_history_collapse;
 use super::patcher::{OpticalPatchOperation, OpticalPatchSet, PatchError};
 use super::post_validate::{validate_patched_request, PostValidationError, ValidatedActiveRequest};
 use super::render_geometry::{
@@ -935,7 +935,9 @@ impl HybridContextEngine {
         report.capsule_digests = capsule_digests;
         report.history_collapse_digest = history_collapse_digest;
         if report.history_collapse_digest.is_some() {
-            report.transforms_applied.push("history_collapse_v1".to_string());
+            report
+                .transforms_applied
+                .push("history_collapse_v1".to_string());
         }
         report.artifact_validated = validated.report().artifact_evidence_derived;
         Ok((validated, report, comparison))

@@ -1,10 +1,9 @@
 use anyhow::{bail, Context, Result};
 use dtoken_preprocessor::{
     bounded_truncate_marker, filters, filters::CommandFilterConfig, managed_filter_config,
-    verify_managed_hook_root, ManagedHookManifest,
-    MAX_MANAGED_RTK_OUTPUT_BYTES, MAX_MANAGED_RTK_USAGE_ENTRIES,
-    MAX_MANAGED_RTK_USAGE_RECORD_BYTES, MAX_MANAGED_RTK_USAGE_TOTAL_BYTES,
-    MIN_MANAGED_RTK_OUTPUT_BYTES,
+    verify_managed_hook_root, ManagedHookManifest, MAX_MANAGED_RTK_OUTPUT_BYTES,
+    MAX_MANAGED_RTK_USAGE_ENTRIES, MAX_MANAGED_RTK_USAGE_RECORD_BYTES,
+    MAX_MANAGED_RTK_USAGE_TOTAL_BYTES, MIN_MANAGED_RTK_OUTPUT_BYTES,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -150,7 +149,8 @@ pub fn run_rtk_wrap(
         return run_wrapped_command_passthrough(&command.command, &mut stdout, &mut stderr);
     };
     let output_limit = reviewed_output_limit(&command, &hook.manifest)?;
-    let output = run_wrapped_command_bounded(&command.command, output_limit, rtk_command_timeout())?;
+    let output =
+        run_wrapped_command_bounded(&command.command, output_limit, rtk_command_timeout())?;
     let exit_code = normalized_exit_code(&output.status, output.timed_out);
     // The d-token-owned structured command filter (PR-C4A) applies only when
     // the reviewed filter binding is intact. A tampered or unreadable binding
@@ -509,7 +509,9 @@ fn terminate_wrapped_command(child: &mut Child) -> Result<()> {
         // missing group never leaks the process.
         let group_result = unsafe { libc::kill(-pid, libc::SIGKILL) };
         if group_result != 0 {
-            child.kill().context("terminate timed-out wrapped command")?;
+            child
+                .kill()
+                .context("terminate timed-out wrapped command")?;
         }
     }
     #[cfg(not(unix))]
@@ -517,7 +519,9 @@ fn terminate_wrapped_command(child: &mut Child) -> Result<()> {
         let _ = Command::new("taskkill")
             .args(["/PID", &child.id().to_string(), "/T", "/F"])
             .status();
-        child.kill().context("terminate timed-out wrapped command")?;
+        child
+            .kill()
+            .context("terminate timed-out wrapped command")?;
     }
     Ok(())
 }
@@ -846,7 +850,10 @@ fn validate_private_directory(path: &Path, label: &str) -> Result<()> {
 }
 
 fn is_allowed_usage_transform(value: &str) -> bool {
-    if matches!(value, "stdout:bounded_capture" | "stderr:bounded_capture" | "process:timeout") {
+    if matches!(
+        value,
+        "stdout:bounded_capture" | "stderr:bounded_capture" | "process:timeout"
+    ) {
         return true;
     }
     let Some((stream, transform)) = value.split_once(':') else {
@@ -861,7 +868,10 @@ fn is_allowed_usage_transform(value: &str) -> bool {
 /// Accepts every transform the d-token-owned structured filters (PR-C4A) and
 /// the reviewed builtin can emit.
 fn is_known_filter_transform(transform: &str) -> bool {
-    if matches!(transform, "unknown-family" | "ansi_strip" | "blank_and_repeat_fold" | "bounded_truncate") {
+    if matches!(
+        transform,
+        "unknown-family" | "ansi_strip" | "blank_and_repeat_fold" | "bounded_truncate"
+    ) {
         return true;
     }
     let Some((family, action)) = transform.split_once(':') else {
@@ -1066,7 +1076,8 @@ mod tests {
                 sha256: "b".repeat(64),
             },
             max_output_bytes: Some(MIN_MANAGED_RTK_OUTPUT_BYTES),
-            filter_dsl_sha256: None,            usage_dir: "usage".to_string(),
+            filter_dsl_sha256: None,
+            usage_dir: "usage".to_string(),
         };
         let secret_argv = serde_json::json!({
             "schema_version": USAGE_RECORD_SCHEMA_VERSION,
@@ -1118,7 +1129,8 @@ mod tests {
                 sha256: "b".repeat(64),
             },
             max_output_bytes: Some(MIN_MANAGED_RTK_OUTPUT_BYTES),
-            filter_dsl_sha256: None,            usage_dir: "usage".to_string(),
+            filter_dsl_sha256: None,
+            usage_dir: "usage".to_string(),
         };
         let record = UsageRecord {
             schema_version: USAGE_RECORD_SCHEMA_VERSION,
@@ -1233,7 +1245,8 @@ mod tests {
                 sha256: "b".repeat(64),
             },
             max_output_bytes: Some(MIN_MANAGED_RTK_OUTPUT_BYTES),
-            filter_dsl_sha256: None,            usage_dir: "usage".to_string(),
+            filter_dsl_sha256: None,
+            usage_dir: "usage".to_string(),
         };
         for index in 0..MAX_MANAGED_RTK_USAGE_ENTRIES {
             let record = UsageRecord {

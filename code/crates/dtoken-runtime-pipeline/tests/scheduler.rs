@@ -164,13 +164,15 @@ fn bounded_queue_is_fifo_and_saturation_is_reported_not_blocked() {
             TaskOutcome::Completed
         }) as Box<dyn FnOnce() -> TaskOutcome + Send>
     };
-    pool.try_submit(16, None, None, first).expect("first task admitted");
+    pool.try_submit(16, None, None, first)
+        .expect("first task admitted");
     started_rx
         .recv_timeout(std::time::Duration::from_secs(5))
         .expect("worker started");
 
     let second = Box::new(|| TaskOutcome::Completed);
-    pool.try_submit(16, None, None, second).expect("second task queued");
+    pool.try_submit(16, None, None, second)
+        .expect("second task queued");
     let third = Box::new(|| TaskOutcome::Completed);
     assert_eq!(
         pool.try_submit(16, None, None, third).unwrap_err(),
@@ -277,7 +279,8 @@ fn byte_permits_cap_concurrency_below_worker_count() {
         second_started_tx.send(()).unwrap();
         TaskOutcome::Completed
     });
-    pool.try_submit(512, None, None, second).expect("second task queued");
+    pool.try_submit(512, None, None, second)
+        .expect("second task queued");
 
     // The second task must NOT start while the first holds the byte budget.
     assert!(

@@ -363,7 +363,11 @@ impl OptimizationManifest {
             return Err(ContractError::MismatchedRequestId);
         }
         for stage in &stages {
-            if !plan.nodes().iter().any(|node| node.node_id() == stage.node_id()) {
+            if !plan
+                .nodes()
+                .iter()
+                .any(|node| node.node_id() == stage.node_id())
+            {
                 return Err(ContractError::UnknownNodeId);
             }
         }

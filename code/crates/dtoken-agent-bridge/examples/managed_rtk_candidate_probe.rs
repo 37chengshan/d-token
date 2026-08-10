@@ -122,9 +122,7 @@ fn run_candidate(bridge_path: &Path, managed_root: &Path) -> Result<serde_json::
     // The JSON family minifies the pretty document into a single line.
     let minified = serde_json::from_str::<serde_json::Value>(&success_stdout.trim())
         .context("candidate RTK did not return minified JSON output")?;
-    if minified
-        != serde_json::json!({"count": 3, "name": "candidate", "ok": true})
-    {
+    if minified != serde_json::json!({"count": 3, "name": "candidate", "ok": true}) {
         bail!("managed RTK did not minify the successful candidate output");
     }
 

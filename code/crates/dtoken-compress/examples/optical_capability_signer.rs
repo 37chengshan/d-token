@@ -26,8 +26,8 @@ use std::process::ExitCode;
 use base64::Engine as _;
 use dtoken_compress::optical::eval::EvalSampleObservation as OpticalEvalSampleObservation;
 use dtoken_compress::optical::{
-    eval_artifact_digest, geometry_for_capability, sign_capability_snapshot, OpticalEvalBuilder,
-    OpticalCapabilityRegistry, EvalThresholds,
+    eval_artifact_digest, geometry_for_capability, sign_capability_snapshot, EvalThresholds,
+    OpticalCapabilityRegistry, OpticalEvalBuilder,
 };
 use dtoken_types::{
     OpticalCapabilitySnapshot, OpticalEvalArtifact, OpticalRuntimeConfig, OpticalTrustedAuthority,
@@ -70,8 +70,8 @@ fn parse_u64(value: &str, name: &str) -> Result<u64, String> {
 }
 
 fn read_json<T: serde::de::DeserializeOwned>(path: &str, what: &str) -> Result<T, String> {
-    let bytes = std::fs::read(path)
-        .map_err(|error| format!("cannot read {what} {path}: {error}"))?;
+    let bytes =
+        std::fs::read(path).map_err(|error| format!("cannot read {what} {path}: {error}"))?;
     serde_json::from_slice(&bytes).map_err(|error| format!("invalid {what} {path}: {error}"))
 }
 
@@ -227,15 +227,15 @@ fn cmd_sign(args: &[String]) -> Result<ExitCode, String> {
 }
 
 fn cmd_verify(args: &[String]) -> Result<ExitCode, String> {
-    let snapshot_path = args
-        .first()
-        .ok_or_else(|| "verify requires <signed-snapshot.json> <authority.json> <eval.json>".to_string())?;
-    let authority_path = args
-        .get(1)
-        .ok_or_else(|| "verify requires <signed-snapshot.json> <authority.json> <eval.json>".to_string())?;
-    let eval_path = args
-        .get(2)
-        .ok_or_else(|| "verify requires <signed-snapshot.json> <authority.json> <eval.json>".to_string())?;
+    let snapshot_path = args.first().ok_or_else(|| {
+        "verify requires <signed-snapshot.json> <authority.json> <eval.json>".to_string()
+    })?;
+    let authority_path = args.get(1).ok_or_else(|| {
+        "verify requires <signed-snapshot.json> <authority.json> <eval.json>".to_string()
+    })?;
+    let eval_path = args.get(2).ok_or_else(|| {
+        "verify requires <signed-snapshot.json> <authority.json> <eval.json>".to_string()
+    })?;
     let now_ms = match flag(args, "--now-ms") {
         Ok(value) => parse_u64(value, "--now-ms")?,
         Err(_) => 1_790_000_000_000,
@@ -268,11 +268,7 @@ fn cmd_verify(args: &[String]) -> Result<ExitCode, String> {
     );
     println!(
         "signature: {}",
-        if signature_ok.is_ok() {
-            "ok"
-        } else {
-            "BAD"
-        }
+        if signature_ok.is_ok() { "ok" } else { "BAD" }
     );
 
     // Full registry gate verdict (authority + eval + economics + digests +
