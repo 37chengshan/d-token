@@ -2961,6 +2961,15 @@
       "summary": "Migrate install presentation copy to DICT via translateCopy (kill 87 language-isolation violations); add 4 in.* keys",
       "head_before": "5aa983fc8aba2535e35738395c9baae4be17cdd5",
       "remote": null
+    },
+    {
+      "id": "493ada66-ab6b-44e7-8ea6-597517122960",
+      "timestamp": "2026-08-10T22:27:57+08:00",
+      "operation": "commit",
+      "branch": "codex/final/stage-pack-integrated",
+      "summary": "migrate DoctorWorkbench bilingual copy to translateCopy (165 violations)",
+      "head_before": "fb5aa07c6b6aff4cd4f90316937f05a270e5581f",
+      "remote": null
     }
   ]
 }
