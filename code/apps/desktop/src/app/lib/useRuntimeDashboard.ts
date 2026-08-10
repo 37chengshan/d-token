@@ -51,8 +51,8 @@ export type RuntimeDetailState = Pick<
   RuntimeDashboardState,
   "payload" | "status" | "updatedAt" | "error" | "refresh" | "invalidate"
 >;
-type RuntimeDetailContextValue = RuntimeDetailState & { activate: () => () => void };
-type RuntimeDashboardStore = {
+export type RuntimeDetailContextValue = RuntimeDetailState & { activate: () => () => void };
+export type RuntimeDashboardStore = {
   getSnapshot: () => RuntimeDashboardState;
   setSnapshot: (next: RuntimeDashboardState) => void;
   subscribe: (listener: () => void) => () => void;
@@ -77,8 +77,8 @@ export const emptyOperationalSnapshot = (): RuntimeOperationalSnapshot => ({
   collectedAt: null,
 });
 
-const RuntimeEvidenceContext = createContext<RuntimeDashboardStore | null>(null);
-const RuntimeDetailContext = createContext<RuntimeDetailContextValue | null>(null);
+export const RuntimeEvidenceContext = createContext<RuntimeDashboardStore | null>(null);
+export const RuntimeDetailContext = createContext<RuntimeDetailContextValue | null>(null);
 const DEFAULT_RUNTIME_POLL_INTERVAL_MS = 8000;
 const RUNTIME_INVALIDATED_EVENT = "dtoken:runtime-invalidated";
 const RUNTIME_SUMMARY_REFRESH_KEY = "runtime-dashboard-summary";
@@ -94,7 +94,7 @@ export function shallowEqualSlice<T extends Record<string, unknown>>(left: T, ri
   return keys.every((key) => Object.is(left[key], right[key]));
 }
 
-function createRuntimeDashboardStore(initial: RuntimeDashboardState): RuntimeDashboardStore {
+export function createRuntimeDashboardStore(initial: RuntimeDashboardState): RuntimeDashboardStore {
   let snapshot = initial;
   const listeners = new Set<() => void>();
   return {
