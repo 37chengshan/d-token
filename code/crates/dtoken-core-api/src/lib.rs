@@ -82,6 +82,21 @@ use std::{
 };
 use uuid::Uuid;
 
+/// Feature-gated crash-point shim: real injection under `failpoints`, a
+/// compile-time no-op otherwise, so the terminal-commit path reads the same
+/// at both call sites.
+#[cfg(feature = "failpoints")]
+mod failpoint {
+    pub(super) use dtoken_event_ledger::failpoints::maybe_crash;
+}
+
+#[cfg(not(feature = "failpoints"))]
+mod failpoint {
+    pub(super) fn maybe_crash(_name: &'static str) -> anyhow::Result<()> {
+        Ok(())
+    }
+}
+
 use ccr_store::{CcrEntryInspection, CcrStore, CcrStoreReceipt};
 
 #[derive(Debug, Clone)]
@@ -1900,36 +1915,48 @@ impl AppState {
     /// journal load.  A dangling `Intent` marker is rolled forward to
     /// `Committed` when the four fan-out journals already hold the complete
     /// bundle (the crash landed after the last fan-out sync but before the
-    /// committed marker); otherwise it is marked `Pending` explicitly.
-    /// Fan-out records are never re-appended here, so recovery cannot
-    /// duplicate terminal records; the pending map then drives the hot-model
-    /// and SQLite filters.
+    /// committed marker); otherwise it is marked `Pending` explicitly.  An
+    /// explicitly `Pending` marker is re-checked against the same four
+    /// journals: if the bundle is now complete it is promoted to `Committed`
+    /// (a later writer or prior fan-out completed it), otherwise it stays
+    /// pending.  Promotion is idempotent — once the latest marker is
+    /// `Committed` recovery leaves it untouched, so repeated restarts append
+    /// exactly one committed marker.  Fan-out records are never re-appended
+    /// here, so recovery cannot duplicate terminal records; the pending map
+    /// then drives the hot-model and SQLite filters.
     fn recover_terminal_commits(&mut self) -> anyhow::Result<()> {
         let Some(store) = self.runtime_store.as_ref() else {
             return Ok(());
         };
         let mut pending = HashMap::<Uuid, TerminalCommitMarker>::new();
         for (request_id, marker) in store.latest_terminal_commit_markers()? {
-            match marker.phase {
+            let mut resolved = marker;
+            if matches!(resolved.phase, TerminalCommitPhase::Intent | TerminalCommitPhase::Pending)
+                && store.terminal_bundle_complete(&resolved)?
+            {
+                store.append_terminal_commit_marker(&TerminalCommitMarker {
+                    phase: TerminalCommitPhase::Committed,
+                    ..resolved.clone()
+                })?;
+                resolved.phase = TerminalCommitPhase::Committed;
+            }
+            match resolved.phase {
                 TerminalCommitPhase::Committed => {}
                 TerminalCommitPhase::Pending => {
-                    pending.insert(request_id, marker);
+                    pending.insert(request_id, resolved);
                 }
                 TerminalCommitPhase::Intent => {
-                    if store.terminal_bundle_complete(&marker)? {
-                        store.append_terminal_commit_marker(&TerminalCommitMarker {
-                            phase: TerminalCommitPhase::Committed,
-                            ..marker.clone()
-                        })?;
-                    } else {
-                        let pending_marker = TerminalCommitMarker {
-                            phase: TerminalCommitPhase::Pending,
-                            reason: Some("partial_fan_out_at_recovery".to_string()),
-                            ..marker.clone()
-                        };
-                        store.append_terminal_commit_marker(&pending_marker)?;
-                        pending.insert(request_id, pending_marker);
-                    }
+                    // The bundle is still partial: mark the dangling intent
+                    // explicitly pending so recovery never guesses committed.
+                    // The per-marker bundle is unchanged, so the same check
+                    // above already ran and reported incomplete.
+                    let pending_marker = TerminalCommitMarker {
+                        phase: TerminalCommitPhase::Pending,
+                        reason: Some("partial_fan_out_at_recovery".to_string()),
+                        ..resolved
+                    };
+                    store.append_terminal_commit_marker(&pending_marker)?;
+                    pending.insert(request_id, pending_marker);
                 }
             }
         }
@@ -3012,6 +3039,18 @@ impl AppState {
                 );
                 return;
             }
+            // Injected crash window: the intent marker is durable but the
+            // fan-out never started.  Recovery classifies this partial bundle
+            // as explicitly pending, never guessed committed.
+            if failpoint::maybe_crash("terminal:crash_after_intent_before_fanout").is_err() {
+                self.record_runtime_performance(
+                    "terminal_commit_total",
+                    terminal_started_at,
+                    false,
+                    0,
+                );
+                return;
+            }
             // Fan-out appends, cheapest to verify last.  The first failure
             // aborts the commit and durably marks the intent pending so a
             // restart converges without guessing.
@@ -3067,6 +3106,19 @@ impl AppState {
             // the restart recovery sweep; a crash after it is a normal
             // committed request whose SQLite view is rebuilt from the
             // journals.
+            // Injected crash window: the complete bundle is durable but the
+            // committed marker is not.  Restart recovery must roll the
+            // dangling intent forward to Committed without re-appending any
+            // fan-out record.
+            if failpoint::maybe_crash("terminal:crash_before_commit_marker").is_err() {
+                self.record_runtime_performance(
+                    "terminal_commit_total",
+                    terminal_started_at,
+                    false,
+                    sync_count,
+                );
+                return;
+            }
             let commit_started_at = Instant::now();
             let commit_marker = TerminalCommitMarker {
                 phase: TerminalCommitPhase::Committed,
@@ -15858,6 +15910,12 @@ mod tests {
     use base64::Engine as _;
     use tower::ServiceExt;
 
+    // The failpoint registry is process-global; every armed crash window in
+    // this binary serializes behind one lock so a `clear_all` can never
+    // disarm another test's failpoint mid-flight.
+    #[cfg(feature = "failpoints")]
+    static FAILPOINT_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     fn optical_test_event(
         stage: LayeredStage,
         status: EventStatus,
@@ -19618,6 +19676,505 @@ mod tests {
         let projections =
             ContextStore::open(dir.join("runtime-state.sqlite3")).expect("open projection");
         assert_eq!(projections.projection_counts().unwrap().0, 1);
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn terminal_commit_recovery_promotes_complete_pending_marker_to_committed() {
+        // A Pending marker whose four fan-out records are all durable — the
+        // crash window after the last fan-out sync when the committed marker
+        // write failed — must be rolled forward to Committed at restart,
+        // never left pending.
+        let dir =
+            std::env::temp_dir().join(format!("dtoken-marker-pending-complete-{}", Uuid::new_v4()));
+        let key = [79_u8; 32];
+        let request = OpenAiChatRequest {
+            model: Some("pending-complete-model".to_string()),
+            messages: Some(vec![json!({
+                "role": "user",
+                "content": "PENDING_COMPLETE_SECRET"
+            })]),
+            stream: Some(false),
+        };
+        let (_response, decision, request_log, event) = routed_openai_payload(&request);
+        let store = RuntimeStore::new(&dir);
+        let intent = TerminalCommitMarker {
+            request_id: decision.request_id,
+            phase: TerminalCommitPhase::Intent,
+            timestamp_ms: event.timestamp_ms.max(1),
+            event_id: event.event_id,
+            ccr_updated_at_ms: event.timestamp_ms.max(1),
+            reason: None,
+        };
+        store
+            .append_terminal_commit_marker(&intent)
+            .expect("write intent marker");
+        // All four fan-out records are durable, but the committed marker
+        // write failed and left the request explicitly pending.
+        let pending = TerminalCommitMarker {
+            phase: TerminalCommitPhase::Pending,
+            reason: Some("commit_marker_write_failed".to_string()),
+            ..intent.clone()
+        };
+        store
+            .append_terminal_commit_marker(&pending)
+            .expect("write pending marker");
+        let ccr = ccr_metadata_from_request(&decision, &request_log, &event, None, false);
+        store.append_event(&event).expect("append event");
+        store
+            .append_route_decision(&route_decision_to_value(&decision))
+            .expect("append route");
+        store.append_request_log(&request_log).expect("append log");
+        store.append_ccr_metadata(&ccr).expect("append ccr");
+
+        let restarted = AppState::new_persistent_with_ccr_key(DtokenConfig::empty(), &dir, key)
+            .expect("restart around complete pending marker");
+        let markers = restarted
+            .runtime_store
+            .as_ref()
+            .expect("runtime store")
+            .latest_terminal_commit_markers()
+            .expect("latest markers");
+        let (_, final_marker) = markers
+            .iter()
+            .find(|(id, _)| *id == decision.request_id)
+            .expect("final marker");
+        assert_eq!(final_marker.phase, TerminalCommitPhase::Committed);
+        assert!(
+            !restarted
+                .terminal_pending_commits
+                .contains_key(&decision.request_id),
+            "complete pending bundle is promoted, not left pending"
+        );
+        // The promoted request converges into the SQLite projection exactly
+        // once.
+        let projections =
+            ContextStore::open(dir.join("runtime-state.sqlite3")).expect("open projection");
+        assert_eq!(projections.projection_counts().unwrap().0, 1);
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn terminal_commit_recovery_keeps_partial_pending_marker_pending() {
+        // A Pending marker with only part of the fan-out durable stays
+        // explicitly pending across restart; recovery never guesses
+        // committed and preserves the recorded failure reason.
+        let dir =
+            std::env::temp_dir().join(format!("dtoken-marker-pending-partial-{}", Uuid::new_v4()));
+        let key = [80_u8; 32];
+        let request = OpenAiChatRequest {
+            model: Some("pending-partial-model".to_string()),
+            messages: Some(vec![json!({
+                "role": "user",
+                "content": "PENDING_PARTIAL_SECRET"
+            })]),
+            stream: Some(false),
+        };
+        let (_response, decision, _request_log, event) = routed_openai_payload(&request);
+        let store = RuntimeStore::new(&dir);
+        let intent = TerminalCommitMarker {
+            request_id: decision.request_id,
+            phase: TerminalCommitPhase::Intent,
+            timestamp_ms: event.timestamp_ms.max(1),
+            event_id: event.event_id,
+            ccr_updated_at_ms: event.timestamp_ms.max(1),
+            reason: None,
+        };
+        store
+            .append_terminal_commit_marker(&intent)
+            .expect("write intent marker");
+        let pending = TerminalCommitMarker {
+            phase: TerminalCommitPhase::Pending,
+            reason: Some("request_log_sync_failed".to_string()),
+            ..intent.clone()
+        };
+        store
+            .append_terminal_commit_marker(&pending)
+            .expect("write pending marker");
+        // Only two of the four fan-out records are durable: the bundle is
+        // still partial at restart.
+        store.append_event(&event).expect("append event");
+        store
+            .append_route_decision(&route_decision_to_value(&decision))
+            .expect("append route");
+
+        let restarted = AppState::new_persistent_with_ccr_key(DtokenConfig::empty(), &dir, key)
+            .expect("restart around partial pending marker");
+        let markers = restarted
+            .runtime_store
+            .as_ref()
+            .expect("runtime store")
+            .latest_terminal_commit_markers()
+            .expect("latest markers");
+        let (_, recovered) = markers
+            .iter()
+            .find(|(id, _)| *id == decision.request_id)
+            .expect("recovered marker");
+        assert_eq!(recovered.phase, TerminalCommitPhase::Pending);
+        assert_eq!(recovered.reason.as_deref(), Some("request_log_sync_failed"));
+        assert!(
+            restarted
+                .terminal_pending_commits
+                .contains_key(&decision.request_id),
+            "partial pending request is still tracked for projection filtering"
+        );
+        assert!(
+            restarted
+                .recent_request_logs(100)
+                .iter()
+                .all(|log| log.request_id != decision.request_id),
+            "partial pending request must not surface in hot request logs"
+        );
+        let projections =
+            ContextStore::open(dir.join("runtime-state.sqlite3")).expect("open projection");
+        assert_eq!(
+            projections.projection_counts().unwrap().0,
+            0,
+            "partial pending request must not surface in the SQLite projection"
+        );
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn terminal_commit_recovery_promotion_is_idempotent_across_restarts() {
+        // Once a complete pending marker is promoted, a second restart must
+        // not re-promote, duplicate the committed marker, or resurrect the
+        // pending state.
+        let dir = std::env::temp_dir()
+            .join(format!("dtoken-marker-pending-idempotent-{}", Uuid::new_v4()));
+        let key = [81_u8; 32];
+        let request = OpenAiChatRequest {
+            model: Some("pending-idempotent-model".to_string()),
+            messages: Some(vec![json!({
+                "role": "user",
+                "content": "PENDING_IDEMPOTENT_SECRET"
+            })]),
+            stream: Some(false),
+        };
+        let (_response, decision, request_log, event) = routed_openai_payload(&request);
+        let store = RuntimeStore::new(&dir);
+        let intent = TerminalCommitMarker {
+            request_id: decision.request_id,
+            phase: TerminalCommitPhase::Intent,
+            timestamp_ms: event.timestamp_ms.max(1),
+            event_id: event.event_id,
+            ccr_updated_at_ms: event.timestamp_ms.max(1),
+            reason: None,
+        };
+        store
+            .append_terminal_commit_marker(&intent)
+            .expect("write intent marker");
+        let pending = TerminalCommitMarker {
+            phase: TerminalCommitPhase::Pending,
+            reason: Some("commit_marker_write_failed".to_string()),
+            ..intent.clone()
+        };
+        store
+            .append_terminal_commit_marker(&pending)
+            .expect("write pending marker");
+        let ccr = ccr_metadata_from_request(&decision, &request_log, &event, None, false);
+        store.append_event(&event).expect("append event");
+        store
+            .append_route_decision(&route_decision_to_value(&decision))
+            .expect("append route");
+        store.append_request_log(&request_log).expect("append log");
+        store.append_ccr_metadata(&ccr).expect("append ccr");
+
+        let restarted = AppState::new_persistent_with_ccr_key(DtokenConfig::empty(), &dir, key)
+            .expect("first restart around complete pending marker");
+        assert!(
+            !restarted
+                .terminal_pending_commits
+                .contains_key(&decision.request_id),
+            "first restart promotes the complete pending bundle"
+        );
+        // Second restart: the committed marker is now the latest per
+        // request, so recovery is a no-op and must not append a duplicate
+        // committed marker or resurrect pending state.
+        let again = AppState::new_persistent_with_ccr_key(DtokenConfig::empty(), &dir, key)
+            .expect("second restart is idempotent");
+        let markers = again
+            .runtime_store
+            .as_ref()
+            .expect("runtime store")
+            .latest_terminal_commit_markers()
+            .expect("latest markers");
+        let (_, final_marker) = markers
+            .iter()
+            .find(|(id, _)| *id == decision.request_id)
+            .expect("final marker after second restart");
+        assert_eq!(final_marker.phase, TerminalCommitPhase::Committed);
+        assert!(
+            !again
+                .terminal_pending_commits
+                .contains_key(&decision.request_id),
+            "pending state does not resurrect on restart"
+        );
+        let committed_count = std::fs::read_to_string(dir.join("terminal-commits.jsonl"))
+            .expect("read marker journal")
+            .lines()
+            .filter(|line| {
+                line.contains("\"phase\":\"committed\"")
+                    && line.contains(&format!(
+                        "\"request_id\":\"{}\"",
+                        decision.request_id
+                    ))
+            })
+            .count();
+        assert_eq!(
+            committed_count, 1,
+            "promotion appends exactly one committed marker across restarts"
+        );
+        let projections =
+            ContextStore::open(dir.join("runtime-state.sqlite3")).expect("open projection");
+        assert_eq!(projections.projection_counts().unwrap().0, 1);
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[cfg(feature = "failpoints")]
+    #[test]
+    fn terminal_commit_recovery_after_failpoint_abort_before_fanout_leaves_partial_pending() {
+        use dtoken_event_ledger::failpoints::{arm, clear_all, disarm};
+        let _guard = FAILPOINT_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+
+        let dir = std::env::temp_dir()
+            .join(format!("dtoken-marker-failpoint-intent-{}", Uuid::new_v4()));
+        let key = [82_u8; 32];
+        let state = AppState::new_persistent_with_ccr_key(DtokenConfig::empty(), &dir, key)
+            .expect("persistent state");
+        let request = OpenAiChatRequest {
+            model: Some("failpoint-intent-model".to_string()),
+            messages: Some(vec![json!({
+                "role": "user",
+                "content": "FAILPOINT_INTENT_SECRET"
+            })]),
+            stream: Some(false),
+        };
+        let (_response, decision, request_log, event) = routed_openai_payload(&request);
+
+        // Crash window: the intent marker is durable, but the process dies
+        // before any fan-out append.  The commit path must abort with the
+        // intent as the only durable trace.
+        arm("terminal:crash_after_intent_before_fanout", 1);
+        state.record_routed_request(&decision, request_log.clone(), event.clone());
+        disarm("terminal:crash_after_intent_before_fanout");
+        drop(state);
+        let marker_lines =
+            std::fs::read_to_string(dir.join("terminal-commits.jsonl")).expect("read marker journal");
+        let request_markers = marker_lines
+            .lines()
+            .filter(|line| {
+                line.contains(&format!("\"request_id\":\"{}\"", decision.request_id))
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            request_markers.len(),
+            1,
+            "aborted commit must leave exactly the intent marker, got {marker_lines}"
+        );
+        assert!(
+            request_markers[0].contains("\"phase\":\"intent\""),
+            "the only durable marker must still be the intent"
+        );
+        assert!(
+            !dir.join("route-decisions.jsonl").exists()
+                && !dir.join("request-logs.jsonl").exists()
+                && !dir.join("events.jsonl").exists()
+                && !dir.join("ccr-metadata.jsonl").exists(),
+            "failpoint abort before fan-out must leave no fan-out journal"
+        );
+
+        // Restart: the dangling intent is classified explicitly pending and
+        // stays hidden from every read model.
+        let restarted = AppState::new_persistent_with_ccr_key(DtokenConfig::empty(), &dir, key)
+            .expect("restart around failpoint-aborted intent");
+        let markers = restarted
+            .runtime_store
+            .as_ref()
+            .expect("runtime store")
+            .latest_terminal_commit_markers()
+            .expect("latest markers");
+        let (_, recovered) = markers
+            .iter()
+            .find(|(id, _)| *id == decision.request_id)
+            .expect("recovered marker");
+        assert_eq!(recovered.phase, TerminalCommitPhase::Pending);
+        assert_eq!(
+            recovered.reason.as_deref(),
+            Some("partial_fan_out_at_recovery")
+        );
+        assert!(
+            restarted
+                .terminal_pending_commits
+                .contains_key(&decision.request_id),
+            "failpoint-aborted request stays tracked as pending"
+        );
+        assert!(
+            restarted
+                .recent_request_logs(100)
+                .iter()
+                .all(|log| log.request_id != decision.request_id),
+            "failpoint-aborted request must not surface in hot request logs"
+        );
+        let projections =
+            ContextStore::open(dir.join("runtime-state.sqlite3")).expect("open projection");
+        assert_eq!(
+            projections.projection_counts().unwrap().0,
+            0,
+            "failpoint-aborted request must not surface in the SQLite projection"
+        );
+
+        // Second restart stays pending and appends no duplicate marker:
+        // recovery never re-classifies an explicitly pending request.
+        let again = AppState::new_persistent_with_ccr_key(DtokenConfig::empty(), &dir, key)
+            .expect("second restart around pending request");
+        let markers = again
+            .runtime_store
+            .as_ref()
+            .expect("runtime store")
+            .latest_terminal_commit_markers()
+            .expect("latest markers");
+        let (_, final_marker) = markers
+            .iter()
+            .find(|(id, _)| *id == decision.request_id)
+            .expect("final marker after second restart");
+        assert_eq!(final_marker.phase, TerminalCommitPhase::Pending);
+        let pending_count = std::fs::read_to_string(dir.join("terminal-commits.jsonl"))
+            .expect("read marker journal")
+            .lines()
+            .filter(|line| {
+                line.contains("\"phase\":\"pending\"")
+                    && line.contains(&format!("\"request_id\":\"{}\"", decision.request_id))
+            })
+            .count();
+        assert_eq!(
+            pending_count, 1,
+            "recovery appends the pending marker exactly once across restarts"
+        );
+        clear_all();
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[cfg(feature = "failpoints")]
+    #[test]
+    fn terminal_commit_recovery_after_failpoint_abort_before_commit_marker_rolls_forward() {
+        use dtoken_event_ledger::failpoints::{arm, clear_all, disarm};
+        let _guard = FAILPOINT_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+
+        let dir = std::env::temp_dir()
+            .join(format!("dtoken-marker-failpoint-commit-{}", Uuid::new_v4()));
+        let key = [83_u8; 32];
+        let state = AppState::new_persistent_with_ccr_key(DtokenConfig::empty(), &dir, key)
+            .expect("persistent state");
+        let request = OpenAiChatRequest {
+            model: Some("failpoint-commit-model".to_string()),
+            messages: Some(vec![json!({
+                "role": "user",
+                "content": "FAILPOINT_COMMIT_SECRET"
+            })]),
+            stream: Some(false),
+        };
+        let (_response, decision, request_log, event) = routed_openai_payload(&request);
+
+        // Crash window: all four fan-out records are durable but the
+        // committed marker never syncs.  The commit path must abort leaving
+        // the intent dangling over a complete bundle.
+        arm("terminal:crash_before_commit_marker", 1);
+        state.record_routed_request(&decision, request_log.clone(), event.clone());
+        disarm("terminal:crash_before_commit_marker");
+        drop(state);
+        let marker_lines =
+            std::fs::read_to_string(dir.join("terminal-commits.jsonl")).expect("read marker journal");
+        let request_markers = marker_lines
+            .lines()
+            .filter(|line| {
+                line.contains(&format!("\"request_id\":\"{}\"", decision.request_id))
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            request_markers.len(),
+            1,
+            "aborted commit must leave exactly the intent marker over a complete bundle, got {marker_lines}"
+        );
+        assert!(
+            request_markers[0].contains("\"phase\":\"intent\""),
+            "the committed marker must never sync after the injected abort"
+        );
+
+        // Restart: the complete bundle rolls forward to Committed exactly
+        // once; no fan-out record is re-appended.
+        let restarted = AppState::new_persistent_with_ccr_key(DtokenConfig::empty(), &dir, key)
+            .expect("restart around failpoint-aborted commit marker");
+        let markers = restarted
+            .runtime_store
+            .as_ref()
+            .expect("runtime store")
+            .latest_terminal_commit_markers()
+            .expect("latest markers");
+        let (_, final_marker) = markers
+            .iter()
+            .find(|(id, _)| *id == decision.request_id)
+            .expect("final marker");
+        assert_eq!(final_marker.phase, TerminalCommitPhase::Committed);
+        assert!(
+            !restarted
+                .terminal_pending_commits
+                .contains_key(&decision.request_id),
+            "complete bundle is not left pending"
+        );
+        let request_id_str = decision.request_id.to_string();
+        let routes = restarted
+            .runtime_store
+            .as_ref()
+            .expect("runtime store")
+            .recent_route_decisions(100)
+            .expect("route decisions");
+        assert_eq!(
+            routes
+                .iter()
+                .filter(|value| value["request_id"].as_str() == Some(request_id_str.as_str()))
+                .count(),
+            1
+        );
+        let logs = restarted
+            .runtime_store
+            .as_ref()
+            .expect("runtime store")
+            .recent_request_logs(100)
+            .expect("request logs");
+        assert_eq!(
+            logs.iter()
+                .filter(|log| log.request_id == decision.request_id)
+                .count(),
+            1
+        );
+        let events = restarted
+            .runtime_store
+            .as_ref()
+            .expect("runtime store")
+            .recent_events(100)
+            .expect("events");
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| event.event_id == final_marker.event_id)
+                .count(),
+            1,
+            "the committed request converges into the hot event ledger exactly once"
+        );
+        let projections =
+            ContextStore::open(dir.join("runtime-state.sqlite3")).expect("open projection");
+        assert_eq!(projections.projection_counts().unwrap().0, 1);
+        clear_all();
 
         let _ = std::fs::remove_dir_all(dir);
     }

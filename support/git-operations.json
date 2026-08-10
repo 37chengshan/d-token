@@ -2781,6 +2781,33 @@
       "summary": "整合完成：C0-C8 全序列后恢复候选 rich OptimizationReceipt/RequestLog 字段并修复编译调用点（HEAD 2f9e1d4 后核心库测试编译修复）",
       "head_before": "2f9e1d4413d82174226bca68ab35de14a049b617",
       "remote": null
+    },
+    {
+      "id": "dfde3427-3c2a-46bc-8679-b9afe233774c",
+      "timestamp": "2026-08-10T16:29:43+08:00",
+      "operation": "branch-create",
+      "branch": "codex/final/pending-recovery",
+      "summary": "从 b408a52 (final-stage-pack-integrated) 创建独立 worktree final-pending-recovery 与分支 codex/final/pending-recovery，修复 DURABILITY-PENDING-NEVER-RECOVERS",
+      "head_before": "b408a5248313b88669e4a2565330ff0d0ad00b1c",
+      "remote": null
+    },
+    {
+      "id": "97def858-4937-4a6c-803d-b136bdf072b6",
+      "timestamp": "2026-08-10T16:29:43+08:00",
+      "operation": "branch-switch",
+      "branch": "codex/final/pending-recovery",
+      "summary": "切换至 codex/final/pending-recovery 分支开始 Pending 终端标记恢复修复",
+      "head_before": "b408a5248313b88669e4a2565330ff0d0ad00b1c",
+      "remote": null
+    },
+    {
+      "id": "eb96f12f-60fc-4740-b403-a036c8b18c43",
+      "timestamp": "2026-08-10T17:45:02+08:00",
+      "operation": "commit",
+      "branch": "codex/final/pending-recovery",
+      "summary": "Pending 终端标记恢复：完整 bundle 的 Pending 提升为 Committed（幂等）、部分 bundle 保持 Pending 隐藏、failpoints 注入窗口（intent 后/commit 前）+ 3 项恢复测试与 2 项 failpoint 测试；core-api 全部 target 双 feature 检查通过",
+      "head_before": "b408a5248313b88669e4a2565330ff0d0ad00b1c",
+      "remote": null
     }
   ]
 }
