@@ -92,7 +92,10 @@ fn pre_commit_candidate_failure_sends_baseline_exactly_once() {
     )
     .unwrap();
     assert_eq!(
-        prepared.clone().with_candidate(artifact, None).unwrap_err(),
+        prepared
+            .clone()
+            .with_candidate(artifact, &decision_for(&prepared), None)
+            .unwrap_err(),
         PipelineError::SourceDigestMismatch
     );
 
@@ -131,8 +134,9 @@ fn post_commit_is_terminal_no_retry_no_second_receipt() {
     )
     .unwrap();
     let recovery = recovery_for(&prepared);
+    let decision = decision_for(&prepared);
     let ready = prepared
-        .with_candidate(artifact, Some(recovery))
+        .with_candidate(artifact, &decision, Some(recovery))
         .unwrap()
         .validate(|baseline, transformed| baseline != transformed)
         .unwrap()
@@ -219,8 +223,9 @@ fn provider_identity_is_bound_at_ingress_and_never_switchable_after_commit() {
     )
     .unwrap();
     let recovery = recovery_for(&prepared);
+    let decision = decision_for(&prepared);
     let receipt = prepared
-        .with_candidate(artifact, Some(recovery))
+        .with_candidate(artifact, &decision, Some(recovery))
         .unwrap()
         .validate(|baseline, transformed| baseline != transformed)
         .unwrap()

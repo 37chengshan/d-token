@@ -404,9 +404,17 @@ impl PreparedRequest {
         &self.scope
     }
 
+    /// Bind a recovery receipt to this prepared request and artifact.
+    ///
+    /// The receipt must match the exact request identity, source digest and
+    /// the **current** active route decision: the stable digest of the
+    /// supplied `decision` is compared against the receipt's bound digest,
+    /// so a stale, mutated or foreign decision can never be paired with a
+    /// candidate (PIPELINE-RECEIPT-BINDING).  Every mismatch fails closed.
     pub fn with_candidate(
         self,
         artifact: TransformArtifact,
+        decision: &RouteDecision,
         recovery: Option<RecoveryReceipt>,
     ) -> Result<CandidateRequest, PipelineError> {
         if artifact.source_digest != self.baseline_digest {
@@ -417,6 +425,9 @@ impl PreparedRequest {
             || recovery.source_digest != self.baseline_digest
         {
             return Err(PipelineError::ReceiptIdentityMismatch);
+        }
+        if recovery.decision_digest != decision.stable_digest() {
+            return Err(PipelineError::RouteDecisionMismatch);
         }
         Ok(CandidateRequest {
             scope: self.scope,
@@ -455,7 +466,7 @@ impl PreparedRequest {
         authority: &RecoveryProofAuthority,
     ) -> Result<CandidateRequest, PipelineError> {
         let recovery = RecoveryReceipt::mint(&self, decision, &proof, authority)?;
-        self.with_candidate(artifact, Some(recovery))
+        self.with_candidate(artifact, decision, Some(recovery))
     }
 
     /// Preserve path for saturation, expired deadlines, and cancellation

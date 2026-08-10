@@ -110,7 +110,7 @@ fn optimized_send_requires_matching_source_validation_and_recovery_receipt() {
     assert_eq!(
         prepared
             .clone()
-            .with_candidate(mismatched, None)
+            .with_candidate(mismatched, &decision_for(&prepared), None)
             .unwrap_err(),
         PipelineError::SourceDigestMismatch
     );
@@ -124,14 +124,15 @@ fn optimized_send_requires_matching_source_validation_and_recovery_receipt() {
     assert_eq!(
         prepared
             .clone()
-            .with_candidate(artifact.clone(), None)
+            .with_candidate(artifact.clone(), &decision_for(&prepared), None)
             .unwrap_err(),
         PipelineError::MissingRecoveryReceipt
     );
 
     let recovery = recovery_for(&prepared);
+    let decision = decision_for(&prepared);
     let candidate = prepared
-        .with_candidate(artifact, Some(recovery))
+        .with_candidate(artifact, &decision, Some(recovery))
         .expect("candidate bound");
     let validated = candidate
         .validate(|baseline, transformed| baseline != transformed)
@@ -257,7 +258,11 @@ fn recovery_receipt_rejects_non_durable_refs_and_forged_bindings() {
     assert!(!foreign.is_valid_for(&prepared, &decision_for(&prepared), 50));
     let bound = prepared
         .clone()
-        .with_candidate(artifact(prepared.baseline_digest()), Some(foreign));
+        .with_candidate(
+            artifact(prepared.baseline_digest()),
+            &decision_for(&prepared),
+            Some(foreign),
+        );
     assert_eq!(
         bound.unwrap_err(),
         PipelineError::ReceiptIdentityMismatch
@@ -366,6 +371,93 @@ fn recovery_receipt_rejects_inactive_route_decisions() {
         PipelineError::RouteDecisionMismatch,
         "a mutated provider identity is not active"
     );
+}
+
+#[test]
+fn recovery_receipt_binding_rejects_inactive_route_decisions() {
+    // Mint a valid receipt for the active decision, then bind the same
+    // candidate under a different (mutated) current decision: the binding
+    // layer compares the receipt's bound stable digest against the supplied
+    // decision and fails closed (PIPELINE-RECEIPT-BINDING), so a stale or
+    // foreign decision can never be paired with a candidate even when the
+    // receipt itself was correctly issued.
+    let input = PipelineInput::new(scope(), br#"{"messages":["baseline"]}"#.to_vec(), 1024)
+        .expect("bounded input");
+    let prepared = input.prepare();
+    let artifact = TransformArtifact::new(
+        prepared.baseline_digest(),
+        b"candidate".to_vec(),
+        vec!["safe-text".to_string()],
+    )
+    .unwrap();
+    let active = decision_for(&prepared);
+    let receipt = prepared
+        .clone()
+        .with_durable_candidate(
+            artifact.clone(),
+            &active,
+            authority()
+                .issue("ccr:bound", 1_000_000_000_000)
+                .expect("store-issued proof"),
+            &authority(),
+        )
+        .expect("active-decision receipt")
+        .recovery_receipt()
+        .clone();
+
+    // Wrong request identity at binding.
+    let foreign_decision = {
+        let mut decision = active.clone();
+        decision.request_id = Uuid::new_v4();
+        decision
+    };
+    assert_eq!(
+        prepared
+            .clone()
+            .with_candidate(artifact.clone(), &foreign_decision, Some(receipt.clone()))
+            .unwrap_err(),
+        PipelineError::RouteDecisionMismatch,
+        "with_candidate rejects a decision for another request"
+    );
+    assert!(!receipt.is_valid_for(&prepared, &foreign_decision, 500));
+
+    // Wrong route identity at binding.
+    let wrong_route = {
+        let mut decision = active.clone();
+        decision.route_id = "route-forged".to_string();
+        decision
+    };
+    assert_eq!(
+        prepared
+            .clone()
+            .with_candidate(artifact.clone(), &wrong_route, Some(receipt.clone()))
+            .unwrap_err(),
+        PipelineError::RouteDecisionMismatch,
+        "with_candidate rejects a mutated route identity"
+    );
+    assert!(!receipt.is_valid_for(&prepared, &wrong_route, 500));
+
+    // Wrong provider identity at binding.
+    let wrong_provider = {
+        let mut decision = active.clone();
+        decision.provider_id = "provider-forged".to_string();
+        decision
+    };
+    assert_eq!(
+        prepared
+            .clone()
+            .with_candidate(artifact.clone(), &wrong_provider, Some(receipt.clone()))
+            .unwrap_err(),
+        PipelineError::RouteDecisionMismatch,
+        "with_candidate rejects a mutated provider identity"
+    );
+    assert!(!receipt.is_valid_for(&prepared, &wrong_provider, 500));
+
+    // The same receipt under the active decision binds and validates.
+    assert!(receipt.is_valid_for(&prepared, &active, 500));
+    assert!(prepared
+        .with_candidate(artifact, &active, Some(receipt))
+        .is_ok());
 }
 
 #[test]
