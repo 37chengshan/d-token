@@ -30,6 +30,13 @@ tokio.workspace = true
 uuid.workspace = true
 url = "2"
 
+[features]
+default = []
+# Compile-time gated so release builds never carry test-only injection
+# points; enabled by `cargo test --features failpoints` or by consumers that
+# need deterministic crash simulation of the terminal-commit path.
+failpoints = ["dtoken-event-ledger/failpoints"]
+
 [target.'cfg(target_os = "windows")'.dependencies]
 keyring = { version = "3", default-features = false, features = ["windows-native"] }
 
