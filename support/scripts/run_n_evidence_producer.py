@@ -281,7 +281,7 @@ def local_node_commands(node_id: str, root: Path) -> list[list[str]]:
             return []
         return [
             bench_run(
-                ["Check", "--corpus", str(bench_corpus), "--baseline",
+                ["check", "--corpus", str(bench_corpus), "--baseline",
                  str(tracked_baseline), "--json"],
                 root,
             ),
