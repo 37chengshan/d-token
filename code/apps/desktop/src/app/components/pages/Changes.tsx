@@ -18,6 +18,12 @@ import { presentOperationFailure } from "../../lib/userCopy";
 const CHANGES_TABS = ["backup", "history"] as const;
 // Rollback points and change history grow with use; render a bounded window.
 const CHANGES_PAGE_SIZE = 40;
+// Locale-keyed copy for helper fallbacks; kept out of inline ternaries so the
+// copy policy AST scan can enforce the typed-map pattern.
+const PREFLIGHT_BLOCKED_REASON: Record<"zh" | "en", string> = {
+  zh: "当前状态尚未通过可恢复性预检。",
+  en: "This point has not passed the restorability preflight.",
+};
 
 type ChangeSource = "loading" | "desktop" | "browser-preview" | "unavailable" | "stale" | "partial";
 
@@ -397,7 +403,7 @@ function buildRollbackPoints(payload: Record<string, any> | null, source: Change
       currentlyRestorable,
       blockedReason: safeText(
         row.blocked_reason ?? row.reason,
-        currentlyRestorable ? "" : lang === "zh" ? "当前状态尚未通过可恢复性预检。" : "This point has not passed the restorability preflight.",
+        currentlyRestorable ? "" : PREFLIGHT_BLOCKED_REASON[lang],
       ),
       expectedCurrentSha256: safeText(row.expected_current_sha256 ?? row.expectedCurrentSha256, ""),
     };
@@ -490,16 +496,23 @@ function scopeLabel(scope: RollbackScope, lang: "zh" | "en"): string {
 }
 
 function historyStatusLabel(status: string, lang: "zh" | "en"): string {
-  if (status === "ok") return lang === "zh" ? "已提交" : "Committed";
-  if (status === "recovered") return lang === "zh" ? "已恢复" : "Recovered";
-  if (status === "failed") return lang === "zh" ? "失败" : "Failed";
-  return lang === "zh" ? "结果未知" : "Unknown";
+  const labels: Record<string, { zh: string; en: string }> = {
+    ok: { zh: "已提交", en: "Committed" },
+    recovered: { zh: "已恢复", en: "Recovered" },
+    failed: { zh: "失败", en: "Failed" },
+    unknown: { zh: "结果未知", en: "Unknown" },
+  };
+  return (labels[status] ?? labels.unknown)[lang];
 }
 
 function changeSummary(kind: string, lang: "zh" | "en"): string {
-  if (kind.includes("rollback")) return lang === "zh" ? "配置已回退" : "Configuration rolled back";
-  if (kind.includes("install")) return lang === "zh" ? "安装与连接配置已提交" : "Install and connection changes committed";
-  if (kind.includes("optical")) return lang === "zh" ? "视觉压缩配置已提交" : "Visual compression changes committed";
-  if (kind.includes("learning")) return lang === "zh" ? "项目学习配置已提交" : "Project learning changes committed";
-  return lang === "zh" ? "本地配置已变更" : "Local configuration changed";
+  const summaries: Record<string, { zh: string; en: string }> = {
+    rollback: { zh: "配置已回退", en: "Configuration rolled back" },
+    install: { zh: "安装与连接配置已提交", en: "Install and connection changes committed" },
+    optical: { zh: "视觉压缩配置已提交", en: "Visual compression changes committed" },
+    learning: { zh: "项目学习配置已提交", en: "Project learning changes committed" },
+    other: { zh: "本地配置已变更", en: "Local configuration changed" },
+  };
+  const key = ["rollback", "install", "optical", "learning"].find((candidate) => kind.includes(candidate)) ?? "other";
+  return summaries[key][lang];
 }

@@ -25,6 +25,28 @@ describe("release UI copy policy", () => {
     const violations = sourceFiles(SOURCE_ROOT).flatMap(collectRawErrorLeaks);
     expect(violations).toEqual([]);
   });
+
+  it("keeps the Changes page free of inline lang-keyed bilingual string literals", () => {
+    // Helpers must not select copy by directly keying off the locale with inline
+    // `? "zh" : "en"` string-literal branches; that escapes the typed locale maps.
+    // The precomputed `zh` boolean used at render sites is a separate pattern that
+    // stays covered by the isRenderedCopy scan above.
+    const file = path.join(SOURCE_ROOT, "components", "pages", "Changes.tsx");
+    const source = ts.createSourceFile(file, fs.readFileSync(file, "utf8"), ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+    const escapes: string[] = [];
+    const visit = (node: ts.Node) => {
+      if (ts.isConditionalExpression(node)
+        && /\blang\b/.test(node.condition.getText())
+        && ts.isStringLiteral(node.whenTrue)
+        && ts.isStringLiteral(node.whenFalse)) {
+        const position = source.getLineAndCharacterOfPosition(node.getStart(source));
+        escapes.push(`${path.relative(SOURCE_ROOT, file)}:${position.line + 1}: ${node.condition.getText()}`);
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(source);
+    expect(escapes).toEqual([]);
+  });
 });
 
 function sourceFiles(directory: string): string[] {
