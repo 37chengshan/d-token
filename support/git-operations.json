@@ -2844,6 +2844,15 @@
       "summary": "merge stream-commit-classification 76883345 into stage-pack-integrated (T-C0B stream send-state classification)",
       "head_before": "7a019595afb308d7f9bf759755e27832f58e91f2",
       "remote": null
+    },
+    {
+      "id": "ee078c96-d598-48df-9b80-eeaee3ec95e4",
+      "timestamp": "2026-08-10T19:12:37+08:00",
+      "operation": "merge",
+      "branch": "codex/final/stage-pack-integrated",
+      "summary": "merge deadline-terminal 8ed1e98 into stage-pack-integrated (deadline terminal receipt + persistence)",
+      "head_before": "5638f7ac9e8e1f92d3aa2b644d67759e419e1e7e",
+      "remote": null
     }
   ]
 }
