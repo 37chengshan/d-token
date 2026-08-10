@@ -140,6 +140,12 @@ LEGACY_ROLES = {
     "windows_dacl_acl",
     # managed-RTK candidate receipt (G5, legacy).
     "managed_rtk",
+    # Independent managed RTK platform receipts (G5): macOS probe evidence,
+    # Windows and WSL runner evidence.  Each must be executed, candidate-bound
+    # and report usage_count > 0; a missing role blocks G5.
+    "managed_rtk_macos",
+    "managed_rtk_windows",
+    "managed_rtk_wsl",
     # real OpenCode routed report (G7, legacy; candidate_id must equal C_final).
     "opencode_real_routed",
     # Dual-platform same-commit/source-digest fan-in contract (G8).
@@ -155,7 +161,8 @@ GATE_ROLES = {
     "G2": ["U1-registry", "N10-U2", "N10-U5"],
     "G3": ["N10-U3", "N1", "N8"],
     "G4": ["N10-U0", "N1", "N2", "N3"],
-    "G5": ["N2", "N3", "N4", "N5", "N7", "N8", "N10-U2"],
+    "G5": ["N2", "N3", "N4", "N5", "N7", "N8", "N10-U2",
+           "managed_rtk_macos", "managed_rtk_windows", "managed_rtk_wsl"],
     "G6": ["N0", "N1", "N6", "N7", "N8", "N10-U5"],
     "G7": ["N3"],
     "G8": ["N0", "N7", "N8", "N10"],
@@ -163,6 +170,10 @@ GATE_ROLES = {
 }
 
 N10_AGGREGATE_ROLES = [f"N10-U{index}" for index in range(10)]
+
+# Independent managed-RTK platform receipts (G5): each must be executed with
+# usage_count > 0 and candidate binding; missing roles block G5.
+MANAGED_RTK_ROLES = {"managed_rtk_macos", "managed_rtk_windows", "managed_rtk_wsl"}
 
 
 def canonical_json_bytes(data: dict) -> bytes:
@@ -373,6 +384,37 @@ def stale_violations(verdicts_by_role: dict[str, list[dict]]) -> dict[str, list[
     return stale
 
 
+
+def _u9_registry_mapping() -> tuple[dict[str, str], dict[str, str]]:
+    """Load the tracked registry's entry->producer-node and entry->artifact map
+    so the U9 coverage seal is validated against the real capability registry
+    (VERIFICATION.md U9: coverage report cannot be hand-written)."""
+    registry_path = Path(__file__).resolve().parents[2] / "support" / "fixtures" / "unified-capability-registry-v1.json"
+    try:
+        data = json.loads(registry_path.read_text(encoding="utf-8"))
+        entries = data.get("entries", [])
+    except (OSError, ValueError):
+        return {}, {}
+    fixed = {
+        "N0": "N0-preflight.json", "N1": "N1-receipt.json", "N2": "N2-codex.json",
+        "N3": "N3-opencode.json", "N4": "N4-config.json", "N5": "N5-cc-switch.json",
+        "N6": "N6-ui.json", "N7": "N7-macos.json", "N8": "N8-windows.json",
+        "N9": "N9-release-status.json", "N10": "N10-unified-proof.json",
+        "N10-U0": "N10-U0-contract.json", "N10-U1": "N10-U1-registry.json",
+        "N10-U2": "N10-U2-property-fuzz.json", "N10-U3": "N10-U3-fault.json",
+        "N10-U4": "N10-U4-replay-quality.json", "N10-U5": "N10-U5-perf.json",
+        "N10-U6": "N10-U6-provider-paired.json", "N10-U7": "N10-U7-optical-active.json",
+        "N10-U8": "N10-U8-platform.json", "N10-U9": "N10-U9-coverage.json",
+    }
+    node_by_id: dict[str, str] = {}
+    artifact_by_id: dict[str, str] = {}
+    for entry in entries:
+        producer = entry.get("producer", "")
+        node = producer.split(":", 1)[1] if producer.startswith("entry-producer:") else None
+        node_by_id[entry.get("id")] = node
+        artifact_by_id[entry.get("id")] = fixed.get(node or "")
+    return node_by_id, artifact_by_id
+
 def evaluate(manifest: dict, expected: dict) -> dict:
     """Aggregate G0-G9 from an explicit evidence manifest (fail-closed)."""
     manifest_errors: list[str] = []
@@ -419,6 +461,92 @@ def evaluate(manifest: dict, expected: dict) -> dict:
             if not verdicts:
                 return False, ["N10 unified compression proof has no declared artifacts"]
             return not failures, [f for v in failures for f in v["violations"]]
+        if role == "N10-U9":
+            # U9 coverage seal: content validation — exactly 117 unique ids
+            # equal to the registry id set, every entry verified, each entry's
+            # producer node/artifact matching the registry mapping, and every
+            # verified entry tracing to an envelope-valid pass artifact of its
+            # producer node (VERIFICATION.md §5 U9).  Cannot be hand-written.
+            verdicts = verdicts_by_role.get(role, [])
+            if not verdicts:
+                return False, ["N10-U9 coverage seal has no declared artifact"]
+            failures = [f for v in verdicts if not v["ok"] for f in v["violations"]]
+            data = verdicts[0].get("data") if verdicts and verdicts[0]["ok"] else None
+            coverage = (data or {}).get("coverage") or {}
+            total = coverage.get("total")
+            verified = coverage.get("verified")
+            if total != 117:
+                failures.append(f"U9 coverage total={total!r} != 117")
+            if verified != 117:
+                failures.append(f"U9 coverage verified={verified!r} != 117 (seal incomplete)")
+            per_entry = coverage.get("per_entry") or []
+            if len(per_entry) != 117:
+                failures.append(
+                    f"U9 per_entry coverage has {len(per_entry)} entries, expected 117"
+                )
+            node_by_id, artifact_by_id = _u9_registry_mapping()
+            if len(node_by_id) != 117:
+                failures.append(
+                    f"U9 cannot validate against registry: {len(node_by_id)} entries loaded"
+                )
+            ids = [item.get("id") for item in per_entry]
+            if len(ids) != len(set(ids)):
+                failures.append("U9 coverage contains duplicate entry ids")
+            if sorted(ids) != sorted(node_by_id):
+                failures.append("U9 coverage entry id set does not match the registry")
+            verified_set = coverage.get("verified_ids") or []
+            if sorted(verified_set) != sorted(node_by_id):
+                failures.append("U9 verified_ids set does not match the registry id set")
+            for item in per_entry:
+                entry_id = item.get("id")
+                if entry_id not in node_by_id:
+                    continue
+                if item.get("producer_node") != node_by_id[entry_id]:
+                    failures.append(
+                        f"U9 entry {entry_id} producer_node {item.get('producer_node')!r} "
+                        f"!= registry {node_by_id[entry_id]!r}"
+                    )
+                if item.get("artifact") != artifact_by_id[entry_id]:
+                    failures.append(
+                        f"U9 entry {entry_id} artifact {item.get('artifact')!r} != "
+                        f"fixed name {artifact_by_id[entry_id]!r}"
+                    )
+                if item.get("verified") is not True:
+                    failures.append(f"U9 entry {entry_id} is not verified")
+                    continue
+                node = item.get("producer_node")
+                entry_art = verdicts_by_role.get(node, []) if node else []
+                if not any(v["ok"] for v in entry_art):
+                    failures.append(
+                        f"U9 entry {entry_id} verified without a valid {node} artifact"
+                    )
+            return not failures, failures
+        if role in MANAGED_RTK_ROLES:
+            # Independent managed-RTK receipt (G5): executed, candidate-bound,
+            # usage_count > 0; missing role blocks.
+            verdicts = verdicts_by_role.get(role, [])
+            if not verdicts:
+                return False, [f"no independent {role} receipt declared (G5 blocks)"]
+            failures: list[str] = []
+            for verdict in verdicts:
+                if not verdict["ok"]:
+                    failures.extend(verdict["violations"])
+                    continue
+                data = verdict.get("data") or {}
+                usage = data.get("usage_count")
+                if not (isinstance(usage, int) and usage > 0):
+                    failures.append(
+                        f"{role}: usage_count={usage!r} must be > 0 (executed receipt)"
+                    )
+                if data.get("fixture") is True or data.get("mock") is True:
+                    failures.append(f"{role}: fixture/mock receipt cannot satisfy G5")
+                if data.get("candidate_commit") not in (None, expected.get("commit")):
+                    failures.append(f"{role}: candidate_commit != C_final")
+                if data.get("candidate_id") not in (None, expected.get("commit")):
+                    failures.append(f"{role}: candidate_id != C_final")
+                if data.get("source_digest") not in (None, expected.get("source_digest")):
+                    failures.append(f"{role}: source_digest != frozen candidate")
+            return not failures, failures
         verdicts = verdicts_by_role.get(role, [])
         if not verdicts:
             return False, [f"no evidence declared for role {role}"]

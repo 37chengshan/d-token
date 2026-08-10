@@ -104,8 +104,17 @@ class N0CandidateEvidenceProducerTest(unittest.TestCase):
             self.assertRegex(digest, r"^[0-9a-f]{64}$")
 
     def test_n0_preflight_declares_required_gate_commands(self) -> None:
-        gates = self.producer.preflight_gates(REPO_ROOT, skip=False)
-        commands = [result["argv"] for result in gates]
+        # Inspect PURE gate specs only — never execute the full N0 suite
+        # (execution happens only in the explicit producer run).  A previous
+        # version ran preflight_gates(skip=False) here, which executed every
+        # gate just to read argv; that is gone.
+        specs = self.producer.preflight_gate_specs(REPO_ROOT, skip=False)
+        commands = [" ".join(spec["argv"]) for spec in specs]
+        self.assertGreater(len(commands), 0)
+        # Specs describe commands; they must not record an executed outcome.
+        for spec in specs:
+            self.assertNotIn("exit_code", spec)
+            self.assertNotIn("ok", spec)
         self.assertTrue(any("cargo fmt --all" in command for command in commands))
         self.assertTrue(any("cargo clippy --workspace --all-targets" in command for command in commands))
         self.assertTrue(any("cargo test --workspace" in command for command in commands))
@@ -113,6 +122,10 @@ class N0CandidateEvidenceProducerTest(unittest.TestCase):
         self.assertTrue(any("npm run build" in command for command in commands))
         self.assertTrue(any("npm run test:e2e" in command for command in commands))
         self.assertTrue(any("generate_release_metadata.py" in command for command in commands))
+        # A skipped freeze declares no gates at all (producer stays fail-closed).
+        self.assertEqual(
+            self.producer.preflight_gate_specs(REPO_ROOT, skip=True), []
+        )
 
     def test_producer_writes_three_artifacts_with_valid_envelope(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

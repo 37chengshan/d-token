@@ -34,6 +34,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 AGGREGATOR = REPO_ROOT / "support" / "scripts" / "generate_release_gate_status.py"
+REGISTRY_PATH = REPO_ROOT / "support" / "fixtures" / "unified-capability-registry-v1.json"
 
 C_FINAL = "a" * 40
 SOURCE_DIGEST = "b" * 64
@@ -56,6 +57,13 @@ EXPECTED_ARGS = [
     "--expected-version",
     "0.0.1",
 ]
+
+
+def _recompute(data: dict) -> str:
+    import hashlib as _h
+    body = {k: v for k, v in data.items() if k != "artifact_sha256"}
+    raw = json.dumps(body, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    return _h.sha256(raw).hexdigest()
 
 
 def canonical_sha(data: dict) -> str:
@@ -115,7 +123,7 @@ def write_full_pass_evidence(dir: Path) -> dict:
     """Synthetic explicit manifest that should yield every gate passed."""
     artifacts: dict[str, list[str]] = {}
     node_files = {
-        "N0": ["N0-preflight.json", "N0-provenance.json"],
+        "N0": ["N0-preflight.json"],
         "N1": ["N1-receipt.json"],
         "N2": ["N2-codex.json"],
         "N3": ["N3-opencode.json"],
@@ -135,15 +143,58 @@ def write_full_pass_evidence(dir: Path) -> dict:
         "N10-U8": ["N10-U8-platform.json"],
         "N10-U9": ["N10-U9-coverage.json"],
     }
+    # Per-node artifact list mirroring the registry producer mapping, so the
+    # U9 coverage seal traces every entry to a valid pass artifact.
+    registry_path = REPO_ROOT / "support" / "fixtures" / "unified-capability-registry-v1.json"
+    registry = json.loads(registry_path.read_text(encoding="utf-8"))
+    per_entry = []
+    for entry in registry["entries"]:
+        producer = entry.get("producer", "")
+        node = producer.split(":", 1)[1] if producer.startswith("entry-producer:") else None
+        per_entry.append(
+            {
+                "id": entry.get("id"),
+                "producer_node": node,
+                "artifact": (node_files.get(node) or [None])[0],
+                "verified": True,
+                "reason": None,
+            }
+        )
     for role, filenames in node_files.items():
         paths = []
         for filename in filenames:
             extra: dict = {}
             if role == "N10-U9":
-                extra = {"registry_total": 117, "verified_total": 117}
+                extra = {
+                    "coverage": {
+                        "total": 117,
+                        "verified": 117,
+                        "unverified": 0,
+                        "verified_ids": [item["id"] for item in per_entry],
+                        "per_entry": per_entry,
+                    }
+                }
             paths.append(str(write_json(dir / filename,
                                         make_artifact(role, extra=extra))))
         artifacts[role] = paths
+    # Independent managed-RTK platform receipts (G5): executed, bound, usage>0.
+    for role, filename in (
+        ("managed_rtk_macos", "managed-rtk-macos-20260810T000000Z.json"),
+        ("managed_rtk_windows", "managed-rtk-windows-20260810T000000Z.json"),
+        ("managed_rtk_wsl", "managed-rtk-wsl-20260810T000000Z.json"),
+    ):
+        artifacts[role] = [
+            str(write_json(
+                dir / filename,
+                {
+                    "status": "pass",
+                    "usage_count": 3,
+                    "candidate_commit": C_FINAL,
+                    "candidate_id": C_FINAL,
+                    "source_digest": SOURCE_DIGEST,
+                },
+            ))
+        ]
     artifacts["release_verification"] = [
         str(write_json(dir / "release-verification-20260809T000000Z.json",
                        make_legacy_release_verification()))
@@ -416,6 +467,51 @@ class ReleaseGateStatusAggregatorContractTests(unittest.TestCase):
             self.assertFalse(report["artifact_verdicts"]["N6"][0]["ok"])
             self.assertIn("missing", report["artifact_verdicts"]["N6"][0]["violations"][0])
 
+    def _mutate_u9(self, root, mutator):
+        manifest = write_full_pass_evidence(root)
+        u9_path = root / "N10-U9-coverage.json"
+        u9 = json.loads(u9_path.read_text(encoding="utf-8"))
+        mutator(u9)
+        u9["artifact_sha256"] = canonical_sha(u9)
+        u9_path.write_text(json.dumps(u9, indent=2) + "\n", encoding="utf-8")
+        return run_aggregator(manifest, root)
+
+    def test_u9_duplicate_entry_ids_block(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+
+            def dup(u9):
+                u9["coverage"]["per_entry"][0]["id"] = u9["coverage"]["per_entry"][1]["id"]
+
+            proc = self._mutate_u9(root, dup)
+            self.assertEqual(proc.returncode, 1, "duplicate U9 ids must block")
+            report = json.loads(proc.stdout)
+            self.assertTrue(any("duplicate entry ids" in g["detail"] for g in report["gates"]))
+
+    def test_u9_producer_mismatch_blocks(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+
+            def mism(u9):
+                u9["coverage"]["per_entry"][0]["producer_node"] = "N2"
+
+            proc = self._mutate_u9(root, mism)
+            self.assertEqual(proc.returncode, 1, "U9 producer mismatch must block")
+            report = json.loads(proc.stdout)
+            self.assertTrue(any("producer_node" in g["detail"] for g in report["gates"]))
+
+    def test_u9_verified_set_mismatch_blocks(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+
+            def idset(u9):
+                u9["coverage"]["verified_ids"] = u9["coverage"]["verified_ids"][:-1]
+
+            proc = self._mutate_u9(root, idset)
+            self.assertEqual(proc.returncode, 1, "U9 verified_ids set mismatch must block")
+            report = json.loads(proc.stdout)
+            self.assertTrue(any("verified_ids" in g["detail"] for g in report["gates"]))
+
     def test_report_schema(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -453,3 +549,45 @@ class ReleaseGateStatusAggregatorContractTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+    def test_u9_duplicate_ids_block_g9(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest = write_full_pass_evidence(root)
+            u9_path = root / "N10-U9-coverage.json"
+            u9 = json.loads(u9_path.read_text(encoding="utf-8"))
+            coverage = u9["coverage"]
+            coverage["per_entry"][0]["id"] = coverage["per_entry"][1]["id"]
+            u9["coverage"] = coverage
+            u9["artifact_sha256"] = _recompute(u9)
+            u9_path.write_text(json.dumps(u9, indent=2) + "\n", encoding="utf-8")
+            proc = run_aggregator(manifest, root)
+            self.assertEqual(proc.returncode, 1)
+            report = json.loads(proc.stdout)
+            self.assertEqual(report["gates"][-1]["state"], "blocked")
+            detail = report["gates"][-1]["detail"]
+            self.assertIn("duplicate", detail)
+
+    def test_u9_producer_mismatch_blocks_g9(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest = write_full_pass_evidence(root)
+            u9_path = root / "N10-U9-coverage.json"
+            u9 = json.loads(u9_path.read_text(encoding="utf-8"))
+            coverage = u9["coverage"]
+            registry = json.loads(REGISTRY_PATH.read_text(encoding="utf-8"))
+            first = registry["entries"][0]
+            entry = next(
+                item for item in coverage["per_entry"] if item["id"] == first["id"]
+            )
+            entry["producer_node"] = "N2"
+            u9["coverage"] = coverage
+            u9["artifact_sha256"] = _recompute(u9)
+            u9_path.write_text(json.dumps(u9, indent=2) + "\n", encoding="utf-8")
+            proc = run_aggregator(manifest, root)
+            self.assertEqual(proc.returncode, 1)
+            report = json.loads(proc.stdout)
+            self.assertEqual(report["gates"][-1]["state"], "blocked")
+            detail = report["gates"][-1]["detail"]
+            self.assertIn("producer_node", detail)
