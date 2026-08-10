@@ -3,6 +3,7 @@ import { StatusBadge } from "../../components/common/StatusBadge";
 import { Button } from "../../components/ui/button";
 import { resolveAgentBinding, selectedCandidate, type InstallPhase } from "../installMachine";
 import type { AgentUpstreamBinding, ConnectionSetupSnapshot, UpstreamCandidate } from "../connectionSetup";
+import { translateCopy } from "../i18n";
 import { protocolLabel } from "../protocol";
 
 function AgentBindingRow({
@@ -28,12 +29,8 @@ function AgentBindingRow({
   const mcpPathReady = Boolean(binding.mcp_config_path) && !binding.mcp_config_path?.startsWith("<local>/");
   const canConfigure = isMcpOrHook ? mcpPathReady : binding.can_configure === true;
   const canClear = isMcpOrHook ? mcpPathReady : binding.can_clear === true;
-  const configureLabel = isMcpOrHook
-    ? (lang === "zh" ? "配置工具集成" : "Configure tools")
-    : (lang === "zh" ? "一键配置" : "One-click configure");
-  const clearLabel = isMcpOrHook
-    ? (lang === "zh" ? "清除工具集成" : "Clear tools")
-    : (lang === "zh" ? "清除 d-token 配置" : "Clear d-token config");
+  const configureLabel = translateCopy(isMcpOrHook ? "in.configureTools" : "in.oneClickConfigure", lang);
+  const clearLabel = translateCopy(isMcpOrHook ? "in.clearTools" : "in.clearDTokenConfig", lang);
   // The card is read-only: provider/model/protocol/endpoint/source come from
   // the uniquely auto-resolved candidate. Ambiguity blocks the plan and is
   // surfaced by the binding summary; no chooser is rendered.
@@ -51,14 +48,12 @@ function AgentBindingRow({
           {binding.follow && <Badge variant="outline">{follow.label}</Badge>}
           {isMcpOrHook && (
             <Badge variant="outline" className="border-amber-500/30 text-amber-700 dark:text-amber-300">
-              {binding.integration_kind === "mcp"
-                ? (lang === "zh" ? "仅 MCP 工具" : "MCP tools only")
-                : (lang === "zh" ? "仅 Hook 工具" : "Hook tools only")}
+              {translateCopy(binding.integration_kind === "mcp" ? "in.mcpToolsOnly" : "in.hookToolsOnly", lang)}
             </Badge>
           )}
           {isMcpOrHook && (
             <Badge variant="outline" className="border-amber-500/30 text-amber-700 dark:text-amber-300">
-              {lang === "zh" ? "工具能力，不改变模型上游" : "Tool capability; model upstream unchanged"}
+              {translateCopy("in.toolCapabilityModelUpstreamUnchanged", lang)}
             </Badge>
           )}
         </div>
@@ -86,7 +81,7 @@ function AgentBindingRow({
         </div>
         {binding.follow?.current_upstream && (
           <div className="mt-1 truncate text-[11px] text-muted-foreground">
-            {lang === "zh" ? "d-token 路由" : "d-token route"} · {binding.follow.current_upstream.provider_id} · {binding.follow.current_upstream.model} · {binding.follow.current_upstream.protocol}
+            {translateCopy("in.dTokenRoute", lang)} · {binding.follow.current_upstream.provider_id} · {binding.follow.current_upstream.model} · {binding.follow.current_upstream.protocol}
           </div>
         )}
         {binding.follow?.last_receipt && (
@@ -102,17 +97,17 @@ function AgentBindingRow({
           variant="outline"
           size="sm"
           disabled={busy || transportBusy || !canConfigure}
-          title={!canConfigure ? (lang === "zh" ? "此 Agent 未提供可执行的一键配置写入动作" : "This Agent exposes no executable one-click write action") : undefined}
+          title={!canConfigure ? translateCopy("in.thisAgentExposesNoExecutableOneClickWriteAction", lang) : undefined}
           onClick={onConfigure}
         >
-          {transportBusy ? (lang === "zh" ? "处理中…" : "Working…") : configureLabel}
+          {transportBusy ? translateCopy("in.working", lang) : configureLabel}
         </Button>
         <Button
           type="button"
           variant="ghost"
           size="sm"
           disabled={busy || transportBusy || !canClear}
-          title={!canClear ? (lang === "zh" ? "没有 d-token ownership receipt，不能安全清除" : "No d-token ownership receipt is available for a safe clear") : undefined}
+          title={!canClear ? translateCopy("in.noDTokenOwnershipReceiptIsAvailableForASafeClear", lang) : undefined}
           onClick={onClear}
         >
           {clearLabel}
@@ -124,71 +119,60 @@ function AgentBindingRow({
 
 function presentAgentFollow(binding: AgentUpstreamBinding, lang: "zh" | "en") {
   const follow = binding.follow;
-  const zh = lang === "zh";
   if (!follow || follow.state === "not_authorized") {
     return {
-      label: zh ? "未启用跟随" : "Follow off",
-      nextAction: zh
-        ? "下一步：在连接方案中启用“跟随已确认上游”。"
-        : "Next: enable follow for confirmed upstreams in the connection plan.",
+      label: translateCopy("in.followOff", lang),
+      nextAction: translateCopy("in.nextEnableFollowForConfirmedUpstreamsInTheConnectionPlan", lang),
     };
   }
   if (follow.state === "transport_out_of_sync") {
     return {
-      label: zh ? "流量可能绕过 d-token" : "Transport out of sync",
+      label: translateCopy("in.transportOutOfSync", lang),
       nextAction: follow.next_action === "configure"
-        ? (zh ? "下一步：重新配置此 Agent，使请求重新经过 d-token。" : "Next: configure this Agent again so requests pass through d-token.")
-        : (zh ? "当前版本未开放安全自动写入；d-token 保留上一次可用路由。" : "Safe automatic writes are not available for this version; d-token keeps the last-known-good route."),
+        ? translateCopy("in.nextConfigureThisAgentAgainSoRequestsPassThroughDToken", lang)
+        : translateCopy("in.safeAutomaticWritesAreNotAvailableForThisVersionDTokenKeepsTheLastKnownGoodRoute", lang),
     };
   }
   if (follow.state === "following" || follow.state === "applied_verified") {
     return {
-      label: zh ? "自动跟随中" : "Following",
-      nextAction: zh
-        ? "当前 Agent transport 与 d-token route 一致。"
-        : "The Agent transport and d-token route currently agree.",
+      label: translateCopy("in.following", lang),
+      nextAction: translateCopy("in.theAgentTransportAndDTokenRouteCurrentlyAgree", lang),
     };
   }
   if (follow.next_action === "verify_runtime") {
     return {
-      label: zh ? "等待 runtime 验证" : "Runtime verification needed",
-      nextAction: zh
-        ? "下一步：重启或重新验证 d-token runtime。"
-        : "Next: restart or reverify the d-token runtime.",
+      label: translateCopy("in.runtimeVerificationNeeded", lang),
+      nextAction: translateCopy("in.nextRestartOrReverifyTheDTokenRuntime", lang),
     };
   }
   if (follow.next_action === "review_follow") {
     return {
-      label: zh ? "需要重新确认" : "Confirmation needed",
-      nextAction: zh
-        ? "下一步：检查新的 provider、endpoint 或 protocol 并重新确认。"
-        : "Next: confirm the new provider, endpoint, or protocol.",
+      label: translateCopy("in.confirmationNeeded", lang),
+      nextAction: translateCopy("in.nextConfirmTheNewProviderEndpointOrProtocol", lang),
     };
   }
   return {
-    label: zh ? "跟随未完成" : "Follow incomplete",
-    nextAction: zh
-      ? "下一步：重新查看连接方案；失败时 d-token 保留上一次可用路由。"
-      : "Next: reopen the connection plan; d-token keeps the last-known-good route on failure.",
+    label: translateCopy("in.followIncomplete", lang),
+    nextAction: translateCopy("in.nextReopenTheConnectionPlanDTokenKeepsTheLastKnownGoodRouteOnFailure", lang),
   };
 }
 
 function presentAgentLocation(binding: AgentUpstreamBinding, lang: "zh" | "en") {
-  if (!binding.installed) return lang === "zh" ? "本机未检测到" : "Not detected locally";
+  if (!binding.installed) return translateCopy("in.notDetectedLocally", lang);
   const location = binding.binary_path || binding.config_path;
-  if (!location) return lang === "zh" ? "已检测" : "Detected";
-  if (location.startsWith("<local>/")) return lang === "zh" ? "已检测本机应用" : "Local app detected";
+  if (!location) return translateCopy("in.detectedOnly", lang);
+  if (location.startsWith("<local>/")) return translateCopy("in.localAppDetected", lang);
   return location;
 }
 
 function presentCcSwitch(status: string | undefined, detected: boolean, sourceState: string | undefined, lang: "zh" | "en") {
   if (!detected) {
     const incompatible = ["unsupported_schema", "locked_or_corrupt", "unsupported_format"].includes(sourceState ?? "");
-    return { health: "warning" as const, label: incompatible ? (lang === "zh" ? "已发现但需要兼容处理" : "Detected, compatibility action needed") : (lang === "zh" ? "未检测到" : "Not detected") };
+    return { health: "warning" as const, label: translateCopy(incompatible ? "in.detectedCompatibilityActionNeeded" : "in.notDetected", lang) };
   }
-  if (status === "synced") return { health: "healthy" as const, label: lang === "zh" ? "已同步" : "Synced" };
-  if (status === "out-of-sync") return { health: "warning" as const, label: lang === "zh" ? "与 d-token 不一致" : "Out of sync" };
-  return { health: "warning" as const, label: lang === "zh" ? "待连接确认" : "Needs confirmation" };
+  if (status === "synced") return { health: "healthy" as const, label: translateCopy("in.synced", lang) };
+  if (status === "out-of-sync") return { health: "warning" as const, label: translateCopy("in.outOfSync", lang) };
+  return { health: "warning" as const, label: translateCopy("in.needsConfirmation", lang) };
 }
 
 function presentBindingSummary(
@@ -202,16 +186,16 @@ function presentBindingSummary(
     return [
       resolved.name,
       model,
-      protocolLabel(resolved.protocol, lang) ?? (lang === "zh" ? "未知" : "Unknown"),
+      protocolLabel(resolved.protocol, lang) ?? translateCopy("protocol.unknown", lang),
       resolved.base_url,
       resolved.source,
     ].filter(Boolean).join(" · ");
   }
-  if (lang === "en") return binding.reasons[0] || "No reusable upstream configuration was found";
-  if (!binding.installed || binding.resolution === "unavailable") return `未检测到可用的 ${binding.agent_name} 配置`;
-  if (binding.resolution === "needs-source-fix") return "存在多个候选上游 / 模型，无法唯一解析；请修复来源配置后重新扫描";
-  if (binding.resolution === "needs-credential") return "已发现上游，需要补充凭据";
-  return "未发现可安全复用的上游配置";
+  if (lang === "en") return binding.reasons[0] || translateCopy("in.noReusableUpstreamConfigurationWasFound", lang);
+  if (!binding.installed || binding.resolution === "unavailable") return translateCopy("in.noUsableAgentConfigurationDetected", lang, { agent: binding.agent_name });
+  if (binding.resolution === "needs-source-fix") return translateCopy("in.multipleCandidateUpstreamsModelsCannotBeUniquelyResolvedFixTheSourceConfigurationAndRescan", lang);
+  if (binding.resolution === "needs-credential") return translateCopy("in.upstreamFoundCredentialRequired", lang);
+  return translateCopy("in.noReusableUpstreamConfigurationWasFound", lang);
 }
 
 function derivePrimaryAction(
@@ -221,63 +205,59 @@ function derivePrimaryAction(
   lang: "zh" | "en",
   restartRequired = false,
 ) {
-  const zh = lang === "zh";
   if (["discovering", "applying-runtime", "applying-agent-configs", "verifying", "review"].includes(phase)) {
-    return { label: phase === "discovering" ? (zh ? "正在读取" : "Discovering") : (zh ? "正在处理" : "Working"), disabled: true, icon: "rocket" };
+    return { label: phase === "discovering" ? translateCopy("in.discovering", lang) : translateCopy("in.working2", lang), disabled: true, icon: "rocket" };
   }
-  if (restartRequired) return { label: zh ? "重启服务" : "Restart service", disabled: false, icon: "restart" };
-  if (phase === "ready") return { label: zh ? "查看变更" : "View changes", disabled: !reviewReady, icon: "rocket" };
-  if (phase === "needs-credential") return { label: zh ? "补充所需凭据" : "Add required credential", disabled: false, icon: "settings" };
+  if (restartRequired) return { label: translateCopy("in.restartService", lang), disabled: false, icon: "restart" };
+  if (phase === "ready") return { label: translateCopy("in.viewChanges", lang), disabled: !reviewReady, icon: "rocket" };
+  if (phase === "needs-credential") return { label: translateCopy("in.addRequiredCredential", lang), disabled: false, icon: "settings" };
   if (["already-connected", "verified"].includes(phase)) {
-    return { label: serviceOnline ? (zh ? "重新验证" : "Verify again") : (zh ? "启动并验证" : "Start and verify"), disabled: false, icon: "verify" };
+    return { label: translateCopy(serviceOnline ? "in.verifyAgain" : "in.startAndVerify", lang), disabled: false, icon: "verify" };
   }
-  return { label: zh ? "重新扫描" : "Scan again", disabled: false, icon: "rocket" };
+  return { label: translateCopy("in.scanAgain", lang), disabled: false, icon: "rocket" };
 }
 
 function presentInstallPhase(phase: InstallPhase, lang: "zh" | "en") {
-  const zh = lang === "zh";
   const map: Record<InstallPhase, { health: "healthy" | "warning" | "error"; label: string; description: string }> = {
-    idle: { health: "warning", label: zh ? "等待读取" : "Waiting", description: zh ? "进入页面后会自动读取本机配置。" : "Local configuration is read automatically when this view opens." },
-    discovering: { health: "warning", label: zh ? "正在发现" : "Discovering", description: zh ? "正在只读扫描 Agent 当前配置、OpenCode catalog、cc-switch 与 d-token 状态。" : "Reading Agent config, the OpenCode catalog, cc-switch, and d-token state without writing." },
-    "already-connected": { health: "healthy", label: zh ? "已连接" : "Connected", description: zh ? "Agent 已指向 d-token；相同配置不会重复写入。" : "Agents already point to d-token; identical configuration will not be written again." },
-    ready: { health: "healthy", label: zh ? "可继续" : "Ready to continue", description: zh ? "已找到唯一且可信的连接方案。查看变更后确认继续。" : "One reliable connection plan was found. View the changes, then confirm to continue." },
-    "needs-credential": { health: "warning", label: zh ? "缺少凭据" : "Credential required", description: zh ? "地址、协议和模型已保留，只需补充无法安全复用的凭据。" : "Address, protocol, and model are preserved; only a credential that cannot be reused is required." },
-    review: { health: "warning", label: zh ? "等待确认" : "Awaiting confirmation", description: zh ? "正在核对摘要、差异、源哈希与回退边界。" : "Checking the summary, differences, source hash, and rollback boundary." },
-    "applying-runtime": { health: "warning", label: zh ? "正在启动服务" : "Starting service", description: zh ? "正在安装或启动 d-token runtime。" : "Installing or starting the d-token runtime." },
-    "applying-agent-configs": { health: "warning", label: zh ? "正在应用配置" : "Applying config", description: zh ? "正在应用已确认的 Agent 配置批次。" : "Applying the confirmed Agent configuration batch." },
-    verifying: { health: "warning", label: zh ? "正在验证" : "Verifying", description: zh ? "正在确认配置生效，并检查服务健康与真实路由证据。" : "Confirming that configuration is active and checking service health and route evidence." },
-    verified: { health: "healthy", label: zh ? "验证通过" : "Verified", description: zh ? "配置、服务和路由证据一致。" : "Configuration, service, and route evidence agree." },
-    partial: { health: "warning", label: zh ? "部分完成" : "Partial", description: zh ? "已安全保留完成项；仍需处理的 Agent 没有被静默写入。" : "Completed work was kept safely; remaining Agents were not silently modified." },
-    blocked: { health: "error", label: zh ? "需要处理" : "Blocked", description: zh ? "没有足够证据生成安全连接方案；可重新扫描或使用高级安装回退。" : "There is not enough evidence for a safe plan; rescan or use Advanced setup as a fallback." },
-    "rolled-back": { health: "warning", label: zh ? "已回退" : "Rolled back", description: zh ? "本批次 Agent 配置已恢复；d-token 服务可能仍安全保留。" : "This Agent config batch was restored; the safe d-token service installation may remain." },
+    idle: { health: "warning", label: translateCopy("in.waiting", lang), description: translateCopy("in.localConfigurationIsReadAutomaticallyWhenThisViewOpens", lang) },
+    discovering: { health: "warning", label: translateCopy("in.discovering2", lang), description: translateCopy("in.readingAgentConfigTheOpencodeCatalogCcSwitchAndDTokenStateWithoutWriting", lang) },
+    "already-connected": { health: "healthy", label: translateCopy("in.connected", lang), description: translateCopy("in.agentsAlreadyPointToDTokenIdenticalConfigurationWillNotBeWrittenAgain", lang) },
+    ready: { health: "healthy", label: translateCopy("in.readyToContinue", lang), description: translateCopy("in.oneReliableConnectionPlanWasFoundViewTheChangesThenConfirmToContinue", lang) },
+    "needs-credential": { health: "warning", label: translateCopy("in.credentialRequired", lang), description: translateCopy("in.addressProtocolAndModelArePreservedOnlyACredentialThatCannotBeReusedIsRequired", lang) },
+    review: { health: "warning", label: translateCopy("in.awaitingConfirmation", lang), description: translateCopy("in.checkingTheSummaryDifferencesSourceHashAndRollbackBoundary", lang) },
+    "applying-runtime": { health: "warning", label: translateCopy("in.startingService", lang), description: translateCopy("in.installingOrStartingTheDTokenRuntime", lang) },
+    "applying-agent-configs": { health: "warning", label: translateCopy("in.applyingConfig", lang), description: translateCopy("in.applyingTheConfirmedAgentConfigurationBatch", lang) },
+    verifying: { health: "warning", label: translateCopy("in.verifying", lang), description: translateCopy("in.confirmingThatConfigurationIsActiveAndCheckingServiceHealthAndRouteEvidence", lang) },
+    verified: { health: "healthy", label: translateCopy("in.verified", lang), description: translateCopy("in.configurationServiceAndRouteEvidenceAgree", lang) },
+    partial: { health: "warning", label: translateCopy("in.partial", lang), description: translateCopy("in.completedWorkWasKeptSafelyRemainingAgentsWereNotSilentlyModified", lang) },
+    blocked: { health: "error", label: translateCopy("in.blocked", lang), description: translateCopy("in.thereIsNotEnoughEvidenceForASafePlanRescanOrUseAdvancedSetupAsAFallback", lang) },
+    "rolled-back": { health: "warning", label: translateCopy("in.rolledBack", lang), description: translateCopy("in.thisAgentConfigBatchWasRestoredTheSafeDTokenServiceInstallationMayRemain", lang) },
   };
   return map[phase];
 }
 
 function presentBinding(binding: AgentUpstreamBinding, lang: "zh" | "en") {
-  const zh = lang === "zh";
-  if (!binding.installed) return { health: "error" as const, label: zh ? "未检测到" : "Not detected" };
-  if (binding.already_connected) return { health: "healthy" as const, label: zh ? "已连接" : "Connected" };
+  if (!binding.installed) return { health: "error" as const, label: translateCopy("in.notDetected", lang) };
+  if (binding.already_connected) return { health: "healthy" as const, label: translateCopy("in.connected", lang) };
   if (binding.resolution === "auto-resolved" && binding.capability === "confirm-required") {
-    return { health: "healthy" as const, label: zh ? "已准备好，需你确认" : "Ready, needs confirmation" };
+    return { health: "healthy" as const, label: translateCopy("in.readyNeedsConfirmation", lang) };
   }
-  if (binding.resolution === "auto-resolved") return { health: "healthy" as const, label: zh ? "已自动解析" : "Auto-resolved" };
-  if (binding.resolution === "needs-source-fix") return { health: "error" as const, label: zh ? "来源冲突" : "Source conflict" };
-  if (binding.resolution === "needs-credential") return { health: "warning" as const, label: zh ? "需要凭据" : "Credential" };
+  if (binding.resolution === "auto-resolved") return { health: "healthy" as const, label: translateCopy("in.autoResolved", lang) };
+  if (binding.resolution === "needs-source-fix") return { health: "error" as const, label: translateCopy("in.sourceConflict", lang) };
+  if (binding.resolution === "needs-credential") return { health: "warning" as const, label: translateCopy("in.credential2", lang) };
   if (binding.transport_status === "advanced_required" || binding.transport_status === "schema_unverified") {
-    return { health: "warning" as const, label: zh ? "仅检测" : "Detection only" };
+    return { health: "warning" as const, label: translateCopy("in.detectionOnly", lang) };
   }
-  return { health: "warning" as const, label: zh ? "等待安全适配" : "Awaiting safe adapter" };
+  return { health: "warning" as const, label: translateCopy("in.awaitingSafeAdapter", lang) };
 }
 
 function capabilityLabel(binding: AgentUpstreamBinding, lang: "zh" | "en") {
-  const zh = lang === "zh";
-  if (binding.can_configure === true) return zh ? "一键配置" : "One-click";
+  if (binding.can_configure === true) return translateCopy("in.oneClick2", lang);
   const { capability } = binding;
-  if (capability === "one-click") return zh ? "一键配置" : "One-click";
-  if (capability === "confirm-required") return zh ? "确认后连接" : "Confirm to connect";
-  if (capability === "prompt-only") return zh ? "仅检测" : "Detection only";
-  return zh ? "安全锁定" : "Write locked";
+  if (capability === "one-click") return translateCopy("in.oneClick2", lang);
+  if (capability === "confirm-required") return translateCopy("in.confirmToConnect", lang);
+  if (capability === "prompt-only") return translateCopy("in.detectionOnly", lang);
+  return translateCopy("in.writeLocked", lang);
 }
 
 function connectionPath(binding: AgentUpstreamBinding, selection: { candidateKey: string; model: string } | undefined, endpoint: string) {
@@ -312,9 +292,9 @@ export function buildConnectionRoutePlanRequest(
 }
 
 function machineMessage(message: string, lang: "zh" | "en") {
-  if (message === "native_unavailable" || message === "connection_setup_unavailable") return lang === "zh" ? "当前是浏览器预览，不读取或改写本机配置。" : "Browser preview does not read or modify local configuration.";
-  if (message === "source-config-changed") return lang === "zh" ? "检测到源配置变化，旧连接方案已失效。" : "The source configuration changed, so the previous connection plan is no longer valid.";
-  if (message === "agent-write-unavailable") return lang === "zh" ? "部分 Agent 当前仅检测，现有配置保持不变。" : "Some Agents are detection-only in this version; their existing configuration remains unchanged.";
+  if (message === "native_unavailable" || message === "connection_setup_unavailable") return translateCopy("in.browserPreviewDoesNotReadOrModifyLocalConfiguration", lang);
+  if (message === "source-config-changed") return translateCopy("in.theSourceConfigurationChangedSoThePreviousConnectionPlanIsNoLongerValid", lang);
+  if (message === "agent-write-unavailable") return translateCopy("in.someAgentsAreDetectionOnlyInThisVersionTheirExistingConfigurationRemainsUnchanged", lang);
   return message;
 }
 
@@ -354,23 +334,23 @@ export function presentServiceInstance(
   const timestamp = updatedAt?.toLocaleTimeString();
   const suffix = timestamp ? ` · ${timestamp}` : "";
   if (serviceStatus?.manifest_stale === true || (serviceStatus?.pid != null && serviceStatus.pid_running === false)) {
-    return `${lang === "zh" ? "历史运行记录已失效，当前实例标识已隐藏" : "Historical runtime record is stale; current instance identifiers are hidden"}${suffix}`;
+    return `${translateCopy("in.historicalRuntimeRecordIsStaleCurrentInstanceIdentifiersAreHidden", lang)}${suffix}`;
   }
   if (serviceStatus?.pid_running === false && serviceOnline) {
-    return `${lang === "zh" ? "本地监听已验证，托管实例标识不可用" : "Local listener verified; managed instance identifiers unavailable"}${suffix}`;
+    return `${translateCopy("in.localListenerVerifiedManagedInstanceIdentifiersUnavailable", lang)}${suffix}`;
   }
   if (serviceOnline) {
     const instance = [serviceStatus?.pid ? `PID ${serviceStatus.pid}` : "", serviceEndpoint]
       .filter(Boolean)
       .join(" · ");
-    return `${instance || (lang === "zh" ? "本地监听已验证" : "Local listener verified")}${suffix}`;
+    return `${instance || translateCopy("in.localListenerVerified", lang)}${suffix}`;
   }
-  return `${lang === "zh" ? "当前未检测到监听实例" : "No listening instance detected"}${suffix}`;
+  return `${translateCopy("in.noListeningInstanceDetected", lang)}${suffix}`;
 }
 
 export function presentConnectionPrivacy(privacy: string | undefined, lang: "zh" | "en") {
-  if (lang === "zh") return "隐私边界：未读取或显示凭据、认证文件、提示词或响应原文。";
-  return privacy || "Privacy boundary: credentials, auth files, prompts, and responses were not read or displayed.";
+  if (lang === "zh") return translateCopy("in.privacyBoundary", lang);
+  return privacy || translateCopy("in.privacyBoundary", lang);
 }
 
 export function presentRouteVerificationSummary(
@@ -378,7 +358,7 @@ export function presentRouteVerificationSummary(
   lang: "zh" | "en",
 ) {
   if (lang === "zh") {
-    return verification.ok ? "配置、服务和路由证据一致。" : "连接证据仍需处理。";
+    return translateCopy(verification.ok ? "in.routeEvidenceConsistent" : "in.routeEvidenceNeedsAttention", lang);
   }
   return verification.summary;
 }

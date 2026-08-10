@@ -2952,6 +2952,15 @@
       "summary": "fix(i18n): migrate Changes page copy to DICT via translateCopy (kill 76 language-isolation violations)",
       "head_before": "0e61ec1a76e986b2f5f8dba74b5d0e2fa172fe08",
       "remote": null
+    },
+    {
+      "id": "9dba889e-ebd8-4914-90db-f7ef4c3f4894",
+      "timestamp": "2026-08-10T22:21:35+08:00",
+      "operation": "commit",
+      "branch": "codex/final/stage-pack-integrated",
+      "summary": "Migrate install presentation copy to DICT via translateCopy (kill 87 language-isolation violations); add 4 in.* keys",
+      "head_before": "5aa983fc8aba2535e35738395c9baae4be17cdd5",
+      "remote": null
     }
   ]
 }
