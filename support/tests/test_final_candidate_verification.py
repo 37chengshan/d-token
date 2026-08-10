@@ -49,6 +49,14 @@ EXPECTED = {
     "producer_revision": "test-producer@1",
 }
 
+# G5 independent managed-RTK receipts (legacy roles, declared explicitly via
+# --legacy-evidence): one executed receipt per platform, candidate-bound.
+MANAGED_RTK_RECEIPTS = {
+    "managed_rtk_macos": "managed-rtk-candidate-evidence.json",
+    "managed_rtk_windows": "managed-rtk-windows-evidence.json",
+    "managed_rtk_wsl": "managed-rtk-wsl-evidence.json",
+}
+
 
 def load_orchestrator_module():
     spec = importlib.util.spec_from_file_location(
@@ -133,13 +141,49 @@ def write_full_evidence(root: Path, *, signing: bool = False) -> None:
             if role == "N8" and signing:
                 extra["signing"] = {"authenticode": True}
             if role == "N10-U9":
-                extra = {"registry_total": 117, "verified_total": 117}
+                # U9 coverage seal: every registry entry mapped to its real
+                # producer node/artifact and marked verified (G9 requires the
+                # seal to trace to valid producer-node evidence).
+                node_by_id, artifact_by_id = module.gate_status._u9_registry_mapping()
+                entry_ids = sorted(node_by_id)
+                extra = {
+                    "registry_total": len(entry_ids),
+                    "verified_total": len(entry_ids),
+                    "coverage": {
+                        "total": len(entry_ids),
+                        "verified": len(entry_ids),
+                        "per_entry": [
+                            {
+                                "id": entry_id,
+                                "producer_node": node_by_id[entry_id],
+                                "artifact": artifact_by_id[entry_id],
+                                "verified": True,
+                            }
+                            for entry_id in entry_ids
+                        ],
+                        "verified_ids": entry_ids,
+                    },
+                }
             if role == "N8" and filename == "fan-in-artifact-contract.json":
                 extra["same_commit"] = True
                 extra["same_source_digest"] = True
             data = make_artifact(role, started, finished, extra=extra)
             path = root / filename
             path.write_text(json.dumps(data), encoding="utf-8")
+    # G5 independent managed-RTK receipts: executed on each platform,
+    # candidate-bound (candidate_commit/candidate_id == C_final,
+    # source_digest == frozen candidate), usage_count > 0, never fixture/mock.
+    for role, filename in MANAGED_RTK_RECEIPTS.items():
+        data = make_artifact(
+            role, NODE_STARTED, NODE_FINISHED,
+            extra={
+                "candidate_id": C_FINAL,
+                "usage_count": 1,
+                "fixture": False,
+                "mock": False,
+            },
+        )
+        (root / filename).write_text(json.dumps(data), encoding="utf-8")
     # Legacy G6 evidence: executed PowerShell release-verification report and
     # handoff manifest (declared explicitly, never discovered).
     (root / "release-verification-20260809T000000Z.json").write_text(
@@ -196,6 +240,8 @@ def run_orchestrator(
         "--legacy-evidence",
         f"release_handoff_manifest={root / 'release-handoff-manifest-20260809T000000Z.json'}",
     ])
+    for role, filename in MANAGED_RTK_RECEIPTS.items():
+        cmd.extend(["--legacy-evidence", f"{role}={root / filename}"])
     if report_only:
         cmd.append("--report-only")
     return subprocess.run(cmd, capture_output=True, text=True)

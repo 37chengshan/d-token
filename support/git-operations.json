@@ -2997,6 +2997,15 @@
       "summary": "fix(agent-bridge): drop needless borrow in managed RTK candidate probe",
       "head_before": "373622bdf8f95329dfe8e43c44fd8ed648f76a79",
       "remote": null
+    },
+    {
+      "id": "fbaff8ba-c79d-4bab-94ad-04021b948efd",
+      "timestamp": "2026-08-10T22:50:47+08:00",
+      "operation": "commit",
+      "branch": "codex/final/stage-pack-integrated",
+      "summary": "fix: complete N9 verification fixture for G5/G9 gates",
+      "head_before": "da361b56a2ce3bccca674fc9c44a697cbc5494bb",
+      "remote": null
     }
   ]
 }
