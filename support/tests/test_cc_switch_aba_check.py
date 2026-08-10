@@ -18,9 +18,9 @@ digest.  These tests pin the contract that matters for release honesty
   * route signatures mirror the d-token-config-patcher pinned formats
     (cc_switch.rs / cc_switch_fixture.rs).
 
-All tests run against private copies of the committed fixture database under
-a unique temp dir; no real cc-switch database, agent config, or credential
-store is ever touched.
+All tests run against private copies of the committed fixture database
+(schema 12) or private synthetic schema-16 databases under a unique temp dir;
+no real cc-switch database, agent config, or credential store is ever touched.
 
 Run:  python3 support/tests/test_cc_switch_aba_check.py
 """
@@ -72,6 +72,98 @@ def flip_to_b(db: Path) -> None:
     conn = sqlite3.connect(str(db))
     conn.execute("UPDATE providers SET is_current = 0 WHERE app_type = 'codex' AND is_current = 1")
     conn.execute("UPDATE providers SET is_current = 1 WHERE id = 'fixture-codex-alt'")
+    conn.commit()
+    conn.close()
+
+
+def make_schema16_db(tmp: Path, name: str) -> Path:
+    """Private cc-switch database with the real-world schema 16 shape
+    (PRAGMA user_version = 16).
+
+    Mirrors the core tables the harness reads from the real
+    ~/.cc-switch/cc-switch.db: profiles (payload column), providers
+    (PK (id, app_type), is_current, sort_index, settings_config) and
+    provider_endpoints (url column).  Providers are seeded with env-style
+    settings_config (ANTHROPIC_BASE_URL / ANTHROPIC_MODEL) exactly like the
+    real active claude provider, so the harness parses them via the env path
+    and never touches the endpoint column.
+    """
+    db = tmp / name
+    conn = sqlite3.connect(str(db))
+    conn.execute("PRAGMA user_version = 16")
+    conn.executescript(
+        """
+        CREATE TABLE profiles (
+            id TEXT PRIMARY KEY, name TEXT NOT NULL, payload TEXT NOT NULL,
+            sort_order INTEGER, created_at INTEGER, updated_at INTEGER
+        );
+        CREATE TABLE providers (
+            id TEXT NOT NULL, app_type TEXT NOT NULL, name TEXT NOT NULL,
+            settings_config TEXT NOT NULL, website_url TEXT, category TEXT,
+            created_at INTEGER, sort_index INTEGER, notes TEXT, icon TEXT,
+            icon_color TEXT, meta TEXT NOT NULL DEFAULT '{}',
+            is_current BOOLEAN NOT NULL DEFAULT 0,
+            in_failover_queue BOOLEAN NOT NULL DEFAULT 0,
+            cost_multiplier TEXT NOT NULL DEFAULT '1.0',
+            limit_daily_usd TEXT, limit_monthly_usd TEXT, provider_type TEXT,
+            PRIMARY KEY (id, app_type)
+        );
+        CREATE TABLE provider_endpoints (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            provider_id TEXT NOT NULL, app_type TEXT NOT NULL, url TEXT NOT NULL,
+            added_at INTEGER,
+            FOREIGN KEY (provider_id, app_type)
+                REFERENCES providers(id, app_type) ON DELETE CASCADE
+        );
+        """
+    )
+
+    def insert_provider(pid: str, app_type: str, name: str, sort_index: int,
+                        is_current: int, endpoint: str, model: str) -> None:
+        conn.execute(
+            "INSERT INTO providers (id, app_type, name, settings_config, "
+            "sort_index, is_current, meta) VALUES (?, ?, ?, ?, ?, ?, '{}')",
+            (pid, app_type, name,
+             json.dumps({"env": {"ANTHROPIC_BASE_URL": endpoint,
+                                 "ANTHROPIC_MODEL": model}}),
+             sort_index, is_current),
+        )
+
+    insert_provider("v16-claude-current", "claude", "claude-current", 0, 1,
+                    "https://v16-claude.example.test", "claude-v16-model")
+    insert_provider("v16-codex-current", "codex", "codex-current", 0, 1,
+                    "https://v16-codex.example.test", "codex-v16-model")
+    insert_provider("v16-gemini-current", "gemini", "gemini-current", 0, 1,
+                    "https://v16-gemini.example.test", "gemini-v16-model")
+    insert_provider("v16-codex-alt", "codex", "codex-alt", 1, 0,
+                    "https://v16-codex-alt.example.test", "codex-v16-alt-model")
+    for pid, name in (("v16-profile-a", "profile-a"), ("v16-profile-b", "profile-b")):
+        conn.execute("INSERT INTO profiles (id, name, payload) VALUES (?, ?, '{}')",
+                     (pid, name))
+    conn.execute(
+        "INSERT INTO provider_endpoints (provider_id, app_type, url) "
+        "VALUES ('v16-codex-alt', 'codex', 'https://v16-codex-alt.example.test')"
+    )
+    conn.commit()
+    conn.close()
+    return db
+
+
+def flip_to_b_schema16(db: Path) -> None:
+    """Flip a private schema-16 copy to the B state (active codex provider
+    alternates), mirroring the Main agent's Computer switch on the real DB."""
+    conn = sqlite3.connect(str(db))
+    conn.execute("UPDATE providers SET is_current = 0 WHERE app_type = 'codex' AND is_current = 1")
+    conn.execute("UPDATE providers SET is_current = 1 WHERE id = 'v16-codex-alt'")
+    conn.commit()
+    conn.close()
+
+
+def flip_to_a_schema16(db: Path) -> None:
+    """Restore the A state on the SAME path (active codex provider returns)."""
+    conn = sqlite3.connect(str(db))
+    conn.execute("UPDATE providers SET is_current = 0 WHERE app_type = 'codex' AND is_current = 1")
+    conn.execute("UPDATE providers SET is_current = 1 WHERE id = 'v16-codex-current'")
     conn.commit()
     conn.close()
 
@@ -211,6 +303,128 @@ class CcSwitchAbaHarnessContractTests(unittest.TestCase):
             self.assertEqual(snap["db"]["schema_kind"], "unknown")
             self.assertEqual(snap["db"]["source_state"], "blocked")
             self.assertEqual(snap["route"]["active_upstreams"], [])
+            self.assertEqual(snap["db"]["writes_attempted"], 0)
+
+    def test_collect_schema16_snapshot_is_loaded_and_readonly(self) -> None:
+        """The real cc-switch DB is user_version=16; collect must load it and
+        record the real user_version, never a blocked snapshot."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            db = make_schema16_db(tmp, "v16.db")
+            before = sha256_file(db)
+            out = tmp / "pre.json"
+            proc = run_collect(db, "pre", out)
+            self.assertEqual(proc.returncode, 0)
+            self.assertEqual(sha256_file(db), before,
+                             "collect must not modify the database bytes")
+            snap = json.loads(out.read_text(encoding="utf-8"))
+            self.assertEqual(snap["status"], "loaded")
+            self.assertEqual(snap["mode"], "real")
+            self.assertEqual(snap["phase"], "pre")
+            self.assertTrue(snap["ok"])
+            self.assertEqual(snap["db"]["schema_version"], 16,
+                             "db.schema_version must record the real user_version")
+            self.assertEqual(snap["db"]["schema_kind"], "loaded")
+            self.assertEqual(snap["db"]["source_state"], "loaded")
+            self.assertEqual(snap["db"]["selection_state"], "resolved")
+            self.assertIs(snap["db"]["readonly_open"], True)
+            self.assertIs(snap["db"]["query_only"], True)
+            self.assertEqual(snap["db"]["writes_attempted"], 0)
+            self.assertIs(snap["db"]["path_redacted"], True)
+            self.assertEqual(snap["ledger"]["writes_attempted"], 0)
+            self.assertIs(snap["redacted"], True)
+            app_types = {u["app_type"] for u in snap["route"]["active_upstreams"]}
+            self.assertEqual(app_types, {"claude", "codex", "gemini"})
+            self.assertTrue(snap["route"]["identity_sha256"])
+
+    def test_full_aba_roundtrip_schema16_passes_with_binding(self) -> None:
+        """A genuine A->B->A round trip on a schema-16 database passes under
+        the same fail-closed contract as schema 12."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            db = make_schema16_db(tmp, "v16.db")
+            pre = tmp / "pre.json"
+            b = tmp / "b.json"
+            post = tmp / "post.json"
+            proc = run_collect(db, "pre", pre)
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            flip_to_b_schema16(db)
+            proc = run_collect(db, "observed-b", b)
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            flip_to_a_schema16(db)
+            proc = run_collect(db, "post", post)
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+
+            pre_snap = json.loads(pre.read_text(encoding="utf-8"))
+            b_snap = json.loads(b.read_text(encoding="utf-8"))
+            post_snap = json.loads(post.read_text(encoding="utf-8"))
+            self.assertNotEqual(b_snap["route"]["identity_sha256"],
+                                pre_snap["route"]["identity_sha256"],
+                                "B state must differ from A for a genuine round trip")
+            self.assertEqual(pre_snap["route"]["identity_sha256"],
+                             post_snap["route"]["identity_sha256"])
+            for snap in (pre_snap, b_snap, post_snap):
+                self.assertEqual(snap["db"]["schema_version"], 16)
+                self.assertEqual(snap["db"]["source_state"], "loaded")
+                self.assertEqual(snap["db"]["writes_attempted"], 0)
+            self.assertEqual(pre_snap["db"]["path_fingerprint_sha256"],
+                             post_snap["db"]["path_fingerprint_sha256"])
+
+            artifact = tmp / "cc-switch-aba-v16.json"
+            proc = run_harness(
+                "verify", "--pre", str(pre), "--observed-b", str(b), "--post", str(post),
+                "--actions", str(make_actions(tmp)), "--db", str(db),
+                "--expected-commit", repo_commit(), "--expected-source-digest", repo_digest(),
+                "--artifact", str(artifact), "--quiet",
+            )
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            data = json.loads(artifact.read_text(encoding="utf-8"))
+            self.assertEqual(data["status"], "passed")
+            self.assertIs(data["ok"], True)
+            self.assertIs(data["wrote_cc_switch"], False)
+            self.assertIs(data["identity_restored"], True)
+            self.assertIs(data["observed_b_differs"], True)
+            self.assertEqual(data["failure"]["class"], "none")
+            self.assertEqual(data["db"]["schema_version"], 16)
+            self.assertEqual(data["db"]["schema_kind"], "loaded")
+            self.assertIs(data["db"]["db_unchanged_during_verify"], True)
+            self.assertEqual(
+                data["artifact_sha256"], recompute_artifact_sha256(data),
+                "artifact_sha256 must equal SHA-256 of the canonical JSON without itself",
+            )
+            check = run_harness("--check-schema", str(artifact))
+            self.assertEqual(check.returncode, 0, check.stderr)
+
+    def test_schema16_endpoint_column_shape_fails_closed(self) -> None:
+        """Schema-16 provider_endpoints stores url (not endpoint): a current
+        provider without env config fails the per-provider parse (selection
+        blocked) while the snapshot itself remains loaded — never a crash and
+        never a fabricated identity."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            db = make_schema16_db(tmp, "v16.db")
+            conn = sqlite3.connect(str(db))
+            conn.execute("UPDATE providers SET is_current = 0 WHERE id = 'v16-codex-current'")
+            conn.execute(
+                "INSERT INTO providers (id, app_type, name, settings_config, "
+                "sort_index, is_current, meta) "
+                "VALUES ('v16-endpoint-only', 'codex', 'endpoint-only', "
+                "'{\"auth\":{\"auth_mode\":\"chatgpt\"}}', 0, 1, '{}')"
+            )
+            conn.commit()
+            conn.close()
+            out = tmp / "snap.json"
+            proc = run_collect(db, "pre", out)
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            snap = json.loads(out.read_text(encoding="utf-8"))
+            self.assertEqual(snap["status"], "loaded")
+            self.assertEqual(snap["db"]["schema_version"], 16)
+            self.assertEqual(snap["db"]["source_state"], "loaded")
+            self.assertEqual(snap["db"]["selection_state"], "blocked")
+            codex_ids = [u["provider_id"] for u in snap["route"]["active_upstreams"]
+                         if u["app_type"] == "codex"]
+            self.assertEqual(codex_ids, [],
+                             "unparseable provider must not fabricate an upstream")
             self.assertEqual(snap["db"]["writes_attempted"], 0)
 
     def test_collect_unreadable_db_fails_closed(self) -> None:

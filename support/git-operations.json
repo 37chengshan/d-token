@@ -3051,6 +3051,15 @@
       "summary": "fix(evidence): validate paired-contract pretty JSON text in U4",
       "head_before": "bd188b4767d75bbf759693f97607220a8c756349",
       "remote": null
+    },
+    {
+      "id": "8275de57-714f-4fe0-bddd-0cdd4af1eea0",
+      "timestamp": "2026-08-11T00:22:04+08:00",
+      "operation": "commit",
+      "branch": "codex/final/stage-pack-integrated",
+      "summary": "fix(evidence): accept cc-switch DB schema 16 in cc-switch ABA harness (12/16 supported; unknown still blocked) + contract tests",
+      "head_before": "29a822f81bc6aa5788a86f9cb88c75b7ed9971af",
+      "remote": null
     }
   ]
 }

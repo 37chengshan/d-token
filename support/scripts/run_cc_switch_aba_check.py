@@ -82,6 +82,13 @@ from pathlib import Path
 
 SCHEMA_VERSION = "1.1"
 
+# cc-switch database user_version values the harness can read. 12 is the
+# historical committed fixture schema; 16 is the current real-world schema
+# (the core tables the harness reads — profiles / providers / provider_endpoints
+# — are present and compatible). Any other user_version resolves to a blocked
+# snapshot (fail-closed, unknown schema).
+SUPPORTED_SCHEMA_VERSIONS = (12, 16)
+
 # --- Status enums -----------------------------------------------------------
 SNAPSHOT_STATUS_LOADED = "loaded"
 SNAPSHOT_STATUS_BLOCKED = "blocked"
@@ -252,9 +259,11 @@ def canonical_identity(active_upstreams: list[dict]) -> str:
 def read_cc_switch_snapshot(db_path: Path, phase: str, mode: str) -> dict:
     """Read-only snapshot of a cc-switch database (never writes).
 
-    Mirrors cc_switch.rs read_cc_switch_snapshot semantics: unknown schema
-    versions resolve to a blocked snapshot, active providers missing required
-    fields block the selection, credential values are never read.
+    Mirrors cc_switch.rs read_cc_switch_snapshot semantics: schema versions
+    outside SUPPORTED_SCHEMA_VERSIONS resolve to a blocked snapshot, active
+    providers missing required fields block the selection, credential values
+    are never read. The db.schema_version field records the database's real
+    PRAGMA user_version (12 or 16).
     """
     events: list[dict] = []
     ledger = {"events": events, "writes_attempted": 0, "redacted": True}
@@ -292,7 +301,7 @@ def read_cc_switch_snapshot(db_path: Path, phase: str, mode: str) -> dict:
             schema_version = 0
         events.append({"at": now_iso(), "event": "open_readonly", "schema_version": schema_version})
 
-        if schema_version != 12:
+        if schema_version not in SUPPORTED_SCHEMA_VERSIONS:
             return {
                 "schema_version": SCHEMA_VERSION,
                 "mode": mode,
