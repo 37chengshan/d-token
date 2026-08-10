@@ -5,8 +5,9 @@
 //! 承载 bus 的 session cache 条目 / Recovery manifest / SharedContext grant 持久化。
 //!
 //! 安全边界（与 bus 契约一致）：
-//! - 不持久化 raw/secret：条目 body 写入前必须已经过 bus 的 secret-shape gate；
-//!   本模块不执行额外解密/脱敏，也不接收明文凭证；
+//! - 不持久化 raw/secret/prompt/source：条目 body 只存在于进程内
+//!   session cache / relay（memory-only），本模块**永不落盘 body 列**——
+//!   表中根本没有 body 列，恢复出的条目恒为元数据投影（body=None）；
 //! - 按 project 隔离读取（跨项目污染 = 0）；
 //! - delete 语义：TTL/stale/superseded 清理后条目/ manifest 从表中删除，重启不复活。
 //!
@@ -64,8 +65,7 @@ impl SqlitePersistence {
                  recorded_at_ms INTEGER NOT NULL,
                  ttl_seconds INTEGER,
                  body_bytes INTEGER NOT NULL,
-                 query_tokens TEXT NOT NULL,
-                 body TEXT
+                 query_tokens TEXT NOT NULL
              );
              CREATE TABLE IF NOT EXISTS bus_manifest (
                  manifest_id TEXT PRIMARY KEY,
@@ -111,6 +111,9 @@ fn tokens_from_row(value: String) -> Result<Vec<String>> {
 
 impl PersistencePort for SqlitePersistence {
     fn save_entry(&mut self, entry: &CacheEntry) -> Result<()> {
+        // 隐私边界（SECURITY/PRD）：持久层绝不落盘 prompt/response/source 原文。
+        // 仅存元数据与签名；body 只存在于进程内 session cache / relay
+        // （memory-only），重启后恢复的条目 body 恒为 None。
         let tokens = serde_json::to_string(&entry.query_tokens)?;
         let connection = self
             .connection
@@ -119,8 +122,8 @@ impl PersistencePort for SqlitePersistence {
         connection.execute(
             "INSERT INTO bus_entry (
                  map_signature, project_id, agent_id, session_id, source_fingerprint,
-                 recorded_at_ms, ttl_seconds, body_bytes, query_tokens, body
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+                 recorded_at_ms, ttl_seconds, body_bytes, query_tokens
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
              ON CONFLICT(map_signature) DO UPDATE SET
                  project_id = excluded.project_id,
                  agent_id = excluded.agent_id,
@@ -129,8 +132,7 @@ impl PersistencePort for SqlitePersistence {
                  recorded_at_ms = excluded.recorded_at_ms,
                  ttl_seconds = excluded.ttl_seconds,
                  body_bytes = excluded.body_bytes,
-                 query_tokens = excluded.query_tokens,
-                 body = excluded.body",
+                 query_tokens = excluded.query_tokens",
             params![
                 entry.map_signature,
                 entry.project_id,
@@ -141,7 +143,6 @@ impl PersistencePort for SqlitePersistence {
                 entry.ttl_seconds.map(|ttl| ttl as i64),
                 entry.body_bytes as i64,
                 tokens,
-                entry.body,
             ],
         )?;
         Ok(())
@@ -154,7 +155,7 @@ impl PersistencePort for SqlitePersistence {
             .map_err(|_| anyhow::anyhow!("bus persistence lock poisoned"))?;
         let mut statement = connection.prepare(
             "SELECT map_signature, project_id, agent_id, session_id, source_fingerprint,
-                    recorded_at_ms, ttl_seconds, body_bytes, query_tokens, body
+                    recorded_at_ms, ttl_seconds, body_bytes, query_tokens
              FROM bus_entry WHERE project_id = ?1 ORDER BY recorded_at_ms",
         )?;
         let rows = statement.query_map(params![project_id], |row| {
@@ -175,7 +176,8 @@ impl PersistencePort for SqlitePersistence {
                 ttl_seconds: row.get::<_, Option<i64>>(6)?.map(|ttl| ttl as u64),
                 body_bytes: row.get::<_, i64>(7)? as usize,
                 query_tokens: tokens,
-                body: row.get(9)?,
+                // 持久层不存 body：恢复出的条目恒为元数据投影。
+                body: None,
             })
         })?;
         let mut entries = Vec::new();
@@ -402,9 +404,58 @@ mod tests {
         let b = port.load_entries("proj-b").unwrap();
         assert_eq!(a.len(), 1);
         assert_eq!(b.len(), 1);
-        assert_eq!(a[0].body.as_deref(), Some("candidate:one"));
+        // 隐私边界：持久层不存 body——恢复出的条目是元数据投影。
+        assert!(a[0].body.is_none());
+        assert_eq!(a[0].map_signature, map_signature("proj-a", "one"));
         assert_eq!(port.load_entries("proj-c").unwrap().len(), 0);
         assert_eq!(port.project_ids().unwrap().len(), 2);
+        for suffix in ["", "-wal", "-shm"] {
+            let mut sidecar = path.clone().into_os_string();
+            sidecar.push(suffix);
+            let _ = std::fs::remove_file(sidecar);
+        }
+    }
+
+    #[test]
+    fn sqlite_port_never_persists_plaintext_body() {
+        // 安全回归（Main security re-review）：即使 entry 携带完整变换后的
+        // prompt/source body，持久层也绝不落盘原文；DB 文件中不出现明文。
+        let path = temp_db("nobody");
+        let mut port = SqlitePersistence::open(&path).unwrap();
+        let plaintext =
+            "user: please explain the authentication flow in detail with source code";
+        let mut e = entry("proj", "one");
+        e.body = Some(plaintext.to_string());
+        e.body_bytes = plaintext.len();
+        port.save_entry(&e).unwrap();
+        port.save_manifest(&RecoveryManifest::new_bound(
+            "proj",
+            "req-1",
+            dtoken_context_bus::signature::sha256_hex(plaintext.as_bytes()),
+            "decision-1",
+            1_000,
+            vec![ManifestEntry::from(&e)],
+        ))
+        .unwrap();
+        drop(port);
+        // DB 文件不包含明文 prompt 内容。
+        let raw = std::fs::read(&path).unwrap();
+        let text = String::from_utf8_lossy(&raw);
+        assert!(
+            !text.contains("please explain the authentication flow"),
+            "plaintext prompt must never be persisted"
+        );
+        assert!(
+            !text.contains(plaintext),
+            "transformed body must never be persisted"
+        );
+        // 重开：元数据恢复可用（body 恒 None）。
+        let reopened = SqlitePersistence::open(&path).unwrap();
+        let rows = reopened.load_entries("proj").unwrap();
+        assert_eq!(rows.len(), 1);
+        assert!(rows[0].body.is_none());
+        assert_eq!(rows[0].body_bytes, plaintext.len());
+        assert_eq!(reopened.load_manifests("proj").unwrap().len(), 1);
         for suffix in ["", "-wal", "-shm"] {
             let mut sidecar = path.clone().into_os_string();
             sidecar.push(suffix);

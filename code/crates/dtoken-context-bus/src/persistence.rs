@@ -43,14 +43,17 @@ impl InMemoryPersistence {
 
 impl PersistencePort for InMemoryPersistence {
     fn save_entry(&mut self, entry: &CacheEntry) -> Result<()> {
+        // 与 SQLite port 同一隐私契约：持久层不存 body（memory-only）。
+        let mut metadata = entry.clone();
+        metadata.body = None;
         if let Some(existing) = self
             .entries
             .iter_mut()
             .find(|e| e.map_signature == entry.map_signature)
         {
-            *existing = entry.clone();
+            *existing = metadata;
         } else {
-            self.entries.push(entry.clone());
+            self.entries.push(metadata);
         }
         Ok(())
     }

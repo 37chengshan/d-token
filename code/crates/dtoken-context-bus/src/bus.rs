@@ -144,6 +144,8 @@ impl ContextBus {
         now_ms: u64,
     ) -> ConsultOutcome {
         // 1) Session Cache：同一 agent 同一 session 的 map-signature 复用。
+        // 仅当条目携带 body（进程内 memory-only）才可替换；重启恢复出的
+        // 元数据投影（body=None）不产生复用（Miss → 调用方压缩自身内容）。
         if let Some(entry) = self.session_cache.get(
             &scope.project_id,
             &scope.agent_id,
@@ -153,19 +155,22 @@ impl ContextBus {
             now_ms,
             true,
         ) {
-            let receipt = CacheReuseReceipt {
-                project_id: scope.project_id.clone(),
-                agent_id: scope.agent_id.clone(),
-                session_id: scope.session_id.clone(),
-                map_signature: map_signature.to_string(),
-                source_fingerprint: source_fingerprint.to_string(),
-                reused_bytes: entry.body_bytes,
-                hit_at_ms: now_ms,
-            };
-            return ConsultOutcome::CacheHit {
-                entry: entry.clone(),
-                receipt,
-            };
+            if let Some(body) = entry.body.as_deref() {
+                let receipt = CacheReuseReceipt {
+                    project_id: scope.project_id.clone(),
+                    agent_id: scope.agent_id.clone(),
+                    session_id: scope.session_id.clone(),
+                    map_signature: map_signature.to_string(),
+                    source_fingerprint: source_fingerprint.to_string(),
+                    reused_bytes: body.len(),
+                    hit_at_ms: now_ms,
+                };
+                return ConsultOutcome::CacheHit {
+                    entry: entry.clone(),
+                    receipt,
+                };
+            }
+            // 元数据投影：无 body 可复用 → 落到 relay/miss 路径。
         }
         // 2) Context Relay：跨 Agent（self-hit=0）+ grant + 同项目 + fresh + source。
         let query = RelayQuery {
@@ -181,9 +186,11 @@ impl ContextBus {
             self.shared.is_granted(project, owner, grantee, session)
         };
         match self.relay.query(&query, &granted) {
-            crate::relay::RelayOutcome::SignatureHit(entry) => {
-                // 精确 map-signature 命中：canonical 内容与 source fingerprint
-                // 完全一致 → 同一变换对同一内容确定成立 → 允许 body 替换。
+            crate::relay::RelayOutcome::SignatureHit(entry) if entry.body.is_some() => {
+                // 精确 map-signature 命中且条目携带 body（进程内 memory-only）：
+                // canonical 内容与 source fingerprint 完全一致 → 同一变换对同一
+                // 内容确定成立 → 允许 body 替换。重启恢复的元数据投影（body=None）
+                // 不产生替换（落到 Miss）。
                 let receipt = RelayHitReceipt {
                     project_id: scope.project_id.clone(),
                     owner_agent_id: entry.agent_id.clone(),
@@ -191,11 +198,12 @@ impl ContextBus {
                     session_id: entry.session_id.clone(),
                     map_signature: entry.map_signature.clone(),
                     source_fingerprint: entry.source_fingerprint.clone(),
-                    avoided_bytes: entry.body_bytes,
+                    avoided_bytes: entry.body.as_deref().map(str::len).unwrap_or(0),
                     hit_at_ms: now_ms,
                 };
                 ConsultOutcome::RelayHit { entry, receipt }
             }
+            crate::relay::RelayOutcome::SignatureHit(_) => ConsultOutcome::Miss,
             crate::relay::RelayOutcome::QueryHit(mut entry) => {
                 // query-aware retrieval 只提供「存在可复用条目」的信号，不提供
                 // body：无精确 map-signature 绑定时替换 body 会把请求 A 的

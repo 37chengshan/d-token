@@ -15476,7 +15476,8 @@ mod tests {
         }
         // 实例 B 重启：从同一 SQLite 恢复。
         let instance_b = AppState::new_persistent(route_test_config(), dir.clone());
-        // 恢复后应能从共享 persistence 读到条目。
+        // 恢复后应能从共享 persistence 读到元数据条目（body 恒 None——
+        // 隐私边界：prompt/source 原文绝不落盘）。
         {
             let bus = instance_b.context_bus.as_ref().unwrap().clone();
             let bus = bus.lock().unwrap();
@@ -15485,6 +15486,43 @@ mod tests {
                 entries.len(),
                 1,
                 "SQLite persistence restored across restart"
+            );
+            assert!(
+                entries[0].body.is_none(),
+                "persisted entries carry no body (privacy boundary)"
+            );
+            assert_eq!(
+                bus.relay_entry_count(),
+                1,
+                "relay metadata recovered after restart"
+            );
+        }
+        // 重启后恢复的条目是元数据投影：consult 不产生 body 替换（Miss）。
+        {
+            let bus = instance_b.context_bus.as_ref().unwrap().clone();
+            let mut bus = bus.lock().unwrap();
+            let outcome = bus.consult(
+                &dtoken_context_bus::BusScope::new("proj", "agent-b", "sess-b"),
+                &dtoken_context_bus::signature::map_signature(
+                    "proj",
+                    r#"{"messages":[{"role":"user","content":"hello"}]}"#,
+                ),
+                &dtoken_context_bus::signature::source_fingerprint(&"a".repeat(64), None),
+                &["route-a".to_string(), "model-a".to_string()],
+                dtoken_event_ledger::now_ms().max(1),
+            );
+            assert!(
+                matches!(outcome, dtoken_context_bus::bus::ConsultOutcome::Miss),
+                "restored metadata-only entries must not substitute bodies"
+            );
+        }
+        // DB 文件不包含明文 prompt。
+        let db = dir.join("context-bus.sqlite3");
+        if let Ok(raw) = std::fs::read(&db) {
+            let text = String::from_utf8_lossy(&raw);
+            assert!(
+                !text.contains("hello"),
+                "plaintext prompt must not appear in context-bus.sqlite3"
             );
         }
         let _ = std::fs::remove_dir_all(dir);
@@ -20290,6 +20328,8 @@ mod tests {
         let consumer = dtoken_context_bus::BusScope::new("proj-a", "agent-b", "sess-2");
         let signature = dtoken_context_bus::signature::map_signature("proj-a", r#"{"q":"shared"}"#);
         let fingerprint = dtoken_context_bus::signature::source_fingerprint(&"a".repeat(64), None);
+        // 隐私边界（security re-review）：重启恢复的条目是元数据投影（body=None），
+        // 不产生 body 替换 → Miss。进程内（未重启）的精确签名命中仍可替换。
         let outcome = bus.consult(
             &consumer,
             &signature,
@@ -20297,12 +20337,14 @@ mod tests {
             &["route-a".to_string()],
             now,
         );
-        match outcome {
-            dtoken_context_bus::bus::ConsultOutcome::RelayHit { entry, .. } => {
-                assert_eq!(entry.body.as_deref(), Some("candidate-body"));
-            }
-            other => panic!("expected relay hit after restart, got {other:?}"),
-        }
+        assert!(
+            matches!(outcome, dtoken_context_bus::bus::ConsultOutcome::Miss),
+            "restored metadata-only entries must not substitute bodies"
+        );
+        // 恢复出的条目确实无 body。
+        let entries = bus.persistence().load_entries("proj-a").unwrap();
+        assert_eq!(entries.len(), 1);
+        assert!(entries[0].body.is_none(), "no plaintext body persisted");
         // 跨项目隔离：proj-b 同内容 → miss（跨项目污染 = 0）。
         let other = dtoken_context_bus::BusScope::new("proj-b", "agent-c", "sess-3");
         let other_signature = dtoken_context_bus::signature::map_signature("proj-b", r#"{"q":"shared"}"#);

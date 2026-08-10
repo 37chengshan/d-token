@@ -2502,6 +2502,15 @@
       "summary": "C2/C3 remediation: registry c3.*/context-store.persistence pointer corrections + accurate C2-C3-REMEDIATION report",
       "head_before": "ad6f2c5",
       "remote": null
+    },
+    {
+      "id": "57b7ac02-3bd3-4505-91d5-3286e07b5830",
+      "timestamp": "2026-08-10T16:15:22+08:00",
+      "operation": "commit",
+      "branch": "codex/final/c2-c3-remediation",
+      "summary": "C2/C3 privacy fix: SQLite persistence stores metadata/signatures only, never body (plaintext prompt/source absent from context-bus.sqlite3); restarted entries are metadata projections that never substitute bodies",
+      "head_before": "1e309ce",
+      "remote": null
     }
   ]
 }
