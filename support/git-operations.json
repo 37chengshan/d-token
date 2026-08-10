@@ -2484,6 +2484,15 @@
       "summary": "修复统一能力注册表虚构测试路径并强制 tracked-file fail-closed 校验",
       "head_before": "decd0016ca8c6312ac57033d1d577b91eefa1c1b",
       "remote": null
+    },
+    {
+      "id": "5bac7e24-7b94-4dcf-82a2-e21b853adcbf",
+      "timestamp": "2026-08-10T12:05:12+08:00",
+      "operation": "commit",
+      "branch": "codex/final/product-closure-remediation",
+      "summary": "product closure: CBM v2 manifest registry, per-version acceptance harness, manifest-driven promo",
+      "head_before": "15f98cf",
+      "remote": null
     }
   ]
 }

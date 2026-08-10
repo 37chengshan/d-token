@@ -147,8 +147,11 @@ def main() -> None:
     args = parser.parse_args()
 
     manifest = json.loads(args.manifest.read_text(encoding="utf-8"))
-    if manifest.get("schema_version") != 1 or manifest.get("upstream", {}).get("tag") != "v0.9.1-rc.1":
+    if manifest.get("schema_version") not in (1, 2) or manifest.get("upstream", {}).get("tag") != "v0.9.1-rc.1":
         raise SystemExit("unsupported codebase-memory artifact manifest")
+    identity = manifest.get("identity_policy", {})
+    if manifest.get("schema_version") == 2 and identity.get("server_json_version_used") is not False:
+        raise SystemExit("codebase-memory v2 manifest must never read server.json version")
     forbidden = ("runtime_download", "upstream_installer", "upstream_ui", "auto_update")
     policy = manifest.get("runtime_policy", {})
     if any(policy.get(key) is not False for key in forbidden):
