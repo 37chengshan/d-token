@@ -2574,6 +2574,15 @@
       "summary": "合并候选功能基线 96033c6 到当前 stage HEAD 15f98cf",
       "head_before": "15f98cfb9861c3f9ad87b1d0dc5f8e6f1844063d",
       "remote": null
+    },
+    {
+      "id": "e0127544-7709-4421-b878-358857b1706e",
+      "timestamp": "2026-08-10T13:20:10+08:00",
+      "operation": "merge",
+      "branch": "codex/final/stage-pack-integrated",
+      "summary": "合并 C0 合同与传输回执修复 c66568c 到 stage 集成 HEAD af622af",
+      "head_before": "af622af55260d948de3c629dd8ed91608e13e262",
+      "remote": null
     }
   ]
 }
