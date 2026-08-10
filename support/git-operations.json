@@ -2781,6 +2781,15 @@
       "summary": "整合完成：C0-C8 全序列后恢复候选 rich OptimizationReceipt/RequestLog 字段并修复编译调用点（HEAD 2f9e1d4 后核心库测试编译修复）",
       "head_before": "2f9e1d4413d82174226bca68ab35de14a049b617",
       "remote": null
+    },
+    {
+      "id": "dcd8ba0e-7a06-462c-b05b-76c0215d79ec",
+      "timestamp": "2026-08-10T17:47:04+08:00",
+      "operation": "commit",
+      "branch": "codex/final/receipt-authority",
+      "summary": "fix(runtime): close PIPELINE-RECEIPT-AUTHENTICITY/BINDING with store-issued RecoveryProof + active RouteDecision binding (52318b2)",
+      "head_before": "52318b25ff4e313b6236870275112a44b0cfaf87",
+      "remote": null
     }
   ]
 }
