@@ -338,3 +338,126 @@ fn pool_never_runs_expired_or_cancelled_tasks() {
     assert_eq!(ran.load(Ordering::SeqCst), 0, "cancelled task must not run");
     pool.shutdown();
 }
+
+#[test]
+fn concurrent_submission_never_inverts_stable_admission_order() {
+    // Two submitters race: the second admission is enqueued strictly after
+    // the first, so FIFO-by-sequence must keep dispatch order exactly
+    // admission order even when enqueues interleave.
+    let limits = ConcurrencyLimits::new(1, 256, 64 * 1024).unwrap();
+    let budget = Arc::new(ByteBudget::new(limits.max_inflight_bytes()).unwrap());
+    let pool = Arc::new(BoundedWorkerPool::spawn(limits, budget, None, None).unwrap());
+    let gate = SchedulerGate::new(limits).unwrap();
+
+    let (done_tx, done_rx) = mpsc::channel::<u64>();
+    let (release_tx, release_rx) = mpsc::channel::<()>();
+    let release_rx = std::sync::Arc::new(std::sync::Mutex::new(release_rx));
+    let barrier = Arc::new(std::sync::Barrier::new(3));
+
+    let first_admission = gate.decide(8, None, None).expect("first admitted");
+    let first_sequence = first_admission.sequence();
+    let done_tx_first = done_tx.clone();
+    let pool_first = Arc::clone(&pool);
+    let release_rx_first = Arc::clone(&release_rx);
+    let barrier_first = Arc::clone(&barrier);
+    let first_handle = std::thread::spawn(move || {
+        barrier_first.wait();
+        pool_first
+            .submit_with_permit(
+                8,
+                None,
+                None,
+                first_sequence,
+                Box::new(move || {
+                    let guard = release_rx_first
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    let _ = guard.recv();
+                    drop(guard);
+                    done_tx_first.send(first_sequence).unwrap();
+                    TaskOutcome::Completed
+                }),
+            )
+            .expect("first task admitted");
+    });
+
+    let second_admission = gate.decide(8, None, None).expect("second admitted");
+    let second_sequence = second_admission.sequence();
+    assert!(first_sequence < second_sequence, "admission order");
+    let done_tx_second = done_tx;
+    let pool_second = Arc::clone(&pool);
+    let barrier_second = Arc::clone(&barrier);
+    let second_handle = std::thread::spawn(move || {
+        barrier_second.wait();
+        // Enqueued strictly after the first: sequence, not enqueue timing,
+        // decides dispatch order.
+        std::thread::sleep(std::time::Duration::from_millis(30));
+        pool_second
+            .submit_with_permit(
+                8,
+                None,
+                None,
+                second_sequence,
+                Box::new(move || {
+                    done_tx_second.send(second_sequence).unwrap();
+                    TaskOutcome::Completed
+                }),
+            )
+            .expect("second task admitted");
+    });
+
+    barrier.wait();
+    std::thread::sleep(std::time::Duration::from_millis(80));
+    release_tx.send(()).unwrap();
+    first_handle.join().unwrap();
+    second_handle.join().unwrap();
+
+    let mut completed = Vec::new();
+    while let Ok(sequence) = done_rx.recv() {
+        completed.push(sequence);
+    }
+    assert_eq!(
+        completed,
+        vec![first_sequence, second_sequence],
+        "dispatch must follow admission sequence, not enqueue timing"
+    );
+    Arc::try_unwrap(pool)
+        .expect("pool uniquely owned after submitters finish")
+        .shutdown();
+}
+
+#[test]
+fn expired_deadline_rejects_before_transport_within_total_budget() {
+    // A request whose deadline has already passed must never reach transport
+    // work: the worker reports DeadlineExceeded and the closure never runs.
+    // This bounds total request time to one request-wide budget.
+    let limits = ConcurrencyLimits::new(1, 4, 64 * 1024).unwrap();
+    let budget = Arc::new(ByteBudget::new(limits.max_inflight_bytes()).unwrap());
+    let pool = BoundedWorkerPool::spawn(limits, budget, None, None).unwrap();
+
+    let expired = RequestDeadline::new(1, 1).unwrap(); // far in the past
+    let ran = Arc::new(AtomicUsize::new(0));
+    let ran_flag = Arc::clone(&ran);
+    let outcome = pool
+        .submit(
+            8,
+            Some(expired),
+            None,
+            Box::new(move || {
+                ran_flag.fetch_add(1, Ordering::SeqCst);
+                TaskOutcome::Completed
+            }),
+        )
+        .expect("expired task admitted to the bounded queue");
+    assert_eq!(
+        outcome,
+        TaskOutcome::DeadlineExceeded,
+        "expired request must be preserved before any transport work"
+    );
+    assert_eq!(
+        ran.load(Ordering::SeqCst),
+        0,
+        "transport work must never run for an expired request"
+    );
+    pool.shutdown();
+}

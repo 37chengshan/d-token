@@ -9,10 +9,10 @@
     "benchmark": {
       "schema": "unified-corpus-benchmark-v1",
       "revision": "product-level-corpus-v1",
+      "license": "Apache-2.0",
+      "privacy": "synthetic request-body fixtures for p50/p95/p99/CPU/throughput/alloc/RSS benchmark runs; the actual 12-item dtoken-benchmark product corpus",
       "product_corpus_id": "product-level-corpus-v1",
       "source_manifest": "code/crates/dtoken-benchmark/corpus/manifest.json",
-      "license": "Apache-2.0",
-      "privacy": "synthetic product-level request-body fixtures (12 items: train/replay/holdout; anthropic/openai_chat); no credentials, absolute paths, or real prompts/responses",
       "digest": "6ff899f329ebb38ca6fbd3118ebd35d0d49b4165c5c3efde7617b0d9c3683876",
       "files": [
         {

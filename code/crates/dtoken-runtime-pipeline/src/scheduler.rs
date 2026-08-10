@@ -455,6 +455,10 @@ struct QueuedTask {
     cancel: Option<CancellationToken>,
     permit_held: bool,
     task: PoolTask,
+    /// Optional completion signal for `submit`/`submit_with_permit`: the
+    /// worker reports the outcome in EVERY branch, so a request preserved
+    /// for deadline/cancellation never blocks its waiting caller.
+    done: Option<mpsc::Sender<TaskOutcome>>,
 }
 
 /// Pool state: the bounded pending set keyed by stable sequence, plus the
@@ -532,7 +536,9 @@ impl BoundedWorkerPool {
                 } else {
                     (queued.task)()
                 };
-                let _ = outcome;
+                if let Some(done) = queued.done {
+                    let _ = done.send(outcome);
+                }
                 if !queued.permit_held {
                     budget.release(queued.bytes);
                 }
@@ -590,12 +596,7 @@ impl BoundedWorkerPool {
         task: PoolTask,
     ) -> Result<TaskOutcome, SubmitError> {
         let (done_tx, done_rx) = mpsc::channel::<TaskOutcome>();
-        let wrapped = Box::new(move || {
-            let outcome = task();
-            let _ = done_tx.send(outcome);
-            outcome
-        });
-        self.try_submit_impl(bytes, deadline, cancel, permit_held, sequence, wrapped)?;
+        self.try_submit_done(bytes, deadline, cancel, permit_held, sequence, Some(done_tx), task)?;
         done_rx.recv().map_err(|_| SubmitError::Closed)
     }
 
@@ -634,6 +635,19 @@ impl BoundedWorkerPool {
         sequence: Option<u64>,
         task: PoolTask,
     ) -> Result<(), SubmitError> {
+        self.try_submit_done(bytes, deadline, cancel, permit_held, sequence, None, task)
+    }
+
+    fn try_submit_done(
+        &self,
+        bytes: usize,
+        deadline: Option<RequestDeadline>,
+        cancel: Option<CancellationToken>,
+        permit_held: bool,
+        sequence: Option<u64>,
+        done: Option<mpsc::Sender<TaskOutcome>>,
+        task: PoolTask,
+    ) -> Result<(), SubmitError> {
         if !permit_held && bytes > self.budget.capacity() {
             return Err(SubmitError::PayloadExceedsCapacity);
         }
@@ -668,6 +682,7 @@ impl BoundedWorkerPool {
                 cancel,
                 permit_held,
                 task,
+                done,
             },
         );
         self.condition.notify_one();
