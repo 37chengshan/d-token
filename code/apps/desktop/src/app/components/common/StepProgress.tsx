@@ -66,7 +66,7 @@ export function StepProgress({
                 : <motion.div
                     animate={{ scale: isActive ? 1.1 : 1 }}
                     transition={{ duration: 0.28, ease: "easeOut" }}
-                    className={cn(isActive && "step-active-pulse")}
+                    className={cn(isActive && !reducedMotion && "step-active-pulse")}
                   >{circle}</motion.div>}
               <span className={cn("text-xs", isActive ? "text-foreground" : "text-muted-foreground")}>{s.label}</span>
             </div>

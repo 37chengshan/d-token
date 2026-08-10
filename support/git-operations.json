@@ -3006,6 +3006,15 @@
       "summary": "fix: complete N9 verification fixture for G5/G9 gates",
       "head_before": "da361b56a2ce3bccca674fc9c44a697cbc5494bb",
       "remote": null
+    },
+    {
+      "id": "335c3ae3-6f91-4654-83d1-b8353d6cdc61",
+      "timestamp": "2026-08-10T23:29:16+08:00",
+      "operation": "commit",
+      "branch": "codex/final/stage-pack-integrated",
+      "summary": "fix(desktop): reduced-motion leaves page stage and step pulse fully idle",
+      "head_before": "4be5b33e8355a54f6e47d22079f1eb432dac5ebd",
+      "remote": null
     }
   ]
 }

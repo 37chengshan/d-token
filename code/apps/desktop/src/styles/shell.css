@@ -614,7 +614,7 @@
   }
 
   .shell-page-stage {
-    animation: page-in-fade var(--duration-fast) ease-out;
+    animation: none !important;
   }
 
   .animated-nav-icon .icon-part,
