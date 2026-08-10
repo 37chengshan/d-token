@@ -2541,15 +2541,75 @@ impl AppState {
             .unwrap_or_default();
         let rtk = rtk_command_output_accounting(
             self.managed_rtk_root.as_deref().map(|root| root.as_path()),
-        )
-        .ok()
-        .flatten();
+        );
         if let Ok(mut summary) = self.runtime_summary.lock() {
             *summary = RuntimeSummaryReadModel::from_records(&logs, &ccr_metadata);
-            if let Some(accounting) = rtk.as_ref() {
+            if let Ok(Some(accounting)) = &rtk {
                 summary.record_rtk_ledger(&accounting.ledger);
             }
         }
+        self.emit_rtk_ledger_events(&rtk);
+    }
+
+    /// Emits one aggregate RtkRewrite event (a verified managed RTK root is
+    /// bound to the bridge wrap pipeline) and one aggregate RtkFilter event
+    /// (verified usage receipts were projected) per rebuild. Both carry
+    /// metadata-only byte accounting — no command argv, raw output, or
+    /// credential material ever enters the ledger.
+    fn emit_rtk_ledger_events(&self, rtk: &Result<Option<RtkCommandOutputAccounting>, String>) {
+        let Ok(Some(accounting)) = rtk else {
+            return;
+        };
+        let now_ms = dtoken_event_ledger::now_ms();
+        let _ = self.try_append_event(DtokenEvent {
+            event_id: Uuid::new_v4(),
+            timestamp_ms: now_ms,
+            project_id: Some("dtoken-runtime".to_string()),
+            agent_id: None,
+            instance_id: None,
+            command_id: None,
+            request_id: None,
+            stage: LayeredStage::RtkRewrite,
+            source: EventSource::Rtk,
+            status: EventStatus::Ok,
+            input_tokens: None,
+            output_tokens: None,
+            saved_tokens: None,
+            baseline_kind: None,
+            error_code: None,
+            metadata: json!({
+                "verified": true,
+                "entries": accounting.entries,
+                "saved_bytes": accounting.ledger.command_output_savings(),
+                "privacy": "Metadata-only; no command argv or output is retained."
+            }),
+            context_accounting: None,
+        });
+        let _ = self.try_append_event(DtokenEvent {
+            event_id: Uuid::new_v4(),
+            timestamp_ms: now_ms,
+            project_id: Some("dtoken-runtime".to_string()),
+            agent_id: None,
+            instance_id: None,
+            command_id: None,
+            request_id: None,
+            stage: LayeredStage::RtkFilter,
+            source: EventSource::Rtk,
+            status: EventStatus::Ok,
+            input_tokens: None,
+            output_tokens: None,
+            saved_tokens: None,
+            baseline_kind: None,
+            error_code: None,
+            metadata: json!({
+                "entries": accounting.entries,
+                "input_bytes": accounting.input_bytes,
+                "output_bytes": accounting.output_bytes,
+                "saved_bytes": accounting.ledger.command_output_savings(),
+                "privacy": "Metadata-only; no command argv or output is retained."
+            }),
+            context_accounting: None,
+        });
     }
 
     fn record_runtime_performance(

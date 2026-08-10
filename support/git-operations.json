@@ -2493,6 +2493,15 @@
       "summary": "C4 RTK remediation: structured family filter dispatch in bridge wrap, manifest-bound filters.toml DSL, debug-gated timeout exit-124, per-invocation claim digest accounting into SavingsLedger replacing rtk_savings hardcode, RtkRewrite/RtkFilter ledger events, timeout/truncation/rollback/secret/accounting tests",
       "head_before": "15f98cf",
       "remote": null
+    },
+    {
+      "id": "91d86ac6-f973-4925-ab46-f6d609c7eeaa",
+      "timestamp": "2026-08-10T12:36:54+08:00",
+      "operation": "commit",
+      "branch": "codex/final/c4-remediation",
+      "summary": "C4 follow-up: emit RtkRewrite/RtkFilter aggregate ledger events from runtime summary rebuild with metadata-only accounting",
+      "head_before": "7b71555",
+      "remote": null
     }
   ]
 }
