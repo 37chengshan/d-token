@@ -92,15 +92,15 @@ fn gate_admission_is_stable_and_saturation_preserves_the_baseline() {
     let limits = ConcurrencyLimits::new(2, 4, 100).unwrap();
     let gate = SchedulerGate::new(limits).unwrap();
 
-    let first: StableAdmission<'_> = gate.decide(40).expect("admit within budget");
-    let second = gate.decide(30).expect("admit within budget");
+    let first: StableAdmission<'_> = gate.decide(40, None, None).expect("admit within budget");
+    let second = gate.decide(30, None, None).expect("admit within budget");
     assert!(
         first.sequence() < second.sequence(),
         "stable admission order"
     );
 
     // 40 + 30 leaves 30 free; a 40-byte request saturates.
-    let saturated = gate.decide(40).unwrap_err();
+    let saturated = gate.decide(40, None, None).unwrap_err();
     assert_eq!(
         saturated,
         DispatchDecision::Preserve(PreserveReason::QueueSaturated)
@@ -164,16 +164,16 @@ fn bounded_queue_is_fifo_and_saturation_is_reported_not_blocked() {
             TaskOutcome::Completed
         }) as Box<dyn FnOnce() -> TaskOutcome + Send>
     };
-    pool.try_submit(16, first).expect("first task admitted");
+    pool.try_submit(16, None, None, first).expect("first task admitted");
     started_rx
         .recv_timeout(std::time::Duration::from_secs(5))
         .expect("worker started");
 
     let second = Box::new(|| TaskOutcome::Completed);
-    pool.try_submit(16, second).expect("second task queued");
+    pool.try_submit(16, None, None, second).expect("second task queued");
     let third = Box::new(|| TaskOutcome::Completed);
     assert_eq!(
-        pool.try_submit(16, third).unwrap_err(),
+        pool.try_submit(16, None, None, third).unwrap_err(),
         SubmitError::QueueSaturated,
         "third submit must report saturation without blocking"
     );
@@ -196,6 +196,8 @@ fn single_worker_pool_runs_tasks_in_stable_admission_order() {
         let runs = Arc::clone(&runs);
         pool.try_submit(
             8,
+            None,
+            None,
             Box::new(move || {
                 let order = runs.fetch_add(1, Ordering::SeqCst);
                 done_tx.send(sequence).unwrap();
@@ -226,6 +228,8 @@ fn multi_worker_pool_completes_every_admitted_task_exactly_once() {
         let done_tx = done_tx.clone();
         pool.try_submit(
             8,
+            None,
+            None,
             Box::new(move || {
                 done_tx.send(sequence).unwrap();
                 TaskOutcome::Completed
@@ -263,7 +267,7 @@ fn byte_permits_cap_concurrency_below_worker_count() {
             TaskOutcome::Completed
         }) as Box<dyn FnOnce() -> TaskOutcome + Send>
     };
-    pool.try_submit(512, first)
+    pool.try_submit(512, None, None, first)
         .expect("first task holds the byte budget");
     started_rx
         .recv_timeout(std::time::Duration::from_secs(5))
@@ -273,7 +277,7 @@ fn byte_permits_cap_concurrency_below_worker_count() {
         second_started_tx.send(()).unwrap();
         TaskOutcome::Completed
     });
-    pool.try_submit(512, second).expect("second task queued");
+    pool.try_submit(512, None, None, second).expect("second task queued");
 
     // The second task must NOT start while the first holds the byte budget.
     assert!(
@@ -295,11 +299,13 @@ fn pool_never_runs_expired_or_cancelled_tasks() {
     let limits = ConcurrencyLimits::new(1, 4, 64 * 1024).unwrap();
     let budget = Arc::new(ByteBudget::new(limits.max_inflight_bytes()).unwrap());
     let expired = RequestDeadline::new(1, 1).unwrap(); // deadline in the far past
-    let pool = BoundedWorkerPool::spawn(limits, budget, Some(expired), None).unwrap();
+    let pool = BoundedWorkerPool::spawn(limits, budget, None, None).unwrap();
     let ran = Arc::new(AtomicUsize::new(0));
     let ran_flag = Arc::clone(&ran);
     pool.try_submit(
         8,
+        Some(expired),
+        None,
         Box::new(move || {
             ran_flag.fetch_add(1, Ordering::SeqCst);
             TaskOutcome::Completed
@@ -315,11 +321,13 @@ fn pool_never_runs_expired_or_cancelled_tasks() {
     token.cancel();
     let limits = ConcurrencyLimits::new(1, 4, 64 * 1024).unwrap();
     let budget = Arc::new(ByteBudget::new(limits.max_inflight_bytes()).unwrap());
-    let pool = BoundedWorkerPool::spawn(limits, budget, None, Some(token)).unwrap();
+    let pool = BoundedWorkerPool::spawn(limits, budget, None, None).unwrap();
     let ran = Arc::new(AtomicUsize::new(0));
     let ran_flag = Arc::clone(&ran);
     pool.try_submit(
         8,
+        None,
+        Some(token),
         Box::new(move || {
             ran_flag.fetch_add(1, Ordering::SeqCst);
             TaskOutcome::Completed

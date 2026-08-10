@@ -249,11 +249,27 @@ pub enum DispatchDecision {
 
 /// Admission gate.  Pure and testable: it owns no threads and can be
 /// shared across transports for one runtime instance.
+///
+/// The gate enforces all three bounded-runtime bounds at admission time:
+///
+/// 1. pipeline capacity — an admission is refused once
+///    `max_workers + max_queue_depth` requests are already in flight, so the
+///    gate never hands out more admissions than the bounded pool can hold;
+/// 2. in-flight payload bytes — a request that would exceed the byte budget
+///    is preserved instead of queueing bytes that can never run;
+/// 3. a request-wide deadline and cancellation token — a request that has
+///    already exhausted its budget, or has been cancelled, is preserved
+///    instead of consuming capacity it can no longer use.
+///
+/// A granted admission carries a stable FIFO sequence: requests are admitted
+/// in admission order, and dispatch follows the same order, so output
+/// ordering is deterministic even when workers finish out of order.
 #[derive(Debug)]
 pub struct SchedulerGate {
     limits: ConcurrencyLimits,
     inflight: ByteBudget,
     order: StableOrder,
+    admitted_inflight: AtomicU64,
 }
 
 impl SchedulerGate {
@@ -262,6 +278,7 @@ impl SchedulerGate {
             limits,
             inflight: ByteBudget::new(limits.max_inflight_bytes())?,
             order: StableOrder::default(),
+            admitted_inflight: AtomicU64::new(0),
         })
     }
 
@@ -277,29 +294,66 @@ impl SchedulerGate {
         self.limits.max_inflight_bytes() - self.inflight.available()
     }
 
+    /// Number of admissions currently held (admission through commit).
+    pub fn admitted_inflight(&self) -> u64 {
+        self.admitted_inflight.load(Ordering::Relaxed)
+    }
+
+    /// Pipeline capacity this gate admits against: every admitted request is
+    /// guaranteed a seat in `max_workers + max_queue_depth`.
+    pub fn pipeline_capacity(&self) -> usize {
+        self.limits.max_workers() + self.limits.max_queue_depth()
+    }
+
     /// Decide what to do with a request at admission time.
     ///
-    /// The byte permit is checked first so an over-budget request preserves
-    /// the baseline instead of queueing bytes that can never run.  A granted
-    /// admission returns a [`StableAdmission`] that holds the byte permit
-    /// and the stable sequence number; dropping it releases the permit.
-    pub fn decide(&self, ingress_bytes: usize) -> Result<StableAdmission<'_>, DispatchDecision> {
+    /// The pipeline-capacity bound is checked first (cheapest), then the
+    /// byte permit, then the request-wide deadline and cancellation token.
+    /// A refused request returns the exact [`PreserveReason`]; the caller
+    /// must deliver the original baseline exactly once.
+    pub fn decide(
+        &self,
+        ingress_bytes: usize,
+        deadline: Option<RequestDeadline>,
+        cancel: Option<&CancellationToken>,
+    ) -> Result<StableAdmission<'_>, DispatchDecision> {
+        let admitted = self.admitted_inflight.load(Ordering::Relaxed);
+        if admitted >= self.pipeline_capacity() as u64 {
+            return Err(DispatchDecision::Preserve(PreserveReason::QueueSaturated));
+        }
         if !self.inflight.try_acquire(ingress_bytes) {
             return Err(DispatchDecision::Preserve(PreserveReason::QueueSaturated));
         }
+        let expired = deadline.is_some_and(|deadline| deadline.is_expired(now_ms()));
+        let cancelled = cancel.is_some_and(CancellationToken::is_cancelled);
+        if expired || cancelled {
+            // The byte permit was already reserved; release it before
+            // reporting the preserve decision so the budget is not leaked.
+            self.inflight.release(ingress_bytes);
+            // Cancellation takes precedence when a request is both cancelled
+            // and expired: an explicitly cancelled request preserves with
+            // the cancellation reason (established transport contract).
+            let reason = if cancelled {
+                PreserveReason::Cancelled
+            } else {
+                PreserveReason::DeadlineExceeded
+            };
+            return Err(DispatchDecision::Preserve(reason));
+        }
+        self.admitted_inflight.fetch_add(1, Ordering::Relaxed);
         Ok(StableAdmission {
-            inflight: &self.inflight,
+            gate: self,
             bytes: ingress_bytes,
             sequence: self.order.next_admission(),
         })
     }
 }
 
-/// A granted admission: holds the byte permit for the request lifetime and
-/// carries its stable dispatch sequence.
+/// A granted admission: holds the byte permit and one pipeline-capacity seat
+/// for the request lifetime and carries its stable dispatch sequence.
 #[derive(Debug)]
 pub struct StableAdmission<'a> {
-    inflight: &'a ByteBudget,
+    gate: &'a SchedulerGate,
     bytes: usize,
     sequence: u64,
 }
@@ -316,7 +370,8 @@ impl StableAdmission<'_> {
 
 impl Drop for StableAdmission<'_> {
     fn drop(&mut self) {
-        self.inflight.release(self.bytes);
+        self.gate.inflight.release(self.bytes);
+        self.gate.admitted_inflight.fetch_sub(1, Ordering::Relaxed);
     }
 }
 
@@ -335,87 +390,299 @@ pub type PoolTask = Box<dyn FnOnce() -> TaskOutcome + Send + 'static>;
 pub enum SubmitError {
     /// The bounded queue is full; the caller preserves the baseline.
     QueueSaturated,
+    /// The payload exceeds the pool's byte budget capacity; it can never be
+    /// admitted, so the caller must preserve the baseline without waiting.
+    PayloadExceedsCapacity,
     /// The pool has shut down.
     Closed,
 }
 
 /// A bounded worker pool with a bounded FIFO queue.
 ///
-/// - `max_workers` threads consume a `sync_channel(max_queue_depth)` queue,
-///   so the aggregate of queued + running tasks is `max_workers +
-///   max_queue_depth` — never unbounded.
-/// - Dispatch order is admission order: the channel is FIFO and every task
-///   carries its stable sequence.
+/// - `max_workers` threads consume a bounded pending set of
+///   `max_queue_depth` queued tasks, so the aggregate of queued + running
+///   tasks is `max_workers + max_queue_depth` — never unbounded.
+/// - Dispatch order is admission order: every task carries a stable sequence
+///   and workers always dequeue the lowest sequence first, so concurrent
+///   submitters can never invert FIFO order (PR-C6A stable order).
 /// - Workers hold a byte permit for the task duration, so the pool enforces
 ///   the in-flight byte bound independently of admission.
 /// - A request-wide deadline and cancellation token are evaluated before a
 ///   task runs, so an expired or cancelled request never performs expensive
 ///   candidate work; it reports [`TaskOutcome::DeadlineExceeded`] or
 ///   [`TaskOutcome::Cancelled`] and the transport preserves the baseline.
-#[derive(Debug)]
 pub struct BoundedWorkerPool {
-    sender: mpsc::SyncSender<(usize, PoolTask)>,
+    inner: std::sync::Arc<Mutex<PoolInner>>,
+    condition: Arc<Condvar>,
+    budget: Arc<ByteBudget>,
+    queue_capacity: usize,
     workers: Vec<std::thread::JoinHandle<()>>,
+}
+
+impl std::fmt::Debug for BoundedWorkerPool {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let queued = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .pending
+            .len();
+        formatter
+            .debug_struct("BoundedWorkerPool")
+            .field("queue_capacity", &self.queue_capacity)
+            .field("queued", &queued)
+            .field("workers", &self.workers.len())
+            .field("byte_budget_capacity", &self.budget.capacity())
+            .finish()
+    }
+}
+
+/// One queued task with its request-wide deadline and cancellation token.
+/// The deadline and cancellation are bound to the *request*, not to the pool,
+/// so a queue-bound request is still evaluated against its own contract the
+/// moment a worker dequeues it.
+///
+/// `permit_held` marks tasks submitted under an existing gate admission:
+/// the byte permit is owned by the admission, so the worker must not acquire
+/// (or release) the pool budget again — there is exactly one admission
+/// authority per request.
+///
+/// The task's stable sequence is the `BTreeMap` key it is stored under;
+/// no duplicate field is kept.
+struct QueuedTask {
+    bytes: usize,
+    deadline: Option<RequestDeadline>,
+    cancel: Option<CancellationToken>,
+    permit_held: bool,
+    task: PoolTask,
+}
+
+/// Pool state: the bounded pending set keyed by stable sequence, plus the
+/// next local sequence for tasks submitted without an admission.
+///
+/// The [`Condvar`] is a sibling of the mutex (not a field of [`PoolInner`]):
+/// workers wait on it while holding the guard, which requires the condition
+/// variable to outlive the guard's borrow.
+struct PoolInner {
+    pending: std::collections::BTreeMap<u64, QueuedTask>,
+    next_sequence: u64,
+    closed: bool,
 }
 
 impl BoundedWorkerPool {
     pub fn spawn(
         limits: ConcurrencyLimits,
         budget: Arc<ByteBudget>,
-        deadline: Option<RequestDeadline>,
-        cancel: Option<CancellationToken>,
+        _deadline: Option<RequestDeadline>,
+        _cancel: Option<CancellationToken>,
     ) -> Result<Self, PipelineError> {
-        let (sender, receiver) = mpsc::sync_channel::<(usize, PoolTask)>(limits.max_queue_depth());
-        let receiver = Arc::new(Mutex::new(receiver));
-        let mut workers = Vec::with_capacity(limits.max_workers());
+        // The pool-level deadline/cancel parameters are retained for API
+        // compatibility; per-request contracts are attached at submit time.
+        let inner = Mutex::new(PoolInner {
+            pending: std::collections::BTreeMap::new(),
+            next_sequence: 0,
+            closed: false,
+        });
+        let inner = std::sync::Arc::new(inner);
+        let condition = Arc::new(Condvar::new());
+        let mut spawned = Vec::with_capacity(limits.max_workers());
         for _ in 0..limits.max_workers() {
-            let receiver = Arc::clone(&receiver);
+            let inner = Arc::clone(&inner);
+            let condition = Arc::clone(&condition);
             let budget = Arc::clone(&budget);
-            let cancel = cancel.clone();
-            workers.push(std::thread::spawn(move || loop {
-                let task = {
-                    let guard = receiver
+            spawned.push(std::thread::spawn(move || loop {
+                let queued = {
+                    let mut guard = inner
                         .lock()
                         .unwrap_or_else(std::sync::PoisonError::into_inner);
-                    guard.recv()
+                    let dequeued = loop {
+                        if let Some(queued) = guard
+                            .pending
+                            .pop_first()
+                            .map(|(_sequence, queued)| queued)
+                        {
+                            break Some(queued);
+                        }
+                        if guard.closed {
+                            break None;
+                        }
+                        guard = condition
+                            .wait(guard)
+                            .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    };
+                    let Some(queued) = dequeued else {
+                        break;
+                    };
+                    queued
                 };
-                let (bytes, task) = match task {
-                    Ok(task) => task,
-                    Err(_) => break,
-                };
-                if !budget.acquire(bytes) {
+                if !queued.permit_held && !budget.acquire(queued.bytes) {
                     continue;
                 }
-                let outcome = if cancel.as_ref().is_some_and(CancellationToken::is_cancelled) {
-                    TaskOutcome::Cancelled
-                } else if deadline
+                let outcome = if queued
+                    .cancel
                     .as_ref()
+                    .is_some_and(CancellationToken::is_cancelled)
+                {
+                    TaskOutcome::Cancelled
+                } else if queued
+                    .deadline
                     .is_some_and(|deadline| deadline.is_expired(now_ms()))
                 {
                     TaskOutcome::DeadlineExceeded
                 } else {
-                    task()
+                    (queued.task)()
                 };
                 let _ = outcome;
-                budget.release(bytes);
+                if !queued.permit_held {
+                    budget.release(queued.bytes);
+                }
             }));
         }
-        Ok(Self { sender, workers })
+        Ok(Self {
+            inner,
+            condition,
+            budget,
+            queue_capacity: limits.max_queue_depth(),
+            workers: spawned,
+        })
     }
 
-    /// Enqueue a task with its byte weight.  A full queue returns
+    /// Enqueue a task with its byte weight and request-wide deadline /
+    /// cancellation contract.  A full queue returns
     /// [`SubmitError::QueueSaturated`] without blocking.
-    pub fn try_submit(&self, bytes: usize, task: PoolTask) -> Result<(), SubmitError> {
-        self.sender
-            .try_send((bytes, task))
-            .map_err(|error| match error {
-                mpsc::TrySendError::Full(_) => SubmitError::QueueSaturated,
-                mpsc::TrySendError::Disconnected(_) => SubmitError::Closed,
-            })
+    ///
+    /// The returned [`TaskOutcome`] reports how the task actually ran: the
+    /// task's own outcome on success, or [`TaskOutcome::Cancelled`] /
+    /// [`TaskOutcome::DeadlineExceeded`] when the request contract expired
+    /// before a worker could start it.
+    pub fn submit(
+        &self,
+        bytes: usize,
+        deadline: Option<RequestDeadline>,
+        cancel: Option<CancellationToken>,
+        task: PoolTask,
+    ) -> Result<TaskOutcome, SubmitError> {
+        self.submit_impl(bytes, deadline, cancel, false, None, task)
+    }
+
+    /// Like [`BoundedWorkerPool::submit`], for tasks whose byte permit is
+    /// already held by a gate admission.  `sequence` is the admission's
+    /// stable sequence, which pins FIFO dispatch order against concurrent
+    /// submitters.
+    pub fn submit_with_permit(
+        &self,
+        bytes: usize,
+        deadline: Option<RequestDeadline>,
+        cancel: Option<CancellationToken>,
+        sequence: u64,
+        task: PoolTask,
+    ) -> Result<TaskOutcome, SubmitError> {
+        self.submit_impl(bytes, deadline, cancel, true, Some(sequence), task)
+    }
+
+    fn submit_impl(
+        &self,
+        bytes: usize,
+        deadline: Option<RequestDeadline>,
+        cancel: Option<CancellationToken>,
+        permit_held: bool,
+        sequence: Option<u64>,
+        task: PoolTask,
+    ) -> Result<TaskOutcome, SubmitError> {
+        let (done_tx, done_rx) = mpsc::channel::<TaskOutcome>();
+        let wrapped = Box::new(move || {
+            let outcome = task();
+            let _ = done_tx.send(outcome);
+            outcome
+        });
+        self.try_submit_impl(bytes, deadline, cancel, permit_held, sequence, wrapped)?;
+        done_rx.recv().map_err(|_| SubmitError::Closed)
+    }
+
+    /// Enqueue a task with its byte weight and request contract without
+    /// waiting for the outcome.  A full queue returns
+    /// [`SubmitError::QueueSaturated`] without blocking.
+    pub fn try_submit(
+        &self,
+        bytes: usize,
+        deadline: Option<RequestDeadline>,
+        cancel: Option<CancellationToken>,
+        task: PoolTask,
+    ) -> Result<(), SubmitError> {
+        self.try_submit_impl(bytes, deadline, cancel, false, None, task)
+    }
+
+    /// Like [`BoundedWorkerPool::try_submit`], for tasks whose byte permit
+    /// is already held by a gate admission.
+    pub fn try_submit_with_permit(
+        &self,
+        bytes: usize,
+        deadline: Option<RequestDeadline>,
+        cancel: Option<CancellationToken>,
+        sequence: u64,
+        task: PoolTask,
+    ) -> Result<(), SubmitError> {
+        self.try_submit_impl(bytes, deadline, cancel, true, Some(sequence), task)
+    }
+
+    fn try_submit_impl(
+        &self,
+        bytes: usize,
+        deadline: Option<RequestDeadline>,
+        cancel: Option<CancellationToken>,
+        permit_held: bool,
+        sequence: Option<u64>,
+        task: PoolTask,
+    ) -> Result<(), SubmitError> {
+        if !permit_held && bytes > self.budget.capacity() {
+            return Err(SubmitError::PayloadExceedsCapacity);
+        }
+        let mut guard = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if guard.closed {
+            return Err(SubmitError::Closed);
+        }
+        if guard.pending.len() >= self.queue_capacity {
+            return Err(SubmitError::QueueSaturated);
+        }
+        let sequence = sequence.unwrap_or_else(|| {
+            let sequence = guard.next_sequence;
+            guard.next_sequence += 1;
+            sequence
+        });
+        // The gate's admission sequences and the pool-local sequence space
+        // are both monotonic, but they can overlap when a process mixes
+        // gated and ungated submits.  A duplicate key would silently replace
+        // a pending task, so treat it as saturation: the transport preserves
+        // the baseline and the pending task is untouched.
+        if guard.pending.contains_key(&sequence) {
+            return Err(SubmitError::QueueSaturated);
+        }
+        guard.pending.insert(
+            sequence,
+            QueuedTask {
+                bytes,
+                deadline,
+                cancel,
+                permit_held,
+                task,
+            },
+        );
+        self.condition.notify_one();
+        Ok(())
     }
 
     pub fn shutdown(self) {
-        drop(self.sender);
+        {
+            let mut guard = self
+                .inner
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            guard.closed = true;
+            self.condition.notify_all();
+        }
         for worker in self.workers {
             let _ = worker.join();
         }
