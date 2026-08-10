@@ -49,8 +49,8 @@ use dtoken_project_policy::{
     PROJECT_POLICY_CAPABILITY_REVISION,
 };
 use dtoken_runtime_pipeline::{
-    PipelineError, PipelineInput, ReadyToSend, SendCommitReceipt, TransformArtifact,
-    ValidationReceipt,
+    PipelineError, PipelineInput, ReadyToSend, RecoveryProof, RecoveryProofAuthority,
+    SendCommitReceipt, TransformArtifact, ValidationReceipt,
 };
 use dtoken_types::{
     AgentSupportProfile, AvailabilityState, BaselineKind, CacheTokens, CapabilityEvidence,
@@ -87,6 +87,12 @@ use ccr_store::{CcrEntryInspection, CcrStore, CcrStoreReceipt};
 #[derive(Debug, Clone)]
 pub struct PreparedCcr {
     receipt: Option<CcrStoreReceipt>,
+    /// Store-issued opaque proof for the durable receipt; never caller
+    /// constructed (PIPELINE-RECEIPT-AUTHENTICITY).
+    proof: Option<RecoveryProof>,
+    /// The store authority that issued `proof`; the pipeline verifies the
+    /// proof against it at candidate binding.
+    authority: Option<RecoveryProofAuthority>,
     store_configured: bool,
 }
 
@@ -855,9 +861,12 @@ pub fn prepare_json_pipeline_payload(
             validation: None,
         });
     }
-    // The recovery receipt is minted inside the pipeline from the durable
-    // CCR store reference — never by caller-supplied bytes (T-C0B).
-    let Some(receipt) = prepared_ccr.receipt.as_ref() else {
+    // The recovery receipt is minted inside the pipeline from the store-
+    // issued opaque proof — never from caller-supplied bytes (T-C0B /
+    // PIPELINE-RECEIPT-AUTHENTICITY).  The proof and its issuing authority
+    // come from the store's private key material via `prepare_ccr_for_request`.
+    let (Some(proof), Some(authority)) = (prepared_ccr.proof.clone(), prepared_ccr.authority.clone())
+    else {
         return Ok(PreparedPipelinePayload {
             ready: prepared.into_baseline_ready("pipeline_recovery_unavailable"),
             fallback_reason: Some("pipeline_recovery_unavailable"),
@@ -880,12 +889,7 @@ pub fn prepare_json_pipeline_payload(
     };
     match prepared
         .clone()
-        .with_durable_candidate(
-            artifact,
-            decision.stable_digest(),
-            receipt.recovery_ref.clone(),
-            receipt.expires_at_unix,
-        )
+        .with_durable_candidate(artifact, decision, proof, &authority)
         .and_then(|candidate| candidate.validate(valid_json_pipeline_transition))
     {
         Ok(validated) => {
@@ -2914,6 +2918,8 @@ impl AppState {
         if !required {
             return Ok(PreparedCcr {
                 receipt: None,
+                proof: None,
+                authority: None,
                 store_configured,
             });
         }
@@ -2929,8 +2935,17 @@ impl AppState {
         ))?;
         let receipt = store.store(&recovery_ref, original_body)?;
         self.append_ccr_lifecycle_record(ccr_pending_retained(&receipt, now_ms)?)?;
+        // The proof is issued by the store from its private key material —
+        // never constructed by the caller — and the pipeline verifies it
+        // against the same authority at candidate binding.
+        let authority = store.recovery_proof_authority();
+        let proof = authority
+            .issue(receipt.recovery_ref.clone(), receipt.expires_at_unix)
+            .map_err(|error| anyhow::anyhow!("CCR recovery proof issuance failed: {error:?}"))?;
         Ok(PreparedCcr {
             receipt: Some(receipt),
+            proof: Some(proof),
+            authority: Some(authority),
             store_configured,
         })
     }
@@ -19165,6 +19180,8 @@ mod tests {
         let transforms = vec!["content_router:json".to_string()];
         let prepared_without_receipt = PreparedCcr {
             receipt: None,
+            proof: None,
+            authority: None,
             store_configured: true,
         };
 
@@ -19192,14 +19209,20 @@ mod tests {
             serde_json::to_vec(&baseline).unwrap().as_slice()
         );
 
-        // Matching receipt -> candidate passes and becomes sendable.
+        // Matching receipt -> candidate passes and becomes sendable. The
+        // proof must be store-issued (same authority the pipeline verifies
+        // against) and live; the old hard-coded near-epoch expiry was never
+        // enforced and would now fail closed.
+        let authority = dtoken_runtime_pipeline::RecoveryProofAuthority::new([31_u8; 32]);
         let receipt = CcrStoreReceipt {
             recovery_ref: "ccr:11111111-1111-4111-8111-111111111111".to_string(),
-            expires_at_unix: 9_999,
+            expires_at_unix: 1_000_000_000_000,
             plaintext_bytes: 64,
         };
         let prepared_with_receipt = PreparedCcr {
+            proof: Some(authority.issue(receipt.recovery_ref.clone(), receipt.expires_at_unix).expect("store-issued proof")),
             receipt: Some(receipt.clone()),
+            authority: Some(authority.clone()),
             store_configured: true,
         };
         let decision = cache_test_decision(&scope);
@@ -19233,6 +19256,8 @@ mod tests {
             &transforms,
             &PreparedCcr {
                 receipt: Some(wrong_receipt),
+                proof: None,
+                authority: None,
                 store_configured: true,
             },
         )
@@ -19253,6 +19278,8 @@ mod tests {
             &transforms,
             &PreparedCcr {
                 receipt: Some(receipt),
+                proof: None,
+                authority: None,
                 store_configured: true,
             },
         )
@@ -20684,6 +20711,8 @@ mod tests {
         let transforms = vec!["semantic_text".to_string()];
         let missing = PreparedCcr {
             receipt: None,
+            proof: None,
+            authority: None,
             store_configured: false,
         };
 
@@ -20705,12 +20734,23 @@ mod tests {
             Some("pipeline_recovery_unavailable")
         );
 
+        // Store-issued live proof: the old near-epoch expiry was never
+        // enforced by the pipeline and would now fail closed, so the test
+        // uses a live store-issued proof (PIPELINE-RECEIPT-AUTHENTICITY).
+        let authority = dtoken_runtime_pipeline::RecoveryProofAuthority::new([31_u8; 32]);
+        let ccr_receipt = CcrStoreReceipt {
+            recovery_ref: format!("ccr:{}", scope.request_id),
+            expires_at_unix: 1_000_000_000_000,
+            plaintext_bytes: 64,
+        };
         let prepared = PreparedCcr {
-            receipt: Some(CcrStoreReceipt {
-                recovery_ref: format!("ccr:{}", scope.request_id),
-                expires_at_unix: 100,
-                plaintext_bytes: 64,
-            }),
+            receipt: Some(ccr_receipt.clone()),
+            proof: Some(
+                authority
+                    .issue(ccr_receipt.recovery_ref.clone(), ccr_receipt.expires_at_unix)
+                    .expect("store-issued proof"),
+            ),
+            authority: Some(authority),
             store_configured: true,
         };
         let optimized =
@@ -22755,12 +22795,22 @@ mod tests {
             json!({"model": "model-a", "messages": [{"role": "user", "content": "repeat repeat"}]});
         let candidate = json!({"model": "model-a", "messages": [{"role": "user", "content": "repeat"}]});
         let transforms = vec!["safe-text".to_string()];
+        // Store-issued live proof; the old near-epoch expiry was never
+        // enforced and would now fail closed at binding.
+        let authority = dtoken_runtime_pipeline::RecoveryProofAuthority::new([31_u8; 32]);
+        let ccr_receipt = CcrStoreReceipt {
+            recovery_ref: "ccr:00000000-0000-4000-8000-000000000000".to_string(),
+            expires_at_unix: 1_000_000_000_000,
+            plaintext_bytes: baseline.to_string().len(),
+        };
         let prepared = PreparedCcr {
-            receipt: Some(CcrStoreReceipt {
-                recovery_ref: "ccr:00000000-0000-4000-8000-000000000000".to_string(),
-                expires_at_unix: 9_999,
-                plaintext_bytes: baseline.to_string().len(),
-            }),
+            receipt: Some(ccr_receipt.clone()),
+            proof: Some(
+                authority
+                    .issue(ccr_receipt.recovery_ref.clone(), ccr_receipt.expires_at_unix)
+                    .expect("store-issued proof"),
+            ),
+            authority: Some(authority),
             store_configured: true,
         };
         let payload = prepare_json_pipeline_payload(

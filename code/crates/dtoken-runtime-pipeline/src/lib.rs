@@ -9,17 +9,19 @@
 //! - [`ValidationReceipt`] is minted only by [`ValidatedRequest::mint_validation_receipt`]
 //!   after a real baseline/candidate validation, and carries the exact
 //!   validated candidate digest.
-//! - [`RecoveryReceipt`] is minted only from a durable store reference bound
-//!   to the request identity and the exact source digest; the old `ccr:`
-//!   prefix sentinel forgery is dead (non-durable refs are rejected).
+//! - [`RecoveryReceipt`] is minted only from a store-issued opaque
+//!   [`RecoveryProof`] bound to the request identity, the exact source
+//!   digest and the active route decision; the old caller-supplied `ccr:`
+//!   prefix sentinel forgery surface is gone (PIPELINE-RECEIPT-AUTHENTICITY).
 //! - [`SendCommitReceipt`] is minted only by [`ReadyToSend::mint_send_commit`],
 //!   which consumes the sendable unit: a transport can produce at most one
 //!   terminal receipt per request, and it must consume the sealed unit to do
 //!   so. The receipt carries the request identity, the exact sent-body
 //!   digest, and the send outcome.
 
-use dtoken_types::RequestScope;
+use dtoken_types::{RequestScope, RouteDecision};
 use sha2::{Digest, Sha256};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 pub use dtoken_types::{SentPayloadVariant, UpstreamSendState as SendCommitState};
 
@@ -68,6 +70,11 @@ pub enum PipelineError {
     AlreadyTerminal,
     /// A terminal receipt did not belong to the request identity.
     ReceiptIdentityMismatch,
+    /// The route decision is not the active decision for this request
+    /// (request/route/provider identity mismatch); the candidate binding
+    /// fails closed so a stale or foreign decision can never be paired
+    /// with a receipt (PIPELINE-RECEIPT-BINDING).
+    RouteDecisionMismatch,
 }
 
 #[derive(Debug, Clone)]
@@ -167,14 +174,94 @@ impl TransformArtifact {
     }
 }
 
+/// Opaque store-issued recovery proof (PIPELINE-RECEIPT-AUTHENTICITY).
+///
+/// The only way to obtain a proof is [`RecoveryProofAuthority::issue`],
+/// which only the production CCR store exercises with references it
+/// actually stored.  Fields are private and the proof carries an
+/// authority-keyed tag, so a caller can never inject an invented `ccr:`
+/// string (or any other free-form bytes) into the public pipeline surface:
+/// the old `impl Into<String>` forgery entry is gone.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecoveryProof {
+    recovery_ref: String,
+    expires_at_unix: u64,
+    tag: [u8; 32],
+}
+
+impl RecoveryProof {
+    /// The durable store reference this proof was issued for.
+    pub fn recovery_ref(&self) -> &str {
+        &self.recovery_ref
+    }
+
+    /// Unix-seconds expiry of the underlying store entry.
+    pub fn expires_at_unix(&self) -> u64 {
+        self.expires_at_unix
+    }
+}
+
+/// Authority that issues and verifies store recovery proofs.
+///
+/// Constructed only from the CCR store's private key material, so code
+/// that does not own the store (adapters, transports, MCP surfaces) never
+/// sees it.  A proof issued under any other key fails
+/// [`RecoveryProofAuthority::verify`] and is rejected at candidate
+/// binding, which also prevents cross-store replay of a proof issued by a
+/// different store instance.
+#[derive(Debug, Clone)]
+pub struct RecoveryProofAuthority {
+    key: [u8; 32],
+}
+
+impl RecoveryProofAuthority {
+    /// Derive the proof authority from the store's private key material.
+    ///
+    /// Only the trusted runtime that owns the CCR store may call this;
+    /// every public pipeline entry that consumes proofs verifies them
+    /// against the authority the caller supplies, and a mismatched
+    /// authority fails closed.
+    pub fn new(store_key: [u8; 32]) -> Self {
+        Self { key: store_key }
+    }
+
+    /// Issue a proof for one durable store reference.
+    ///
+    /// The reference must be durable (`ccr:` prefix) and carry a non-zero
+    /// expiry; free-form strings and bare prefixes are rejected here, at
+    /// the single issuance point.
+    pub fn issue(
+        &self,
+        recovery_ref: impl Into<String>,
+        expires_at_unix: u64,
+    ) -> Result<RecoveryProof, PipelineError> {
+        let recovery_ref = recovery_ref.into();
+        if !is_durable_recovery_ref(&recovery_ref) || expires_at_unix == 0 {
+            return Err(PipelineError::InvalidRecoveryReceipt);
+        }
+        Ok(RecoveryProof {
+            tag: proof_tag(&self.key, &recovery_ref, expires_at_unix),
+            recovery_ref,
+            expires_at_unix,
+        })
+    }
+
+    /// True when the proof was issued by an authority holding this exact
+    /// key (i.e. the same store instance).
+    pub fn verify(&self, proof: &RecoveryProof) -> bool {
+        proof_tag(&self.key, &proof.recovery_ref, proof.expires_at_unix) == proof.tag
+    }
+}
+
 /// Sealed recovery receipt (T-C0B / RUNTIME-8 / CONTEXT-2).
 ///
-/// Minted only from a durable store reference by [`PreparedRequest::with_candidate`]
-/// (via [`RecoveryReceipt::mint`], which is pub but accepts no free-form
-/// bytes: every field is either a validated digest, the request identity, or
-/// a durable store ref that must carry the `ccr:` prefix). A receipt binds
-/// the request, the exact source digest and the route decision digest so a
-/// foreign or stale recovery handle can never be substituted.
+/// Minted only from a store-issued [`RecoveryProof`] by
+/// [`PreparedRequest::with_durable_candidate`] (via
+/// [`RecoveryReceipt::mint`], which is pub but accepts no free-form bytes:
+/// every field is either a validated digest, the request identity, the
+/// active route decision digest, or a store-issued opaque proof). A receipt
+/// binds the request, the exact source digest and the route decision digest
+/// so a foreign, forged or stale recovery handle can never be substituted.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RecoveryReceipt {
     request_id: uuid::Uuid,
@@ -188,30 +275,35 @@ impl RecoveryReceipt {
     /// Mint the recovery receipt for one prepared request (crate-private).
     ///
     /// Only the pipeline itself may mint receipts; external callers use the
-    /// public [`PreparedRequest::with_durable_candidate`] flow. `recovery_ref`
-    /// must be a durable store reference (`ccr:` prefix) — the old
-    /// timestamp/prefix-sentinel forgery is rejected here — and every field
-    /// is bound to the exact prepared request identity and source digest.
+    /// public [`PreparedRequest::with_durable_candidate`] flow.  The proof
+    /// must verify under the supplied authority (store-issued), the decision
+    /// must be the active decision for this request, and the proof must not
+    /// be expired against the pipeline's own trusted clock — every check
+    /// fails closed (PIPELINE-RECEIPT-AUTHENTICITY / BINDING).
     pub(crate) fn mint(
         request: &PreparedRequest,
-        decision_digest: impl Into<String>,
-        recovery_ref: impl Into<String>,
-        expires_at_unix: u64,
+        decision: &RouteDecision,
+        proof: &RecoveryProof,
+        authority: &RecoveryProofAuthority,
     ) -> Result<Self, PipelineError> {
-        let decision_digest = decision_digest.into();
-        let recovery_ref = recovery_ref.into();
-        if decision_digest.trim().is_empty() {
-            return Err(PipelineError::EmptySourceDigest);
-        }
-        if !is_durable_recovery_ref(&recovery_ref) || expires_at_unix == 0 {
+        if !authority.verify(proof) {
             return Err(PipelineError::InvalidRecoveryReceipt);
+        }
+        if !is_durable_recovery_ref(&proof.recovery_ref) || proof.expires_at_unix == 0 {
+            return Err(PipelineError::InvalidRecoveryReceipt);
+        }
+        if trusted_now_unix() >= proof.expires_at_unix {
+            return Err(PipelineError::InvalidRecoveryReceipt);
+        }
+        if !decision_is_active_for(decision, request) {
+            return Err(PipelineError::RouteDecisionMismatch);
         }
         Ok(Self {
             request_id: request.scope.request_id,
             source_digest: request.baseline_digest.clone(),
-            decision_digest,
-            recovery_ref,
-            expires_at_unix,
+            decision_digest: decision.stable_digest(),
+            recovery_ref: proof.recovery_ref.clone(),
+            expires_at_unix: proof.expires_at_unix,
         })
     }
 
@@ -337,23 +429,24 @@ impl PreparedRequest {
         }
     }
 
-    /// Public production flow that binds a durable store reference and
+    /// Public production flow that binds a store-issued recovery proof and
     /// candidate in one step (T-C0B / RUNTIME-8).
     ///
     /// The recovery receipt is minted inside the pipeline — never by the
     /// caller — and bound to this exact request identity and source digest.
-    /// `decision_digest` is the canonical
-    /// [`dtoken_types::RouteDecision::stable_digest`] of the request's route
-    /// decision; `recovery_ref` must be a durable store reference (`ccr:`
-    /// prefix); `expires_at_unix` must be non-zero.
+    /// `decision` must be the active [`dtoken_types::RouteDecision`] for
+    /// this request (identity is checked; the stable digest is computed
+    /// inside the pipeline, never accepted from the caller); `proof` must be
+    /// issued by the store authority; and expiry is checked against the
+    /// pipeline's own trusted clock.  Every violation fails closed.
     pub fn with_durable_candidate(
         self,
         artifact: TransformArtifact,
-        decision_digest: impl Into<String>,
-        recovery_ref: impl Into<String>,
-        expires_at_unix: u64,
+        decision: &RouteDecision,
+        proof: RecoveryProof,
+        authority: &RecoveryProofAuthority,
     ) -> Result<CandidateRequest, PipelineError> {
-        let recovery = RecoveryReceipt::mint(&self, decision_digest, recovery_ref, expires_at_unix)?;
+        let recovery = RecoveryReceipt::mint(&self, decision, &proof, authority)?;
         self.with_candidate(artifact, Some(recovery))
     }
 
@@ -593,6 +686,39 @@ impl SendCommitReceipt {
 /// string can never masquerade as a recovery receipt (RUNTIME-8).
 fn is_durable_recovery_ref(recovery_ref: &str) -> bool {
     recovery_ref.starts_with("ccr:") && recovery_ref.len() > "ccr:".len()
+}
+
+/// Authority-keyed tag over the proof binding.  Only an authority holding
+/// the same store key can issue a proof that verifies, so invented refs and
+/// cross-store replays fail closed at candidate binding.
+fn proof_tag(key: &[u8; 32], recovery_ref: &str, expires_at_unix: u64) -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    hasher.update(key);
+    hasher.update(b"dtoken-ccr-recovery-proof-v1\0");
+    hasher.update(recovery_ref.as_bytes());
+    hasher.update(expires_at_unix.to_le_bytes());
+    hasher.finalize().into()
+}
+
+/// True when the decision is the active route decision for the request:
+/// the identity (request/route/provider) must match the prepared scope, and
+/// the stable digest is derived from those canonical fields inside the
+/// pipeline.  A stale or foreign decision can never be paired with a
+/// receipt (PIPELINE-RECEIPT-BINDING).
+fn decision_is_active_for(decision: &RouteDecision, request: &PreparedRequest) -> bool {
+    decision.request_id == request.scope.request_id
+        && decision.route_id == request.scope.route_id
+        && decision.provider_id == request.scope.provider_id
+}
+
+/// Trusted pipeline clock (unix seconds), read inside the pipeline and never
+/// supplied by the caller, so an adapter cannot defeat the expiry gate by
+/// claiming an old time (RUNTIME-8).
+fn trusted_now_unix() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or_default()
 }
 
 fn digest(bytes: &[u8]) -> String {

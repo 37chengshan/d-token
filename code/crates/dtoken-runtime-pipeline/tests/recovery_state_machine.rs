@@ -4,10 +4,14 @@
 //! the sendable unit at the observable commit point.
 
 use dtoken_runtime_pipeline::{
-    PipelineError, PipelineInput, RecoveryPhase, RecoveryReceipt, RecoveryTracker,
-    RecoveryTransitionError, SendCommitState, SentPayloadVariant, TransformArtifact,
+    PipelineError, PipelineInput, RecoveryPhase, RecoveryProofAuthority, RecoveryReceipt,
+    RecoveryTracker, RecoveryTransitionError, SendCommitState, SentPayloadVariant,
+    TransformArtifact,
 };
-use dtoken_types::{EvidenceSource, EvidenceValue, Protocol, RequestScope};
+use dtoken_types::{
+    ChainMode, CompressionPolicy, EvidenceSource, EvidenceValue, Protocol, RequestScope,
+    RouteDecision,
+};
 use uuid::Uuid;
 
 fn scope() -> RequestScope {
@@ -38,6 +42,26 @@ fn prepared_request() -> (Uuid, dtoken_runtime_pipeline::PreparedRequest) {
     (request_id, prepared)
 }
 
+/// Test stand-in for the production store authority.
+fn authority() -> RecoveryProofAuthority {
+    RecoveryProofAuthority::new([7_u8; 32])
+}
+
+/// Active route decision for the prepared request.
+fn decision_for(prepared: &dtoken_runtime_pipeline::PreparedRequest) -> RouteDecision {
+    let scope = prepared.scope();
+    RouteDecision {
+        request_id: scope.request_id,
+        route_id: scope.route_id.clone(),
+        provider_id: scope.provider_id.clone(),
+        chain_mode: ChainMode::Direct,
+        compression_policy: CompressionPolicy::Balanced,
+        reason: "test decision".to_string(),
+        input_protocol: Some(scope.input_protocol.clone()),
+        output_protocol: Some(scope.output_protocol.clone()),
+    }
+}
+
 fn recovery_for(prepared: &dtoken_runtime_pipeline::PreparedRequest) -> RecoveryReceipt {
     let artifact = TransformArtifact::new(
         prepared.baseline_digest(),
@@ -45,9 +69,12 @@ fn recovery_for(prepared: &dtoken_runtime_pipeline::PreparedRequest) -> Recovery
         vec!["safe-text".to_string()],
     )
     .unwrap();
+    let proof = authority()
+        .issue("ccr:durable-ref-1", 1_000_000_000_000)
+        .expect("store-issued proof");
     let candidate = prepared
         .clone()
-        .with_durable_candidate(artifact, "decision-digest", "ccr:durable-ref-1", 1_000_000)
+        .with_durable_candidate(artifact, &decision_for(prepared), proof, &authority())
         .expect("valid durable recovery receipt");
     candidate.recovery_receipt().clone()
 }
