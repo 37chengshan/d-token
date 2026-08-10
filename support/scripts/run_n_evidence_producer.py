@@ -596,7 +596,15 @@ def stage_node(
             dirty=dirty,
         )
     if commands:
-        records = [run_command(argv, expected["root"]) for argv in commands]
+        records = [
+            run_command(
+                argv,
+                expected["root"] / "code"
+                if argv and argv[0] == "cargo" and "--manifest-path" not in argv
+                else expected["root"],
+            )
+            for argv in commands
+        ]
         ok, reasons = validate_local_output(node_id, records)
         node_extra["commands"] = [
             {k: r[k] for k in ("argv", "exit_code", "ok", "output_tail")}
