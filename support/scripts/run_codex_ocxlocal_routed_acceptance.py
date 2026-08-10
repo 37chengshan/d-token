@@ -586,15 +586,28 @@ def correlate_chain(
         if log.get("error"):
             return {}, ("correlation_mismatch", f"request_log terminal error set for request_id={_redact_id(request_id)}")
 
+        # The real runtime ledger emits several events per routed request:
+        # the terminal route_forward event carries the configured instance
+        # agent (codex), while provider_forward stage events are attributed
+        # to d-token.  /export/json returns events newest-first
+        # (EventLedger::recent reverses append order), so correlation MUST
+        # select the configured-agent event (first newest match with
+        # agent=codex), never the first per-request event.
         event = next(
-            (e for e in events if isinstance(e, dict) and e.get("request_id") == request_id),
+            (
+                e
+                for e in events
+                if isinstance(e, dict)
+                and e.get("request_id") == request_id
+                and normalize_agent(e.get("agent_id")) == AGENT_ID
+            ),
             None,
         )
         if event is None:
-            return {}, ("evidence_missing", f"no ledger event for request_id={_redact_id(request_id)}")
-        event_agent = normalize_agent(event.get("agent_id"))
-        if event_agent != AGENT_ID:
-            return {}, ("correlation_mismatch", f"ledger event agent {event_agent!r} != codex for request_id={_redact_id(request_id)}")
+            return {}, (
+                "evidence_missing",
+                f"no ledger event with agent={AGENT_ID} for request_id={_redact_id(request_id)}",
+            )
         # Terminal success state of the ledger event (EventStatus::Ok), not
         # just an event count.
         event_status = event.get("status")

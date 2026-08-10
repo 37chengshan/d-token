@@ -485,6 +485,72 @@ class CodexOcxlocalEvidenceTests(unittest.TestCase):
         self.assertEqual(report["route"]["upstream"]["host"], "127.0.0.1")
         self.assertEqual(report["route"]["upstream"]["port"], 10100)
 
+    def test_multi_event_ledger_selects_configured_agent_event(self) -> None:
+        # The real runtime ledger emits several events per routed request:
+        # the terminal route_forward event carries the configured instance
+        # agent (codex) while provider_forward stage events are attributed to
+        # d-token, and /export/json returns events newest-first. Correlation
+        # must select the newest agent=codex event, never the first
+        # per-request event (which is the provider_forward/d-token event).
+        evidence = real_evidence(self.module)
+        evidence["export"]["events"] = [
+            # newest-first: provider_forward (d-token) precedes route_forward (codex)
+            {"event_id": "e-1-pf2", "timestamp_ms": 3, "project_id": "dtoken-runtime",
+             "agent_id": "d-token", "instance_id": "dtoken-runtime-local", "command_id": None,
+             "request_id": "req-1", "stage": "provider_forward", "source": "dtoken",
+             "status": "ok", "input_tokens": 500, "output_tokens": 200, "saved_tokens": 0,
+             "baseline_kind": None, "error_code": None, "metadata": {}},
+            {"event_id": "e-1-pf1", "timestamp_ms": 2, "project_id": "dtoken-runtime",
+             "agent_id": "d-token", "instance_id": "dtoken-runtime-local", "command_id": None,
+             "request_id": "req-1", "stage": "provider_forward", "source": "dtoken",
+             "status": "ok", "input_tokens": 500, "output_tokens": 200, "saved_tokens": 0,
+             "baseline_kind": None, "error_code": None, "metadata": {}},
+            {"event_id": "e-1-rf", "timestamp_ms": 1, "project_id": "dtoken-runtime",
+             "agent_id": "codex", "instance_id": "dtoken-runtime-local", "command_id": None,
+             "request_id": "req-1", "stage": "route_forward", "source": "dtoken",
+             "status": "ok", "input_tokens": 500, "output_tokens": 200, "saved_tokens": 100,
+             "baseline_kind": None, "error_code": None, "metadata": {}},
+            {"event_id": "e-2-pf", "timestamp_ms": 3, "project_id": "dtoken-runtime",
+             "agent_id": "d-token", "instance_id": "dtoken-runtime-local", "command_id": None,
+             "request_id": "req-2", "stage": "provider_forward", "source": "dtoken",
+             "status": "ok", "input_tokens": 500, "output_tokens": 200, "saved_tokens": 0,
+             "baseline_kind": None, "error_code": None, "metadata": {}},
+            {"event_id": "e-2-rf", "timestamp_ms": 2, "project_id": "dtoken-runtime",
+             "agent_id": "codex", "instance_id": "dtoken-runtime-local", "command_id": None,
+             "request_id": "req-2", "stage": "route_forward", "source": "dtoken",
+             "status": "ok", "input_tokens": 500, "output_tokens": 200, "saved_tokens": 100,
+             "baseline_kind": None, "error_code": None, "metadata": {}},
+        ]
+        report = self._build(evidence, "--upstream-no-auth")
+        self.assertTrue(report["ok"], report["failure"])
+        self.assertTrue(report["routed"])
+        self.assertEqual(report["ledger"]["request_match_count"], 2)
+        self.assertEqual(report["ledger"]["events_observed"], 2)
+        self.assertEqual(report["route"]["model_forwarded"], ["model-a", "model-b"])
+
+    def test_multi_event_ledger_without_configured_agent_event_blocks(self) -> None:
+        # A request whose only ledger events are d-token stage events (no
+        # agent=codex route_forward event) must fail closed with
+        # evidence_missing, never pass on a foreign event.
+        evidence = real_evidence(self.module)
+        evidence["export"]["events"] = [
+            {"event_id": "e-1-pf", "timestamp_ms": 2, "project_id": "dtoken-runtime",
+             "agent_id": "d-token", "instance_id": "dtoken-runtime-local", "command_id": None,
+             "request_id": "req-1", "stage": "provider_forward", "source": "dtoken",
+             "status": "ok", "input_tokens": 500, "output_tokens": 200, "saved_tokens": 0,
+             "baseline_kind": None, "error_code": None, "metadata": {}},
+            {"event_id": "e-2-pf", "timestamp_ms": 2, "project_id": "dtoken-runtime",
+             "agent_id": "d-token", "instance_id": "dtoken-runtime-local", "command_id": None,
+             "request_id": "req-2", "stage": "provider_forward", "source": "dtoken",
+             "status": "ok", "input_tokens": 500, "output_tokens": 200, "saved_tokens": 0,
+             "baseline_kind": None, "error_code": None, "metadata": {}},
+        ]
+        report = self._build(evidence, "--upstream-no-auth")
+        self.assertFalse(report["ok"])
+        self.assertFalse(report["routed"])
+        self.assertEqual(report["failure"]["class"], "evidence_missing")
+        self.assertIn("agent=codex", report["failure"]["detail_redacted"])
+
     def test_dynamic_two_model_passthrough(self) -> None:
         report = self._build(
             real_evidence(self.module, models=("model-a", "model-b")),
@@ -646,10 +712,15 @@ class CodexOcxlocalEvidenceTests(unittest.TestCase):
         self.assertEqual(report["failure"]["class"], "evidence_missing")
 
     def test_ledger_event_agent_mismatch_blocked(self) -> None:
+        # A ledger that only records events for a different agent (e.g.
+        # opencode) has no agent=codex route_forward event: correlation fails
+        # closed with evidence_missing, never passes on a foreign event.
         evidence = real_evidence(self.module, event_agent="opencode")
         report = self._build(evidence, "--upstream-no-auth")
         self.assertFalse(report["ok"])
-        self.assertEqual(report["failure"]["class"], "correlation_mismatch")
+        self.assertFalse(report["routed"])
+        self.assertEqual(report["failure"]["class"], "evidence_missing")
+        self.assertIn("agent=codex", report["failure"]["detail_redacted"])
 
     def test_provider_metadata_missing_blocked(self) -> None:
         evidence = real_evidence(self.module, provider=False)
