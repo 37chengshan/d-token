@@ -2808,6 +2808,15 @@
       "summary": "merge receipt-authority 83b0ca8 into stage-pack-integrated (runtime pipeline receipt binding)",
       "head_before": "9b1631b",
       "remote": null
+    },
+    {
+      "id": "0ba0d1a6-a229-44aa-9c58-463dd38f8c9b",
+      "timestamp": "2026-08-10T19:11:55+08:00",
+      "operation": "merge",
+      "branch": "codex/final/stage-pack-integrated",
+      "summary": "merge stream-commit-classification 76883345 into stage-pack-integrated (T-C0B stream send-state classification)",
+      "head_before": "7a019595afb308d7f9bf759755e27832f58e91f2",
+      "remote": null
     }
   ]
 }
