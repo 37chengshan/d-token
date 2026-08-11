@@ -3159,6 +3159,24 @@
       "summary": "Commit Git operation audit records for OpenCode branch.",
       "head_before": "58755956c064",
       "remote": null
+    },
+    {
+      "id": "1c8027ad-7f7a-44d6-b876-2a09c7834d7f",
+      "timestamp": "2026-08-11T21:41:25+08:00",
+      "operation": "merge",
+      "branch": "main",
+      "summary": "Merge reviewed PR 23 transparent OpenCode multi-model routing into main.",
+      "head_before": "c29181ca0b3f",
+      "remote": null
+    },
+    {
+      "id": "b7ce74b4-92c8-4ba1-b995-23794ec4b674",
+      "timestamp": "2026-08-11T21:41:37+08:00",
+      "operation": "commit",
+      "branch": "codex/final/opencode-transparent-routing",
+      "summary": "Commit PR 23 merge audit record before GitHub merge.",
+      "head_before": "c29181ca0b3f",
+      "remote": null
     }
   ]
 }
