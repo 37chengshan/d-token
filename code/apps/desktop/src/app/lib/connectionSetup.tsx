@@ -21,6 +21,10 @@ export type UpstreamCandidate = {
   source: string;
   freshness: string;
   auth_mode: string;
+  /** OpenCode-only metadata projection: whether d-token's own OS credential
+   * entry exists for this authenticated candidate. Never a value or
+   * reference; absent means "not projected" (fail closed). */
+  dtoken_credential_configured?: boolean;
   active: boolean;
   port?: number | null;
   state: string;
@@ -97,6 +101,21 @@ export type AgentUpstreamBinding = {
   mcp_available?: boolean;
   /** The resolved absolute path to the MCP config file, if known. */
   mcp_config_path?: string | null;
+};
+
+/**
+ * Exact upstream identity that a stored credential binds to. Used by the
+ * OpenCode Install credential flow: candidate id alone is ambiguous (slug
+ * twins like `foo-bar`/`foo_bar`/`foo.bar` and same-id candidates from
+ * different sources or endpoints must never share a keyring account), so the
+ * credential command submits this triple plus the reviewed discovery
+ * revision and the native store re-verifies it against current discovery.
+ * `endpoint` is the raw candidate endpoint; normalization happens native-side.
+ */
+export type CredentialUpstreamIdentity = {
+  candidate_id: string;
+  source: string;
+  endpoint: string;
 };
 
 export type ConnectionSetupSnapshot = {

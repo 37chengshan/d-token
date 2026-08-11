@@ -872,6 +872,135 @@ describe("Install", () => {
     }]);
   });
 
+  it("emits one route row per safe OpenCode catalog candidate in stable order", () => {
+    const free = {
+      id: "opencode-free",
+      name: "OpenCode free",
+      protocol: "open_ai",
+      base_url: "https://opencode.ai/zen/v1",
+      models: ["deepseek-v4-flash-free", "north-mini-code-free"],
+      source: "opencode-provider-catalog-cache",
+      freshness: "unix:1",
+      auth_mode: "none",
+      active: false,
+      state: "available",
+      agent_ids: ["opencode"],
+      confidence: 90,
+      reasons: [],
+    };
+    const go = {
+      ...free,
+      id: "opencode-go",
+      name: "OpenCode Go",
+      base_url: "https://opencode.go.example.test/v1",
+      models: ["go-model"],
+      auth_mode: "unavailable",
+      dtoken_credential_configured: true,
+    };
+    const plan = buildConnectionRoutePlanRequest("r-opencode", [{
+      agent_id: "opencode",
+      agent_name: "OpenCode",
+      installed: true,
+      current_config_source: "opencode-provider-catalog-cache",
+      candidates: [free, go],
+      resolved_candidate: free,
+      resolution: "auto-resolved",
+      confidence: 90,
+      reasons: [],
+      capability: "one-click",
+      already_connected: false,
+    }], {});
+    // The resolved candidate never narrows the catalog: every safe
+    // candidate/model pair joins, sorted deterministically by model.
+    expect(plan.bindings).toEqual([
+      { agent_id: "opencode", candidate_id: "opencode-free", candidate_source: "opencode-provider-catalog-cache", model: "deepseek-v4-flash-free" },
+      { agent_id: "opencode", candidate_id: "opencode-go", candidate_source: "opencode-provider-catalog-cache", model: "go-model" },
+      { agent_id: "opencode", candidate_id: "opencode-free", candidate_source: "opencode-provider-catalog-cache", model: "north-mini-code-free" },
+    ]);
+  });
+
+  it("omits unconfigured credential OpenCode candidates from the route plan", () => {
+    const free = {
+      id: "opencode-free",
+      name: "OpenCode free",
+      protocol: "open_ai",
+      base_url: "https://opencode.ai/zen/v1",
+      models: ["deepseek-v4-flash-free"],
+      source: "opencode-provider-catalog-cache",
+      freshness: "unix:1",
+      auth_mode: "none",
+      active: false,
+      state: "available",
+      agent_ids: ["opencode"],
+      confidence: 90,
+      reasons: [],
+    };
+    const go = {
+      ...free,
+      id: "opencode-go",
+      name: "OpenCode Go",
+      base_url: "https://opencode.go.example.test/v1",
+      models: ["go-model"],
+      auth_mode: "unavailable",
+    };
+    const plan = buildConnectionRoutePlanRequest("r-opencode", [{
+      agent_id: "opencode",
+      agent_name: "OpenCode",
+      installed: true,
+      current_config_source: "opencode-provider-catalog-cache",
+      candidates: [go, free],
+      resolved_candidate: go,
+      resolution: "needs-credential",
+      confidence: 70,
+      reasons: ["credential missing"],
+      capability: "one-click",
+      already_connected: false,
+    }], {});
+    expect(plan.bindings).toEqual([{
+      agent_id: "opencode",
+      candidate_id: "opencode-free",
+      candidate_source: "opencode-provider-catalog-cache",
+      model: "deepseek-v4-flash-free",
+    }]);
+  });
+
+  it("fails closed when OpenCode models alias different endpoints", () => {
+    const first = {
+      id: "one",
+      name: "One",
+      protocol: "open_ai",
+      base_url: "https://one.example.test/v1",
+      models: ["shared-model"],
+      source: "opencode-provider-catalog-cache",
+      freshness: "unix:1",
+      auth_mode: "none",
+      active: false,
+      state: "available",
+      agent_ids: ["opencode"],
+      confidence: 90,
+      reasons: [],
+    };
+    const second = {
+      ...first,
+      id: "two",
+      base_url: "https://two.example.test/v1",
+    };
+    const plan = buildConnectionRoutePlanRequest("r-opencode", [{
+      agent_id: "opencode",
+      agent_name: "OpenCode",
+      installed: true,
+      current_config_source: "opencode-provider-catalog-cache",
+      candidates: [first, second],
+      resolved_candidate: first,
+      resolution: "auto-resolved",
+      confidence: 90,
+      reasons: [],
+      capability: "one-click",
+      already_connected: false,
+    }], {});
+    expect(plan.bindings).toEqual([]);
+  });
+
   it("stores a required credential through the secure command without rendering it when native storage fails", async () => {
     const credential = "test-credential-never-rendered";
     mocks.invokeNative.mockImplementation(async (command: string) => {
@@ -887,7 +1016,20 @@ describe("Install", () => {
     fireEvent.click(screen.getByRole("button", { name: "安全保存并继续" }));
 
     await waitFor(() => expect(mocks.invokeNative).toHaveBeenCalledWith("store_provider_credential", {
-      request: { provider_id: "provider-needing-key", credential },
+      request: {
+        provider_id: "provider-needing-key",
+        credential,
+        // The OpenCode Install credential call binds to the exact reviewed
+        // upstream identity (candidate id + source + endpoint) plus the
+        // snapshot revision; provider_id alone is never accepted for this
+        // flow.
+        upstream_identity: {
+          candidate_id: "provider-needing-key",
+          source: "agent-config:opencode",
+          endpoint: "https://example.test/v1",
+        },
+        discovery_revision: "credential-1",
+      },
     }));
     expect(await screen.findByRole("alert")).toHaveTextContent("未能安全保存凭据，请检查后重试。");
     expect(screen.queryByText(credential)).not.toBeInTheDocument();

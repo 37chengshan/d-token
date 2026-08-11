@@ -10,15 +10,14 @@ import {
   dispatchInstallMachine,
   getInstallMachineState,
   runInstallAgentBatch,
-  selectedCandidate,
   subscribeInstallMachine,
   type InstallAgentReceipt,
   type InstallPhase,
 } from "../../lib/installMachine";
-import { useConnectionSetup, type AgentUpstreamBinding, type ConnectionSetupSnapshot, type UpstreamCandidate } from "../../lib/connectionSetup";
+import { useConnectionSetup, type AgentUpstreamBinding, type ConnectionSetupSnapshot, type CredentialUpstreamIdentity, type UpstreamCandidate } from "../../lib/connectionSetup";
 import { InstallView } from "../../lib/install/InstallView";
 import { buildConnectionRoutePlanRequest, connectionDiscoveryCounts, derivePrimaryAction, desktopInstallRoot, hasRealAgentAction, hybridAgentIntegrationDraft, presentCcSwitch, presentInstallPhase, presentRouteVerificationSummary, presentServiceInstance, safeText, supportsAutomaticAgentIntegration } from "../../lib/install/presentation";
-import type { ConnectionRoutePlanReceipt, ConnectionRoutePlanReview, DtokenServiceStatus, HybridAgentIntegrationApply, HybridAgentIntegrationReview, HybridAgentIntegrationVerification, ManagedAgentTransportReceipt, ManagedAgentTransportReview, OpenCodeConnectionReceipt, OpenCodeConnectionReview, RouteVerification } from "../../lib/install/presentation";
+import type { CompoundRouteOpencodeReceipt, CompoundRouteOpencodeReview, ConnectionRoutePlanReceipt, ConnectionRoutePlanReview, DtokenServiceStatus, HybridAgentIntegrationApply, HybridAgentIntegrationReview, HybridAgentIntegrationVerification, ManagedAgentTransportReceipt, ManagedAgentTransportReview, OpenCodeConnectionReceipt, OpenCodeConnectionReview, RouteVerification } from "../../lib/install/presentation";
 export { connectionDiscoveryCounts, desktopInstallRoot, presentConnectionPrivacy, presentRouteVerificationSummary, presentServiceInstance } from "../../lib/install/presentation";
 export { buildConnectionRoutePlanRequest } from "../../lib/install/presentation";
 
@@ -70,6 +69,10 @@ export function Install({ onOpenAdvanced }: { onOpenAdvanced?: () => void; initi
   const [stopError, setStopError] = useState("");
   const [connectionReview, setConnectionReview] = useState<OpenCodeConnectionReview | null>(null);
   const [routePlanReview, setRoutePlanReview] = useState<ConnectionRoutePlanReview | null>(null);
+  // One native review for a batch that includes OpenCode: the route and
+  // OpenCode changes are prepared together, so apply echoes the single
+  // compound revision and both hash pairs back to the compound apply.
+  const [compoundReview, setCompoundReview] = useState<CompoundRouteOpencodeReview | null>(null);
   const [ccSwitchSyncReview, setCcSwitchSyncReview] = useState<ConnectionRoutePlanReview | null>(null);
   const [ccSwitchAutoFollow, setCcSwitchAutoFollow] = useState(true);
   const [agentAutoFollow, setAgentAutoFollow] = useState(true);
@@ -132,15 +135,29 @@ export function Install({ onOpenAdvanced }: { onOpenAdvanced?: () => void; initi
     () => (snapshot?.agent_bindings ?? []).filter((binding) => machine.selectedAgentIds.includes(binding.agent_id)),
     [machine.selectedAgentIds, snapshot?.agent_bindings],
   );
-  const selectedOpenCode = actionableBindings.find((binding) => binding.agent_id === "opencode");
   const credentialBinding = actionableBindings.find((binding) => binding.resolution === "needs-credential") ?? null;
   const credentialProviderId = credentialBinding?.resolved_candidate?.id
     ?? credentialBinding?.candidates[0]?.id
     ?? "";
-  const openCodeSelection = selectedOpenCode
-    ? selectedCandidate(selectedOpenCode, machine.selections[selectedOpenCode.agent_id])
-    : null;
   const reviewReady = snapshot ? canReviewInstall(snapshot, machine.selections, machine.selectedAgentIds) : false;
+  // One route plan for the whole page: preview and apply must agree on the
+  // exact rows. OpenCode contributes one row per safe catalog candidate.
+  const routePlan = useMemo(
+    () => (snapshot
+      ? buildConnectionRoutePlanRequest(snapshot.revision, actionableBindings, machine.selections)
+      : null),
+    [snapshot, actionableBindings, machine.selections],
+  );
+  // The union of OpenCode models entering the plan (already-validated by
+  // resolveAgentBindings inside the route plan). preview/apply_opencode_
+  // connection receive the whole array; a non-empty array is required before
+  // the OpenCode review is requested.
+  const openCodeModels = useMemo(
+    () => (routePlan?.bindings
+      .filter((binding) => binding.agent_id === "opencode")
+      .map((binding) => binding.model) ?? []),
+    [routePlan],
+  );
   const primaryBindings = useMemo(
     // Only Agents with a real, verified backend write action are shown as
     // configurable rows. Detected-but-not-writable Agents stay in the counts
@@ -176,6 +193,7 @@ export function Install({ onOpenAdvanced }: { onOpenAdvanced?: () => void; initi
     setShowReview(false);
     setConnectionReview(null);
     setRoutePlanReview(null);
+    setCompoundReview(null);
     setCcSwitchSyncReview((current) =>
       current?.source_fingerprint === snapshot.external_config_snapshot?.cc_switch?.fingerprint
         ? current
@@ -248,11 +266,11 @@ export function Install({ onOpenAdvanced }: { onOpenAdvanced?: () => void; initi
     setShowReview(true);
     setConnectionReview(null);
     setRoutePlanReview(null);
+    setCompoundReview(null);
     setManagedTransportReviews({});
     setAgentIntegrationReviews({});
     const requestId = createOperationRequestId("connection-preview");
-    const routePlan = buildConnectionRoutePlanRequest(snapshot.revision, actionableBindings, machine.selections);
-    if (routePlan.bindings.length === 0) return;
+    if (!routePlan || routePlan.bindings.length === 0) return;
     setPendingAction("preview");
     try {
       const integrationBindings = actionableBindings.filter((binding) =>
@@ -264,16 +282,21 @@ export function Install({ onOpenAdvanced }: { onOpenAdvanced?: () => void; initi
         && !binding.already_connected
         && Boolean(binding.config_path),
       );
-      const [routeReview, openCodeReview, managedTransportReviewEntries, integrationReviewEntries] = await Promise.all([
-        invokeNative<ConnectionRoutePlanReview>("preview_connection_route_plan", { request: routePlan }),
-        openCodeSelection?.model
-          ? invokeNative<OpenCodeConnectionReview>("preview_opencode_connection", {
+      const [compound, managedTransportReviewEntries, integrationReviewEntries] = await Promise.all([
+        // A batch with OpenCode uses one compound preview: the native side
+        // re-discovers, prepares the active route change AND the OpenCode
+        // provider change, and returns one compound revision plus both
+        // diffs/hashes. Batches without OpenCode keep the route-only preview.
+        openCodeModels.length > 0
+          ? invokeNative<CompoundRouteOpencodeReview>("preview_compound_route_opencode", {
               request: {
-                model: openCodeSelection.model,
-                listener_port: 18001,
-                reviewed_revision: null,
-                reviewed_before_sha256: null,
-                reviewed_after_sha256: null,
+                plan: routePlan,
+                opencode: { models: openCodeModels, listener_port: 18001 },
+                // The preview projects the follow-safe subset so the review
+                // can show which routes would be skipped for auto-follow
+                // before confirmation: OpenCode multi-route follow is never
+                // authorized, and non-OpenCode follow stays unchanged.
+                enable_auto_follow: agentAutoFollow,
               },
             })
           : Promise.resolve(null),
@@ -307,12 +330,27 @@ export function Install({ onOpenAdvanced }: { onOpenAdvanced?: () => void; initi
           }),
         ] as const)),
       ]);
+      let routeReview: ConnectionRoutePlanReview | null = null;
+      let openCodeReview: OpenCodeConnectionReview | null = null;
+      let nextCompoundReview: CompoundRouteOpencodeReview | null = null;
+      if (compound) {
+        // The compound review keeps one visible confirmation; the split
+        // views are populated from its nested route/opencode reviews.
+        nextCompoundReview = compound;
+        routeReview = compound.route ?? null;
+        openCodeReview = compound.opencode ?? null;
+      } else {
+        routeReview = await invokeNative<ConnectionRoutePlanReview>("preview_connection_route_plan", {
+          request: routePlan,
+        });
+      }
       setRoutePlanReview(routeReview);
       setConnectionReview(openCodeReview);
+      setCompoundReview(nextCompoundReview);
       setManagedTransportReviews(Object.fromEntries(managedTransportReviewEntries));
       setAgentIntegrationReviews(Object.fromEntries(integrationReviewEntries));
-      if (!routeReview.ok) {
-        const failure = presentOperationFailure("connection", routeReview.error, lang);
+      if (!routeReview?.ok) {
+        const failure = presentOperationFailure("connection", routeReview?.error, lang);
         setNotice(failure.message);
         dispatch({ type: "SET_PHASE", phase: "blocked", message: failure.message });
         addNotification({ dedupeKey: "connection-preview-failed", level: "error", title: failure.title, message: failure.message, details: failure.details, receipt: { requestId, targetId: "connection-plan" } });
@@ -333,17 +371,20 @@ export function Install({ onOpenAdvanced }: { onOpenAdvanced?: () => void; initi
     if (!snapshot || machine.reviewDiscoveryRevision !== snapshot.revision) {
       setShowReview(false);
       setConnectionReview(null);
+      setCompoundReview(null);
       setNotice(translateCopy("in.sourceConfigurationChangedTheOldPlanWasInvalidatedAndWillBeRebuilt", lang));
       await refreshAll();
       return;
     }
     setPendingAction("apply");
     const requestId = createOperationRequestId("connection-apply");
-    const routePlan = buildConnectionRoutePlanRequest(snapshot.revision, actionableBindings, machine.selections);
+    if (!routePlan) return;
     const routeChanges = routePlanReview?.before_sha256 !== routePlanReview?.after_sha256;
     const wasManaged = serviceManaged;
+    const hasCompound = openCodeModels.length > 0;
     let routeReceipt: ConnectionRoutePlanReceipt | null = null;
     let openCodeReceipt: OpenCodeConnectionReceipt | null = null;
+    let compoundReceipt: CompoundRouteOpencodeReceipt | null = null;
     let appliedManagedTransports: AgentUpstreamBinding[] = [];
     let appliedAgentReceipts: InstallAgentReceipt[] = [];
     let rolledBack = false;
@@ -358,33 +399,63 @@ export function Install({ onOpenAdvanced }: { onOpenAdvanced?: () => void; initi
         const stopped = await invokeNative<NativeActionResult>("stop_dtoken_service");
         assertNativeActionSucceeded(stopped);
       }
-      routeReceipt = await invokeNative<ConnectionRoutePlanReceipt>("apply_connection_route_plan", {
-        request: {
-          plan: routePlan,
-          reviewed_before_sha256: routePlanReview.before_sha256,
-          reviewed_after_sha256: routePlanReview.after_sha256,
-          enable_auto_follow: agentAutoFollow,
-        },
-      });
-      if (!routeReceipt.ok || !routeReceipt.verified) throw new Error(routeReceipt.summary);
+      if (hasCompound) {
+        // One native compound transaction applies the active route change
+        // and the OpenCode provider change together: both files share one
+        // backup set and any apply failure reverses the prior change. The
+        // exact compound revision and both hash pairs must match the review.
+        if (!compoundReview?.ok || !compoundReview.compound_revision
+          || !compoundReview.route?.before_sha256 || !compoundReview.route?.after_sha256
+          || !compoundReview.opencode?.before_sha256 || !compoundReview.opencode?.after_sha256) {
+          throw new Error("opencode_preview_incomplete");
+        }
+        compoundReceipt = await invokeNative<CompoundRouteOpencodeReceipt>("apply_compound_route_opencode", {
+          request: {
+            plan: routePlan,
+            opencode: { models: openCodeModels, listener_port: 18001 },
+            reviewed_compound_revision: compoundReview.compound_revision,
+            reviewed_route_before_sha256: compoundReview.route.before_sha256,
+            reviewed_route_after_sha256: compoundReview.route.after_sha256,
+            reviewed_opencode_before_sha256: compoundReview.opencode.before_sha256,
+            reviewed_opencode_after_sha256: compoundReview.opencode.after_sha256,
+            enable_auto_follow: agentAutoFollow,
+          },
+        });
+        if (!compoundReceipt.ok || !compoundReceipt.verified) throw new Error(compoundReceipt.summary);
+        routeReceipt = {
+          ok: compoundReceipt.ok,
+          state: compoundReceipt.state,
+          verified: compoundReceipt.verified,
+          summary: compoundReceipt.summary,
+          rollback_id: compoundReceipt.route?.rollback_id ?? null,
+          before_sha256: compoundReceipt.route?.before_sha256 ?? null,
+          after_sha256: compoundReceipt.route?.after_sha256 ?? null,
+          auto_follow: compoundReceipt.auto_follow ?? undefined,
+        };
+        openCodeReceipt = {
+          ok: compoundReceipt.ok,
+          state: compoundReceipt.state,
+          verified: compoundReceipt.verified,
+          summary: compoundReceipt.summary,
+          rollback_id: compoundReceipt.opencode?.rollback_id ?? null,
+        };
+      } else {
+        // Route-only batches keep the single-command behavior.
+        routeReceipt = await invokeNative<ConnectionRoutePlanReceipt>("apply_connection_route_plan", {
+          request: {
+            plan: routePlan,
+            reviewed_before_sha256: routePlanReview.before_sha256,
+            reviewed_after_sha256: routePlanReview.after_sha256,
+            enable_auto_follow: agentAutoFollow,
+          },
+        });
+        if (!routeReceipt.ok || !routeReceipt.verified) throw new Error(routeReceipt.summary);
+      }
+      // Runtime install/start/reload happens only after the compound (or
+      // route-only) receipt is verified; the native apply never starts it.
       if (!serviceOnline || routeChanges) await installRuntime();
 
       dispatch({ type: "SET_PHASE", phase: "applying-agent-configs" });
-      if (openCodeSelection?.model) {
-        if (!connectionReview?.ok || !connectionReview.revision || !connectionReview.before_sha256 || !connectionReview.after_sha256) {
-          throw new Error("opencode_preview_incomplete");
-        }
-        openCodeReceipt = await invokeNative<OpenCodeConnectionReceipt>("apply_opencode_connection", {
-          request: {
-            model: openCodeSelection.model,
-            listener_port: 18001,
-            reviewed_revision: connectionReview.revision,
-            reviewed_before_sha256: connectionReview.before_sha256,
-            reviewed_after_sha256: connectionReview.after_sha256,
-          },
-        });
-        if (!openCodeReceipt.ok) throw new Error(openCodeReceipt.summary);
-      }
 
       const managedTransportBindings = actionableBindings.filter((binding) =>
         binding.agent_id !== "opencode"
@@ -467,7 +538,8 @@ export function Install({ onOpenAdvanced }: { onOpenAdvanced?: () => void; initi
       if (
         fullyVerified
         && agentAutoFollow
-        && routeReceipt.auto_follow?.state === "pending_runtime_verification"
+        && (routeReceipt.auto_follow?.state === "pending_runtime_verification"
+          || routeReceipt.auto_follow?.state === "partial")
         && routeReceipt.after_sha256
       ) {
         const follow = await invokeNative<{ ok: boolean; state: string; summary?: string }>(
@@ -533,20 +605,41 @@ export function Install({ onOpenAdvanced }: { onOpenAdvanced?: () => void; initi
         }).catch(() => null);
         rolledBack = rolledBack || (restored?.verification?.ok === true && restored?.state !== "failed");
       }
-      if (openCodeReceipt?.ok && openCodeReceipt.rollback_id) {
-        const restored = await invokeNative<NativeActionResult>("manage_backup", { action: "restore", id: openCodeReceipt.rollback_id }).catch(() => null);
-        rolledBack = rolledBack || restored?.ok === true;
-      }
-      if (routeReceipt?.ok && routeReceipt.rollback_id && routeReceipt.after_sha256) {
+      if (compoundReceipt?.ok && compoundReceipt.route?.rollback_id && compoundReceipt.opencode?.rollback_id) {
+        // Compound rollback restores both files in reverse order using the
+        // exact per-file rollback targets from the compound receipt, and
+        // reports all-or-fail truthfully.
         if (routeChanges) await invokeNative<NativeActionResult>("stop_dtoken_service").catch(() => null);
-        const restored = await invokeNative<NativeActionResult>("rollback_connection_route_plan", {
+        const restored = await invokeNative<NativeActionResult>("rollback_compound_route_opencode", {
           request: {
-            rollback_id: routeReceipt.rollback_id,
-            expected_after_sha256: routeReceipt.after_sha256,
+            route: {
+              rollback_id: compoundReceipt.route.rollback_id,
+              expected_after_sha256: compoundReceipt.route.after_sha256 ?? "",
+            },
+            opencode: {
+              rollback_id: compoundReceipt.opencode.rollback_id,
+              expected_after_sha256: compoundReceipt.opencode.after_sha256 ?? "",
+            },
           },
         }).catch(() => null);
         rolledBack = rolledBack || restored?.ok === true;
         if (restored?.ok && wasManaged) await installRuntime().catch(() => undefined);
+      } else {
+        if (openCodeReceipt?.ok && openCodeReceipt.rollback_id) {
+          const restored = await invokeNative<NativeActionResult>("manage_backup", { action: "restore", id: openCodeReceipt.rollback_id }).catch(() => null);
+          rolledBack = rolledBack || restored?.ok === true;
+        }
+        if (routeReceipt?.ok && routeReceipt.rollback_id && routeReceipt.after_sha256) {
+          if (routeChanges) await invokeNative<NativeActionResult>("stop_dtoken_service").catch(() => null);
+          const restored = await invokeNative<NativeActionResult>("rollback_connection_route_plan", {
+            request: {
+              rollback_id: routeReceipt.rollback_id,
+              expected_after_sha256: routeReceipt.after_sha256,
+            },
+          }).catch(() => null);
+          rolledBack = rolledBack || restored?.ok === true;
+          if (restored?.ok && wasManaged) await installRuntime().catch(() => undefined);
+        }
       }
       rolledBack = rolledBack || /rollback|rolled.back|恢复/i.test(message);
       dispatch({ type: "SET_PHASE", phase: rolledBack ? "rolled-back" : "blocked", message: failure.message });
@@ -656,8 +749,36 @@ export function Install({ onOpenAdvanced }: { onOpenAdvanced?: () => void; initi
     setPendingAction("credential");
     setCredentialError("");
     try {
+      const candidate = credentialBinding?.resolved_candidate ?? credentialBinding?.candidates[0];
+      const isOpenCode = credentialBinding?.agent_id === "opencode";
+      // OpenCode Install credentials must bind to the exact reviewed
+      // upstream identity (candidate id + source + endpoint) plus the
+      // reviewed discovery revision; provider_id alone is never accepted by
+      // the native store for this flow, so fail closed instead of falling
+      // back to the generic provider path.
+      if (isOpenCode && (!candidate || !snapshot?.revision)) {
+        setCredentialError(translateCopy("in.sourceConfigurationChangedTheOldPlanWasInvalidatedAndWillBeRebuilt", lang));
+        return;
+      }
+      const request: {
+        provider_id: string;
+        credential: string;
+        upstream_identity?: CredentialUpstreamIdentity;
+        discovery_revision?: string;
+      } = {
+        provider_id: credentialProviderId,
+        credential: providerCredential,
+      };
+      if (isOpenCode && candidate && snapshot) {
+        request.upstream_identity = {
+          candidate_id: candidate.id,
+          source: candidate.source,
+          endpoint: candidate.base_url ?? "",
+        };
+        request.discovery_revision = snapshot.revision;
+      }
       const result = await invokeNative<NativeActionResult>("store_provider_credential", {
-        request: { provider_id: credentialProviderId, credential: providerCredential },
+        request,
       });
       assertNativeActionSucceeded(result);
       setProviderCredential("");
@@ -934,5 +1055,5 @@ export function Install({ onOpenAdvanced }: { onOpenAdvanced?: () => void; initi
     }
   };
 
-  return <InstallView {...{ lang, t, snapshot, discoveryStatus, phasePresentation, discoveryCounts, refreshAll, busy, pendingAction, handlePrimaryAction, primaryAction, serviceInstanceDetail, servicePresentation, restartRequired, serviceOnline, serviceManaged, setStopError, setConfirmServiceStop, visibleBindings, primaryBindings, machine, dispatch, secondaryBindings, ccSwitchPresentation, notice, transactionLogs, agentIntegrationReceipts, routeVerification, showReview, setShowReview, setConnectionReview, setRoutePlanReview, setManagedTransportReviews, setAgentIntegrationReviews, actionableBindings, serviceEndpoint, routePlanReview, connectionReview, managedTransportReviews, agentIntegrationReviews, openCodeSelection, applyConnectionPlan, credentialDialogOpen, setCredentialDialogOpen, setProviderCredential, setCredentialError, credentialBinding, credentialProviderId, providerCredential, credentialError, saveInlineCredential, confirmServiceStop, stopError, serviceStatus, serviceIdentifiersCurrent, stopService, transportBusyAgent, onConfigureAgent: (binding: AgentUpstreamBinding) => { void runManagedTransport(binding, "configure"); }, onClearAgent: (binding: AgentUpstreamBinding) => { void runManagedTransport(binding, "clear"); }, transportConfirm, setTransportConfirm, applyManagedTransport: () => applyManagedTransport(), mcpConfirm, setMcpConfirm, applyManagedMcpIntegration: () => applyManagedMcpIntegration(), agentAutoFollow, setAgentAutoFollow, ccSwitchSyncReview, setCcSwitchSyncReview, ccSwitchAutoFollow, setCcSwitchAutoFollow, ccSwitchSyncBusy: pendingAction === "sync", onPreviewCcSwitchSync: () => { void previewCcSwitchSync(); }, onApplyCcSwitchSync: () => { void applyCcSwitchSync(); } }} />;
+  return <InstallView {...{ lang, t, snapshot, discoveryStatus, phasePresentation, discoveryCounts, refreshAll, busy, pendingAction, handlePrimaryAction, primaryAction, serviceInstanceDetail, servicePresentation, restartRequired, serviceOnline, serviceManaged, setStopError, setConfirmServiceStop, visibleBindings, primaryBindings, machine, dispatch, secondaryBindings, ccSwitchPresentation, notice, transactionLogs, agentIntegrationReceipts, routeVerification, showReview, setShowReview, setConnectionReview, setRoutePlanReview, setManagedTransportReviews, setAgentIntegrationReviews, actionableBindings, serviceEndpoint, routePlanReview, connectionReview, managedTransportReviews, agentIntegrationReviews, openCodeSelection: openCodeModels.length > 0 ? { model: openCodeModels[0] } : null, applyConnectionPlan, credentialDialogOpen, setCredentialDialogOpen, setProviderCredential, setCredentialError, credentialBinding, credentialProviderId, providerCredential, credentialError, saveInlineCredential, confirmServiceStop, stopError, serviceStatus, serviceIdentifiersCurrent, stopService, transportBusyAgent, onConfigureAgent: (binding: AgentUpstreamBinding) => { void runManagedTransport(binding, "configure"); }, onClearAgent: (binding: AgentUpstreamBinding) => { void runManagedTransport(binding, "clear"); }, transportConfirm, setTransportConfirm, applyManagedTransport: () => applyManagedTransport(), mcpConfirm, setMcpConfirm, applyManagedMcpIntegration: () => applyManagedMcpIntegration(), agentAutoFollow, setAgentAutoFollow, ccSwitchSyncReview, setCcSwitchSyncReview, ccSwitchAutoFollow, setCcSwitchAutoFollow, ccSwitchSyncBusy: pendingAction === "sync", onPreviewCcSwitchSync: () => { void previewCcSwitchSync(); }, onApplyCcSwitchSync: () => { void applyCcSwitchSync(); } }} />;
 }

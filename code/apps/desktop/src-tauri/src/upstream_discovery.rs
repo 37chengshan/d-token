@@ -908,32 +908,10 @@ fn discover_opencode_catalog(candidates: &mut Vec<UpstreamCandidate>, sources: &
         run_capture_with_timeout("opencode", &["models", "opencode"], Duration::from_secs(6));
     match output {
         Ok((true, stdout)) => {
-            let models = stdout
-                .lines()
-                .map(str::trim)
-                .filter_map(|line| line.strip_prefix("opencode/"))
-                .filter(|model| !model.is_empty())
-                .map(str::to_string)
-                .collect::<Vec<_>>();
-            if !models.is_empty() {
-                candidates.push(UpstreamCandidate {
-                    id: "opencode".to_string(),
-                    name: "OpenCode official free catalog".to_string(),
-                    protocol: "open_ai".to_string(),
-                    base_url: Some("https://opencode.ai/zen/v1".to_string()),
-                    models,
-                    source: "opencode-provider-catalog".to_string(),
-                    freshness: now_timestamp(),
-                    auth_mode: "none".to_string(),
-                    active: false,
-                    port: Some(443),
-                    state: "available".to_string(),
-                    agent_ids: vec!["opencode".to_string()],
-                    confidence: 70,
-                    reasons: vec!["Official OpenCode free catalog reported this model".to_string()],
-                });
-            }
-            sources.push(json!({"id":"opencode-provider-catalog","state":"loaded","freshness":now_timestamp()}));
+            // Names-only CLI output includes paid models and carries no
+            // cost/status metadata, so it can never back a free-catalog
+            // candidate (auth_mode none). Record the source state instead.
+            sources.push(opencode_names_only_source(&stdout));
         }
         Ok((false, _)) => sources.push(json!({"id":"opencode-provider-catalog","state":"unavailable","freshness":now_timestamp()})),
         Err(error) => sources.push(json!({"id":"opencode-provider-catalog","state":if error == "timeout" { "timeout" } else { "missing" },"freshness":now_timestamp()})),
@@ -996,6 +974,27 @@ fn parse_opencode_free_models(raw: &[u8]) -> Vec<String> {
     free
 }
 
+/// Source entry for the names-only `opencode models opencode` fallback. The
+/// CLI listing includes paid models and names carry no cost/status metadata,
+/// so it NEVER yields a free-catalog candidate (auth_mode none); callers
+/// record `metadata_insufficient` instead.
+fn opencode_names_only_source(stdout: &str) -> Value {
+    let has_models = stdout
+        .lines()
+        .map(str::trim)
+        .filter_map(|line| line.strip_prefix("opencode/"))
+        .any(|model| !model.is_empty());
+    json!({
+        "id": "opencode-provider-catalog",
+        "state": if has_models {
+            "metadata_insufficient"
+        } else {
+            "unavailable"
+        },
+        "freshness": now_timestamp(),
+    })
+}
+
 fn candidates_from_opencode_config(path: &Path) -> Result<Vec<UpstreamCandidate>, &'static str> {
     let metadata = fs::metadata(path).map_err(|_| "unavailable")?;
     if !metadata.is_file() || metadata.len() > 2 * 1024 * 1024 {
@@ -1015,10 +1014,10 @@ fn candidates_from_opencode_config(path: &Path) -> Result<Vec<UpstreamCandidate>
             .and_then(|model| model.strip_prefix(&format!("{id}/")));
         let active = active_model.is_some();
         let base_url = provider.base_url().as_deref().and_then(redact_base_url);
+        // The top-level `model` only selects which provider/model is active;
+        // it never narrows the provider's model map. Retaining the full map
+        // keeps discovery honest about everything the config actually offers.
         let mut models = provider.models.keys().cloned().collect::<Vec<_>>();
-        if let Some(model) = active_model.filter(|model| safe_model_id(model)) {
-            models = vec![model.to_string()];
-        }
         models.sort();
         models.dedup();
         if base_url.is_none() && models.is_empty() {
@@ -3646,7 +3645,7 @@ mod tests {
     }
 
     #[test]
-    fn opencode_parser_uses_explicit_provider_fields_and_drops_secret_values() {
+    fn opencode_config_parser_keeps_full_models_and_never_reads_credentials() {
         const SECRET: &str = "OPENCODE_SECRET_MUST_NOT_ESCAPE";
         let root = tempfile::tempdir().expect("temporary directory");
         let path = root.path().join("opencode.json");
@@ -3662,11 +3661,18 @@ mod tests {
                         "baseURL": "https://user:{SECRET}@opencode.example.test/v1?token={SECRET}",
                         "apiKey": "{SECRET}"
                       }},
-                      "models": {{"routed-model": {{"name": "Routed"}}}},
+                      "models": {{
+                        "routed-model": {{"name": "Routed"}},
+                        "second-model": {{"name": "Second"}}
+                      }},
                       "unrelated": {{
                         "baseURL": "https://wrong.example.test/v1",
                         "model": "wrong-model"
                       }}
+                    }},
+                    "open-source": {{
+                      "npm": "@ai-sdk/openai-compatible",
+                      "models": {{"free-a": {{}}, "free-b": {{}}}}
                     }}
                   }}
                 }}"#
@@ -3675,21 +3681,59 @@ mod tests {
         .expect("OpenCode config");
 
         let candidates = candidates_from_opencode_config(&path).expect("OpenCode candidates");
-        assert_eq!(candidates.len(), 1);
-        let candidate = &candidates[0];
-        assert!(candidate.active);
-        assert_eq!(candidate.id, "custom");
-        assert_eq!(candidate.models, ["routed-model"]);
-        assert_eq!(candidate.protocol, "open_ai");
+        assert_eq!(candidates.len(), 2);
+
+        let selected = candidates
+            .iter()
+            .find(|candidate| candidate.id == "custom")
+            .expect("selected provider");
+        // The top-level model selects the active model but never narrows the
+        // provider's full model map: both models are retained.
+        assert!(selected.active);
+        assert_eq!(selected.models, ["routed-model", "second-model"]);
+        assert_eq!(selected.protocol, "open_ai");
         assert_eq!(
-            candidate.base_url.as_deref(),
+            selected.base_url.as_deref(),
             Some("https://opencode.example.test/v1")
         );
-        assert_eq!(candidate.auth_mode, "unavailable");
+        // A credential-shaped provider stays auth_mode unavailable: the value
+        // is only detected as present, never read or returned (keyring
+        // resolution belongs to main.rs, not discovery).
+        assert_eq!(selected.auth_mode, "unavailable");
+
+        let other = candidates
+            .iter()
+            .find(|candidate| candidate.id == "open-source")
+            .expect("second provider");
+        assert!(!other.active);
+        assert_eq!(other.models, ["free-a", "free-b"]);
+        assert_eq!(other.auth_mode, "none");
+
         let encoded = serde_json::to_string(&candidates).expect("serialize candidates");
         assert!(!encoded.contains(SECRET));
         assert!(!encoded.contains("wrong.example"));
         assert!(!encoded.contains("wrong-model"));
+    }
+
+    #[test]
+    fn opencode_names_only_cli_output_never_creates_free_candidate() {
+        // Names-only `opencode models opencode` output includes paid models
+        // and no cost/status metadata, so it must never surface as an
+        // 'official free catalog' candidate with auth_mode none: only a
+        // metadata_insufficient source entry is allowed.
+        let stdout = "opencode/free-model-a\nopencode/free-model-b\nopencode/paid-model-c\n";
+        let source = opencode_names_only_source(stdout);
+        assert_eq!(source["id"], "opencode-provider-catalog");
+        assert_eq!(source["state"], "metadata_insufficient");
+        assert!(source.get("models").is_none());
+        assert!(source.get("auth_mode").is_none());
+        assert!(source.get("base_url").is_none());
+
+        // Unparseable/empty output stays unavailable and also yields no
+        // candidate.
+        let empty = opencode_names_only_source("");
+        assert_eq!(empty["id"], "opencode-provider-catalog");
+        assert_eq!(empty["state"], "unavailable");
     }
 
     #[test]

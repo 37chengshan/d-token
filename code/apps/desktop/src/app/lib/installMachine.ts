@@ -171,13 +171,22 @@ export type ResolvedAgentBinding = {
 };
 
 /**
- * The only model d-token may ever write is the uniquely auto-resolved one
- * (PRD P0.0.10.2/.5): exactly one model on the resolved candidate, or the
- * empty passthrough marker for the Codex Responses proxy. Every other shape
- * (multiple models, or none outside the passthrough) is ambiguous and fails
- * closed to null — callers must block, never guess or pick models[0].
+ * The only model d-token may ever write for a single-resolution Agent is the
+ * uniquely auto-resolved one (PRD P0.0.10.2/.5): exactly one model on the
+ * resolved candidate, or the empty passthrough marker for the Codex
+ * Responses proxy. Every other shape (multiple models, or none outside the
+ * passthrough) is ambiguous and fails closed to null — callers must block,
+ * never guess or pick models[0].
+ *
+ * OpenCode is an intentional multi-provider catalog and always returns null
+ * here; callers must use `resolveAgentBindings` so no code path silently
+ * locks a single catalog model.
  */
 export function resolveAgentBinding(binding: AgentUpstreamBinding, selection?: AgentSelection): ResolvedAgentBinding | null {
+  // The OpenCode catalog has no single auto-resolved model. Returning null
+  // forces every caller through resolveAgentBindings() for OpenCode while
+  // preserving the exact single-resolution contract for every other Agent.
+  if (binding.agent_id === "opencode") return null;
   const chosen = selection ? selectedCandidate(binding, selection) : null;
   const candidate = chosen?.candidate ?? binding.resolved_candidate;
   if (!candidate) return null;
@@ -188,11 +197,63 @@ export function resolveAgentBinding(binding: AgentUpstreamBinding, selection?: A
   return null;
 }
 
+/**
+ * Resolves every safe route already present in a binding. Non-OpenCode
+ * Agents keep the historical unique auto-resolution (exactly one model on
+ * the resolved candidate, or the Codex Responses passthrough marker), never
+ * more than one row.
+ *
+ * OpenCode is a multi-provider catalog: every candidate/model pair already
+ * in `binding.candidates` that is safe joins the plan — base_url present,
+ * auth_mode "none" OR a configured d-token OS credential
+ * (`dtoken_credential_configured: true`), and a non-empty model. Models are
+ * deduped globally; if the same model maps to a different candidate/source/
+ * endpoint the whole binding fails closed to [] (no route may guess). The
+ * `resolved_candidate` never narrows the catalog — multi-provider routing is
+ * intentional. Only candidates present in the binding are reviewed source
+ * evidence. Order is deterministic (model, source, candidate id).
+ */
+export function resolveAgentBindings(binding: AgentUpstreamBinding): ResolvedAgentBinding[] {
+  if (binding.agent_id !== "opencode") {
+    const resolved = resolveAgentBinding(binding);
+    return resolved ? [resolved] : [];
+  }
+  const byModel = new Map<string, { candidate: UpstreamCandidate; model: string; fingerprint: string }>();
+  for (const candidate of binding.candidates) {
+    if (!candidate.base_url) continue;
+    const safe = candidate.auth_mode === "none" || candidate.dtoken_credential_configured === true;
+    if (!safe) continue;
+    const endpoint = candidate.base_url.trim().replace(/\/+$/, "").toLowerCase();
+    const fingerprint = `${candidate.id}::${candidate.source}::${endpoint}`;
+    for (const model of candidate.models) {
+      if (!model) continue;
+      const existing = byModel.get(model);
+      if (existing && existing.fingerprint !== fingerprint) return [];
+      byModel.set(model, { candidate, model, fingerprint });
+    }
+  }
+  return [...byModel.values()]
+    .map(({ candidate, model }) => ({ candidate, model }))
+    .sort((left, right) =>
+      left.model.localeCompare(right.model)
+      || left.candidate.source.localeCompare(right.candidate.source)
+      || left.candidate.id.localeCompare(right.candidate.id));
+}
+
 export function canReviewInstall(snapshot: ConnectionSetupSnapshot, selections: Record<string, AgentSelection>, selectedAgentIds = defaultSelectedAgentIds(snapshot)) {
   const actionable = selectedBindings(snapshot, selectedAgentIds);
   if (actionable.length === 0) return false;
   return actionable.every((binding) => {
     if (binding.already_connected) return true;
+    if (binding.agent_id === "opencode") {
+      // OpenCode is an intentional multi-provider catalog: any safe
+      // candidate/model pair already in the binding makes the plan ready.
+      // Credential-gated candidates without a configured d-token credential
+      // are omitted, never blocking safe routes. A genuine source ambiguity
+      // (multiple equally plausible active upstreams) still fails closed.
+      if (binding.resolution === "needs-source-fix") return false;
+      return resolveAgentBindings(binding).length >= 1;
+    }
     if (binding.resolution === "needs-credential") return false;
     // Ambiguity is never resolvable by the user; the plan fails closed.
     if (binding.resolution === "needs-source-fix") return false;
@@ -213,7 +274,15 @@ export function deriveInstallPhase(snapshot: ConnectionSetupSnapshot, selections
   // verified transport adapter.
   if (actionable.length === 0) return "partial";
   if (actionable.every((binding) => binding.already_connected)) return "already-connected";
-  if (actionable.some((binding) => binding.resolution === "needs-credential")) return "needs-credential";
+  // Credential-gated OpenCode candidates without a configured d-token
+  // credential never block safe routes: the requirement stays (and the
+  // credential dialog remains) only when no safe route exists at all.
+  const needsCredential = actionable.some((binding) =>
+    binding.agent_id === "opencode"
+      ? binding.resolution === "needs-credential" && resolveAgentBindings(binding).length === 0
+      : binding.resolution === "needs-credential",
+  );
+  if (needsCredential) return "needs-credential";
   // A genuinely ambiguous upstream/model blocks the whole plan until the
   // source is fixed and rescanned; no chooser is offered.
   if (actionable.some((binding) => binding.resolution === "needs-source-fix")) return "blocked";

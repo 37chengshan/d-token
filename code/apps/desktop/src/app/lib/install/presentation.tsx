@@ -1,7 +1,7 @@
 import { Badge } from "../../components/ui/badge";
 import { StatusBadge } from "../../components/common/StatusBadge";
 import { Button } from "../../components/ui/button";
-import { resolveAgentBinding, selectedCandidate, type InstallPhase } from "../installMachine";
+import { resolveAgentBinding, resolveAgentBindings, selectedCandidate, type InstallPhase } from "../installMachine";
 import type { AgentUpstreamBinding, ConnectionSetupSnapshot, UpstreamCandidate } from "../connectionSetup";
 import { translateCopy } from "../i18n";
 import { protocolLabel } from "../protocol";
@@ -275,6 +275,19 @@ export function buildConnectionRoutePlanRequest(
     discovery_revision: discoveryRevision,
     bindings: bindings.flatMap((binding) => {
       if (binding.already_connected) return [];
+      if (binding.agent_id === "opencode") {
+        // The OpenCode multi-provider catalog emits one row per safe
+        // candidate/model already present in the binding (base_url present;
+        // auth_mode none or a configured d-token credential; non-empty
+        // model). Ambiguity (same model on different endpoints) fails closed
+        // to zero rows. resolved_candidate never narrows the catalog.
+        return resolveAgentBindings(binding).map((resolved) => ({
+          agent_id: binding.agent_id,
+          candidate_id: resolved.candidate.id,
+          candidate_source: resolved.candidate.source,
+          model: resolved.model,
+        }));
+      }
       // Only the uniquely auto-resolved model (or the Codex Responses
       // passthrough marker "") may enter the route plan. Ambiguity never falls
       // back to a first model: the binding is omitted and the batch stays
@@ -437,7 +450,87 @@ type ConnectionRoutePlanReceipt = {
     enabled?: boolean;
     state?: string;
     summary?: string;
+    /** Follow-safe agent ids actually staged for follow (subset). */
+    agent_ids?: string[];
+    /** Agents whose authenticated routes were skipped for follow. */
+    skipped_agents?: string[];
+    skipped_candidates?: number;
+    /** True when an authorization was staged and still needs runtime verification. */
+    requires_runtime_verification?: boolean;
   };
+};
+
+/** OpenCode side of the compound route + OpenCode transaction request. */
+type CompoundOpenCodeRequest = {
+  models: string[];
+  listener_port: number;
+};
+
+/**
+ * One native review for the compound route + OpenCode transaction: the route
+ * and OpenCode changes are prepared together from one re-discovery, so the
+ * UI shows exactly one confirmation and apply echoes the single compound
+ * revision plus both hash pairs.
+ */
+type CompoundRouteOpencodeReview = {
+  ok: boolean;
+  state: string;
+  compound_revision?: string | null;
+  requires_explicit_confirmation?: boolean;
+  summary?: string;
+  error?: string;
+  route?: ConnectionRoutePlanReview | null;
+  opencode?: OpenCodeConnectionReview | null;
+};
+
+/**
+ * One native receipt for the compound route + OpenCode transaction: one
+ * transaction id plus per-file rollback records. `verified` is true only
+ * after the active d-token config and the exact OpenCode provider/model set
+ * were both re-checked post-apply. The runtime is started/reloaded by the
+ * caller only after this receipt is verified.
+ */
+type CompoundRouteOpencodeReceipt = {
+  ok: boolean;
+  state: string;
+  verified: boolean;
+  summary: string;
+  compound_revision?: string | null;
+  transaction_id?: string | null;
+  agents?: string[];
+  route?: {
+    target?: string;
+    before_sha256?: string | null;
+    after_sha256?: string | null;
+    rollback_id?: string | null;
+  } | null;
+  opencode?: {
+    target?: string;
+    revision?: string | null;
+    models?: string[];
+    listener?: string;
+    before_sha256?: string | null;
+    after_sha256?: string | null;
+    rollback_id?: string | null;
+  } | null;
+  auto_follow?: {
+    enabled?: boolean;
+    state?: string;
+    summary?: string;
+    /** Follow-safe agent ids actually staged for follow (subset). */
+    agent_ids?: string[];
+    /** Agents whose authenticated routes were skipped for follow. */
+    skipped_agents?: string[];
+    skipped_candidates?: number;
+    /** True when an authorization was staged and still needs runtime verification. */
+    requires_runtime_verification?: boolean;
+  } | null;
+};
+
+/** Native compound rollback: exact per-file rollback targets with hashes. */
+type CompoundRouteOpencodeRollbackRequest = {
+  route: { rollback_id: string; expected_after_sha256: string };
+  opencode: { rollback_id: string; expected_after_sha256: string };
 };
 
 type ManagedAgentTransportReview = {
@@ -547,6 +640,10 @@ export {
   supportsAutomaticAgentIntegration,
 };
 export type {
+  CompoundOpenCodeRequest,
+  CompoundRouteOpencodeReceipt,
+  CompoundRouteOpencodeReview,
+  CompoundRouteOpencodeRollbackRequest,
   ConnectionRoutePlanReceipt,
   ConnectionRoutePlanReview,
   DtokenServiceStatus,

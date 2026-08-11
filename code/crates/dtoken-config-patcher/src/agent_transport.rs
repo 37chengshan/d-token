@@ -761,30 +761,48 @@ pub fn verify_agent_transport_document(
     verify_document(descriptor, content, endpoint, enabled, None)
 }
 
+/// Pure document-level OpenCode configure operation over an explicit model
+/// list. The list is validated, deduplicated in stable first-occurrence order,
+/// and must be non-empty; every model becomes exactly
+/// `{"name":"d-token routed <id>"}` in the canonical provider.
+pub fn configure_opencode_transport_document_models(
+    existing: &str,
+    endpoint: &str,
+    models: &[&str],
+    enabled: bool,
+) -> Result<String> {
+    let models = normalize_opencode_models(models)?;
+    let model_refs: Vec<&str> = models.iter().map(String::as_str).collect();
+    let request = AgentTransportRequest {
+        agent_id: "opencode".to_string(),
+        target_path: PathBuf::from("opencode.json"),
+        endpoint: endpoint.to_string(),
+        enabled,
+        // The request field carries a single model for generic validation; the
+        // full normalized list travels explicitly to transform_opencode.
+        model: Some(models[0].clone()),
+    };
+    prepare_request(&request, AgentTransportOperation::Configure)?;
+    transform_opencode(
+        existing,
+        AgentTransportOperation::Configure,
+        endpoint,
+        enabled,
+        Some(&model_refs),
+    )
+}
+
 /// Pure document-level OpenCode configure operation. Keeping this separate
-/// makes the model requirement explicit instead of fabricating a default.
+/// makes the model requirement explicit instead of fabricating a default; the
+/// single model is wrapped into the one-element list of the canonical
+/// list-taking helper.
 pub fn configure_opencode_transport_document(
     existing: &str,
     endpoint: &str,
     model: &str,
     enabled: bool,
 ) -> Result<String> {
-    let request = AgentTransportRequest {
-        agent_id: "opencode".to_string(),
-        target_path: PathBuf::from("opencode.json"),
-        endpoint: endpoint.to_string(),
-        enabled,
-        model: Some(model.to_string()),
-    };
-    prepare_request(&request, AgentTransportOperation::Configure)?;
-    transform_document(
-        descriptor_for(&request)?,
-        existing,
-        AgentTransportOperation::Configure,
-        endpoint,
-        enabled,
-        request.model.as_deref(),
-    )
+    configure_opencode_transport_document_models(existing, endpoint, &[model], enabled)
 }
 
 fn apply_agent_transport(
@@ -1103,7 +1121,8 @@ fn transform_document(
             bail!("Agent provider schema is unavailable")
         }
         AgentTransportAdapterKind::OpenCodeProvider => {
-            transform_opencode(text, operation, endpoint, enabled, model)
+            let single_model: Option<Vec<&str>> = model.map(|single| vec![single]);
+            transform_opencode(text, operation, endpoint, enabled, single_model.as_deref())
         }
         AgentTransportAdapterKind::Hermes => {
             let model = model.context("Hermes transport requires an explicit model")?;
@@ -8876,7 +8895,7 @@ fn transform_opencode(
     operation: AgentTransportOperation,
     endpoint: &str,
     enabled: bool,
-    model: Option<&str>,
+    models: Option<&[&str]>,
 ) -> Result<String> {
     if operation == AgentTransportOperation::Clear && text.trim().is_empty() {
         return Ok(text.to_string());
@@ -8900,7 +8919,7 @@ fn transform_opencode(
     }
     match operation {
         AgentTransportOperation::Configure => {
-            let model = model.context("OpenCode transport requires an explicit model")?;
+            let models = models.context("OpenCode transport requires an explicit model")?;
             let has_enabled_allowlist = root.contains_key("enabled_providers");
             // Validate any user-owned provider lists before staging a change.
             let _ =
@@ -8919,11 +8938,13 @@ fn transform_opencode(
                 .as_object_mut()
                 .context("OpenCode provider must be an object")?;
             if let Some(existing) = providers.get(OPENCODE_PROVIDER_ID) {
+                // An owned provider is idempotently reconfigured; a foreign
+                // collision with the same key fails closed here.
                 ensure_owned_opencode_provider(existing)?;
             }
             providers.insert(
                 OPENCODE_PROVIDER_ID.into(),
-                opencode_provider_value(endpoint, model),
+                opencode_provider_value_models(endpoint, models)?,
             );
             if let Some(entries) = opencode_provider_list(&mut root, "enabled_providers")? {
                 entries.retain(|entry| entry.as_str() != Some(OPENCODE_PROVIDER_ID));
@@ -8988,11 +9009,36 @@ fn opencode_provider_list_contains(root: &Map<String, Value>, key: &str, id: &st
     Ok(entries.iter().any(|entry| entry.as_str() == Some(id)))
 }
 
-/// Canonical OpenCode `dtoken-local-route` provider value. Both the managed
-/// transport and the dedicated desktop connection flow must build the provider
-/// through this single Rust-owned builder so the two never drift apart.
-pub fn opencode_provider_value(endpoint: &str, model: &str) -> Value {
+/// Validates an OpenCode model list and returns it deduplicated in stable
+/// first-occurrence order. The list must be non-empty and every model ID must
+/// pass the canonical model validation shared by all transport adapters.
+fn normalize_opencode_models(models: &[&str]) -> Result<Vec<String>> {
+    if models.is_empty() {
+        bail!("OpenCode transport requires at least one model");
+    }
+    let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    let mut normalized = Vec::with_capacity(models.len());
+    for model in models {
+        validate_model(Some(*model))?;
+        if seen.insert(model) {
+            normalized.push(model.to_string());
+        }
+    }
+    Ok(normalized)
+}
+
+/// Shape-only provider construction shared by the validated and single-model
+/// builders so the two can never drift. Callers are responsible for model
+/// validation (see `normalize_opencode_models`).
+fn opencode_provider_value_unchecked(endpoint: &str, models: &[&str]) -> Value {
     let base_url = opencode_base_url(endpoint);
+    let mut model_map = Map::new();
+    for model in models {
+        model_map.insert(
+            model.to_string(),
+            serde_json::json!({ "name": format!("d-token routed {model}") }),
+        );
+    }
     serde_json::json!({
         "npm": OPENCODE_PROVIDER_NPM,
         "name": OPENCODE_PROVIDER_NAME,
@@ -9000,10 +9046,27 @@ pub fn opencode_provider_value(endpoint: &str, model: &str) -> Value {
             "baseURL": base_url,
             "apiKey": OPENCODE_TOKEN_REFERENCE,
         },
-        "models": {
-            model: { "name": format!("d-token routed {model}") },
-        },
+        "models": model_map,
     })
+}
+
+/// Canonical OpenCode `dtoken-local-route` provider value for a model list.
+/// The list is validated, deduplicated in stable first-occurrence order, and
+/// must be non-empty; every model entry is exactly
+/// `{"name":"d-token routed <id>"}`. Both the managed transport and the
+/// dedicated desktop connection flow must build the provider through this
+/// single Rust-owned builder so the two never drift apart.
+pub fn opencode_provider_value_models(endpoint: &str, models: &[&str]) -> Result<Value> {
+    let models = normalize_opencode_models(models)?;
+    let model_refs: Vec<&str> = models.iter().map(String::as_str).collect();
+    Ok(opencode_provider_value_unchecked(endpoint, &model_refs))
+}
+
+/// Canonical OpenCode `dtoken-local-route` provider value for a single model,
+/// wrapped into the one-element list taken by the canonical builder. Model
+/// validation happens at the configure boundary, never in this builder.
+pub fn opencode_provider_value(endpoint: &str, model: &str) -> Value {
+    opencode_provider_value_unchecked(endpoint, &[model])
 }
 
 /// Canonical OpenCode base URL construction: a loopback endpoint plus `/v1`.
@@ -9049,16 +9112,18 @@ pub fn ensure_owned_opencode_provider(value: &Value) -> Result<()> {
         .get("models")
         .and_then(Value::as_object)
         .context("OpenCode dtoken-local-route models must be an object")?;
-    let Some((model, definition)) = (models.len() == 1).then(|| models.iter().next()).flatten()
-    else {
+    if models.is_empty() {
         bail!("OpenCode dtoken-local-route provider is not provably d-token-owned");
-    };
-    if definition.as_object().is_none_or(|definition| {
-        definition.len() != 1
-            || definition.get("name").and_then(Value::as_str)
-                != Some(format!("d-token routed {model}").as_str())
-    }) {
-        bail!("OpenCode dtoken-local-route provider is not provably d-token-owned");
+    }
+    for (model, definition) in models {
+        validate_model(Some(model.as_str()))?;
+        if definition.as_object().is_none_or(|definition| {
+            definition.len() != 1
+                || definition.get("name").and_then(Value::as_str)
+                    != Some(format!("d-token routed {model}").as_str())
+        }) {
+            bail!("OpenCode dtoken-local-route provider is not provably d-token-owned");
+        }
     }
     Ok(())
 }
@@ -9144,7 +9209,8 @@ fn verify_document(
             Err(anyhow::anyhow!("Agent provider schema is unavailable"))
         }
         AgentTransportAdapterKind::OpenCodeProvider => {
-            verify_opencode(text, endpoint, enabled, model)
+            let single_model: Option<Vec<&str>> = model.map(|single| vec![single]);
+            verify_opencode(text, endpoint, enabled, single_model.as_deref())
         }
         AgentTransportAdapterKind::CortexCodeHook
         | AgentTransportAdapterKind::CursorMcp
@@ -9231,20 +9297,28 @@ fn verify_codex_cleared(text: &str) -> Result<()> {
     Ok(())
 }
 
-fn verify_opencode(text: &str, endpoint: &str, enabled: bool, model: Option<&str>) -> Result<()> {
-    let model = model.context("OpenCode transport requires an explicit model")?;
+fn verify_opencode(
+    text: &str,
+    endpoint: &str,
+    enabled: bool,
+    models: Option<&[&str]>,
+) -> Result<()> {
+    let models = models.context("OpenCode transport requires an explicit model")?;
     let root: Value =
         serde_json::from_str(text).context("OpenCode configuration must be strict JSON")?;
     let provider = root
         .pointer(&format!("/provider/{OPENCODE_PROVIDER_ID}"))
         .context("d-token OpenCode provider is absent")?;
     ensure_owned_opencode_provider(provider)?;
+    let provider_models = provider
+        .pointer("/models")
+        .and_then(Value::as_object)
+        .context("d-token OpenCode provider models are absent")?;
     if provider.pointer("/options/baseURL").and_then(Value::as_str)
         != Some(opencode_base_url(endpoint).as_str())
-        || provider
-            .pointer("/models")
-            .and_then(Value::as_object)
-            .is_none_or(|models| !models.contains_key(model))
+        || models
+            .iter()
+            .any(|model| !provider_models.contains_key(*model))
     {
         bail!("d-token OpenCode provider does not match requested endpoint/model");
     }
@@ -9334,10 +9408,13 @@ fn current_upstream_signature(
             let model = provider
                 .get("models")
                 .and_then(Value::as_object)
-                .and_then(|models| {
-                    (models.len() == 1)
-                        .then(|| models.keys().next().cloned())
-                        .flatten()
+                .map(|models| {
+                    let mut ids: Vec<&String> = models.keys().collect();
+                    ids.sort();
+                    ids.iter()
+                        .map(|id| id.as_str())
+                        .collect::<Vec<_>>()
+                        .join(",")
                 });
             let object = root
                 .as_object()
@@ -10354,8 +10431,12 @@ mod tests {
         );
         assert!(document.get("enabled_providers").is_none());
 
-        let verification =
-            verify_opencode(&configured, "http://127.0.0.1:8787", true, Some("gpt-5.6"));
+        let verification = verify_opencode(
+            &configured,
+            "http://127.0.0.1:8787",
+            true,
+            Some(&["gpt-5.6"][..]),
+        );
         assert!(verification.is_ok());
         let upstream =
             current_upstream_signature(agent_transport_adapter("opencode").unwrap(), &configured)
@@ -10364,6 +10445,197 @@ mod tests {
         assert_eq!(upstream.model.as_deref(), Some("gpt-5.6"));
         assert_eq!(upstream.endpoint, "http://127.0.0.1:8787");
         assert_ne!(upstream.signature_sha256, OPENCODE_TOKEN_REFERENCE);
+    }
+
+    #[test]
+    fn opencode_list_configure_writes_stable_deduped_validated_models() {
+        // Normalization keeps first-occurrence order and collapses duplicates.
+        assert_eq!(
+            normalize_opencode_models(&[
+                "gpt-5.6",
+                "claude-sonnet-test",
+                "gpt-5.6",
+                "opencode-coder"
+            ])
+            .unwrap(),
+            ["gpt-5.6", "claude-sonnet-test", "opencode-coder"]
+        );
+        let original = r#"{"provider":{"existing":{"name":"Existing provider"}}}"#;
+        let configured = configure_opencode_transport_document_models(
+            original,
+            "http://127.0.0.1:8787",
+            &["gpt-5.6", "claude-sonnet-test", "gpt-5.6", "opencode-coder"],
+            true,
+        )
+        .unwrap();
+        let document: Value = serde_json::from_str(&configured).unwrap();
+        // Every entry is exactly {"name":"d-token routed <id>"}, duplicates
+        // collapsed; JSON object equality is order-insensitive.
+        assert_eq!(
+            document
+                .pointer("/provider/dtoken-local-route/models")
+                .expect("models object"),
+            &serde_json::json!({
+                "gpt-5.6": { "name": "d-token routed gpt-5.6" },
+                "claude-sonnet-test": { "name": "d-token routed claude-sonnet-test" },
+                "opencode-coder": { "name": "d-token routed opencode-coder" },
+            })
+        );
+        // Ownership accepts the multi-model provider.
+        ensure_owned_opencode_provider(
+            document
+                .pointer("/provider/dtoken-local-route")
+                .expect("managed provider"),
+        )
+        .unwrap();
+        // The list verification passes when every requested model is present.
+        assert!(verify_opencode(
+            &configured,
+            "http://127.0.0.1:8787",
+            true,
+            Some(&["claude-sonnet-test", "gpt-5.6"][..]),
+        )
+        .is_ok());
+        assert!(verify_opencode(
+            &configured,
+            "http://127.0.0.1:8787",
+            true,
+            Some(&["opencode-coder"][..]),
+        )
+        .is_ok());
+        // A model outside the provider's list is not routable.
+        assert!(verify_opencode(
+            &configured,
+            "http://127.0.0.1:8787",
+            true,
+            Some(&["unknown-model"][..]),
+        )
+        .is_err());
+        let upstream =
+            current_upstream_signature(agent_transport_adapter("opencode").unwrap(), &configured)
+                .unwrap()
+                .unwrap();
+        assert_eq!(
+            upstream.model.as_deref(),
+            Some("claude-sonnet-test,gpt-5.6,opencode-coder")
+        );
+        assert_eq!(upstream.endpoint, "http://127.0.0.1:8787");
+    }
+
+    #[test]
+    fn opencode_list_configure_rejects_empty_and_malformed_models() {
+        let original = r#"{"provider":{"existing":{"name":"Existing provider"}}}"#;
+        let error = configure_opencode_transport_document_models(
+            original,
+            "http://127.0.0.1:8787",
+            &[],
+            true,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("at least one model"));
+
+        // A malformed model ID (control character) must fail closed.
+        let error = configure_opencode_transport_document_models(
+            original,
+            "http://127.0.0.1:8787",
+            &["gpt-5.6", "bad\nmodel"],
+            true,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("unsupported characters"));
+    }
+
+    #[test]
+    fn opencode_owned_provider_is_idempotently_reconfigured() {
+        let single = configure_opencode_transport_document(
+            r#"{"provider":{"existing":{"name":"Existing provider"}}}"#,
+            "http://127.0.0.1:8787",
+            "gpt-5.6",
+            true,
+        )
+        .unwrap();
+        // Reconfiguring the owned provider with a different list must succeed
+        // and replace the models in full.
+        let reconfigured = configure_opencode_transport_document_models(
+            &single,
+            "http://127.0.0.1:8787",
+            &["claude-sonnet-test", "opencode-coder"],
+            true,
+        )
+        .unwrap();
+        let document: Value = serde_json::from_str(&reconfigured).unwrap();
+        let models = document
+            .pointer("/provider/dtoken-local-route/models")
+            .and_then(Value::as_object)
+            .expect("models object");
+        assert_eq!(models.len(), 2);
+        assert!(models.contains_key("claude-sonnet-test"));
+        assert!(models.contains_key("opencode-coder"));
+        assert!(!models.contains_key("gpt-5.6"));
+        assert!(verify_opencode(
+            &reconfigured,
+            "http://127.0.0.1:8787",
+            true,
+            Some(&["opencode-coder"][..]),
+        )
+        .is_ok());
+        // Idempotence: reconfiguring with the same list is a stable no-op.
+        let repeated = configure_opencode_transport_document_models(
+            &reconfigured,
+            "http://127.0.0.1:8787",
+            &["claude-sonnet-test", "opencode-coder"],
+            true,
+        )
+        .unwrap();
+        assert_eq!(repeated, reconfigured);
+    }
+
+    #[test]
+    fn opencode_ownership_rejects_empty_extra_fields_and_lookalikes() {
+        let original = opencode_provider_value("http://127.0.0.1:8787", "gpt-5.6");
+
+        // Empty model map is not owned.
+        let mut empty_models = original.clone();
+        empty_models
+            .pointer_mut("/models")
+            .expect("models")
+            .as_object_mut()
+            .expect("models object")
+            .clear();
+        assert!(ensure_owned_opencode_provider(&empty_models).is_err());
+
+        // An extra field inside a model definition is not owned.
+        let mut extra_field = original.clone();
+        extra_field
+            .pointer_mut("/models/gpt-5.6")
+            .expect("definition")
+            .as_object_mut()
+            .expect("definition object")
+            .insert("temperature".into(), Value::from(0.2));
+        assert!(ensure_owned_opencode_provider(&extra_field).is_err());
+
+        // A name that does not exactly match "d-token routed <id>" is a
+        // lookalike and must be rejected.
+        let mut renamed = original.clone();
+        *renamed.pointer_mut("/models/gpt-5.6/name").expect("name") =
+            Value::from("d-token routed gpt-5.6x");
+        assert!(ensure_owned_opencode_provider(&renamed).is_err());
+
+        // A malformed model ID (control character) in the key is not owned.
+        let mut bad_id = original.clone();
+        bad_id.as_object_mut().expect("provider").insert(
+            "models".into(),
+            serde_json::json!({ "bad\nid": { "name": "d-token routed bad\nid" } }),
+        );
+        assert!(ensure_owned_opencode_provider(&bad_id).is_err());
+
+        // A provider-level extra field is a lookalike and must be rejected.
+        let mut lookalike = original;
+        lookalike
+            .as_object_mut()
+            .expect("provider")
+            .insert("user_note".into(), Value::String("do not overwrite".into()));
+        assert!(ensure_owned_opencode_provider(&lookalike).is_err());
     }
 
     #[test]
@@ -10424,9 +10696,13 @@ mod tests {
             false,
         )
         .unwrap();
-        assert!(
-            verify_opencode(&configured, "http://127.0.0.1:8787", false, Some("gpt-5.6")).is_ok()
-        );
+        assert!(verify_opencode(
+            &configured,
+            "http://127.0.0.1:8787",
+            false,
+            Some(&["gpt-5.6"][..])
+        )
+        .is_ok());
         assert_eq!(
             serde_json::from_str::<Value>(&configured).unwrap()["enabled_providers"],
             serde_json::json!(["existing"])
