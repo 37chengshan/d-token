@@ -1,6 +1,7 @@
 import type { ActivityDay } from "../../components/common/Heatmap";
 import type { ConnectionSetupSnapshot } from "../connectionSetup";
-import type { Lang } from "../i18n";
+import type { Lang } from "../i18n"
+import { translateCopy } from "../i18n";
 import { classifyEvidence, type EvidenceState } from "../state/evidence";
 
 export type AccountQuotaWindow = {
@@ -20,7 +21,6 @@ export type AccountQuotaSummary = {
 };
 
 export function deriveAccountQuotaSummary(payload: Record<string, any> | null, evidence: EvidenceState, lang: Lang): AccountQuotaSummary[] {
-  const zh = lang === "zh";
   const quotaRoot = objectValue(payload?.account_quotas ?? payload?.quota);
   const claude = objectValue(quotaRoot.claude ?? payload?.subscription_window);
   const claudeLatest = objectValue(claude.latest ?? claude);
@@ -37,14 +37,14 @@ export function deriveAccountQuotaSummary(payload: Record<string, any> | null, e
     return windows.every((window) => window.usedPercent !== null) ? "verified" as const : "partial" as const;
   };
   const claudeWindows = [
-    quotaWindow("five_hour", zh ? "5 小时" : "5 hours", claudeLatest.five_hour),
-    quotaWindow("seven_day", zh ? "7 日" : "7 days", claudeLatest.seven_day),
+    quotaWindow("five_hour", translateCopy("ov.5Hours", lang), claudeLatest.five_hour),
+    quotaWindow("seven_day", translateCopy("ov.7Days", lang), claudeLatest.seven_day),
   ];
   const primary = objectValue(codexLatest.primary ?? codexLatest.primary_window);
   const secondary = objectValue(codexLatest.secondary ?? codexLatest.secondary_window);
   const codexWindows = [
-    quotaWindow("primary", zh ? "5 小时" : "5 hours", primary, 300),
-    quotaWindow("secondary", zh ? "7 日" : "7 days", secondary, 10080),
+    quotaWindow("primary", translateCopy("ov.5Hours", lang), primary, 300),
+    quotaWindow("secondary", translateCopy("ov.7Days", lang), secondary, 10080),
   ];
   return [
     { provider: "codex", label: "Codex", accountRef: quotaAccountRef(codexLatest) ?? quotaAccountRef(codex), state: stateFor(codexLatest, codexWindows), source: quotaSource(codexLatest, lang), windows: codexWindows },
@@ -83,7 +83,6 @@ export function deriveOverviewOperationalSummary(
     status: "idle" | "discovering" | "ready" | "stale" | "unavailable";
   } = { snapshot: null, status: "unavailable" },
 ): OverviewOperationalSummary {
-  const zh = lang === "zh";
   const evidenceState = classifyEvidence({ payload, status, requireRuntimeIdentity: true });
   const requestLogs = recordArray(payload?.request_logs);
   const runtimeConfig = objectValue(payload?.runtime_active_config);
@@ -122,77 +121,76 @@ export function deriveOverviewOperationalSummary(
 
   const service: OperationalStatus = isRuntime
     ? {
-        label: zh ? "正在运行" : "Running",
+        label: translateCopy("ov.running", lang),
         detail: safeText(
           payload?.desktop_service_url,
-          zh ? "本地服务已响应，未提供监听地址" : "Local service responded without a listening address",
+          translateCopy("ov.localServiceRespondedWithoutAListeningAddress", lang),
         ),
         tone: "positive",
       }
     : evidenceState === "loading"
-      ? { label: zh ? "正在检查" : "Checking", detail: zh ? "正在连接 d-token 本地服务" : "Connecting to the d-token local service", tone: "neutral" }
+      ? { label: translateCopy("set.checking2", lang), detail: translateCopy("ov.connectingToTheDTokenLocalService", lang), tone: "neutral" }
       : evidenceState === "preview"
-        ? { label: zh ? "浏览器预览" : "Browser preview", detail: zh ? "未连接真实本地服务" : "No real local service is connected", tone: "neutral" }
+        ? { label: translateCopy("cp.source.preview", lang), detail: translateCopy("ov.noRealLocalServiceIsConnected", lang), tone: "neutral" }
         : evidenceState === "stale"
-          ? { label: zh ? "状态已过期" : "Status is stale", detail: zh ? "旧数据不作为当前服务状态" : "Old data is not treated as current service status", tone: "warning" }
+          ? { label: translateCopy("ov.statusIsStale", lang), detail: translateCopy("ov.oldDataIsNotTreatedAsCurrentServiceStatus", lang), tone: "warning" }
           : evidenceState === "partial"
-            ? { label: zh ? "状态不完整" : "Status is incomplete", detail: zh ? "缺少完整的本地服务证据" : "Complete local service evidence is missing", tone: "warning" }
-            : { label: zh ? "未连接" : "Not connected", detail: zh ? "本地服务未启动或暂时无法访问" : "The local service is stopped or unavailable", tone: "negative" };
+            ? { label: translateCopy("ov.statusIsIncomplete", lang), detail: translateCopy("ov.completeLocalServiceEvidenceIsMissing", lang), tone: "warning" }
+            : { label: translateCopy("ov.notConnected", lang), detail: translateCopy("ov.theLocalServiceIsStoppedOrUnavailable", lang), tone: "negative" };
 
   const agents: OperationalStatus = setupFresh && setupConnectedAgents.length > 0
-    ? { label: setupConnectedAgents.join("、"), detail: zh ? "本机当前配置已指向 d-token" : "The current local configuration points to d-token", tone: "positive" }
+    ? { label: setupConnectedAgents.join("、"), detail: translateCopy("ov.theCurrentLocalConfigurationPointsToDToken", lang), tone: "positive" }
     : connection.status === "stale" && setupConnectedAgents.length > 0
-      ? { label: setupConnectedAgents.join("、"), detail: zh ? "上次检测到本机配置指向 d-token；配置证据已过期" : "The last check found local config pointing to d-token; configuration evidence is stale", tone: "warning" }
+      ? { label: setupConnectedAgents.join("、"), detail: translateCopy("ov.theLastCheckFoundLocalConfigPointingToDTokenConfigurationEvidenceIsStale", lang), tone: "warning" }
       : isRuntime && trafficAgents.length > 0
-        ? { label: trafficAgents.join("、"), detail: zh ? `历史中有 ${requestLogs.length} 条请求；不能据此判断当前仍已连接` : `${requestLogs.length} historical request(s) exist; they do not prove a current connection`, tone: "warning" }
+        ? { label: trafficAgents.join("、"), detail: translateCopy("ov.historicalRequestSExistTheyDoNotProveACurrentConnection", lang, { v1: requestLogs.length }), tone: "warning" }
         : !isRuntime
           ? {
-              label: zh ? "尚无已验证连接" : "No verified connection",
+              label: translateCopy("ov.noVerifiedConnection", lang),
               detail: setupDetectedAgents.length > 0
                 ? (connection.status === "stale"
-                    ? (zh ? `上次检测：${setupDetectedAgents.join("、")}；配置证据已过期` : `Last detected: ${setupDetectedAgents.join(", ")}; configuration evidence is stale`)
-                    : (zh ? `已检测：${setupDetectedAgents.join("、")}；只有真实请求才能证明连接` : `Detected: ${setupDetectedAgents.join(", ")}; only real requests prove a connection`))
-                : (zh ? "只有实时本地请求才能证明 Agent 已连接" : "Only live local requests can prove an agent connection"),
+                    ? (translateCopy("ov.lastDetectedConfigurationEvidenceIsStale", lang, { v1: setupDetectedAgents.join("、"), v2: setupDetectedAgents.join(", ") }))
+                    : (translateCopy("ov.detectedOnlyRealRequestsProveAConnection", lang, { v1: setupDetectedAgents.join("、"), v2: setupDetectedAgents.join(", ") })))
+                : (translateCopy("ov.onlyLiveLocalRequestsCanProveAnAgentConnection", lang)),
               tone: "neutral",
             }
           : configuredAgents.length > 0
-            ? { label: zh ? "尚无已验证连接" : "No verified connection yet", detail: zh ? `已配置：${configuredAgents.join("、")}` : `Configured: ${configuredAgents.join(", ")}`, tone: "warning" }
+            ? { label: translateCopy("ov.noVerifiedConnectionYet", lang), detail: translateCopy("ov.configured", lang, { v1: configuredAgents.join("、"), v2: configuredAgents.join(", ") }), tone: "warning" }
             : setupDetectedAgents.length > 0
-              ? { label: zh ? "尚无已验证连接" : "No verified connection yet", detail: zh ? `已检测：${setupDetectedAgents.join("、")}` : `Detected: ${setupDetectedAgents.join(", ")}`, tone: "warning" }
-              : { label: zh ? "尚未连接" : "Not connected", detail: zh ? "完成配置并发送一次真实请求后显示" : "Configure an agent and send one real request", tone: isRuntime ? "warning" : "neutral" };
+              ? { label: translateCopy("ov.noVerifiedConnectionYet", lang), detail: translateCopy("ov.detected", lang, { v1: setupDetectedAgents.join("、"), v2: setupDetectedAgents.join(", ") }), tone: "warning" }
+              : { label: translateCopy("ov.notConnected2", lang), detail: translateCopy("ov.configureAnAgentAndSendOneRealRequest", lang), tone: isRuntime ? "warning" : "neutral" };
 
   const routeStatus: OperationalStatus = isRuntime && routeConfigured
     ? {
         label: [routeName, providerName].filter(Boolean).join(" → "),
         detail: requestLogs.length > 0
-          ? (zh ? "最近请求已经过 d-token" : "Recent requests passed through d-token")
-          : (zh ? "配置已加载，尚无请求证据" : "Configuration loaded; no request evidence yet"),
+          ? (translateCopy("ov.recentRequestsPassedThroughDToken", lang))
+          : (translateCopy("ov.configurationLoadedNoRequestEvidenceYet", lang)),
         tone: requestLogs.length > 0 ? "positive" : "warning",
       }
     : {
-        label: isRuntime ? (zh ? "等待连接配置" : "Waiting for connection setup") : (zh ? "尚未连接真实路径" : "No real connection path"),
-        detail: zh ? "缺少实时配置证据时保持未连接状态" : "The connection remains unverified without live configuration evidence",
+        label: isRuntime ? (translateCopy("ov.waitingForConnectionSetup", lang)) : (translateCopy("ov.noRealConnectionPath", lang)),
+        detail: translateCopy("ov.theConnectionRemainsUnverifiedWithoutLiveConfigurationEvidence", lang),
         tone: isRuntime ? "warning" : "neutral",
       };
 
   const issues: OperationalStatus = !isRuntime
-    ? { label: zh ? "尚无当前问题证据" : "No current issue evidence", detail: zh ? "连接实时本地服务后才能判断最近问题" : "Connect the live local service to inspect recent issues", tone: "warning" }
+    ? { label: translateCopy("ov.noCurrentIssueEvidence", lang), detail: translateCopy("ov.connectTheLiveLocalServiceToInspectRecentIssues", lang), tone: "warning" }
     : issueCount > 0
-      ? { label: zh ? `${issueCount} 个问题` : `${issueCount} issue(s)`, detail: errorCount > 0 ? (zh ? `${errorCount} 条请求失败，需要查看原因` : `${errorCount} request(s) failed`) : (zh ? "连接配置尚未完整" : "Connection setup is incomplete"), tone: "negative" }
+      ? { label: translateCopy("ov.issueS", lang, { v1: issueCount }), detail: errorCount > 0 ? (translateCopy("ov.requestSFailed", lang, { v1: errorCount })) : (translateCopy("ov.connectionSetupIsIncomplete", lang)), tone: "negative" }
       : requestLogs.length === 0
-        ? { label: zh ? "尚无请求记录" : "No request records yet", detail: zh ? "收到真实请求后才能判断请求错误" : "Request errors can be evaluated after real traffic arrives", tone: "neutral" }
-        : { label: zh ? "没有发现问题" : "No issues found", detail: zh ? "以当前本地服务记录为准" : "Based on current local service records", tone: "positive" };
+        ? { label: translateCopy("ov.noRequestRecordsYet", lang), detail: translateCopy("ov.requestErrorsCanBeEvaluatedAfterRealTrafficArrives", lang), tone: "neutral" }
+        : { label: translateCopy("ov.noIssuesFound", lang), detail: translateCopy("ov.basedOnCurrentLocalServiceRecords", lang), tone: "positive" };
 
   const ccSwitch = isRuntime
     ? deriveCcSwitchStatus(payload, providers, lang, setupAvailable ? connection.snapshot?.cc_switch_sync ?? null : null, setupFresh)
     : setupAvailable
       ? deriveCcSwitchStatus(payload, providers, lang, connection.snapshot?.cc_switch_sync ?? null, setupFresh)
-      : { state: "unknown" as const, label: zh ? "尚未获得实时验证" : "No live verification yet", detail: zh ? "非实时数据不会显示同步成功" : "Non-live data is never shown as successfully synced" };
+      : { state: "unknown" as const, label: translateCopy("ov.noLiveVerificationYet", lang), detail: translateCopy("ov.nonLiveDataIsNeverShownAsSuccessfullySynced", lang) };
   return { service, agents, route: routeStatus, issues, ccSwitch };
 }
 
 export function overviewFromPayload(payload: Record<string, any> | null, status: string, lang: Lang = "zh") {
-  const zh = lang === "zh";
   const evidenceState = classifyEvidence({ payload, status, requireRuntimeIdentity: true });
   const stats = objectValue(payload?.stats);
   const runtimeTokens = objectValue(stats.tokens);
@@ -224,22 +222,22 @@ export function overviewFromPayload(payload: Record<string, any> | null, status:
       compressionAvailable: false,
       trafficAvailable: false,
       sourceLabel: evidenceState === "verified"
-        ? (zh ? "本地服务在线 · 暂无请求记录" : "Local service online · no request records")
+        ? (translateCopy("an.localServiceOnlineNoRequestRecords", lang))
         : evidenceState === "preview"
-          ? (zh ? "浏览器预览 · 未连接实时数据" : "Browser preview · no live data")
+          ? (translateCopy("ov.browserPreviewNoLiveData", lang))
           : evidenceState === "stale"
-            ? (zh ? "本地数据已过期 · 不作为当前状态" : "Local data is stale · not treated as current")
+            ? (translateCopy("ov.localDataIsStaleNotTreatedAsCurrent", lang))
             : evidenceState === "partial"
-              ? (zh ? "本地数据不完整 · 未确认当前状态" : "Local data is incomplete · current state unverified")
+              ? (translateCopy("ov.localDataIsIncompleteCurrentStateUnverified", lang))
               : evidenceState === "loading"
-                ? (zh ? "正在连接 d-token 本地服务" : "Connecting to the local d-token service")
-                : (zh ? "d-token 本地服务暂不可用" : "Local d-token service unavailable"),
+                ? (translateCopy("an.connectingToTheLocalDTokenService", lang))
+                : (translateCopy("an.localDTokenServiceUnavailable", lang)),
       stats: emptyOverviewStats,
       trend: [],
       activityDays: [],
       tools: [],
-      activitySource: zh ? "等待实时本地请求记录" : "Waiting for live local request records",
-      errorLabel: zh ? "尚无当前错误证据" : "No current error evidence",
+      activitySource: translateCopy("ov.waitingForLiveLocalRequestRecords", lang),
+      errorLabel: translateCopy("ov.noCurrentErrorEvidence", lang),
     };
   }
 
@@ -252,38 +250,37 @@ export function overviewFromPayload(payload: Record<string, any> | null, status:
     compressionAvailable,
     trafficAvailable,
     sourceLabel: evidenceState === "stale"
-      ? requestCount === 0 ? (zh ? "上次验证 · 暂无请求记录 · 数据已过期" : "Last verified · no requests · data is stale") : (zh ? `上次验证 · ${requestCount} 条请求 · 数据已过期` : `Last verified · ${requestCount} request(s) · data is stale`)
+      ? requestCount === 0 ? (translateCopy("ov.lastVerifiedNoRequestsDataIsStale", lang)) : (translateCopy("ov.lastVerifiedRequestSDataIsStale", lang, { v1: requestCount }))
       : trafficAvailable
-        ? requestCount === 0 ? (zh ? "本地服务在线 · 暂无请求记录" : "Local service online · no request records") : (zh ? `d-token 本地服务 · ${requestCount} 条请求` : `Local d-token service · ${requestCount} request(s)`)
-        : (zh ? "本地服务在线 · 暂无请求记录" : "Local service online · no request records"),
+        ? requestCount === 0 ? (translateCopy("an.localServiceOnlineNoRequestRecords", lang)) : (translateCopy("ov.localDTokenServiceRequestS", lang, { v1: requestCount }))
+        : (translateCopy("an.localServiceOnlineNoRequestRecords", lang)),
     stats: { savedTotal: physicalSaved ?? 0, claimableSaved, compressionRate: savingsPercent === null ? 0 : Math.max(0, Math.min(1, savingsPercent / 100)), activeAgents, errorsToday: errorCount, requestCount },
     trend: buildTrendFromLogs(requestLogs),
     activityDays: buildActivityDaysFromLogs(requestLogs),
     tools: buildToolsFromLogs(requestLogs),
     activitySource: trafficAvailable
-      ? evidenceState === "stale" ? (zh ? "上次验证的 d-token 本地请求记录" : "Last verified local d-token request records") : (zh ? "d-token 本地请求记录" : "Local d-token request records")
-      : (zh ? "等待实时本地请求记录" : "Waiting for live local request records"),
+      ? evidenceState === "stale" ? (translateCopy("ov.lastVerifiedLocalDTokenRequestRecords", lang)) : (translateCopy("ov.localDTokenRequestRecords", lang))
+      : (translateCopy("ov.waitingForLiveLocalRequestRecords", lang)),
     errorLabel: trafficAvailable
       ? evidenceState === "stale"
-        ? errorCount > 0 ? (zh ? `上次验证记录 ${errorCount} 条失败；非当前状态` : `${errorCount} failures in last verified data; not current`) : (zh ? "上次验证没有请求失败；非当前状态" : "No failures in last verified data; not current")
-        : errorCount > 0 ? (zh ? "存在请求失败" : "Request failures recorded") : (zh ? "没有请求失败" : "No request failures recorded")
-      : (zh ? "尚无实时请求记录" : "No live request records"),
+        ? errorCount > 0 ? (translateCopy("ov.failuresInLastVerifiedDataNotCurrent", lang, { v1: errorCount })) : (translateCopy("ov.noFailuresInLastVerifiedDataNotCurrent", lang))
+        : errorCount > 0 ? (translateCopy("ov.requestFailuresRecorded", lang)) : (translateCopy("ov.noRequestFailuresRecorded", lang))
+      : (translateCopy("ov.noLiveRequestRecords", lang)),
   };
 }
 
 const emptyOverviewStats = { savedTotal: 0, claimableSaved: 0, compressionRate: 0, activeAgents: 0, errorsToday: 0, requestCount: 0 };
 
 function deriveCcSwitchStatus(payload: Record<string, any> | null, providers: any[], lang: Lang, connectionEvidence: Record<string, unknown> | null = null, connectionVerified = false): CcSwitchStatus {
-  const zh = lang === "zh";
   const evidence = objectValue(connectionEvidence ?? payload?.cc_switch_sync ?? payload?.ccSwitchSync);
   const state = safeText(evidence.status ?? evidence.state, "").toLowerCase();
   const verified = evidence.verified === true || evidence.evidence_verified === true || (connectionVerified && evidence.source === "cc-switch-read-only" && ["synced", "in_sync", "out-of-sync", "out_of_sync", "mismatch"].includes(state));
   const detected = evidence.detected === true || providers.some((provider) => ["cc_switch", "cc-switch", "ccswitch"].includes(safeText(provider?.kind, "").toLowerCase()));
   const evidenceDetail = uniqueText([evidence.profile, evidence.upstream, evidence.connection_path]).join(" · ");
-  if (verified && (state === "synced" || state === "in_sync")) return { state: "synced", label: zh ? "已验证同步" : "Sync verified", detail: evidenceDetail || (zh ? "同步证据来自本地检测结果" : "Backed by local detection evidence") };
-  if (verified && (state === "out-of-sync" || state === "out_of_sync" || state === "mismatch")) return { state: "out_of_sync", label: zh ? "连接不一致" : "Connection mismatch", detail: evidenceDetail || (zh ? "需要在安装与连接页确认当前上游" : "Confirm the current upstream in Install & Connect") };
-  if (detected || Object.keys(evidence).length > 0) return { state: "unverified", label: zh ? "检测到配置，尚未验证同步" : "Configuration detected; sync not verified", detail: zh ? "没有同步时间或校验结果，不显示为正常" : "No sync time or verification result; not shown as healthy" };
-  return { state: "unknown", label: zh ? "尚未检测" : "Not detected yet", detail: zh ? "不会自动猜测或改写第三方配置" : "Third-party settings are not guessed or rewritten" };
+  if (verified && (state === "synced" || state === "in_sync")) return { state: "synced", label: translateCopy("ov.syncVerified", lang), detail: evidenceDetail || (translateCopy("ov.backedByLocalDetectionEvidence", lang)) };
+  if (verified && (state === "out-of-sync" || state === "out_of_sync" || state === "mismatch")) return { state: "out_of_sync", label: translateCopy("ov.connectionMismatch", lang), detail: evidenceDetail || (translateCopy("ov.confirmTheCurrentUpstreamInInstallConnect", lang)) };
+  if (detected || Object.keys(evidence).length > 0) return { state: "unverified", label: translateCopy("ov.configurationDetectedSyncNotVerified", lang), detail: translateCopy("ov.noSyncTimeOrVerificationResultNotShownAsHealthy", lang) };
+  return { state: "unknown", label: translateCopy("ov.notDetectedYet", lang), detail: translateCopy("ov.thirdPartySettingsAreNotGuessedOrRewritten", lang) };
 }
 
 function quotaWindow(key: string, label: string, value: unknown, expectedMinutes?: number): AccountQuotaWindow {
@@ -294,7 +291,7 @@ function quotaWindow(key: string, label: string, value: unknown, expectedMinutes
   return { key, label, usedPercent: validUsed, resetsAt: normalizeQuotaReset(window.resets_at ?? window.reset_at ?? window.resetsAt) };
 }
 
-function quotaSource(value: Record<string, any>, lang: Lang) { return quotaSourceAllowed(value.source) ? (lang === "zh" ? "d-token 本地额度证据" : "Local d-token quota evidence") : (lang === "zh" ? "等待本地额度证据" : "Waiting for local quota evidence"); }
+function quotaSource(value: Record<string, any>, lang: Lang) { return quotaSourceAllowed(value.source) ? (translateCopy("ov.localDTokenQuotaEvidence", lang)) : (translateCopy("ov.waitingForLocalQuotaEvidence", lang)); }
 function quotaAccountRef(value: Record<string, any>) { const ref = safeText(value.account_ref, "").replace(/[\u0000-\u001F\u007F]/g, "").trim(); return ref && !ref.includes("@") ? ref.slice(0, 64) : null; }
 function quotaSourceAllowed(value: unknown) { return ["passive-runtime-metadata", "codex-response-headers", "codex-wham-usage", "claude-usage-metadata", "dtoken-runtime-quota"].includes(safeText(value, "")); }
 function parseQuotaTimestamp(value: unknown): number | null { if (typeof value === "number" && Number.isFinite(value)) { const milliseconds = value < 10_000_000_000 ? value * 1000 : value; return Number.isFinite(new Date(milliseconds).getTime()) ? milliseconds : null; } if (typeof value !== "string" || !value.trim()) return null; const parsed = new Date(value).getTime(); return Number.isFinite(parsed) ? parsed : null; }

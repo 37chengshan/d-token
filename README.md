@@ -12,8 +12,8 @@ A local context control plane for AI coding agents.
 English · [简体中文](README-cn.md)
 
 [![CI](https://github.com/37chengshan/d-token/actions/workflows/ci.yml/badge.svg)](https://github.com/37chengshan/d-token/actions/workflows/ci.yml)
-![Version](https://img.shields.io/badge/version-0.2.0--beta.1-ea580c)
-![Status](https://img.shields.io/badge/status-beta-ea580c)
+![Version](https://img.shields.io/badge/version-0.0.1-2563eb)
+![Status](https://img.shields.io/badge/status-candidate-2563eb)
 ![Desktop](https://img.shields.io/badge/desktop-Tauri%202-24c8db?logo=tauri&logoColor=white)
 ![Core](https://img.shields.io/badge/core-Rust-b7410e?logo=rust&logoColor=white)
 ![License](https://img.shields.io/badge/license-Apache--2.0-2563eb)
@@ -53,7 +53,7 @@ npm run tauri:dev
 ```
 
 > [!NOTE]
-> `0.2.0-beta.1` is an **unsigned public prerelease** for macOS ARM64 and Windows x64 — not a signed installer. An unsigned macOS build may trigger a system security warning; verify the source and supplied hashes, and don't bypass OS security controls. Details in [SECURITY.md](SECURITY.md).
+> `0.0.1` is the current **candidate technical preview** for macOS ARM64 and Windows x64 — not a signed installer and not yet a public release. An unsigned build may trigger a system security warning; verify the source and supplied hashes, and don't bypass OS security controls. A public release is only possible after the N0–N10 verification DAG passes on the frozen candidate and the N9 conclusion says so. Details in [SECURITY.md](SECURITY.md).
 
 ## Why it exists
 
@@ -63,7 +63,7 @@ AI coding agents re-send the same files, logs, and tool output over and over. Th
 
 | Version | Focus | Status |
 |---|---|---|
-| `0.2.0-beta.1` | Trusted connect & trusted compression, Optimization Receipts, Doctor | current candidate |
+| `0.0.1` | Trusted connect & trusted compression, Optimization Receipts, Doctor, final verification orchestration | current candidate |
 | `v0.3` | Context continuity: cross-agent Context Relay, Session Cache, cc-switch follow / lock / observe | planned |
 | `v0.4` | Automated local control plane: multi-agent adaptation, low-risk auto-repair, stable signing | planned |
 

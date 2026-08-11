@@ -141,7 +141,7 @@ describe("Overview information hierarchy and truthfulness", () => {
           already_connected: true,
         }],
         sources: [],
-        selection_required: false,
+        has_resolution_gap: false,
         cc_switch_sync: {
           detected: true,
           status: "synced",
@@ -183,7 +183,7 @@ describe("Overview information hierarchy and truthfulness", () => {
         already_connected: true,
       }],
       sources: [],
-      selection_required: false,
+      has_resolution_gap: false,
       cc_switch_sync: {
         detected: true,
         status: "synced",
@@ -227,6 +227,9 @@ describe("Overview information hierarchy and truthfulness", () => {
       refresh: vi.fn(),
     };
     render(<Overview setPage={vi.fn()} />);
+
+    expect(screen.getByRole("heading", { level: 1, name: "总体概览" })).toBeVisible();
+    expect(screen.getByRole("heading", { level: 1, name: "总体概览" })).toHaveClass("[.is-sidebar-collapsed_&]:sr-only");
 
     expect(screen.getAllByText("浏览器预览 · 未连接实时数据")).not.toHaveLength(0);
     expect(screen.queryByText("浏览器预览 · 示例数据")).not.toBeInTheDocument();

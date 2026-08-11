@@ -1,5 +1,5 @@
 import { useEffect, useRef } from "react";
-import { useI18n } from "../../lib/i18n";
+import { useI18n, translateCopy } from "../../lib/i18n";
 import { useNotifications } from "../../lib/notifications";
 import { createOperationRequestId } from "../../lib/notifications";
 import { shallowEqualSlice, useRuntimeDashboardSelector, type RuntimeDashboardState, type RuntimeDashboardStatus } from "../../lib/useRuntimeDashboard";
@@ -48,10 +48,8 @@ export function RuntimeNotificationBridge() {
       addNotification({
         dedupeKey: "runtime-service-running",
         level: "success",
-        title: lang === "zh" ? "本地服务已连接" : "Local service connected",
-        message: lang === "zh"
-          ? "d-token 本地服务恢复运行，页面数据正在同步。"
-          : "The d-token local service is running again and page data is syncing.",
+        title: translateCopy("rtb.localServiceConnected", lang),
+        message: translateCopy("rtb.theDTokenLocalServiceIsRunningAgainAndPageDataIsSyncing", lang),
         receipt: { requestId, targetId: "local-service" },
       });
       return;
@@ -61,11 +59,11 @@ export function RuntimeNotificationBridge() {
       dedupeKey: `runtime-service-${current}`,
       level: current === "stopped" ? "info" : "warning",
       title: current === "stopped"
-        ? (lang === "zh" ? "本地服务已停止" : "Local service stopped")
-        : (lang === "zh" ? "本地服务连接中断" : "Local service connection lost"),
+        ? (translateCopy("tray.localServiceStopped", lang))
+        : (translateCopy("rtb.localServiceConnectionLost", lang)),
       message: current === "stopped"
-        ? (lang === "zh" ? "服务已按操作停止；重新启动后将继续同步真实数据。" : "The service stopped as requested. Real data will resume after restart.")
-        : (lang === "zh" ? "无法读取本地服务状态，请在安装与连接或 Doctor 中检查。" : "The local service state cannot be read. Check Install & Connect or Doctor."),
+        ? (translateCopy("rtb.theServiceStoppedAsRequestedRealDataWillResumeAfterRestart", lang))
+        : (translateCopy("rtb.theLocalServiceStateCannotBeReadCheckInstallConnectOrDoctor", lang)),
       details: `transition:${before}->${current}`,
       receipt: { requestId, targetId: "local-service" },
     });
@@ -126,15 +124,15 @@ export function autoUpdateNotification(
     dedupeKey: updateAvailable ? "automatic-update-available" : verifiedCurrent ? "automatic-update-current" : "automatic-update-unavailable",
     level: updateAvailable ? "action-required" as const : verifiedCurrent ? "info" as const : "warning" as const,
     title: updateAvailable
-      ? (lang === "zh" ? "发现经过签名验证的更新" : "Signed update available")
+      ? (translateCopy("rtb.signedUpdateAvailable", lang))
       : verifiedCurrent
-        ? (lang === "zh" ? "当前已是最新版本" : "d-token is up to date")
-        : (lang === "zh" ? "签名更新源不可用" : "Signed update feed unavailable"),
+        ? (translateCopy("rtb.dTokenIsUpToDate", lang))
+        : (translateCopy("rtb.signedUpdateFeedUnavailable", lang)),
     message: updateAvailable
-      ? (lang === "zh" ? "已发现经过签名验证的可用版本；尚未下载或安装。" : "A signed version is available; nothing has been downloaded or installed.")
+      ? (translateCopy("rtb.aSignedVersionIsAvailableNothingHasBeenDownloadedOrInstalled", lang))
       : verifiedCurrent
-        ? (lang === "zh" ? "当前版本已通过签名更新源确认。" : "The current version was confirmed by the signed update feed.")
-        : (lang === "zh" ? "未读取到经过签名验证的更新信息；未下载或安装任何内容。" : "No signed update information was read; nothing was downloaded or installed."),
+        ? (translateCopy("rtb.theCurrentVersionWasConfirmedByTheSignedUpdateFeed", lang))
+        : (translateCopy("rtb.noSignedUpdateInformationWasReadNothingWasDownloadedOrInstalled", lang)),
     persistent: updateAvailable || !verifiedCurrent,
     receipt: {
       requestId: createOperationRequestId("automatic-update-check"),

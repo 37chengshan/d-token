@@ -1,5 +1,6 @@
 pub mod ccr_store;
 pub mod mcp;
+pub(crate) mod scheduler;
 
 use anyhow::Context as _;
 use axum::response::Response;
@@ -21,6 +22,7 @@ use dtoken_compress::output_shaper::{
     shape_output_for_policy, OutputSafety, OutputShapingAccounting, OutputShapingDisposition,
     OutputShapingResult,
 };
+use dtoken_compress::rtk_planner::SavingsLedger;
 use dtoken_compress::{CompressionEngine, ResolvedOptimizationContext};
 use dtoken_config::DtokenConfig;
 use dtoken_config_patcher::{
@@ -38,15 +40,17 @@ use dtoken_event_ledger::{EventLedger, JsonlEventLedger, JsonlStore};
 use dtoken_headroom_adapter::detect_headroom_status;
 use dtoken_learning::LEARNING_CAPABILITY_REVISION;
 use dtoken_preprocessor::{
-    detect_rtk_status, inspect_managed_rtk_runtime, list_preprocessors, rtk_discover_report,
-    rtk_gain_mock, rtk_session_report, ManagedRtkRuntimeEvidence,
+    command_output_accounting_entry, detect_rtk_status, inspect_managed_rtk_runtime,
+    list_preprocessors, rtk_discover_report, rtk_gain_mock, rtk_session_report,
+    verified_managed_rtk_usage, verified_usage_claim_digest, ManagedRtkRuntimeEvidence,
 };
 use dtoken_project_policy::{
     default_policy, RecommendationInput, RuleBasedRecommendationEngine,
     PROJECT_POLICY_CAPABILITY_REVISION,
 };
 use dtoken_runtime_pipeline::{
-    PipelineInput, ReadyToSend, RecoveryPrepareReceipt, TransformArtifact,
+    PipelineError, PipelineInput, ReadyToSend, RecoveryProof, RecoveryProofAuthority,
+    SendCommitReceipt, TransformArtifact, ValidationReceipt,
 };
 use dtoken_types::{
     AgentSupportProfile, AvailabilityState, BaselineKind, CacheTokens, CapabilityEvidence,
@@ -54,11 +58,12 @@ use dtoken_types::{
     EventSource, EventStatus, EvidenceFreshness, EvidenceSource, EvidenceValue, HealthResponse,
     InputTokenUsage, LayeredSavingsReport, LayeredStage, ModalityTokens, OpticalApplicabilityInput,
     OpticalCapabilitiesPublicSummary, OpticalCapabilityLifecyclePublicSummary, OpticalEndpoint,
-    OpticalEventMetadataPublicSummary, OpticalEventPublicSummary, OpticalMode,
-    OpticalPlanPublicSummary, OpticalPlanStatus, OpticalPreviewRequest, OpticalStatusPublicSummary,
-    PayloadByteUsage, Protocol, ProtocolInjectionProfile, RequestLog, RequestScope,
-    RequestScopeError, RouteDecision, SupportLevel, UpstreamSendState, UsageEvidence,
-    UsageEvidenceKind, UsageMeasurement, UsageVector,
+    OpticalEventMetadataPublicSummary, OpticalEventPublicSummary, OpticalExactRouteEvidence,
+    OpticalMode, OpticalPlanPublicSummary, OpticalPlanStatus, OpticalPreviewRequest,
+    OpticalStatusPublicSummary, OptimizationReceipt, PayloadByteUsage, Protocol,
+    ProtocolInjectionProfile, RequestLog, RequestScope, RequestScopeError, RouteDecision,
+    SupportLevel, UpstreamSendState, UsageEvidence, UsageEvidenceKind, UsageMeasurement,
+    UsageVector,
 };
 use futures_util::{Stream, TryStreamExt};
 use reqwest::StatusCode;
@@ -77,11 +82,32 @@ use std::{
 };
 use uuid::Uuid;
 
+/// Feature-gated crash-point shim: real injection under `failpoints`, a
+/// compile-time no-op otherwise, so the terminal-commit path reads the same
+/// at both call sites.
+#[cfg(feature = "failpoints")]
+mod failpoint {
+    pub(super) use dtoken_event_ledger::failpoints::maybe_crash;
+}
+
+#[cfg(not(feature = "failpoints"))]
+mod failpoint {
+    pub(super) fn maybe_crash(_name: &'static str) -> anyhow::Result<()> {
+        Ok(())
+    }
+}
+
 use ccr_store::{CcrEntryInspection, CcrStore, CcrStoreReceipt};
 
 #[derive(Debug, Clone)]
-struct PreparedCcr {
+pub struct PreparedCcr {
     receipt: Option<CcrStoreReceipt>,
+    /// Store-issued opaque proof for the durable receipt; never caller
+    /// constructed (PIPELINE-RECEIPT-AUTHENTICITY).
+    proof: Option<RecoveryProof>,
+    /// The store authority that issued `proof`; the pipeline verifies the
+    /// proof against it at candidate binding.
+    authority: Option<RecoveryProofAuthority>,
     store_configured: bool,
 }
 
@@ -298,9 +324,10 @@ impl EvaluatedCompressionDecision {
 }
 
 #[derive(Debug)]
-struct PreparedPipelinePayload {
+pub struct PreparedPipelinePayload {
     ready: ReadyToSend,
     fallback_reason: Option<&'static str>,
+    validation: Option<ValidationReceipt>,
 }
 
 type RuntimeTransformGroup = (u64, u64, u64, u64);
@@ -401,6 +428,14 @@ struct RuntimeSummaryReadModel {
     ccr_tokens_saved: u64,
     recent_ccr: VecDeque<Value>,
     latest_account_quotas: BTreeMap<String, Value>,
+    /// Independent command-output (RTK) savings dimension (PR-C4C). Populated
+    /// from verified managed-RTK usage receipts via the exclusive
+    /// SavingsLedger; never merged into compression totals.
+    rtk_savings_bytes: u64,
+    rtk_input_bytes: u64,
+    rtk_output_bytes: u64,
+    rtk_entries: u64,
+    rtk_available: bool,
 }
 
 impl RuntimeSummaryReadModel {
@@ -413,6 +448,31 @@ impl RuntimeSummaryReadModel {
             model.record_ccr(metadata);
         }
         model
+    }
+
+    /// Replaces the RTK dimension with a freshly derived ledger so repeated
+    /// rebuilds can never double-count: the ledger admits each source digest
+    /// exactly once and the projection is recomputed from the verified
+    /// receipts every time.
+    fn record_rtk_ledger(&mut self, ledger: &SavingsLedger) {
+        let totals = ledger.bucket_totals(dtoken_types::AccountingBucket::CommandOutput);
+        self.rtk_savings_bytes = totals.saved_bytes;
+        self.rtk_input_bytes = totals.input_bytes;
+        self.rtk_output_bytes = totals.output_bytes;
+        self.rtk_entries = totals.entries as u64;
+        self.rtk_available = true;
+    }
+
+    fn rtk_available_note(&self) -> String {
+        if self.rtk_available {
+            format!(
+                "RTK command-output savings derived from {} verified receipts; prompt, response, and command bodies are not stored.",
+                self.rtk_entries
+            )
+        } else {
+            "RTK command-output dimension unavailable: no verified managed RTK root is configured."
+                .to_string()
+        }
     }
 
     fn record_request(&mut self, log: &RequestLog) {
@@ -600,7 +660,7 @@ impl RuntimeSummaryReadModel {
         let latency_breakdown = self.latency_breakdown();
         let route_overhead = self.route_overhead();
         let layered = LayeredSavingsReport {
-            rtk_savings: 0,
+            rtk_savings: self.rtk_savings_bytes,
             headroom_savings: self.tokens_saved,
             end_to_end_savings: self.tokens_saved,
             attribution_confidence: if self.total_requests == 0 {
@@ -608,7 +668,7 @@ impl RuntimeSummaryReadModel {
             } else {
                 "runtime_estimated".to_string()
             },
-            note: "Aggregated from d-token-owned runtime request logs; prompt and response bodies are not stored.".to_string(),
+            note: self.rtk_available_note(),
         };
         let analytics_daily = self
             .analytics_daily
@@ -650,6 +710,20 @@ impl RuntimeSummaryReadModel {
                 "savings_percent": savings_percent
             },
             "layered": layered,
+            "rtk": {
+                "source": "dtoken-managed-rtk",
+                "available": self.rtk_available,
+                "entries": self.rtk_entries,
+                "input_bytes": self.rtk_input_bytes,
+                "output_bytes": self.rtk_output_bytes,
+                "saved_bytes": self.rtk_savings_bytes,
+                "reason": if self.rtk_available {
+                    "verified_usage_receipts"
+                } else {
+                    "managed_rtk_not_configured"
+                },
+                "privacy": "Metadata-only aggregated byte accounting; no command argv or output is retained."
+            },
             "account_quotas": self.latest_account_quotas,
             "analytics": {
                 "source": "dtoken-owned-runtime",
@@ -768,8 +842,9 @@ fn percent(numerator: u64, denominator: u64) -> f64 {
     }
 }
 
-fn prepare_json_pipeline_payload(
+pub fn prepare_json_pipeline_payload(
     scope: RequestScope,
+    decision: &RouteDecision,
     baseline: &Value,
     candidate: &Value,
     transforms: &[String],
@@ -784,6 +859,7 @@ fn prepare_json_pipeline_payload(
         return Ok(PreparedPipelinePayload {
             ready: prepared.into_baseline_ready("no_transform_selected"),
             fallback_reason: None,
+            validation: None,
         });
     }
     // Bare-marker persistence guard: a transformed candidate that carries a
@@ -797,15 +873,20 @@ fn prepare_json_pipeline_payload(
         return Ok(PreparedPipelinePayload {
             ready: prepared.into_baseline_ready(reason),
             fallback_reason: Some(reason),
+            validation: None,
         });
     }
-    let recovery = prepared_ccr.receipt.as_ref().and_then(|receipt| {
-        RecoveryPrepareReceipt::new(receipt.recovery_ref.clone(), receipt.expires_at_unix).ok()
-    });
-    let Some(recovery) = recovery else {
+    // The recovery receipt is minted inside the pipeline from the store-
+    // issued opaque proof — never from caller-supplied bytes (T-C0B /
+    // PIPELINE-RECEIPT-AUTHENTICITY).  The proof and its issuing authority
+    // come from the store's private key material via `prepare_ccr_for_request`.
+    let (Some(proof), Some(authority)) =
+        (prepared_ccr.proof.clone(), prepared_ccr.authority.clone())
+    else {
         return Ok(PreparedPipelinePayload {
             ready: prepared.into_baseline_ready("pipeline_recovery_unavailable"),
             fallback_reason: Some("pipeline_recovery_unavailable"),
+            validation: None,
         });
     };
     let artifact = match TransformArtifact::new(
@@ -818,21 +899,27 @@ fn prepare_json_pipeline_payload(
             return Ok(PreparedPipelinePayload {
                 ready: prepared.into_baseline_ready("pipeline_artifact_invalid"),
                 fallback_reason: Some("pipeline_artifact_invalid"),
+                validation: None,
             });
         }
     };
     match prepared
         .clone()
-        .with_candidate(artifact, Some(recovery))
+        .with_durable_candidate(artifact, decision, proof, &authority)
         .and_then(|candidate| candidate.validate(valid_json_pipeline_transition))
     {
-        Ok(validated) => Ok(PreparedPipelinePayload {
-            ready: validated.into_ready_to_send(),
-            fallback_reason: None,
-        }),
+        Ok(validated) => {
+            let validation = validated.mint_validation_receipt(dtoken_event_ledger::now_ms());
+            Ok(PreparedPipelinePayload {
+                ready: validated.into_ready_to_send(),
+                fallback_reason: None,
+                validation: Some(validation),
+            })
+        }
         Err(_) => Ok(PreparedPipelinePayload {
             ready: prepared.into_baseline_ready("pipeline_validation_failed"),
             fallback_reason: Some("pipeline_validation_failed"),
+            validation: None,
         }),
     }
 }
@@ -972,6 +1059,7 @@ fn backend_capability_registry(
     context_store: ContextStoreCapabilityState,
     ccr_private_store_ready: bool,
     managed_rtk: Option<&ManagedRtkRuntimeEvidence>,
+    optical_active_configured: bool,
 ) -> CapabilityRegistrySnapshot {
     let verified_at_ms = dtoken_event_ledger::now_ms().max(1);
     let verified =
@@ -1167,9 +1255,24 @@ fn backend_capability_registry(
     }
     capabilities.push(verified(
         "optical-active",
-        AvailabilityState::ImplementedDisabled,
+        if optical_active_configured {
+            AvailabilityState::Ready
+        } else {
+            AvailabilityState::ImplementedDisabled
+        },
         OPTICAL_SHADOW_EVIDENCE_REVISION,
-        &["policy_shadow_only", "release_gate_disabled"],
+        &[
+            if optical_active_configured {
+                "exact_attested_route_configured"
+            } else {
+                "policy_shadow_only"
+            },
+            if optical_active_configured {
+                "release_gate_enabled"
+            } else {
+                "release_gate_disabled"
+            },
+        ],
     ));
 
     capabilities.push(
@@ -1531,6 +1634,9 @@ pub struct AppState {
     /// still reconciled.  Populated only during persistent restart.
     terminal_pending_commits: HashMap<Uuid, TerminalCommitMarker>,
     context_store: Option<Arc<Mutex<ContextStore>>>,
+    /// LeanCTX Context Bus（PR-C3A..C3C）：canonical resolved path 的
+    /// session cache / relay 复用入口。未配置（None）时生产路径行为不变。
+    context_bus: Option<Arc<Mutex<dtoken_context_bus::ContextBus>>>,
     managed_rtk_root: Option<Arc<PathBuf>>,
     agent_discovery: Arc<Option<AgentDiscoverySnapshot>>,
     http_client: reqwest::Client,
@@ -1552,11 +1658,13 @@ impl AppState {
         let optical_config_issues = Arc::new(config.normalize_optical_fail_closed());
         let hybrid_engine = Arc::new(HybridContextEngine::new(&config.optical.global_policy));
         let agent_discovery = scan_current_process_agents().ok();
+        let optical_active_configured = optical_active_configured(&config);
         let capabilities = Arc::new(backend_capability_registry(
             agent_discovery.as_ref(),
             ContextStoreCapabilityState::NotConfigured,
             false,
             None,
+            optical_active_configured,
         ));
         let capability_read_model = Arc::new(Mutex::new((*capabilities).clone()));
         Self {
@@ -1574,6 +1682,7 @@ impl AppState {
             runtime_store: None,
             terminal_pending_commits: HashMap::new(),
             context_store: None,
+            context_bus: None,
             managed_rtk_root: None,
             agent_discovery: Arc::new(agent_discovery),
             http_client: reqwest::Client::new(),
@@ -1611,6 +1720,24 @@ impl AppState {
     ) -> Self {
         let store = Arc::new(RuntimeStore::new(runtime_dir));
         let mut state = Self::new_with_config_status(config, config_status);
+        // PR-C3A..C3C: production 启动即接入 LeanCTX Context Bus（SQLite
+        // persistence port；bus 域 policy 单一 authority）。恢复失败不阻断
+        // （fail-open：调用方正常读取原文）。
+        let bus_persistence =
+            dtoken_context_store::SqlitePersistence::open(runtime_dir.join("context-bus.sqlite3"))
+                .map(|port| {
+                    Box::new(port) as Box<dyn dtoken_context_bus::persistence::PersistencePort>
+                })
+                .ok();
+        let mut bus = dtoken_context_bus::ContextBus::new(dtoken_context_bus::BusConfig::default());
+        if let Some(port) = bus_persistence {
+            bus = dtoken_context_bus::ContextBus::with_persistence(
+                dtoken_context_bus::BusConfig::default(),
+                port,
+            );
+            let _ = bus.recover(dtoken_event_ledger::now_ms().max(1));
+        }
+        state.context_bus = Some(Arc::new(Mutex::new(bus)));
         state.ccr_private_store = ccr_private_store;
         // G3: the terminal-commit recovery sweep needs the journal installed
         // before any load, and every subsequent load must filter the requests
@@ -1705,11 +1832,13 @@ impl AppState {
         match ContextStore::open(runtime_dir.join("runtime-state.sqlite3")) {
             Ok(mut context_store) => {
                 let schema_version = context_store.schema_version().unwrap_or_default();
+                let optical_active_configured = optical_active_configured(&state.config);
                 let capabilities = Arc::new(backend_capability_registry(
                     state.agent_discovery.as_ref().as_ref(),
                     ContextStoreCapabilityState::Ready { schema_version },
                     state.ccr_private_store.is_some(),
                     Some(&managed_rtk_evidence),
+                    optical_active_configured,
                 ));
                 if persist_context_store_evidence(
                     &mut context_store,
@@ -1726,6 +1855,7 @@ impl AppState {
                         ContextStoreCapabilityState::Failed,
                         state.ccr_private_store.is_some(),
                         Some(&managed_rtk_evidence),
+                        optical_active_configured,
                     ));
                 }
             }
@@ -1735,6 +1865,7 @@ impl AppState {
                     ContextStoreCapabilityState::Failed,
                     state.ccr_private_store.is_some(),
                     Some(&managed_rtk_evidence),
+                    optical_active_configured(&state.config),
                 ));
             }
         }
@@ -1790,36 +1921,50 @@ impl AppState {
     /// journal load.  A dangling `Intent` marker is rolled forward to
     /// `Committed` when the four fan-out journals already hold the complete
     /// bundle (the crash landed after the last fan-out sync but before the
-    /// committed marker); otherwise it is marked `Pending` explicitly.
-    /// Fan-out records are never re-appended here, so recovery cannot
-    /// duplicate terminal records; the pending map then drives the hot-model
-    /// and SQLite filters.
+    /// committed marker); otherwise it is marked `Pending` explicitly.  An
+    /// explicitly `Pending` marker is re-checked against the same four
+    /// journals: if the bundle is now complete it is promoted to `Committed`
+    /// (a later writer or prior fan-out completed it), otherwise it stays
+    /// pending.  Promotion is idempotent — once the latest marker is
+    /// `Committed` recovery leaves it untouched, so repeated restarts append
+    /// exactly one committed marker.  Fan-out records are never re-appended
+    /// here, so recovery cannot duplicate terminal records; the pending map
+    /// then drives the hot-model and SQLite filters.
     fn recover_terminal_commits(&mut self) -> anyhow::Result<()> {
         let Some(store) = self.runtime_store.as_ref() else {
             return Ok(());
         };
         let mut pending = HashMap::<Uuid, TerminalCommitMarker>::new();
         for (request_id, marker) in store.latest_terminal_commit_markers()? {
-            match marker.phase {
+            let mut resolved = marker;
+            if matches!(
+                resolved.phase,
+                TerminalCommitPhase::Intent | TerminalCommitPhase::Pending
+            ) && store.terminal_bundle_complete(&resolved)?
+            {
+                store.append_terminal_commit_marker(&TerminalCommitMarker {
+                    phase: TerminalCommitPhase::Committed,
+                    ..resolved.clone()
+                })?;
+                resolved.phase = TerminalCommitPhase::Committed;
+            }
+            match resolved.phase {
                 TerminalCommitPhase::Committed => {}
                 TerminalCommitPhase::Pending => {
-                    pending.insert(request_id, marker);
+                    pending.insert(request_id, resolved);
                 }
                 TerminalCommitPhase::Intent => {
-                    if store.terminal_bundle_complete(&marker)? {
-                        store.append_terminal_commit_marker(&TerminalCommitMarker {
-                            phase: TerminalCommitPhase::Committed,
-                            ..marker.clone()
-                        })?;
-                    } else {
-                        let pending_marker = TerminalCommitMarker {
-                            phase: TerminalCommitPhase::Pending,
-                            reason: Some("partial_fan_out_at_recovery".to_string()),
-                            ..marker.clone()
-                        };
-                        store.append_terminal_commit_marker(&pending_marker)?;
-                        pending.insert(request_id, pending_marker);
-                    }
+                    // The bundle is still partial: mark the dangling intent
+                    // explicitly pending so recovery never guesses committed.
+                    // The per-marker bundle is unchanged, so the same check
+                    // above already ran and reported incomplete.
+                    let pending_marker = TerminalCommitMarker {
+                        phase: TerminalCommitPhase::Pending,
+                        reason: Some("partial_fan_out_at_recovery".to_string()),
+                        ..resolved
+                    };
+                    store.append_terminal_commit_marker(&pending_marker)?;
+                    pending.insert(request_id, pending_marker);
                 }
             }
         }
@@ -1898,6 +2043,7 @@ impl AppState {
             context_store,
             self.ccr_private_store.is_some(),
             Some(&managed_rtk),
+            optical_active_configured(&self.config),
         );
         let Ok(mut current) = self.capability_read_model.lock() else {
             return candidate;
@@ -2435,10 +2581,13 @@ impl AppState {
 
     pub(crate) fn mcp_stats(&self) -> Value {
         let logs = self.recent_request_logs(10_000);
+        let rtk = rtk_command_output_accounting(
+            self.managed_rtk_root.as_deref().map(|root| root.as_path()),
+        );
         json!({
             "source": "dtoken-owned-runtime",
             "state": "runtime",
-            "stats": runtime_stats_payload(&logs),
+            "stats": runtime_stats_payload_with_rtk(&logs, rtk),
             "cache_summary": runtime_cache_summary_for_state(self),
             "raw_available": false,
         })
@@ -2455,9 +2604,77 @@ impl AppState {
             .lock()
             .map(|items| items.clone())
             .unwrap_or_default();
+        let rtk = rtk_command_output_accounting(
+            self.managed_rtk_root.as_deref().map(|root| root.as_path()),
+        );
         if let Ok(mut summary) = self.runtime_summary.lock() {
             *summary = RuntimeSummaryReadModel::from_records(&logs, &ccr_metadata);
+            if let Ok(Some(accounting)) = &rtk {
+                summary.record_rtk_ledger(&accounting.ledger);
+            }
         }
+        self.emit_rtk_ledger_events(&rtk);
+    }
+
+    /// Emits one aggregate RtkRewrite event (a verified managed RTK root is
+    /// bound to the bridge wrap pipeline) and one aggregate RtkFilter event
+    /// (verified usage receipts were projected) per rebuild. Both carry
+    /// metadata-only byte accounting — no command argv, raw output, or
+    /// credential material ever enters the ledger.
+    fn emit_rtk_ledger_events(&self, rtk: &Result<Option<RtkCommandOutputAccounting>, String>) {
+        let Ok(Some(accounting)) = rtk else {
+            return;
+        };
+        let now_ms = dtoken_event_ledger::now_ms();
+        let _ = self.try_append_event(DtokenEvent {
+            event_id: Uuid::new_v4(),
+            timestamp_ms: now_ms,
+            project_id: Some("dtoken-runtime".to_string()),
+            agent_id: None,
+            instance_id: None,
+            command_id: None,
+            request_id: None,
+            stage: LayeredStage::RtkRewrite,
+            source: EventSource::Rtk,
+            status: EventStatus::Ok,
+            input_tokens: None,
+            output_tokens: None,
+            saved_tokens: None,
+            baseline_kind: None,
+            error_code: None,
+            metadata: json!({
+                "verified": true,
+                "entries": accounting.entries,
+                "saved_bytes": accounting.ledger.command_output_savings(),
+                "privacy": "Metadata-only; no command argv or output is retained."
+            }),
+            context_accounting: None,
+        });
+        let _ = self.try_append_event(DtokenEvent {
+            event_id: Uuid::new_v4(),
+            timestamp_ms: now_ms,
+            project_id: Some("dtoken-runtime".to_string()),
+            agent_id: None,
+            instance_id: None,
+            command_id: None,
+            request_id: None,
+            stage: LayeredStage::RtkFilter,
+            source: EventSource::Rtk,
+            status: EventStatus::Ok,
+            input_tokens: None,
+            output_tokens: None,
+            saved_tokens: None,
+            baseline_kind: None,
+            error_code: None,
+            metadata: json!({
+                "entries": accounting.entries,
+                "input_bytes": accounting.input_bytes,
+                "output_bytes": accounting.output_bytes,
+                "saved_bytes": accounting.ledger.command_output_savings(),
+                "privacy": "Metadata-only; no command argv or output is retained."
+            }),
+            context_accounting: None,
+        });
     }
 
     fn record_runtime_performance(
@@ -2732,6 +2949,8 @@ impl AppState {
         if !required {
             return Ok(PreparedCcr {
                 receipt: None,
+                proof: None,
+                authority: None,
                 store_configured,
             });
         }
@@ -2747,8 +2966,17 @@ impl AppState {
         ))?;
         let receipt = store.store(&recovery_ref, original_body)?;
         self.append_ccr_lifecycle_record(ccr_pending_retained(&receipt, now_ms)?)?;
+        // The proof is issued by the store from its private key material —
+        // never constructed by the caller — and the pipeline verifies it
+        // against the same authority at candidate binding.
+        let authority = store.recovery_proof_authority();
+        let proof = authority
+            .issue(receipt.recovery_ref.clone(), receipt.expires_at_unix)
+            .map_err(|error| anyhow::anyhow!("CCR recovery proof issuance failed: {error:?}"))?;
         Ok(PreparedCcr {
             receipt: Some(receipt),
+            proof: Some(proof),
+            authority: Some(authority),
             store_configured,
         })
     }
@@ -2830,6 +3058,18 @@ impl AppState {
                 );
                 return;
             }
+            // Injected crash window: the intent marker is durable but the
+            // fan-out never started.  Recovery classifies this partial bundle
+            // as explicitly pending, never guessed committed.
+            if failpoint::maybe_crash("terminal:crash_after_intent_before_fanout").is_err() {
+                self.record_runtime_performance(
+                    "terminal_commit_total",
+                    terminal_started_at,
+                    false,
+                    0,
+                );
+                return;
+            }
             // Fan-out appends, cheapest to verify last.  The first failure
             // aborts the commit and durably marks the intent pending so a
             // restart converges without guessing.
@@ -2885,6 +3125,19 @@ impl AppState {
             // the restart recovery sweep; a crash after it is a normal
             // committed request whose SQLite view is rebuilt from the
             // journals.
+            // Injected crash window: the complete bundle is durable but the
+            // committed marker is not.  Restart recovery must roll the
+            // dangling intent forward to Committed without re-appending any
+            // fan-out record.
+            if failpoint::maybe_crash("terminal:crash_before_commit_marker").is_err() {
+                self.record_runtime_performance(
+                    "terminal_commit_total",
+                    terminal_started_at,
+                    false,
+                    sync_count,
+                );
+                return;
+            }
             let commit_started_at = Instant::now();
             let commit_marker = TerminalCommitMarker {
                 phase: TerminalCommitPhase::Committed,
@@ -3980,6 +4233,10 @@ pub fn build_router_with_mcp_server(state: AppState, mcp_server: Arc<mcp::McpSer
             get(optical_capability_lifecycle),
         )
         .route(
+            "/compression/optical/exact-evidence",
+            get(optical_exact_evidence),
+        )
+        .route(
             "/compression/optical/events/recent",
             get(optical_recent_events),
         )
@@ -4190,6 +4447,24 @@ async fn optical_capabilities(
     })
 }
 
+/// True when the current config carries a fully green exact direct Anthropic
+/// active lane: allow_active survives normalization, the configured registry
+/// verified at least one attested capability, and at least one exact route is
+/// bound to it. This drives the honest `optical-active` capability state.
+fn optical_active_configured(config: &DtokenConfig) -> bool {
+    if !config.optical.global_policy.allow_active {
+        return false;
+    }
+    if !config.optical_config_issues().is_empty() {
+        return false;
+    }
+    let registry = OpticalCapabilityRegistry::from_runtime_config(
+        &config.optical,
+        dtoken_event_ledger::now_ms(),
+    );
+    registry.verified_rule_count() > 0 && active_direct_anthropic_route_count(config, &registry) > 0
+}
+
 fn active_direct_anthropic_route_count(
     config: &DtokenConfig,
     registry: &OpticalCapabilityRegistry,
@@ -4222,6 +4497,21 @@ fn active_direct_anthropic_route_count(
                         && policy.confirmed_experimental_lossy
                 })
     }).count()
+}
+
+/// Bounded, non-sensitive exact-route evidence for the N10 U7 gate: route/
+/// provider/model/API identity, digests, lifecycle and paired eval numbers.
+/// Never contains signatures, bodies, PNG/base64 or secrets.
+async fn optical_exact_evidence(
+    State(state): State<AppState>,
+) -> Json<Vec<OpticalExactRouteEvidence>> {
+    let now_ms = dtoken_event_ledger::now_ms();
+    let registry = OpticalCapabilityRegistry::from_runtime_config(&state.config.optical, now_ms);
+    Json(dtoken_compress::optical::optical_exact_route_evidence(
+        &state.config.optical,
+        &registry,
+        now_ms,
+    ))
 }
 
 async fn optical_capability_lifecycle(
@@ -4656,12 +4946,30 @@ fn compression_decision_error_code(error: CompressionDecisionError) -> &'static 
     }
 }
 
+/// Export-safe projection of [`RuntimeConfigStatus`]: every field local
+/// runtime logic consumes is preserved (`source`, `error`, route/instance
+/// counts, `fallback_disabled`, ...), while the on-disk absolute `path` is
+/// deliberately omitted so no JSON export, CSV export, dashboard, or
+/// config-active payload can leak host filesystem layout.
+fn config_status_export_payload(status: &RuntimeConfigStatus) -> Value {
+    json!({
+        "source": status.source,
+        "loaded": status.loaded,
+        "exists": status.exists,
+        "provider_count": status.provider_count,
+        "route_count": status.route_count,
+        "instance_count": status.instance_count,
+        "fallback_disabled": status.fallback_disabled,
+        "error": status.error,
+    })
+}
+
 fn active_config_payload(state: &AppState) -> Value {
     json!({
         "source": "dtoken-owned-runtime",
         "runtime_kind": "headroom-derived",
         "external_headroom_dependency": false,
-        "config": &*state.config_status,
+        "config": config_status_export_payload(&state.config_status),
         "providers": provider_metadata_payload(&state.config.providers),
         "routes": state.config.routes,
         "instances": state.config.instances,
@@ -4688,6 +4996,7 @@ fn provider_metadata_payload(providers: &[dtoken_types::ProviderProfile]) -> Val
                     "models": provider.models,
                     "timeout_ms": provider.timeout_ms,
                     "healthcheck_path": provider.healthcheck_path,
+                    "wire_api": provider.wire_api,
                     "credential_configured": provider.api_key_ref.as_deref().is_some_and(|value| !value.trim().is_empty())
                 })
             })
@@ -4847,12 +5156,16 @@ struct CompressionSummary {
     fallback_reason_code: Option<String>,
     body: Value,
     context_accounting: Option<dtoken_types::HybridContextAccounting>,
+    /// LeanCTX Context Bus receipts（PR-C3B/CONTEXT-3）：RelayHit/CacheReuse
+    /// 与 compression savings 严格分离，永不进入 `tokens_saved`。
+    bus_receipts: Vec<dtoken_context_bus::BusReceipt>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RouteAdapterKind {
     OpenAiChatPassthrough,
     OpenAiResponsesToChat,
+    OpenAiResponsesPassthrough,
     AnthropicMessagesPassthrough,
     AnthropicMessagesToOpenAiChat,
 }
@@ -4862,6 +5175,7 @@ impl RouteAdapterKind {
         match self {
             Self::OpenAiChatPassthrough => "open_ai_chat_passthrough",
             Self::OpenAiResponsesToChat => "open_ai_responses_to_chat",
+            Self::OpenAiResponsesPassthrough => "open_ai_responses_passthrough",
             Self::AnthropicMessagesPassthrough => "anthropic_messages_passthrough",
             Self::AnthropicMessagesToOpenAiChat => "anthropic_messages_to_open_ai_chat",
         }
@@ -4887,6 +5201,16 @@ impl RouteAdapterKind {
                 OptimizationSurface {
                     protocol: Protocol::OpenAi,
                     endpoint: OpticalEndpoint::OpenAiChatCompletions,
+                },
+            ),
+            Self::OpenAiResponsesPassthrough => (
+                OptimizationSurface {
+                    protocol: Protocol::OpenAi,
+                    endpoint: OpticalEndpoint::OpenAiResponses,
+                },
+                OptimizationSurface {
+                    protocol: Protocol::OpenAi,
+                    endpoint: OpticalEndpoint::OpenAiResponses,
                 },
             ),
             Self::AnthropicMessagesToOpenAiChat => (
@@ -5205,17 +5529,48 @@ fn compress_for_route_with_frozen(
     cache_evidence: Option<&dtoken_compress::context_pipeline::ProviderCacheEvidence>,
     frozen_message_count: Option<usize>,
 ) -> CompressionSummary {
+    compress_for_route_with_ir(
+        context,
+        policy,
+        body,
+        cache_evidence,
+        frozen_message_count,
+        None,
+    )
+}
+
+/// Single resolved production compression entry (PR-C1A/PR-C1C). All surfaces
+/// (HTTP chat, Anthropic, Responses, MCP/Rust) route through this function:
+/// it invokes the resolved engine exactly once and never falls back to the
+/// no-op `CompressionEngine::compress` (PR-12: no second/no-op engine).
+///
+/// `ir` is the canonical IR the caller already lowered from `body`
+/// (pre-plan lower once); `None` lets the pipeline lower a single time.
+fn compress_for_route_with_ir(
+    context: Option<&ResolvedRouteOptimizationContext>,
+    policy: CompressionPolicy,
+    body: Value,
+    cache_evidence: Option<&dtoken_compress::context_pipeline::ProviderCacheEvidence>,
+    frozen_message_count: Option<usize>,
+    ir: Option<&dtoken_compress::HybridContextIr>,
+) -> CompressionSummary {
     let result = context
         .map(|context| {
-            CompressionEngine::new().compress_resolved_with_cache_evidence(
+            CompressionEngine::new().compress_resolved_with_ir(
                 &context.compression_context,
                 policy.clone(),
                 body.clone(),
                 cache_evidence,
                 frozen_message_count,
+                ir,
             )
         })
-        .unwrap_or_else(|| CompressionEngine::new().compress(policy, body.clone()))
+        // No resolved context: produce an honest baseline summary directly
+        // (body untouched, zero transforms) instead of invoking the no-op
+        // engine. The send path seals this baseline through the same
+        // `prepare_json_pipeline_payload` envelope, so the sent body is the
+        // validated body even on the un-resolvable path.
+        .unwrap_or_else(|| Ok(baseline_compression_result(policy, body.clone())))
         .map(|result| (result, None))
         .unwrap_or_else(|_| {
             (
@@ -5248,11 +5603,220 @@ fn compress_for_route_with_frozen(
         fallback_reason_code,
         body: result.body,
         context_accounting: result.context_accounting,
+        bus_receipts: Vec::new(),
     }
 }
 
-fn compression_inventory_diagnostics(
+/// PR-C3A..C3C 接线：canonical resolved path 前 consult Context Bus。
+///
+/// - 命中（Session Cache / Context Relay）→ 复用候选 body，`bus_receipts`
+///   单独记录，不计入 compression savings（CONTEXT-3 四维分账独立）；
+/// - 未命中 → 走 canonical resolved path 压缩后 record，供后续复用；
+/// - 任何 bus 失败（未配置 / 锁失败 / 校验失败）→ fail-open 回退原文路径，
+///   与未接线行为完全一致（失败正常读取原文）。
+#[allow(clippy::too_many_arguments)]
+fn compress_for_route_with_relay(
+    state: &AppState,
+    scope: &RequestScope,
+    context: Option<&ResolvedRouteOptimizationContext>,
+    policy: CompressionPolicy,
+    body: Value,
+    cache_evidence: Option<&dtoken_compress::context_pipeline::ProviderCacheEvidence>,
+    frozen_message_count: Option<usize>,
+    ir: Option<&dtoken_compress::HybridContextIr>,
+    baseline_digest: &str,
+) -> CompressionSummary {
+    // bus 未配置 → 原路径（行为不变）。
+    let Some(bus) = state.context_bus.as_ref() else {
+        return compress_for_route_with_ir(
+            context,
+            policy,
+            body,
+            cache_evidence,
+            frozen_message_count,
+            ir,
+        );
+    };
+    // scope 缺少 project/agent → 无法投影 BusScope → 回退原文路径。
+    let (Some(project_id), Some(agent_id)) =
+        (scope.project.value.clone(), scope.agent.value.clone())
+    else {
+        return compress_for_route_with_ir(
+            context,
+            policy,
+            body,
+            cache_evidence,
+            frozen_message_count,
+            ir,
+        );
+    };
+    let session_id = scope.session.value.clone().unwrap_or_default();
+    let bus_scope = dtoken_context_bus::BusScope::new(project_id, agent_id, session_id);
+    if !bus_scope.is_valid() {
+        return compress_for_route_with_ir(
+            context,
+            policy,
+            body,
+            cache_evidence,
+            frozen_message_count,
+            ir,
+        );
+    }
+    // map-signature：canonical JSON of body；source fingerprint：evidence 的
+    // source_revision + 无 file digest（HTTP body 无文件粒度）。
+    let Ok(canonical_content) = serde_json::to_string(&body) else {
+        return compress_for_route_with_ir(
+            context,
+            policy,
+            body,
+            cache_evidence,
+            frozen_message_count,
+            ir,
+        );
+    };
+    let source_revision = cache_evidence
+        .map(|evidence| evidence.source_revision.as_str())
+        .unwrap_or_default();
+    let source_fingerprint =
+        dtoken_context_bus::signature::source_fingerprint(source_revision, None);
+    let query_tokens = vec![scope.route_id.clone(), scope.model.clone()];
+    let now_ms = dtoken_event_ledger::now_ms().max(1);
+    let map_signature =
+        dtoken_context_bus::signature::map_signature(&bus_scope.project_id, &canonical_content);
+    let Ok(mut bus) = bus.lock() else {
+        return compress_for_route_with_ir(
+            context,
+            policy,
+            body,
+            cache_evidence,
+            frozen_message_count,
+            ir,
+        );
+    };
+    match bus.consult(
+        &bus_scope,
+        &map_signature,
+        &source_fingerprint,
+        &query_tokens,
+        now_ms,
+    ) {
+        dtoken_context_bus::bus::ConsultOutcome::CacheHit { entry, receipt } => {
+            relay_hit_compression_summary(
+                &body,
+                entry.body.as_deref(),
+                vec![dtoken_context_bus::BusReceipt::CacheReuse(receipt)],
+            )
+        }
+        dtoken_context_bus::bus::ConsultOutcome::RelayHit { entry, receipt } => {
+            relay_hit_compression_summary(
+                &body,
+                entry.body.as_deref(),
+                vec![dtoken_context_bus::BusReceipt::RelayHit(receipt)],
+            )
+        }
+        dtoken_context_bus::bus::ConsultOutcome::Miss => {
+            // 未命中：走 canonical resolved path 压缩。
+            let summary = compress_for_route_with_ir(
+                context,
+                policy,
+                body.clone(),
+                cache_evidence,
+                frozen_message_count,
+                ir,
+            );
+            // record_bound 失败静默忽略（不影响发送路径）；manifest 绑定
+            // request_id + 验证基线 digest（raw wire bytes 的 sha256，由调用方计算），
+            // 供 C0C1 的 recovery receipt 交叉绑定。
+            if let Ok(candidate_body) = serde_json::to_string(&summary.body) {
+                let decision_digest = dtoken_context_bus::signature::sha256_hex(
+                    &serde_json::to_vec(&(scope.route_id.clone(), scope.provider_id.clone()))
+                        .unwrap_or_default(),
+                );
+                let _ = bus.record_bound(
+                    &bus_scope,
+                    &canonical_content,
+                    source_revision,
+                    None,
+                    Some(candidate_body),
+                    &query_tokens,
+                    now_ms,
+                    &scope.request_id.to_string(),
+                    baseline_digest,
+                    &decision_digest,
+                );
+            }
+            summary
+        }
+    }
+}
+
+/// relay/cache 命中：用候选 body 构造 CompressionSummary。
+/// `tokens_saved` 保持 0（Relay/Cache 不计 compression savings），
+/// receipt 单独记录；候选 body 缺失/不可解析时回退原文 body。
+fn relay_hit_compression_summary(
+    original: &Value,
+    candidate_body: Option<&str>,
+    bus_receipts: Vec<dtoken_context_bus::BusReceipt>,
+) -> CompressionSummary {
+    let body: Value = candidate_body
+        .and_then(|candidate| serde_json::from_str(candidate).ok())
+        .unwrap_or_else(|| original.clone());
+    let original_tokens = dtoken_compress::estimate_tokens(original) as u64;
+    let compressed_tokens = dtoken_compress::estimate_tokens(&body) as u64;
+    CompressionSummary {
+        original_tokens,
+        compressed_tokens,
+        tokens_saved: 0,
+        savings_percent: 0.0,
+        elapsed_us: 1,
+        transforms_applied: Vec::new(),
+        fallback_reason_code: None,
+        body,
+        context_accounting: None,
+        bus_receipts,
+    }
+}
+
+/// CONTEXT-3 独立分账：把 bus receipts 投影成脱敏 metadata（只含 kind 与
+/// avoided bytes，不含任何 prompt/response 内容）。
+fn bus_receipts_metadata(receipts: &[dtoken_context_bus::BusReceipt]) -> Vec<Value> {
+    receipts
+        .iter()
+        .map(|receipt| {
+            json!({
+                "kind": receipt.savings_kind().as_str(),
+                "avoided_bytes": receipt.avoided_bytes(),
+                "project_id": receipt.project_id(),
+            })
+        })
+        .collect()
+}
+
+/// Direct baseline summary: body untouched, zero transforms, honest token
+/// estimate. Never routes through a no-op engine (PR-12).
+fn baseline_compression_result(
+    _policy: CompressionPolicy,
+    body: Value,
+) -> dtoken_types::CompressionResult {
+    let original_tokens = dtoken_compress::estimate_tokens(&body);
+    dtoken_types::CompressionResult {
+        original_tokens,
+        compressed_tokens: original_tokens,
+        tokens_saved: 0,
+        elapsed_us: 1,
+        transforms_applied: Vec::new(),
+        body,
+        context_accounting: None,
+    }
+}
+
+/// Shadow inventory diagnostics that reuse an already-lowered canonical IR
+/// (PR-C1A pre-plan lower once). `ir` is the exact IR lowered from `body` by
+/// the caller; `None` falls back to a single internal lowering so the
+/// metadata stays available for surfaces without a pre-lowered IR.
+fn compression_inventory_diagnostics_with_ir(
     context: &dtoken_compress::ResolvedOptimizationContext,
+    ir: Option<&dtoken_compress::HybridContextIr>,
     body: &Value,
 ) -> Value {
     let conversation_items = body
@@ -5285,13 +5849,22 @@ fn compression_inventory_diagnostics(
         })
         .collect::<Vec<_>>();
 
-    let Some(inventory) = dtoken_compress::lower_hybrid_context(context, body) else {
-        return json!({
-            "state": "unsupported_context",
-            "role_sequence": role_sequence,
-            "content_kinds": content_kinds,
-            "raw_available": false
-        });
+    // Pre-plan lower once (PR-C1A): reuse the caller-supplied IR when present
+    // so the same body is never lowered twice (shadow inventory + plan). Only
+    // when no IR was supplied does the diagnostics lower on its own.
+    let inventory = match ir {
+        Some(ir) => ir.clone(),
+        None => match dtoken_compress::lower_hybrid_context(context, body) {
+            Some(inventory) => inventory,
+            None => {
+                return json!({
+                    "state": "unsupported_context",
+                    "role_sequence": role_sequence,
+                    "content_kinds": content_kinds,
+                    "raw_available": false
+                });
+            }
+        },
     };
     let tool_nodes = inventory
         .nodes()
@@ -5376,6 +5949,8 @@ struct RouteEvidence<'a> {
     route_id: Option<&'a str>,
     instance_id: Option<&'a str>,
     model: Option<&'a str>,
+    project_id: Option<&'a str>,
+    session_id: Option<&'a str>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -5394,6 +5969,8 @@ fn resolve_configured_request_scope(
     model: Option<&str>,
     input_protocol: Protocol,
     output_protocol: Protocol,
+    project_id: Option<&str>,
+    session_id: Option<&str>,
 ) -> Result<RequestScope, RequestScopeError> {
     let config_json =
         serde_json::to_string(config).map_err(|_| RequestScopeError::ConfigSerialization)?;
@@ -5420,12 +5997,24 @@ fn resolve_configured_request_scope(
                 .map(String::as_str)
         })
         .unwrap_or_default();
+    // PR-C3A..C3C: project/session identity comes from the caller (typed
+    // `x-dtoken-project-id` / `x-dtoken-session-id` headers in the HTTP
+    // handlers; typed values in the Rust/MCP surface).  Unknown identity
+    // keeps the bus scope unprojected (miss), never an unsafe projection.
+    let project = project_id
+        .filter(|value| !value.trim().is_empty())
+        .map(|value| EvidenceValue::known(value.to_string(), EvidenceSource::Derived))
+        .unwrap_or_else(|| EvidenceValue::unknown("project_identity_unavailable"));
+    let session = session_id
+        .filter(|value| !value.trim().is_empty())
+        .map(|value| EvidenceValue::known(value.to_string(), EvidenceSource::Derived))
+        .unwrap_or_else(|| EvidenceValue::unknown("session_identity_unavailable"));
 
     RequestScope::new(
         request_id,
         agent,
-        EvidenceValue::unknown("project_identity_unavailable"),
-        EvidenceValue::unknown("session_identity_unavailable"),
+        project,
+        session,
         instance,
         route.id.clone(),
         provider.id.clone(),
@@ -5463,6 +6052,14 @@ fn header_evidence<'a>(headers: &'a HeaderMap, model: Option<&'a str>) -> RouteE
             .and_then(|value| value.to_str().ok())
             .filter(|value| !value.trim().is_empty()),
         model,
+        project_id: headers
+            .get("x-dtoken-project-id")
+            .and_then(|value| value.to_str().ok())
+            .filter(|value| !value.trim().is_empty()),
+        session_id: headers
+            .get("x-dtoken-session-id")
+            .and_then(|value| value.to_str().ok())
+            .filter(|value| !value.trim().is_empty()),
     }
 }
 
@@ -5559,6 +6156,7 @@ fn build_request_log(
     request_id: Uuid,
     decision: &RouteDecision,
     model: Option<String>,
+    user_target_model: Option<String>,
     input_protocol: Protocol,
     compression: &CompressionSummary,
     attribution: &RequestAttribution,
@@ -5568,6 +6166,11 @@ fn build_request_log(
         timestamp_ms: dtoken_event_ledger::now_ms(),
         agent: attribution.agent.clone(),
         instance_id: attribution.instance_id.clone(),
+        project_id: attribution
+            .project_id
+            .clone()
+            .filter(|value| !value.trim().is_empty()),
+        user_target_model,
         input_protocol,
         provider_id: Some(decision.provider_id.clone()),
         route_id: Some(decision.route_id.clone()),
@@ -5576,6 +6179,8 @@ fn build_request_log(
         input_tokens_before: Some(compression.original_tokens as usize),
         input_tokens_after: Some(compression.compressed_tokens as usize),
         output_tokens: None,
+        provider_input_tokens: None,
+        provider_output_tokens: None,
         tokens_saved: Some(if compression.context_accounting.is_some() {
             0
         } else {
@@ -5628,6 +6233,9 @@ fn build_ledger_event(
             "compression_elapsed_us": compression.elapsed_us,
             "transforms_applied": compression.transforms_applied,
             "compression_fallback_reason": compression.fallback_reason_code,
+            // CONTEXT-3: Relay/Cache 命中与 compression savings 严格分离。
+            // receipt 只记录命中来源与避免重传字节，永不进入 `saved_tokens`。
+            "bus_receipts": bus_receipts_metadata(&compression.bus_receipts),
             "privacy": "aggregate only; prompt and response bodies are not stored"
         }),
         context_accounting: compression.context_accounting.clone(),
@@ -6118,11 +6726,17 @@ fn mark_upstream_outcome(
     event: &mut DtokenEvent,
 ) {
     let provider_usage = provider_usage_measurement(&upstream.response);
+    let provider_input_tokens = provider_usage
+        .as_ref()
+        .and_then(|measurement| measurement.usage.input.normalized_total)
+        .and_then(|tokens| usize::try_from(tokens).ok());
     let output_tokens = provider_usage
         .as_ref()
         .and_then(|measurement| measurement.usage.output_tokens)
         .and_then(|tokens| usize::try_from(tokens).ok());
     request_log.quota_metadata = upstream.quota_metadata.clone();
+    request_log.provider_input_tokens = provider_input_tokens;
+    request_log.provider_output_tokens = output_tokens;
 
     if let Some(accounting) = request_log.context_accounting.as_mut() {
         accounting.upstream_state = upstream.send_state;
@@ -9274,36 +9888,76 @@ fn anthropic_route_payload(
         upstream_body.get("model").and_then(Value::as_str),
         Protocol::Anthropic,
         provider.protocol.clone(),
+        evidence.project_id,
+        evidence.session_id,
     )
     .map_err(|_| RouteSelectionError::InvalidOptimizationContext)?;
-    // Authorized memory is retrieved exactly once, then injected only into
-    // the final wire body after compression: memory blocks never enter the
-    // compression pipeline, never enter stored artifacts, and never distort
-    // token accounting.  Fail-closed: no retrievable scope -> no injection.
+    // PR-C1B: authorized memory is retrieved exactly once and enters the
+    // upstream body BEFORE the transform plan, so the Direct Anthropic hybrid
+    // planner and the Anthropic -> Chat pipeline both see it and the final
+    // wire body carries it exactly once. Fail-closed: no retrievable scope ->
+    // no injection.
     let memory_blocks = request_scope_memory_access(&scope)
         .as_ref()
         .map(|access| memory_context_blocks(&authorized_memory_records(state, access)))
         .unwrap_or_default();
-    let compression = if provider.protocol == Protocol::Anthropic {
-        // Direct Anthropic routes are planned by HybridContextEngine in the handler.
-        // Keeping this preliminary body untouched prevents semantic+optical stacking.
-        compress_for_route(None, CompressionPolicy::Off, upstream_body)
+    let memory_block_count = memory_blocks.len();
+    let upstream_body = if memory_blocks.is_empty() {
+        upstream_body
     } else {
-        let cache_evidence = configured_provider_cache_evidence(state, &scope);
-        compress_for_route_with_frozen(
-            Some(&optimization_context),
-            decision.compression_policy.clone(),
-            upstream_body,
+        inject_memory_into_body(upstream_body, &provider.protocol, &memory_blocks)
+    };
+    let cache_evidence = configured_provider_cache_evidence(state, &scope);
+    let compression = if provider.protocol == Protocol::Anthropic {
+        // Direct Anthropic routes are planned by HybridContextEngine in the
+        // handler; the preliminary baseline keeps the body untouched UNLESS
+        // the Context Bus has a reuse candidate (session cache / relay), in
+        // which case the candidate body replaces the wire body and the
+        // `bus_receipts` are carried into the ledger (CONTEXT-3; the handler
+        // skips hybrid planning when a bus reuse is present).
+        let baseline_digest = dtoken_context_bus::signature::sha256_hex(
+            &serde_json::to_vec(&upstream_body).unwrap_or_default(),
+        );
+        compress_for_route_with_relay(
+            state,
+            &scope,
+            None,
+            CompressionPolicy::Off,
+            upstream_body.clone(),
             cache_evidence.as_ref(),
             None,
+            None,
+            &baseline_digest,
+        )
+    } else {
+        let baseline_digest = dtoken_context_bus::signature::sha256_hex(
+            &serde_json::to_vec(&upstream_body).unwrap_or_default(),
+        );
+        // PR-C1A: lower once (route-bound) and share the IR with the plan.
+        let ir = dtoken_compress::lower_hybrid_context(
+            &optimization_context.compression_context,
+            &upstream_body,
+        );
+        // PR-C3A..C3C: relay-aware canonical resolved path（bus 失败回退原文）。
+        compress_for_route_with_relay(
+            state,
+            &scope,
+            Some(&optimization_context),
+            decision.compression_policy.clone(),
+            upstream_body.clone(),
+            cache_evidence.as_ref(),
+            None,
+            ir.as_ref(),
+            &baseline_digest,
         )
     };
-    let memory_injected_body =
-        inject_memory_into_body(compression.body.clone(), &provider.protocol, &memory_blocks);
     let attribution = request_attribution_from_scope(&scope);
     let request_log = build_request_log(
         request_id,
         &decision,
+        body.get("model")
+            .and_then(Value::as_str)
+            .map(ToString::to_string),
         body.get("model")
             .and_then(Value::as_str)
             .map(ToString::to_string),
@@ -9320,14 +9974,15 @@ fn anthropic_route_payload(
         &attribution,
     );
     attach_request_scope(&mut event, &scope);
-    if !memory_blocks.is_empty() {
+    if memory_block_count > 0 {
         if let Some(metadata) = event.metadata.as_object_mut() {
             metadata.insert(
                 "memory_injection".to_string(),
                 json!({
                     "injected": true,
-                    "block_count": memory_blocks.len(),
+                    "block_count": memory_block_count,
                     "protocol": provider.protocol,
+                    "timing": "pre_plan",
                     "raw_available": false,
                     "privacy": "typed memory summaries only; raw prompt, response, source and secrets are never persisted"
                 }),
@@ -9336,7 +9991,7 @@ fn anthropic_route_payload(
     }
     Ok(RoutedBridgePayload {
         scope,
-        upstream_body: memory_injected_body,
+        upstream_body,
         decision,
         request_log,
         event,
@@ -9622,6 +10277,7 @@ fn force_payload_ccr_pre_send_baseline(
     let request_log = build_request_log(
         request_id,
         &payload.decision,
+        model.clone(),
         model,
         Protocol::Anthropic,
         &compression,
@@ -9651,13 +10307,18 @@ fn apply_routed_pipeline_payload(
     payload: &mut RoutedBridgePayload,
     original_anthropic_body: &Value,
     prepared_ccr: &PreparedCcr,
-) -> anyhow::Result<dtoken_types::SentPayloadVariant> {
+) -> anyhow::Result<(
+    dtoken_types::SentPayloadVariant,
+    Option<ReadyToSend>,
+    Option<ValidationReceipt>,
+)> {
     let protocol_baseline = match payload.provider.protocol {
         Protocol::Anthropic => original_anthropic_body.clone(),
         Protocol::OpenAi => anthropic_to_openai_body(original_anthropic_body, &payload.provider),
     };
     let mut selection = prepare_json_pipeline_payload(
         payload.scope.clone(),
+        &payload.decision,
         &protocol_baseline,
         &payload.upstream_body,
         &payload.request_log.transforms_applied,
@@ -9667,6 +10328,7 @@ fn apply_routed_pipeline_payload(
         force_payload_ccr_pre_send_baseline(payload, original_anthropic_body, reason);
         selection = prepare_json_pipeline_payload(
             payload.scope.clone(),
+            &payload.decision,
             &protocol_baseline,
             &payload.upstream_body,
             &[],
@@ -9685,7 +10347,60 @@ fn apply_routed_pipeline_payload(
             json!(selection.ready.reason_code()),
         );
     }
-    Ok(variant)
+    Ok((variant, Some(selection.ready), selection.validation))
+}
+
+/// Mint the terminal transport-observable `SendCommitReceipt` (T-C0B /
+/// RUNTIME-8). Called ONLY at the point where the transport (reqwest/hyper)
+/// has accepted the exact body bytes (`committed_at_ms != 0`) or failed
+/// before commit (`committed_at_ms == 0`). Consuming the sendable unit makes
+/// a second terminal receipt for the request structurally impossible; the
+/// receipt binds the exact sent-body digest, and the terminal evidence is
+/// recorded into the ledger event metadata.
+///
+/// Fail-closed validation binding (T-C1B): when a sealed validation receipt
+/// exists for this sendable unit, its validated digest MUST equal the digest
+/// of the body about to be sent. A mismatch means the body was mutated after
+/// validation — the send is aborted with [`PipelineError::SourceDigestMismatch`]
+/// and the unit is never consumed, so no terminal receipt is minted.
+fn mint_transport_send_commit(
+    ready: ReadyToSend,
+    validation: Option<&ValidationReceipt>,
+    committed_at_ms: u64,
+    _request_log: &mut RequestLog,
+    event: &mut DtokenEvent,
+) -> Result<SendCommitReceipt, PipelineError> {
+    let ready_digest = ready.body_digest();
+    if let Some(validation) = validation {
+        if validation.request_id() != ready.scope().request_id
+            || validation.validated_digest() != ready_digest
+        {
+            return Err(PipelineError::SourceDigestMismatch);
+        }
+    }
+    let receipt = ready.mint_send_commit(committed_at_ms);
+    if let Some(metadata) = event.metadata.as_object_mut() {
+        metadata.insert(
+            "send_commit_digest".to_string(),
+            json!(receipt.sent_digest()),
+        );
+        metadata.insert("send_commit_state".to_string(), json!(receipt.state()));
+        metadata.insert("send_commit_variant".to_string(), json!(receipt.variant()));
+        metadata.insert(
+            "send_commit_reason".to_string(),
+            json!(receipt.reason_code()),
+        );
+    }
+    Ok(receipt)
+}
+
+/// True when the upstream result proves the transport never accepted the
+/// body (no request bytes were handed over / the request was not attempted).
+fn transport_not_committed(upstream: &UpstreamResult) -> bool {
+    matches!(
+        upstream.send_state,
+        UpstreamSendState::NotAttempted | UpstreamSendState::FailedBeforeCommit
+    )
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -9912,6 +10627,8 @@ fn prepare_direct_anthropic_pipeline_for_send(
     PreparedCcr,
     dtoken_types::SentPayloadVariant,
     DirectAnthropicCacheWire,
+    Option<ReadyToSend>,
+    Option<ValidationReceipt>,
 ) {
     let mut cache_wire = apply_direct_anthropic_cache_breakpoint(payload, cache_evidence);
     let prepared_ccr = match state.prepare_ccr_for_request(
@@ -9935,9 +10652,9 @@ fn prepare_direct_anthropic_pipeline_for_send(
                 .expect("baseline request does not require CCR storage")
         }
     };
-    let pipeline_variant =
+    let (pipeline_variant, sealed_ready, sealed_validation) =
         match apply_routed_pipeline_payload(payload, original_body, &prepared_ccr) {
-            Ok(variant) => variant,
+            Ok((variant, ready, validation)) => (variant, ready, validation),
             Err(_) => {
                 force_payload_ccr_pre_send_baseline(
                     payload,
@@ -9954,7 +10671,7 @@ fn prepare_direct_anthropic_pipeline_for_send(
                         json!(dtoken_types::SentPayloadVariant::Original),
                     );
                 }
-                dtoken_types::SentPayloadVariant::Original
+                (dtoken_types::SentPayloadVariant::Original, None, None)
             }
         };
     if cache_wire.breakpoint_inserted
@@ -9965,7 +10682,13 @@ fn prepare_direct_anthropic_pipeline_for_send(
             "cache_breakpoint_pipeline_fallback",
         );
     }
-    (prepared_ccr, pipeline_variant, cache_wire)
+    (
+        prepared_ccr,
+        pipeline_variant,
+        cache_wire,
+        sealed_ready,
+        sealed_validation,
+    )
 }
 
 fn direct_anthropic_uses_raw_body(variant: dtoken_types::SentPayloadVariant) -> bool {
@@ -9988,6 +10711,7 @@ fn routed_openai_payload(
     let log = build_request_log(
         request_id,
         &decision,
+        request.model.clone(),
         request.model.clone(),
         Protocol::OpenAi,
         &compression,
@@ -10044,7 +10768,7 @@ fn routed_openai_payload(
     (response, decision, log, event)
 }
 
-fn runtime_stats_payload(logs: &[RequestLog]) -> Value {
+fn runtime_stats_payload(logs: &[RequestLog], rtk: Option<&SavingsLedger>) -> Value {
     let total_requests = logs.len() as u64;
     let failed_requests = logs.iter().filter(|log| log.error.is_some()).count() as u64;
     let input_before: u64 = logs
@@ -10110,7 +10834,7 @@ fn runtime_stats_payload(logs: &[RequestLog]) -> Value {
             .or_insert_with(|| quota.clone());
     }
     let layered = LayeredSavingsReport {
-        rtk_savings: 0,
+        rtk_savings: rtk.map(SavingsLedger::command_output_savings).unwrap_or_default(),
         headroom_savings: tokens_saved,
         end_to_end_savings: tokens_saved,
         attribution_confidence: if total_requests == 0 {
@@ -10118,7 +10842,7 @@ fn runtime_stats_payload(logs: &[RequestLog]) -> Value {
         } else {
             "runtime_estimated".to_string()
         },
-        note: "Aggregated from d-token-owned runtime request logs; prompt and response bodies are not stored.".to_string(),
+        note: "Aggregated from d-token-owned runtime request logs and verified RTK usage receipts; prompt and response bodies are not stored.".to_string(),
     };
     let analytics = RuntimeSummaryReadModel::from_records(logs, &[]).stats()["analytics"].clone();
 
@@ -10178,7 +10902,140 @@ fn signed_context_savings(log: &RequestLog) -> i64 {
 
 fn runtime_stats_for_state(state: &AppState) -> Value {
     let logs = state.recent_request_logs(10_000);
-    runtime_stats_payload(&logs)
+    let rtk =
+        rtk_command_output_accounting(state.managed_rtk_root.as_deref().map(|root| root.as_path()));
+    runtime_stats_payload_with_rtk(&logs, rtk)
+}
+
+/// Independent command-output (RTK) accounting projection (PR-C4C).
+///
+/// Availability is explicit, never an indistinguishable zero:
+/// - `Ok(Some(...))` — a verified managed root produced `entries` claims;
+///   `entries == 0` means verified-but-no-usage (honest zero).
+/// - `Ok(None)` — no managed RTK root is configured (unavailable).
+/// - `Err(reason)` — the receipt set is unreadable/invalid and fails closed:
+///   no claim is ever made on partial evidence.
+///
+/// Claims are source-digest bound to a single verified receipt invocation
+/// (`verified_usage_claim_digest`), so a legitimate repeated command is its
+/// own distinct claim while a replayed/copied receipt collapses to a
+/// duplicate and is rejected by the exclusive ledger.
+fn rtk_command_output_accounting(
+    root: Option<&StdPath>,
+) -> Result<Option<RtkCommandOutputAccounting>, String> {
+    let Some(root) = root else {
+        return Ok(None);
+    };
+    let records = verified_managed_rtk_usage(root).map_err(|error| format!("{error:#}"))?;
+    let mut ledger = SavingsLedger::new();
+    for record in records {
+        let source_digest = verified_usage_claim_digest(&record);
+        let entry = command_output_accounting_entry(
+            &record.evidence,
+            &source_digest,
+            record.recorded_at_ms,
+        )
+        .map_err(|error| format!("{error:#}"))?;
+        ledger
+            .record(entry)
+            .map_err(|error| format!("duplicate or conflicting RTK claim rejected: {error}"))?;
+    }
+    let entries = ledger.total_entries();
+    let totals = ledger.bucket_totals(dtoken_types::AccountingBucket::CommandOutput);
+    Ok(Some(RtkCommandOutputAccounting {
+        ledger,
+        entries,
+        input_bytes: totals.input_bytes,
+        output_bytes: totals.output_bytes,
+    }))
+}
+
+/// The independent command-output (RTK) accounting projection.
+#[derive(Debug, Clone)]
+struct RtkCommandOutputAccounting {
+    ledger: SavingsLedger,
+    entries: usize,
+    input_bytes: u64,
+    output_bytes: u64,
+}
+
+fn accounting_note(accounting: &RtkCommandOutputAccounting) -> String {
+    format!(
+        "RTK command-output savings derived from {} verified receipts; prompt, response, and command bodies are not stored.",
+        accounting.entries
+    )
+}
+
+fn runtime_stats_payload_with_rtk(
+    logs: &[RequestLog],
+    rtk: Result<Option<RtkCommandOutputAccounting>, String>,
+) -> Value {
+    let layered = match &rtk {
+        Ok(Some(accounting)) => LayeredSavingsReport {
+            rtk_savings: accounting.ledger.command_output_savings(),
+            headroom_savings: runtime_headroom_savings(logs),
+            end_to_end_savings: runtime_headroom_savings(logs),
+            attribution_confidence: if logs.is_empty() {
+                "empty_runtime".to_string()
+            } else {
+                "runtime_estimated".to_string()
+            },
+            note: accounting_note(accounting),
+        },
+        Ok(None) => LayeredSavingsReport {
+            rtk_savings: 0,
+            headroom_savings: runtime_headroom_savings(logs),
+            end_to_end_savings: runtime_headroom_savings(logs),
+            attribution_confidence: if logs.is_empty() {
+                "empty_runtime".to_string()
+            } else {
+                "runtime_estimated".to_string()
+            },
+            note: "RTK command-output dimension unavailable: no verified managed RTK root is configured."
+                .to_string(),
+        },
+        Err(reason) => LayeredSavingsReport {
+            rtk_savings: 0,
+            headroom_savings: runtime_headroom_savings(logs),
+            end_to_end_savings: runtime_headroom_savings(logs),
+            attribution_confidence: "rtk_unavailable".to_string(),
+            note: format!("RTK accounting failed closed: {reason}"),
+        },
+    };
+    let rtk_ledger = rtk
+        .as_ref()
+        .ok()
+        .and_then(|option| option.as_ref())
+        .map(|accounting| &accounting.ledger);
+    let mut payload = runtime_stats_payload(logs, rtk_ledger);
+    if let Some(object) = payload.as_object_mut() {
+        object.insert("layered".to_string(), json!(layered));
+        object.insert(
+            "rtk".to_string(),
+            json!({
+                "source": "dtoken-managed-rtk",
+                "available": rtk.as_ref().is_ok_and(|option| option.is_some()),
+                "entries": rtk.as_ref().ok().and_then(|option| option.as_ref()).map(|a| a.entries).unwrap_or(0),
+                "input_bytes": rtk.as_ref().ok().and_then(|option| option.as_ref()).map(|a| a.input_bytes).unwrap_or(0),
+                "output_bytes": rtk.as_ref().ok().and_then(|option| option.as_ref()).map(|a| a.output_bytes).unwrap_or(0),
+                "saved_bytes": rtk.as_ref().ok().and_then(|option| option.as_ref()).map(|a| a.ledger.command_output_savings()).unwrap_or(0),
+                "reason": match &rtk {
+                    Ok(Some(_)) => "verified_usage_receipts",
+                    Ok(None) => "managed_rtk_not_configured",
+                    Err(_) => "rtk_evidence_invalid_failed_closed",
+                },
+                "privacy": "Metadata-only aggregated byte accounting; no command argv or output is retained."
+            }),
+        );
+    }
+    payload
+}
+
+fn runtime_headroom_savings(logs: &[RequestLog]) -> u64 {
+    logs.iter()
+        .filter_map(|log| log.tokens_saved)
+        .map(|value| value as u64)
+        .sum()
 }
 
 fn runtime_stats_history_payload(logs: &[RequestLog]) -> Value {
@@ -10230,7 +11087,7 @@ fn runtime_stats_history_for_state(state: &AppState) -> Value {
 }
 
 fn runtime_metrics_text(logs: &[RequestLog]) -> String {
-    let stats = runtime_stats_payload(logs);
+    let stats = runtime_stats_payload(logs, None);
     runtime_metrics_text_from_stats(&stats)
 }
 
@@ -10433,20 +11290,32 @@ fn route_overhead_payload(logs: &[RequestLog]) -> Value {
     })
 }
 
+/// Public redacted runtime export summary (registry `core-api.export-redaction`).
+/// Never includes raw prompts/responses, secrets, absolute config paths, or
+/// full command output.
+pub fn export_runtime_summary(state: &AppState) -> Value {
+    runtime_export_json_payload(state)
+}
+
 fn runtime_export_json_payload(state: &AppState) -> Value {
     let logs = state.recent_request_logs(10_000);
+    let optimization_receipts: Vec<OptimizationReceipt> = logs
+        .iter()
+        .map(OptimizationReceipt::from_request_log)
+        .collect();
     json!({
         "source": "dtoken-owned-runtime",
         "runtime_kind": "headroom-derived",
         "redacted": true,
         "raw_available": false,
         "privacy": "No raw prompt, raw response, API key, auth header, cookie, CCR body, or full command output is included.",
-        "stats": runtime_stats_payload(&logs),
+        "stats": runtime_stats_for_state(state),
         "history": runtime_stats_history_payload(&logs),
         "metrics": runtime_metrics_payload(&logs),
         "events": state.recent_events(10_000),
         "route_decisions": state.recent_route_decisions(10_000),
         "request_logs": logs,
+        "optimization_receipts": optimization_receipts,
         "active_config": active_config_payload(state),
         "ccr": runtime_cache_summary_for_state(state),
         "memory": memory_summary_for_state(state),
@@ -10467,7 +11336,7 @@ fn runtime_export_csv_payload(state: &AppState) -> String {
         "kind,request_id,timestamp_ms,agent,route_id,provider_id,input_protocol,chain_mode,tokens_before,tokens_after,tokens_saved,latency_ms,error".to_string(),
     ];
     rows.push(format!(
-        "config_status,,0,d-token,{},{},,,0,0,0,0,source={};loaded={};fallback_disabled={};path={}",
+        "config_status,,0,d-token,{},{},,,0,0,0,0,source={};loaded={};fallback_disabled={}",
         csv_escape(
             state
                 .config
@@ -10487,7 +11356,6 @@ fn runtime_export_csv_payload(state: &AppState) -> String {
         csv_escape(&state.config_status.source),
         state.config_status.loaded,
         state.config_status.fallback_disabled,
-        csv_escape(state.config_status.path.clone().unwrap_or_default()),
     ));
     for log in state.recent_request_logs(10_000) {
         rows.push(format!(
@@ -10794,7 +11662,7 @@ pub fn dashboard_payload_for_config(config: &DtokenConfig) -> Value {
     let state = AppState::new(config.clone());
     with_active_config(
         build_dashboard_payload(DashboardPayloadInput {
-            stats: runtime_stats_payload(&[]),
+            stats: runtime_stats_payload(&[], None),
             history: runtime_stats_history_payload(&[]),
             metrics: runtime_metrics_payload(&[]),
             cache_summary: runtime_cache_summary_payload(),
@@ -10814,9 +11682,15 @@ pub fn dashboard_payload_for_state(state: &AppState) -> Value {
     let route_decisions = state.recent_route_decisions(20);
     let request_logs = state.recent_request_logs(20);
     let all_logs = state.recent_request_logs(10_000);
-    with_cached_account_quota(with_active_config(
+    let optimization_receipts: Vec<OptimizationReceipt> = request_logs
+        .iter()
+        .map(OptimizationReceipt::from_request_log)
+        .collect();
+    let rtk =
+        rtk_command_output_accounting(state.managed_rtk_root.as_deref().map(|root| root.as_path()));
+    let mut payload = with_cached_account_quota(with_active_config(
         build_dashboard_payload(DashboardPayloadInput {
-            stats: runtime_stats_payload(&all_logs),
+            stats: runtime_stats_payload_with_rtk(&all_logs, rtk),
             history: runtime_stats_history_payload(&all_logs),
             metrics: runtime_metrics_payload(&all_logs),
             cache_summary: runtime_cache_summary_for_state(state),
@@ -10829,7 +11703,14 @@ pub fn dashboard_payload_for_state(state: &AppState) -> Value {
             memory: memory_summary_for_state(state),
         }),
         active_config_payload(state),
-    ))
+    ));
+    if let Some(object) = payload.as_object_mut() {
+        object.insert(
+            "optimization_receipts".to_string(),
+            json!(optimization_receipts),
+        );
+    }
+    payload
 }
 
 pub fn dashboard_summary_for_state(state: &AppState) -> Value {
@@ -11144,6 +12025,8 @@ async fn openai_chat_completions(
             request.model.as_deref(),
             Protocol::OpenAi,
             Protocol::OpenAi,
+            header_evidence(&headers, request.model.as_deref()).project_id,
+            header_evidence(&headers, request.model.as_deref()).session_id,
         ) {
             Ok(scope) => scope,
             Err(_) => {
@@ -11162,23 +12045,61 @@ async fn openai_chat_completions(
                 return (status, Json(response)).into_response();
             }
         };
-        let inventory_diagnostics = compression_inventory_diagnostics(
+        // PR-C1B: authorized memory is retrieved exactly once and enters the
+        // body BEFORE the transform plan, so the canonical IR (and the final
+        // validated envelope) includes it. Memory blocks stay frozen
+        // (`cache_control: ephemeral`) and never enter stored artifacts.
+        let memory_blocks = request_scope_memory_access(&scope)
+            .as_ref()
+            .map(|access| memory_context_blocks(&authorized_memory_records(&state, access)))
+            .unwrap_or_default();
+        let memory_block_count = memory_blocks.len();
+        let ingress_body = if memory_blocks.is_empty() {
+            original_body
+        } else {
+            inject_memory_into_body(original_body, &Protocol::OpenAi, &memory_blocks)
+        };
+        // PR-C1A: lower the request into the canonical IR exactly once and
+        // share it between the shadow inventory and the production plan.
+        let ir = dtoken_compress::lower_hybrid_context(
             &optimization_context.compression_context,
-            &original_body,
+            &ingress_body,
         );
-        let baseline_body = original_body.clone();
+        let inventory_diagnostics = compression_inventory_diagnostics_with_ir(
+            &optimization_context.compression_context,
+            ir.as_ref(),
+            &ingress_body,
+        );
+        let baseline_body = ingress_body.clone();
         let cache_evidence = configured_provider_cache_evidence(&state, &scope);
-        let mut compression = compress_for_route_with_frozen(
-            Some(&optimization_context),
+        // PR-C6A: production scheduler gate — admission (pipeline capacity,
+        // byte permit, request deadline, cancel) happens BEFORE candidate
+        // work; a refused request is preserved as its exact baseline without
+        // running a plan.
+        let gated = scheduler::run_gated_compression(
+            &state,
+            scope.clone(),
+            Some(optimization_context.clone()),
             decision.compression_policy.clone(),
-            original_body,
-            cache_evidence.as_ref(),
+            ingress_body,
+            cache_evidence.clone(),
             None,
-        );
+            ir.clone(),
+            scheduler::request_deadline(),
+        )
+        .await;
+        let preserve_reason = gated.preserve_reason;
+        let mut compression = gated.summary;
+        // The admission stays alive through the send commit (byte permit +
+        // capacity seat), then releases on handler return.
+        let _scheduler_admission = gated._admission;
+        let _request_cancel = gated.cancel;
+        let scheduler_deadline = gated.deadline;
         let attribution = request_attribution_from_scope(&scope);
         let mut request_log = build_request_log(
             request_id,
             &decision,
+            request.model.clone(),
             request.model.clone(),
             Protocol::OpenAi,
             &compression,
@@ -11199,6 +12120,21 @@ async fn openai_chat_completions(
                 inventory_diagnostics.clone(),
             );
         }
+        if memory_block_count > 0 {
+            if let Some(metadata) = event.metadata.as_object_mut() {
+                metadata.insert(
+                    "memory_injection".to_string(),
+                    json!({
+                        "injected": true,
+                        "block_count": memory_block_count,
+                        "protocol": "open_ai",
+                        "timing": "pre_plan",
+                        "raw_available": false,
+                        "privacy": "typed memory summaries only; raw prompt, response, source and secrets are never persisted"
+                    }),
+                );
+            }
+        }
         let prepared_ccr =
             match state.prepare_ccr_for_request(&decision, &request_log, &ccr_original_body) {
                 Ok(prepared) => prepared,
@@ -11208,6 +12144,7 @@ async fn openai_chat_completions(
                     request_log = build_request_log(
                         request_id,
                         &decision,
+                        request.model.clone(),
                         request.model.clone(),
                         Protocol::OpenAi,
                         &compression,
@@ -11233,39 +12170,48 @@ async fn openai_chat_completions(
                         .expect("baseline request does not require CCR storage")
                 }
             };
-        let pipeline_payload = match prepare_json_pipeline_payload(
-            scope.clone(),
-            &baseline_body,
-            &compression.body,
-            &request_log.transforms_applied,
-            &prepared_ccr,
-        ) {
-            Ok(payload) => payload,
-            Err(_) => PreparedPipelinePayload {
-                ready: PipelineInput::new(
-                    scope.clone(),
-                    serde_json::to_vec(&baseline_body).unwrap_or_default(),
-                    MAX_REQUEST_BODY_BYTES,
-                )
-                .map(|input| {
-                    input
-                        .prepare()
-                        .into_baseline_ready("pipeline_input_invalid")
-                })
-                .unwrap_or_else(|_| {
-                    PipelineInput::new(scope.clone(), b"{}".to_vec(), MAX_REQUEST_BODY_BYTES)
-                        .expect("static JSON baseline is valid")
-                        .prepare()
-                        .into_baseline_ready("pipeline_input_invalid")
-                }),
-                fallback_reason: Some("pipeline_input_invalid"),
-            },
+        let pipeline_payload = if let Some(reason) = preserve_reason {
+            // PR-C6A preserve path: the exact baseline is sealed with the
+            // evidence-bearing reason code; no candidate plan ran.
+            scheduler::preserved_pipeline_payload(scope.clone(), &baseline_body, reason)
+        } else {
+            match prepare_json_pipeline_payload(
+                scope.clone(),
+                &decision,
+                &baseline_body,
+                &compression.body,
+                &request_log.transforms_applied,
+                &prepared_ccr,
+            ) {
+                Ok(payload) => payload,
+                Err(_) => PreparedPipelinePayload {
+                    ready: PipelineInput::new(
+                        scope.clone(),
+                        serde_json::to_vec(&baseline_body).unwrap_or_default(),
+                        MAX_REQUEST_BODY_BYTES,
+                    )
+                    .map(|input| {
+                        input
+                            .prepare()
+                            .into_baseline_ready("pipeline_input_invalid")
+                    })
+                    .unwrap_or_else(|_| {
+                        PipelineInput::new(scope.clone(), b"{}".to_vec(), MAX_REQUEST_BODY_BYTES)
+                            .expect("static JSON baseline is valid")
+                            .prepare()
+                            .into_baseline_ready("pipeline_input_invalid")
+                    }),
+                    fallback_reason: Some("pipeline_input_invalid"),
+                    validation: None,
+                },
+            }
         };
         if let Some(reason) = pipeline_payload.fallback_reason {
             compression = compress_for_route(None, CompressionPolicy::Off, baseline_body.clone());
             request_log = build_request_log(
                 request_id,
                 &decision,
+                request.model.clone(),
                 request.model.clone(),
                 Protocol::OpenAi,
                 &compression,
@@ -11285,32 +12231,11 @@ async fn openai_chat_completions(
                 metadata.insert("pipeline_fallback_reason".to_string(), json!(reason));
             }
         }
-        let mut upstream_body = serde_json::from_slice::<Value>(pipeline_payload.ready.body())
+        // PR-C1B: memory entered the body BEFORE the transform plan (above),
+        // so the sealed pipeline payload already carries it exactly once. The
+        // wire body is the validated envelope: no post-plan mutation.
+        let upstream_body = serde_json::from_slice::<Value>(pipeline_payload.ready.body())
             .unwrap_or_else(|_| baseline_body.clone());
-        // Authorized memory is injected into the final wire body after
-        // compression: memory blocks never enter the compression pipeline,
-        // never enter stored artifacts, and never distort token accounting.
-        let memory_blocks = request_scope_memory_access(&scope)
-            .as_ref()
-            .map(|access| memory_context_blocks(&authorized_memory_records(&state, access)))
-            .unwrap_or_default();
-        if !memory_blocks.is_empty() {
-            let injected =
-                inject_memory_into_body(upstream_body.clone(), &Protocol::OpenAi, &memory_blocks);
-            upstream_body = injected;
-            if let Some(metadata) = event.metadata.as_object_mut() {
-                metadata.insert(
-                    "memory_injection".to_string(),
-                    json!({
-                        "injected": true,
-                        "block_count": memory_blocks.len(),
-                        "protocol": "open_ai",
-                        "raw_available": false,
-                        "privacy": "typed memory summaries only; raw prompt, response, source and secrets are never persisted"
-                    }),
-                );
-            }
-        }
         if let Some(metadata) = event.metadata.as_object_mut() {
             metadata.insert(
                 "pipeline_payload_variant".to_string(),
@@ -11331,6 +12256,17 @@ async fn openai_chat_completions(
             "elapsed_us": compression.elapsed_us,
             "transforms_applied": compression.transforms_applied,
         });
+        if scheduler::scheduler_deadline_expired(scheduler_deadline) {
+            return scheduler::scheduler_deadline_terminate(
+                &state,
+                request_id,
+                &decision,
+                request_log,
+                event,
+                &prepared_ccr,
+                pipeline_payload,
+            );
+        }
         if request.stream.unwrap_or(false) {
             let quota_account_ref = opaque_codex_account_ref(&headers);
             let upstream = forward_openai_chat_stream(
@@ -11344,6 +12280,30 @@ async fn openai_chat_completions(
                 Ok((status_code, response_headers, body, mut quota_metadata)) => {
                     attach_quota_account_ref(&mut quota_metadata, quota_account_ref.as_deref());
                     request_log.quota_metadata = quota_metadata;
+                    // Transport-observable commit: the stream request was
+                    // accepted by reqwest/hyper; mint the terminal receipt
+                    // from the sealed sendable unit (T-C0B).
+                    match mint_transport_send_commit(
+                        pipeline_payload.ready,
+                        pipeline_payload.validation.as_ref(),
+                        dtoken_event_ledger::now_ms(),
+                        &mut request_log,
+                        &mut event,
+                    ) {
+                        Ok(_send_commit) => _send_commit,
+                        Err(_) => {
+                            return (
+                                StatusCode::INTERNAL_SERVER_ERROR,
+                                Json(json!({
+                                    "error": {
+                                        "type": "validated_body_mismatch",
+                                        "message": "send body digest differs from the validated envelope; send aborted"
+                                    }
+                                })),
+                            )
+                                .into_response();
+                        }
+                    };
                     attach_output_shaping_evidence(
                         &mut request_log,
                         &mut event,
@@ -11405,6 +12365,37 @@ async fn openai_chat_completions(
                         .into_response();
                 }
                 Err(upstream) => {
+                    // Mint the terminal transport receipt from the sealed
+                    // sendable unit (T-C0B). A request the transport never
+                    // accepted is honest prior to commit (committed_at = 0);
+                    // an after-commit failure (timeout / response started /
+                    // non-success status) proves the body crossed the wire and
+                    // must be stamped committed, matching the non-stream path.
+                    match mint_transport_send_commit(
+                        pipeline_payload.ready,
+                        pipeline_payload.validation.as_ref(),
+                        if transport_not_committed(&upstream) {
+                            0
+                        } else {
+                            dtoken_event_ledger::now_ms()
+                        },
+                        &mut request_log,
+                        &mut event,
+                    ) {
+                        Ok(_send_commit) => _send_commit,
+                        Err(_) => {
+                            return (
+                                StatusCode::INTERNAL_SERVER_ERROR,
+                                Json(json!({
+                                    "error": {
+                                        "type": "validated_body_mismatch",
+                                        "message": "send body digest differs from the validated envelope; send aborted"
+                                    }
+                                })),
+                            )
+                                .into_response();
+                        }
+                    };
                     mark_upstream_outcome(&upstream, &mut request_log, &mut event);
                     let response_status = upstream_response_status(&upstream);
                     let response = json!({
@@ -11451,12 +12442,50 @@ async fn openai_chat_completions(
                 }
             }
         }
+        if scheduler::scheduler_deadline_expired(scheduler_deadline) {
+            return scheduler::scheduler_deadline_terminate(
+                &state,
+                request_id,
+                &decision,
+                request_log,
+                event,
+                &prepared_ccr,
+                pipeline_payload,
+            );
+        }
         let mut upstream =
             forward_openai_chat(&state.http_client, provider, upstream_body, Some(&headers)).await;
         attach_quota_account_ref(
             &mut upstream.quota_metadata,
             opaque_codex_account_ref(&headers).as_deref(),
         );
+        // Transport-observable commit point: reqwest accepted (or rejected
+        // pre-commit) the exact sealed body; mint the terminal receipt.
+        match mint_transport_send_commit(
+            pipeline_payload.ready,
+            pipeline_payload.validation.as_ref(),
+            if transport_not_committed(&upstream) {
+                0
+            } else {
+                dtoken_event_ledger::now_ms()
+            },
+            &mut request_log,
+            &mut event,
+        ) {
+            Ok(_send_commit) => _send_commit,
+            Err(_) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({
+                        "error": {
+                            "type": "validated_body_mismatch",
+                            "message": "send body digest differs from the validated envelope; send aborted"
+                        }
+                    })),
+                )
+                    .into_response();
+            }
+        };
         let output_shaping = if upstream.error_category.is_some() {
             output_shaping_passthrough_evidence(
                 "error_response_passthrough",
@@ -11573,12 +12602,13 @@ async fn openai_responses(
         let request_id = Uuid::new_v4();
         let decision = build_configured_route_decision(request_id, route, provider);
         if provider.wire_api == dtoken_types::ProviderWireApi::OpenAiResponses {
-            // Native Responses passthrough: forward the inbound Responses body
-            // verbatim to the provider's /v1/responses wire endpoint, bypassing
-            // the Responses -> Chat semantic bridge and all compression
-            // transforms. The route decision, request log and ledger event are
-            // still recorded with CompressionPolicy::Off over the original
-            // request so Dashboard/Doctor/Event Ledger stay consistent.
+            // Native Responses passthrough (PR-12/C1A/C1C): forward the inbound
+            // Responses body to the provider's /v1/responses wire endpoint with
+            // no Responses -> Chat conversion. The request now flows through the
+            // same resolved optimization context, pre-plan memory (fail-closed
+            // for the Responses shape), lower-once IR and sealed pipeline
+            // payload as every other surface; the success response body and the
+            // SSE bytes are untouched.
             let scope = match resolve_configured_request_scope(
                 &state.config,
                 route,
@@ -11587,6 +12617,8 @@ async fn openai_responses(
                 body.get("model").and_then(Value::as_str),
                 Protocol::OpenAi,
                 Protocol::OpenAi,
+                header_evidence(&headers, body.get("model").and_then(Value::as_str)).project_id,
+                header_evidence(&headers, body.get("model").and_then(Value::as_str)).session_id,
             ) {
                 Ok(scope) => scope,
                 Err(_) => {
@@ -11605,14 +12637,87 @@ async fn openai_responses(
                     return (status, Json(response)).into_response();
                 }
             };
-            let compression = compress_for_route(None, CompressionPolicy::Off, body.clone());
+            let optimization_context = match resolve_optimization_context(
+                &decision,
+                route,
+                provider,
+                RouteAdapterKind::OpenAiResponsesPassthrough,
+                &body,
+                &body,
+            ) {
+                Ok(context) => context,
+                Err(_) => {
+                    record_route_selection_error(
+                        &state,
+                        request_id,
+                        "openai_responses",
+                        RouteSelectionError::InvalidOptimizationContext,
+                    );
+                    let (status, response) = route_selection_error_response(
+                        request_id,
+                        "openai_responses",
+                        RouteSelectionError::InvalidOptimizationContext,
+                        &state.config_status,
+                    );
+                    return (status, Json(response)).into_response();
+                }
+            };
+            // PR-C1B: authorized memory is retrieved exactly once and enters
+            // the body BEFORE the transform plan. The native Responses wire
+            // shape (`input` items, no Chat `messages` array) does not support
+            // the Chat-style injector, so injection fails closed: the body is
+            // never mutated and no synthetic Chat items are fabricated.
+            let memory_blocks = request_scope_memory_access(&scope)
+                .as_ref()
+                .map(|access| memory_context_blocks(&authorized_memory_records(&state, access)))
+                .unwrap_or_default();
+            let memory_block_count = memory_blocks.len();
+            let requested_model = body
+                .get("model")
+                .and_then(Value::as_str)
+                .map(ToString::to_string);
+            let stream_requested = body.get("stream").and_then(Value::as_bool).unwrap_or(false);
+            let ingress_body = inject_memory_into_body(body, &Protocol::OpenAi, &memory_blocks);
+            // PR-C1A: lower the request into the canonical IR exactly once and
+            // share it between the shadow inventory and the production plan.
+            let ir = dtoken_compress::lower_hybrid_context(
+                &optimization_context.compression_context,
+                &ingress_body,
+            );
+            let inventory_diagnostics = compression_inventory_diagnostics_with_ir(
+                &optimization_context.compression_context,
+                ir.as_ref(),
+                &ingress_body,
+            );
+            let baseline_body = ingress_body.clone();
+            let cache_evidence = configured_provider_cache_evidence(&state, &scope);
+            // PR-C6A: production scheduler gate — admission (pipeline
+            // capacity, byte permit, request deadline, cancel) happens
+            // BEFORE candidate work; a refused request is preserved as its
+            // exact baseline without running a plan.
+            let gated = scheduler::run_gated_compression(
+                &state,
+                scope.clone(),
+                Some(optimization_context.clone()),
+                decision.compression_policy.clone(),
+                ingress_body,
+                cache_evidence.clone(),
+                None,
+                ir.clone(),
+                scheduler::request_deadline(),
+            )
+            .await;
+            let preserve_reason = gated.preserve_reason;
+            let mut compression = gated.summary;
+            let _scheduler_admission = gated._admission;
+            let _request_cancel = gated.cancel;
+            let scheduler_deadline = gated.deadline;
             let attribution = request_attribution_from_scope(&scope);
             let mut request_log = build_request_log(
                 request_id,
                 &decision,
-                body.get("model")
-                    .and_then(Value::as_str)
-                    .map(ToString::to_string),
+                requested_model.clone(),
+                requested_model.clone(),
                 Protocol::OpenAi,
                 &compression,
                 &attribution,
@@ -11628,35 +12733,190 @@ async fn openai_responses(
             attach_request_scope(&mut event, &scope);
             if let Some(metadata) = event.metadata.as_object_mut() {
                 metadata.insert(
+                    "adapter".to_string(),
+                    json!(optimization_context.adapter.adapter_label()),
+                );
+                metadata.insert(
                     "native_responses_passthrough".to_string(),
                     json!({
                         "conversion": "none",
-                        "compression": "off",
-                        "original_request_preserved": true,
+                        "compression": compression_policy_as_str(&decision.compression_policy),
+                        "original_request_preserved": compression.transforms_applied.is_empty(),
                         "raw_available": false,
                         "privacy": "native Responses body is forwarded verbatim and never stored"
                     }),
                 );
+                metadata.insert(
+                    "responses_shadow_inventory".to_string(),
+                    inventory_diagnostics.clone(),
+                );
+            }
+            if memory_block_count > 0 {
+                // Fail-closed: the Responses shape cannot carry Chat-style
+                // memory blocks, so nothing was injected; the ledger records
+                // the honest outcome instead of claiming injection.
+                if let Some(metadata) = event.metadata.as_object_mut() {
+                    metadata.insert(
+                        "memory_injection".to_string(),
+                        json!({
+                            "injected": false,
+                            "block_count": memory_block_count,
+                            "protocol": "open_ai",
+                            "timing": "pre_plan",
+                            "reason": "responses_shape_unsupported",
+                            "raw_available": false,
+                            "privacy": "typed memory summaries only; raw prompt, response, source and secrets are never persisted"
+                        }),
+                    );
+                }
             }
             let prepared_ccr =
                 match state.prepare_ccr_for_request(&decision, &request_log, &ccr_original_body) {
                     Ok(prepared) => prepared,
                     Err(_) => {
-                        let (status, response) = route_selection_error_response(
+                        // CCR baseline fallback: the store is unavailable, so
+                        // the summary is demoted to an honest baseline (body
+                        // untouched, zero transforms) and the pipeline still
+                        // seals the envelope before the send.
+                        compression =
+                            compress_for_route(None, CompressionPolicy::Off, baseline_body.clone());
+                        request_log = build_request_log(
                             request_id,
-                            "openai_responses",
-                            RouteSelectionError::InvalidOptimizationContext,
-                            &state.config_status,
+                            &decision,
+                            requested_model.clone(),
+                            requested_model.clone(),
+                            Protocol::OpenAi,
+                            &compression,
+                            &attribution,
                         );
-                        return (status, Json(response)).into_response();
+                        event = build_ledger_event(
+                            request_id,
+                            &decision,
+                            Protocol::OpenAi,
+                            Protocol::OpenAi,
+                            &compression,
+                            &attribution,
+                        );
+                        attach_request_scope(&mut event, &scope);
+                        if let Some(metadata) = event.metadata.as_object_mut() {
+                            metadata.insert(
+                                "responses_shadow_inventory".to_string(),
+                                inventory_diagnostics.clone(),
+                            );
+                            metadata.insert(
+                                "ccr_pre_send".to_string(),
+                                json!("baseline_fallback_store_unavailable"),
+                            );
+                        }
+                        state
+                            .prepare_ccr_for_request(&decision, &request_log, &ccr_original_body)
+                            .expect("baseline request does not require CCR storage")
                     }
                 };
-            if body.get("stream").and_then(Value::as_bool).unwrap_or(false) {
+            // PR-C1C: the request is sealed through the same pipeline payload
+            // envelope as every other surface, then sent from the validated
+            // envelope body (never a raw post-plan mutation).
+            let pipeline_payload = if let Some(reason) = preserve_reason {
+                // PR-C6A preserve path: the exact baseline is sealed with the
+                // evidence-bearing reason code; no candidate plan ran.
+                scheduler::preserved_pipeline_payload(scope.clone(), &baseline_body, reason)
+            } else {
+                match prepare_json_pipeline_payload(
+                    scope.clone(),
+                    &decision,
+                    &baseline_body,
+                    &compression.body,
+                    &request_log.transforms_applied,
+                    &prepared_ccr,
+                ) {
+                    Ok(payload) => payload,
+                    Err(_) => PreparedPipelinePayload {
+                        ready: PipelineInput::new(
+                            scope.clone(),
+                            serde_json::to_vec(&baseline_body).unwrap_or_default(),
+                            MAX_REQUEST_BODY_BYTES,
+                        )
+                        .map(|input| {
+                            input
+                                .prepare()
+                                .into_baseline_ready("pipeline_input_invalid")
+                        })
+                        .unwrap_or_else(|_| {
+                            PipelineInput::new(
+                                scope.clone(),
+                                b"{}".to_vec(),
+                                MAX_REQUEST_BODY_BYTES,
+                            )
+                            .expect("static JSON baseline is valid")
+                            .prepare()
+                            .into_baseline_ready("pipeline_input_invalid")
+                        }),
+                        fallback_reason: Some("pipeline_input_invalid"),
+                        validation: None,
+                    },
+                }
+            };
+            if let Some(reason) = pipeline_payload.fallback_reason {
+                compression =
+                    compress_for_route(None, CompressionPolicy::Off, baseline_body.clone());
+                request_log = build_request_log(
+                    request_id,
+                    &decision,
+                    requested_model.clone(),
+                    requested_model.clone(),
+                    Protocol::OpenAi,
+                    &compression,
+                    &attribution,
+                );
+                event = build_ledger_event(
+                    request_id,
+                    &decision,
+                    Protocol::OpenAi,
+                    Protocol::OpenAi,
+                    &compression,
+                    &attribution,
+                );
+                attach_request_scope(&mut event, &scope);
+                if let Some(metadata) = event.metadata.as_object_mut() {
+                    metadata.insert(
+                        "responses_shadow_inventory".to_string(),
+                        inventory_diagnostics,
+                    );
+                    metadata.insert("pipeline_fallback_reason".to_string(), json!(reason));
+                }
+            }
+            // PR-C1C: the wire body is the validated envelope: no post-plan
+            // mutation. The success response body and SSE bytes are untouched.
+            let upstream_body = serde_json::from_slice::<Value>(pipeline_payload.ready.body())
+                .unwrap_or_else(|_| baseline_body.clone());
+            if let Some(metadata) = event.metadata.as_object_mut() {
+                metadata.insert(
+                    "pipeline_payload_variant".to_string(),
+                    json!(pipeline_payload.ready.variant()),
+                );
+                metadata.insert(
+                    "pipeline_reason_code".to_string(),
+                    json!(pipeline_payload.ready.reason_code()),
+                );
+            }
+            drop(ccr_original_body);
+            if stream_requested {
+                if scheduler::scheduler_deadline_expired(scheduler_deadline) {
+                    return scheduler::scheduler_deadline_terminate(
+                        &state,
+                        request_id,
+                        &decision,
+                        request_log,
+                        event,
+                        &prepared_ccr,
+                        pipeline_payload,
+                    );
+                }
                 let quota_account_ref = opaque_codex_account_ref(&headers);
                 let upstream = forward_openai_responses_stream(
                     &state.http_client,
                     provider,
-                    body,
+                    upstream_body.clone(),
                     Some(&headers),
                 )
                 .await;
@@ -11664,6 +12924,30 @@ async fn openai_responses(
                     Ok((status_code, response_headers, stream_body, mut quota_metadata)) => {
                         attach_quota_account_ref(&mut quota_metadata, quota_account_ref.as_deref());
                         request_log.quota_metadata = quota_metadata;
+                        // Transport-observable commit: the native Responses
+                        // stream was accepted; mint the terminal receipt from
+                        // the sealed sendable unit (T-C0B).
+                        match mint_transport_send_commit(
+                            pipeline_payload.ready,
+                            pipeline_payload.validation.as_ref(),
+                            dtoken_event_ledger::now_ms(),
+                            &mut request_log,
+                            &mut event,
+                        ) {
+                            Ok(_send_commit) => _send_commit,
+                            Err(_) => {
+                                return (
+                                    StatusCode::INTERNAL_SERVER_ERROR,
+                                    Json(json!({
+                                        "error": {
+                                            "type": "validated_body_mismatch",
+                                            "message": "send body digest differs from the validated envelope; send aborted"
+                                        }
+                                    })),
+                                )
+                                    .into_response();
+                            }
+                        };
                         event.saved_tokens = Some(0);
                         if let Some(metadata) = event.metadata.as_object_mut() {
                             metadata.insert("stream".to_string(), json!(true));
@@ -11724,6 +13008,35 @@ async fn openai_responses(
                             .into_response();
                     }
                     Err(upstream) => {
+                        // T-C0B: after-commit failures (timeout / response
+                        // started / non-success status) crossed the wire and
+                        // are stamped committed; only transport-not-accepted
+                        // failures stay at committed_at = 0.
+                        match mint_transport_send_commit(
+                            pipeline_payload.ready,
+                            pipeline_payload.validation.as_ref(),
+                            if transport_not_committed(&upstream) {
+                                0
+                            } else {
+                                dtoken_event_ledger::now_ms()
+                            },
+                            &mut request_log,
+                            &mut event,
+                        ) {
+                            Ok(_send_commit) => _send_commit,
+                            Err(_) => {
+                                return (
+                                    StatusCode::INTERNAL_SERVER_ERROR,
+                                    Json(json!({
+                                        "error": {
+                                            "type": "validated_body_mismatch",
+                                            "message": "send body digest differs from the validated envelope; send aborted"
+                                        }
+                                    })),
+                                )
+                                    .into_response();
+                            }
+                        };
                         mark_upstream_outcome(&upstream, &mut request_log, &mut event);
                         let response_status = upstream_response_status(&upstream);
                         let response = json!({
@@ -11769,12 +13082,55 @@ async fn openai_responses(
                     }
                 }
             }
-            let mut upstream =
-                forward_openai_responses(&state.http_client, provider, body, Some(&headers)).await;
+            if scheduler::scheduler_deadline_expired(scheduler_deadline) {
+                return scheduler::scheduler_deadline_terminate(
+                    &state,
+                    request_id,
+                    &decision,
+                    request_log,
+                    event,
+                    &prepared_ccr,
+                    pipeline_payload,
+                );
+            }
+            let mut upstream = forward_openai_responses(
+                &state.http_client,
+                provider,
+                upstream_body.clone(),
+                Some(&headers),
+            )
+            .await;
             attach_quota_account_ref(
                 &mut upstream.quota_metadata,
                 opaque_codex_account_ref(&headers).as_deref(),
             );
+            // Transport-observable commit point: reqwest accepted (or
+            // rejected pre-commit) the exact sealed body.
+            match mint_transport_send_commit(
+                pipeline_payload.ready,
+                pipeline_payload.validation.as_ref(),
+                if transport_not_committed(&upstream) {
+                    0
+                } else {
+                    dtoken_event_ledger::now_ms()
+                },
+                &mut request_log,
+                &mut event,
+            ) {
+                Ok(_send_commit) => _send_commit,
+                Err(_) => {
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(json!({
+                            "error": {
+                                "type": "validated_body_mismatch",
+                                "message": "send body digest differs from the validated envelope; send aborted"
+                            }
+                        })),
+                    )
+                        .into_response();
+                }
+            };
             mark_upstream_outcome(&upstream, &mut request_log, &mut event);
             let response_status = upstream_response_status(&upstream);
             let provider_status = if upstream.error_category.is_some() {
@@ -11907,6 +13263,8 @@ async fn openai_responses(
             request.model.as_deref(),
             Protocol::OpenAi,
             Protocol::OpenAi,
+            header_evidence(&headers, request.model.as_deref()).project_id,
+            header_evidence(&headers, request.model.as_deref()).session_id,
         ) {
             Ok(scope) => scope,
             Err(_) => {
@@ -11925,29 +13283,59 @@ async fn openai_responses(
                 return (status, Json(response)).into_response();
             }
         };
-        let responses_shadow_context = ResolvedOptimizationContext {
-            route_id: decision.route_id.clone(),
-            provider_id: decision.provider_id.clone(),
-            model: optimization_context.effective_model.clone(),
-            input_protocol: Protocol::OpenAi,
-            output_protocol: Protocol::OpenAi,
-            endpoint: OpticalEndpoint::OpenAiResponses,
+        // PR-C1B: authorized memory enters the converted Chat body BEFORE the
+        // transform plan, so the canonical IR (and the sealed envelope)
+        // includes it exactly once.
+        let memory_blocks = request_scope_memory_access(&scope)
+            .as_ref()
+            .map(|access| memory_context_blocks(&authorized_memory_records(&state, access)))
+            .unwrap_or_default();
+        let memory_block_count = memory_blocks.len();
+        let ingress_body = if memory_blocks.is_empty() {
+            original_body
+        } else {
+            inject_memory_into_body(original_body, &Protocol::OpenAi, &memory_blocks)
         };
-        let inventory_diagnostics =
-            compression_inventory_diagnostics(&responses_shadow_context, &body);
-        let baseline_body = original_body.clone();
-        let cache_evidence = configured_provider_cache_evidence(&state, &scope);
-        let mut compression = compress_for_route_with_frozen(
-            Some(&optimization_context),
-            decision.compression_policy.clone(),
-            original_body,
-            cache_evidence.as_ref(),
-            None,
+        // PR-C1A: lower the converted request into the canonical IR exactly
+        // once (route-bound context) and share it between the shadow
+        // inventory and the production plan.
+        let ir = dtoken_compress::lower_hybrid_context(
+            &optimization_context.compression_context,
+            &ingress_body,
         );
+        let inventory_diagnostics = compression_inventory_diagnostics_with_ir(
+            &optimization_context.compression_context,
+            ir.as_ref(),
+            &ingress_body,
+        );
+        let baseline_body = ingress_body.clone();
+        let cache_evidence = configured_provider_cache_evidence(&state, &scope);
+        // PR-C6A: production scheduler gate — admission (pipeline capacity,
+        // byte permit, request deadline, cancel) happens BEFORE candidate
+        // work; a refused request is preserved as its exact baseline without
+        // running a plan.
+        let gated = scheduler::run_gated_compression(
+            &state,
+            scope.clone(),
+            Some(optimization_context.clone()),
+            decision.compression_policy.clone(),
+            ingress_body,
+            cache_evidence.clone(),
+            None,
+            ir.clone(),
+            scheduler::request_deadline(),
+        )
+        .await;
+        let preserve_reason = gated.preserve_reason;
+        let mut compression = gated.summary;
+        let _scheduler_admission = gated._admission;
+        let _request_cancel = gated.cancel;
+        let scheduler_deadline = gated.deadline;
         let attribution = request_attribution_from_scope(&scope);
         let mut request_log = build_request_log(
             request_id,
             &decision,
+            request.model.clone(),
             request.model.clone(),
             Protocol::OpenAi,
             &compression,
@@ -11968,6 +13356,21 @@ async fn openai_responses(
                 inventory_diagnostics.clone(),
             );
         }
+        if memory_block_count > 0 {
+            if let Some(metadata) = event.metadata.as_object_mut() {
+                metadata.insert(
+                    "memory_injection".to_string(),
+                    json!({
+                        "injected": true,
+                        "block_count": memory_block_count,
+                        "protocol": "open_ai",
+                        "timing": "pre_plan",
+                        "raw_available": false,
+                        "privacy": "typed memory summaries only; raw prompt, response, source and secrets are never persisted"
+                    }),
+                );
+            }
+        }
         let prepared_ccr =
             match state.prepare_ccr_for_request(&decision, &request_log, &ccr_original_body) {
                 Ok(prepared) => prepared,
@@ -11977,6 +13380,7 @@ async fn openai_responses(
                     request_log = build_request_log(
                         request_id,
                         &decision,
+                        request.model.clone(),
                         request.model.clone(),
                         Protocol::OpenAi,
                         &compression,
@@ -12006,39 +13410,48 @@ async fn openai_responses(
                         .expect("baseline request does not require CCR storage")
                 }
             };
-        let pipeline_payload = match prepare_json_pipeline_payload(
-            scope.clone(),
-            &baseline_body,
-            &compression.body,
-            &request_log.transforms_applied,
-            &prepared_ccr,
-        ) {
-            Ok(payload) => payload,
-            Err(_) => PreparedPipelinePayload {
-                ready: PipelineInput::new(
-                    scope.clone(),
-                    serde_json::to_vec(&baseline_body).unwrap_or_default(),
-                    MAX_REQUEST_BODY_BYTES,
-                )
-                .map(|input| {
-                    input
-                        .prepare()
-                        .into_baseline_ready("pipeline_input_invalid")
-                })
-                .unwrap_or_else(|_| {
-                    PipelineInput::new(scope.clone(), b"{}".to_vec(), MAX_REQUEST_BODY_BYTES)
-                        .expect("static JSON baseline is valid")
-                        .prepare()
-                        .into_baseline_ready("pipeline_input_invalid")
-                }),
-                fallback_reason: Some("pipeline_input_invalid"),
-            },
+        let pipeline_payload = if let Some(reason) = preserve_reason {
+            // PR-C6A preserve path: the exact baseline is sealed with the
+            // evidence-bearing reason code; no candidate plan ran.
+            scheduler::preserved_pipeline_payload(scope.clone(), &baseline_body, reason)
+        } else {
+            match prepare_json_pipeline_payload(
+                scope.clone(),
+                &decision,
+                &baseline_body,
+                &compression.body,
+                &request_log.transforms_applied,
+                &prepared_ccr,
+            ) {
+                Ok(payload) => payload,
+                Err(_) => PreparedPipelinePayload {
+                    ready: PipelineInput::new(
+                        scope.clone(),
+                        serde_json::to_vec(&baseline_body).unwrap_or_default(),
+                        MAX_REQUEST_BODY_BYTES,
+                    )
+                    .map(|input| {
+                        input
+                            .prepare()
+                            .into_baseline_ready("pipeline_input_invalid")
+                    })
+                    .unwrap_or_else(|_| {
+                        PipelineInput::new(scope.clone(), b"{}".to_vec(), MAX_REQUEST_BODY_BYTES)
+                            .expect("static JSON baseline is valid")
+                            .prepare()
+                            .into_baseline_ready("pipeline_input_invalid")
+                    }),
+                    fallback_reason: Some("pipeline_input_invalid"),
+                    validation: None,
+                },
+            }
         };
         if let Some(reason) = pipeline_payload.fallback_reason {
             compression = compress_for_route(None, CompressionPolicy::Off, baseline_body.clone());
             request_log = build_request_log(
                 request_id,
                 &decision,
+                request.model.clone(),
                 request.model.clone(),
                 Protocol::OpenAi,
                 &compression,
@@ -12061,32 +13474,11 @@ async fn openai_responses(
                 metadata.insert("pipeline_fallback_reason".to_string(), json!(reason));
             }
         }
-        let mut upstream_body = serde_json::from_slice::<Value>(pipeline_payload.ready.body())
+        // PR-C1B: memory entered the converted body before the plan (above),
+        // so the sealed pipeline payload already carries it exactly once. The
+        // wire body is the validated envelope: no post-plan mutation.
+        let upstream_body = serde_json::from_slice::<Value>(pipeline_payload.ready.body())
             .unwrap_or_else(|_| baseline_body.clone());
-        // Authorized memory is injected into the final wire body after
-        // compression: memory blocks never enter the compression pipeline,
-        // never enter stored artifacts, and never distort token accounting.
-        let memory_blocks = request_scope_memory_access(&scope)
-            .as_ref()
-            .map(|access| memory_context_blocks(&authorized_memory_records(&state, access)))
-            .unwrap_or_default();
-        if !memory_blocks.is_empty() {
-            let injected =
-                inject_memory_into_body(upstream_body.clone(), &Protocol::OpenAi, &memory_blocks);
-            upstream_body = injected;
-            if let Some(metadata) = event.metadata.as_object_mut() {
-                metadata.insert(
-                    "memory_injection".to_string(),
-                    json!({
-                        "injected": true,
-                        "block_count": memory_blocks.len(),
-                        "protocol": "open_ai",
-                        "raw_available": false,
-                        "privacy": "typed memory summaries only; raw prompt, response, source and secrets are never persisted"
-                    }),
-                );
-            }
-        }
         if let Some(metadata) = event.metadata.as_object_mut() {
             metadata.insert(
                 "pipeline_payload_variant".to_string(),
@@ -12113,6 +13505,29 @@ async fn openai_responses(
                 Ok((status_code, mut response_headers, body, mut quota_metadata)) => {
                     attach_quota_account_ref(&mut quota_metadata, quota_account_ref.as_deref());
                     request_log.quota_metadata = quota_metadata;
+                    // Transport-observable commit: the bridged SSE request was
+                    // accepted; mint the terminal receipt (T-C0B).
+                    match mint_transport_send_commit(
+                        pipeline_payload.ready,
+                        pipeline_payload.validation.as_ref(),
+                        dtoken_event_ledger::now_ms(),
+                        &mut request_log,
+                        &mut event,
+                    ) {
+                        Ok(_send_commit) => _send_commit,
+                        Err(_) => {
+                            return (
+                                StatusCode::INTERNAL_SERVER_ERROR,
+                                Json(json!({
+                                    "error": {
+                                        "type": "validated_body_mismatch",
+                                        "message": "send body digest differs from the validated envelope; send aborted"
+                                    }
+                                })),
+                            )
+                                .into_response();
+                        }
+                    };
                     attach_output_shaping_evidence(
                         &mut request_log,
                         &mut event,
@@ -12199,6 +13614,35 @@ async fn openai_responses(
                         .into_response();
                 }
                 Err(upstream) => {
+                    // T-C0B: after-commit failures (timeout / response
+                    // started / non-success status) crossed the wire and are
+                    // stamped committed; only transport-not-accepted failures
+                    // stay at committed_at = 0.
+                    match mint_transport_send_commit(
+                        pipeline_payload.ready,
+                        pipeline_payload.validation.as_ref(),
+                        if transport_not_committed(&upstream) {
+                            0
+                        } else {
+                            dtoken_event_ledger::now_ms()
+                        },
+                        &mut request_log,
+                        &mut event,
+                    ) {
+                        Ok(_send_commit) => _send_commit,
+                        Err(_) => {
+                            return (
+                                StatusCode::INTERNAL_SERVER_ERROR,
+                                Json(json!({
+                                    "error": {
+                                        "type": "validated_body_mismatch",
+                                        "message": "send body digest differs from the validated envelope; send aborted"
+                                    }
+                                })),
+                            )
+                                .into_response();
+                        }
+                    };
                     mark_upstream_outcome(&upstream, &mut request_log, &mut event);
                     let response_status = upstream_response_status(&upstream);
                     let response = json!({
@@ -12244,6 +13688,17 @@ async fn openai_responses(
                 }
             }
         }
+        if scheduler::scheduler_deadline_expired(scheduler_deadline) {
+            return scheduler::scheduler_deadline_terminate(
+                &state,
+                request_id,
+                &decision,
+                request_log,
+                event,
+                &prepared_ccr,
+                pipeline_payload,
+            );
+        }
         let mut upstream = require_openai_message(
             forward_openai_chat(&state.http_client, provider, upstream_body, Some(&headers)).await,
             "OpenAI Responses",
@@ -12252,6 +13707,32 @@ async fn openai_responses(
             &mut upstream.quota_metadata,
             opaque_codex_account_ref(&headers).as_deref(),
         );
+        // Transport-observable commit point (Responses -> Chat bridge).
+        match mint_transport_send_commit(
+            pipeline_payload.ready,
+            pipeline_payload.validation.as_ref(),
+            if transport_not_committed(&upstream) {
+                0
+            } else {
+                dtoken_event_ledger::now_ms()
+            },
+            &mut request_log,
+            &mut event,
+        ) {
+            Ok(_send_commit) => _send_commit,
+            Err(_) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({
+                        "error": {
+                            "type": "validated_body_mismatch",
+                            "message": "send body digest differs from the validated envelope; send aborted"
+                        }
+                    })),
+                )
+                    .into_response();
+            }
+        };
         let output_shaping = if upstream.error_category.is_some() {
             output_shaping_passthrough_evidence(
                 "error_response_passthrough",
@@ -12431,83 +13912,113 @@ async fn anthropic_messages(
                 evidence.strategy
                     == dtoken_compress::context_pipeline::ProviderCacheStrategy::AnthropicExplicit
             });
-        // Without fresh, exact provider evidence, Direct Anthropic must retain
-        // the inbound representation all the way to the wire.  In particular,
-        // do not let a JSON re-serialization or a Hybrid candidate turn an
-        // unverified cache optimization into an observable request mutation.
-        let raw_wire_required = direct_cache_evidence.is_none();
-        // Active preparation owns the request-wide byte lease. Keep it alive
-        // until the upstream operation reaches a terminal return.
-        let mut _retained_hybrid_request = None;
-        if !raw_wire_required {
-            if let Some(mut prepared) =
-                prepare_direct_anthropic_hybrid(&state, &payload, raw_body.clone()).await
-            {
-                let stage_recording =
-                    record_hybrid_pre_send_stages(&state, payload.decision.request_id, &prepared);
-                if stage_recording.is_err()
-                    && matches!(
-                        prepared.kind(),
-                        HybridPreparationKind::Active | HybridPreparationKind::Semantic
-                    )
+        // PR-C3A..C3C: 仅当 Context Bus 真正替换了 body（avoided_bytes > 0，
+        // 精确签名命中）时跳过 hybrid 规划；query-aware 信号（0 字节）不改变
+        // wire body，继续走 hybrid/raw-wire 逻辑。
+        let bus_substituted = !payload.compression.bus_receipts.is_empty()
+            && payload
+                .compression
+                .bus_receipts
+                .iter()
+                .any(|receipt| receipt.avoided_bytes() > 0);
+        if bus_substituted {
+            append_stage_event(
+                &state,
+                payload.decision.request_id,
+                LayeredStage::RouteForward,
+                EventStatus::Ok,
+                json!({
+                    "source": "context_bus",
+                    "kind": payload.compression.bus_receipts[0].savings_kind().as_str(),
+                    "avoided_bytes": payload.compression.bus_receipts[0].avoided_bytes(),
+                    "transform_applied": false,
+                    "raw_available": false,
+                    "privacy": "metadata only; prompt, response and credentials are never persisted"
+                }),
+                None,
+            );
+        } else {
+            // Without fresh, exact provider evidence, Direct Anthropic must retain
+            // the inbound representation all the way to the wire.  In particular,
+            // do not let a JSON re-serialization or a Hybrid candidate turn an
+            // unverified cache optimization into an observable request mutation.
+            let raw_wire_required = direct_cache_evidence.is_none();
+            // Active preparation owns the request-wide byte lease. Keep it alive
+            // until the upstream operation reaches a terminal return.
+            let mut _retained_hybrid_request = None;
+            if !raw_wire_required {
+                if let Some(mut prepared) =
+                    prepare_direct_anthropic_hybrid(&state, &payload, raw_body.clone()).await
                 {
-                    prepared = force_hybrid_pre_send_fallback(
-                        prepared,
-                        original_body,
-                        "ledger_pre_send_unavailable",
+                    let stage_recording = record_hybrid_pre_send_stages(
+                        &state,
+                        payload.decision.request_id,
+                        &prepared,
                     );
+                    if stage_recording.is_err()
+                        && matches!(
+                            prepared.kind(),
+                            HybridPreparationKind::Active | HybridPreparationKind::Semantic
+                        )
+                    {
+                        prepared = force_hybrid_pre_send_fallback(
+                            prepared,
+                            original_body,
+                            "ledger_pre_send_unavailable",
+                        );
+                        append_stage_event(
+                            &state,
+                            payload.decision.request_id,
+                            LayeredStage::OpticalFallback,
+                            EventStatus::Failed,
+                            json!({
+                                "reason_code": "ledger_pre_send_unavailable",
+                                "raw_available": false,
+                                "privacy": "baseline selected before upstream send"
+                            }),
+                            Some("ledger_pre_send_unavailable"),
+                        );
+                    }
+                    apply_hybrid_preparation(&mut payload, &prepared);
+                    _retained_hybrid_request = Some(prepared);
+                } else {
                     append_stage_event(
                         &state,
                         payload.decision.request_id,
                         LayeredStage::OpticalFallback,
                         EventStatus::Failed,
                         json!({
-                            "reason_code": "ledger_pre_send_unavailable",
+                            "reason_code": "hybrid_worker_unavailable",
                             "raw_available": false,
-                            "privacy": "baseline selected before upstream send"
+                            "baseline_selected": true,
+                            "automatic_retry": false
                         }),
-                        Some("ledger_pre_send_unavailable"),
+                        Some("hybrid_worker_unavailable"),
                     );
                 }
-                apply_hybrid_preparation(&mut payload, &prepared);
-                _retained_hybrid_request = Some(prepared);
             } else {
+                force_payload_ccr_pre_send_baseline(
+                    &mut payload,
+                    &body,
+                    "provider_cache_evidence_unavailable",
+                );
                 append_stage_event(
                     &state,
                     payload.decision.request_id,
                     LayeredStage::OpticalFallback,
                     EventStatus::Failed,
                     json!({
-                        "reason_code": "hybrid_worker_unavailable",
+                        "reason_code": "provider_cache_evidence_unavailable",
                         "raw_available": false,
                         "baseline_selected": true,
                         "automatic_retry": false
                     }),
-                    Some("hybrid_worker_unavailable"),
+                    Some("provider_cache_evidence_unavailable"),
                 );
             }
-        } else {
-            force_payload_ccr_pre_send_baseline(
-                &mut payload,
-                &body,
-                "provider_cache_evidence_unavailable",
-            );
-            append_stage_event(
-                &state,
-                payload.decision.request_id,
-                LayeredStage::OpticalFallback,
-                EventStatus::Failed,
-                json!({
-                    "reason_code": "provider_cache_evidence_unavailable",
-                    "raw_available": false,
-                    "baseline_selected": true,
-                    "automatic_retry": false
-                }),
-                Some("provider_cache_evidence_unavailable"),
-            );
-        }
+        } // else: bus reuse 分支跳过 hybrid/raw-wire 规划。
 
-        let (prepared_ccr, pipeline_variant, cache_wire) =
+        let (prepared_ccr, pipeline_variant, cache_wire, sealed_ready, sealed_validation) =
             prepare_direct_anthropic_pipeline_for_send(
                 &state,
                 &mut payload,
@@ -12518,6 +14029,21 @@ async fn anthropic_messages(
         let send_raw_body = direct_anthropic_uses_raw_body(pipeline_variant);
         attach_direct_anthropic_cache_wire_metadata(&mut payload.event, cache_wire, send_raw_body);
         drop(ccr_original_body);
+
+        // The sealed sendable unit for the terminal receipt: the pipeline's
+        // ready unit, or — when the exact raw inbound representation is
+        // forwarded — a baseline unit sealed over the exact raw bytes so the
+        // receipt digest matches what the transport actually sent.
+        let mut sealed_ready = sealed_ready;
+        if sealed_ready.is_none() {
+            sealed_ready = PipelineInput::new(
+                payload.scope.clone(),
+                raw_body.clone(),
+                MAX_REQUEST_BODY_BYTES,
+            )
+            .ok()
+            .map(|input| input.prepare().into_baseline_ready("raw_preserve_forward"));
+        }
 
         let stream = payload
             .upstream_body
@@ -12535,6 +14061,32 @@ async fn anthropic_messages(
             .await
             {
                 Ok((status_code, response_headers, response_stream)) => {
+                    // Transport-observable commit: the Anthropic stream was
+                    // accepted; mint the terminal receipt from the sealed
+                    // sendable unit (T-C0B).
+                    if let Some(ready) = sealed_ready {
+                        match mint_transport_send_commit(
+                            ready,
+                            sealed_validation.as_ref(),
+                            dtoken_event_ledger::now_ms(),
+                            &mut payload.request_log,
+                            &mut payload.event,
+                        ) {
+                            Ok(_send_commit) => _send_commit,
+                            Err(_) => {
+                                return (
+                                    StatusCode::INTERNAL_SERVER_ERROR,
+                                    Json(json!({
+                                        "error": {
+                                            "type": "validated_body_mismatch",
+                                            "message": "send body digest differs from the validated envelope; send aborted"
+                                        }
+                                    })),
+                                )
+                                    .into_response();
+                            }
+                        };
+                    }
                     attach_output_shaping_evidence(
                         &mut payload.request_log,
                         &mut payload.event,
@@ -12629,6 +14181,37 @@ async fn anthropic_messages(
                         .into_response();
                 }
                 Err(upstream) => {
+                    if let Some(ready) = sealed_ready {
+                        // T-C0B: after-commit failures (timeout / response
+                        // started / non-success status) crossed the wire and
+                        // are stamped committed; only transport-not-accepted
+                        // failures stay at committed_at = 0.
+                        match mint_transport_send_commit(
+                            ready,
+                            sealed_validation.as_ref(),
+                            if transport_not_committed(&upstream) {
+                                0
+                            } else {
+                                dtoken_event_ledger::now_ms()
+                            },
+                            &mut payload.request_log,
+                            &mut payload.event,
+                        ) {
+                            Ok(_send_commit) => _send_commit,
+                            Err(_) => {
+                                return (
+                                    StatusCode::INTERNAL_SERVER_ERROR,
+                                    Json(json!({
+                                        "error": {
+                                            "type": "validated_body_mismatch",
+                                            "message": "send body digest differs from the validated envelope; send aborted"
+                                        }
+                                    })),
+                                )
+                                    .into_response();
+                            }
+                        };
+                    }
                     mark_upstream_outcome(&upstream, &mut payload.request_log, &mut payload.event);
                     let response_status = upstream_response_status(&upstream);
                     let response = json!({
@@ -12681,6 +14264,35 @@ async fn anthropic_messages(
             )
             .await,
         );
+        // Transport-observable commit point: reqwest accepted (or rejected
+        // pre-commit) the exact sealed body.
+        if let Some(ready) = sealed_ready {
+            match mint_transport_send_commit(
+                ready,
+                sealed_validation.as_ref(),
+                if transport_not_committed(&upstream) {
+                    0
+                } else {
+                    dtoken_event_ledger::now_ms()
+                },
+                &mut payload.request_log,
+                &mut payload.event,
+            ) {
+                Ok(_send_commit) => _send_commit,
+                Err(_) => {
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(json!({
+                            "error": {
+                                "type": "validated_body_mismatch",
+                                "message": "send body digest differs from the validated envelope; send aborted"
+                            }
+                        })),
+                    )
+                        .into_response();
+                }
+            };
+        }
         let output_shaping = if upstream.error_category.is_some() {
             output_shaping_passthrough_evidence(
                 "error_response_passthrough",
@@ -12954,7 +14566,7 @@ async fn stats_history(State(state): State<AppState>) -> Json<Value> {
     Json(runtime_stats_history_for_state(&state))
 }
 
-async fn metrics(State(state): State<AppState>) -> String {
+pub async fn metrics(State(state): State<AppState>) -> String {
     let logs = state.recent_request_logs(10_000);
     runtime_metrics_text(&logs)
 }
@@ -13855,7 +15467,7 @@ async fn headroom_stats(State(state): State<AppState>) -> Json<Value> {
         "source": "dtoken-owned-runtime",
         "runtime_kind": "headroom-derived",
         "external_headroom_dependency": false,
-        "stats": runtime_stats_payload(&logs),
+        "stats": runtime_stats_for_state(&state),
         "history": runtime_stats_history_payload(&logs),
         "metrics": runtime_metrics_payload(&logs),
         "output_shape": output_shape_for_state(&state, None, None),
@@ -14371,7 +15983,14 @@ fn protocol_injection_profiles() -> Vec<ProtocolInjectionProfile> {
 mod tests {
     use super::*;
     use axum::http::Request;
+    use base64::Engine as _;
     use tower::ServiceExt;
+
+    // The failpoint registry is process-global; every armed crash window in
+    // this binary serializes behind one lock so a `clear_all` can never
+    // disarm another test's failpoint mid-flight.
+    #[cfg(feature = "failpoints")]
+    static FAILPOINT_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     fn optical_test_event(
         stage: LayeredStage,
@@ -14753,6 +16372,109 @@ mod tests {
         .unwrap()
     }
 
+    fn cache_test_decision(scope: &RequestScope) -> RouteDecision {
+        RouteDecision {
+            request_id: scope.request_id,
+            route_id: scope.route_id.clone(),
+            provider_id: scope.provider_id.clone(),
+            chain_mode: ChainMode::Direct,
+            compression_policy: CompressionPolicy::Balanced,
+            reason: "test decision".to_string(),
+            input_protocol: Some(scope.input_protocol.clone()),
+            output_protocol: Some(scope.output_protocol.clone()),
+        }
+    }
+
+    #[tokio::test]
+    async fn context_bus_relay_reuses_across_two_app_states_without_cross_body_pollution() {
+        // 两个 AppState（两个运行实例）共享同一持久目录：实例 A 记录候选，
+        // 实例 B 经 SQLite persistence 启动恢复后按精确签名命中。
+        let dir = std::env::temp_dir().join(format!("dtoken-c2c3-two-appstate-{}", Uuid::new_v4()));
+        {
+            let instance_a = AppState::new_persistent(route_test_config(), dir.clone());
+            let bus = instance_a.context_bus.as_ref().unwrap().clone();
+            let mut bus = bus.lock().unwrap();
+            let bus_scope = dtoken_context_bus::BusScope::new("proj", "agent-a", "sess-a");
+            bus.grant(&dtoken_context_bus::GrantRequest {
+                scope: dtoken_context_bus::GrantScope::new("proj", "agent-a", "agent-b", "sess-a"),
+                grant_revision: "rev-1".to_string(),
+                granted_at_ms: dtoken_event_ledger::now_ms().max(1),
+            })
+            .unwrap();
+            bus.record(
+                &bus_scope,
+                r#"{"messages":[{"role":"user","content":"hello"}]}"#,
+                &"a".repeat(64),
+                None,
+                Some(r#"{"messages":[{"role":"user","content":"hello"}]}"#.to_string()),
+                &["route-a".to_string(), "model-a".to_string()],
+                dtoken_event_ledger::now_ms().max(1),
+            )
+            .unwrap();
+        }
+        // 实例 B 重启：从同一 SQLite 恢复。
+        let instance_b = AppState::new_persistent(route_test_config(), dir.clone());
+        // 恢复后应能从共享 persistence 读到条目。
+        {
+            let bus = instance_b.context_bus.as_ref().unwrap().clone();
+            let bus = bus.lock().unwrap();
+            let entries = bus.persistence().load_entries("proj").unwrap();
+            assert_eq!(
+                entries.len(),
+                1,
+                "SQLite persistence restored across restart"
+            );
+        }
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn context_bus_same_route_model_different_body_no_cross_body_reuse() {
+        // 安全回归（PipelineSecurityReview）：相同 route/model 查询 token、
+        // 无 cache evidence（source fingerprint 为空），agent-b 查询不同内容
+        // 时，bus 绝不能把 agent-a 的变换 body 替换进 agent-b 的请求。
+        let mut bus = dtoken_context_bus::ContextBus::new(dtoken_context_bus::BusConfig::default());
+        let owner_scope = dtoken_context_bus::BusScope::new("proj", "agent-a", "sess-a");
+        bus.record(
+            &owner_scope,
+            r#"{"q":"content-a"}"#,
+            "",
+            None,
+            Some(r#"{"q":"content-a","transformed":true}"#.to_string()),
+            &["route-a".to_string(), "model-a".to_string()],
+            1_000,
+        )
+        .unwrap();
+        bus.grant(&dtoken_context_bus::GrantRequest {
+            scope: dtoken_context_bus::GrantScope::new("proj", "agent-a", "agent-b", "sess-a"),
+            grant_revision: "rev-1".to_string(),
+            granted_at_ms: 1_000,
+        })
+        .unwrap();
+        let consumer = dtoken_context_bus::BusScope::new("proj", "agent-b", "sess-b");
+        let outcome = bus.consult(
+            &consumer,
+            &dtoken_context_bus::signature::map_signature("proj", r#"{"q":"content-b"}"#),
+            &dtoken_context_bus::signature::source_fingerprint("", None),
+            &["route-a".to_string(), "model-a".to_string()],
+            1_000,
+        );
+        assert!(
+            matches!(
+                outcome,
+                dtoken_context_bus::bus::ConsultOutcome::RelayHit { .. }
+            ),
+            "query-aware signal expected"
+        );
+        match outcome {
+            dtoken_context_bus::bus::ConsultOutcome::RelayHit { entry, receipt } => {
+                assert!(entry.body.is_none(), "no cross-body substitution allowed");
+                assert_eq!(receipt.avoided_bytes, 0);
+            }
+            other => panic!("unexpected outcome {other:?}"),
+        }
+    }
+
     #[test]
     fn provider_cache_observation_uses_only_protocol_specific_usage_fields() {
         let anthropic = provider_cache_observation_from_response(
@@ -15016,6 +16738,8 @@ mod tests {
             Some("model-a"),
             Protocol::OpenAi,
             Protocol::OpenAi,
+            None,
+            None,
         )
         .unwrap();
         let state = AppState::new_persistent(config, &dir);
@@ -15094,7 +16818,7 @@ mod tests {
             endpoint: dtoken_types::OpticalEndpoint::OpenAiChatCompletions,
         };
 
-        let diagnostics = compression_inventory_diagnostics(&context, &body);
+        let diagnostics = compression_inventory_diagnostics_with_ir(&context, None, &body);
         assert_eq!(diagnostics["state"], "resolved");
         assert!(diagnostics["approved_target_count"].as_u64().unwrap_or(0) > 0);
         assert_eq!(diagnostics["raw_available"], false);
@@ -15163,7 +16887,7 @@ mod tests {
             endpoint: OpticalEndpoint::OpenAiResponses,
         };
 
-        let diagnostics = compression_inventory_diagnostics(&context, &body);
+        let diagnostics = compression_inventory_diagnostics_with_ir(&context, None, &body);
         assert_eq!(diagnostics["state"], "resolved");
         assert_eq!(diagnostics["message_count"], 17);
         assert_eq!(diagnostics["recent_tail_start"], 5);
@@ -15494,10 +17218,12 @@ mod tests {
             fallback_reason_code: None,
             body: json!({}),
             context_accounting: None,
+            bus_receipts: vec![],
         };
         let log = build_request_log(
             decision.request_id,
             &decision,
+            Some("model-a".to_string()),
             Some("model-a".to_string()),
             Protocol::OpenAi,
             &compression,
@@ -15554,6 +17280,8 @@ mod tests {
             Some("model-a"),
             Protocol::OpenAi,
             Protocol::OpenAi,
+            None,
+            None,
         )
         .expect("configured route should produce a scope");
 
@@ -16732,6 +18460,173 @@ mod tests {
     }
 
     #[test]
+    fn provider_metadata_payload_exports_actual_configured_wire_api() {
+        // Routed acceptance (PR-2/PR-5 evidence loop) must be able to read the
+        // actual configured wire_api from the runtime metadata payload: the
+        // value comes from the provider's own enum, never inferred from
+        // protocol/base_url, and uses the canonical snake_case serde names.
+        let mut config = route_test_config();
+        config.providers.push(dtoken_types::ProviderProfile {
+            id: "ocxlocal".to_string(),
+            name: "OpenCodex Local".to_string(),
+            kind: dtoken_types::ProviderKind::LocalChain,
+            protocol: Protocol::OpenAi,
+            base_url: "http://127.0.0.1:10100/v1".to_string(),
+            api_key_ref: None,
+            models: vec![],
+            timeout_ms: 30_000,
+            healthcheck_path: None,
+            wire_api: dtoken_types::ProviderWireApi::OpenAiResponses,
+        });
+        let payload = provider_metadata_payload(&config.providers);
+        let by_id: std::collections::HashMap<String, serde_json::Value> = payload
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|entry| (entry["id"].as_str().unwrap().to_string(), entry.clone()))
+            .collect();
+        assert_eq!(
+            by_id["ocxlocal"]["wire_api"], "open_ai_responses",
+            "Responses provider must expose canonical wire_api"
+        );
+        assert_eq!(
+            by_id["provider-a"]["wire_api"], "open_ai_chat",
+            "Chat provider must expose canonical wire_api"
+        );
+        // Payload also flows through active_config / export surfaces.
+        let state = AppState::new(config);
+        let config_section = active_config_payload(&state);
+        let exported: Vec<&str> = config_section["providers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|entry| entry["wire_api"].as_str().unwrap())
+            .collect();
+        assert!(exported.contains(&"open_ai_responses"));
+        assert!(exported.contains(&"open_ai_chat"));
+    }
+
+    #[test]
+    fn export_surfaces_never_leak_active_config_absolute_path() {
+        let config = DtokenConfig {
+            providers: vec![dtoken_types::ProviderProfile {
+                id: "export-provider".to_string(),
+                name: "Export Provider".to_string(),
+                kind: dtoken_types::ProviderKind::Custom,
+                protocol: Protocol::OpenAi,
+                base_url: "https://example.invalid/v1".to_string(),
+                api_key_ref: Some("local-secret-ref".to_string()),
+                models: vec!["model-a".to_string()],
+                timeout_ms: 30_000,
+                healthcheck_path: None,
+                wire_api: dtoken_types::ProviderWireApi::OpenAiChat,
+            }],
+            routes: vec![dtoken_types::RouteProfile {
+                id: "export-route".to_string(),
+                name: "Export Route".to_string(),
+                input_protocol: Protocol::OpenAi,
+                instance_id: "export-instance".to_string(),
+                target_provider_id: "export-provider".to_string(),
+                fallback_provider_id: None,
+                chain_mode: ChainMode::Direct,
+                compression_policy: CompressionPolicy::Balanced,
+                bind_host: "127.0.0.1".to_string(),
+                local_port: 18001,
+            }],
+            instances: vec![],
+            provider_cache_policies: vec![],
+            output_shaping_policies: vec![],
+            optical: Default::default(),
+        };
+        for (label, absolute_path) in [
+            (
+                "windows",
+                "C:/Users/example/AppData/Local/d-token/active-config/dtoken-config.json",
+            ),
+            (
+                "macos",
+                "/Users/example/Library/Application Support/d-token/active-config/dtoken-config.json",
+            ),
+        ] {
+            let status = RuntimeConfigStatus::from_config(
+                "desktop_active_config",
+                Some(absolute_path.to_string()),
+                &config,
+            );
+            let state = AppState::new_with_config_status(config.clone(), status.clone());
+            let json_export = runtime_export_json_payload(&state);
+            let csv_export = runtime_export_csv_payload(&state);
+            let dashboard = dashboard_payload_for_state(&state);
+            let config_active = active_config_payload(&state);
+
+            // Internal runtime status keeps the real path for local logic.
+            assert_eq!(
+                state.config_status.path.as_deref(),
+                Some(absolute_path),
+                "{label}: internal path must be preserved"
+            );
+
+            for (surface_name, surface) in [
+                ("json_export", &json_export),
+                ("dashboard", &dashboard),
+                ("config_active", &config_active),
+            ] {
+                let config_section = if surface_name == "config_active" {
+                    surface["config"].clone()
+                } else {
+                    surface["active_config"]["config"].clone()
+                };
+                assert_eq!(
+                    config_section["source"], "desktop_active_config",
+                    "{label} {surface_name}: source enum must be preserved"
+                );
+                assert_eq!(
+                    config_section["route_count"], 1,
+                    "{label} {surface_name}: route_count must be preserved"
+                );
+                assert_eq!(
+                    config_section["fallback_disabled"], true,
+                    "{label} {surface_name}: fallback must be preserved"
+                );
+                assert!(
+                    config_section.get("path").is_none(),
+                    "{label} {surface_name}: path key must be omitted"
+                );
+                let serialized = surface.to_string();
+                assert!(
+                    !serialized.contains(absolute_path),
+                    "{label} {surface_name}: leaked absolute path"
+                );
+                assert!(
+                    !serialized.contains("active-config/dtoken-config.json"),
+                    "{label} {surface_name}: leaked path content"
+                );
+                assert!(
+                    !serialized.contains("Application Support"),
+                    "{label} {surface_name}: leaked macos path content"
+                );
+            }
+
+            assert!(
+                !csv_export.contains("path="),
+                "{label}: CSV must drop the path field"
+            );
+            assert!(
+                !csv_export.contains(absolute_path),
+                "{label}: CSV leaked absolute path"
+            );
+            assert!(
+                !csv_export.contains("active-config/dtoken-config.json"),
+                "{label}: CSV leaked path content"
+            );
+            assert!(
+                csv_export.contains("source=desktop_active_config"),
+                "{label}: CSV must keep the source enum"
+            );
+        }
+    }
+
+    #[test]
     fn openai_route_adapter_records_safe_passthrough_and_route_metadata() {
         let request = OpenAiChatRequest {
             model: Some("opencode/deepseek-v4-flash-free".to_string()),
@@ -17060,6 +18955,416 @@ mod tests {
         assert!(text.contains("data:"));
         assert!(text.contains("[DONE]"));
         server.await.expect("mock upstream task");
+    }
+
+    /// T-C0B: the OpenAI Chat stream Err path must mint the terminal
+    /// send-commit receipt from the upstream `send_state`, not from a
+    /// hardcoded timestamp 0. A post-commit failure (upstream accepted the
+    /// body, e.g. HTTP 401) must never be recorded as pre-commit.
+    #[tokio::test]
+    async fn stream_terminal_send_state_derives_from_upstream_after_commit() {
+        let (addr, server) = spawn_json_upstream(
+            "401 Unauthorized",
+            r#"{"error":{"message":"invalid local test credential"}}"#,
+            0,
+        )
+        .await;
+        let state = configured_openai_test_state(format!("http://{addr}/v1"), 1_000);
+
+        let response = openai_chat_completions(
+            State(state.clone()),
+            HeaderMap::new(),
+            request_bytes(json!({
+                "model": "mock/model",
+                "messages": [{"role": "user", "content": "hello"}],
+                "stream": true
+            })),
+        )
+        .await
+        .into_response();
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        let event = state
+            .recent_events(20)
+            .into_iter()
+            .find(|event| event.metadata.get("send_commit_state").is_some())
+            .expect("stream failure event must carry the terminal send-commit receipt");
+        assert_eq!(
+            event.metadata["send_commit_state"], "send_committed",
+            "upstream accepted the stream body; the terminal receipt must not claim pre-commit failure"
+        );
+        assert_eq!(event.status, EventStatus::Failed);
+        assert_eq!(event.error_code.as_deref(), Some("provider_auth"));
+        assert_eq!(event.metadata["terminal"], true);
+        assert_eq!(event.metadata["optical_phase"], "upstream_completed");
+        server.await.expect("local mock upstream task");
+    }
+
+    /// T-C0B: a true pre-commit stream failure (connection refused) must
+    /// still mint a pre-commit receipt; the send-state derivation must not
+    /// turn honest pre-commit failures into post-commit ones.
+    #[tokio::test]
+    async fn stream_terminal_send_state_preserves_pre_commit_failure() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind then release a port");
+        let addr = listener.local_addr().expect("local address");
+        drop(listener);
+
+        let state = configured_openai_test_state(format!("http://{addr}/v1"), 1_000);
+        let response = openai_chat_completions(
+            State(state.clone()),
+            HeaderMap::new(),
+            request_bytes(json!({
+                "model": "mock/model",
+                "messages": [{"role": "user", "content": "hello"}],
+                "stream": true
+            })),
+        )
+        .await
+        .into_response();
+
+        assert!(response.status().is_server_error());
+        let event = state
+            .recent_events(20)
+            .into_iter()
+            .find(|event| event.metadata.get("send_commit_state").is_some())
+            .expect("stream failure event must carry the terminal send-commit receipt");
+        assert_eq!(
+            event.metadata["send_commit_state"], "failed_before_commit",
+            "connection refusal stays a pre-commit failure"
+        );
+        assert_eq!(event.metadata["terminal"], true);
+        assert_eq!(event.metadata["optical_phase"], "upstream_failed");
+    }
+
+    /// T-C0B: a timeout is an ambiguous send failure (reqwest cannot prove
+    /// the failure happened before the write); it must stay post-commit so
+    /// the baseline is never retried.
+    #[tokio::test]
+    async fn stream_terminal_send_state_preserves_failed_after_commit_ambiguity() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        // The client times out at 1 ms while the upstream sleeps 200 ms. The
+        // mock must tolerate the client aborting mid-read (read() may return
+        // 0) and must not panic when the write silently fails after close.
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind mock upstream");
+        let addr = listener.local_addr().expect("mock addr");
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.expect("accept");
+            let mut buffer = [0_u8; 4096];
+            let _ = socket.read(&mut buffer).await;
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            let _ = socket
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\n\r\ndata: [DONE]\n\n",
+                )
+                .await;
+        });
+
+        let state = configured_openai_test_state(format!("http://{addr}/v1"), 1);
+        let response = openai_chat_completions(
+            State(state.clone()),
+            HeaderMap::new(),
+            request_bytes(json!({
+                "model": "mock/model",
+                "messages": [{"role": "user", "content": "hello"}],
+                "stream": true
+            })),
+        )
+        .await
+        .into_response();
+
+        assert_eq!(response.status(), StatusCode::GATEWAY_TIMEOUT);
+        let event = state
+            .recent_events(20)
+            .into_iter()
+            .find(|event| event.metadata.get("send_commit_state").is_some())
+            .expect("stream failure event must carry the terminal send-commit receipt");
+        assert_eq!(
+            event.metadata["send_commit_state"], "send_committed",
+            "ambiguous timeout must not be downgraded to pre-commit"
+        );
+        assert_eq!(event.metadata["terminal"], true);
+        assert_eq!(event.metadata["optical_phase"], "upstream_failed");
+        server.await.expect("local mock upstream task");
+    }
+
+    /// T-C0B: the native Responses stream Err path derives the terminal
+    /// send-commit receipt from the upstream `send_state` as well.
+    #[tokio::test]
+    async fn native_responses_stream_send_state_derives_from_upstream_after_commit() {
+        use axum::body::to_bytes;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind mock upstream");
+        let addr = listener.local_addr().expect("mock addr");
+        let error_body = r#"{"error":{"message":"invalid local test credential"}}"#;
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.expect("accept request");
+            let mut request = Vec::new();
+            let mut buffer = [0_u8; 4096];
+            let (header_end, content_length) = loop {
+                let read = socket.read(&mut buffer).await.expect("read request");
+                assert!(read > 0, "request closed before headers completed");
+                request.extend_from_slice(&buffer[..read]);
+                if let Some(index) = request.windows(4).position(|window| window == b"\r\n\r\n") {
+                    let header_end = index + 4;
+                    let headers = String::from_utf8_lossy(&request[..header_end]);
+                    let content_length = headers
+                        .lines()
+                        .find_map(|line| {
+                            let (name, value) = line.split_once(':')?;
+                            name.eq_ignore_ascii_case("content-length")
+                                .then(|| value.trim().parse::<usize>().ok())
+                                .flatten()
+                        })
+                        .expect("serialized body has a content length");
+                    break (header_end, content_length);
+                }
+            };
+            while request.len() < header_end + content_length {
+                let read = socket.read(&mut buffer).await.expect("read request body");
+                assert!(read > 0, "request closed before body completed");
+                request.extend_from_slice(&buffer[..read]);
+            }
+            let response = format!(
+                "HTTP/1.1 401 Unauthorized\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{error_body}",
+                error_body.len()
+            );
+            socket
+                .write_all(response.as_bytes())
+                .await
+                .expect("write error response");
+        });
+
+        let provider = dtoken_types::ProviderProfile {
+            id: "responses-upstream".to_string(),
+            name: "Responses upstream".to_string(),
+            kind: dtoken_types::ProviderKind::Custom,
+            protocol: Protocol::OpenAi,
+            base_url: format!("http://{addr}/v1"),
+            api_key_ref: None,
+            models: vec!["mock/model".to_string()],
+            timeout_ms: 30_000,
+            healthcheck_path: None,
+            wire_api: dtoken_types::ProviderWireApi::OpenAiResponses,
+        };
+        let route = dtoken_types::RouteProfile {
+            id: "route-responses".to_string(),
+            name: "route-responses".to_string(),
+            input_protocol: Protocol::OpenAi,
+            instance_id: "instance-responses".to_string(),
+            target_provider_id: "responses-upstream".to_string(),
+            fallback_provider_id: None,
+            chain_mode: ChainMode::Direct,
+            compression_policy: CompressionPolicy::Off,
+            bind_host: "127.0.0.1".to_string(),
+            local_port: 18001,
+        };
+        let config = DtokenConfig {
+            providers: vec![provider],
+            routes: vec![route],
+            instances: vec![],
+            provider_cache_policies: vec![],
+            output_shaping_policies: vec![],
+            optical: Default::default(),
+        };
+        let state = AppState::new(config);
+        let app = build_router(state.clone());
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/responses")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"model":"mock/model","input":"hello","stream":true}"#,
+                    ))
+                    .expect("request"),
+            )
+            .await
+            .expect("router response");
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        let bytes = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("error body bytes");
+        let payload: Value = serde_json::from_slice(&bytes).expect("dtoken error JSON");
+        assert_eq!(payload["error"]["type"], "provider_auth");
+        let event = state
+            .recent_events(20)
+            .into_iter()
+            .find(|event| event.metadata.get("send_commit_state").is_some())
+            .expect("stream failure event must carry the terminal send-commit receipt");
+        assert_eq!(
+            event.metadata["send_commit_state"], "send_committed",
+            "native Responses upstream accepted the stream body; receipt must not claim pre-commit failure"
+        );
+        assert_eq!(event.status, EventStatus::Failed);
+        server.await.expect("mock upstream task");
+    }
+
+    /// T-C0B: the Responses-to-Chat SSE bridge Err path derives the terminal
+    /// send-commit receipt from the upstream `send_state` as well.
+    #[tokio::test]
+    async fn responses_to_chat_stream_send_state_derives_from_upstream_after_commit() {
+        use axum::body::to_bytes;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind mock upstream");
+        let addr = listener.local_addr().expect("mock addr");
+        let error_body = r#"{"error":{"message":"invalid local test credential"}}"#;
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.expect("accept request");
+            let mut request = Vec::new();
+            let mut buffer = [0_u8; 4096];
+            let (header_end, content_length) = loop {
+                let read = socket.read(&mut buffer).await.expect("read request");
+                assert!(read > 0, "request closed before headers completed");
+                request.extend_from_slice(&buffer[..read]);
+                if let Some(index) = request.windows(4).position(|window| window == b"\r\n\r\n") {
+                    let header_end = index + 4;
+                    let headers = String::from_utf8_lossy(&request[..header_end]);
+                    let content_length = headers
+                        .lines()
+                        .find_map(|line| {
+                            let (name, value) = line.split_once(':')?;
+                            name.eq_ignore_ascii_case("content-length")
+                                .then(|| value.trim().parse::<usize>().ok())
+                                .flatten()
+                        })
+                        .expect("serialized body has a content length");
+                    break (header_end, content_length);
+                }
+            };
+            while request.len() < header_end + content_length {
+                let read = socket.read(&mut buffer).await.expect("read request body");
+                assert!(read > 0, "request closed before body completed");
+                request.extend_from_slice(&buffer[..read]);
+            }
+            let response = format!(
+                "HTTP/1.1 401 Unauthorized\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{error_body}",
+                error_body.len()
+            );
+            socket
+                .write_all(response.as_bytes())
+                .await
+                .expect("write error response");
+        });
+
+        let provider = dtoken_types::ProviderProfile {
+            id: "bridge-upstream".to_string(),
+            name: "Bridge upstream".to_string(),
+            kind: dtoken_types::ProviderKind::Custom,
+            protocol: Protocol::OpenAi,
+            base_url: format!("http://{addr}/v1"),
+            api_key_ref: None,
+            models: vec!["mock/model".to_string()],
+            timeout_ms: 30_000,
+            healthcheck_path: None,
+            wire_api: dtoken_types::ProviderWireApi::OpenAiChat,
+        };
+        let route = dtoken_types::RouteProfile {
+            id: "route-bridge".to_string(),
+            name: "route-bridge".to_string(),
+            input_protocol: Protocol::OpenAi,
+            instance_id: "instance-bridge".to_string(),
+            target_provider_id: "bridge-upstream".to_string(),
+            fallback_provider_id: None,
+            chain_mode: ChainMode::Direct,
+            compression_policy: CompressionPolicy::Off,
+            bind_host: "127.0.0.1".to_string(),
+            local_port: 18001,
+        };
+        let config = DtokenConfig {
+            providers: vec![provider],
+            routes: vec![route],
+            instances: vec![],
+            provider_cache_policies: vec![],
+            output_shaping_policies: vec![],
+            optical: Default::default(),
+        };
+        let state = AppState::new(config);
+        let app = build_router(state.clone());
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/responses")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"model":"mock/model","input":"hello","stream":true}"#,
+                    ))
+                    .expect("request"),
+            )
+            .await
+            .expect("router response");
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        let bytes = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("error body bytes");
+        let payload: Value = serde_json::from_slice(&bytes).expect("dtoken error JSON");
+        assert_eq!(payload["error"]["type"], "provider_auth");
+        let event = state
+            .recent_events(20)
+            .into_iter()
+            .find(|event| event.metadata.get("send_commit_state").is_some())
+            .expect("stream failure event must carry the terminal send-commit receipt");
+        assert_eq!(
+            event.metadata["send_commit_state"], "send_committed",
+            "Responses bridge upstream accepted the stream body; receipt must not claim pre-commit failure"
+        );
+        assert_eq!(event.status, EventStatus::Failed);
+        server.await.expect("mock upstream task");
+    }
+
+    /// T-C0B: the Anthropic stream Err path derives the terminal
+    /// send-commit receipt from the upstream `send_state` as well.
+    #[tokio::test]
+    async fn anthropic_stream_send_state_derives_from_upstream_after_commit() {
+        let (addr, server) = spawn_json_upstream(
+            "401 Unauthorized",
+            r#"{"error":{"message":"invalid local test credential"}}"#,
+            0,
+        )
+        .await;
+        let state = AppState::new(direct_anthropic_cache_test_config(format!("http://{addr}")));
+
+        let response = anthropic_messages(
+            State(state.clone()),
+            HeaderMap::new(),
+            Bytes::from_static(
+                br#"{"model":"claude-cache-test","messages":[{"role":"user","content":"hello"}],"stream":true}"#,
+            ),
+        )
+        .await
+        .into_response();
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        let event = state
+            .recent_events(20)
+            .into_iter()
+            .find(|event| event.metadata.get("send_commit_state").is_some())
+            .expect("stream failure event must carry the terminal send-commit receipt");
+        assert_eq!(
+            event.metadata["send_commit_state"], "send_committed",
+            "Anthropic upstream accepted the stream body; the terminal receipt must not claim pre-commit failure"
+        );
+        assert_eq!(event.status, EventStatus::Failed);
+        assert_eq!(event.metadata["terminal"], true);
+        assert_eq!(event.metadata["optical_phase"], "upstream_completed");
+        server.await.expect("local mock upstream task");
     }
 
     #[test]
@@ -17391,12 +19696,16 @@ mod tests {
         let transforms = vec!["content_router:json".to_string()];
         let prepared_without_receipt = PreparedCcr {
             receipt: None,
+            proof: None,
+            authority: None,
             store_configured: true,
         };
 
         // Marker in the candidate with no durable receipt -> baseline fallback.
+        let decision = cache_test_decision(&scope);
         let payload = prepare_json_pipeline_payload(
             scope.clone(),
+            &decision,
             &baseline,
             &candidate,
             &transforms,
@@ -17416,18 +19725,30 @@ mod tests {
             serde_json::to_vec(&baseline).unwrap().as_slice()
         );
 
-        // Matching receipt -> candidate passes and becomes sendable.
+        // Matching receipt -> candidate passes and becomes sendable. The
+        // proof must be store-issued (same authority the pipeline verifies
+        // against) and live; the old hard-coded near-epoch expiry was never
+        // enforced and would now fail closed.
+        let authority = dtoken_runtime_pipeline::RecoveryProofAuthority::new([31_u8; 32]);
         let receipt = CcrStoreReceipt {
             recovery_ref: "ccr:11111111-1111-4111-8111-111111111111".to_string(),
-            expires_at_unix: 9_999,
+            expires_at_unix: 1_000_000_000_000,
             plaintext_bytes: 64,
         };
         let prepared_with_receipt = PreparedCcr {
+            proof: Some(
+                authority
+                    .issue(receipt.recovery_ref.clone(), receipt.expires_at_unix)
+                    .expect("store-issued proof"),
+            ),
             receipt: Some(receipt.clone()),
+            authority: Some(authority.clone()),
             store_configured: true,
         };
+        let decision = cache_test_decision(&scope);
         let payload = prepare_json_pipeline_payload(
             scope.clone(),
+            &decision,
             &baseline,
             &candidate,
             &transforms,
@@ -17446,13 +19767,17 @@ mod tests {
             recovery_ref: "ccr:22222222-2222-4222-8222-222222222222".to_string(),
             ..receipt
         };
+        let decision = cache_test_decision(&scope);
         let payload = prepare_json_pipeline_payload(
             scope.clone(),
+            &decision,
             &baseline,
             &candidate,
             &transforms,
             &PreparedCcr {
                 receipt: Some(wrong_receipt),
+                proof: None,
+                authority: None,
                 store_configured: true,
             },
         )
@@ -17464,13 +19789,17 @@ mod tests {
 
         // Unverifiable bracket form -> baseline fallback even with a receipt.
         let bracket_candidate = json!({"model": "model-a", "messages": [{"role": "user", "content": "Retrieve original: hash=deadbeef"}]});
+        let decision = cache_test_decision(&scope);
         let payload = prepare_json_pipeline_payload(
             scope.clone(),
+            &decision,
             &baseline,
             &bracket_candidate,
             &transforms,
             &PreparedCcr {
                 receipt: Some(receipt),
+                proof: None,
+                authority: None,
                 store_configured: true,
             },
         )
@@ -17836,6 +20165,500 @@ mod tests {
         let projections =
             ContextStore::open(dir.join("runtime-state.sqlite3")).expect("open projection");
         assert_eq!(projections.projection_counts().unwrap().0, 1);
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn terminal_commit_recovery_promotes_complete_pending_marker_to_committed() {
+        // A Pending marker whose four fan-out records are all durable — the
+        // crash window after the last fan-out sync when the committed marker
+        // write failed — must be rolled forward to Committed at restart,
+        // never left pending.
+        let dir =
+            std::env::temp_dir().join(format!("dtoken-marker-pending-complete-{}", Uuid::new_v4()));
+        let key = [79_u8; 32];
+        let request = OpenAiChatRequest {
+            model: Some("pending-complete-model".to_string()),
+            messages: Some(vec![json!({
+                "role": "user",
+                "content": "PENDING_COMPLETE_SECRET"
+            })]),
+            stream: Some(false),
+        };
+        let (_response, decision, request_log, event) = routed_openai_payload(&request);
+        let store = RuntimeStore::new(&dir);
+        let intent = TerminalCommitMarker {
+            request_id: decision.request_id,
+            phase: TerminalCommitPhase::Intent,
+            timestamp_ms: event.timestamp_ms.max(1),
+            event_id: event.event_id,
+            ccr_updated_at_ms: event.timestamp_ms.max(1),
+            reason: None,
+        };
+        store
+            .append_terminal_commit_marker(&intent)
+            .expect("write intent marker");
+        // All four fan-out records are durable, but the committed marker
+        // write failed and left the request explicitly pending.
+        let pending = TerminalCommitMarker {
+            phase: TerminalCommitPhase::Pending,
+            reason: Some("commit_marker_write_failed".to_string()),
+            ..intent.clone()
+        };
+        store
+            .append_terminal_commit_marker(&pending)
+            .expect("write pending marker");
+        let ccr = ccr_metadata_from_request(&decision, &request_log, &event, None, false);
+        store.append_event(&event).expect("append event");
+        store
+            .append_route_decision(&route_decision_to_value(&decision))
+            .expect("append route");
+        store.append_request_log(&request_log).expect("append log");
+        store.append_ccr_metadata(&ccr).expect("append ccr");
+
+        let restarted = AppState::new_persistent_with_ccr_key(DtokenConfig::empty(), &dir, key)
+            .expect("restart around complete pending marker");
+        let markers = restarted
+            .runtime_store
+            .as_ref()
+            .expect("runtime store")
+            .latest_terminal_commit_markers()
+            .expect("latest markers");
+        let (_, final_marker) = markers
+            .iter()
+            .find(|(id, _)| *id == decision.request_id)
+            .expect("final marker");
+        assert_eq!(final_marker.phase, TerminalCommitPhase::Committed);
+        assert!(
+            !restarted
+                .terminal_pending_commits
+                .contains_key(&decision.request_id),
+            "complete pending bundle is promoted, not left pending"
+        );
+        // The promoted request converges into the SQLite projection exactly
+        // once.
+        let projections =
+            ContextStore::open(dir.join("runtime-state.sqlite3")).expect("open projection");
+        assert_eq!(projections.projection_counts().unwrap().0, 1);
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn terminal_commit_recovery_keeps_partial_pending_marker_pending() {
+        // A Pending marker with only part of the fan-out durable stays
+        // explicitly pending across restart; recovery never guesses
+        // committed and preserves the recorded failure reason.
+        let dir =
+            std::env::temp_dir().join(format!("dtoken-marker-pending-partial-{}", Uuid::new_v4()));
+        let key = [80_u8; 32];
+        let request = OpenAiChatRequest {
+            model: Some("pending-partial-model".to_string()),
+            messages: Some(vec![json!({
+                "role": "user",
+                "content": "PENDING_PARTIAL_SECRET"
+            })]),
+            stream: Some(false),
+        };
+        let (_response, decision, _request_log, event) = routed_openai_payload(&request);
+        let store = RuntimeStore::new(&dir);
+        let intent = TerminalCommitMarker {
+            request_id: decision.request_id,
+            phase: TerminalCommitPhase::Intent,
+            timestamp_ms: event.timestamp_ms.max(1),
+            event_id: event.event_id,
+            ccr_updated_at_ms: event.timestamp_ms.max(1),
+            reason: None,
+        };
+        store
+            .append_terminal_commit_marker(&intent)
+            .expect("write intent marker");
+        let pending = TerminalCommitMarker {
+            phase: TerminalCommitPhase::Pending,
+            reason: Some("request_log_sync_failed".to_string()),
+            ..intent.clone()
+        };
+        store
+            .append_terminal_commit_marker(&pending)
+            .expect("write pending marker");
+        // Only two of the four fan-out records are durable: the bundle is
+        // still partial at restart.
+        store.append_event(&event).expect("append event");
+        store
+            .append_route_decision(&route_decision_to_value(&decision))
+            .expect("append route");
+
+        let restarted = AppState::new_persistent_with_ccr_key(DtokenConfig::empty(), &dir, key)
+            .expect("restart around partial pending marker");
+        let markers = restarted
+            .runtime_store
+            .as_ref()
+            .expect("runtime store")
+            .latest_terminal_commit_markers()
+            .expect("latest markers");
+        let (_, recovered) = markers
+            .iter()
+            .find(|(id, _)| *id == decision.request_id)
+            .expect("recovered marker");
+        assert_eq!(recovered.phase, TerminalCommitPhase::Pending);
+        assert_eq!(recovered.reason.as_deref(), Some("request_log_sync_failed"));
+        assert!(
+            restarted
+                .terminal_pending_commits
+                .contains_key(&decision.request_id),
+            "partial pending request is still tracked for projection filtering"
+        );
+        assert!(
+            restarted
+                .recent_request_logs(100)
+                .iter()
+                .all(|log| log.request_id != decision.request_id),
+            "partial pending request must not surface in hot request logs"
+        );
+        let projections =
+            ContextStore::open(dir.join("runtime-state.sqlite3")).expect("open projection");
+        assert_eq!(
+            projections.projection_counts().unwrap().0,
+            0,
+            "partial pending request must not surface in the SQLite projection"
+        );
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn terminal_commit_recovery_promotion_is_idempotent_across_restarts() {
+        // Once a complete pending marker is promoted, a second restart must
+        // not re-promote, duplicate the committed marker, or resurrect the
+        // pending state.
+        let dir = std::env::temp_dir().join(format!(
+            "dtoken-marker-pending-idempotent-{}",
+            Uuid::new_v4()
+        ));
+        let key = [81_u8; 32];
+        let request = OpenAiChatRequest {
+            model: Some("pending-idempotent-model".to_string()),
+            messages: Some(vec![json!({
+                "role": "user",
+                "content": "PENDING_IDEMPOTENT_SECRET"
+            })]),
+            stream: Some(false),
+        };
+        let (_response, decision, request_log, event) = routed_openai_payload(&request);
+        let store = RuntimeStore::new(&dir);
+        let intent = TerminalCommitMarker {
+            request_id: decision.request_id,
+            phase: TerminalCommitPhase::Intent,
+            timestamp_ms: event.timestamp_ms.max(1),
+            event_id: event.event_id,
+            ccr_updated_at_ms: event.timestamp_ms.max(1),
+            reason: None,
+        };
+        store
+            .append_terminal_commit_marker(&intent)
+            .expect("write intent marker");
+        let pending = TerminalCommitMarker {
+            phase: TerminalCommitPhase::Pending,
+            reason: Some("commit_marker_write_failed".to_string()),
+            ..intent.clone()
+        };
+        store
+            .append_terminal_commit_marker(&pending)
+            .expect("write pending marker");
+        let ccr = ccr_metadata_from_request(&decision, &request_log, &event, None, false);
+        store.append_event(&event).expect("append event");
+        store
+            .append_route_decision(&route_decision_to_value(&decision))
+            .expect("append route");
+        store.append_request_log(&request_log).expect("append log");
+        store.append_ccr_metadata(&ccr).expect("append ccr");
+
+        let restarted = AppState::new_persistent_with_ccr_key(DtokenConfig::empty(), &dir, key)
+            .expect("first restart around complete pending marker");
+        assert!(
+            !restarted
+                .terminal_pending_commits
+                .contains_key(&decision.request_id),
+            "first restart promotes the complete pending bundle"
+        );
+        // Second restart: the committed marker is now the latest per
+        // request, so recovery is a no-op and must not append a duplicate
+        // committed marker or resurrect pending state.
+        let again = AppState::new_persistent_with_ccr_key(DtokenConfig::empty(), &dir, key)
+            .expect("second restart is idempotent");
+        let markers = again
+            .runtime_store
+            .as_ref()
+            .expect("runtime store")
+            .latest_terminal_commit_markers()
+            .expect("latest markers");
+        let (_, final_marker) = markers
+            .iter()
+            .find(|(id, _)| *id == decision.request_id)
+            .expect("final marker after second restart");
+        assert_eq!(final_marker.phase, TerminalCommitPhase::Committed);
+        assert!(
+            !again
+                .terminal_pending_commits
+                .contains_key(&decision.request_id),
+            "pending state does not resurrect on restart"
+        );
+        let committed_count = std::fs::read_to_string(dir.join("terminal-commits.jsonl"))
+            .expect("read marker journal")
+            .lines()
+            .filter(|line| {
+                line.contains("\"phase\":\"committed\"")
+                    && line.contains(&format!("\"request_id\":\"{}\"", decision.request_id))
+            })
+            .count();
+        assert_eq!(
+            committed_count, 1,
+            "promotion appends exactly one committed marker across restarts"
+        );
+        let projections =
+            ContextStore::open(dir.join("runtime-state.sqlite3")).expect("open projection");
+        assert_eq!(projections.projection_counts().unwrap().0, 1);
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[cfg(feature = "failpoints")]
+    #[test]
+    fn terminal_commit_recovery_after_failpoint_abort_before_fanout_leaves_partial_pending() {
+        use dtoken_event_ledger::failpoints::{arm, clear_all, disarm};
+        let _guard = FAILPOINT_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+
+        let dir =
+            std::env::temp_dir().join(format!("dtoken-marker-failpoint-intent-{}", Uuid::new_v4()));
+        let key = [82_u8; 32];
+        let state = AppState::new_persistent_with_ccr_key(DtokenConfig::empty(), &dir, key)
+            .expect("persistent state");
+        let request = OpenAiChatRequest {
+            model: Some("failpoint-intent-model".to_string()),
+            messages: Some(vec![json!({
+                "role": "user",
+                "content": "FAILPOINT_INTENT_SECRET"
+            })]),
+            stream: Some(false),
+        };
+        let (_response, decision, request_log, event) = routed_openai_payload(&request);
+
+        // Crash window: the intent marker is durable, but the process dies
+        // before any fan-out append.  The commit path must abort with the
+        // intent as the only durable trace.
+        arm("terminal:crash_after_intent_before_fanout", 1);
+        state.record_routed_request(&decision, request_log.clone(), event.clone());
+        disarm("terminal:crash_after_intent_before_fanout");
+        drop(state);
+        let marker_lines = std::fs::read_to_string(dir.join("terminal-commits.jsonl"))
+            .expect("read marker journal");
+        let request_markers = marker_lines
+            .lines()
+            .filter(|line| line.contains(&format!("\"request_id\":\"{}\"", decision.request_id)))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            request_markers.len(),
+            1,
+            "aborted commit must leave exactly the intent marker, got {marker_lines}"
+        );
+        assert!(
+            request_markers[0].contains("\"phase\":\"intent\""),
+            "the only durable marker must still be the intent"
+        );
+        assert!(
+            !dir.join("route-decisions.jsonl").exists()
+                && !dir.join("request-logs.jsonl").exists()
+                && !dir.join("events.jsonl").exists()
+                && !dir.join("ccr-metadata.jsonl").exists(),
+            "failpoint abort before fan-out must leave no fan-out journal"
+        );
+
+        // Restart: the dangling intent is classified explicitly pending and
+        // stays hidden from every read model.
+        let restarted = AppState::new_persistent_with_ccr_key(DtokenConfig::empty(), &dir, key)
+            .expect("restart around failpoint-aborted intent");
+        let markers = restarted
+            .runtime_store
+            .as_ref()
+            .expect("runtime store")
+            .latest_terminal_commit_markers()
+            .expect("latest markers");
+        let (_, recovered) = markers
+            .iter()
+            .find(|(id, _)| *id == decision.request_id)
+            .expect("recovered marker");
+        assert_eq!(recovered.phase, TerminalCommitPhase::Pending);
+        assert_eq!(
+            recovered.reason.as_deref(),
+            Some("partial_fan_out_at_recovery")
+        );
+        assert!(
+            restarted
+                .terminal_pending_commits
+                .contains_key(&decision.request_id),
+            "failpoint-aborted request stays tracked as pending"
+        );
+        assert!(
+            restarted
+                .recent_request_logs(100)
+                .iter()
+                .all(|log| log.request_id != decision.request_id),
+            "failpoint-aborted request must not surface in hot request logs"
+        );
+        let projections =
+            ContextStore::open(dir.join("runtime-state.sqlite3")).expect("open projection");
+        assert_eq!(
+            projections.projection_counts().unwrap().0,
+            0,
+            "failpoint-aborted request must not surface in the SQLite projection"
+        );
+
+        // Second restart stays pending and appends no duplicate marker:
+        // recovery never re-classifies an explicitly pending request.
+        let again = AppState::new_persistent_with_ccr_key(DtokenConfig::empty(), &dir, key)
+            .expect("second restart around pending request");
+        let markers = again
+            .runtime_store
+            .as_ref()
+            .expect("runtime store")
+            .latest_terminal_commit_markers()
+            .expect("latest markers");
+        let (_, final_marker) = markers
+            .iter()
+            .find(|(id, _)| *id == decision.request_id)
+            .expect("final marker after second restart");
+        assert_eq!(final_marker.phase, TerminalCommitPhase::Pending);
+        let pending_count = std::fs::read_to_string(dir.join("terminal-commits.jsonl"))
+            .expect("read marker journal")
+            .lines()
+            .filter(|line| {
+                line.contains("\"phase\":\"pending\"")
+                    && line.contains(&format!("\"request_id\":\"{}\"", decision.request_id))
+            })
+            .count();
+        assert_eq!(
+            pending_count, 1,
+            "recovery appends the pending marker exactly once across restarts"
+        );
+        clear_all();
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[cfg(feature = "failpoints")]
+    #[test]
+    fn terminal_commit_recovery_after_failpoint_abort_before_commit_marker_rolls_forward() {
+        use dtoken_event_ledger::failpoints::{arm, clear_all, disarm};
+        let _guard = FAILPOINT_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+
+        let dir =
+            std::env::temp_dir().join(format!("dtoken-marker-failpoint-commit-{}", Uuid::new_v4()));
+        let key = [83_u8; 32];
+        let state = AppState::new_persistent_with_ccr_key(DtokenConfig::empty(), &dir, key)
+            .expect("persistent state");
+        let request = OpenAiChatRequest {
+            model: Some("failpoint-commit-model".to_string()),
+            messages: Some(vec![json!({
+                "role": "user",
+                "content": "FAILPOINT_COMMIT_SECRET"
+            })]),
+            stream: Some(false),
+        };
+        let (_response, decision, request_log, event) = routed_openai_payload(&request);
+
+        // Crash window: all four fan-out records are durable but the
+        // committed marker never syncs.  The commit path must abort leaving
+        // the intent dangling over a complete bundle.
+        arm("terminal:crash_before_commit_marker", 1);
+        state.record_routed_request(&decision, request_log.clone(), event.clone());
+        disarm("terminal:crash_before_commit_marker");
+        drop(state);
+        let marker_lines = std::fs::read_to_string(dir.join("terminal-commits.jsonl"))
+            .expect("read marker journal");
+        let request_markers = marker_lines
+            .lines()
+            .filter(|line| line.contains(&format!("\"request_id\":\"{}\"", decision.request_id)))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            request_markers.len(),
+            1,
+            "aborted commit must leave exactly the intent marker over a complete bundle, got {marker_lines}"
+        );
+        assert!(
+            request_markers[0].contains("\"phase\":\"intent\""),
+            "the committed marker must never sync after the injected abort"
+        );
+
+        // Restart: the complete bundle rolls forward to Committed exactly
+        // once; no fan-out record is re-appended.
+        let restarted = AppState::new_persistent_with_ccr_key(DtokenConfig::empty(), &dir, key)
+            .expect("restart around failpoint-aborted commit marker");
+        let markers = restarted
+            .runtime_store
+            .as_ref()
+            .expect("runtime store")
+            .latest_terminal_commit_markers()
+            .expect("latest markers");
+        let (_, final_marker) = markers
+            .iter()
+            .find(|(id, _)| *id == decision.request_id)
+            .expect("final marker");
+        assert_eq!(final_marker.phase, TerminalCommitPhase::Committed);
+        assert!(
+            !restarted
+                .terminal_pending_commits
+                .contains_key(&decision.request_id),
+            "complete bundle is not left pending"
+        );
+        let request_id_str = decision.request_id.to_string();
+        let routes = restarted
+            .runtime_store
+            .as_ref()
+            .expect("runtime store")
+            .recent_route_decisions(100)
+            .expect("route decisions");
+        assert_eq!(
+            routes
+                .iter()
+                .filter(|value| value["request_id"].as_str() == Some(request_id_str.as_str()))
+                .count(),
+            1
+        );
+        let logs = restarted
+            .runtime_store
+            .as_ref()
+            .expect("runtime store")
+            .recent_request_logs(100)
+            .expect("request logs");
+        assert_eq!(
+            logs.iter()
+                .filter(|log| log.request_id == decision.request_id)
+                .count(),
+            1
+        );
+        let events = restarted
+            .runtime_store
+            .as_ref()
+            .expect("runtime store")
+            .recent_events(100)
+            .expect("events");
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| event.event_id == final_marker.event_id)
+                .count(),
+            1,
+            "the committed request converges into the hot event ledger exactly once"
+        );
+        let projections =
+            ContextStore::open(dir.join("runtime-state.sqlite3")).expect("open projection");
+        assert_eq!(projections.projection_counts().unwrap().0, 1);
+        clear_all();
 
         let _ = std::fs::remove_dir_all(dir);
     }
@@ -18656,6 +21479,7 @@ mod tests {
             ContextStoreCapabilityState::NotConfigured,
             false,
             None,
+            false,
         );
         for id in [
             "cache-aligner",
@@ -18731,6 +21555,7 @@ mod tests {
             ContextStoreCapabilityState::NotConfigured,
             true,
             None,
+            false,
         );
         assert_eq!(
             ccr_ready
@@ -18748,6 +21573,7 @@ mod tests {
             ContextStoreCapabilityState::Ready { schema_version: 6 },
             true,
             None,
+            false,
         );
         let expected = [
             ("compression", AvailabilityState::Ready),
@@ -18799,6 +21625,7 @@ mod tests {
             ContextStoreCapabilityState::NotConfigured,
             false,
             Some(&installed_only),
+            false,
         );
         assert_eq!(
             installed_registry
@@ -18827,6 +21654,7 @@ mod tests {
             ContextStoreCapabilityState::NotConfigured,
             false,
             Some(&invoked),
+            false,
         );
         assert_eq!(
             invoked_registry
@@ -18857,6 +21685,7 @@ mod tests {
             ContextStoreCapabilityState::NotConfigured,
             false,
             None,
+            false,
         );
         let capability = registry
             .find("agent-registry")
@@ -18896,11 +21725,14 @@ mod tests {
         let transforms = vec!["semantic_text".to_string()];
         let missing = PreparedCcr {
             receipt: None,
+            proof: None,
+            authority: None,
             store_configured: false,
         };
 
         let fallback = prepare_json_pipeline_payload(
             scope.clone(),
+            &cache_test_decision(&scope),
             &baseline,
             &candidate,
             &transforms,
@@ -18916,17 +21748,37 @@ mod tests {
             Some("pipeline_recovery_unavailable")
         );
 
+        // Store-issued live proof: the old near-epoch expiry was never
+        // enforced by the pipeline and would now fail closed, so the test
+        // uses a live store-issued proof (PIPELINE-RECEIPT-AUTHENTICITY).
+        let authority = dtoken_runtime_pipeline::RecoveryProofAuthority::new([31_u8; 32]);
+        let ccr_receipt = CcrStoreReceipt {
+            recovery_ref: format!("ccr:{}", scope.request_id),
+            expires_at_unix: 1_000_000_000_000,
+            plaintext_bytes: 64,
+        };
         let prepared = PreparedCcr {
-            receipt: Some(CcrStoreReceipt {
-                recovery_ref: format!("ccr:{}", scope.request_id),
-                expires_at_unix: 100,
-                plaintext_bytes: 64,
-            }),
+            receipt: Some(ccr_receipt.clone()),
+            proof: Some(
+                authority
+                    .issue(
+                        ccr_receipt.recovery_ref.clone(),
+                        ccr_receipt.expires_at_unix,
+                    )
+                    .expect("store-issued proof"),
+            ),
+            authority: Some(authority),
             store_configured: true,
         };
-        let optimized =
-            prepare_json_pipeline_payload(scope, &baseline, &candidate, &transforms, &prepared)
-                .expect("optimized payload");
+        let optimized = prepare_json_pipeline_payload(
+            scope.clone(),
+            &cache_test_decision(&scope),
+            &baseline,
+            &candidate,
+            &transforms,
+            &prepared,
+        )
+        .expect("optimized payload");
         assert_eq!(
             optimized.ready.variant(),
             dtoken_types::SentPayloadVariant::Optimized
@@ -18951,6 +21803,7 @@ mod tests {
             ContextStoreCapabilityState::Ready { schema_version: 2 },
             false,
             None,
+            false,
         );
         let mut store =
             ContextStore::open(dir.join("runtime-state.sqlite3")).expect("open context store");
@@ -19048,6 +21901,7 @@ mod tests {
             request_id,
             &decision,
             Some("model-a".to_string()),
+            Some("model-a".to_string()),
             Protocol::OpenAi,
             &compression,
             &attribution,
@@ -19123,6 +21977,228 @@ mod tests {
     }
 
     #[test]
+    fn runtime_export_and_dashboard_expose_same_fact_optimization_receipts() {
+        let state = AppState::new(DtokenConfig::empty());
+        let request = OpenAiChatRequest {
+            model: Some("opencode/deepseek-v4-flash-free".to_string()),
+            messages: Some(vec![json!({
+                "role": "user",
+                "content": "terminal state normal request"
+            })]),
+            stream: Some(false),
+        };
+        let (_response, decision, request_log, event) = routed_openai_payload(&request);
+        state.record_routed_request(&decision, request_log, event);
+
+        let export = runtime_export_json_payload(&state);
+        let receipts = export["optimization_receipts"].as_array().unwrap();
+        let logs = export["request_logs"].as_array().unwrap();
+        assert_eq!(receipts.len(), 1);
+        assert_eq!(receipts.len(), logs.len());
+        // Receipt request_id corresponds 1:1 to request_logs.
+        assert_eq!(receipts[0]["request_id"], logs[0]["request_id"]);
+        assert_eq!(receipts[0]["timestamp_ms"], logs[0]["timestamp_ms"]);
+        // Provider usage was not measured on this passthrough path.
+        assert!(receipts[0]["provider_input_tokens"].is_null());
+        assert!(receipts[0]["provider_output_tokens"].is_null());
+        // Receipt projection never leaks raw payload, bodies, auth or paths.
+        let serialized = export.to_string();
+        assert!(!serialized.contains("raw_prompt"));
+        assert!(!serialized.contains("response_body"));
+        assert!(!serialized.contains("Authorization"));
+        assert!(!serialized.contains("Cookie"));
+        let receipt_object = receipts[0].as_object().unwrap();
+        for key in ["raw", "body", "auth", "path"] {
+            assert!(
+                !receipt_object.contains_key(key),
+                "receipt must not carry {key}"
+            );
+        }
+
+        // Dashboard exposes the same projection (same fact, no duplicated accounting).
+        let dashboard = dashboard_payload_for_state(&state);
+        let dashboard_receipts = dashboard["optimization_receipts"].as_array().unwrap();
+        assert_eq!(dashboard_receipts.len(), 1);
+        assert_eq!(
+            dashboard_receipts[0]["request_id"],
+            receipts[0]["request_id"]
+        );
+        assert_eq!(
+            dashboard["request_logs"].as_array().unwrap().len(),
+            dashboard_receipts.len()
+        );
+    }
+
+    #[test]
+    fn optimization_receipts_cover_compression_fallback() {
+        let state = AppState::new(DtokenConfig::empty());
+        let request = OpenAiChatRequest {
+            model: Some("opencode/deepseek-v4-flash-free".to_string()),
+            messages: Some(vec![json!({"role": "user", "content": "fallback case"})]),
+            stream: Some(false),
+        };
+        let (_response, decision, mut request_log, event) = routed_openai_payload(&request);
+        request_log.context_accounting = Some(dtoken_types::HybridContextAccounting {
+            schema_version: 1,
+            disposition: dtoken_types::OptimizationDisposition::FallbackPreSend,
+            sent_payload: dtoken_types::SentPayloadVariant::Original,
+            upstream_state: dtoken_types::UpstreamSendState::Completed,
+            estimated: None,
+            provider_counterfactual_baseline: None,
+            provider_actual_sent: dtoken_types::ProviderActualUsage { measurement: None },
+            provider_reconciled_input_savings: None,
+            paired_actual: None,
+            attribution_basis: dtoken_types::SavingsAttribution::None,
+            fallback_reason_code: Some("compression_failed".to_string()),
+        });
+        state.record_routed_request(&decision, request_log, event);
+
+        let export = runtime_export_json_payload(&state);
+        let receipt = &export["optimization_receipts"][0];
+        assert_eq!(receipt["disposition"], "fallback_pre_send");
+        assert_eq!(receipt["failure_type"], "compression_failed");
+        assert!(receipt["savings_claimable"].is_null());
+        assert!(receipt["savings_estimated"].is_null());
+    }
+
+    #[test]
+    fn mark_upstream_outcome_records_provider_actual_usage() {
+        let upstream = UpstreamResult {
+            response: json!({
+                "usage": {
+                    "prompt_tokens": 900,
+                    "completion_tokens": 120
+                }
+            }),
+            status: Some(200),
+            error_category: None,
+            send_state: UpstreamSendState::Completed,
+            quota_metadata: None,
+        };
+        let mut request_log = RequestLog {
+            request_id: Uuid::new_v4(),
+            timestamp_ms: 1,
+            agent: Some("test-agent".to_string()),
+            instance_id: None,
+            project_id: None,
+            user_target_model: None,
+            input_protocol: dtoken_types::Protocol::OpenAi,
+            provider_id: Some("test-provider".to_string()),
+            route_id: Some("test-route".to_string()),
+            chain_mode: None,
+            model: Some("test-model".to_string()),
+            input_tokens_before: Some(1000),
+            input_tokens_after: Some(400),
+            output_tokens: None,
+            provider_input_tokens: None,
+            provider_output_tokens: None,
+            tokens_saved: None,
+            transforms_applied: vec![],
+            latency_ms: None,
+            error: None,
+            config_source: None,
+            quota_metadata: None,
+            context_accounting: Some(completed_active_accounting()),
+        };
+        let mut event = optical_test_event(
+            LayeredStage::HeadroomRetrieve,
+            EventStatus::Ok,
+            1,
+            json!({}),
+            None,
+        );
+        mark_upstream_outcome(&upstream, &mut request_log, &mut event);
+
+        // Projected from normalized provider-reported usage, never derived.
+        assert_eq!(request_log.provider_input_tokens, Some(900));
+        assert_eq!(request_log.provider_output_tokens, Some(120));
+        let accounting = request_log.context_accounting.as_ref().unwrap();
+        let provider_actual = accounting
+            .provider_actual_sent
+            .measurement
+            .as_ref()
+            .expect("mark_upstream_outcome must record provider actual usage");
+        assert_eq!(
+            provider_actual.evidence.kind,
+            UsageEvidenceKind::ProviderActual
+        );
+        assert_eq!(provider_actual.usage.input.normalized_total, Some(900));
+        assert_eq!(provider_actual.usage.output_tokens, Some(120));
+        assert_eq!(event.context_accounting, request_log.context_accounting);
+    }
+
+    #[test]
+    fn build_request_log_projects_scope_and_user_target_into_receipt() {
+        // Request-scope project identity and the user-requested model are
+        // explicit evidence captured at build time; the receipt projection
+        // must carry them and derive provider_or_model_changed from them.
+        let decision = RouteDecision {
+            request_id: Uuid::new_v4(),
+            route_id: "route-a".to_string(),
+            provider_id: "provider-a".to_string(),
+            chain_mode: ChainMode::Direct,
+            compression_policy: CompressionPolicy::Balanced,
+            reason: "test".to_string(),
+            input_protocol: Some(Protocol::OpenAi),
+            output_protocol: Some(Protocol::OpenAi),
+        };
+        let compression = CompressionSummary {
+            original_tokens: 1000,
+            compressed_tokens: 400,
+            tokens_saved: 600,
+            savings_percent: 60.0,
+            elapsed_us: 1000,
+            transforms_applied: vec!["repeat_line_fold".to_string()],
+            fallback_reason_code: None,
+            body: json!({}),
+            context_accounting: None,
+            bus_receipts: vec![],
+        };
+        let attribution = RequestAttribution {
+            agent: Some("test-agent".to_string()),
+            instance_id: Some("instance-a".to_string()),
+            project_id: Some("project-a".to_string()),
+        };
+        let log = build_request_log(
+            decision.request_id,
+            &decision,
+            Some("routed-model".to_string()),
+            Some("user-model".to_string()),
+            Protocol::OpenAi,
+            &compression,
+            &attribution,
+        );
+        assert_eq!(log.project_id.as_deref(), Some("project-a"));
+        assert_eq!(log.user_target_model.as_deref(), Some("user-model"));
+
+        let receipt = OptimizationReceipt::from_request_log(&log);
+        assert_eq!(receipt.project_scope.as_deref(), Some("project-a"));
+        assert_eq!(receipt.user_target_model.as_deref(), Some("user-model"));
+        assert_eq!(receipt.model.as_deref(), Some("routed-model"));
+        assert_eq!(receipt.provider_or_model_changed, Some(true));
+        // Blank project identity stays None on the log and the receipt.
+        let blank_attribution = RequestAttribution {
+            agent: None,
+            instance_id: None,
+            project_id: Some("   ".to_string()),
+        };
+        let blank_log = build_request_log(
+            decision.request_id,
+            &decision,
+            None,
+            None,
+            Protocol::OpenAi,
+            &compression,
+            &blank_attribution,
+        );
+        assert_eq!(blank_log.project_id, None);
+        assert_eq!(
+            OptimizationReceipt::from_request_log(&blank_log).project_scope,
+            None
+        );
+    }
+
+    #[test]
     fn headroom_parity_payloads_are_dtoken_owned_runtime_derived() {
         let state = AppState::new(DtokenConfig::empty());
         let request = OpenAiChatRequest {
@@ -19137,7 +22213,7 @@ mod tests {
         state.record_routed_request(&decision, request_log, event);
 
         let logs = state.recent_request_logs(10_000);
-        let stats = runtime_stats_payload(&logs);
+        let stats = runtime_stats_payload(&logs, None);
         let metrics = runtime_metrics_payload(&logs);
         let cache = runtime_cache_summary_for_state(&state);
         let memory = memory_summary_for_state(&state);
@@ -19452,6 +22528,88 @@ mod tests {
     }
 
     #[test]
+    fn context_bus_relay_survives_restart_across_two_app_states() {
+        // C3B: 两个 AppState 实例（模拟两次进程启动）共享同一持久目录：
+        // 第一个实例写入 session cache / relay 条目 + grant；第二个实例
+        // 启动时从 SQLite 恢复，跨 Agent 命中 relay 且跨项目仍为零。
+        let dir = std::env::temp_dir().join(format!("dtoken-bus-relay-restart-{}", Uuid::new_v4()));
+        let config = route_test_config();
+        let now = dtoken_event_ledger::now_ms().max(1);
+        {
+            let first = AppState::new_persistent(config.clone(), &dir);
+            let mut bus = first
+                .context_bus
+                .as_ref()
+                .expect("bus configured")
+                .lock()
+                .unwrap();
+            let owner = dtoken_context_bus::BusScope::new("proj-a", "agent-a", "sess-1");
+            bus.record(
+                &owner,
+                r#"{"q":"shared"}"#,
+                &"a".repeat(64),
+                None,
+                Some("candidate-body".to_string()),
+                &["route-a".to_string()],
+                now,
+            )
+            .expect("record");
+            bus.grant(&dtoken_context_bus::shared::GrantRequest {
+                scope: dtoken_context_bus::GrantScope::new(
+                    "proj-a", "agent-a", "agent-b", "sess-1",
+                ),
+                grant_revision: "rev-1".to_string(),
+                granted_at_ms: now,
+            })
+            .expect("grant");
+        }
+        // 第二个实例：从同一持久目录恢复。
+        let second = AppState::new_persistent(config, &dir);
+        let mut bus = second
+            .context_bus
+            .as_ref()
+            .expect("bus configured")
+            .lock()
+            .unwrap();
+        assert_eq!(bus.cache_entry_count(), 1, "session cache recovered");
+        assert_eq!(bus.relay_entry_count(), 1, "relay recovered");
+        assert_eq!(bus.shared_grant_count(), 1, "grant recovered");
+        let consumer = dtoken_context_bus::BusScope::new("proj-a", "agent-b", "sess-2");
+        let signature = dtoken_context_bus::signature::map_signature("proj-a", r#"{"q":"shared"}"#);
+        let fingerprint = dtoken_context_bus::signature::source_fingerprint(&"a".repeat(64), None);
+        let outcome = bus.consult(
+            &consumer,
+            &signature,
+            &fingerprint,
+            &["route-a".to_string()],
+            now,
+        );
+        match outcome {
+            dtoken_context_bus::bus::ConsultOutcome::RelayHit { entry, .. } => {
+                assert_eq!(entry.body.as_deref(), Some("candidate-body"));
+            }
+            other => panic!("expected relay hit after restart, got {other:?}"),
+        }
+        // 跨项目隔离：proj-b 同内容 → miss（跨项目污染 = 0）。
+        let other = dtoken_context_bus::BusScope::new("proj-b", "agent-c", "sess-3");
+        let other_signature =
+            dtoken_context_bus::signature::map_signature("proj-b", r#"{"q":"shared"}"#);
+        assert!(matches!(
+            bus.consult(
+                &other,
+                &other_signature,
+                &fingerprint,
+                &["route-a".to_string()],
+                now
+            ),
+            dtoken_context_bus::bus::ConsultOutcome::Miss
+        ));
+        drop(bus);
+        drop(second);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
     fn direct_anthropic_verified_evidence_inserts_one_frozen_tool_breakpoint() {
         let dir = std::env::temp_dir().join(format!("dtoken-anthropic-cache-{}", Uuid::new_v4()));
         let state = AppState::new_persistent(
@@ -19564,13 +22722,14 @@ mod tests {
         let evidence = configured_provider_cache_evidence(&state, &payload.scope)
             .expect("fresh exact Anthropic evidence");
 
-        let (prepared_ccr, variant, wire) = prepare_direct_anthropic_pipeline_for_send(
-            &state,
-            &mut payload,
-            &body,
-            &original,
-            Some(&evidence),
-        );
+        let (prepared_ccr, variant, wire, _sealed_ready, _sealed_validation) =
+            prepare_direct_anthropic_pipeline_for_send(
+                &state,
+                &mut payload,
+                &body,
+                &original,
+                Some(&evidence),
+            );
 
         assert!(prepared_ccr.receipt.is_some());
         assert_eq!(variant, dtoken_types::SentPayloadVariant::Optimized);
@@ -19614,13 +22773,14 @@ mod tests {
         let evidence = configured_provider_cache_evidence(&state, &payload.scope)
             .expect("fresh exact Anthropic evidence");
 
-        let (prepared_ccr, variant, wire) = prepare_direct_anthropic_pipeline_for_send(
-            &state,
-            &mut payload,
-            &body,
-            &original,
-            Some(&evidence),
-        );
+        let (prepared_ccr, variant, wire, _sealed_ready, _sealed_validation) =
+            prepare_direct_anthropic_pipeline_for_send(
+                &state,
+                &mut payload,
+                &body,
+                &original,
+                Some(&evidence),
+            );
 
         assert!(prepared_ccr.receipt.is_none());
         assert_eq!(variant, dtoken_types::SentPayloadVariant::Original);
@@ -19823,6 +22983,392 @@ mod tests {
             "anthropic_cache_upstream_unverified"
         );
         server.await.expect("mock upstream task");
+        drop(state);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    fn optical_exact_capability() -> dtoken_types::OpticalModelCapability {
+        dtoken_types::OpticalModelCapability {
+            provider_family: dtoken_types::ProviderFamily::Anthropic,
+            provider_id: Some("anthropic-main".to_string()),
+            model_base: Some("claude-fable-5".to_string()),
+            endpoint: dtoken_types::OpticalEndpoint::AnthropicMessages,
+            status: dtoken_types::CapabilityStatus::Supported,
+            max_mode: dtoken_types::OpticalMode::ToolResultsOnly,
+            supports_image_input: true,
+            supports_anthropic_image_block: true,
+            supports_openai_image_url: false,
+            supports_openai_input_image: false,
+            supports_data_url: true,
+            max_images_per_request: 10,
+            max_image_width_px: 1_568,
+            max_image_height_px: 728,
+            vision_token_formula: dtoken_types::VisionTokenFormula::PatchGrid {
+                patch_size_px: 28,
+                max_tokens: 1_568,
+                safety_margin_percent: 105.0,
+            },
+            exactness_class: dtoken_types::VisionExactnessClass::TechnicalReadable,
+        }
+    }
+
+    fn optical_exact_economics() -> dtoken_types::OpticalEconomicsAttestation {
+        dtoken_types::OpticalEconomicsAttestation {
+            schema_version: 1,
+            tokenizer_revision: "test-char4-tokenizer-v1".to_string(),
+            pricing_revision: "test-anthropic-cache-pricing-v1".to_string(),
+            cache_policy_revision: "cold-warm-unknown-max-burn-v1".to_string(),
+            chars_per_text_token: 4.0,
+            cache_create_rate: 1.25,
+            cache_read_rate: 0.1,
+        }
+    }
+
+    /// Fully green fixture config: Ed25519-attested exact route capability,
+    /// passing bound paired eval, attested economics, explicit route policy
+    /// and an Anthropic cache policy, so the direct send path can go
+    /// automatic active with no UI switch (PR-C5D).
+    fn optical_exact_active_test_config() -> DtokenConfig {
+        let mut snapshot = dtoken_types::OpticalCapabilitySnapshot {
+            schema_version: 1,
+            snapshot_id: "signed-route-capability-v1".to_string(),
+            revision: 1,
+            enabled: true,
+            lifecycle: dtoken_types::OpticalCapabilityLifecycle::Active,
+            revoked_at_ms: None,
+            revocation_reason: None,
+            supersedes_snapshot_id: None,
+            provider_family: dtoken_types::ProviderFamily::Anthropic,
+            provider_id: Some("anthropic-main".to_string()),
+            route_id: Some("route-main".to_string()),
+            model_base: "claude-fable-5".to_string(),
+            endpoint: dtoken_types::OpticalEndpoint::AnthropicMessages,
+            capability: optical_exact_capability(),
+            verified_at_ms: 1,
+            source: "c5d-test-fixture".to_string(),
+            notes: None,
+            attestation: None,
+            economics: Some(optical_exact_economics()),
+        };
+        let profile = dtoken_compress::optical::geometry_for_capability(&snapshot.capability)
+            .expect("exact capability must have geometry");
+        let mut builder = dtoken_compress::optical::OpticalEvalBuilder::new(
+            "eval-c5d-v1",
+            "claude-fable-5",
+            dtoken_types::OpticalEndpoint::AnthropicMessages,
+            &profile,
+            "fixture-corpus-digest",
+            1,
+            dtoken_compress::optical::EvalThresholds::default(),
+            snapshot.economics.as_ref(),
+        );
+        for _ in 0..20 {
+            builder.record(dtoken_compress::optical::EvalSampleObservation {
+                baseline_passed: true,
+                candidate_passed: true,
+                exact_failure: false,
+                unsafe_failure: false,
+                baseline_input_tokens: 2_000,
+                candidate_input_tokens: 1_000,
+                baseline_cost_microusd: 2_000,
+                candidate_cost_microusd: 1_000,
+                baseline_latency_ms: 100,
+                candidate_latency_ms: 90,
+            });
+        }
+        let eval = builder.finalize().expect("fixture eval artifact");
+        let eval_digest = dtoken_compress::optical::eval_artifact_digest(&eval);
+        let now_ms = dtoken_event_ledger::now_ms().max(1);
+        dtoken_compress::optical::sign_capability_snapshot(
+            &mut snapshot,
+            &[7u8; 32],
+            "fixture-authority",
+            "fixture-key-v1",
+            now_ms.saturating_sub(1).max(1),
+            now_ms.saturating_add(3_600_000),
+            &eval_digest,
+        )
+        .expect("fixture capability must sign");
+
+        DtokenConfig {
+            providers: vec![dtoken_types::ProviderProfile {
+                id: "anthropic-main".to_string(),
+                name: "Anthropic main".to_string(),
+                kind: dtoken_types::ProviderKind::Custom,
+                protocol: Protocol::Anthropic,
+                base_url: "https://api.anthropic.com".to_string(),
+                api_key_ref: None,
+                models: vec!["claude-fable-5".to_string(), "claude-other-5".to_string()],
+                timeout_ms: 30_000,
+                healthcheck_path: None,
+                wire_api: dtoken_types::ProviderWireApi::OpenAiChat,
+            }],
+            routes: vec![dtoken_types::RouteProfile {
+                id: "route-main".to_string(),
+                name: "Exact Optical route".to_string(),
+                input_protocol: Protocol::Anthropic,
+                instance_id: "anthropic-main-instance".to_string(),
+                target_provider_id: "anthropic-main".to_string(),
+                fallback_provider_id: None,
+                chain_mode: ChainMode::Direct,
+                compression_policy: CompressionPolicy::Balanced,
+                bind_host: "127.0.0.1".to_string(),
+                local_port: 18003,
+            }],
+            instances: vec![],
+            provider_cache_policies: vec![
+                dtoken_types::ProviderCachePolicy {
+                    route_id: "route-main".to_string(),
+                    provider_id: "anthropic-main".to_string(),
+                    model: "claude-fable-5".to_string(),
+                    strategy: dtoken_types::ProviderCachePolicyStrategy::AnthropicExplicit,
+                    ttl_seconds: 300,
+                    min_prefix_bytes: 1,
+                },
+                dtoken_types::ProviderCachePolicy {
+                    route_id: "route-main".to_string(),
+                    provider_id: "anthropic-main".to_string(),
+                    model: "claude-other-5".to_string(),
+                    strategy: dtoken_types::ProviderCachePolicyStrategy::AnthropicExplicit,
+                    ttl_seconds: 300,
+                    min_prefix_bytes: 1,
+                },
+            ],
+            output_shaping_policies: vec![],
+            optical: dtoken_types::OpticalRuntimeConfig {
+                schema_version: 1,
+                global_policy: dtoken_types::OpticalGlobalPolicy {
+                    enabled: true,
+                    allow_active: true,
+                    max_plan_time_ms: 5_000,
+                    max_render_time_ms: 5_000,
+                    ..Default::default()
+                },
+                route_policies: vec![dtoken_types::RouteOpticalPolicyEntry {
+                    route_id: "route-main".to_string(),
+                    policy: dtoken_types::RouteOpticalPolicy {
+                        enabled: true,
+                        mode: dtoken_types::OpticalMode::ToolResultsOnly,
+                        allow_tool_result: true,
+                        min_net_saved_tokens: 1,
+                        confirmed_experimental_lossy: true,
+                        ..Default::default()
+                    },
+                }],
+                capability_snapshots: vec![snapshot],
+                trusted_authorities: vec![dtoken_types::OpticalTrustedAuthority {
+                    authority_id: "fixture-authority".to_string(),
+                    key_id: "fixture-key-v1".to_string(),
+                    public_key_base64: base64::engine::general_purpose::STANDARD.encode(
+                        ed25519_dalek::SigningKey::from_bytes(&[7u8; 32])
+                            .verifying_key()
+                            .as_bytes(),
+                    ),
+                }],
+                eval_artifacts: vec![eval],
+            },
+        }
+    }
+
+    fn optical_exact_request_body(model: &str) -> Value {
+        let log = format!("INFO {} \n", "historical operation completed ".repeat(16));
+        let log = log.repeat(40);
+        let mut messages = vec![
+            json!({"role":"assistant","content":[{"type":"tool_use","id":"tool-1","name":"read","input":{"path":"/tmp/a"}}]}),
+            json!({"role":"user","content":[{"type":"tool_result","tool_use_id":"tool-1","content":log}]}),
+        ];
+        for index in 0..6 {
+            messages.push(json!({"role":"assistant","content":[{"type":"tool_use","id":format!("recent-{index}"),"name":"read","input":{}}]}));
+            messages.push(json!({"role":"user","content":[{"type":"tool_result","tool_use_id":format!("recent-{index}"),"content":"recent"}]}));
+        }
+        messages.push(json!({"role":"user","content":[{"type":"text","text":"current turn"}]}));
+        json!({
+            "model": model,
+            "system": "protected system instruction",
+            "tools": [{"name":"read","input_schema":{"type":"object"}}],
+            "messages": messages
+        })
+    }
+
+    #[tokio::test]
+    async fn optical_exact_attested_route_auto_activates_on_direct_send_path() {
+        let dir = std::env::temp_dir().join(format!("dtoken-c5d-green-{}", Uuid::new_v4()));
+        let state = AppState::new_persistent(optical_exact_active_test_config(), &dir);
+
+        // The capability registry must reflect the green exact route.
+        assert_eq!(
+            state
+                .capabilities
+                .find("optical-active")
+                .expect("optical-active capability")
+                .state,
+            AvailabilityState::Ready
+        );
+        let Json(status) = optical_status(State(state.clone())).await;
+        assert!(status.allow_active);
+        assert!(status.active_reachable);
+        assert_eq!(status.active_direct_routes, 1);
+
+        let body = optical_exact_request_body("claude-fable-5");
+        let raw = serde_json::to_vec(&body).expect("fixture serializes");
+        let mut payload = anthropic_route_payload(&state, body.clone(), RouteEvidence::default())
+            .expect("exact Anthropic route payload");
+        persist_anthropic_cache_evidence(&state, &payload.scope);
+
+        let prepared = prepare_direct_anthropic_hybrid(&state, &payload, raw)
+            .await
+            .expect("hybrid preparation must run with fresh cache evidence");
+        assert_eq!(
+            prepared.kind(),
+            HybridPreparationKind::Active,
+            "{}",
+            prepared.report().reason_code
+        );
+        assert!(prepared.report().artifact_validated);
+        assert!(prepared.report().image_count > 0);
+        assert_eq!(prepared.report().capability_revision, Some(1));
+        assert!(!prepared.report().capsule_digests.is_empty());
+
+        let original_body = payload.upstream_body.clone();
+        apply_hybrid_preparation(&mut payload, &prepared);
+        assert_ne!(payload.upstream_body, original_body);
+        assert_eq!(
+            payload
+                .request_log
+                .context_accounting
+                .as_ref()
+                .map(|accounting| accounting.disposition),
+            Some(dtoken_types::OptimizationDisposition::Active)
+        );
+        assert_eq!(payload.upstream_body["model"], json!("claude-fable-5"));
+        // Protected fields survive; only the approved historical tool result
+        // is replaced by the rendered capsule.
+        assert_eq!(payload.upstream_body["system"], body["system"]);
+        assert_eq!(payload.upstream_body["tools"], body["tools"]);
+        assert_eq!(payload.upstream_body["messages"][0], body["messages"][0]);
+        let patched_content = payload
+            .upstream_body
+            .pointer("/messages/1/content/0/content")
+            .and_then(Value::as_array)
+            .expect("approved tool result is replaced by typed content blocks");
+        assert_eq!(patched_content[0]["type"], "text");
+        assert_eq!(patched_content[1]["type"], "image");
+        drop(state);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn optical_exact_expired_attestation_preserves_original_body_on_send_path() {
+        let dir = std::env::temp_dir().join(format!("dtoken-c5d-expired-{}", Uuid::new_v4()));
+        let mut config = optical_exact_active_test_config();
+        config.optical.capability_snapshots[0]
+            .attestation
+            .as_mut()
+            .expect("attestation")
+            .expires_at_ms = 1;
+        let state = AppState::new_persistent(config, &dir);
+
+        let body = optical_exact_request_body("claude-fable-5");
+        let raw = serde_json::to_vec(&body).expect("fixture serializes");
+        let mut payload = anthropic_route_payload(&state, body.clone(), RouteEvidence::default())
+            .expect("exact Anthropic route payload");
+        persist_anthropic_cache_evidence(&state, &payload.scope);
+
+        let prepared = prepare_direct_anthropic_hybrid(&state, &payload, raw)
+            .await
+            .expect("hybrid preparation must run with fresh cache evidence");
+        assert_eq!(prepared.kind(), HybridPreparationKind::Shadow);
+        assert_eq!(prepared.body(), &body);
+        assert_eq!(
+            prepared.accounting().sent_payload,
+            dtoken_types::SentPayloadVariant::Original
+        );
+
+        apply_hybrid_preparation(&mut payload, &prepared);
+        assert_eq!(payload.upstream_body, body);
+        drop(state);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn optical_exact_revoked_snapshot_preserves_original_body_on_send_path() {
+        let dir = std::env::temp_dir().join(format!("dtoken-c5d-revoked-{}", Uuid::new_v4()));
+        let mut config = optical_exact_active_test_config();
+        let snapshot = &mut config.optical.capability_snapshots[0];
+        snapshot.lifecycle = dtoken_types::OpticalCapabilityLifecycle::Revoked;
+        snapshot.revoked_at_ms = Some(dtoken_event_ledger::now_ms());
+        snapshot.revocation_reason = Some("fixture revocation".to_string());
+        let state = AppState::new_persistent(config, &dir);
+
+        let body = optical_exact_request_body("claude-fable-5");
+        let raw = serde_json::to_vec(&body).expect("fixture serializes");
+        let mut payload = anthropic_route_payload(&state, body.clone(), RouteEvidence::default())
+            .expect("exact Anthropic route payload");
+        persist_anthropic_cache_evidence(&state, &payload.scope);
+
+        let prepared = prepare_direct_anthropic_hybrid(&state, &payload, raw)
+            .await
+            .expect("hybrid preparation must run with fresh cache evidence");
+        assert_eq!(prepared.kind(), HybridPreparationKind::Shadow);
+        assert_eq!(prepared.body(), &body);
+        assert_eq!(
+            prepared.accounting().sent_payload,
+            dtoken_types::SentPayloadVariant::Original
+        );
+
+        apply_hybrid_preparation(&mut payload, &prepared);
+        assert_eq!(payload.upstream_body, body);
+        drop(state);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn optical_exact_evidence_endpoint_emits_bounded_active_reachable_evidence() {
+        let state = AppState::new(optical_exact_active_test_config());
+        let Json(evidence) = optical_exact_evidence(State(state)).await;
+        assert_eq!(evidence.len(), 1);
+        let entry = &evidence[0];
+        assert!(entry.active_reachable);
+        assert!(entry.attested);
+        assert!(entry.eval_gate_passed);
+        assert!(entry.economics_bound);
+        assert!(entry.exact_identity);
+        assert_eq!(entry.route_id, "route-main");
+        assert_eq!(entry.provider_id, "anthropic-main");
+        assert_eq!(entry.model_base, "claude-fable-5");
+        assert_eq!(entry.api_revision, "anthropic-messages-v1");
+        let encoded = serde_json::to_string(&evidence).expect("evidence serializes");
+        assert!(!encoded.contains("signature"));
+        assert!(!encoded.contains("secret"));
+        assert!(!encoded.contains("base64"));
+    }
+
+    #[tokio::test]
+    async fn optical_exact_unknown_model_economics_preserves_original_body_on_send_path() {
+        // The snapshot attests claude-fable-5; a request for claude-other-5
+        // has no attested economics and must keep the original text even
+        // though the cache evidence for that model is fresh.
+        let dir = std::env::temp_dir().join(format!("dtoken-c5d-econ-{}", Uuid::new_v4()));
+        let state = AppState::new_persistent(optical_exact_active_test_config(), &dir);
+
+        let body = optical_exact_request_body("claude-other-5");
+        let raw = serde_json::to_vec(&body).expect("fixture serializes");
+        let mut payload = anthropic_route_payload(&state, body.clone(), RouteEvidence::default())
+            .expect("exact Anthropic route payload");
+        persist_anthropic_cache_evidence(&state, &payload.scope);
+
+        let prepared = prepare_direct_anthropic_hybrid(&state, &payload, raw)
+            .await
+            .expect("hybrid preparation must run with fresh cache evidence");
+        assert_eq!(prepared.kind(), HybridPreparationKind::Shadow);
+        assert_eq!(prepared.body(), &body);
+        assert_eq!(
+            prepared.accounting().sent_payload,
+            dtoken_types::SentPayloadVariant::Original
+        );
+
+        apply_hybrid_preparation(&mut payload, &prepared);
+        assert_eq!(payload.upstream_body, body);
         drop(state);
         let _ = std::fs::remove_dir_all(dir);
     }
@@ -20105,6 +23651,332 @@ mod tests {
             "evidence recorded in ledger"
         );
         server.await.expect("mock upstream task");
+    }
+
+    /// PR-12/C1A/C1C native Responses contract: the native /v1/responses
+    /// passthrough must seal the request through `prepare_json_pipeline_payload`
+    /// before any upstream send (resolved adapter `OpenAiResponsesPassthrough`,
+    /// pipeline variant + reason code recorded in the Event Ledger, wire body
+    /// byte-identical to the validated envelope body).
+    #[tokio::test]
+    async fn native_responses_passthrough_seals_pipeline_payload_and_records_resolved_adapter() {
+        use axum::body::to_bytes;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        // Keys are pre-sorted so the handler's `Json(...)` re-serialization is
+        // byte-identical to the upstream document (exact passthrough contract).
+        const UPSTREAM_BODY: &str = r#"{"id":"resp_123","object":"response","output":[{"content":[{"annotations":[],"text":"hello","type":"output_text"}],"id":"msg_1","role":"assistant","status":"completed","type":"message"}],"status":"completed","usage":{"input_tokens":2,"output_tokens":1,"total_tokens":3}}"#;
+
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind mock upstream");
+        let addr = listener.local_addr().expect("mock addr");
+        let upstream_body = UPSTREAM_BODY.to_string();
+        // Capture the exact request body the mock upstream receives so the
+        // test can prove the wire body equals the validated pipeline body.
+        let received = std::sync::Arc::new(std::sync::Mutex::new(None::<Vec<u8>>));
+        let received_for_server = received.clone();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.expect("accept request");
+            let mut request = Vec::new();
+            let mut buffer = [0_u8; 4096];
+            let expected_request_bytes = loop {
+                let read = socket.read(&mut buffer).await.expect("read request");
+                assert!(read > 0, "request closed before headers completed");
+                request.extend_from_slice(&buffer[..read]);
+                let Some(header_end) = request.windows(4).position(|window| window == b"\r\n\r\n")
+                else {
+                    continue;
+                };
+                let headers =
+                    std::str::from_utf8(&request[..header_end]).expect("request headers are UTF-8");
+                let content_length = headers
+                    .lines()
+                    .find_map(|line| {
+                        let (name, value) = line.split_once(':')?;
+                        if !name.trim().eq_ignore_ascii_case("content-length") {
+                            return None;
+                        }
+                        value.trim().parse::<usize>().ok()
+                    })
+                    .expect("request content length");
+                break header_end + 4 + content_length;
+            };
+            while request.len() < expected_request_bytes {
+                let read = socket.read(&mut buffer).await.expect("read request body");
+                assert!(read > 0, "request closed before body completed");
+                request.extend_from_slice(&buffer[..read]);
+            }
+            if let Some(header_end) = request.windows(4).position(|window| window == b"\r\n\r\n") {
+                *received_for_server.lock().expect("lock") =
+                    Some(request[header_end + 4..].to_vec());
+            }
+            let response = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                upstream_body.len(),
+                upstream_body
+            );
+            socket
+                .write_all(response.as_bytes())
+                .await
+                .expect("write json");
+        });
+
+        let provider = dtoken_types::ProviderProfile {
+            id: "responses-upstream".to_string(),
+            name: "Responses upstream".to_string(),
+            kind: dtoken_types::ProviderKind::Custom,
+            protocol: Protocol::OpenAi,
+            base_url: format!("http://{addr}/v1"),
+            api_key_ref: None,
+            models: vec!["mock/model".to_string()],
+            timeout_ms: 30_000,
+            healthcheck_path: None,
+            wire_api: dtoken_types::ProviderWireApi::OpenAiResponses,
+        };
+        let route = dtoken_types::RouteProfile {
+            id: "route-responses".to_string(),
+            name: "route-responses".to_string(),
+            input_protocol: Protocol::OpenAi,
+            instance_id: "instance-responses".to_string(),
+            target_provider_id: "responses-upstream".to_string(),
+            fallback_provider_id: None,
+            chain_mode: ChainMode::Direct,
+            compression_policy: CompressionPolicy::Off,
+            bind_host: "127.0.0.1".to_string(),
+            local_port: 18001,
+        };
+        let config = DtokenConfig {
+            providers: vec![provider],
+            routes: vec![route],
+            instances: vec![],
+            provider_cache_policies: vec![],
+            output_shaping_policies: vec![],
+            optical: Default::default(),
+        };
+        let state = AppState::new(config);
+        let app = build_router(state.clone());
+        let ingress = json!({"model":"mock/model","input":"hello"});
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/responses")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_vec(&ingress).expect("serialize ingress"),
+                    ))
+                    .expect("request"),
+            )
+            .await
+            .expect("router response");
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body bytes");
+        let body = String::from_utf8(bytes.to_vec()).expect("UTF-8 JSON");
+        // Native passthrough must preserve the upstream Responses JSON exactly:
+        // no dtoken envelope, no evidence keys inserted (Codex schema contract).
+        assert_eq!(body, UPSTREAM_BODY, "body={body}");
+        assert!(!body.contains("\"dtoken\""), "no dtoken key: body={body}");
+        // PR-C1C: the wire body the upstream received is exactly the validated
+        // envelope body (Off policy seals the baseline byte-for-byte).
+        let received = received
+            .lock()
+            .expect("lock")
+            .clone()
+            .expect("captured body");
+        assert_eq!(
+            received,
+            serde_json::to_vec(&ingress).expect("serialize expected wire body"),
+            "wire body must equal the validated pipeline body"
+        );
+        // PR-C1A/C1C ledger evidence: resolved adapter and the sealed
+        // pipeline variant + reason code land in the Event Ledger.
+        let events = state.recent_events(20);
+        let ledger_event = events
+            .iter()
+            .find(|event| event.metadata.get("native_responses_passthrough").is_some())
+            .expect("native passthrough ledger event present");
+        assert_eq!(
+            ledger_event.metadata["adapter"], "open_ai_responses_passthrough",
+            "resolved adapter must be recorded in the ledger"
+        );
+        assert_eq!(
+            ledger_event.metadata["pipeline_payload_variant"], "original",
+            "pipeline variant must land in the ledger"
+        );
+        assert_eq!(
+            ledger_event.metadata["pipeline_reason_code"], "no_transform_selected",
+            "pipeline reason code must land in the ledger"
+        );
+        // T-C0B: the production transport consumed the sealed unit and the
+        // terminal SendCommitReceipt evidence lands in the ledger.
+        assert_eq!(
+            ledger_event.metadata["send_commit_state"], "send_committed",
+            "transport-observable commit receipt state must land in the ledger"
+        );
+        assert_eq!(
+            ledger_event.metadata["send_commit_variant"], "original",
+            "commit receipt variant must match the sealed unit"
+        );
+        server.await.expect("mock upstream task");
+    }
+
+    /// Fail-closed negative (T-C1B / RUNTIME-8): the shared transport mint
+    /// refuses to commit when the sendable unit's body digest does not match
+    /// the sealed validation receipt. A body mutated after validation can
+    /// never be paired with the original receipt: the types are sealed, so
+    /// the only way to reach the mint with mismatched digests is to present
+    /// a different sendable unit, and that is rejected.
+    #[test]
+    fn transport_mint_rejects_post_validation_mutation() {
+        use dtoken_runtime_pipeline::PipelineError;
+        let scope = cache_test_scope(Protocol::OpenAi);
+        let decision = cache_test_decision(&scope);
+        let baseline =
+            json!({"model": "model-a", "messages": [{"role": "user", "content": "repeat repeat"}]});
+        let candidate =
+            json!({"model": "model-a", "messages": [{"role": "user", "content": "repeat"}]});
+        let transforms = vec!["safe-text".to_string()];
+        // Store-issued live proof; the old near-epoch expiry was never
+        // enforced and would now fail closed at binding.
+        let authority = dtoken_runtime_pipeline::RecoveryProofAuthority::new([31_u8; 32]);
+        let ccr_receipt = CcrStoreReceipt {
+            recovery_ref: "ccr:00000000-0000-4000-8000-000000000000".to_string(),
+            expires_at_unix: 1_000_000_000_000,
+            plaintext_bytes: baseline.to_string().len(),
+        };
+        let prepared = PreparedCcr {
+            receipt: Some(ccr_receipt.clone()),
+            proof: Some(
+                authority
+                    .issue(
+                        ccr_receipt.recovery_ref.clone(),
+                        ccr_receipt.expires_at_unix,
+                    )
+                    .expect("store-issued proof"),
+            ),
+            authority: Some(authority),
+            store_configured: true,
+        };
+        let payload = prepare_json_pipeline_payload(
+            scope.clone(),
+            &decision,
+            &baseline,
+            &candidate,
+            &transforms,
+            &prepared,
+        )
+        .expect("validated payload");
+        let validation = payload.validation.expect("validation receipt present");
+        // The sealed unit's body digest equals the validated digest.
+        assert_eq!(validation.validated_digest(), payload.ready.body_digest());
+
+        // A different sendable unit — one sealed over MUTATED bytes — cannot
+        // be committed under the original validation receipt.
+        let mutated =
+            json!({"model": "model-a", "messages": [{"role": "user", "content": "MUTATED"}]});
+        let mutated_ready = PipelineInput::new(
+            scope.clone(),
+            serde_json::to_vec(&mutated).unwrap(),
+            MAX_REQUEST_BODY_BYTES,
+        )
+        .expect("bounded mutated ingress")
+        .prepare()
+        .into_baseline_ready("mutated");
+        assert_ne!(
+            mutated_ready.body_digest(),
+            validation.validated_digest(),
+            "mutation changes the digest"
+        );
+        let mut request_log = RequestLog {
+            request_id: scope.request_id,
+            timestamp_ms: 1,
+            agent: None,
+            instance_id: None,
+            project_id: None,
+            user_target_model: None,
+            input_protocol: Protocol::OpenAi,
+            provider_id: Some("provider-a".to_string()),
+            route_id: Some("route-a".to_string()),
+            chain_mode: None,
+            model: Some("model-a".to_string()),
+            input_tokens_before: None,
+            input_tokens_after: None,
+            output_tokens: None,
+            provider_input_tokens: None,
+            provider_output_tokens: None,
+            tokens_saved: None,
+            transforms_applied: vec![],
+            latency_ms: None,
+            error: None,
+            config_source: None,
+            quota_metadata: None,
+            context_accounting: None,
+        };
+        let mut event = build_ledger_event(
+            scope.request_id,
+            &decision,
+            Protocol::OpenAi,
+            Protocol::OpenAi,
+            &CompressionSummary {
+                original_tokens: 0,
+                compressed_tokens: 0,
+                tokens_saved: 0,
+                savings_percent: 0.0,
+                elapsed_us: 0,
+                transforms_applied: vec![],
+                fallback_reason_code: None,
+                body: baseline.clone(),
+                context_accounting: None,
+                bus_receipts: vec![],
+            },
+            &RequestAttribution {
+                agent: None,
+                instance_id: None,
+                project_id: None,
+            },
+        );
+        let refused = mint_transport_send_commit(
+            mutated_ready,
+            Some(&validation),
+            1,
+            &mut request_log,
+            &mut event,
+        );
+        assert_eq!(
+            refused.unwrap_err(),
+            PipelineError::SourceDigestMismatch,
+            "a mutated body must never commit under the validated receipt"
+        );
+        assert!(
+            event.metadata.get("send_commit_state").is_none(),
+            "no terminal receipt evidence may be recorded on refusal"
+        );
+    }
+
+    /// Fail-closed contract: the native Responses wire shape (`input` items,
+    /// no Chat `messages` array) never receives Chat-style memory injection.
+    /// Memory is retrieved but must not mutate a Responses body.
+    #[test]
+    fn responses_shape_memory_injection_fails_closed_without_messages() {
+        let blocks = vec![
+            json!({"type": "text", "text": "MEMONLY", "cache_control": {"type": "ephemeral"}}),
+        ];
+        let responses = json!({
+            "model": "m",
+            "input": [{"type": "message", "role": "user", "content": [{"type": "input_text", "text": "hi"}]}]
+        });
+        let injected = inject_memory_into_body(responses.clone(), &Protocol::OpenAi, &blocks);
+        assert_eq!(
+            injected, responses,
+            "Responses input shape must not receive Chat-style memory injection"
+        );
+        assert!(!serde_json::to_string(&injected)
+            .expect("serialize")
+            .contains("MEMONLY"));
     }
 
     #[tokio::test]
@@ -20654,5 +24526,459 @@ mod tests {
             .expect("compress_resolved_with_cache_evidence");
         // tokens_saved is u64, always non-negative; the assertion is that
         // the call completed without error (demonstrated above).
+    }
+
+    /// Observable contract: each surface injects the same authorized memory
+    /// exactly once, before any transform. A second injection would double
+    /// the memory block on the wire, which the surface flow must never do.
+    #[test]
+    fn contract_single_memory_injection_per_surface() {
+        let blocks = vec![
+            json!({"type": "text", "text": "MEMONLY", "cache_control": {"type": "ephemeral"}}),
+        ];
+        let count = |value: &serde_json::Value| {
+            serde_json::to_string(value)
+                .expect("serialize")
+                .matches("MEMONLY")
+                .count()
+        };
+        // Chat surface ingress (PR-C1B pre-plan injection).
+        let chat = json!({"model": "m", "messages": [{"role": "user", "content": "hi"}]});
+        let once = inject_memory_into_body(chat, &Protocol::OpenAi, &blocks);
+        assert_eq!(count(&once), 1);
+        // Responses -> Chat bridge ingress (same Chat wire shape).
+        let responses = json!({
+            "model": "m",
+            "input": [{"type": "message", "role": "user", "content": [{"type": "input_text", "text": "hi"}]}]
+        });
+        let converted = responses_to_openai_chat_body(&responses).expect("responses conversion");
+        let once_responses = inject_memory_into_body(converted, &Protocol::OpenAi, &blocks);
+        assert_eq!(count(&once_responses), 1);
+        // Anthropic surface ingress.
+        let anthropic =
+            json!({"model": "claude-x", "messages": [{"role": "user", "content": "hi"}]});
+        let once_anthropic = inject_memory_into_body(anthropic, &Protocol::Anthropic, &blocks);
+        assert_eq!(count(&once_anthropic), 1);
+    }
+
+    /// Observable contract: the pre-lowered IR is reused (metadata before the
+    /// planner) and the sealed pipeline envelope is byte-identical to the
+    /// candidate the planner produced — the sent body is the verified body.
+    #[test]
+    fn contract_prelowered_ir_reuse_and_prepared_body_parity() {
+        let config = route_test_config();
+        let route = config.routes[0].clone();
+        let provider = config
+            .providers
+            .iter()
+            .find(|provider| provider.id == route.target_provider_id)
+            .expect("route provider present")
+            .clone();
+        let model = provider.models[0].clone();
+        let body = json!({"model": model, "messages": [{"role": "user", "content": "hi"}]});
+        let decision = build_configured_route_decision(Uuid::new_v4(), &route, &provider);
+        let ctx = resolve_optimization_context(
+            &decision,
+            &route,
+            &provider,
+            RouteAdapterKind::OpenAiChatPassthrough,
+            &body,
+            &body,
+        )
+        .expect("resolved optimization context");
+        let scope = resolve_configured_request_scope(
+            &config,
+            &route,
+            &provider,
+            decision.request_id,
+            Some(&model),
+            Protocol::OpenAi,
+            Protocol::OpenAi,
+            None,
+            None,
+        )
+        .expect("resolved request scope");
+        let blocks = vec![
+            json!({"type": "text", "text": "MEMONLY", "cache_control": {"type": "ephemeral"}}),
+        ];
+        let ingress = inject_memory_into_body(body, &Protocol::OpenAi, &blocks);
+        let count = |value: &serde_json::Value| {
+            serde_json::to_string(value)
+                .expect("serialize")
+                .matches("MEMONLY")
+                .count()
+        };
+        assert_eq!(count(&ingress), 1);
+        // PR-C1A: lower exactly once and reuse the IR for the shadow
+        // inventory (metadata) before the planner runs.
+        let ir = dtoken_compress::lower_hybrid_context(&ctx.compression_context, &ingress);
+        let inventory_reuse = compression_inventory_diagnostics_with_ir(
+            &ctx.compression_context,
+            ir.as_ref(),
+            &ingress,
+        );
+        let inventory_fresh =
+            compression_inventory_diagnostics_with_ir(&ctx.compression_context, None, &ingress);
+        assert_eq!(inventory_reuse, inventory_fresh);
+        // The pre-lowered IR must produce the same plan output as a fresh
+        // internal lower: reuse never changes the observable body.
+        let policy = decision.compression_policy.clone();
+        let planned = compress_for_route_with_ir(
+            Some(&ctx),
+            policy.clone(),
+            ingress.clone(),
+            None,
+            None,
+            ir.as_ref(),
+        );
+        let replanned =
+            compress_for_route_with_ir(Some(&ctx), policy, ingress.clone(), None, None, None);
+        assert_eq!(planned.body, replanned.body);
+        assert_eq!(planned.original_tokens, replanned.original_tokens);
+        assert_eq!(planned.transforms_applied, replanned.transforms_applied);
+        // Prepared body byte parity: the validated envelope is the candidate.
+        let state = AppState::new(config);
+        let attribution = request_attribution_from_scope(&scope);
+        let request_log = build_request_log(
+            decision.request_id,
+            &decision,
+            Some(model.clone()),
+            Some(model),
+            Protocol::OpenAi,
+            &planned,
+            &attribution,
+        );
+        let prepared_ccr = state
+            .prepare_ccr_for_request(
+                &decision,
+                &request_log,
+                &serde_json::to_vec(&ingress).expect("serialize ingress"),
+            )
+            .expect("ccr preparation");
+        let payload = prepare_json_pipeline_payload(
+            scope,
+            &decision,
+            &ingress,
+            &planned.body,
+            &request_log.transforms_applied,
+            &prepared_ccr,
+        )
+        .expect("pipeline payload");
+        if payload.fallback_reason.is_none() {
+            assert_eq!(
+                payload.ready.body(),
+                serde_json::to_vec(&planned.body).expect("serialize candidate")
+            );
+        }
+        let sealed: serde_json::Value =
+            serde_json::from_slice(payload.ready.body()).expect("sealed envelope json");
+        assert_eq!(count(&sealed), 1);
+    }
+
+    /// RED/GREEN core of the deadline terminal fix: an already-expired
+    /// request-wide deadline must consume the sealed sendable unit into
+    /// exactly one `FailedBeforeCommit` receipt, persist the
+    /// request/route/CCR terminal bundle durably (restart-visible), and
+    /// never invoke the upstream (503 response, no forward).
+    #[tokio::test]
+    async fn scheduler_deadline_terminate_consumes_unit_persists_bundle_and_never_forwards() {
+        use dtoken_runtime_pipeline::RequestDeadline;
+
+        let dir = std::env::temp_dir().join(format!("dtoken-deadline-term-{}", Uuid::new_v4()));
+        let state = AppState::new_persistent(DtokenConfig::empty(), &dir);
+        let scope = cache_test_scope(Protocol::OpenAi);
+        let decision = cache_test_decision(&scope);
+        let baseline = json!({
+            "model": "model-a",
+            "messages": [{"role": "user", "content": "repeat repeat deadline"}]
+        });
+        let attribution = RequestAttribution {
+            agent: Some("test-agent".to_string()),
+            instance_id: Some("instance-a".to_string()),
+            project_id: Some("project-a".to_string()),
+        };
+        let compression = compress_for_route(None, CompressionPolicy::Off, baseline.clone());
+        let request_log = build_request_log(
+            decision.request_id,
+            &decision,
+            Some("model-a".to_string()),
+            Some("model-a".to_string()),
+            Protocol::OpenAi,
+            &compression,
+            &attribution,
+        );
+        let mut event = build_ledger_event(
+            decision.request_id,
+            &decision,
+            Protocol::OpenAi,
+            Protocol::OpenAi,
+            &compression,
+            &attribution,
+        );
+        let prepared_ccr = state
+            .prepare_ccr_for_request(
+                &decision,
+                &request_log,
+                &serde_json::to_vec(&baseline).expect("serialize baseline"),
+            )
+            .expect("ccr preparation");
+        let payload = prepare_json_pipeline_payload(
+            scope,
+            &decision,
+            &baseline,
+            &baseline,
+            &request_log.transforms_applied,
+            &prepared_ccr,
+        )
+        .expect("sealed baseline payload");
+        assert!(
+            payload.validation.is_none(),
+            "baseline payload has no validation"
+        );
+        let sealed_digest = payload.ready.body_digest();
+        // Handlers insert the pipeline provenance into the ledger event
+        // before the deadline check; the terminal record must preserve it.
+        let pipeline_reason = payload
+            .fallback_reason
+            .unwrap_or("no_transform_selected")
+            .to_string();
+        if let Some(metadata) = event.metadata.as_object_mut() {
+            metadata.insert(
+                "pipeline_payload_variant".to_string(),
+                json!(payload.ready.variant()),
+            );
+            metadata.insert("pipeline_reason_code".to_string(), json!(pipeline_reason));
+        }
+
+        // Expired deadline: must never reach an upstream.  Deadline anchored
+        // at the Unix epoch is already long past.
+        let deadline = RequestDeadline::new(0, 30_000).expect("epoch deadline with valid budget");
+        assert!(scheduler::scheduler_deadline_expired(deadline));
+        let response = scheduler::scheduler_deadline_terminate(
+            &state,
+            decision.request_id,
+            &decision,
+            request_log,
+            event,
+            &prepared_ccr,
+            payload,
+        );
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let body = response_json(response).await;
+        assert_eq!(body["error"]["type"], "request_timeout");
+        assert_eq!(body["dtoken"]["reason_code"], "deadline_exceeded_preserve");
+        assert_eq!(body["dtoken"]["upstream_send_attempted"], false);
+
+        // Exactly one terminal receipt, bound to the sealed body digest.
+        // The newest-first ledger also holds the ProviderForward stage event
+        // (`send_state`, no `send_commit_state`), so select the terminal
+        // event that actually carries the receipt metadata.
+        let terminal = state
+            .recent_events(100)
+            .into_iter()
+            .find(|event| {
+                event.request_id == Some(decision.request_id)
+                    && event.metadata.get("send_commit_state").is_some()
+            })
+            .expect("terminal ledger event recorded");
+        assert_eq!(terminal.status, EventStatus::Failed);
+        assert_eq!(
+            terminal.metadata["send_commit_state"],
+            "failed_before_commit"
+        );
+        assert_eq!(
+            terminal.metadata["send_commit_digest"].as_str(),
+            Some(sealed_digest.as_str()),
+            "receipt binds the exact sealed body digest"
+        );
+        assert_eq!(
+            terminal.metadata["send_commit_reason"], "no_transform_selected",
+            "receipt reason is the sealed unit's own (T-C0B), not the deadline reason"
+        );
+        assert_eq!(
+            terminal.metadata["deadline_before_upstream"]["reason_code"],
+            "deadline_exceeded_preserve"
+        );
+        assert_eq!(
+            terminal.metadata["deadline_before_upstream"]["upstream_send_attempted"],
+            false
+        );
+        assert_eq!(
+            terminal.metadata["pipeline_reason_code"], pipeline_reason,
+            "pipeline fallback reason preserved"
+        );
+
+        // Request/route/CCR bundle persisted (restart-visible).
+        assert_eq!(state.recent_route_decisions(10).len(), 1);
+        let logs = state.recent_request_logs(10);
+        assert_eq!(logs.len(), 1);
+        assert_eq!(logs[0].request_id, decision.request_id);
+        assert_eq!(
+            logs[0].error.as_deref(),
+            None,
+            "no fabricated upstream error"
+        );
+        let ccr = state
+            .retrieve_ccr_metadata(&format!("ccr:{}", decision.request_id))
+            .expect("ccr metadata");
+        assert_eq!(ccr["state"], "not_required");
+        assert_eq!(ccr["raw_available"], false);
+
+        // Restart: the same terminal bundle is visible from the journals.
+        let restarted = AppState::new_persistent(DtokenConfig::empty(), &dir);
+        let restarted_events = restarted.recent_events(100);
+        assert!(
+            restarted_events.iter().any(|event| {
+                event.request_id == Some(decision.request_id)
+                    && event.metadata["send_commit_state"] == "failed_before_commit"
+            }),
+            "terminal event survives restart"
+        );
+        assert_eq!(restarted.recent_route_decisions(10).len(), 1);
+        assert_eq!(restarted.recent_request_logs(10).len(), 1);
+        assert_eq!(
+            restarted
+                .retrieve_ccr_metadata(&format!("ccr:{}", decision.request_id))
+                .expect("restart ccr metadata")["state"],
+            "not_required"
+        );
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// The deadline terminate must fail closed when the sealed sendable unit
+    /// cannot pair with its validation receipt: no terminal receipt is
+    /// minted, nothing is forwarded, and the fail-closed response is
+    /// returned instead of a deadline 503.
+    #[tokio::test]
+    async fn scheduler_deadline_terminate_rejects_mutated_unit_without_minting() {
+        let dir = std::env::temp_dir().join(format!("dtoken-deadline-mut-{}", Uuid::new_v4()));
+        let state = AppState::new_persistent(DtokenConfig::empty(), &dir);
+        let scope = cache_test_scope(Protocol::OpenAi);
+        let decision = cache_test_decision(&scope);
+        let baseline =
+            json!({"model": "model-a", "messages": [{"role": "user", "content": "repeat repeat"}]});
+        let candidate =
+            json!({"model": "model-a", "messages": [{"role": "user", "content": "repeat"}]});
+        let transforms = vec!["safe-text".to_string()];
+        let authority = dtoken_runtime_pipeline::RecoveryProofAuthority::new([31_u8; 32]);
+        let prepared = PreparedCcr {
+            receipt: Some(CcrStoreReceipt {
+                recovery_ref: format!("ccr:{}", decision.request_id),
+                expires_at_unix: 1_000_000_000_000,
+                plaintext_bytes: baseline.to_string().len(),
+            }),
+            proof: Some(
+                authority
+                    .issue(format!("ccr:{}", decision.request_id), 1_000_000_000_000)
+                    .expect("store-issued proof"),
+            ),
+            authority: Some(authority),
+            store_configured: true,
+        };
+        let payload = prepare_json_pipeline_payload(
+            scope.clone(),
+            &decision,
+            &baseline,
+            &candidate,
+            &transforms,
+            &prepared,
+        )
+        .expect("validated payload");
+        let validation = payload.validation.expect("validation receipt present");
+        // A different sendable unit — one sealed over MUTATED bytes — cannot
+        // be committed under the original validation receipt.
+        let mutated =
+            json!({"model": "model-a", "messages": [{"role": "user", "content": "MUTATED"}]});
+        let mutated_ready = PipelineInput::new(
+            scope.clone(),
+            serde_json::to_vec(&mutated).unwrap(),
+            MAX_REQUEST_BODY_BYTES,
+        )
+        .expect("bounded mutated ingress")
+        .prepare()
+        .into_baseline_ready("mutated");
+        assert_ne!(
+            mutated_ready.body_digest(),
+            validation.validated_digest(),
+            "mutation changes the digest"
+        );
+        let request_log = RequestLog {
+            request_id: scope.request_id,
+            timestamp_ms: 1,
+            agent: None,
+            instance_id: None,
+            project_id: None,
+            user_target_model: None,
+            input_protocol: Protocol::OpenAi,
+            provider_id: Some("provider-a".to_string()),
+            route_id: Some("route-a".to_string()),
+            chain_mode: None,
+            model: Some("model-a".to_string()),
+            input_tokens_before: None,
+            input_tokens_after: None,
+            output_tokens: None,
+            provider_input_tokens: None,
+            provider_output_tokens: None,
+            tokens_saved: None,
+            transforms_applied: vec![],
+            latency_ms: None,
+            error: None,
+            config_source: None,
+            quota_metadata: None,
+            context_accounting: None,
+        };
+        let event = build_ledger_event(
+            scope.request_id,
+            &decision,
+            Protocol::OpenAi,
+            Protocol::OpenAi,
+            &CompressionSummary {
+                original_tokens: 0,
+                compressed_tokens: 0,
+                tokens_saved: 0,
+                savings_percent: 0.0,
+                elapsed_us: 0,
+                transforms_applied: vec![],
+                fallback_reason_code: None,
+                body: baseline.clone(),
+                context_accounting: None,
+                bus_receipts: vec![],
+            },
+            &RequestAttribution {
+                agent: None,
+                instance_id: None,
+                project_id: None,
+            },
+        );
+        // Deadline anchored at the Unix epoch: already long expired.
+        let response = scheduler::scheduler_deadline_terminate(
+            &state,
+            decision.request_id,
+            &decision,
+            request_log,
+            event,
+            &prepared,
+            PreparedPipelinePayload {
+                ready: mutated_ready,
+                fallback_reason: None,
+                validation: Some(validation),
+            },
+        );
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        let body = response_json(response).await;
+        assert_eq!(body["error"]["type"], "validated_body_mismatch");
+        // No terminal receipt, no request/route/CCR bundle.
+        assert!(
+            state
+                .recent_events(100)
+                .iter()
+                .all(|event| event.request_id != Some(decision.request_id)),
+            "no terminal event when the unit cannot be consumed"
+        );
+        assert!(state.recent_request_logs(10).is_empty());
+        assert!(state.recent_route_decisions(10).is_empty());
+
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

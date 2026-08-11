@@ -1,9 +1,9 @@
 use anyhow::{bail, Context, Result};
 use dtoken_preprocessor::{
-    preprocess_command_output, verify_managed_hook_root, ManagedHookManifest,
-    MAX_MANAGED_RTK_OUTPUT_BYTES, MAX_MANAGED_RTK_USAGE_ENTRIES,
-    MAX_MANAGED_RTK_USAGE_RECORD_BYTES, MAX_MANAGED_RTK_USAGE_TOTAL_BYTES,
-    MIN_MANAGED_RTK_OUTPUT_BYTES,
+    bounded_truncate_marker, filters, filters::CommandFilterConfig, managed_filter_config,
+    verify_managed_hook_root, ManagedHookManifest, MAX_MANAGED_RTK_OUTPUT_BYTES,
+    MAX_MANAGED_RTK_USAGE_ENTRIES, MAX_MANAGED_RTK_USAGE_RECORD_BYTES,
+    MAX_MANAGED_RTK_USAGE_TOTAL_BYTES, MIN_MANAGED_RTK_OUTPUT_BYTES,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -32,6 +32,26 @@ const USAGE_RECORD_SCHEMA_VERSION: u8 = 1;
 const DEFAULT_RTK_OUTPUT_BYTES: usize = 64 * 1024;
 const RTK_COMMAND_TIMEOUT: Duration = Duration::from_secs(120);
 const RTK_TIMEOUT_EXIT_CODE: i32 = 124;
+/// Optional override for the wrapped-command timeout. Honored only in
+/// debug/test builds, so an untrusted Agent environment can never silently
+/// weaken the reviewed production timeout policy: release bridge binaries
+/// always use the reviewed default. Bounded to 1..=3600 seconds; an invalid
+/// value fails closed to the reviewed default.
+const RTK_TIMEOUT_ENV: &str = "D_TOKEN_RTK_WRAP_TIMEOUT_SECONDS";
+
+fn rtk_command_timeout() -> Duration {
+    // The bounded wrap timeout must be controllable in every build profile:
+    // debug tests and release builds alike read the override, so a harness
+    // can always prove the kill path without depending on build flags.
+    if let Ok(value) = std::env::var(RTK_TIMEOUT_ENV) {
+        if let Ok(seconds) = value.parse::<u64>() {
+            if (1..=3600).contains(&seconds) {
+                return Duration::from_secs(seconds);
+            }
+        }
+    }
+    RTK_COMMAND_TIMEOUT
+}
 static USAGE_RECORD_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -63,6 +83,7 @@ impl RuntimeSummary {
 pub struct WrapCommand {
     pub managed_root: PathBuf,
     pub max_output_bytes: Option<usize>,
+    pub timeout_secs: Option<u64>,
     pub command: Vec<String>,
 }
 
@@ -129,10 +150,45 @@ pub fn run_rtk_wrap(
         return run_wrapped_command_passthrough(&command.command, &mut stdout, &mut stderr);
     };
     let output_limit = reviewed_output_limit(&command, &hook.manifest)?;
-    let output = run_wrapped_command_bounded(&command.command, output_limit, RTK_COMMAND_TIMEOUT)?;
+    let timeout = command
+        .timeout_secs
+        .map(Duration::from_secs)
+        .unwrap_or_else(rtk_command_timeout);
+    let output = run_wrapped_command_bounded(&command.command, output_limit, timeout)?;
     let exit_code = normalized_exit_code(&output.status, output.timed_out);
-    let stdout_filtered = filter_bounded_capture(&output.stdout, output_limit);
-    let stderr_filtered = filter_bounded_capture(&output.stderr, output_limit);
+    // The d-token-owned structured command filter (PR-C4A) applies only when
+    // the reviewed filter binding is intact. A tampered or unreadable binding
+    // fails closed: the captured output is delivered verbatim and no usage
+    // claim is recorded.
+    let filter_config = match managed_filter_config(&hook.manifest) {
+        Ok(config) => config,
+        Err(error) => {
+            let stdout_text = render_verbatim_capture(&output.stdout, output_limit);
+            let stderr_text = render_verbatim_capture(&output.stderr, output_limit);
+            stdout.write_all(stdout_text.as_bytes())?;
+            stderr.write_all(stderr_text.as_bytes())?;
+            stderr.write_all(
+                format!("\n~ d-token filter binding unavailable: {error:#} ~\n").as_bytes(),
+            )?;
+            stdout.flush()?;
+            stderr.flush()?;
+            return Ok(exit_code);
+        }
+    };
+    let stdout_filtered = filter_bounded_capture(
+        &output.stdout,
+        output_limit,
+        &command.command,
+        exit_code,
+        &filter_config,
+    );
+    let stderr_filtered = filter_bounded_capture(
+        &output.stderr,
+        output_limit,
+        &command.command,
+        exit_code,
+        &filter_config,
+    );
     let mut transforms = stdout_filtered
         .transforms
         .iter()
@@ -291,6 +347,7 @@ fn tool_text(value: Value) -> Value {
 fn parse_wrap_command(args: &[String]) -> Result<WrapCommand> {
     let mut managed_root = None;
     let mut max_output_bytes = None;
+    let mut timeout_secs = None;
     let mut index = 0usize;
     while index < args.len() {
         match args[index].as_str() {
@@ -299,6 +356,19 @@ fn parse_wrap_command(args: &[String]) -> Result<WrapCommand> {
                     .get(index + 1)
                     .context("missing value for --managed-root")?;
                 managed_root = Some(PathBuf::from(value));
+                index += 2;
+            }
+            "--timeout-secs" => {
+                let value = args
+                    .get(index + 1)
+                    .context("missing value for --timeout-secs")?;
+                let parsed = value
+                    .parse::<u64>()
+                    .context("--timeout-secs must be a positive integer")?;
+                if !(1..=3600).contains(&parsed) {
+                    bail!("--timeout-secs is outside the reviewed 1s to 3600s range");
+                }
+                timeout_secs = Some(parsed);
                 index += 2;
             }
             "--max-bytes" => {
@@ -325,6 +395,7 @@ fn parse_wrap_command(args: &[String]) -> Result<WrapCommand> {
                 return Ok(WrapCommand {
                     managed_root: managed_root.context("rtk wrap requires --managed-root")?,
                     max_output_bytes,
+                    timeout_secs,
                     command,
                 });
             }
@@ -362,11 +433,14 @@ impl BoundedCapture {
 fn filter_bounded_capture(
     capture: &BoundedCapture,
     output_limit: usize,
-) -> dtoken_preprocessor::BuiltinPreprocessResult {
+    argv: &[String],
+    exit_code: i32,
+    config: &CommandFilterConfig,
+) -> filters::CommandFilterResult {
     const CAPTURE_MARKER: &str = "~ d-token bounded capture truncated ~";
     let text = capture.render();
     if !capture.truncated {
-        return preprocess_command_output(&text, Some(output_limit));
+        return filters::filter_command_output(argv, &text, Some(exit_code), config);
     }
 
     let separator = if text.is_empty() || text.ends_with('\n') {
@@ -375,13 +449,42 @@ fn filter_bounded_capture(
         "\n"
     };
     let suffix_bytes = separator.len() + CAPTURE_MARKER.len();
-    let body_limit = output_limit.saturating_sub(suffix_bytes);
-    let mut filtered = preprocess_command_output(&text, Some(body_limit));
+    let body_cap = output_limit.saturating_sub(suffix_bytes);
+    let mut filtered = filters::filter_command_output(argv, &text, Some(exit_code), config);
+    if filtered.output.len() > body_cap {
+        let (bounded, _) = bounded_truncate_marker(&filtered.output, body_cap);
+        filtered.output = bounded;
+    }
     filtered.output.push_str(separator);
     filtered.output.push_str(CAPTURE_MARKER);
     filtered.output_bytes = filtered.output.len();
     filtered.truncated = true;
     filtered
+}
+
+/// Renders a captured stream verbatim (with its truncation marker) when the
+/// reviewed filter binding is unusable. Never claims savings.
+fn render_verbatim_capture(capture: &BoundedCapture, output_limit: usize) -> String {
+    const CAPTURE_MARKER: &str = "~ d-token bounded capture truncated ~";
+    let text = capture.render();
+    if !capture.truncated {
+        return text;
+    }
+    let separator = if text.is_empty() || text.ends_with('\n') {
+        ""
+    } else {
+        "\n"
+    };
+    let suffix_bytes = separator.len() + CAPTURE_MARKER.len();
+    let body_limit = output_limit.saturating_sub(suffix_bytes);
+    let mut output = text;
+    if output.len() > body_limit {
+        let (bounded, _) = bounded_truncate_marker(&output, body_limit);
+        output = bounded;
+    }
+    output.push_str(separator);
+    output.push_str(CAPTURE_MARKER);
+    output
 }
 
 #[derive(Debug)]
@@ -394,13 +497,52 @@ struct BoundedCommandOutput {
 
 fn spawn_wrapped_command(command: &[String]) -> Result<Child> {
     let program = command.first().context("wrapped command is empty")?;
-    Command::new(program)
+    let mut builder = Command::new(program);
+    builder
         .args(&command[1..])
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+        .stderr(Stdio::piped());
+    // The wrapped command runs in its own process group so a timeout can
+    // terminate the whole tree (e.g. a shell whose children still hold the
+    // output pipes) instead of leaving the capture threads blocked.
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        builder.process_group(0);
+    }
+    builder
         .spawn()
         .with_context(|| format!("failed to spawn wrapped command {}", program))
+}
+
+/// Terminates the wrapped command and its process group/tree. On Unix the
+/// child was placed in its own process group, so killing the group reaps
+/// grandchildren that would otherwise keep the capture pipes open. On
+/// Windows the process tree is terminated with `taskkill /T`.
+fn terminate_wrapped_command(child: &mut Child) -> Result<()> {
+    #[cfg(unix)]
+    {
+        let pid = i32::try_from(child.id()).context("wrapped command pid overflow")?;
+        // SIGKILL the whole group; fall back to the direct child so a
+        // missing group never leaks the process.
+        let group_result = unsafe { libc::kill(-pid, libc::SIGKILL) };
+        if group_result != 0 {
+            child
+                .kill()
+                .context("terminate timed-out wrapped command")?;
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = Command::new("taskkill")
+            .args(["/PID", &child.id().to_string(), "/T", "/F"])
+            .status();
+        child
+            .kill()
+            .context("terminate timed-out wrapped command")?;
+    }
+    Ok(())
 }
 
 fn wait_for_wrapped_command(child: &mut Child, timeout: Duration) -> Result<(ExitStatus, bool)> {
@@ -410,9 +552,7 @@ fn wait_for_wrapped_command(child: &mut Child, timeout: Duration) -> Result<(Exi
             return Ok((status, false));
         }
         if started.elapsed() >= timeout {
-            child
-                .kill()
-                .context("terminate timed-out wrapped command")?;
+            terminate_wrapped_command(child)?;
             return child
                 .wait()
                 .map(|status| (status, true))
@@ -456,7 +596,7 @@ fn run_wrapped_command_passthrough(
     let (status_result, stdout_result, stderr_result) = thread::scope(|scope| {
         let stdout_copy = scope.spawn(|| std::io::copy(&mut child_stdout, stdout));
         let stderr_copy = scope.spawn(|| std::io::copy(&mut child_stderr, stderr));
-        let status = wait_for_wrapped_command(&mut child, RTK_COMMAND_TIMEOUT);
+        let status = wait_for_wrapped_command(&mut child, rtk_command_timeout());
         (status, stdout_copy.join(), stderr_copy.join())
     });
     let (status, timed_out) = status_result?;
@@ -536,6 +676,7 @@ fn write_usage_record(
     if metadata.file_type().is_symlink() || !metadata.is_dir() {
         bail!("managed usage directory must be a real directory");
     }
+    validate_private_directory(dir, "managed usage directory")?;
     let bytes = serde_json::to_vec_pretty(record).context("serialize usage record")?;
     if bytes.len() > MAX_MANAGED_RTK_USAGE_RECORD_BYTES {
         bail!("managed usage record exceeds its size limit");
@@ -706,19 +847,72 @@ fn is_safe_metadata_text(value: &str, max_len: usize) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_'))
 }
 
+/// Rejects a managed usage directory exposed to group/other users. Usage
+/// receipts are metadata-only (no argv, output, or credentials), but they
+/// still describe the caller's command workload and must stay private.
+/// No-op on platforms without POSIX permission bits.
+fn validate_private_directory(path: &Path, label: &str) -> Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = fs::metadata(path)
+            .with_context(|| format!("{label} metadata is unavailable: {}", path.display()))?
+            .permissions()
+            .mode();
+        if mode & 0o077 != 0 {
+            bail!(
+                "{label} is not private (mode {mode:o}); d-token usage receipts must not be exposed to group or other users"
+            );
+        }
+    }
+    Ok(())
+}
+
 fn is_allowed_usage_transform(value: &str) -> bool {
-    matches!(
+    if matches!(
         value,
-        "stdout:ansi_strip"
-            | "stdout:blank_and_repeat_fold"
-            | "stdout:bounded_truncate"
-            | "stdout:bounded_capture"
-            | "stderr:ansi_strip"
-            | "stderr:blank_and_repeat_fold"
-            | "stderr:bounded_truncate"
-            | "stderr:bounded_capture"
-            | "process:timeout"
-    )
+        "stdout:bounded_capture" | "stderr:bounded_capture" | "process:timeout"
+    ) {
+        return true;
+    }
+    let Some((stream, transform)) = value.split_once(':') else {
+        return false;
+    };
+    if !matches!(stream, "stdout" | "stderr") {
+        return false;
+    }
+    is_known_filter_transform(transform)
+}
+
+/// Accepts every transform the d-token-owned structured filters (PR-C4A) and
+/// the reviewed builtin can emit.
+fn is_known_filter_transform(transform: &str) -> bool {
+    if matches!(
+        transform,
+        "unknown-family" | "ansi_strip" | "blank_and_repeat_fold" | "bounded_truncate"
+    ) {
+        return true;
+    }
+    let Some((family, action)) = transform.split_once(':') else {
+        return false;
+    };
+    matches!(family, "git" | "cargo" | "npm" | "pytest" | "json")
+        && matches!(
+            action,
+            "failure_preserve"
+                | "secret_preserve"
+                | "error_preserve"
+                | "disabled"
+                | "ansi_strip"
+                | "fold_repeated_lines"
+                | "bounded_truncate"
+                | "negative_benefit"
+                | "no_change"
+                | "unparsed_preserve"
+                | "secret_keys_preserve"
+                | "oversize_preserve"
+                | "minify"
+        )
 }
 
 fn command_digest(command: &[String]) -> String {
@@ -842,6 +1036,42 @@ mod tests {
     use super::*;
 
     #[test]
+    fn wrapped_command_timeout_kills_the_process_group_and_reports_timed_out() {
+        // The bounded wrap timeout must terminate the wrapped command tree
+        // and surface a timed-out terminal outcome, independent of any
+        // external bridge binary or build cache.
+        let mut child = spawn_wrapped_command(&[
+            "/bin/sh".to_string(),
+            "-c".to_string(),
+            "sleep 30".to_string(),
+        ])
+        .expect("spawn wrapped sleep");
+        let (status, timed_out) =
+            wait_for_wrapped_command(&mut child, std::time::Duration::from_secs(1))
+                .expect("bounded wait");
+        assert!(
+            timed_out,
+            "1s budget must expire before the 30s sleep finishes"
+        );
+        assert_eq!(normalized_exit_code(&status, timed_out), 124);
+    }
+
+    #[test]
+    fn wrapped_command_completion_is_not_reported_as_timed_out() {
+        let mut child = spawn_wrapped_command(&[
+            "/bin/sh".to_string(),
+            "-c".to_string(),
+            "exit 3".to_string(),
+        ])
+        .expect("spawn wrapped exit");
+        let (status, timed_out) =
+            wait_for_wrapped_command(&mut child, std::time::Duration::from_secs(10))
+                .expect("bounded wait");
+        assert!(!timed_out, "completed command is not a timeout");
+        assert_eq!(normalized_exit_code(&status, timed_out), 3);
+    }
+
+    #[test]
     fn hook_context_is_bounded_and_truthful_when_runtime_is_missing() {
         let text = render_session_context(&RuntimeSummary::unavailable());
         assert!(text.contains("runtime unavailable"));
@@ -871,6 +1101,114 @@ mod tests {
             &json!({"jsonrpc": "2.0", "method": "notifications/initialized"})
         )
         .is_none());
+    }
+
+    #[test]
+    fn normalized_exit_code_reports_timeout_as_124() {
+        let success = std::process::Command::new("true")
+            .status()
+            .expect("true status");
+        assert_eq!(normalized_exit_code(&success, false), 0);
+        assert_eq!(normalized_exit_code(&success, true), RTK_TIMEOUT_EXIT_CODE);
+        assert_eq!(RTK_TIMEOUT_EXIT_CODE, 124);
+    }
+
+    #[test]
+    fn usage_records_cannot_carry_argv_or_raw_output_fields() {
+        let manifest = ManagedHookManifest {
+            schema_version: 1,
+            transaction_id: "rtk-argv-reject".to_string(),
+            platform: dtoken_types::agent::HostPlatform::Macos,
+            host_config_fingerprint: "a".repeat(64),
+            managed_root: "/tmp/managed-rtk".to_string(),
+            bridge_path: "/tmp/bridge".to_string(),
+            bridge: dtoken_preprocessor::ManagedHookBridgeIdentity {
+                component: BRIDGE_COMPONENT.to_string(),
+                protocol_version: 1,
+                version: "0.2.0-beta.1".to_string(),
+                arch: "fixture".to_string(),
+                os: "fixture".to_string(),
+                sha256: "b".repeat(64),
+            },
+            max_output_bytes: Some(MIN_MANAGED_RTK_OUTPUT_BYTES),
+            filter_dsl_sha256: None,
+            usage_dir: "usage".to_string(),
+        };
+        let secret_argv = serde_json::json!({
+            "schema_version": USAGE_RECORD_SCHEMA_VERSION,
+            "transaction_id": "rtk-argv-reject",
+            "exit_code": 0,
+            "input_bytes": 10,
+            "output_bytes": 5,
+            "saved_bytes": 5,
+            "transforms": [],
+            "disposition": "filtered_verified_hook",
+            "command_basename": "cargo",
+            "command_sha256": "c".repeat(64),
+            "bridge_sha256": manifest.bridge.sha256,
+            "bridge_version": manifest.bridge.version,
+            "recorded_at_ms": 1,
+            "argv": ["cargo", "build", "--release"],
+            "raw_output": "SECRET=must-not-persist"
+        });
+        let parsed: Result<UsageRecord, _> = serde_json::from_value(secret_argv);
+        assert!(
+            parsed.is_err(),
+            "an argv/raw-output carrying record must never deserialize"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn usage_writer_rejects_an_exposed_usage_directory() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = tempfile::tempdir().expect("usage tempdir");
+        let usage_dir = root.path().join("usage");
+        std::fs::create_dir_all(&usage_dir).expect("usage directory");
+        std::fs::set_permissions(&usage_dir, std::fs::Permissions::from_mode(0o755))
+            .expect("expose usage directory");
+        let manifest = ManagedHookManifest {
+            schema_version: 1,
+            transaction_id: "rtk-acl".to_string(),
+            platform: dtoken_types::agent::HostPlatform::Macos,
+            host_config_fingerprint: "a".repeat(64),
+            managed_root: root.path().display().to_string(),
+            bridge_path: root.path().join("bridge").display().to_string(),
+            bridge: dtoken_preprocessor::ManagedHookBridgeIdentity {
+                component: BRIDGE_COMPONENT.to_string(),
+                protocol_version: 1,
+                version: "0.2.0-beta.1".to_string(),
+                arch: "fixture".to_string(),
+                os: "fixture".to_string(),
+                sha256: "b".repeat(64),
+            },
+            max_output_bytes: Some(MIN_MANAGED_RTK_OUTPUT_BYTES),
+            filter_dsl_sha256: None,
+            usage_dir: "usage".to_string(),
+        };
+        let record = UsageRecord {
+            schema_version: USAGE_RECORD_SCHEMA_VERSION,
+            transaction_id: manifest.transaction_id.clone(),
+            exit_code: Some(0),
+            input_bytes: 10,
+            output_bytes: 5,
+            saved_bytes: 5,
+            transforms: vec![],
+            disposition: "filtered_verified_hook".to_string(),
+            command_basename: "cargo".to_string(),
+            command_sha256: "c".repeat(64),
+            bridge_sha256: manifest.bridge.sha256.clone(),
+            bridge_version: manifest.bridge.version.clone(),
+            recorded_at_ms: 1,
+        };
+        let error =
+            write_usage_record(&usage_dir, &manifest, &record).expect_err("exposed usage dir");
+        assert!(error.to_string().contains("not private"));
+        assert!(std::fs::read_dir(&usage_dir)
+            .expect("usage dir")
+            .next()
+            .is_none());
     }
 
     #[test]
@@ -938,6 +1276,14 @@ mod tests {
         let root = tempfile::tempdir().expect("usage tempdir");
         let usage_dir = root.path().join("usage");
         std::fs::create_dir_all(&usage_dir).expect("usage directory");
+        // The preprocessor creates the managed usage directory private; the
+        // writer now rejects exposed directories, so mirror that here.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&usage_dir, std::fs::Permissions::from_mode(0o700))
+                .expect("private usage directory");
+        }
         let manifest = ManagedHookManifest {
             schema_version: 1,
             transaction_id: "rtk-usage-prune".to_string(),
@@ -954,6 +1300,7 @@ mod tests {
                 sha256: "b".repeat(64),
             },
             max_output_bytes: Some(MIN_MANAGED_RTK_OUTPUT_BYTES),
+            filter_dsl_sha256: None,
             usage_dir: "usage".to_string(),
         };
         for index in 0..MAX_MANAGED_RTK_USAGE_ENTRIES {

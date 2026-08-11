@@ -6,7 +6,24 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
-No user-facing changes have been assigned beyond the `0.2.0-beta.1` candidate.
+No user-facing changes have been assigned beyond the `0.0.1` candidate.
+
+## [0.0.1] — candidate (2026-08-09)
+
+`0.0.1` is the active release candidate version (V-1 version unification). It
+is not a signed, notarized, Authenticode-signed, or production-certified
+installer release; publication requires the N0–N10 verification DAG to settle
+on the frozen `C_final` candidate with matching source/registry/corpus digests,
+and only the N9 conclusion decides between a signed release, an explicit
+public-unsigned technical preview, or blocked. An unsigned conclusion always
+means `release_ready=false` and `distribution_ready_public=false`.
+
+### Changed
+
+- Unified JavaScript, Tauri, desktop crate, and all Rust workspace crate versions at `0.0.1` (previously `0.2.0-beta.1`).
+- Added the explicit N0 → N1–N8/N10 → N9 final-candidate verification orchestration (`support/scripts/run_final_candidate_verification.py`): every evidence artifact must carry the unified envelope (candidate commit, source/registry/corpus digests, timestamps, recomputed `artifact_sha256`); missing, stale, old-candidate, digest-mismatch, or pass-only evidence is rejected, and evidence is never selected by mtime/latest.
+- Extended the release gate aggregator to consume an explicit evidence manifest and mandatory expected digests; G9 (frontend completeness) and N10 (unified compression proof) are now required evidence for the final gates.
+- N9 emits one of `signed` / `public-unsigned` / `blocked`; unsigned always keeps `release_ready=false`.
 
 ## [0.2.0-beta.1] — unsigned technical preview (2026-07-26)
 
@@ -47,4 +64,5 @@ No user-facing changes have been assigned beyond the `0.2.0-beta.1` candidate.
 - Doctor can execute only supported, evidence-backed repair paths; unsupported repairs remain locked or fail closed.
 - Code Graph requires explicit import of the pinned upstream component and does not bundle its executable in the installer.
 
+[0.0.1]: https://github.com/37chengshan/d-token/compare/v0.2.0-beta.1...v0.0.1
 [Unreleased]: https://github.com/37chengshan/d-token/compare/v0.2.0-beta.1...HEAD

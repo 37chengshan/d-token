@@ -8,6 +8,8 @@ pub mod engine;
 pub mod eval;
 pub mod eval_hybrid;
 pub mod eval_profile;
+pub mod evidence;
+pub mod history_collapse;
 pub mod inventory;
 pub mod patcher;
 pub mod plan_ir;
@@ -18,7 +20,7 @@ pub mod risk;
 pub mod schema_slimmer;
 pub mod secret;
 pub mod semantic_priority;
-mod spleen5x8;
+pub mod spleen5x8;
 pub mod text_arena;
 pub mod validate;
 pub mod volatility;
@@ -33,7 +35,8 @@ pub use capability::{
     provider_family_for_protocol, resolve_model_capability,
     resolve_model_capability_record_for_route_with_registry,
     resolve_model_capability_record_with_registry, resolve_model_capability_with_registry,
-    CapabilityRegistryError, OpticalCapabilityRegistry, ResolvedOpticalCapability,
+    sign_capability_snapshot, CapabilityRegistryError, OpticalCapabilityRegistry,
+    ResolvedOpticalCapability,
 };
 pub use context_graph::{
     build_context_graph, ContextEdge, ContextEdgeKind, ContextGraph, ContextGraphSummary,
@@ -62,6 +65,12 @@ pub use eval_profile::{
     RenderLayoutPolicy, OPENAI_VISION_RULES_RETRIEVED_AT, OPENAI_VISION_RULES_URL,
     PXPIPE_SOURCE_COMMIT,
 };
+pub use evidence::optical_exact_route_evidence;
+pub use history_collapse::{
+    frozen_prefix_is_byte_identical, pin_reason_for, plan_history_collapse, BillingBoundary,
+    CacheAnchor, CollapseCandidate, FreezeGrid, FrozenRow, HistoryCollapsePlan, PinReason,
+    SlabProvenance, SlabRow, StaticSlab, HISTORY_COLLAPSE_PLANNER_REVISION,
+};
 pub use inventory::{
     build_anthropic_inventory, build_anthropic_inventory_with_arena, build_openai_chat_inventory,
     build_openai_chat_inventory_with_arena, build_openai_responses_inventory,
@@ -83,13 +92,18 @@ pub use render_geometry::{
     RenderGeometryProfile,
 };
 pub use renderer::{
-    dereflow_rendered_text, font_digest, font_digest_for, production_render_contract,
-    profile_digest, render_contract_digest, validate_png, DeterministicPngRenderer,
-    RenderCancellation, RenderContract, RenderError, RenderLimits, RenderPermitPool,
-    RenderedArtifact, RenderedPage, DETERMINISTIC_FONT_ID,
+    dereflow_rendered_text, font_digest, font_digest_for, platform_render_evidence,
+    production_render_contract, profile_digest, render_contract_digest, validate_png,
+    DeterministicPngRenderer, PlatformPageEvidence, PlatformRenderEvidence, RenderCancellation,
+    RenderContract, RenderError, RenderLimits, RenderPermitPool, RenderedArtifact, RenderedPage,
+    DETERMINISTIC_FONT_ID, PLATFORM_EVIDENCE_CORPUS, PLATFORM_EVIDENCE_CORPUS_REVISION,
 };
 pub use secret::{
     contains_secret_like, SecretClassifier, SecretFinding, SecretKind, SECRET_CLASSIFIER_REVISION,
+};
+pub use spleen5x8::{
+    is_supported as spleen_glyph_is_supported, SPLEEN_5X8_AA_REVISION,
+    SPLEEN_5X8_FALLBACK_REVISION, SPLEEN_5X8_SOURCE_REVISION, SPLEEN_5X8_UNICODE_FALLBACK_GLYPH,
 };
 pub use text_arena::{TextArena, TextRef, TextRefId, TextSensitivity};
 pub use validate::{

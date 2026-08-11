@@ -1,3 +1,10 @@
+/*
+ * d-token sidebar, structurally adapted from AiMaMi at
+ * 297c7af56f10fb371b77bc9b6b65aa320afcbe7e (Apache-2.0).
+ * Insets, expand/collapse and theme-segmented structure derive from AiMaMi's
+ * layout/ui sidebar; page set, metrics, motion and tokens are d-token's own.
+ * See docs/legal/THIRD_PARTY_NOTICES.md (AiMaMi 适配范围) and shell.css header.
+ */
 import { NAV, SETTINGS_NAV, type PageId } from "../../lib/nav";
 import { useT } from "../../lib/i18n";
 import { useAppearance } from "../../lib/theme-context";
@@ -211,7 +218,7 @@ const SidebarItem = memo(function SidebarItem({
 }: {
   id: PageId;
   labelKey: string;
-  badge?: "beta";
+  badge?: "beta" | "experimental";
   active: boolean;
   setPage: (page: PageId) => void;
   collapsed: boolean;
@@ -244,7 +251,8 @@ const SidebarItem = memo(function SidebarItem({
   });
 
   const label = t(labelKey);
-  const accessibleLabel = badge === "beta" ? `${label} Beta` : label;
+  const badgeLabel = badge === "beta" ? "Beta" : badge === "experimental" ? t("nav.experimental") : null;
+  const accessibleLabel = badgeLabel ? `${label} ${badgeLabel}` : label;
   const button = (
     <button
       ref={buttonRef}
@@ -295,7 +303,7 @@ const SidebarItem = memo(function SidebarItem({
           motionToken={motionToken}
           className="size-[18px]"
         />
-        {collapsed && badge === "beta" ? (
+        {collapsed && badge ? (
           <span
             className="absolute -right-0.5 -top-0.5 size-1.5 rounded-full bg-[color:var(--interaction-accent-strong)]"
             aria-hidden
@@ -305,9 +313,9 @@ const SidebarItem = memo(function SidebarItem({
       {!collapsed && (
         <>
           <span className="min-w-0 flex-1 truncate">{label}</span>
-          {badge === "beta" ? (
+          {badge ? (
             <span className="shrink-0 rounded px-1 py-0.5 text-[10px] font-medium leading-none text-[color:var(--interaction-accent-strong)] ring-1 ring-[color:var(--interaction-accent-strong)]/30">
-              Beta
+              {badgeLabel}
             </span>
           ) : null}
         </>

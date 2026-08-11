@@ -27,7 +27,7 @@
 
 ## 4. Headroom 轨道（PR-H）
 
-- [ ] T-H1 headroom-pin：评估 release v0.34.0/`9fd5ae3d` 与 main `7f6950be` 相对旧基线 `01df2452` 的增量；三候选中唯一 pin 决议；更新登记文档。REQ：OSS-1, CONTEXT-1｜依赖：T-P0｜owner：PR-H1 Agent｜output：评估记录 + 漂移 D2 闭合。验证：N0（结构/漂移 grep）。
+- [x] T-H1 headroom-pin：评估 release v0.34.0/`9fd5ae3d` 与 main `7f6950be` 相对旧基线 `01df2452` 的增量（行为/接口/许可证/NOTICE）；唯一 pin 决议 = `v0.34.0`/`9fd5ae3d`；更新 `code/runtimes/headroom/README.md`、`docs/legal/THIRD_PARTY_NOTICES.md`、根 `THIRD_PARTY_NOTICES.md` 及 PLAN/OSS/REQ/EVIDENCE 同步。REQ：OSS-1, CONTEXT-1｜依赖：T-P0｜owner：PR-H1 Agent｜output：评估记录（`code/runtimes/headroom/README.md` §三候选漂移审计与唯一 pin 决议）+ 漂移 D2 闭合。验证：N0（结构/漂移 grep）。证据：worktree `codex/final/headroom-pin`（base `c5a5849`）；三候选 commit（`01df2452`/`9fd5ae3d`/`7f6950be`）在外部克隆 `headroom-main-2026-08-08` 内核验；delta 统计与 NOTICE 差异见 README 决议节；git 操作审计记录 `3079608a-681b-49d1-809e-864561d7cd7c`（branch-create）。
 - [ ] T-H2 headroom-matrix：117 项能力矩阵零占位/缺失或显式记录；B0→B6 顺序闭合残余缺口。REQ：CONTEXT-1, CONTEXT-2｜依赖：T-H1, T-PR1｜owner：PR-H2 Agent｜output：矩阵更新 + 切片报告。验证：N1/N3。
 - [ ] T-H3 headroom-g9：§8 能力逐项绑定 `C_final`；G9 判定表（G0–G8 全绿后才开放）。REQ：CONTEXT-1, EVID-1｜依赖：T-H2, T-PR7, T-PR9｜owner：PR-H3 Agent｜output：G9 判定表 + 证据绑定。验证：N9。
 
@@ -40,7 +40,7 @@
 
 ## 6. Optical 轨道（PR-O）
 
-- [ ] T-O1 pxpipe-pin：v0.12.0/`0ceabbe` 评估 vs 旧 pin `7b7d6efa`；capability matrix 刷新；1928×1928 非生产声明保留。REQ：OPTICAL-3, OSS-1｜依赖：T-P0｜owner：PR-O1 Agent｜output：评估记录 + 漂移 D3 闭合。验证：N0。
+- [x] T-O1 pxpipe-pin：v0.12.0/`0ceabbe` 评估 vs 旧 pin `7b7d6efa`；capability matrix 刷新；1928×1928 非生产声明保留。REQ：OPTICAL-3, OSS-1｜依赖：T-P0｜owner：PR-O1 Agent｜output：评估记录 + 漂移 D3 闭合。验证：N0。完成 2026-08-08：唯一 pin `0ceabbed`/v0.12.0（LICENSE 未变、上游无 NOTICE）；法律声明/`PXPIPE_SOURCE_COMMIT`/计划文档已同步；切片 commit 待 Main 串行拣选补录（worktree `final-pxpipe-pin` / 分支 `codex/final/pxpipe-pin`）。
 - [ ] T-O2 spleen-renderer：Spleen 2.2.0 声明完整 + 跨平台渲染确定性测试。REQ：OPTICAL-4, OPTICAL-6｜依赖：T-O1｜owner：PR-O2 Agent｜output：确定性测试。验证：N1/N6。
 - [ ] T-O3 optical-active-gate：active 不可达断言 + shadow raw ingress 测试 + 门槛文档。REQ：OPTICAL-1, OPTICAL-2, OPTICAL-5｜依赖：T-O2, T-PR1｜owner：PR-O3 Agent｜output：gate 测试 + `docs/optical/release-gates.md` 更新。验证：N6。
 

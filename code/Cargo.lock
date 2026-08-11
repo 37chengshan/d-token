@@ -845,10 +845,11 @@ dependencies = [
 
 [[package]]
 name = "d-token-desktop"
-version = "0.2.0-beta.1"
+version = "0.0.1"
 dependencies = [
  "dtoken-agent-bridge",
  "dtoken-codebase-memory",
+ "dtoken-compress",
  "dtoken-config",
  "dtoken-config-patcher",
  "dtoken-context-store",
@@ -1084,11 +1085,12 @@ dependencies = [
 
 [[package]]
 name = "dtoken-agent-bridge"
-version = "0.2.0-beta.1"
+version = "0.0.1"
 dependencies = [
  "anyhow",
  "dtoken-preprocessor",
  "dtoken-types",
+ "libc",
  "serde",
  "serde_json",
  "sha2",
@@ -1096,8 +1098,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "dtoken-benchmark"
+version = "0.0.1"
+dependencies = [
+ "anyhow",
+ "clap",
+ "dtoken-compress",
+ "dtoken-runtime-pipeline",
+ "dtoken-types",
+ "libc",
+ "serde",
+ "serde_json",
+ "sha2",
+ "uuid",
+]
+
+[[package]]
 name = "dtoken-codebase-memory"
-version = "0.2.0-beta.1"
+version = "0.0.1"
 dependencies = [
  "anyhow",
  "axum",
@@ -1114,16 +1132,19 @@ dependencies = [
 
 [[package]]
 name = "dtoken-compress"
-version = "0.2.0-beta.1"
+version = "0.0.1"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
+ "dtoken-context-bus",
  "dtoken-types",
  "ed25519-dalek",
  "font8x8",
+ "getrandom 0.3.4",
  "png 0.17.16",
  "proptest",
  "quote",
+ "serde",
  "serde_json",
  "sha2",
  "syn 2.0.118",
@@ -1140,7 +1161,7 @@ dependencies = [
 
 [[package]]
 name = "dtoken-config"
-version = "0.2.0-beta.1"
+version = "0.0.1"
 dependencies = [
  "anyhow",
  "dtoken-types",
@@ -1150,7 +1171,7 @@ dependencies = [
 
 [[package]]
 name = "dtoken-config-patcher"
-version = "0.2.0-beta.1"
+version = "0.0.1"
 dependencies = [
  "anyhow",
  "dtoken-compress",
@@ -1170,10 +1191,24 @@ dependencies = [
 ]
 
 [[package]]
-name = "dtoken-context-store"
-version = "0.2.0-beta.1"
+name = "dtoken-context-bus"
+version = "0.0.1"
 dependencies = [
  "anyhow",
+ "dtoken-types",
+ "serde",
+ "serde_json",
+ "sha2",
+ "uuid",
+]
+
+[[package]]
+name = "dtoken-context-store"
+version = "0.0.1"
+dependencies = [
+ "anyhow",
+ "dtoken-context-bus",
+ "dtoken-event-ledger",
  "dtoken-types",
  "rusqlite",
  "serde",
@@ -1185,13 +1220,15 @@ dependencies = [
 
 [[package]]
 name = "dtoken-core-api"
-version = "0.2.0-beta.1"
+version = "0.0.1"
 dependencies = [
  "anyhow",
  "axum",
+ "base64 0.22.1",
  "dtoken-compress",
  "dtoken-config",
  "dtoken-config-patcher",
+ "dtoken-context-bus",
  "dtoken-context-store",
  "dtoken-doctor",
  "dtoken-event-ledger",
@@ -1201,6 +1238,7 @@ dependencies = [
  "dtoken-project-policy",
  "dtoken-runtime-pipeline",
  "dtoken-types",
+ "ed25519-dalek",
  "futures-util",
  "keyring",
  "reqwest 0.12.28",
@@ -1215,7 +1253,7 @@ dependencies = [
 
 [[package]]
 name = "dtoken-doctor"
-version = "0.2.0-beta.1"
+version = "0.0.1"
 dependencies = [
  "dtoken-types",
  "serde",
@@ -1224,7 +1262,7 @@ dependencies = [
 
 [[package]]
 name = "dtoken-event-ledger"
-version = "0.2.0-beta.1"
+version = "0.0.1"
 dependencies = [
  "anyhow",
  "dtoken-types",
@@ -1235,7 +1273,7 @@ dependencies = [
 
 [[package]]
 name = "dtoken-headroom-adapter"
-version = "0.2.0-beta.1"
+version = "0.0.1"
 dependencies = [
  "dtoken-types",
  "serde_json",
@@ -1244,7 +1282,7 @@ dependencies = [
 
 [[package]]
 name = "dtoken-learning"
-version = "0.2.0-beta.1"
+version = "0.0.1"
 dependencies = [
  "rusqlite",
  "serde",
@@ -1255,7 +1293,7 @@ dependencies = [
 
 [[package]]
 name = "dtoken-preprocessor"
-version = "0.2.0-beta.1"
+version = "0.0.1"
 dependencies = [
  "anyhow",
  "dtoken-types",
@@ -1264,11 +1302,12 @@ dependencies = [
  "sha2",
  "tempfile",
  "tokio",
+ "toml 0.8.2",
 ]
 
 [[package]]
 name = "dtoken-process"
-version = "0.2.0-beta.1"
+version = "0.0.1"
 dependencies = [
  "anyhow",
  "dtoken-types",
@@ -1281,7 +1320,7 @@ dependencies = [
 
 [[package]]
 name = "dtoken-project-policy"
-version = "0.2.0-beta.1"
+version = "0.0.1"
 dependencies = [
  "dtoken-types",
  "uuid",
@@ -1289,7 +1328,7 @@ dependencies = [
 
 [[package]]
 name = "dtoken-proxy"
-version = "0.2.0-beta.1"
+version = "0.0.1"
 dependencies = [
  "anyhow",
  "axum",
@@ -1307,7 +1346,7 @@ dependencies = [
 
 [[package]]
 name = "dtoken-router"
-version = "0.2.0-beta.1"
+version = "0.0.1"
 dependencies = [
  "anyhow",
  "dtoken-config",
@@ -1317,7 +1356,7 @@ dependencies = [
 
 [[package]]
 name = "dtoken-runtime-pipeline"
-version = "0.2.0-beta.1"
+version = "0.0.1"
 dependencies = [
  "dtoken-types",
  "sha2",
@@ -1326,10 +1365,11 @@ dependencies = [
 
 [[package]]
 name = "dtoken-types"
-version = "0.2.0-beta.1"
+version = "0.0.1"
 dependencies = [
  "serde",
  "serde_json",
+ "sha2",
  "uuid",
 ]
 
@@ -1378,6 +1418,7 @@ checksum = "70e796c081cee67dc755e1a36a0a172b897fab85fc3f6bc48307991f64e4eca9"
 dependencies = [
  "curve25519-dalek",
  "ed25519",
+ "rand_core 0.6.4",
  "serde",
  "sha2",
  "subtle",

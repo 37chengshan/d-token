@@ -1,4 +1,5 @@
 import { lazy, Suspense, useCallback, useEffect, useState } from "react";
+import { MotionConfig } from "motion/react";
 import { Sidebar } from "./Sidebar";
 import { Topbar } from "./Topbar";
 import { StatusBar } from "./StatusBar";
@@ -207,7 +208,8 @@ export function AppShell() {
   };
 
   return (
-    <div className={`app-shell ${collapsed ? "is-sidebar-collapsed" : ""}`}>
+    <MotionConfig reducedMotion="user">
+      <div className={`app-shell ${collapsed ? "is-sidebar-collapsed" : ""}`}>
         <Sidebar page={page} setPage={handleSetPage} collapsed={collapsed} setCollapsed={setCollapsed} reducedMotion={reduceMotion} />
         <section className="shell-workspace">
           <Topbar page={page} collapsed={collapsed} setCollapsed={setCollapsed} reducedMotion={reduceMotion} onOpenOnboarding={openOnboarding} onboardingActive={showOnboarding} />
@@ -243,7 +245,8 @@ export function AppShell() {
           </div>
           <NotificationLiveRegion />
         </section>
-    </div>
+      </div>
+    </MotionConfig>
   );
 }
 
@@ -251,7 +254,7 @@ function PageFallback() {
   const { lang } = useI18n();
   return (
     <div className="shell-page-fallback flex min-h-[280px] items-center justify-center rounded-lg border border-border/40 text-sm text-muted-foreground">
-      {lang === "zh" ? "正在加载页面…" : "Loading view…"}
+      {translateCopy("app.loading", lang)}
     </div>
   );
 }

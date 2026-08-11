@@ -1,0 +1,29 @@
+[package]
+name = "dtoken-benchmark"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Fixed-corpus resolved-path benchmark runner and quality gates (PR-C7A/B/C)"
+
+[[bin]]
+name = "dtoken-bench"
+path = "src/main.rs"
+
+[[bin]]
+name = "dtoken-bench-probe"
+path = "src/bin/probe.rs"
+
+[dependencies]
+anyhow.workspace = true
+clap = { workspace = true }
+dtoken-compress = { path = "../dtoken-compress" }
+dtoken-runtime-pipeline = { path = "../dtoken-runtime-pipeline" }
+dtoken-types = { path = "../dtoken-types" }
+libc = "0.2"
+serde = { workspace = true }
+serde_json.workspace = true
+sha2 = "0.10"
+
+[dev-dependencies]
+uuid.workspace = true

@@ -98,7 +98,10 @@ pub fn plan_volatility(text: &str) -> VolatilityPlan {
     }
 }
 
-fn detect_volatile_kind(line: &str) -> Option<VolatileKind> {
+/// Classify a single trimmed line against the known volatile header
+/// fingerprints. Public so downstream planners (e.g. history collapse) use
+/// the same single source of truth for boundary detection.
+pub fn detect_volatile_kind(line: &str) -> Option<VolatileKind> {
     let trimmed = line.trim_start();
     for (prefix, kind) in VOLATILE_PREFIXES {
         if trimmed.starts_with(prefix) {

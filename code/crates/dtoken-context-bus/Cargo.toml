@@ -1,0 +1,17 @@
+[package]
+name = "dtoken-context-bus"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "LeanCTX nine-boundary Rust-owned domain: Context Bus / Session Cache / Context Relay / map-signature reuse / query-aware retrieval / Recovery Pointer-Manifest / Stale-Superseded / SharedContext authorization / self-hit-size boundary"
+
+[dependencies]
+anyhow.workspace = true
+dtoken-types = { path = "../dtoken-types" }
+serde.workspace = true
+serde_json.workspace = true
+sha2 = "0.10"
+uuid.workspace = true
+
+[dev-dependencies]

@@ -63,4 +63,37 @@ proptest! {
         let after: Value = serde_json::from_str(&minified).expect("minified JSON");
         prop_assert_eq!(before, after);
     }
+
+    #[test]
+    fn prop_each_ir_node_has_exactly_one_exclusive_action(fragment in "[a-zA-Z0-9 ]{1,32}") {
+        let tool_result = std::iter::repeat_n(format!("INFO {fragment}"), 12)
+            .collect::<Vec<_>>()
+            .join("\n");
+        let original = request(tool_result);
+        let plan = plan_context(&context(), &original).expect("supported context");
+        let prepared = prepare_context_transform(&context(), CompressionPolicy::Balanced, original)
+            .expect("supported context");
+        // Every manifest entry is a distinct IR node: no node is transformed
+        // twice, no protected/frozen node enters the manifest, and every
+        // transformed node lies inside the transformable window.
+        let entries = prepared
+            .as_ref()
+            .map(|item| item.manifest().entries())
+            .unwrap_or_default();
+        let mut pointers = entries
+            .iter()
+            .map(|entry| entry.pointer())
+            .collect::<Vec<_>>();
+        pointers.sort_unstable();
+        pointers.dedup();
+        prop_assert_eq!(pointers.len(), entries.len(), "each node has one action");
+        for entry in entries {
+            prop_assert!(
+                plan.transformable_zones()
+                    .iter()
+                    .any(|zone| zone.pointer() == entry.pointer()),
+                "transformed node must sit inside the transformable window"
+            );
+        }
+    }
 }

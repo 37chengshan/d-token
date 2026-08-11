@@ -21,7 +21,7 @@ export function StatCard({
     <motion.div
       initial={{ opacity: 0, y: 12 }}
       animate={{ opacity: 1, y: 0 }}
-      transition={{ delay: index * 0.05, duration: 0.35 }}
+      transition={{ duration: 0.28, ease: "easeOut", delay: index * 0.05 }}
     >
       <Surface className="overflow-hidden p-5">
         {accentBar && <div className="mb-4 h-1 w-10 rounded-full" style={{ background: accentBar }} />}

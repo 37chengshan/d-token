@@ -1,4 +1,5 @@
 pub mod agent;
+pub mod contract;
 pub mod time;
 
 use serde::{Deserialize, Serialize};
@@ -125,8 +126,11 @@ pub enum ManagedRtkOperation {
 }
 
 /// A managed RTK transaction is only successful after a versioned host hook
-/// adapter has verified its own write and rollback. `Blocked` is an expected,
-/// safe state while no such adapter is shipped for the host platform.
+/// adapter has verified its own write and rollback. `Unavailable` is the
+/// expected state while the managed runtime is not configured (no verified
+/// d-token-owned wrapper for the operation); it is never a hard platform
+/// lock. The adapter may transition from a valid `Planned` transaction into
+/// `Installed`/`Configured`/`Verified` on any supported host platform.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ManagedRtkTransactionState {
@@ -136,7 +140,7 @@ pub enum ManagedRtkTransactionState {
     Verified,
     RolledBack,
     Uninstalled,
-    Blocked,
+    Unavailable,
     Failed,
 }
 
@@ -191,6 +195,50 @@ pub struct ManagedRtkUsageEvidence {
     pub saved_bytes: usize,
     pub transforms: Vec<String>,
     pub disposition: String,
+}
+
+/// Four-dimension savings accounting (RUNTIME-5/9, CONTEXT-3). Compression
+/// (Headroom/Optical text transforms), command-output (RTK), provider-cache,
+/// and relay savings are independently attributable: entries in different
+/// buckets may never share a source digest, and no two buckets may be summed
+/// as if they were one savings pool.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum AccountingBucket {
+    Compression,
+    CommandOutput,
+    ProviderCache,
+    Relay,
+}
+
+/// One attributed savings claim. `source_digest` binds the claim to the exact
+/// bytes it transformed; the same digest may never appear in two buckets
+/// (exclusive attribution, no double count).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct AccountingEntry {
+    pub schema_version: u8,
+    pub bucket: AccountingBucket,
+    pub source_digest: String,
+    pub input_bytes: u64,
+    pub output_bytes: u64,
+    pub saved_bytes: u64,
+    pub disposition: String,
+    pub recorded_at_ms: u64,
+}
+
+/// Exclusive canonical planner action for one context node (RUNTIME-7). A
+/// node is assigned exactly one action; `RtkCommandOutput` nodes are never
+/// also `HeadroomSemantic`/`Optical`/`Reuse`, so their byte savings cannot be
+/// double counted into another dimension.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NodeAction {
+    Preserve,
+    Reuse,
+    HeadroomSemantic,
+    RtkCommandOutput,
+    Optical,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1120,6 +1168,12 @@ pub struct RollbackPoint {
     pub patch_ids: Vec<String>,
 }
 
+/// Canonical route decision (T-C1A: RouteDecision 唯一权威).
+///
+/// Production construction flows through `dtoken_router::Router`
+/// (`decide`/`decide_for_request`) — the single selection authority — and
+/// the stable digest is derived from the canonical fields, so a caller can
+/// never inject a forged decision digest into a receipt.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RouteDecision {
     pub request_id: Uuid,
@@ -1132,6 +1186,29 @@ pub struct RouteDecision {
     pub input_protocol: Option<Protocol>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output_protocol: Option<Protocol>,
+}
+
+impl RouteDecision {
+    /// Stable canonical digest of the decision identity (T-C0A).
+    ///
+    /// The same decision always produces the same digest across processes
+    /// and surfaces; `reason` is human prose and deliberately excluded. This
+    /// is the single authority for route-decision evidence
+    /// (registry `aggregate.route-decision` / `router.route-decision-digest`).
+    pub fn stable_digest(&self) -> String {
+        use sha2::{Digest, Sha256};
+        let canonical = serde_json::to_vec(&(
+            &self.request_id,
+            &self.route_id,
+            &self.provider_id,
+            &self.chain_mode,
+            &self.compression_policy,
+            &self.input_protocol,
+            &self.output_protocol,
+        ))
+        .expect("canonical decision serialization cannot fail");
+        format!("{:x}", Sha256::digest(&canonical))
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1302,9 +1379,10 @@ fn saturating_i64_difference_u128(baseline: u128, candidate: u128) -> i64 {
     }
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum OptimizationDisposition {
+    #[default]
     Passthrough,
     Shadow,
     Active,
@@ -1479,6 +1557,14 @@ pub struct RequestLog {
     pub timestamp_ms: u64,
     pub agent: Option<String>,
     pub instance_id: Option<String>,
+    /// Project identity evidence from the resolved request scope; None when
+    /// identity is unavailable (never fabricated).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<String>,
+    /// Model the user requested in the original request body, parsed before
+    /// any routing; never derived from the actual routed model.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user_target_model: Option<String>,
     pub input_protocol: Protocol,
     pub provider_id: Option<String>,
     pub route_id: Option<String>,
@@ -1487,6 +1573,12 @@ pub struct RequestLog {
     pub input_tokens_before: Option<usize>,
     pub input_tokens_after: Option<usize>,
     pub output_tokens: Option<usize>,
+    /// Actual provider-reported input tokens from the upstream response; never derived.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_input_tokens: Option<usize>,
+    /// Actual provider-reported output tokens from the upstream response; never derived.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_output_tokens: Option<usize>,
     pub tokens_saved: Option<usize>,
     pub transforms_applied: Vec<String>,
     pub latency_ms: Option<u64>,
@@ -1497,6 +1589,150 @@ pub struct RequestLog {
     pub quota_metadata: Option<serde_json::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_accounting: Option<HybridContextAccounting>,
+}
+
+/// Minimal, safe projection of a request's optimization outcome (spec v2
+/// §7.2 field parity plus PRD P0.0.7 Local/Provider/claimable separation).
+///
+/// `savings_estimated` is display-only; `savings_claimable` is only populated
+/// from `PairedActual` or a complete `ProviderReconciledActual` attribution
+/// chain (provider usage alone or `EstimatedActive` never makes savings
+/// claimable). `physical_tokens_saved` is projected from local before/after
+/// input measurements only when both exist and the change is non-negative;
+/// it never copies the legacy positive `tokens_saved` field. `project_scope`,
+/// `user_target_model` and `provider_or_model_changed` are populated only
+/// from explicit request-scope/request-body evidence; `user_target_provider`,
+/// `protected_content`, `recovery_status` and `recovery_pointer` have no
+/// evidence source on this path and stay `None` (never guessed).
+/// `validation_status` projects the accounting record's own validation result
+/// when accounting evidence exists. This struct never carries
+/// prompt/response bodies, credentials or local paths.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct OptimizationReceipt {
+    pub request_id: Uuid,
+    pub timestamp_ms: u64,
+    pub agent: Option<String>,
+    pub provider_id: Option<String>,
+    pub route_id: Option<String>,
+    pub model: Option<String>,
+    pub project_scope: Option<String>,
+    pub user_target_provider: Option<String>,
+    pub user_target_model: Option<String>,
+    pub provider_or_model_changed: Option<bool>,
+    pub local_input_tokens_before: Option<usize>,
+    pub local_input_tokens_after: Option<usize>,
+    pub provider_input_tokens: Option<usize>,
+    pub provider_output_tokens: Option<usize>,
+    pub protected_content: Option<bool>,
+    pub physical_tokens_saved: Option<usize>,
+    pub savings_estimated: Option<i64>,
+    pub savings_claimable: Option<i64>,
+    pub recovery_status: Option<String>,
+    pub recovery_pointer: Option<String>,
+    pub validation_status: Option<String>,
+    pub disposition: OptimizationDisposition,
+    pub failure_type: Option<String>,
+    pub transforms_applied: Vec<String>,
+    pub latency_ms: Option<u64>,
+}
+
+impl OptimizationReceipt {
+    /// Safe projection from a `&RequestLog`.
+    ///
+    /// Claimable savings require the full, validated, declarable
+    /// `HybridContextAccounting` path; a request with only provider usage
+    /// recorded is never claimable.
+    pub fn from_request_log(request_log: &RequestLog) -> Self {
+        let accounting = request_log.context_accounting.as_ref();
+        // Claimable savings require complete, validated, declarable attribution:
+        // PairedActual, or the full ProviderReconciledActual chain (counterfactual
+        // baseline + provider actual + reconciled savings). EstimatedActive and
+        // provider-usage-only never produce claimable savings.
+        let savings_claimable = match accounting {
+            Some(accounting) => match accounting.attribution_basis {
+                SavingsAttribution::PairedActual => accounting
+                    .claimable_signed_savings()
+                    .and_then(|savings| savings.total_tokens),
+                SavingsAttribution::ProviderReconciledActual => accounting
+                    .provider_reconciled_signed_savings()
+                    .and_then(|savings| savings.total_tokens),
+                SavingsAttribution::None | SavingsAttribution::EstimatedActive => None,
+            },
+            None => None,
+        };
+        let savings_estimated = accounting
+            .and_then(|accounting| accounting.estimated.as_ref())
+            .and_then(|comparison| comparison.signed_savings.total_tokens);
+        // Physical local-input savings are only projected when both before and
+        // after measurements exist and the signed change is non-negative;
+        // missing measurements or growth stay None (no negative truncation,
+        // never copied from the legacy positive-only `tokens_saved` field).
+        let physical_tokens_saved = match (
+            request_log.input_tokens_before,
+            request_log.input_tokens_after,
+        ) {
+            (Some(before), Some(after)) if before >= after => Some(before - after),
+            _ => None,
+        };
+        // provider_or_model_changed is only provable when both the user's
+        // requested model and the routed actual model are recorded; either
+        // missing (e.g. dynamic model passthrough without a request model)
+        // stays None — never guessed.
+        let provider_or_model_changed = match (
+            request_log.user_target_model.as_deref(),
+            request_log.model.as_deref(),
+        ) {
+            (Some(user_target), Some(actual)) => Some(user_target != actual),
+            _ => None,
+        };
+        // validation_status projects the accounting record's own validation
+        // result (existing accounting evidence); no accounting -> None.
+        let validation_status = accounting.map(|accounting| {
+            if accounting.validate().is_ok() {
+                "validated".to_string()
+            } else {
+                "invalid".to_string()
+            }
+        });
+        Self {
+            request_id: request_log.request_id,
+            timestamp_ms: request_log.timestamp_ms,
+            agent: request_log.agent.clone(),
+            provider_id: request_log.provider_id.clone(),
+            route_id: request_log.route_id.clone(),
+            model: request_log.model.clone(),
+            project_scope: request_log.project_id.clone(),
+            // No request-level provider-target evidence exists on any routed
+            // path (requests name a model, never a provider); stays None.
+            user_target_provider: None,
+            user_target_model: request_log.user_target_model.clone(),
+            provider_or_model_changed,
+            local_input_tokens_before: request_log.input_tokens_before,
+            local_input_tokens_after: request_log.input_tokens_after,
+            provider_input_tokens: request_log.provider_input_tokens,
+            provider_output_tokens: request_log.provider_output_tokens,
+            // No protected-content evidence is recorded on this path; stays
+            // None (never guessed).
+            protected_content: None,
+            physical_tokens_saved,
+            savings_estimated,
+            savings_claimable,
+            // CCR/recovery evidence (raw_recovery_ref) is not recorded on
+            // RequestLog; stays None until a recovery slice populates it.
+            recovery_status: None,
+            recovery_pointer: None,
+            validation_status,
+            disposition: accounting
+                .map(|accounting| accounting.disposition)
+                .unwrap_or_default(),
+            failure_type: request_log.error.clone().or_else(|| {
+                accounting.and_then(|accounting| accounting.fallback_reason_code.clone())
+            }),
+            transforms_applied: request_log.transforms_applied.clone(),
+            latency_ms: request_log.latency_ms,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1810,6 +2046,12 @@ pub struct OpticalCapabilitySnapshot {
     pub notes: Option<String>,
     #[serde(default)]
     pub attestation: Option<OpticalCapabilityAttestation>,
+    /// Attested economics bound by the Ed25519 signature. Active-capable
+    /// snapshots must carry a well-formed economics attestation; the signed
+    /// transform contract digest is derived from these revisions, so tampering
+    /// with tokenizer/pricing/cache parameters breaks the attestation.
+    #[serde(default)]
+    pub economics: Option<OpticalEconomicsAttestation>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1833,6 +2075,59 @@ pub struct OpticalTrustedAuthority {
     pub authority_id: String,
     pub key_id: String,
     pub public_key_base64: String,
+}
+
+fn default_optical_economics_schema_version() -> u32 {
+    1
+}
+
+/// Model-bound economics parameters attested by the capability authority.
+/// Only a well-formed, signature-bound economics attestation may authorize an
+/// active Optical transform; any unattested or malformed economics contract
+/// keeps the request on the preserve-text path.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct OpticalEconomicsAttestation {
+    #[serde(default = "default_optical_economics_schema_version")]
+    pub schema_version: u32,
+    pub tokenizer_revision: String,
+    pub pricing_revision: String,
+    pub cache_policy_revision: String,
+    pub chars_per_text_token: f64,
+    pub cache_create_rate: f64,
+    pub cache_read_rate: f64,
+}
+
+impl Default for OpticalEconomicsAttestation {
+    fn default() -> Self {
+        Self {
+            schema_version: default_optical_economics_schema_version(),
+            tokenizer_revision: String::new(),
+            pricing_revision: String::new(),
+            cache_policy_revision: String::new(),
+            chars_per_text_token: 0.0,
+            cache_create_rate: 0.0,
+            cache_read_rate: 0.0,
+        }
+    }
+}
+
+impl OpticalEconomicsAttestation {
+    /// A well-formed economics attestation is required before any active
+    /// economics contract may be derived from it.
+    pub fn is_well_formed(&self) -> bool {
+        self.schema_version == 1
+            && !self.tokenizer_revision.trim().is_empty()
+            && !self.pricing_revision.trim().is_empty()
+            && !self.cache_policy_revision.trim().is_empty()
+            && self.chars_per_text_token.is_finite()
+            && self.chars_per_text_token > 0.0
+            && self.cache_create_rate.is_finite()
+            && self.cache_read_rate.is_finite()
+            && self.cache_create_rate >= 0.0
+            && self.cache_read_rate >= 0.0
+            && self.cache_create_rate >= self.cache_read_rate
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -2066,6 +2361,59 @@ pub struct OpticalCapabilityLifecyclePublicSummary {
     pub eval_artifacts: usize,
     pub passing_eval_artifacts: usize,
     pub attestation_required: bool,
+}
+
+/// Bounded, non-sensitive exact-route evidence for the N10 U7 gate. It carries
+/// route/provider/model/API identity, renderer/font/profile/corpus/tokenizer/
+/// pricing/cache/eval digests, lifecycle times and the paired fidelity/cost/
+/// latency eval numbers. It never contains signatures, request bodies, source
+/// text, PNG/base64 bytes, credentials or raw secrets.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct OpticalExactRouteEvidence {
+    pub schema_version: u32,
+    pub snapshot_id: String,
+    pub revision: u64,
+    pub lifecycle: OpticalCapabilityLifecycle,
+    pub provider_family: ProviderFamily,
+    pub provider_id: String,
+    pub route_id: String,
+    pub model_base: String,
+    pub endpoint: OpticalEndpoint,
+    /// Exact wire API revision bound by the snapshot, e.g. `anthropic-messages-v1`.
+    pub api_revision: String,
+    pub verified_at_ms: u64,
+    pub issued_at_ms: Option<u64>,
+    pub expires_at_ms: Option<u64>,
+    pub renderer_profile_digest: String,
+    pub font_digest: String,
+    /// Digest over the transform contract, including tokenizer/pricing/cache revisions.
+    pub transform_contract_digest: String,
+    pub tokenizer_revision: String,
+    pub pricing_revision: String,
+    pub cache_policy_revision: String,
+    pub corpus_digest: String,
+    pub eval_artifact_digest: String,
+    pub eval_sample_count: u64,
+    pub eval_exact_failures: u64,
+    pub eval_unsafe_failures: u64,
+    pub eval_baseline_passes: u64,
+    pub eval_candidate_passes: u64,
+    pub eval_quality_delta: f64,
+    /// Paired (same model/API revision) baseline vs candidate input-token delta.
+    pub paired_input_token_delta: i64,
+    /// Paired cost delta in micro-USD (positive = candidate cheaper).
+    pub paired_cost_delta_microusd: i64,
+    /// Paired p95 latency delta in ms (positive = candidate faster).
+    pub paired_latency_p95_delta_ms: i64,
+    pub attested: bool,
+    pub eval_gate_passed: bool,
+    pub economics_bound: bool,
+    /// True when provider/route/model identity is exact (no wildcard).
+    pub exact_identity: bool,
+    /// True only when every gate is green: verified attestation, passing
+    /// paired eval, bound economics, exact identity, Active lifecycle and
+    /// unexpired attestation.
+    pub active_reachable: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -1,6 +1,6 @@
 import React from "react";
 import "@testing-library/jest-dom/vitest";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
@@ -65,7 +65,7 @@ const connectedSnapshot = {
     already_connected: true,
   }],
   sources: [],
-  selection_required: false,
+  has_resolution_gap: false,
   cc_switch_sync: null,
   writes_performed: false as const,
   privacy: "redacted",
@@ -137,7 +137,7 @@ const credentialRequiredSnapshot = {
     already_connected: false,
   }],
   sources: [],
-  selection_required: false,
+  has_resolution_gap: false,
   cc_switch_sync: null,
   writes_performed: false as const,
   privacy: "redacted",
@@ -580,6 +580,79 @@ describe("Install", () => {
     expect(screen.getByText("OpenCode")).toBeInTheDocument();
   });
 
+  it("marks an ambiguous upstream as needs-source-fix and fails closed without a chooser", async () => {
+    const firstSourceCandidate = {
+      id: "profile-one",
+      name: "Profile one",
+      protocol: "open_ai",
+      base_url: "https://one.example.test/v1",
+      models: ["model-a"],
+      source: "agent-config:opencode",
+      freshness: "unix:5",
+      auth_mode: "none",
+      active: true,
+      state: "discovered",
+      agent_ids: ["opencode"],
+      confidence: 95,
+      reasons: ["current"],
+    };
+    const secondSourceCandidate = {
+      id: "profile-two",
+      name: "Profile two",
+      protocol: "open_ai",
+      base_url: "https://two.example.test/v1",
+      models: ["model-b"],
+      source: "cc-switch:profile-two",
+      freshness: "unix:5",
+      auth_mode: "none",
+      active: true,
+      state: "discovered",
+      agent_ids: ["opencode"],
+      confidence: 92,
+      reasons: ["active profile"],
+    };
+    const conflictBinding = {
+      ...connectedSnapshot.agent_bindings[0],
+      candidates: [firstSourceCandidate, secondSourceCandidate],
+      resolved_candidate: null,
+      resolution: "needs-source-fix" as const,
+      confidence: 40,
+      reasons: ["multiple sources claim the same Agent"],
+      can_configure: true,
+      can_clear: true,
+      already_connected: false,
+    };
+    const conflictSnapshot = {
+      ...connectedSnapshot,
+      revision: "source-conflict-1",
+      candidates: [firstSourceCandidate, secondSourceCandidate],
+      agent_bindings: [conflictBinding],
+      has_resolution_gap: true,
+    };
+    mocks.invokeNative.mockImplementation(async (command: string) => {
+      if (command === "discover_upstream_candidates") return conflictSnapshot;
+      throw new Error(`unexpected command: ${command}`);
+    });
+
+    const { container } = render(<Install />);
+
+    // The conflict is surfaced as source-conflict copy: fix the source and
+    // rescan. No chooser is offered for the ambiguous upstream.
+    expect(await screen.findByText("来源冲突")).toBeInTheDocument();
+    expect(screen.getByText(/无法唯一解析；请修复来源配置后重新扫描/)).toBeInTheDocument();
+
+    // The whole plan fails closed: no review path exists while the source is
+    // ambiguous; rescan is the only primary action.
+    expect(screen.getByText("需要处理")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "重新扫描" })).toBeEnabled();
+    expect(screen.queryByRole("button", { name: "查看变更" })).not.toBeInTheDocument();
+
+    // No select or checkbox chooser is rendered on the page.
+    expect(screen.queryByRole("checkbox")).not.toBeInTheDocument();
+    expect(screen.queryByRole("combobox")).not.toBeInTheDocument();
+    expect(container.querySelector("select")).toBeNull();
+  });
+
   it("rescans instead of redirecting a detection-only Agent to Advanced setup", async () => {
     const onOpenAdvanced = vi.fn();
     const detectionOnlySnapshot = {
@@ -684,7 +757,7 @@ describe("Install", () => {
       ],
       agent_bindings: [{ agent_id: "opencode", agent_name: "OpenCode", installed: true, current_config_source: "agent-config:opencode", candidates: [], resolution: "auto-resolved", confidence: 98, reasons: [], capability: "one-click", already_connected: false }],
       sources: [{ id: "cc-switch-sqlite", profile_count: 3 }],
-      selection_required: false,
+      has_resolution_gap: false,
       cc_switch_sync: null,
       writes_performed: false,
       privacy: "redacted",
@@ -799,6 +872,135 @@ describe("Install", () => {
     }]);
   });
 
+  it("emits one route row per safe OpenCode catalog candidate in stable order", () => {
+    const free = {
+      id: "opencode-free",
+      name: "OpenCode free",
+      protocol: "open_ai",
+      base_url: "https://opencode.ai/zen/v1",
+      models: ["deepseek-v4-flash-free", "north-mini-code-free"],
+      source: "opencode-provider-catalog-cache",
+      freshness: "unix:1",
+      auth_mode: "none",
+      active: false,
+      state: "available",
+      agent_ids: ["opencode"],
+      confidence: 90,
+      reasons: [],
+    };
+    const go = {
+      ...free,
+      id: "opencode-go",
+      name: "OpenCode Go",
+      base_url: "https://opencode.go.example.test/v1",
+      models: ["go-model"],
+      auth_mode: "unavailable",
+      dtoken_credential_configured: true,
+    };
+    const plan = buildConnectionRoutePlanRequest("r-opencode", [{
+      agent_id: "opencode",
+      agent_name: "OpenCode",
+      installed: true,
+      current_config_source: "opencode-provider-catalog-cache",
+      candidates: [free, go],
+      resolved_candidate: free,
+      resolution: "auto-resolved",
+      confidence: 90,
+      reasons: [],
+      capability: "one-click",
+      already_connected: false,
+    }], {});
+    // The resolved candidate never narrows the catalog: every safe
+    // candidate/model pair joins, sorted deterministically by model.
+    expect(plan.bindings).toEqual([
+      { agent_id: "opencode", candidate_id: "opencode-free", candidate_source: "opencode-provider-catalog-cache", model: "deepseek-v4-flash-free" },
+      { agent_id: "opencode", candidate_id: "opencode-go", candidate_source: "opencode-provider-catalog-cache", model: "go-model" },
+      { agent_id: "opencode", candidate_id: "opencode-free", candidate_source: "opencode-provider-catalog-cache", model: "north-mini-code-free" },
+    ]);
+  });
+
+  it("omits unconfigured credential OpenCode candidates from the route plan", () => {
+    const free = {
+      id: "opencode-free",
+      name: "OpenCode free",
+      protocol: "open_ai",
+      base_url: "https://opencode.ai/zen/v1",
+      models: ["deepseek-v4-flash-free"],
+      source: "opencode-provider-catalog-cache",
+      freshness: "unix:1",
+      auth_mode: "none",
+      active: false,
+      state: "available",
+      agent_ids: ["opencode"],
+      confidence: 90,
+      reasons: [],
+    };
+    const go = {
+      ...free,
+      id: "opencode-go",
+      name: "OpenCode Go",
+      base_url: "https://opencode.go.example.test/v1",
+      models: ["go-model"],
+      auth_mode: "unavailable",
+    };
+    const plan = buildConnectionRoutePlanRequest("r-opencode", [{
+      agent_id: "opencode",
+      agent_name: "OpenCode",
+      installed: true,
+      current_config_source: "opencode-provider-catalog-cache",
+      candidates: [go, free],
+      resolved_candidate: go,
+      resolution: "needs-credential",
+      confidence: 70,
+      reasons: ["credential missing"],
+      capability: "one-click",
+      already_connected: false,
+    }], {});
+    expect(plan.bindings).toEqual([{
+      agent_id: "opencode",
+      candidate_id: "opencode-free",
+      candidate_source: "opencode-provider-catalog-cache",
+      model: "deepseek-v4-flash-free",
+    }]);
+  });
+
+  it("fails closed when OpenCode models alias different endpoints", () => {
+    const first = {
+      id: "one",
+      name: "One",
+      protocol: "open_ai",
+      base_url: "https://one.example.test/v1",
+      models: ["shared-model"],
+      source: "opencode-provider-catalog-cache",
+      freshness: "unix:1",
+      auth_mode: "none",
+      active: false,
+      state: "available",
+      agent_ids: ["opencode"],
+      confidence: 90,
+      reasons: [],
+    };
+    const second = {
+      ...first,
+      id: "two",
+      base_url: "https://two.example.test/v1",
+    };
+    const plan = buildConnectionRoutePlanRequest("r-opencode", [{
+      agent_id: "opencode",
+      agent_name: "OpenCode",
+      installed: true,
+      current_config_source: "opencode-provider-catalog-cache",
+      candidates: [first, second],
+      resolved_candidate: first,
+      resolution: "auto-resolved",
+      confidence: 90,
+      reasons: [],
+      capability: "one-click",
+      already_connected: false,
+    }], {});
+    expect(plan.bindings).toEqual([]);
+  });
+
   it("stores a required credential through the secure command without rendering it when native storage fails", async () => {
     const credential = "test-credential-never-rendered";
     mocks.invokeNative.mockImplementation(async (command: string) => {
@@ -814,7 +1016,20 @@ describe("Install", () => {
     fireEvent.click(screen.getByRole("button", { name: "安全保存并继续" }));
 
     await waitFor(() => expect(mocks.invokeNative).toHaveBeenCalledWith("store_provider_credential", {
-      request: { provider_id: "provider-needing-key", credential },
+      request: {
+        provider_id: "provider-needing-key",
+        credential,
+        // The OpenCode Install credential call binds to the exact reviewed
+        // upstream identity (candidate id + source + endpoint) plus the
+        // snapshot revision; provider_id alone is never accepted for this
+        // flow.
+        upstream_identity: {
+          candidate_id: "provider-needing-key",
+          source: "agent-config:opencode",
+          endpoint: "https://example.test/v1",
+        },
+        discovery_revision: "credential-1",
+      },
     }));
     expect(await screen.findByRole("alert")).toHaveTextContent("未能安全保存凭据，请检查后重试。");
     expect(screen.queryByText(credential)).not.toBeInTheDocument();
@@ -1010,6 +1225,12 @@ describe("Install", () => {
     // MCP/Hook integrations are labeled truthfully: tool capability only.
     expect(screen.getByText("工具能力，不改变模型上游")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "配置工具集成" }));
+
+    // The preview opens the unified OperationDialog (M-3); the apply write
+    // happens only after the user confirms the reviewed plan.
+    const dialog = await screen.findByRole("alertdialog");
+    expect(dialog).toHaveTextContent("d-token-agent-bridge MCP 工具");
+    fireEvent.click(within(dialog).getByRole("button", { name: "应用方案" }));
 
     await waitFor(() => {
       expect(mocks.invokeNative).toHaveBeenCalledWith(

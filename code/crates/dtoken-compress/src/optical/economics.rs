@@ -2,7 +2,7 @@
 // 关联计划：OPTICAL_COMPRESSION_EXPERIMENT_PLAN.md §18。
 
 use crate::optical::render_geometry::{estimate_image_tokens, RenderGeometryProfile};
-use dtoken_types::OpticalBucket;
+use dtoken_types::{OpticalBucket, OpticalEconomicsAttestation};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LatencyRiskLevel {
@@ -38,33 +38,31 @@ pub struct CostEstimateRange {
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct ActiveEconomicsContract {
-    pub tokenizer_revision: &'static str,
-    pub pricing_revision: &'static str,
-    pub cache_policy_revision: &'static str,
+    pub tokenizer_revision: String,
+    pub pricing_revision: String,
+    pub cache_policy_revision: String,
     pub chars_per_text_token: f64,
     pub cache_create_rate: f64,
     pub cache_read_rate: f64,
 }
 
-/// Production contracts must be loaded from an attested, model-bound source.
-/// No such source is shipped yet, so production Active remains fail-closed.
-pub(crate) fn resolve_active_economics_contract(
-    model: &str,
-    capability_revision: Option<u64>,
+/// Derives the active economics contract from an attested, model-bound
+/// economics attestation. A malformed or unattested attestation yields `None`,
+/// which keeps the request on the preserve-text path (OPTICAL-1/C5C).
+pub(crate) fn economics_contract_from_attested(
+    economics: &OpticalEconomicsAttestation,
 ) -> Option<ActiveEconomicsContract> {
-    #[cfg(test)]
-    if model == "claude-fable-5" && capability_revision.is_some() {
-        return Some(ActiveEconomicsContract {
-            tokenizer_revision: "test-char4-tokenizer-v1",
-            pricing_revision: "test-anthropic-cache-pricing-v1",
-            cache_policy_revision: "cold-warm-unknown-max-burn-v1",
-            chars_per_text_token: 4.0,
-            cache_create_rate: 1.25,
-            cache_read_rate: 0.1,
-        });
+    if !economics.is_well_formed() {
+        return None;
     }
-    let _ = (model, capability_revision);
-    None
+    Some(ActiveEconomicsContract {
+        tokenizer_revision: economics.tokenizer_revision.clone(),
+        pricing_revision: economics.pricing_revision.clone(),
+        cache_policy_revision: economics.cache_policy_revision.clone(),
+        chars_per_text_token: economics.chars_per_text_token,
+        cache_create_rate: economics.cache_create_rate,
+        cache_read_rate: economics.cache_read_rate,
+    })
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -307,16 +305,31 @@ mod tests {
     }
 
     #[test]
-    fn production_build_has_no_unattested_tokenizer_or_pricing_contract() {
-        #[cfg(not(test))]
-        assert!(resolve_active_economics_contract("claude-fable-5", Some(1)).is_none());
-        #[cfg(test)]
-        {
-            assert!(resolve_active_economics_contract("unknown-model", Some(1)).is_none());
-            let contract = resolve_active_economics_contract("claude-fable-5", Some(1))
-                .expect("unit fixture contract");
-            assert!(!contract.tokenizer_revision.is_empty());
-            assert!(!contract.pricing_revision.is_empty());
-        }
+    fn unattested_or_malformed_economics_never_produces_an_active_contract() {
+        let mut malformed = OpticalEconomicsAttestation::default();
+        assert!(economics_contract_from_attested(&malformed).is_none());
+
+        malformed.schema_version = 1;
+        malformed.tokenizer_revision = "tokenizer-v1".to_string();
+        malformed.pricing_revision = "pricing-v1".to_string();
+        malformed.cache_policy_revision = "cache-v1".to_string();
+        malformed.chars_per_text_token = 4.0;
+        malformed.cache_create_rate = 1.25;
+        malformed.cache_read_rate = 0.1;
+        let contract = economics_contract_from_attested(&malformed)
+            .expect("well-formed attested economics must resolve");
+        assert_eq!(contract.tokenizer_revision, "tokenizer-v1");
+        assert_eq!(contract.pricing_revision, "pricing-v1");
+        assert_eq!(contract.cache_policy_revision, "cache-v1");
+
+        // Unknown/unattested economics must stay fail-closed even when the
+        // remaining parameters look plausible.
+        let mut no_cache_revision = malformed.clone();
+        no_cache_revision.cache_policy_revision.clear();
+        assert!(economics_contract_from_attested(&no_cache_revision).is_none());
+
+        let mut inverted_rates = malformed;
+        inverted_rates.cache_read_rate = 2.0;
+        assert!(economics_contract_from_attested(&inverted_rates).is_none());
     }
 }

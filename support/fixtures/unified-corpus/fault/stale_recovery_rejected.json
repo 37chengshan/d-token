@@ -1,0 +1,9 @@
+{
+  "id": "fault-stale-recovery-rejected",
+  "kind": "fault-scenario",
+  "description": "Expired or wrong-scope recovery receipt must be rejected; original text preserved.",
+  "privacy": "synthetic fixture; no credentials, paths, or real prompts",
+  "failpoint": "recovery.receipt",
+  "expected_unique_terminal_state": "recovery_rejected_original_preserved",
+  "forbidden": ["stale_restore", "wrong_scope_restore"]
+}

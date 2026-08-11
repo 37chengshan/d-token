@@ -54,6 +54,58 @@ test.describe("d-token desktop control plane", () => {
     }
   });
 
+  test("expanded sidebar shows the page heading and drops the topbar context title", async ({ page }) => {
+    const app = new AppShellPage(page);
+    await page.addInitScript(() => localStorage.setItem("d-token.shell.sidebar-collapsed", "0"));
+    await app.open();
+
+    await expect(page.locator(".shell-topbar-context")).toHaveCount(0);
+    const structure = await app.main.evaluate((main) => {
+      const headings = Array.from(main.querySelectorAll("h1"));
+      const visuallyRendered = headings.filter((element) => {
+        const style = window.getComputedStyle(element);
+        const rect = element.getBoundingClientRect();
+        return (
+          style.display !== "none" &&
+          style.visibility !== "hidden" &&
+          style.clip !== "rect(0px, 0px, 0px, 0px)" &&
+          rect.width > 1 &&
+          rect.height > 1
+        );
+      });
+      return { total: headings.length, visuallyRendered: visuallyRendered.length };
+    });
+    expect(structure.total, "expanded shell must keep exactly one semantic h1").toBe(1);
+    expect(structure.visuallyRendered, "expanded shell must render the page title visibly").toBe(1);
+    await expect(app.heading("总体概览")).toBeVisible();
+  });
+
+  test("collapsed sidebar keeps the topbar context as the only visible page title", async ({ page }) => {
+    const app = new AppShellPage(page);
+    await app.open();
+
+    const context = page.locator(".shell-topbar-context");
+    await expect(context).toBeVisible();
+    await expect(context).toHaveText("总体概览");
+    const structure = await app.main.evaluate((main) => {
+      const headings = Array.from(main.querySelectorAll("h1"));
+      const visuallyRendered = headings.filter((element) => {
+        const style = window.getComputedStyle(element);
+        const rect = element.getBoundingClientRect();
+        return (
+          style.display !== "none" &&
+          style.visibility !== "hidden" &&
+          style.clip !== "rect(0px, 0px, 0px, 0px)" &&
+          rect.width > 1 &&
+          rect.height > 1
+        );
+      });
+      return { total: headings.length, visuallyRendered: visuallyRendered.length };
+    });
+    expect(structure.total, "collapsed shell must keep exactly one semantic h1").toBe(1);
+    expect(structure.visuallyRendered, "collapsed shell must not double the title visually").toBe(0);
+  });
+
   test("browser preview fails closed for native detection and change mutations", async ({ page }) => {
     const unexpectedExternalRequests: string[] = [];
     page.on("request", (request) => {
@@ -276,6 +328,10 @@ test.describe("d-token desktop control plane", () => {
     expect(motion.animationNames.length).toBeGreaterThan(0);
     expect(motion.animationNames.every((animationName) => animationName === "none")).toBe(true);
     expect(motion.runningCount).toBe(0);
+
+    const chevron = page.locator(".shell-statusbar [class*='rotate-']");
+    await expect(chevron).toHaveCSS("rotate", "0deg");
+    await expect(chevron).toHaveCSS("transition-property", "none");
   });
 
   test("navigation icons and page stages expose repeatable visible motion", async ({ page }) => {

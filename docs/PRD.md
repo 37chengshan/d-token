@@ -102,7 +102,7 @@ AgentConfigReceipt
 - `lock`：只记录外部变化并提醒，不静默覆盖 d-token route；
 - `observe`：只检测和展示，不写入 Agent、cc-switch 或 Runtime。
 
-版本边界：`v0.2.0-beta.1` 默认只交付只读发现、`observe` 和明确冲突提示；`follow` 的自动 route sync 是 `v0.3` MUST，除非另有当前版本的真实证据、显式授权和回滚验证，不得把实现中存在的 watcher 误写成 Beta 已交付。
+版本边界：`v0.0.1` 默认只交付只读发现、`observe` 和明确冲突提示；`follow` 的自动 route sync 是 `v0.3` MUST，除非另有当前版本的真实证据、显式授权和回滚验证，不得把实现中存在的 watcher 误写成当前候选已交付。
 
 监听必须覆盖已确认的数据库、WAL/SHM、profile metadata 和父目录，采用 750ms debounce、单飞刷新和 5–15 秒 polling fallback；SQLite 锁定、损坏、未来 schema、缺失和 watcher 不可用都要留下明确证据。Runtime 采用可验证的原子 route snapshot：旧请求继续使用旧快照，新请求使用新快照；reload 失败保留 last-known-good，并记录 `external_config_detected`、`external_config_changed`、`route_sync_*`、`runtime_reloaded` 或 `runtime_reload_required`。
 
@@ -133,7 +133,7 @@ LeanCTX 与 CCR 的职责也必须分开：
 
 版本边界：
 
-- `v0.2.0-beta.1`：MUST 保留 Context/Relay/Memory 的安全接口、scope 和 fail-closed 合同；不把未完成的跨 Agent 复用包装成发布能力；
+- `v0.0.1`：MUST 保留 Context/Relay/Memory 的安全接口、scope 和 fail-closed 合同；不把未完成的跨 Agent 复用包装成发布能力；
 - `v0.3`：MUST 完成 Context Bus、Session Cache、Context Relay、Map/Signatures 复用、Query-aware Retrieval、Recovery Pointer、Stale/Superseded Context 和 CCR crash recovery；
 - `v0.4`：SHOULD 完成多 Agent 长期运行、低风险自动修复和项目/团队策略。
 
@@ -155,9 +155,9 @@ Headroom 只有在固定参考版本的能力矩阵逐项具备真实请求、�
 
 `passthrough-only`、`metadata-only`、`preview-only`、测试专用实现或依赖外部 Headroom `8787` 的路径均不计为迁移完成。Optical 仅指“代码与上下文 → PNG → 多模态模型输入”的上下文优化链；普通图片 resize、re-encode、tile、ONNX 等不属于本产品范围。Optical active 默认关闭，只有签名 capability、确定性 renderer、post-validator、资源上限和目标模型质量/成本/延迟评估全部通过后才可达；此前只能是 shadow/preview。
 
-本矩阵是“Headroom 完整迁移”长期发布阻断门，不等同于 `v0.2.0-beta.1` 的全部 MUST；Beta 只允许交付 P0.0.7 明确列出的 Headroom 核心可信压缩子集，其余能力保持 `partial`/`unavailable` 并进入后续版本门。
+本矩阵是“Headroom 完整迁移”长期发布阻断门，不等同于 `v0.0.1` 的全部 MUST；v0.0.1 只允许交付 P0.0.7 明确列出的 Headroom 核心可信压缩子集，其余能力保持 `partial`/`unavailable` 并进入后续版本门。
 
-### P0.0.7 `v0.2.0-beta.1` 发布门
+### P0.0.7 `v0.0.1` 发布门
 
 当前公开试用候选的 MUST 范围是：首次引导、Agent/cc-switch 发现、配置事务与恢复、OpenAI Chat/Responses 和 Anthropic Messages 路由、Headroom 核心可信压缩、Optimization Receipt、Local Token 与 Provider Token 分离、Doctor、OpenCode 与 Codex 各至少一条真实 routed-flow（Codex 首要正式场景为 OpenCodex local proxy，见 P0.0.10.5）、macOS/Windows 候选安装包及安装/升级/卸载恢复证据。
 

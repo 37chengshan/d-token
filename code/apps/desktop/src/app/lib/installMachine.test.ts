@@ -5,6 +5,7 @@ import {
   initialInstallMachineState,
   installMachineReducer,
   resetInstallMachineState,
+  resolveAgentBindings,
   runInstallAgentBatch,
   subscribeInstallMachine,
   type InstallMachineState,
@@ -60,7 +61,7 @@ const snapshot = (revision: string, agentBinding = binding()): ConnectionSetupSn
   candidates: agentBinding.candidates,
   agent_bindings: [agentBinding],
   sources: [],
-  selection_required: agentBinding.resolution === "needs-choice",
+  has_resolution_gap: agentBinding.resolution === "needs-source-fix",
   cc_switch_sync: null,
   writes_performed: false,
   privacy: "redacted",
@@ -84,16 +85,21 @@ describe("installMachine", () => {
     resetInstallMachineState();
   });
 
-  it("auto-resolves one high-confidence upstream without requiring Advanced setup", () => {
+  it("auto-resolves the OpenCode catalog without a chooser and keeps no single selection", () => {
     const state = installMachineReducer(initialInstallMachineState, { type: "DISCOVERED", snapshot: snapshot("r1") });
     expect(state.phase).toBe("ready");
-    expect(state.selections.opencode.model).toBe("model-a");
+    // OpenCode is an intentional multi-provider catalog: the machine keeps no
+    // single-model selection; route rows come from resolveAgentBindings.
+    expect(state.selections.opencode).toBeUndefined();
+    expect(resolveAgentBindings(snapshot("r1").agent_bindings[0])).toEqual([
+      { candidate: expect.objectContaining({ id: "provider" }), model: "model-a" },
+    ]);
   });
 
   it("blocks the whole plan when an installed Agent's upstream/model is ambiguous", () => {
     const first = candidate({ id: "one", active: false });
     const second = candidate({ id: "two", active: false, models: ["model-b"] });
-    const ambiguous = binding({ candidates: [first, second], resolved_candidate: null, resolution: "needs-choice" });
+    const ambiguous = binding({ candidates: [first, second], resolved_candidate: null, resolution: "needs-source-fix" });
     const state = installMachineReducer(initialInstallMachineState, { type: "DISCOVERED", snapshot: snapshot("r1", ambiguous) });
     // The ambiguous Agent joins the automatic batch and fails closed; no
     // chooser is offered.
@@ -101,11 +107,15 @@ describe("installMachine", () => {
     expect(state.phase).toBe("blocked");
   });
 
-  it("fails closed on a resolved candidate with two models instead of locking the first model", () => {
-    const multiModel = binding({ resolved_candidate: candidate({ models: ["model-a", "model-b"] }) });
+  it("fails closed on a non-OpenCode resolved candidate with two models instead of locking the first model", () => {
+    const multiModel = binding({
+      agent_id: "cline",
+      agent_name: "Cline",
+      resolved_candidate: candidate({ id: "cline-provider", models: ["model-a", "model-b"], agent_ids: ["cline"] }),
+    });
     const state = installMachineReducer(initialInstallMachineState, { type: "DISCOVERED", snapshot: snapshot("r1", multiModel) });
-    expect(state.selectedAgentIds).toEqual(["opencode"]);
-    expect(state.selections.opencode).toBeUndefined();
+    expect(state.selectedAgentIds).toEqual(["cline"]);
+    expect(state.selections.cline).toBeUndefined();
     expect(state.phase).toBe("blocked");
   });
 
@@ -121,12 +131,136 @@ describe("installMachine", () => {
     expect(state.selectedAgentIds).toEqual(["codex"]);
   });
 
+  it("includes every safe OpenCode catalog candidate/model in stable order without resolved_candidate limits", () => {
+    const free = candidate({
+      id: "opencode-free",
+      name: "OpenCode free",
+      source: "opencode-provider-catalog-cache",
+      models: ["deepseek-v4-flash-free", "north-mini-code-free"],
+      auth_mode: "none",
+    });
+    const go = candidate({
+      id: "opencode-go",
+      name: "OpenCode Go",
+      source: "opencode-provider-catalog-cache",
+      models: ["go-model"],
+      auth_mode: "unavailable",
+      dtoken_credential_configured: true,
+    });
+    const noBaseUrl = candidate({
+      id: "no-base",
+      name: "No base URL",
+      source: "opencode-provider-catalog-cache",
+      models: ["ghost-model"],
+      auth_mode: "none",
+      base_url: null,
+    });
+    const openCode = binding({
+      candidates: [go, free, noBaseUrl],
+      // The resolved candidate (here the Go route) never narrows the catalog.
+      resolved_candidate: go,
+    });
+    expect(resolveAgentBindings(openCode)).toEqual([
+      { candidate: free, model: "deepseek-v4-flash-free" },
+      { candidate: go, model: "go-model" },
+      { candidate: free, model: "north-mini-code-free" },
+    ]);
+  });
+
+  it("includes authenticated OpenCode candidates only when the d-token credential is configured", () => {
+    const free = candidate({ id: "free", source: "opencode-provider-catalog-cache", models: ["free-model"], auth_mode: "none" });
+    const configured = candidate({ id: "go", source: "opencode-provider-catalog-cache", models: ["go-model"], auth_mode: "unavailable", dtoken_credential_configured: true });
+    const missing = candidate({ id: "paid", source: "opencode-provider-catalog-cache", models: ["paid-model"], auth_mode: "unavailable", dtoken_credential_configured: false });
+    const absentFlag = candidate({ id: "legacy", source: "opencode-provider-catalog-cache", models: ["legacy-model"], auth_mode: "unavailable" });
+    const openCode = binding({ candidates: [missing, configured, absentFlag, free] });
+    expect(resolveAgentBindings(openCode).map((entry) => entry.model)).toEqual(["free-model", "go-model"]);
+  });
+
+  it("fails closed when the same OpenCode model maps to different candidate/endpoint", () => {
+    const first = candidate({ id: "one", source: "opencode-provider-catalog-cache", models: ["shared-model"] });
+    const second = candidate({
+      id: "two",
+      source: "opencode-provider-catalog-cache",
+      models: ["shared-model"],
+      base_url: "https://other.example.test/v1",
+    });
+    const openCode = binding({ candidates: [first, second] });
+    expect(resolveAgentBindings(openCode)).toEqual([]);
+  });
+
+  it("dedupes the same OpenCode model repeated within one candidate", () => {
+    const repeated = candidate({ id: "dup", source: "opencode-provider-catalog-cache", models: ["model-a", "model-a"] });
+    expect(resolveAgentBindings(binding({ candidates: [repeated] }))).toEqual([
+      { candidate: repeated, model: "model-a" },
+    ]);
+  });
+
+  it("preserves the single non-OpenCode resolution including the Codex empty passthrough", () => {
+    const cline = binding({
+      agent_id: "cline",
+      agent_name: "Cline",
+      resolved_candidate: candidate({ id: "cl", agent_ids: ["cline"] }),
+    });
+    expect(resolveAgentBindings(cline)).toEqual([
+      { candidate: expect.objectContaining({ id: "cl" }), model: "model-a" },
+    ]);
+    const codex = binding({
+      agent_id: "codex",
+      agent_name: "Codex",
+      resolved_candidate: candidate({ id: "ocxlocal", protocol: "responses", models: [], agent_ids: ["codex"] }),
+    });
+    expect(resolveAgentBindings(codex)).toEqual([
+      { candidate: expect.objectContaining({ id: "ocxlocal" }), model: "" },
+    ]);
+  });
+
+  it("keeps OpenCode ready when a safe free route exists alongside an unconfigured credential candidate", () => {
+    const free = candidate({
+      id: "opencode-free",
+      name: "OpenCode free",
+      source: "opencode-provider-catalog-cache",
+      models: ["deepseek-v4-flash-free"],
+      auth_mode: "none",
+    });
+    const go = candidate({
+      id: "opencode-go",
+      name: "OpenCode Go",
+      source: "opencode-provider-catalog-cache",
+      models: ["go-model"],
+      auth_mode: "unavailable",
+      dtoken_credential_configured: false,
+    });
+    const mixed = binding({ candidates: [free, go], resolved_candidate: go, resolution: "needs-credential" });
+    const state = installMachineReducer(initialInstallMachineState, { type: "DISCOVERED", snapshot: snapshot("r1", mixed) });
+    expect(state.phase).toBe("ready");
+    expect(resolveAgentBindings(mixed).map((entry) => entry.model)).toEqual(["deepseek-v4-flash-free"]);
+  });
+
+  it("keeps the credential dialog when no OpenCode safe route exists", () => {
+    const go = candidate({
+      id: "opencode-go",
+      name: "OpenCode Go",
+      source: "opencode-provider-catalog-cache",
+      models: ["go-model"],
+      auth_mode: "unavailable",
+      dtoken_credential_configured: false,
+    });
+    const onlyCredential = binding({ candidates: [go], resolved_candidate: go, resolution: "needs-credential" });
+    const state = installMachineReducer(initialInstallMachineState, { type: "DISCOVERED", snapshot: snapshot("r1", onlyCredential) });
+    expect(state.phase).toBe("needs-credential");
+  });
+
   it("keeps credential gaps and already-connected state distinct", () => {
     // Credential-gated Agents are part of the automatic batch and surface the
-    // credential requirement without any user opt-in.
+    // credential requirement without any user opt-in. The candidate is
+    // explicitly auth_mode "unavailable" with no configured d-token
+    // credential, and it is the binding's only candidate — with no safe route
+    // present, the credential requirement is preserved instead of degrading
+    // to a ready OpenCode catalog.
+    const credentialCandidate = candidate({ auth_mode: "unavailable", dtoken_credential_configured: false });
     const credential = installMachineReducer(initialInstallMachineState, {
       type: "DISCOVERED",
-      snapshot: snapshot("r1", binding({ resolution: "needs-credential", resolved_candidate: candidate({ auth_mode: "unavailable" }) })),
+      snapshot: snapshot("r1", binding({ resolution: "needs-credential", candidates: [credentialCandidate], resolved_candidate: credentialCandidate })),
     });
     expect(credential.phase).toBe("needs-credential");
     expect(credential.selectedAgentIds).toEqual(["opencode"]);

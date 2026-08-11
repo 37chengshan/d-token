@@ -1,0 +1,936 @@
+{
+ "description": "Tracked symbol source index for unified capability registry dispatch resolution (VERIFICATION.md U1). resolved = declaration regex matches tracked file; pending = canonical symbol ships in this release wave by owning slice (verified in sibling worktrees).",
+ "revision": "c8-evidence-remediation-2026-08-10",
+ "schema": "symbol-source-index",
+ "schema_version": 1,
+ "symbols": {
+  "dtoken_agent_bridge::query_runtime": {
+   "file": "code/crates/dtoken-agent-bridge/src/lib.rs",
+   "kind": "fn",
+   "note": "agent bridge identity summary",
+   "owner": null,
+   "regexes": [
+    "pub fn query_runtime\\(\\) -> Result<RuntimeSummary>"
+   ],
+   "status": "resolved"
+  },
+  "dtoken_benchmark::corpus::CorpusManifest::corpus_digest": {
+   "file": "code/crates/dtoken-benchmark/src/corpus.rs",
+   "kind": "assoc-fn",
+   "note": "product corpus identity digest",
+   "owner": null,
+   "regexes": [
+    "pub struct CorpusManifest \\{",
+    "pub fn corpus_digest\\(&self\\)"
+   ],
+   "status": "resolved"
+  },
+  "dtoken_codebase_memory::ui_host::run_index_controlled": {
+   "file": "code/crates/dtoken-codebase-memory/src/ui_host.rs",
+   "kind": "fn",
+   "note": "d-token-owned indexing dispatch (launcher)",
+   "owner": null,
+   "regexes": [
+    "pub fn run_index_controlled\\("
+   ],
+   "status": "resolved"
+  },
+  "dtoken_compress::CompressionEngine": {
+   "file": "code/crates/dtoken-compress/src/lib.rs",
+   "kind": "type",
+   "note": "single resolved production path entry",
+   "owner": null,
+   "regexes": [
+    "pub struct CompressionEngine;"
+   ],
+   "status": "resolved"
+  },
+  "dtoken_compress::CompressionEngine::compress_resolved": {
+   "file": "code/crates/dtoken-compress/src/lib.rs",
+   "kind": "assoc-fn",
+   "note": "resolved production compression",
+   "owner": null,
+   "regexes": [
+    "pub struct CompressionEngine;",
+    "pub fn compress_resolved\\("
+   ],
+   "status": "resolved"
+  },
+  "dtoken_compress::bench::run": {
+   "file": null,
+   "kind": "pending",
+   "note": "C6C7 owns c7.benchmark-corpus (dtoken_benchmark::run::run_corpus exists)",
+   "owner": "C6C7",
+   "regexes": [],
+   "status": "pending"
+  },
+  "dtoken_compress::compressor_registry::ProductionCompressorRegistry::select": {
+   "file": "code/crates/dtoken-compress/src/compressor_registry.rs",
+   "kind": "assoc-fn",
+   "note": "production compressor registry selection (9 codecs)",
+   "owner": null,
+   "regexes": [
+    "pub struct ProductionCompressorRegistry;",
+    "pub fn select\\("
+   ],
+   "status": "resolved"
+  },
+  "dtoken_compress::compressor_registry::production_registry_codec_ids": {
+   "file": "code/crates/dtoken-compress/src/compressor_registry.rs",
+   "kind": "fn",
+   "note": "canonical production codec id list",
+   "owner": null,
+   "regexes": [
+    "pub const fn production_registry_codec_ids\\(\\) -> \\[&'static str; 9\\]"
+   ],
+   "status": "resolved"
+  },
+  "dtoken_compress::content_router::route_content_with_budget": {
+   "file": "code/crates/dtoken-compress/src/content_router.rs",
+   "kind": "fn",
+   "note": "resolved content routing entry",
+   "owner": null,
+   "regexes": [
+    "pub fn route_content_with_budget\\(text: &str, budget: RoutingBudget\\)"
+   ],
+   "status": "resolved"
+  },
+  "dtoken_compress::context_pipeline::plan_context": {
+   "file": "code/crates/dtoken-compress/src/context_pipeline.rs",
+   "kind": "fn",
+   "note": "cache live-zone planning",
+   "owner": null,
+   "regexes": [
+    "pub fn plan_context\\("
+   ],
+   "status": "resolved"
+  },
+  "dtoken_compress::eval::paired": {
+   "file": null,
+   "kind": "pending",
+   "note": "C6C7 owns c7.paired-quality-eval (dtoken_benchmark PairedContract CLI exists)",
+   "owner": "C6C7",
+   "regexes": [],
+   "status": "pending"
+  },
+  "dtoken_compress::optical::active": {
+   "file": null,
+   "kind": "pending",
+   "note": "C5 owns c5.optical-exact-active; real exact-active runtime evidence required",
+   "owner": "C5",
+   "regexes": [],
+   "status": "pending"
+  },
+  "dtoken_compress::optical::attest": {
+   "file": null,
+   "kind": "pending",
+   "note": "C5 owns c5.optical-attestation (capability_attestation_payload exists)",
+   "owner": "C5",
+   "regexes": [],
+   "status": "pending"
+  },
+  "dtoken_compress::optical::history": {
+   "file": null,
+   "kind": "pending",
+   "note": "C5 owns c5.optical-history-cache (plan_history_collapse exists)",
+   "owner": "C5",
+   "regexes": [],
+   "status": "pending"
+  },
+  "dtoken_compress::optical::render": {
+   "file": null,
+   "kind": "pending",
+   "note": "C5 owns c5.optical-renderer (renderer::Renderer::render exists)",
+   "owner": "C5",
+   "regexes": [],
+   "status": "pending"
+  },
+  "dtoken_compress::optical::secret::SecretClassifier::classify": {
+   "file": "code/crates/dtoken-compress/src/optical/secret.rs",
+   "kind": "assoc-fn",
+   "note": "canonical secret classifier dispatch",
+   "owner": null,
+   "regexes": [
+    "pub struct SecretClassifier;",
+    "pub fn classify\\(self, text: &str\\)"
+   ],
+   "status": "resolved"
+  },
+  "dtoken_compress::optical::shadow": {
+   "file": null,
+   "kind": "pending",
+   "note": "C5 owns c5.optical-shadow-preview",
+   "owner": "C5",
+   "regexes": [],
+   "status": "pending"
+  },
+  "dtoken_compress::replay::replay": {
+   "file": null,
+   "kind": "pending",
+   "note": "C6C7 owns c7.deterministic-replay (dtoken_benchmark Replay CLI exists)",
+   "owner": "C6C7",
+   "regexes": [],
+   "status": "pending"
+  },
+  "dtoken_compress::rtk_planner::plan_exclusive_action": {
+   "file": "code/crates/dtoken-compress/src/rtk_planner.rs",
+   "kind": "fn",
+   "note": "RTK exclusive action planner",
+   "owner": null,
+   "regexes": [
+    "pub fn plan_exclusive_action\\("
+   ],
+   "status": "resolved"
+  },
+  "dtoken_config_patcher::ConfigPatcher": {
+   "file": "code/crates/dtoken-config-patcher/src/lib.rs",
+   "kind": "type",
+   "note": "config transaction patcher",
+   "owner": null,
+   "regexes": [
+    "pub struct ConfigPatcher \\{"
+   ],
+   "status": "resolved"
+  },
+  "dtoken_context_bus::bus::ContextBus": {
+   "file": "code/crates/dtoken-context-bus/src/bus.rs",
+   "kind": "type",
+   "note": "context bus core",
+   "owner": null,
+   "regexes": [
+    "pub struct ContextBus \\{"
+   ],
+   "status": "resolved"
+  },
+  "dtoken_context_bus::cache::SessionCache": {
+   "file": "code/crates/dtoken-context-bus/src/cache.rs",
+   "kind": "type",
+   "note": "session cache",
+   "owner": null,
+   "regexes": [
+    "pub struct SessionCache \\{"
+   ],
+   "status": "resolved"
+  },
+  "dtoken_context_bus::persistence::PersistencePort": {
+   "file": "code/crates/dtoken-context-bus/src/persistence.rs",
+   "kind": "type",
+   "note": "persistence port trait",
+   "owner": null,
+   "regexes": [
+    "pub trait PersistencePort"
+   ],
+   "status": "resolved"
+  },
+  "dtoken_context_bus::relay::ContextRelay": {
+   "file": "code/crates/dtoken-context-bus/src/relay.rs",
+   "kind": "type",
+   "note": "context relay",
+   "owner": null,
+   "regexes": [
+    "pub struct ContextRelay \\{"
+   ],
+   "status": "resolved"
+  },
+  "dtoken_context_bus::relay::ContextRelay::query": {
+   "file": "code/crates/dtoken-context-bus/src/relay.rs",
+   "kind": "assoc-fn",
+   "note": "query-aware retrieval",
+   "owner": null,
+   "regexes": [
+    "pub struct ContextRelay \\{",
+    "pub fn query\\("
+   ],
+   "status": "resolved"
+  },
+  "dtoken_context_bus::relay::relay_authorized": {
+   "file": "code/crates/dtoken-context-bus/src/relay.rs",
+   "kind": "fn",
+   "note": "shared-context authorization",
+   "owner": null,
+   "regexes": [
+    "pub fn relay_authorized\\("
+   ],
+   "status": "resolved"
+  },
+  "dtoken_context_bus::shared::SharedContext": {
+   "file": "code/crates/dtoken-context-bus/src/shared.rs",
+   "kind": "type",
+   "note": "shared context",
+   "owner": null,
+   "regexes": [
+    "pub struct SharedContext \\{"
+   ],
+   "status": "resolved"
+  },
+  "dtoken_core_api::AppState": {
+   "file": "code/crates/dtoken-core-api/src/lib.rs",
+   "kind": "type",
+   "note": "core API app state",
+   "owner": null,
+   "regexes": [
+    "pub struct AppState \\{"
+   ],
+   "status": "resolved"
+  },
+  "dtoken_core_api::AppState::route_request": {
+   "file": null,
+   "kind": "pending",
+   "note": "C6C7 owns c6.bounded-concurrency concurrency entry",
+   "owner": "C6C7",
+   "regexes": [],
+   "status": "pending"
+  },
+  "dtoken_core_api::CcrStoreReceipt": {
+   "file": "code/crates/dtoken-core-api/src/ccr_store.rs",
+   "kind": "type",
+   "note": "CCR store receipt",
+   "owner": null,
+   "regexes": [
+    "pub struct CcrStoreReceipt \\{"
+   ],
+   "status": "resolved"
+  },
+  "dtoken_core_api::ccr_store::CcrStore": {
+   "file": "code/crates/dtoken-core-api/src/ccr_store.rs",
+   "kind": "type",
+   "note": "durable CCR store",
+   "owner": null,
+   "regexes": [
+    "pub struct CcrStore \\{"
+   ],
+   "status": "resolved"
+  },
+  "dtoken_core_api::export_runtime_summary": {
+   "file": null,
+   "kind": "pending",
+   "note": "pub fn export_runtime_summary ships (redacted export)",
+   "owner": "C0C1",
+   "regexes": [],
+   "status": "pending"
+  },
+  "dtoken_core_api::mcp::McpServer": {
+   "file": "code/crates/dtoken-core-api/src/mcp.rs",
+   "kind": "type",
+   "note": "MCP surface server",
+   "owner": null,
+   "regexes": [
+    "pub struct McpServer \\{"
+   ],
+   "status": "resolved"
+  },
+  "dtoken_core_api::metrics": {
+   "file": "code/crates/dtoken-core-api/src/lib.rs",
+   "kind": "fn",
+   "note": "G6 metrics handler (C0C1 will publish)",
+   "owner": null,
+   "regexes": [
+    "async fn metrics\\(State\\(state\\): State<AppState>\\)"
+   ],
+   "status": "resolved"
+  },
+  "dtoken_core_api::openai_responses": {
+   "file": "code/crates/dtoken-core-api/src/lib.rs",
+   "kind": "fn",
+   "note": "native /v1/responses production handler (C0C1 will publish)",
+   "owner": null,
+   "regexes": [
+    "async fn openai_responses\\("
+   ],
+   "status": "resolved"
+  },
+  "dtoken_core_api::prepare_json_pipeline_payload": {
+   "file": "code/crates/dtoken-core-api/src/lib.rs",
+   "kind": "fn",
+   "note": "single-dispatch native-responses payload preparation (C0C1 will publish)",
+   "owner": null,
+   "regexes": [
+    "fn prepare_json_pipeline_payload\\("
+   ],
+   "status": "resolved"
+  },
+  "dtoken_event_ledger::EventLedger": {
+   "file": "code/crates/dtoken-event-ledger/src/lib.rs",
+   "kind": "type",
+   "note": "event ledger",
+   "owner": null,
+   "regexes": [
+    "pub struct EventLedger \\{"
+   ],
+   "status": "resolved"
+  },
+  "dtoken_learning::LearningCache": {
+   "file": "code/crates/dtoken-learning/src/lib.rs",
+   "kind": "type",
+   "note": "learning cache store",
+   "owner": null,
+   "regexes": [
+    "pub struct LearningCache \\{"
+   ],
+   "status": "resolved"
+  },
+  "dtoken_preprocessor::ManagedRtkLifecycle": {
+   "file": "code/crates/dtoken-preprocessor/src/lib.rs",
+   "kind": "type",
+   "note": "managed RTK hook/tee lifecycle",
+   "owner": null,
+   "regexes": [
+    "pub struct ManagedRtkLifecycle \\{"
+   ],
+   "status": "resolved"
+  },
+  "dtoken_preprocessor::command_output_accounting_entry": {
+   "file": "code/crates/dtoken-preprocessor/src/lib.rs",
+   "kind": "fn",
+   "note": "RTK command-output accounting entry",
+   "owner": null,
+   "regexes": [
+    "pub fn command_output_accounting_entry\\("
+   ],
+   "status": "resolved"
+  },
+  "dtoken_preprocessor::filters::filter_command_output": {
+   "file": "code/crates/dtoken-preprocessor/src/filters.rs",
+   "kind": "fn",
+   "note": "RTK structured filters",
+   "owner": null,
+   "regexes": [
+    "pub fn filter_command_output\\("
+   ],
+   "status": "resolved"
+  },
+  "dtoken_process::lifecycle::ProcessManager::stop_verified": {
+   "file": "code/crates/dtoken-process/src/lifecycle.rs",
+   "kind": "assoc-fn",
+   "note": "identity-verified process stop",
+   "owner": null,
+   "regexes": [
+    "pub struct ProcessManager;",
+    "pub fn stop_verified<I: ProcessInspector>\\("
+   ],
+   "status": "resolved"
+  },
+  "dtoken_proxy::parse_loopback_host": {
+   "file": "code/crates/dtoken-proxy/src/main.rs",
+   "kind": "bin-fn",
+   "note": "loopback-only host validation (binary crate main.rs)",
+   "owner": null,
+   "regexes": [
+    "fn parse_loopback_host\\(value: &str\\) -> Result<IpAddr>"
+   ],
+   "status": "resolved"
+  },
+  "dtoken_router::Router::decide": {
+   "file": "code/crates/dtoken-router/src/lib.rs",
+   "kind": "assoc-fn",
+   "note": "route decision authority (no engine chooser)",
+   "owner": null,
+   "regexes": [
+    "pub fn decide\\(&self, instance_id: &str, input_protocol: Protocol\\)"
+   ],
+   "status": "resolved"
+  },
+  "dtoken_runtime_pipeline::ContextEnvelope::new": {
+   "file": "code/crates/dtoken-runtime-pipeline/src/lib.rs",
+   "kind": "assoc-fn",
+   "note": "pipeline context envelope",
+   "owner": null,
+   "regexes": [
+    "pub struct ContextEnvelope \\{",
+    "pub fn new\\("
+   ],
+   "status": "resolved"
+  },
+  "dtoken_runtime_pipeline::PipelineInput::prepare": {
+   "file": "code/crates/dtoken-runtime-pipeline/src/lib.rs",
+   "kind": "assoc-fn",
+   "note": "prepared request",
+   "owner": null,
+   "regexes": [
+    "pub struct PipelineInput \\{",
+    "pub fn prepare\\(self\\) -> PreparedRequest"
+   ],
+   "status": "resolved"
+  },
+  "dtoken_runtime_pipeline::ReadyToSend": {
+   "file": "code/crates/dtoken-runtime-pipeline/src/lib.rs",
+   "kind": "type",
+   "note": "recovery state machine terminal type",
+   "owner": null,
+   "regexes": [
+    "pub struct ReadyToSend \\{"
+   ],
+   "status": "resolved"
+  },
+  "dtoken_runtime_pipeline::RecoveryReceipt": {
+   "file": null,
+   "kind": "pending",
+   "note": "RecoveryReceipt ships; old RecoveryPrepareReceipt removed",
+   "owner": "C0C1",
+   "regexes": [],
+   "status": "pending"
+  },
+  "dtoken_runtime_pipeline::RecoveryReceipt::mint": {
+   "file": null,
+   "kind": "pending",
+   "note": "mint ships",
+   "owner": "C0C1",
+   "regexes": [],
+   "status": "pending"
+  },
+  "dtoken_runtime_pipeline::SendCommitReceipt": {
+   "file": null,
+   "kind": "pending",
+   "note": "SendCommitReceipt ships; old mark_committed removed",
+   "owner": "C0C1",
+   "regexes": [],
+   "status": "pending"
+  },
+  "dtoken_runtime_pipeline::SendCommitReceipt::mint": {
+   "file": null,
+   "kind": "pending",
+   "note": "mint ships on ReadyToSend",
+   "owner": "C0C1",
+   "regexes": [],
+   "status": "pending"
+  },
+  "dtoken_runtime_pipeline::TransformArtifact::new": {
+   "file": "code/crates/dtoken-runtime-pipeline/src/lib.rs",
+   "kind": "assoc-fn",
+   "note": "transform artifact",
+   "owner": null,
+   "regexes": [
+    "pub struct TransformArtifact \\{",
+    "pub fn new\\("
+   ],
+   "status": "resolved"
+  },
+  "dtoken_runtime_pipeline::ValidatedRequest::into_ready_to_send": {
+   "file": "code/crates/dtoken-runtime-pipeline/src/lib.rs",
+   "kind": "assoc-fn",
+   "note": "ready-to-send transition",
+   "owner": null,
+   "regexes": [
+    "pub struct ValidatedRequest \\{",
+    "pub fn into_ready_to_send\\(self\\) -> ReadyToSend"
+   ],
+   "status": "resolved"
+  },
+  "dtoken_runtime_pipeline::ValidationReceipt": {
+   "file": null,
+   "kind": "pending",
+   "note": "ValidationReceipt ships; old SendReceipt removed",
+   "owner": "C0C1",
+   "regexes": [],
+   "status": "pending"
+  },
+  "dtoken_runtime_pipeline::ValidationReceipt::mint": {
+   "file": null,
+   "kind": "pending",
+   "note": "mint ships on ValidationReceipt",
+   "owner": "C0C1",
+   "regexes": [],
+   "status": "pending"
+  },
+  "dtoken_types::CapabilityEvidence::new": {
+   "file": "code/crates/dtoken-types/src/lib.rs",
+   "kind": "assoc-fn",
+   "note": "capability evidence",
+   "owner": null,
+   "regexes": [
+    "pub struct CapabilityEvidence \\{",
+    "pub fn new\\("
+   ],
+   "status": "resolved"
+  },
+  "dtoken_types::CapabilityRegistrySnapshot::new": {
+   "file": "code/crates/dtoken-types/src/lib.rs",
+   "kind": "assoc-fn",
+   "note": "capability registry snapshot",
+   "owner": null,
+   "regexes": [
+    "pub struct CapabilityRegistrySnapshot \\{",
+    "pub fn new\\("
+   ],
+   "status": "resolved"
+  },
+  "dtoken_types::DoctorReport": {
+   "file": "code/crates/dtoken-types/src/lib.rs",
+   "kind": "type",
+   "note": "doctor report type (dtoken-doctor re-uses it)",
+   "owner": null,
+   "regexes": [
+    "pub struct DoctorReport \\{"
+   ],
+   "status": "resolved"
+  },
+  "dtoken_types::EvidenceValue::known": {
+   "file": "code/crates/dtoken-types/src/lib.rs",
+   "kind": "assoc-fn",
+   "note": "evidence value",
+   "owner": null,
+   "regexes": [
+    "pub struct EvidenceValue<T> \\{",
+    "pub fn known\\("
+   ],
+   "status": "resolved"
+  },
+  "dtoken_types::HybridContextAccounting::validate": {
+   "file": "code/crates/dtoken-types/src/lib.rs",
+   "kind": "assoc-fn",
+   "note": "hybrid accounting validation",
+   "owner": null,
+   "regexes": [
+    "pub struct HybridContextAccounting \\{",
+    "pub fn validate\\(&self\\)"
+   ],
+   "status": "resolved"
+  },
+  "dtoken_types::ManagedRtkTransactionReceipt": {
+   "file": "code/crates/dtoken-types/src/lib.rs",
+   "kind": "type",
+   "note": "managed RTK transaction receipt",
+   "owner": null,
+   "regexes": [
+    "pub struct ManagedRtkTransactionReceipt \\{"
+   ],
+   "status": "resolved"
+  },
+  "dtoken_types::NodeAction": {
+   "file": "code/crates/dtoken-types/src/lib.rs",
+   "kind": "type",
+   "note": "exclusive node action",
+   "owner": null,
+   "regexes": [
+    "pub enum NodeAction \\{"
+   ],
+   "status": "resolved"
+  },
+  "dtoken_types::NodeAction::HeadroomSemantic": {
+   "file": "code/crates/dtoken-types/src/lib.rs",
+   "kind": "variant",
+   "note": "exclusive node action variant (contract module will re-export)",
+   "owner": null,
+   "regexes": [
+    "pub enum NodeAction \\{",
+    "HeadroomSemantic"
+   ],
+   "status": "resolved"
+  },
+  "dtoken_types::NodeAction::Optical": {
+   "file": "code/crates/dtoken-types/src/lib.rs",
+   "kind": "variant",
+   "note": "exclusive node action variant (contract module will re-export)",
+   "owner": null,
+   "regexes": [
+    "pub enum NodeAction \\{",
+    "Optical"
+   ],
+   "status": "resolved"
+  },
+  "dtoken_types::NodeAction::Preserve": {
+   "file": "code/crates/dtoken-types/src/lib.rs",
+   "kind": "variant",
+   "note": "exclusive node action variant (contract module will re-export)",
+   "owner": null,
+   "regexes": [
+    "pub enum NodeAction \\{",
+    "Preserve"
+   ],
+   "status": "resolved"
+  },
+  "dtoken_types::NodeAction::Reuse": {
+   "file": "code/crates/dtoken-types/src/lib.rs",
+   "kind": "variant",
+   "note": "exclusive node action variant (contract module will re-export)",
+   "owner": null,
+   "regexes": [
+    "pub enum NodeAction \\{",
+    "Reuse"
+   ],
+   "status": "resolved"
+  },
+  "dtoken_types::NodeAction::RtkCommandOutput": {
+   "file": "code/crates/dtoken-types/src/lib.rs",
+   "kind": "variant",
+   "note": "exclusive node action variant (contract module will re-export)",
+   "owner": null,
+   "regexes": [
+    "pub enum NodeAction \\{",
+    "RtkCommandOutput"
+   ],
+   "status": "resolved"
+  },
+  "dtoken_types::OpticalBucketSummary": {
+   "file": "code/crates/dtoken-types/src/lib.rs",
+   "kind": "type",
+   "note": "optical bucket summary",
+   "owner": null,
+   "regexes": [
+    "pub struct OpticalBucketSummary \\{"
+   ],
+   "status": "resolved"
+  },
+  "dtoken_types::OpticalCapabilityAttestation": {
+   "file": "code/crates/dtoken-types/src/lib.rs",
+   "kind": "type",
+   "note": "optical attestation",
+   "owner": null,
+   "regexes": [
+    "pub struct OpticalCapabilityAttestation \\{"
+   ],
+   "status": "resolved"
+  },
+  "dtoken_types::OpticalCapabilitySnapshot": {
+   "file": "code/crates/dtoken-types/src/lib.rs",
+   "kind": "type",
+   "note": "optical capability snapshot",
+   "owner": null,
+   "regexes": [
+    "pub struct OpticalCapabilitySnapshot \\{"
+   ],
+   "status": "resolved"
+  },
+  "dtoken_types::OpticalEvalArtifact::passes_derived_quality_gate": {
+   "file": "code/crates/dtoken-types/src/lib.rs",
+   "kind": "assoc-fn",
+   "note": "optical eval artifact",
+   "owner": null,
+   "regexes": [
+    "pub struct OpticalEvalArtifact \\{",
+    "pub fn passes_derived_quality_gate\\(&self\\)"
+   ],
+   "status": "resolved"
+  },
+  "dtoken_types::OpticalGateDecision": {
+   "file": "code/crates/dtoken-types/src/lib.rs",
+   "kind": "type",
+   "note": "optical gate decision",
+   "owner": null,
+   "regexes": [
+    "pub struct OpticalGateDecision \\{"
+   ],
+   "status": "resolved"
+  },
+  "dtoken_types::OpticalGlobalPolicy": {
+   "file": "code/crates/dtoken-types/src/lib.rs",
+   "kind": "type",
+   "note": "optical global policy",
+   "owner": null,
+   "regexes": [
+    "pub struct OpticalGlobalPolicy \\{"
+   ],
+   "status": "resolved"
+  },
+  "dtoken_types::OpticalRuntimeConfig": {
+   "file": "code/crates/dtoken-types/src/lib.rs",
+   "kind": "type",
+   "note": "optical runtime config",
+   "owner": null,
+   "regexes": [
+    "pub struct OpticalRuntimeConfig \\{"
+   ],
+   "status": "resolved"
+  },
+  "dtoken_types::OptimizationReceipt::from_request_log": {
+   "file": null,
+   "kind": "pending",
+   "note": "OptimizationReceipt::from_request_log ships (exact name)",
+   "owner": "C0C1",
+   "regexes": [],
+   "status": "pending"
+  },
+  "dtoken_types::ProviderCacheObservation::new": {
+   "file": "code/crates/dtoken-types/src/lib.rs",
+   "kind": "assoc-fn",
+   "note": "provider cache observation",
+   "owner": null,
+   "regexes": [
+    "pub struct ProviderCacheObservation \\{",
+    "pub fn new\\("
+   ],
+   "status": "resolved"
+  },
+  "dtoken_types::ProviderCachePolicy": {
+   "file": "code/crates/dtoken-types/src/lib.rs",
+   "kind": "type",
+   "note": "provider cache policy aggregate",
+   "owner": null,
+   "regexes": [
+    "pub struct ProviderCachePolicy \\{"
+   ],
+   "status": "resolved"
+  },
+  "dtoken_types::ProviderCachePolicy::is_well_formed": {
+   "file": "code/crates/dtoken-types/src/lib.rs",
+   "kind": "assoc-fn",
+   "note": "provider cache policy",
+   "owner": null,
+   "regexes": [
+    "pub struct ProviderCachePolicy \\{",
+    "pub fn is_well_formed\\(&self\\)"
+   ],
+   "status": "resolved"
+  },
+  "dtoken_types::RequestLog": {
+   "file": "code/crates/dtoken-types/src/lib.rs",
+   "kind": "type",
+   "note": "request log",
+   "owner": null,
+   "regexes": [
+    "pub struct RequestLog \\{"
+   ],
+   "status": "resolved"
+  },
+  "dtoken_types::RequestScope::new": {
+   "file": "code/crates/dtoken-types/src/lib.rs",
+   "kind": "assoc-fn",
+   "note": "request scope contract",
+   "owner": null,
+   "regexes": [
+    "pub struct RequestScope \\{",
+    "pub fn new\\("
+   ],
+   "status": "resolved"
+  },
+  "dtoken_types::RouteDecision::stable_digest": {
+   "file": null,
+   "kind": "pending",
+   "note": "stable_digest ships; present in C0C1 worktree lib.rs:1192",
+   "owner": "C0C1",
+   "regexes": [],
+   "status": "pending"
+  },
+  "dtoken_types::RouteOpticalPolicy": {
+   "file": "code/crates/dtoken-types/src/lib.rs",
+   "kind": "type",
+   "note": "optical route policy",
+   "owner": null,
+   "regexes": [
+    "pub struct RouteOpticalPolicy \\{"
+   ],
+   "status": "resolved"
+  },
+  "dtoken_types::UsageComparison::from_measurements": {
+   "file": "code/crates/dtoken-types/src/lib.rs",
+   "kind": "assoc-fn",
+   "note": "usage comparison",
+   "owner": null,
+   "regexes": [
+    "pub struct UsageComparison \\{",
+    "pub fn from_measurements\\("
+   ],
+   "status": "resolved"
+  },
+  "dtoken_types::contract::AccountingBuckets": {
+   "file": null,
+   "kind": "pending",
+   "note": "contract::AccountingBuckets ships; verified in C0C1 worktree",
+   "owner": "C0C1",
+   "regexes": [],
+   "status": "pending"
+  },
+  "dtoken_types::contract::BoundRequest::new": {
+   "file": null,
+   "kind": "pending",
+   "note": "contract::BoundRequest ships",
+   "owner": "C0C1",
+   "regexes": [],
+   "status": "pending"
+  },
+  "dtoken_types::contract::IrNode::new": {
+   "file": null,
+   "kind": "pending",
+   "note": "contract::IrNode ships",
+   "owner": "C0C1",
+   "regexes": [],
+   "status": "pending"
+  },
+  "dtoken_types::contract::NodePlan::new": {
+   "file": null,
+   "kind": "pending",
+   "note": "contract::NodePlan ships",
+   "owner": "C0C1",
+   "regexes": [],
+   "status": "pending"
+  },
+  "dtoken_types::contract::OptimizationManifest::new": {
+   "file": null,
+   "kind": "pending",
+   "note": "contract::OptimizationManifest ships",
+   "owner": "C0C1",
+   "regexes": [],
+   "status": "pending"
+  },
+  "dtoken_types::contract::SafetyPolicy": {
+   "file": null,
+   "kind": "pending",
+   "note": "dtoken_types::contract module ships SafetyPolicy + default/enhanced/lossy; verified present in final-c0-c1-remediation worktree",
+   "owner": "C0C1",
+   "regexes": [],
+   "status": "pending"
+  },
+  "dtoken_types::contract::SafetyPolicy::default": {
+   "file": null,
+   "kind": "pending",
+   "note": "contract::SafetyPolicy::default ships in C0C1 slice (verified contract.rs in final-c0-c1-remediation worktree)",
+   "owner": "C0C1",
+   "regexes": [],
+   "status": "pending"
+  },
+  "dtoken_types::contract::SafetyPolicy::enhanced": {
+   "file": null,
+   "kind": "pending",
+   "note": "contract::SafetyPolicy::enhanced ships in C0C1 slice (verified contract.rs in final-c0-c1-remediation worktree)",
+   "owner": "C0C1",
+   "regexes": [],
+   "status": "pending"
+  },
+  "dtoken_types::contract::SafetyPolicy::lossy": {
+   "file": null,
+   "kind": "pending",
+   "note": "contract::SafetyPolicy::lossy ships in C0C1 slice (verified contract.rs in final-c0-c1-remediation worktree)",
+   "owner": "C0C1",
+   "regexes": [],
+   "status": "pending"
+  },
+  "dtoken_types::contract::StageArtifact::new": {
+   "file": null,
+   "kind": "pending",
+   "note": "contract::StageArtifact ships",
+   "owner": "C0C1",
+   "regexes": [],
+   "status": "pending"
+  },
+  "support/scripts/generate_release_gate_status.py": {
+   "file": "support/scripts/generate_release_gate_status.py",
+   "kind": "script",
+   "note": "tracked support script",
+   "owner": null,
+   "regexes": [
+    "def evaluate\\("
+   ],
+   "status": "resolved"
+  },
+  "support/scripts/validate_unified_capability_registry.py": {
+   "file": "support/scripts/validate_unified_capability_registry.py",
+   "kind": "script",
+   "note": "tracked support script",
+   "owner": null,
+   "regexes": [
+    "def validate\\("
+   ],
+   "status": "resolved"
+  },
+  "support/scripts/validate_unified_corpus_manifests.py": {
+   "file": "support/scripts/validate_unified_corpus_manifests.py",
+   "kind": "script",
+   "note": "tracked support script",
+   "owner": null,
+   "regexes": [
+    "def validate\\("
+   ],
+   "status": "resolved"
+  }
+ }
+}

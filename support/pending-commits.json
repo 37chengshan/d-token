@@ -591,6 +591,58 @@
       "submitted": false,
       "submitted_at": null,
       "commit_hash": null
+    },
+    {
+      "id": "opencode-transparent-routing",
+      "created_at": "2026-08-11T21:10:51+08:00",
+      "updated_at": "2026-08-11T21:11:32+08:00",
+      "branch": "codex/final/opencode-transparent-routing",
+      "phase": "release-final",
+      "status": "committed",
+      "title": "OpenCode transparent multi-model routing",
+      "summary": "Configure reviewed OpenCode Free and authenticated routes atomically with exact credential identity, ownership and rollback.",
+      "commit_message": "feat: add transparent OpenCode multi-model routing",
+      "head_before": "f86b1039a2e9",
+      "files": [
+        "code/apps/desktop/src-tauri/src/main.rs",
+        "code/apps/desktop/src-tauri/src/opencode_adapter.rs",
+        "code/apps/desktop/src-tauri/src/upstream_discovery.rs",
+        "code/apps/desktop/src/app/components/pages/Install.opencode-transaction.test.tsx",
+        "code/apps/desktop/src/app/components/pages/Install.test.tsx",
+        "code/apps/desktop/src/app/components/pages/Install.tsx",
+        "code/apps/desktop/src/app/lib/connectionSetup.tsx",
+        "code/apps/desktop/src/app/lib/install/presentation.tsx",
+        "code/apps/desktop/src/app/lib/installMachine.test.ts",
+        "code/apps/desktop/src/app/lib/installMachine.ts",
+        "code/crates/dtoken-config-patcher/src/agent_transport.rs"
+      ],
+      "tests": [
+        "python3 support/scripts/check_structure.py",
+        "cargo fmt --all -- --check",
+        "cargo clippy --workspace --all-targets -- -D warnings",
+        "cargo test --workspace (1210 passed, 5 ignored)",
+        "desktop tsc, 501 Vitest, build and bundle budget",
+        "desktop Chromium 16/16 and WebKit 16/16 E2E"
+      ],
+      "dependencies": [],
+      "notes": [],
+      "staging_mode": "whole-file",
+      "shared_files": [],
+      "verification": {
+        "status": "passed",
+        "checks": [
+          "python3 support/scripts/check_structure.py",
+          "cargo fmt --all -- --check",
+          "cargo clippy --workspace --all-targets -- -D warnings",
+          "cargo test --workspace (1210 passed, 5 ignored)",
+          "desktop tsc, 501 Vitest, build and bundle budget",
+          "desktop Chromium 16/16 and WebKit 16/16 E2E"
+        ]
+      },
+      "blockers": [],
+      "submitted": true,
+      "submitted_at": "2026-08-11T21:11:32+08:00",
+      "commit_hash": "5875595"
     }
   ]
 }

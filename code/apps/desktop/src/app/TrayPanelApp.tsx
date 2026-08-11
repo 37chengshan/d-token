@@ -2,7 +2,7 @@ import { useCallback, useMemo, useState } from "react";
 import { Activity, Coins, Gauge, PanelTop, Power, Server } from "lucide-react";
 import { AppProviders } from "./lib/theme-context";
 import { RuntimeEvidenceProvider, shallowEqualSlice, useRuntimeDashboardSelector, type RuntimeDashboardState } from "./lib/useRuntimeDashboard";
-import { useI18n } from "./lib/i18n";
+import { useI18n, translateCopy } from "./lib/i18n";
 import { overviewFromPayload } from "./lib/overview/derivations";
 import { OverviewTrendChart } from "./lib/overview/components";
 import { invokeNative, isTauriRuntime } from "./lib/native";
@@ -39,7 +39,6 @@ function formatCount(value: number) {
 
 function TrayPanel() {
   const { lang } = useI18n();
-  const zh = lang === "zh";
   const { payload, status, operational, refresh } = useRuntimeDashboardSelector(
     selectPanelRuntime,
     shallowEqualSlice,
@@ -89,8 +88,8 @@ function TrayPanel() {
           type="button"
           className="tray-panel-icon-button"
           onClick={openControlPlane}
-          title={zh ? "打开控制台" : "Open the control plane"}
-          aria-label={zh ? "打开控制台" : "Open the control plane"}
+          title={translateCopy("tray.openTheControlPlane", lang)}
+          aria-label={translateCopy("tray.openTheControlPlane", lang)}
         >
           <PanelTop className="size-4" />
         </button>
@@ -99,17 +98,17 @@ function TrayPanel() {
       <section className="tray-panel-metrics">
         <Metric
           icon={Coins}
-          label={zh ? "物理减少 Token" : "Physical token reduction"}
+          label={translateCopy("tray.physicalTokenReduction", lang)}
           value={overview.metricsAvailable ? formatCount(overview.stats.savedTotal) : "—"}
         />
         <Metric
           icon={Gauge}
-          label={zh ? "物理减少比例" : "Physical reduction rate"}
+          label={translateCopy("tray.physicalReductionRate", lang)}
           value={overview.compressionAvailable ? `${(overview.stats.compressionRate * 100).toFixed(1)}%` : "—"}
         />
         <Metric
           icon={Activity}
-          label={zh ? "已处理请求" : "Routed requests"}
+          label={translateCopy("tray.routedRequests", lang)}
           value={overview.trafficAvailable ? formatCount(overview.stats.requestCount) : "—"}
         />
       </section>
@@ -117,7 +116,7 @@ function TrayPanel() {
       <section className="tray-panel-trend">
         {overview.trend.length > 0
           ? <OverviewTrendChart data={overview.trend} lang={lang} />
-          : <div className="tray-panel-empty">{zh ? "暂无可绘制的请求记录" : "No request records to chart yet"}</div>}
+          : <div className="tray-panel-empty">{translateCopy("tray.noRequestRecordsToChartYet", lang)}</div>}
       </section>
 
       <section className="tray-panel-service">
@@ -126,12 +125,12 @@ function TrayPanel() {
           <div className="min-w-0">
             <div className="tray-panel-service-state">
               {operational.service.state === "loading"
-                ? (zh ? "正在读取服务状态" : "Reading service state")
+                ? (translateCopy("tray.readingServiceState", lang))
                 : serviceRunning
-                  ? (zh ? "本地服务运行中" : "Local service running")
+                  ? (translateCopy("tray.localServiceRunning", lang))
                   : service
-                    ? (zh ? "本地服务已停止" : "Local service stopped")
-                    : (zh ? "服务状态不可用" : "Service state unavailable")}
+                    ? (translateCopy("tray.localServiceStopped", lang))
+                    : (translateCopy("tray.serviceStateUnavailable", lang))}
             </div>
             {serviceUrl && <div className="tray-panel-service-url">{serviceUrl}</div>}
           </div>
@@ -144,12 +143,12 @@ function TrayPanel() {
         >
           <Power className="size-3.5" />
           {pendingAction === "start"
-            ? (zh ? "正在启动" : "Starting")
+            ? (translateCopy("cbm.state.starting", lang))
             : pendingAction === "stop"
-              ? (zh ? "正在停止" : "Stopping")
+              ? (translateCopy("tray.stopping", lang))
               : serviceRunning
-                ? (zh ? "停止服务" : "Stop service")
-                : (zh ? "启动服务" : "Start service")}
+                ? (translateCopy("tray.stopService", lang))
+                : (translateCopy("tray.startService", lang))}
         </button>
       </section>
 

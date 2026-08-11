@@ -1,0 +1,154 @@
+{
+  "schema": "unified-corpus-manifest",
+  "schema_version": 1,
+  "revision": "c6c7-product-corpus-2026-08-10",
+  "description": "Fixed corpus manifest for the v0.0.1 unified-compression proof (QUALITY-3/4, T-C0C). Every corpus is synthetic: no credentials, no absolute paths, no real prompts/responses. Each corpus digest is the SHA-256 of the canonical JSON of its file entries (sorted keys, no extra whitespace), recomputed by support/scripts/validate_unified_corpus_manifests.py.",
+  "license": "Apache-2.0",
+  "privacy": "All fixtures are synthetic placeholders; they carry no API keys, tokens, cookies, auth files, real prompt/response content, source code or absolute config paths.",
+  "corpora": {
+    "benchmark": {
+      "schema": "unified-corpus-benchmark-v1",
+      "revision": "product-level-corpus-v1",
+      "product_corpus_id": "product-level-corpus-v1",
+      "source_manifest": "code/crates/dtoken-benchmark/corpus/manifest.json",
+      "license": "Apache-2.0",
+      "privacy": "synthetic product-level request-body fixtures (12 items: train/replay/holdout; anthropic/openai_chat); no credentials, absolute paths, or real prompts/responses",
+      "digest": "6ff899f329ebb38ca6fbd3118ebd35d0d49b4165c5c3efde7617b0d9c3683876",
+      "files": [
+        {
+          "path": "benchmark/claude-code-build-session.json",
+          "sha256": "a4bcf57ce47209725f8aa10299c2ffbc89ae9df0896b7102f6e03db5cc22ed4f"
+        },
+        {
+          "path": "benchmark/claude-code-json-output.json",
+          "sha256": "98f28e5060eae7ce6f1b674a4e6e9ee01f92f7683f43f49f3bd70b785083c0b6"
+        },
+        {
+          "path": "benchmark/claude-code-log-analysis.json",
+          "sha256": "5dff0f42d87148792769d45850dc91cede22c736c6c1255551a1d65408011f09"
+        },
+        {
+          "path": "benchmark/claude-code-mixed-session.json",
+          "sha256": "585286f07fa8082d187816abb57a3445adb213e1a6d5482124073f26ba153f3c"
+        },
+        {
+          "path": "benchmark/claude-code-plain-repeat.json",
+          "sha256": "46757a3153fe269d0ab11c3dfc7883cb1e8bd874a5eb078bb26b222a825a3eb8"
+        },
+        {
+          "path": "benchmark/claude-code-repeated-warnings.json",
+          "sha256": "74a2abb6036ee82d4e8105590d40cc940c3df5b8d683596cc7c096f780f342b8"
+        },
+        {
+          "path": "benchmark/claude-code-test-iteration.json",
+          "sha256": "cab0b752e74caa9a97f60932f1900146f3db268d9ee7fd6d3d93d6fe4b275c9c"
+        },
+        {
+          "path": "benchmark/fallback-recent-only.json",
+          "sha256": "4ec6a5793371b803a906677844c8eae1620e8ad95146354b5b4eeea18ce4cd3c"
+        },
+        {
+          "path": "benchmark/fallback-secret-session.json",
+          "sha256": "9ed794d8d39102f2984c8db11b0a63c47c7008050c77b7b26e908d2c8bea33f6"
+        },
+        {
+          "path": "benchmark/holdout-openai-log-analysis.json",
+          "sha256": "e6da17f1616c1e07dc9f81a1da10479f48554483cd437c4f43dbd34205ff8239"
+        },
+        {
+          "path": "benchmark/large-mixed-product-session.json",
+          "sha256": "346979e104cb2a78cbfab378b1749598e3e15fbc44e967b4f886bb29ea1d53c4"
+        },
+        {
+          "path": "benchmark/openai-chat-build-session.json",
+          "sha256": "b39fab9a5f0943101d6f85e5dfcce1d2841f0dbe6382c9f4501f5c440961203f"
+        }
+      ]
+    },
+    "replay": {
+      "schema": "unified-corpus-replay-v1",
+      "revision": "replay-v1",
+      "license": "Apache-2.0",
+      "privacy": "synthetic decision/body replay fixtures; no real prompts or credentials",
+      "digest": "9c107671587ab6e3274394a86a652152c54642b06f15cf874d1ba90282ae8dc6",
+      "files": [
+        {
+          "path": "replay/decision_body_001.json",
+          "sha256": "cd78e5b3b422b5afeffa39a0c7a4214908a2a67b5ace49fc5bf14218beb0bf36"
+        },
+        {
+          "path": "replay/passthrough_001.json",
+          "sha256": "dc9ddfcfbc82f431c1402635989b9e2453ba873b8ef63491185268ae25695f9e"
+        }
+      ]
+    },
+    "fuzz": {
+      "schema": "unified-corpus-fuzz-v1",
+      "revision": "fuzz-v1",
+      "license": "Apache-2.0",
+      "privacy": "synthetic malformed/protected seeds; placeholders only, no real secrets",
+      "digest": "66bad231c1aa564c496a9780e434d0e1566ece7de620a3010095503591fbfbaf",
+      "files": [
+        {
+          "path": "fuzz/malformed_json_seeds.json",
+          "sha256": "740e13c0cc8e05e195576b92699e88e6d99c2326e4ba6f87b7d78368be010e05"
+        },
+        {
+          "path": "fuzz/protected_secret_seeds.json",
+          "sha256": "cdbff8524c54a61f8e475f31c99c783858bd4e6e6c9a4852ae5e00471d327e78"
+        }
+      ]
+    },
+    "fault": {
+      "schema": "unified-corpus-fault-v1",
+      "revision": "fault-v1",
+      "license": "Apache-2.0",
+      "privacy": "synthetic fault scenarios; no real credentials or prompts",
+      "digest": "acd29472b395add9d360e624bb4a0da279568f99dd07f4312c6176e57de4f5d5",
+      "files": [
+        {
+          "path": "fault/precommit_candidate_failure.json",
+          "sha256": "92103bb0c5263e4e4e8668150163a54af22242c8264cbda02b2798a94561c438"
+        },
+        {
+          "path": "fault/postcommit_stream_drop.json",
+          "sha256": "42167d277c7194b9b4ed130b4de43ed6e6f76b1b2431e57a2fc56546a97f5b6d"
+        },
+        {
+          "path": "fault/stale_recovery_rejected.json",
+          "sha256": "9a56df9cb8c7f3b2bec722f2a6eaac9d8154b4e5954181e1ce0a3bf53bb6e0f2"
+        }
+      ]
+    },
+    "quality": {
+      "schema": "unified-corpus-quality-v1",
+      "revision": "quality-v1",
+      "license": "Apache-2.0",
+      "privacy": "synthetic coding-task/holdout fixtures; no real prompts or credentials",
+      "digest": "d2bd33763dfb514bb33a6d636df9cc79d45b0a93ee9a51e9195b009194112060",
+      "files": [
+        {
+          "path": "quality/coding_task_compress.json",
+          "sha256": "21dfc04aa978e5bc76182805d9355d5053030c36341d47d9552c9fc317e1af42"
+        },
+        {
+          "path": "quality/holdout_stale.json",
+          "sha256": "8bbaac367cec5ae3d7891dc381088e5e7eb33ed86ec8f9f1fa0359bcf6eb448a"
+        }
+      ]
+    },
+    "optical": {
+      "schema": "unified-corpus-optical-v1",
+      "revision": "optical-v1",
+      "license": "Apache-2.0",
+      "privacy": "synthetic render metadata; no real images, credentials or prompts",
+      "digest": "45dcd9d54b285c6e71ba37127656898a5ac9217fdfb21e7d1cc08b7af9ec0bbe",
+      "files": [
+        {
+          "path": "optical/render_metadata.json",
+          "sha256": "8630f435a2c6fd52dd864d31f4b84d7a181cac258d1ecbb0dd120d15098d2b9c"
+        }
+      ]
+    }
+  }
+}

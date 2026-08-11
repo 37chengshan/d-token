@@ -3,6 +3,7 @@ use anyhow::{anyhow, bail, Context, Result};
 use dtoken_context_store::{apply_private_directory_acl, apply_private_file_acl};
 #[cfg(all(windows, test))]
 use dtoken_context_store::{verify_private_directory_acl, verify_private_file_acl};
+use dtoken_runtime_pipeline::RecoveryProofAuthority;
 use ring::{
     aead::{Aad, LessSafeKey, Nonce, UnboundKey, AES_256_GCM, NONCE_LEN},
     rand::{SecureRandom, SystemRandom},
@@ -110,6 +111,17 @@ pub struct CcrStore {
 }
 
 impl CcrStore {
+    /// The store-issued recovery proof authority for this instance.
+    ///
+    /// Keyed by this store's private key material: only code holding the
+    /// store (the trusted runtime) can issue proofs that the pipeline
+    /// accepts, so adapters and transports can never fabricate a `ccr:`
+    /// reference (PIPELINE-RECEIPT-AUTHENTICITY). A proof issued by a
+    /// different store instance fails pipeline binding.
+    pub fn recovery_proof_authority(&self) -> RecoveryProofAuthority {
+        RecoveryProofAuthority::new(self.key)
+    }
+
     pub fn new(root: PathBuf, key: [u8; 32]) -> Result<Self> {
         ensure_private_storage_platform_support()?;
         let store = Self {

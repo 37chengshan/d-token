@@ -1,6 +1,11 @@
 from __future__ import annotations
 
 import importlib.util
+import json
+
+
+def json_dumps(value):
+    return json.dumps(value, separators=(",", ":"))
 from pathlib import Path
 import unittest
 
@@ -68,6 +73,52 @@ class RuntimePerformanceGateContractTests(unittest.TestCase):
             if not check["ok"]
         ]
         self.assertEqual(failed, ["error_path_observed", "client_disconnect_observed"])
+
+    def test_missing_thresholds_file_fails_closed(self) -> None:
+        missing = Path("/nonexistent/runtime-performance-thresholds-v1.json")
+        with self.assertRaises(SystemExit):
+            MODULE.load_thresholds(missing)
+
+    def test_invalid_thresholds_manifest_fails_closed(self) -> None:
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            bad_schema = Path(tmp) / "bad-schema.json"
+            bad_schema.write_text(json_dumps({"schema_version": 99, "thresholds": {}}), encoding="utf-8")
+            with self.assertRaises(SystemExit):
+                MODULE.load_thresholds(bad_schema)
+
+            missing_keys = Path(tmp) / "missing-keys.json"
+            missing_keys.write_text(
+                json_dumps({"schema_version": 1, "thresholds": {"max_p95_ms": 250.0}}),
+                encoding="utf-8",
+            )
+            with self.assertRaises(SystemExit):
+                MODULE.load_thresholds(missing_keys)
+
+    def test_valid_thresholds_manifest_loads_with_sha256(self) -> None:
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            manifest = Path(tmp) / "thresholds.json"
+            manifest.write_text(
+                json_dumps(
+                    {
+                        "schema_version": 1,
+                        "thresholds": {
+                            "min_request_count": 64,
+                            "max_p95_ms": 250.0,
+                            "max_p99_ms": 500.0,
+                            "max_failure_rate_percent": 0.0,
+                            "max_peak_rss_mib": 256.0,
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            thresholds = MODULE.load_thresholds(manifest)
+            self.assertEqual(thresholds["max_p95_ms"], 250.0)
+            self.assertEqual(len(MODULE.sha256_file(manifest)), 64)
 
 
 if __name__ == "__main__":

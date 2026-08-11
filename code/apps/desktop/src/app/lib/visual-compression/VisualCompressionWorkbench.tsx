@@ -23,7 +23,7 @@ import { Switch } from "../../components/ui/switch";
 import { Input } from "../../components/ui/input";
 import { Textarea } from "../../components/ui/textarea";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../../components/ui/tabs";
-import { useI18n, useT } from "../i18n";
+import { useI18n, useT, translateCopy } from "../i18n";
 import { createOperationRequestId, useNotifications } from "../notifications";
 import { presentOperationFailure } from "../userCopy";
 import {
@@ -249,7 +249,7 @@ export function VisualCompression() {
           setAgentReceipt(null);
           transactionNotice = transactionResult.error
             ? presentOperationFailure("visual", transactionResult.error, lang).message
-            : (lang === "zh" ? "无法读取已保存的 Agent 接入事务证据。" : "Could not read the saved Agent integration evidence.");
+            : (translateCopy("visual.couldNotReadTheSavedAgentIntegrationEvidence", lang));
         } else if (mountedRef.current && transaction) {
           if (transaction.state === "rolled_back") {
             setAgentTransactionState("rolled_back");
@@ -294,7 +294,7 @@ export function VisualCompression() {
       }
       setAgentNotice(transactionNotice || (next.bridge.available ? "" : next.bridge.error
         ? presentOperationFailure("visual", next.bridge.error, lang).message
-        : (lang === "zh" ? "Agent bridge 尚未构建。" : "Agent bridge is not built yet.")));
+        : (translateCopy("visual.agentBridgeIsNotBuiltYet", lang))));
     } catch (err) {
       if (!mountedRef.current) return;
       setAgentReceipt(null);
@@ -318,18 +318,16 @@ export function VisualCompression() {
         setError(next.error ? presentOperationFailure("visual", next.error, lang).message : "");
         setStaleNotice("");
         hasEvidenceRef.current = true;
-        if (mode === "manual") addNotification({ dedupeKey: "optical-refresh", level: "success", title: lang === "zh" ? "视觉压缩状态已更新" : "Visual compression status refreshed", message: lang === "zh" ? "状态、能力、生命周期与近期事件已重新读取。" : "Status, capabilities, lifecycle, and recent events were refreshed.", receipt: { requestId, targetId: "optical-observability" } });
+        if (mode === "manual") addNotification({ dedupeKey: "optical-refresh", level: "success", title: translateCopy("visual.visualCompressionStatusRefreshed", lang), message: translateCopy("visual.statusCapabilitiesLifecycleAndRecentEventsWereRefreshed", lang), receipt: { requestId, targetId: "optical-observability" } });
         return;
       }
       if (mode !== "initial" && hasEvidenceRef.current) {
         setStaleNotice(
-          lang === "zh"
-            ? "最新刷新未拿到完整状态，仍显示上一份可用证据。"
-            : "Latest refresh was incomplete; keeping the last good evidence.",
+          translateCopy("visual.latestRefreshWasIncompleteKeepingTheLastGoodEvidence", lang),
         );
         const failure = next.error ? presentOperationFailure("visual", next.error, lang) : undefined;
         setError(failure?.message ?? "");
-        if (mode === "manual") addNotification({ dedupeKey: "optical-refresh-partial", level: "warning", title: lang === "zh" ? "视觉压缩刷新不完整" : "Visual compression refresh incomplete", message: lang === "zh" ? "仍显示上一份可验证证据。" : "The last verified evidence remains visible.", details: failure?.details, receipt: { requestId, targetId: "optical-observability" } });
+        if (mode === "manual") addNotification({ dedupeKey: "optical-refresh-partial", level: "warning", title: translateCopy("visual.visualCompressionRefreshIncomplete", lang), message: translateCopy("visual.theLastVerifiedEvidenceRemainsVisible", lang), details: failure?.details, receipt: { requestId, targetId: "optical-observability" } });
         return;
       }
       setSnapshot(next);
@@ -342,18 +340,16 @@ export function VisualCompression() {
       const display = failure.message;
       if (mode !== "initial" && hasEvidenceRef.current) {
         setStaleNotice(
-          lang === "zh"
-            ? "刷新失败，仍显示上一份可用证据。"
-            : "Refresh failed; keeping the last good evidence.",
+          translateCopy("visual.refreshFailedKeepingTheLastGoodEvidence", lang),
         );
         setError(display);
-        if (mode === "manual") addNotification({ dedupeKey: "optical-refresh-failed", level: "error", title: lang === "zh" ? "视觉压缩刷新失败" : "Visual compression refresh failed", message: lang === "zh" ? "仍显示上一份可验证证据。" : "The last verified evidence remains visible.", details: failure.details, receipt: { requestId, targetId: "optical-observability" } });
+        if (mode === "manual") addNotification({ dedupeKey: "optical-refresh-failed", level: "error", title: translateCopy("visual.visualCompressionRefreshFailed", lang), message: translateCopy("visual.theLastVerifiedEvidenceRemainsVisible", lang), details: failure.details, receipt: { requestId, targetId: "optical-observability" } });
         return;
       }
       setError(display);
       setStaleNotice("");
       if (!hasEvidenceRef.current) setSnapshot(null);
-      if (mode === "manual") addNotification({ dedupeKey: "optical-refresh-error", level: "error", title: lang === "zh" ? "视觉压缩刷新失败" : "Visual compression refresh failed", message: display, receipt: { requestId, targetId: "optical-observability" } });
+      if (mode === "manual") addNotification({ dedupeKey: "optical-refresh-error", level: "error", title: translateCopy("visual.visualCompressionRefreshFailed", lang), message: display, receipt: { requestId, targetId: "optical-observability" } });
     } finally {
       if (!mountedRef.current || seq !== refreshSeqRef.current) return;
       setLoading(false);
@@ -453,7 +449,7 @@ export function VisualCompression() {
         return;
       }
       setConfirmOpen(true);
-      addNotification({ dedupeKey: `optical-config-preview-${next.after_sha256}`, level: "info", title: lang === "zh" ? "视觉压缩变更已准备" : "Visual compression changes are ready", message: lang === "zh" ? "请查看脱敏差异；确认前不会写入配置。" : "View the redacted differences; no configuration is written before confirmation.", receipt: { requestId, targetId: "optical-config" } });
+      addNotification({ dedupeKey: `optical-config-preview-${next.after_sha256}`, level: "info", title: translateCopy("visual.visualCompressionChangesAreReady", lang), message: translateCopy("visual.viewTheRedactedDifferencesNoConfigurationIsWrittenBeforeConfirmation", lang), receipt: { requestId, targetId: "optical-config" } });
     } catch (err) {
       if (!mountedRef.current) return;
       const failure = presentOperationFailure("visual", err, lang);
@@ -484,7 +480,7 @@ export function VisualCompression() {
           // that — do not present a generic failure.
           const unverified = t("visual.config.writeUnverified");
           setConfigNotice(unverified);
-          addNotification({ dedupeKey: `optical-config-apply-unverified-${result.rollback_id ?? "done"}`, level: "warning", title: lang === "zh" ? "配置已写入，服务未验证" : "Config written, service not verified", message: unverified, persistent: true, receipt: { requestId, rollbackId: result.rollback_id ?? undefined, targetId: "optical-config" } });
+          addNotification({ dedupeKey: `optical-config-apply-unverified-${result.rollback_id ?? "done"}`, level: "warning", title: translateCopy("visual.configWrittenServiceNotVerified", lang), message: unverified, persistent: true, receipt: { requestId, rollbackId: result.rollback_id ?? undefined, targetId: "optical-config" } });
           setConfirmOpen(false);
           setReview(null);
           setPendingDraft(null);
@@ -503,11 +499,11 @@ export function VisualCompression() {
         // rollback entry visible instead of claiming a fully verified apply.
         const unverified = t("visual.config.writeUnverified");
         setConfigNotice(unverified);
-        addNotification({ dedupeKey: `optical-config-applied-unverified-${result.rollback_id ?? "done"}`, level: "warning", title: lang === "zh" ? "配置已写入，服务未验证" : "Config written, service not verified", message: unverified, persistent: true, receipt: { requestId, rollbackId: result.rollback_id ?? undefined, targetId: "optical-config" } });
+        addNotification({ dedupeKey: `optical-config-applied-unverified-${result.rollback_id ?? "done"}`, level: "warning", title: translateCopy("visual.configWrittenServiceNotVerified", lang), message: unverified, persistent: true, receipt: { requestId, rollbackId: result.rollback_id ?? undefined, targetId: "optical-config" } });
       } else {
         const applied = t("visual.config.applied");
         setConfigNotice(applied);
-        addNotification({ dedupeKey: `optical-config-applied-${result.rollback_id ?? "done"}`, level: "success", title: lang === "zh" ? "视觉压缩配置已应用" : "Visual compression config applied", message: applied, persistent: true, receipt: { requestId, rollbackId: result.rollback_id ?? undefined, targetId: "optical-config" } });
+        addNotification({ dedupeKey: `optical-config-applied-${result.rollback_id ?? "done"}`, level: "success", title: translateCopy("visual.visualCompressionConfigApplied", lang), message: applied, persistent: true, receipt: { requestId, rollbackId: result.rollback_id ?? undefined, targetId: "optical-config" } });
       }
       setReview(null);
       setPendingDraft(null);
@@ -539,7 +535,7 @@ export function VisualCompression() {
       }
       const rolledBack = t("visual.config.rollbackDone");
       setConfigNotice(rolledBack);
-      addNotification({ dedupeKey: `optical-config-rollback-${lastApply.rollback_id}`, level: "success", title: lang === "zh" ? "视觉压缩配置已回退" : "Visual compression config rolled back", message: rolledBack, persistent: true, receipt: { requestId, rollbackId: lastApply.rollback_id, targetId: "optical-config" } });
+      addNotification({ dedupeKey: `optical-config-rollback-${lastApply.rollback_id}`, level: "success", title: translateCopy("visual.visualCompressionConfigRolledBack", lang), message: rolledBack, persistent: true, receipt: { requestId, rollbackId: lastApply.rollback_id, targetId: "optical-config" } });
       setLastApply(null);
       await loadEditor();
       await refresh("action");
@@ -566,11 +562,11 @@ export function VisualCompression() {
 
   const beginAgentIntegration = async () => {
     if (agentDraft.agent_ids.length === 0) {
-      setAgentNotice(lang === "zh" ? "请至少选择一个已安装的 Agent。" : "Select at least one installed Agent.");
+      setAgentNotice(translateCopy("visual.selectAtLeastOneInstalledAgent", lang));
       return;
     }
     if (agentDraft.scope === "project" && !agentDraft.project_root?.trim()) {
-      setAgentNotice(lang === "zh" ? "项目作用域需要绝对项目路径。" : "Project scope requires an absolute project path.");
+      setAgentNotice(translateCopy("visual.projectScopeRequiresAnAbsoluteProjectPath", lang));
       return;
     }
     setAgentBusy("preview");
@@ -587,7 +583,7 @@ export function VisualCompression() {
         return;
       }
       setAgentConfirmOpen(true);
-      addNotification({ dedupeKey: `optical-agent-preview-${next.plan.review_digest}`, level: "info", title: lang === "zh" ? "Agent 接入变更已准备" : "Agent integration changes are ready", message: lang === "zh" ? "请查看逐文件差异；确认前不会写入 Agent 配置。" : "View each file difference; no Agent configuration is written before confirmation.", receipt: { requestId, targetId: agentDraft.agent_ids.join(",") } });
+      addNotification({ dedupeKey: `optical-agent-preview-${next.plan.review_digest}`, level: "info", title: translateCopy("visual.agentIntegrationChangesAreReady", lang), message: translateCopy("visual.viewEachFileDifferenceNoAgentConfigurationIsWrittenBeforeConfirmation", lang), receipt: { requestId, targetId: agentDraft.agent_ids.join(",") } });
     } catch (err) {
       if (!mountedRef.current) return;
       const failure = presentOperationFailure("visual", err, lang);
@@ -624,10 +620,10 @@ export function VisualCompression() {
       setAgentTransactionState(verifiedAgentState(verification));
       setAgentNotice([
         verified
-          ? lang === "zh" ? "文件校验通过。请新建 Agent 会话；Codex Hook 还需在 /hooks 中信任。" : "Files verified. Start a new Agent session; trust the Codex Hook in /hooks."
-          : lang === "zh" ? "写入完成，但验证未通过；可立即回退。" : "Writing completed, but verification did not pass; rollback is available.",
+          ? translateCopy("visual.filesVerifiedStartANewAgentSessionTrustTheCodexHookInHooks", lang)
+          : translateCopy("visual.writingCompletedButVerificationDidNotPassRollbackIsAvailable", lang),
       ].filter(Boolean).join(" "));
-      addNotification({ dedupeKey: `optical-agent-apply-${result.receipt.transaction_id}`, level: verified ? "success" : "warning", title: verified ? (lang === "zh" ? "Agent 接入已验证" : "Agent integration verified") : (lang === "zh" ? "Agent 接入需要处理" : "Agent integration needs attention"), message: verified ? (lang === "zh" ? "文件校验通过；请新建 Agent 会话，并按提示信任 Codex Hook。" : "File verification passed; start a new Agent session and trust the Codex Hook when prompted.") : (lang === "zh" ? "写入完成但验证未通过，可立即回退。" : "Writing completed but verification did not pass; rollback is available."), persistent: true, receipt: { requestId, transactionId: result.receipt.transaction_id, targetId: agentDraft.agent_ids.join(",") } });
+      addNotification({ dedupeKey: `optical-agent-apply-${result.receipt.transaction_id}`, level: verified ? "success" : "warning", title: verified ? (translateCopy("visual.agentIntegrationVerified", lang)) : (translateCopy("visual.agentIntegrationNeedsAttention", lang)), message: verified ? (translateCopy("visual.fileVerificationPassedStartANewAgentSessionAndTrustTheCodexHookWhenPrompted", lang)) : (translateCopy("visual.writingCompletedButVerificationDidNotPassRollbackIsAvailable2", lang)), persistent: true, receipt: { requestId, transactionId: result.receipt.transaction_id, targetId: agentDraft.agent_ids.join(",") } });
       await loadAgentIntegration(false);
     } catch (err) {
       if (!mountedRef.current) return;
@@ -648,10 +644,10 @@ export function VisualCompression() {
     try {
       const result = await rollbackHybridAgentIntegration(agentReceipt.transaction_id);
       if (!mountedRef.current) return;
-      const success = lang === "zh" ? "接入前状态已恢复。" : "The pre-integration state was restored.";
+      const success = translateCopy("visual.thePreIntegrationStateWasRestored", lang);
       const failure = presentOperationFailure("visual", result.error || result.summary, lang);
       setAgentNotice(result.ok ? success : failure.message);
-      addNotification({ dedupeKey: `optical-agent-rollback-${agentReceipt.transaction_id}`, level: result.ok ? "success" : "error", title: result.ok ? (lang === "zh" ? "Agent 接入已回退" : "Agent integration rolled back") : failure.title, message: result.ok ? success : failure.message, details: result.ok ? undefined : failure.details, persistent: true, receipt: { requestId, transactionId: agentReceipt.transaction_id, targetId: agentDraft.agent_ids.join(",") } });
+      addNotification({ dedupeKey: `optical-agent-rollback-${agentReceipt.transaction_id}`, level: result.ok ? "success" : "error", title: result.ok ? (translateCopy("visual.agentIntegrationRolledBack", lang)) : failure.title, message: result.ok ? success : failure.message, details: result.ok ? undefined : failure.details, persistent: true, receipt: { requestId, transactionId: agentReceipt.transaction_id, targetId: agentDraft.agent_ids.join(",") } });
       if (result.ok) {
         setAgentTransactionState("rolled_back");
         window.localStorage.removeItem(AGENT_TRANSACTION_KEY);
@@ -676,10 +672,10 @@ export function VisualCompression() {
     try {
       const result = await startHybridService();
       if (!mountedRef.current) return;
-      const success = lang === "zh" ? "本地服务已启动；请查看当前状态。" : "The local service started. Check the current status.";
+      const success = translateCopy("visual.theLocalServiceStartedCheckTheCurrentStatus", lang);
       const failure = presentOperationFailure("service", result.summary, lang);
       setAgentNotice(result.ok ? success : failure.message);
-      addNotification({ dedupeKey: "optical-service-started", level: result.ok ? "success" : "warning", title: result.ok ? (lang === "zh" ? "本地服务已启动" : "Local service started") : failure.title, message: result.ok ? success : failure.message, details: result.ok ? undefined : failure.details, receipt: { requestId, targetId: "local-service" } });
+      addNotification({ dedupeKey: "optical-service-started", level: result.ok ? "success" : "warning", title: result.ok ? (translateCopy("visual.localServiceStarted", lang)) : failure.title, message: result.ok ? success : failure.message, details: result.ok ? undefined : failure.details, receipt: { requestId, targetId: "local-service" } });
       await Promise.all([loadAgentIntegration(false), loadEditor(), refresh("action")]);
     } catch (err) {
       if (!mountedRef.current) return;
@@ -735,7 +731,7 @@ export function VisualCompression() {
     if (previewText.length > PREVIEW_MAX_CHARS) {
       const failure = t("visual.preview.tooLarge");
       setPreviewError(failure);
-      addNotification({ dedupeKey: "optical-shadow-preview-too-large", level: "warning", title: lang === "zh" ? "Shadow 预览已阻止" : "Shadow preview blocked", message: failure, receipt: { requestId, targetId: "optical-shadow-preview" } });
+      addNotification({ dedupeKey: "optical-shadow-preview-too-large", level: "warning", title: translateCopy("visual.shadowPreviewBlocked", lang), message: failure, receipt: { requestId, targetId: "optical-shadow-preview" } });
       return;
     }
     let body: unknown;
@@ -744,7 +740,7 @@ export function VisualCompression() {
     } catch {
       const failure = t("visual.preview.invalidJson");
       setPreviewError(failure);
-      addNotification({ dedupeKey: "optical-shadow-preview-invalid", level: "warning", title: lang === "zh" ? "Shadow 预览已阻止" : "Shadow preview blocked", message: failure, receipt: { requestId, targetId: "optical-shadow-preview" } });
+      addNotification({ dedupeKey: "optical-shadow-preview-invalid", level: "warning", title: translateCopy("visual.shadowPreviewBlocked", lang), message: failure, receipt: { requestId, targetId: "optical-shadow-preview" } });
       return;
     }
     setPreviewRunning(true);
@@ -758,7 +754,7 @@ export function VisualCompression() {
         return;
       }
       setPreviewResult(result.data);
-      addNotification({ dedupeKey: `optical-shadow-preview-${requestId}`, level: "success", title: lang === "zh" ? "Shadow 预览完成" : "Shadow preview complete", message: lang === "zh" ? "已生成仅含元数据的规划摘要，未改写真实请求。" : "A metadata-only planning summary was created without modifying a real request.", receipt: { requestId, targetId: "optical-shadow-preview" } });
+      addNotification({ dedupeKey: `optical-shadow-preview-${requestId}`, level: "success", title: translateCopy("visual.shadowPreviewComplete", lang), message: translateCopy("visual.aMetadataOnlyPlanningSummaryWasCreatedWithoutModifyingARealRequest", lang), receipt: { requestId, targetId: "optical-shadow-preview" } });
     } catch (err) {
       if (!mountedRef.current || seq !== previewSeqRef.current) return;
       const failure = presentOperationFailure("visual", err, lang);
@@ -903,23 +899,21 @@ export function VisualCompression() {
                 <div className="flex items-center gap-2">
                   <Cable className="size-4 text-muted-foreground" aria-hidden />
                   <h2 className="text-base font-semibold">
-                    {lang === "zh" ? "Agent 接入" : "Agent integration"}
+                    {translateCopy("in.agentIntegration", lang)}
                   </h2>
                 </div>
                 <p className="max-w-3xl text-sm text-muted-foreground">
-                  {lang === "zh"
-                    ? "为 Claude Code、Codex 和 OpenCode 安装精简规则、会话状态 Hook/Plugin 与恢复 Skill。真实压缩仍由 d-token 本地代理完成，MCP 只提供元数据诊断。"
-                    : "Install concise rules, session status Hook/Plugin, and recovery Skill for Claude Code, Codex, and OpenCode. The local d-token proxy still performs compression; MCP is metadata-only diagnostics."}
+                  {translateCopy("visual.installConciseRulesSessionStatusHookPluginAndRecoverySkillForClaudeCodeCodexAndOpencodeTheLocalDTokenProxyStillPerformsCompressionMcpIsMetadataOnlyDiagnostics", lang)}
                 </p>
               </div>
               <Badge variant={agentTransactionState === "verified" ? "default" : "secondary"}>
                 {agentTransactionState === "verified"
-                  ? lang === "zh" ? "已验证" : "Verified"
+                  ? translateCopy("cbm.state.ready", lang)
                   : agentTransactionState
                     ? agentTransactionState
                   : agentDiscovery?.bridge.available
-                    ? lang === "zh" ? "可配置" : "Ready"
-                    : lang === "zh" ? "不可用" : "Unavailable"}
+                    ? translateCopy("visual.ready", lang)
+                    : translateCopy("cbm.state.unavailable", lang)}
               </Badge>
             </div>
 
@@ -949,8 +943,8 @@ export function VisualCompression() {
                   >
                     {agentBusy === "service" ? <RefreshCw className="size-3.5 animate-spin" aria-hidden /> : null}
                     {agentBusy === "service"
-                      ? lang === "zh" ? "正在启动…" : "Starting…"
-                      : lang === "zh" ? "启动 d-token 服务" : "Start d-token service"}
+                      ? translateCopy("visual.starting", lang)
+                      : translateCopy("visual.startDTokenService", lang)}
                   </Button>
                 ) : null}
               </div>
@@ -958,21 +952,19 @@ export function VisualCompression() {
                 <div className="text-xs text-muted-foreground">Transport</div>
                 <div className="mt-1 font-medium">
                   {agentDiscovery?.transport.configured
-                    ? lang === "zh" ? "已配置路由" : "Route configured"
-                    : lang === "zh" ? "需在“安装与连接”配置" : "Configure in Install & Connect"}
+                    ? translateCopy("visual.routeConfigured", lang)
+                    : translateCopy("visual.configureInInstallConnect", lang)}
                 </div>
                 <div className="mt-1 text-xs text-muted-foreground">
-                  {lang === "zh"
-                    ? `已发现 ${agentDiscovery?.transport.route_count ?? 0} 条路由；本事务不修改 Provider 凭据。`
-                    : `${agentDiscovery?.transport.route_count ?? 0} routes found; this transaction never changes provider credentials.`}
+                  {translateCopy("visual.routesFoundThisTransactionNeverChangesProviderCredentials", lang, { v1: agentDiscovery?.transport.route_count ?? 0 })}
                 </div>
               </div>
               <div className="rounded-xl border border-border/70 bg-muted/15 p-3 text-sm">
                 <div className="text-xs text-muted-foreground">Agent bridge</div>
                 <div className="mt-1 font-medium">
                   {agentDiscovery?.bridge.available
-                    ? lang === "zh" ? "已打包" : "Bundled"
-                    : lang === "zh" ? "尚未构建" : "Not built"}
+                    ? translateCopy("visual.bundled", lang)
+                    : translateCopy("visual.notBuilt", lang)}
                 </div>
                 <div className="mt-1 truncate text-xs text-muted-foreground" title={agentDiscovery?.bridge.path ?? undefined}>
                   {agentDiscovery?.bridge.path ?? agentDiscovery?.bridge.error ?? "—"}
@@ -982,7 +974,7 @@ export function VisualCompression() {
 
             <div className="mt-4 grid gap-4 lg:grid-cols-[1.1fr_0.9fr]">
               <div className="space-y-3 rounded-xl border border-border/70 p-4">
-                <h3 className="text-sm font-semibold">{lang === "zh" ? "目标 Agent" : "Target Agents"}</h3>
+                <h3 className="text-sm font-semibold">{translateCopy("visual.targetAgents", lang)}</h3>
                 <div className="grid gap-2 sm:grid-cols-3">
                   {(agentDiscovery?.agents ?? []).map((agent) => (
                     <label key={agent.id} className="flex items-center justify-between gap-2 rounded-lg border border-border/60 px-3 py-2 text-sm">
@@ -990,17 +982,17 @@ export function VisualCompression() {
                         <span className="block font-medium">{agent.name}</span>
                         <span className="block text-[11px] text-muted-foreground">
                           {!agent.installed
-                            ? lang === "zh" ? "未检测" : "Not detected"
+                            ? translateCopy("cbm.agentNotDetected", lang)
                             : agent.integration_supported === false
-                              ? lang === "zh" ? "已检测 · 暂不支持自动接入" : "Detected · automatic integration unavailable"
-                              : lang === "zh" ? "已检测" : "Detected"}
+                              ? translateCopy("visual.detectedAutomaticIntegrationUnavailable", lang)
+                              : translateCopy("cbm.agentDetected", lang)}
                         </span>
                       </span>
                       <Switch
                         checked={agentDraft.agent_ids.includes(agent.id)}
                         disabled={!agent.installed || agent.integration_supported === false || agentBusy !== ""}
                         onCheckedChange={(checked) => toggleAgent(agent.id, checked)}
-                        aria-label={`${agent.name} ${lang === "zh" ? "接入" : "integration"}`}
+                        aria-label={`${agent.name} ${translateCopy("visual.integration", lang)}`}
                       />
                     </label>
                   ))}
@@ -1008,7 +1000,7 @@ export function VisualCompression() {
 
                 <div className="grid gap-3 sm:grid-cols-[160px_1fr]">
                   <label className="space-y-1 text-sm">
-                    <span className="text-xs text-muted-foreground">{lang === "zh" ? "作用域" : "Scope"}</span>
+                    <span className="text-xs text-muted-foreground">{translateCopy("visual.scope", lang)}</span>
                     <select
                       className="h-9 w-full rounded-md border border-border bg-background px-2 text-sm"
                       value={agentDraft.scope}
@@ -1019,13 +1011,13 @@ export function VisualCompression() {
                         setAgentReview(null);
                       }}
                     >
-                      <option value="project">{lang === "zh" ? "当前项目" : "Current project"}</option>
-                      <option value="global">{lang === "zh" ? "全局" : "Global"}</option>
+                      <option value="project">{translateCopy("cbm.scopeProject", lang)}</option>
+                      <option value="global">{translateCopy("visual.global", lang)}</option>
                     </select>
                   </label>
                   {agentDraft.scope === "project" ? (
                     <label className="space-y-1 text-sm">
-                      <span className="text-xs text-muted-foreground">{lang === "zh" ? "项目绝对路径" : "Absolute project path"}</span>
+                      <span className="text-xs text-muted-foreground">{translateCopy("visual.absoluteProjectPath", lang)}</span>
                       <Input
                         value={agentDraft.project_root ?? ""}
                         disabled={agentBusy !== ""}
@@ -1038,19 +1030,19 @@ export function VisualCompression() {
                     </label>
                   ) : (
                     <div className="self-end pb-2 text-xs text-muted-foreground">
-                      {lang === "zh" ? "全局文件仍会先预览 diff，再由你确认。" : "Global file diffs are still previewed before confirmation."}
+                      {translateCopy("visual.globalFileDiffsAreStillPreviewedBeforeConfirmation", lang)}
                     </div>
                   )}
                 </div>
               </div>
 
               <div className="space-y-3 rounded-xl border border-border/70 p-4">
-                <h3 className="text-sm font-semibold">{lang === "zh" ? "接入组件" : "Integration surfaces"}</h3>
+                <h3 className="text-sm font-semibold">{translateCopy("visual.integrationSurfaces", lang)}</h3>
                 {([
-                  ["install_instructions", lang === "zh" ? "规则 / Instructions" : "Rules / Instructions", true],
-                  ["install_hook_or_plugin", lang === "zh" ? "Hook / Plugin（动态状态）" : "Hook / Plugin (dynamic status)", true],
-                  ["install_skill", lang === "zh" ? "恢复 Skill" : "Recovery Skill", true],
-                  ["install_mcp", lang === "zh" ? "诊断 MCP（默认关闭）" : "Diagnostic MCP (off by default)", false],
+                  ["install_instructions", translateCopy("visual.rulesInstructions", lang), true],
+                  ["install_hook_or_plugin", translateCopy("visual.hookPluginDynamicStatus", lang), true],
+                  ["install_skill", translateCopy("visual.recoverySkill", lang), true],
+                  ["install_mcp", translateCopy("visual.diagnosticMcpOffByDefault", lang), false],
                 ] as const).map(([key, label, recommended]) => (
                   <label key={key} className="flex items-center justify-between gap-3 text-sm">
                     <span>
@@ -1069,9 +1061,7 @@ export function VisualCompression() {
                   </label>
                 ))}
                 <p className="text-xs text-muted-foreground">
-                  {lang === "zh"
-                    ? "Codex Hook 写入后仍需你在 /hooks 中确认信任；不会绕过 hash trust。"
-                    : "After writing, the Codex Hook still requires your trust in /hooks; hash trust is never bypassed."}
+                  {translateCopy("visual.afterWritingTheCodexHookStillRequiresYourTrustInHooksHashTrustIsNeverBypassed", lang)}
                 </p>
               </div>
             </div>
@@ -1086,15 +1076,15 @@ export function VisualCompression() {
               >
                 {agentBusy === "preview" ? <RefreshCw className="size-3.5 animate-spin" aria-hidden /> : null}
                 {agentBusy === "preview"
-                  ? lang === "zh" ? "正在生成预览…" : "Preparing preview…"
-                  : lang === "zh" ? "预览接入变更" : "Preview integration changes"}
+                  ? translateCopy("visual.preparingPreview", lang)
+                  : translateCopy("visual.previewIntegrationChanges", lang)}
               </Button>
               {agentReceipt ? (
                 <Button type="button" variant="outline" disabled={agentBusy !== ""} onClick={() => void runAgentRollback()} aria-busy={agentBusy === "rollback"}>
                   {agentBusy === "rollback" ? <RefreshCw className="size-3.5 animate-spin" aria-hidden /> : null}
                   {agentBusy === "rollback"
-                    ? lang === "zh" ? "正在回退…" : "Rolling back…"
-                    : lang === "zh" ? "回退本次 Agent 接入" : "Rollback this integration"}
+                    ? translateCopy("visual.rollingBack", lang)
+                    : translateCopy("visual.rollbackThisIntegration", lang)}
                 </Button>
               ) : null}
             </div>
@@ -1437,7 +1427,7 @@ export function VisualCompression() {
                   <h2 className="text-base font-semibold">{t("visual.events")}</h2>
                   <span className="text-xs text-muted-foreground">
                     {eventsOk
-                      ? `${events.length} ${lang === "zh" ? "条" : "items"} · ${t("visual.estimateNote")}`
+                      ? `${events.length} ${translateCopy("visual.items", lang)} · ${t("visual.estimateNote")}`
                       : t("visual.eventsUnavailable")}
                   </span>
                 </div>
@@ -1621,7 +1611,7 @@ export function VisualCompression() {
         pending={configBusy === "apply"}
         confirmDisabled={!review?.ok || !review.before_sha256 || !review.after_sha256}
         confirmLabel={t("visual.config.apply")}
-        cancelLabel={lang === "zh" ? "取消" : "Cancel"}
+        cancelLabel={translateCopy("common.cancel", lang)}
         onConfirm={() => void runConfigApply()}
         details={
           review?.ok ? (
@@ -1640,20 +1630,18 @@ export function VisualCompression() {
       <OperationDialog
         open={agentConfirmOpen}
         onOpenChange={setAgentConfirmOpen}
-        title={lang === "zh" ? "确认 Agent 接入变更" : "Confirm Agent integration changes"}
-        summary={lang === "zh"
-          ? "d-token 将按下列 diff 创建备份并原子写入；不会修改 Provider 凭据或自动开启视觉 Active。"
-          : "d-token will create backups and atomically apply the diffs below; provider credentials and visual Active remain unchanged."}
+        title={translateCopy("visual.confirmAgentIntegrationChanges", lang)}
+        summary={translateCopy("visual.dTokenWillCreateBackupsAndAtomicallyApplyTheDiffsBelowProviderCredentialsAndVisualActiveRemainUnchanged", lang)}
         impact={agentReview?.plan
-          ? `${agentReview.plan.targets.length} ${lang === "zh" ? "个目标文件" : "target files"} · ${agentReview.plan.scope}`
+          ? `${agentReview.plan.targets.length} ${translateCopy("visual.targetFiles", lang)} · ${agentReview.plan.scope}`
           : undefined}
         risk="warning"
         pending={agentBusy === "apply" || agentBusy === "verify"}
         confirmDisabled={!agentReview?.ok || !agentReview.plan}
         confirmLabel={agentBusy === "verify"
-          ? lang === "zh" ? "正在验证…" : "Verifying…"
-          : lang === "zh" ? "确认、应用并验证" : "Confirm, apply, and verify"}
-        cancelLabel={lang === "zh" ? "取消" : "Cancel"}
+          ? translateCopy("visual.verifying", lang)
+          : translateCopy("visual.confirmApplyAndVerify", lang)}
+        cancelLabel={translateCopy("common.cancel", lang)}
         onConfirm={() => void runAgentIntegration()}
         details={agentReview?.plan ? (
           <div className="max-h-[50vh] space-y-3 overflow-auto pr-1 text-xs text-muted-foreground">
@@ -1667,11 +1655,11 @@ export function VisualCompression() {
                 <div className="mt-1">{shortHash(target.before_sha256)} → {shortHash(target.after_sha256)}</div>
                 {target.trust_required ? (
                   <div className="mt-1 text-amber-700 dark:text-amber-300">
-                    {lang === "zh" ? "需要在 Codex /hooks 中信任" : "Requires trust in Codex /hooks"}
+                    {translateCopy("visual.requiresTrustInCodexHooks", lang)}
                   </div>
                 ) : null}
                 <pre className="mt-2 max-h-32 overflow-auto whitespace-pre-wrap rounded-md bg-background p-2 font-mono text-[11px]">
-                  {target.diff || (lang === "zh" ? "内容无变化" : "No content change")}
+                  {target.diff || (translateCopy("visual.noContentChange", lang))}
                 </pre>
               </div>
             ))}

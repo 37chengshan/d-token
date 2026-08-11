@@ -731,30 +731,12 @@
       "remote": null
     },
     {
-      "id": "68f18cfa-3a6e-4bbc-89aa-2313f2cf4ede",
-      "timestamp": "2026-08-06T21:19:26+08:00",
+      "id": "6a3c7964-004c-49ee-bada-4e338867536c",
+      "timestamp": "2026-08-04T21:46:32+08:00",
       "operation": "commit",
-      "branch": "main",
-      "summary": "docs: v2.1 README 文案与宣传图更新（hero 横幅 + 社交预览图 + 01-06 SVG 横幅）",
-      "head_before": "76fe8838fa290514c13a20514e5c7d63c8ae75f3",
-      "remote": null
-    },
-    {
-      "id": "9f8d2c54-a794-467f-82d2-b644d1446c2a",
-      "timestamp": "2026-08-06T21:19:54+08:00",
-      "operation": "push",
-      "branch": "main",
-      "summary": "push README v2.1 文案与宣传图更新到 main",
-      "head_before": "d7b8ca1",
-      "remote": "origin"
-    },
-    {
-      "id": "bf2b5a2a-e172-4860-949a-2d6f27804689",
-      "timestamp": "2026-08-06T21:22:50+08:00",
-      "operation": "merge",
-      "branch": "main",
-      "summary": "merge origin/main（含 CI 修复与 Code Graph MCP 合入）后推送 README 更新",
-      "head_before": "1963913",
+      "branch": "detached",
+      "summary": "fix: tauri-specta single invoke_handler regression, bindings fail-closed, AGENTS.md corrections, sidecar CI",
+      "head_before": "922b86632c0d",
       "remote": null
     },
     {
@@ -764,15 +746,6 @@
       "branch": "codex/code-graph-mcp-integration",
       "summary": "cherry-pick a0720cd from isolated worktree: fix specta scaffolding regression — single invoke_handler, fail-closed bindings",
       "head_before": "922b866",
-      "remote": null
-    },
-    {
-      "id": "6a3c7964-004c-49ee-bada-4e338867536c",
-      "timestamp": "2026-08-04T21:46:32+08:00",
-      "operation": "commit",
-      "branch": "detached",
-      "summary": "fix: tauri-specta single invoke_handler regression, bindings fail-closed, AGENTS.md corrections, sidecar CI",
-      "head_before": "922b86632c0d",
       "remote": null
     },
     {
@@ -810,69 +783,6 @@
       "summary": "Push dynamic route and release gate candidate for CI and Windows validation",
       "head_before": "f707114473d268c5dec15bdd83416ef943aa4038",
       "remote": "origin"
-    },
-    {
-      "id": "5d7053df-a6f9-4882-ad6d-08dd1386a078",
-      "timestamp": "2026-08-06T23:52:30+08:00",
-      "operation": "commit",
-      "branch": "main",
-      "summary": "docs: README 顶部图标替换为应用真实图标（app-icon.png，替换错误的 icons/logo.svg）",
-      "head_before": "c88c8e91b186bac804a0137523ab1c5b9b3e53e2",
-      "remote": null
-    },
-    {
-      "id": "9cb966ef-1d6e-4f2f-b7fa-5209ce34ed65",
-      "timestamp": "2026-08-06T23:52:36+08:00",
-      "operation": "push",
-      "branch": "main",
-      "summary": "push README 图标替换（app-icon.png）到 main",
-      "head_before": "e7fb6a0",
-      "remote": "origin"
-    },
-    {
-      "id": "7d53f8e1-95b3-4c9c-980c-a7f8f17cbdd0",
-      "timestamp": "2026-08-06T23:57:24+08:00",
-      "operation": "merge",
-      "branch": "main",
-      "summary": "merge origin/main（用户手动 README 改动不保留，以应用真实图标版本为准）",
-      "head_before": "7acf7fd",
-      "remote": null
-    },
-    {
-      "id": "bf132f51-905a-4e67-a31a-210164124bcc",
-      "timestamp": "2026-08-06T23:58:13+08:00",
-      "operation": "push",
-      "branch": "main",
-      "summary": "push README 图标替换（app-icon.png，采用应用真实图标版本）到 main",
-      "head_before": "89b2546",
-      "remote": "origin"
-    },
-    {
-      "id": "73fbf4e6-54b2-422a-8889-ef870346087c",
-      "timestamp": "2026-08-07T09:06:58+08:00",
-      "operation": "commit",
-      "branch": "main",
-      "summary": "docs: 重写 README 为发布宣传文案（证据前置、冲突开场、去汇报腔）",
-      "head_before": "2e3fe53c3987363a105fc417dda3e38e27444e59",
-      "remote": null
-    },
-    {
-      "id": "1574d5cf-28b2-49cb-b439-11a7c3a50138",
-      "timestamp": "2026-08-07T09:07:06+08:00",
-      "operation": "push",
-      "branch": "main",
-      "summary": "push README 发布宣传文案重写（证据前置）到 main",
-      "head_before": "c0f50b8",
-      "remote": "origin"
-    },
-    {
-      "id": "c2750bc9-b19e-443c-962b-ae436ebdc076",
-      "timestamp": "2026-08-07T10:05:21+08:00",
-      "operation": "commit",
-      "branch": "main",
-      "summary": "docs: README 改为开源项目范式（首屏定位 + Highlights + Quick start，未签名声明压缩为 NOTE）",
-      "head_before": "5a0fa0fcef646daa099b44478cad459274d28780",
-      "remote": null
     },
     {
       "id": "18457dfc-53bd-4670-93db-0a03b4eebff7",
@@ -934,15 +844,6 @@
       "operation": "branch-create",
       "branch": "codex/release-runtime-logs",
       "summary": "为真实请求日志费用数据合同创建隔离分支",
-      "head_before": "f1b89dcc8db8",
-      "remote": null
-    },
-    {
-      "id": "5001c0b7-4f1c-46bb-a8ed-7cb611071e22",
-      "timestamp": "2026-08-06T21:13:12+08:00",
-      "operation": "commit",
-      "branch": "codex/release-model-pricing",
-      "summary": "完成模型价格表与本地费用设置",
       "head_before": "f1b89dcc8db8",
       "remote": null
     },
@@ -1019,30 +920,39 @@
       "remote": null
     },
     {
-      "id": "0fd82147-6b04-41ac-99c5-d0cab3912cf3",
-      "timestamp": "2026-08-06T21:17:08+08:00",
-      "operation": "branch-create",
-      "branch": "codex/release-protocol-normalization",
-      "summary": "为运行时协议 wire 与 UI 展示正规化创建隔离分支",
-      "head_before": "f1b89dcc8db8",
-      "remote": null
-    },
-    {
-      "id": "65d368fe-199d-4d2c-8a73-4287a3c61969",
-      "timestamp": "2026-08-06T23:26:41+08:00",
+      "id": "cecfcf5c-7f30-428b-b7fe-b7b6e3aa4bc9",
+      "timestamp": "2026-08-06T21:03:35+08:00",
       "operation": "commit",
-      "branch": "codex/release-optical-implementation",
-      "summary": "Complete Optical desktop research slice with runtime status truth, explicit preview gates, rollback distinction, and route-safe preview contract",
+      "branch": "codex/release-codebase-memory",
+      "summary": "fix: truthful Codebase Memory untrusted reason and block v0.9.1-rc.1 pin drift",
       "head_before": "f1b89dc",
+      "remote": "null"
+    },
+    {
+      "id": "567ccbce-c6a9-4b1e-837e-91ce9c1d9962",
+      "timestamp": "2026-08-06T21:04:15+08:00",
+      "operation": "commit",
+      "branch": "codex/release-overview-savings",
+      "summary": "feat(overview): 首页累计/当周/当月/当天节省区间，本地时区窗口与费用 unavailable 诚实口径",
+      "head_before": "f1b89dcc8db810b6d2373e9d1d4b5f57f1c6f40e",
       "remote": null
     },
     {
-      "id": "a58fb8e1-6ab6-434c-91e1-a9469d85798e",
-      "timestamp": "2026-08-06T23:56:32+08:00",
-      "operation": "merge",
-      "branch": "codex/code-graph-mcp-integration",
-      "summary": "合并已审查的开源 provenance 修正分支",
-      "head_before": "190e1e5",
+      "id": "2a9db348-d7b0-4d87-b284-8cf618591f50",
+      "timestamp": "2026-08-06T21:09:56+08:00",
+      "operation": "commit",
+      "branch": "codex/release-log-view",
+      "summary": "P0 fix: Analytics log Provider Token column reads provider_input_tokens only; RequestLogRow contract + tests + report update",
+      "head_before": "192935f",
+      "remote": null
+    },
+    {
+      "id": "5001c0b7-4f1c-46bb-a8ed-7cb611071e22",
+      "timestamp": "2026-08-06T21:13:12+08:00",
+      "operation": "commit",
+      "branch": "codex/release-model-pricing",
+      "summary": "完成模型价格表与本地费用设置",
+      "head_before": "f1b89dcc8db8",
       "remote": null
     },
     {
@@ -1052,15 +962,6 @@
       "branch": "codex/release-macos-sidebar",
       "summary": "fix(sidebar): stable press hit rect, per-item render isolation, cat-ear nav icons + report",
       "head_before": "f1b89dcc8db810b6d2373e9d1d4b5f57f1c6f40e",
-      "remote": null
-    },
-    {
-      "id": "b30c2c18-3ecb-450d-a8fd-d31008adc557",
-      "timestamp": "2026-08-06T21:21:55+08:00",
-      "operation": "commit",
-      "branch": "codex/release-open-source",
-      "summary": "fix: correct LeanCTX license to Apache-2.0 and headroom v0.34.0 release date",
-      "head_before": "378261c",
       "remote": null
     },
     {
@@ -1082,31 +983,49 @@
       "remote": null
     },
     {
-      "id": "4e6aa2a1-7ed2-4813-96e7-2abc2cf7ead4",
-      "timestamp": "2026-08-07T00:24:00+08:00",
-      "operation": "merge",
-      "branch": "codex/code-graph-mcp-integration",
-      "summary": "合并 Codebase Memory v0.9.1-rc.1 分支，待主树测试",
-      "head_before": "facad18",
+      "id": "0fd82147-6b04-41ac-99c5-d0cab3912cf3",
+      "timestamp": "2026-08-06T21:17:08+08:00",
+      "operation": "branch-create",
+      "branch": "codex/release-protocol-normalization",
+      "summary": "为运行时协议 wire 与 UI 展示正规化创建隔离分支",
+      "head_before": "f1b89dcc8db8",
       "remote": null
     },
     {
-      "id": "cecfcf5c-7f30-428b-b7fe-b7b6e3aa4bc9",
-      "timestamp": "2026-08-06T21:03:35+08:00",
+      "id": "68f18cfa-3a6e-4bbc-89aa-2313f2cf4ede",
+      "timestamp": "2026-08-06T21:19:26+08:00",
       "operation": "commit",
-      "branch": "codex/release-codebase-memory",
-      "summary": "fix: truthful Codebase Memory untrusted reason and block v0.9.1-rc.1 pin drift",
-      "head_before": "f1b89dc",
-      "remote": "null"
+      "branch": "main",
+      "summary": "docs: v2.1 README 文案与宣传图更新（hero 横幅 + 社交预览图 + 01-06 SVG 横幅）",
+      "head_before": "76fe8838fa290514c13a20514e5c7d63c8ae75f3",
+      "remote": null
     },
     {
-      "id": "e045f5f2-68c6-4527-9e0f-6429513ff174",
-      "timestamp": "2026-08-06T23:24:02+08:00",
+      "id": "9f8d2c54-a794-467f-82d2-b644d1446c2a",
+      "timestamp": "2026-08-06T21:19:54+08:00",
+      "operation": "push",
+      "branch": "main",
+      "summary": "push README v2.1 文案与宣传图更新到 main",
+      "head_before": "d7b8ca1",
+      "remote": "origin"
+    },
+    {
+      "id": "b30c2c18-3ecb-450d-a8fd-d31008adc557",
+      "timestamp": "2026-08-06T21:21:55+08:00",
       "operation": "commit",
-      "branch": "codex/release-codebase-memory",
-      "summary": "upgrade Codebase Memory pin to v0.9.1-rc.1 and fix launcher_unavailable blocked reason",
-      "head_before": "902930c",
-      "remote": "null"
+      "branch": "codex/release-open-source",
+      "summary": "fix: correct LeanCTX license to Apache-2.0 and headroom v0.34.0 release date",
+      "head_before": "378261c",
+      "remote": null
+    },
+    {
+      "id": "bf2b5a2a-e172-4860-949a-2d6f27804689",
+      "timestamp": "2026-08-06T21:22:50+08:00",
+      "operation": "merge",
+      "branch": "main",
+      "summary": "merge origin/main（含 CI 修复与 Code Graph MCP 合入）后推送 README 更新",
+      "head_before": "1963913",
+      "remote": null
     },
     {
       "id": "7035aad1-eb61-4ad7-8610-5263af06a8ff",
@@ -1136,6 +1055,15 @@
       "remote": null
     },
     {
+      "id": "7deeb248-ff24-4a63-9d81-5a1eee3b51b1",
+      "timestamp": "2026-08-06T23:22:04+08:00",
+      "operation": "commit",
+      "branch": "codex/release-macos-sidebar",
+      "summary": "Fix sidebar tooltip refs, CSS hit rect, local pulse rendering, canonical cat-face mark",
+      "head_before": "4015a75",
+      "remote": null
+    },
+    {
       "id": "6c236a37-5091-4ab2-9137-1a3f1b409634",
       "timestamp": "2026-08-06T23:22:08+08:00",
       "operation": "commit",
@@ -1145,13 +1073,13 @@
       "remote": null
     },
     {
-      "id": "2a9db348-d7b0-4d87-b284-8cf618591f50",
-      "timestamp": "2026-08-06T21:09:56+08:00",
+      "id": "e045f5f2-68c6-4527-9e0f-6429513ff174",
+      "timestamp": "2026-08-06T23:24:02+08:00",
       "operation": "commit",
-      "branch": "codex/release-log-view",
-      "summary": "P0 fix: Analytics log Provider Token column reads provider_input_tokens only; RequestLogRow contract + tests + report update",
-      "head_before": "192935f",
-      "remote": null
+      "branch": "codex/release-codebase-memory",
+      "summary": "upgrade Codebase Memory pin to v0.9.1-rc.1 and fix launcher_unavailable blocked reason",
+      "head_before": "902930c",
+      "remote": "null"
     },
     {
       "id": "97d9e50d-23a7-4f80-92be-baa041c43dea",
@@ -1172,30 +1100,12 @@
       "remote": null
     },
     {
-      "id": "60cba030-76d1-4415-8956-29170ca898f5",
-      "timestamp": "2026-08-07T00:41:05+08:00",
-      "operation": "merge",
-      "branch": "codex/code-graph-mcp-integration",
-      "summary": "合并首页节省区间分支",
-      "head_before": "3064b0b",
-      "remote": null
-    },
-    {
-      "id": "567ccbce-c6a9-4b1e-837e-91ce9c1d9962",
-      "timestamp": "2026-08-06T21:04:15+08:00",
+      "id": "65d368fe-199d-4d2c-8a73-4287a3c61969",
+      "timestamp": "2026-08-06T23:26:41+08:00",
       "operation": "commit",
-      "branch": "codex/release-overview-savings",
-      "summary": "feat(overview): 首页累计/当周/当月/当天节省区间，本地时区窗口与费用 unavailable 诚实口径",
-      "head_before": "f1b89dcc8db810b6d2373e9d1d4b5f57f1c6f40e",
-      "remote": null
-    },
-    {
-      "id": "7deeb248-ff24-4a63-9d81-5a1eee3b51b1",
-      "timestamp": "2026-08-06T23:22:04+08:00",
-      "operation": "commit",
-      "branch": "codex/release-macos-sidebar",
-      "summary": "Fix sidebar tooltip refs, CSS hit rect, local pulse rendering, canonical cat-face mark",
-      "head_before": "4015a75",
+      "branch": "codex/release-optical-implementation",
+      "summary": "Complete Optical desktop research slice with runtime status truth, explicit preview gates, rollback distinction, and route-safe preview contract",
+      "head_before": "f1b89dc",
       "remote": null
     },
     {
@@ -1205,6 +1115,96 @@
       "branch": "codex/release-optical-implementation",
       "summary": "Commit audit ledger entry for Optical release slice",
       "head_before": "2fa1b92",
+      "remote": null
+    },
+    {
+      "id": "5d7053df-a6f9-4882-ad6d-08dd1386a078",
+      "timestamp": "2026-08-06T23:52:30+08:00",
+      "operation": "commit",
+      "branch": "main",
+      "summary": "docs: README 顶部图标替换为应用真实图标（app-icon.png，替换错误的 icons/logo.svg）",
+      "head_before": "c88c8e91b186bac804a0137523ab1c5b9b3e53e2",
+      "remote": null
+    },
+    {
+      "id": "9cb966ef-1d6e-4f2f-b7fa-5209ce34ed65",
+      "timestamp": "2026-08-06T23:52:36+08:00",
+      "operation": "push",
+      "branch": "main",
+      "summary": "push README 图标替换（app-icon.png）到 main",
+      "head_before": "e7fb6a0",
+      "remote": "origin"
+    },
+    {
+      "id": "a58fb8e1-6ab6-434c-91e1-a9469d85798e",
+      "timestamp": "2026-08-06T23:56:32+08:00",
+      "operation": "merge",
+      "branch": "codex/code-graph-mcp-integration",
+      "summary": "合并已审查的开源 provenance 修正分支",
+      "head_before": "190e1e5",
+      "remote": null
+    },
+    {
+      "id": "7d53f8e1-95b3-4c9c-980c-a7f8f17cbdd0",
+      "timestamp": "2026-08-06T23:57:24+08:00",
+      "operation": "merge",
+      "branch": "main",
+      "summary": "merge origin/main（用户手动 README 改动不保留，以应用真实图标版本为准）",
+      "head_before": "7acf7fd",
+      "remote": null
+    },
+    {
+      "id": "bf132f51-905a-4e67-a31a-210164124bcc",
+      "timestamp": "2026-08-06T23:58:13+08:00",
+      "operation": "push",
+      "branch": "main",
+      "summary": "push README 图标替换（app-icon.png，采用应用真实图标版本）到 main",
+      "head_before": "89b2546",
+      "remote": "origin"
+    },
+    {
+      "id": "4e6aa2a1-7ed2-4813-96e7-2abc2cf7ead4",
+      "timestamp": "2026-08-07T00:24:00+08:00",
+      "operation": "merge",
+      "branch": "codex/code-graph-mcp-integration",
+      "summary": "合并 Codebase Memory v0.9.1-rc.1 分支，待主树测试",
+      "head_before": "facad18",
+      "remote": null
+    },
+    {
+      "id": "60cba030-76d1-4415-8956-29170ca898f5",
+      "timestamp": "2026-08-07T00:41:05+08:00",
+      "operation": "merge",
+      "branch": "codex/code-graph-mcp-integration",
+      "summary": "合并首页节省区间分支",
+      "head_before": "3064b0b",
+      "remote": null
+    },
+    {
+      "id": "73fbf4e6-54b2-422a-8889-ef870346087c",
+      "timestamp": "2026-08-07T09:06:58+08:00",
+      "operation": "commit",
+      "branch": "main",
+      "summary": "docs: 重写 README 为发布宣传文案（证据前置、冲突开场、去汇报腔）",
+      "head_before": "2e3fe53c3987363a105fc417dda3e38e27444e59",
+      "remote": null
+    },
+    {
+      "id": "1574d5cf-28b2-49cb-b439-11a7c3a50138",
+      "timestamp": "2026-08-07T09:07:06+08:00",
+      "operation": "push",
+      "branch": "main",
+      "summary": "push README 发布宣传文案重写（证据前置）到 main",
+      "head_before": "c0f50b8",
+      "remote": "origin"
+    },
+    {
+      "id": "c2750bc9-b19e-443c-962b-ae436ebdc076",
+      "timestamp": "2026-08-07T10:05:21+08:00",
+      "operation": "commit",
+      "branch": "main",
+      "summary": "docs: README 改为开源项目范式（首屏定位 + Highlights + Quick start，未签名声明压缩为 NOTE）",
+      "head_before": "5a0fa0fcef646daa099b44478cad459274d28780",
       "remote": null
     },
     {
@@ -1530,6 +1530,15 @@
       "summary": "push round-3 CI stabilization fixes",
       "head_before": "16bb7ad",
       "remote": "origin"
+    },
+    {
+      "id": "bc113092-d635-4454-bcf5-1d40933679c0",
+      "timestamp": "2026-08-08T17:56:41+08:00",
+      "operation": "commit",
+      "branch": "codex/final/runtime-receipt",
+      "summary": "Add runtime optimization receipt projection and provider usage evidence",
+      "head_before": "1ddb30edcf0c12f5172c800a182b18e8cdadb61b",
+      "remote": null
     },
     {
       "id": "3d176f09-492b-4121-8366-28b2c4ede115",
@@ -2150,6 +2159,1032 @@
       "branch": "codex/final-release-iteration",
       "summary": "push managed RTK rewrite path assertion fix",
       "head_before": "13f52e2",
+      "remote": "origin"
+    },
+    {
+      "id": "c8c71e00-8825-46b4-9fda-aaf82131bf07",
+      "timestamp": "2026-08-09T00:47:02+08:00",
+      "operation": "commit",
+      "branch": "codex/final/candidate-integration",
+      "summary": "Stabilize fake binary smoke readiness and secret classifier lint",
+      "head_before": "927958de9fe0cfbbee1640e2c1ac4d5a66dc0768",
+      "remote": null
+    },
+    {
+      "id": "8e7cdfa7-eed6-485f-a715-bd463594341b",
+      "timestamp": "2026-08-09T11:17:35+08:00",
+      "operation": "branch-create",
+      "branch": "codex/final/cachealigner-ccr",
+      "summary": "Create isolated CacheAligner CCR implementation branch from current candidate",
+      "head_before": "dc647aff71b2fdf63cc1ce2a1fc25810d8f86bd3",
+      "remote": null
+    },
+    {
+      "id": "c140d56a-eb7a-4bf0-8bdc-7e1fa7df41e8",
+      "timestamp": "2026-08-09T15:37:32+08:00",
+      "operation": "branch-create",
+      "branch": "codex/final/plan-package-reconciled",
+      "summary": "Create reconciled release-plan branch after OMP and Agent MCP cross-review",
+      "head_before": "dc647aff71b2fdf63cc1ce2a1fc25810d8f86bd3",
+      "remote": null
+    },
+    {
+      "id": "d54c88d3-cc3c-455d-bc13-8962f07e6c7a",
+      "timestamp": "2026-08-09T15:37:46+08:00",
+      "operation": "branch-use",
+      "branch": "codex/final/plan-package-reconciled",
+      "summary": "Attach isolated worktree for reconciled release-plan branch",
+      "head_before": "dc647aff71b2fdf63cc1ce2a1fc25810d8f86bd3",
+      "remote": null
+    },
+    {
+      "id": "fd46ee2e-55fc-4bc5-a614-dc96030ef4ee",
+      "timestamp": "2026-08-09T15:38:41+08:00",
+      "operation": "commit",
+      "branch": "codex/final/plan-package-reconciled",
+      "summary": "Commit reconciled v0.0.1 release-plan contracts and DAG",
+      "head_before": "dc647aff71b2fdf63cc1ce2a1fc25810d8f86bd3",
+      "remote": null
+    },
+    {
+      "id": "447b4da4-9690-4e53-9e48-bc46852113ec",
+      "timestamp": "2026-08-09T15:39:03+08:00",
+      "operation": "push",
+      "branch": "codex/final/plan-package-reconciled",
+      "summary": "Push reconciled v0.0.1 release-plan branch for review",
+      "head_before": "1ae7f6d",
+      "remote": "origin"
+    },
+    {
+      "id": "9130bf4b-fedb-458a-91ef-980d86246387",
+      "timestamp": "2026-08-09T15:46:51+08:00",
+      "operation": "commit",
+      "branch": "codex/final/plan-package-reconciled",
+      "summary": "Fix V-1 dependency cycle in reconciled release DAG",
+      "head_before": "a4a7dfafb72a8b2cba76eb494f0366e9926f81c1",
+      "remote": null
+    },
+    {
+      "id": "1cc9cb98-acb8-473d-8fe9-18a2c087cb28",
+      "timestamp": "2026-08-09T16:13:56+08:00",
+      "operation": "commit",
+      "branch": "codex/final/plan-package-reconciled",
+      "summary": "Resolve final release-plan dependency, evidence, and no-touch review findings",
+      "head_before": "a4a7dfafb72a8b2cba76eb494f0366e9926f81c1",
+      "remote": null
+    },
+    {
+      "id": "03594bf2-a168-4696-b63f-27cf73047d66",
+      "timestamp": "2026-08-09T16:14:32+08:00",
+      "operation": "push",
+      "branch": "codex/final/plan-package-reconciled",
+      "summary": "Push reviewed v0.0.1 release-plan corrections",
+      "head_before": "f77bb2f",
+      "remote": "origin"
+    },
+    {
+      "id": "2729e1ca-abf8-4c78-97a2-91748ea1060f",
+      "timestamp": "2026-08-09T16:18:43+08:00",
+      "operation": "merge",
+      "branch": "codex/final-release-iteration",
+      "summary": "Merge reviewed v0.0.1 release-plan package PR 21",
+      "head_before": "dc647aff71b2fdf63cc1ce2a1fc25810d8f86bd3",
+      "remote": "origin"
+    },
+    {
+      "id": "f154ade8-5624-4fa0-86a3-c0fd8de8f879",
+      "timestamp": "2026-08-09T16:19:07+08:00",
+      "operation": "commit",
+      "branch": "codex/final/plan-package-reconciled",
+      "summary": "Record reviewed release-plan PR merge and final push audit",
+      "head_before": "88c7f189c3b183a132828da83683e3e0c32ee4e3",
+      "remote": null
+    },
+    {
+      "id": "fce9608d-8f1f-4b61-a863-f7438614d981",
+      "timestamp": "2026-08-09T16:19:07+08:00",
+      "operation": "push",
+      "branch": "codex/final/plan-package-reconciled",
+      "summary": "Push release-plan merge audit ledger",
+      "head_before": "88c7f189c3b183a132828da83683e3e0c32ee4e3",
+      "remote": "origin"
+    },
+    {
+      "id": "ca32542d-f500-4ecc-8996-7ec5d1db1999",
+      "timestamp": "2026-08-09T17:30:17+08:00",
+      "operation": "branch-create",
+      "branch": "codex/final/c0a-schema-policy",
+      "summary": "Create C0A schema policy implementation branch from reconciled provenance baseline",
+      "head_before": "082f00125683e18ebe1604b484bd8a1c0213356f",
+      "remote": null
+    },
+    {
+      "id": "b683742f-c8fa-4ffd-8233-76d9adbad6c9",
+      "timestamp": "2026-08-09T17:30:17+08:00",
+      "operation": "commit",
+      "branch": "codex/final/provenance-batch-reconciled",
+      "summary": "Record C0A branch creation audit before provenance review PR",
+      "head_before": "082f00125683e18ebe1604b484bd8a1c0213356f",
+      "remote": null
+    },
+    {
+      "id": "c824dcd0-5245-4ebb-94aa-cb3f406063bc",
+      "timestamp": "2026-08-09T17:36:14+08:00",
+      "operation": "branch-create",
+      "branch": "codex/final/agent-experience-pack",
+      "summary": "Create Agent experience macro delivery branch from provenance baseline",
+      "head_before": "f8b3db00353e24ecd206c0894ec6350a207c340a",
+      "remote": null
+    },
+    {
+      "id": "00fbc311-1640-433b-a48c-756863813ab2",
+      "timestamp": "2026-08-09T17:36:14+08:00",
+      "operation": "branch-create",
+      "branch": "codex/final/platform-cbm-pack",
+      "summary": "Create platform and Codebase Memory macro delivery branch from provenance baseline",
+      "head_before": "f8b3db00353e24ecd206c0894ec6350a207c340a",
+      "remote": null
+    },
+    {
+      "id": "6d0ed96f-8442-4092-9376-f7f66186cfdc",
+      "timestamp": "2026-08-09T17:36:15+08:00",
+      "operation": "commit",
+      "branch": "codex/final/provenance-batch-reconciled",
+      "summary": "Record Agent experience and platform macro branch audits",
+      "head_before": "f8b3db00353e24ecd206c0894ec6350a207c340a",
+      "remote": null
+    },
+    {
+      "id": "ce325fba-e1ee-478f-b4ca-42b20325c7f1",
+      "timestamp": "2026-08-09T18:01:15+08:00",
+      "operation": "commit",
+      "branch": "codex/final/provenance-batch-reconciled",
+      "summary": "Reconcile provenance completion facts across active release documents",
+      "head_before": "a9e8f9c7fe89013fce06be2b331f2dd812245b9a",
+      "remote": null
+    },
+    {
+      "id": "e8858575-47c1-4a7f-af9b-bf26c1f8e726",
+      "timestamp": "2026-08-09T20:54:54+08:00",
+      "operation": "commit",
+      "branch": "codex/final/provenance-batch-reconciled",
+      "summary": "完成 canonical production pipeline 与 Native Responses 单一发送路径",
+      "head_before": "4b892ea92995df6b4e79f7047cd2b69d44dedfc7",
+      "remote": null
+    },
+    {
+      "id": "ac5644fb-4368-479b-b516-e846dfd8f958",
+      "timestamp": "2026-08-09T21:31:22+08:00",
+      "operation": "commit",
+      "branch": "codex/final/headroom-ccr-stage",
+      "summary": "完成 Headroom cache CCR stage pack",
+      "head_before": "649d2ed",
+      "remote": null
+    },
+    {
+      "id": "4a0216c8-3faa-488f-a32e-1ca67404fd2b",
+      "timestamp": "2026-08-09T21:31:44+08:00",
+      "operation": "commit",
+      "branch": "codex/final/rtk-production-stage",
+      "summary": "完成 RTK production stage pack",
+      "head_before": "649d2ed",
+      "remote": null
+    },
+    {
+      "id": "c65c7bb8-775c-4d3f-9d95-8bfce61ccefa",
+      "timestamp": "2026-08-09T21:32:10+08:00",
+      "operation": "commit",
+      "branch": "codex/final/optical-renderer-history",
+      "summary": "完成 Optical renderer history stage pack",
+      "head_before": "649d2ed",
+      "remote": null
+    },
+    {
+      "id": "5334dafa-7358-4c29-8c6e-a651677b4d74",
+      "timestamp": "2026-08-09T21:36:13+08:00",
+      "operation": "commit",
+      "branch": "codex/final/context-relay-recovery",
+      "summary": "完成 Context Relay recovery stage pack",
+      "head_before": "649d2ed",
+      "remote": null
+    },
+    {
+      "id": "b59225a7-da71-4d1f-b12b-58eaa544728d",
+      "timestamp": "2026-08-09T21:36:39+08:00",
+      "operation": "merge",
+      "branch": "codex/final/stage-pack-integrated",
+      "summary": "合并 Headroom cache CCR stage pack",
+      "head_before": "649d2ed",
+      "remote": null
+    },
+    {
+      "id": "a5899827-e38d-4867-9531-18433650664c",
+      "timestamp": "2026-08-09T21:36:58+08:00",
+      "operation": "merge",
+      "branch": "codex/final/stage-pack-integrated",
+      "summary": "合并 Headroom cache CCR stage pack",
+      "head_before": "afa3d92",
+      "remote": null
+    },
+    {
+      "id": "471aeba9-3479-4506-b559-5f794ffce25c",
+      "timestamp": "2026-08-09T21:39:23+08:00",
+      "operation": "merge",
+      "branch": "codex/final/stage-pack-integrated",
+      "summary": "合并 Context Relay recovery stage pack",
+      "head_before": "38d2747",
+      "remote": null
+    },
+    {
+      "id": "b96fc57e-ea6c-4bf1-af00-cdadd65abb8d",
+      "timestamp": "2026-08-09T21:40:48+08:00",
+      "operation": "merge",
+      "branch": "codex/final/stage-pack-integrated",
+      "summary": "合并 RTK production stage pack",
+      "head_before": "b7033dd",
+      "remote": null
+    },
+    {
+      "id": "fef2fd1f-f7b8-4a6e-8a47-1e69ba80164d",
+      "timestamp": "2026-08-09T21:42:18+08:00",
+      "operation": "merge",
+      "branch": "codex/final/stage-pack-integrated",
+      "summary": "合并 Optical renderer history stage pack",
+      "head_before": "c6a0bf9",
+      "remote": null
+    },
+    {
+      "id": "fd834856-bcfe-40ae-9197-398cd9fe0230",
+      "timestamp": "2026-08-09T22:41:41+08:00",
+      "operation": "commit",
+      "branch": "codex/final/stage-pack-integrated",
+      "summary": "完成 Optical exact automatic active evidence pack",
+      "head_before": "b7d1eed",
+      "remote": null
+    },
+    {
+      "id": "ab5fcc2d-4645-4a8c-8e1d-1cb6688fc4b7",
+      "timestamp": "2026-08-09T22:57:59+08:00",
+      "operation": "commit",
+      "branch": "codex/final/stage-pack-integrated",
+      "summary": "完成 durability performance fault replay pack",
+      "head_before": "9da94eb",
+      "remote": null
+    },
+    {
+      "id": "45178f8a-1a15-44ac-944b-1be9f1fcb24e",
+      "timestamp": "2026-08-09T23:56:45+08:00",
+      "operation": "commit",
+      "branch": "codex/final/stage-pack-integrated",
+      "summary": "统一 v0.0.1 发布编排并收口桌面文案语言隔离",
+      "head_before": "0a44a48",
+      "remote": null
+    },
+    {
+      "id": "6a5cb40e-085d-4b24-b718-842ea51dfe02",
+      "timestamp": "2026-08-09T23:58:05+08:00",
+      "operation": "commit",
+      "branch": "codex/final/stage-pack-integrated",
+      "summary": "记录 v0.0.1 编排提交的必需 Git 审计条目",
+      "head_before": "c01e901",
+      "remote": null
+    },
+    {
+      "id": "c52e9cc0-579f-4e5f-bf81-9dce9041bceb",
+      "timestamp": "2026-08-10T00:38:47+08:00",
+      "operation": "commit",
+      "branch": "codex/final/stage-pack-integrated",
+      "summary": "N0 候选冻结预检：Cargo.lock 版本对齐、fmt/clippy 修复、bundle budget 对齐、fake-bin 脚本代理隔离、新增 N0 producer",
+      "head_before": "9cf01f3",
+      "remote": null
+    },
+    {
+      "id": "7858b7fe-7cfa-452b-ae6c-998f85a371af",
+      "timestamp": "2026-08-10T00:40:29+08:00",
+      "operation": "commit",
+      "branch": "codex/final/stage-pack-integrated",
+      "summary": "记录 N0 候选冻结执行报告（N0-EXECUTION.md）",
+      "head_before": "25241e5",
+      "remote": null
+    },
+    {
+      "id": "4a5ffa65-1154-406a-bacb-930ed7376c5d",
+      "timestamp": "2026-08-10T00:42:16+08:00",
+      "operation": "commit",
+      "branch": "codex/final/stage-pack-integrated",
+      "summary": "提交 N0 候选审计账本追加记录",
+      "head_before": "25241e5",
+      "remote": null
+    },
+    {
+      "id": "977018af-dfb2-4314-b064-01a384acd22e",
+      "timestamp": "2026-08-10T00:51:50+08:00",
+      "operation": "commit",
+      "branch": "codex/final/stage-pack-integrated",
+      "summary": "补齐 N0 全量结构、Rust、桌面与真实 E2E 前置门",
+      "head_before": "c8946db",
+      "remote": null
+    },
+    {
+      "id": "eaa17027-d85c-481c-8e66-49bce92adeeb",
+      "timestamp": "2026-08-10T01:02:56+08:00",
+      "operation": "commit",
+      "branch": "codex/final/stage-pack-integrated",
+      "summary": "修复 N0 完整门、浏览器 fallback、跳过门 fail-closed 与冻结 fixture digest 绑定",
+      "head_before": "22076a1",
+      "remote": null
+    },
+    {
+      "id": "c0add228-5c31-4725-b1fb-3671e5a0e7b3",
+      "timestamp": "2026-08-10T09:59:55+08:00",
+      "operation": "commit",
+      "branch": "codex/final/stage-pack-integrated",
+      "summary": "修复统一能力注册表虚构测试路径并强制 tracked-file fail-closed 校验",
+      "head_before": "decd0016ca8c6312ac57033d1d577b91eefa1c1b",
+      "remote": null
+    },
+    {
+      "id": "d25511e8-c81b-4f52-8b7b-547ab613bc02",
+      "timestamp": "2026-08-10T10:54:38+08:00",
+      "operation": "branch-create",
+      "branch": "codex/final/c0-c1-remediation",
+      "summary": "创建 C0 C1 合同与传输回执修复分支",
+      "head_before": "15f98cfb9861c3f9ad87b1d0dc5f8e6f1844063d",
+      "remote": null
+    },
+    {
+      "id": "8c7e1260-8027-4dda-8309-2365ca9f3d31",
+      "timestamp": "2026-08-10T10:56:17+08:00",
+      "operation": "branch-create",
+      "branch": "codex/final/c2-c3-remediation",
+      "summary": "创建 C2 C3 持久化与 Relay 修复分支",
+      "head_before": "15f98cfb9861c3f9ad87b1d0dc5f8e6f1844063d",
+      "remote": null
+    },
+    {
+      "id": "83652463-1b3c-4b64-9ba9-cd072122eb2d",
+      "timestamp": "2026-08-10T10:56:17+08:00",
+      "operation": "branch-create",
+      "branch": "codex/final/c4-remediation",
+      "summary": "创建 C4 RTK 生产接线修复分支",
+      "head_before": "15f98cfb9861c3f9ad87b1d0dc5f8e6f1844063d",
+      "remote": null
+    },
+    {
+      "id": "14dafee9-f316-4ff1-97c4-d25a159518cc",
+      "timestamp": "2026-08-10T10:56:18+08:00",
+      "operation": "branch-create",
+      "branch": "codex/final/c5-remediation",
+      "summary": "创建 C5 Optical active 修复分支",
+      "head_before": "15f98cfb9861c3f9ad87b1d0dc5f8e6f1844063d",
+      "remote": null
+    },
+    {
+      "id": "9dcf94ab-a7f4-4cef-96ec-84e2755a658f",
+      "timestamp": "2026-08-10T10:57:50+08:00",
+      "operation": "branch-create",
+      "branch": "codex/final/c8-evidence-remediation",
+      "summary": "创建 C8 证据生产与注册表修复分支",
+      "head_before": "15f98cfb9861c3f9ad87b1d0dc5f8e6f1844063d",
+      "remote": null
+    },
+    {
+      "id": "8d014571-4d99-4db5-b7d8-97a22eaa623e",
+      "timestamp": "2026-08-10T10:59:32+08:00",
+      "operation": "branch-create",
+      "branch": "codex/final/c6-c7-remediation",
+      "summary": "创建 C6 C7 调度与性能修复分支",
+      "head_before": "15f98cfb9861c3f9ad87b1d0dc5f8e6f1844063d",
+      "remote": null
+    },
+    {
+      "id": "79508676-b076-4595-abfb-76dd3bedf1ce",
+      "timestamp": "2026-08-10T11:09:57+08:00",
+      "operation": "branch-create",
+      "branch": "codex/final/product-closure-remediation",
+      "summary": "创建 Agent 与桌面产品闭环修复分支",
+      "head_before": "15f98cfb9861c3f9ad87b1d0dc5f8e6f1844063d",
+      "remote": null
+    },
+    {
+      "id": "ce66d522-e66e-48d5-95d7-6121bb749731",
+      "timestamp": "2026-08-10T11:42:15+08:00",
+      "operation": "commit",
+      "branch": "codex/final/c5-remediation",
+      "summary": "C5 optical remediation: history collapse wiring, signer example, signed active contract tests, registry c5 entries, docs",
+      "head_before": "15f98cfb9861c3f9ad87b1d0dc5f8e6f1844063d",
+      "remote": null
+    },
+    {
+      "id": "5bac7e24-7b94-4dcf-82a2-e21b853adcbf",
+      "timestamp": "2026-08-10T12:05:12+08:00",
+      "operation": "commit",
+      "branch": "codex/final/product-closure-remediation",
+      "summary": "product closure: CBM v2 manifest registry, per-version acceptance harness, manifest-driven promo",
+      "head_before": "15f98cf",
+      "remote": null
+    },
+    {
+      "id": "560d014e-e75c-42a6-abac-a116d84a3662",
+      "timestamp": "2026-08-10T12:08:22+08:00",
+      "operation": "commit",
+      "branch": "product-closure-remediation",
+      "summary": "UI product closure: onboarding 5-seg, service progress/reduce motion, order gate, OperationDialog confirm, honest running copy",
+      "head_before": "9ef2151d86faa55ad438570ca815426250515796",
+      "remote": null
+    },
+    {
+      "id": "41fab61a-25ae-459e-87ba-863f031a953d",
+      "timestamp": "2026-08-10T12:20:41+08:00",
+      "operation": "commit",
+      "branch": "product-closure-remediation",
+      "summary": "N6 Tauri UI acceptance producer: receipt-driven, fail-closed native window contract + tests",
+      "head_before": "5e19e7d5fa0a84000300ea579c9683caceed04b1",
+      "remote": null
+    },
+    {
+      "id": "a33e2ff0-91a9-4f15-a6e8-69cc77d531c5",
+      "timestamp": "2026-08-10T12:28:24+08:00",
+      "operation": "commit",
+      "branch": "codex/final/c8-evidence-remediation",
+      "summary": "C8 evidence remediation: registry validator hardening + symbol source index, fixed-name N1-N8/N10-U0..U9 evidence producer/stager, aggregator U9 content validation + managed RTK G5 roles, N0 pure gate specs, tests",
+      "head_before": "15f98cfb9861",
+      "remote": null
+    },
+    {
+      "id": "bc70c829-9744-4aab-866e-240c88c03b08",
+      "timestamp": "2026-08-10T12:28:33+08:00",
+      "operation": "commit",
+      "branch": "codex/final/c8-evidence-remediation",
+      "summary": "record git-operations.json audit entry for C8 evidence remediation commit ebf897f",
+      "head_before": "ebf897f8ff3b",
+      "remote": null
+    },
+    {
+      "id": "2c79f579-3aa5-4f25-bcdc-8bc029ed1b6f",
+      "timestamp": "2026-08-10T12:32:35+08:00",
+      "operation": "commit",
+      "branch": "codex/final/c6-c7-remediation",
+      "summary": "C6C7 remediation: production SchedulerGate wiring, per-task deadline/cancel pool, tracked U5 thresholds manifest + perf gate fail-closed consumption, deterministic queue load barrier",
+      "head_before": "15f98cfb9861c3f9ad87b1d0dc5f8e6f1844063d",
+      "remote": null
+    },
+    {
+      "id": "9282d383-508c-4493-bdf6-3f5ea5eefb7a",
+      "timestamp": "2026-08-10T12:33:02+08:00",
+      "operation": "commit",
+      "branch": "codex/final/c6-c7-remediation",
+      "summary": "C6C7 remediation report .ai-bridge/release-iteration/C6-C7-REMEDIATION.md",
+      "head_before": "aa2e186",
+      "remote": null
+    },
+    {
+      "id": "0ac7f136-d624-4319-85d0-53766d39e9a6",
+      "timestamp": "2026-08-10T12:35:48+08:00",
+      "operation": "commit",
+      "branch": "codex/final/c4-remediation",
+      "summary": "C4 RTK remediation: structured family filter dispatch in bridge wrap, manifest-bound filters.toml DSL, debug-gated timeout exit-124, per-invocation claim digest accounting into SavingsLedger replacing rtk_savings hardcode, RtkRewrite/RtkFilter ledger events, timeout/truncation/rollback/secret/accounting tests",
+      "head_before": "15f98cf",
+      "remote": null
+    },
+    {
+      "id": "91d86ac6-f973-4925-ab46-f6d609c7eeaa",
+      "timestamp": "2026-08-10T12:36:54+08:00",
+      "operation": "commit",
+      "branch": "codex/final/c4-remediation",
+      "summary": "C4 follow-up: emit RtkRewrite/RtkFilter aggregate ledger events from runtime summary rebuild with metadata-only accounting",
+      "head_before": "7b71555",
+      "remote": null
+    },
+    {
+      "id": "958d134f-a578-48ea-acba-c2d980154c80",
+      "timestamp": "2026-08-10T12:37:25+08:00",
+      "operation": "commit",
+      "branch": "codex/final/c4-remediation",
+      "summary": "C4 remediation report",
+      "head_before": "427d366",
+      "remote": null
+    },
+    {
+      "id": "b903c83e-30f8-41fd-b493-df738417d78e",
+      "timestamp": "2026-08-10T12:38:16+08:00",
+      "operation": "commit",
+      "branch": "codex/final/c8-evidence-remediation",
+      "summary": "C8 evidence remediation: registry validator hardening, symbol source index, fixed-name evidence producer/stager, U9 117/117 coverage, managed RTK roles, N0 pure gate specs",
+      "head_before": "15f98cfb9861c3f9ad87b1d0dc5f8e6f1844063d",
+      "remote": null
+    },
+    {
+      "id": "60ee3516-c6cf-41dc-ac44-36d9c81bb01c",
+      "timestamp": "2026-08-10T12:45:28+08:00",
+      "operation": "commit",
+      "branch": "codex/final/c2-c3-remediation",
+      "summary": "C2/C3 remediation: SQLite PersistencePort, bus recovery/record_bound, HTTP ingress bus routing (incl direct Anthropic), two-AppState relay tests, report",
+      "head_before": "15f98cf",
+      "remote": null
+    },
+    {
+      "id": "7113f264-a25f-4086-abe9-2d734d64b00d",
+      "timestamp": "2026-08-10T12:49:08+08:00",
+      "operation": "commit",
+      "branch": "codex/final/product-closure-remediation",
+      "summary": "product closure: Agent acceptance N0 digest envelopes, Codex top-level TOML + OpenClaw cc-switch mapping, bridge identity gate, generated Agent integration matrix",
+      "head_before": "563360884914",
+      "remote": null
+    },
+    {
+      "id": "9dd215c9-be88-4ce3-9336-eaee10024520",
+      "timestamp": "2026-08-10T12:54:50+08:00",
+      "operation": "commit",
+      "branch": "codex/final/c6-c7-remediation",
+      "summary": "C6C7 final: integrator FIFO pool + deadline guard, corpus identity unification (12-item product-level-corpus-v1), U5 perf-gate test import fix",
+      "head_before": "aa2e186",
+      "remote": null
+    },
+    {
+      "id": "d6fe030f-6357-4640-bebb-8936f5faa0f1",
+      "timestamp": "2026-08-10T13:05:03+08:00",
+      "operation": "merge",
+      "branch": "codex/final/stage-pack-integrated",
+      "summary": "合并候选功能基线 96033c6 到当前 stage HEAD 15f98cf",
+      "head_before": "15f98cfb9861c3f9ad87b1d0dc5f8e6f1844063d",
+      "remote": null
+    },
+    {
+      "id": "e0127544-7709-4421-b878-358857b1706e",
+      "timestamp": "2026-08-10T13:20:10+08:00",
+      "operation": "merge",
+      "branch": "codex/final/stage-pack-integrated",
+      "summary": "合并 C0 合同与传输回执修复 c66568c 到 stage 集成 HEAD af622af",
+      "head_before": "af622af55260d948de3c629dd8ed91608e13e262",
+      "remote": null
+    },
+    {
+      "id": "aa595ec6-b901-4530-9b6f-54e5156c7147",
+      "timestamp": "2026-08-10T13:34:07+08:00",
+      "operation": "merge",
+      "branch": "codex/final/stage-pack-integrated",
+      "summary": "合并 C2 C3 持久化与 Relay 修复 ad6f2c5 到 stage 集成 HEAD cfb8a51a66c4f7d6da173a66389c9ef4bf978657",
+      "head_before": "cfb8a51a66c4f7d6da173a66389c9ef4bf978657",
+      "remote": null
+    },
+    {
+      "id": "bdf47512-a06e-4032-af4e-97bcdc5d7113",
+      "timestamp": "2026-08-10T13:37:23+08:00",
+      "operation": "merge",
+      "branch": "codex/final/stage-pack-integrated",
+      "summary": "合并 C4 RTK 生产接线修复 1c66803 到 stage 集成 HEAD 0b3ea70649d09aa3c2b8a302756e4df881da332d",
+      "head_before": "0b3ea70649d09aa3c2b8a302756e4df881da332d",
+      "remote": null
+    },
+    {
+      "id": "a30c421d-2485-46c7-8136-3affcde90d83",
+      "timestamp": "2026-08-10T13:38:46+08:00",
+      "operation": "merge",
+      "branch": "codex/final/stage-pack-integrated",
+      "summary": "合并 C5 Optical active 修复 1ad92b0 到 stage 集成 HEAD f5abe0a25e8ee6b2b8557bebdea0ae9d12f9d309",
+      "head_before": "f5abe0a25e8ee6b2b8557bebdea0ae9d12f9d309",
+      "remote": null
+    },
+    {
+      "id": "a1f70cde-e04d-4994-bc52-9a30ea103197",
+      "timestamp": "2026-08-10T13:39:06+08:00",
+      "operation": "merge",
+      "branch": "codex/final/stage-pack-integrated",
+      "summary": "合并 C6 C7 调度与性能修复 400138c 到 stage 集成 HEAD 25b34784ffad62778755d98167146d035bef4d13",
+      "head_before": "25b34784ffad62778755d98167146d035bef4d13",
+      "remote": null
+    },
+    {
+      "id": "c5b85b59-8adc-43a5-b171-b8e39ac94df1",
+      "timestamp": "2026-08-10T13:43:32+08:00",
+      "operation": "merge",
+      "branch": "codex/final/stage-pack-integrated",
+      "summary": "合并 Agent 与桌面产品闭环修复 f5a6069 到 stage 集成 HEAD a315004fd0e837b4850de8934861473f9784cf18",
+      "head_before": "a315004fd0e837b4850de8934861473f9784cf18",
+      "remote": null
+    },
+    {
+      "id": "7b67c413-8a3d-4c57-9a8c-559c609a8ad7",
+      "timestamp": "2026-08-10T13:46:26+08:00",
+      "operation": "merge",
+      "branch": "codex/final/stage-pack-integrated",
+      "summary": "合并 C8 证据生产与注册表修复 37ce2a1 到 stage 集成 HEAD 526fb4437d0f52dd21169b3fcf2ea6ab49fe5c37",
+      "head_before": "526fb4437d0f52dd21169b3fcf2ea6ab49fe5c37",
+      "remote": null
+    },
+    {
+      "id": "bd2c29dd-a0ef-4b90-a770-8efba1c56ca1",
+      "timestamp": "2026-08-10T14:45:51+08:00",
+      "operation": "merge",
+      "branch": "codex/final/stage-pack-integrated",
+      "summary": "整合完成：C0-C8 全序列后恢复候选 rich OptimizationReceipt/RequestLog 字段并修复编译调用点（HEAD 2f9e1d4 后核心库测试编译修复）",
+      "head_before": "2f9e1d4413d82174226bca68ab35de14a049b617",
+      "remote": null
+    },
+    {
+      "id": "dfde3427-3c2a-46bc-8679-b9afe233774c",
+      "timestamp": "2026-08-10T16:29:43+08:00",
+      "operation": "branch-create",
+      "branch": "codex/final/pending-recovery",
+      "summary": "从 b408a52 (final-stage-pack-integrated) 创建独立 worktree final-pending-recovery 与分支 codex/final/pending-recovery，修复 DURABILITY-PENDING-NEVER-RECOVERS",
+      "head_before": "b408a5248313b88669e4a2565330ff0d0ad00b1c",
+      "remote": null
+    },
+    {
+      "id": "97def858-4937-4a6c-803d-b136bdf072b6",
+      "timestamp": "2026-08-10T16:29:43+08:00",
+      "operation": "branch-switch",
+      "branch": "codex/final/pending-recovery",
+      "summary": "切换至 codex/final/pending-recovery 分支开始 Pending 终端标记恢复修复",
+      "head_before": "b408a5248313b88669e4a2565330ff0d0ad00b1c",
+      "remote": null
+    },
+    {
+      "id": "9fb21aff-3ac7-450c-81cf-7b308d22db42",
+      "timestamp": "2026-08-10T16:48:04+08:00",
+      "operation": "branch-create",
+      "branch": "detached",
+      "summary": "create detached worktree final-stream-commit-classification at candidate b408a52 for transport stream commit classification slice",
+      "head_before": "b408a5248313",
+      "remote": null
+    },
+    {
+      "id": "73c2734a-3bcf-4e15-a60f-b191b43250df",
+      "timestamp": "2026-08-10T16:50:41+08:00",
+      "operation": "branch-create",
+      "branch": "codex/final/stream-commit-classification",
+      "summary": "create audited slice branch codex/final/stream-commit-classification from b408a52",
+      "head_before": "b408a5248313",
+      "remote": null
+    },
+    {
+      "id": "ced3f876-065f-4dc4-b1cb-83f143d20261",
+      "timestamp": "2026-08-10T16:50:42+08:00",
+      "operation": "branch-switch",
+      "branch": "codex/final/stream-commit-classification",
+      "summary": "switch slice worktree to codex/final/stream-commit-classification",
+      "head_before": "b408a5248313",
+      "remote": null
+    },
+    {
+      "id": "eb96f12f-60fc-4740-b403-a036c8b18c43",
+      "timestamp": "2026-08-10T17:45:02+08:00",
+      "operation": "commit",
+      "branch": "codex/final/pending-recovery",
+      "summary": "Pending 终端标记恢复：完整 bundle 的 Pending 提升为 Committed（幂等）、部分 bundle 保持 Pending 隐藏、failpoints 注入窗口（intent 后/commit 前）+ 3 项恢复测试与 2 项 failpoint 测试；core-api 全部 target 双 feature 检查通过",
+      "head_before": "b408a5248313b88669e4a2565330ff0d0ad00b1c",
+      "remote": null
+    },
+    {
+      "id": "dcd8ba0e-7a06-462c-b05b-76c0215d79ec",
+      "timestamp": "2026-08-10T17:47:04+08:00",
+      "operation": "commit",
+      "branch": "codex/final/receipt-authority",
+      "summary": "fix(runtime): close PIPELINE-RECEIPT-AUTHENTICITY/BINDING with store-issued RecoveryProof + active RouteDecision binding (52318b2)",
+      "head_before": "52318b25ff4e313b6236870275112a44b0cfaf87",
+      "remote": null
+    },
+    {
+      "id": "4c78bee6-26a5-4212-9010-1328b8478a34",
+      "timestamp": "2026-08-10T18:02:47+08:00",
+      "operation": "branch-create",
+      "branch": "codex/final/deadline-terminal",
+      "summary": "Create isolated deadline-terminal durability slice from final-stage-pack-integrated candidate b408a52",
+      "head_before": "b408a5248313b88669e4a2565330ff0d0ad00b1c",
+      "remote": null
+    },
+    {
+      "id": "4c6d2767-82d1-4547-a162-8cc231df13ce",
+      "timestamp": "2026-08-10T18:02:48+08:00",
+      "operation": "branch-use",
+      "branch": "codex/final/deadline-terminal",
+      "summary": "Attach worktree final-deadline-terminal for SCHEDULER-DEADLINE-TERMINAL-DURABILITY fix",
+      "head_before": "b408a5248313b88669e4a2565330ff0d0ad00b1c",
+      "remote": null
+    },
+    {
+      "id": "74d5c8d8-82fd-43a6-888b-0af5d68b7fff",
+      "timestamp": "2026-08-10T18:02:48+08:00",
+      "operation": "commit",
+      "branch": "codex/final/deadline-terminal",
+      "summary": "fix: deadline expiry consumes sendable unit and persists terminal bundle",
+      "head_before": "b408a5248313b88669e4a2565330ff0d0ad00b1c",
+      "remote": null
+    },
+    {
+      "id": "ebefdca8-79ef-4f97-a096-c37522560fa1",
+      "timestamp": "2026-08-10T18:51:41+08:00",
+      "operation": "commit",
+      "branch": "codex/final/receipt-authority",
+      "summary": "fix(runtime): enforce active RouteDecision digest at recovery-receipt binding",
+      "head_before": "e254c4010fcd1212e783c4b21fb8401baf4459d5",
+      "remote": null
+    },
+    {
+      "id": "5a3dbc2d-a9f5-499c-b949-17d5428a6052",
+      "timestamp": "2026-08-10T18:53:51+08:00",
+      "operation": "merge",
+      "branch": "codex/final/stage-pack-integrated",
+      "summary": "merge receipt-authority 83b0ca8 into stage-pack-integrated (runtime pipeline receipt binding)",
+      "head_before": "9b1631b",
+      "remote": null
+    },
+    {
+      "id": "0ba0d1a6-a229-44aa-9c58-463dd38f8c9b",
+      "timestamp": "2026-08-10T19:11:55+08:00",
+      "operation": "merge",
+      "branch": "codex/final/stage-pack-integrated",
+      "summary": "merge stream-commit-classification 76883345 into stage-pack-integrated (T-C0B stream send-state classification)",
+      "head_before": "7a019595afb308d7f9bf759755e27832f58e91f2",
+      "remote": null
+    },
+    {
+      "id": "ee078c96-d598-48df-9b80-eeaee3ec95e4",
+      "timestamp": "2026-08-10T19:12:37+08:00",
+      "operation": "merge",
+      "branch": "codex/final/stage-pack-integrated",
+      "summary": "merge deadline-terminal 8ed1e98 into stage-pack-integrated (deadline terminal receipt + persistence)",
+      "head_before": "5638f7ac9e8e1f92d3aa2b644d67759e419e1e7e",
+      "remote": null
+    },
+    {
+      "id": "3b360d5d-a35d-41ff-b9fd-c9da277abe65",
+      "timestamp": "2026-08-10T19:13:02+08:00",
+      "operation": "merge",
+      "branch": "codex/final/stage-pack-integrated",
+      "summary": "merge pending-recovery aa0fc56 into stage-pack-integrated (Pending terminal recovery promotion)",
+      "head_before": "ee43fb74954638acc81ff0e6c028d6893b662678",
+      "remote": null
+    },
+    {
+      "id": "1ca61c33-f6c6-45d9-8462-86f59cb05be5",
+      "timestamp": "2026-08-10T19:17:05+08:00",
+      "operation": "commit",
+      "branch": "codex/final/stage-pack-integrated",
+      "summary": "fix(core-api): update deadline terminate test to store-issued PreparedCcr proof after merge",
+      "head_before": "6aac34c5380aad2d0077d2f168933ecbe3f78426",
+      "remote": null
+    },
+    {
+      "id": "e961f35c-9fa4-4be9-b3c8-0df31fdcf673",
+      "timestamp": "2026-08-10T19:40:29+08:00",
+      "operation": "commit",
+      "branch": "codex/final/stage-pack-integrated",
+      "summary": "style: rustfmt workspace + clippy fixes (needless borrow, too-many-arguments allow)",
+      "head_before": "a1bcd5f253828cc6e18aadc5d50f82460d0c691e",
+      "remote": null
+    },
+    {
+      "id": "d750ad76-5349-40fb-a149-ba91eeec4782",
+      "timestamp": "2026-08-10T21:27:34+08:00",
+      "operation": "commit",
+      "branch": "codex/final/stage-pack-integrated",
+      "summary": "fix(optical): rebuild signed capability/eval fixtures for current transform contract digest",
+      "head_before": "abc96ad10498eb983b8f87a19f81539b3ccdf959",
+      "remote": null
+    },
+    {
+      "id": "ec10eb2d-9550-4dc5-a67a-8bb4d008acdb",
+      "timestamp": "2026-08-10T22:14:36+08:00",
+      "operation": "commit",
+      "branch": "codex/final/stage-pack-integrated",
+      "summary": "fix(i18n): migrate Changes page copy to DICT via translateCopy (kill 76 language-isolation violations)",
+      "head_before": "0e61ec1a76e986b2f5f8dba74b5d0e2fa172fe08",
+      "remote": null
+    },
+    {
+      "id": "9dba889e-ebd8-4914-90db-f7ef4c3f4894",
+      "timestamp": "2026-08-10T22:21:35+08:00",
+      "operation": "commit",
+      "branch": "codex/final/stage-pack-integrated",
+      "summary": "Migrate install presentation copy to DICT via translateCopy (kill 87 language-isolation violations); add 4 in.* keys",
+      "head_before": "5aa983fc8aba2535e35738395c9baae4be17cdd5",
+      "remote": null
+    },
+    {
+      "id": "493ada66-ab6b-44e7-8ea6-597517122960",
+      "timestamp": "2026-08-10T22:27:57+08:00",
+      "operation": "commit",
+      "branch": "codex/final/stage-pack-integrated",
+      "summary": "migrate DoctorWorkbench bilingual copy to translateCopy (165 violations)",
+      "head_before": "fb5aa07c6b6aff4cd4f90316937f05a270e5581f",
+      "remote": null
+    },
+    {
+      "id": "3cd8a05b-f4a7-4413-b433-f2afb5e10b09",
+      "timestamp": "2026-08-10T22:35:06+08:00",
+      "operation": "commit",
+      "branch": "codex/final/stage-pack-integrated",
+      "summary": "chore(desktop): realign bundle budget to measured steady state after i18n DICT growth",
+      "head_before": "fda91db069819a4c7d0cc61a85732feac823a5f7",
+      "remote": null
+    },
+    {
+      "id": "1bc5b475-5033-40ee-bab4-725f5491cc2f",
+      "timestamp": "2026-08-10T22:38:04+08:00",
+      "operation": "commit",
+      "branch": "codex/final/stage-pack-integrated",
+      "summary": "chore: untrack .ai-bridge remediation reports (process files must stay ignored)",
+      "head_before": "6b02599d2e2856aed8a3943cd5184a5618454974",
+      "remote": null
+    },
+    {
+      "id": "72817ece-69a3-439f-8a39-474b3a31d825",
+      "timestamp": "2026-08-10T22:44:51+08:00",
+      "operation": "commit",
+      "branch": "codex/final/stage-pack-integrated",
+      "summary": "fix(agent-bridge): drop needless borrow in managed RTK candidate probe",
+      "head_before": "373622bdf8f95329dfe8e43c44fd8ed648f76a79",
+      "remote": null
+    },
+    {
+      "id": "fbaff8ba-c79d-4bab-94ad-04021b948efd",
+      "timestamp": "2026-08-10T22:50:47+08:00",
+      "operation": "commit",
+      "branch": "codex/final/stage-pack-integrated",
+      "summary": "fix: complete N9 verification fixture for G5/G9 gates",
+      "head_before": "da361b56a2ce3bccca674fc9c44a697cbc5494bb",
+      "remote": null
+    },
+    {
+      "id": "335c3ae3-6f91-4654-83d1-b8353d6cdc61",
+      "timestamp": "2026-08-10T23:29:16+08:00",
+      "operation": "commit",
+      "branch": "codex/final/stage-pack-integrated",
+      "summary": "fix(desktop): reduced-motion leaves page stage and step pulse fully idle",
+      "head_before": "4be5b33e8355a54f6e47d22079f1eb432dac5ebd",
+      "remote": null
+    },
+    {
+      "id": "3ee6e553-c6a4-43c4-81f8-a2d216efeb82",
+      "timestamp": "2026-08-10T23:49:51+08:00",
+      "operation": "commit",
+      "branch": "codex/final/stage-pack-integrated",
+      "summary": "fix(evidence): run cargo commands from workspace root in N evidence producer",
+      "head_before": "e9d4c11ecc9596baf61f36773f3d6d407ada80c2",
+      "remote": null
+    },
+    {
+      "id": "ccf471ad-b45c-4892-8c85-358f389e203c",
+      "timestamp": "2026-08-10T23:52:49+08:00",
+      "operation": "commit",
+      "branch": "codex/final/stage-pack-integrated",
+      "summary": "fix(evidence): pin dtoken-bench binary in N evidence producer bench runs",
+      "head_before": "686fff402e7db227cdf9226633e7cb07cff94ade",
+      "remote": null
+    },
+    {
+      "id": "53638294-e1ea-4c34-9efe-f3076b5cc8ad",
+      "timestamp": "2026-08-11T00:06:10+08:00",
+      "operation": "commit",
+      "branch": "codex/final/stage-pack-integrated",
+      "summary": "fix(evidence): parse replay text output and fix bench subcommand casing",
+      "head_before": "6595845e1948f61e9b1f1460d4ddbf6e638eb5a8",
+      "remote": null
+    },
+    {
+      "id": "2ead24b7-b6bf-4aef-9276-5f5211f40184",
+      "timestamp": "2026-08-11T00:07:45+08:00",
+      "operation": "commit",
+      "branch": "codex/final/stage-pack-integrated",
+      "summary": "fix(evidence): validate paired-contract pretty JSON text in U4",
+      "head_before": "bd188b4767d75bbf759693f97607220a8c756349",
+      "remote": null
+    },
+    {
+      "id": "8275de57-714f-4fe0-bddd-0cdd4af1eea0",
+      "timestamp": "2026-08-11T00:22:04+08:00",
+      "operation": "commit",
+      "branch": "codex/final/stage-pack-integrated",
+      "summary": "fix(evidence): accept cc-switch DB schema 16 in cc-switch ABA harness (12/16 supported; unknown still blocked) + contract tests",
+      "head_before": "29a822f81bc6aa5788a86f9cb88c75b7ed9971af",
+      "remote": null
+    },
+    {
+      "id": "cbb7d920-189b-4324-8fd5-6ca66889f843",
+      "timestamp": "2026-08-11T00:37:02+08:00",
+      "operation": "commit",
+      "branch": "codex/final/stage-pack-integrated",
+      "summary": "fix(evidence): correlate N2 codex route_forward events by configured agent",
+      "head_before": "943d4a1deb03c2423084d2ad3074b13c741f2f43",
+      "remote": null
+    },
+    {
+      "id": "f17ac036-19c2-4cf4-a8cb-19c771bc584d",
+      "timestamp": "2026-08-11T04:39:12+08:00",
+      "operation": "commit",
+      "branch": "codex/final/stage-pack-integrated",
+      "summary": "fix(agent-bridge): deterministic wrap timeout via explicit flag + profile-independent env; unit-test the kill path",
+      "head_before": "ad1c87608de1086af013c977bb309b21e3f99d10",
+      "remote": null
+    },
+    {
+      "id": "86f40b5a-1038-471b-90fb-3d0bebd0aa71",
+      "timestamp": "2026-08-11T04:43:10+08:00",
+      "operation": "commit",
+      "branch": "codex/final/stage-pack-integrated",
+      "summary": "fix(evidence): import os for gate env merge in N0 producer",
+      "head_before": "67e2b8c084c3f950877bc9886bc48d8eb94e69eb",
+      "remote": null
+    },
+    {
+      "id": "2824603e-602e-4ec2-9085-26f9e3b22ec0",
+      "timestamp": "2026-08-11T04:46:23+08:00",
+      "operation": "commit",
+      "branch": "codex/final/stage-pack-integrated",
+      "summary": "style: rustfmt agent-bridge timeout unit test",
+      "head_before": "14182b18e985afdf6346b82c5059b7eecf32fde2",
+      "remote": null
+    },
+    {
+      "id": "ff9856d8-0f35-40dd-bbfa-ca6998f55386",
+      "timestamp": "2026-08-11T04:51:56+08:00",
+      "operation": "commit",
+      "branch": "codex/final/stage-pack-integrated",
+      "summary": "chore(bench): record tracked C7A perf baseline for U5",
+      "head_before": "cda20f2fde70ad87c60e477ebb89b6a0a6c1cdab",
+      "remote": null
+    },
+    {
+      "id": "12e53029-f983-4db9-adc1-54d453a1807b",
+      "timestamp": "2026-08-11T04:52:51+08:00",
+      "operation": "commit",
+      "branch": "codex/final/stage-pack-integrated",
+      "summary": "fix(evidence): lowercase check subcommand in U5 perf producer",
+      "head_before": "ffe2ac6ce2e500077b12abf11c0f4c78d66fd0a1",
+      "remote": null
+    },
+    {
+      "id": "d4a971d8-9ddd-4fa9-b016-a79db48c4a03",
+      "timestamp": "2026-08-11T04:55:35+08:00",
+      "operation": "commit",
+      "branch": "codex/final/stage-pack-integrated",
+      "summary": "fix(evidence): parse multi-line pretty JSON output in N evidence producer",
+      "head_before": "9d3bca83980cf6c42e850c8bec0ab07eea5ec62a",
+      "remote": null
+    },
+    {
+      "id": "631e0473-8d27-4023-bf84-7820025e1ff2",
+      "timestamp": "2026-08-11T04:57:07+08:00",
+      "operation": "commit",
+      "branch": "codex/final/stage-pack-integrated",
+      "summary": "fix(evidence): robust JSON tail parsing with full output capture",
+      "head_before": "2fc304b104a6237a2a1886c4cfb96b5ea078dcd2",
+      "remote": null
+    },
+    {
+      "id": "2b51d67d-0b24-4f22-9d0e-093af386b886",
+      "timestamp": "2026-08-11T21:10:52+08:00",
+      "operation": "commit",
+      "branch": "codex/final/opencode-transparent-routing",
+      "summary": "Commit verified OpenCode transparent multi-model routing transaction.",
+      "head_before": "f86b1039a2e9",
+      "remote": null
+    },
+    {
+      "id": "7d1693ac-6535-44e8-9c6a-e2bb75ad53a4",
+      "timestamp": "2026-08-11T21:11:32+08:00",
+      "operation": "push",
+      "branch": "codex/final/opencode-transparent-routing",
+      "summary": "Push verified OpenCode transparent routing branch for review.",
+      "head_before": "58755956c064",
+      "remote": "origin"
+    },
+    {
+      "id": "7b37e074-de1a-4b1f-8611-c302f9ce4c8d",
+      "timestamp": "2026-08-11T21:11:32+08:00",
+      "operation": "commit",
+      "branch": "codex/final/opencode-transparent-routing",
+      "summary": "Commit Git operation audit records for OpenCode branch.",
+      "head_before": "58755956c064",
+      "remote": null
+    },
+    {
+      "id": "1c8027ad-7f7a-44d6-b876-2a09c7834d7f",
+      "timestamp": "2026-08-11T21:41:25+08:00",
+      "operation": "merge",
+      "branch": "main",
+      "summary": "Merge reviewed PR 23 transparent OpenCode multi-model routing into main.",
+      "head_before": "c29181ca0b3f",
+      "remote": null
+    },
+    {
+      "id": "b7ce74b4-92c8-4ba1-b995-23794ec4b674",
+      "timestamp": "2026-08-11T21:41:37+08:00",
+      "operation": "commit",
+      "branch": "codex/final/opencode-transparent-routing",
+      "summary": "Commit PR 23 merge audit record before GitHub merge.",
+      "head_before": "c29181ca0b3f",
+      "remote": null
+    },
+    {
+      "id": "5d6b4c65-7e0b-48ed-9c47-77a9b59b3d1e",
+      "timestamp": "2026-08-11T21:41:37+08:00",
+      "operation": "push",
+      "branch": "codex/final/opencode-transparent-routing",
+      "summary": "Push PR 23 merge audit record.",
+      "head_before": "047ac78a9145",
       "remote": "origin"
     }
   ]

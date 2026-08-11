@@ -12,8 +12,8 @@
 [English](README.md) · 简体中文
 
 [![CI](https://github.com/37chengshan/d-token/actions/workflows/ci.yml/badge.svg)](https://github.com/37chengshan/d-token/actions/workflows/ci.yml)
-![Version](https://img.shields.io/badge/version-0.2.0--beta.1-ea580c)
-![Status](https://img.shields.io/badge/status-beta-ea580c)
+![Version](https://img.shields.io/badge/version-0.0.1-2563eb)
+![Status](https://img.shields.io/badge/status-candidate-2563eb)
 ![Desktop](https://img.shields.io/badge/desktop-Tauri%202-24c8db?logo=tauri&logoColor=white)
 ![Core](https://img.shields.io/badge/core-Rust-b7410e?logo=rust&logoColor=white)
 ![License](https://img.shields.io/badge/license-Apache--2.0-2563eb)
@@ -53,7 +53,7 @@ npm run tauri:dev
 ```
 
 > [!NOTE]
-> `0.2.0-beta.1` 是面向 macOS ARM64 与 Windows x64 的**公开未签名预发布**——不是已签名安装包。未签名的 macOS 构建可能出现系统安全警告；请核对仓库来源与已提供的哈希，不要绕过系统安全保护。详见 [SECURITY.md](SECURITY.md)。
+> `0.0.1` 是当前面向 macOS ARM64 与 Windows x64 的**候选技术预览**——不是已签名安装包，也还不是公开发布。未签名的构建可能出现系统安全警告；请核对仓库来源与已提供的哈希，不要绕过系统安全保护。只有 N0–N10 验证 DAG 在冻结候选上全部通过且 N9 结论允许时，才可能公开发布。详见 [SECURITY.md](SECURITY.md)。
 
 ## 为什么需要它
 
@@ -63,7 +63,7 @@ AI 编码 Agent 会一遍又一遍重发相同的文件、日志和工具输出�
 
 | 版本 | 重点 | 状态 |
 |---|---|---|
-| `0.2.0-beta.1` | 可信连接与可信压缩、Optimization Receipt、Doctor | 当前候选 |
+| `0.0.1` | 可信连接与可信压缩、Optimization Receipt、Doctor、最终验证编排 | 当前候选 |
 | `v0.3` | 上下文连续性：跨 Agent Context Relay、Session Cache、cc-switch 跟随 / 锁定 / 观察 | 规划中 |
 | `v0.4` | 自动化本地控制面：多 Agent 适配、低风险自动修复、稳定签名 | 规划中 |
 

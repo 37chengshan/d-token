@@ -2,9 +2,35 @@
 //!
 //! Source: https://github.com/fcambus/spleen/blob/master/spleen-5x8.bdf
 //! Copyright (c) 2018-2026, Frederic Cambus. BSD-2-Clause.
+//!
+//! Glyph resolution is per-character and fail-closed: printable ASCII is
+//! resolved from the pinned 2.2.0 atlas, the newline marker has a dedicated
+//! arrow glyph, and every other Unicode code point (including CJK/wide text)
+//! is deterministically substituted with a hollow-box placeholder so the
+//! lossy substitution is visually explicit and can never be confused with a
+//! real atlas glyph such as `?`. The substitution is part of the rendered
+//! pixels, so page digests change whenever fallback coverage changes.
 
 pub const SPLEEN_5X8_SOURCE_REVISION: &str = "spleen-5x8-2.2.0-ascii";
 pub const SPLEEN_5X8_AA_REVISION: &str = "dtoken-spleen-5x8-aa-kernel-v1";
+/// Revision of the per-glyph fail-closed Unicode/CJK fallback kernel. The
+/// fallback glyph is d-token-owned (not copied from pxpipe or any other
+/// runtime); it is deliberately distinct from every atlas glyph.
+pub const SPLEEN_5X8_FALLBACK_REVISION: &str = "dtoken-spleen-5x8-unicode-fallback-v1";
+
+/// Hollow-box placeholder for Unicode/CJK code points outside the ASCII
+/// atlas. A border-only 5x8 box: unsupported text remains visible as a
+/// clearly marked cell rather than being silently dropped or mis-mapped.
+#[rustfmt::skip]
+pub const SPLEEN_5X8_UNICODE_FALLBACK_GLYPH: [u8; 8] = [
+    0xF8, 0x88, 0x88, 0x88, 0x88, 0x88, 0x88, 0xF8,
+];
+
+/// Whether `character` has an exact atlas glyph (printable ASCII or the
+/// newline marker). Every other code point takes the fallback glyph.
+pub fn is_supported(character: char) -> bool {
+    (' '..='~').contains(&character) || character == '↵'
+}
 
 #[rustfmt::skip]
 pub const SPLEEN_5X8_ASCII: [[u8; 8]; 95] = [
@@ -48,7 +74,9 @@ pub fn glyph(character: char) -> [u8; 8] {
     } else if character == '↵' {
         [0, 32, 32, 40, 248, 8, 16, 0]
     } else {
-        SPLEEN_5X8_ASCII['?' as usize - 32]
+        // Fail-closed per-glyph fallback: unsupported Unicode/CJK renders as
+        // the explicit box placeholder, never as a real atlas glyph.
+        SPLEEN_5X8_UNICODE_FALLBACK_GLYPH
     }
 }
 
@@ -61,5 +89,27 @@ mod tests {
         assert_eq!(SPLEEN_5X8_ASCII.len(), 95);
         assert_eq!(glyph('A'), [0, 96, 144, 144, 240, 144, 144, 0]);
         assert_ne!(glyph('↵'), glyph('?'));
+    }
+
+    #[test]
+    fn unicode_fallback_is_per_glyph_distinct_and_classified() {
+        assert!(is_supported('A'));
+        assert!(is_supported('?'));
+        assert!(is_supported(' '));
+        assert!(is_supported('↵'));
+        assert!(!is_supported('中'));
+        assert!(!is_supported('文'));
+        assert!(!is_supported('\u{2000}'));
+
+        // The fallback box must differ from every real atlas glyph we can
+        // confuse it with: '?', 'A', and the newline marker.
+        assert_ne!(glyph('中'), glyph('?'));
+        assert_ne!(glyph('文'), glyph('A'));
+        assert_ne!(glyph('中'), glyph('↵'));
+        assert_eq!(glyph('中'), glyph('文'));
+        assert_eq!(glyph('中'), SPLEEN_5X8_UNICODE_FALLBACK_GLYPH);
+        // Real question marks keep their atlas glyph, so lossy substitution
+        // is always visible in the rasterized output.
+        assert_eq!(glyph('?'), SPLEEN_5X8_ASCII['?' as usize - 32]);
     }
 }

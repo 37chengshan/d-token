@@ -7,6 +7,7 @@ pub mod diff_codec;
 pub mod hybrid;
 pub mod optical;
 pub mod output_shaper;
+pub mod rtk_planner;
 pub mod text_codec;
 pub mod tool_schema;
 
@@ -60,6 +61,31 @@ impl CompressionEngine {
         cache_evidence: Option<&context_pipeline::ProviderCacheEvidence>,
         frozen_message_count: Option<usize>,
     ) -> Result<CompressionResult> {
+        self.compress_resolved_with_ir(
+            context,
+            policy,
+            body,
+            cache_evidence,
+            frozen_message_count,
+            None,
+        )
+    }
+
+    /// Lower-once production entry (PR-C1A): the caller has already lowered
+    /// the exact request body into the canonical IR and supplies it here, so
+    /// the same body is never lowered twice (once for shadow inventory, once
+    /// for the plan). `ir` must come from this exact `context` and `body`;
+    /// `None` falls back to lowering inside the pipeline (single lower).
+    #[allow(clippy::too_many_arguments)]
+    pub fn compress_resolved_with_ir(
+        &self,
+        context: &ResolvedOptimizationContext,
+        policy: CompressionPolicy,
+        body: Value,
+        cache_evidence: Option<&context_pipeline::ProviderCacheEvidence>,
+        frozen_message_count: Option<usize>,
+        ir: Option<&crate::HybridContextIr>,
+    ) -> Result<CompressionResult> {
         let started = Instant::now();
         let original_tokens = estimate_tokens(&body);
         if policy == CompressionPolicy::Off || !context.supports_safe_text_codec() {
@@ -96,8 +122,25 @@ impl CompressionEngine {
         // from the normalized baseline the pipeline actually transforms.
         let original_tokens = estimate_tokens(&body);
         let original_body = body.clone();
-        let (compressed_body, pipeline_transforms) =
-            match context_pipeline::prepare_context_transform_with_cache_evidence(
+        let (compressed_body, pipeline_transforms) = match ir {
+            Some(ir) => match context_pipeline::prepare_context_transform_with_ir(
+                context,
+                policy,
+                ir,
+                body,
+                cache_evidence,
+                frozen_message_count,
+            ) {
+                Ok(Some(prepared)) => match prepared.validate() {
+                    Ok(validated) => {
+                        let (body, manifest) = validated.into_parts();
+                        (body, manifest.transforms().to_vec())
+                    }
+                    Err(_) => (original_body.clone(), Vec::new()),
+                },
+                Ok(None) | Err(_) => (original_body.clone(), Vec::new()),
+            },
+            None => match context_pipeline::prepare_context_transform_with_cache_evidence(
                 context,
                 policy,
                 body,
@@ -112,7 +155,8 @@ impl CompressionEngine {
                     Err(_) => (original_body.clone(), Vec::new()),
                 },
                 Ok(None) | Err(_) => (original_body.clone(), Vec::new()),
-            };
+            },
+        };
         for transform in pipeline_transforms {
             push_transform(&mut transforms_applied, &transform);
         }
@@ -365,7 +409,11 @@ fn push_transform(transforms: &mut Vec<String>, name: &str) {
     }
 }
 
-fn estimate_tokens(value: &Value) -> usize {
+/// Estimate the token count of a JSON body using the same deterministic
+/// approximation used by the pipeline: whitespace-split words, bounded by a
+/// character/4 floor. Public so adapters can build honest baseline summaries
+/// without invoking a second (no-op) engine (PR-12).
+pub fn estimate_tokens(value: &Value) -> usize {
     estimate_text_tokens(&serde_json::to_string(value).unwrap_or_default())
 }
 

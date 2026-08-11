@@ -4,10 +4,10 @@
 
 | Version | Security support |
 |---|---|
-| `0.2.0-beta.x` | Best-effort security fixes while the Beta line is active |
+| `0.0.1` | Best-effort security fixes while the 0.0.1 line is active |
 | Earlier development snapshots | Unsupported |
 
-Beta builds are not a promise of production suitability. `0.2.0-beta.1` is an unsigned technical preview for local evaluation, with preview targets macOS ARM64 and Windows x64. It is not a signed, notarized, Authenticode-signed, or publicly distributable installer release. An unsigned or ad-hoc macOS build may show a system security warning; verify the source and any supplied hash, and do not bypass operating-system security controls for untrusted packages. A candidate is publicly distributable only when its tagged commit passes the applicable signed platform release workflow.
+Candidate builds are not a promise of production suitability. `0.0.1` is an unsigned candidate technical preview for local evaluation, with preview targets macOS ARM64 and Windows x64. It is not a signed, notarized, Authenticode-signed, or publicly distributable installer release. An unsigned or ad-hoc macOS build may show a system security warning; verify the source and any supplied hash, and do not bypass operating-system security controls for untrusted packages. A candidate is publicly distributable only when its tagged commit passes the applicable signed platform release workflow.
 
 ## Reporting a vulnerability
 
@@ -51,7 +51,7 @@ Official release assets must be attached to a GitHub Release created from a matc
 - dependency license inventory;
 - basic security scan report.
 
-For `0.2.0-beta.1`, macOS publication additionally requires Developer ID signing, notarization, stapling, Gatekeeper assessment, temporary installation, startup and uninstall validation. Windows must not be described as publishable until the real Windows workflow verifies Authenticode signatures before and after installation, launches the installed application, audits bundle contents and completes silent uninstall.
+For `0.0.1`, macOS publication additionally requires Developer ID signing, notarization, stapling, Gatekeeper assessment, temporary installation, startup and uninstall validation. Windows must not be described as publishable until the real Windows workflow verifies Authenticode signatures before and after installation, launches the installed application, audits bundle contents and completes silent uninstall.
 
 ## Out of scope
 

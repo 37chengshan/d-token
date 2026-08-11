@@ -1,10 +1,12 @@
+pub mod filters;
+
 use anyhow::{bail, Context, Result};
 use dtoken_types::{
-    agent::HostPlatform, HookStatus, IntegrityState, ManagedRtkOperation,
-    ManagedRtkPlatformCapability, ManagedRtkTransactionPlan, ManagedRtkTransactionReceipt,
-    ManagedRtkTransactionState, ManagedRtkUsageEvidence, PreprocessorImplementation,
-    PreprocessorProfile, RtkDiscoverReport, RtkGainReport, RtkSessionReport, RtkStatus,
-    RuntimeMode, TelemetryStatus, ToolStatus,
+    agent::HostPlatform, AccountingBucket, AccountingEntry, HookStatus, IntegrityState,
+    ManagedRtkOperation, ManagedRtkPlatformCapability, ManagedRtkTransactionPlan,
+    ManagedRtkTransactionReceipt, ManagedRtkTransactionState, ManagedRtkUsageEvidence,
+    PreprocessorImplementation, PreprocessorProfile, RtkDiscoverReport, RtkGainReport,
+    RtkSessionReport, RtkStatus, RuntimeMode, TelemetryStatus, ToolStatus,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -83,26 +85,12 @@ pub fn preprocess_command_output(input: &str, max_bytes: Option<usize>) -> Built
         if output.len() > limit {
             // UTF-8 boundary and a deterministic marker make the loss
             // explicit; callers must record this as a non-lossless transform.
-            let mut boundary = limit.min(output.len());
-            while boundary > 0 && !output.is_char_boundary(boundary) {
-                boundary -= 1;
+            let (bounded, did_truncate) = bounded_truncate_marker(&output, limit);
+            output = bounded;
+            truncated = did_truncate;
+            if did_truncate {
+                transforms.push("bounded_truncate");
             }
-            let mut body_end = boundary;
-            loop {
-                let omitted = output.len().saturating_sub(body_end);
-                let marker = format!("~{omitted}");
-                let next_end = boundary.saturating_sub(marker.len());
-                if next_end >= body_end {
-                    output = format!("{}{}", &output[..body_end], marker);
-                    break;
-                }
-                body_end = next_end;
-                while body_end > 0 && !output.is_char_boundary(body_end) {
-                    body_end -= 1;
-                }
-            }
-            truncated = true;
-            transforms.push("bounded_truncate");
         }
     }
     BuiltinPreprocessResult {
@@ -111,6 +99,32 @@ pub fn preprocess_command_output(input: &str, max_bytes: Option<usize>) -> Built
         input_bytes,
         transforms,
         truncated,
+    }
+}
+
+/// Truncates `output` at `limit` bytes on a UTF-8 boundary, appending a
+/// compact `~<omitted>` marker so the loss is explicit and deterministic.
+/// Returns `(text, true)` when bytes were actually omitted.
+pub fn bounded_truncate_marker(output: &str, limit: usize) -> (String, bool) {
+    if output.len() <= limit {
+        return (output.to_string(), false);
+    }
+    let mut boundary = limit.min(output.len());
+    while boundary > 0 && !output.is_char_boundary(boundary) {
+        boundary -= 1;
+    }
+    let mut body_end = boundary;
+    loop {
+        let omitted = output.len().saturating_sub(body_end);
+        let marker = format!("~{omitted}");
+        let next_end = boundary.saturating_sub(marker.len());
+        if next_end >= body_end {
+            return (format!("{}{}", &output[..body_end], marker), true);
+        }
+        body_end = next_end;
+        while body_end > 0 && !output.is_char_boundary(body_end) {
+            body_end -= 1;
+        }
     }
 }
 
@@ -131,6 +145,12 @@ pub struct ManagedHookPaths {
     pub managed_root: PathBuf,
     pub bridge_path: PathBuf,
     pub max_output_bytes: Option<usize>,
+    /// Optional d-token-owned structured command filter DSL (TOML, PR-C4A).
+    /// When present it is parsed and hash-bound into the manifest as
+    /// `filters.toml` under the managed root; when absent the reviewed
+    /// builtin defaults apply. The bridge re-verifies the hash before every
+    /// wrapped command so a tampered filter can never run.
+    pub filter_dsl: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -155,6 +175,11 @@ pub struct ManagedHookManifest {
     pub bridge_path: String,
     pub bridge: ManagedHookBridgeIdentity,
     pub max_output_bytes: Option<usize>,
+    /// sha256 of the d-token-owned `filters.toml` DSL, when one was reviewed
+    /// at install time. `None` means the bridge must use the builtin
+    /// defaults. Missing on older manifests; validated when present.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub filter_dsl_sha256: Option<String>,
     pub usage_dir: String,
 }
 
@@ -174,11 +199,13 @@ pub struct ManagedCommandOutput {
     pub evidence: ManagedRtkUsageEvidence,
 }
 
-/// Fail-closed lifecycle contract for the future Agent-specific managed RTK
+/// Fail-closed lifecycle contract for the Agent-specific managed RTK
 /// adapters. This crate owns command-result filtering, but it does not own an
-/// Agent configuration schema. Until a versioned host adapter is implemented
-/// and independently verifies its config transaction, every write-like phase
-/// remains blocked and command output is passed through unchanged.
+/// Agent configuration schema. The d-token-owned wrapper manifest lifecycle
+/// (install/verify/rollback/uninstall) is available on every supported host
+/// platform; an unconfigured managed runtime is reported as `Unavailable`,
+/// never hard-`Blocked`. Agent configuration bytes remain externally owned
+/// and are transacted by the owning adapter, not by this crate.
 #[derive(Debug, Clone)]
 pub struct ManagedRtkLifecycle {
     plan: ManagedRtkTransactionPlan,
@@ -240,6 +267,12 @@ impl ManagedRtkLifecycle {
     /// Returns a preview receipt rather than performing a write. The d-token
     /// managed wrapper only owns its own manifest/provenance; Agent-specific
     /// config backup/apply/verify/rollback remains external to this crate.
+    ///
+    /// The managed runtime is no longer hard-blocked on any host platform: a
+    /// valid plan may always be installed and the wrapper lifecycle can be
+    /// driven to `Verified`. An operation that cannot proceed from the current
+    /// transaction state (e.g. verifying before the wrapper is installed) is
+    /// reported as `Unavailable`, not `Blocked`.
     pub fn request_operation(
         &self,
         operation: ManagedRtkOperation,
@@ -251,13 +284,22 @@ impl ManagedRtkLifecycle {
                     .to_string(),
             )
         } else {
-            (
-                ManagedRtkTransactionState::Blocked,
-                format!(
-                    "managed RTK {operation:?} blocked: {}",
-                    self.plan.capability.reason
+            match self.preview_transition(operation) {
+                Some(target) => (
+                    target,
+                    format!(
+                        "managed RTK {operation:?} is available from {:?} and would transition to {target:?}; {}",
+                        self.state, self.plan.capability.reason
+                    ),
                 ),
-            )
+                None => (
+                    ManagedRtkTransactionState::Unavailable,
+                    format!(
+                        "managed RTK {operation:?} unavailable from {:?}: the d-token-owned wrapper is not configured for this operation ({})",
+                        self.state, self.plan.capability.reason
+                    ),
+                ),
+            }
         };
         ManagedRtkTransactionReceipt {
             schema_version: 1,
@@ -267,6 +309,40 @@ impl ManagedRtkLifecycle {
             host_config_fingerprint: self.plan.host_config_fingerprint.clone(),
             summary,
         }
+    }
+
+    /// The state a requested operation would reach from the current
+    /// transaction state, or `None` when the operation cannot proceed (the
+    /// managed runtime is unconfigured for it).
+    fn preview_transition(
+        &self,
+        operation: ManagedRtkOperation,
+    ) -> Option<ManagedRtkTransactionState> {
+        Some(match (self.state, operation) {
+            (ManagedRtkTransactionState::Planned, ManagedRtkOperation::Install) => {
+                ManagedRtkTransactionState::Installed
+            }
+            (ManagedRtkTransactionState::Installed, ManagedRtkOperation::Configure) => {
+                ManagedRtkTransactionState::Configured
+            }
+            (
+                ManagedRtkTransactionState::Installed | ManagedRtkTransactionState::Configured,
+                ManagedRtkOperation::Verify,
+            ) => ManagedRtkTransactionState::Verified,
+            (
+                ManagedRtkTransactionState::Installed
+                | ManagedRtkTransactionState::Configured
+                | ManagedRtkTransactionState::Verified,
+                ManagedRtkOperation::Rollback,
+            ) => ManagedRtkTransactionState::RolledBack,
+            (
+                ManagedRtkTransactionState::Installed
+                | ManagedRtkTransactionState::Configured
+                | ManagedRtkTransactionState::Verified,
+                ManagedRtkOperation::Uninstall,
+            ) => ManagedRtkTransactionState::Uninstalled,
+            _ => return None,
+        })
     }
 
     pub fn install_hook(
@@ -330,25 +406,7 @@ impl ManagedRtkLifecycle {
     pub fn command_rewrite(&self) -> ManagedCommandRewrite {
         if self.state == ManagedRtkTransactionState::Verified {
             if let Some(hook) = &self.hook {
-                let mut args_prefix = vec![
-                    "rtk".to_string(),
-                    "wrap".to_string(),
-                    "--managed-root".to_string(),
-                    hook.manifest.managed_root.clone(),
-                ];
-                if let Some(limit) = hook.manifest.max_output_bytes {
-                    args_prefix.push("--max-bytes".to_string());
-                    args_prefix.push(limit.to_string());
-                }
-                args_prefix.push("--".to_string());
-                return ManagedCommandRewrite {
-                    use_managed_wrapper: true,
-                    propagates_exit_status: true,
-                    executable: Some(PathBuf::from(&hook.manifest.bridge_path)),
-                    args_prefix,
-                    managed_root: Some(PathBuf::from(&hook.manifest.managed_root)),
-                    reason: "verified d-token-owned RTK bridge manifest".to_string(),
-                };
+                return managed_command_rewrite(hook);
             }
         }
         ManagedCommandRewrite {
@@ -404,16 +462,26 @@ impl ManagedRtkLifecycle {
 
     /// Filters an already-produced command result only when a managed hook was
     /// verified. In the current fail-closed state it preserves output and exit
-    /// status exactly, while emitting redacted byte-level evidence.
+    /// status exactly, while emitting redacted byte-level evidence. The
+    /// structured d-token-owned family filters (PR-C4A) apply when the hook
+    /// manifest binds a reviewed filter DSL; otherwise the builtin defaults
+    /// run. Secret-, error-, and failure-shaped output is always preserved.
+    /// Output caps are governed by the reviewed manifest/DSL; the historical
+    /// caller-supplied `max_bytes` override is no longer applied.
     pub fn filter_command_output(
         &self,
         output: &str,
         exit_code: Option<i32>,
-        max_bytes: Option<usize>,
+        _max_bytes: Option<usize>,
     ) -> ManagedCommandOutput {
         let rewrite = self.command_rewrite();
         if rewrite.use_managed_wrapper {
-            let filtered = preprocess_command_output(output, max_bytes);
+            let config = self
+                .hook
+                .as_ref()
+                .and_then(|hook| managed_filter_config(&hook.manifest).ok())
+                .unwrap_or_default();
+            let filtered = filters::filter_command_output(&[], output, exit_code, &config);
             let saved_bytes = filtered.input_bytes.saturating_sub(filtered.output_bytes);
             ManagedCommandOutput {
                 output: filtered.output,
@@ -424,11 +492,7 @@ impl ManagedRtkLifecycle {
                     input_bytes: filtered.input_bytes,
                     output_bytes: filtered.output_bytes,
                     saved_bytes,
-                    transforms: filtered
-                        .transforms
-                        .into_iter()
-                        .map(str::to_string)
-                        .collect(),
+                    transforms: filtered.transforms,
                     disposition: "filtered_verified_hook".to_string(),
                 },
             }
@@ -447,6 +511,31 @@ impl ManagedRtkLifecycle {
                 },
             }
         }
+    }
+}
+
+/// Build the exclusive command rewrite for a fully verified managed hook.
+/// Production adapters (Agent hook writers, desktop flows) consume this so
+/// the wrap argv, managed root, and exit-status contract stay canonical.
+pub fn managed_command_rewrite(verification: &ManagedHookVerification) -> ManagedCommandRewrite {
+    let mut args_prefix = vec![
+        "rtk".to_string(),
+        "wrap".to_string(),
+        "--managed-root".to_string(),
+        verification.manifest.managed_root.clone(),
+    ];
+    if let Some(limit) = verification.manifest.max_output_bytes {
+        args_prefix.push("--max-bytes".to_string());
+        args_prefix.push(limit.to_string());
+    }
+    args_prefix.push("--".to_string());
+    ManagedCommandRewrite {
+        use_managed_wrapper: true,
+        propagates_exit_status: true,
+        executable: Some(PathBuf::from(&verification.manifest.bridge_path)),
+        args_prefix,
+        managed_root: Some(PathBuf::from(&verification.manifest.managed_root)),
+        reason: "verified d-token-owned RTK bridge manifest".to_string(),
     }
 }
 
@@ -476,6 +565,10 @@ pub fn managed_rtk_platform_capability(platform: HostPlatform) -> ManagedRtkPlat
 const MANAGED_HOOK_MANIFEST: &str = "managed-rtk-hook.json";
 const MANAGED_HOOK_USAGE_DIR: &str = "usage";
 const MANAGED_HOOK_SCHEMA_VERSION: u8 = 1;
+/// d-token-owned structured command filter DSL artifact (PR-C4A), bound by
+/// sha256 in the managed manifest when a reviewed DSL was installed.
+pub const MANAGED_HOOK_FILTER_FILE: &str = "filters.toml";
+pub const MAX_MANAGED_RTK_FILTER_BYTES: usize = 16 * 1024;
 const BRIDGE_COMPONENT: &str = "dtoken-agent-bridge";
 const MANAGED_RTK_USAGE_SCHEMA_VERSION: u8 = 1;
 const MAX_MANAGED_RTK_MANIFEST_BYTES: usize = 16 * 1024;
@@ -543,8 +636,69 @@ impl ManagedRtkUsageRecord {
     }
 }
 
+/// Maps a bounded RTK usage evidence to the canonical command-output
+/// accounting bucket (PR-C4C). Fails closed when the source digest is not a
+/// sha256 hex value or the byte accounting is inconsistent, so an unknown or
+/// negative claim can never enter the ledger as a positive saving.
+pub fn command_output_accounting_entry(
+    evidence: &ManagedRtkUsageEvidence,
+    source_digest: &str,
+    recorded_at_ms: u64,
+) -> Result<AccountingEntry> {
+    if !is_sha256_hex(source_digest) {
+        bail!("command-output accounting requires a sha256 source digest");
+    }
+    let input = u64::try_from(evidence.input_bytes).context("input bytes overflow")?;
+    let output = u64::try_from(evidence.output_bytes).context("output bytes overflow")?;
+    let saved = u64::try_from(evidence.saved_bytes).context("saved bytes overflow")?;
+    if input < output || saved != input - output {
+        bail!("command-output accounting bytes are inconsistent");
+    }
+    Ok(AccountingEntry {
+        schema_version: 1,
+        bucket: AccountingBucket::CommandOutput,
+        source_digest: source_digest.to_string(),
+        input_bytes: input,
+        output_bytes: output,
+        saved_bytes: saved,
+        disposition: evidence.disposition.clone(),
+        recorded_at_ms,
+    })
+}
+
 pub fn managed_hook_manifest_path(root: &Path) -> PathBuf {
     root.join(MANAGED_HOOK_MANIFEST)
+}
+
+/// Loads the reviewed structured filter DSL (PR-C4A) bound by a verified
+/// managed manifest. Re-verifies the sha256 binding so a tampered or missing
+/// artifact fails closed; a manifest without a bound DSL yields the reviewed
+/// builtin defaults. Callers must have already verified the root.
+pub fn managed_filter_config(
+    manifest: &ManagedHookManifest,
+) -> Result<filters::CommandFilterConfig> {
+    match &manifest.filter_dsl_sha256 {
+        Some(expected) => {
+            let root = Path::new(&manifest.managed_root);
+            let filter_path = root.join(MANAGED_HOOK_FILTER_FILE);
+            let bytes = read_regular_file_bounded(&filter_path, MAX_MANAGED_RTK_FILTER_BYTES)
+                .with_context(|| {
+                    format!(
+                        "managed RTK filter DSL is unavailable: {}",
+                        filter_path.display()
+                    )
+                })?;
+            let actual = format!("{:x}", Sha256::digest(&bytes));
+            if &actual != expected {
+                bail!("managed RTK filter DSL no longer matches the reviewed manifest");
+            }
+            let text =
+                std::str::from_utf8(&bytes).context("managed RTK filter DSL is not UTF-8")?;
+            filters::CommandFilterConfig::from_toml(text)
+                .context("managed RTK filter DSL cannot be parsed")
+        }
+        None => Ok(filters::CommandFilterConfig::defaults()),
+    }
 }
 
 /// Inspects an explicit d-token-managed root without creating directories or
@@ -645,6 +799,9 @@ pub fn uninstall_managed_rtk_runtime(root: &Path) -> Result<ManagedRtkTransactio
             verification.usage_dir.display()
         )
     })?;
+    if verification.manifest.filter_dsl_sha256.is_some() {
+        remove_managed_hook_filter(&root.join(MANAGED_HOOK_FILTER_FILE))?;
+    }
     remove_managed_hook_manifest(&verification.manifest_path)?;
     match fs::remove_dir(root) {
         Ok(()) => {}
@@ -710,6 +867,10 @@ fn validate_managed_hook_manifest(manifest: &ManagedHookManifest) -> Result<()> 
         || manifest.max_output_bytes.is_some_and(|limit| {
             !(MIN_MANAGED_RTK_OUTPUT_BYTES..=MAX_MANAGED_RTK_OUTPUT_BYTES).contains(&limit)
         })
+        || manifest
+            .filter_dsl_sha256
+            .as_deref()
+            .is_some_and(|digest| !is_sha256_hex(digest))
         || !is_safe_bridge_identity(&manifest.bridge)
     {
         bail!("managed RTK manifest contains invalid metadata");
@@ -749,6 +910,104 @@ fn read_managed_usage_evidence(
     root: &Path,
     manifest: &ManagedHookManifest,
 ) -> Result<(usize, u64, Option<ManagedRtkUsageReceipt>)> {
+    let records = read_managed_usage_records(root, manifest)?;
+    let mut saved_bytes = 0u64;
+    let mut last_receipt = None;
+    for record in &records {
+        saved_bytes = saved_bytes
+            .checked_add(record.saved_bytes)
+            .context("managed RTK saved-byte total overflow")?;
+        let receipt = record.receipt();
+        if last_receipt
+            .as_ref()
+            .is_none_or(|last: &ManagedRtkUsageReceipt| {
+                receipt.recorded_at_ms > last.recorded_at_ms
+            })
+        {
+            last_receipt = Some(receipt);
+        }
+    }
+    Ok((records.len(), saved_bytes, last_receipt))
+}
+
+/// One verified d-token-owned usage record, bound to its command digest.
+/// Suitable for exclusive command-output accounting (PR-C4C): the digest is
+/// the claim's `source_digest` and the byte counts are the claim's values.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct VerifiedRtkUsageRecord {
+    pub evidence: ManagedRtkUsageEvidence,
+    pub command_sha256: String,
+    pub recorded_at_ms: u64,
+}
+
+/// Canonical digest binding one accounting claim to a single verified usage
+/// receipt. Includes the command digest, the receipt timestamp, the
+/// transaction id, and the exact byte counts, so a legitimate repeated
+/// invocation is its own distinct claim while a replayed (copied) receipt —
+/// identical content — collapses to the same digest and is rejected by the
+/// exclusive ledger's duplicate guard.
+pub fn verified_usage_claim_digest(record: &VerifiedRtkUsageRecord) -> String {
+    let mut digest = Sha256::new();
+    digest.update(record.command_sha256.as_bytes());
+    digest.update([0]);
+    digest.update(record.recorded_at_ms.to_string().as_bytes());
+    digest.update([0]);
+    digest.update(record.evidence.transaction_id.as_bytes());
+    digest.update([0]);
+    digest.update(
+        record
+            .evidence
+            .exit_code
+            .map(|code| code.to_string())
+            .unwrap_or_default()
+            .as_bytes(),
+    );
+    digest.update([0]);
+    digest.update(record.evidence.input_bytes.to_string().as_bytes());
+    digest.update([0]);
+    digest.update(record.evidence.output_bytes.to_string().as_bytes());
+    digest.update([0]);
+    digest.update(record.evidence.saved_bytes.to_string().as_bytes());
+    format!("{:x}", digest.finalize())
+}
+
+/// Reads every verified usage record under a fully verified managed RTK root,
+/// fail closed. Invalid, unknown, oversized, or symlinked artifacts abort the
+/// whole read so no partial evidence ever reaches accounting.
+pub fn verified_managed_rtk_usage(root: &Path) -> Result<Vec<VerifiedRtkUsageRecord>> {
+    let verification = verify_managed_hook_root(root, false)?;
+    let records = read_managed_usage_records(root, &verification.manifest)?;
+    records
+        .into_iter()
+        .map(|record| {
+            let input_bytes = usize::try_from(record.input_bytes)
+                .context("managed RTK usage input bytes are not supported")?;
+            let output_bytes = usize::try_from(record.output_bytes)
+                .context("managed RTK usage output bytes are not supported")?;
+            let saved_bytes = usize::try_from(record.saved_bytes)
+                .context("managed RTK usage saved bytes are not supported")?;
+            Ok(VerifiedRtkUsageRecord {
+                evidence: ManagedRtkUsageEvidence {
+                    schema_version: record.schema_version,
+                    transaction_id: record.transaction_id,
+                    exit_code: record.exit_code,
+                    input_bytes,
+                    output_bytes,
+                    saved_bytes,
+                    transforms: record.transforms,
+                    disposition: record.disposition,
+                },
+                command_sha256: record.command_sha256,
+                recorded_at_ms: record.recorded_at_ms,
+            })
+        })
+        .collect()
+}
+
+fn read_managed_usage_records(
+    root: &Path,
+    manifest: &ManagedHookManifest,
+) -> Result<Vec<ManagedRtkUsageRecord>> {
     let usage_dir = canonical_existing_directory(
         &root.join(MANAGED_HOOK_USAGE_DIR),
         "managed RTK usage directory",
@@ -763,8 +1022,7 @@ fn read_managed_usage_evidence(
     entries.sort_by_key(|entry| entry.file_name());
 
     let mut total_bytes = 0usize;
-    let mut saved_bytes = 0u64;
-    let mut last_receipt = None;
+    let mut records = Vec::with_capacity(entries.len());
     for entry in entries {
         let name = entry
             .file_name()
@@ -798,26 +1056,9 @@ fn read_managed_usage_evidence(
         let record: ManagedRtkUsageRecord =
             serde_json::from_slice(&bytes).context("managed RTK usage record is invalid")?;
         validate_managed_usage_record(&record, manifest)?;
-        saved_bytes = saved_bytes
-            .checked_add(record.saved_bytes)
-            .context("managed RTK saved-byte total overflow")?;
-        let receipt = record.receipt();
-        if last_receipt
-            .as_ref()
-            .is_none_or(|last: &ManagedRtkUsageReceipt| {
-                receipt.recorded_at_ms > last.recorded_at_ms
-            })
-        {
-            last_receipt = Some(receipt);
-        }
+        records.push(record);
     }
-    Ok((entries_len(&usage_dir)?, saved_bytes, last_receipt))
-}
-
-fn entries_len(path: &Path) -> Result<usize> {
-    Ok(fs::read_dir(path)
-        .context("managed RTK usage directory cannot be re-read")?
-        .count())
+    Ok(records)
 }
 
 fn validate_managed_usage_record(
@@ -856,18 +1097,51 @@ fn is_safe_metadata_text(value: &str, max_len: usize) -> bool {
 }
 
 fn is_allowed_usage_transform(value: &str) -> bool {
-    matches!(
+    if matches!(
         value,
-        "stdout:ansi_strip"
-            | "stdout:blank_and_repeat_fold"
-            | "stdout:bounded_truncate"
-            | "stdout:bounded_capture"
-            | "stderr:ansi_strip"
-            | "stderr:blank_and_repeat_fold"
-            | "stderr:bounded_truncate"
-            | "stderr:bounded_capture"
-            | "process:timeout"
-    )
+        "stdout:bounded_capture" | "stderr:bounded_capture" | "process:timeout"
+    ) {
+        return true;
+    }
+    let Some((stream, transform)) = value.split_once(':') else {
+        return false;
+    };
+    if !matches!(stream, "stdout" | "stderr") {
+        return false;
+    }
+    is_known_filter_transform(transform)
+}
+
+/// Accepts every transform the d-token-owned structured filters (PR-C4A) and
+/// the reviewed builtin can emit, so a wrapped command's usage record can
+/// never be invalidated by a legitimately reviewed filter action.
+fn is_known_filter_transform(transform: &str) -> bool {
+    if matches!(
+        transform,
+        "unknown-family" | "ansi_strip" | "blank_and_repeat_fold" | "bounded_truncate"
+    ) {
+        return true;
+    }
+    let Some((family, action)) = transform.split_once(':') else {
+        return false;
+    };
+    matches!(family, "git" | "cargo" | "npm" | "pytest" | "json")
+        && matches!(
+            action,
+            "failure_preserve"
+                | "secret_preserve"
+                | "error_preserve"
+                | "disabled"
+                | "ansi_strip"
+                | "fold_repeated_lines"
+                | "bounded_truncate"
+                | "negative_benefit"
+                | "no_change"
+                | "unparsed_preserve"
+                | "secret_keys_preserve"
+                | "oversize_preserve"
+                | "minify"
+        )
 }
 
 fn read_regular_file_bounded(path: &Path, max_bytes: usize) -> Result<Vec<u8>> {
@@ -906,6 +1180,7 @@ pub fn verify_managed_hook_root(
     if !manifest_matches_managed_root(&manifest, &root) {
         bail!("managed RTK hook manifest does not own the requested root");
     }
+    validate_private_directory(&root, "managed RTK root")?;
     let bridge_path = canonical_existing_file(Path::new(&manifest.bridge_path), "RTK bridge")?;
     let actual_identity = bridge_identity(&bridge_path)?;
     if actual_identity != manifest.bridge {
@@ -919,10 +1194,37 @@ pub fn verify_managed_hook_root(
             bail!("managed RTK hook is being used by an unexpected bridge executable");
         }
     }
+    let filter_path = root.join(MANAGED_HOOK_FILTER_FILE);
+    match &manifest.filter_dsl_sha256 {
+        Some(expected) => {
+            let actual = hash_file(&filter_path).with_context(|| {
+                format!(
+                    "managed RTK filter DSL is unavailable: {}",
+                    filter_path.display()
+                )
+            })?;
+            if &actual != expected {
+                bail!("managed RTK filter DSL no longer matches the reviewed manifest");
+            }
+        }
+        None => match fs::symlink_metadata(&filter_path) {
+            Ok(_) => bail!("managed RTK root contains an unexpected filter DSL artifact"),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(error).with_context(|| {
+                    format!(
+                        "managed RTK filter DSL metadata is unavailable: {}",
+                        filter_path.display()
+                    )
+                })
+            }
+        },
+    }
     let usage_dir = canonical_existing_directory(
         &root.join(MANAGED_HOOK_USAGE_DIR),
         "managed RTK usage directory",
     )?;
+    validate_private_directory(&usage_dir, "managed RTK usage directory")?;
     Ok(ManagedHookVerification {
         manifest,
         manifest_path,
@@ -943,6 +1245,25 @@ fn write_and_verify_managed_hook_manifest(
             usage_dir.display()
         )
     })?;
+    ensure_private_directory_permissions(&usage_dir)?;
+    let filter_dsl_sha256 = match paths.filter_dsl.as_ref() {
+        Some(text) => {
+            let config = filters::CommandFilterConfig::from_toml(text)
+                .context("managed RTK filter DSL is invalid")?;
+            if config.schema_version != filters::FILTER_SCHEMA_VERSION {
+                bail!("managed RTK filter DSL schema version is unsupported");
+            }
+            if text.len() > MAX_MANAGED_RTK_FILTER_BYTES {
+                bail!("managed RTK filter DSL exceeds its size limit");
+            }
+            let filter_path = managed_root.join(MANAGED_HOOK_FILTER_FILE);
+            fs::write(&filter_path, text)
+                .with_context(|| format!("failed to write {}", filter_path.display()))?;
+            ensure_private_file_permissions(&filter_path)?;
+            Some(hash_file(&filter_path)?)
+        }
+        None => None,
+    };
     let manifest = ManagedHookManifest {
         schema_version: MANAGED_HOOK_SCHEMA_VERSION,
         transaction_id: plan.transaction_id.clone(),
@@ -952,6 +1273,7 @@ fn write_and_verify_managed_hook_manifest(
         bridge_path: bridge_path.display().to_string(),
         bridge: bridge_identity(&bridge_path)?,
         max_output_bytes: paths.max_output_bytes,
+        filter_dsl_sha256,
         usage_dir: MANAGED_HOOK_USAGE_DIR.to_string(),
     };
     validate_managed_hook_manifest(&manifest)?;
@@ -967,7 +1289,56 @@ fn validate_managed_root(root: &Path) -> Result<PathBuf> {
     reject_parent_components(root)?;
     fs::create_dir_all(root)
         .with_context(|| format!("failed to create managed RTK root {}", root.display()))?;
+    ensure_private_directory_permissions(root)?;
     canonical_existing_directory(root, "managed RTK root")
+}
+
+/// Makes a d-token-owned file private (0600 on Unix) so the filter DSL is
+/// never readable or writable by group/other users. No-op on platforms
+/// without POSIX permission bits.
+fn ensure_private_file_permissions(path: &Path) -> Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(path, fs::Permissions::from_mode(0o600))
+            .with_context(|| format!("failed to secure permissions on {}", path.display()))?;
+    }
+    Ok(())
+}
+
+/// Makes a d-token-owned directory private (0700 on Unix) so usage receipts
+/// and the wrapper manifest are never readable or writable by group/other
+/// users. No-op on platforms without POSIX permission bits.
+fn ensure_private_directory_permissions(path: &Path) -> Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(path, fs::Permissions::from_mode(0o700))
+            .with_context(|| format!("failed to secure permissions on {}", path.display()))?;
+    }
+    Ok(())
+}
+
+/// Rejects a managed RTK directory whose POSIX ACL exposes it to group/other
+/// users (any group or other permission bit). This is the ACL half of the
+/// private tee contract: usage receipts and the manifest must stay private
+/// even when the caller re-verifies an existing root. No-op on platforms
+/// without POSIX permission bits.
+fn validate_private_directory(path: &Path, label: &str) -> Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = fs::metadata(path)
+            .with_context(|| format!("{label} metadata is unavailable: {}", path.display()))?
+            .permissions()
+            .mode();
+        if mode & 0o077 != 0 {
+            bail!(
+                "{label} is not private (mode {mode:o}); managed RTK artifacts must not be exposed to group or other users"
+            );
+        }
+    }
+    Ok(())
 }
 
 /// Executes the RTK bridge `identity` command, retrying the transient Linux
@@ -1027,6 +1398,14 @@ fn bridge_identity(path: &Path) -> Result<ManagedHookBridgeIdentity> {
 }
 
 fn remove_managed_hook_manifest(path: &Path) -> Result<()> {
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error).with_context(|| format!("failed to remove {}", path.display())),
+    }
+}
+
+fn remove_managed_hook_filter(path: &Path) -> Result<()> {
     match fs::remove_file(path) {
         Ok(()) => Ok(()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
@@ -1099,7 +1478,7 @@ fn is_safe_transaction_id(value: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
 }
 
-fn strip_ansi(input: &str) -> String {
+pub(crate) fn strip_ansi(input: &str) -> String {
     let mut output = String::with_capacity(input.len());
     let bytes = input.as_bytes();
     let mut index = 0;
@@ -1578,7 +1957,7 @@ mod tests {
     }
 
     #[test]
-    fn managed_rtk_lifecycle_is_explicitly_blocked_on_macos_and_windows() {
+    fn managed_rtk_unconfigured_is_unavailable_not_blocked_on_all_platforms() {
         let fingerprint = "a".repeat(64);
         for platform in [
             HostPlatform::Macos,
@@ -1599,19 +1978,157 @@ mod tests {
             );
             assert!(!lifecycle.command_rewrite().use_managed_wrapper);
 
+            // The managed runtime is unconfigured: no operation other than
+            // Install is available, and none is ever hard-Blocked.
+            let install = lifecycle.request_operation(ManagedRtkOperation::Install);
+            assert_eq!(install.state, ManagedRtkTransactionState::Installed);
+            assert_eq!(install.host_config_fingerprint, fingerprint);
+            assert!(!install.summary.contains("blocked"));
+
             for operation in [
-                ManagedRtkOperation::Install,
                 ManagedRtkOperation::Configure,
                 ManagedRtkOperation::Verify,
                 ManagedRtkOperation::Rollback,
                 ManagedRtkOperation::Uninstall,
             ] {
                 let receipt = lifecycle.request_operation(operation);
-                assert_eq!(receipt.state, ManagedRtkTransactionState::Blocked);
+                assert_eq!(
+                    receipt.state,
+                    ManagedRtkTransactionState::Unavailable,
+                    "{operation:?} on an unconfigured runtime must be unavailable"
+                );
                 assert_eq!(receipt.host_config_fingerprint, fingerprint);
-                assert!(receipt.summary.contains("blocked"));
+                assert!(!receipt.summary.contains("blocked"));
+                assert!(receipt.summary.contains("unavailable"));
             }
         }
+    }
+
+    #[test]
+    fn managed_rtk_preview_transitions_track_the_lifecycle_state_machine() {
+        let root = tempdir().expect("managed RTK tempdir");
+        let managed_root = root.path().join("managed-rtk");
+        let mut lifecycle = ManagedRtkLifecycle::plan(
+            "rtk-transaction.preview",
+            HostPlatform::Linux,
+            &"9".repeat(64),
+        );
+        // Unconfigured: only Install is available.
+        assert_eq!(
+            lifecycle
+                .request_operation(ManagedRtkOperation::Install)
+                .state,
+            ManagedRtkTransactionState::Installed
+        );
+        assert_eq!(
+            lifecycle
+                .request_operation(ManagedRtkOperation::Verify)
+                .state,
+            ManagedRtkTransactionState::Unavailable
+        );
+        lifecycle
+            .install_hook(ManagedHookPaths {
+                managed_root: managed_root.clone(),
+                bridge_path: fake_bridge_path(),
+                max_output_bytes: Some(1_024),
+                filter_dsl: None,
+            })
+            .expect("install managed RTK hook");
+        // Installed: verify/rollback/uninstall available; install is not.
+        assert_eq!(
+            lifecycle
+                .request_operation(ManagedRtkOperation::Verify)
+                .state,
+            ManagedRtkTransactionState::Verified
+        );
+        assert_eq!(
+            lifecycle
+                .request_operation(ManagedRtkOperation::Install)
+                .state,
+            ManagedRtkTransactionState::Unavailable
+        );
+        lifecycle.verify_hook().expect("verify managed RTK hook");
+        assert_eq!(
+            lifecycle
+                .request_operation(ManagedRtkOperation::Rollback)
+                .state,
+            ManagedRtkTransactionState::RolledBack
+        );
+        assert_eq!(
+            lifecycle
+                .request_operation(ManagedRtkOperation::Uninstall)
+                .state,
+            ManagedRtkTransactionState::Uninstalled
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn managed_rtk_artifacts_are_private_and_exposed_roots_fail_closed() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = tempdir().expect("managed RTK tempdir");
+        let managed_root = root.path().join("managed-rtk");
+        let mut lifecycle =
+            ManagedRtkLifecycle::plan("rtk-transaction.acl", HostPlatform::Macos, &"8".repeat(64));
+        lifecycle
+            .install_hook(ManagedHookPaths {
+                managed_root: managed_root.clone(),
+                bridge_path: fake_bridge_path(),
+                max_output_bytes: None,
+                filter_dsl: None,
+            })
+            .expect("install managed RTK hook");
+
+        let root_mode = fs::metadata(&managed_root)
+            .expect("managed root metadata")
+            .permissions()
+            .mode();
+        assert_eq!(root_mode & 0o077, 0, "managed root must be private");
+        let usage_mode = fs::metadata(managed_root.join("usage"))
+            .expect("usage metadata")
+            .permissions()
+            .mode();
+        assert_eq!(usage_mode & 0o077, 0, "usage dir must be private");
+
+        // An exposed (group/other-readable) root fails closed.
+        fs::set_permissions(&managed_root, fs::Permissions::from_mode(0o755))
+            .expect("expose managed root");
+        let error = verify_managed_hook_root(&managed_root, false).expect_err("exposed root");
+        assert!(error.to_string().contains("not private"));
+    }
+
+    #[test]
+    fn command_output_accounting_entry_is_bucket_bound_and_fails_closed() {
+        let evidence = ManagedRtkUsageEvidence {
+            schema_version: 1,
+            transaction_id: "rtk-tx".to_string(),
+            exit_code: Some(0),
+            input_bytes: 100,
+            output_bytes: 40,
+            saved_bytes: 60,
+            transforms: vec!["stdout:ansi_strip".to_string()],
+            disposition: "filtered_verified_hook".to_string(),
+        };
+        let digest = "a".repeat(64);
+        let entry = command_output_accounting_entry(&evidence, &digest, 1_000)
+            .expect("valid evidence maps to an entry");
+        assert_eq!(entry.bucket, AccountingBucket::CommandOutput);
+        assert_eq!(entry.source_digest, digest);
+        assert_eq!(entry.saved_bytes, 60);
+
+        let inconsistent = ManagedRtkUsageEvidence {
+            saved_bytes: 50,
+            ..evidence.clone()
+        };
+        assert!(
+            command_output_accounting_entry(&inconsistent, &digest, 1_000).is_err(),
+            "inconsistent bytes must fail closed"
+        );
+        assert!(
+            command_output_accounting_entry(&evidence, "not-a-digest", 1_000).is_err(),
+            "non-sha256 digest must fail closed"
+        );
     }
 
     #[test]
@@ -1624,6 +2141,7 @@ mod tests {
                 managed_root: root.path().join("managed-rtk"),
                 bridge_path: fake_bridge_path(),
                 max_output_bytes: Some(1_024),
+                filter_dsl: None,
             })
             .expect("install managed RTK hook");
         assert_eq!(install.state, ManagedRtkTransactionState::Installed);
@@ -1678,11 +2196,44 @@ mod tests {
                 managed_root: managed_root.clone(),
                 bridge_path: fake_bridge_path(),
                 max_output_bytes: Some(1_023),
+                filter_dsl: None,
             })
             .expect_err("sub-1KiB output limit must fail closed");
 
         assert!(error.to_string().contains("invalid metadata"));
         assert!(!managed_hook_manifest_path(&managed_root).exists());
+    }
+
+    #[test]
+    fn verified_claim_digest_is_per_invocation_and_replay_guarded() {
+        fn record(recorded_at_ms: u64) -> VerifiedRtkUsageRecord {
+            VerifiedRtkUsageRecord {
+                evidence: ManagedRtkUsageEvidence {
+                    schema_version: 1,
+                    transaction_id: "rtk-claim.1".to_string(),
+                    exit_code: Some(0),
+                    input_bytes: 100,
+                    output_bytes: 40,
+                    saved_bytes: 60,
+                    transforms: vec!["stdout:json:minify".to_string()],
+                    disposition: "filtered_verified_hook".to_string(),
+                },
+                command_sha256: "3".repeat(64),
+                recorded_at_ms,
+            }
+        }
+        // Two genuinely distinct invocations (different timestamps) are two
+        // distinct claims: both can be counted.
+        let invocation_a = record(1_000);
+        let invocation_b = record(2_000);
+        let digest_a = verified_usage_claim_digest(&invocation_a);
+        let digest_b = verified_usage_claim_digest(&invocation_b);
+        assert_ne!(digest_a, digest_b);
+        assert!(is_sha256_hex(&digest_a));
+        // An exact duplicate (replayed) receipt has an identical digest: the
+        // exclusive ledger's duplicate guard rejects it.
+        let replay = record(1_000);
+        assert_eq!(verified_usage_claim_digest(&replay), digest_a);
     }
 
     #[test]
@@ -1699,6 +2250,7 @@ mod tests {
                 managed_root: managed_root.clone(),
                 bridge_path: fake_bridge_path(),
                 max_output_bytes: Some(1_024),
+                filter_dsl: None,
             })
             .expect("install managed RTK hook");
         lifecycle.verify_hook().expect("verify managed RTK hook");
@@ -1758,6 +2310,7 @@ mod tests {
                 managed_root: managed_root.clone(),
                 bridge_path: fake_bridge_path(),
                 max_output_bytes: Some(1_024),
+                filter_dsl: None,
             })
             .expect("install manifest");
 
@@ -1788,6 +2341,7 @@ mod tests {
                 managed_root: managed_root.clone(),
                 bridge_path: fake_bridge_path(),
                 max_output_bytes: Some(1_024),
+                filter_dsl: None,
             })
             .expect("install managed RTK hook");
         lifecycle.verify_hook().expect("verify managed RTK hook");
@@ -1858,6 +2412,7 @@ mod tests {
                 managed_root: managed_root.clone(),
                 bridge_path: fake_bridge_path(),
                 max_output_bytes: None,
+                filter_dsl: None,
             })
             .expect("install managed RTK hook");
         let manifest_path = managed_hook_manifest_path(&managed_root);
@@ -1887,6 +2442,7 @@ mod tests {
                 managed_root: managed_root.clone(),
                 bridge_path: fake_bridge_path(),
                 max_output_bytes: None,
+                filter_dsl: None,
             })
             .expect("install managed RTK hook");
         lifecycle.verify_hook().expect("verify managed RTK hook");
@@ -1950,6 +2506,7 @@ mod tests {
                 managed_root: managed_root.clone(),
                 bridge_path: fake_bridge_path(),
                 max_output_bytes: None,
+                filter_dsl: None,
             })
             .expect("install managed RTK hook");
         lifecycle.verify_hook().expect("verify managed RTK hook");

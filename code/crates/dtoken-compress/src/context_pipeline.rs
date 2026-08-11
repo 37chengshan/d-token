@@ -4,7 +4,7 @@ use crate::hybrid::{
     lower_hybrid_context, ApprovedHybridTarget, HybridContextIr, HybridProtectionReason,
     ResolvedOptimizationContext,
 };
-use dtoken_types::{CompressionPolicy, Protocol};
+use dtoken_types::CompressionPolicy;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
@@ -117,30 +117,12 @@ impl CacheAlignmentPlan {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ProviderCacheStrategy {
-    AnthropicExplicit,
-    OpenAiAutomatic,
-    GoogleExplicit,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CacheEvidenceStatus {
-    Unavailable,
-    VerifiedBelowMinimum,
-    VerifiedEligible,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ProviderCacheEvidence {
-    pub route_id: String,
-    pub provider_id: String,
-    pub model: String,
-    pub strategy: ProviderCacheStrategy,
-    pub ttl_seconds: Option<u64>,
-    pub min_prefix_bytes: usize,
-    pub source_revision: String,
-}
+// Provider cache policy 类型已搬移至 `dtoken-context-bus`（单一 domain authority，
+// RISKS_DECISIONS D5 / PR-C3A）。此处仅 re-export 保持公开路径不变，
+// 不再本地持有定义（搬移而非复制）。
+pub use dtoken_context_bus::policy::{
+    CacheEvidenceStatus, ProviderCacheEvidence, ProviderCacheStrategy,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ContextPlan {
@@ -371,6 +353,21 @@ fn apply_cache_evidence(
         plan.cache_alignment.evidence_revision = Some(evidence.source_revision.clone());
         plan.cache_alignment.ttl_seconds = evidence.ttl_seconds;
         plan.cache_alignment.min_prefix_bytes = Some(evidence.min_prefix_bytes);
+        // The cache identity binds the evidence source revision: two requests
+        // with the same resolved route and stable prefix but a different
+        // provider/config revision must never alias the same cache slot. The
+        // unverified key (resolved identity + stable prefix) is kept for the
+        // no-evidence plan; verified plans rebind it with the revision so a
+        // provider policy change turns a previously cached prefix into a miss.
+        if let Some(prefix) = plan.cache_alignment.stable_prefix_digest.clone() {
+            plan.cache_alignment.cache_key_digest = Some(digest_bytes(
+                format!(
+                    "{}\0{}\0{}",
+                    plan.cache_alignment.resolved_identity_digest, prefix, evidence.source_revision
+                )
+                .as_bytes(),
+            ));
+        }
     }
     Ok(plan)
 }
@@ -395,13 +392,36 @@ pub fn prepare_context_transform_with_cache_evidence(
     }
     let ir = lower_hybrid_context(context, &original_body)
         .ok_or(ContextTransformError::UnsupportedContext)?;
+    prepare_context_transform_with_ir(
+        context,
+        policy,
+        &ir,
+        original_body,
+        evidence,
+        frozen_message_count,
+    )
+}
+
+/// Lower-once transform planning: the caller already lowered the request into
+/// the canonical IR and supplies it here, so the same request body is never
+/// lowered twice (PR-C1A parse/lower once). The IR must come from this exact
+/// `context` and `original_body`; callers that lower once for both shadow
+/// inventory and the production plan use this entry.
+pub fn prepare_context_transform_with_ir(
+    context: &ResolvedOptimizationContext,
+    policy: CompressionPolicy,
+    ir: &HybridContextIr,
+    original_body: Value,
+    evidence: Option<&ProviderCacheEvidence>,
+    frozen_message_count: Option<usize>,
+) -> Result<Option<PreparedContextTransform>, ContextTransformError> {
     // A request-level `frozen_message_count` override wins over marker-derived
     // floor detection: the caller owns the cache prefix contract for this
     // request. `None` falls back to `compute_frozen_message_count`.
     let frozen_message_floor = resolve_frozen_message_count(&original_body, frozen_message_count);
     let plan = apply_cache_evidence(
         context,
-        build_context_plan_with_frozen_floor(&ir, &original_body, frozen_message_floor),
+        build_context_plan_with_frozen_floor(ir, &original_body, frozen_message_floor),
         evidence,
     )?;
     let mut transforms = Vec::new();
@@ -416,7 +436,7 @@ pub fn prepare_context_transform_with_cache_evidence(
         return Ok(None);
     }
 
-    let entries = build_manifest_entries(&ir, &original_body, &candidate_body)?;
+    let entries = build_manifest_entries(ir, &original_body, &candidate_body)?;
     if entries.is_empty() {
         return Err(ContextTransformError::MutationOutsideManifest);
     }
@@ -655,35 +675,23 @@ fn validate_provider_cache_evidence(
     context: &ResolvedOptimizationContext,
     evidence: &ProviderCacheEvidence,
 ) -> Result<(), ContextTransformError> {
-    if evidence.route_id != context.route_id
-        || evidence.provider_id != context.provider_id
-        || evidence.model != context.model
-        || !strategy_matches_protocol(evidence.strategy, &context.input_protocol)
-    {
-        return Err(ContextTransformError::ProviderCacheEvidenceMismatch);
-    }
-    if evidence.min_prefix_bytes == 0
-        || evidence.ttl_seconds == Some(0)
-        || evidence.source_revision.len() != 64
-        || !evidence
-            .source_revision
-            .bytes()
-            .all(|byte| byte.is_ascii_hexdigit())
-    {
-        return Err(ContextTransformError::InvalidProviderCacheEvidence);
-    }
-    Ok(())
-}
-
-fn strategy_matches_protocol(strategy: ProviderCacheStrategy, protocol: &Protocol) -> bool {
-    matches!(
-        (strategy, protocol),
-        (
-            ProviderCacheStrategy::AnthropicExplicit,
-            Protocol::Anthropic
-        ) | (ProviderCacheStrategy::OpenAiAutomatic, Protocol::OpenAi)
-            | (ProviderCacheStrategy::GoogleExplicit, Protocol::OpenAi)
+    // PR-C3A：policy 校验搬移至 `dtoken-context-bus`（单一 authority）。
+    // 此处仅映射错误变体，不再持有校验规则副本。
+    dtoken_context_bus::policy::validate_provider_cache_evidence(
+        &context.route_id,
+        &context.provider_id,
+        &context.model,
+        &context.input_protocol,
+        evidence,
     )
+    .map_err(|error| match error {
+        dtoken_context_bus::policy::CachePolicyError::ProviderCacheEvidenceMismatch => {
+            ContextTransformError::ProviderCacheEvidenceMismatch
+        }
+        dtoken_context_bus::policy::CachePolicyError::InvalidProviderCacheEvidence => {
+            ContextTransformError::InvalidProviderCacheEvidence
+        }
+    })
 }
 
 fn build_manifest_entries(

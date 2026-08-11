@@ -1,0 +1,11 @@
+{
+  "id": "optical-render-metadata",
+  "kind": "render-fixture",
+  "description": "Optical render fixture metadata: deterministic PNG digest cross-platform parity case.",
+  "privacy": "synthetic fixture; no real images, credentials, or prompts",
+  "renderer": "pxpipe-pin",
+  "font": "spleen-2.2.0",
+  "profile": "exact-anthropic-v1",
+  "expected_png_digest_algorithm": "sha256",
+  "content": "repeated slab content for renderer digest parity"
+}

@@ -90,7 +90,7 @@
   color: var(--muted-foreground);
   font-size: 12px;
   line-height: 1;
-  transition: background 160ms ease, border-color 160ms ease, color 160ms ease, box-shadow 160ms ease;
+  transition: background var(--duration-fast) var(--ease-standard), border-color var(--duration-fast) var(--ease-standard), color var(--duration-fast) var(--ease-standard), box-shadow var(--duration-fast) var(--ease-standard);
 }
 
 .segmented-control-item:hover,
@@ -268,7 +268,9 @@
   border-radius: 999px;
   color: var(--muted-foreground);
   font-size: var(--text-sm);
-  transition: all 0.2s ease;
+  transition: background-color var(--duration-fast) var(--ease-standard),
+              border-color var(--duration-fast) var(--ease-standard),
+              color var(--duration-fast) var(--ease-standard);
   cursor: pointer;
   user-select: none;
 }
@@ -314,7 +316,7 @@
   color: var(--foreground) !important;
   backdrop-filter: none !important;
   -webkit-backdrop-filter: none !important;
-  transition: background-color 160ms ease, color 160ms ease;
+  transition: background-color var(--duration-fast) var(--ease-standard), color var(--duration-fast) var(--ease-standard);
 }
 
 .install-workbench-nav [data-slot="tabs-trigger"]:hover {
@@ -343,7 +345,7 @@
 .install-workbench-nav-icon {
   background: var(--muted);
   color: var(--muted-foreground);
-  transition: background-color 160ms ease, color 160ms ease;
+  transition: background-color var(--duration-fast) var(--ease-standard), color var(--duration-fast) var(--ease-standard);
 }
 
 .install-workbench-nav [data-slot="tabs-trigger"][data-state="active"] .install-workbench-nav-icon {
@@ -537,7 +539,7 @@
   font-size: 12px;
   line-height: 1;
   white-space: nowrap;
-  transition: background 160ms ease, border-color 160ms ease, color 160ms ease, box-shadow 160ms ease;
+  transition: background var(--duration-fast) var(--ease-standard), border-color var(--duration-fast) var(--ease-standard), color var(--duration-fast) var(--ease-standard), box-shadow var(--duration-fast) var(--ease-standard);
 }
 
 .segmented-control-item:hover,
@@ -636,7 +638,7 @@
   fill: var(--activity-empty);
   stroke: rgba(255, 255, 255, 0.38);
   stroke-width: 1;
-  transition: fill 160ms ease, opacity 160ms ease, transform 160ms ease;
+  transition: fill var(--duration-fast) var(--ease-standard), opacity var(--duration-fast) var(--ease-standard), transform var(--duration-fast) var(--ease-standard);
   transform-box: fill-box;
   transform-origin: center;
 }
@@ -847,7 +849,7 @@
 
 .activity-tab,
 .activity-range {
-  transition: background 150ms ease, color 150ms ease, box-shadow 150ms ease;
+  transition: background var(--duration-fast) var(--ease-standard), color var(--duration-fast) var(--ease-standard), box-shadow var(--duration-fast) var(--ease-standard);
 }
 
 .activity-tab:hover,
@@ -901,7 +903,7 @@
 .activity-cell-svg {
   fill: var(--activity-empty);
   stroke: transparent;
-  transition: fill 150ms ease, opacity 150ms ease, transform 150ms ease;
+  transition: fill var(--duration-fast) var(--ease-standard), opacity var(--duration-fast) var(--ease-standard), transform var(--duration-fast) var(--ease-standard);
   transform-box: fill-box;
   transform-origin: center;
 }
@@ -1419,8 +1421,8 @@
 
 :where(button, a, [role="button"], [role="tab"], input, select, textarea) {
   transition-property: color, background-color, border-color, opacity, transform;
-  transition-duration: 180ms;
-  transition-timing-function: cubic-bezier(0.2, 0, 0, 1);
+  transition-duration: var(--duration-fast);
+  transition-timing-function: var(--ease-standard);
 }
 
 :where(button, a, [role="button"], [role="tab"], input, select, textarea):focus-visible {
@@ -1450,7 +1452,7 @@
   overflow: hidden;
   background: var(--background);
   color: var(--foreground);
-  transition: grid-template-columns 200ms cubic-bezier(0.2, 0, 0, 1);
+  transition: grid-template-columns var(--duration-base) var(--ease-standard);
 }
 
 .app-shell.is-sidebar-collapsed {
@@ -1466,7 +1468,7 @@
   grid-column: 1;
   padding: 8px 0 8px 8px;
   color: var(--sidebar-foreground);
-  transition: padding 200ms cubic-bezier(0.2, 0, 0, 1);
+  transition: padding var(--duration-base) var(--ease-standard);
 }
 
 .shell-sidebar-header {
@@ -1683,8 +1685,14 @@
   *,
   *::before,
   *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+
+  .service-breathe-bar::before,
+  .step-active-pulse::after {
     animation: none !important;
-    transition: none !important;
   }
 
   :where(button, a, [role="button"], [role="tab"]):active {

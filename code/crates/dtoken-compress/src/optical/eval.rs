@@ -1,8 +1,8 @@
-use dtoken_types::{OpticalEndpoint, OpticalEvalArtifact};
+use dtoken_types::{OpticalEconomicsAttestation, OpticalEndpoint, OpticalEvalArtifact};
 use sha2::{Digest, Sha256};
 
 use super::contract::OpticalTransformContractV2;
-use super::economics::resolve_active_economics_contract;
+use super::economics::economics_contract_from_attested;
 use super::renderer::{font_digest_for, production_render_contract, render_contract_digest};
 use super::RenderGeometryProfile;
 
@@ -77,17 +77,19 @@ impl OpticalEvalBuilder {
         corpus_digest: impl Into<String>,
         evaluated_at_ms: u64,
         thresholds: EvalThresholds,
+        economics: Option<&OpticalEconomicsAttestation>,
     ) -> Self {
         let model_base = model_base.into();
         let render_contract = production_render_contract(profile);
         let renderer_profile_digest = render_contract_digest(&render_contract);
-        let transform_contract_digest = resolve_active_economics_contract(&model_base, Some(1))
-            .map(|economics| {
+        let transform_contract_digest = economics
+            .and_then(economics_contract_from_attested)
+            .map(|contract| {
                 OpticalTransformContractV2::current_with_economics(
                     &renderer_profile_digest,
-                    economics.tokenizer_revision,
-                    economics.pricing_revision,
-                    economics.cache_policy_revision,
+                    &contract.tokenizer_revision,
+                    &contract.pricing_revision,
+                    &contract.cache_policy_revision,
                 )
                 .digest()
             })
@@ -266,6 +268,7 @@ mod tests {
             "corpus",
             1,
             EvalThresholds::default(),
+            None,
         );
         for _ in 0..20 {
             builder.record(EvalSampleObservation {

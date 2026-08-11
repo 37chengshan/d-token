@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { AlertTriangle, CheckCircle2, ClipboardCopy, Copy, RefreshCw, Rocket, ShieldAlert } from "lucide-react";
-import { useI18n, useT } from "../../lib/i18n";
+import { useI18n, useT, translateCopy } from "../../lib/i18n";
 import { useConnectionSetup, type AgentUpstreamBinding, type ConnectionSetupSnapshot } from "../../lib/connectionSetup";
 import { useRuntimeDashboardSelector, shallowEqualSlice, type RuntimeDashboardState } from "../../lib/useRuntimeDashboard";
 import { connectionDiscoveryCounts, presentServiceInstance, safeText } from "../../lib/install/presentation";
@@ -9,6 +9,7 @@ import type { OnboardingGateState } from "../../lib/onboarding";
 import { canJoinInstallBatch } from "../../lib/installMachine";
 import { Surface, FlatRows, FlatRow } from "../common/Surface";
 import { StatusBadge } from "../common/StatusBadge";
+import { StepProgress, type Step } from "../common/StepProgress";
 import { Button } from "../ui/button";
 import { cn } from "../ui/utils";
 
@@ -21,15 +22,18 @@ import { cn } from "../ui/utils";
  * Install & Connect page. Completion is only ever a user-confirmed action that
  * persists the first-config marker in the d-token settings store.
  *
- * The wizard is a 6-step guided flow: welcome (value + two modes) → service →
- * agents → upstream → config preview → verify/complete. Step position is local
+ * The wizard is a 5-step guided flow: welcome (value + two modes) → service →
+ * scan agents (Agent + upstream/cc-switch discovery) → config preview →
+ * start using (evidence review and completion). The standalone upstream step
+ * is deliberately folded into the Agent scan and config steps so the guide
+ * stays a single scan → configure → start path. Step position is local
  * component state so re-entering a completed wizard still starts at welcome
  * and lets the user browse every step again; the completed marker only decides
  * whether the wizard auto-opens on launch, it never freezes the flow.
  */
 
-/** The six wizard steps; index doubles as the active-step state. */
-const STEP_KEYS = ["welcome", "service", "agents", "upstream", "config", "verify"] as const;
+/** The five wizard steps; index doubles as the active-step state. */
+const STEP_KEYS = ["welcome", "service", "agents", "config", "verify"] as const;
 type StepKey = (typeof STEP_KEYS)[number];
 const TOTAL_STEPS = STEP_KEYS.length;
 
@@ -130,26 +134,26 @@ function buildDetectionSummary(
   visibleBindings: AgentUpstreamBinding[],
   lang: "zh" | "en",
 ): string {
-  const lines: string[] = [lang === "zh" ? "d-token 检测摘要（元数据，不含凭据）" : "d-token detection summary (metadata only, no credentials)"];
-  lines.push(`${lang === "zh" ? "来源" : "Source"}: ${safeText(snapshot?.source, "—")}`);
-  lines.push(`${lang === "zh" ? "修订" : "Revision"}: ${safeText(snapshot?.revision, "—")}`);
-  const batchLabel = lang === "zh" ? "自动纳入批次" : "Automatic batch";
+  const lines: string[] = [translateCopy("onb.dTokenDetectionSummaryMetadataOnlyNoCredentials", lang)];
+  lines.push(`${translateCopy("onb.source", lang)}: ${safeText(snapshot?.source, "—")}`);
+  lines.push(`${translateCopy("onb.revision", lang)}: ${safeText(snapshot?.revision, "—")}`);
+  const batchLabel = translateCopy("onb.automaticBatch", lang);
   const batch = visibleBindings.map((binding) => {
     const facts = bindingRouteFacts(binding);
     const resolved = binding.resolved_candidate ?? binding.candidates?.[0] ?? null;
     const route = resolved || binding.follow?.current_upstream
       ? `${facts.providerModel} / ${facts.protocol} / ${facts.endpoint}`
       : binding.already_connected
-        ? lang === "zh" ? "已接入" : "connected"
-        : lang === "zh" ? "来源冲突" : "source conflict";
+        ? translateCopy("onb.connected", lang)
+        : translateCopy("onb.sourceConflict", lang);
     return `${binding.agent_name || binding.agent_id} → ${route}`;
   }).join("; ");
   lines.push(`${batchLabel}: ${batch || "—"}`);
   const candidates = snapshot?.candidates ?? [];
-  lines.push(`${lang === "zh" ? "相关上游候选" : "Related upstream candidates"}: ${candidates.map((candidate) => candidate.name || candidate.id).join(", ") || "—"}`);
+  lines.push(`${translateCopy("onb.relatedUpstreamCandidates", lang)}: ${candidates.map((candidate) => candidate.name || candidate.id).join(", ") || "—"}`);
   const ccSwitch = snapshot?.cc_switch_sync?.detected
-    ? lang === "zh" ? "已检测到" : "Detected"
-    : lang === "zh" ? "未检测到" : "Not detected";
+    ? translateCopy("onb.upstream.ccSwitchDetected", lang)
+    : translateCopy("onb.upstream.ccSwitchNone", lang);
   lines.push(`cc-switch: ${ccSwitch}`);
   return lines.join("\n");
 }
@@ -233,6 +237,24 @@ export function OnboardingPage({
         ? { label: t("onb.checking"), health: "warning" as const }
         : { label: t("onb.service.stopped"), health: "error" as const };
 
+  // UI-8: the service start covers exactly 检查 → 备份 → 启动 → 验证. The native
+  // transaction is synchronous with no stage callback, so the wizard expresses
+  // the phases from the transaction's explicit states only: idle (all pending),
+  // loading (indeterminate — the exact sub-stage is unknown, so a breathing
+  // marker instead of a stage claim), success (all four done), error (pending
+  // again). It never fabricates a connected/verified claim from the receipt.
+  const serviceSteps: Step[] = [
+    { key: "check", label: t("onb.service.phase.check") },
+    { key: "backup", label: t("onb.service.phase.backup") },
+    { key: "start", label: t("onb.service.phase.start") },
+    { key: "verify", label: t("onb.service.phase.verify") },
+  ];
+  const serviceProgress = serviceAction.phase === "loading"
+    ? { current: 0, done: false, indeterminate: true }
+    : serviceAction.phase === "success"
+      ? { current: 0, done: true, indeterminate: false }
+      : { current: -1, done: false, indeterminate: false };
+
   // Completion is an explicit user acknowledgement of the first-run wizard,
   // NOT a connection/verified claim: the ConnectionSetup contract has no
   // PRD P0.7.1 #5 verified field, so the marker must never be gated on (or
@@ -242,6 +264,12 @@ export function OnboardingPage({
   const completeDisabled = nativeUnavailable;
 
   const stepIndex = STEP_KEYS.indexOf(step);
+  // UI-9 order gate: steps after "service" stay locked until the service step
+  // is genuinely completed (transaction success + refresh) or the local
+  // service is already running. The stepper can never jump past service, so
+  // config/verify are unreachable without a started service.
+  const serviceGateOpen = serviceAction.phase === "success" || serviceOnline;
+  const maxUnlockedIndex = serviceGateOpen ? TOTAL_STEPS - 1 : STEP_KEYS.indexOf("service");
   const detectionText = buildDetectionSummary(snapshot, visibleBindings, lang);
   const detectedEvidence = evidenceState(discoveryUnavailable ? null : visibleBindings.length > 0);
   const anyConnected = visibleBindings.some((binding) => binding.already_connected);
@@ -330,6 +358,18 @@ export function OnboardingPage({
                 </FlatRow>
               </FlatRows>
             </Surface>
+            {servicePresentation.phase === "running" && (
+              <p role="note" className="text-xs text-muted-foreground">{t("onb.service.runningNote")}</p>
+            )}
+            <div data-testid="service-step-progress" aria-label={t("onb.service.phases")}>
+              <StepProgress
+                steps={serviceSteps}
+                current={serviceProgress.current}
+                done={serviceProgress.done}
+                indeterminate={serviceProgress.indeterminate}
+                reducedMotion={reducedMotion}
+              />
+            </div>
             <div className="flex flex-wrap items-center gap-3">
               <Button
                 type="button"
@@ -342,6 +382,9 @@ export function OnboardingPage({
                     ? t("onb.service.retry")
                     : t("onb.service.start")}
               </Button>
+              {serviceAction.phase === "loading" && (
+                <span className="service-breathe-bar" role="status" aria-label={t("onb.service.starting")} />
+              )}
               <p className="min-w-0 flex-1 text-xs text-muted-foreground" role="status" aria-live="polite">
                 {serviceAction.phase === "success"
                   ? t("onb.service.startSuccess")
@@ -404,17 +447,6 @@ export function OnboardingPage({
                     </Button>
                   </div>
                 </FlatRow>
-              </FlatRows>
-            </Surface>
-          </div>
-        );
-
-      case "upstream":
-        return (
-          <div className="space-y-3">
-            <p className="text-sm leading-relaxed text-muted-foreground">{t("onb.upstream.desc")}</p>
-            <Surface>
-              <FlatRows>
                 <FlatRow className="items-center gap-4">
                   <div className="min-w-0 flex-1">
                     <div className="text-sm font-medium text-foreground">{t("onb.section.upstream")}</div>
@@ -578,9 +610,12 @@ export function OnboardingPage({
             <button
               type="button"
               onClick={() => setStep(key)}
+              disabled={index > maxUnlockedIndex}
+              aria-disabled={index > maxUnlockedIndex}
               aria-current={key === step ? "step" : undefined}
               className={cn(
                 "inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs transition-colors",
+                index > maxUnlockedIndex && "cursor-not-allowed opacity-45",
                 key === step
                   ? "border-primary/40 bg-primary/10 font-medium text-foreground"
                   : "border-border/60 bg-card/40 text-muted-foreground hover:bg-card/70 hover:text-foreground",
@@ -608,7 +643,7 @@ export function OnboardingPage({
       {step === "welcome" || step === "verify" ? null : (
         <div className="mt-6 flex flex-wrap items-center gap-3">
           <Button type="button" variant="ghost" onClick={goPrev}>{t("onb.prev")}</Button>
-          <Button type="button" onClick={goNext}>{t("onb.next")}</Button>
+          <Button type="button" onClick={goNext} disabled={stepIndex + 1 > maxUnlockedIndex}>{t("onb.next")}</Button>
         </div>
       )}
 

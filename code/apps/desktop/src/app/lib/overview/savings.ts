@@ -1,4 +1,5 @@
-import type { Lang } from "../i18n";
+import type { Lang } from "../i18n"
+import { translateCopy } from "../i18n";
 import type { EvidenceState } from "../state/evidence";
 import {
   estimateSavingsCost,
@@ -76,7 +77,6 @@ export function deriveSavingsWindows(
   now: Date = new Date(),
   pricing: ModelPriceCache | null = null,
 ): SavingsDerivation {
-  const zh = lang === "zh";
   const lastVerified = evidence === "verified" || evidence === "stale";
   const hasCollection = Array.isArray(payload?.request_logs);
   const requestLogs = hasCollection ? (payload as Record<string, any>).request_logs : [];
@@ -91,12 +91,12 @@ export function deriveSavingsWindows(
   if (!lastVerified) {
     const source =
       evidence === "preview"
-        ? (zh ? "浏览器预览 · 未连接实时数据" : "Browser preview · no live data")
+        ? (translateCopy("ov.browserPreviewNoLiveData", lang))
         : evidence === "loading"
-          ? (zh ? "正在连接 d-token 本地服务" : "Connecting to the local d-token service")
+          ? (translateCopy("an.connectingToTheLocalDTokenService", lang))
           : evidence === "partial"
-            ? (zh ? "本地数据不完整 · 未确认当前状态" : "Local data is incomplete · current state unverified")
-            : (zh ? "d-token 本地服务暂不可用" : "Local d-token service unavailable");
+            ? (translateCopy("ov.localDataIsIncompleteCurrentStateUnverified", lang))
+            : (translateCopy("an.localDTokenServiceUnavailable", lang));
     return {
       available: false,
       source,
@@ -125,12 +125,12 @@ export function deriveSavingsWindows(
   const anyEvidence = windows.some((window) => window.state !== "unavailable");
   const source =
     evidence === "stale"
-      ? (zh ? "上次验证的 d-token 本地请求记录" : "Last verified local d-token request records")
+      ? (translateCopy("ov.lastVerifiedLocalDTokenRequestRecords", lang))
       : requestLogs.length === 0
-        ? (zh ? "本地服务在线 · 暂无请求记录" : "Local service online · no request records")
+        ? (translateCopy("an.localServiceOnlineNoRequestRecords", lang))
         : timestampedLogs.length === 0
-          ? (zh ? "本地服务在线 · 请求缺少时间戳" : "Local service online · requests lack timestamps")
-          : (zh ? "d-token 本地请求记录" : "Local d-token request records");
+          ? (translateCopy("ov.localServiceOnlineRequestsLackTimestamps", lang))
+          : (translateCopy("ov.localDTokenRequestRecords", lang));
 
   return { available: anyEvidence, source, windows, cost: deriveCost(parsedLogs, pricing, lang) };
 }
@@ -144,19 +144,14 @@ function deriveCost(
   pricing: ModelPriceCache | null,
   lang: Lang,
 ): SavingsCostSummary {
-  const zh = lang === "zh";
   if (!pricing) return missingCost(lang);
   const estimate = estimateSavingsCost(parsedLogs, pricing);
   if (!estimate.available) {
     const detail =
       estimate.reason === "unknown-models"
-        ? zh
-          ? `部分模型缺少显式价格（${estimate.unknownModels.join("、")}），无法可靠估算账单节省。`
-          : `Some models lack explicit prices (${estimate.unknownModels.join(", ")}); billing savings cannot be estimated reliably.`
+        ? translateCopy("ov.someModelsLackExplicitPricesBillingSavingsCannotBeEstimatedReliably", lang, { v1: estimate.unknownModels.join("、"), v2: estimate.unknownModels.join(", ") })
         : estimate.reason === "mixed-currency"
-          ? zh
-            ? "请求涉及多种币种，无法合并估算账单节省。"
-            : "Requests span multiple currencies; billing savings cannot be merged."
+          ? translateCopy("ov.requestsSpanMultipleCurrenciesBillingSavingsCannotBeMerged", lang)
           : missingCost(lang).detail;
     return { available: false, detail };
   }
@@ -168,9 +163,7 @@ function deriveCost(
     freshness: pricing.freshness,
     checkedAt: pricing.checkedAt,
     detail:
-      zh
-        ? `基于本机价格表（${estimate.currency}）估算；Token 差额不等于账单节省。`
-        : `Estimated from the local pricing table (${estimate.currency}); token deltas are not billing savings.`,
+      translateCopy("ov.estimatedFromTheLocalPricingTableTokenDeltasAreNotBillingSavings", lang, { v1: estimate.currency }),
   };
 }
 
@@ -183,8 +176,7 @@ function buildTotalWindow(
   rawLogCount: number,
   lang: Lang,
 ): SavingsWindowSummary {
-  const zh = lang === "zh";
-  const label = zh ? "累计" : "Total";
+  const label = translateCopy("ov.total", lang);
   // 优先使用 durable 聚合值，避免被近期截断窗口低估。
   if (aggregateBefore !== null && aggregateAfter !== null) {
     return {
@@ -193,7 +185,7 @@ function buildTotalWindow(
       tokensSaved: Math.max(0, aggregateBefore - aggregateAfter),
       requestCount: aggregateTotal,
       state: "verified",
-      note: zh ? "来自运行时的持久聚合 Token 记录" : "From the runtime's durable aggregate token records",
+      note: translateCopy("ov.fromTheRuntimeSDurableAggregateTokenRecords", lang),
     };
   }
   if (totalPairs.length > 0) {
@@ -206,8 +198,8 @@ function buildTotalWindow(
       requestCount: aggregateTotal ?? rawLogCount,
       state: partial ? "partial" : "verified",
       note: partial
-        ? zh ? "部分请求缺少压缩前后值，节省按可得请求计算" : "Some requests lack before/after values; savings cover available requests only"
-        : zh ? "按压缩前后值计算；账单影响待确认。" : "Based on before/after values; billing impact pending",
+        ? translateCopy("ov.someRequestsLackBeforeAfterValuesSavingsCoverAvailableRequestsOnly", lang)
+        : translateCopy("ov.basedOnBeforeAfterValuesBillingImpactPending", lang),
     };
   }
   // verified 空集合是真实 zero，不是 unavailable。
@@ -218,7 +210,7 @@ function buildTotalWindow(
       tokensSaved: 0,
       requestCount: aggregateTotal ?? 0,
       state: "verified",
-      note: zh ? "暂无请求记录" : "No request records",
+      note: translateCopy("ov.noRequestRecords", lang),
     };
   }
   // 有请求但完全没有压缩前后值 → 部分证据，不冒充 verified 0。
@@ -228,7 +220,7 @@ function buildTotalWindow(
     tokensSaved: null,
     requestCount: aggregateTotal ?? rawLogCount,
     state: "partial",
-    note: zh ? "有请求但缺少压缩前后值" : "Requests exist but lack before/after values",
+    note: translateCopy("ov.requestsExistButLackBeforeAfterValues", lang),
   };
 }
 
@@ -240,8 +232,7 @@ function buildBoundedWindow(
   parsedLogs: Array<{ timestamp: number | null; before: number | null; after: number | null }>,
   lang: Lang,
 ): SavingsWindowSummary {
-  const zh = lang === "zh";
-  const label = key === "week" ? (zh ? "当周" : "This week") : key === "month" ? (zh ? "当月" : "This month") : (zh ? "当天" : "Today");
+  const label = key === "week" ? (translateCopy("ov.thisWeek", lang)) : key === "month" ? (translateCopy("ov.thisMonth", lang)) : (translateCopy("ov.today", lang));
   const inWindow = parsedLogs.filter((log) => log.timestamp !== null && log.timestamp >= start && log.timestamp <= now);
   if (inWindow.length === 0) {
     // verified 空集合 → 真实 zero；有时间戳但不在窗口内 → 真实 zero；
@@ -253,7 +244,7 @@ function buildBoundedWindow(
         tokensSaved: null,
         requestCount: null,
         state: "unavailable",
-        note: zh ? "暂无本地请求记录" : "No local request records yet",
+        note: translateCopy("ov.noLocalRequestRecordsYet", lang),
       };
     }
     const hasAnyTimestamp = parsedLogs.some((log) => log.timestamp !== null);
@@ -264,7 +255,7 @@ function buildBoundedWindow(
         tokensSaved: null,
         requestCount: null,
         state: "unavailable",
-        note: zh ? "请求缺少时间戳，无法归入该窗口" : "Requests lack timestamps; cannot attribute to this window",
+        note: translateCopy("ov.requestsLackTimestampsCannotAttributeToThisWindow", lang),
       };
     }
     return {
@@ -273,7 +264,7 @@ function buildBoundedWindow(
       tokensSaved: 0,
       requestCount: 0,
       state: "verified",
-      note: zh ? "该窗口内没有请求记录" : "No requests in this window",
+      note: translateCopy("ov.noRequestsInThisWindow", lang),
     };
   }
   const pairs = inWindow.filter((log) => log.before !== null && log.after !== null);
@@ -284,7 +275,7 @@ function buildBoundedWindow(
       tokensSaved: null,
       requestCount: inWindow.length,
       state: "partial",
-      note: zh ? "该窗口有请求但缺少压缩前后值" : "Requests exist but lack before/after values",
+      note: translateCopy("ov.requestsExistButLackBeforeAfterValues2", lang),
     };
   }
   const saved = pairs.reduce((sum, pair) => sum + Math.max(0, pair.before! - pair.after!), 0);
@@ -296,31 +287,28 @@ function buildBoundedWindow(
     requestCount: inWindow.length,
     state: partial ? "partial" : "verified",
     note: partial
-      ? zh ? "部分请求缺少压缩前后值，节省按可得请求计算" : "Some requests lack before/after values; savings cover available requests only"
-      : zh ? "按压缩前后值计算；账单影响待确认" : "Based on before/after values; billing impact pending",
+      ? translateCopy("ov.someRequestsLackBeforeAfterValuesSavingsCoverAvailableRequestsOnly", lang)
+      : translateCopy("ov.basedOnBeforeAfterValuesBillingImpactPending2", lang),
   };
 }
 
 function unavailableWindow(key: SavingsWindowKey, lang: Lang, evidence: EvidenceState): SavingsWindowSummary {
-  const zh = lang === "zh";
-  const label = key === "total" ? (zh ? "累计" : "Total") : key === "week" ? (zh ? "当周" : "This week") : key === "month" ? (zh ? "当月" : "This month") : (zh ? "当天" : "Today");
+  const label = key === "total" ? (translateCopy("ov.total", lang)) : key === "week" ? (translateCopy("ov.thisWeek", lang)) : key === "month" ? (translateCopy("ov.thisMonth", lang)) : (translateCopy("ov.today", lang));
   const note =
     evidence === "preview"
-      ? (zh ? "浏览器预览 · 未连接实时数据" : "Browser preview · no live data")
+      ? (translateCopy("ov.browserPreviewNoLiveData", lang))
       : evidence === "loading"
-        ? (zh ? "正在连接 d-token 本地服务" : "Connecting to the local d-token service")
+        ? (translateCopy("an.connectingToTheLocalDTokenService", lang))
         : evidence === "partial"
-          ? (zh ? "本地数据不完整 · 未确认当前状态" : "Local data is incomplete · current state unverified")
-          : (zh ? "d-token 本地服务暂不可用" : "Local d-token service unavailable");
+          ? (translateCopy("ov.localDataIsIncompleteCurrentStateUnverified", lang))
+          : (translateCopy("an.localDTokenServiceUnavailable", lang));
   return { key, label, tokensSaved: null, requestCount: null, state: "unavailable", note };
 }
 
 function missingCost(lang: Lang): SavingsCostSummary {
   return {
     available: false,
-    detail: lang === "zh"
-      ? "缺少可信价格来源；不估算账单节省。Token 差额不等于账单节省。"
-      : "No trusted pricing source; billing savings are not estimated. Token deltas are not billing savings.",
+    detail: translateCopy("ov.noTrustedPricingSourceBillingSavingsAreNotEstimatedTokenDeltasAreNotBillingSavings", lang),
   };
 }
 

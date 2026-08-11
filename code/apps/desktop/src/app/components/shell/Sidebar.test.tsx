@@ -2,7 +2,7 @@ import "@testing-library/jest-dom/vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Sidebar } from "./Sidebar";
-import { I18nContext } from "../../lib/i18n";
+import { I18nContext, translateCopy } from "../../lib/i18n";
 import { NAV } from "../../lib/nav";
 
 const themeMock = vi.hoisted(() => ({
@@ -58,7 +58,7 @@ describe("Sidebar", () => {
     for (const label of [
       "总体概览",
       "安装与连接",
-      "代码图谱",
+      "代码图谱 实验性",
       "分析",
       "视觉压缩 Beta",
       "Doctor",
@@ -242,5 +242,24 @@ describe("Sidebar", () => {
     ).toBeVisible();
     expect(screen.getByRole("radio", { name: "Light" })).toBeVisible();
     expect(screen.getByRole("radio", { name: "Dark" })).toBeVisible();
+  });
+
+  it("keeps the bilingual nav and analytics copy keys complete and expected", () => {
+    for (const [key, expected] of [
+      ["nav.experimental", "实验性"],
+      ["nav.doctor", "Doctor"],
+      ["nav.changes", "变更与回退"],
+      ["an.heatmap", "活动趋势热力图"],
+    ] as const) {
+      expect(translateCopy(key, "zh")).toBe(expected);
+    }
+    for (const [key, expected] of [
+      ["nav.experimental", "Experimental"],
+      ["nav.doctor", "Doctor"],
+      ["nav.changes", "Changes & Rollback"],
+      ["an.heatmap", "Activity trend heatmap"],
+    ] as const) {
+      expect(translateCopy(key, "en")).toBe(expected);
+    }
   });
 });

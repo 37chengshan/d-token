@@ -1,0 +1,9 @@
+{
+  "id": "fault-precommit-candidate-failure",
+  "kind": "fault-scenario",
+  "description": "Pre-commit candidate failure: transform validated then store write fails; baseline must be sent exactly once.",
+  "privacy": "synthetic fixture; no credentials, paths, or real prompts",
+  "failpoint": "ccr_store.write",
+  "expected_unique_terminal_state": "baseline_sent_once",
+  "forbidden": ["candidate_sent", "double_send", "retry_after_commit"]
+}

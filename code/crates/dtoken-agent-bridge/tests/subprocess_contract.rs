@@ -158,7 +158,7 @@ fn invalid_cli_command_returns_a_nonzero_exit_code() {
 }
 
 #[test]
-fn managed_rtk_wrap_filters_output_tracks_metadata_and_preserves_failure_exit_code() {
+fn managed_rtk_wrap_preserves_failure_output_and_tracks_metadata() {
     let root = tempdir().expect("managed RTK tempdir");
     let managed_root = root.path().join("managed-rtk");
     let isolated_bridge = private_bridge_copy(root.path());
@@ -176,6 +176,7 @@ fn managed_rtk_wrap_filters_output_tracks_metadata_and_preserves_failure_exit_co
             managed_root: managed_root.clone(),
             bridge_path: isolated_bridge.clone(),
             max_output_bytes: Some(1_024),
+            filter_dsl: None,
         })
         .expect("install managed hook");
     lifecycle.verify_hook().expect("verify managed hook");
@@ -204,8 +205,12 @@ fn managed_rtk_wrap_filters_output_tracks_metadata_and_preserves_failure_exit_co
 
     let stdout = String::from_utf8(output.stdout).expect("managed stdout");
     let stderr = String::from_utf8(output.stderr).expect("managed stderr");
-    assert!(stdout.contains("previous line repeated"));
-    assert!(!stdout.contains("\u{1b}[31m"));
+    // A failing command's output is preserved verbatim: neither ANSI nor the
+    // repeated error lines are filtered, because the caller must see the
+    // original failure output (PR-C4A failure preserve).
+    assert!(stdout.contains("\u{1b}[31merror\u{1b}[0m"));
+    assert!(stdout.contains("\n\nerror\nerror"));
+    // Secret-shaped stderr is preserved in the delivered output ...
     assert!(stderr.contains("SECRET=must-not-persist"));
 
     let usage_dir = managed_root.join("usage");
@@ -223,7 +228,86 @@ fn managed_rtk_wrap_filters_output_tracks_metadata_and_preserves_failure_exit_co
         usage["command_basename"].as_str(),
         command.file_name().and_then(|name| name.to_str())
     );
+    assert!(usage["transforms"]
+        .as_array()
+        .expect("transforms")
+        .iter()
+        .any(|value| value == "stdout:unknown-family"));
+    // ... but raw output and secrets never enter the persisted receipt.
     assert!(!usage_text.contains("SECRET=must-not-persist"));
+    assert!(!usage_text.contains("\u{1b}[31m"));
+}
+
+#[test]
+fn managed_rtk_wrap_applies_structured_json_filter_and_records_capture_evidence() {
+    let root = tempdir().expect("managed RTK tempdir");
+    let managed_root = root.path().join("managed-rtk");
+    let isolated_bridge = private_bridge_copy(root.path());
+    let mut lifecycle = ManagedRtkLifecycle::plan(
+        "rtk-wrap-fixture.filter",
+        if cfg!(windows) {
+            dtoken_types::agent::HostPlatform::Windows
+        } else {
+            dtoken_types::agent::HostPlatform::Macos
+        },
+        &"f".repeat(64),
+    );
+    lifecycle
+        .install_hook(ManagedHookPaths {
+            managed_root: managed_root.clone(),
+            bridge_path: isolated_bridge.clone(),
+            max_output_bytes: Some(1_024),
+            filter_dsl: None,
+        })
+        .expect("install managed hook");
+    lifecycle.verify_hook().expect("verify managed hook");
+
+    let command = managed_command_binary();
+    let managed_root_text = managed_root.display().to_string();
+    let command_text = command.display().to_string();
+    let output = run_bridge(
+        &isolated_bridge,
+        &[
+            "rtk",
+            "wrap",
+            "--managed-root",
+            managed_root_text.as_str(),
+            "--",
+            command_text.as_str(),
+            "json",
+        ],
+        b"",
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // PR-C4A JSON family: output-shape classification minifies a complete
+    // JSON document losslessly, so pretty-printed fixture JSON becomes one
+    // line (no raw output ever enters the persisted receipt).
+    assert_eq!(stdout.trim(), r#"{"count":3,"name":"fixture","ok":true}"#);
+
+    let entries = fs::read_dir(managed_root.join("usage"))
+        .expect("usage dir")
+        .map(|entry| entry.expect("usage entry").path())
+        .collect::<Vec<_>>();
+    assert_eq!(entries.len(), 1);
+    let usage_text = fs::read_to_string(&entries[0]).expect("usage record");
+    let usage: Value = serde_json::from_str(&usage_text).expect("usage JSON");
+    assert_eq!(usage["disposition"], "filtered_verified_hook");
+    assert_eq!(usage["exit_code"].as_i64(), Some(0));
+    assert!(
+        usage["input_bytes"].as_u64().unwrap_or_default()
+            >= usage["output_bytes"].as_u64().unwrap_or_default()
+    );
+    assert!(usage["transforms"]
+        .as_array()
+        .expect("transforms")
+        .iter()
+        .any(|value| value == "stdout:json:minify"));
+    assert!(!usage_text.contains("{\"count\":3"));
 }
 
 #[test]
@@ -245,6 +329,7 @@ fn managed_rtk_wrap_bounds_large_dual_stream_output_and_records_capture_evidence
             managed_root: managed_root.clone(),
             bridge_path: isolated_bridge.clone(),
             max_output_bytes: Some(1_024),
+            filter_dsl: None,
         })
         .expect("install managed hook");
     lifecycle.verify_hook().expect("verify managed hook");
@@ -311,6 +396,7 @@ fn managed_rtk_wrap_rejects_a_cli_limit_that_is_not_hash_bound_to_the_manifest()
             managed_root: managed_root.clone(),
             bridge_path: isolated_bridge.clone(),
             max_output_bytes: Some(1_024),
+            filter_dsl: None,
         })
         .expect("install managed hook");
     lifecycle.verify_hook().expect("verify managed hook");
@@ -336,6 +422,73 @@ fn managed_rtk_wrap_rejects_a_cli_limit_that_is_not_hash_bound_to_the_manifest()
     assert_eq!(output.status.code(), Some(1));
     assert!(String::from_utf8_lossy(&output.stderr).contains("does not match"));
     assert!(output.stdout.is_empty());
+    assert_eq!(
+        fs::read_dir(managed_root.join("usage"))
+            .expect("usage dir")
+            .count(),
+        0
+    );
+}
+
+#[test]
+fn managed_rtk_wrap_binds_a_reviewed_filter_dsl_and_fails_closed_on_tampering() {
+    let root = tempdir().expect("managed RTK tempdir");
+    let managed_root = root.path().join("managed-rtk");
+    let isolated_bridge = private_bridge_copy(root.path());
+    let mut lifecycle = ManagedRtkLifecycle::plan(
+        "rtk-wrap-fixture.dsl",
+        if cfg!(windows) {
+            dtoken_types::agent::HostPlatform::Windows
+        } else {
+            dtoken_types::agent::HostPlatform::Macos
+        },
+        &"9".repeat(64),
+    );
+    let dsl = "schema_version = 1\n[git]\nenabled = true\nfold_repeated_lines = true\nmax_output_bytes = 65536\n"
+        .to_string();
+    lifecycle
+        .install_hook(ManagedHookPaths {
+            managed_root: managed_root.clone(),
+            bridge_path: isolated_bridge.clone(),
+            max_output_bytes: Some(1_024),
+            filter_dsl: Some(dsl.clone()),
+        })
+        .expect("install managed hook with DSL");
+    lifecycle.verify_hook().expect("verify managed hook");
+
+    // The reviewed DSL artifact exists and is hash-bound.
+    let filter_path = managed_root.join("filters.toml");
+    assert_eq!(
+        fs::read_to_string(&filter_path).expect("read bound DSL"),
+        dsl
+    );
+
+    // Tampering with the bound DSL invalidates the root verification, so
+    // wrap is exact passthrough: captured output delivered verbatim and no
+    // usage claim recorded.
+    fs::write(&filter_path, "[git]\nenabled = false\n").expect("tamper with DSL");
+    let command = managed_command_binary();
+    let managed_root_text = managed_root.display().to_string();
+    let command_text = command.display().to_string();
+    let output = run_bridge(
+        &isolated_bridge,
+        &[
+            "rtk",
+            "wrap",
+            "--managed-root",
+            managed_root_text.as_str(),
+            "--",
+            command_text.as_str(),
+            "json",
+        ],
+        b"",
+    );
+    assert_eq!(output.status.code(), Some(0));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("\n  \"name\": \"fixture\","),
+        "tampered DSL must fall back to verbatim capture: {stdout}"
+    );
     assert_eq!(
         fs::read_dir(managed_root.join("usage"))
             .expect("usage dir")

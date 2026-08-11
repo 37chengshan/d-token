@@ -13,6 +13,7 @@ sha2 = "0.10"
 [dependencies]
 dtoken-agent-bridge = { path = "../../../crates/dtoken-agent-bridge" }
 dtoken-codebase-memory = { path = "../../../crates/dtoken-codebase-memory" }
+dtoken-compress = { path = "../../../crates/dtoken-compress" }
 dtoken-core-api = { path = "../../../crates/dtoken-core-api" }
 dtoken-config = { path = "../../../crates/dtoken-config" }
 dtoken-config-patcher = { path = "../../../crates/dtoken-config-patcher" }

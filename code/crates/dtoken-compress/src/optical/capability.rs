@@ -2,23 +2,29 @@ use std::collections::{HashMap, HashSet};
 
 use base64::Engine as _;
 use dtoken_types::{
-    CapabilityStatus, OpticalCapabilityLifecycle, OpticalCapabilitySnapshot, OpticalEndpoint,
-    OpticalEvalArtifact, OpticalMode, OpticalModelCapability, OpticalRuntimeConfig,
-    OpticalTrustedAuthority, Protocol, ProviderFamily, VisionExactnessClass, VisionTokenFormula,
+    CapabilityStatus, OpticalCapabilityLifecycle, OpticalCapabilitySnapshot,
+    OpticalEconomicsAttestation, OpticalEndpoint, OpticalEvalArtifact, OpticalMode,
+    OpticalModelCapability, OpticalRuntimeConfig, OpticalTrustedAuthority, Protocol,
+    ProviderFamily, VisionExactnessClass, VisionTokenFormula,
 };
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use sha2::{Digest, Sha256};
 
 use super::contract::OpticalTransformContractV2;
-use super::economics::resolve_active_economics_contract;
+use super::economics::economics_contract_from_attested;
 use super::render_geometry::geometry_for_capability;
 use super::renderer::{font_digest_for, production_render_contract, render_contract_digest};
+
+#[cfg(test)]
+use ed25519_dalek::Signer;
 
 #[derive(Debug, Clone)]
 pub struct ResolvedOpticalCapability {
     pub capability: OpticalModelCapability,
     pub snapshot_id: Option<String>,
     pub revision: Option<u64>,
+    /// Attested economics bound by the resolved snapshot, when present.
+    pub economics: Option<OpticalEconomicsAttestation>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -30,6 +36,7 @@ pub enum CapabilityRegistryError {
     SupersededSnapshot,
     InvalidLifecycleMetadata,
     InvalidIdentity,
+    WildcardIdentity,
     InvalidRevision,
     CapabilityNotSupported,
     CapabilityIdentityMismatch,
@@ -164,6 +171,18 @@ impl OpticalCapabilityRegistry {
         self.superseded_rules
     }
 
+    /// Returns the verified snapshot for `snapshot_id`, when the registry
+    /// accepted it after full attestation/eval/economics validation.
+    pub fn verified_snapshot(&self, snapshot_id: &str) -> Option<&OpticalCapabilitySnapshot> {
+        self.verified_rules
+            .iter()
+            .find(|snapshot| snapshot.snapshot_id == snapshot_id)
+    }
+
+    pub fn verified_snapshots(&self) -> impl Iterator<Item = &OpticalCapabilitySnapshot> {
+        self.verified_rules.iter()
+    }
+
     pub(crate) fn register_snapshot(
         &mut self,
         mut snapshot: OpticalCapabilitySnapshot,
@@ -217,6 +236,18 @@ impl OpticalCapabilityRegistry {
             || snapshot.source.is_empty()
         {
             return Err(CapabilityRegistryError::InvalidIdentity);
+        }
+        if identity_contains_wildcard(&snapshot.model_base)
+            || snapshot
+                .provider_id
+                .as_deref()
+                .is_some_and(identity_contains_wildcard)
+            || snapshot
+                .route_id
+                .as_deref()
+                .is_some_and(identity_contains_wildcard)
+        {
+            return Err(CapabilityRegistryError::WildcardIdentity);
         }
         if snapshot.revision == 0 || snapshot.verified_at_ms == 0 {
             return Err(CapabilityRegistryError::InvalidRevision);
@@ -274,6 +305,7 @@ impl OpticalCapabilityRegistry {
                 "compatibility helper; production should load versioned snapshots".to_string(),
             ),
             attestation: None,
+            economics: None,
         };
         let _ = self.register_snapshot(snapshot);
     }
@@ -336,6 +368,10 @@ fn capability_identity_key(
         endpoint,
         normalize_model_base(model_base)
     )
+}
+
+pub(crate) fn identity_contains_wildcard(value: &str) -> bool {
+    value.contains('*')
 }
 
 fn snapshot_identity_key(snapshot: &OpticalCapabilitySnapshot) -> String {
@@ -484,6 +520,22 @@ pub(crate) fn experimental_anthropic_active_snapshot(
         source: source.to_string(),
         notes: Some("experimental; requires explicit route confirmation".to_string()),
         attestation: None,
+        economics: Some(fixture_economics()),
+    }
+}
+
+/// Fixture economics matching the historical unit contract
+/// (`test-char4-tokenizer-v1` / `test-anthropic-cache-pricing-v1`).
+#[cfg(test)]
+pub(crate) fn fixture_economics() -> OpticalEconomicsAttestation {
+    OpticalEconomicsAttestation {
+        schema_version: 1,
+        tokenizer_revision: "test-char4-tokenizer-v1".to_string(),
+        pricing_revision: "test-anthropic-cache-pricing-v1".to_string(),
+        cache_policy_revision: "cold-warm-unknown-max-burn-v1".to_string(),
+        chars_per_text_token: 4.0,
+        cache_create_rate: 1.25,
+        cache_read_rate: 0.1,
     }
 }
 
@@ -528,6 +580,7 @@ pub fn capability_attestation_payload(snapshot: &OpticalCapabilitySnapshot) -> V
         "capability": snapshot.capability,
         "verified_at_ms": snapshot.verified_at_ms,
         "source": snapshot.source,
+        "economics": snapshot.economics,
         "attestation": {
             "schema_version": attestation.schema_version,
             "algorithm": attestation.algorithm,
@@ -549,6 +602,89 @@ pub fn eval_artifact_digest(artifact: &OpticalEvalArtifact) -> String {
         "{:x}",
         Sha256::digest(serde_json::to_vec(artifact).unwrap_or_default())
     )
+}
+
+/// Produces a signed, production-loadable capability snapshot for an exact
+/// route/provider/model/API identity. The authority's private key signs the
+/// snapshot payload, which binds the renderer/font/transform/eval digests and
+/// the attested economics. `expires_at_ms` drives the expiry lifecycle; a
+/// revocation or a higher superseded revision later blocks this snapshot.
+pub fn sign_capability_snapshot(
+    snapshot: &mut OpticalCapabilitySnapshot,
+    signing_key_bytes: &[u8; 32],
+    authority_id: &str,
+    key_id: &str,
+    issued_at_ms: u64,
+    expires_at_ms: u64,
+    eval_artifact_digest: &str,
+) -> Result<(), CapabilityRegistryError> {
+    if identity_contains_wildcard(&snapshot.model_base)
+        || snapshot
+            .provider_id
+            .as_deref()
+            .is_some_and(identity_contains_wildcard)
+        || snapshot
+            .route_id
+            .as_deref()
+            .is_some_and(identity_contains_wildcard)
+    {
+        return Err(CapabilityRegistryError::WildcardIdentity);
+    }
+    if snapshot
+        .provider_id
+        .as_deref()
+        .map(str::trim)
+        .is_none_or(str::is_empty)
+        || snapshot
+            .route_id
+            .as_deref()
+            .map(str::trim)
+            .is_none_or(str::is_empty)
+    {
+        return Err(CapabilityRegistryError::InvalidIdentity);
+    }
+    let geometry = geometry_for_capability(&snapshot.capability)
+        .ok_or(CapabilityRegistryError::RendererProfileMismatch)?;
+    let render_contract = production_render_contract(&geometry);
+    let renderer_profile_digest = render_contract_digest(&render_contract);
+    let economics_contract = snapshot
+        .economics
+        .as_ref()
+        .and_then(economics_contract_from_attested)
+        .ok_or(CapabilityRegistryError::EconomicsContractMissing)?;
+    let transform_contract_digest = OpticalTransformContractV2::current_with_economics(
+        &renderer_profile_digest,
+        &economics_contract.tokenizer_revision,
+        &economics_contract.pricing_revision,
+        &economics_contract.cache_policy_revision,
+    )
+    .digest();
+    if expires_at_ms <= issued_at_ms {
+        return Err(CapabilityRegistryError::AttestationExpired);
+    }
+    let attestation = dtoken_types::OpticalCapabilityAttestation {
+        schema_version: 2,
+        algorithm: "ed25519".to_string(),
+        authority_id: authority_id.trim().to_string(),
+        key_id: key_id.trim().to_string(),
+        issued_at_ms,
+        expires_at_ms,
+        renderer_profile_digest,
+        font_digest: font_digest_for(render_contract.font),
+        transform_contract_digest,
+        eval_artifact_digest: eval_artifact_digest.to_string(),
+        signature_base64: String::new(),
+    };
+    snapshot.attestation = Some(attestation);
+    let signing_key = ed25519_dalek::SigningKey::from_bytes(signing_key_bytes);
+    let signature =
+        ed25519_dalek::Signer::sign(&signing_key, &capability_attestation_payload(snapshot));
+    snapshot
+        .attestation
+        .as_mut()
+        .expect("attestation was just set")
+        .signature_base64 = base64::engine::general_purpose::STANDARD.encode(signature.to_bytes());
+    Ok(())
 }
 
 fn verify_snapshot_attestation(
@@ -573,6 +709,20 @@ fn verify_snapshot_attestation(
             .is_none_or(str::is_empty)
     {
         return Err(CapabilityRegistryError::InvalidIdentity);
+    }
+    // A wildcard-bound capability must never authorize active execution on a
+    // request: exact route/provider/model identity is a release gate.
+    if identity_contains_wildcard(&snapshot.model_base)
+        || snapshot
+            .provider_id
+            .as_deref()
+            .is_some_and(identity_contains_wildcard)
+        || snapshot
+            .route_id
+            .as_deref()
+            .is_some_and(identity_contains_wildcard)
+    {
+        return Err(CapabilityRegistryError::WildcardIdentity);
     }
     if attestation.schema_version != 2 {
         return Err(CapabilityRegistryError::UnsupportedAttestationVersion);
@@ -617,14 +767,18 @@ fn verify_snapshot_attestation(
         .ok_or(CapabilityRegistryError::RendererProfileMismatch)?;
     let render_contract = production_render_contract(&geometry);
     let renderer_profile_digest = render_contract_digest(&render_contract);
-    let economics_contract =
-        resolve_active_economics_contract(&snapshot.model_base, Some(snapshot.revision))
-            .ok_or(CapabilityRegistryError::EconomicsContractMissing)?;
+    // The economics contract must be carried by the snapshot itself and bound
+    // by the signature; an unattested or malformed contract can never resolve.
+    let economics_contract = snapshot
+        .economics
+        .as_ref()
+        .and_then(economics_contract_from_attested)
+        .ok_or(CapabilityRegistryError::EconomicsContractMissing)?;
     let transform_contract_digest = OpticalTransformContractV2::current_with_economics(
         &renderer_profile_digest,
-        economics_contract.tokenizer_revision,
-        economics_contract.pricing_revision,
-        economics_contract.cache_policy_revision,
+        &economics_contract.tokenizer_revision,
+        &economics_contract.pricing_revision,
+        &economics_contract.cache_policy_revision,
     )
     .digest();
     if attestation.renderer_profile_digest != renderer_profile_digest {
@@ -636,6 +790,9 @@ fn verify_snapshot_attestation(
     let eval = evals
         .get(&attestation.eval_artifact_digest)
         .ok_or(CapabilityRegistryError::EvalArtifactMissing)?;
+    if eval.corpus_digest.trim().is_empty() {
+        return Err(CapabilityRegistryError::EvalArtifactRejected);
+    }
     if !eval.passes_derived_quality_gate()
         || eval.evaluated_at_ms == 0
         || eval.evaluated_at_ms > attestation.issued_at_ms
@@ -733,6 +890,7 @@ pub fn resolve_model_capability_record_for_route_with_registry(
             },
             snapshot_id: None,
             revision: None,
+            economics: None,
         };
     };
 
@@ -751,6 +909,7 @@ pub fn resolve_model_capability_record_for_route_with_registry(
             capability,
             snapshot_id: Some(snapshot.snapshot_id.clone()),
             revision: Some(snapshot.revision),
+            economics: snapshot.economics.clone(),
         };
     }
 
@@ -797,111 +956,118 @@ pub fn resolve_model_capability_record_for_route_with_registry(
         capability,
         snapshot_id: None,
         revision: None,
+        economics: None,
     }
+}
+
+/// Builds a fully signed fixture runtime config (Ed25519 attestation + passing
+/// bound eval + attested economics) that the registry accepts while fresh.
+#[cfg(test)]
+pub(crate) fn signed_runtime_config_fixture() -> OpticalRuntimeConfig {
+    signed_runtime_config()
+}
+
+#[cfg(test)]
+fn signed_runtime_config() -> OpticalRuntimeConfig {
+    let mut snapshot = experimental_anthropic_active_snapshot_for_route(
+        "signed-route-capability-v1",
+        1,
+        "anthropic-main",
+        "route-main",
+        "claude-fable-5",
+        100,
+        "fixture-eval",
+    );
+    let geometry = geometry_for_capability(&snapshot.capability)
+        .expect("experimental capability must have geometry");
+    let render_contract = production_render_contract(&geometry);
+    let renderer_digest = render_contract_digest(&render_contract);
+    let economics = snapshot
+        .economics
+        .as_ref()
+        .and_then(economics_contract_from_attested)
+        .expect("fixture snapshot must carry attested economics");
+    let transform_contract_digest = OpticalTransformContractV2::current_with_economics(
+        &renderer_digest,
+        &economics.tokenizer_revision,
+        &economics.pricing_revision,
+        &economics.cache_policy_revision,
+    )
+    .digest();
+    let eval = OpticalEvalArtifact {
+        schema_version: 2,
+        artifact_id: "eval-v1".to_string(),
+        model_base: "claude-fable-5".to_string(),
+        endpoint: OpticalEndpoint::AnthropicMessages,
+        renderer_profile_digest: renderer_digest.clone(),
+        font_digest: font_digest_for(render_contract.font),
+        transform_contract_digest: transform_contract_digest.clone(),
+        corpus_digest: "fixture-corpus-digest".to_string(),
+        evaluated_at_ms: 90,
+        sample_count: 20,
+        exact_failures: 0,
+        unsafe_failures: 0,
+        baseline_passes: 20,
+        candidate_passes: 20,
+        quality_delta: 0.0,
+        signed_input_token_delta: 10_000,
+        signed_cost_delta_microusd: 5_000,
+        latency_p95_delta_ms: 100,
+        passed: true,
+    };
+    sign_capability_snapshot(
+        &mut snapshot,
+        &[7u8; 32],
+        "fixture-authority",
+        "fixture-key-v1",
+        150,
+        1_000,
+        &eval_artifact_digest(&eval),
+    )
+    .expect("fixture snapshot must sign");
+    let _ = (renderer_digest, transform_contract_digest);
+
+    OpticalRuntimeConfig {
+        capability_snapshots: vec![snapshot],
+        trusted_authorities: vec![OpticalTrustedAuthority {
+            authority_id: "fixture-authority".to_string(),
+            key_id: "fixture-key-v1".to_string(),
+            public_key_base64: base64::engine::general_purpose::STANDARD.encode(
+                ed25519_dalek::SigningKey::from_bytes(&[7u8; 32])
+                    .verifying_key()
+                    .as_bytes(),
+            ),
+        }],
+        eval_artifacts: vec![eval],
+        ..Default::default()
+    }
+}
+
+/// Re-signs the fixture attestation after mutating the snapshot/eval so the
+/// remaining gates are evaluated on their own merit.
+#[cfg(test)]
+pub(crate) fn resign_runtime_config_fixture(config: &mut OpticalRuntimeConfig) {
+    let digest = eval_artifact_digest(&config.eval_artifacts[0]);
+    config.capability_snapshots[0]
+        .attestation
+        .as_mut()
+        .expect("attestation")
+        .eval_artifact_digest = digest;
+    let signing_key = ed25519_dalek::SigningKey::from_bytes(&[7u8; 32]);
+    let signature = signing_key.sign(&capability_attestation_payload(
+        &config.capability_snapshots[0],
+    ));
+    config.capability_snapshots[0]
+        .attestation
+        .as_mut()
+        .expect("attestation")
+        .signature_base64 = base64::engine::general_purpose::STANDARD.encode(signature.to_bytes());
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use ed25519_dalek::{Signer, SigningKey};
-
-    fn signed_runtime_config() -> OpticalRuntimeConfig {
-        let mut snapshot = experimental_anthropic_active_snapshot_for_route(
-            "signed-route-capability-v1",
-            1,
-            "anthropic-main",
-            "route-main",
-            "claude-fable-5",
-            100,
-            "fixture-eval",
-        );
-        let geometry = geometry_for_capability(&snapshot.capability)
-            .expect("experimental capability must have geometry");
-        let render_contract = production_render_contract(&geometry);
-        let renderer_digest = render_contract_digest(&render_contract);
-        let economics = resolve_active_economics_contract("claude-fable-5", Some(1))
-            .expect("test economics contract");
-        let transform_contract_digest = OpticalTransformContractV2::current_with_economics(
-            &renderer_digest,
-            economics.tokenizer_revision,
-            economics.pricing_revision,
-            economics.cache_policy_revision,
-        )
-        .digest();
-        let eval = OpticalEvalArtifact {
-            schema_version: 2,
-            artifact_id: "eval-v1".to_string(),
-            model_base: "claude-fable-5".to_string(),
-            endpoint: OpticalEndpoint::AnthropicMessages,
-            renderer_profile_digest: renderer_digest.clone(),
-            font_digest: font_digest_for(render_contract.font),
-            transform_contract_digest: transform_contract_digest.clone(),
-            corpus_digest: "fixture-corpus-digest".to_string(),
-            evaluated_at_ms: 90,
-            sample_count: 20,
-            exact_failures: 0,
-            unsafe_failures: 0,
-            baseline_passes: 20,
-            candidate_passes: 20,
-            quality_delta: 0.0,
-            signed_input_token_delta: 10_000,
-            signed_cost_delta_microusd: 5_000,
-            latency_p95_delta_ms: 100,
-            passed: true,
-        };
-        snapshot.attestation = Some(dtoken_types::OpticalCapabilityAttestation {
-            schema_version: 2,
-            algorithm: "ed25519".to_string(),
-            authority_id: "fixture-authority".to_string(),
-            key_id: "fixture-key-v1".to_string(),
-            issued_at_ms: 150,
-            expires_at_ms: 1_000,
-            renderer_profile_digest: renderer_digest,
-            font_digest: font_digest_for(render_contract.font),
-            transform_contract_digest,
-            eval_artifact_digest: eval_artifact_digest(&eval),
-            signature_base64: String::new(),
-        });
-        let signing_key = SigningKey::from_bytes(&[7u8; 32]);
-        let signature = signing_key.sign(&capability_attestation_payload(&snapshot));
-        snapshot
-            .attestation
-            .as_mut()
-            .expect("attestation exists")
-            .signature_base64 =
-            base64::engine::general_purpose::STANDARD.encode(signature.to_bytes());
-
-        OpticalRuntimeConfig {
-            capability_snapshots: vec![snapshot],
-            trusted_authorities: vec![OpticalTrustedAuthority {
-                authority_id: "fixture-authority".to_string(),
-                key_id: "fixture-key-v1".to_string(),
-                public_key_base64: base64::engine::general_purpose::STANDARD
-                    .encode(signing_key.verifying_key().as_bytes()),
-            }],
-            eval_artifacts: vec![eval],
-            ..Default::default()
-        }
-    }
-
-    fn resign_runtime_config(config: &mut OpticalRuntimeConfig) {
-        let digest = eval_artifact_digest(&config.eval_artifacts[0]);
-        config.capability_snapshots[0]
-            .attestation
-            .as_mut()
-            .expect("attestation")
-            .eval_artifact_digest = digest;
-        let signing_key = SigningKey::from_bytes(&[7u8; 32]);
-        let signature = signing_key.sign(&capability_attestation_payload(
-            &config.capability_snapshots[0],
-        ));
-        config.capability_snapshots[0]
-            .attestation
-            .as_mut()
-            .expect("attestation")
-            .signature_base64 =
-            base64::engine::general_purpose::STANDARD.encode(signature.to_bytes());
-    }
 
     #[test]
     fn normalize_model_base_strips_variant_tags() {
@@ -935,14 +1101,14 @@ mod tests {
         degraded.eval_artifacts[0].candidate_passes = 19;
         degraded.eval_artifacts[0].quality_delta = -0.05;
         degraded.eval_artifacts[0].passed = true;
-        resign_runtime_config(&mut degraded);
+        resign_runtime_config_fixture(&mut degraded);
         let registry = OpticalCapabilityRegistry::from_runtime_config(&degraded, 200);
         assert_eq!(registry.verified_rule_count(), 0);
         assert_eq!(registry.rejected_rule_count(), 1);
 
         let mut legacy = signed_runtime_config();
         legacy.eval_artifacts[0].schema_version = 1;
-        resign_runtime_config(&mut legacy);
+        resign_runtime_config_fixture(&mut legacy);
         let registry = OpticalCapabilityRegistry::from_runtime_config(&legacy, 200);
         assert_eq!(registry.verified_rule_count(), 0);
         assert_eq!(registry.rejected_rule_count(), 1);
@@ -955,7 +1121,7 @@ mod tests {
         config.eval_artifacts[0].candidate_passes = 0;
         config.eval_artifacts[0].quality_delta = 0.0;
         config.eval_artifacts[0].passed = true;
-        resign_runtime_config(&mut config);
+        resign_runtime_config_fixture(&mut config);
 
         let registry = OpticalCapabilityRegistry::from_runtime_config(&config, 200);
         assert_eq!(registry.verified_rule_count(), 0);
@@ -963,13 +1129,91 @@ mod tests {
     }
 
     #[test]
-    fn signed_capability_without_model_bound_economics_contract_is_rejected() {
+    fn signed_capability_without_attested_economics_contract_is_rejected() {
+        // Removing the attested economics leaves the transform contract
+        // unbound, so the registry must reject the snapshot (OPTICAL-5).
         let mut config = signed_runtime_config();
-        config.capability_snapshots[0].model_base = "claude-unpriced-5".to_string();
-        config.capability_snapshots[0].capability.model_base =
-            Some("claude-unpriced-5".to_string());
-        config.eval_artifacts[0].model_base = "claude-unpriced-5".to_string();
-        resign_runtime_config(&mut config);
+        config.capability_snapshots[0].economics = None;
+        resign_runtime_config_fixture(&mut config);
+
+        let registry = OpticalCapabilityRegistry::from_runtime_config(&config, 200);
+        assert_eq!(registry.verified_rule_count(), 0);
+        assert_eq!(registry.rejected_rule_count(), 1);
+    }
+
+    #[test]
+    fn signed_capability_with_malformed_economics_contract_is_rejected() {
+        let mut config = signed_runtime_config();
+        let mut economics = config.capability_snapshots[0]
+            .economics
+            .clone()
+            .expect("fixture economics");
+        economics.cache_policy_revision.clear();
+        config.capability_snapshots[0].economics = Some(economics);
+        resign_runtime_config_fixture(&mut config);
+
+        let registry = OpticalCapabilityRegistry::from_runtime_config(&config, 200);
+        assert_eq!(registry.verified_rule_count(), 0);
+        assert_eq!(registry.rejected_rule_count(), 1);
+    }
+
+    #[test]
+    fn signed_wildcard_identity_is_rejected_and_never_activates() {
+        for field in ["provider", "route", "model"] {
+            let mut config = signed_runtime_config();
+            match field {
+                "provider" => {
+                    config.capability_snapshots[0].provider_id = Some("*".to_string());
+                }
+                "route" => {
+                    config.capability_snapshots[0].route_id = Some("*".to_string());
+                }
+                _ => {
+                    config.capability_snapshots[0].model_base = "*".to_string();
+                }
+            }
+            resign_runtime_config_fixture(&mut config);
+            let registry = OpticalCapabilityRegistry::from_runtime_config(&config, 200);
+            assert_eq!(
+                registry.verified_rule_count(),
+                0,
+                "wildcard {field} must not verify"
+            );
+            assert_eq!(registry.rejected_rule_count(), 1, "wildcard {field}");
+        }
+    }
+
+    #[test]
+    fn expired_attestation_is_rejected_after_expiry() {
+        let config = signed_runtime_config();
+        let registry = OpticalCapabilityRegistry::from_runtime_config(&config, 200);
+        assert_eq!(registry.verified_rule_count(), 1);
+
+        // The fixture attestation expires at 1_000ms; after that the same
+        // snapshot must fail closed (expiry lifecycle).
+        let registry = OpticalCapabilityRegistry::from_runtime_config(&config, 1_001);
+        assert_eq!(registry.verified_rule_count(), 0);
+        assert_eq!(registry.rejected_rule_count(), 1);
+    }
+
+    #[test]
+    fn not_yet_valid_attestation_is_rejected() {
+        let mut config = signed_runtime_config();
+        config.capability_snapshots[0]
+            .attestation
+            .as_mut()
+            .expect("attestation")
+            .issued_at_ms = 500;
+        let signing_key = SigningKey::from_bytes(&[7u8; 32]);
+        let signature = signing_key.sign(&capability_attestation_payload(
+            &config.capability_snapshots[0],
+        ));
+        config.capability_snapshots[0]
+            .attestation
+            .as_mut()
+            .expect("attestation")
+            .signature_base64 =
+            base64::engine::general_purpose::STANDARD.encode(signature.to_bytes());
 
         let registry = OpticalCapabilityRegistry::from_runtime_config(&config, 200);
         assert_eq!(registry.verified_rule_count(), 0);

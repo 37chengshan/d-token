@@ -1,6 +1,7 @@
 import { useState } from "react";
+import { AnimatePresence, motion } from "motion/react";
 import { ChevronUp } from "lucide-react";
-import { useI18n, useT } from "../../lib/i18n";
+import { useI18n, useT, translateCopy } from "../../lib/i18n";
 import { StatusDot } from "../common/StatusBadge";
 import { useRuntimeDashboardSelector } from "../../lib/useRuntimeDashboard";
 
@@ -71,7 +72,7 @@ export function StatusBar() {
   return (
     <div className="shell-statusbar shrink-0 border-t border-border/40 px-3.5 py-2 text-[12px]">
       <div className="flex min-w-0 items-center gap-x-3">
-        <div className="flex min-w-0 flex-1 flex-nowrap items-center gap-x-4 overflow-x-auto">
+        <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-4">
           <Item label={t("status.runtime")} value={summary.runtimeLabel} health={summary.runtimeHealth} />
           <Item label={t("status.route")} value={summary.routeLabel} />
           <Item label={t("status.ports")} value={summary.portsLabel} />
@@ -87,19 +88,27 @@ export function StatusBar() {
           className="flex shrink-0 items-center gap-1 text-muted-foreground hover:text-foreground"
         >
           {t("status.details")}
-          <span className="transition-transform duration-200" style={{ transform: `rotate(${open ? 0 : 180}deg)` }}><ChevronUp className="size-4" /></span>
+          <span className={`transition-transform duration-200 motion-reduce:rotate-0 motion-reduce:transition-none ${open ? "rotate-0" : "rotate-180"}`}><ChevronUp className="size-4" /></span>
         </button>
       </div>
-      {open && (
-          <div className="overflow-hidden animate-in fade-in duration-200">
+      <AnimatePresence initial={false}>
+        {open && (
+          <motion.div
+            initial={{ opacity: 0, height: 0 }}
+            animate={{ opacity: 1, height: "auto" }}
+            exit={{ opacity: 0, height: 0 }}
+            transition={{ duration: 0.18, ease: "easeOut" }}
+            className="overflow-hidden"
+          >
             <div className="mt-2 grid grid-cols-2 gap-2 border-t border-sidebar-border/70 pt-2 text-muted-foreground md:grid-cols-4">
               <span>{t("status.source")}: {summary.sourceLabel}</span>
               <span>{t("status.requests")}: {summary.requestCount}</span>
               <span>{t("status.routes")}: {summary.routeCount}</span>
               <span>{t("status.updated")}: {summary.updatedLabel}</span>
             </div>
-          </div>
-      )}
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }
@@ -112,7 +121,6 @@ export function buildStatusSummary(
   lang: "zh" | "en" = "zh",
   serviceStatus: Record<string, any> | null = null,
 ) {
-  const zh = lang === "zh";
   const isRuntime = status === "runtime";
   const isPreview = status === "browser-preview";
   const isStale = status === "stale";
@@ -145,89 +153,89 @@ export function buildStatusSummary(
   const doctorOk = doctorEvidence?.ok === true;
   const doctorFailed = doctorEvidence?.ok === false;
   const doctorLabel = serviceRestartRequired
-    ? (zh ? "需重启服务" : "Restart required")
+    ? (translateCopy("sb.restartRequired", lang))
     : !runtimeEvidenceUsable
     ? isPreview
-      ? (zh ? "未运行诊断" : "Not run")
+      ? (translateCopy("sb.notRun", lang))
       : status === "loading"
-        ? (zh ? "等待数据" : "Loading")
-        : (zh ? "需要处理" : "Needs attention")
+        ? (translateCopy("sb.loading", lang))
+        : (translateCopy("cap.needsAttention", lang))
     : doctorOk
-      ? (zh ? "正常" : "Healthy")
+      ? (translateCopy("common.healthy", lang))
       : doctorFailed
-      ? (zh ? "需要处理" : "Needs attention")
+      ? (translateCopy("cap.needsAttention", lang))
         : failed !== null && failed > 0
-          ? zh ? `${failed} 个请求错误` : `${failed} request errors`
+          ? translateCopy("sb.requestErrors", lang, { v1: failed })
       : error
-        ? (zh ? "需要处理" : "Needs attention")
+        ? (translateCopy("cap.needsAttention", lang))
         : !activeRoute
-          ? (zh ? "等待配置" : "Waiting for configuration")
+          ? (translateCopy("sb.waitingForConfiguration", lang))
           : fallbackDisabled
-            ? (zh ? "未运行诊断" : "Not run")
-            : (zh ? "配置待确认" : "Configuration unverified");
+            ? (translateCopy("sb.notRun", lang))
+            : (translateCopy("sb.configurationUnverified", lang));
   const doctorHealth = doctorOk && !serviceRestartRequired ? "healthy" as const : "warning" as const;
 
   return {
     runtimeLabel: serviceRestartRequired
-      ? (zh ? "需要重启" : "Restart required")
+      ? (translateCopy("onb.service.restartRequired", lang))
       : runtimeEvidenceUsable
-      ? requests !== null && requests > 0 ? (zh ? "运行中" : "Running") : (zh ? "已连接" : "Connected")
+      ? requests !== null && requests > 0 ? (translateCopy("status.running", lang)) : (translateCopy("sb.connected", lang))
       : serviceRunning
-        ? (zh ? "运行中（数据不完整）" : "Running (partial data)")
+        ? (translateCopy("sb.runningPartialData", lang))
       : serviceStopped
-        ? (zh ? "已停止" : "Stopped")
+        ? (translateCopy("cbm.state.stopped", lang))
       : isPreview
-        ? (zh ? "浏览器预览" : "Browser preview")
+        ? (translateCopy("cp.source.preview", lang))
         : isStale
-          ? (zh ? "数据已过期" : "Data stale")
+          ? (translateCopy("sb.dataStale", lang))
           : isPartial
-            ? (zh ? "数据不完整" : "Data incomplete")
-            : status === "loading" ? (zh ? "读取中" : "Loading") : (zh ? "暂不可用" : "Unavailable"),
+            ? (translateCopy("sb.dataIncomplete", lang))
+            : status === "loading" ? (translateCopy("adv.preferenceLoading", lang)) : (translateCopy("sb.unavailable", lang)),
     runtimeHealth: runtimeEvidenceUsable ? "healthy" as const : serviceRestartRequired || serviceRunning || isPreview || status === "loading" ? "warning" as const : "error" as const,
     routeLabel: serviceRestartRequired
-      ? (zh ? "重启后重新验证" : "Reverify after restart")
+      ? (translateCopy("sb.reverifyAfterRestart", lang))
       : runtimeEvidenceUsable
-      ? activeRoute || (zh ? "等待路由配置" : "Waiting for route")
+      ? activeRoute || (translateCopy("sb.waitingForRoute", lang))
       : isPreview
-        ? (zh ? "尚未连接真实路由" : "No verified route")
+        ? (translateCopy("sb.noVerifiedRoute", lang))
         : isStale
-          ? (zh ? "路由数据已过期" : "Route data stale")
+          ? (translateCopy("sb.routeDataStale", lang))
           : isPartial
-            ? (zh ? "路由数据不完整" : "Route data incomplete")
-            : (zh ? "路由不可用" : "Route unavailable"),
+            ? (translateCopy("sb.routeDataIncomplete", lang))
+            : (translateCopy("sb.routeUnavailable", lang)),
     portsLabel: serviceRestartRequired
       ? (!staleServiceIdentifiers && (serviceUrl || serviceStatus?.service_url)
-          ? `${String(serviceUrl || serviceStatus?.service_url).replace(/^https?:\/\//, "")} · ${zh ? "需重启" : "restart required"}`
-          : (zh ? "需重启后确认" : "Confirm after restart"))
+          ? `${String(serviceUrl || serviceStatus?.service_url).replace(/^https?:\/\//, "")} · ${translateCopy("sb.restartRequired2", lang)}`
+          : (translateCopy("sb.confirmAfterRestart", lang)))
       : runtimeEvidenceUsable || serviceRunning
       ? staleServiceIdentifiers
-        ? (zh ? "监听已验证，实例标识不可用" : "Listener verified; instance identifiers unavailable")
+        ? (translateCopy("sb.listenerVerifiedInstanceIdentifiersUnavailable", lang))
         : (serviceUrl || serviceStatus?.service_url ? String(serviceUrl || serviceStatus?.service_url).replace(/^https?:\/\//, "") : "—")
       : serviceStopped
-        ? (zh ? "未监听" : "Not listening")
+        ? (translateCopy("sb.notListening", lang))
         : isPreview
-          ? (zh ? "未监听（预览）" : "Not listening (preview)")
+          ? (translateCopy("sb.notListeningPreview", lang))
           : status === "loading"
-            ? (zh ? "读取中" : "Loading")
-            : (zh ? "端口状态不可用" : "Port status unavailable"),
+            ? (translateCopy("adv.preferenceLoading", lang))
+            : (translateCopy("sb.portStatusUnavailable", lang)),
     modeLabel: serviceRestartRequired
-      ? (zh ? "旧进程待替换" : "Stale process")
+      ? (translateCopy("sb.staleProcess", lang))
       : runtimeEvidenceUsable
-      ? (zh ? "运行时数据" : "Runtime data")
+      ? (translateCopy("sb.runtimeData", lang))
       : isPreview
-        ? (zh ? "浏览器预览" : "Browser preview")
+        ? (translateCopy("cp.source.preview", lang))
         : isStale
-          ? (zh ? "过期数据" : "Stale data")
+          ? (translateCopy("sb.staleData", lang))
           : isPartial
-            ? (zh ? "不完整数据" : "Partial data")
-            : (zh ? "运行时不可用" : "Runtime unavailable"),
+            ? (translateCopy("sb.partialData", lang))
+            : (translateCopy("sb.runtimeUnavailable", lang)),
     doctorLabel,
     doctorHealth,
     sourceLabel: isStale
-      ? (zh ? "本地数据已过期" : "Local data stale")
+      ? (translateCopy("sb.localDataStale", lang))
       : isPartial
-        ? (zh ? "本地数据不完整" : "Local data incomplete")
-        : source === "browser-preview" ? (zh ? "浏览器预览" : "Browser preview") : source,
+        ? (translateCopy("sb.localDataIncomplete", lang))
+        : source === "browser-preview" ? (translateCopy("cp.source.preview", lang)) : source,
     requestCount: runtimeEvidenceUsable && requests !== null ? requests : "—",
     routeCount: runtimeEvidenceUsable && routes ? routes.length : "—",
     updatedLabel: updatedAt ? updatedAt.toLocaleTimeString() : "—",

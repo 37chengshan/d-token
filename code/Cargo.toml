@@ -5,6 +5,7 @@ members = [
   "crates/dtoken-router",
   "crates/dtoken-compress",
   "crates/dtoken-context-store",
+  "crates/dtoken-context-bus",
   "crates/dtoken-process",
   "crates/dtoken-doctor",
   "crates/dtoken-event-ledger",
@@ -18,12 +19,13 @@ members = [
   "crates/dtoken-codebase-memory",
   "crates/dtoken-core-api",
   "crates/dtoken-proxy",
+  "crates/dtoken-benchmark",
   "apps/desktop/src-tauri",
 ]
 resolver = "2"
 
 [workspace.package]
-version = "0.2.0-beta.1"
+version = "0.0.1"
 edition = "2021"
 license = "Apache-2.0"
 repository = "https://github.com/37chengshan/d-token"

@@ -1,0 +1,16 @@
+{
+  "id": "replay-passthrough-case",
+  "kind": "replay-case",
+  "description": "Replay case where the decision is passthrough: identical baseline and sent body.",
+  "privacy": "synthetic fixture; no credentials, paths, or real prompts",
+  "request_id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+  "route_id": "route-secondary",
+  "provider_id": "provider-secondary",
+  "input_protocol": "anthropic",
+  "body": {
+    "model": "replay-passthrough",
+    "messages": [
+      {"role": "user", "content": "exact passthrough"}
+    ]
+  }
+}

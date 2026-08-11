@@ -110,7 +110,7 @@ function serviceReadyNative(transactionOk: boolean) {
         candidates: [],
         agent_bindings: [],
         sources: [],
-        selection_required: false,
+        has_resolution_gap: false,
         writes_performed: false,
         privacy: "metadata only",
       };

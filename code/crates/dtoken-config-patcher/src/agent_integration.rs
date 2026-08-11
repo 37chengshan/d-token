@@ -1785,6 +1785,65 @@ mod tests {
     }
 
     #[test]
+    fn claude_code_hook_transaction_wires_the_bridge_and_rolls_back_exactly() {
+        let root = tempdir().unwrap();
+        let root_path = fs::canonicalize(root.path()).unwrap();
+        let home = root_path.join("home");
+        let backups = root_path.join("backups");
+        fs::create_dir_all(home.join(".claude")).unwrap();
+        let original = r#"{"enableAllProjectMcpServers": true, "hooks": {"SessionStart": [{"matcher": "startup", "hooks": [{"type": "command", "command": "pre-existing-hook"}]}]}}"#;
+        fs::write(home.join(".claude/settings.json"), original).unwrap();
+
+        let mut request = request(
+            AgentIntegrationScope::Global,
+            None,
+            PathBuf::from("/opt/dtoken-agent-bridge"),
+        );
+        request.agent_ids = vec!["claude-code".to_string()];
+        request.install_hook_or_plugin = true;
+        let prepared = prepare_agent_integration(&request, &home, &backups).unwrap();
+        let digest = prepared.plan.review_digest.clone();
+        let receipt = apply_agent_integration(prepared, &backups, &digest).unwrap();
+
+        let settings: Value =
+            serde_json::from_str(&fs::read_to_string(home.join(".claude/settings.json")).unwrap())
+                .unwrap();
+        let entries = settings["hooks"]["SessionStart"].as_array().unwrap();
+        assert_eq!(entries.len(), 2, "pre-existing hook is preserved");
+        let managed = entries
+            .iter()
+            .find(|entry| {
+                entry.get("dtoken_managed_id").and_then(Value::as_str)
+                    == Some("dtoken-hybrid-session-start-v1")
+            })
+            .expect("d-token managed hook entry");
+        let command = managed["hooks"][0]["command"]
+            .as_str()
+            .expect("hook command");
+        assert!(command.contains("dtoken-agent-bridge"));
+        assert!(command.contains("hook session-start"));
+        assert_eq!(managed["matcher"].as_str(), Some("startup|resume|compact"));
+        assert!(settings["enableAllProjectMcpServers"].as_bool() == Some(true));
+
+        let verification =
+            verify_agent_integration_transaction(&receipt.transaction_id, &backups).unwrap();
+        assert!(verification.ok);
+
+        let restored = rollback_agent_integration(&receipt.transaction_id, &backups).unwrap();
+        let mut restored_sorted = restored.clone();
+        restored_sorted.sort();
+        let mut verified_sorted = verification.verified_targets.clone();
+        verified_sorted.sort();
+        assert_eq!(restored_sorted, verified_sorted);
+        let after = fs::read_to_string(home.join(".claude/settings.json")).unwrap();
+        assert_eq!(
+            serde_json::from_str::<Value>(&after).unwrap(),
+            serde_json::from_str::<Value>(original).unwrap(),
+            "rollback restores the exact original hook configuration"
+        );
+    }
+
+    #[test]
     fn stale_review_digest_writes_nothing() {
         let root = tempdir().unwrap();
         let root_path = fs::canonicalize(root.path()).unwrap();

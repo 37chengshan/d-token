@@ -11,6 +11,7 @@ axum.workspace = true
 dtoken-config = { path = "../dtoken-config" }
 dtoken-config-patcher = { path = "../dtoken-config-patcher" }
 dtoken-compress = { path = "../dtoken-compress" }
+dtoken-context-bus = { path = "../dtoken-context-bus" }
 dtoken-context-store = { path = "../dtoken-context-store" }
 dtoken-doctor = { path = "../dtoken-doctor" }
 dtoken-event-ledger = { path = "../dtoken-event-ledger" }
@@ -29,6 +30,13 @@ tokio.workspace = true
 uuid.workspace = true
 url = "2"
 
+[features]
+default = []
+# Compile-time gated so release builds never carry test-only injection
+# points; enabled by `cargo test --features failpoints` or by consumers that
+# need deterministic crash simulation of the terminal-commit path.
+failpoints = ["dtoken-event-ledger/failpoints"]
+
 [target.'cfg(target_os = "windows")'.dependencies]
 keyring = { version = "3", default-features = false, features = ["windows-native"] }
 
@@ -36,4 +44,6 @@ keyring = { version = "3", default-features = false, features = ["windows-native
 keyring = { version = "3", default-features = false, features = ["apple-native"] }
 
 [dev-dependencies]
+base64 = "0.22"
+ed25519-dalek = { version = "2", features = ["rand_core"] }
 tower = { version = "0.5", features = ["util"] }

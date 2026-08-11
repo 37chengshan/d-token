@@ -1,6 +1,6 @@
 # d-token Third-Party Notices
 
-Last updated: 2026-08-06
+Last updated: 2026-08-08
 Applies to: d-token `0.2.0-beta.1` source and desktop distribution candidates
 
 This file is the distribution-facing third-party notice for d-token. The project itself is licensed under the Apache License 2.0; see [`LICENSE`](LICENSE). Release installers must include both `LICENSE` and this file under their legal resources.
@@ -50,12 +50,14 @@ THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND 
 ## Codebase Memory MCP import integration
 
 - Upstream: `DeusData/codebase-memory-mcp`
-- Pinned release: `v0.9.0`
-- Pinned commit: `b637e3330c96cfe452da623db068c241aaa3ec01`
+- Current pin (immutable pre-release): `v0.9.1-rc.1`, published 2026-07-30
+- Pinned commit: `ee9833df2c72b750378273897ffec9410fc2c4f2`
 - License: MIT
 - Integrity manifest: [`code/runtimes/codebase-memory/artifact-manifest.json`](code/runtimes/codebase-memory/artifact-manifest.json)
 
 The d-token installer ships only its restricted launcher and the legal text needed to explain the optional import. The upstream executable, installer, updater and native web UI are not included in the d-token installer. When a user chooses to import the pinned upstream archive, the d-token control plane verifies the archive and executable hashes before use and keeps the upstream license/notices with the imported component.
+
+Superseded historical pin `v0.9.0` / `b637e3330c96cfe452da623db068c241aaa3ec01` (superseded 2026-08-06): retained only as the reproduction baseline for the user-reported v0.9.0 import failure; it is no longer the active import pin and is not offered for new imports.
 
 ## Reference-only projects
 
@@ -63,14 +65,16 @@ The projects below informed behavior studies or evaluation design. Their source 
 
 ### Headroom
 
-- Upstream: `headroomlabs-ai/headroom`
-- Pinned comparison tag/commit: `v0.33.0` / `28aa53dc7ca51e687cc719c3fe160f3be50c6570`
-- Current comparison baseline (main HEAD, fetched 2026-08-02): `01df2452529a86c689cf226fecd5918cc5d19676`
-- Latest stable tag (released 2026-08-05, after the current baseline, not yet evaluated): `v0.34.0` / `9fd5ae3d530b5d9eb9e9127e413235a5a3b2faf6`
+- Upstream: `headroomlabs-ai/headroom` (official remote: `https://github.com/headroomlabs-ai/headroom.git`)
+- Pinned comparison tag/commit (unique current comparison pin, selected 2026-08-08 after a three-candidate drift audit): `v0.34.0` / `9fd5ae3d530b5d9eb9e9127e413235a5a3b2faf6` (released 2026-08-05; `pyproject.toml` version 0.34.0)
+- Historical baseline (superseded by `v0.34.0`): `01df2452529a86c689cf226fecd5918cc5d19676` (main HEAD as fetched 2026-08-02; `pyproject.toml` version 0.33.0; kept only to explain earlier evidence)
+- Previous release baseline (historical): `v0.33.0` / `28aa53dc7ca51e687cc719c3fe160f3be50c6570` (released 2026-07-29)
+- Post-release delta (tracked, not pinned): main `7f6950be34e29304deae0fa5138b852491b092fe` (fetched 2026-08-08; `pyproject.toml` version still 0.34.0, unreleased)
 - Historical comparison commit: `1725cd1f8376828849c0e48fd9008afa25d24fff`
-- License: Apache License 2.0
+- License: Apache License 2.0 (identical at all three candidate pins)
+- Upstream NOTICE: since `v0.34.0` it lists the vendored dashboard assets (`headroom/dashboard/static/`: Tailwind CSS 3.4.17 MIT, htmx 1.9.10 Zero-Clause BSD, Alpine.js 3.13.3 MIT, added by `#2734`); no NOTICE change from `v0.34.0` to main. d-token does not distribute those upstream assets.
 
-Versioned `headroom-*/` directories are local reference workspaces and are excluded from release source scope and desktop packages. d-token's Rust runtime is not a Python Headroom sidecar and does not silently install or launch Headroom. The CCR reversible-compression capability is a Headroom-internal component (not an independent upstream project); its provenance is covered by the Headroom pinned commit above.
+Versioned `headroom-*/` directories are local reference workspaces and are excluded from release source scope and desktop packages. d-token's Rust runtime is not a Python Headroom sidecar, does not silently install or launch Headroom, and does not depend on an external Headroom 8787 service. The CCR reversible-compression capability is a Headroom-internal component (not an independent upstream project); its provenance is covered by the Headroom pinned release above.
 
 ### lean-ctx (LeanCTX / Context Bus / Context Relay reference)
 
@@ -79,14 +83,24 @@ Versioned `headroom-*/` directories are local reference workspaces and are exclu
 - License: Apache License 2.0 (project-wide; root `LICENSE`, `README`, Rust `Cargo.toml` manifests and the Claude plugin `manifest.json` all declare Apache-2.0; `NOTICE` present)
 - Subpackage exceptions (licensed MIT, listed separately, not part of the project-wide license): `clients/python` (`pyproject.toml`) and `rust/crates/grammar-addons/lua` (`Cargo.toml`)
 - Local read-only research copy: `/Users/cc/Documents/d-token-external/lean-ctx/` (not distributed)
+- Pin decision (2026-08-08): `v3.9.17` / `cf8fce6b…` is the **single reference pin**. Upstream `main` `95a1b7bc60a01479986af026c0c24451804993ba` (fetched 2026-08-08) was evaluated and kept as post-pin research only: 93 unreleased commits / 160 files / +11209 −2665 (ADR-001..013, new `lean-ctx-protocol` v0.1.0 crate, enterprise feature gating, in-flight r15–r18 "science" series, security fixes #1428/#1431–35/#1418/#1437) with no version bump and no LICENSE/NOTICE change (verified at both pins, including the unchanged MIT subpackage exceptions). Not a runtime dependency; no migration claimed.
 
 lean-ctx informed behavior studies for the LeanCTX / Context Bus / Context Relay capability domain (`docs/PRD.md` P0.0.5). Its source code and binaries are not distributed as part of d-token. Headroom upstream removed its lean-ctx integration in `#2677` (merged 2026-07-31); d-token's LeanCTX alignment layer must be implemented as a d-token-owned Rust service and remains `unavailable`/`partial` until real cross-agent evidence exists.
+
+### RTK (integrated command-layer behavior baseline)
+
+- Upstream: `rtk-ai/rtk` (official remote `https://github.com/rtk-ai/rtk.git`)
+- Pinned release/commit: `v0.45.0` / `b34be37caf3796b69a50952a28e60e32b5daad43` (released 2026-08-07; git tags `v0.45.0` and `latest` both point at this commit; `Cargo.toml` version `0.45.0`)
+- License: Apache License 2.0 (root `LICENSE` verified 2026-08-08; standard sections 1-9 complete, ends with an embedded `Copyright 2024 rtk-ai and rtk-ai Labs` line instead of the appendix boilerplate)
+- NOTICE: none — the pinned commit has no root `NOTICE` file (no `NOTICE*` file anywhere in the repository)
+
+RTK is a behavior-migration baseline for d-token's integrated/managed command-output layer, not an implicitly bundled external runtime and not a standalone product path (`docs/PRD.md` §0.3/§4.2/§7). d-token does not install RTK separately by default and does not distribute the RTK binary. The d-token managed RTK lifecycle (command rewrite, shim/hook, fail-safe, usage metadata, precise uninstall) is implemented by the d-token-owned `dtoken-preprocessor` crate. External standalone RTK installs are only detected read-only as conflict hints. `rtk gain` is not used as a product polling path; RTK savings shown in d-token come from d-token runtime metrics or integrated RTK metrics only.
 
 ### pxpipe
 
 - Upstream: `teamchong/pxpipe`
-- Pinned comparison commit: `7b7d6efa42926a73b1bd709b5f6d1af1ae679947`
-- License: MIT
+- Pinned comparison commit: `0ceabbed941cf7e95d395153825e944ea9f82e2c` (v0.12.0 release, 2026-08-06; supersedes `7b7d6efa42926a73b1bd709b5f6d1af1ae679947` / v0.8.0, kept as historical)
+- License: MIT (unchanged between pins; no NOTICE file upstream)
 
 pxpipe informed public evaluation ideas around optical context representation. d-token's Rust renderer, request IR, patcher, routing and safety gates are independently implemented.
 

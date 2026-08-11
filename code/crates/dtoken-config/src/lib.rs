@@ -202,8 +202,12 @@ impl DtokenConfig {
         }) {
             self.optical.global_policy.allow_active = false;
         }
-        if active_requested {
-            self.optical.global_policy.allow_active = false;
+        // Active is authorized by the attestation chain, not by a blanket
+        // release flag: a fully green config (trusted authority + passing
+        // eval + attested capability + sane budgets) keeps `allow_active`, so
+        // the exact supported route can go automatic active with no UI switch
+        // (OPTICAL-1). Any missing/stale/unknown gate still fails closed.
+        if active_requested && !self.optical.global_policy.allow_active {
             issues.push(OpticalConfigIssue::ActiveDisabledByReleasePolicy);
         }
         let known_routes = self
@@ -297,14 +301,118 @@ mod tests {
     }
 
     #[test]
-    fn release_policy_always_disables_requested_optical_active() {
+    fn incomplete_gates_disable_requested_optical_active() {
+        // allow_active with no authority/eval/attested snapshot must fail
+        // closed and report the release-policy block.
         let mut config = DtokenConfig::default();
         config.optical.global_policy.allow_active = true;
 
         let issues = config.normalize_optical_fail_closed();
 
         assert!(!config.optical.global_policy.allow_active);
+        assert!(issues.contains(&OpticalConfigIssue::ActiveWithoutTrustedAuthority));
+        assert!(issues.contains(&OpticalConfigIssue::ActiveWithoutPassingEval));
+        assert!(issues.contains(&OpticalConfigIssue::ActiveWithoutAttestedCapability));
         assert!(issues.contains(&OpticalConfigIssue::ActiveDisabledByReleasePolicy));
+    }
+
+    #[test]
+    fn fully_green_config_keeps_requested_optical_active() {
+        // A config with a trusted authority, a passing eval artifact and an
+        // attested capability snapshot is the only config that may keep
+        // allow_active: the exact route is then automatic active with no UI
+        // switch (OPTICAL-1 / PR-C5D).
+        let mut config = DtokenConfig::default();
+        config.optical.global_policy.allow_active = true;
+        config
+            .optical
+            .trusted_authorities
+            .push(dtoken_types::OpticalTrustedAuthority {
+                authority_id: "fixture-authority".to_string(),
+                key_id: "fixture-key-v1".to_string(),
+                public_key_base64: "QUJD".to_string(),
+            });
+        config
+            .optical
+            .eval_artifacts
+            .push(dtoken_types::OpticalEvalArtifact {
+                schema_version: 2,
+                artifact_id: "eval-green".to_string(),
+                model_base: "claude-fable-5".to_string(),
+                endpoint: dtoken_types::OpticalEndpoint::AnthropicMessages,
+                renderer_profile_digest: "renderer".to_string(),
+                font_digest: "font".to_string(),
+                transform_contract_digest: "contract".to_string(),
+                corpus_digest: "corpus".to_string(),
+                evaluated_at_ms: 1,
+                sample_count: 20,
+                exact_failures: 0,
+                unsafe_failures: 0,
+                baseline_passes: 19,
+                candidate_passes: 20,
+                quality_delta: 0.05,
+                signed_input_token_delta: 1,
+                signed_cost_delta_microusd: 1,
+                latency_p95_delta_ms: 0,
+                passed: false,
+            });
+        config
+            .optical
+            .capability_snapshots
+            .push(dtoken_types::OpticalCapabilitySnapshot {
+                schema_version: 1,
+                snapshot_id: "snapshot-green".to_string(),
+                revision: 1,
+                enabled: true,
+                lifecycle: dtoken_types::OpticalCapabilityLifecycle::Active,
+                revoked_at_ms: None,
+                revocation_reason: None,
+                supersedes_snapshot_id: None,
+                provider_family: dtoken_types::ProviderFamily::Anthropic,
+                provider_id: Some("anthropic-main".to_string()),
+                route_id: Some("route-main".to_string()),
+                model_base: "claude-fable-5".to_string(),
+                endpoint: dtoken_types::OpticalEndpoint::AnthropicMessages,
+                capability: dtoken_types::OpticalModelCapability {
+                    provider_family: dtoken_types::ProviderFamily::Anthropic,
+                    provider_id: Some("anthropic-main".to_string()),
+                    model_base: Some("claude-fable-5".to_string()),
+                    endpoint: dtoken_types::OpticalEndpoint::AnthropicMessages,
+                    status: dtoken_types::CapabilityStatus::Supported,
+                    max_mode: dtoken_types::OpticalMode::ToolResultsOnly,
+                    ..Default::default()
+                },
+                verified_at_ms: 1,
+                source: "fixture".to_string(),
+                notes: None,
+                attestation: Some(dtoken_types::OpticalCapabilityAttestation {
+                    schema_version: 2,
+                    algorithm: "ed25519".to_string(),
+                    authority_id: "fixture-authority".to_string(),
+                    key_id: "fixture-key-v1".to_string(),
+                    issued_at_ms: 1,
+                    expires_at_ms: 1_000,
+                    renderer_profile_digest: "renderer".to_string(),
+                    font_digest: "font".to_string(),
+                    transform_contract_digest: "contract".to_string(),
+                    eval_artifact_digest: "eval".to_string(),
+                    signature_base64: String::new(),
+                }),
+                economics: Some(dtoken_types::OpticalEconomicsAttestation {
+                    schema_version: 1,
+                    tokenizer_revision: "tokenizer-v1".to_string(),
+                    pricing_revision: "pricing-v1".to_string(),
+                    cache_policy_revision: "cache-v1".to_string(),
+                    chars_per_text_token: 4.0,
+                    cache_create_rate: 1.25,
+                    cache_read_rate: 0.1,
+                }),
+            });
+
+        let issues = config.normalize_optical_fail_closed();
+
+        assert!(config.optical.global_policy.allow_active);
+        assert!(issues.is_empty());
     }
 
     #[test]

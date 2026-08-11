@@ -17,6 +17,7 @@ use codebase_memory_control::{
 use tray::show_control_plane;
 
 use dtoken_agent_bridge::{BRIDGE_COMPONENT, BRIDGE_PROTOCOL_VERSION, BRIDGE_VERSION};
+use dtoken_compress::optical::contains_secret_like;
 use dtoken_config::DtokenConfig;
 use dtoken_config_patcher::agent_transport::{
     apply_reviewed_agent_transport, preview_clear_agent_transport,
@@ -78,7 +79,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use specta::Type;
 use std::{
-    collections::{BTreeMap, HashMap, HashSet, VecDeque},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque},
     env, fs,
     io::{Read, Write},
     net::{SocketAddr, TcpStream},
@@ -595,6 +596,51 @@ struct RollbackConnectionRoutePlanRequest {
     expected_after_sha256: String,
 }
 
+/// The OpenCode side of a compound route + OpenCode transaction. The native
+/// command always re-reads the guarded OpenCode config and re-validates the
+/// request; `models` must be non-empty and the listener port must be a
+/// safe local port, exactly like the standalone adapter flow.
+#[derive(Clone, Deserialize)]
+struct CompoundOpenCodeRequest {
+    models: Vec<String>,
+    listener_port: u16,
+}
+
+#[derive(Deserialize)]
+struct PreviewCompoundRouteOpencodeRequest {
+    plan: ConnectionRoutePlanRequest,
+    #[serde(default)]
+    opencode: Option<CompoundOpenCodeRequest>,
+    #[serde(default)]
+    enable_auto_follow: bool,
+}
+
+#[derive(Deserialize)]
+struct ApplyCompoundRouteOpencodeRequest {
+    plan: ConnectionRoutePlanRequest,
+    #[serde(default)]
+    opencode: Option<CompoundOpenCodeRequest>,
+    reviewed_compound_revision: Option<String>,
+    reviewed_route_before_sha256: Option<String>,
+    reviewed_route_after_sha256: Option<String>,
+    reviewed_opencode_before_sha256: Option<String>,
+    reviewed_opencode_after_sha256: Option<String>,
+    #[serde(default)]
+    enable_auto_follow: bool,
+}
+
+#[derive(Deserialize)]
+struct CompoundRollbackTarget {
+    rollback_id: String,
+    expected_after_sha256: String,
+}
+
+#[derive(Deserialize)]
+struct RollbackCompoundRouteOpencodeRequest {
+    route: CompoundRollbackTarget,
+    opencode: CompoundRollbackTarget,
+}
+
 #[derive(Deserialize)]
 struct CcSwitchSyncPlanRequest {
     /// The cc-switch-owned snapshot revision, not the aggregate Agent +
@@ -627,15 +673,42 @@ struct SetCcSwitchAutoFollowRequest {
     source_fingerprint: Option<String>,
 }
 
+/// Exact upstream identity a credential must bind to. Used by the OpenCode
+/// Install credential flow: candidate id alone is ambiguous (slug twins like
+/// `foo-bar`/`foo_bar`/`foo.bar` and same-id candidates from different
+/// sources or endpoints must never share a keyring account), so store and
+/// delete derive the account from the full triple. `endpoint` is normalized
+/// native-side; the frontend submits the raw candidate endpoint.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+struct CredentialUpstreamIdentityRequest {
+    candidate_id: String,
+    source: String,
+    endpoint: String,
+}
+
 #[derive(Deserialize)]
 struct StoreProviderCredentialRequest {
     provider_id: String,
     credential: String,
+    /// Exact identity mode: when supplied, the store re-runs enriched
+    /// discovery, requires `discovery_revision` to match, finds the exact
+    /// OpenCode candidate tuple, requires `auth_mode != none` and an exact
+    /// normalized endpoint/source match, then stores under the canonical
+    /// identity account. `provider_id` alone is never accepted in this
+    /// mode.
+    #[serde(default)]
+    upstream_identity: Option<CredentialUpstreamIdentityRequest>,
+    #[serde(default)]
+    discovery_revision: Option<String>,
 }
 
 #[derive(Deserialize)]
 struct DeleteProviderCredentialRequest {
     provider_id: String,
+    /// Exact identity mode for removal. No migration or fallback to old
+    /// colliding id-slug accounts is ever performed.
+    #[serde(default)]
+    upstream_identity: Option<CredentialUpstreamIdentityRequest>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -2225,7 +2298,7 @@ fn read_active_config_value() -> Result<Value, String> {
     }
     let content =
         fs::read_to_string(&path).map_err(|err| format!("Active config is unreadable: {err}"))?;
-    if content.contains("sk-") {
+    if contains_secret_like(&content) {
         return Err("Active config contains a plaintext-looking secret".to_string());
     }
     serde_json::from_str(&content).map_err(|err| format!("Active config is invalid JSON: {err}"))
@@ -2378,7 +2451,7 @@ fn merge_optical_into_active_config(
     }
     let serialized = serde_json::to_string(&config)
         .map_err(|err| format!("failed to serialize merged config: {err}"))?;
-    if serialized.contains("sk-") {
+    if contains_secret_like(&serialized) {
         return Err("merged config contains a plaintext-looking secret".to_string());
     }
     Ok(config)
@@ -3301,6 +3374,11 @@ fn hybrid_agent_integration_request(
         _ => return Err("Agent integration scope must be global or project".to_string()),
     };
     let bridge_path = resolve_dtoken_agent_bridge_exe()?;
+    // AGENT-7 / H3 authority gate: managed MCP/Hook writes are only opened
+    // after the bridge identity is verified (embedded hash where required,
+    // platform signature, and the bundled component/protocol/OS/arch/version
+    // identity). A path resolution alone is never authority to write.
+    verify_dtoken_agent_bridge(&bridge_path)?;
     Ok(AgentIntegrationRequest {
         agent_ids: draft.agent_ids.clone(),
         scope,
@@ -4362,6 +4440,7 @@ fn apply_managed_rtk_install(request: ApplyManagedRtkRequest) -> Value {
         managed_root: managed_rtk_root_path(),
         bridge_path,
         max_output_bytes: Some(max_output_bytes),
+        filter_dsl: None,
     }) {
         Ok(receipt) => receipt,
         Err(error) => {
@@ -5470,6 +5549,24 @@ fn safe_slug(value: &str, fallback: &str) -> String {
     }
 }
 
+/// Deterministically disambiguate automatic-plan ids that collide after
+/// slugging (for example two distinct reviewed models that slugify
+/// identically). Bindings are processed in a stable sorted order, so the
+/// `-2`, `-3`, ... suffixes are deterministic across runs.
+fn unique_auto_id(base: &str, used: &mut HashSet<String>) -> String {
+    if used.insert(base.to_string()) {
+        return base.to_string();
+    }
+    let mut suffix = 2usize;
+    loop {
+        let candidate = format!("{base}-{suffix}");
+        if used.insert(candidate.clone()) {
+            return candidate;
+        }
+        suffix += 1;
+    }
+}
+
 fn parse_protocol(value: &str) -> &'static str {
     match value.trim().to_ascii_lowercase().as_str() {
         "anthropic" => "anthropic",
@@ -5579,6 +5676,132 @@ fn credential_reference_for_provider(provider_id: &str) -> (String, String) {
     (format!("os-credential://d-token/{account}"), account)
 }
 
+/// Versioned canonical derivation of a d-token-owned credential account and
+/// opaque reference for an exact reviewed upstream identity (candidate id +
+/// source + normalized endpoint). The digest — not the slug — is the
+/// identity: slug twins (`foo-bar`/`foo_bar`/`foo.bar`) and same-id
+/// candidates from different sources or endpoints map to distinct accounts.
+/// The short human-safe slug is included only for readability. The
+/// reference is always recomputed native-side from the exact candidate
+/// triple; the frontend can never supply it, and `provider_id` alone never
+/// selects one of these accounts.
+const UPSTREAM_CREDENTIAL_IDENTITY_VERSION: &str = "d-token-upstream-credential-v1";
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct UpstreamCredentialIdentity {
+    candidate_id: String,
+    source: String,
+    endpoint: String,
+}
+
+impl UpstreamCredentialIdentity {
+    /// Builds and validates an identity from the exact candidate Value used
+    /// by discovery, the planner, and the store. Rejects missing or invalid
+    /// source/endpoint (including credential-like URL metadata) so a
+    /// malformed candidate can never resolve to a real account.
+    fn from_candidate(candidate: &Value) -> Result<Self, String> {
+        let candidate_id = candidate
+            .get("id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| "OpenCode candidate id is unavailable".to_string())?;
+        let source = candidate
+            .get("source")
+            .and_then(Value::as_str)
+            .ok_or_else(|| "OpenCode candidate source is unavailable".to_string())?;
+        let endpoint = candidate
+            .get("base_url")
+            .and_then(Value::as_str)
+            .ok_or_else(|| "OpenCode candidate endpoint is unavailable".to_string())?;
+        Self::new(candidate_id, source, endpoint)
+    }
+
+    fn new(candidate_id: &str, source: &str, endpoint: &str) -> Result<Self, String> {
+        let candidate_id = candidate_id.trim();
+        if candidate_id.is_empty() || candidate_id.len() > 256 {
+            return Err("OpenCode candidate id is invalid".to_string());
+        }
+        let source = source.trim();
+        if source.is_empty() || source.len() > 512 {
+            return Err("OpenCode candidate source is invalid".to_string());
+        }
+        let endpoint = normalize_upstream_endpoint(endpoint)?;
+        Ok(UpstreamCredentialIdentity {
+            candidate_id: candidate_id.to_string(),
+            source: source.to_string(),
+            endpoint,
+        })
+    }
+}
+
+/// Endpoint normalization for credential identity. Uses the same
+/// normalization as the discovery projection (`normalized_endpoint`) and
+/// additionally rejects non-http(s) or credential-like URLs so the identity
+/// is well-formed and stable.
+fn normalize_upstream_endpoint(value: &str) -> Result<String, String> {
+    let normalized = normalized_endpoint(value);
+    if normalized.is_empty() {
+        return Err("OpenCode candidate endpoint is invalid".to_string());
+    }
+    let parsed = url::Url::parse(&normalized)
+        .map_err(|_| "OpenCode candidate endpoint is invalid".to_string())?;
+    if !matches!(parsed.scheme(), "http" | "https")
+        || !parsed.username().is_empty()
+        || parsed.password().is_some()
+        || parsed.query().is_some()
+        || parsed.fragment().is_some()
+    {
+        return Err("OpenCode candidate endpoint is invalid".to_string());
+    }
+    Ok(normalized)
+}
+
+fn credential_reference_for_upstream_identity(
+    identity: &UpstreamCredentialIdentity,
+) -> (String, String) {
+    let digest = stable_hash(&format!(
+        "{UPSTREAM_CREDENTIAL_IDENTITY_VERSION}\n{}\n{}\n{}",
+        identity.candidate_id, identity.source, identity.endpoint
+    ));
+    let slug = safe_slug(&identity.candidate_id, "upstream");
+    let account = format!("providers/upstream/{slug}-{}", &digest[..24]);
+    (format!("os-credential://d-token/{account}"), account)
+}
+
+/// Canonical derivation from the exact candidate Value. `Err` means the
+/// candidate cannot be bound to a credential identity; callers fail closed.
+fn credential_reference_for_upstream_candidate(
+    candidate: &Value,
+) -> Result<(String, String), String> {
+    let identity = UpstreamCredentialIdentity::from_candidate(candidate)?;
+    Ok(credential_reference_for_upstream_identity(&identity))
+}
+
+/// Metadata-only probe for d-token's own keyring entry for an exact
+/// candidate identity. The stored value is read solely to test existence
+/// and is discarded immediately inside this function; it never reaches
+/// logs, diffs, events, or callers. Invalid candidates fail closed.
+fn credential_entry_exists_for_candidate(candidate: &Value) -> bool {
+    credential_reference_for_upstream_candidate(candidate)
+        .map(|(_reference, account)| platform_credential_entry_exists(&account))
+        .unwrap_or(false)
+}
+
+/// Metadata-only probe for d-token's own keyring entry. The stored value is
+/// read solely to test existence and is discarded immediately inside this
+/// function; it never reaches logs, diffs, events, or callers.
+#[cfg(any(target_os = "windows", target_os = "macos"))]
+fn platform_credential_entry_exists(account: &str) -> bool {
+    keyring::Entry::new("d-token", account)
+        .and_then(|entry| entry.get_password())
+        .map(|_| true)
+        .unwrap_or(false)
+}
+
+#[cfg(not(any(target_os = "windows", target_os = "macos")))]
+fn platform_credential_entry_exists(_account: &str) -> bool {
+    false
+}
+
 #[cfg(any(target_os = "windows", target_os = "macos"))]
 fn platform_store_credential(account: &str, credential: &str) -> Result<(), ()> {
     let entry = keyring::Entry::new("d-token", account).map_err(|_| ())?;
@@ -5603,6 +5826,16 @@ fn platform_delete_credential(_account: &str) -> Result<(), ()> {
 
 #[tauri::command]
 fn store_provider_credential(request: StoreProviderCredentialRequest) -> ActionResult {
+    store_provider_credential_value(request, None)
+}
+
+/// Testable store core. `discovery_override` lets inline tests drive the
+/// exact-identity path with a fixture instead of real read-only discovery;
+/// production always re-runs the current enriched discovery.
+fn store_provider_credential_value(
+    request: StoreProviderCredentialRequest,
+    discovery_override: Option<Value>,
+) -> ActionResult {
     let credential = request.credential.trim();
     if credential.is_empty() || credential.len() > 65_536 {
         return ActionResult {
@@ -5615,7 +5848,60 @@ fn store_provider_credential(request: StoreProviderCredentialRequest) -> ActionR
             tools: all_checks(),
         };
     }
-    let (_, account) = credential_reference_for_provider(&request.provider_id);
+    let account = if let Some(identity) = request.upstream_identity.as_ref() {
+        // Exact identity mode (mandatory for the OpenCode Install flow):
+        // `provider_id` alone is never accepted here. The store re-runs
+        // enriched discovery, requires the reviewed snapshot revision to
+        // match, finds the exact OpenCode candidate tuple, requires
+        // `auth_mode != none` and an exact normalized endpoint/source
+        // match, and only then writes under the canonical identity
+        // account. Failures never echo the credential value.
+        let Some(revision) = request.discovery_revision.as_deref() else {
+            return ActionResult {
+                ok: false,
+                summary: "Exact upstream credential identity requires a discovery revision"
+                    .to_string(),
+                logs: vec![log(
+                    "error",
+                    "Credential was not written; exact upstream identity mode requires the reviewed discovery revision",
+                )],
+                tools: all_checks(),
+            };
+        };
+        if revision.trim().is_empty() {
+            return ActionResult {
+                ok: false,
+                summary: "Exact upstream credential identity requires a discovery revision"
+                    .to_string(),
+                logs: vec![log(
+                    "error",
+                    "Credential was not written; the discovery revision is empty",
+                )],
+                tools: all_checks(),
+            };
+        }
+        let discovery = match discovery_override {
+            Some(discovery) => discovery,
+            None => enrich_upstream_discovery(upstream_discovery::discover()),
+        };
+        match resolve_exact_upstream_credential_account(&discovery, identity, revision) {
+            Ok(account) => account,
+            Err(error) => {
+                return ActionResult {
+                    ok: false,
+                    summary: "The reviewed OpenCode upstream changed; scan again before storing the credential"
+                        .to_string(),
+                    logs: vec![log("error", sanitize_command_output(&error))],
+                    tools: all_checks(),
+                };
+            }
+        }
+    } else {
+        // Generic Advanced provider path, unchanged: `provider_id` alone is
+        // accepted and maps to the legacy per-provider account.
+        let (_, account) = credential_reference_for_provider(&request.provider_id);
+        account
+    };
     match platform_store_credential(&account, credential) {
         Ok(()) => ActionResult {
             ok: true,
@@ -5639,9 +5925,116 @@ fn store_provider_credential(request: StoreProviderCredentialRequest) -> ActionR
     }
 }
 
+/// Pure exact-identity resolution for the OpenCode Install credential flow.
+/// The supplied discovery is the current enriched discovery: the revision
+/// must match the reviewed snapshot, the exact (id, source) OpenCode
+/// candidate tuple must be present with `auth_mode != none`, and the
+/// normalized endpoint must match exactly. Returns the canonical keyring
+/// account for that identity; never the credential value or any reference
+/// belonging to a different identity.
+fn resolve_exact_upstream_credential_account(
+    discovery: &Value,
+    identity: &CredentialUpstreamIdentityRequest,
+    request_revision: &str,
+) -> Result<String, String> {
+    let current_revision = discovery
+        .get("revision")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "Current discovery revision is unavailable".to_string())?;
+    if current_revision != request_revision {
+        return Err(
+            "Agent or upstream configuration changed after discovery; scan again before storing the credential"
+                .to_string(),
+        );
+    }
+    let exact = UpstreamCredentialIdentity::new(
+        &identity.candidate_id,
+        &identity.source,
+        &identity.endpoint,
+    )?;
+    let candidate = discovery
+        .get("candidates")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .chain(
+            discovery
+                .get("agent_bindings")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter(|binding| {
+                    binding.get("agent_id").and_then(Value::as_str) == Some("opencode")
+                })
+                .flat_map(|binding| {
+                    binding
+                        .get("candidates")
+                        .and_then(Value::as_array)
+                        .into_iter()
+                        .flatten()
+                }),
+        )
+        .find(|candidate| {
+            candidate.get("id").and_then(Value::as_str) == Some(exact.candidate_id.as_str())
+                && candidate.get("source").and_then(Value::as_str) == Some(exact.source.as_str())
+                && candidate
+                    .get("agent_ids")
+                    .and_then(Value::as_array)
+                    .is_some_and(|agent_ids| {
+                        agent_ids
+                            .iter()
+                            .any(|agent_id| agent_id.as_str() == Some("opencode"))
+                    })
+        })
+        .ok_or_else(|| {
+            "The reviewed OpenCode upstream is no longer present in discovery".to_string()
+        })?;
+    if candidate.get("auth_mode").and_then(Value::as_str) == Some("none") {
+        return Err("The reviewed OpenCode upstream does not require a credential".to_string());
+    }
+    let candidate_endpoint = candidate
+        .get("base_url")
+        .and_then(Value::as_str)
+        .map(normalized_endpoint)
+        .ok_or_else(|| "The reviewed OpenCode upstream endpoint is unavailable".to_string())?;
+    if candidate_endpoint != exact.endpoint {
+        return Err(
+            "The reviewed OpenCode upstream endpoint changed after discovery; scan again before storing the credential"
+                .to_string(),
+        );
+    }
+    let (_reference, account) = credential_reference_for_upstream_identity(&exact);
+    Ok(account)
+}
+
 #[tauri::command]
 fn delete_provider_credential(request: DeleteProviderCredentialRequest) -> ActionResult {
-    let (_, account) = credential_reference_for_provider(&request.provider_id);
+    let account = if let Some(identity) = request.upstream_identity.as_ref() {
+        // Exact identity mode: remove the canonical identity account only.
+        // There is deliberately no migration or fallback to old colliding
+        // id-slug accounts, and no secret is echoed in any response.
+        match UpstreamCredentialIdentity::new(
+            &identity.candidate_id,
+            &identity.source,
+            &identity.endpoint,
+        ) {
+            Ok(identity) => credential_reference_for_upstream_identity(&identity).1,
+            Err(_) => {
+                return ActionResult {
+                    ok: false,
+                    summary: "Provider credential could not be removed".to_string(),
+                    logs: vec![log(
+                        "error",
+                        "Credential-store removal failed; the upstream identity is invalid",
+                    )],
+                    tools: all_checks(),
+                };
+            }
+        }
+    } else {
+        let (_, account) = credential_reference_for_provider(&request.provider_id);
+        account
+    };
     match platform_delete_credential(&account) {
         Ok(()) => ActionResult {
             ok: true,
@@ -5852,7 +6245,7 @@ fn prepare_route_profile_draft_apply(
     let Some(config) = draft.get("config").cloned() else {
         return Err("Route draft has no config section".to_string());
     };
-    if config.to_string().contains("sk-") {
+    if contains_secret_like(&config.to_string()) {
         return Err("Route draft contains a plaintext-looking secret".to_string());
     }
     let serialized_config = serde_json::to_string_pretty(&config)
@@ -6009,7 +6402,510 @@ fn prepare_connection_route_plan(
     request: &ConnectionRoutePlanRequest,
 ) -> Result<(String, dtoken_config_patcher::PreparedChange, Vec<String>), String> {
     let discovery = enrich_upstream_discovery(upstream_discovery::discover());
-    prepare_connection_route_plan_from_discovery(request, &discovery)
+    prepare_connection_route_plan_from_discovery(request, &discovery, &|candidate| {
+        credential_entry_exists_for_candidate(candidate)
+    })
+}
+
+/// Top-level ownership manifest that records exactly which provider/route/
+/// instance artifacts the automatic connection planner generated for each
+/// Agent. `merge_connection_route_document` removes and replaces ONLY
+/// artifacts proven owned by this manifest (exact ids plus a deterministic
+/// digest of the artifact objects plus internally consistent graph
+/// references); anything else in the document — including legacy `auto-`
+/// artifacts without evidence — is foreign and preserved. A missing,
+/// invalid, or tampered manifest never authorizes removal: it fails closed.
+const CONNECTION_ROUTE_OWNERSHIP_FIELD: &str = "dtoken_connection_route_ownership";
+const CONNECTION_ROUTE_OWNERSHIP_VERSION: u64 = 1;
+
+#[derive(Debug, Clone)]
+struct ConnectionRouteOwnershipEntry {
+    provider_ids: Vec<String>,
+    route_ids: Vec<String>,
+    instance_ids: Vec<String>,
+    artifacts_digest: String,
+}
+
+/// Recursively canonicalizes a JSON value (object keys sorted) so ownership
+/// digests are independent of object key insertion order.
+fn canonical_route_artifact_value(value: &Value) -> Value {
+    match value {
+        Value::Object(object) => {
+            let mut sorted = BTreeMap::new();
+            for (key, value) in object {
+                sorted.insert(key.clone(), canonical_route_artifact_value(value));
+            }
+            Value::Object(sorted.into_iter().collect())
+        }
+        Value::Array(items) => Value::Array(
+            items
+                .iter()
+                .map(canonical_route_artifact_value)
+                .collect::<Vec<_>>(),
+        ),
+        other => other.clone(),
+    }
+}
+
+fn push_owned_route_artifacts(
+    collected: &mut Vec<Value>,
+    ids: &[String],
+    candidates: &[Value],
+    kind: &str,
+) -> Result<(), String> {
+    for id in ids {
+        let artifact = candidates
+            .iter()
+            .find(|artifact| artifact.get("id").and_then(Value::as_str) == Some(id.as_str()))
+            .ok_or_else(|| format!("Owned {kind} {id} is missing from the connection document"))?;
+        collected.push(canonical_route_artifact_value(artifact));
+    }
+    Ok(())
+}
+
+/// Deterministic sha256 digest over the owned artifact objects listed by a
+/// manifest entry, in exactly the stored id order: providers, then routes,
+/// then instances. Recomputed at merge time and compared against the
+/// manifest to detect edits or tampering.
+fn connection_route_ownership_digest(
+    provider_ids: &[String],
+    route_ids: &[String],
+    instance_ids: &[String],
+    providers: &[Value],
+    routes: &[Value],
+    instances: &[Value],
+) -> Result<String, String> {
+    use sha2::{Digest, Sha256};
+
+    let mut artifacts =
+        Vec::with_capacity(provider_ids.len() + route_ids.len() + instance_ids.len());
+    push_owned_route_artifacts(&mut artifacts, provider_ids, providers, "provider")?;
+    push_owned_route_artifacts(&mut artifacts, route_ids, routes, "route")?;
+    push_owned_route_artifacts(&mut artifacts, instance_ids, instances, "instance")?;
+    let canonical = serde_json::to_string(&Value::Array(artifacts))
+        .map_err(|error| format!("Connection route ownership digest serialize failed: {error}"))?;
+    Ok(format!("{:x}", Sha256::digest(canonical.as_bytes())))
+}
+
+fn owned_id_list(
+    entry: &serde_json::Map<String, Value>,
+    field: &str,
+    agent: &str,
+) -> Result<Vec<String>, String> {
+    let value = entry.get(field).ok_or_else(|| {
+        format!("{CONNECTION_ROUTE_OWNERSHIP_FIELD} entry for {agent} is missing {field}")
+    })?;
+    let Value::Array(ids) = value else {
+        return Err(format!(
+            "{CONNECTION_ROUTE_OWNERSHIP_FIELD} entry for {agent} has a malformed {field}"
+        ));
+    };
+    let mut seen = HashSet::new();
+    let mut parsed = Vec::with_capacity(ids.len());
+    for id in ids {
+        let id = id.as_str().ok_or_else(|| {
+            format!(
+                "{CONNECTION_ROUTE_OWNERSHIP_FIELD} entry for {agent} has a non-string {field} id"
+            )
+        })?;
+        if id.is_empty() || !seen.insert(id.to_string()) {
+            return Err(format!(
+                "{CONNECTION_ROUTE_OWNERSHIP_FIELD} entry for {agent} has an invalid or duplicate {field} id"
+            ));
+        }
+        parsed.push(id.to_string());
+    }
+    Ok(parsed)
+}
+
+/// Parses the top-level ownership manifest with a strict schema: exactly
+/// `version` and `agents`, each agent entry exactly `provider_ids`,
+/// `route_ids`, `instance_ids`, and `artifacts_digest`. Any deviation is
+/// treated as tampering and fails closed.
+fn parse_connection_route_ownership_manifest(
+    root: &serde_json::Map<String, Value>,
+) -> Result<BTreeMap<String, ConnectionRouteOwnershipEntry>, String> {
+    let Some(value) = root.get(CONNECTION_ROUTE_OWNERSHIP_FIELD) else {
+        return Ok(BTreeMap::new());
+    };
+    let Value::Object(manifest) = value else {
+        return Err(format!(
+            "{CONNECTION_ROUTE_OWNERSHIP_FIELD} must be a JSON object when present"
+        ));
+    };
+    if manifest.len() != 2
+        || manifest.get("version").and_then(Value::as_u64)
+            != Some(CONNECTION_ROUTE_OWNERSHIP_VERSION)
+    {
+        return Err(format!(
+            "{CONNECTION_ROUTE_OWNERSHIP_FIELD} has an unsupported or tampered schema"
+        ));
+    }
+    let Some(agents_value) = manifest.get("agents") else {
+        return Err(format!(
+            "{CONNECTION_ROUTE_OWNERSHIP_FIELD} is missing its agents map"
+        ));
+    };
+    let Value::Object(agents) = agents_value else {
+        return Err(format!(
+            "{CONNECTION_ROUTE_OWNERSHIP_FIELD} agents value is not an object"
+        ));
+    };
+    let mut entries = BTreeMap::new();
+    for (agent, entry_value) in agents {
+        let Value::Object(entry) = entry_value else {
+            return Err(format!(
+                "{CONNECTION_ROUTE_OWNERSHIP_FIELD} entry for {agent} is not an object"
+            ));
+        };
+        if entry.len() != 4 {
+            return Err(format!(
+                "{CONNECTION_ROUTE_OWNERSHIP_FIELD} entry for {agent} has an unsupported schema"
+            ));
+        }
+        let provider_ids = owned_id_list(entry, "provider_ids", agent)?;
+        let route_ids = owned_id_list(entry, "route_ids", agent)?;
+        let instance_ids = owned_id_list(entry, "instance_ids", agent)?;
+        let artifacts_digest = entry
+            .get("artifacts_digest")
+            .and_then(Value::as_str)
+            .filter(|digest| !digest.is_empty())
+            .map(str::to_string)
+            .ok_or_else(|| {
+                format!(
+                    "{CONNECTION_ROUTE_OWNERSHIP_FIELD} entry for {agent} is missing its artifacts digest"
+                )
+            })?;
+        entries.insert(
+            agent.clone(),
+            ConnectionRouteOwnershipEntry {
+                provider_ids,
+                route_ids,
+                instance_ids,
+                artifacts_digest,
+            },
+        );
+    }
+    Ok(entries)
+}
+
+/// Validates one agent's ownership evidence against the current document:
+/// every listed id must exist, the recomputed digest must match, and the
+/// owned graph must reference only owned artifacts internally. Any failure
+/// fails closed — removal is never authorized on stale or tampered evidence.
+fn validate_connection_route_ownership_entry(
+    agent: &str,
+    entry: &ConnectionRouteOwnershipEntry,
+    providers: &[Value],
+    routes: &[Value],
+    instances: &[Value],
+) -> Result<(), String> {
+    let expected = connection_route_ownership_digest(
+        &entry.provider_ids,
+        &entry.route_ids,
+        &entry.instance_ids,
+        providers,
+        routes,
+        instances,
+    )?;
+    if expected != entry.artifacts_digest {
+        return Err(format!(
+            "Connection route ownership evidence for {agent} no longer matches the active document; refusing to remove automatic artifacts"
+        ));
+    }
+    let owned_providers = entry
+        .provider_ids
+        .iter()
+        .map(String::as_str)
+        .collect::<HashSet<_>>();
+    let owned_routes = entry
+        .route_ids
+        .iter()
+        .map(String::as_str)
+        .collect::<HashSet<_>>();
+    let owned_instances = entry
+        .instance_ids
+        .iter()
+        .map(String::as_str)
+        .collect::<HashSet<_>>();
+    for route in routes.iter().filter(|route| {
+        route
+            .get("id")
+            .and_then(Value::as_str)
+            .is_some_and(|id| owned_routes.contains(id))
+    }) {
+        let route_id = route.get("id").and_then(Value::as_str).unwrap_or("?");
+        if !route
+            .get("instance_id")
+            .and_then(Value::as_str)
+            .is_some_and(|id| owned_instances.contains(id))
+        {
+            return Err(format!(
+                "Owned route {route_id} references an instance outside the owned graph"
+            ));
+        }
+        if !route
+            .get("target_provider_id")
+            .and_then(Value::as_str)
+            .is_some_and(|id| owned_providers.contains(id))
+        {
+            return Err(format!(
+                "Owned route {route_id} references a provider outside the owned graph"
+            ));
+        }
+        if let Some(fallback) = route.get("fallback_provider_id").and_then(Value::as_str) {
+            if !owned_providers.contains(fallback) {
+                return Err(format!(
+                    "Owned route {route_id} references a fallback provider outside the owned graph"
+                ));
+            }
+        }
+    }
+    for instance in instances.iter().filter(|instance| {
+        instance
+            .get("id")
+            .and_then(Value::as_str)
+            .is_some_and(|id| owned_instances.contains(id))
+    }) {
+        let instance_id = instance.get("id").and_then(Value::as_str).unwrap_or("?");
+        if !instance
+            .get("route_id")
+            .and_then(Value::as_str)
+            .is_some_and(|id| owned_routes.contains(id))
+        {
+            return Err(format!(
+                "Owned instance {instance_id} references a route outside the owned graph"
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Derives exact per-agent ownership for the freshly generated artifacts.
+/// The plan must form a self-contained graph: every new provider is
+/// referenced by a new route, every new route references a new instance and
+/// new providers, and every new instance carries an agent id and references
+/// a new route. Anything else fails closed so the written manifest is
+/// trustworthy.
+fn infer_new_connection_route_ownership(
+    new_providers: &[Value],
+    new_routes: &[Value],
+    new_instances: &[Value],
+) -> Result<BTreeMap<String, ConnectionRouteOwnershipEntry>, String> {
+    let new_provider_ids = new_providers
+        .iter()
+        .filter_map(|provider| provider.get("id").and_then(Value::as_str))
+        .collect::<HashSet<_>>();
+    let new_route_ids = new_routes
+        .iter()
+        .filter_map(|route| route.get("id").and_then(Value::as_str))
+        .collect::<HashSet<_>>();
+    let new_instance_ids = new_instances
+        .iter()
+        .filter_map(|instance| instance.get("id").and_then(Value::as_str))
+        .collect::<HashSet<_>>();
+
+    for provider in new_providers {
+        let id = provider
+            .get("id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| "Connection plan contains a provider without an id".to_string())?;
+        let referenced = new_routes.iter().any(|route| {
+            route.get("target_provider_id").and_then(Value::as_str) == Some(id)
+                || route.get("fallback_provider_id").and_then(Value::as_str) == Some(id)
+        });
+        if !referenced {
+            return Err(format!(
+                "Connection plan provider {id} is not referenced by any planned route"
+            ));
+        }
+    }
+    let mut route_agents = HashMap::new();
+    for instance in new_instances {
+        let id = instance
+            .get("id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| "Connection plan contains an instance without an id".to_string())?;
+        let agent = instance
+            .get("agent")
+            .and_then(Value::as_str)
+            .ok_or_else(|| format!("Connection plan instance {id} has no agent id"))?;
+        let route_id = instance
+            .get("route_id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| format!("Connection plan instance {id} has no route id"))?;
+        if !new_route_ids.contains(route_id) {
+            return Err(format!(
+                "Connection plan instance {id} references a route outside the plan"
+            ));
+        }
+        // Keyed by the instance's own id: routes reference their owning
+        // instance via `instance_id`, so lookups below must resolve by
+        // instance id, not by the instance's route id.
+        route_agents.insert(id.to_string(), agent.to_string());
+    }
+    for route in new_routes {
+        let id = route
+            .get("id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| "Connection plan contains a route without an id".to_string())?;
+        let instance_id = route
+            .get("instance_id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| format!("Connection plan route {id} has no instance id"))?;
+        if !new_instance_ids.contains(instance_id) {
+            return Err(format!(
+                "Connection plan route {id} references an instance outside the plan"
+            ));
+        }
+        let target = route
+            .get("target_provider_id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| format!("Connection plan route {id} has no target provider"))?;
+        if !new_provider_ids.contains(target) {
+            return Err(format!(
+                "Connection plan route {id} references a provider outside the plan"
+            ));
+        }
+        if let Some(fallback) = route.get("fallback_provider_id").and_then(Value::as_str) {
+            if !new_provider_ids.contains(fallback) {
+                return Err(format!(
+                    "Connection plan route {id} references a fallback provider outside the plan"
+                ));
+            }
+        }
+    }
+
+    let mut agent_providers: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for provider in new_providers {
+        let provider_id = provider
+            .get("id")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        for route in new_routes {
+            let references = route.get("target_provider_id").and_then(Value::as_str)
+                == Some(provider_id)
+                || route.get("fallback_provider_id").and_then(Value::as_str) == Some(provider_id);
+            if !references {
+                continue;
+            }
+            let instance_id = route
+                .get("instance_id")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            let Some(agent) = route_agents.get(instance_id) else {
+                return Err(format!(
+                    "Connection plan route {} has no owning instance",
+                    route.get("id").and_then(Value::as_str).unwrap_or("?")
+                ));
+            };
+            agent_providers
+                .entry(agent.clone())
+                .or_default()
+                .push(provider_id.to_string());
+        }
+    }
+    let mut agent_routes: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for route in new_routes {
+        let route_id = route.get("id").and_then(Value::as_str).unwrap_or_default();
+        let instance_id = route
+            .get("instance_id")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let Some(agent) = route_agents.get(instance_id) else {
+            return Err(format!(
+                "Connection plan route {route_id} has no owning instance"
+            ));
+        };
+        agent_routes
+            .entry(agent.clone())
+            .or_default()
+            .push(route_id.to_string());
+    }
+    let mut agent_instances: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for instance in new_instances {
+        let id = instance
+            .get("id")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let agent = instance
+            .get("agent")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        agent_instances
+            .entry(agent.to_string())
+            .or_default()
+            .push(id.to_string());
+    }
+
+    let mut agents = agent_providers.keys().cloned().collect::<BTreeSet<_>>();
+    agents.extend(agent_routes.keys().cloned());
+    agents.extend(agent_instances.keys().cloned());
+    let mut entries = BTreeMap::new();
+    for agent in agents {
+        let provider_ids = agent_providers.remove(&agent).unwrap_or_default();
+        let route_ids = agent_routes.remove(&agent).unwrap_or_default();
+        let instance_ids = agent_instances.remove(&agent).unwrap_or_default();
+        let artifacts_digest = connection_route_ownership_digest(
+            &provider_ids,
+            &route_ids,
+            &instance_ids,
+            new_providers,
+            new_routes,
+            new_instances,
+        )?;
+        entries.insert(
+            agent,
+            ConnectionRouteOwnershipEntry {
+                provider_ids,
+                route_ids,
+                instance_ids,
+                artifacts_digest,
+            },
+        );
+    }
+    Ok(entries)
+}
+
+fn connection_route_ownership_entry_value(entry: &ConnectionRouteOwnershipEntry) -> Value {
+    json!({
+        "provider_ids": entry.provider_ids,
+        "route_ids": entry.route_ids,
+        "instance_ids": entry.instance_ids,
+        "artifacts_digest": entry.artifacts_digest,
+    })
+}
+
+/// Rewrites the ownership manifest after a successful merge: fresh entries
+/// for the selected agents, and preserved entries for unselected agents
+/// only when their evidence still validates against the merged document.
+/// Tampered or stale evidence fails closed rather than being guessed at.
+fn write_connection_route_ownership_manifest(
+    previous: &BTreeMap<String, ConnectionRouteOwnershipEntry>,
+    selected_agents: &HashSet<String>,
+    new_ownership: &BTreeMap<String, ConnectionRouteOwnershipEntry>,
+    providers: &[Value],
+    routes: &[Value],
+    instances: &[Value],
+) -> Result<Value, String> {
+    let mut agents = serde_json::Map::new();
+    for (agent, entry) in previous {
+        if selected_agents.contains(agent) {
+            continue;
+        }
+        validate_connection_route_ownership_entry(agent, entry, providers, routes, instances)?;
+        agents.insert(agent.clone(), connection_route_ownership_entry_value(entry));
+    }
+    for (agent, entry) in new_ownership {
+        agents.insert(agent.clone(), connection_route_ownership_entry_value(entry));
+    }
+    let mut manifest = serde_json::Map::new();
+    manifest.insert(
+        "version".to_string(),
+        json!(CONNECTION_ROUTE_OWNERSHIP_VERSION),
+    );
+    manifest.insert("agents".to_string(), Value::Object(agents));
+    Ok(Value::Object(manifest))
 }
 
 fn merge_connection_route_document(
@@ -6055,26 +6951,65 @@ fn merge_connection_route_document(
         .transpose()?
         .unwrap_or_default();
 
-    let selected_route_ids = selected_agents
-        .iter()
-        .map(|agent_id| {
-            safe_slug(
-                &format!("auto-{agent_id}-route"),
-                &format!("auto-{agent_id}"),
-            )
-        })
-        .collect::<HashSet<_>>();
-    let selected_instance_ids = selected_route_ids
-        .iter()
-        .map(|route_id| format!("{route_id}-instance"))
-        .collect::<HashSet<_>>();
-    let removed_provider_ids = routes
+    // Removal is authorized ONLY by validated ownership evidence. Artifacts
+    // without a manifest entry — including legacy `auto-` prefixed ones —
+    // are foreign and preserved; a missing id, digest mismatch, or broken
+    // owned graph fails closed.
+    let manifest = parse_connection_route_ownership_manifest(&root)?;
+    let selected = selected_agents.iter().cloned().collect::<HashSet<_>>();
+    let mut removed_provider_ids = HashSet::new();
+    let mut removed_route_ids = HashSet::new();
+    let mut removed_instance_ids = HashSet::new();
+    for agent in selected.iter().collect::<BTreeSet<_>>() {
+        let Some(entry) = manifest.get(agent) else {
+            continue;
+        };
+        validate_connection_route_ownership_entry(agent, entry, &providers, &routes, &instances)?;
+        removed_provider_ids.extend(entry.provider_ids.iter().cloned());
+        removed_route_ids.extend(entry.route_ids.iter().cloned());
+        removed_instance_ids.extend(entry.instance_ids.iter().cloned());
+    }
+
+    // Never break preserved artifacts. A preserved route or instance that
+    // crosses into the owned graph fails closed; a provider referenced by a
+    // preserved route is kept even when the manifest owns it.
+    for route in routes.iter().filter(|route| {
+        !route
+            .get("id")
+            .and_then(Value::as_str)
+            .is_some_and(|id| removed_route_ids.contains(id))
+    }) {
+        if let Some(instance_id) = route.get("instance_id").and_then(Value::as_str) {
+            if removed_instance_ids.contains(instance_id) {
+                return Err(format!(
+                    "Preserved route {} references an owned instance {instance_id}; review the active config before planning",
+                    route.get("id").and_then(Value::as_str).unwrap_or("?")
+                ));
+            }
+        }
+    }
+    for instance in instances.iter().filter(|instance| {
+        !instance
+            .get("id")
+            .and_then(Value::as_str)
+            .is_some_and(|id| removed_instance_ids.contains(id))
+    }) {
+        if let Some(route_id) = instance.get("route_id").and_then(Value::as_str) {
+            if removed_route_ids.contains(route_id) {
+                return Err(format!(
+                    "Preserved instance {} references an owned route {route_id}; review the active config before planning",
+                    instance.get("id").and_then(Value::as_str).unwrap_or("?")
+                ));
+            }
+        }
+    }
+    let preserved_provider_references = routes
         .iter()
         .filter(|route| {
-            route
+            !route
                 .get("id")
                 .and_then(Value::as_str)
-                .is_some_and(|route_id| selected_route_ids.contains(route_id))
+                .is_some_and(|id| removed_route_ids.contains(id))
         })
         .flat_map(|route| {
             ["target_provider_id", "fallback_provider_id"]
@@ -6084,48 +7019,93 @@ fn merge_connection_route_document(
                 .collect::<Vec<_>>()
         })
         .collect::<HashSet<_>>();
+    removed_provider_ids.retain(|id| !preserved_provider_references.contains(id));
+
     routes.retain(|route| {
         !route
             .get("id")
             .and_then(Value::as_str)
-            .is_some_and(|route_id| selected_route_ids.contains(route_id))
+            .is_some_and(|route_id| removed_route_ids.contains(route_id))
     });
     instances.retain(|instance| {
         !instance
             .get("id")
             .and_then(Value::as_str)
-            .is_some_and(|instance_id| selected_instance_ids.contains(instance_id))
+            .is_some_and(|instance_id| removed_instance_ids.contains(instance_id))
     });
-    let preserved_provider_references = routes
-        .iter()
-        .flat_map(|route| {
-            ["target_provider_id", "fallback_provider_id"]
-                .into_iter()
-                .filter_map(|field| route.get(field).and_then(Value::as_str))
-                .map(str::to_string)
-                .collect::<Vec<_>>()
-        })
-        .collect::<HashSet<_>>();
-    let new_provider_ids = new_providers
+    providers.retain(|provider| {
+        !provider
+            .get("id")
+            .and_then(Value::as_str)
+            .is_some_and(|provider_id| removed_provider_ids.contains(provider_id))
+    });
+
+    // Any generated id that collides with a preserved artifact fails closed
+    // and instructs review instead of overwriting foreign work.
+    let preserved_provider_ids = providers
         .iter()
         .filter_map(|provider| provider.get("id").and_then(Value::as_str))
-        .map(str::to_string)
         .collect::<HashSet<_>>();
-    providers.retain(|provider| {
-        let Some(provider_id) = provider.get("id").and_then(Value::as_str) else {
-            return true;
-        };
-        !new_provider_ids.contains(provider_id)
-            && (!removed_provider_ids.contains(provider_id)
-                || preserved_provider_references.contains(provider_id))
-    });
+    let preserved_route_ids = routes
+        .iter()
+        .filter_map(|route| route.get("id").and_then(Value::as_str))
+        .collect::<HashSet<_>>();
+    let preserved_instance_ids = instances
+        .iter()
+        .filter_map(|instance| instance.get("id").and_then(Value::as_str))
+        .collect::<HashSet<_>>();
+    for provider in &new_providers {
+        if let Some(id) = provider.get("id").and_then(Value::as_str) {
+            if preserved_provider_ids.contains(id) {
+                return Err(format!(
+                    "Connection plan provider {id} collides with a preserved provider that d-token does not own; review the active config before applying this plan"
+                ));
+            }
+        }
+    }
+    for route in &new_routes {
+        if let Some(id) = route.get("id").and_then(Value::as_str) {
+            if preserved_route_ids.contains(id) {
+                return Err(format!(
+                    "Connection plan route {id} collides with a preserved route that d-token does not own; review the active config before applying this plan"
+                ));
+            }
+        }
+    }
+    for instance in &new_instances {
+        if let Some(id) = instance.get("id").and_then(Value::as_str) {
+            if preserved_instance_ids.contains(id) {
+                return Err(format!(
+                    "Connection plan instance {id} collides with a preserved instance that d-token does not own; review the active config before applying this plan"
+                ));
+            }
+        }
+    }
+
+    // The freshly generated artifacts must form a self-contained graph that
+    // becomes the new ownership evidence for the selected agents.
+    let new_ownership =
+        infer_new_connection_route_ownership(&new_providers, &new_routes, &new_instances)?;
 
     providers.extend(new_providers);
     routes.extend(new_routes);
     instances.extend(new_instances);
+
+    // Rewrite the ownership manifest: fresh entries for the selected agents,
+    // preserved entries for unselected agents whose evidence validates.
+    let ownership = write_connection_route_ownership_manifest(
+        &manifest,
+        &selected,
+        &new_ownership,
+        &providers,
+        &routes,
+        &instances,
+    )?;
+
     root.insert("providers".to_string(), Value::Array(providers));
     root.insert("routes".to_string(), Value::Array(routes));
     root.insert("instances".to_string(), Value::Array(instances));
+    root.insert(CONNECTION_ROUTE_OWNERSHIP_FIELD.to_string(), ownership);
     let content = serde_json::to_string_pretty(&Value::Object(root))
         .map_err(|error| format!("Connection route plan serialize failed: {error}"))?;
     let parsed = serde_json::from_str::<DtokenConfig>(&content)
@@ -6201,10 +7181,30 @@ fn validate_connection_route_config(config: &DtokenConfig) -> Result<(), String>
     Ok(())
 }
 
-fn prepare_connection_route_plan_from_discovery(
+/// Pure output of the automatic route planner, before document merge.
+#[derive(Debug)]
+struct PlannedConnectionRoutes {
+    revision: String,
+    providers: Vec<Value>,
+    routes: Vec<Value>,
+    instances: Vec<Value>,
+    selected_agents: Vec<String>,
+}
+
+/// Pure multi-agent automatic route planner. `credential_available` is the
+/// metadata-only seam used for OpenCode candidates whose upstream requires
+/// a credential: given the exact candidate Value it reports whether
+/// d-token's own keyring entry for that candidate's exact identity (id +
+/// source + normalized endpoint) exists. Production supplies the platform
+/// probe; tests supply a fake closure, so tests never touch the real
+/// Keychain. The stored credential value is never read beyond that
+/// existence check, and the emitted `api_key_ref` is always recomputed
+/// native-side from the candidate identity.
+fn plan_connection_routes_from_discovery(
     request: &ConnectionRoutePlanRequest,
     discovery: &Value,
-) -> Result<(String, dtoken_config_patcher::PreparedChange, Vec<String>), String> {
+    credential_available: &dyn Fn(&Value) -> bool,
+) -> Result<PlannedConnectionRoutes, String> {
     if request.bindings.is_empty() || request.bindings.len() > 16 {
         return Err(
             "Connection plan must contain between one and sixteen Agent bindings".to_string(),
@@ -6282,16 +7282,49 @@ fn prepare_connection_route_plan_from_discovery(
     let mut routes = Vec::new();
     let mut instances = Vec::new();
     let mut selected_agents = Vec::new();
+    let mut seen_opencode_tuples = HashSet::new();
+    let mut seen_opencode_models = HashSet::new();
+    let mut used_auto_ids = HashSet::new();
     let mut route_keys: HashMap<(String, String), (String, String)> = HashMap::new();
 
     let mut requested = request.bindings.clone();
-    requested.sort_by(|left, right| left.agent_id.cmp(&right.agent_id));
+    requested.sort_by(|left, right| {
+        left.agent_id
+            .cmp(&right.agent_id)
+            .then_with(|| left.candidate_id.cmp(&right.candidate_id))
+            .then_with(|| left.candidate_source.cmp(&right.candidate_source))
+            .then_with(|| left.model.cmp(&right.model))
+    });
     for binding_request in requested {
         let agent_id = safe_slug(&binding_request.agent_id, "");
         if agent_id.is_empty() || agent_id != binding_request.agent_id {
             return Err("Connection plan contains an invalid Agent id".to_string());
         }
-        if selected_agents.iter().any(|selected| selected == &agent_id) {
+        // OpenCode is the only Agent that may appear more than once, and
+        // only when every (candidate_id, candidate_source, model) tuple is
+        // unique. Any other repeated Agent stays forbidden.
+        if agent_id == "opencode" {
+            let tuple = (
+                binding_request.candidate_id.clone(),
+                binding_request.candidate_source.clone(),
+                binding_request.model.clone(),
+            );
+            if !seen_opencode_tuples.insert(tuple) {
+                return Err(
+                    "Connection plan repeats the same OpenCode upstream and model tuple"
+                        .to_string(),
+                );
+            }
+            // core-api routes on the model alone, so the same OpenCode model
+            // across two distinct candidates would become ambiguous even
+            // when the (candidate, source, model) tuples differ.
+            if !seen_opencode_models.insert(binding_request.model.clone()) {
+                return Err(
+                    "Connection plan repeats the same OpenCode model across distinct upstreams; a unique reviewed route is required"
+                        .to_string(),
+                );
+            }
+        } else if selected_agents.iter().any(|selected| selected == &agent_id) {
             return Err(format!("Connection plan repeats Agent {agent_id}"));
         }
         let binding = discovered_bindings
@@ -6340,11 +7373,38 @@ fn prepare_connection_route_plan_from_discovery(
                     "The reviewed upstream/model for {agent_id} is no longer present in discovery"
                 )
             })?;
-        if candidate.get("auth_mode").and_then(Value::as_str) != Some("none") {
+        let auth_mode = candidate
+            .get("auth_mode")
+            .and_then(Value::as_str)
+            .unwrap_or("none");
+        let api_key_ref = if auth_mode == "none" {
+            Value::Null
+        } else if agent_id == "opencode" {
+            // Never reuse the OpenCode config credential. The plan succeeds
+            // only when the reviewed discovery projected the d-token OS
+            // credential as configured AND the live metadata probe still
+            // reports the entry exists: the first blocks plans built from
+            // fabricated or stale frontend/discovery state, the second
+            // catches a credential deleted between scan and review. The
+            // reference is recomputed native-side and the stored value is
+            // never read or exposed.
+            let projected_configured = candidate
+                .get("dtoken_credential_configured")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            if !projected_configured || !credential_available(candidate) {
+                return Err(format!(
+                    "The OpenCode credential for candidate {} is not stored with d-token; save it with d-token before reviewing",
+                    binding_request.candidate_id
+                ));
+            }
+            let (reference, _account) = credential_reference_for_upstream_candidate(candidate)?;
+            json!(reference)
+        } else {
             return Err(format!(
                 "The upstream credential for {agent_id} cannot be reused safely"
             ));
-        }
+        };
         let base_url = candidate
             .get("base_url")
             .and_then(Value::as_str)
@@ -6374,7 +7434,27 @@ fn prepare_connection_route_plan_from_discovery(
         }
 
         let route_key = (protocol.clone(), model.clone());
-        if let Some((existing_url, existing_agent)) = route_keys.get(&route_key) {
+        // OpenCode models must be unique across the ENTIRE plan: core-api
+        // routes on the model alone, and OpenCode Agent attribution/instance
+        // differs, so no route — not even a same-endpoint non-OpenCode
+        // route — can be shared with an OpenCode route. Fail closed before
+        // adding an OpenCode route that collides with any existing route key.
+        if agent_id == "opencode" {
+            if let Some((_, existing_agent)) = route_keys.get(&route_key) {
+                return Err(format!(
+                    "{agent_id} selects the same protocol/model as the existing {existing_agent} route; OpenCode models must be unique across the whole plan"
+                ));
+            }
+        } else if let Some((existing_url, existing_agent)) = route_keys.get(&route_key) {
+            // Only other Agents may share a same-endpoint route, exactly as
+            // before; an OpenCode-owned route is never shareable even when
+            // the endpoint matches, because core-api model selection would
+            // be ambiguous between the two Agents.
+            if existing_agent == "opencode" {
+                return Err(format!(
+                    "{agent_id} selects the same protocol/model as the opencode route; OpenCode models must be unique across the whole plan"
+                ));
+            }
             if existing_url != &base_url {
                 return Err(format!(
                     "{agent_id} and {existing_agent} use the same protocol/model with different upstreams; a unique reviewed route is required"
@@ -6392,14 +7472,51 @@ fn prepare_connection_route_plan_from_discovery(
             .get("source")
             .and_then(Value::as_str)
             .unwrap_or("discovery");
-        let provider_id = safe_slug(
-            &format!("auto-{agent_id}-{}", binding_request.candidate_id),
-            &format!("auto-{agent_id}-provider"),
-        );
-        let route_id = safe_slug(
-            &format!("auto-{agent_id}-route"),
-            &format!("auto-{agent_id}"),
-        );
+        // OpenCode routes are identified deterministically from the
+        // candidate id and a safe model slug so every unique tuple maps to
+        // distinct provider/route/instance ids; slug collisions are
+        // disambiguated with a stable numeric suffix.
+        let model_slug = safe_slug(&model, &format!("model-{}", providers.len() + 1));
+        let provider_id = if agent_id == "opencode" {
+            unique_auto_id(
+                &safe_slug(
+                    &format!(
+                        "auto-{agent_id}-{}-{model_slug}",
+                        binding_request.candidate_id
+                    ),
+                    &format!("auto-{agent_id}-provider"),
+                ),
+                &mut used_auto_ids,
+            )
+        } else {
+            unique_auto_id(
+                &safe_slug(
+                    &format!("auto-{agent_id}-{}", binding_request.candidate_id),
+                    &format!("auto-{agent_id}-provider"),
+                ),
+                &mut used_auto_ids,
+            )
+        };
+        let route_id = if agent_id == "opencode" {
+            unique_auto_id(
+                &safe_slug(
+                    &format!(
+                        "auto-{agent_id}-{}-{model_slug}-route",
+                        binding_request.candidate_id
+                    ),
+                    &format!("auto-{agent_id}-route"),
+                ),
+                &mut used_auto_ids,
+            )
+        } else {
+            unique_auto_id(
+                &safe_slug(
+                    &format!("auto-{agent_id}-route"),
+                    &format!("auto-{agent_id}"),
+                ),
+                &mut used_auto_ids,
+            )
+        };
         let instance_id = format!("{route_id}-instance");
         let local_chain = url::Url::parse(&base_url).ok().is_some_and(|parsed| {
             matches!(parsed.host(), Some(url::Host::Ipv4(address)) if address.is_loopback())
@@ -6420,7 +7537,7 @@ fn prepare_connection_route_plan_from_discovery(
             "kind": provider_kind,
             "protocol": protocol,
             "base_url": base_url,
-            "api_key_ref": Value::Null,
+            "api_key_ref": api_key_ref,
             "models": if dynamic_passthrough {
                 Vec::<String>::new()
             } else {
@@ -6462,6 +7579,26 @@ fn prepare_connection_route_plan_from_discovery(
     if routes.is_empty() {
         return Err("Connection plan did not produce a routable upstream".to_string());
     }
+    selected_agents.sort();
+    selected_agents.dedup();
+    Ok(PlannedConnectionRoutes {
+        revision: current_revision,
+        providers,
+        routes,
+        instances,
+        selected_agents,
+    })
+}
+
+/// Production wrapper: plans against current discovery and the real keyring
+/// probe, then merges into the active d-token config and prepares the
+/// hash-bound review change.
+fn prepare_connection_route_plan_from_discovery(
+    request: &ConnectionRoutePlanRequest,
+    discovery: &Value,
+    credential_available: &dyn Fn(&Value) -> bool,
+) -> Result<(String, dtoken_config_patcher::PreparedChange, Vec<String>), String> {
+    let planned = plan_connection_routes_from_discovery(request, discovery, credential_available)?;
     let parent = active_config_path()
         .parent()
         .map(Path::to_path_buf)
@@ -6476,8 +7613,13 @@ fn prepare_connection_route_plan_from_discovery(
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
         Err(error) => return Err(format!("Active config could not be read: {error}")),
     };
-    let content =
-        merge_connection_route_document(existing, &selected_agents, providers, routes, instances)?;
+    let content = merge_connection_route_document(
+        existing,
+        &planned.selected_agents,
+        planned.providers,
+        planned.routes,
+        planned.instances,
+    )?;
     let prepared = config_patcher()
         .prepare_change(
             patchable_active_config_path()?,
@@ -6487,7 +7629,7 @@ fn prepare_connection_route_plan_from_discovery(
             RiskLevel::Medium,
         )
         .map_err(|error| format!("Connection route review could not be prepared: {error:#}"))?;
-    Ok((current_revision, prepared, selected_agents))
+    Ok((planned.revision, prepared, planned.selected_agents))
 }
 
 fn preview_connection_route_plan_value(request: ConnectionRoutePlanRequest) -> Value {
@@ -6901,6 +8043,147 @@ fn stage_agent_auto_follow_authorization(
         runtime_identity: None,
         last_sync_state: "pending_runtime_verification".to_string(),
     }))
+}
+
+/// Compound-specific auto-follow staging outcome. The compound route +
+/// OpenCode transaction keeps every reviewed binding in the route plan;
+/// follow authorization is staged only for credential-free (auth_mode none)
+/// non-OpenCode bindings, and OpenCode bindings are truthfully reported as
+/// skipped instead of failing the apply: the follow executor assumes one
+/// resolved model per Agent and a legacy route id, so OpenCode multi-route
+/// follow is structurally unsupported and never staged.
+struct StagedCompoundAutoFollow {
+    authorization: Option<AgentAutoFollowAuthorization>,
+    skipped_agents: Vec<String>,
+    skipped_candidates: usize,
+    /// True when any OpenCode binding was excluded from follow staging.
+    opencode_excluded: bool,
+}
+
+/// Compound apply staging: filter the reviewed plan down to follow-safe
+/// bindings (auth_mode none, non-cc-switch, non-OpenCode) and delegate to
+/// the unchanged per-agent staging, so every other path keeps its exact
+/// semantics. OpenCode bindings are excluded REGARDLESS of auth_mode: the
+/// follow executor resolves a single model per Agent with a legacy route
+/// id, so staging a multi-route OpenCode plan would authorize a follow
+/// contract that executor cannot honor. The route transaction still
+/// applies ALL bindings; only the follow authorization subset is filtered.
+/// When no follow-safe binding exists no authorization is produced and the
+/// apply still succeeds; a credentialed identity is never silently
+/// followed.
+fn stage_compound_agent_auto_follow_authorization(
+    plan: &ConnectionRoutePlanRequest,
+    discovery: &Value,
+    active_config_sha256: &str,
+) -> Result<StagedCompoundAutoFollow, String> {
+    let discovered_bindings = discovery
+        .get("agent_bindings")
+        .and_then(Value::as_array)
+        .ok_or_else(|| "Current Agent discovery result is unavailable".to_string())?;
+    let mut follow_safe = Vec::new();
+    let mut skipped_agents = BTreeSet::new();
+    let mut skipped_candidates = 0usize;
+    let mut opencode_excluded = false;
+    for binding_request in &plan.bindings {
+        // cc-switch bindings are governed by the cc-switch follow flow,
+        // never by Agent follow.
+        if binding_request.candidate_source.starts_with("cc-switch:") {
+            continue;
+        }
+        // OpenCode multi-route follow is structurally unsupported by the
+        // follow executor (single resolved model + legacy route id), so
+        // every OpenCode binding is excluded regardless of auth_mode and
+        // reported truthfully instead of failing the apply.
+        if binding_request.agent_id == "opencode" {
+            skipped_agents.insert(binding_request.agent_id.clone());
+            skipped_candidates += 1;
+            opencode_excluded = true;
+            continue;
+        }
+        let follow_safe_candidate = discovered_bindings
+            .iter()
+            .find(|binding| {
+                binding.get("agent_id").and_then(Value::as_str)
+                    == Some(binding_request.agent_id.as_str())
+            })
+            .and_then(|binding| {
+                binding
+                    .get("candidates")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .find(|candidate| {
+                        candidate.get("id").and_then(Value::as_str)
+                            == Some(binding_request.candidate_id.as_str())
+                            && candidate.get("source").and_then(Value::as_str)
+                                == Some(binding_request.candidate_source.as_str())
+                    })
+            })
+            .is_some_and(|candidate| {
+                candidate.get("auth_mode").and_then(Value::as_str) == Some("none")
+            });
+        if follow_safe_candidate {
+            follow_safe.push(binding_request.clone());
+        } else {
+            skipped_agents.insert(binding_request.agent_id.clone());
+            skipped_candidates += 1;
+        }
+    }
+    if follow_safe.is_empty() {
+        return Ok(StagedCompoundAutoFollow {
+            authorization: None,
+            skipped_agents: skipped_agents.into_iter().collect(),
+            skipped_candidates,
+            opencode_excluded,
+        });
+    }
+    let filtered = ConnectionRoutePlanRequest {
+        discovery_revision: plan.discovery_revision.clone(),
+        source_fingerprint: plan.source_fingerprint.clone(),
+        source_fingerprint_scope: plan.source_fingerprint_scope.clone(),
+        bindings: follow_safe,
+    };
+    let authorization =
+        stage_agent_auto_follow_authorization(&filtered, discovery, active_config_sha256)?;
+    Ok(StagedCompoundAutoFollow {
+        authorization,
+        skipped_agents: skipped_agents.into_iter().collect(),
+        skipped_candidates,
+        opencode_excluded,
+    })
+}
+
+/// Truthful compound auto-follow projection for preview and receipt: the
+/// staged follow-safe subset plus the explicitly skipped bindings.
+/// `partial` means a follow-safe subset was staged while other bindings
+/// were skipped; `not_authorized_for_multiroute` means OpenCode bindings
+/// were excluded (structurally unsupported by the follow executor) and
+/// nothing else could be staged, so no runtime verification is pending;
+/// `not_authorized_for_credentialed` means only credentialed non-OpenCode
+/// bindings remained. In every not-authorized state the apply still
+/// succeeded with follow disabled and nothing persisted.
+fn compound_auto_follow_receipt_value(staged: &StagedCompoundAutoFollow) -> Value {
+    let (state, requires_runtime_verification) = match (
+        &staged.authorization,
+        staged.skipped_candidates,
+        staged.opencode_excluded,
+    ) {
+        (Some(authorization), 0, _) => (authorization.last_sync_state.clone(), true),
+        (Some(_), _, _) => ("partial".to_string(), true),
+        (None, 0, _) => ("not_available".to_string(), false),
+        (None, _, true) => ("not_authorized_for_multiroute".to_string(), false),
+        (None, _, false) => ("not_authorized_for_credentialed".to_string(), false),
+    };
+    json!({
+        "enabled": staged.authorization.as_ref().map(|authorization| authorization.enabled).unwrap_or(false),
+        "state": state,
+        "agent_ids": staged.authorization.as_ref().map(|authorization| {
+            authorization.last_synced_bindings.iter().map(|binding| binding.agent_id.clone()).collect::<Vec<_>>()
+        }).unwrap_or_default(),
+        "skipped_agents": staged.skipped_agents,
+        "skipped_candidates": staged.skipped_candidates,
+        "requires_runtime_verification": requires_runtime_verification,
+    })
 }
 
 fn active_config_sha256() -> Result<String, String> {
@@ -7470,7 +8753,9 @@ fn execute_agent_auto_follow() -> Value {
         }
     };
     let (revision, prepared, agents) =
-        match prepare_connection_route_plan_from_discovery(&plan, &synthetic) {
+        match prepare_connection_route_plan_from_discovery(&plan, &synthetic, &|candidate| {
+            credential_entry_exists_for_candidate(candidate)
+        }) {
             Ok(prepared) => prepared,
             Err(error) => {
                 authorization.last_sync_state = "blocked".to_string();
@@ -8691,17 +9976,20 @@ fn apply_connection_route_plan_value(request: ApplyConnectionRoutePlanRequest) -
         });
     };
     let discovery = enrich_upstream_discovery(upstream_discovery::discover());
-    let (revision, prepared, agents) =
-        match prepare_connection_route_plan_from_discovery(&request.plan, &discovery) {
-            Ok(prepared) => prepared,
-            Err(error) => {
-                return json!({
-                    "ok": false,
-                    "state": "stale",
-                    "summary": sanitize_command_output(&error)
-                });
-            }
-        };
+    let (revision, prepared, agents) = match prepare_connection_route_plan_from_discovery(
+        &request.plan,
+        &discovery,
+        &|candidate| credential_entry_exists_for_candidate(candidate),
+    ) {
+        Ok(prepared) => prepared,
+        Err(error) => {
+            return json!({
+                "ok": false,
+                "state": "stale",
+                "summary": sanitize_command_output(&error)
+            });
+        }
+    };
     if prepared.plan.before_hash != reviewed_before || prepared.plan.after_hash != reviewed_after {
         return json!({
             "ok": false,
@@ -8867,6 +10155,644 @@ fn rollback_connection_route_plan(request: RollbackConnectionRoutePlanRequest) -
                 logs,
                 tools: all_checks(),
             }
+        }
+    }
+}
+
+/// Deterministic digest for the compound route + OpenCode transaction. It
+/// commits to the route discovery revision, both prepared route hashes, the
+/// OpenCode revision (which itself binds models, listener, and both OpenCode
+/// hashes), and both prepared OpenCode hashes, so a reviewed compound
+/// preview cannot be replayed onto any other file state.
+fn compound_route_opencode_revision(
+    route_revision: &str,
+    route_before: &str,
+    route_after: &str,
+    opencode_revision: &str,
+    opencode_before: &str,
+    opencode_after: &str,
+) -> String {
+    stable_hash(&format!(
+        "route-opencode-compound-v1\n{route_revision}\n{route_before}\n{route_after}\n{opencode_revision}\n{opencode_before}\n{opencode_after}"
+    ))
+}
+
+fn compound_open_code_request_from(value: &CompoundOpenCodeRequest) -> OpenCodeConnectionRequest {
+    OpenCodeConnectionRequest {
+        models: value.models.clone(),
+        listener_port: value.listener_port,
+        reviewed_revision: None,
+        reviewed_before_sha256: None,
+        reviewed_after_sha256: None,
+    }
+}
+
+fn preview_compound_route_opencode_from_discovery(
+    request: &PreviewCompoundRouteOpencodeRequest,
+    discovery: &Value,
+    credential_available: &dyn Fn(&Value) -> bool,
+) -> Value {
+    let Some(opencode_request) = request.opencode.as_ref() else {
+        return json!({
+            "ok": false,
+            "state": "blocked",
+            "source": "dtoken-desktop-auto-route-plan",
+            "freshness": "unknown",
+            "error": "The compound route + OpenCode preview requires the OpenCode request",
+            "requires_explicit_confirmation": true,
+            "route": {
+                "ok": false,
+                "state": "blocked",
+                "error": "The compound route + OpenCode preview requires the OpenCode request"
+            }
+        });
+    };
+    let (route_revision, route_prepared, agents) =
+        match prepare_connection_route_plan_from_discovery(
+            &request.plan,
+            discovery,
+            credential_available,
+        ) {
+            Ok(prepared) => prepared,
+            Err(error) => {
+                let message = sanitize_command_output(&error);
+                return json!({
+                    "ok": false,
+                    "state": "blocked",
+                    "source": "dtoken-desktop-auto-route-plan",
+                    "freshness": "unknown",
+                    "error": message,
+                    "requires_explicit_confirmation": true,
+                    "route": {
+                        "ok": false,
+                        "state": "blocked",
+                        "error": message
+                    }
+                });
+            }
+        };
+    let (opencode_path, opencode_prepared, opencode_models) = match opencode_adapter::prepare(
+        &compound_open_code_request_from(opencode_request),
+        &config_backup_root(),
+    ) {
+        Ok(prepared) => prepared,
+        Err(error) => {
+            let message = sanitize_command_output(&error);
+            return json!({
+                "ok": false,
+                "state": "blocked",
+                "source": "dtoken-desktop-auto-route-plan",
+                "freshness": "unknown",
+                "error": message,
+                "requires_explicit_confirmation": true,
+                "route": {
+                    "ok": false,
+                    "state": "blocked",
+                    "error": message
+                }
+            });
+        }
+    };
+    let opencode_revision = opencode_adapter::review_revision(
+        &opencode_models,
+        opencode_request.listener_port,
+        &opencode_prepared.plan.before_hash,
+        &opencode_prepared.plan.after_hash,
+    );
+    let compound_revision = compound_route_opencode_revision(
+        &route_revision,
+        &route_prepared.plan.before_hash,
+        &route_prepared.plan.after_hash,
+        &opencode_revision,
+        &opencode_prepared.plan.before_hash,
+        &opencode_prepared.plan.after_hash,
+    );
+    // Read-only auto-follow projection: when the user opted in, the same
+    // compound-specific filter reports which follow-safe bindings would be
+    // staged and which OpenCode bindings would be skipped (multi-route
+    // OpenCode follow is never authorized), before confirmation. Nothing
+    // is persisted by preview.
+    let auto_follow = if request.enable_auto_follow {
+        match stage_compound_agent_auto_follow_authorization(
+            &request.plan,
+            discovery,
+            &route_prepared.plan.after_hash,
+        ) {
+            Ok(staged) => Some(compound_auto_follow_receipt_value(&staged)),
+            Err(error) => {
+                let message = sanitize_command_output(&error);
+                return json!({
+                    "ok": false,
+                    "state": "blocked",
+                    "source": "dtoken-desktop-auto-route-plan",
+                    "freshness": "unknown",
+                    "error": message,
+                    "requires_explicit_confirmation": true,
+                    "route": {
+                        "ok": false,
+                        "state": "blocked",
+                        "error": message
+                    }
+                });
+            }
+        }
+    } else {
+        None
+    };
+    json!({
+        "ok": true,
+        "state": "review_required",
+        "source": "dtoken-desktop-auto-route-plan",
+        "freshness": "fresh",
+        "compound_revision": compound_revision,
+        "requires_explicit_confirmation": true,
+        "auto_follow": auto_follow,
+        "route": {
+            "ok": true,
+            "state": "review_required",
+            "source": "dtoken-desktop-auto-route-plan",
+            "freshness": "fresh",
+            "discovery_revision": route_revision,
+            "target": route_prepared.plan.target_file,
+            "before_sha256": route_prepared.plan.before_hash,
+            "after_sha256": route_prepared.plan.after_hash,
+            "diff": route_prepared.plan.diff,
+            "risk_level": route_prepared.plan.risk_level,
+            "agents": agents,
+            "requires_explicit_confirmation": true,
+            "summary": "Review the exact d-token route change inside the compound transaction",
+            "privacy": "d-token active config only; credential values and third-party configuration are not returned."
+        },
+        "opencode": {
+            "ok": true,
+            "state": "review_required",
+            "source": "dtoken-desktop-opencode-adapter",
+            "freshness": "fresh",
+            "target": opencode_adapter::display_path(&opencode_path),
+            "models": opencode_models,
+            "listener": format!("127.0.0.1:{}", opencode_request.listener_port),
+            "transaction": "scan-plan-diff-backup-confirm-apply-verify-doctor-rollback",
+            "revision": opencode_revision,
+            "before_sha256": opencode_prepared.plan.before_hash,
+            "after_sha256": opencode_prepared.plan.after_hash,
+            "diff": opencode_prepared.plan.diff,
+            "summary": "Review the exact OpenCode provider change inside the compound transaction",
+            "privacy": opencode_adapter::privacy()
+        },
+        "summary": "Review the exact d-token route and OpenCode provider changes before applying them as one transaction",
+        "privacy": "d-token active config and normal strict OpenCode JSON config only; credentials and secrets are never read or returned."
+    })
+}
+
+fn preview_compound_route_opencode_value(request: PreviewCompoundRouteOpencodeRequest) -> Value {
+    let discovery = enrich_upstream_discovery(upstream_discovery::discover());
+    preview_compound_route_opencode_from_discovery(&request, &discovery, &|candidate| {
+        credential_entry_exists_for_candidate(candidate)
+    })
+}
+
+#[tauri::command]
+async fn preview_compound_route_opencode(request: PreviewCompoundRouteOpencodeRequest) -> Value {
+    tauri::async_runtime::spawn_blocking(move || preview_compound_route_opencode_value(request))
+        .await
+        .unwrap_or_else(|error| {
+            let message = format!("Compound route + OpenCode preview worker failed: {error}");
+            json!({
+                "ok": false,
+                "state": "blocked",
+                "source": "dtoken-desktop-auto-route-plan",
+                "error": message,
+                "route": {
+                    "ok": false,
+                    "state": "blocked",
+                    "error": message
+                }
+            })
+        })
+}
+
+/// File-level post-apply verification for the compound transaction: the
+/// active d-token config must match the reviewed after hash and parse as a
+/// loaded route config, and the OpenCode config must match its reviewed
+/// after hash and contain the exact owned provider binding. Runtime health
+/// is intentionally not part of this boundary: the caller starts/reloads
+/// the runtime only after the compound receipt is verified.
+fn verify_compound_route_opencode_applied(
+    route_receipt: &dtoken_config_patcher::ApplyReceipt,
+    opencode_receipt: &dtoken_config_patcher::ApplyReceipt,
+    opencode_path: &Path,
+    opencode_models: &[String],
+    listener_port: u16,
+) -> Result<(), String> {
+    let route_after = route_receipt
+        .after
+        .sha256
+        .clone()
+        .ok_or_else(|| "route apply receipt is missing its after hash".to_string())?;
+    let active = active_route_config_status();
+    if active.get("state").and_then(Value::as_str) != Some("loaded") {
+        return Err("active d-token config is not a loaded route config after apply".to_string());
+    }
+    let route_bytes = fs::read(active_config_path())
+        .map_err(|error| format!("read applied active config: {error}"))?;
+    let route_text = String::from_utf8(route_bytes)
+        .map_err(|_| "applied active config is not UTF-8".to_string())?;
+    if stable_hash(&route_text) != route_after {
+        return Err("active d-token config does not match the reviewed after hash".to_string());
+    }
+    let opencode_after = opencode_receipt
+        .after
+        .sha256
+        .clone()
+        .ok_or_else(|| "OpenCode apply receipt is missing its after hash".to_string())?;
+    let opencode_bytes = fs::read(opencode_path)
+        .map_err(|error| format!("read applied OpenCode config: {error}"))?;
+    let opencode_text = String::from_utf8(opencode_bytes)
+        .map_err(|_| "applied OpenCode config is not UTF-8".to_string())?;
+    if stable_hash(&opencode_text) != opencode_after {
+        return Err("OpenCode config does not match the reviewed after hash".to_string());
+    }
+    opencode_adapter::verify_provider(opencode_path, opencode_models, listener_port)
+        .map_err(|error| format!("applied OpenCode provider verification failed: {error}"))?;
+    Ok(())
+}
+
+/// Restores both files of a committed compound transaction in reverse apply
+/// order (OpenCode first, then the route), reporting all-or-fail truthfully.
+/// Each restore is hash-bound against the receipt's after hash, so a
+/// concurrent edit fails closed without touching the other file.
+fn restore_compound_route_opencode_backups(
+    patcher: &ConfigPatcher,
+    opencode_receipt: &dtoken_config_patcher::ApplyReceipt,
+    route_receipt: &dtoken_config_patcher::ApplyReceipt,
+) -> Result<(), String> {
+    let mut failures = Vec::new();
+    let opencode_expected =
+        ExpectedFileState::Hash(opencode_receipt.after.sha256.clone().unwrap_or_default());
+    if let Err(error) = patcher.restore_backup(&opencode_receipt.backup, &opencode_expected) {
+        failures.push(format!("OpenCode config: {error:#}"));
+    }
+    let route_expected =
+        ExpectedFileState::Hash(route_receipt.after.sha256.clone().unwrap_or_default());
+    if let Err(error) = patcher.restore_backup(&route_receipt.backup, &route_expected) {
+        failures.push(format!("active d-token config: {error:#}"));
+    }
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        Err(failures.join("; "))
+    }
+}
+
+fn apply_compound_route_opencode_from_discovery(
+    request: &ApplyCompoundRouteOpencodeRequest,
+    discovery: &Value,
+    credential_available: &dyn Fn(&Value) -> bool,
+) -> Value {
+    let Some(opencode_request) = request.opencode.as_ref() else {
+        return json!({
+            "ok": false,
+            "state": "blocked",
+            "summary": "The compound route + OpenCode apply requires the OpenCode request"
+        });
+    };
+    let (
+        Some(reviewed_compound),
+        Some(reviewed_route_before),
+        Some(reviewed_route_after),
+        Some(reviewed_opencode_before),
+        Some(reviewed_opencode_after),
+    ) = (
+        request.reviewed_compound_revision.as_deref(),
+        request.reviewed_route_before_sha256.as_deref(),
+        request.reviewed_route_after_sha256.as_deref(),
+        request.reviewed_opencode_before_sha256.as_deref(),
+        request.reviewed_opencode_after_sha256.as_deref(),
+    )
+    else {
+        return json!({
+            "ok": false,
+            "state": "blocked",
+            "summary": "Review the combined d-token route and OpenCode provider diff before applying it"
+        });
+    };
+    let (route_revision, route_prepared, agents) =
+        match prepare_connection_route_plan_from_discovery(
+            &request.plan,
+            discovery,
+            credential_available,
+        ) {
+            Ok(prepared) => prepared,
+            Err(error) => {
+                return json!({
+                    "ok": false,
+                    "state": "stale",
+                    "summary": sanitize_command_output(&error)
+                });
+            }
+        };
+    let (opencode_path, opencode_prepared, opencode_models) = match opencode_adapter::prepare(
+        &compound_open_code_request_from(opencode_request),
+        &config_backup_root(),
+    ) {
+        Ok(prepared) => prepared,
+        Err(error) => {
+            return json!({
+                "ok": false,
+                "state": "stale",
+                "summary": sanitize_command_output(&error)
+            });
+        }
+    };
+    let opencode_revision = opencode_adapter::review_revision(
+        &opencode_models,
+        opencode_request.listener_port,
+        &opencode_prepared.plan.before_hash,
+        &opencode_prepared.plan.after_hash,
+    );
+    let compound_revision = compound_route_opencode_revision(
+        &route_revision,
+        &route_prepared.plan.before_hash,
+        &route_prepared.plan.after_hash,
+        &opencode_revision,
+        &opencode_prepared.plan.before_hash,
+        &opencode_prepared.plan.after_hash,
+    );
+    if reviewed_compound != compound_revision
+        || reviewed_route_before != route_prepared.plan.before_hash
+        || reviewed_route_after != route_prepared.plan.after_hash
+        || reviewed_opencode_before != opencode_prepared.plan.before_hash
+        || reviewed_opencode_after != opencode_prepared.plan.after_hash
+    {
+        return json!({
+            "ok": false,
+            "state": "stale",
+            "summary": "The active route or OpenCode configuration changed after review; generate a new preview"
+        });
+    }
+    let staged_auto_follow = if request.enable_auto_follow {
+        match stage_compound_agent_auto_follow_authorization(
+            &request.plan,
+            discovery,
+            &route_prepared.plan.after_hash,
+        ) {
+            Ok(staged) => Some(staged),
+            Err(error) => {
+                return json!({
+                    "ok": false,
+                    "state": "blocked",
+                    "summary": sanitize_command_output(&error),
+                });
+            }
+        }
+    } else {
+        None
+    };
+    let transaction = match config_patcher().apply_transaction(&[route_prepared, opencode_prepared])
+    {
+        Ok(transaction) => transaction,
+        Err(error) => {
+            return json!({
+                "ok": false,
+                "state": "failed",
+                "summary": format!("Compound route + OpenCode transaction failed: {error:#}")
+            });
+        }
+    };
+    let (Some(route_receipt), Some(opencode_receipt)) =
+        (transaction.changes.first(), transaction.changes.get(1))
+    else {
+        return json!({
+            "ok": false,
+            "state": "failed",
+            "summary": "Compound route + OpenCode transaction returned no verification receipt"
+        });
+    };
+    if let Err(error) = verify_compound_route_opencode_applied(
+        route_receipt,
+        opencode_receipt,
+        &opencode_path,
+        &opencode_models,
+        opencode_request.listener_port,
+    ) {
+        let restored = restore_compound_route_opencode_backups(
+            &config_patcher(),
+            opencode_receipt,
+            route_receipt,
+        );
+        let (state, summary) = match &restored {
+            Ok(()) => (
+                "recovered",
+                format!("{error}; both files were rolled back to their exact original bytes"),
+            ),
+            Err(restore_error) => (
+                "recovery_failed",
+                format!(
+                    "{error}; automatic restore needs attention: {}",
+                    restore_error
+                ),
+            ),
+        };
+        return json!({
+            "ok": false,
+            "state": state,
+            "summary": summary,
+        });
+    }
+    if let Some(staged) = staged_auto_follow.as_ref() {
+        if let Some(authorization) = staged.authorization.as_ref() {
+            if let Err(error) = save_agent_auto_follow_authorization(authorization) {
+                let restored = restore_compound_route_opencode_backups(
+                    &config_patcher(),
+                    opencode_receipt,
+                    route_receipt,
+                );
+                return json!({
+                    "ok": false,
+                    "state": if restored.is_ok() {
+                        "authorization_failed_rolled_back"
+                    } else {
+                        "authorization_failed_rollback_failed"
+                    },
+                    "summary": if restored.is_ok() {
+                        format!("{}; compound transaction was rolled back", sanitize_command_output(&error))
+                    } else {
+                        sanitize_command_output(&error)
+                    },
+                });
+            }
+        }
+    }
+    let route_after_sha256 = route_receipt.after.sha256.clone().unwrap_or_default();
+    let opencode_after_sha256 = opencode_receipt.after.sha256.clone().unwrap_or_default();
+    let result = json!({
+        "ok": true,
+        "state": "applied_verified",
+        "source": "dtoken-desktop-auto-route-plan",
+        "freshness": "fresh",
+        "compound_revision": compound_revision,
+        "transaction_id": transaction.transaction_id,
+        "verified": true,
+        "agents": agents,
+        "route": {
+            "target": route_receipt.target_path.display().to_string(),
+            "before_sha256": route_receipt.before.sha256,
+            "after_sha256": route_after_sha256,
+            "rollback_id": route_receipt.backup.rollback_id,
+        },
+        "opencode": {
+            "target": opencode_adapter::display_path(&opencode_path),
+            "revision": opencode_revision,
+            "models": opencode_models,
+            "listener": format!("127.0.0.1:{}", opencode_request.listener_port),
+            "before_sha256": opencode_receipt.before.sha256,
+            "after_sha256": opencode_after_sha256,
+            "rollback_id": opencode_receipt.backup.rollback_id,
+        },
+        "auto_follow": staged_auto_follow.as_ref().map(compound_auto_follow_receipt_value),
+        "summary": "Reviewed d-token route and OpenCode provider were applied as one verified transaction with per-file rollback points"
+    });
+    let _ = append_desktop_event(
+        "install_route_opencode_compound_apply",
+        "ok",
+        json!({
+            "compound_revision": result.get("compound_revision"),
+            "transaction_id": result.get("transaction_id"),
+            "route_after_sha256": result.pointer("/route/after_sha256"),
+            "opencode_after_sha256": result.pointer("/opencode/after_sha256"),
+            "route_rollback_id": result.pointer("/route/rollback_id"),
+            "opencode_rollback_id": result.pointer("/opencode/rollback_id"),
+            "agents": result.get("agents"),
+        }),
+    );
+    result
+}
+
+fn apply_compound_route_opencode_value(request: ApplyCompoundRouteOpencodeRequest) -> Value {
+    let discovery = enrich_upstream_discovery(upstream_discovery::discover());
+    apply_compound_route_opencode_from_discovery(&request, &discovery, &|candidate| {
+        credential_entry_exists_for_candidate(candidate)
+    })
+}
+
+#[tauri::command]
+async fn apply_compound_route_opencode(request: ApplyCompoundRouteOpencodeRequest) -> Value {
+    tauri::async_runtime::spawn_blocking(move || apply_compound_route_opencode_value(request))
+        .await
+        .unwrap_or_else(|error| {
+            json!({
+                "ok": false,
+                "state": "failed",
+                "summary": format!("Compound route + OpenCode apply worker failed: {error}")
+            })
+        })
+}
+
+#[tauri::command]
+fn rollback_compound_route_opencode(request: RollbackCompoundRouteOpencodeRequest) -> ActionResult {
+    let mut logs = vec![log(
+        "info",
+        "Restoring the reviewed d-token route and OpenCode provider transaction",
+    )];
+    let patcher = config_patcher();
+    let route_backup = match patcher.load_backup(&request.route.rollback_id) {
+        Ok(backup) => backup,
+        Err(error) => {
+            logs.push(log(
+                "error",
+                format!("Compound route rollback point could not be loaded: {error:#}"),
+            ));
+            return ActionResult {
+                ok: false,
+                summary: "Compound route rollback point is unavailable".to_string(),
+                logs,
+                tools: all_checks(),
+            };
+        }
+    };
+    let opencode_backup = match patcher.load_backup(&request.opencode.rollback_id) {
+        Ok(backup) => backup,
+        Err(error) => {
+            logs.push(log(
+                "error",
+                format!("Compound OpenCode rollback point could not be loaded: {error:#}"),
+            ));
+            return ActionResult {
+                ok: false,
+                summary: "Compound OpenCode rollback point is unavailable".to_string(),
+                logs,
+                tools: all_checks(),
+            };
+        }
+    };
+    if patchable_active_config_path().ok().as_ref() != Some(&route_backup.target_path) {
+        logs.push(log(
+            "error",
+            "Compound route rollback point does not target the d-token active config",
+        ));
+        return ActionResult {
+            ok: false,
+            summary: "Refusing to restore an unrelated compound route rollback point".to_string(),
+            logs,
+            tools: all_checks(),
+        };
+    }
+    let discovered_opencode = opencode_adapter::discover_config_path()
+        .ok()
+        .and_then(|path| fs::canonicalize(&path).ok());
+    if discovered_opencode.as_deref() != Some(opencode_backup.target_path.as_path()) {
+        logs.push(log(
+            "error",
+            "Compound OpenCode rollback point does not target the guarded OpenCode config",
+        ));
+        return ActionResult {
+            ok: false,
+            summary: "Refusing to restore an unrelated compound OpenCode rollback point"
+                .to_string(),
+            logs,
+            tools: all_checks(),
+        };
+    }
+    // Reverse apply order: the OpenCode provider was applied second, so it is
+    // restored first, then the active d-token route. All-or-fail: the command
+    // reports success only when both restores land exactly.
+    let mut failures = Vec::new();
+    match patcher.restore_backup(
+        &opencode_backup,
+        &ExpectedFileState::Hash(request.opencode.expected_after_sha256),
+    ) {
+        Ok(_) => logs.push(log("info", "Exact previous OpenCode bytes were restored")),
+        Err(error) => failures.push(format!("OpenCode config: {error:#}")),
+    }
+    match patcher.restore_backup(
+        &route_backup,
+        &ExpectedFileState::Hash(request.route.expected_after_sha256),
+    ) {
+        Ok(_) => logs.push(log(
+            "info",
+            "Exact previous d-token route bytes were restored",
+        )),
+        Err(error) => failures.push(format!("active d-token config: {error:#}")),
+    }
+    if failures.is_empty() {
+        ActionResult {
+            ok: true,
+            summary: "The compound d-token route and OpenCode provider transaction was rolled back exactly"
+                .to_string(),
+            logs,
+            tools: all_checks(),
+        }
+    } else {
+        logs.push(log(
+            "error",
+            format!("Compound rollback failed closed: {}", failures.join("; ")),
+        ));
+        ActionResult {
+            ok: false,
+            summary: "Compound rollback needs attention; no unrelated file was modified"
+                .to_string(),
+            logs,
+            tools: all_checks(),
         }
     }
 }
@@ -10150,7 +12076,7 @@ fn preview_opencode_connection(request: OpenCodeConnectionRequest) -> OpenCodeCo
             "transaction": review.transaction,
             "revision": review.revision,
             "target": review.target,
-            "model": review.model,
+            "models": review.models,
             "listener": review.listener,
             "before_sha256": review.before_sha256,
             "after_sha256": review.after_sha256,
@@ -10169,7 +12095,7 @@ fn apply_opencode_connection(request: OpenCodeConnectionRequest) -> Value {
             source: "dtoken-desktop-opencode-adapter",
             freshness: "fresh",
             target: "<normal-opencode-config>".to_string(),
-            model: request.model.clone(),
+            models: request.models.clone(),
             listener: format!("127.0.0.1:{}", request.listener_port),
             transaction: "scan-plan-diff-backup-confirm-apply-verify-doctor-rollback".to_string(),
             revision: request.reviewed_revision.clone(),
@@ -10195,7 +12121,7 @@ fn apply_opencode_connection(request: OpenCodeConnectionRequest) -> Value {
             "revision": request.reviewed_revision,
             "before_sha256": request.reviewed_before_sha256,
             "after_sha256": request.reviewed_after_sha256,
-            "model": request.model,
+            "models": request.models,
         }),
     );
     let mut receipt = opencode_adapter::apply(&request, &config_backup_root());
@@ -10259,7 +12185,7 @@ fn apply_opencode_connection(request: OpenCodeConnectionRequest) -> Value {
             "before_sha256": receipt.before_sha256,
             "after_sha256": receipt.after_sha256,
             "rollback_id": receipt.rollback_id,
-            "model": receipt.model,
+            "models": receipt.models,
             "listener": receipt.listener,
             "verified": true,
         }),
@@ -10865,25 +12791,119 @@ fn reject_symlink_components(path: &Path) -> Result<(), String> {
 
 #[tauri::command]
 async fn discover_upstream_candidates() -> Value {
-    tauri::async_runtime::spawn_blocking(upstream_discovery::discover)
-        .await
-        .map(enrich_upstream_discovery)
-        .unwrap_or_else(|error| {
-            json!({
-                "source": "dtoken-desktop-read-only-discovery",
-                "freshness": "unknown",
-                "revision": "unavailable",
-                "state": "unavailable",
-                "candidates": [],
-                "agent_bindings": [],
-                "sources": [],
-                "selection_required": false,
-                "cc_switch_sync": null,
-                "writes_performed": false,
-                "privacy": "No credential values were read or returned",
-                "error": format!("Discovery worker failed: {error}")
-            })
+    tauri::async_runtime::spawn_blocking(|| {
+        enrich_upstream_discovery(upstream_discovery::discover())
+    })
+    .await
+    .unwrap_or_else(|error| {
+        json!({
+            "source": "dtoken-desktop-read-only-discovery",
+            "freshness": "unknown",
+            "revision": "unavailable",
+            "state": "unavailable",
+            "candidates": [],
+            "agent_bindings": [],
+            "sources": [],
+            "has_resolution_gap": false,
+            "cc_switch_sync": null,
+            "writes_performed": false,
+            "privacy": "No credential values were read or returned",
+            "error": format!("Discovery worker failed: {error}")
         })
+    })
+}
+
+/// Metadata-only projection of d-token OS credential presence onto OpenCode
+/// candidates. `credential_configured` receives the exact candidate Value
+/// and reports whether d-token's own keyring entry for that candidate's
+/// exact identity (id + source + normalized endpoint) exists. Production
+/// supplies the platform probe; inline tests supply a fake closure, so tests
+/// never touch the real Keychain. Only the existence boolean is projected —
+/// no credential reference or stored value is ever emitted, and `auth_mode`
+/// is preserved exactly as discovered (never relabeled to "none").
+fn project_dtoken_credential_presence(
+    discovery: &mut Value,
+    credential_configured: &dyn Fn(&Value) -> bool,
+) {
+    if let Some(candidates) = discovery
+        .get_mut("candidates")
+        .and_then(Value::as_array_mut)
+    {
+        for candidate in candidates {
+            project_candidate_dtoken_credential(candidate, credential_configured);
+        }
+    }
+    let Some(bindings) = discovery
+        .get_mut("agent_bindings")
+        .and_then(Value::as_array_mut)
+    else {
+        return;
+    };
+    for binding in bindings {
+        if binding.get("agent_id").and_then(Value::as_str) != Some("opencode") {
+            continue;
+        }
+        if let Some(candidates) = binding.get_mut("candidates").and_then(Value::as_array_mut) {
+            for candidate in candidates {
+                project_candidate_dtoken_credential(candidate, credential_configured);
+            }
+        }
+        let resolved_configured = binding
+            .get_mut("resolved_candidate")
+            .filter(|resolved| !resolved.is_null())
+            .is_some_and(|resolved| {
+                project_candidate_dtoken_credential(resolved, credential_configured);
+                resolved
+                    .get("dtoken_credential_configured")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false)
+            });
+        // A binding that discovery reported as needs-credential can be
+        // auto-resolved only when d-token's own OS credential entry for the
+        // exact resolved candidate exists. The statement stays credential-
+        // free: it reports configuration state, never a value or reference.
+        if binding.get("resolution").and_then(Value::as_str) == Some("needs-credential")
+            && resolved_configured
+        {
+            if let Some(binding) = binding.as_object_mut() {
+                binding.insert("resolution".to_string(), json!("auto-resolved"));
+                binding.insert(
+                    "reasons".to_string(),
+                    json!(["d-token OS credential is configured for this upstream"]),
+                );
+            }
+        }
+    }
+}
+
+fn project_candidate_dtoken_credential(
+    candidate: &mut Value,
+    credential_configured: &dyn Fn(&Value) -> bool,
+) {
+    if !candidate.is_object() {
+        return;
+    }
+    let opencode_mapped = candidate
+        .get("agent_ids")
+        .and_then(Value::as_array)
+        .is_some_and(|agent_ids| {
+            agent_ids
+                .iter()
+                .any(|agent_id| agent_id.as_str() == Some("opencode"))
+        });
+    let auth_mode = candidate
+        .get("auth_mode")
+        .and_then(Value::as_str)
+        .unwrap_or("none");
+    if opencode_mapped && auth_mode != "none" {
+        let configured = credential_configured(candidate);
+        if let Some(object) = candidate.as_object_mut() {
+            object.insert(
+                "dtoken_credential_configured".to_string(),
+                json!(configured),
+            );
+        }
+    }
 }
 
 fn enrich_upstream_discovery(mut discovery: Value) -> Value {
@@ -10966,6 +12986,13 @@ fn enrich_upstream_discovery(mut discovery: Value) -> Value {
         &agent_follow_authorization,
         agent_follow_receipt.as_ref(),
     );
+    // Metadata-only projection of d-token OS credential presence onto
+    // authenticated OpenCode candidates, performed before the final revision
+    // is recomputed so every reviewed snapshot binds credential presence and
+    // stale reviews cannot bypass it.
+    project_dtoken_credential_presence(&mut discovery, &|candidate| {
+        credential_entry_exists_for_candidate(candidate)
+    });
     if let Some(object) = discovery.as_object_mut() {
         let prior_revision = object
             .get("revision")
@@ -10978,6 +13005,21 @@ fn enrich_upstream_discovery(mut discovery: Value) -> Value {
                 "active_providers": active_providers,
                 "cc_switch_status": object.get("cc_switch_sync").and_then(|value| value.get("status")),
                 "agent_route_follow": object.get("agent_route_follow"),
+                "dtoken_credential_presence": object.get("candidates").and_then(Value::as_array).map(|candidates| {
+                    candidates
+                        .iter()
+                        .map(|candidate| {
+                            json!({
+                                "id": candidate.get("id"),
+                                "source": candidate.get("source"),
+                                "endpoint": candidate.get("base_url").and_then(Value::as_str).map(normalized_endpoint),
+                                "dtoken_credential_configured": candidate
+                                    .get("dtoken_credential_configured")
+                                    .and_then(Value::as_bool),
+                            })
+                        })
+                        .collect::<Vec<_>>()
+                }),
             })
             .to_string(),
         );
@@ -13510,18 +15552,21 @@ fn apply_doctor_repair(request: ApplyDoctorModuleRepairRequest) -> Value {
                         // Compute the reviewed hashes from the current
                         // discovery so the apply transaction verifies against
                         // exactly what the preview digest bound.
-                        let prepared =
-                            match prepare_connection_route_plan_from_discovery(&plan, &discovery) {
-                                Ok((_, prepared, _)) => Some(prepared),
-                                Err(error) => {
-                                    agent_receipts.push(json!({
-                                        "agent_id": "cc-switch",
-                                        "outcome": "blocked",
-                                        "summary": sanitize_command_output(&error),
-                                    }));
-                                    None
-                                }
-                            };
+                        let prepared = match prepare_connection_route_plan_from_discovery(
+                            &plan,
+                            &discovery,
+                            &|candidate| credential_entry_exists_for_candidate(candidate),
+                        ) {
+                            Ok((_, prepared, _)) => Some(prepared),
+                            Err(error) => {
+                                agent_receipts.push(json!({
+                                    "agent_id": "cc-switch",
+                                    "outcome": "blocked",
+                                    "summary": sanitize_command_output(&error),
+                                }));
+                                None
+                            }
+                        };
                         if let Some(prepared) = prepared {
                             let result = apply_connection_route_plan_value(
                                 ApplyConnectionRoutePlanRequest {
@@ -15374,6 +17419,9 @@ macro_rules! desktop_release_handlers {
             preview_connection_route_plan,
             apply_connection_route_plan,
             rollback_connection_route_plan,
+            preview_compound_route_opencode,
+            apply_compound_route_opencode,
+            rollback_compound_route_opencode,
             finalize_agent_auto_follow_authorization,
             preview_cc_switch_sync_plan,
             apply_cc_switch_sync_plan,
@@ -16299,6 +18347,46 @@ mod tests {
         });
     }
 
+    #[test]
+    fn hybrid_agent_integration_request_fails_closed_on_unverified_bridge() {
+        // AGENT-7 / H3 authority gate: managed MCP/Hook request construction
+        // must never proceed on a path-resolved bridge whose identity is not
+        // verified (hash where required, platform signature, component/
+        // protocol/OS/arch/version). A fake bridge file fails closed before
+        // any AgentIntegrationRequest is produced.
+        with_isolated_app_state("hybrid-bridge-gate", || {
+            let root = app_state_dir();
+            let fake_bridge = root.join("fake-dtoken-agent-bridge");
+            fs::write(&fake_bridge, b"not a real bridge binary").expect("write fake bridge");
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                fs::set_permissions(&fake_bridge, fs::Permissions::from_mode(0o755))
+                    .expect("make fake bridge executable");
+            }
+            let previous_bridge = env::var_os("DTOKEN_AGENT_BRIDGE_EXE");
+            env::set_var("DTOKEN_AGENT_BRIDGE_EXE", &fake_bridge);
+            let draft = HybridAgentIntegrationDraftRequest {
+                agent_ids: vec!["codex".to_string()],
+                scope: "project".to_string(),
+                project_root: Some(root.display().to_string()),
+                install_instructions: false,
+                install_hook_or_plugin: false,
+                install_skill: false,
+                install_mcp: true,
+            };
+            let result = hybrid_agent_integration_request(&draft, BTreeMap::new());
+            assert!(
+                result.is_err(),
+                "an unverified bridge must never construct an Agent integration request"
+            );
+            match previous_bridge {
+                Some(value) => env::set_var("DTOKEN_AGENT_BRIDGE_EXE", value),
+                None => env::remove_var("DTOKEN_AGENT_BRIDGE_EXE"),
+            }
+        });
+    }
+
     fn review_and_apply_route(route_id: &str) -> ActionResult {
         let review = preview_route_profile_draft_apply(RouteDraftReviewRequest {
             route_id: route_id.to_string(),
@@ -16812,7 +18900,7 @@ mod tests {
             };
 
             let (revision, prepared, agents) =
-                prepare_connection_route_plan_from_discovery(&request, &discovery)
+                prepare_connection_route_plan_from_discovery(&request, &discovery, &|_| false)
                     .expect("prepare automatic route plan");
             assert_eq!(revision, "setup-reviewed");
             assert_eq!(agents, vec!["opencode"]);
@@ -16827,15 +18915,575 @@ mod tests {
 
             let mut stale = request.clone();
             stale.discovery_revision = "setup-stale".to_string();
-            let error = prepare_connection_route_plan_from_discovery(&stale, &discovery)
-                .expect_err("stale discovery must fail");
+            let error =
+                prepare_connection_route_plan_from_discovery(&stale, &discovery, &|_| false)
+                    .expect_err("stale discovery must fail");
             assert!(error.contains("changed after discovery"));
 
             let mut external_stale = request;
             external_stale.source_fingerprint = Some("external-b".to_string());
-            let error = prepare_connection_route_plan_from_discovery(&external_stale, &discovery)
+            let error =
+                prepare_connection_route_plan_from_discovery(&external_stale, &discovery, &|_| {
+                    false
+                })
                 .expect_err("external source drift must fail");
             assert!(error.contains("External Agent or cc-switch configuration changed"));
+        });
+    }
+
+    fn compound_discovery_fixture() -> Value {
+        json!({
+            "revision": "setup-reviewed",
+            "external_config_snapshot": { "fingerprint": "external-a" },
+            "agent_bindings": [{
+                "agent_id": "opencode",
+                "installed": true,
+                "capability": "one-click",
+                "candidates": [{
+                    "id": "opencode",
+                    "name": "OpenCode official free catalog",
+                    "source": "opencode-provider-catalog-cache",
+                    "protocol": "open_ai",
+                    "base_url": "https://opencode.ai/zen/v1",
+                    "models": ["deepseek-v4-flash-free"],
+                    "auth_mode": "none"
+                }]
+            }]
+        })
+    }
+
+    fn compound_plan_request() -> ConnectionRoutePlanRequest {
+        ConnectionRoutePlanRequest {
+            discovery_revision: "setup-reviewed".to_string(),
+            source_fingerprint: None,
+            source_fingerprint_scope: None,
+            bindings: vec![ConnectionRouteBindingRequest {
+                agent_id: "opencode".to_string(),
+                candidate_id: "opencode".to_string(),
+                candidate_source: "opencode-provider-catalog-cache".to_string(),
+                model: "deepseek-v4-flash-free".to_string(),
+            }],
+        }
+    }
+
+    fn compound_opencode_request() -> CompoundOpenCodeRequest {
+        CompoundOpenCodeRequest {
+            models: vec!["deepseek-v4-flash-free".to_string()],
+            listener_port: 18001,
+        }
+    }
+
+    fn reviewed_compound_request(
+        plan: ConnectionRoutePlanRequest,
+        opencode: CompoundOpenCodeRequest,
+        review: &Value,
+        enable_auto_follow: bool,
+    ) -> ApplyCompoundRouteOpencodeRequest {
+        ApplyCompoundRouteOpencodeRequest {
+            plan,
+            opencode: Some(opencode),
+            reviewed_compound_revision: review
+                .get("compound_revision")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            reviewed_route_before_sha256: review
+                .pointer("/route/before_sha256")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            reviewed_route_after_sha256: review
+                .pointer("/route/after_sha256")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            reviewed_opencode_before_sha256: review
+                .pointer("/opencode/before_sha256")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            reviewed_opencode_after_sha256: review
+                .pointer("/opencode/after_sha256")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            enable_auto_follow,
+        }
+    }
+
+    /// The compound preview prepares both the active d-token route change and
+    /// the OpenCode provider change from one re-discovery, returns one
+    /// compound revision plus both diffs and both hash pairs, and requires
+    /// explicit confirmation. The apply re-prepares both, validates the exact
+    /// compound revision and hashes, commits one transaction with per-file
+    /// rollback points, verifies both files post-apply, and never touches the
+    /// runtime.
+    #[test]
+    fn compound_route_opencode_preview_apply_and_rollback_are_one_transaction() {
+        let _guard = opencode_adapter::config_env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        with_isolated_app_state("compound-route-opencode", || {
+            let root = tempfile::tempdir_in(test_temp_root()).expect("temporary root");
+            let opencode_config = root.path().join("opencode.json");
+            let original = b"{\"provider\":{\"existing\":{\"name\":\"Existing\"}},\"enabled_providers\":[\"existing\"]}\n";
+            fs::write(&opencode_config, original).expect("write OpenCode config");
+            env::set_var(
+                "DTOKEN_OPENCODE_CONFIG_PATH",
+                fs::canonicalize(&opencode_config).expect("canonical OpenCode config"),
+            );
+            let discovery = compound_discovery_fixture();
+            let plan = compound_plan_request();
+            let opencode = compound_opencode_request();
+
+            let preview = preview_compound_route_opencode_from_discovery(
+                &PreviewCompoundRouteOpencodeRequest {
+                    plan: plan.clone(),
+                    opencode: Some(opencode.clone()),
+                    enable_auto_follow: false,
+                },
+                &discovery,
+                &|_| false,
+            );
+            assert_eq!(
+                preview.get("ok").and_then(Value::as_bool),
+                Some(true),
+                "{}",
+                preview
+            );
+            assert_eq!(
+                preview.get("state").and_then(Value::as_str),
+                Some("review_required")
+            );
+            let compound_revision = preview
+                .get("compound_revision")
+                .and_then(Value::as_str)
+                .expect("compound revision");
+            assert!(preview
+                .pointer("/route/diff")
+                .and_then(Value::as_str)
+                .is_some_and(|diff| diff.contains("opencode")));
+            assert!(preview
+                .pointer("/opencode/diff")
+                .and_then(Value::as_str)
+                .is_some_and(|diff| diff.contains("dtoken-local-route")));
+            assert_ne!(
+                preview.pointer("/route/before_sha256"),
+                preview.pointer("/route/after_sha256")
+            );
+            assert_ne!(
+                preview.pointer("/opencode/before_sha256"),
+                preview.pointer("/opencode/after_sha256")
+            );
+
+            // Applying the exact reviewed revision commits both files in one
+            // transaction and returns one transaction id plus per-file
+            // rollback records.
+            let apply = apply_compound_route_opencode_from_discovery(
+                &reviewed_compound_request(plan, opencode, &preview, false),
+                &discovery,
+                &|_| false,
+            );
+            assert_eq!(
+                apply.get("ok").and_then(Value::as_bool),
+                Some(true),
+                "{}",
+                apply
+            );
+            assert_eq!(
+                apply.get("compound_revision").and_then(Value::as_str),
+                Some(compound_revision)
+            );
+            assert!(apply
+                .get("transaction_id")
+                .and_then(Value::as_str)
+                .is_some());
+            let route_rollback_id = apply
+                .pointer("/route/rollback_id")
+                .and_then(Value::as_str)
+                .expect("route rollback id");
+            let opencode_rollback_id = apply
+                .pointer("/opencode/rollback_id")
+                .and_then(Value::as_str)
+                .expect("opencode rollback id");
+            assert_ne!(route_rollback_id, opencode_rollback_id);
+            let route_after = apply
+                .pointer("/route/after_sha256")
+                .and_then(Value::as_str)
+                .expect("route after hash");
+            let opencode_after = apply
+                .pointer("/opencode/after_sha256")
+                .and_then(Value::as_str)
+                .expect("opencode after hash");
+
+            // The active d-token config and the OpenCode config were both
+            // written and verified (the route file is valid JSON with the
+            // automatic OpenCode route; the OpenCode file carries the owned
+            // provider with the exact model set).
+            let active = fs::read_to_string(active_config_path()).expect("read active config");
+            assert_eq!(stable_hash(&active), route_after);
+            assert!(active.contains("auto-opencode"));
+            let applied_opencode = fs::read_to_string(&opencode_config).expect("read OpenCode");
+            assert_eq!(stable_hash(&applied_opencode), opencode_after);
+            assert!(applied_opencode.contains("dtoken-local-route"));
+            assert!(applied_opencode.contains("deepseek-v4-flash-free"));
+
+            // The compound rollback restores both files in reverse apply order
+            // (OpenCode first, then the route) and reports all-or-fail.
+            let rollback = rollback_compound_route_opencode(RollbackCompoundRouteOpencodeRequest {
+                route: CompoundRollbackTarget {
+                    rollback_id: route_rollback_id.to_string(),
+                    expected_after_sha256: route_after.to_string(),
+                },
+                opencode: CompoundRollbackTarget {
+                    rollback_id: opencode_rollback_id.to_string(),
+                    expected_after_sha256: opencode_after.to_string(),
+                },
+            });
+            assert!(rollback.ok, "{}", rollback.summary);
+            assert_eq!(
+                fs::read(&opencode_config).expect("read restored OpenCode"),
+                original,
+                "OpenCode original bytes must be restored"
+            );
+            assert!(
+                !active_config_path().exists(),
+                "route file must be restored"
+            );
+            env::remove_var("DTOKEN_OPENCODE_CONFIG_PATH");
+        });
+    }
+
+    /// A stale compound review is rejected without writing either file, and a
+    /// missing review is rejected up front. The apply re-prepares both changes
+    /// from current state, so any drift in the route discovery, the active
+    /// config, or the OpenCode config fails closed.
+    #[test]
+    fn compound_route_opencode_stale_review_is_rejected_without_writes() {
+        let _guard = opencode_adapter::config_env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        with_isolated_app_state("compound-route-opencode-stale", || {
+            let root = tempfile::tempdir_in(test_temp_root()).expect("temporary root");
+            let opencode_config = root.path().join("opencode.json");
+            fs::write(&opencode_config, "{\"provider\":{}}\n").expect("write OpenCode config");
+            env::set_var(
+                "DTOKEN_OPENCODE_CONFIG_PATH",
+                fs::canonicalize(&opencode_config).expect("canonical OpenCode config"),
+            );
+            let opencode_before = fs::read(&opencode_config).expect("read OpenCode before");
+            let discovery = compound_discovery_fixture();
+            let plan = compound_plan_request();
+            let opencode = compound_opencode_request();
+            let preview = preview_compound_route_opencode_from_discovery(
+                &PreviewCompoundRouteOpencodeRequest {
+                    plan: plan.clone(),
+                    opencode: Some(opencode.clone()),
+                    enable_auto_follow: false,
+                },
+                &discovery,
+                &|_| false,
+            );
+            assert_eq!(preview.get("ok").and_then(Value::as_bool), Some(true));
+
+            // Discovery drifts between preview and apply.
+            let mut drifted = discovery.clone();
+            drifted["revision"] = json!("setup-drifted");
+            let stale = apply_compound_route_opencode_from_discovery(
+                &reviewed_compound_request(plan.clone(), opencode.clone(), &preview, false),
+                &drifted,
+                &|_| false,
+            );
+            assert_eq!(stale.get("ok").and_then(Value::as_bool), Some(false));
+            assert_eq!(stale.get("state").and_then(Value::as_str), Some("stale"));
+            assert!(!active_config_path().exists(), "route must not be written");
+            assert_eq!(
+                fs::read(&opencode_config).expect("read OpenCode after"),
+                opencode_before
+            );
+
+            // The OpenCode config drifts between preview and apply.
+            fs::write(&opencode_config, "{\"provider\":{},\"theme\":\"system\"}\n")
+                .expect("concurrent OpenCode edit");
+            let opencode_concurrent = fs::read(&opencode_config).expect("read concurrent OpenCode");
+            let concurrent = apply_compound_route_opencode_from_discovery(
+                &reviewed_compound_request(plan.clone(), opencode, &preview, false),
+                &discovery,
+                &|_| false,
+            );
+            assert_eq!(concurrent.get("ok").and_then(Value::as_bool), Some(false));
+            assert_eq!(
+                concurrent.get("state").and_then(Value::as_str),
+                Some("stale")
+            );
+            assert_eq!(
+                fs::read(&opencode_config).expect("read OpenCode after concurrent edit"),
+                opencode_concurrent
+            );
+
+            // Missing reviewed fields are rejected up front.
+            let missing = apply_compound_route_opencode_from_discovery(
+                &ApplyCompoundRouteOpencodeRequest {
+                    plan,
+                    opencode: Some(compound_opencode_request()),
+                    reviewed_compound_revision: None,
+                    reviewed_route_before_sha256: None,
+                    reviewed_route_after_sha256: None,
+                    reviewed_opencode_before_sha256: None,
+                    reviewed_opencode_after_sha256: None,
+                    enable_auto_follow: false,
+                },
+                &discovery,
+                &|_| false,
+            );
+            assert_eq!(missing.get("ok").and_then(Value::as_bool), Some(false));
+            assert_eq!(
+                missing.get("state").and_then(Value::as_str),
+                Some("blocked")
+            );
+            env::remove_var("DTOKEN_OPENCODE_CONFIG_PATH");
+        });
+    }
+
+    /// The compound apply rejects a review whose OpenCode request was
+    /// tampered with between preview and apply (different models or port),
+    /// because the compound revision binds them.
+    #[test]
+    fn compound_route_opencode_review_cannot_be_replayed_onto_another_request() {
+        let _guard = opencode_adapter::config_env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        with_isolated_app_state("compound-route-opencode-replay", || {
+            let root = tempfile::tempdir_in(test_temp_root()).expect("temporary root");
+            let opencode_config = root.path().join("opencode.json");
+            fs::write(&opencode_config, "{\"provider\":{}}\n").expect("write OpenCode config");
+            env::set_var(
+                "DTOKEN_OPENCODE_CONFIG_PATH",
+                fs::canonicalize(&opencode_config).expect("canonical OpenCode config"),
+            );
+            let discovery = compound_discovery_fixture();
+            let plan = compound_plan_request();
+            let opencode = compound_opencode_request();
+            let preview = preview_compound_route_opencode_from_discovery(
+                &PreviewCompoundRouteOpencodeRequest {
+                    plan: plan.clone(),
+                    opencode: Some(opencode.clone()),
+                    enable_auto_follow: false,
+                },
+                &discovery,
+                &|_| false,
+            );
+            assert_eq!(preview.get("ok").and_then(Value::as_bool), Some(true));
+
+            let mut tampered = opencode;
+            tampered.models = vec!["different/model".to_string()];
+            let replayed = apply_compound_route_opencode_from_discovery(
+                &reviewed_compound_request(plan, tampered, &preview, false),
+                &discovery,
+                &|_| false,
+            );
+            assert_eq!(replayed.get("ok").and_then(Value::as_bool), Some(false));
+            assert_eq!(replayed.get("state").and_then(Value::as_str), Some("stale"));
+            assert!(!active_config_path().exists(), "route must not be written");
+            env::remove_var("DTOKEN_OPENCODE_CONFIG_PATH");
+        });
+    }
+
+    /// The compound apply with default auto-follow must not fail solely
+    /// because OpenCode multi-route follow is structurally unsupported by
+    /// the follow executor (single resolved model + legacy route id): EVERY
+    /// OpenCode binding is excluded regardless of auth_mode, no follow
+    /// authorization is staged or persisted, the receipt truthfully says
+    /// `not_authorized_for_multiroute`, and BOTH routes remain configured
+    /// in the applied d-token route document.
+    #[test]
+    fn compound_apply_never_stages_opencode_multiroute_auto_follow() {
+        let _guard = opencode_adapter::config_env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        with_isolated_app_state("compound-route-opencode-auto-follow", || {
+            let root = tempfile::tempdir_in(test_temp_root()).expect("temporary root");
+            let opencode_config = root.path().join("opencode.json");
+            let original =
+                b"{\"provider\":{\"existing\":{\"name\":\"Existing\"}},\"enabled_providers\":[\"existing\"]}\n";
+            fs::write(&opencode_config, original).expect("write OpenCode config");
+            env::set_var(
+                "DTOKEN_OPENCODE_CONFIG_PATH",
+                fs::canonicalize(&opencode_config).expect("canonical OpenCode config"),
+            );
+            let discovery = json!({
+                "revision": "setup-reviewed",
+                "external_config_snapshot": {
+                    "fingerprint": "external-a",
+                    "agent_configs": []
+                },
+                "agent_bindings": [{
+                    "agent_id": "opencode",
+                    "installed": true,
+                    "capability": "one-click",
+                    "candidates": [{
+                        "id": "opencode-free",
+                        "name": "OpenCode free",
+                        "source": "opencode-provider-catalog-cache",
+                        "protocol": "open_ai",
+                        "base_url": "https://opencode.ai/zen/v1",
+                        "models": ["deepseek-v4-flash-free"],
+                        "auth_mode": "none"
+                    }, {
+                        "id": "opencode-go",
+                        "name": "OpenCode Go",
+                        "source": "opencode-provider-catalog-cache",
+                        "protocol": "open_ai",
+                        "base_url": "https://opencode.go.example.test/v1",
+                        "models": ["go-model"],
+                        "auth_mode": "unavailable",
+                        "dtoken_credential_configured": true
+                    }]
+                }]
+            });
+            let plan = ConnectionRoutePlanRequest {
+                discovery_revision: "setup-reviewed".to_string(),
+                source_fingerprint: None,
+                source_fingerprint_scope: None,
+                bindings: vec![
+                    ConnectionRouteBindingRequest {
+                        agent_id: "opencode".to_string(),
+                        candidate_id: "opencode-free".to_string(),
+                        candidate_source: "opencode-provider-catalog-cache".to_string(),
+                        model: "deepseek-v4-flash-free".to_string(),
+                    },
+                    ConnectionRouteBindingRequest {
+                        agent_id: "opencode".to_string(),
+                        candidate_id: "opencode-go".to_string(),
+                        candidate_source: "opencode-provider-catalog-cache".to_string(),
+                        model: "go-model".to_string(),
+                    },
+                ],
+            };
+            let opencode = CompoundOpenCodeRequest {
+                models: vec!["deepseek-v4-flash-free".to_string(), "go-model".to_string()],
+                listener_port: 18001,
+            };
+            // The test seam reports that d-token's own entry for the Go
+            // candidate exists; no real Keychain is touched.
+            let credential_available = |candidate: &Value| {
+                candidate.get("id").and_then(Value::as_str) == Some("opencode-go")
+            };
+
+            // Preview exposes the exclusion before confirmation: no
+            // follow-safe subset exists for an OpenCode-only compound, so
+            // the receipt says OpenCode multi-route follow is not
+            // authorized and both candidates are skipped.
+            let preview = preview_compound_route_opencode_from_discovery(
+                &PreviewCompoundRouteOpencodeRequest {
+                    plan: plan.clone(),
+                    opencode: Some(opencode.clone()),
+                    enable_auto_follow: true,
+                },
+                &discovery,
+                &credential_available,
+            );
+            assert_eq!(
+                preview.get("ok").and_then(Value::as_bool),
+                Some(true),
+                "{}",
+                preview
+            );
+            assert_eq!(
+                preview
+                    .pointer("/auto_follow/state")
+                    .and_then(Value::as_str),
+                Some("not_authorized_for_multiroute")
+            );
+            assert_eq!(
+                preview
+                    .pointer("/auto_follow/enabled")
+                    .and_then(Value::as_bool),
+                Some(false)
+            );
+            assert_eq!(
+                preview
+                    .pointer("/auto_follow/requires_runtime_verification")
+                    .and_then(Value::as_bool),
+                Some(false)
+            );
+            assert_eq!(
+                preview
+                    .pointer("/auto_follow/skipped_candidates")
+                    .and_then(Value::as_u64),
+                Some(2)
+            );
+            assert_eq!(
+                preview
+                    .pointer("/auto_follow/skipped_agents")
+                    .and_then(Value::as_array)
+                    .map(|agents| agents.len()),
+                Some(1)
+            );
+
+            // Apply succeeds with the full route + OpenCode transaction and
+            // a truthful not-authorized receipt: nothing was staged, so no
+            // runtime verification is pending and nothing is persisted.
+            let apply = apply_compound_route_opencode_from_discovery(
+                &reviewed_compound_request(plan, opencode, &preview, true),
+                &discovery,
+                &credential_available,
+            );
+            assert_eq!(
+                apply.get("ok").and_then(Value::as_bool),
+                Some(true),
+                "{}",
+                apply
+            );
+            assert_eq!(
+                apply.pointer("/auto_follow/state").and_then(Value::as_str),
+                Some("not_authorized_for_multiroute")
+            );
+            assert_eq!(
+                apply
+                    .pointer("/auto_follow/enabled")
+                    .and_then(Value::as_bool),
+                Some(false)
+            );
+            assert_eq!(
+                apply
+                    .pointer("/auto_follow/skipped_candidates")
+                    .and_then(Value::as_u64),
+                Some(2)
+            );
+            assert_eq!(
+                apply
+                    .pointer("/auto_follow/skipped_agents")
+                    .and_then(Value::as_array)
+                    .map(|agents| agents.len()),
+                Some(1)
+            );
+            assert_eq!(
+                apply
+                    .pointer("/auto_follow/requires_runtime_verification")
+                    .and_then(Value::as_bool),
+                Some(false)
+            );
+
+            // No follow authorization was staged or persisted: an
+            // OpenCode-only compound receipt must never leave a
+            // `pending_runtime_verification` state that the finalize
+            // command could act on.
+            let saved = read_app_state(&["routing", "agent-auto-follow.json"]);
+            assert!(
+                saved.is_err(),
+                "OpenCode multi-route follow must not be staged or persisted"
+            );
+
+            // Both routes remain configured in the applied d-token config:
+            // the follow authorization subset never shrinks the route plan.
+            let active = fs::read_to_string(active_config_path()).expect("read active config");
+            assert!(active.contains("opencode-free"));
+            assert!(active.contains("deepseek-v4-flash-free"));
+            assert!(active.contains("opencode-go"));
+            assert!(active.contains("go-model"));
+
+            // The OpenCode provider change was applied with both models.
+            let applied_opencode = fs::read_to_string(&opencode_config).expect("read OpenCode");
+            assert!(applied_opencode.contains("deepseek-v4-flash-free"));
+            assert!(applied_opencode.contains("go-model"));
+
+            env::remove_var("DTOKEN_OPENCODE_CONFIG_PATH");
         });
     }
 
@@ -16876,7 +19524,7 @@ mod tests {
             };
 
             let (revision, prepared, agents) =
-                prepare_connection_route_plan_from_discovery(&request, &discovery)
+                prepare_connection_route_plan_from_discovery(&request, &discovery, &|_| false)
                     .expect("Codex Responses upstream must be routable");
             assert_eq!(revision, "setup-reviewed");
             assert_eq!(agents, vec!["codex"]);
@@ -16962,6 +19610,30 @@ mod tests {
             }],
             "custom_extension": {"preserve": true}
         });
+        // The prior automatic OpenCode graph is owned through a valid
+        // versioned manifest with exact ids and a digest of its artifacts;
+        // only this evidence authorizes replacement.
+        let digest = connection_route_ownership_digest(
+            &["auto-opencode-old".to_string()],
+            &["auto-opencode-route".to_string()],
+            &["auto-opencode-route-instance".to_string()],
+            existing["providers"].as_array().expect("providers"),
+            existing["routes"].as_array().expect("routes"),
+            existing["instances"].as_array().expect("instances"),
+        )
+        .expect("ownership digest");
+        let mut existing = existing;
+        existing["dtoken_connection_route_ownership"] = json!({
+            "version": 1,
+            "agents": {
+                "opencode": {
+                    "provider_ids": ["auto-opencode-old"],
+                    "route_ids": ["auto-opencode-route"],
+                    "instance_ids": ["auto-opencode-route-instance"],
+                    "artifacts_digest": digest
+                }
+            }
+        });
         let content = merge_connection_route_document(
             Some(existing),
             &["opencode".to_string()],
@@ -17028,6 +19700,1867 @@ mod tests {
                     .find(|route| route["id"] == "auto-opencode-route"))
                 .and_then(|route| route["target_provider_id"].as_str()),
             Some("auto-opencode-new")
+        );
+        // The manifest is rewritten to own exactly the new graph.
+        let ownership = &merged["dtoken_connection_route_ownership"];
+        assert_eq!(ownership["version"], 1);
+        assert_eq!(
+            ownership["agents"]["opencode"]["provider_ids"],
+            json!(["auto-opencode-new"])
+        );
+        assert_eq!(
+            ownership["agents"]["opencode"]["route_ids"],
+            json!(["auto-opencode-route"])
+        );
+        assert_eq!(
+            ownership["agents"]["opencode"]["instance_ids"],
+            json!(["auto-opencode-route-instance"])
+        );
+        let new_digest = connection_route_ownership_digest(
+            &["auto-opencode-new".to_string()],
+            &["auto-opencode-route".to_string()],
+            &["auto-opencode-route-instance".to_string()],
+            merged["providers"].as_array().expect("providers"),
+            merged["routes"].as_array().expect("routes"),
+            merged["instances"].as_array().expect("instances"),
+        )
+        .expect("new ownership digest");
+        assert_eq!(
+            ownership["agents"]["opencode"]["artifacts_digest"].as_str(),
+            Some(new_digest.as_str())
+        );
+    }
+
+    #[test]
+    fn opencode_multi_route_plan_emits_deterministic_distinct_credentialed_routes() {
+        let discovery = json!({
+            "revision": "setup-reviewed",
+            "external_config_snapshot": { "fingerprint": "external-a" },
+            "agent_bindings": [{
+                "agent_id": "opencode",
+                "installed": true,
+                "capability": "one-click",
+                "candidates": [{
+                    "id": "opencode-free",
+                    "name": "OpenCode free",
+                    "source": "opencode-provider-catalog-cache",
+                    "protocol": "open_ai",
+                    "base_url": "https://opencode.ai/zen/v1",
+                    "models": ["deepseek-v4-flash-free"],
+                    "auth_mode": "none"
+                }, {
+                    "id": "opencode-go",
+                    "name": "OpenCode Go",
+                    "source": "opencode-provider-catalog-cache",
+                    "protocol": "open_ai",
+                    "base_url": "https://opencode.go.example.test/v1",
+                    "models": ["go-model"],
+                    "auth_mode": "unavailable",
+                    "dtoken_credential_configured": true
+                }]
+            }]
+        });
+        let request = ConnectionRoutePlanRequest {
+            discovery_revision: "setup-reviewed".to_string(),
+            source_fingerprint: None,
+            source_fingerprint_scope: None,
+            bindings: vec![
+                ConnectionRouteBindingRequest {
+                    agent_id: "opencode".to_string(),
+                    candidate_id: "opencode-free".to_string(),
+                    candidate_source: "opencode-provider-catalog-cache".to_string(),
+                    model: "deepseek-v4-flash-free".to_string(),
+                },
+                ConnectionRouteBindingRequest {
+                    agent_id: "opencode".to_string(),
+                    candidate_id: "opencode-go".to_string(),
+                    candidate_source: "opencode-provider-catalog-cache".to_string(),
+                    model: "go-model".to_string(),
+                },
+            ],
+        };
+        // The test seam reports that d-token's own entry for the Go
+        // candidate exists; no real Keychain is touched.
+        let credential_available =
+            |candidate: &Value| candidate.get("id").and_then(Value::as_str) == Some("opencode-go");
+        let planned =
+            plan_connection_routes_from_discovery(&request, &discovery, &credential_available)
+                .expect("multi-route OpenCode plan");
+        assert_eq!(planned.revision, "setup-reviewed");
+        assert_eq!(planned.selected_agents, vec!["opencode"]);
+        assert_eq!(planned.providers.len(), 2);
+        assert_eq!(planned.routes.len(), 2);
+        assert_eq!(planned.instances.len(), 2);
+
+        let free = planned
+            .providers
+            .iter()
+            .find(|provider| provider["models"][0] == "deepseek-v4-flash-free")
+            .expect("free provider");
+        let go = planned
+            .providers
+            .iter()
+            .find(|provider| provider["models"][0] == "go-model")
+            .expect("Go provider");
+        assert_ne!(free["id"], go["id"]);
+        assert!(free["id"]
+            .as_str()
+            .is_some_and(|id| id.contains("opencode-free")));
+        assert!(free["id"]
+            .as_str()
+            .is_some_and(|id| id.contains("deepseek-v4-flash-free")));
+        assert!(go["id"]
+            .as_str()
+            .is_some_and(|id| id.contains("opencode-go")));
+        assert!(go["id"].as_str().is_some_and(|id| id.contains("go-model")));
+        // Each provider carries exactly one model.
+        assert_eq!(free["models"].as_array().map(Vec::len), Some(1));
+        assert_eq!(go["models"].as_array().map(Vec::len), Some(1));
+        // auth_mode none -> no reference; credentialed -> the exact
+        // deterministic d-token reference, recomputed native-side.
+        assert_eq!(free["api_key_ref"], Value::Null);
+        let (expected_go_reference, _account) = credential_reference_for_upstream_candidate(
+            &discovery["agent_bindings"][0]["candidates"][1],
+        )
+        .expect("Go candidate identity derives");
+        // The emitted reference is the exact digest identity of the Go
+        // candidate triple (id + source + normalized endpoint), never the
+        // bare id slug.
+        assert!(
+            expected_go_reference.contains("opencode-go-"),
+            "readable slug prefix survives"
+        );
+        assert_ne!(
+            expected_go_reference,
+            "os-credential://d-token/providers/opencode-go"
+        );
+        assert_eq!(go["api_key_ref"], json!(expected_go_reference));
+        assert_ne!(free["api_key_ref"], go["api_key_ref"]);
+
+        let route_ids = planned
+            .routes
+            .iter()
+            .filter_map(|route| route["id"].as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(route_ids.len(), 2);
+        let instance_ids = planned
+            .instances
+            .iter()
+            .filter_map(|instance| instance["id"].as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(instance_ids.len(), 2);
+        // No fallback anywhere, and every route is wired to its own
+        // instance.
+        for route in &planned.routes {
+            assert_eq!(route["fallback_provider_id"], Value::Null);
+            assert!(planned
+                .instances
+                .iter()
+                .any(|instance| instance["id"] == route["instance_id"]));
+        }
+        // The plan never carries a credential value, only the opaque
+        // reference.
+        let providers_json = serde_json::to_string(&planned.providers).expect("providers JSON");
+        assert!(providers_json.contains(&expected_go_reference));
+        assert!(!providers_json.contains("secret-value"));
+
+        // Deterministic: planning again yields the identical ids.
+        let again =
+            plan_connection_routes_from_discovery(&request, &discovery, &credential_available)
+                .expect("repeat plan");
+        let again_route_ids = again
+            .routes
+            .iter()
+            .filter_map(|route| route["id"].as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(again_route_ids, route_ids);
+
+        // Without the d-token-owned entry the credentialed route fails
+        // closed.
+        let denied = plan_connection_routes_from_discovery(&request, &discovery, &|_| false)
+            .expect_err("missing d-token credential must fail");
+        assert!(denied.contains("not stored with d-token"));
+    }
+
+    #[test]
+    fn opencode_multi_route_plan_rejects_duplicate_tuples_and_unknown_models() {
+        let discovery = json!({
+            "revision": "setup-reviewed",
+            "external_config_snapshot": { "fingerprint": "external-a" },
+            "agent_bindings": [{
+                "agent_id": "opencode",
+                "installed": true,
+                "capability": "one-click",
+                "candidates": [{
+                    "id": "opencode-free",
+                    "name": "OpenCode free",
+                    "source": "opencode-provider-catalog-cache",
+                    "protocol": "open_ai",
+                    "base_url": "https://opencode.ai/zen/v1",
+                    "models": ["deepseek-v4-flash-free"],
+                    "auth_mode": "none"
+                }]
+            }]
+        });
+        let binding = ConnectionRouteBindingRequest {
+            agent_id: "opencode".to_string(),
+            candidate_id: "opencode-free".to_string(),
+            candidate_source: "opencode-provider-catalog-cache".to_string(),
+            model: "deepseek-v4-flash-free".to_string(),
+        };
+        let mut request = ConnectionRoutePlanRequest {
+            discovery_revision: "setup-reviewed".to_string(),
+            source_fingerprint: None,
+            source_fingerprint_scope: None,
+            bindings: vec![binding.clone(), binding],
+        };
+        let error = plan_connection_routes_from_discovery(&request, &discovery, &|_| false)
+            .expect_err("duplicate OpenCode tuple must fail");
+        assert!(error.contains("repeats the same OpenCode"));
+
+        request.bindings[1].model = "not-listed".to_string();
+        let error = plan_connection_routes_from_discovery(&request, &discovery, &|_| false)
+            .expect_err("unknown OpenCode model must fail");
+        assert!(error.contains("no longer present in discovery"));
+    }
+
+    #[test]
+    fn opencode_route_plan_rejects_repeated_model_across_distinct_candidates() {
+        let discovery = json!({
+            "revision": "setup-reviewed",
+            "external_config_snapshot": { "fingerprint": "external-a" },
+            "agent_bindings": [{
+                "agent_id": "opencode",
+                "installed": true,
+                "capability": "one-click",
+                "candidates": [{
+                    "id": "opencode-one",
+                    "name": "OpenCode one",
+                    "source": "opencode-provider-catalog-cache",
+                    "protocol": "open_ai",
+                    "base_url": "https://one.opencode.example.test/v1",
+                    "models": ["shared-model"],
+                    "auth_mode": "none"
+                }, {
+                    "id": "opencode-two",
+                    "name": "OpenCode two",
+                    "source": "opencode-provider-catalog-cache",
+                    "protocol": "open_ai",
+                    "base_url": "https://two.opencode.example.test/v1",
+                    "models": ["shared-model"],
+                    "auth_mode": "none"
+                }]
+            }]
+        });
+        let request = ConnectionRoutePlanRequest {
+            discovery_revision: "setup-reviewed".to_string(),
+            source_fingerprint: None,
+            source_fingerprint_scope: None,
+            bindings: vec![
+                ConnectionRouteBindingRequest {
+                    agent_id: "opencode".to_string(),
+                    candidate_id: "opencode-one".to_string(),
+                    candidate_source: "opencode-provider-catalog-cache".to_string(),
+                    model: "shared-model".to_string(),
+                },
+                ConnectionRouteBindingRequest {
+                    agent_id: "opencode".to_string(),
+                    candidate_id: "opencode-two".to_string(),
+                    candidate_source: "opencode-provider-catalog-cache".to_string(),
+                    model: "shared-model".to_string(),
+                },
+            ],
+        };
+        // Distinct (candidate, source, model) tuples, but core-api routes
+        // on the model alone: the repeated OpenCode model must fail even
+        // though no tuple repeats.
+        let error = plan_connection_routes_from_discovery(&request, &discovery, &|_| false)
+            .expect_err("repeated OpenCode model across distinct candidates must fail");
+        assert!(error.contains("same OpenCode model"));
+    }
+
+    #[test]
+    fn opencode_model_collision_with_any_existing_route_fails_closed() {
+        let discovery = json!({
+            "revision": "setup-reviewed",
+            "external_config_snapshot": { "fingerprint": "external-a" },
+            "agent_bindings": [{
+                "agent_id": "codex",
+                "installed": true,
+                "capability": "one-click",
+                "candidates": [{
+                    "id": "codex-x",
+                    "name": "Codex upstream",
+                    "source": "agent-config:codex",
+                    "protocol": "open_ai",
+                    "base_url": "https://shared.example.test/v1",
+                    "models": ["shared-model", "codex-model"],
+                    "auth_mode": "none"
+                }]
+            }, {
+                "agent_id": "opencode",
+                "installed": true,
+                "capability": "one-click",
+                "candidates": [{
+                    "id": "opencode-free",
+                    "name": "OpenCode free",
+                    "source": "opencode-provider-catalog-cache",
+                    "protocol": "open_ai",
+                    "base_url": "https://shared.example.test/v1",
+                    "models": ["shared-model", "go-model", "z-model"],
+                    "auth_mode": "none"
+                }]
+            }, {
+                "agent_id": "zother",
+                "installed": true,
+                "capability": "one-click",
+                "candidates": [{
+                    "id": "zother-x",
+                    "name": "Z other upstream",
+                    "source": "agent-config:zother",
+                    "protocol": "open_ai",
+                    "base_url": "https://shared.example.test/v1",
+                    "models": ["z-model", "codex-model"],
+                    "auth_mode": "none"
+                }]
+            }]
+        });
+        let codex_binding = |model: &str| ConnectionRouteBindingRequest {
+            agent_id: "codex".to_string(),
+            candidate_id: "codex-x".to_string(),
+            candidate_source: "agent-config:codex".to_string(),
+            model: model.to_string(),
+        };
+        let opencode_binding = |model: &str| ConnectionRouteBindingRequest {
+            agent_id: "opencode".to_string(),
+            candidate_id: "opencode-free".to_string(),
+            candidate_source: "opencode-provider-catalog-cache".to_string(),
+            model: model.to_string(),
+        };
+        let zother_binding = |model: &str| ConnectionRouteBindingRequest {
+            agent_id: "zother".to_string(),
+            candidate_id: "zother-x".to_string(),
+            candidate_source: "agent-config:zother".to_string(),
+            model: model.to_string(),
+        };
+        let request = |bindings: Vec<ConnectionRouteBindingRequest>| ConnectionRoutePlanRequest {
+            discovery_revision: "setup-reviewed".to_string(),
+            source_fingerprint: None,
+            source_fingerprint_scope: None,
+            bindings,
+        };
+
+        // A non-OpenCode explicit model collides with an OpenCode model: the
+        // plan must fail closed even though both point at the SAME endpoint,
+        // because Agent attribution/instance differs and core-api routes on
+        // the model alone.
+        let error = plan_connection_routes_from_discovery(
+            &request(vec![
+                codex_binding("shared-model"),
+                opencode_binding("shared-model"),
+            ]),
+            &discovery,
+            &|_| false,
+        )
+        .expect_err("OpenCode model colliding with an existing route must fail");
+        assert!(error.contains("OpenCode models must be unique"));
+
+        // The reverse ordering is equally blocked: a non-OpenCode Agent that
+        // sorts after opencode must never share an OpenCode-owned route even
+        // at the same endpoint.
+        let error = plan_connection_routes_from_discovery(
+            &request(vec![opencode_binding("z-model"), zother_binding("z-model")]),
+            &discovery,
+            &|_| false,
+        )
+        .expect_err("non-OpenCode Agent must never share an OpenCode route");
+        assert!(error.contains("OpenCode models must be unique"));
+
+        // Distinct models keep the multi-Agent plan routable: every binding
+        // gets its own deterministic route, and non-OpenCode same-endpoint
+        // sharing between two non-OpenCode Agents stays allowed.
+        let planned = plan_connection_routes_from_discovery(
+            &request(vec![
+                codex_binding("codex-model"),
+                opencode_binding("go-model"),
+                zother_binding("codex-model"),
+            ]),
+            &discovery,
+            &|_| false,
+        )
+        .expect("distinct models plan");
+        assert_eq!(
+            planned.providers.len(),
+            2,
+            "Codex and zother share one route"
+        );
+        assert_eq!(planned.routes.len(), 2);
+        assert_eq!(
+            planned.instances.len(),
+            2,
+            "shared routes do not duplicate instances"
+        );
+        assert_eq!(planned.selected_agents, vec!["codex", "opencode", "zother"]);
+        assert!(planned
+            .providers
+            .iter()
+            .any(|provider| provider["models"][0] == "codex-model"));
+        assert!(planned
+            .providers
+            .iter()
+            .any(|provider| provider["models"][0] == "go-model"));
+        assert!(!planned
+            .providers
+            .iter()
+            .any(|provider| provider["models"][0] == "shared-model"));
+    }
+
+    #[test]
+    fn opencode_authenticated_plan_requires_projected_credential_presence() {
+        let discovery = json!({
+            "revision": "setup-reviewed",
+            "agent_bindings": [{
+                "agent_id": "opencode",
+                "installed": true,
+                "capability": "one-click",
+                "candidates": [{
+                    "id": "opencode-auth",
+                    "name": "OpenCode authenticated",
+                    "source": "opencode-provider-catalog-cache",
+                    "protocol": "open_ai",
+                    "base_url": "https://opencode.auth.example.test/v1",
+                    "models": ["auth-model"],
+                    "auth_mode": "unavailable",
+                    "agent_ids": ["opencode"]
+                }]
+            }]
+        });
+        let request = ConnectionRoutePlanRequest {
+            discovery_revision: "setup-reviewed".to_string(),
+            source_fingerprint: None,
+            source_fingerprint_scope: None,
+            bindings: vec![ConnectionRouteBindingRequest {
+                agent_id: "opencode".to_string(),
+                candidate_id: "opencode-auth".to_string(),
+                candidate_source: "opencode-provider-catalog-cache".to_string(),
+                model: "auth-model".to_string(),
+            }],
+        };
+        // The live probe reports the entry exists, but discovery never
+        // projected the credential as configured: the plan must fail closed
+        // against fabricated or stale frontend/discovery state.
+        let error = plan_connection_routes_from_discovery(&request, &discovery, &|_| true)
+            .expect_err("missing projected credential presence must fail");
+        assert!(error.contains("not stored with d-token"));
+
+        // An explicit projected false fails identically.
+        let mut projected_false = discovery;
+        projected_false["agent_bindings"][0]["candidates"][0]["dtoken_credential_configured"] =
+            json!(false);
+        let error = plan_connection_routes_from_discovery(&request, &projected_false, &|_| true)
+            .expect_err("projected false must fail");
+        assert!(error.contains("not stored with d-token"));
+    }
+
+    #[test]
+    fn opencode_authenticated_plan_requires_live_credential_probe() {
+        let discovery = json!({
+            "revision": "setup-reviewed",
+            "agent_bindings": [{
+                "agent_id": "opencode",
+                "installed": true,
+                "capability": "one-click",
+                "candidates": [{
+                    "id": "opencode-auth",
+                    "name": "OpenCode authenticated",
+                    "source": "opencode-provider-catalog-cache",
+                    "protocol": "open_ai",
+                    "base_url": "https://opencode.auth.example.test/v1",
+                    "models": ["auth-model"],
+                    "auth_mode": "unavailable",
+                    "agent_ids": ["opencode"],
+                    "dtoken_credential_configured": true
+                }]
+            }]
+        });
+        let request = ConnectionRoutePlanRequest {
+            discovery_revision: "setup-reviewed".to_string(),
+            source_fingerprint: None,
+            source_fingerprint_scope: None,
+            bindings: vec![ConnectionRouteBindingRequest {
+                agent_id: "opencode".to_string(),
+                candidate_id: "opencode-auth".to_string(),
+                candidate_source: "opencode-provider-catalog-cache".to_string(),
+                model: "auth-model".to_string(),
+            }],
+        };
+        // Projected presence alone is not enough: a credential deleted
+        // between scan and review must fail the live metadata probe.
+        let error = plan_connection_routes_from_discovery(&request, &discovery, &|_| false)
+            .expect_err("deleted d-token credential must fail");
+        assert!(error.contains("not stored with d-token"));
+    }
+
+    #[test]
+    fn enrichment_promotes_opencode_needs_credential_when_dtoken_credential_configured() {
+        let candidate = json!({
+            "id": "opencode-auth",
+            "name": "OpenCode authenticated",
+            "source": "opencode-provider-catalog-cache",
+            "protocol": "open_ai",
+            "base_url": "https://opencode.auth.example.test/v1",
+            "models": ["auth-model"],
+            "auth_mode": "unavailable",
+            "agent_ids": ["opencode"],
+            "active": true,
+            "state": "discovered",
+            "confidence": 95,
+            "reasons": ["The upstream is known, but its credential cannot be reused by d-token"]
+        });
+        let mut discovery = json!({
+            "revision": "setup-before",
+            "candidates": [candidate.clone()],
+            "agent_bindings": [{
+                "agent_id": "opencode",
+                "installed": true,
+                "capability": "one-click",
+                "candidates": [candidate.clone()],
+                "resolved_candidate": candidate,
+                "resolution": "needs-credential",
+                "reasons": ["The upstream is known, but its credential cannot be reused by d-token"]
+            }]
+        });
+        // Fake closure, never the real Keychain: only the exact candidate id
+        // reports a configured d-token OS credential entry.
+        project_dtoken_credential_presence(&mut discovery, &|candidate: &Value| {
+            candidate.get("id").and_then(Value::as_str) == Some("opencode-auth")
+        });
+
+        let binding = &discovery["agent_bindings"][0];
+        assert_eq!(
+            binding["resolution"].as_str(),
+            Some("auto-resolved"),
+            "needs-credential promotes to auto-resolved when the d-token OS credential is configured"
+        );
+        assert_eq!(
+            binding["reasons"][0].as_str(),
+            Some("d-token OS credential is configured for this upstream")
+        );
+        // The boolean propagates to the top-level candidate, every binding
+        // candidate, and the resolved candidate.
+        assert_eq!(
+            discovery["candidates"][0]["dtoken_credential_configured"],
+            json!(true)
+        );
+        assert_eq!(
+            binding["candidates"][0]["dtoken_credential_configured"],
+            json!(true)
+        );
+        assert_eq!(
+            binding["resolved_candidate"]["dtoken_credential_configured"],
+            json!(true)
+        );
+        // auth_mode is preserved exactly as discovered, never relabeled.
+        assert_eq!(
+            discovery["candidates"][0]["auth_mode"].as_str(),
+            Some("unavailable")
+        );
+        assert_eq!(
+            binding["resolved_candidate"]["auth_mode"].as_str(),
+            Some("unavailable")
+        );
+        // Only the existence boolean is projected: no credential reference
+        // or value is ever returned.
+        assert!(discovery["candidates"][0].get("api_key_ref").is_none());
+        assert!(binding["resolved_candidate"].get("api_key_ref").is_none());
+        assert!(!discovery.to_string().contains("sk-"));
+        assert!(!discovery.to_string().contains("secret"));
+    }
+
+    #[test]
+    fn enrichment_keeps_needs_credential_when_dtoken_credential_not_configured() {
+        let candidate = json!({
+            "id": "opencode-auth",
+            "name": "OpenCode authenticated",
+            "source": "opencode-provider-catalog-cache",
+            "protocol": "open_ai",
+            "base_url": "https://opencode.auth.example.test/v1",
+            "models": ["auth-model"],
+            "auth_mode": "unavailable",
+            "agent_ids": ["opencode"],
+            "active": true,
+            "state": "discovered",
+            "confidence": 95,
+            "reasons": ["The upstream is known, but its credential cannot be reused by d-token"]
+        });
+        let mut discovery = json!({
+            "revision": "setup-before",
+            "candidates": [candidate.clone(), json!({
+                "id": "codex-local",
+                "name": "Codex local",
+                "source": "agent-config:codex",
+                "protocol": "responses",
+                "base_url": "http://127.0.0.1:10100/v1",
+                "models": ["codex-model"],
+                "auth_mode": "none",
+                "agent_ids": ["codex"]
+            })],
+            "agent_bindings": [{
+                "agent_id": "opencode",
+                "installed": true,
+                "capability": "one-click",
+                "candidates": [candidate.clone()],
+                "resolved_candidate": candidate,
+                "resolution": "needs-credential",
+                "reasons": ["The upstream is known, but its credential cannot be reused by d-token"]
+            }]
+        });
+        let original_reasons = discovery["agent_bindings"][0]["reasons"].clone();
+        project_dtoken_credential_presence(&mut discovery, &|_| false);
+
+        let binding = &discovery["agent_bindings"][0];
+        assert_eq!(
+            binding["resolution"].as_str(),
+            Some("needs-credential"),
+            "without the d-token OS credential the binding stays needs-credential"
+        );
+        assert_eq!(binding["reasons"], original_reasons);
+        assert_eq!(
+            discovery["candidates"][0]["dtoken_credential_configured"],
+            json!(false)
+        );
+        assert_eq!(
+            binding["resolved_candidate"]["dtoken_credential_configured"],
+            json!(false)
+        );
+        assert_eq!(
+            discovery["candidates"][0]["auth_mode"].as_str(),
+            Some("unavailable")
+        );
+        // Non-OpenCode candidates are never projected.
+        assert!(discovery["candidates"][1]
+            .get("dtoken_credential_configured")
+            .is_none());
+    }
+
+    #[test]
+    fn upstream_credential_identity_distinguishes_slug_twins_and_identity_triples() {
+        let endpoint = "https://one.example.test/v1";
+        let mut accounts = HashSet::new();
+        let mut references = HashSet::new();
+        for candidate_id in ["foo-bar", "foo_bar", "foo.bar"] {
+            let identity = UpstreamCredentialIdentity::new(
+                candidate_id,
+                "opencode-provider-catalog-cache",
+                endpoint,
+            )
+            .expect("twin identity");
+            let (reference, account) = credential_reference_for_upstream_identity(&identity);
+            // Human-safe slug for readability, digest for identity.
+            let slug = safe_slug(candidate_id, "upstream");
+            assert!(
+                account.starts_with(&format!("providers/upstream/{slug}-")),
+                "readable slug prefix: {account}"
+            );
+            assert_eq!(reference, format!("os-credential://d-token/{account}"));
+            assert!(account.len() > format!("providers/upstream/{slug}-").len() + 20);
+            accounts.insert(account);
+            references.insert(reference);
+        }
+        assert_eq!(
+            accounts.len(),
+            3,
+            "slug twins must never share a keyring account"
+        );
+        assert_eq!(references.len(), 3);
+
+        // Same id from different sources must not collide.
+        let a = credential_reference_for_upstream_identity(
+            &UpstreamCredentialIdentity::new("svc", "source-a", "https://a.example.test/v1")
+                .expect("a identity"),
+        )
+        .1;
+        let b = credential_reference_for_upstream_identity(
+            &UpstreamCredentialIdentity::new("svc", "source-b", "https://a.example.test/v1")
+                .expect("b identity"),
+        )
+        .1;
+        assert_ne!(a, b, "same id, different source must not collide");
+
+        // Same id and source from a different endpoint must not collide.
+        let c = credential_reference_for_upstream_identity(
+            &UpstreamCredentialIdentity::new("svc", "source-a", "https://b.example.test/v1")
+                .expect("c identity"),
+        )
+        .1;
+        assert_ne!(a, c, "same id/source, different endpoint must not collide");
+
+        // Endpoint normalization collapses trailing slash and host case.
+        let d = credential_reference_for_upstream_identity(
+            &UpstreamCredentialIdentity::new("svc", "source-a", "HTTPS://A.EXAMPLE.TEST/v1/")
+                .expect("d identity"),
+        )
+        .1;
+        assert_eq!(a, d, "normalized endpoints must map to one account");
+
+        // Invalid or missing source/endpoint is rejected, and
+        // credential-like URL metadata never becomes an account.
+        assert!(
+            UpstreamCredentialIdentity::new("svc", "   ", "https://a.example.test/v1").is_err()
+        );
+        assert!(UpstreamCredentialIdentity::new("svc", "source-a", " ").is_err());
+        assert!(UpstreamCredentialIdentity::new("svc", "source-a", "not-a-url").is_err());
+        assert!(UpstreamCredentialIdentity::new(
+            "svc",
+            "source-a",
+            "https://user:pass@a.example.test/v1"
+        )
+        .is_err());
+        // No secret material in the derived identity surface.
+        assert!(!a.contains("secret"));
+        assert!(!a.contains("pass"));
+    }
+
+    #[test]
+    fn exact_upstream_credential_store_requires_revision_tuple_and_endpoint_match() {
+        let candidate = json!({
+            "id": "opencode-auth",
+            "name": "OpenCode authenticated",
+            "source": "opencode-provider-catalog-cache",
+            "protocol": "open_ai",
+            "base_url": "https://opencode.auth.example.test/v1",
+            "models": ["auth-model"],
+            "auth_mode": "unavailable",
+            "agent_ids": ["opencode"]
+        });
+        let discovery = json!({
+            "revision": "setup-reviewed",
+            "candidates": [candidate.clone()],
+            "agent_bindings": [{
+                "agent_id": "opencode",
+                "installed": true,
+                "candidates": [candidate.clone()],
+                "resolved_candidate": candidate,
+                "resolution": "needs-credential"
+            }]
+        });
+        let identity = CredentialUpstreamIdentityRequest {
+            candidate_id: "opencode-auth".to_string(),
+            source: "opencode-provider-catalog-cache".to_string(),
+            endpoint: "https://opencode.auth.example.test/v1/".to_string(),
+        };
+
+        // Stale or missing revision never resolves to a store account.
+        let error = resolve_exact_upstream_credential_account(&discovery, &identity, "setup-stale")
+            .expect_err("stale revision must fail");
+        assert!(error.contains("changed after discovery"));
+        let error = resolve_exact_upstream_credential_account(&discovery, &identity, "")
+            .expect_err("missing revision must fail");
+        assert!(error.contains("changed after discovery"));
+
+        // A wrong identity tuple (same id, different source) cannot store.
+        let wrong_source = CredentialUpstreamIdentityRequest {
+            candidate_id: "opencode-auth".to_string(),
+            source: "agent-config:opencode".to_string(),
+            endpoint: "https://opencode.auth.example.test/v1".to_string(),
+        };
+        let error =
+            resolve_exact_upstream_credential_account(&discovery, &wrong_source, "setup-reviewed")
+                .expect_err("wrong source must fail");
+        assert!(error.contains("no longer present in discovery"));
+
+        // A slug-twin candidate id that is not in discovery cannot store.
+        let wrong_id = CredentialUpstreamIdentityRequest {
+            candidate_id: "opencode_auth".to_string(),
+            source: "opencode-provider-catalog-cache".to_string(),
+            endpoint: "https://opencode.auth.example.test/v1".to_string(),
+        };
+        let error =
+            resolve_exact_upstream_credential_account(&discovery, &wrong_id, "setup-reviewed")
+                .expect_err("wrong id must fail");
+        assert!(error.contains("no longer present in discovery"));
+
+        // An endpoint mismatch for the exact tuple cannot store.
+        let wrong_endpoint = CredentialUpstreamIdentityRequest {
+            candidate_id: "opencode-auth".to_string(),
+            source: "opencode-provider-catalog-cache".to_string(),
+            endpoint: "https://other.example.test/v1".to_string(),
+        };
+        let error = resolve_exact_upstream_credential_account(
+            &discovery,
+            &wrong_endpoint,
+            "setup-reviewed",
+        )
+        .expect_err("endpoint mismatch must fail");
+        assert!(error.contains("endpoint changed"));
+
+        // A candidate that requires no credential cannot store.
+        let none_discovery = json!({
+            "revision": "setup-reviewed",
+            "candidates": [json!({
+                "id": "opencode-free",
+                "source": "opencode-provider-catalog-cache",
+                "base_url": "https://opencode.ai/zen/v1",
+                "auth_mode": "none",
+                "agent_ids": ["opencode"]
+            })]
+        });
+        let free_identity = CredentialUpstreamIdentityRequest {
+            candidate_id: "opencode-free".to_string(),
+            source: "opencode-provider-catalog-cache".to_string(),
+            endpoint: "https://opencode.ai/zen/v1".to_string(),
+        };
+        let error = resolve_exact_upstream_credential_account(
+            &none_discovery,
+            &free_identity,
+            "setup-reviewed",
+        )
+        .expect_err("auth_mode none must fail");
+        assert!(error.contains("does not require a credential"));
+
+        // The exact reviewed identity resolves to the canonical account
+        // derived from the same triple the helper computes.
+        let account =
+            resolve_exact_upstream_credential_account(&discovery, &identity, "setup-reviewed")
+                .expect("exact identity resolves");
+        let expected = credential_reference_for_upstream_identity(
+            &UpstreamCredentialIdentity::new(
+                "opencode-auth",
+                "opencode-provider-catalog-cache",
+                "https://opencode.auth.example.test/v1",
+            )
+            .expect("expected identity"),
+        )
+        .1;
+        assert_eq!(account, expected);
+        // The digest account differs from the old id-slug account.
+        assert_ne!(account, "providers/opencode-auth");
+    }
+
+    #[test]
+    fn store_provider_credential_exact_identity_mode_fails_closed_without_keyring() {
+        // The exact identity path must reject missing/stale revisions and
+        // wrong tuples BEFORE any OS credential store write; these tests
+        // never touch the real Keychain.
+        let credential = "sk-super-secret-value";
+        let result = store_provider_credential_value(
+            StoreProviderCredentialRequest {
+                provider_id: "opencode-auth".to_string(),
+                credential: credential.to_string(),
+                upstream_identity: Some(CredentialUpstreamIdentityRequest {
+                    candidate_id: "opencode-auth".to_string(),
+                    source: "opencode-provider-catalog-cache".to_string(),
+                    endpoint: "https://opencode.auth.example.test/v1".to_string(),
+                }),
+                discovery_revision: None,
+            },
+            None,
+        );
+        assert!(!result.ok);
+        assert!(result.summary.contains("discovery revision"));
+        assert!(!result.summary.contains(credential));
+
+        let discovery = json!({
+            "revision": "setup-reviewed",
+            "candidates": [json!({
+                "id": "opencode-auth",
+                "source": "opencode-provider-catalog-cache",
+                "base_url": "https://opencode.auth.example.test/v1",
+                "auth_mode": "unavailable",
+                "agent_ids": ["opencode"]
+            })]
+        });
+        let result = store_provider_credential_value(
+            StoreProviderCredentialRequest {
+                provider_id: "opencode-auth".to_string(),
+                credential: credential.to_string(),
+                upstream_identity: Some(CredentialUpstreamIdentityRequest {
+                    candidate_id: "opencode-auth".to_string(),
+                    source: "opencode-provider-catalog-cache".to_string(),
+                    endpoint: "https://opencode.auth.example.test/v1".to_string(),
+                }),
+                discovery_revision: Some("setup-stale".to_string()),
+            },
+            Some(discovery),
+        );
+        assert!(!result.ok);
+        assert!(result.summary.contains("scan again"));
+        let joined_logs = result
+            .logs
+            .iter()
+            .map(|entry| entry.message.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(joined_logs.contains("changed after discovery"));
+        // The credential value never appears in any response surface.
+        assert!(!result.summary.contains(credential));
+        assert!(!joined_logs.contains(credential));
+        assert!(!serde_json::to_string(&result).unwrap().contains(credential));
+    }
+
+    #[test]
+    fn opencode_plan_credential_binds_to_exact_upstream_identity_not_id_slug() {
+        // Candidate A (`cred-svc`) and its slug twin B (`cred_svc`) come
+        // from different sources and endpoints. A credential stored for A
+        // must never satisfy B: the probe and the emitted reference are
+        // both derived from the exact candidate triple.
+        let candidate_a = json!({
+            "id": "cred-svc",
+            "name": "Service A",
+            "source": "source-a",
+            "protocol": "open_ai",
+            "base_url": "https://a.example.test/v1",
+            "models": ["model-a"],
+            "auth_mode": "unavailable",
+            "agent_ids": ["opencode"],
+            "dtoken_credential_configured": true
+        });
+        let candidate_b = json!({
+            "id": "cred_svc",
+            "name": "Service B",
+            "source": "source-b",
+            "protocol": "open_ai",
+            "base_url": "https://b.example.test/v1",
+            "models": ["model-b"],
+            "auth_mode": "unavailable",
+            "agent_ids": ["opencode"],
+            "dtoken_credential_configured": true
+        });
+        let discovery = json!({
+            "revision": "setup-reviewed",
+            "external_config_snapshot": { "fingerprint": "external-a" },
+            "agent_bindings": [{
+                "agent_id": "opencode",
+                "installed": true,
+                "capability": "one-click",
+                "candidates": [candidate_a, candidate_b]
+            }]
+        });
+        let (expected_a_reference, expected_a_account) = credential_reference_for_upstream_identity(
+            &UpstreamCredentialIdentity::new("cred-svc", "source-a", "https://a.example.test/v1")
+                .expect("A identity"),
+        );
+        let (_expected_b_reference, expected_b_account) =
+            credential_reference_for_upstream_identity(
+                &UpstreamCredentialIdentity::new(
+                    "cred_svc",
+                    "source-b",
+                    "https://b.example.test/v1",
+                )
+                .expect("B identity"),
+            );
+        assert_ne!(
+            expected_a_account, expected_b_account,
+            "A and B must never share a credential identity"
+        );
+        // The seam reports existence only for A's exact identity account.
+        let credential_available = |candidate: &Value| {
+            credential_reference_for_upstream_candidate(candidate)
+                .map(|(_reference, account)| account == expected_a_account)
+                .unwrap_or(false)
+        };
+        let request_b = ConnectionRoutePlanRequest {
+            discovery_revision: "setup-reviewed".to_string(),
+            source_fingerprint: None,
+            source_fingerprint_scope: None,
+            bindings: vec![ConnectionRouteBindingRequest {
+                agent_id: "opencode".to_string(),
+                candidate_id: "cred_svc".to_string(),
+                candidate_source: "source-b".to_string(),
+                model: "model-b".to_string(),
+            }],
+        };
+        let error =
+            plan_connection_routes_from_discovery(&request_b, &discovery, &credential_available)
+                .expect_err("B must not be satisfiable by A's credential");
+        assert!(error.contains("not stored with d-token"));
+
+        let request_a = ConnectionRoutePlanRequest {
+            discovery_revision: "setup-reviewed".to_string(),
+            source_fingerprint: None,
+            source_fingerprint_scope: None,
+            bindings: vec![ConnectionRouteBindingRequest {
+                agent_id: "opencode".to_string(),
+                candidate_id: "cred-svc".to_string(),
+                candidate_source: "source-a".to_string(),
+                model: "model-a".to_string(),
+            }],
+        };
+        let planned =
+            plan_connection_routes_from_discovery(&request_a, &discovery, &credential_available)
+                .expect("A plans with its exact credential");
+        assert_eq!(planned.providers.len(), 1);
+        // The emitted reference is the exact digest identity of A's triple,
+        // never the bare id slug and never B's reference.
+        assert_eq!(
+            planned.providers[0]["api_key_ref"],
+            json!(expected_a_reference)
+        );
+        assert!(
+            expected_a_reference.contains("cred-svc-"),
+            "readable slug prefix survives"
+        );
+        assert_ne!(
+            expected_a_reference,
+            "os-credential://d-token/providers/upstream/cred-svc"
+        );
+        // No credential value is ever emitted.
+        assert!(!planned.providers[0]["api_key_ref"]
+            .as_str()
+            .unwrap()
+            .contains("secret"));
+    }
+
+    #[test]
+    fn connection_route_plan_rejects_repeated_non_opencode_agents() {
+        let discovery = json!({
+            "revision": "setup-reviewed",
+            "agent_bindings": [{
+                "agent_id": "codex",
+                "installed": true,
+                "capability": "one-click",
+                "candidates": [{
+                    "id": "codex-local",
+                    "name": "Codex local",
+                    "source": "agent-config:codex",
+                    "protocol": "responses",
+                    "base_url": "http://127.0.0.1:10100/v1",
+                    "models": [],
+                    "auth_mode": "none"
+                }]
+            }]
+        });
+        let binding = ConnectionRouteBindingRequest {
+            agent_id: "codex".to_string(),
+            candidate_id: "codex-local".to_string(),
+            candidate_source: "agent-config:codex".to_string(),
+            model: String::new(),
+        };
+        let request = ConnectionRoutePlanRequest {
+            discovery_revision: "setup-reviewed".to_string(),
+            source_fingerprint: None,
+            source_fingerprint_scope: None,
+            bindings: vec![binding.clone(), binding],
+        };
+        let error = plan_connection_routes_from_discovery(&request, &discovery, &|_| false)
+            .expect_err("repeated non-OpenCode Agent must fail");
+        assert!(error.contains("repeats Agent codex"));
+    }
+
+    #[test]
+    fn connection_route_merge_removes_every_prior_opencode_auto_artifact() {
+        let existing = json!({
+            "providers": [{
+                "id": "user-provider",
+                "name": "User provider",
+                "kind": "custom",
+                "protocol": "open_ai",
+                "base_url": "https://user.example.test/v1",
+                "api_key_ref": null,
+                "models": ["user-model"],
+                "timeout_ms": 120000,
+                "healthcheck_path": null
+            }, {
+                "id": "auto-opencode-old",
+                "name": "Old fixed OpenCode provider",
+                "kind": "official",
+                "protocol": "open_ai",
+                "base_url": "https://old.example.test/v1",
+                "api_key_ref": null,
+                "models": ["old-model"],
+                "timeout_ms": 120000,
+                "healthcheck_path": null
+            }, {
+                "id": "auto-opencode-go-deepseek-v4-flash",
+                "name": "Old multi-route OpenCode provider",
+                "kind": "official",
+                "protocol": "open_ai",
+                "base_url": "https://go.example.test/v1",
+                "api_key_ref": null,
+                "models": ["deepseek-v4-flash"],
+                "timeout_ms": 120000,
+                "healthcheck_path": null
+            }],
+            "routes": [{
+                "id": "user-route",
+                "name": "User route",
+                "input_protocol": "open_ai",
+                "instance_id": "user-instance",
+                "target_provider_id": "user-provider",
+                "fallback_provider_id": null,
+                "chain_mode": "direct",
+                "compression_policy": "balanced",
+                "bind_host": "127.0.0.1",
+                "local_port": 18002
+            }, {
+                "id": "auto-opencode-route",
+                "name": "Old fixed OpenCode route",
+                "input_protocol": "open_ai",
+                "instance_id": "auto-opencode-route-instance",
+                "target_provider_id": "auto-opencode-old",
+                "fallback_provider_id": null,
+                "chain_mode": "direct",
+                "compression_policy": "balanced",
+                "bind_host": "127.0.0.1",
+                "local_port": 18001
+            }, {
+                "id": "auto-opencode-go-deepseek-v4-flash-route",
+                "name": "Old multi-route OpenCode route",
+                "input_protocol": "open_ai",
+                "instance_id": "auto-opencode-go-deepseek-v4-flash-route-instance",
+                "target_provider_id": "auto-opencode-go-deepseek-v4-flash",
+                "fallback_provider_id": null,
+                "chain_mode": "direct",
+                "compression_policy": "balanced",
+                "bind_host": "127.0.0.1",
+                "local_port": 18001
+            }],
+            "instances": [{
+                "id": "user-instance",
+                "name": "User instance",
+                "agent": "custom",
+                "route_id": "user-route",
+                "local_port": 18002,
+                "process_status": "stopped",
+                "log_path": "./logs/user.jsonl"
+            }, {
+                "id": "auto-opencode-route-instance",
+                "name": "Old fixed OpenCode instance",
+                "agent": "opencode",
+                "route_id": "auto-opencode-route",
+                "local_port": 18001,
+                "process_status": "stopped",
+                "log_path": "./logs/old.jsonl"
+            }, {
+                "id": "auto-opencode-go-deepseek-v4-flash-route-instance",
+                "name": "Old multi-route OpenCode instance",
+                "agent": "opencode",
+                "route_id": "auto-opencode-go-deepseek-v4-flash-route",
+                "local_port": 18001,
+                "process_status": "stopped",
+                "log_path": "./logs/go.jsonl"
+            }]
+        });
+        // The old fixed single-route and slugged multi-route OpenCode graphs
+        // are both owned through one valid manifest entry for opencode.
+        let digest = connection_route_ownership_digest(
+            &[
+                "auto-opencode-old".to_string(),
+                "auto-opencode-go-deepseek-v4-flash".to_string(),
+            ],
+            &[
+                "auto-opencode-route".to_string(),
+                "auto-opencode-go-deepseek-v4-flash-route".to_string(),
+            ],
+            &[
+                "auto-opencode-route-instance".to_string(),
+                "auto-opencode-go-deepseek-v4-flash-route-instance".to_string(),
+            ],
+            existing["providers"].as_array().expect("providers"),
+            existing["routes"].as_array().expect("routes"),
+            existing["instances"].as_array().expect("instances"),
+        )
+        .expect("ownership digest");
+        let mut existing = existing;
+        existing["dtoken_connection_route_ownership"] = json!({
+            "version": 1,
+            "agents": {
+                "opencode": {
+                    "provider_ids": [
+                        "auto-opencode-old",
+                        "auto-opencode-go-deepseek-v4-flash"
+                    ],
+                    "route_ids": [
+                        "auto-opencode-route",
+                        "auto-opencode-go-deepseek-v4-flash-route"
+                    ],
+                    "instance_ids": [
+                        "auto-opencode-route-instance",
+                        "auto-opencode-go-deepseek-v4-flash-route-instance"
+                    ],
+                    "artifacts_digest": digest
+                }
+            }
+        });
+        let content = merge_connection_route_document(
+            Some(existing),
+            &["opencode".to_string()],
+            vec![json!({
+                "id": "auto-opencode-free-deepseek-v4-flash-free",
+                "name": "New OpenCode free provider",
+                "kind": "official",
+                "protocol": "open_ai",
+                "base_url": "https://free.example.test/v1",
+                "api_key_ref": null,
+                "models": ["deepseek-v4-flash-free"],
+                "timeout_ms": 120000,
+                "healthcheck_path": null
+            })],
+            vec![json!({
+                "id": "auto-opencode-free-deepseek-v4-flash-free-route",
+                "name": "New OpenCode free route",
+                "input_protocol": "open_ai",
+                "instance_id": "auto-opencode-free-deepseek-v4-flash-free-route-instance",
+                "target_provider_id": "auto-opencode-free-deepseek-v4-flash-free",
+                "fallback_provider_id": null,
+                "chain_mode": "direct",
+                "compression_policy": "balanced",
+                "bind_host": "127.0.0.1",
+                "local_port": 18001
+            })],
+            vec![json!({
+                "id": "auto-opencode-free-deepseek-v4-flash-free-route-instance",
+                "name": "New OpenCode free instance",
+                "agent": "opencode",
+                "route_id": "auto-opencode-free-deepseek-v4-flash-free-route",
+                "local_port": 18001,
+                "process_status": "stopped",
+                "log_path": "./logs/free.jsonl"
+            })],
+        )
+        .expect("merge multi-route OpenCode artifacts");
+        let merged: Value = serde_json::from_str(&content).expect("parse merged config");
+
+        // User-owned artifacts survive untouched.
+        assert!(merged["providers"]
+            .as_array()
+            .is_some_and(|providers| providers
+                .iter()
+                .any(|provider| provider["id"] == "user-provider")));
+        assert!(merged["routes"]
+            .as_array()
+            .is_some_and(|routes| routes.iter().any(|route| route["id"] == "user-route")));
+        assert!(merged["instances"]
+            .as_array()
+            .is_some_and(|instances| instances
+                .iter()
+                .any(|instance| instance["id"] == "user-instance")));
+        // Every prior OpenCode auto artifact — fixed single-route and
+        // slugged multi-route — is removed.
+        assert!(!merged["providers"]
+            .as_array()
+            .is_some_and(|providers| providers
+                .iter()
+                .any(|provider| provider["id"] == "auto-opencode-old")));
+        assert!(!merged["providers"]
+            .as_array()
+            .is_some_and(|providers| providers
+                .iter()
+                .any(|provider| provider["id"] == "auto-opencode-go-deepseek-v4-flash")));
+        assert!(!merged["routes"].as_array().is_some_and(|routes| routes
+            .iter()
+            .any(|route| route["id"] == "auto-opencode-route")));
+        assert!(!merged["routes"].as_array().is_some_and(|routes| routes
+            .iter()
+            .any(|route| route["id"] == "auto-opencode-go-deepseek-v4-flash-route")));
+        assert!(!merged["instances"]
+            .as_array()
+            .is_some_and(|instances| instances
+                .iter()
+                .any(|instance| instance["id"] == "auto-opencode-route-instance")));
+        assert!(!merged["instances"].as_array().is_some_and(|instances| {
+            instances.iter().any(|instance| {
+                instance["id"] == "auto-opencode-go-deepseek-v4-flash-route-instance"
+            })
+        }));
+        // The newly planned route is present and valid.
+        assert!(merged["providers"]
+            .as_array()
+            .is_some_and(|providers| providers
+                .iter()
+                .any(|provider| provider["id"] == "auto-opencode-free-deepseek-v4-flash-free")));
+        assert!(merged["routes"].as_array().is_some_and(|routes| routes
+            .iter()
+            .any(|route| route["id"] == "auto-opencode-free-deepseek-v4-flash-free-route")));
+        // The manifest is rewritten to own exactly the new graph.
+        let ownership = &merged["dtoken_connection_route_ownership"];
+        assert_eq!(ownership["version"], 1);
+        assert_eq!(
+            ownership["agents"]["opencode"]["provider_ids"],
+            json!(["auto-opencode-free-deepseek-v4-flash-free"])
+        );
+        assert_eq!(
+            ownership["agents"]["opencode"]["route_ids"],
+            json!(["auto-opencode-free-deepseek-v4-flash-free-route"])
+        );
+        assert_eq!(
+            ownership["agents"]["opencode"]["instance_ids"],
+            json!(["auto-opencode-free-deepseek-v4-flash-free-route-instance"])
+        );
+        let new_digest = connection_route_ownership_digest(
+            &["auto-opencode-free-deepseek-v4-flash-free".to_string()],
+            &["auto-opencode-free-deepseek-v4-flash-free-route".to_string()],
+            &["auto-opencode-free-deepseek-v4-flash-free-route-instance".to_string()],
+            merged["providers"].as_array().expect("providers"),
+            merged["routes"].as_array().expect("routes"),
+            merged["instances"].as_array().expect("instances"),
+        )
+        .expect("new ownership digest");
+        assert_eq!(
+            ownership["agents"]["opencode"]["artifacts_digest"].as_str(),
+            Some(new_digest.as_str())
+        );
+    }
+
+    #[test]
+    fn connection_route_merge_preserves_foreign_auto_artifacts_without_manifest() {
+        // Legacy `auto-` artifacts without an ownership manifest are
+        // foreign. The merge must leave them untouched, never remove by
+        // prefix alone, and record ownership only for the new graph.
+        let existing = json!({
+            "providers": [{
+                "id": "auto-opencode-legacy",
+                "name": "Legacy OpenCode provider",
+                "kind": "custom",
+                "protocol": "open_ai",
+                "base_url": "https://legacy.example.test/v1",
+                "api_key_ref": null,
+                "models": ["legacy-model"],
+                "timeout_ms": 120000,
+                "healthcheck_path": null
+            }],
+            "routes": [{
+                "id": "auto-opencode-legacy-route",
+                "name": "Legacy OpenCode route",
+                "input_protocol": "open_ai",
+                "instance_id": "auto-opencode-legacy-route-instance",
+                "target_provider_id": "auto-opencode-legacy",
+                "fallback_provider_id": null,
+                "chain_mode": "direct",
+                "compression_policy": "balanced",
+                "bind_host": "127.0.0.1",
+                "local_port": 18001
+            }],
+            "instances": [{
+                "id": "auto-opencode-legacy-route-instance",
+                "name": "Legacy OpenCode instance",
+                "agent": "opencode",
+                "route_id": "auto-opencode-legacy-route",
+                "local_port": 18001,
+                "process_status": "stopped",
+                "log_path": "./logs/legacy.jsonl"
+            }]
+        });
+        let content = merge_connection_route_document(
+            Some(existing),
+            &["opencode".to_string()],
+            vec![json!({
+                "id": "auto-opencode-new",
+                "name": "New OpenCode provider",
+                "kind": "official",
+                "protocol": "open_ai",
+                "base_url": "https://new.example.test/v1",
+                "api_key_ref": null,
+                "models": ["new-model"],
+                "timeout_ms": 120000,
+                "healthcheck_path": null
+            })],
+            vec![json!({
+                "id": "auto-opencode-new-route",
+                "name": "New OpenCode route",
+                "input_protocol": "open_ai",
+                "instance_id": "auto-opencode-new-route-instance",
+                "target_provider_id": "auto-opencode-new",
+                "fallback_provider_id": null,
+                "chain_mode": "direct",
+                "compression_policy": "balanced",
+                "bind_host": "127.0.0.1",
+                "local_port": 18001
+            })],
+            vec![json!({
+                "id": "auto-opencode-new-route-instance",
+                "name": "New OpenCode instance",
+                "agent": "opencode",
+                "route_id": "auto-opencode-new-route",
+                "local_port": 18001,
+                "process_status": "stopped",
+                "log_path": "./logs/new.jsonl"
+            })],
+        )
+        .expect("merge preserves foreign auto artifacts");
+        let merged: Value = serde_json::from_str(&content).expect("parse merged config");
+
+        assert!(merged["providers"]
+            .as_array()
+            .is_some_and(|providers| providers
+                .iter()
+                .any(|provider| provider["id"] == "auto-opencode-legacy")));
+        assert!(merged["routes"].as_array().is_some_and(|routes| routes
+            .iter()
+            .any(|route| route["id"] == "auto-opencode-legacy-route")));
+        assert!(merged["instances"]
+            .as_array()
+            .is_some_and(|instances| instances
+                .iter()
+                .any(|instance| instance["id"] == "auto-opencode-legacy-route-instance")));
+        assert!(merged["providers"]
+            .as_array()
+            .is_some_and(|providers| providers
+                .iter()
+                .any(|provider| provider["id"] == "auto-opencode-new")));
+        // The manifest owns only the new graph, not the foreign legacy one.
+        assert_eq!(
+            merged["dtoken_connection_route_ownership"]["agents"]["opencode"]["provider_ids"],
+            json!(["auto-opencode-new"])
+        );
+        assert_eq!(
+            merged["dtoken_connection_route_ownership"]["agents"]["opencode"]["route_ids"],
+            json!(["auto-opencode-new-route"])
+        );
+        assert_eq!(
+            merged["dtoken_connection_route_ownership"]["agents"]["opencode"]["instance_ids"],
+            json!(["auto-opencode-new-route-instance"])
+        );
+    }
+
+    #[test]
+    fn connection_route_merge_blocks_foreign_provider_collision_referenced_by_preserved_route() {
+        // A preserved user route references a foreign provider whose id the
+        // new plan wants to reuse. Without ownership evidence the merge must
+        // fail closed and instruct review instead of overwriting it.
+        let existing = json!({
+            "providers": [{
+                "id": "auto-opencode-collide",
+                "name": "Foreign OpenCode provider",
+                "kind": "custom",
+                "protocol": "open_ai",
+                "base_url": "https://foreign.example.test/v1",
+                "api_key_ref": null,
+                "models": ["foreign-model"],
+                "timeout_ms": 120000,
+                "healthcheck_path": null
+            }],
+            "routes": [{
+                "id": "user-route",
+                "name": "User route",
+                "input_protocol": "open_ai",
+                "instance_id": "user-instance",
+                "target_provider_id": "auto-opencode-collide",
+                "fallback_provider_id": null,
+                "chain_mode": "direct",
+                "compression_policy": "balanced",
+                "bind_host": "127.0.0.1",
+                "local_port": 18002
+            }],
+            "instances": [{
+                "id": "user-instance",
+                "name": "User instance",
+                "agent": "custom",
+                "route_id": "user-route",
+                "local_port": 18002,
+                "process_status": "stopped",
+                "log_path": "./logs/user.jsonl"
+            }]
+        });
+        let error = merge_connection_route_document(
+            Some(existing),
+            &["opencode".to_string()],
+            vec![json!({
+                "id": "auto-opencode-collide",
+                "name": "Planned OpenCode provider",
+                "kind": "official",
+                "protocol": "open_ai",
+                "base_url": "https://planned.example.test/v1",
+                "api_key_ref": null,
+                "models": ["planned-model"],
+                "timeout_ms": 120000,
+                "healthcheck_path": null
+            })],
+            vec![json!({
+                "id": "auto-opencode-route",
+                "name": "Planned OpenCode route",
+                "input_protocol": "open_ai",
+                "instance_id": "auto-opencode-instance",
+                "target_provider_id": "auto-opencode-collide",
+                "fallback_provider_id": null,
+                "chain_mode": "direct",
+                "compression_policy": "balanced",
+                "bind_host": "127.0.0.1",
+                "local_port": 18001
+            })],
+            vec![json!({
+                "id": "auto-opencode-instance",
+                "name": "Planned OpenCode instance",
+                "agent": "opencode",
+                "route_id": "auto-opencode-route",
+                "local_port": 18001,
+                "process_status": "stopped",
+                "log_path": "./logs/planned.jsonl"
+            })],
+        )
+        .expect_err("foreign provider collision must block the plan");
+        assert!(error.contains("collides"), "unexpected error: {error}");
+        assert!(error.contains("review"), "unexpected error: {error}");
+    }
+
+    #[test]
+    fn connection_route_merge_fails_closed_on_tampered_owned_artifact() {
+        // A manifest entry is present, but one owned artifact was edited
+        // after the digest was recorded. Removal must fail closed.
+        let existing = json!({
+            "providers": [{
+                "id": "auto-opencode-owned",
+                "name": "Owned OpenCode provider",
+                "kind": "official",
+                "protocol": "open_ai",
+                "base_url": "https://owned.example.test/v1",
+                "api_key_ref": null,
+                "models": ["owned-model"],
+                "timeout_ms": 120000,
+                "healthcheck_path": null
+            }],
+            "routes": [{
+                "id": "auto-opencode-owned-route",
+                "name": "Owned OpenCode route",
+                "input_protocol": "open_ai",
+                "instance_id": "auto-opencode-owned-route-instance",
+                "target_provider_id": "auto-opencode-owned",
+                "fallback_provider_id": null,
+                "chain_mode": "direct",
+                "compression_policy": "balanced",
+                "bind_host": "127.0.0.1",
+                "local_port": 18001
+            }],
+            "instances": [{
+                "id": "auto-opencode-owned-route-instance",
+                "name": "Owned OpenCode instance",
+                "agent": "opencode",
+                "route_id": "auto-opencode-owned-route",
+                "local_port": 18001,
+                "process_status": "stopped",
+                "log_path": "./logs/owned.jsonl"
+            }]
+        });
+        let digest = connection_route_ownership_digest(
+            &["auto-opencode-owned".to_string()],
+            &["auto-opencode-owned-route".to_string()],
+            &["auto-opencode-owned-route-instance".to_string()],
+            existing["providers"].as_array().expect("providers"),
+            existing["routes"].as_array().expect("routes"),
+            existing["instances"].as_array().expect("instances"),
+        )
+        .expect("ownership digest");
+        let mut existing = existing;
+        existing["dtoken_connection_route_ownership"] = json!({
+            "version": 1,
+            "agents": {
+                "opencode": {
+                    "provider_ids": ["auto-opencode-owned"],
+                    "route_ids": ["auto-opencode-owned-route"],
+                    "instance_ids": ["auto-opencode-owned-route-instance"],
+                    "artifacts_digest": digest
+                }
+            }
+        });
+        // Tamper with an owned artifact after the digest was recorded.
+        existing["instances"][0]["name"] = json!("Tampered OpenCode instance");
+        let error = merge_connection_route_document(
+            Some(existing),
+            &["opencode".to_string()],
+            vec![json!({
+                "id": "auto-opencode-replacement",
+                "name": "Replacement OpenCode provider",
+                "kind": "official",
+                "protocol": "open_ai",
+                "base_url": "https://replacement.example.test/v1",
+                "api_key_ref": null,
+                "models": ["replacement-model"],
+                "timeout_ms": 120000,
+                "healthcheck_path": null
+            })],
+            vec![json!({
+                "id": "auto-opencode-replacement-route",
+                "name": "Replacement OpenCode route",
+                "input_protocol": "open_ai",
+                "instance_id": "auto-opencode-replacement-route-instance",
+                "target_provider_id": "auto-opencode-replacement",
+                "fallback_provider_id": null,
+                "chain_mode": "direct",
+                "compression_policy": "balanced",
+                "bind_host": "127.0.0.1",
+                "local_port": 18001
+            })],
+            vec![json!({
+                "id": "auto-opencode-replacement-route-instance",
+                "name": "Replacement OpenCode instance",
+                "agent": "opencode",
+                "route_id": "auto-opencode-replacement-route",
+                "local_port": 18001,
+                "process_status": "stopped",
+                "log_path": "./logs/replacement.jsonl"
+            })],
+        )
+        .expect_err("tampered owned artifacts must fail closed");
+        assert!(
+            error.contains("no longer matches"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn connection_route_merge_replaces_valid_owned_graph_preserving_user_and_unselected_graphs() {
+        // A valid manifest owns the selected agent's exact old graph, an
+        // unselected agent's owned graph, and a user graph. The merge
+        // replaces only the selected graph, preserves the user and
+        // unselected graphs, and rewrites the manifest with the fresh
+        // selected entry plus the still-valid unselected entry.
+        let existing = json!({
+            "providers": [{
+                "id": "user-provider",
+                "name": "User provider",
+                "kind": "custom",
+                "protocol": "open_ai",
+                "base_url": "https://user.example.test/v1",
+                "api_key_ref": null,
+                "models": ["user-model"],
+                "timeout_ms": 120000,
+                "healthcheck_path": null
+            }, {
+                "id": "auto-opencode-owned",
+                "name": "Owned OpenCode provider",
+                "kind": "official",
+                "protocol": "open_ai",
+                "base_url": "https://owned.example.test/v1",
+                "api_key_ref": null,
+                "models": ["owned-model"],
+                "timeout_ms": 120000,
+                "healthcheck_path": null
+            }, {
+                "id": "auto-cline-owned",
+                "name": "Owned Cline provider",
+                "kind": "custom",
+                "protocol": "open_ai",
+                "base_url": "https://cline.example.test/v1",
+                "api_key_ref": null,
+                "models": ["cline-model"],
+                "timeout_ms": 120000,
+                "healthcheck_path": null
+            }],
+            "routes": [{
+                "id": "user-route",
+                "name": "User route",
+                "input_protocol": "open_ai",
+                "instance_id": "user-instance",
+                "target_provider_id": "user-provider",
+                "fallback_provider_id": null,
+                "chain_mode": "direct",
+                "compression_policy": "balanced",
+                "bind_host": "127.0.0.1",
+                "local_port": 18002
+            }, {
+                "id": "auto-opencode-owned-route",
+                "name": "Owned OpenCode route",
+                "input_protocol": "open_ai",
+                "instance_id": "auto-opencode-owned-route-instance",
+                "target_provider_id": "auto-opencode-owned",
+                "fallback_provider_id": null,
+                "chain_mode": "direct",
+                "compression_policy": "balanced",
+                "bind_host": "127.0.0.1",
+                "local_port": 18001
+            }, {
+                "id": "auto-cline-owned-route",
+                "name": "Owned Cline route",
+                "input_protocol": "open_ai",
+                "instance_id": "auto-cline-owned-route-instance",
+                "target_provider_id": "auto-cline-owned",
+                "fallback_provider_id": null,
+                "chain_mode": "direct",
+                "compression_policy": "balanced",
+                "bind_host": "127.0.0.1",
+                "local_port": 18003
+            }],
+            "instances": [{
+                "id": "user-instance",
+                "name": "User instance",
+                "agent": "custom",
+                "route_id": "user-route",
+                "local_port": 18002,
+                "process_status": "stopped",
+                "log_path": "./logs/user.jsonl"
+            }, {
+                "id": "auto-opencode-owned-route-instance",
+                "name": "Owned OpenCode instance",
+                "agent": "opencode",
+                "route_id": "auto-opencode-owned-route",
+                "local_port": 18001,
+                "process_status": "stopped",
+                "log_path": "./logs/owned.jsonl"
+            }, {
+                "id": "auto-cline-owned-route-instance",
+                "name": "Owned Cline instance",
+                "agent": "cline",
+                "route_id": "auto-cline-owned-route",
+                "local_port": 18003,
+                "process_status": "stopped",
+                "log_path": "./logs/cline.jsonl"
+            }]
+        });
+        let opencode_digest = connection_route_ownership_digest(
+            &["auto-opencode-owned".to_string()],
+            &["auto-opencode-owned-route".to_string()],
+            &["auto-opencode-owned-route-instance".to_string()],
+            existing["providers"].as_array().expect("providers"),
+            existing["routes"].as_array().expect("routes"),
+            existing["instances"].as_array().expect("instances"),
+        )
+        .expect("opencode ownership digest");
+        let cline_digest = connection_route_ownership_digest(
+            &["auto-cline-owned".to_string()],
+            &["auto-cline-owned-route".to_string()],
+            &["auto-cline-owned-route-instance".to_string()],
+            existing["providers"].as_array().expect("providers"),
+            existing["routes"].as_array().expect("routes"),
+            existing["instances"].as_array().expect("instances"),
+        )
+        .expect("cline ownership digest");
+        let mut existing = existing;
+        existing["dtoken_connection_route_ownership"] = json!({
+            "version": 1,
+            "agents": {
+                "opencode": {
+                    "provider_ids": ["auto-opencode-owned"],
+                    "route_ids": ["auto-opencode-owned-route"],
+                    "instance_ids": ["auto-opencode-owned-route-instance"],
+                    "artifacts_digest": opencode_digest
+                },
+                "cline": {
+                    "provider_ids": ["auto-cline-owned"],
+                    "route_ids": ["auto-cline-owned-route"],
+                    "instance_ids": ["auto-cline-owned-route-instance"],
+                    "artifacts_digest": cline_digest
+                }
+            }
+        });
+        let content = merge_connection_route_document(
+            Some(existing),
+            &["opencode".to_string()],
+            vec![json!({
+                "id": "auto-opencode-replacement",
+                "name": "Replacement OpenCode provider",
+                "kind": "official",
+                "protocol": "open_ai",
+                "base_url": "https://replacement.example.test/v1",
+                "api_key_ref": null,
+                "models": ["replacement-model"],
+                "timeout_ms": 120000,
+                "healthcheck_path": null
+            })],
+            vec![json!({
+                "id": "auto-opencode-replacement-route",
+                "name": "Replacement OpenCode route",
+                "input_protocol": "open_ai",
+                "instance_id": "auto-opencode-replacement-route-instance",
+                "target_provider_id": "auto-opencode-replacement",
+                "fallback_provider_id": null,
+                "chain_mode": "direct",
+                "compression_policy": "balanced",
+                "bind_host": "127.0.0.1",
+                "local_port": 18001
+            })],
+            vec![json!({
+                "id": "auto-opencode-replacement-route-instance",
+                "name": "Replacement OpenCode instance",
+                "agent": "opencode",
+                "route_id": "auto-opencode-replacement-route",
+                "local_port": 18001,
+                "process_status": "stopped",
+                "log_path": "./logs/replacement.jsonl"
+            })],
+        )
+        .expect("merge replaces owned graph");
+        let merged: Value = serde_json::from_str(&content).expect("parse merged config");
+
+        // User graph survives untouched.
+        assert!(merged["providers"]
+            .as_array()
+            .is_some_and(|providers| providers
+                .iter()
+                .any(|provider| provider["id"] == "user-provider")));
+        assert!(merged["routes"]
+            .as_array()
+            .is_some_and(|routes| routes.iter().any(|route| route["id"] == "user-route")));
+        assert!(merged["instances"]
+            .as_array()
+            .is_some_and(|instances| instances
+                .iter()
+                .any(|instance| instance["id"] == "user-instance")));
+        // The unselected agent's owned graph survives untouched.
+        assert!(merged["providers"]
+            .as_array()
+            .is_some_and(|providers| providers
+                .iter()
+                .any(|provider| provider["id"] == "auto-cline-owned")));
+        assert!(merged["routes"].as_array().is_some_and(|routes| routes
+            .iter()
+            .any(|route| route["id"] == "auto-cline-owned-route")));
+        assert!(merged["instances"]
+            .as_array()
+            .is_some_and(|instances| instances
+                .iter()
+                .any(|instance| instance["id"] == "auto-cline-owned-route-instance")));
+        // The selected agent's exact old graph is replaced by the new graph.
+        assert!(!merged["providers"]
+            .as_array()
+            .is_some_and(|providers| providers
+                .iter()
+                .any(|provider| provider["id"] == "auto-opencode-owned")));
+        assert!(!merged["routes"].as_array().is_some_and(|routes| routes
+            .iter()
+            .any(|route| route["id"] == "auto-opencode-owned-route")));
+        assert!(!merged["instances"]
+            .as_array()
+            .is_some_and(|instances| instances
+                .iter()
+                .any(|instance| instance["id"] == "auto-opencode-owned-route-instance")));
+        assert!(merged["providers"]
+            .as_array()
+            .is_some_and(|providers| providers
+                .iter()
+                .any(|provider| provider["id"] == "auto-opencode-replacement")));
+        // The manifest keeps the unselected agent's validated entry and
+        // rewrites the selected agent's entry for the fresh graph.
+        let ownership = &merged["dtoken_connection_route_ownership"];
+        assert_eq!(
+            ownership["agents"]["opencode"]["provider_ids"],
+            json!(["auto-opencode-replacement"])
+        );
+        assert_eq!(
+            ownership["agents"]["opencode"]["route_ids"],
+            json!(["auto-opencode-replacement-route"])
+        );
+        assert_eq!(
+            ownership["agents"]["opencode"]["instance_ids"],
+            json!(["auto-opencode-replacement-route-instance"])
+        );
+        assert_eq!(
+            ownership["agents"]["cline"]["provider_ids"],
+            json!(["auto-cline-owned"])
+        );
+        assert_eq!(
+            ownership["agents"]["cline"]["route_ids"],
+            json!(["auto-cline-owned-route"])
+        );
+        assert_eq!(
+            ownership["agents"]["cline"]["instance_ids"],
+            json!(["auto-cline-owned-route-instance"])
+        );
+        assert_eq!(
+            ownership["agents"]["cline"]["artifacts_digest"].as_str(),
+            Some(cline_digest.as_str())
+        );
+        let new_digest = connection_route_ownership_digest(
+            &["auto-opencode-replacement".to_string()],
+            &["auto-opencode-replacement-route".to_string()],
+            &["auto-opencode-replacement-route-instance".to_string()],
+            merged["providers"].as_array().expect("providers"),
+            merged["routes"].as_array().expect("routes"),
+            merged["instances"].as_array().expect("instances"),
+        )
+        .expect("new ownership digest");
+        assert_eq!(
+            ownership["agents"]["opencode"]["artifacts_digest"].as_str(),
+            Some(new_digest.as_str())
         );
     }
 
@@ -17121,6 +21654,245 @@ mod tests {
         )
         .expect_err("new endpoint must require confirmation");
         assert!(error.contains("outside the approved follow set"));
+    }
+
+    #[test]
+    fn compound_auto_follow_excludes_all_opencode_bindings_and_keeps_non_opencode_staging() {
+        let discovery = json!({
+            "revision": "setup-reviewed",
+            "external_config_snapshot": {
+                "fingerprint": "external-a",
+                "agent_configs": []
+            },
+            "agent_bindings": [{
+                "agent_id": "opencode",
+                "installed": true,
+                "capability": "one-click",
+                "candidates": [{
+                    "id": "opencode-free",
+                    "name": "OpenCode free",
+                    "source": "opencode-provider-catalog-cache",
+                    "protocol": "open_ai",
+                    "base_url": "https://opencode.ai/zen/v1",
+                    "models": ["deepseek-v4-flash-free"],
+                    "auth_mode": "none"
+                }, {
+                    "id": "opencode-go",
+                    "name": "OpenCode Go",
+                    "source": "opencode-provider-catalog-cache",
+                    "protocol": "open_ai",
+                    "base_url": "https://opencode.go.example.test/v1",
+                    "models": ["go-model"],
+                    "auth_mode": "unavailable",
+                    "dtoken_credential_configured": true
+                }, {
+                    "id": "opencode-paid",
+                    "name": "OpenCode paid",
+                    "source": "opencode-provider-catalog-cache",
+                    "protocol": "open_ai",
+                    "base_url": "https://opencode.paid.example.test/v1",
+                    "models": ["paid-model"],
+                    "auth_mode": "unavailable",
+                    "dtoken_credential_configured": true
+                }]
+            }, {
+                "agent_id": "cline",
+                "installed": true,
+                "capability": "one-click",
+                "candidates": [{
+                    "id": "cline-one",
+                    "name": "Cline one",
+                    "source": "agent-config:cline-cli-v1",
+                    "protocol": "open_ai",
+                    "base_url": "https://one.example.test/v1",
+                    "models": ["model-a"],
+                    "auth_mode": "none",
+                    "confidence": 99
+                }, {
+                    "id": "cline-cred",
+                    "name": "Cline credentialed",
+                    "source": "agent-config:cline-cli-v1",
+                    "protocol": "open_ai",
+                    "base_url": "https://cred.example.test/v1",
+                    "models": ["model-cred"],
+                    "auth_mode": "unavailable",
+                    "dtoken_credential_configured": true,
+                    "confidence": 99
+                }]
+            }]
+        });
+        let free = ConnectionRouteBindingRequest {
+            agent_id: "opencode".to_string(),
+            candidate_id: "opencode-free".to_string(),
+            candidate_source: "opencode-provider-catalog-cache".to_string(),
+            model: "deepseek-v4-flash-free".to_string(),
+        };
+        let go = ConnectionRouteBindingRequest {
+            agent_id: "opencode".to_string(),
+            candidate_id: "opencode-go".to_string(),
+            candidate_source: "opencode-provider-catalog-cache".to_string(),
+            model: "go-model".to_string(),
+        };
+        let paid = ConnectionRouteBindingRequest {
+            agent_id: "opencode".to_string(),
+            candidate_id: "opencode-paid".to_string(),
+            candidate_source: "opencode-provider-catalog-cache".to_string(),
+            model: "paid-model".to_string(),
+        };
+        let cline = ConnectionRouteBindingRequest {
+            agent_id: "cline".to_string(),
+            candidate_id: "cline-one".to_string(),
+            candidate_source: "agent-config:cline-cli-v1".to_string(),
+            model: "model-a".to_string(),
+        };
+        let cline_cred = ConnectionRouteBindingRequest {
+            agent_id: "cline".to_string(),
+            candidate_id: "cline-cred".to_string(),
+            candidate_source: "agent-config:cline-cli-v1".to_string(),
+            model: "model-cred".to_string(),
+        };
+        let plan = |bindings: Vec<ConnectionRouteBindingRequest>| ConnectionRoutePlanRequest {
+            discovery_revision: "setup-reviewed".to_string(),
+            source_fingerprint: None,
+            source_fingerprint_scope: None,
+            bindings,
+        };
+
+        // The unfiltered per-agent staging still fails on the credentialed
+        // OpenCode route: the compound-specific filter is what keeps the
+        // apply from failing, and its semantics are unchanged for every
+        // other path.
+        let error = stage_agent_auto_follow_authorization(
+            &plan(vec![free.clone(), go.clone()]),
+            &discovery,
+            &"a".repeat(64),
+        )
+        .expect_err("credentialed OpenCode route cannot be auto-followed");
+        assert!(error.contains("cannot be followed automatically"));
+
+        // The compound filter keeps every OpenCode binding for the route
+        // transaction but NEVER stages OpenCode follow authorization, even
+        // for the credential-free Free candidate: the follow executor
+        // cannot honor a multi-route OpenCode contract. Both candidates are
+        // skipped with truthful counts and no authorization is produced.
+        let staged = stage_compound_agent_auto_follow_authorization(
+            &plan(vec![free.clone(), go.clone()]),
+            &discovery,
+            &"a".repeat(64),
+        )
+        .expect("compound staging must not fail on OpenCode routes");
+        assert!(
+            staged.authorization.is_none(),
+            "OpenCode multi-route follow must never be staged"
+        );
+        assert_eq!(staged.skipped_agents, vec!["opencode"]);
+        assert_eq!(staged.skipped_candidates, 2);
+        assert!(staged.opencode_excluded);
+
+        // The receipt projection is truthful: explicitly not authorized for
+        // OpenCode multi-route, both candidates skipped, and no runtime
+        // verification pending (nothing was staged).
+        let receipt = compound_auto_follow_receipt_value(&staged);
+        assert_eq!(receipt["state"], "not_authorized_for_multiroute");
+        assert_eq!(receipt["enabled"], false);
+        assert_eq!(receipt["requires_runtime_verification"], false);
+        assert_eq!(receipt["skipped_agents"], json!(["opencode"]));
+        assert_eq!(receipt["skipped_candidates"], 2);
+        assert_eq!(receipt["agent_ids"], json!([]));
+
+        // Credentialed OpenCode bindings alone are excluded the same way:
+        // nothing is staged or saved and the receipt stays not authorized
+        // for OpenCode multi-route.
+        let all_credentialed = stage_compound_agent_auto_follow_authorization(
+            &plan(vec![go.clone(), paid.clone()]),
+            &discovery,
+            &"a".repeat(64),
+        )
+        .expect("all-credentialed plan still stages without failure");
+        assert!(all_credentialed.authorization.is_none());
+        assert_eq!(all_credentialed.skipped_agents, vec!["opencode"]);
+        assert_eq!(all_credentialed.skipped_candidates, 2);
+        let receipt = compound_auto_follow_receipt_value(&all_credentialed);
+        assert_eq!(receipt["state"], "not_authorized_for_multiroute");
+        assert_eq!(receipt["enabled"], false);
+        assert_eq!(receipt["requires_runtime_verification"], false);
+        assert_eq!(receipt["skipped_candidates"], 2);
+
+        // Even a single credential-free OpenCode binding is excluded: the
+        // exclusion is by Agent, not by auth_mode.
+        let all_free = stage_compound_agent_auto_follow_authorization(
+            &plan(vec![free.clone()]),
+            &discovery,
+            &"a".repeat(64),
+        )
+        .expect("all-free OpenCode plan stages");
+        assert!(all_free.authorization.is_none());
+        assert_eq!(all_free.skipped_agents, vec!["opencode"]);
+        assert_eq!(all_free.skipped_candidates, 1);
+        let receipt = compound_auto_follow_receipt_value(&all_free);
+        assert_eq!(receipt["state"], "not_authorized_for_multiroute");
+        assert_eq!(receipt["requires_runtime_verification"], false);
+
+        // Mixed plan: a non-OpenCode credential-free binding still stages
+        // through its unchanged follow contract while every OpenCode
+        // binding is excluded; the receipt says partial with the truthful
+        // skip list and pending runtime verification for the staged subset.
+        let mixed = stage_compound_agent_auto_follow_authorization(
+            &plan(vec![cline.clone(), free.clone(), go.clone()]),
+            &discovery,
+            &"a".repeat(64),
+        )
+        .expect("mixed plan stages the follow-safe non-OpenCode subset");
+        let authorization = mixed
+            .authorization
+            .as_ref()
+            .expect("non-OpenCode follow-safe subset staged");
+        assert_eq!(authorization.last_synced_bindings.len(), 1);
+        assert_eq!(authorization.last_synced_bindings[0].agent_id, "cline");
+        assert_eq!(
+            authorization.last_synced_bindings[0].candidate_id,
+            "cline-one"
+        );
+        assert_eq!(
+            authorization.last_synced_bindings[0].upstream.model,
+            "model-a"
+        );
+        assert!(!authorization
+            .last_synced_bindings
+            .iter()
+            .any(|binding| binding.agent_id == "opencode"));
+        assert_eq!(mixed.skipped_agents, vec!["opencode"]);
+        assert_eq!(mixed.skipped_candidates, 2);
+        assert_eq!(
+            authorization.last_sync_state,
+            "pending_runtime_verification"
+        );
+        let receipt = compound_auto_follow_receipt_value(&mixed);
+        assert_eq!(receipt["state"], "partial");
+        assert_eq!(receipt["enabled"], false);
+        assert_eq!(receipt["requires_runtime_verification"], true);
+        assert_eq!(receipt["agent_ids"], json!(["cline"]));
+        assert_eq!(receipt["skipped_agents"], json!(["opencode"]));
+        assert_eq!(receipt["skipped_candidates"], 2);
+
+        // A credentialed NON-OpenCode plan keeps its own distinct truthful
+        // state: OpenCode was not involved, so the receipt says not
+        // authorized for credentialed routes instead of multi-route.
+        let credentialed_agent = stage_compound_agent_auto_follow_authorization(
+            &plan(vec![cline_cred]),
+            &discovery,
+            &"a".repeat(64),
+        )
+        .expect("credentialed non-OpenCode plan stages without failure");
+        assert!(credentialed_agent.authorization.is_none());
+        assert_eq!(credentialed_agent.skipped_agents, vec!["cline"]);
+        assert_eq!(credentialed_agent.skipped_candidates, 1);
+        assert!(!credentialed_agent.opencode_excluded);
+        let receipt = compound_auto_follow_receipt_value(&credentialed_agent);
+        assert_eq!(receipt["state"], "not_authorized_for_credentialed");
+        assert_eq!(receipt["enabled"], false);
+        assert_eq!(receipt["requires_runtime_verification"], false);
+        assert_eq!(receipt["skipped_candidates"], 1);
     }
 
     #[test]
@@ -17323,8 +22095,9 @@ mod tests {
                     model: "private-model".to_string(),
                 }],
             };
-            let error = prepare_connection_route_plan_from_discovery(&request, &discovery)
-                .expect_err("credential reuse must fail closed");
+            let error =
+                prepare_connection_route_plan_from_discovery(&request, &discovery, &|_| false)
+                    .expect_err("credential reuse must fail closed");
             assert!(error.contains("cannot be reused safely"));
         });
     }
@@ -17363,7 +22136,7 @@ mod tests {
             };
 
             let (_, prepared, agents) =
-                prepare_connection_route_plan_from_discovery(&request, &discovery)
+                prepare_connection_route_plan_from_discovery(&request, &discovery, &|_| false)
                     .expect("verified Cline transport must be routable");
 
             assert_eq!(agents, ["cline"]);
@@ -17410,13 +22183,14 @@ mod tests {
                 }],
             };
 
-            prepare_connection_route_plan_from_discovery(&request, &discovery)
+            prepare_connection_route_plan_from_discovery(&request, &discovery, &|_| false)
                 .expect("aggregate Agent drift must not invalidate a cc-switch-scoped review");
 
             let mut stale = request;
             stale.source_fingerprint = Some("cc-switch-b".to_string());
-            let error = prepare_connection_route_plan_from_discovery(&stale, &discovery)
-                .expect_err("cc-switch fingerprint drift must invalidate the review");
+            let error =
+                prepare_connection_route_plan_from_discovery(&stale, &discovery, &|_| false)
+                    .expect_err("cc-switch fingerprint drift must invalidate the review");
             assert!(error.contains("cc-switch configuration changed"));
         });
     }
@@ -18329,6 +23103,236 @@ mod tests {
             assert!(!result.ok);
             assert!(result.summary.contains("credential reference"));
             assert_eq!(list_route_profile_drafts()["count"], 0);
+        });
+    }
+
+    #[test]
+    fn active_config_rejects_credential_shapes_beyond_sk_prefix() {
+        with_isolated_app_state("active-config-secret-shapes", || {
+            fs::create_dir_all(
+                active_config_path()
+                    .parent()
+                    .expect("active config has a parent"),
+            )
+            .expect("create active config directory");
+            for value in [
+                "Authorization: Bearer abcdef123456",
+                "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.signature123",
+                "ghp_abcdefghijklmnopqrstuvwxyz012345",
+                "AIzaSyA1234567890abcdefghijklmnopqrstuv",
+                "GOCSPX-abcdefghijklmnopqrstuvwxyz123456",
+                "ya29.abcdefghijklmnopqrstuvwxyz1234567890",
+                "-----BEGIN PRIVATE KEY-----",
+                "session_id=opaque-session",
+                "ｔｏｋｅｎ＝abc123secret",
+                "to\u{200b}ken=abc123secret",
+            ] {
+                fs::write(active_config_path(), format!(r#"{{"note": "{value}"}}"#))
+                    .expect("write active config");
+                let err = read_active_config_value().expect_err("secret shape must be rejected");
+                assert!(
+                    err.contains("plaintext-looking secret"),
+                    "vector {value:?} -> {err}"
+                );
+            }
+        });
+    }
+
+    #[test]
+    fn merged_optical_config_rejects_credential_shapes_beyond_sk_prefix() {
+        with_isolated_app_state("merged-config-secret-shapes", || {
+            for value in [
+                "Bearer abcdef123456",
+                "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.signature123",
+                "ghp_abcdefghijklmnopqrstuvwxyz012345",
+                "AIzaSyA1234567890abcdefghijklmnopqrstuv",
+                "GOCSPX-abcdefghijklmnopqrstuvwxyz123456",
+                "ya29.abcdefghijklmnopqrstuvwxyz1234567890",
+                "-----BEGIN PRIVATE KEY-----",
+                "session_id=opaque-session",
+                "ｔｏｋｅｎ＝abc123secret",
+                "to\u{200b}ken=abc123secret",
+            ] {
+                let config = json!({
+                    "routes": [],
+                    "providers": [{
+                        "id": "leaky-provider",
+                        "name": "Leaky provider",
+                        "kind": "custom",
+                        "protocol": "open_ai",
+                        "base_url": "https://example.invalid/v1",
+                        "api_key_ref": value,
+                        "models": ["model"],
+                        "timeout_ms": 120000,
+                        "healthcheck_path": "/health"
+                    }],
+                });
+                let err = merge_optical_into_active_config(
+                    config,
+                    json!({
+                        "schema_version": 1,
+                        "global_policy": {
+                            "enabled": true,
+                            "default_mode": "shadow_preview",
+                            "allow_active": false,
+                            "public_summary_only": true
+                        },
+                        "route_policies": []
+                    }),
+                )
+                .expect_err("secret shape must be rejected");
+                assert!(
+                    err.contains("plaintext-looking secret"),
+                    "vector {value:?} -> {err}"
+                );
+            }
+        });
+    }
+
+    #[test]
+    fn route_draft_apply_rejects_credential_shapes_beyond_sk_prefix() {
+        with_isolated_app_state("route-draft-secret-shapes", || {
+            fs::create_dir_all(app_state_dir().join("routing")).expect("create routing directory");
+            for value in [
+                "Bearer abcdef123456",
+                "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.signature123",
+                "ghp_abcdefghijklmnopqrstuvwxyz012345",
+                "AIzaSyA1234567890abcdefghijklmnopqrstuv",
+                "GOCSPX-abcdefghijklmnopqrstuvwxyz123456",
+                "ya29.abcdefghijklmnopqrstuvwxyz1234567890",
+                "-----BEGIN PRIVATE KEY-----",
+                "session_id=opaque-session",
+                "ｔｏｋｅｎ＝abc123secret",
+                "to\u{200b}ken=abc123secret",
+            ] {
+                let draft = json!({
+                    "config": {
+                        "providers": [{
+                            "id": "leaky-provider",
+                            "name": "Leaky provider",
+                            "kind": "custom",
+                            "protocol": "open_ai",
+                            "base_url": "https://example.invalid/v1",
+                            "api_key_ref": value,
+                            "models": ["model"],
+                            "timeout_ms": 120000,
+                            "healthcheck_path": "/health"
+                        }],
+                        "routes": [],
+                    }
+                });
+                fs::write(
+                    app_state_dir().join("routing").join("leaky-route.json"),
+                    serde_json::to_vec(&draft).expect("serialize draft"),
+                )
+                .expect("write route draft");
+                let err =
+                    prepare_route_profile_draft_apply("leaky-route").expect_err("must be rejected");
+                assert!(
+                    err.contains("plaintext-looking secret"),
+                    "vector {value:?} -> {err}"
+                );
+            }
+        });
+    }
+
+    #[test]
+    fn active_config_rejects_compact_structured_plaintext_credentials() {
+        with_isolated_app_state("active-config-compact-secret", || {
+            fs::create_dir_all(
+                active_config_path()
+                    .parent()
+                    .expect("active config has a parent"),
+            )
+            .expect("create active config directory");
+            // Compact JSON written straight to disk: the credential key is
+            // not the first key, so the leading base_url must not hide the
+            // api_key_ref value from classification.
+            fs::write(
+                active_config_path(),
+                r#"{"base_url":"https://one.example.test/v1","api_key_ref":"sk-abcdefghijklmnop","routes":[]}"#,
+            )
+            .expect("write active config");
+            let err = read_active_config_value().expect_err("compact secret must be rejected");
+            assert!(
+                err.contains("plaintext-looking secret"),
+                "compact active config -> {err}"
+            );
+        });
+    }
+
+    #[test]
+    fn merged_optical_config_rejects_compact_structured_plaintext_credentials() {
+        with_isolated_app_state("merged-config-compact-secret", || {
+            // Compact provider config serialized without pre-formatting: the
+            // credential value sits under a non-sensitive label after a
+            // URL-bearing key and must still be rejected.
+            let config = json!({
+                "routes": [],
+                "providers": [{
+                    "id": "leaky-provider",
+                    "name": "Leaky provider",
+                    "kind": "custom",
+                    "protocol": "open_ai",
+                    "base_url": "https://example.invalid/v1",
+                    "openai_api_key": "sk-abcdefghijklmnop",
+                    "models": ["model"],
+                    "timeout_ms": 120000,
+                    "healthcheck_path": "/health"
+                }],
+            });
+            let err = merge_optical_into_active_config(
+                config,
+                json!({
+                    "schema_version": 1,
+                    "global_policy": {
+                        "enabled": true,
+                        "default_mode": "shadow_preview",
+                        "allow_active": false,
+                        "public_summary_only": true
+                    },
+                    "route_policies": []
+                }),
+            )
+            .expect_err("compact secret must be rejected");
+            assert!(
+                err.contains("plaintext-looking secret"),
+                "compact merged config -> {err}"
+            );
+        });
+    }
+
+    #[test]
+    fn route_draft_apply_rejects_compact_structured_plaintext_credentials() {
+        with_isolated_app_state("route-draft-compact-secret", || {
+            fs::create_dir_all(app_state_dir().join("routing")).expect("create routing directory");
+            let draft = json!({
+                "config": {
+                    "providers": [{
+                        "id": "leaky-provider",
+                        "name": "Leaky provider",
+                        "kind": "custom",
+                        "protocol": "open_ai",
+                        "base_url": "https://example.invalid/v1",
+                        "openai_api_key": "sk-abcdefghijklmnop",
+                        "models": ["model"],
+                        "timeout_ms": 120000,
+                        "healthcheck_path": "/health"
+                    }],
+                    "routes": [],
+                }
+            });
+            fs::write(
+                app_state_dir().join("routing").join("leaky-route.json"),
+                serde_json::to_vec(&draft).expect("serialize draft"),
+            )
+            .expect("write route draft");
+            let err =
+                prepare_route_profile_draft_apply("leaky-route").expect_err("must be rejected");
+            assert!(
+                err.contains("plaintext-looking secret"),
+                "compact route draft -> {err}"
+            );
         });
     }
 

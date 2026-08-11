@@ -1,0 +1,9 @@
+{
+  "id": "quality-coding-task-compress",
+  "kind": "coding-task",
+  "description": "Coding-task eval case: same-model baseline vs optimized must preserve task success and key facts.",
+  "privacy": "synthetic fixture; no credentials, paths, or real prompts",
+  "task": "Refactor a Rust function to remove duplicated match arms.",
+  "success_criteria": ["compiles", "behavior_unchanged", "no_unused_imports"],
+  "key_facts": ["function_signature_preserved", "error_paths_preserved"]
+}

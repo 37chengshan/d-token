@@ -219,6 +219,71 @@ fn verified_cache_evidence_is_carried_into_the_pre_send_transform_plan() {
 }
 
 #[test]
+fn cache_key_digest_binds_evidence_source_revision_and_ttl_strategy() {
+    let body = request();
+    let context = context();
+    let evidence = ProviderCacheEvidence {
+        route_id: context.route_id.clone(),
+        provider_id: context.provider_id.clone(),
+        model: context.model.clone(),
+        strategy: ProviderCacheStrategy::AnthropicExplicit,
+        ttl_seconds: Some(300),
+        min_prefix_bytes: 1,
+        source_revision: "d".repeat(64),
+    };
+    let verified = plan_context_with_cache_evidence(&context, &body, Some(&evidence))
+        .expect("verified evidence");
+    assert_eq!(
+        verified.cache_alignment().evidence_status(),
+        CacheEvidenceStatus::VerifiedEligible
+    );
+    let verified_key = verified
+        .cache_alignment()
+        .cache_key_digest()
+        .expect("verified cache key");
+
+    // The same route/provider/model/stable prefix but a different source
+    // revision must produce a different cache key (stale/mismatch miss):
+    // a provider/config policy change must never alias the cached slot.
+    let mut new_revision = evidence.clone();
+    new_revision.source_revision = "e".repeat(64);
+    let reverted = plan_context_with_cache_evidence(&context, &body, Some(&new_revision))
+        .expect("new revision evidence");
+    assert_ne!(
+        verified_key,
+        reverted
+            .cache_alignment()
+            .cache_key_digest()
+            .expect("rebound cache key")
+    );
+
+    // A provider policy change (new TTL with a new source revision) also
+    // rebinds the identity: the cached slot from the old policy must never
+    // be reused.  A strategy change alone is a mismatch (fail-closed) and is
+    // covered by `provider_cache_evidence_must_match_exact_route_provider_and_model`.
+    let mut policy_changed = evidence.clone();
+    policy_changed.ttl_seconds = Some(600);
+    policy_changed.source_revision = "f".repeat(64);
+    let policy_rebound = plan_context_with_cache_evidence(&context, &body, Some(&policy_changed))
+        .expect("policy changed evidence");
+    assert_ne!(
+        verified_key,
+        policy_rebound
+            .cache_alignment()
+            .cache_key_digest()
+            .expect("policy rebound key")
+    );
+    assert_ne!(
+        verified_key,
+        plan_context(&context, &body)
+            .expect("unverified plan")
+            .cache_alignment()
+            .cache_key_digest()
+            .expect("unverified key")
+    );
+}
+
+#[test]
 fn manifest_validator_accepts_only_declared_target_changes() {
     let body = request();
     let prepared = prepare_context_transform(&context(), CompressionPolicy::Balanced, body)
