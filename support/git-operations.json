@@ -2151,6 +2151,60 @@
       "summary": "push managed RTK rewrite path assertion fix",
       "head_before": "13f52e2",
       "remote": "origin"
+    },
+    {
+      "id": "fe79d897-8b50-4497-bca2-175a0104b624",
+      "timestamp": "2026-08-10T18:44:10+08:00",
+      "operation": "branch-create",
+      "branch": "codex/final/animation-fixes",
+      "summary": "create animation-fixes branch in isolated worktree for improve-animations implementation",
+      "head_before": "15f98cfb9861c3f9ad87b1d0dc5f8e6f1844063d",
+      "remote": null
+    },
+    {
+      "id": "af9a55d5-e03a-42c8-bd45-b17929c94d7e",
+      "timestamp": "2026-08-10T19:45:48+08:00",
+      "operation": "commit",
+      "branch": "codex/final/animation-fixes",
+      "summary": "implement animation fixes plans 001-009",
+      "head_before": "15f98cfb9861c3f9ad87b1d0dc5f8e6f1844063d",
+      "remote": null
+    },
+    {
+      "id": "8e12c7a8-50e3-4f1d-a0f7-acddf55362aa",
+      "timestamp": "2026-08-10T22:37:58+08:00",
+      "operation": "commit",
+      "branch": "codex/final/animation-fixes",
+      "summary": "DEV-only web-preview mock data layer for animation review",
+      "head_before": "7aac313c251bdcd7e700c9900f7b2b5b53f1c466",
+      "remote": null
+    },
+    {
+      "id": "99627a74-b891-449e-8a80-d887f2ce383f",
+      "timestamp": "2026-08-10T22:50:47+08:00",
+      "operation": "branch-use",
+      "branch": "codex/final/animation-fixes",
+      "summary": "rebase animation-fixes onto 89480ec and prepare merge to stage-pack-integrated",
+      "head_before": "da361b56a2ce3bccca674fc9c44a697cbc5494bb",
+      "remote": null
+    },
+    {
+      "id": "1eb1a243-d392-4cc2-b1ef-339a69008273",
+      "timestamp": "2026-08-10T22:51:13+08:00",
+      "operation": "merge",
+      "branch": "codex/final/stage-pack-integrated",
+      "summary": "merge animation-fixes (plans 001-009 + DEV mock preview) into stage-pack-integrated",
+      "head_before": "89480ec1fb0bd9e31b4c6e97e9f0167cb0aad8a2",
+      "remote": null
+    },
+    {
+      "id": "1938b210-0d94-469e-827b-235c399619fa",
+      "timestamp": "2026-08-12T15:39:57+08:00",
+      "operation": "commit",
+      "branch": "codex/final-release-iteration",
+      "summary": "freeze P0 preflight baseline and unified release execution plan",
+      "head_before": "dc647aff71b2fdf63cc1ce2a1fc25810d8f86bd3",
+      "remote": null
     }
   ]
 }
