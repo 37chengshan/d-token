@@ -49,16 +49,17 @@ use dtoken_runtime_pipeline::{
     PipelineInput, ReadyToSend, RecoveryPrepareReceipt, TransformArtifact,
 };
 use dtoken_types::{
-    AgentSupportProfile, AvailabilityState, BaselineKind, CacheTokens, CapabilityEvidence,
-    CapabilityRegistrySnapshot, ChainMode, CompressionPolicy, DtokenEvent, EffectiveOpticalState,
-    EventSource, EventStatus, EvidenceFreshness, EvidenceSource, EvidenceValue, HealthResponse,
-    InputTokenUsage, LayeredSavingsReport, LayeredStage, ModalityTokens, OpticalApplicabilityInput,
+    AgentSupportProfile, AgentTransactionEvidence, AvailabilityState, BaselineKind, CacheTokens,
+    CapabilityEvidence, CapabilityRegistrySnapshot, ChainMode, CompressionPolicy,
+    ConfigTransactionState, DtokenEvent, EffectiveOpticalState, EventSource, EventStatus,
+    EvidenceFreshness, EvidenceSource, EvidenceValue, HealthResponse, InputTokenUsage,
+    LayeredSavingsReport, LayeredStage, ModalityTokens, OpticalApplicabilityInput,
     OpticalCapabilitiesPublicSummary, OpticalCapabilityLifecyclePublicSummary, OpticalEndpoint,
     OpticalEventMetadataPublicSummary, OpticalEventPublicSummary, OpticalMode,
     OpticalPlanPublicSummary, OpticalPlanStatus, OpticalPreviewRequest, OpticalStatusPublicSummary,
-    PayloadByteUsage, Protocol, ProtocolInjectionProfile, RequestLog, RequestScope,
-    RequestScopeError, RouteDecision, SupportLevel, UpstreamSendState, UsageEvidence,
-    UsageEvidenceKind, UsageMeasurement, UsageVector,
+    OptimizationReceipt, PayloadByteUsage, Protocol, ProtocolInjectionProfile, RequestLog,
+    RequestScope, RequestScopeError, RouteDecision, SupportLevel, UpstreamSendState, UsageEvidence,
+    UsageEvidenceKind, UsageMeasurement, UsageVector, ValidationStatus,
 };
 use futures_util::{Stream, TryStreamExt};
 use reqwest::StatusCode;
@@ -120,6 +121,457 @@ pub struct CcrDeletionReceipt {
 pub const COMPRESSION_DECISION_CONTRACT_REVISION: &str = "dtoken-compression-decision-v1";
 pub const RUST_LIBRARY_IMPLEMENTATION_REVISION: &str = "dtoken-rust-library-v1";
 pub const TYPESCRIPT_SDK_IMPLEMENTATION_REVISION: &str = "dtoken-typescript-sdk-http-v1";
+
+// ===========================================================================
+// CF-2 contract-freeze-core: ConfigTransactionState progression and the
+// per-Agent transaction cross-section (frozen §6.1/§8.1, consumed here).
+// ===========================================================================
+
+/// One Agent's configuration transaction (frozen §6.1/§8.1). Every Agent
+/// advances its own `ConfigTransactionState` independently; batch
+/// configuration is UI orchestration only and is never a shared atomic
+/// transaction. `evidence` is the frozen cross-section that must satisfy the
+/// target state's requirements before the transition is accepted.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AgentTransactionRecord {
+    pub agent_id: String,
+    pub state: ConfigTransactionState,
+    pub evidence: AgentTransactionEvidence,
+}
+
+impl AgentTransactionRecord {
+    /// Opens a fresh transaction in `discovered` with an empty cross-section.
+    pub fn new(agent_id: impl Into<String>) -> Self {
+        Self {
+            agent_id: agent_id.into(),
+            state: ConfigTransactionState::Discovered,
+            evidence: AgentTransactionEvidence {
+                transaction_id: String::new(),
+                source_revision: String::new(),
+                before_digest: String::new(),
+                redacted_diff_digest: String::new(),
+                backup_manifest: None,
+                planned_after_digest: String::new(),
+                readback_digest: None,
+                capability_evidence: None,
+                receipt_id: None,
+                rollback_receipt_id: None,
+            },
+        }
+    }
+
+    /// Validates that the frozen cross-section evidence is complete for the
+    /// target state (fail-closed: a missing field rejects the transition).
+    pub fn validate_evidence_for(
+        &self,
+        target: ConfigTransactionState,
+    ) -> Result<(), AgentTransactionError> {
+        use ConfigTransactionState::*;
+        let evidence = &self.evidence;
+        let require = |name: &'static str, present: bool| {
+            if present {
+                Ok(())
+            } else {
+                Err(AgentTransactionError::MissingEvidence(name))
+            }
+        };
+        match target {
+            // No cross-section requirement for the discovery/selection steps;
+            // failure may happen at any point and needs no evidence.
+            Discovered | Selected | Failed => Ok(()),
+            Planned => {
+                require("transaction_id", !evidence.transaction_id.is_empty())?;
+                require("source_revision", !evidence.source_revision.is_empty())?;
+                require("before_digest", !evidence.before_digest.is_empty())?;
+                require(
+                    "redacted_diff_digest",
+                    !evidence.redacted_diff_digest.is_empty(),
+                )?;
+                require(
+                    "planned_after_digest",
+                    !evidence.planned_after_digest.is_empty(),
+                )
+            }
+            BackedUp => require(
+                "backup_manifest",
+                evidence
+                    .backup_manifest
+                    .as_deref()
+                    .is_some_and(|s| !s.is_empty()),
+            ),
+            Applied => require(
+                "receipt_id",
+                evidence
+                    .receipt_id
+                    .as_deref()
+                    .is_some_and(|s| !s.is_empty()),
+            ),
+            ReadbackVerified => {
+                require(
+                    "planned_after_digest",
+                    !evidence.planned_after_digest.is_empty(),
+                )?;
+                require(
+                    "readback_digest",
+                    evidence
+                        .readback_digest
+                        .as_deref()
+                        .is_some_and(|s| !s.is_empty()),
+                )?;
+                if evidence.readback_digest.as_deref()
+                    == Some(evidence.planned_after_digest.as_str())
+                {
+                    Ok(())
+                } else {
+                    Err(AgentTransactionError::ReadbackMismatch)
+                }
+            }
+            CapabilityVerified => require(
+                "capability_evidence",
+                evidence
+                    .capability_evidence
+                    .as_deref()
+                    .is_some_and(|s| !s.is_empty()),
+            ),
+            Completed => require(
+                "receipt_id",
+                evidence
+                    .receipt_id
+                    .as_deref()
+                    .is_some_and(|s| !s.is_empty()),
+            ),
+            RolledBack => require(
+                "rollback_receipt_id",
+                evidence
+                    .rollback_receipt_id
+                    .as_deref()
+                    .is_some_and(|s| !s.is_empty()),
+            ),
+        }
+    }
+
+    /// Advances this Agent's transaction to `target`. The transition must be
+    /// allowed by the frozen table and the cross-section evidence must satisfy
+    /// the target state's requirements; otherwise the record is left unchanged
+    /// and an error is returned (fail-closed).
+    pub fn advance(
+        &mut self,
+        target: ConfigTransactionState,
+    ) -> Result<ConfigTransactionState, AgentTransactionError> {
+        if !self.state.can_transition_to(target) {
+            return Err(AgentTransactionError::InvalidTransition {
+                from: self.state,
+                to: target,
+            });
+        }
+        self.validate_evidence_for(target)?;
+        self.state = target;
+        Ok(target)
+    }
+
+    /// Verifies the post-apply readback digest for this Agent (§6.1/§8.1).
+    /// A digest matching `planned_after_digest` advances to
+    /// `readback_verified`; a mismatch rolls back **this Agent only** and
+    /// records the rollback receipt in the cross-section. Other Agents'
+    /// transactions are never touched.
+    pub fn verify_readback(
+        &mut self,
+        observed_digest: &str,
+        rollback_receipt_id: &str,
+    ) -> Result<ReadbackOutcome, AgentTransactionError> {
+        if self.state != ConfigTransactionState::Applied {
+            return Err(AgentTransactionError::InvalidTransition {
+                from: self.state,
+                to: ConfigTransactionState::ReadbackVerified,
+            });
+        }
+        if !observed_digest.is_empty() && observed_digest == self.evidence.planned_after_digest {
+            self.evidence.readback_digest = Some(observed_digest.to_string());
+            self.state = ConfigTransactionState::ReadbackVerified;
+            Ok(ReadbackOutcome::Verified)
+        } else {
+            if rollback_receipt_id.is_empty() {
+                return Err(AgentTransactionError::MissingEvidence(
+                    "rollback_receipt_id",
+                ));
+            }
+            self.evidence.rollback_receipt_id = Some(rollback_receipt_id.to_string());
+            self.state = ConfigTransactionState::RolledBack;
+            Ok(ReadbackOutcome::RolledBack)
+        }
+    }
+
+    /// Projects this Agent's transaction onto the frozen cross-section for
+    /// API/UI consumption. Only cross-section fields are emitted; credentials,
+    /// raw configuration bytes, and absolute paths never enter the projection.
+    /// The state is the internal snake_case code for technical details,
+    /// Doctor, and logs. Ordinary pages must instead derive their result word
+    /// with [`transaction_status_word`].
+    pub fn projection(&self) -> Value {
+        json!({
+            "agent_id": self.agent_id,
+            "state": config_transaction_state_label(self.state),
+            "transaction_id": self.evidence.transaction_id,
+            "source_revision": self.evidence.source_revision,
+            "before_digest": self.evidence.before_digest,
+            "redacted_diff_digest": self.evidence.redacted_diff_digest,
+            "backup_manifest": self.evidence.backup_manifest,
+            "planned_after_digest": self.evidence.planned_after_digest,
+            "readback_digest": self.evidence.readback_digest,
+            "capability_evidence": self.evidence.capability_evidence,
+            "receipt_id": self.evidence.receipt_id,
+            "rollback_receipt_id": self.evidence.rollback_receipt_id,
+        })
+    }
+}
+
+/// Outcome of a per-Agent readback verification.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReadbackOutcome {
+    /// Readback digest matched `planned_after_digest`.
+    Verified,
+    /// Readback digest mismatched; this Agent alone was rolled back.
+    RolledBack,
+}
+
+/// A request to advance one Agent's transaction.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentAdvanceRequest {
+    pub agent_id: String,
+    pub target: ConfigTransactionState,
+}
+
+/// Why an Agent transaction cannot advance (fail-closed).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AgentTransactionError {
+    /// The transition is not in the frozen table (§6.1).
+    InvalidTransition {
+        from: ConfigTransactionState,
+        to: ConfigTransactionState,
+    },
+    /// A cross-section field required for the target state is missing.
+    MissingEvidence(&'static str),
+    /// `readback_digest` does not match `planned_after_digest`.
+    ReadbackMismatch,
+    /// No transaction record exists for the requested Agent.
+    UnknownAgent(String),
+    /// More than one record claims the same Agent identity.
+    DuplicateAgent(String),
+}
+
+/// Advances each requested Agent independently (§8.1). One Agent's failure
+/// (for example a readback mismatch that rolls back that Agent) never rolls
+/// back or aborts any other Agent's transaction; results are aligned with
+/// `requests`.
+pub fn advance_agent_batch(
+    records: &mut [AgentTransactionRecord],
+    requests: &[AgentAdvanceRequest],
+) -> Vec<Result<ConfigTransactionState, AgentTransactionError>> {
+    let duplicates = records
+        .iter()
+        .fold(HashMap::<String, usize>::new(), |mut counts, record| {
+            *counts.entry(record.agent_id.clone()).or_default() += 1;
+            counts
+        });
+    requests
+        .iter()
+        .map(|request| {
+            if duplicates
+                .get(request.agent_id.as_str())
+                .copied()
+                .unwrap_or(0)
+                > 1
+            {
+                return Err(AgentTransactionError::DuplicateAgent(
+                    request.agent_id.clone(),
+                ));
+            }
+            records
+                .iter_mut()
+                .find(|record| record.agent_id == request.agent_id)
+                .map_or_else(
+                    || {
+                        Err(AgentTransactionError::UnknownAgent(
+                            request.agent_id.clone(),
+                        ))
+                    },
+                    |record| record.advance(request.target),
+                )
+        })
+        .collect()
+}
+
+/// Stable snake_case label for [`ConfigTransactionState`] — the internal code
+/// used in technical details, Doctor, and logs (§3.6/§6.1); never ordinary UI.
+fn config_transaction_state_label(state: ConfigTransactionState) -> &'static str {
+    use ConfigTransactionState::*;
+    match state {
+        Discovered => "discovered",
+        Selected => "selected",
+        Planned => "planned",
+        BackedUp => "backed_up",
+        Applied => "applied",
+        ReadbackVerified => "readback_verified",
+        CapabilityVerified => "capability_verified",
+        Completed => "completed",
+        RolledBack => "rolled_back",
+        Failed => "failed",
+    }
+}
+
+/// Maps the frozen per-Agent transaction state onto the §3.6 user vocabulary.
+/// Intermediate states are one user task (`正在配置`); only completed is success,
+/// and both rollback and failure are visible failures.
+pub fn transaction_status_word(state: ConfigTransactionState) -> &'static str {
+    use ConfigTransactionState::*;
+    match state {
+        Discovered | Selected | Planned | BackedUp | Applied | ReadbackVerified
+        | CapabilityVerified => "正在配置",
+        Completed => "配置成功",
+        RolledBack | Failed => "配置失败",
+    }
+}
+
+/// Projects a frozen `RequestLog` onto the frozen `OptimizationReceipt`
+/// (§6.2/§7.2). Local token counts are mapped from the log's pre/post counts;
+/// Provider input/output usage is sourced only from
+/// `context_accounting.provider_actual_sent` — when the log carries no
+/// Provider usage evidence the fields stay `None` (unavailable) and are never
+/// set to `0`. Provider usage alone never elevates claimable savings; the
+/// claimable bucket is derived only from the accounting's claimable signed
+/// savings. `protected_content` is a descriptor of protected content and
+/// never carries content; a `RequestLog` records no such descriptor, so the
+/// projection leaves it empty rather than inventing one.
+pub fn project_optimization_receipt(log: &RequestLog) -> OptimizationReceipt {
+    let provider_usage = log.context_accounting.as_ref().and_then(|accounting| {
+        if accounting.validate().is_err() {
+            return None;
+        }
+        accounting
+            .provider_actual_sent
+            .measurement
+            .as_ref()
+            .filter(|measurement| measurement.evidence.kind == UsageEvidenceKind::ProviderActual)
+    });
+    let provider_input_tokens =
+        provider_usage.and_then(|measurement| measurement.usage.input.normalized_total);
+    let provider_output_tokens =
+        provider_usage.and_then(|measurement| measurement.usage.output_tokens);
+    let claimable_tokens_avoided = log
+        .context_accounting
+        .as_ref()
+        .and_then(|accounting| accounting.claimable_signed_savings())
+        .and_then(|savings| savings.total_tokens.or(savings.input_tokens))
+        .filter(|tokens| *tokens > 0);
+    OptimizationReceipt {
+        schema_version: 1,
+        request_id: log.request_id,
+        timestamp_ms: log.timestamp_ms,
+        source_agent: log.agent.clone(),
+        project_scope: None,
+        user_target_provider: None,
+        user_target_model: None,
+        actual_provider: log.provider_id.clone(),
+        actual_model: log.model.clone(),
+        // No user-target evidence is recorded in `RequestLog`, so a change
+        // cannot be claimed; the receipt stays conservative (false).
+        provider_or_model_changed: false,
+        transformations: log.transforms_applied.clone(),
+        protected_content: String::new(),
+        local_original_tokens: log
+            .input_tokens_before
+            .and_then(|tokens| u64::try_from(tokens).ok()),
+        local_optimized_tokens: log
+            .input_tokens_after
+            .and_then(|tokens| u64::try_from(tokens).ok()),
+        provider_input_tokens,
+        provider_output_tokens,
+        estimated_local_tokens_avoided: log
+            .tokens_saved
+            .and_then(|tokens| i64::try_from(tokens).ok()),
+        claimable_tokens_avoided,
+        recovery_status: None,
+        recovery_pointer: None,
+        // A `RequestLog` alone carries no artifact-derived validation
+        // evidence; unavailable is the honest value, never Passed/Failed.
+        validation_status: ValidationStatus::Unavailable,
+        skip_or_failure_reason: log.error.clone(),
+    }
+}
+
+// ===========================================================================
+// §3.6 frozen configuration/sync result vocabulary (frozen; consumed by
+// PR-3/PR-4). Ordinary pages render ONLY these words; internal codes appear
+// only in technical detail / Doctor / logs. Unknown codes fail closed.
+// ===========================================================================
+
+/// The ten §3.6 frozen configuration/sync result words — the only words
+/// ordinary pages may render for configuration/sync results.
+pub const FROZEN_STATUS_WORDS: [&str; 10] = [
+    "未安装",
+    "未选择",
+    "正在配置",
+    "配置成功",
+    "配置失败",
+    "工具能力已接入",
+    "已检测/不支持本地路由",
+    "正在同步",
+    "同步成功",
+    "同步失败",
+];
+
+/// Asset-list statuses additionally allowed by §3.6 (MUST 1, §11.2).
+pub const FROZEN_ASSET_LIST_WORDS: [&str; 4] = ["已安装", "未安装", "已配置", "未配置"];
+
+/// No sanctioned §3.6 user word exists for this internal code. The code may
+/// only appear in technical detail / Doctor / logs; it must never leak into
+/// ordinary UI (fail-closed).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StatusVocabularyError {
+    pub internal_code: String,
+}
+
+/// Maps an internal status code to the §3.6 frozen user-facing word
+/// (PR-3/PR-4 shared interface). Known codes return the sanctioned word;
+/// mechanism-only codes (`adapter`, `route`, `credential_reference`,
+/// `needs-source-fix`, `source_conflict`, `healthy`, `active`, `supported`,
+/// …) and unknown strings fail closed.
+pub fn user_status_word_for(internal_code: &str) -> Result<&'static str, StatusVocabularyError> {
+    let word = match internal_code {
+        "not_installed" | "uninstalled" => "未安装",
+        "unselected" | "not_selected" => "未选择",
+        "configuring" | "in_progress" => "正在配置",
+        // Design example: Codex 无 routed 报告时显示「配置成功；尚无真实请求验证」——
+        // `configured`/`not_verified` 的内部码在普通 UI 落为「配置成功」，
+        // 证据说明允许用户语言补充，绝不原样显示内部码。
+        "configured" | "not_verified" => "配置成功",
+        "failed" | "configuration_failed" => "配置失败",
+        "connected" | "verified" => "工具能力已接入",
+        "detected" | "detection_only" => "已检测/不支持本地路由",
+        "syncing" => "正在同步",
+        "synced" => "同步成功",
+        "sync_failed" => "同步失败",
+        _ => {
+            return Err(StatusVocabularyError {
+                internal_code: internal_code.to_string(),
+            })
+        }
+    };
+    Ok(word)
+}
+
+/// Asset-list status word (§3.6 MUST 1, §11.2): maps installed/configured
+/// facts to one of the four allowed asset-list words. Returns only frozen
+/// vocabulary; never an internal code.
+pub fn asset_list_status_word(installed: bool, configured: bool) -> &'static str {
+    if !installed {
+        "未安装"
+    } else if configured {
+        "已配置"
+    } else {
+        "未配置"
+    }
+}
 
 /// A local, redacted request for a deterministic compression decision. The
 /// body is evaluated in memory only and is never retained by this contract.
@@ -20654,5 +21106,664 @@ mod tests {
             .expect("compress_resolved_with_cache_evidence");
         // tokens_saved is u64, always non-negative; the assertion is that
         // the call completed without error (demonstrated above).
+    }
+
+    // ------------------------------------------------------------------
+    // CF-2 contract-freeze-core direct behavior tests (frozen §3.6/§6.1/§8.1)
+    // ------------------------------------------------------------------
+
+    /// Builds an `AgentTransactionRecord` advanced through the legal chain up
+    /// to `applied` with a complete cross-section.
+    fn applied_record(agent_id: &str) -> AgentTransactionRecord {
+        let mut record = AgentTransactionRecord::new(agent_id);
+        record
+            .advance(ConfigTransactionState::Selected)
+            .expect("discovered -> selected");
+        record.evidence.transaction_id = format!("tx-{agent_id}");
+        record.evidence.source_revision = "rev-1".to_string();
+        record.evidence.before_digest = "before-1".to_string();
+        record.evidence.redacted_diff_digest = "diff-1".to_string();
+        record.evidence.planned_after_digest = "after-1".to_string();
+        record
+            .advance(ConfigTransactionState::Planned)
+            .expect("selected -> planned");
+        record.evidence.backup_manifest = Some("backup-1".to_string());
+        record
+            .advance(ConfigTransactionState::BackedUp)
+            .expect("planned -> backed_up");
+        record.evidence.receipt_id = Some("receipt-1".to_string());
+        record
+            .advance(ConfigTransactionState::Applied)
+            .expect("backed_up -> applied");
+        record
+    }
+
+    /// A `RequestLog` with local token counts but no Provider usage evidence.
+    fn request_log_without_provider_usage() -> RequestLog {
+        RequestLog {
+            request_id: Uuid::new_v4(),
+            timestamp_ms: 1_700_000_000_000,
+            agent: Some("opencode".to_string()),
+            instance_id: Some("instance-1".to_string()),
+            input_protocol: Protocol::OpenAi,
+            provider_id: Some("provider-1".to_string()),
+            route_id: Some("route-1".to_string()),
+            chain_mode: None,
+            model: Some("model-1".to_string()),
+            input_tokens_before: Some(1200),
+            input_tokens_after: Some(1000),
+            output_tokens: Some(300),
+            tokens_saved: Some(200),
+            transforms_applied: vec!["json_compact".to_string()],
+            latency_ms: Some(42),
+            error: None,
+            config_source: Some("dtoken-owned-runtime".to_string()),
+            quota_metadata: None,
+            context_accounting: None,
+        }
+    }
+
+    #[test]
+    fn agent_transaction_advances_through_full_legal_chain() {
+        let mut record = applied_record("opencode");
+        record.evidence.readback_digest = Some("after-1".to_string());
+        record
+            .advance(ConfigTransactionState::ReadbackVerified)
+            .expect("applied -> readback_verified");
+        record.evidence.capability_evidence = Some("capability-evidence-1".to_string());
+        record
+            .advance(ConfigTransactionState::CapabilityVerified)
+            .expect("readback_verified -> capability_verified");
+        record
+            .advance(ConfigTransactionState::Completed)
+            .expect("capability_verified -> completed");
+        assert_eq!(record.state, ConfigTransactionState::Completed);
+        assert!(record.state.is_terminal());
+    }
+
+    #[test]
+    fn illegal_state_transitions_are_rejected() {
+        // Skipping steps is rejected by the frozen transition table.
+        let mut record = AgentTransactionRecord::new("opencode");
+        assert_eq!(
+            record.advance(ConfigTransactionState::Planned),
+            Err(AgentTransactionError::InvalidTransition {
+                from: ConfigTransactionState::Discovered,
+                to: ConfigTransactionState::Planned,
+            })
+        );
+        // Rollback requires a backup to exist (frozen table).
+        let mut record = AgentTransactionRecord::new("opencode");
+        record.advance(ConfigTransactionState::Selected).unwrap();
+        assert_eq!(
+            record.advance(ConfigTransactionState::RolledBack),
+            Err(AgentTransactionError::InvalidTransition {
+                from: ConfigTransactionState::Selected,
+                to: ConfigTransactionState::RolledBack,
+            })
+        );
+        // Terminal states absorb no further transitions.
+        let mut record = applied_record("opencode");
+        record.state = ConfigTransactionState::Completed;
+        assert!(matches!(
+            record.advance(ConfigTransactionState::Failed),
+            Err(AgentTransactionError::InvalidTransition { .. })
+        ));
+    }
+
+    #[test]
+    fn missing_cross_section_evidence_rejects_the_transition() {
+        let mut record = AgentTransactionRecord::new("opencode");
+        record.advance(ConfigTransactionState::Selected).unwrap();
+        // `planned` requires the full plan cross-section.
+        assert_eq!(
+            record.advance(ConfigTransactionState::Planned),
+            Err(AgentTransactionError::MissingEvidence("transaction_id"))
+        );
+        record.evidence.transaction_id = "tx-1".to_string();
+        record.evidence.source_revision = "rev-1".to_string();
+        record.evidence.before_digest = "before-1".to_string();
+        record.evidence.redacted_diff_digest = "diff-1".to_string();
+        record.evidence.planned_after_digest = "after-1".to_string();
+        record.advance(ConfigTransactionState::Planned).unwrap();
+        // `backed_up` requires the backup manifest.
+        assert_eq!(
+            record.advance(ConfigTransactionState::BackedUp),
+            Err(AgentTransactionError::MissingEvidence("backup_manifest"))
+        );
+    }
+
+    #[test]
+    fn readback_verified_requires_matching_digest() {
+        let mut record = applied_record("opencode");
+        record.evidence.readback_digest = Some("wrong-digest".to_string());
+        assert_eq!(
+            record.advance(ConfigTransactionState::ReadbackVerified),
+            Err(AgentTransactionError::ReadbackMismatch)
+        );
+        assert_eq!(record.state, ConfigTransactionState::Applied);
+    }
+
+    #[test]
+    fn readback_failure_rolls_back_only_the_failing_agent() {
+        let mut opencode = applied_record("opencode");
+        let claude = applied_record("claude-code");
+        // opencode readback fails -> rolled_back with a rollback receipt.
+        let outcome = opencode
+            .verify_readback("mismatched-digest", "rollback-receipt-1")
+            .expect("readback failure must roll back");
+        assert_eq!(outcome, ReadbackOutcome::RolledBack);
+        assert_eq!(opencode.state, ConfigTransactionState::RolledBack);
+        assert_eq!(
+            opencode.evidence.rollback_receipt_id.as_deref(),
+            Some("rollback-receipt-1")
+        );
+        // claude-code is untouched and still `applied`.
+        assert_eq!(claude.state, ConfigTransactionState::Applied);
+        assert!(claude.evidence.rollback_receipt_id.is_none());
+        assert!(claude.evidence.readback_digest.is_none());
+    }
+
+    #[test]
+    fn readback_success_advances_only_the_verified_agent() {
+        let mut opencode = applied_record("opencode");
+        let claude = applied_record("claude-code");
+        let outcome = opencode
+            .verify_readback("after-1", "unused")
+            .expect("matching readback must verify");
+        assert_eq!(outcome, ReadbackOutcome::Verified);
+        assert_eq!(opencode.state, ConfigTransactionState::ReadbackVerified);
+        assert_eq!(claude.state, ConfigTransactionState::Applied);
+    }
+
+    #[test]
+    fn rollback_without_receipt_is_rejected_fail_closed() {
+        let mut record = applied_record("opencode");
+        assert_eq!(
+            record.verify_readback("mismatched-digest", ""),
+            Err(AgentTransactionError::MissingEvidence(
+                "rollback_receipt_id"
+            ))
+        );
+        assert_eq!(record.state, ConfigTransactionState::Applied);
+    }
+
+    #[test]
+    fn batch_advance_is_per_agent_independent() {
+        let mut records = vec![applied_record("opencode"), applied_record("claude-code")];
+        records[1].evidence.readback_digest = Some("after-1".to_string());
+        let results = advance_agent_batch(
+            &mut records,
+            &[
+                AgentAdvanceRequest {
+                    agent_id: "opencode".to_string(),
+                    target: ConfigTransactionState::RolledBack,
+                },
+                AgentAdvanceRequest {
+                    agent_id: "claude-code".to_string(),
+                    target: ConfigTransactionState::ReadbackVerified,
+                },
+                AgentAdvanceRequest {
+                    agent_id: "ghost".to_string(),
+                    target: ConfigTransactionState::Completed,
+                },
+            ],
+        );
+        // opencode lacks a rollback receipt -> only its request fails.
+        assert_eq!(
+            results[0],
+            Err(AgentTransactionError::MissingEvidence(
+                "rollback_receipt_id"
+            ))
+        );
+        assert_eq!(records[0].state, ConfigTransactionState::Applied);
+        // claude-code verifies independently despite opencode's failure.
+        assert!(results[1].is_ok());
+        assert_eq!(records[1].state, ConfigTransactionState::ReadbackVerified);
+        // Unknown Agent fails closed.
+        assert!(matches!(
+            results[2],
+            Err(AgentTransactionError::UnknownAgent(_))
+        ));
+    }
+
+    #[test]
+    fn projection_keeps_provider_usage_unavailable_when_missing() {
+        let log = request_log_without_provider_usage();
+        let receipt = project_optimization_receipt(&log);
+        // Missing Provider usage is None (unavailable), never 0.
+        assert_eq!(receipt.provider_input_tokens, None);
+        assert_eq!(receipt.provider_output_tokens, None);
+        // Local buckets are still projected from the log.
+        assert_eq!(receipt.local_original_tokens, Some(1200));
+        assert_eq!(receipt.local_optimized_tokens, Some(1000));
+        assert_eq!(receipt.estimated_local_tokens_avoided, Some(200));
+        assert_eq!(receipt.claimable_tokens_avoided, None);
+        // No artifact-derived validation evidence -> unavailable.
+        assert_eq!(receipt.validation_status, ValidationStatus::Unavailable);
+        // protected_content is a descriptor, never fabricated content.
+        assert_eq!(receipt.protected_content, "");
+    }
+
+    #[test]
+    fn projection_sources_provider_usage_from_provider_actual_sent() {
+        let accounting = dtoken_types::HybridContextAccounting {
+            schema_version: 1,
+            disposition: dtoken_types::OptimizationDisposition::Active,
+            sent_payload: dtoken_types::SentPayloadVariant::Optimized,
+            upstream_state: UpstreamSendState::Completed,
+            estimated: None,
+            provider_counterfactual_baseline: None,
+            provider_actual_sent: dtoken_types::ProviderActualUsage {
+                measurement: Some(dtoken_types::UsageMeasurement {
+                    evidence: dtoken_types::UsageEvidence {
+                        kind: UsageEvidenceKind::ProviderActual,
+                        source_revision: "rev-1".to_string(),
+                    },
+                    usage: dtoken_types::UsageVector {
+                        input: dtoken_types::InputTokenUsage {
+                            normalized_total: Some(900),
+                            modality: Default::default(),
+                            cache: Default::default(),
+                        },
+                        output_tokens: Some(250),
+                        bytes: Default::default(),
+                        cost_microusd: None,
+                    },
+                }),
+            },
+            provider_reconciled_input_savings: None,
+            paired_actual: None,
+            attribution_basis: dtoken_types::SavingsAttribution::None,
+            fallback_reason_code: None,
+        };
+        let mut log = request_log_without_provider_usage();
+        log.context_accounting = Some(accounting);
+        let receipt = project_optimization_receipt(&log);
+        assert_eq!(receipt.provider_input_tokens, Some(900));
+        assert_eq!(receipt.provider_output_tokens, Some(250));
+        // Provider usage alone never elevates claimable (attribution None).
+        assert_eq!(receipt.claimable_tokens_avoided, None);
+    }
+
+    #[test]
+    fn transaction_projection_exposes_only_cross_section_fields() {
+        let mut record = applied_record("opencode");
+        record.evidence.backup_manifest = Some("backup-1".to_string());
+        let projection = record.projection();
+        let text = serde_json::to_string(&projection).expect("serialize projection");
+        for forbidden in [
+            "token",
+            "cookie",
+            "authorization",
+            "api_key",
+            "password",
+            "secret",
+            "/Users",
+            "/home/",
+        ] {
+            assert!(
+                !text.to_lowercase().contains(forbidden),
+                "forbidden term {forbidden:?} leaked into projection: {text}"
+            );
+        }
+        let keys: Vec<String> = projection
+            .as_object()
+            .expect("projection object")
+            .keys()
+            .cloned()
+            .collect();
+        let expected = [
+            "agent_id",
+            "state",
+            "transaction_id",
+            "source_revision",
+            "before_digest",
+            "redacted_diff_digest",
+            "backup_manifest",
+            "planned_after_digest",
+            "readback_digest",
+            "capability_evidence",
+            "receipt_id",
+            "rollback_receipt_id",
+        ];
+        assert_eq!(keys.len(), expected.len(), "unexpected keys: {keys:?}");
+        for key in expected {
+            assert!(
+                keys.contains(&key.to_string()),
+                "missing key {key}: {keys:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn vocabulary_maps_known_codes_and_fails_closed_on_unknown() {
+        assert_eq!(user_status_word_for("configured").unwrap(), "配置成功");
+        assert_eq!(user_status_word_for("not_verified").unwrap(), "配置成功");
+        assert_eq!(user_status_word_for("connected").unwrap(), "工具能力已接入");
+        assert_eq!(
+            user_status_word_for("detected").unwrap(),
+            "已检测/不支持本地路由"
+        );
+        assert_eq!(user_status_word_for("syncing").unwrap(), "正在同步");
+        // Mechanism / internal codes fail closed and never surface in UI.
+        for internal in [
+            "adapter",
+            "route",
+            "credential_reference",
+            "needs-source-fix",
+            "source_conflict",
+            "healthy",
+            "active",
+            "supported",
+            "totally-unknown",
+        ] {
+            assert!(
+                user_status_word_for(internal).is_err(),
+                "internal code {internal:?} must fail closed"
+            );
+        }
+        // Every mapped word belongs to the frozen §3.6 vocabulary.
+        for code in [
+            "not_installed",
+            "unselected",
+            "configuring",
+            "configured",
+            "not_verified",
+            "failed",
+            "connected",
+            "verified",
+            "detected",
+            "detection_only",
+            "syncing",
+            "synced",
+            "sync_failed",
+        ] {
+            let word = user_status_word_for(code).expect(code);
+            assert!(
+                FROZEN_STATUS_WORDS.contains(&word),
+                "{word} is not in the frozen §3.6 vocabulary"
+            );
+        }
+        // Asset-list words are also frozen-only.
+        assert_eq!(asset_list_status_word(false, false), "未安装");
+        assert_eq!(asset_list_status_word(true, false), "未配置");
+        assert_eq!(asset_list_status_word(true, true), "已配置");
+        assert!(FROZEN_ASSET_LIST_WORDS.contains(&asset_list_status_word(true, false)));
+    }
+
+    #[test]
+    fn transaction_states_map_to_frozen_user_words() {
+        for state in [
+            ConfigTransactionState::Discovered,
+            ConfigTransactionState::Selected,
+            ConfigTransactionState::Planned,
+            ConfigTransactionState::BackedUp,
+            ConfigTransactionState::Applied,
+            ConfigTransactionState::ReadbackVerified,
+            ConfigTransactionState::CapabilityVerified,
+        ] {
+            assert_eq!(transaction_status_word(state), "正在配置");
+        }
+        assert_eq!(
+            transaction_status_word(ConfigTransactionState::Completed),
+            "配置成功"
+        );
+        assert_eq!(
+            transaction_status_word(ConfigTransactionState::RolledBack),
+            "配置失败"
+        );
+        assert_eq!(
+            transaction_status_word(ConfigTransactionState::Failed),
+            "配置失败"
+        );
+    }
+
+    #[test]
+    fn invalid_or_non_provider_accounting_keeps_provider_usage_unavailable() {
+        let mut log = request_log_without_provider_usage();
+        let invalid = dtoken_types::HybridContextAccounting {
+            schema_version: 2,
+            disposition: dtoken_types::OptimizationDisposition::Active,
+            sent_payload: dtoken_types::SentPayloadVariant::Optimized,
+            upstream_state: UpstreamSendState::Completed,
+            estimated: None,
+            provider_counterfactual_baseline: None,
+            provider_actual_sent: dtoken_types::ProviderActualUsage {
+                measurement: Some(dtoken_types::UsageMeasurement {
+                    evidence: dtoken_types::UsageEvidence {
+                        kind: UsageEvidenceKind::LocalEstimate,
+                        source_revision: "rev-invalid".to_string(),
+                    },
+                    usage: dtoken_types::UsageVector {
+                        input: dtoken_types::InputTokenUsage {
+                            normalized_total: Some(999),
+                            modality: Default::default(),
+                            cache: Default::default(),
+                        },
+                        output_tokens: Some(111),
+                        bytes: Default::default(),
+                        cost_microusd: None,
+                    },
+                }),
+            },
+            provider_reconciled_input_savings: None,
+            paired_actual: None,
+            attribution_basis: dtoken_types::SavingsAttribution::None,
+            fallback_reason_code: None,
+        };
+        log.context_accounting = Some(invalid);
+        let receipt = project_optimization_receipt(&log);
+        assert_eq!(receipt.provider_input_tokens, None);
+        assert_eq!(receipt.provider_output_tokens, None);
+    }
+
+    #[test]
+    fn valid_local_estimate_in_provider_slot_stays_unavailable() {
+        let mut log = request_log_without_provider_usage();
+        log.context_accounting = Some(dtoken_types::HybridContextAccounting {
+            schema_version: 1,
+            disposition: dtoken_types::OptimizationDisposition::Active,
+            sent_payload: dtoken_types::SentPayloadVariant::Optimized,
+            upstream_state: UpstreamSendState::Completed,
+            estimated: None,
+            provider_counterfactual_baseline: None,
+            provider_actual_sent: dtoken_types::ProviderActualUsage {
+                measurement: Some(dtoken_types::UsageMeasurement {
+                    evidence: dtoken_types::UsageEvidence {
+                        kind: UsageEvidenceKind::LocalEstimate,
+                        source_revision: "rev-local".to_string(),
+                    },
+                    usage: dtoken_types::UsageVector {
+                        input: dtoken_types::InputTokenUsage {
+                            normalized_total: Some(999),
+                            modality: Default::default(),
+                            cache: Default::default(),
+                        },
+                        output_tokens: Some(111),
+                        bytes: Default::default(),
+                        cost_microusd: None,
+                    },
+                }),
+            },
+            provider_reconciled_input_savings: None,
+            paired_actual: None,
+            attribution_basis: dtoken_types::SavingsAttribution::None,
+            fallback_reason_code: None,
+        });
+        assert!(log.context_accounting.as_ref().unwrap().validate().is_ok());
+        let receipt = project_optimization_receipt(&log);
+        assert_eq!(receipt.provider_input_tokens, None);
+        assert_eq!(receipt.provider_output_tokens, None);
+    }
+
+    #[test]
+    fn negative_signed_savings_are_not_claimable_avoided_tokens() {
+        let baseline = dtoken_types::UsageMeasurement {
+            evidence: dtoken_types::UsageEvidence {
+                kind: UsageEvidenceKind::LocalEstimate,
+                source_revision: "baseline".to_string(),
+            },
+            usage: dtoken_types::UsageVector {
+                input: dtoken_types::InputTokenUsage {
+                    normalized_total: Some(1000),
+                    modality: Default::default(),
+                    cache: Default::default(),
+                },
+                output_tokens: None,
+                bytes: Default::default(),
+                cost_microusd: None,
+            },
+        };
+        let candidate = dtoken_types::UsageMeasurement {
+            evidence: dtoken_types::UsageEvidence {
+                kind: UsageEvidenceKind::LocalEstimate,
+                source_revision: "candidate".to_string(),
+            },
+            usage: dtoken_types::UsageVector {
+                input: dtoken_types::InputTokenUsage {
+                    normalized_total: Some(1200),
+                    modality: Default::default(),
+                    cache: Default::default(),
+                },
+                output_tokens: None,
+                bytes: Default::default(),
+                cost_microusd: None,
+            },
+        };
+        let mut log = request_log_without_provider_usage();
+        log.context_accounting = Some(dtoken_types::HybridContextAccounting {
+            schema_version: 1,
+            disposition: dtoken_types::OptimizationDisposition::Active,
+            sent_payload: dtoken_types::SentPayloadVariant::Optimized,
+            upstream_state: UpstreamSendState::Completed,
+            estimated: Some(dtoken_types::UsageComparison::from_measurements(
+                baseline, candidate,
+            )),
+            provider_counterfactual_baseline: None,
+            provider_actual_sent: Default::default(),
+            provider_reconciled_input_savings: None,
+            paired_actual: None,
+            attribution_basis: dtoken_types::SavingsAttribution::EstimatedActive,
+            fallback_reason_code: None,
+        });
+        assert_eq!(
+            project_optimization_receipt(&log).claimable_tokens_avoided,
+            None
+        );
+    }
+
+    #[test]
+    fn duplicate_agent_records_fail_closed_without_mutation() {
+        let mut records = vec![applied_record("opencode"), applied_record("opencode")];
+        let states_before = records
+            .iter()
+            .map(|record| record.state)
+            .collect::<Vec<_>>();
+        let results = advance_agent_batch(
+            &mut records,
+            &[AgentAdvanceRequest {
+                agent_id: "opencode".to_string(),
+                target: ConfigTransactionState::Failed,
+            }],
+        );
+        assert_eq!(
+            results,
+            vec![Err(AgentTransactionError::DuplicateAgent(
+                "opencode".to_string()
+            ))]
+        );
+        assert_eq!(
+            records
+                .iter()
+                .map(|record| record.state)
+                .collect::<Vec<_>>(),
+            states_before
+        );
+    }
+
+    #[test]
+    fn evidence_matrix_rejects_missing_applied_capability_and_completed_fields() {
+        let mut applied = AgentTransactionRecord::new("applied");
+        applied.state = ConfigTransactionState::BackedUp;
+        assert_eq!(
+            applied.advance(ConfigTransactionState::Applied),
+            Err(AgentTransactionError::MissingEvidence("receipt_id"))
+        );
+
+        let mut capability = applied_record("capability");
+        capability.state = ConfigTransactionState::ReadbackVerified;
+        assert_eq!(
+            capability.advance(ConfigTransactionState::CapabilityVerified),
+            Err(AgentTransactionError::MissingEvidence(
+                "capability_evidence"
+            ))
+        );
+
+        let mut completed = applied_record("completed");
+        completed.state = ConfigTransactionState::CapabilityVerified;
+        completed.evidence.receipt_id = None;
+        assert_eq!(
+            completed.advance(ConfigTransactionState::Completed),
+            Err(AgentTransactionError::MissingEvidence("receipt_id"))
+        );
+    }
+
+    #[test]
+    fn estimated_active_accounting_projects_claimable_savings() {
+        let mut accounting = dtoken_types::HybridContextAccounting {
+            schema_version: 1,
+            disposition: dtoken_types::OptimizationDisposition::Active,
+            sent_payload: dtoken_types::SentPayloadVariant::Optimized,
+            upstream_state: UpstreamSendState::Completed,
+            estimated: None,
+            provider_counterfactual_baseline: None,
+            provider_actual_sent: Default::default(),
+            provider_reconciled_input_savings: None,
+            paired_actual: None,
+            attribution_basis: dtoken_types::SavingsAttribution::EstimatedActive,
+            fallback_reason_code: None,
+        };
+        let baseline = dtoken_types::UsageMeasurement {
+            evidence: dtoken_types::UsageEvidence {
+                kind: UsageEvidenceKind::LocalEstimate,
+                source_revision: "baseline".to_string(),
+            },
+            usage: dtoken_types::UsageVector {
+                input: dtoken_types::InputTokenUsage {
+                    normalized_total: Some(1200),
+                    modality: Default::default(),
+                    cache: Default::default(),
+                },
+                output_tokens: None,
+                bytes: Default::default(),
+                cost_microusd: None,
+            },
+        };
+        let candidate = dtoken_types::UsageMeasurement {
+            evidence: dtoken_types::UsageEvidence {
+                kind: UsageEvidenceKind::LocalEstimate,
+                source_revision: "candidate".to_string(),
+            },
+            usage: dtoken_types::UsageVector {
+                input: dtoken_types::InputTokenUsage {
+                    normalized_total: Some(1000),
+                    modality: Default::default(),
+                    cache: Default::default(),
+                },
+                output_tokens: None,
+                bytes: Default::default(),
+                cost_microusd: None,
+            },
+        };
+        accounting.estimated = Some(dtoken_types::UsageComparison::from_measurements(
+            baseline, candidate,
+        ));
+        let mut log = request_log_without_provider_usage();
+        log.context_accounting = Some(accounting);
+        assert_eq!(
+            project_optimization_receipt(&log).claimable_tokens_avoided,
+            Some(200)
+        );
     }
 }
