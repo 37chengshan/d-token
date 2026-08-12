@@ -2250,6 +2250,24 @@
       "summary": "create CF-2 core API contract freeze worktree from merged CF-1 baseline",
       "head_before": "01bef846c79be66deb2647023d55f5c11cc3ec4c",
       "remote": null
+    },
+    {
+      "id": "fc1c7979-6ec7-45bb-aa1c-ba319fd07dd4",
+      "timestamp": "2026-08-12T19:49:33+08:00",
+      "operation": "commit",
+      "branch": "codex/final/contract-freeze-core",
+      "summary": "freeze core API contract consumption after independent review",
+      "head_before": "01bef84c679be66deb2647023d55f5c11cc3ec4c",
+      "remote": null
+    },
+    {
+      "id": "0d61e150-2149-478f-b896-6cdfe727adeb",
+      "timestamp": "2026-08-12T19:52:17+08:00",
+      "operation": "merge",
+      "branch": "codex/final-release-iteration",
+      "summary": "merge reviewed CF-2 core API contract freeze",
+      "head_before": "6de0011797a38b5ef61081430274e842c8f26381",
+      "remote": null
     }
   ]
 }
