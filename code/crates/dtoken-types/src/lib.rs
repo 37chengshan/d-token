@@ -1,6 +1,14 @@
 pub mod agent;
 pub mod time;
 
+// CF-1 frozen config contract (§6.1) lives in `agent`; re-exported at crate
+// root so the shared contract surface is stable for every downstream consumer
+// without a second type set.
+pub use agent::{
+    AgentConfigOperation, AgentConfigPlan, AgentConfigReceipt, AgentConfigReceiptState,
+    AgentConfigSnapshot, AgentConfigTarget, AgentCredentialState, UpstreamSignature,
+};
+
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -2141,6 +2149,275 @@ pub struct OpticalEventPublicSummary {
     pub stage: LayeredStage,
     pub status: EventStatus,
     pub metadata: OpticalEventMetadataPublicSummary,
+}
+
+// ============================================================================
+// CF-1 frozen shared contract (§6.1 / §6.2 / §6.3 / §8.1 / §13 of the unified
+// release design). Field names follow the design text one-to-one; no token,
+// cookie, Authorization header, or full auth configuration may ever appear in
+// any of these types.
+// ============================================================================
+
+/// Frozen per-Agent configuration transaction state machine (§6.1). Each Agent
+/// advances independently; there is no cross-Agent shared atomic transaction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ConfigTransactionState {
+    Discovered,
+    Selected,
+    Planned,
+    BackedUp,
+    Applied,
+    ReadbackVerified,
+    CapabilityVerified,
+    Completed,
+    RolledBack,
+    Failed,
+}
+
+impl ConfigTransactionState {
+    pub const fn is_terminal(self) -> bool {
+        matches!(self, Self::Completed | Self::RolledBack | Self::Failed)
+    }
+
+    /// Closed transition table from §6.1:
+    /// `discovered → selected → planned → backed_up → applied →
+    /// readback_verified → capability_verified → completed | rolled_back | failed`.
+    /// Rollback is only reachable once a backup exists; failure is reachable
+    /// from any non-terminal state; terminal states absorb no further
+    /// transitions.
+    pub fn can_transition_to(self, target: Self) -> bool {
+        use ConfigTransactionState::*;
+        if self.is_terminal() {
+            return false;
+        }
+        matches!(
+            (self, target),
+            (Discovered, Selected)
+                | (Selected, Planned)
+                | (Planned, BackedUp)
+                | (BackedUp, Applied)
+                | (Applied, ReadbackVerified)
+                | (ReadbackVerified, CapabilityVerified)
+                | (CapabilityVerified, Completed)
+                | (BackedUp, RolledBack)
+                | (Applied, RolledBack)
+                | (ReadbackVerified, RolledBack)
+                | (CapabilityVerified, RolledBack)
+                | (_, Failed)
+        )
+    }
+}
+
+/// Frozen write policy (§6.1). `AlwaysReadOnly` covers OMP and cc-switch
+/// (read-only, never write); `UserSelectedManaged` covers user-selected Agents
+/// written through a one-click authorized transactional apply; `Unsupported`
+/// is Detection-only and fail-closed (never write).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WritePolicy {
+    AlwaysReadOnly,
+    UserSelectedManaged,
+    Unsupported,
+}
+
+/// Official capability tier (§13 capability_tier): `route | mcp_hook |
+/// detection_only`. Each tier has its own completion definition (§6.3); tiers
+/// must never masquerade as one another.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CapabilityTier {
+    Route,
+    McpHook,
+    DetectionOnly,
+}
+
+/// One capability aspect record (§6.3): every aspect must record official
+/// source, version, config path, field ownership, write policy, auth owner,
+/// watcher, normal-failure recovery acceptance, and UI status from the §3.6
+/// frozen vocabulary.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CapabilityAspect {
+    pub official_source: String,
+    pub version: String,
+    pub config_path: Option<String>,
+    pub field_ownership: String,
+    pub write_policy: WritePolicy,
+    pub auth_owner: String,
+    pub watcher: String,
+    pub failure_recovery_acceptance: String,
+    /// UI status drawn from the §3.6 frozen vocabulary, never invented.
+    pub ui_status: String,
+}
+
+/// Frozen `AgentCapability` fields (§6.3): agent_id / display_name /
+/// official_capability / discovery / configuration / authentication /
+/// change_detection / verification / rollback / platforms / provenance.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AgentCapability {
+    pub agent_id: String,
+    pub display_name: String,
+    pub official_capability: CapabilityTier,
+    pub discovery: CapabilityAspect,
+    pub configuration: CapabilityAspect,
+    pub authentication: CapabilityAspect,
+    pub change_detection: CapabilityAspect,
+    pub verification: CapabilityAspect,
+    pub rollback: CapabilityAspect,
+    pub platforms: Vec<agent::HostPlatform>,
+    pub provenance: String,
+}
+
+/// Frozen per-Agent transaction evidence cross-section (§6.1):
+/// transaction_id / source_revision / before_digest / redacted_diff_digest /
+/// backup_manifest / planned_after_digest / readback_digest /
+/// capability_evidence / receipt_id / rollback_receipt_id. Batch config is UI
+/// orchestration only and is never a shared atomic transaction.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AgentTransactionEvidence {
+    pub transaction_id: String,
+    pub source_revision: String,
+    pub before_digest: String,
+    pub redacted_diff_digest: String,
+    pub backup_manifest: Option<String>,
+    pub planned_after_digest: String,
+    pub readback_digest: Option<String>,
+    pub capability_evidence: Option<String>,
+    pub receipt_id: Option<String>,
+    pub rollback_receipt_id: Option<String>,
+}
+
+/// CCR journal states (§9.2): `write_intent → pending_retained → terminal` and
+/// `delete_intent → deleted`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RecoveryStatus {
+    WriteIntent,
+    PendingRetained,
+    Terminal,
+    Deleted,
+}
+
+/// Artifact-derived validation outcome. Missing evidence is `Unavailable`, not
+/// zero or fabricated (`unknown ≠ 0`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ValidationStatus {
+    Passed,
+    Failed,
+    Unavailable,
+}
+
+/// OptimizationReceipt (§7.2 minimal fields, §6.2 Local/Provider/claimable
+/// separation). `protected_content` is one of the minimal fields and is a
+/// descriptor only — it must never carry actual protected content. Provider
+/// usage missing stays `None` (unavailable), never `0`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct OptimizationReceipt {
+    pub schema_version: u8,
+    pub request_id: Uuid,
+    pub timestamp_ms: u64,
+    pub source_agent: Option<String>,
+    pub project_scope: Option<String>,
+    pub user_target_provider: Option<String>,
+    pub user_target_model: Option<String>,
+    pub actual_provider: Option<String>,
+    pub actual_model: Option<String>,
+    pub provider_or_model_changed: bool,
+    pub transformations: Vec<String>,
+    /// Descriptor of protected content; never the content itself.
+    pub protected_content: String,
+    pub local_original_tokens: Option<u64>,
+    pub local_optimized_tokens: Option<u64>,
+    pub provider_input_tokens: Option<u64>,
+    pub provider_output_tokens: Option<u64>,
+    pub estimated_local_tokens_avoided: Option<i64>,
+    /// Claimable savings, kept separate from Local/Provider buckets.
+    pub claimable_tokens_avoided: Option<i64>,
+    pub recovery_status: Option<RecoveryStatus>,
+    pub recovery_pointer: Option<String>,
+    pub validation_status: ValidationStatus,
+    pub skip_or_failure_reason: Option<String>,
+}
+
+/// Artifact-derived ValidationReceipt (§6.2): sealed only from artifact
+/// evidence; callers cannot fabricate it with booleans or timestamps.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ValidationReceipt {
+    pub schema_version: u8,
+    pub artifact_sha256: String,
+    pub status: ValidationStatus,
+    pub reason_codes: Vec<String>,
+    pub producer_revision: String,
+    pub validated_at_ms: u64,
+}
+
+/// RecoveryReceipt bound to request, source, and decision (§6.2 / §9.2).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RecoveryReceipt {
+    pub schema_version: u8,
+    pub request_id: Uuid,
+    pub source_digest: String,
+    pub decision_digest: String,
+    pub status: RecoveryStatus,
+    pub recovery_pointer: Option<String>,
+    pub recorded_at_ms: u64,
+}
+
+/// Transport-observable SendCommitReceipt (§6.2): production transport must
+/// actually consume it; the sent body must equal the verified body.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SendCommitReceipt {
+    pub schema_version: u8,
+    pub request_id: Uuid,
+    pub sent_at_ms: u64,
+    pub transport: String,
+    pub sent_payload_sha256: String,
+    pub upstream_state: UpstreamSendState,
+    pub failure_reason: Option<String>,
+}
+
+/// Relay bucket receipt (§6.2): relay hits are accounted independently and are
+/// never counted as compression savings.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RelayHitReceipt {
+    pub schema_version: u8,
+    pub request_id: Uuid,
+    pub relay_id: String,
+    pub avoided_transfer_bytes: u64,
+    pub hit_at_ms: u64,
+}
+
+/// Provider-cache bucket receipt (§6.2): cache reuse is accounted
+/// independently and is never counted as compression savings.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CacheReuseReceipt {
+    pub schema_version: u8,
+    pub request_id: Uuid,
+    pub cache_key_fingerprint: String,
+    pub reused_bytes: u64,
+    pub hit_at_ms: u64,
+}
+
+/// Canonical Context IR terminal action (§6.2): every IR node has exactly one
+/// terminal action. Wiring semantics land in C0A/C1; this slice freezes the
+/// type skeleton only.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NodeAction {
+    Preserve,
+    Reuse,
+    HeadroomSemantic,
+    RtkCommandOutput,
+    Optical,
+}
+
+/// Canonical Context IR node skeleton (§6.2): one request → one canonical IR;
+/// each node carries exactly one terminal `action`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ContextIrNode {
+    pub node_id: String,
+    pub action: NodeAction,
 }
 
 #[cfg(test)]

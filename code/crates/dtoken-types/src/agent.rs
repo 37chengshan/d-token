@@ -145,6 +145,9 @@ pub struct AgentConfigPlan {
     pub operation: AgentConfigOperation,
     pub snapshot: AgentConfigSnapshot,
     pub targets: Vec<AgentConfigTarget>,
+    /// Identifier binding this reviewed plan to its durable backup or exact
+    /// rollback record. It contains no configuration bytes.
+    pub backup_or_rollback_id: Option<String>,
     pub runtime_reload_required: bool,
 }
 
@@ -157,6 +160,10 @@ pub struct AgentConfigReceipt {
     pub rollback_ids: Vec<String>,
     pub verified_fingerprint: Option<String>,
     pub runtime_reload_required: bool,
+    /// Revision of the discovered source configuration this receipt verifies.
+    pub source_revision: String,
+    /// User-readable next action when the transaction is not fully complete.
+    pub next_action: Option<String>,
     pub summary: String,
 }
 
@@ -271,6 +278,7 @@ mod tests {
                 after_sha256: "c".repeat(64),
                 redacted_diff: "@@ -1 +1 @@\n-model_provider = \"openai\"".to_string(),
             }],
+            backup_or_rollback_id: Some("backup-1".to_string()),
             runtime_reload_required: true,
         };
 
