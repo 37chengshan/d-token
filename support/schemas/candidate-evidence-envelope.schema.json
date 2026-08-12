@@ -1,0 +1,426 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://d-token.local/schemas/candidate-evidence-envelope.schema.json",
+  "title": "CandidateEvidenceEnvelope",
+  "description": "Frozen evidence envelope (CF-3, UNIFIED_RELEASE_DESIGN §13) for every N0-N10 machine artifact bound to C_final. Strict: additionalProperties=false; all base fields required. N/A is expressed ONLY as explicit null + a per-field non-empty reason inside not_applicable_reasons; omitting a field is never treated as N/A. A status other than pass MUST carry at least one non-whitespace reason_code (fail-closed); status=pass may keep an empty reason_codes list per the frozen design example. evidence_kind discriminates the evidence class so route artifacts require non-null route digests and optical/benchmark/paired_eval artifacts require non-null renderer/profile/font/tokenizer/pricing/cache/eval digests (see contract-freeze-registry-report.md). Cross-artifact contracts this JSON Schema alone CANNOT enforce (frozen in agent-capability-matrix.json envelope_binding_rule + this report, exercised by cross-artifact contract tests): (1) envelope<->matrix binding — when agent_id is registered in the matrix, a non-null capability_tier MUST equal that agent's official_capability; an unregistered agent_id MUST NOT declare capability_tier=route; consumers PR-7/PR-9/C8C/N5/N9 MUST block on any mismatch; (2) timestamp ordering — finished_at >= started_at is enforced by the downstream aggregator/consumer parsing both as RFC3339; finished_at < started_at MUST be blocked. This schema intentionally does NOT attempt cross-field comparisons.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "node_id",
+    "status",
+    "reason_codes",
+    "candidate_commit",
+    "source_digest",
+    "registry_digest",
+    "corpus_digests",
+    "started_at",
+    "finished_at",
+    "platform",
+    "producer_revision",
+    "artifact_sha256",
+    "agent_id",
+    "capability_tier",
+    "privacy_assertions",
+    "not_applicable_reasons",
+    "evidence_kind",
+    "route_decision_digest",
+    "capability_digest",
+    "renderer_digest",
+    "profile_digest",
+    "font_digest",
+    "tokenizer_digest",
+    "pricing_digest",
+    "cache_digest",
+    "eval_digest"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "1.0.0",
+      "description": "Frozen schema version; bump only via a new contract-freeze slice."
+    },
+    "node_id": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$",
+      "description": "Evidence node id (N0..N10 or a derived node label)."
+    },
+    "status": {
+      "enum": ["pass", "fail", "blocked", "unavailable", "partial"],
+      "description": "Artifact status; aggregation treats any missing/failed key evidence as blocked (fail-closed)."
+    },
+    "reason_codes": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1, "pattern": "\\S" },
+      "uniqueItems": true
+    },
+    "candidate_commit": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$",
+      "description": "C_final candidate commit (40-hex SHA-1)."
+    },
+    "source_digest": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$",
+      "description": "Candidate source digest (SHA-256 hex), dirty=false."
+    },
+    "registry_digest": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "corpus_digests": {
+      "type": "object",
+      "additionalProperties": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+    },
+    "started_at": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.\\d+)?(Z|[+-][0-9]{2}:[0-9]{2})$"
+    },
+    "finished_at": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.\\d+)?(Z|[+-][0-9]{2}:[0-9]{2})$"
+    },
+    "platform": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["os", "arch", "toolchain"],
+      "properties": {
+        "os": { "enum": ["macos", "windows", "linux"] },
+        "arch": { "enum": ["x86_64", "aarch64"] },
+        "toolchain": { "type": "string", "minLength": 1 }
+      }
+    },
+    "producer_revision": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Revision of the tracked producer script that generated this artifact."
+    },
+    "artifact_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$",
+      "description": "SHA-256 of the artifact bytes; aggregators recompute, never trust metadata."
+    },
+    "agent_id": {
+      "type": ["string", "null"],
+      "minLength": 1,
+      "description": "Required field; null ONLY when N/A with a reason in not_applicable_reasons.agent_id."
+    },
+    "capability_tier": {
+      "enum": ["route", "mcp_hook", "detection_only", null],
+      "description": "Required field; null ONLY when N/A with a reason in not_applicable_reasons.capability_tier."
+    },
+    "privacy_assertions": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "no_secret",
+        "no_complete_prompt_or_response",
+        "no_source_code",
+        "no_absolute_paths",
+        "no_raw_command_output",
+        "redaction_verified"
+      ],
+      "properties": {
+        "no_secret": { "const": true },
+        "no_complete_prompt_or_response": { "const": true },
+        "no_source_code": { "const": true },
+        "no_absolute_paths": { "const": true },
+        "no_raw_command_output": { "const": true },
+        "redaction_verified": { "const": true }
+      }
+    },
+    "not_applicable_reasons": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "agent_id": { "type": "string", "minLength": 1, "pattern": "\\S" },
+        "capability_tier": { "type": "string", "minLength": 1, "pattern": "\\S" },
+        "route_decision_digest": { "type": "string", "minLength": 1, "pattern": "\\S" },
+        "capability_digest": { "type": "string", "minLength": 1, "pattern": "\\S" },
+        "renderer_digest": { "type": "string", "minLength": 1, "pattern": "\\S" },
+        "profile_digest": { "type": "string", "minLength": 1, "pattern": "\\S" },
+        "font_digest": { "type": "string", "minLength": 1, "pattern": "\\S" },
+        "tokenizer_digest": { "type": "string", "minLength": 1, "pattern": "\\S" },
+        "pricing_digest": { "type": "string", "minLength": 1, "pattern": "\\S" },
+        "cache_digest": { "type": "string", "minLength": 1, "pattern": "\\S" },
+        "eval_digest": { "type": "string", "minLength": 1, "pattern": "\\S" }
+      }
+    },
+    "evidence_kind": {
+      "enum": ["generic", "route", "optical", "benchmark", "paired_eval"],
+      "description": "Evidence class discriminator added by CF-3: capability_tier names the agent's official capability layer, but route-vs-optical digest applicability is a property of the artifact's evidence class, so route artifacts force non-null route_decision_digest/capability_digest and optical/benchmark/paired_eval artifacts force non-null renderer/profile/font/tokenizer/pricing/cache/eval digests."
+    },
+    "route_decision_digest": {
+      "type": ["string", "null"],
+      "pattern": "^[0-9a-f]{64}$",
+      "description": "Required field; for evidence_kind=route it MUST be non-null."
+    },
+    "capability_digest": {
+      "type": ["string", "null"],
+      "pattern": "^[0-9a-f]{64}$",
+      "description": "Required field; for evidence_kind=route it MUST be non-null."
+    },
+    "renderer_digest": { "type": ["string", "null"], "pattern": "^[0-9a-f]{64}$" },
+    "profile_digest": { "type": ["string", "null"], "pattern": "^[0-9a-f]{64}$" },
+    "font_digest": { "type": ["string", "null"], "pattern": "^[0-9a-f]{64}$" },
+    "tokenizer_digest": { "type": ["string", "null"], "pattern": "^[0-9a-f]{64}$" },
+    "pricing_digest": { "type": ["string", "null"], "pattern": "^[0-9a-f]{64}$" },
+    "cache_digest": { "type": ["string", "null"], "pattern": "^[0-9a-f]{64}$" },
+    "eval_digest": { "type": ["string", "null"], "pattern": "^[0-9a-f]{64}$" }
+  },
+  "allOf": [
+    {
+      "description": "status != pass requires at least one non-whitespace reason_code (fail-closed); status=pass may keep empty reason_codes per the frozen design example.",
+      "if": {
+        "properties": { "status": { "not": { "const": "pass" } } },
+        "required": ["status"]
+      },
+      "then": { "properties": { "reason_codes": { "minItems": 1 } } }
+    },
+    {
+      "description": "agent_id null requires a reason; non-null forbids a contradictory reason.",
+      "if": { "properties": { "agent_id": { "type": "null" } }, "required": ["agent_id"] },
+      "then": {
+        "properties": {
+          "not_applicable_reasons": {
+            "required": ["agent_id"],
+            "properties": { "agent_id": { "type": "string", "minLength": 1 } }
+          }
+        },
+        "required": ["not_applicable_reasons"]
+      },
+      "else": {
+        "properties": {
+          "not_applicable_reasons": { "not": { "required": ["agent_id"] } }
+        }
+      }
+    },
+    {
+      "description": "capability_tier null requires a reason; non-null forbids a contradictory reason.",
+      "if": { "properties": { "capability_tier": { "type": "null" } }, "required": ["capability_tier"] },
+      "then": {
+        "properties": {
+          "not_applicable_reasons": {
+            "required": ["capability_tier"],
+            "properties": { "capability_tier": { "type": "string", "minLength": 1 } }
+          }
+        },
+        "required": ["not_applicable_reasons"]
+      },
+      "else": {
+        "properties": {
+          "not_applicable_reasons": { "not": { "required": ["capability_tier"] } }
+        }
+      }
+    },
+    {
+      "description": "route_decision_digest null requires a reason; non-null forbids a contradictory reason.",
+      "if": { "properties": { "route_decision_digest": { "type": "null" } }, "required": ["route_decision_digest"] },
+      "then": {
+        "properties": {
+          "not_applicable_reasons": {
+            "required": ["route_decision_digest"],
+            "properties": { "route_decision_digest": { "type": "string", "minLength": 1 } }
+          }
+        },
+        "required": ["not_applicable_reasons"]
+      },
+      "else": {
+        "properties": {
+          "not_applicable_reasons": { "not": { "required": ["route_decision_digest"] } }
+        }
+      }
+    },
+    {
+      "description": "capability_digest null requires a reason; non-null forbids a contradictory reason.",
+      "if": { "properties": { "capability_digest": { "type": "null" } }, "required": ["capability_digest"] },
+      "then": {
+        "properties": {
+          "not_applicable_reasons": {
+            "required": ["capability_digest"],
+            "properties": { "capability_digest": { "type": "string", "minLength": 1 } }
+          }
+        },
+        "required": ["not_applicable_reasons"]
+      },
+      "else": {
+        "properties": {
+          "not_applicable_reasons": { "not": { "required": ["capability_digest"] } }
+        }
+      }
+    },
+    {
+      "description": "renderer_digest null requires a reason; non-null forbids a contradictory reason.",
+      "if": { "properties": { "renderer_digest": { "type": "null" } }, "required": ["renderer_digest"] },
+      "then": {
+        "properties": {
+          "not_applicable_reasons": {
+            "required": ["renderer_digest"],
+            "properties": { "renderer_digest": { "type": "string", "minLength": 1 } }
+          }
+        },
+        "required": ["not_applicable_reasons"]
+      },
+      "else": {
+        "properties": {
+          "not_applicable_reasons": { "not": { "required": ["renderer_digest"] } }
+        }
+      }
+    },
+    {
+      "description": "profile_digest null requires a reason; non-null forbids a contradictory reason.",
+      "if": { "properties": { "profile_digest": { "type": "null" } }, "required": ["profile_digest"] },
+      "then": {
+        "properties": {
+          "not_applicable_reasons": {
+            "required": ["profile_digest"],
+            "properties": { "profile_digest": { "type": "string", "minLength": 1 } }
+          }
+        },
+        "required": ["not_applicable_reasons"]
+      },
+      "else": {
+        "properties": {
+          "not_applicable_reasons": { "not": { "required": ["profile_digest"] } }
+        }
+      }
+    },
+    {
+      "description": "font_digest null requires a reason; non-null forbids a contradictory reason.",
+      "if": { "properties": { "font_digest": { "type": "null" } }, "required": ["font_digest"] },
+      "then": {
+        "properties": {
+          "not_applicable_reasons": {
+            "required": ["font_digest"],
+            "properties": { "font_digest": { "type": "string", "minLength": 1 } }
+          }
+        },
+        "required": ["not_applicable_reasons"]
+      },
+      "else": {
+        "properties": {
+          "not_applicable_reasons": { "not": { "required": ["font_digest"] } }
+        }
+      }
+    },
+    {
+      "description": "tokenizer_digest null requires a reason; non-null forbids a contradictory reason.",
+      "if": { "properties": { "tokenizer_digest": { "type": "null" } }, "required": ["tokenizer_digest"] },
+      "then": {
+        "properties": {
+          "not_applicable_reasons": {
+            "required": ["tokenizer_digest"],
+            "properties": { "tokenizer_digest": { "type": "string", "minLength": 1 } }
+          }
+        },
+        "required": ["not_applicable_reasons"]
+      },
+      "else": {
+        "properties": {
+          "not_applicable_reasons": { "not": { "required": ["tokenizer_digest"] } }
+        }
+      }
+    },
+    {
+      "description": "pricing_digest null requires a reason; non-null forbids a contradictory reason.",
+      "if": { "properties": { "pricing_digest": { "type": "null" } }, "required": ["pricing_digest"] },
+      "then": {
+        "properties": {
+          "not_applicable_reasons": {
+            "required": ["pricing_digest"],
+            "properties": { "pricing_digest": { "type": "string", "minLength": 1 } }
+          }
+        },
+        "required": ["not_applicable_reasons"]
+      },
+      "else": {
+        "properties": {
+          "not_applicable_reasons": { "not": { "required": ["pricing_digest"] } }
+        }
+      }
+    },
+    {
+      "description": "cache_digest null requires a reason; non-null forbids a contradictory reason.",
+      "if": { "properties": { "cache_digest": { "type": "null" } }, "required": ["cache_digest"] },
+      "then": {
+        "properties": {
+          "not_applicable_reasons": {
+            "required": ["cache_digest"],
+            "properties": { "cache_digest": { "type": "string", "minLength": 1 } }
+          }
+        },
+        "required": ["not_applicable_reasons"]
+      },
+      "else": {
+        "properties": {
+          "not_applicable_reasons": { "not": { "required": ["cache_digest"] } }
+        }
+      }
+    },
+    {
+      "description": "eval_digest null requires a reason; non-null forbids a contradictory reason.",
+      "if": { "properties": { "eval_digest": { "type": "null" } }, "required": ["eval_digest"] },
+      "then": {
+        "properties": {
+          "not_applicable_reasons": {
+            "required": ["eval_digest"],
+            "properties": { "eval_digest": { "type": "string", "minLength": 1 } }
+          }
+        },
+        "required": ["not_applicable_reasons"]
+      },
+      "else": {
+        "properties": {
+          "not_applicable_reasons": { "not": { "required": ["eval_digest"] } }
+        }
+      }
+    },
+    {
+      "description": "Route evidence requires non-null route_decision_digest and capability_digest, and forbids N/A reasons for them.",
+      "if": { "properties": { "evidence_kind": { "const": "route" } }, "required": ["evidence_kind"] },
+      "then": {
+        "properties": {
+          "route_decision_digest": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+          "capability_digest": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+          "not_applicable_reasons": {
+            "not": { "required": ["route_decision_digest", "capability_digest"] }
+          }
+        }
+      }
+    },
+    {
+      "description": "Optical/benchmark/paired_eval evidence requires non-null renderer/profile/font/tokenizer/pricing/cache/eval digests, and forbids N/A reasons for them.",
+      "if": {
+        "properties": { "evidence_kind": { "enum": ["optical", "benchmark", "paired_eval"] } },
+        "required": ["evidence_kind"]
+      },
+      "then": {
+        "properties": {
+          "renderer_digest": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+          "profile_digest": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+          "font_digest": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+          "tokenizer_digest": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+          "pricing_digest": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+          "cache_digest": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+          "eval_digest": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+          "not_applicable_reasons": {
+            "not": {
+              "required": [
+                "renderer_digest",
+                "profile_digest",
+                "font_digest",
+                "tokenizer_digest",
+                "pricing_digest",
+                "cache_digest",
+                "eval_digest"
+              ]
+            }
+          }
+        }
+      }
+    }
+  ]
+}

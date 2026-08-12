@@ -2250,6 +2250,8 @@
       "summary": "Push release-plan merge audit ledger",
       "head_before": "88c7f189c3b183a132828da83683e3e0c32ee4e3",
       "remote": "origin"
+    },
+    {
       "id": "fe79d897-8b50-4497-bca2-175a0104b624",
       "timestamp": "2026-08-10T18:44:10+08:00",
       "operation": "branch-create",
@@ -2311,6 +2313,51 @@
       "summary": "freeze BASE-1 dirty-path ownership and implementation baseline",
       "head_before": "0553168847c323c13d7855dfebd9941295f29f8e",
       "remote": null
+    },
+    {
+      "id": "d74e70a7-3f39-48e6-b812-eecd6dfc604b",
+      "timestamp": "2026-08-12T21:14:54+08:00",
+      "operation": "commit",
+      "branch": "codex/final/contract-freeze-registry-v2",
+      "summary": "Commit reviewed CF-3 contracts on the current remote release baseline",
+      "head_before": "fdd5f5617f5c",
+      "remote": null
+    },
+    {
+      "id": "06224d06-b13b-4ba6-8174-b8aeb41d620b",
+      "timestamp": "2026-08-12T21:15:04+08:00",
+      "operation": "push",
+      "branch": "codex/final/contract-freeze-registry-v2",
+      "summary": "Push corrected CF-3 branch based on the current release baseline",
+      "head_before": "a65e211",
+      "remote": "origin"
+    },
+    {
+      "id": "5dc9cebc-a21b-459d-9546-c9a6500dc59f",
+      "timestamp": "2026-08-12T21:21:30+08:00",
+      "operation": "push",
+      "branch": "codex/final/contract-freeze-core-v2",
+      "summary": "Publish reviewed CF-2 stack base for CF-3 pull request",
+      "head_before": "fdd5f5617f5cc01e315e5494457c95f0b364258c",
+      "remote": "origin"
+    },
+    {
+      "id": "bacd0f28-3f15-4d23-b972-ea1bbbf8c65c",
+      "timestamp": "2026-08-12T21:26:32+08:00",
+      "operation": "merge",
+      "branch": "codex/final-release-iteration",
+      "summary": "Merge reviewed P0 CF-1 CF-2 stack PR 26; GitHub Actions jobs did not start due account billing gate, local Rust tests and fmt passed",
+      "head_before": "5486068d3f80d0d7103d64e0b48715a535a40008",
+      "remote": "origin"
+    },
+    {
+      "id": "4b8b6045-01a5-427c-a0f4-9958e840069d",
+      "timestamp": "2026-08-12T21:27:54+08:00",
+      "operation": "merge",
+      "branch": "codex/final-release-iteration",
+      "summary": "Merge reviewed CF-3 contract freeze PR 25; GitHub Actions jobs did not start due account billing gate, local 56 tests JSON audit fmt and Rust stack tests passed",
+      "head_before": "0387382775e9bc7df92f0d45f76fa3af6c4c102d",
+      "remote": "origin"
     }
   ]
 }
