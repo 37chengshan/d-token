@@ -102,7 +102,7 @@ describe("Install OpenCode guarded transaction", () => {
           }],
           sources: [],
           cc_switch_sync: null,
-          selection_required: false,
+          has_resolution_gap: false,
           writes_performed: false,
           privacy: "redacted",
         };
