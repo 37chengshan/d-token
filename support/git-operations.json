@@ -2268,6 +2268,15 @@
       "summary": "merge reviewed CF-2 core API contract freeze",
       "head_before": "6de0011797a38b5ef61081430274e842c8f26381",
       "remote": null
+    },
+    {
+      "id": "1dc62662-3dab-426f-ad35-b35e9d4366b2",
+      "timestamp": "2026-08-12T20:56:56+08:00",
+      "operation": "commit",
+      "branch": "codex/final/contract-freeze-registry",
+      "summary": "Freeze CF-3 evidence envelope and Agent capability matrix contract",
+      "head_before": "ec9d303189e2e2ca9caa713841677974d0570059",
+      "remote": null
     }
   ]
 }
