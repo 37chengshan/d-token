@@ -2367,6 +2367,60 @@
       "summary": "Create local W2 execution baseline matching merged P0 through CF-3 tree",
       "head_before": "95da92a4db595c36b1749feffaf359a5ea45a2e2",
       "remote": null
+    },
+    {
+      "id": "8c443dec-f30b-4f94-8a22-16422405b039",
+      "timestamp": "2026-08-12T21:34:58+08:00",
+      "operation": "branch-create",
+      "branch": "codex/final/w2-runtime-receipt",
+      "summary": "Create W2 runtime receipt slice from frozen CF-3 baseline",
+      "head_before": "16081b3",
+      "remote": null
+    },
+    {
+      "id": "48338448-4fbe-4729-b92a-1f5f27294e1e",
+      "timestamp": "2026-08-12T21:34:58+08:00",
+      "operation": "branch-create",
+      "branch": "codex/final/w2-codex-acceptance",
+      "summary": "Create W2 Codex acceptance slice from frozen CF-3 baseline",
+      "head_before": "16081b3",
+      "remote": null
+    },
+    {
+      "id": "5c70b8cf-f87a-4682-8b69-fb13cb89d558",
+      "timestamp": "2026-08-12T21:34:59+08:00",
+      "operation": "branch-create",
+      "branch": "codex/final/w2-ui-polish",
+      "summary": "Create W2 UI polish slice from frozen CF-3 baseline",
+      "head_before": "16081b3",
+      "remote": null
+    },
+    {
+      "id": "4248a00d-2d77-4884-a815-f28c7bd7825b",
+      "timestamp": "2026-08-12T21:34:59+08:00",
+      "operation": "branch-create",
+      "branch": "codex/final/w2-config-acceptance",
+      "summary": "Create W2 config acceptance slice from frozen CF-3 baseline",
+      "head_before": "16081b3",
+      "remote": null
+    },
+    {
+      "id": "f8c6ceb9-406b-42c1-9f67-1b65beffe0e2",
+      "timestamp": "2026-08-12T21:34:59+08:00",
+      "operation": "branch-create",
+      "branch": "codex/final/w2-hot-sync",
+      "summary": "Create W2 hot sync slice from frozen CF-3 baseline",
+      "head_before": "16081b3",
+      "remote": null
+    },
+    {
+      "id": "281c960a-49b7-4cc0-8552-6020ab52be9a",
+      "timestamp": "2026-08-12T21:34:59+08:00",
+      "operation": "branch-create",
+      "branch": "codex/final/w2-cbm-manifest",
+      "summary": "Create W2 CBM manifest slice from frozen CF-3 baseline",
+      "head_before": "16081b3",
+      "remote": null
     }
   ]
 }
