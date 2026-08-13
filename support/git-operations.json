@@ -2304,6 +2304,15 @@
       "summary": "R2.B per-Agent 事务/C cc-switch app 授权/D Codex 真实链路/E Capability Registry + 视觉压缩 + 交叉审核修复",
       "head_before": "8ca86e7d85c2",
       "remote": null
+    },
+    {
+      "id": "4bfdc3da-6d42-4076-9f6d-f5c12475e9e8",
+      "timestamp": "2026-08-14T03:12:36+08:00",
+      "operation": "rebase",
+      "branch": "codex/final-release-iteration",
+      "summary": "rebase 到 origin 最新（含他人 docs #21）再推送",
+      "head_before": "296c4b668083",
+      "remote": null
     }
   ]
 }
