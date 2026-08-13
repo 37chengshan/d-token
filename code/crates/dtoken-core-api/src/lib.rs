@@ -1,3 +1,4 @@
+pub mod capability_bridge;
 pub mod ccr_store;
 pub mod mcp;
 
@@ -635,6 +636,15 @@ pub struct CompressionDecision {
     pub tokens_saved: u64,
     pub capability: CompressionCapabilityTransaction,
     pub evidence: CompressionDecisionEvidence,
+    /// R2.E: capability registry summary for this model (seed/observed/
+    /// learned/inferred + unknown flag + strategy). Evidence only; unknown
+    /// models never fail the decision.
+    #[serde(default)]
+    pub capability_summary: serde_json::Value,
+    /// R2.E: capability-driven compression strategy hint; None for unknown
+    /// models (route policy governs). Not yet applied by default.
+    #[serde(default)]
+    pub compression_hint: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -1599,6 +1609,10 @@ fn backend_capability_registry(
         (
             "optical-direct-anthropic-upstream",
             "direct_anthropic_shadow_path_available",
+        ),
+        (
+            "tool-schema-normalization",
+            "tool_schema_normalization_available",
         ),
         (
             "optical-streaming-passthrough",
@@ -2782,6 +2796,19 @@ impl AppState {
             return Err(CompressionDecisionError::RouteContextUnavailable);
         }
 
+        // R2.E: attach capability evidence (seed/observed/learned/inferred)
+        // and, when the capability is known, drive the compression strategy
+        // hint. Unknown models never fail here — the hint stays None and the
+        // route policy governs; the evidence still lands in the decision.
+        let capability_summary = crate::capability_bridge::resolve_model_capability_summary(
+            &model,
+            Some(protocol_label(&provider.protocol)),
+        );
+        let capability_hint = crate::capability_bridge::compression_hint_for(
+            &model,
+            Some(protocol_label(&provider.protocol)),
+        );
+
         let (adapter, ingress_body, upstream_body) =
             match (&route.input_protocol, &provider.protocol, &request.endpoint) {
                 (Protocol::OpenAi, Protocol::OpenAi, OpticalEndpoint::OpenAiChatCompletions) => (
@@ -2878,6 +2905,8 @@ impl AppState {
                     adapter: adapter.adapter_label(),
                 },
                 evidence: compression_decision_evidence(),
+                capability_summary,
+                compression_hint: capability_hint,
             },
             body: summary.body,
             savings_percent: summary.savings_percent,
@@ -4639,6 +4668,10 @@ async fn optical_capabilities(
             &state.capabilities,
             "optical-capability-attestation",
         ),
+        tool_schema_normalization: backend_capability_ready(
+            &state.capabilities,
+            "tool-schema-normalization",
+        ),
     })
 }
 
@@ -5812,6 +5845,8 @@ fn build_route_decision(request_id: Uuid, model: Option<&str>) -> RouteDecision 
             .to_string(),
         input_protocol: Some(Protocol::OpenAi),
         output_protocol: Some(Protocol::OpenAi),
+        model_identity: model.map(str::to_string),
+        compression_hint: None,
     }
 }
 
@@ -5990,6 +6025,8 @@ fn build_configured_route_decision(
         reason: "matched one explicit configured route; fallback disabled".to_string(),
         input_protocol: Some(route.input_protocol.clone()),
         output_protocol: Some(provider.protocol.clone()),
+        model_identity: None,
+        compression_hint: None,
     }
 }
 
@@ -12078,7 +12115,13 @@ async fn openai_responses(
                 &attribution,
             );
             attach_request_scope(&mut event, &scope);
+            let capability_summary = body
+                .get("model")
+                .and_then(Value::as_str)
+                .map(|model| capability_bridge::resolve_model_capability_summary(model, Some("responses")))
+                .unwrap_or_else(|| json!({ "unknown": true, "model_id": null }));
             if let Some(metadata) = event.metadata.as_object_mut() {
+                metadata.insert("capability".to_string(), capability_summary.clone());
                 metadata.insert(
                     "native_responses_passthrough".to_string(),
                     json!({
@@ -15935,6 +15978,8 @@ mod tests {
             reason: "test".to_string(),
             input_protocol: Some(Protocol::OpenAi),
             output_protocol: Some(Protocol::OpenAi),
+            model_identity: None,
+            compression_hint: None,
         };
         let compression = CompressionSummary {
             original_tokens: 10,

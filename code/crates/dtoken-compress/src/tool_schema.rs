@@ -41,8 +41,35 @@ pub struct ToolSchemaNormalizeOutcome {
     pub tools_reordered: bool,
     /// PR-E2 fired: at least one JSON Schema object had its keys reordered.
     pub schemas_key_sorted: bool,
+    /// PR-E4 fired: at least one byte-identical duplicate definition dropped.
+    pub tools_deduped: usize,
     /// Any byte change happened (either pass fired).
     pub changed: bool,
+}
+
+/// PR-E4: drop byte-identical duplicate tool definitions (graph dedup).
+///
+/// Two tool definitions are duplicates when their canonical JSON is exactly
+/// equal (same name + same schema).  Keeping only the first is lossless:
+/// identical bytes mean identical semantics for every provider.  When any
+/// tool carries a `cache_control` marker the duplicates are still removed
+/// (dedup never reorders, so cache breakpoints are untouched).  Returns the
+/// number of removed tools.
+pub fn dedupe_tools(tools: &mut Vec<Value>) -> usize {
+    let mut seen: Vec<Vec<u8>> = Vec::with_capacity(tools.len());
+    let mut kept: Vec<Value> = Vec::with_capacity(tools.len());
+    let mut removed = 0;
+    for tool in tools.drain(..) {
+        let canonical = serde_json::to_vec(&tool).unwrap_or_default();
+        if seen.iter().any(|existing| existing == &canonical) {
+            removed += 1;
+            continue;
+        }
+        seen.push(canonical);
+        kept.push(tool);
+    }
+    *tools = kept;
+    removed
 }
 
 /// Sort `tools[]` deterministically by name (PR-E1).
@@ -148,6 +175,7 @@ pub fn normalize_tool_definitions(body: &mut Value) -> ToolSchemaNormalizeOutcom
         tools_considered: 0,
         tools_reordered: false,
         schemas_key_sorted: false,
+        tools_deduped: 0,
         changed: false,
     };
     let Value::Object(map) = body else {
@@ -158,6 +186,9 @@ pub fn normalize_tool_definitions(body: &mut Value) -> ToolSchemaNormalizeOutcom
     // (`function.parameters`) share this key.
     if let Some(tools) = map.get_mut("tools").and_then(Value::as_array_mut) {
         outcome.tools_considered += tools.len();
+        // PR-E4 dedup first (never reorders, so cache breakpoints are safe),
+        // then PR-E1 sort and PR-E2 key sorting.
+        outcome.tools_deduped += dedupe_tools(tools);
         if !any_tool_has_cache_control(tools) {
             outcome.tools_reordered |= sort_tools_deterministically(tools);
         }
@@ -177,6 +208,7 @@ pub fn normalize_tool_definitions(body: &mut Value) -> ToolSchemaNormalizeOutcom
     // OpenAI legacy shape: `functions[*].parameters`.
     if let Some(functions) = map.get_mut("functions").and_then(Value::as_array_mut) {
         outcome.tools_considered += functions.len();
+        outcome.tools_deduped += dedupe_tools(functions);
         if !any_tool_has_cache_control(functions) {
             outcome.tools_reordered |= sort_tools_deterministically(functions);
         }
@@ -187,7 +219,9 @@ pub fn normalize_tool_definitions(body: &mut Value) -> ToolSchemaNormalizeOutcom
         }
     }
 
-    outcome.changed = outcome.tools_reordered || outcome.schemas_key_sorted;
+    outcome.changed = outcome.tools_reordered
+        || outcome.schemas_key_sorted
+        || outcome.tools_deduped > 0;
     outcome
 }
 
@@ -310,5 +344,46 @@ mod tests {
         let outcome = normalize_tool_definitions(&mut body);
         assert_eq!(outcome.tools_considered, 0);
         assert!(!outcome.changed);
+    }
+
+    #[test]
+    fn dedupe_drops_byte_identical_tool_definitions_losslessly() {
+        let mut tools = vec![
+            json!({"name": "alpha", "input_schema": {"type": "object", "properties": {"a": {"type": "string"}}}}),
+            json!({"name": "alpha", "input_schema": {"type": "object", "properties": {"a": {"type": "string"}}}}),
+            json!({"name": "beta", "input_schema": {"type": "object"}}),
+        ];
+        let removed = dedupe_tools(&mut tools);
+        assert_eq!(removed, 1);
+        assert_eq!(tools.len(), 2);
+        assert_eq!(tools[0]["name"].as_str().unwrap(), "alpha");
+        assert_eq!(tools[1]["name"].as_str().unwrap(), "beta");
+    }
+
+    #[test]
+    fn dedupe_keeps_distinct_schemas_with_same_name() {
+        // Same tool name but different schema is NOT a duplicate.
+        let mut tools = vec![
+            json!({"name": "alpha", "input_schema": {"type": "object", "properties": {"a": {}}}}),
+            json!({"name": "alpha", "input_schema": {"type": "object", "properties": {"b": {}}}}),
+        ];
+        let removed = dedupe_tools(&mut tools);
+        assert_eq!(removed, 0);
+        assert_eq!(tools.len(), 2);
+    }
+
+    #[test]
+    fn normalize_reports_deduped_count_and_changed() {
+        let mut body = json!({
+            "tools": [
+                {"name": "a", "input_schema": {"type": "object"}},
+                {"name": "a", "input_schema": {"type": "object"}},
+                {"name": "b", "input_schema": {"type": "object"}}
+            ]
+        });
+        let outcome = normalize_tool_definitions(&mut body);
+        assert_eq!(outcome.tools_deduped, 1);
+        assert!(outcome.changed);
+        assert_eq!(body["tools"].as_array().unwrap().len(), 2);
     }
 }

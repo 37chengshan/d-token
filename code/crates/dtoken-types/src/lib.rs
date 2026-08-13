@@ -1140,6 +1140,14 @@ pub struct RouteDecision {
     pub input_protocol: Option<Protocol>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output_protocol: Option<Protocol>,
+    /// R2.E: the request's model identity, carried for capability-driven
+    /// compression and receipt evidence. Never changes route selection.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_identity: Option<String>,
+    /// R2.E: capability-resolved compression strategy hint (e.g. "semantic_v2",
+    /// "default"); the compressor maps it onto a concrete policy.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compression_hint: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -2059,6 +2067,9 @@ pub struct OpticalCapabilitiesPublicSummary {
     pub artifact_post_validation: bool,
     pub signed_multimodal_accounting: bool,
     pub capability_attestation_required: bool,
+    /// Tool-graph compression (PR-E1/E2/E4) availability, metadata-only.
+    #[serde(default)]
+    pub tool_schema_normalization: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

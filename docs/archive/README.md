@@ -1,6 +1,6 @@
 # d-token 文档归档
 
-更新时间：2026-07-11 晚间
+更新时间：2026-08-13
 
 本目录保存已经退出当前执行线、仅用于追溯的计划、审查、实验版本、Agent 工作记录和仓库整理记录。
 
@@ -36,3 +36,4 @@ archive/
 - 早期研究和技术笔记仍描述 Python runtime/外部 Headroom 过渡架构，与当前 Rust-owned runtime 不一致。
 - 根目录 `task_plan.md`、`findings.md`、`progress.md` 属于一次 Agent 会话过程，不应继续充当仓库顶层入口。
 - `support/` 根目录中的占位、重复说明和零散 notes 不属于正式支持资产，已集中归档。
+- 2026-08-13 将旧 `docs/PLAN.md` 归档为 `archive/release/2026-08-12-PLAN-pre-product-recovery.md`；旧大型 release DAG 与 44/65 等历史进度口径退出当前执行线，当前执行只看新的 `docs/PLAN.md`。

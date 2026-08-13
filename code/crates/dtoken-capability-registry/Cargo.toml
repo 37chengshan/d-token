@@ -1,0 +1,9 @@
+[package]
+name = "dtoken-capability-registry"
+version = "0.1.0"
+edition = "2021"
+description = "Runtime Capability Registry: model identity -> capability resolution with seed/observed/learned layers (PRD P0.0.11)"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

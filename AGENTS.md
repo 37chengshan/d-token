@@ -1,6 +1,6 @@
 # AGENTS.md
 
-更新时间：2026-07-11 晚间
+更新时间：2026-08-13
 
 本文件是 Codex、Claude Code、Cline、OpenCode 等 AI coding agent 的仓库入口。
 
@@ -68,10 +68,10 @@ docs/                              正式文档、历史和归档
 2. 禁止实现成 `App -> external Headroom 8787 -> Dashboard data`。
 3. 外部 Headroom、standalone RTK、cc-switch 只能在明确的 no-touch/只读边界内检测或对照，不能成为隐式运行依赖。
 4. 所有本地服务默认只绑定 `127.0.0.1`。
-5. Provider/Route 选择必须显式、可解释；禁止静默猜测和静默 fallback。
+5. Provider/Route 行为必须可解释、可追溯，禁止静默猜测和静默 fallback；普通自动配置流程不得要求用户再次选择 Provider/Route/model/protocol/endpoint，具体以 `docs/PRD.md` P0.0.10 为准。
 6. API key、token、cookie、Authorization、auth 文件、完整 prompt/response、源代码和大段原始命令输出不得进入普通日志、配置、导出或提交。
 7. 凭据只进入操作系统凭据库；d-token 配置只保存不透明引用，禁止明文 fallback。
-8. 所有真实写操作必须具备用户可读摘要、diff、backup、明确确认、verify 和 rollback evidence。
+8. 所有真实写操作必须具备用户可读摘要、diff、backup、授权、verify 和 rollback evidence；对 P0.0.10 的 Agent 自动配置，“一次点击配置”本身就是该批选中 Agent 的明确授权，后台不得再弹第二层 Diff/风险/备份确认。其他破坏性或未被该合同覆盖的写操作仍需各自明确授权。
 9. 进程停止前必须验证 PID、可执行文件、端口所有权和 d-token identity，防止误杀或 PID reuse。
 10. 浏览器 preview 只能证明 UI；真实功能必须由 runtime、route decision、Event Ledger、export 或 routed Agent flow 证明。
 11. Optical 当前仅允许 shadow preview 和 metadata-only observability；没有 renderer、patcher、post-validator、rollback 前禁止 active transform。

@@ -497,6 +497,15 @@ pub struct AgentUpstreamBinding {
 }
 
 pub fn discover() -> Value {
+    discover_with_auto_follow(false)
+}
+
+/// Read-only discovery. `auto_follow_authorized` reflects whether an app-level
+/// cc-switch auto-follow authorization is active (R2.C): when true, external
+/// config changes are reported as automatically applicable; when false the
+/// legacy review-gated contract (false) is preserved. Discovery itself never
+/// writes anything.
+pub fn discover_with_auto_follow(auto_follow_authorized: bool) -> Value {
     let mut candidates = Vec::new();
     let mut sources = Vec::new();
     let agent_discovery = scan_current_process_agents();
@@ -510,8 +519,12 @@ pub fn discover() -> Value {
     candidates.dedup_by(|left, right| {
         left.source == right.source && left.id == right.id && left.models == right.models
     });
-    let external_config_snapshot =
-        external_config_snapshot(&sources, &candidates, agent_discovery.as_ref().ok());
+    let external_config_snapshot = external_config_snapshot(
+        &sources,
+        &candidates,
+        agent_discovery.as_ref().ok(),
+        auto_follow_authorized,
+    );
     let (agent_bindings, agent_scan) = match agent_discovery {
         Ok(snapshot) => {
             let status = json!({
@@ -605,6 +618,7 @@ fn external_config_snapshot(
     sources: &[Value],
     candidates: &[UpstreamCandidate],
     agent_discovery: Option<&dtoken_config_patcher::agent::AgentDiscoverySnapshot>,
+    auto_follow_authorized: bool,
 ) -> ExternalConfigSnapshot {
     let cc_switch_source = sources
         .iter()
@@ -650,7 +664,7 @@ fn external_config_snapshot(
         cc_switch,
         agent_configs,
         fingerprint: metadata_fingerprint("external-config", &stable),
-        automatic_apply_allowed: false,
+        automatic_apply_allowed: auto_follow_authorized,
     }
 }
 
@@ -1992,15 +2006,40 @@ fn candidate_from_codex_toml(path: &Path) -> Result<Option<UpstreamCandidate>, &
         .get("model_providers")
         .and_then(toml::Value::as_table)
         .and_then(|providers| providers.get(&provider_id));
+    // R2.D / GP-D1: real Codex configs may use the top-level
+    // `openai_base_url` + `model_catalog_json` shape (OpenCodex / ocxlocal
+    // dynamic catalog) with no [model_providers] table. In that shape the
+    // top-level openai_base_url IS the upstream; the provider id is derived
+    // from the local proxy so the candidate identifies the ocxlocal route.
+    let top_level_base_url = value
+        .get("openai_base_url")
+        .and_then(toml::Value::as_str)
+        .and_then(redact_base_url);
+    let has_model_catalog = value.get("model_catalog_json").is_some();
     let base_url = provider
         .and_then(|provider| provider.get("base_url"))
         .and_then(toml::Value::as_str)
-        .and_then(redact_base_url);
+        .and_then(redact_base_url)
+        .or(top_level_base_url.clone());
     let protocol = provider
         .and_then(|provider| provider.get("wire_api"))
         .and_then(toml::Value::as_str)
         .unwrap_or("responses")
         .to_string();
+    // Top-level shape: the local proxy is the provider; there is no separate
+    // model_providers identity to name the candidate after.
+    let candidate_provider_id = if provider.is_none() && top_level_base_url.is_some() {
+        "ocxlocal"
+    } else {
+        provider_id.as_str()
+    };
+    // Catalog-referencing configs expose dynamic models; the root `model` (if
+    // any) is still preserved as the current selection.
+    let models = if has_model_catalog && model.is_none() {
+        Vec::new()
+    } else {
+        model.into_iter().collect()
+    };
     let has_env_key = provider
         .and_then(|provider| provider.get("env_key"))
         .and_then(toml::Value::as_str)
@@ -2012,15 +2051,15 @@ fn candidate_from_codex_toml(path: &Path) -> Result<Option<UpstreamCandidate>, &
         .and_then(|provider| provider.get("requires_openai_auth"))
         .and_then(toml::Value::as_bool)
         .unwrap_or(false);
-    if base_url.is_none() && model.is_none() {
+    if base_url.is_none() && models.is_empty() {
         return Ok(None);
     }
     Ok(Some(UpstreamCandidate {
-        id: format!("codex-{provider_id}"),
-        name: format!("Codex {provider_id}"),
+        id: format!("codex-{candidate_provider_id}"),
+        name: format!("Codex {candidate_provider_id}"),
         protocol,
         base_url,
-        models: model.into_iter().collect(),
+        models,
         source: "agent-config:codex".to_string(),
         freshness: now_timestamp(),
         auth_mode: if has_env_key || requires_openai_auth {
@@ -3650,6 +3689,36 @@ mod tests {
         assert!(!encoded.contains(SECRET));
         assert!(!encoded.contains("wrong.example"));
         assert!(!encoded.contains("wrong-model"));
+    }
+
+    #[test]
+    fn codex_toml_parser_reads_top_level_openai_base_url_and_model_catalog() {
+        // R1.D / GP-D1: real Codex configs can use the top-level
+        // `openai_base_url` + `model_catalog_json` shape (OpenCodex / ocxlocal
+        // dynamic catalog) with no [model_providers] table. Discovery must
+        // resolve the local Responses proxy from the top-level keys instead of
+        // reporting no base URL.
+        const FIXTURE: &str = include_str!(
+            "../../../../crates/dtoken-config-patcher/tests/fixtures/codex-ocxlocal-top-level.toml"
+        );
+        let root = tempfile::tempdir().expect("temporary directory");
+        let path = root.path().join("config.toml");
+        fs::write(&path, FIXTURE).expect("Codex config");
+
+        let candidate = candidate_from_codex_toml(&path)
+            .expect("parse")
+            .expect("candidate");
+        assert_eq!(candidate.id, "codex-ocxlocal");
+        // The upstream comes from the top-level openai_base_url, not a
+        // fabricated model_providers entry.
+        assert_eq!(
+            candidate.base_url.as_deref(),
+            Some("http://127.0.0.1:10100/v1")
+        );
+        assert_eq!(candidate.protocol, "responses");
+        // The explicitly selected root model is preserved.
+        assert_eq!(candidate.models, ["gpt-5"]);
+        assert!(candidate.active);
     }
 
     #[test]

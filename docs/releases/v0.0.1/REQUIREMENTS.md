@@ -161,7 +161,7 @@
 
 | ID | 需求（来源） | current | gap | owner | acceptance | release claim |
 |---|---|---|---|---|---|---|
-| QUALITY-1 | 117 项能力矩阵必须是可数、机器可读工件，每项有 production dispatch 与证据 DAG | PLAN 只有领域散文，无 117 行 artifact | tracked JSON registry + validator + generated coverage；每项 `id/source_capability/owner_crate/dispatch_symbol/tests/real_evidence/gates/status` 必填 | PR-C0C, PR-C0D, PR-C8A | 恰 117 个唯一 ID；N0 前仅 `implemented_unverified/blocked`；N10/U9 最终密封 117/117 verified；零 placeholder/missing/not-in-scope | MUST |
+| QUALITY-1 | 117 项能力矩阵必须是可数、机器可读工件，每项有 production dispatch 与证据 DAG | PLAN 只有领域散文，无 117 行 artifact | tracked JSON registry + validator + generated coverage；每项 `id/source_capability/owner_crate/dispatch_symbol/tests/real_evidence/gates/status` 必填 | PR-C0C, PR-H2, PR-C8A | 恰 117 个唯一 ID；状态只允许 `implemented_unverified/verified/blocked`；最终必须 117/117 verified，零 placeholder/missing/not-in-scope | MUST |
 | QUALITY-2 | codec/IR property + fuzz：lossless reconstruction、protected/secret/exact、malformed protocol | 仅 3 个通用 proptest；无统一 fuzz；各 codec evidence 不能替代跨 NodeAction 证明 | 每个 NodeAction/codec 的重建、exclusive ownership、malformed、secret/exact/open-tool corpus；有界 fuzz runner | PR-C2A, PR-C6C | crash/panic=0；lossless byte-exact；每 node 恰一 action；critical privacy/meaning failure=0 | MUST |
 | QUALITY-3 | fixed-corpus release benchmark：resolved production 入口、p50/p95/p99、CPU、throughput、alloc/RSS、queue/cancel、ratio/benefit/fallback | 现有 benchmark 调 no-op `compress()`；无 criterion/fixed corpus/throughput/replay | tracked corpus manifest + release runner + corpus digest；先采 fresh baseline，再冻结 absolute cap 与 noise/no-regression band；passthrough floor 单列 | PR-C0C, PR-C7A/C7C | 阈值由同硬件/OS/release profile fresh baseline 产生并版本化；C_final 全过；禁止从 UI 指标或旧 evidence 编造 | MUST |
 | QUALITY-4 | deterministic replay / coding-task quality / provider paired eval | 无 replay harness、无真实 paired runner；NUEDC 仅计划/手工 | decision/body digest replay；same-model same-task baseline/optimized paired run；task outcome judge 与 holdout；Optical exact fidelity/cost/latency | PR-C7B, N3, N10 | replay byte/digest 一致；任务成功率/关键事实不退化；Optical paired eval 全绿；claimable 仅 Provider actual | MUST |
@@ -184,7 +184,7 @@
 
 | 审计发现（Blocker/High） | requirement | task | slice | verification |
 |---|---|---|---|---|
-| 统一压缩：117 项能力矩阵无机器工件（QUALITY-1/U1/U9/G8 不可执行） | QUALITY-1 | T-C0C, T-C0D, T-C8A | PR-C0C, PR-C0D, PR-C8A | N10/U1, U9 |
+| 统一压缩：117 项能力矩阵无机器工件（QUALITY-1/U1/U9/G8 不可执行） | QUALITY-1 | T-C0C, T-C0D, T-C8A | PR-C0C, PR-C0D, PR-H2, PR-C8A | N10/U1, U9 |
 | 统一压缩：发送路径无 canonical IR/NodeAction；memory 校验后注入；no-op compress() 生产 fallback（RUNTIME-7/CONTEXT-4 违反） | RUNTIME-7, CONTEXT-4, QUALITY-6 | T-C0A, T-C1A, T-C1B, T-C1C | PR-C0A, PR-C1A, PR-C1B, PR-C1C | N10/U0, N1 |
 | 统一压缩：type-state 可伪造（caller validator/digest/ccr: 前缀/时间戳）（RUNTIME-8/QUALITY-7 违反） | RUNTIME-8, QUALITY-7 | T-C0B, T-C1C, T-C6C | PR-C0B, PR-C1C, PR-C6C | N10/U0, U3 |
 | 统一压缩：生产 transport 未消费 SendCommitReceipt；CCR store→receipt→marker→restore 未闭环 | RUNTIME-8 | T-C0B, T-C6C | PR-C0B, PR-C6C | N10/U3 |

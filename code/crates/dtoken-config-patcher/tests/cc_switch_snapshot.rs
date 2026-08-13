@@ -28,7 +28,7 @@
 //! database, and never reads a credential value.
 
 use dtoken_config_patcher::cc_switch::{
-    follow_decision, read_cc_switch_snapshot, CcSwitchWatcher, FollowDecision, WatchEvent,
+    follow_decision, follow_decision_for_app, read_cc_switch_snapshot, CcSwitchWatcher, FollowDecision, WatchEvent,
     CC_SWITCH_WATCH_DEBOUNCE_MS,
 };
 use std::{
@@ -239,6 +239,54 @@ fn follow_decision_is_hash_bound_and_production_owned() {
     );
     assert_eq!(
         follow_decision(&authorized, Some(&route_b), &other, &route_b),
+        FollowDecision::ReauthorizationRequired
+    );
+}
+
+#[test]
+fn follow_decision_supports_app_level_authorized_auto_follow() {
+    // PRD P0.0.10.6 / PRODUCT_CONTRACT §6: once an app is authorized, every
+    // provider/model/protocol/endpoint/profile change within that app is
+    // followed automatically without a second confirmation. Only apps that
+    // were never authorized still require (re)authorization.
+    let app_codex = "codex".to_string();
+    let authorized_apps = vec![app_codex.clone()];
+
+    let upstream_a = dtoken_config_patcher::cc_switch::cc_switch_upstream_signature(
+        "provider-a",
+        "cc-switch:codex",
+        "open_ai",
+        "https://provider-a.example.test/v1",
+    );
+    let upstream_b = dtoken_config_patcher::cc_switch::cc_switch_upstream_signature(
+        "provider-b",
+        "cc-switch:codex",
+        "open_ai",
+        "https://provider-b.example.test/v1",
+    );
+    let route_a = dtoken_config_patcher::cc_switch::cc_switch_route_signature(&upstream_a, "model-1");
+    let route_b = dtoken_config_patcher::cc_switch::cc_switch_route_signature(&upstream_b, "model-2");
+
+    // Authorized app: an upstream identity change (provider B) follows
+    // automatically — SyncRequired, never a second confirmation.
+    assert_eq!(
+        follow_decision_for_app(&authorized_apps, &app_codex, Some(&route_a), &upstream_b, &route_b),
+        FollowDecision::SyncRequired
+    );
+    // Model-only change within the same upstream also follows.
+    let route_a2 = dtoken_config_patcher::cc_switch::cc_switch_route_signature(&upstream_a, "model-3");
+    assert_eq!(
+        follow_decision_for_app(&authorized_apps, &app_codex, Some(&route_a), &upstream_a, &route_a2),
+        FollowDecision::SyncRequired
+    );
+    // Unchanged stays unchanged.
+    assert_eq!(
+        follow_decision_for_app(&authorized_apps, &app_codex, Some(&route_a), &upstream_a, &route_a),
+        FollowDecision::Unchanged
+    );
+    // An app that was never authorized still fails closed.
+    assert_eq!(
+        follow_decision_for_app(&authorized_apps, &"claude-code".to_string(), Some(&route_a), &upstream_a, &route_a),
         FollowDecision::ReauthorizationRequired
     );
 }

@@ -113,8 +113,8 @@ pub fn cc_switch_route_signature(upstream_signature: &str, model: &str) -> Strin
     ))
 }
 
-/// Fail-closed follow decision. A new upstream identity is never followed
-/// without reauthorization, even if the route signature is unchanged.
+/// Fail-closed follow decision (upstream-signature-bound legacy contract).
+/// A new upstream identity is never followed without reauthorization.
 pub fn follow_decision(
     authorized_upstream_signatures: &[String],
     last_synced_route_signature: Option<&str>,
@@ -127,6 +127,31 @@ pub fn follow_decision(
     {
         FollowDecision::ReauthorizationRequired
     } else if last_synced_route_signature == Some(route_signature) {
+        FollowDecision::Unchanged
+    } else {
+        FollowDecision::SyncRequired
+    }
+}
+
+/// App-level authorized follow decision (PRD P0.0.10.6 / PRODUCT_CONTRACT §6).
+///
+/// Once an app (agent_id) is authorized, every provider/model/protocol/
+/// endpoint/profile change within that app follows automatically — d-token
+/// updates its own route/runtime without a second confirmation. Only an app
+/// that was never authorized still requires (re)authorization and fails
+/// closed. This is the contract the R2.C auto-follow path must use; the
+/// legacy signature-bound `follow_decision` remains for the pre-R2.C path.
+pub fn follow_decision_for_app(
+    authorized_app_ids: &[String],
+    app_id: &str,
+    last_synced_route_signature: Option<&str>,
+    _upstream_signature: &str,
+    route_signature: &str,
+) -> FollowDecision {
+    if !authorized_app_ids.iter().any(|authorized| authorized == app_id) {
+        return FollowDecision::ReauthorizationRequired;
+    }
+    if last_synced_route_signature == Some(route_signature) {
         FollowDecision::Unchanged
     } else {
         FollowDecision::SyncRequired

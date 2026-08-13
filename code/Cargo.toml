@@ -17,6 +17,7 @@ members = [
   "crates/dtoken-agent-bridge",
   "crates/dtoken-codebase-memory",
   "crates/dtoken-core-api",
+  "crates/dtoken-capability-registry",
   "crates/dtoken-proxy",
   "apps/desktop/src-tauri",
 ]

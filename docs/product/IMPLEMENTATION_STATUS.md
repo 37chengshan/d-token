@@ -1,7 +1,9 @@
 # d-token 当前实现状态
 
-更新时间：2026-08-07
+更新时间：2026-08-13（恢复模式标记；主体事实仍主要来自 2026-08-07 快照，等待 R0 重新复核）
 状态类型：代码事实快照，不替代 `docs/PRD.md` 与 `docs/PLAN.md`
+
+> **恢复模式警告（2026-08-13）**：本文件中的“已通过 / 已支持 / 最新全仓复证”等结论目前只代表其原记录时点，不能直接作为当前候选 PASS。当前恢复计划已确认 Onboarding 六步、whole-batch rollback、cc-switch `automatic_apply_allowed=false` 等现状与最新产品合同冲突。R0 完成前，任何能力状态必须以当前源码、当前测试和 `.ai-bridge/release-iteration/TASKS.md` 为准；R0 结束后必须刷新本文件的结论与测试数字。
 
 ## 1. 当前结论
 
@@ -231,7 +233,7 @@ npm run test:e2e
 
 2026-07-18 Codebase Memory 本地交付证据：Rust workspace `555 passed / 2 ignored`、桌面 Vitest `234/234`、TypeScript、Vite 与首屏预算、Chromium/WebKit Playwright `20/20`、structure、fmt、严格 Clippy 和 diff check 通过。macOS ARM/x64 与 Windows ARM64/x64 四个官方 archive 的 SHA-256、提取 binary SHA-256 与 Cosign blob bundle（固定 workflow identity/OIDC issuer）均验证通过；Windows GNU target 的领域/配置 crate `cargo check` 通过并包含私有 backup ACL 路径。Tauri debug `.app`/DMG 完成实构建、ad-hoc deep signature 校验，bundle 内 launcher 对签名后 upstream 完成 initialize、tools/list 与真实 tool call。真实 OpenCode 1.14.51 使用官方免费模型完成 3 次允许 tool call、0 次拒绝，事务后项目配置与仓库零写入边界复检通过。Windows workflow 已新增安装后 launcher MCP、索引、只读图页、安全端点、浏览器分发与仓库零写入 smoke gate，但尚无远程 runner 通过报告，因此不写成 Windows 实机通过。
 
-2026-07-18 晚间按产品反馈调整分发与交互：正式 Tauri `externalBin`、macOS/Windows sidecar 准备、签名、安装审计与产物 manifest 已移除大型 upstream，App 仅保留受限 launcher 与法律资源；页面增加固定官方 `v0.9.0` 下载入口、默认/自定义导入目录与每秒 metadata 变化自动识别，执行前仍以 pinned platform/arch/SHA-256 fail closed。页面自动扫描 OpenCode/Codex/Claude，默认多选全部已安装受支持目标，批量预览/逐目标应用与复读验证，失败时逆序回退；该「默认多选」交互是 2026-08-07 P0.0.10 自动配置硬合同之前的旧口径，已取代为自动纳入全部已安装且受支持 Agent、不提供勾选/多选入口；2026-08-03 起 Cursor、Windsurf 等未被支持 schema 的 Agent 保持不可自动接入，而 Gemini CLI/Roo Code/Continue/Aider 已具备 Configure/Clear 能力。Shell 横幅只显示本次运行最新事件，历史保留通知中心；所有页面切换均不再主动聚焦 `<h1>`。实窗复核还发现图谱 Tauri command 的 Rust 参数为 `request: Payload`，而前端曾错误发送双层 `request`，导致批量配置按钮报 `missing field request`；现已统一为单层 payload，并用 Rust contract test 锁定 preview/apply/verify/rollback/start/index/delete/directory 命令。状态构建、配置预览/应用、UI host 启动与索引启动已移入 `spawn_blocking`，避免这些文件校验和进程启动工作占用窗口线程。
+2026-07-18 晚间按产品反馈调整分发与交互：正式 Tauri `externalBin`、macOS/Windows sidecar 准备、签名、安装审计与产物 manifest 已移除大型 upstream，App 仅保留受限 launcher 与法律资源；页面增加固定官方 `v0.9.0` 下载入口、默认/自定义导入目录与每秒 metadata 变化自动识别，执行前仍以 pinned platform/arch/SHA-256 fail closed。页面当时自动扫描 OpenCode/Codex/Claude，并经历过“默认多选全部已安装受支持目标”“自动纳入且不可取消”两种历史交互；这两种口径都已被 2026-08-12 P0.0.10 取代。当前合同是：完整 Agent 清单可见，已安装受支持项默认勾选，用户可以取消，未安装项不可勾选；逐 Agent 独立事务，单项失败不得逆序回滚其他成功项。2026-08-03 起 Cursor、Windsurf 等未被支持 schema 的 Agent 保持不可自动接入，而 Gemini CLI/Roo Code/Continue/Aider 已具备 Configure/Clear 能力。Shell 横幅只显示本次运行最新事件，历史保留通知中心；所有页面切换均不再主动聚焦 `<h1>`。实窗复核还发现图谱 Tauri command 的 Rust 参数为 `request: Payload`，而前端曾错误发送双层 `request`，导致批量配置按钮报 `missing field request`；现已统一为单层 payload，并用 Rust contract test 锁定 preview/apply/verify/rollback/start/index/delete/directory 命令。状态构建、配置预览/应用、UI host 启动与索引启动已移入 `spawn_blocking`，避免这些文件校验和进程启动工作占用窗口线程。
 
 同日晚间最终本地门：Rust workspace `558 passed / 2 ignored`、桌面 Vitest `40 files / 239 tests`、Chromium/WebKit Playwright `20/20`、support Python `11/11` 全部通过；当时候选的 TypeScript、Vite production build、workspace fmt、严格 Clippy、structure、diff check 与 `npm audit`（0 vulnerabilities）通过。最终重打包时工作树还并发加入了其他 UI 改动，首屏递归 JS 为 `136,747 B / 180,224 B`。重新生成的 macOS arm64 release 候选 `.app` 为 32 MB、DMG 为 14 MB，bundle 资源清单只有 `dtoken-codebase-memory-launcher` 与 Codebase Memory LICENSE/NOTICE，不含 261 MB upstream；`codesign --verify --deep --strict` 通过 ad-hoc 签名校验。用户导入 pinned upstream 后，真实 OpenCode 1.14.51 使用官方免费模型完成 `codebase-memory-mcp_list_projects` tool event（completed）；事务随后精确回退，`code/opencode.json` 不存在，批准仓库没有新增 `.codebase-memory/`、`artifact.json` 或 `.gitattributes`。这些是 macOS 本机、dirty working-tree、ad-hoc signed 证据；Windows workflow 虽有静态和合同门禁，仍无真实 Windows runner 报告。上述门禁完成后，23:24 并发新增的未跟踪 `src/app/lib/copyPolicy.test.ts` 因缺少 Node 类型造成当前全量 `tsc --noEmit` 的 6 个错误；该文件不属于本轮代码图谱改动，未在本轮擅自修正，因此当前 dirty working-tree 不能标为全门通过。
 

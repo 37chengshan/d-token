@@ -1,0 +1,52 @@
+{
+  "schemaVersion": "mimosa-finding-ledger-batch/v1",
+  "batchId": "stop-20260811T155953854Z-10883-5d85049c0324",
+  "runId": "20260811T155953854Z-10883-5d85049c0324",
+  "runStatus": "inconclusive",
+  "coverage": {
+    "status": "partial",
+    "reasons": [
+      {
+        "code": "bash_discovery_incomplete",
+        "stage": "bash-discovery",
+        "target": "test/runtime/manual-20260712/parallel/call-070/codex-home/.tmp/plugins/plugins/mixpanel-headless/skills/mixpanelyst/scripts/help.py",
+        "detail": "project enumeration exceeded 5000 reviewable files",
+        "affectsCompletion": true
+      },
+      {
+        "code": "baseline_partial",
+        "stage": "baseline",
+        "target": "test/runtime/manual-20260712/parallel/call-070/codex-home/.tmp/plugins/plugins/mixpanel-headless/skills/mixpanelyst/scripts/help.py",
+        "detail": "baseline exceeded 5000 candidate files",
+        "affectsCompletion": true
+      },
+      {
+        "code": "project_check_failed",
+        "stage": "bash-discovery",
+        "target": "test/runtime/manual-20260712/parallel/call-070/codex-home/.tmp/plugins/plugins/mixpanel-headless/skills/mixpanelyst/scripts/help.py",
+        "detail": "bash_discovery_incomplete: project enumeration exceeded 5000 reviewable files",
+        "affectsCompletion": true
+      },
+      {
+        "code": "project_check_failed",
+        "stage": "baseline",
+        "target": "test/runtime/manual-20260712/parallel/call-070/codex-home/.tmp/plugins/plugins/mixpanel-headless/skills/mixpanelyst/scripts/help.py",
+        "detail": "baseline_partial: baseline exceeded 5000 candidate files",
+        "affectsCompletion": true
+      }
+    ]
+  },
+  "source": {
+    "component": "zcode-hook",
+    "operationId": "Stop"
+  },
+  "revision": "dc647aff71b2fdf63cc1ce2a1fc25810d8f86bd3",
+  "diffHash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+  "rulesVersion": "unavailable",
+  "sessionHash": "d60574ed0c5e9c2071ae5cb0b7028071b476209b966fd0e3223cc0db8968ca9d",
+  "reportRef": ".mimosa/reports/task-review-sess_d0fd36dd-f579-46c5-b31d-e1ef10b7dc67-20260811T155953854Z-10883-5d85049c0324.json",
+  "events": [],
+  "observedFindingIds": [],
+  "verifiedFiles": [],
+  "recordedAt": "2026-08-11T15:59:54.173Z"
+}

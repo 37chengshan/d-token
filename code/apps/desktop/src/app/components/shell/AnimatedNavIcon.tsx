@@ -40,8 +40,6 @@ export type AnimatedNavIconProps = {
   className?: string;
   expanded?: boolean;
   dark?: boolean;
-  /** Parent reports pointer hover / keyboard focus (CSS also uses :hover as primary path). */
-  engaged?: boolean;
   /** Bumped on click so the recipe can replay without relying on :hover. */
   motionToken?: number;
 };
@@ -61,7 +59,6 @@ export const AnimatedNavIcon = memo(function AnimatedNavIcon({
   className,
   expanded = true,
   dark = false,
-  engaged = false,
   motionToken = 0,
 }: AnimatedNavIconProps) {
   const recipe = id in NAV_MOTION_RECIPES ? NAV_MOTION_RECIPES[id as VisibleAnimatedNavIconId] : null;
@@ -77,7 +74,7 @@ export const AnimatedNavIcon = memo(function AnimatedNavIcon({
     return () => window.clearTimeout(timer);
   }, [motionToken, reducedMotion, recipe?.durationMs]);
 
-  const motionActive = !reducedMotion && (engaged || playing);
+  const motionActive = !reducedMotion && playing;
 
   const common = {
     "aria-hidden": true as const,
@@ -94,7 +91,6 @@ export const AnimatedNavIcon = memo(function AnimatedNavIcon({
     "data-reduced-motion": reducedMotion ? "true" : "false",
     "data-motion-state": reducedMotion ? "color-only" : "enabled",
     "data-motion-trigger": String(motionToken),
-    "data-motion-engaged": engaged && !reducedMotion ? "true" : "false",
     "data-motion-play": motionActive ? "true" : "false",
     ...(recipe
       ? {

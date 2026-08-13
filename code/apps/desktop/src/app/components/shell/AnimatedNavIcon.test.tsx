@@ -134,7 +134,6 @@ describe("AnimatedNavIcon", () => {
     expect(icon).toHaveAttribute("data-motion-state", "color-only");
     expect(icon).toHaveAttribute("data-motion-iterations", "1");
     expect(icon).toHaveAttribute("data-motion-play", "false");
-    expect(icon).toHaveAttribute("data-motion-engaged", "false");
   });
 
   it("keeps every navigation icon free of the duplicate cat-face mark", () => {
@@ -170,59 +169,6 @@ describe("AnimatedNavIcon", () => {
       ).toBeInTheDocument();
       unmount();
     }
-  });
-
-  it("sets data-motion-engaged when parent reports hover/focus for enter/leave", () => {
-    const { container, rerender } = render(
-      <AnimatedNavIcon
-        id="settings"
-        active={false}
-        reducedMotion={false}
-        engaged={false}
-      />,
-    );
-    expect(container.querySelector("svg")).toHaveAttribute(
-      "data-motion-engaged",
-      "false",
-    );
-    expect(container.querySelector("svg")).toHaveAttribute(
-      "data-motion-play",
-      "false",
-    );
-
-    rerender(
-      <AnimatedNavIcon
-        id="settings"
-        active={false}
-        reducedMotion={false}
-        engaged
-      />,
-    );
-    expect(container.querySelector("svg")).toHaveAttribute(
-      "data-motion-engaged",
-      "true",
-    );
-    expect(container.querySelector("svg")).toHaveAttribute(
-      "data-motion-play",
-      "true",
-    );
-
-    rerender(
-      <AnimatedNavIcon
-        id="settings"
-        active={false}
-        reducedMotion={false}
-        engaged={false}
-      />,
-    );
-    expect(container.querySelector("svg")).toHaveAttribute(
-      "data-motion-engaged",
-      "false",
-    );
-    expect(container.querySelector("svg")).toHaveAttribute(
-      "data-motion-play",
-      "false",
-    );
   });
 
   it("sets data-motion-play when motionToken bumps so click can pulse without remount", () => {
@@ -267,22 +213,17 @@ describe("AnimatedNavIcon", () => {
     vi.useRealTimers();
   });
 
-  it("ignores engaged and motionToken under reduced motion", () => {
+  it("ignores motionToken under reduced motion", () => {
     const { container } = render(
       <AnimatedNavIcon
         id="settings"
         active={false}
         reducedMotion
-        engaged
         motionToken={3}
       />,
     );
     expect(container.querySelector("svg")).toHaveAttribute(
       "data-motion-play",
-      "false",
-    );
-    expect(container.querySelector("svg")).toHaveAttribute(
-      "data-motion-engaged",
       "false",
     );
   });

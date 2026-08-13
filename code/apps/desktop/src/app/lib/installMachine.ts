@@ -34,6 +34,7 @@ export type InstallMachineEvent =
   | { type: "DISCOVERED"; snapshot: ConnectionSetupSnapshot }
   | { type: "DISCOVERY_FAILED"; message: string }
   | { type: "OPEN_REVIEW" }
+  | { type: "TOGGLE_AGENT"; agentId: string }
   | { type: "SET_PHASE"; phase: InstallPhase; message?: string }
   | { type: "RESET" };
 
@@ -110,9 +111,12 @@ export function installMachineReducer(state: InstallMachineState, event: Install
     case "DISCOVERED": {
       const revisionChanged = state.snapshot !== null && state.snapshot.revision !== event.snapshot.revision;
       // The batch is automatic: every installed Agent with a verified write
-      // action joins. There is no user opt-in, so selection always follows
-      // discovery and never needs to be preserved across polling.
-      const selectedAgentIds = defaultSelectedAgentIds(event.snapshot);
+      // action joins by default. Users may opt Agents out (TOGGLE_AGENT);
+      // opt-outs survive identical polls but are re-evaluated when the
+      // discovery revision changes (the source set may have moved).
+      const selectedAgentIds = state.snapshot === null || revisionChanged
+        ? defaultSelectedAgentIds(event.snapshot)
+        : state.selectedAgentIds.filter((id) => actionableBindings(event.snapshot).some((b) => b.agent_id === id));
       const selections = mergeSelections(event.snapshot, revisionChanged ? {} : state.selections);
       const nextPhase = deriveInstallPhase(event.snapshot, selections, selectedAgentIds);
       if (!revisionChanged && ["review", "applying-runtime", "applying-agent-configs", "verifying", "verified"].includes(state.phase)) {
@@ -129,6 +133,14 @@ export function installMachineReducer(state: InstallMachineState, event: Install
           ? "source-config-changed"
           : "",
       };
+    }
+    case "TOGGLE_AGENT": {
+      const actionable = state.snapshot ? actionableBindings(state.snapshot) : [];
+      if (!actionable.some((binding) => binding.agent_id === event.agentId)) return state;
+      const selectedAgentIds = state.selectedAgentIds.includes(event.agentId)
+        ? state.selectedAgentIds.filter((id) => id !== event.agentId)
+        : [...state.selectedAgentIds, event.agentId];
+      return { ...state, selectedAgentIds, phase: "idle" };
     }
     case "DISCOVERY_FAILED":
       if (["applying-runtime", "applying-agent-configs", "verifying"].includes(state.phase)) return state;
@@ -292,7 +304,7 @@ export async function runInstallAgentBatch(
     if (!item.reviewDigest) {
       error = `Missing reviewed Agent integration for ${item.agentName}`;
       receipts.push({ ...item, state: "failed", summary: error });
-      break;
+      continue;
     }
 
     try {
@@ -309,29 +321,47 @@ export async function runInstallAgentBatch(
       };
       receipts.push(receipt);
       const verified = await operations.verify(receipt);
-      if (!verified.ok) throw new Error(verified.summary || `Agent integration verification failed for ${item.agentName}`);
+      if (!verified.ok) {
+        // P0.0.10.5: a failure only rolls back this Agent's own incomplete
+        // write and continues with the remaining selected Agents, so every
+        // selected Agent gets an independent result and a retry path.
+        receipt.state = "failed";
+        receipt.summary = verified.summary || `Agent integration verification failed for ${item.agentName}`;
+        error = receipt.summary;
+        try {
+          const restored = await operations.rollback(receipt);
+          receipt.state = restored.ok ? "rolled-back" : "rollback-failed";
+          receipt.summary = restored.summary || receipt.summary;
+        } catch (reason) {
+          receipt.state = "rollback-failed";
+          receipt.summary = reason instanceof Error ? reason.message : String(reason);
+        }
+        continue;
+      }
       receipt.state = "verified";
       receipt.summary = verified.summary;
     } catch (reason) {
       error = reason instanceof Error ? reason.message : String(reason);
       const current = receipts.find((receipt) => receipt.agentId === item.agentId);
       if (!current) receipts.push({ ...item, state: "failed", summary: error });
-      break;
+      else {
+        // Apply failed after a transaction was recorded: roll back only this Agent.
+        current.state = "failed";
+        current.summary = error;
+        if (current.transactionId) {
+          try {
+            const restored = await operations.rollback(current);
+            current.state = restored.ok ? "rolled-back" : "rollback-failed";
+            current.summary = restored.summary || current.summary;
+          } catch (rollbackReason) {
+            current.state = "rollback-failed";
+            current.summary = rollbackReason instanceof Error ? rollbackReason.message : String(rollbackReason);
+          }
+        }
+      }
+      continue;
     }
   }
 
-  if (!error) return { ok: true, receipts, error: "" };
-
-  for (const receipt of [...receipts].reverse()) {
-    if (!receipt.transactionId || !["applied", "verified"].includes(receipt.state)) continue;
-    try {
-      const restored = await operations.rollback(receipt);
-      receipt.state = restored.ok ? "rolled-back" : "rollback-failed";
-      receipt.summary = restored.summary;
-    } catch (reason) {
-      receipt.state = "rollback-failed";
-      receipt.summary = reason instanceof Error ? reason.message : String(reason);
-    }
-  }
-  return { ok: false, receipts, error };
+  return error ? { ok: false, receipts, error } : { ok: true, receipts, error: "" };
 }

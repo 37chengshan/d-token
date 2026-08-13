@@ -25,8 +25,9 @@ English · [简体中文](README-cn.md)
 
 - 🧠 **Save what you can see** — a single real routed request reduced **33,705 tokens** (measured, 2026-08-04)
 - 🛣️ **Explicit routing** — every request takes a clear path to your configured upstream; no silent provider swaps
-- 🧾 **A receipt for every request** — source agent, route, transformations, Local vs Provider tokens, recovery status
-- 🔒 **Safe configuration** — preview → redacted diff → backup → verify → roll back
+- 🧾 **A receipt for every request** — source agent, route, transformations, capability identity, recovery status
+- 🔒 **One-click, per-Agent configuration** — click once to authorize; each Agent is an independent transaction with its own plan, backup, verify, rollback and receipt (a failing Agent never rolls back a successful one)
+- 🧬 **Runtime Capability Registry** — configure once, then any new model / provider / route adapts automatically: request-level model identity → capability (context window, tool call, stream, protocol) → compression strategy → upstream, with unknown models never failing (conservative default + `unknown` evidence)
 - 🏠 **Local-first** — runs on your machine; secrets never enter ordinary logs
 - 🩺 **Doctor for your setup** — diagnose, repair, and recover when something breaks
 
@@ -63,7 +64,7 @@ AI coding agents re-send the same files, logs, and tool output over and over. Th
 
 | Version | Focus | Status |
 |---|---|---|
-| `0.2.0-beta.1` | Trusted connect & trusted compression, Optimization Receipts, Doctor | current candidate |
+| `0.2.0-beta.1` | Trusted connect & trusted compression, per-Agent one-click transactions, Runtime Capability Registry, Codex real routed flow | current candidate |
 | `v0.3` | Context continuity: cross-agent Context Relay, Session Cache, cc-switch follow / lock / observe | planned |
 | `v0.4` | Automated local control plane: multi-agent adaptation, low-risk auto-repair, stable signing | planned |
 
@@ -77,6 +78,7 @@ d-token keeps settings, diagnostics, request metadata, and rollback records on y
 - [Product direction (v2.1)](docs/d-token_AI_product_target_spec_v2.md)
 - [Implementation status & release gates](docs/product/IMPLEMENTATION_STATUS.md)
 - [Architecture](docs/ARCHITECTURE.md)
+- [Runtime Capability Registry architecture](docs/RUNTIME_CAPABILITY_REGISTRY_ARCHITECTURE.md)
 - [Security boundaries](docs/SECURITY_BOUNDARIES.md)
 - [Changelog](CHANGELOG.md)
 

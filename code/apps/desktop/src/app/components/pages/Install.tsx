@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { useI18n, useT } from "../../lib/i18n";
 import { invokeNative, type NativeActionLog, type NativeActionResult } from "../../lib/native";
 import { useRuntimeDashboardSelector, shallowEqualSlice, type RuntimeDashboardState } from "../../lib/useRuntimeDashboard";
@@ -70,6 +70,28 @@ export function Install({ onOpenAdvanced }: { onOpenAdvanced?: () => void; initi
   const [stopError, setStopError] = useState("");
   const [connectionReview, setConnectionReview] = useState<OpenCodeConnectionReview | null>(null);
   const [routePlanReview, setRoutePlanReview] = useState<ConnectionRoutePlanReview | null>(null);
+  // Synchronous mirror of the review state so the one-click apply chain can
+  // read the freshly produced review in the same tick (P0.0.10.3).
+  const routePlanReviewRef = useRef<ConnectionRoutePlanReview | null>(null);
+  const setRoutePlanReviewSynced = (review: ConnectionRoutePlanReview | null) => {
+    routePlanReviewRef.current = review;
+    setRoutePlanReview(review);
+  };
+  const connectionReviewRef = useRef<OpenCodeConnectionReview | null>(null);
+  const setConnectionReviewSynced = (review: OpenCodeConnectionReview | null) => {
+    connectionReviewRef.current = review;
+    setConnectionReview(review);
+  };
+  const managedTransportReviewsRef = useRef<Record<string, ManagedAgentTransportReview>>({});
+  const setManagedTransportReviewsSynced = (reviews: Record<string, ManagedAgentTransportReview>) => {
+    managedTransportReviewsRef.current = reviews;
+    setManagedTransportReviews(reviews);
+  };
+  const agentIntegrationReviewsRef = useRef<Record<string, HybridAgentIntegrationReview>>({});
+  const setAgentIntegrationReviewsSynced = (reviews: Record<string, HybridAgentIntegrationReview>) => {
+    agentIntegrationReviewsRef.current = reviews;
+    setAgentIntegrationReviews(reviews);
+  };
   const [ccSwitchSyncReview, setCcSwitchSyncReview] = useState<ConnectionRoutePlanReview | null>(null);
   const [ccSwitchAutoFollow, setCcSwitchAutoFollow] = useState(true);
   const [agentAutoFollow, setAgentAutoFollow] = useState(true);
@@ -161,13 +183,13 @@ export function Install({ onOpenAdvanced }: { onOpenAdvanced?: () => void; initi
     // let a review built from the earlier fingerprint reach apply; refresh is
     // read-only and the user must explicitly review a new d-token plan.
     setShowReview(false);
-    setConnectionReview(null);
-    setRoutePlanReview(null);
+    setConnectionReviewSynced(null);
+    setRoutePlanReviewSynced(null);
     setCcSwitchSyncReview((current) =>
       current?.source_fingerprint === snapshot.external_config_snapshot?.cc_switch?.fingerprint
         ? current
         : null);
-    setAgentIntegrationReviews({});
+    setAgentIntegrationReviewsSynced({});
     const sources = snapshot.external_config_refresh.changed_sources.join(", ");
     setNotice(lang === "zh"
       ? `外部配置已变化${sources ? `（${sources}）` : ""}，旧计划已失效；请重新扫描并确认。`
@@ -231,17 +253,17 @@ export function Install({ onOpenAdvanced }: { onOpenAdvanced?: () => void; initi
     await refreshRuntime();
   };
 
-  const previewConnectionPlan = async () => {
-    if (!snapshot || !reviewReady) return;
+  const previewConnectionPlan = async (): Promise<boolean> => {
+    if (!snapshot || !reviewReady) return false;
     dispatch({ type: "OPEN_REVIEW" });
     setShowReview(true);
-    setConnectionReview(null);
-    setRoutePlanReview(null);
-    setManagedTransportReviews({});
-    setAgentIntegrationReviews({});
+    setConnectionReviewSynced(null);
+    setRoutePlanReviewSynced(null);
+    setManagedTransportReviewsSynced({});
+    setAgentIntegrationReviewsSynced({});
     const requestId = createOperationRequestId("connection-preview");
     const routePlan = buildConnectionRoutePlanRequest(snapshot.revision, actionableBindings, machine.selections);
-    if (routePlan.bindings.length === 0) return;
+    if (routePlan.bindings.length === 0) return false;
     setPendingAction("preview");
     try {
       const integrationBindings = actionableBindings.filter((binding) =>
@@ -296,10 +318,10 @@ export function Install({ onOpenAdvanced }: { onOpenAdvanced?: () => void; initi
           }),
         ] as const)),
       ]);
-      setRoutePlanReview(routeReview);
-      setConnectionReview(openCodeReview);
-      setManagedTransportReviews(Object.fromEntries(managedTransportReviewEntries));
-      setAgentIntegrationReviews(Object.fromEntries(integrationReviewEntries));
+      setRoutePlanReviewSynced(routeReview);
+      setConnectionReviewSynced(openCodeReview);
+      setManagedTransportReviewsSynced(Object.fromEntries(managedTransportReviewEntries));
+      setAgentIntegrationReviewsSynced(Object.fromEntries(integrationReviewEntries));
       if (!routeReview.ok) {
         const failure = presentOperationFailure("connection", routeReview.error, lang);
         setNotice(failure.message);
@@ -307,21 +329,24 @@ export function Install({ onOpenAdvanced }: { onOpenAdvanced?: () => void; initi
         addNotification({ dedupeKey: "connection-preview-failed", level: "error", title: failure.title, message: failure.message, details: failure.details, receipt: { requestId, targetId: "connection-plan" } });
       } else {
         addNotification({ dedupeKey: `connection-preview-${routeReview.after_sha256 ?? "ready"}`, level: "info", title: lang === "zh" ? "连接变更已准备" : "Connection changes are ready", message: lang === "zh" ? "差异和验证证据已准备。请查看当前变更后再应用。" : "Differences and verification evidence are ready. View the current changes before applying.", receipt: { requestId, targetId: "connection-plan" } });
+        return true;
       }
+      return false;
     } catch (error) {
       const failure = presentOperationFailure("connection", error, lang);
       setNotice(failure.message);
       dispatch({ type: "SET_PHASE", phase: "blocked", message: failure.message });
       addNotification({ dedupeKey: "connection-preview-error", level: "error", title: failure.title, message: failure.message, details: failure.details, receipt: { requestId, targetId: "connection-plan" } });
+      return false;
     } finally {
       setPendingAction(null);
     }
   };
 
   const applyConnectionPlan = async () => {
-    if (!snapshot || machine.reviewDiscoveryRevision !== snapshot.revision) {
+    if (!snapshot || getInstallMachineState().reviewDiscoveryRevision !== snapshot.revision) {
       setShowReview(false);
-      setConnectionReview(null);
+      setConnectionReviewSynced(null);
       setNotice(lang === "zh" ? "源配置已变化，旧方案已失效，正在重新读取。" : "Source configuration changed; the old plan was invalidated and will be rebuilt.");
       await refreshAll();
       return;
@@ -329,15 +354,15 @@ export function Install({ onOpenAdvanced }: { onOpenAdvanced?: () => void; initi
     setPendingAction("apply");
     const requestId = createOperationRequestId("connection-apply");
     const routePlan = buildConnectionRoutePlanRequest(snapshot.revision, actionableBindings, machine.selections);
-    const routeChanges = routePlanReview?.before_sha256 !== routePlanReview?.after_sha256;
+    // Read the review from the synchronous mirror so the one-click chain
+    // (preview -> apply in the same tick) sees the fresh hashes.
+    const review = routePlanReviewRef.current ?? routePlanReview;
+    const routeChanges = review?.before_sha256 !== review?.after_sha256;
     const wasManaged = serviceManaged;
     let routeReceipt: ConnectionRoutePlanReceipt | null = null;
     let openCodeReceipt: OpenCodeConnectionReceipt | null = null;
-    let appliedManagedTransports: AgentUpstreamBinding[] = [];
-    let appliedAgentReceipts: InstallAgentReceipt[] = [];
-    let rolledBack = false;
     try {
-      if (!routePlanReview?.ok || !routePlanReview.before_sha256 || !routePlanReview.after_sha256) {
+      if (!review?.ok || !review.before_sha256 || !review.after_sha256) {
         throw new Error("connection_preview_incomplete");
       }
       if (routeChanges && serviceOnline && !serviceManaged) {
@@ -350,8 +375,8 @@ export function Install({ onOpenAdvanced }: { onOpenAdvanced?: () => void; initi
       routeReceipt = await invokeNative<ConnectionRoutePlanReceipt>("apply_connection_route_plan", {
         request: {
           plan: routePlan,
-          reviewed_before_sha256: routePlanReview.before_sha256,
-          reviewed_after_sha256: routePlanReview.after_sha256,
+          reviewed_before_sha256: review.before_sha256,
+          reviewed_after_sha256: review.after_sha256,
           enable_auto_follow: agentAutoFollow,
         },
       });
@@ -360,16 +385,17 @@ export function Install({ onOpenAdvanced }: { onOpenAdvanced?: () => void; initi
 
       dispatch({ type: "SET_PHASE", phase: "applying-agent-configs" });
       if (openCodeSelection?.model) {
-        if (!connectionReview?.ok || !connectionReview.revision || !connectionReview.before_sha256 || !connectionReview.after_sha256) {
+        const openCodeReview = connectionReviewRef.current ?? connectionReview;
+        if (!openCodeReview?.ok || !openCodeReview.revision || !openCodeReview.before_sha256 || !openCodeReview.after_sha256) {
           throw new Error("opencode_preview_incomplete");
         }
         openCodeReceipt = await invokeNative<OpenCodeConnectionReceipt>("apply_opencode_connection", {
           request: {
             model: openCodeSelection.model,
             listener_port: 18001,
-            reviewed_revision: connectionReview.revision,
-            reviewed_before_sha256: connectionReview.before_sha256,
-            reviewed_after_sha256: connectionReview.after_sha256,
+            reviewed_revision: openCodeReview.revision,
+            reviewed_before_sha256: openCodeReview.before_sha256,
+            reviewed_after_sha256: openCodeReview.after_sha256,
           },
         });
         if (!openCodeReceipt.ok) throw new Error(openCodeReceipt.summary);
@@ -382,7 +408,7 @@ export function Install({ onOpenAdvanced }: { onOpenAdvanced?: () => void; initi
         && Boolean(binding.config_path),
       );
       for (const binding of managedTransportBindings) {
-        const review = managedTransportReviews[binding.agent_id]?.review;
+        const review = (managedTransportReviewsRef.current[binding.agent_id] ?? managedTransportReviews[binding.agent_id])?.review;
         const model = machine.selections[binding.agent_id]?.model;
         if (!binding.config_path || !model || !review) {
           throw new Error("managed_transport_preview_incomplete");
@@ -403,7 +429,6 @@ export function Install({ onOpenAdvanced }: { onOpenAdvanced?: () => void; initi
         if (receipt.ok === false || receipt.state === "failed" || receipt.verification?.ok === false) {
           throw new Error("managed_transport_apply_failed");
         }
-        appliedManagedTransports.push(binding);
       }
 
       const agentBatch = await runInstallAgentBatch(
@@ -413,7 +438,7 @@ export function Install({ onOpenAdvanced }: { onOpenAdvanced?: () => void; initi
             agentId: binding.agent_id,
             agentName: binding.agent_name,
             alreadyConnected: binding.already_connected,
-            reviewDigest: agentIntegrationReviews[binding.agent_id]?.plan?.review_digest,
+            reviewDigest: (agentIntegrationReviewsRef.current[binding.agent_id] ?? agentIntegrationReviews[binding.agent_id])?.plan?.review_digest,
           })),
         {
           apply: async (item) => {
@@ -443,7 +468,6 @@ export function Install({ onOpenAdvanced }: { onOpenAdvanced?: () => void; initi
           },
         },
       );
-      appliedAgentReceipts = agentBatch.receipts;
       setAgentIntegrationReceipts(agentBatch.receipts);
       if (!agentBatch.ok) throw new Error(agentBatch.error);
 
@@ -492,40 +516,12 @@ export function Install({ onOpenAdvanced }: { onOpenAdvanced?: () => void; initi
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       const failure = presentOperationFailure("connection", error, lang);
-      for (const receipt of [...appliedAgentReceipts].reverse()) {
-        if (!receipt.transactionId || !["applied", "verified"].includes(receipt.state)) continue;
-        const restored = await invokeNative<HybridAgentIntegrationApply>("rollback_hybrid_agent_integration", {
-          request: { transaction_id: receipt.transactionId },
-        }).catch(() => null);
-        rolledBack = rolledBack || restored?.ok === true;
-      }
-      for (const binding of [...appliedManagedTransports].reverse()) {
-        if (!binding.config_path) continue;
-        const request = {
-          agent_id: binding.agent_id,
-          target_path: binding.config_path,
-          endpoint: serviceEndpoint || "http://127.0.0.1:18001",
-          enabled: false,
-        };
-        const preview = await invokeNative<ManagedAgentTransportReview>("preview_managed_agent_transport", {
-          request,
-          operation: "clear",
-        }).catch(() => null);
-        const review = preview?.review;
-        if (!review) continue;
-        const restored = await invokeNative<ManagedAgentTransportReceipt>("apply_reviewed_managed_agent_transport", {
-          request,
-          operation: "clear",
-          reviewedRevision: review.revision,
-          reviewedBeforeSha256: review.before_sha256,
-          reviewedAfterSha256: review.after_sha256,
-        }).catch(() => null);
-        rolledBack = rolledBack || (restored?.verification?.ok === true && restored?.state !== "failed");
-      }
-      if (openCodeReceipt?.ok && openCodeReceipt.rollback_id) {
-        const restored = await invokeNative<NativeActionResult>("manage_backup", { action: "restore", id: openCodeReceipt.rollback_id }).catch(() => null);
-        rolledBack = rolledBack || restored?.ok === true;
-      }
+      // P0.0.10.5: per-Agent failures are isolated (runInstallAgentBatch rolls
+      // back only the failing Agent). The shared d-token route plan is NOT an
+      // Agent config: if a later step failed after the route receipt was
+      // applied, the shared route is rolled back to keep the system consistent
+      // (verified Agents keep their own configs).
+      let rolledBack = false;
       if (routeReceipt?.ok && routeReceipt.rollback_id && routeReceipt.after_sha256) {
         if (routeChanges) await invokeNative<NativeActionResult>("stop_dtoken_service").catch(() => null);
         const restored = await invokeNative<NativeActionResult>("rollback_connection_route_plan", {
@@ -537,7 +533,6 @@ export function Install({ onOpenAdvanced }: { onOpenAdvanced?: () => void; initi
         rolledBack = rolledBack || restored?.ok === true;
         if (restored?.ok && wasManaged) await installRuntime().catch(() => undefined);
       }
-      rolledBack = rolledBack || /rollback|rolled.back|恢复/i.test(message);
       dispatch({ type: "SET_PHASE", phase: rolledBack ? "rolled-back" : "blocked", message: failure.message });
       setNotice(failure.message);
       addNotification({
@@ -629,7 +624,17 @@ export function Install({ onOpenAdvanced }: { onOpenAdvanced?: () => void; initi
   const handlePrimaryAction = async () => {
     if (busy) return;
     if (restartRequired) return restartService();
-    if (machine.phase === "ready") return previewConnectionPlan();
+    if (machine.phase === "ready") {
+      // P0.0.10.3: one click IS the authorization. The plan is previewed
+      // internally (bound hashes) and applied immediately; the redacted diff
+      // evidence still lands in the review panel for inspection afterwards,
+      // but no second confirmation dialog interrupts the user.
+      const previewed = await previewConnectionPlan();
+      if (previewed) {
+        await applyConnectionPlan();
+      }
+      return;
+    }
     if (machine.phase === "needs-credential") {
       setCredentialError("");
       setCredentialDialogOpen(true);

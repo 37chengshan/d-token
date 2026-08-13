@@ -282,10 +282,17 @@
 .nav-motion-item:active {
   transform: none !important;
 }
+/* Press scale lives on the direct svg/span layer. The transition is declared
+ * on the base rule (not inside :active) so releasing the button animates back
+ * instead of snapping — a transition declared only inside :active disappears
+ * the moment the pointer lifts. */
+.nav-motion-item > svg,
+.nav-motion-item > span {
+  transition: transform var(--duration-instant) var(--ease-spring);
+}
 .nav-motion-item:active > svg,
 .nav-motion-item:active > span {
   transform: scale(0.92);
-  transition: transform var(--duration-instant) var(--ease-spring);
 }
 
 .animated-nav-icon .icon-bar-1,

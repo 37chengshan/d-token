@@ -10,12 +10,14 @@ import { dirname, resolve } from "node:path";
 const here = dirname(fileURLToPath(import.meta.url));
 
 /**
- * Product boundary: Agents, upstreams, and models are never chosen by the
- * user inside d-token. The install flow auto-includes every installed Agent
- * with a verified write action and resolves provider/model/protocol/endpoint/
- * source automatically. Ambiguity fails closed (blocked/partial + rescan),
- * never with a chooser. These file-level guards keep the selection controls
- * from regressing into the production install surface.
+ * Product boundary: Agents are user-selectable (PRD P0.0.10.1: installed
+ * Agents default to checked, the user may cancel any of them, uninstalled
+ * Agents are not checkable), but Providers/models/upstreams are never chosen
+ * inside d-token. The install flow auto-resolves provider/model/protocol/
+ * endpoint/source; ambiguity fails closed (blocked/partial + rescan), never
+ * with a chooser. These file-level guards keep the Agent-level selection
+ * controls (Checkbox/onToggle/TOGGLE_AGENT) while forbidding any provider-
+ * level chooser from entering the production install surface.
  */
 const PRODUCTION_FILES: Record<string, string> = {
   "lib/install/presentation.tsx": resolve(here, "presentation.tsx"),
@@ -25,14 +27,12 @@ const PRODUCTION_FILES: Record<string, string> = {
 };
 
 const FORBIDDEN_PATTERNS: Array<{ name: string; pattern: RegExp }> = [
-  { name: "Checkbox component", pattern: /Checkbox/ },
-  { name: "onToggle handler", pattern: /onToggle/ },
-  { name: "onSelect handler", pattern: /onSelect/ },
   { name: "SELECT_UPSTREAM event", pattern: /SELECT_UPSTREAM/ },
-  { name: "TOGGLE_AGENT event", pattern: /TOGGLE_AGENT/ },
   { name: "discovered-upstream chooser copy", pattern: /选择已发现/ },
   { name: "choose-model copy", pattern: /Choose[^.]*model/i },
   { name: "needs-choice <select> chooser", pattern: /<select/ },
+  { name: "provider/model chooser combobox", pattern: /role="combobox"/ },
+  { name: "upstream select element", pattern: /<select\b/i },
 ];
 
 describe("install selection controls are removed from production code", () => {

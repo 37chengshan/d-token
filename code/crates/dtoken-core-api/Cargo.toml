@@ -9,6 +9,7 @@ repository.workspace = true
 anyhow.workspace = true
 axum.workspace = true
 dtoken-config = { path = "../dtoken-config" }
+dtoken-capability-registry = { path = "../dtoken-capability-registry" }
 dtoken-config-patcher = { path = "../dtoken-config-patcher" }
 dtoken-compress = { path = "../dtoken-compress" }
 dtoken-context-store = { path = "../dtoken-context-store" }

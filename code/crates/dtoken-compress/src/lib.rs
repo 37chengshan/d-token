@@ -1,6 +1,9 @@
 pub mod code_codec;
 pub mod codec_evidence;
 pub mod compressor_registry;
+pub mod strategy_hint;
+
+pub use strategy_hint::compression_strategy_to_policy;
 pub mod content_router;
 pub mod context_pipeline;
 pub mod diff_codec;

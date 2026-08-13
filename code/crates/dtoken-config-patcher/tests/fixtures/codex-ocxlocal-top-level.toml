@@ -1,0 +1,9 @@
+# Real Codex config.toml fixture: top-level `openai_base_url` + `model_catalog_json`
+# (OpenCodex / ocxlocal dynamic model catalog form). There is no
+# [model_providers] table and no model_provider selector; the local OpenAI-
+# compatible Responses proxy owns dynamic model switching and its catalog is
+# referenced by URL. PRD P0.0.10.5 / R2.D require d-token to discover this
+# shape without requiring a fabricated [model_providers].
+model = "gpt-5"
+openai_base_url = "http://127.0.0.1:10100/v1"
+model_catalog_json = "https://models.dev/api.json"

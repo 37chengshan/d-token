@@ -23,7 +23,6 @@ export function Topbar({
 }) {
   const t = useT();
   const current = [...NAV, SETTINGS_NAV].find((item) => item.id === page) ?? NAV[0];
-  const [engaged, setEngaged] = useState(false);
   const [motionToken, setMotionToken] = useState(0);
 
   return (
@@ -37,10 +36,6 @@ export function Topbar({
           setMotionToken((token) => token + 1);
           setCollapsed(!collapsed);
         }}
-        onPointerEnter={() => setEngaged(true)}
-        onPointerLeave={() => setEngaged(false)}
-        onFocus={() => setEngaged(true)}
-        onBlur={() => setEngaged(false)}
         aria-label={collapsed ? t("app.expandSidebar") : t("app.collapseSidebar")}
         title={collapsed ? t("app.expandSidebar") : t("app.collapseSidebar")}
         data-reduced-motion={reducedMotion ? "true" : "false"}
@@ -51,7 +46,6 @@ export function Topbar({
           active={false}
           reducedMotion={reducedMotion}
           expanded={!collapsed}
-          engaged={engaged}
           motionToken={motionToken}
           className="size-4"
         />

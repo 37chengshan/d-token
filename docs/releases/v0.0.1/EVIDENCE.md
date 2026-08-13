@@ -67,7 +67,7 @@
 ## 4. 证据卫生规则
 
 1. artifact 只能由其 tracked producer 生成；producer/schema/registry/corpus digest 必须进入统一 envelope。
-2. 聚合器必须消费显式 artifact path manifest，并逐项复算 SHA-256：移除顶层 `artifact_sha256` 字段，按 UTF-8、对象键字典序、无多余空白的 canonical JSON 序列化后计算小写十六进制 SHA-256，再与字段值精确比较；禁止把自引用字段包含进哈希、信任 producer 自报值，或使用目录扫描、`latest_file()`、mtime、文件名、`status=pass` 选证。
+2. 聚合器必须消费显式 artifact path manifest，并逐项复算 SHA-256；禁止目录扫描、`latest_file()`、mtime、文件名或 `status=pass` 选证。
 3. 候选变化即失效；`candidate_commit`、`source_digest`、registry/corpus/eval/platform 任一不匹配都 blocked。
 4. 截图/Computer evidence 必须来自主代理真实 Tauri/cc-switch 操作，附窗口/坐标/时间；浏览器 preview 不能证明 native/runtime。
 5. 任何 raw prompt/response/PNG/base64/secret/auth/config content 不进入 artifact；只保存 bounded metadata、hash、size、reason、receipt。

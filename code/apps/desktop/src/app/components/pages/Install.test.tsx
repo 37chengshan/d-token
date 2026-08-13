@@ -398,13 +398,9 @@ describe("Install", () => {
     });
 
     render(<Install />);
+    // P0.0.10.3: one click is the authorization — the plan is previewed
+    // internally and applied immediately, no second confirmation.
     fireEvent.click(await screen.findByRole("button", { name: "查看变更" }));
-    expect(await screen.findByText(/传输配置/)).toBeInTheDocument();
-    expect(screen.getByText("+ d-token local provider")).toBeInTheDocument();
-    // The confirm dialog states the rollback boundary alongside target/diff/hash.
-    expect(screen.getByText(/应用前会创建备份与回退点/)).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "确认并连接" }));
-
     await waitFor(() => expect(mocks.invokeNative).toHaveBeenCalledWith(
       "apply_reviewed_managed_agent_transport",
       expect.objectContaining({
@@ -572,10 +568,13 @@ describe("Install", () => {
 
     render(<Install initialAgentId="cline" />);
 
-    // The batch is automatic: no per-Agent include checkbox is rendered and
-    // the onboarding Agent hint never narrows the auto batch to one Agent.
+    // The batch is automatic with Agent-level selection (PRD P0.0.10.1):
+    // every installed Agent renders a selectable checkbox defaulting to
+    // checked; the onboarding hint never narrows the auto batch to one Agent.
     expect(await screen.findByRole("button", { name: "查看变更" })).toBeEnabled();
-    expect(screen.queryByRole("checkbox")).not.toBeInTheDocument();
+    const checkboxes = screen.getAllByRole("checkbox") as HTMLInputElement[];
+    expect(checkboxes.length).toBeGreaterThanOrEqual(2);
+    expect(checkboxes.every((item) => item.checked)).toBe(true);
     expect(screen.getByText("Cline")).toBeInTheDocument();
     expect(screen.getByText("OpenCode")).toBeInTheDocument();
   });

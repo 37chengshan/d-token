@@ -125,7 +125,7 @@ export type ConnectionSetupSnapshot = {
     previous_fingerprint?: string | null;
     changed_sources: string[];
     review_required: boolean;
-    automatic_apply_allowed: false;
+    automatic_apply_allowed: boolean;
     next_poll_not_before_ms: number;
   };
   external_config_snapshot?: {
@@ -135,7 +135,7 @@ export type ConnectionSetupSnapshot = {
       revision: string;
       selection_state: string;
     };
-    automatic_apply_allowed: false;
+    automatic_apply_allowed: boolean;
   };
   agent_route_follow?: {
     schema_version: number;

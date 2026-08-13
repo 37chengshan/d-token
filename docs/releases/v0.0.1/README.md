@@ -1,4 +1,6 @@
-# d-token v0.0.1 最终发布计划包（权威入口）
+# d-token v0.0.1 发布计划包（FROZEN 历史工作集）
+
+> **状态：FROZEN（2026-08-13）**。本九文件包保留尚未吸收的 release 需求、证据索引和本地修改，但当前不是执行入口。当前唯一 Living Plan 是 `docs/PLAN.md`；只有产品恢复阶段 GP-A / GP-B / GP-C 与八页真实用户任务验收通过后，才在 R4 基于当时当前源码重新生成 release lane。禁止直接恢复本包旧 DAG、旧任务状态、旧完成百分比或旧 `.ai-bridge` 路径。
 
 - 计划日期：2026-08-09（首次 2026-08-08；2026-08-09 依四份审计 + OMP 交叉评审修订基线/日期口径）
 - 目标版本：**v0.0.1**（用户指定最终发布目标）
@@ -6,7 +8,7 @@
 - 执行基线：分支 `codex/final-release-iteration`；历史 freeze/HEAD 仅作过程事实，真正执行从 [TASKS.md](./TASKS.md) T-P0 重新冻结 clean `C_final` 开始。
 - 权威输入：`docs/PRD.md`（唯一产品真理源）、`docs/d-token_AI_product_target_spec_v2.md`、`docs/PLAN.md`（唯一 Living Plan）、`docs/product/IMPLEMENTATION_STATUS.md`（代码事实快照）、`.ai-bridge/release-iteration/*`（过程输入，非权威链接）
 
-> 本包是 **v0.0.1 的具体执行分解**，不是新的 Living Plan。`docs/PLAN.md` 仍是仓库唯一 Living Plan；本包只把 v0.0.1 收口阶段的任务、切片、验收与证据索引化。任何执行顺序变化先改本包，再同步 `docs/PLAN.md` 对应节；任何产品边界变化只改 `docs/PRD.md`。
+> 本包现在只作为 **v0.0.1 历史工作集与需求/证据库存**。产品恢复阶段不得从这里启动任务；执行顺序只改 `docs/PLAN.md`，产品边界只改 `docs/PRD.md`。R4 重新开放 release 工作时，再决定吸收、重写或归档本包各文件。
 
 ## 1. 包结构（九文件）
 
@@ -39,7 +41,7 @@
 
 1. 用户已明确指定目标版本 **v0.0.1**，无需再次确认。当前 `0.2.0-beta.1` 仅是尚未执行 V-1 的事实，不构成范围降级。
 2. 切片 V-1 必须在 C0–C8、既有功能/平台切片完成后一次性统一 manifest、PRD 版本门、PLAN/status/CHANGELOG/workflow/check script。
-3. V-1 前不得生成最终候选；V-1 统一版本身份，PR-9/C8C 完成编排与 gate wiring，N0 才冻结 v0.0.1 `C_final`。所有真实候选证据只能在 N0 通过后生成并绑定该 `C_final`；旧版本、旧 commit 或 pre-N0 evidence 全部过期/拒绝。
+3. V-1 前不得生成最终候选；V-1 后新证据只能绑定 v0.0.1 `C_final`，旧版本证据全部过期。
 4. 旧版本字符串只允许存在于 history/archive/CHANGELOG 历史条目。
 
 ## 3. 完成定义（Definition of Done）

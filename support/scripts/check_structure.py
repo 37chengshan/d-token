@@ -173,6 +173,7 @@ DOCS_ROOT_MARKDOWN_ALLOWED = {
     "index.md",
     "agent-mcp-parallel-dev-prompts.md",
     "d-token_AI_product_target_spec_v2.md",
+    "RUNTIME_CAPABILITY_REGISTRY_ARCHITECTURE.md",
 }
 
 ACTIVE_MARKDOWN_ROOTS = [

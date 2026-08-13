@@ -26,12 +26,12 @@ Doctor
 | 正式页面 | 主要代码 | 用户任务 | 当前边界 |
 |---|---|---|---|
 | 总体概览 | `components/pages/Overview.tsx` | 查看 d-token 服务、运行证据、关键指标、近期问题和下一步动作 | 只有 Tauri + d-token-owned runtime 的完整新鲜证据才能显示为真实状态；浏览器预览必须明确标记 |
-| 安装与连接 | `Install.tsx`、`InstallWorkbench.tsx` | 配置 d-token 服务、自动扫描并纳入全部已安装且受支持 Agent、逐 Agent 自动解析链路、聚合预览变更、一次确认、应用、验证 | 当前能保存和应用 d-token 自有 route config；第三方 Agent 自动写入尚未形成完整生产事务 |
+| 安装与连接 | `Install.tsx`、`InstallWorkbench.tsx` | 配置 d-token 服务、自动扫描全部 Agent、已安装受支持项默认勾选且允许取消、逐 Agent 自动解析链路、一次点击配置、后台备份/应用/复读验证、逐 Agent 展示结果 | 当前能保存和应用 d-token 自有 route config；第三方 Agent 自动写入必须按 P0.0.10 的独立事务闭环，不得 whole-batch rollback |
 | 代码图谱（实验性） | `CodebaseMemory.tsx`、`lib/codebaseMemory.ts` | 按当前 manifest/allowlist 导入并校验受支持的图谱组件，打开当前官方 release，自定义目录后自动识别；自动扫描本机 Agent，批量预览/配置/验证/回退 MCP；一键启动并打开 d-token-owned 只读图谱并管理独立索引 | App 不 bundle/下载 upstream；五维状态独立；批量操作必须在 Native 返回前显示 Agent、阶段和 current/total 进度，并在刷新/重启后恢复所有未回退 transaction；大型 artifact 校验、进程与 loopback 工作必须在后台 worker 执行；仅允许当前 manifest/allowlist 绑定的 headless artifact、受限 launcher、`persistence=false` 和短期授权 loopback；旧协议/配置不兼容版本仍 fail-closed；不得直出上游原生 UI，也不得停止 Agent-owned MCP 进程 |
 | 分析 | `Analytics.tsx` | 查看请求、token、路由、延迟和错误的聚合趋势 | 不得把 fixture 或推算值冒充真实账单；估算必须标注 |
 | 视觉压缩（Beta） | `VisualCompression.tsx`、`lib/optical/*` | 一键启用安全 Shadow 默认值；高级配置按 route 调整策略；预览 diff、确认应用与回退；状态与预览查看 status/capabilities/lifecycle/events 与 shadow plan | 信息架构对齐安装工作台（一键 + 高级 + 状态）；仅 shadow/metadata；产品路径强制 `allow_active=false`；写盘走 ConfigPatcher + 服务重启；不渲染 PNG/base64/raw body；节省为估算；Windows/macOS 共享同一 UI |
 | Doctor | `Doctor.tsx` | 自动扫描并修复或仅扫描；使用专项模块修复服务、已有 Agent 接入、路由/Optical/平台等受管项并自动复检 | v3 快照动态判定 freshness；服务和已有管理证据的 Claude Code/Codex/OpenCode Agent Integration 已接 executor，其他模块按 capability 锁定或返回来源流程；Optical Active/cc-switch 写入永远禁止 |
-| 变更与回退 | `Changes.tsx` | 默认查看备份与回滚，预检当前可恢复性；查看已提交的持久变更记录 | 顶级待批/Diff 已移除，Diff 留在写前确认和历史详情；Agent 多文件事务聚合为一个回退点，普通/Agent/Optical 按 `executor_kind` 分发并先创建反向安全备份 |
+| 变更与回退 | `Changes.tsx` | 默认查看备份与回滚，预检当前可恢复性；查看已提交的持久变更记录 | 顶级待批/Diff 已移除；P0.0.10 Agent 自动配置的 Diff/backup/receipt 在后台生成并进入详情/历史，不再作为第二层普通确认；每 Agent 保持独立回退点，普通/Agent/Optical 按 `executor_kind` 分发并先创建反向安全备份 |
 | 设置 | `Settings.tsx` | 管理主题、语言、本地端口、安全、项目策略和应用偏好 | 设置只写 d-token 本地状态，不存储明文凭据或原始 prompt/response |
 
 ## 3. 安装与连接工作台
@@ -40,11 +40,11 @@ Doctor
 
 ```text
 确认服务状态
-→ 自动扫描全部已安装且受支持 Agent
-→ 逐 Agent 自动解析链路（歧义 fail-closed 进入 needs-source-fix）
-→ 聚合预览摘要与 diff
-→ 建立备份/回退点
-→ 明确应用
+→ 自动扫描全部 Agent（已安装受支持项默认勾选，用户可取消）
+→ 逐 Agent 自动解析链路（歧义 fail-closed，不提供 Provider/model/endpoint chooser）
+→ 用户一次点击“配置”授权选中 Agent
+→ 后台逐 Agent 建立 diff / backup / apply / readback verify / receipt
+→ 成功项保持成功，失败项单独回退与重试
 → 验证配置和运行证据
 → 进入 Doctor / 概览 / 日志
 ```
@@ -53,7 +53,7 @@ Doctor
 
 - `InstallWorkbench.tsx`：安装与连接主工作台。
 - `SmartLearning.tsx`：项目发现、评分、深度扫描和 managed block 方向；未完成 native 事务前必须 fail closed。
-- `Advanced.tsx`：高级 Provider、Route、项目策略和实验能力入口。
+- `Advanced.tsx`：高级 d-token 运行参数、网络/可靠性、项目策略和诊断入口；不得提供 Provider/model/protocol/endpoint/cc-switch profile chooser。
 - `LogsSecurity.tsx`：日志、安全与导出能力。
 - `Compatibility.tsx`：Agent/协议/平台兼容信息。
 
@@ -73,7 +73,7 @@ Doctor
 8. 读取 Optical 观测切片（status/capabilities/lifecycle/events）并运行 shadow preview public summary（Tauri → loopback）。
 9. 通过 `get_optical_config_editor` / `preview_optical_config_change` / `apply_optical_config_change` 编辑 active config 的 optical 全局与 route 策略（shadow-only，强制关闭 active）。
 10. 在 debug build 中运行内部 OpenCode/benchmark/smoke 验证；release build 不注册这些开发命令。
-11. 通过代码图谱页读取 package/integration/agent session/UI session/index 五维证据；先完成用户导入与固定校验，再以显式项目范围驱动本机 Agent 扫描、自动纳入全部已安装且受支持 Agent 的整批 MCP 配置、索引与只读图谱页面。按钮不可用时必须就地显示阻塞原因。
+11. 通过代码图谱页读取 package/integration/agent session/UI session/index 五维证据；先完成用户导入与固定校验，再以显式项目范围驱动本机 Agent 扫描；已安装且受支持 Agent 默认勾选并允许用户取消，按选中 Agent 执行独立 MCP 配置事务、索引与只读图谱页面。按钮不可用时必须就地显示阻塞原因。
 
 ## 5. 尚未完成的产品闭环
 

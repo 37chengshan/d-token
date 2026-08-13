@@ -1096,6 +1096,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "dtoken-capability-registry"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "dtoken-codebase-memory"
 version = "0.2.0-beta.1"
 dependencies = [
@@ -1189,6 +1197,7 @@ version = "0.2.0-beta.1"
 dependencies = [
  "anyhow",
  "axum",
+ "dtoken-capability-registry",
  "dtoken-compress",
  "dtoken-config",
  "dtoken-config-patcher",

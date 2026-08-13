@@ -1,23 +1,25 @@
 # d-token 文档导航
 
-更新时间：2026-07-26
+更新时间：2026-08-13
 
-本页是 `docs/` 的唯一导航入口。当前事实、执行计划、历史证据和归档材料必须分开理解。当前 `0.2.0-beta.1` 仅是 macOS ARM64 / Windows x64 的未签名技术预览，不是已签名、公证或公开发布的安装包；系统安全警告、不可用能力与未完成的发布门禁均以 README、变更记录和实现状态为准。
+本页是 `docs/` 的唯一导航入口。当前事实、执行计划、历史证据和归档材料必须分开理解。当前仓库处于“产品恢复模式”：先收敛首次使用、一键配置、cc-switch 日常跟随和八页真实用户任务，再重新生成发布 lane。旧 release DAG、旧完成百分比和旧审计结论不得覆盖当前源码与当前验证事实。
 
 ## 1. 当前必读
 
-1. [`PRD.md`](PRD.md) — 唯一产品真理源：产品边界、信息架构、安全要求和验收标准。
-2. [`PLAN.md`](PLAN.md) — 唯一 Living Plan：当前实施顺序、发布阻断和下一步。
-3. [`releases/v0.0.1/README.md`](releases/v0.0.1/README.md) — v0.0.1 最终发布计划包（权威入口）：九文件执行分解、版本冲突（VERSION-0）、切片 DAG、验证门（N0–N9/G0–G9）与证据索引。
-4. [`product/IMPLEMENTATION_STATUS.md`](product/IMPLEMENTATION_STATUS.md) — 2026-07-15 按实际源码与最终本地门整理的当前能力与限制。
-5. [`ARCHITECTURE.md`](ARCHITECTURE.md) — Rust-owned runtime、Tauri 桌面壳和本地服务架构。
-6. [`TECH_STACK.md`](TECH_STACK.md) — Windows/macOS 技术选型和平台边界。
-7. [`SECURITY_BOUNDARIES.md`](SECURITY_BOUNDARIES.md) — loopback、凭据、脱敏、配置写入和进程边界。
-8. [`APP_FUNCTIONS_AND_PAGES.md`](APP_FUNCTIONS_AND_PAGES.md) — 当前八个一级页面（含视觉压缩 Beta 与代码图谱实验页）与实际代码组件映射。
-9. [`../CHANGELOG.md`](../CHANGELOG.md) — 未签名技术预览的版本措辞、用户可见变化与已知限制。
-10. [`../SECURITY.md`](../SECURITY.md) — 漏洞报告、支持范围、系统安全警告与发布完整性策略。
-11. [`../THIRD_PARTY_NOTICES.md`](../THIRD_PARTY_NOTICES.md) — 面向源码与安装包分发的第三方声明。
-12. [`../LICENSE`](../LICENSE) — d-token 项目的 Apache License 2.0 授权文本。
+1. [`PRD.md`](PRD.md) — 唯一产品真理源：产品边界、信息架构、安全要求和验收标准；自动配置优先看 P0.0.10 最新条款。
+2. [`PLAN.md`](PLAN.md) — 唯一 Living Plan：当前处于产品恢复模式，按 Golden Path 串行收敛。
+3. [`product/IMPLEMENTATION_STATUS.md`](product/IMPLEMENTATION_STATUS.md) — 当前能力与限制快照；如与当前源码/测试冲突，以当前源码和当前验证为事实依据并回写本文件。
+4. [`../.ai-bridge/release-iteration/README.md`](../.ai-bridge/release-iteration/README.md) — 本轮 Agent 协作入口：PRODUCT_CONTRACT / PLAN / TASKS 与旧 release-iteration 归档说明。
+5. [`releases/v0.0.1/README.md`](releases/v0.0.1/README.md) — 保留中的 v0.0.1 旧执行工作集；当前存在未吸收本地修改，产品恢复门通过前不是当前执行入口，也不得覆盖 `PLAN.md`。
+6. [`ARCHITECTURE.md`](ARCHITECTURE.md) — Rust-owned runtime、Tauri 桌面壳和本地服务架构。
+7. [`RUNTIME_CAPABILITY_REGISTRY_ARCHITECTURE.md`](RUNTIME_CAPABILITY_REGISTRY_ARCHITECTURE.md) — Runtime Capability Registry（R2.E 通用 Agent 压缩层）落地架构：开源调研结论、三层能力注册表、每请求管线、未知模型处理、与现有 crate 映射。
+7. [`TECH_STACK.md`](TECH_STACK.md) — Windows/macOS 技术选型和平台边界。
+8. [`SECURITY_BOUNDARIES.md`](SECURITY_BOUNDARIES.md) — loopback、凭据、脱敏、配置写入和进程边界。
+9. [`APP_FUNCTIONS_AND_PAGES.md`](APP_FUNCTIONS_AND_PAGES.md) — 当前八个一级页面（含视觉压缩 Beta 与代码图谱实验页）与实际代码组件映射。
+10. [`../CHANGELOG.md`](../CHANGELOG.md) — 未签名技术预览的版本措辞、用户可见变化与已知限制。
+11. [`../SECURITY.md`](../SECURITY.md) — 漏洞报告、支持范围、系统安全警告与发布完整性策略。
+12. [`../THIRD_PARTY_NOTICES.md`](../THIRD_PARTY_NOTICES.md) — 面向源码与安装包分发的第三方声明。
+13. [`../LICENSE`](../LICENSE) — d-token 项目的 Apache License 2.0 授权文本。
 
 ## 2. 当前代码与产品专题
 
@@ -79,20 +81,21 @@
 - Optical V6、早期 Phase A 报告和 review round 1–4。
 - 根目录 Agent 会话文件 `task_plan.md`、`findings.md`、`progress.md`。
 - `support/` 根目录重复 notes、placeholder 和仓库整理过程文件。
+- 2026-08-12 旧 Living Plan 已归档到 `archive/release/2026-08-12-PLAN-pre-product-recovery.md`；旧 release-iteration 蓝图/DAG/审计集中到 `.ai-bridge/release-iteration/archive/2026-08-12-pre-recovery/`。
 
 ## 7. 文档优先级
 
 发生冲突时按以下顺序处理：
 
 ```text
-实际源码与当前测试证据
-→ docs/PRD.md
-→ docs/PLAN.md
-→ docs/product/IMPLEMENTATION_STATUS.md
+用户最新明确要求
+→ docs/PRD.md（产品边界与验收合同）
+→ docs/PLAN.md（唯一 Living Plan）
+→ 当前源码与当前测试证据 / docs/product/IMPLEMENTATION_STATUS.md（实现事实）
 → ARCHITECTURE / TECH_STACK / SECURITY_BOUNDARIES
 → 当前专题文档
 → history/
 → archive/
 ```
 
-产品边界不能仅凭代码偶然实现改变；如源码与 PRD 冲突，必须明确记录差异并决定改代码还是改 PRD，禁止静默选择历史文档。
+产品边界不能仅凭代码偶然实现改变；如源码与 PRD 冲突，必须明确记录差异并决定改代码还是改 PRD。实现是否完成则必须以当前源码、当前测试与必要真实验收为证据，禁止从历史文档继承完成状态。

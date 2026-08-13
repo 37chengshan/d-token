@@ -2,7 +2,7 @@
 document_id: d-token-product-target-spec
 document_version: 2.1
 status: draft
-authority: product-direction-ssot
+authority: product-direction-input
 audience:
   - ai-planning-agent
   - product-agent
@@ -13,7 +13,7 @@ target_versions:
   - 0.2.0-beta.1
   - 0.3
   - 0.4
-updated_at: 2026-08-05
+updated_at: 2026-08-12
 language: zh-CN
 ---
 
@@ -21,7 +21,9 @@ language: zh-CN
 
 > 文档类型：AI 可执行产品目标规格  
 > 适用范围：产品规划、架构设计、PRD 拆分、实现计划、代码审查、发布验收  
-> 权威级别：产品方向事实来源；不代表所有能力已经实现
+> 权威级别：长期产品方向输入；不代表所有能力已经实现，也不覆盖 `docs/PRD.md` / `docs/PLAN.md`
+
+当前权威顺序：用户最新明确要求 → `docs/PRD.md` 最新高优先级条款 → `docs/PLAN.md` → 当前源码/测试事实。本文件用于补充长期方向、版本分层和审查视角；与 PRD/PLAN 冲突时必须服从当前 PRD/PLAN。
 
 ---
 
@@ -326,46 +328,50 @@ d-token 不是另一个功能庞杂的 AI Gateway。
 
 #### 目标
 
-用户首次打开 d-token 后，在一个连续流程中完成发现、授权、连接、测试和价值验证。
+用户首次打开 d-token 后，在一个连续流程中完成发现、选择 Agent、一次授权、配置、验证和价值验证。普通用户只需要选择要配置的 Agent 并点击一次「配置」；不得要求用户理解本地服务、provider、route、model、cc-switch、协议、端口、adapter 或凭据引用。
 
 #### MUST
 
-1. 扫描支持的 Agent 可执行文件和配置；
-2. 扫描用户级与项目级配置；
-3. 扫描 cc-switch 配置及当前选择；
-4. 区分：
-   - 可自动接入；
-   - 仅可检测；
-   - 不支持；
-   - 状态未知；
-5. 显示当前 Provider、模型、配置来源和最后更新时间；
-6. 让用户选择需要接入的 Agent；
-7. 写入前展示 Diff；
-8. 创建恢复点；
-9. 应用配置并重新读取验证；
-10. 发起真实连通性测试；
+1. 扫描正式支持矩阵中的完整 Agent 清单，每项显示「已安装 / 未安装 / 已配置 / 未配置 / 配置失败」；
+2. 未安装项不可勾选；已安装项默认全部勾选；已配置项保持勾选；用户可以取消不想配置的 Agent；
+3. 用户点击一次「配置」即构成本次明确授权并直接执行，不再出现第二层 Diff、风险或备份确认弹窗；d-token 在后台完成计划、脱敏 Diff、backup、apply、复读验证、恢复点和 receipt，这些证据可从详情、日志和变更与回退查看；正常结果只显示「配置成功」；
+4. 已配置且未变化的 Agent 只重新验证，不重复写入或重启；
+5. 每个 Agent 拥有独立 plan、backup、apply、verify、rollback 和 receipt；某个 Agent 失败时只回退该 Agent 本次未完成的写入，其他已成功 Agent 保持成功；失败项显示简短原因和单独「重试」，不得整批回退成功项；
+6. 要求支持的 Agent 必须完成真实扫描、配置、复读验证、路由证据和恢复能力闭环；任一要求适配的 Agent 未闭环即 `release_ready=false`，不得以「等待安全适配」「仅检测」「来源冲突」「暂不支持自动配置」作为最终交付状态；
+7. 三类上游运行模型全部自动适配：
+   - `agent_managed_auth`：OpenCode Free、GPT/ChatGPT、Claude 等账号/OAuth 登录以及 Agent 已有 API Key，认证继续由原 Agent/官方客户端持有；d-token 不要求重复登录或重复录入凭据，也不持久化 token/cookie/Authorization；
+   - `dynamic_local_proxy`：OpenCodex 等本地动态代理可在同一会话中选择多个模型；d-token 固定接入代理链并原样透传每次请求的 model 与 Responses/Chat 协议语义；多模型是正常能力，不是来源冲突；
+   - `cc_switch_managed`：Provider/profile/model 切换由 cc-switch 管理；d-token 只读监控 cc-switch 并自动同步自有 route/runtime，不要求用户在 d-token 重选或重复配置；
+8. 不提供 Provider、上游、模型、协议、endpoint 或 cc-switch profile 选择器；d-token 根据上述三类运行模型自动保持 Agent 当前实际运行语义；
+9. 普通页面只显示结果语言：「配置成功 / 配置失败」；不出现 `needs-source-fix`、来源冲突、等待安全适配、adapter、route 或 credential reference；无法配置时显示该 Agent「配置失败」、一条用户可执行说明和「重试」，技术证据进入详情与日志；
+10. 发起真实连通性测试，必须是真实 routed-flow，禁止模拟请求冒充；
 11. 生成首份 Optimization Receipt；
 12. 清晰说明如何恢复。
 
 #### SHOULD
 
 - 自动填写可以可靠发现的信息；
-- 支持跳过部分 Agent；
 - 首次失败时直接进入对应 Doctor 诊断；
 - 首次流程结束后进入简洁 Overview。
 
 #### 禁止
 
-- 未经确认写入配置；
-- 把无法识别的 Agent 标记为已接入；
+- 未经用户点击「配置」授权写入配置（「配置」按钮即本次明确授权，除此之外无隐式写入）；
+- 把未安装、无法识别或未闭环适配的 Agent 标记为已接入或配置成功；
 - 使用模拟请求冒充真实连通性测试；
+- 提供 Agent / Provider / 模型 / 协议 / endpoint / cc-switch profile 的 chooser；
 - 首屏展示大量内部技术术语。
 
 #### 验收标准
 
-- 用户无需手动寻找已支持 Agent 的配置路径；
-- 至少一个支持的 Agent 可以完成真实 routed-flow；
-- Provider 和模型在测试前后保持符合用户选择；
+- 用户无需手动寻找已支持 Agent 的配置路径；完整 Agent 清单按「已安装 / 未安装 / 已配置」展示，未安装项不可勾选，已安装项默认全选，用户可取消；
+- 所有选中 Agent 逐项完成真实 routed-flow、复读 verify、restore 路径与 receipt 验收；任一要求适配的 Agent 未闭环即 `release_ready=false`；
+- 每个选中 Agent 拥有独立结果与单项「重试」，部分失败不撤销其他成功项；
+- 认证由 Agent 自持（账号/OAuth/API key），d-token 不重复录入、不持久化凭据；
+- OpenCodex 动态代理多模型 passthrough 保持原协议语义，模型不固定为安装时值；
+- cc-switch 只读自动跟随 d-token route/runtime，d-token 不写 cc-switch；
+- 全程无 Provider / model / protocol / endpoint / profile chooser；
+- 普通 UI 无 `needs-source-fix` / 来源冲突 / 等待安全适配 / 仅检测最终状态；
 - 配置备份、写入验证和恢复路径均可验证；
 - 首次流程结束时存在真实 Receipt。
 
@@ -577,7 +583,7 @@ post_action_verification:
 
 #### 目标
 
-用户只需要正常使用 Agent 和 cc-switch；d-token 负责感知变化、保持 Runtime 一致、记录证据并避免配置冲突。
+用户只需要正常使用 Agent 和 cc-switch；d-token 负责感知变化、保持 Runtime 一致、记录证据并避免配置冲突。用户只选择要配置的 Agent 并点击一次「配置」即完成授权；Provider、模型、协议、endpoint 与 cc-switch profile 一律由 d-token 自动解析与跟随，不提供 chooser。
 
 #### 发现范围
 
@@ -586,48 +592,42 @@ post_action_verification:
 - 项目级配置；
 - 环境变量；
 - MCP 配置；
-- cc-switch 配置；
+- cc-switch 配置（数据库、WAL/SHM、profile metadata、多 active candidate、schema 状态、脱敏 endpoint、credential-present、fingerprint、revision）；
 - 当前 Provider；
 - 当前模型；
-- Base URL；
+- 协议与 Base URL；
 - 配置来源；
 - 文件变更；
 - d-token 管理状态。
 
-#### 模式
+#### 上游运行模型
 
-##### 跟随模式
-
-经用户授权后，d-token 跟随 cc-switch 当前上游选择。
-
-##### 锁定模式
-
-d-token 保持当前上游；外部变化仅提醒，不自动覆盖。
-
-##### 观察模式
-
-d-token 只检测和展示变化，不修改配置或 Runtime。
+1. `agent_managed_auth`：OpenCode Free、GPT/ChatGPT、Claude 等账号/OAuth 登录以及 Agent 已有 API Key，认证继续由原 Agent/官方客户端持有；d-token 不要求重复登录或重复录入凭据，也不持久化 Agent 的 token/cookie/Authorization；
+2. `dynamic_local_proxy`：OpenCodex 等本地动态代理允许同一会话按请求切换多个模型；d-token 固定接入代理链并原样透传每次请求的 model 与 Responses/Chat 协议语义，不把多模型判定为冲突，模型不固定为安装时值；
+3. `cc_switch_managed`：cc-switch 是只读外部观察源，d-token 不写其数据库、配置或凭据；Provider/profile/model/endpoint 变化后，d-token 自动同步自有 route/runtime，用户无需再次选择或确认。
 
 #### MUST
 
-1. 检测配置变化；
-2. 尽可能识别变更来源；
-3. 更新只读状态；
-4. 根据用户策略决定是否同步；
-5. Provider 与模型保持显式；
-6. 记录切换前后状态；
-7. 冲突时请求用户选择；
-8. 无法确认时不得自动覆盖；
-9. 配置修改采用事务与恢复机制；
-10. Runtime 状态与磁盘配置分别记录。
+1. 自动定位并只读监控 cc-switch 常见配置、数据库、WAL/SHM 与当前 profile；不显示或写入密钥原文；无法读取时记录内部诊断，但不得把「来源冲突」作为正常用户流程；
+2. 用户首次点击「配置」即授权 d-token 在不修改 cc-switch 的前提下持续只读跟随其当前生效配置：监控已确认的数据库、WAL/SHM、profile metadata 和父目录，采用 750ms debounce、单飞刷新和 5–15 秒 polling fallback；
+3. cc-switch 的 Provider、模型、协议、endpoint 或 profile 变化后，d-token 自动更新自己的 route/runtime，用户无需重新点击配置或确认；不显示 `out-of-sync` 作为正常流程；
+4. 每次同步仍在后台生成备份、复读验证、receipt 和 Event Ledger 记录，并提供一键恢复；Runtime 使用原子 route snapshot：旧请求继续使用旧快照，新请求使用新快照；reload 失败保留 last-known-good；
+5. 每个 Agent 拥有独立 plan、backup、apply、verify、rollback 和 receipt；某个 Agent 失败时只回退该 Agent 本次未完成的写入，其他已成功 Agent 保持成功；失败项显示简短原因和单独「重试」，不得整批回退成功项；
+6. 不提供 Provider、上游、模型、协议、endpoint 或 cc-switch profile 选择器；d-token 根据三类上游运行模型自动保持被选 Agent 当前实际运行链路；
+7. 普通 UI 只显示结果语言：「配置成功 / 配置失败」；不出现 `needs-source-fix`、来源冲突、等待安全适配、adapter、route 或 credential reference；无法配置时显示该 Agent「配置失败」、一条用户可执行说明和「重试」，技术证据进入详情与日志；
+8. 配置修改采用事务与恢复机制；写入只涉及 d-token-owned 字段，不写 cc-switch；凭据不得进入普通日志、配置、导出或提交；
+9. 要求支持的 Agent 必须完成真实扫描、配置、复读验证、路由证据和恢复能力闭环；任一要求适配的 Agent 未闭环即 `release_ready=false`，不得以「等待安全适配」「仅检测」「来源冲突」作为最终交付状态。
 
 #### 验收标准
 
-- 用户通过 cc-switch 切换后，d-token 能识别当前状态；
-- 跟随模式下 Runtime 与授权选择保持一致；
-- 锁定模式下外部变化不会静默覆盖 d-token；
-- 观察模式下不发生任何写入；
-- 冲突事件进入 Event Ledger；
+- 用户通过 cc-switch 切换 Provider/profile/模型/endpoint 后，d-token 自动同步 route/runtime 且不要求重新配置；cc-switch 全程只读，d-token 不写其数据库、配置或凭据；
+- 所有选中 Agent 逐项具备真实 routed-flow、复读 verify、restore 路径与 receipt 证据；任一要求适配的 Agent 未闭环阻断发布；
+- 每个选中 Agent 拥有独立结果与单项「重试」，部分失败不撤销其他成功项；
+- 认证由 Agent 自持（账号/OAuth/API key），d-token 不重复录入、不持久化凭据；
+- OpenCodex 多模型 passthrough 保持原协议语义，模型不固定为安装时值；
+- 全程无 Provider / model / protocol / endpoint / profile chooser；
+- 普通 UI 无 `needs-source-fix` / 来源冲突 / 等待安全适配 / 仅检测最终状态；
+- 配置、同步与恢复事件进入 Event Ledger；
 - 用户可查看变更来源、时间和结果。
 
 ---

@@ -9,6 +9,7 @@ import type { Health } from "../runtime/types";
 import type { NativeActionLog } from "../native";
 import type { AgentUpstreamBinding, ConnectionSetupSnapshot } from "../connectionSetup";
 import {
+  canJoinInstallBatch,
   type InstallAgentReceipt,
   type InstallMachineEvent,
   type InstallMachineState,
@@ -194,6 +195,9 @@ export function InstallView(props: InstallViewProps) {
                     transportBusy={transportBusyAgent === binding.agent_id}
                     onConfigure={() => onConfigureAgent(binding)}
                     onClear={() => onClearAgent(binding)}
+                    selected={machine.selectedAgentIds.includes(binding.agent_id)}
+                    onToggle={() => dispatch({ type: "TOGGLE_AGENT", agentId: binding.agent_id })}
+                    selectable={canJoinInstallBatch(binding)}
                   />
                 ))}
                 {primaryBindings.length === 0 && visibleBindings.length > 0 && (
@@ -222,6 +226,9 @@ export function InstallView(props: InstallViewProps) {
                           transportBusy={transportBusyAgent === binding.agent_id}
                           onConfigure={() => onConfigureAgent(binding)}
                           onClear={() => onClearAgent(binding)}
+                          selected={machine.selectedAgentIds.includes(binding.agent_id)}
+                          onToggle={() => dispatch({ type: "TOGGLE_AGENT", agentId: binding.agent_id })}
+                          selectable={canJoinInstallBatch(binding)}
                         />
                       ))}
                     </div>

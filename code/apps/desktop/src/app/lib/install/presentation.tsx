@@ -12,6 +12,9 @@ function AgentBindingRow({
   transportBusy,
   onConfigure,
   onClear,
+  selected,
+  onToggle,
+  selectable,
 }: {
   binding: AgentUpstreamBinding;
   lang: "zh" | "en";
@@ -19,6 +22,13 @@ function AgentBindingRow({
   transportBusy: boolean;
   onConfigure: () => void;
   onClear: () => void;
+  /** Agent-level batch selection (PRD P0.0.10.1): installed Agents default
+   *  to selected, the user may cancel any of them, unselectable Agents are
+   *  disabled. This is the only selection control; provider/model/upstream
+   *  are never chosen here. */
+  selected?: boolean;
+  onToggle?: () => void;
+  selectable?: boolean;
 }) {
   const presentation = presentBinding(binding, lang);
   const isMcpOrHook = binding.integration_kind === "mcp" || binding.integration_kind === "hook";
@@ -44,6 +54,19 @@ function AgentBindingRow({
   // tool-level access, never route evidence or compression.
   return (
     <div className="grid gap-3 py-3 md:grid-cols-[minmax(0,1fr)_minmax(220px,0.8fr)_auto_auto] md:items-center">
+      {onToggle && (
+        <label className="flex items-center justify-self-start">
+          <input
+            type="checkbox"
+            checked={selected ?? false}
+            disabled={selectable === false}
+            onChange={onToggle}
+            aria-label={lang === "zh" ? `选择配置 ${binding.agent_name}` : `Select ${binding.agent_name} for setup`}
+            className="size-4"
+          />
+          <span className="sr-only">{lang === "zh" ? "纳入一键配置批次" : "Include in the one-click setup batch"}</span>
+        </label>
+      )}
       <div className="min-w-0">
         <div className="flex flex-wrap items-center gap-2">
           <span className="font-medium">{binding.agent_name}</span>

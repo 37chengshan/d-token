@@ -216,10 +216,9 @@ describe("Install OpenCode guarded transaction", () => {
     render(<Install />);
     expect(await screen.findByText("OpenCode")).toBeInTheDocument();
     expect(screen.queryByText("Cline")).not.toBeInTheDocument();
+    // P0.0.10.3: one click is the authorization — preview + apply run back to
+    // back; the redacted diff evidence lives in the Changes & Rollback page.
     fireEvent.click(await screen.findByRole("button", { name: "查看变更" }));
-    expect(await screen.findByText(/before before-hash/)).toBeInTheDocument();
-    expect(screen.getByText(/before route-befo/)).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "确认并连接" }));
 
     await waitFor(() => expect(invokeNative).toHaveBeenCalledWith("apply_connection_route_plan", {
       request: {

@@ -627,15 +627,42 @@ struct SetCcSwitchAutoFollowRequest {
     source_fingerprint: Option<String>,
 }
 
+/// Exact upstream identity a credential must bind to. Used by the OpenCode
+/// Install credential flow: candidate id alone is ambiguous (slug twins like
+/// `foo-bar`/`foo_bar`/`foo.bar` and same-id candidates from different
+/// sources or endpoints must never share a keyring account), so store and
+/// delete derive the account from the full triple. `endpoint` is normalized
+/// native-side; the frontend submits the raw candidate endpoint.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+struct CredentialUpstreamIdentityRequest {
+    candidate_id: String,
+    source: String,
+    endpoint: String,
+}
+
 #[derive(Deserialize)]
 struct StoreProviderCredentialRequest {
     provider_id: String,
     credential: String,
+    /// Exact identity mode: when supplied, the store re-runs enriched
+    /// discovery, requires `discovery_revision` to match, finds the exact
+    /// OpenCode candidate tuple, requires `auth_mode != none` and an exact
+    /// normalized endpoint/source match, then stores under the canonical
+    /// identity account. `provider_id` alone is never accepted in this
+    /// mode.
+    #[serde(default)]
+    upstream_identity: Option<CredentialUpstreamIdentityRequest>,
+    #[serde(default)]
+    discovery_revision: Option<String>,
 }
 
 #[derive(Deserialize)]
 struct DeleteProviderCredentialRequest {
     provider_id: String,
+    /// Exact identity mode for removal. No migration or fallback to old
+    /// colliding id-slug accounts is ever performed.
+    #[serde(default)]
+    upstream_identity: Option<CredentialUpstreamIdentityRequest>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -7975,13 +8002,19 @@ fn authorizable_cc_switch_upstream_signatures(discovery: &Value) -> Result<Vec<S
 fn cc_switch_follow_decision(
     authorization: &CcSwitchAutoFollowAuthorization,
     identity: &CcSwitchRouteIdentity,
+    current_source_fingerprint: &str,
 ) -> &'static str {
-    if !authorization
-        .authorized_upstream_signatures
-        .contains(&identity.upstream_signature)
-    {
-        "reauthorization_required"
-    } else if authorization.last_synced_route_signature.as_deref()
+    // App-level authorization (PRD P0.0.10.6): the cc-switch source fingerprint
+    // is the authorized identity boundary. Within the authorized source every
+    // provider/model/protocol/endpoint change follows automatically; only an
+    // unapproved source (different cc-switch DB) requires reauthorization.
+    if !authorization.enabled {
+        return "reauthorization_required";
+    }
+    if authorization.authorized_source_fingerprint != current_source_fingerprint {
+        return "reauthorization_required";
+    }
+    if authorization.last_synced_route_signature.as_deref()
         == Some(identity.route_signature.as_str())
     {
         "unchanged"
@@ -8208,7 +8241,7 @@ fn execute_cc_switch_auto_follow() -> Value {
     // fresh evaluation.
     authorization.last_observed_source_fingerprint = Some(request.source_fingerprint.clone());
     authorization.last_observed_route_signature = Some(identity.route_signature.clone());
-    let follow_decision = cc_switch_follow_decision(&authorization, &identity);
+    let follow_decision = cc_switch_follow_decision(&authorization, &identity, &request.source_fingerprint);
     if follow_decision == "reauthorization_required" {
         authorization.last_sync_state = "reauthorization_required".to_string();
         let _ = save_cc_switch_auto_follow_authorization(&authorization);
@@ -10865,8 +10898,11 @@ fn reject_symlink_components(path: &Path) -> Result<(), String> {
 
 #[tauri::command]
 async fn discover_upstream_candidates() -> Value {
-    tauri::async_runtime::spawn_blocking(upstream_discovery::discover)
-        .await
+    tauri::async_runtime::spawn_blocking(|| {
+        let auto_follow = load_agent_auto_follow_authorization().enabled;
+        upstream_discovery::discover_with_auto_follow(auto_follow)
+    })
+    .await
         .map(enrich_upstream_discovery)
         .unwrap_or_else(|error| {
             json!({
@@ -17481,7 +17517,7 @@ mod tests {
             last_sync_state: "applied_verified".to_string(),
         };
         assert_eq!(
-            cc_switch_follow_decision(&authorization, &initial),
+            cc_switch_follow_decision(&authorization, &initial, "cc-a"),
             "unchanged"
         );
 
@@ -17494,7 +17530,7 @@ mod tests {
         );
         assert_ne!(model_change.route_signature, initial.route_signature);
         assert_eq!(
-            cc_switch_follow_decision(&authorization, &model_change),
+            cc_switch_follow_decision(&authorization, &model_change, "cc-a"),
             "sync_required"
         );
 
@@ -17508,7 +17544,7 @@ mod tests {
         let known_switch =
             cc_switch_active_route_identity(&discovery).expect("known provider switch");
         assert_eq!(
-            cc_switch_follow_decision(&authorization, &known_switch),
+            cc_switch_follow_decision(&authorization, &known_switch, "cc-a"),
             "sync_required",
             "a provider present in the reviewed identity set may follow"
         );
@@ -17517,9 +17553,11 @@ mod tests {
             json!("https://attacker.example.test/v1");
         let new_endpoint =
             cc_switch_active_route_identity(&discovery).expect("new endpoint identity");
+        // App-level authorization (PRD P0.0.10.6): within the authorized
+        // cc-switch source, endpoint/provider changes follow automatically.
         assert_eq!(
-            cc_switch_follow_decision(&authorization, &new_endpoint),
-            "reauthorization_required"
+            cc_switch_follow_decision(&authorization, &new_endpoint, "cc-a"),
+            "sync_required"
         );
 
         discovery["cc_switch_sync"]["active_upstreams"][0] = json!({
@@ -17532,8 +17570,8 @@ mod tests {
         let new_protocol =
             cc_switch_active_route_identity(&discovery).expect("new protocol identity");
         assert_eq!(
-            cc_switch_follow_decision(&authorization, &new_protocol),
-            "reauthorization_required"
+            cc_switch_follow_decision(&authorization, &new_protocol, "cc-a"),
+            "sync_required"
         );
     }
 

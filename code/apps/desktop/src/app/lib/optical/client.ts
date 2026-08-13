@@ -77,6 +77,7 @@ function pickCapabilities(data: unknown): OpticalCapabilities | null {
     artifact_post_validation: asBool(object.artifact_post_validation),
     signed_multimodal_accounting: asBool(object.signed_multimodal_accounting),
     capability_attestation_required: asBool(object.capability_attestation_required),
+    tool_schema_normalization: asBool(object.tool_schema_normalization),
   };
 }
 

@@ -25,6 +25,7 @@ vi.mock("../../lib/useRuntimeDashboard", () => ({
 }));
 
 import { I18nContext } from "../../lib/i18n";
+import { resetInstallMachineState } from "../../lib/installMachine";
 import { OnboardingPage } from "./Onboarding";
 import type { AgentUpstreamBinding, ConnectionSetupSnapshot } from "../../lib/connectionSetup";
 
@@ -158,6 +159,7 @@ async function advance(user: ReturnType<typeof userEvent.setup>, times: number) 
 }
 
 beforeEach(() => {
+  resetInstallMachineState();
   mocks.connectionSetup.mockReturnValue({ snapshot: null, status: "idle", error: "", refresh: vi.fn().mockResolvedValue(null) });
   mocks.runtimeSlice.mockReturnValue(runningRuntime);
 });
@@ -167,6 +169,207 @@ afterEach(() => {
   vi.unstubAllGlobals();
   mocks.invokeNative.mockReset();
   vi.restoreAllMocks();
+});
+
+describe("OnboardingPage five-step contract", () => {
+  it("renders exactly five steps with no standalone upstream step", async () => {
+    mocks.connectionSetup.mockReturnValue({ snapshot: detectedSnapshot, status: "ready", error: "", refresh: vi.fn().mockResolvedValue(null) });
+    const { user } = renderPage();
+
+    await user.click(screen.getByRole("button", { name: "开始引导" }));
+
+    const stepper = screen.getByRole("list", { name: /第 2 步/ });
+    expect(within(stepper).queryByRole("button", { name: /上游/ })).not.toBeInTheDocument();
+    for (const name of [/欢迎/, /本地服务/, /Agent/, /配置/, /验证/]) {
+      expect(within(stepper).getByRole("button", { name })).toBeInTheDocument();
+    }
+  });
+
+  it("locks every later step until the service is really running", async () => {
+    mocks.connectionSetup.mockReturnValue({ snapshot: detectedSnapshot, status: "ready", error: "", refresh: vi.fn().mockResolvedValue(null) });
+    mocks.runtimeSlice.mockReturnValue({
+      payload: null,
+      status: "stopped",
+      operational: { service: { data: { state: "stopped", pid_running: false, managed: true, service_url: "" } } },
+      updatedAt: null,
+    });
+    const { user } = renderPage();
+
+    await user.click(screen.getByRole("button", { name: "开始引导" }));
+
+    // The stepper cannot skip ahead to agents/config/verify.
+    expect(screen.getByRole("button", { name: /Agent/ })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /配置/ })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /验证/ })).toBeDisabled();
+    // "下一步" cannot bypass the gate either; it is visibly disabled.
+    expect(screen.getByRole("button", { name: "下一步" })).toBeDisabled();
+    await user.click(screen.getByRole("button", { name: "下一步" }));
+    expect(screen.getByRole("button", { name: "启动并检查本地服务" })).toBeInTheDocument();
+  });
+
+  it("keeps the config step locked while discovery is still running", async () => {
+    mocks.connectionSetup.mockReturnValue({ snapshot: null, status: "discovering", error: "", refresh: vi.fn().mockResolvedValue(null) });
+    const { user } = renderPage();
+
+    await user.click(screen.getByRole("button", { name: "开始引导" }));
+    await advance(user, 1); // service → agents
+
+    expect(screen.getByRole("button", { name: /配置/ })).toBeDisabled();
+    await user.click(screen.getByRole("button", { name: "下一步" }));
+    expect(screen.getByText(/正在检查首次配置状态/)).toBeInTheDocument();
+  });
+
+  it("unlocks the verify step only after the user starts the one-click setup", async () => {
+    mocks.connectionSetup.mockReturnValue({ snapshot: autoBatchSnapshot, status: "ready", error: "", refresh: vi.fn().mockResolvedValue(null) });
+    const { user, onStartSetup } = renderPage();
+
+    await user.click(screen.getByRole("button", { name: "开始引导" }));
+    await advance(user, 2); // service → agents → config
+
+    expect(screen.getByRole("button", { name: /验证/ })).toBeDisabled();
+    expect(screen.queryByRole("button", { name: "完成引导" })).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "开始一键配置" }));
+    expect(onStartSetup).toHaveBeenCalledTimes(1);
+    await advance(user, 1);
+    expect(screen.getByRole("button", { name: "完成引导" })).toBeEnabled();
+  });
+
+  it("does not unlock later steps after a failed service start", async () => {
+    mocks.connectionSetup.mockReturnValue({ snapshot: detectedSnapshot, status: "ready", error: "", refresh: vi.fn().mockResolvedValue(null) });
+    mocks.runtimeSlice.mockReturnValue({
+      payload: null,
+      status: "stopped",
+      operational: { service: { data: { state: "stopped", pid_running: false, managed: true, service_url: "" } } },
+      updatedAt: null,
+    });
+    const onStartService = vi.fn().mockResolvedValue({ ok: false, summary: "transaction failed", refreshed: false });
+    const { user } = renderPage({ onStartService });
+
+    await user.click(screen.getByRole("button", { name: "开始引导" }));
+    await user.click(screen.getByRole("button", { name: "启动并检查本地服务" }));
+    await waitFor(() => expect(screen.getByText(/启动失败或状态刷新未确认/)).toBeInTheDocument());
+
+    expect(screen.getByRole("button", { name: /Agent/ })).toBeDisabled();
+    expect(screen.queryByRole("button", { name: "完成引导" })).not.toBeInTheDocument();
+  });
+
+  it("shows the real service transaction stages on the service step", async () => {
+    mocks.connectionSetup.mockReturnValue({ snapshot: detectedSnapshot, status: "ready", error: "", refresh: vi.fn().mockResolvedValue(null) });
+    let resolveStart!: (value: { ok: boolean; summary: string; refreshed: boolean }) => void;
+    const pending = new Promise<{ ok: boolean; summary: string; refreshed: boolean }>((resolve) => { resolveStart = resolve; });
+    const { user } = renderPage({ onStartService: vi.fn().mockReturnValue(pending) });
+
+    await user.click(screen.getByRole("button", { name: "开始引导" }));
+
+    // The service step exposes the real transaction stages, not a bare button.
+    expect(screen.getByText("启动本地服务")).toBeInTheDocument();
+    expect(screen.getByText("确认运行状态")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "启动并检查本地服务" }));
+    expect(screen.getByText("启动本地服务")).toBeInTheDocument();
+
+    resolveStart({ ok: true, summary: "runtime started", refreshed: true });
+    await waitFor(() => expect(screen.getByText("服务已启动，状态已刷新")).toBeInTheDocument());
+  });
+
+  it("shows installed Agents as selectable checkboxes defaulting to checked", async () => {
+    mocks.connectionSetup.mockReturnValue({ snapshot: autoBatchSnapshot, status: "ready", error: "", refresh: vi.fn().mockResolvedValue(null) });
+    const { user } = renderPage();
+
+    await user.click(screen.getByRole("button", { name: "开始引导" }));
+    await advance(user, 1); // service → agents
+
+    const checkboxes = screen.getAllByRole("checkbox");
+    expect(checkboxes).toHaveLength(2);
+    expect(checkboxes[0]).toBeChecked();
+    expect(checkboxes[1]).toBeChecked();
+    // Read-only listing assertion from the old contract is replaced by real
+    // selection controls; the old "no checkbox" guard test is updated.
+  });
+
+  it("lets the user cancel an Agent and updates the config batch count", async () => {
+    mocks.connectionSetup.mockReturnValue({ snapshot: autoBatchSnapshot, status: "ready", error: "", refresh: vi.fn().mockResolvedValue(null) });
+    const { user } = renderPage();
+
+    await user.click(screen.getByRole("button", { name: "开始引导" }));
+    await advance(user, 1);
+
+    const checkboxes = screen.getAllByRole("checkbox");
+    await user.click(checkboxes[1]); // uncheck Codex
+    expect(checkboxes[1]).not.toBeChecked();
+
+    await advance(user, 1); // → config
+    expect(screen.getByText("本次将自动配置 1 个 Agent")).toBeInTheDocument();
+  });
+
+  it("keeps a conflict/unsupported Agent disabled and not selectable", async () => {
+    mocks.connectionSetup.mockReturnValue({ snapshot: detectedSnapshot, status: "ready", error: "", refresh: vi.fn().mockResolvedValue(null) });
+    const { user } = renderPage();
+
+    await user.click(screen.getByRole("button", { name: "开始引导" }));
+    await advance(user, 1);
+
+    const checkboxes = screen.getAllByRole("checkbox");
+    expect(checkboxes[0]).toBeChecked(); // opencode auto-included
+    expect(checkboxes[1]).toBeDisabled(); // codex needs-credential, not selectable
+  });
+
+  it("blocks one-click setup when every Agent is deselected", async () => {
+    mocks.connectionSetup.mockReturnValue({ snapshot: autoBatchSnapshot, status: "ready", error: "", refresh: vi.fn().mockResolvedValue(null) });
+    const { user, onStartSetup } = renderPage();
+
+    await user.click(screen.getByRole("button", { name: "开始引导" }));
+    await advance(user, 1);
+
+    for (const checkbox of screen.getAllByRole("checkbox")) {
+      await user.click(checkbox);
+    }
+    await advance(user, 1);
+
+    expect(screen.getByRole("button", { name: "开始一键配置" })).toBeDisabled();
+    expect(onStartSetup).not.toHaveBeenCalled();
+  });
+
+  it("applies the onboarding selection to the one-click setup batch", async () => {
+    mocks.connectionSetup.mockReturnValue({ snapshot: autoBatchSnapshot, status: "ready", error: "", refresh: vi.fn().mockResolvedValue(null) });
+    const { user, onStartSetup } = renderPage();
+
+    await user.click(screen.getByRole("button", { name: "开始引导" }));
+    await advance(user, 1);
+    await user.click(screen.getAllByRole("checkbox")[1]); // uncheck Codex
+    await advance(user, 1);
+
+    await user.click(screen.getByRole("button", { name: "开始一键配置" }));
+    expect(onStartSetup).toHaveBeenCalledTimes(1);
+    // The store selection survives into the workbench; the setup entry carries no id.
+  });
+
+  it("unlocks verify only after one-click setup with a selection", async () => {
+    mocks.connectionSetup.mockReturnValue({ snapshot: autoBatchSnapshot, status: "ready", error: "", refresh: vi.fn().mockResolvedValue(null) });
+    const { user } = renderPage();
+
+    await user.click(screen.getByRole("button", { name: "开始引导" }));
+    await advance(user, 1);
+    await user.click(screen.getAllByRole("checkbox")[1]);
+    await advance(user, 1);
+
+    expect(screen.getByRole("button", { name: "开始一键配置" })).toBeEnabled();
+    await user.click(screen.getByRole("button", { name: "开始一键配置" }));
+    await advance(user, 1);
+    expect(screen.getByRole("button", { name: "完成引导" })).toBeEnabled();
+  });
+
+  it("keeps the stage presentation static under reduced motion", async () => {
+    mocks.connectionSetup.mockReturnValue({ snapshot: detectedSnapshot, status: "ready", error: "", refresh: vi.fn().mockResolvedValue(null) });
+    const { user, container } = renderPage({ reducedMotion: true });
+
+    await user.click(screen.getByRole("button", { name: "开始引导" }));
+
+    expect(container.querySelector("[data-reduced-motion='true']")).toBeInTheDocument();
+    expect(screen.getByText("启动本地服务")).toBeInTheDocument();
+    expect(container.querySelector(".animate-spin")).toBeNull();
+  });
 });
 
 describe("OnboardingPage first-run states", () => {
@@ -192,24 +395,26 @@ describe("OnboardingPage first-run states", () => {
 
     await advance(user, 1);
     expect(screen.getByText("已检测到 2 个 Agent")).toBeInTheDocument();
-    // The Agent step is a read-only batch listing: no radio/select/checkbox.
+    // The Agent step offers Agent-level selection checkboxes (default checked)
+    // but no provider/upstream chooser: no radio/select/combobox.
+    expect(screen.getAllByRole("checkbox")).toHaveLength(2);
     expect(screen.queryByRole("radio")).not.toBeInTheDocument();
-    expect(screen.queryByRole("checkbox")).not.toBeInTheDocument();
     expect(screen.queryByRole("combobox")).not.toBeInTheDocument();
     expect(screen.getByText("OpenCode")).toBeInTheDocument();
     expect(screen.getByText("Codex")).toBeInTheDocument();
 
-    await advance(user, 1);
-    expect(screen.getByText("已检测到 1 个上游候选")).toBeInTheDocument();
-
+    // Upstream facts are folded into the config step, never a standalone step.
     await advance(user, 1);
     expect(screen.getByRole("heading", { name: "检测摘要" })).toBeInTheDocument();
+    expect(screen.getByText("已检测到 1 个上游候选")).toBeInTheDocument();
     const summary = screen.getByRole("region", { name: "检测摘要" });
     expect(summary).toHaveTextContent("OpenCode");
     expect(summary).toHaveTextContent("Codex");
     expect(screen.getByRole("button", { name: "复制检测摘要" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "开始一键配置" })).toBeInTheDocument();
 
+    // The verify step unlocks only after the user starts the one-click setup.
+    await user.click(screen.getByRole("button", { name: "开始一键配置" }));
     await advance(user, 1);
     expect(screen.getByRole("button", { name: "完成引导" })).toBeEnabled();
     expect(screen.getByRole("button", { name: "进入安装与连接完成验证" })).toBeEnabled();
@@ -220,7 +425,9 @@ describe("OnboardingPage first-run states", () => {
     const { user } = renderPage();
 
     await user.click(screen.getByRole("button", { name: "开始引导" }));
-    await advance(user, 4);
+    await advance(user, 2);
+    await user.click(screen.getByRole("button", { name: "开始一键配置" }));
+    await advance(user, 1);
 
     expect(within(screen.getByRole("group", { name: "检测结果" })).getByText("证据成立")).toBeInTheDocument();
     expect(within(screen.getByRole("group", { name: "接入声明" })).getByText("证据成立")).toBeInTheDocument();
@@ -239,7 +446,9 @@ describe("OnboardingPage first-run states", () => {
     const { user } = renderPage();
 
     await user.click(screen.getByRole("button", { name: "开始引导" }));
-    await advance(user, 4);
+    await advance(user, 2);
+    await user.click(screen.getByRole("button", { name: "开始一键配置" }));
+    await advance(user, 1);
 
     const verified = screen.getByRole("group", { name: "验证证据" });
     expect(within(verified).getByText("未知")).toBeInTheDocument();
@@ -256,7 +465,9 @@ describe("OnboardingPage first-run states", () => {
     const { user } = renderPage();
 
     await user.click(screen.getByRole("button", { name: "开始引导" }));
-    await advance(user, 4);
+    await advance(user, 2);
+    await user.click(screen.getByRole("button", { name: "开始一键配置" }));
+    await advance(user, 1);
 
     expect(within(screen.getByRole("group", { name: "检测结果" })).getByText("证据成立")).toBeInTheDocument();
     const connected = screen.getByRole("group", { name: "接入声明" });
@@ -269,29 +480,30 @@ describe("OnboardingPage first-run states", () => {
     expect(screen.queryByText("连接已验证")).not.toBeInTheDocument();
   });
 
-  it("reports discovery unavailable as unknown instead of fabricating evidence", async () => {
+  it("reports discovery unavailable as unknown and keeps the config step locked", async () => {
     mocks.connectionSetup.mockReturnValue({ snapshot: null, status: "unavailable", error: "connection_setup_unavailable", refresh: vi.fn().mockResolvedValue(null) });
     const { user } = renderPage();
 
     await user.click(screen.getByRole("button", { name: "开始引导" }));
-    await advance(user, 4);
+    await advance(user, 1); // service → agents
 
-    for (const name of ["检测结果", "接入声明", "验证证据"]) {
-      const evidence = screen.getByRole("group", { name });
-      expect(within(evidence).getByText("未知")).toBeInTheDocument();
-      expect(evidence).toHaveAttribute("data-evidence-health", "muted");
-    }
-    expect(screen.getByRole("button", { name: "完成引导" })).toBeEnabled();
+    // Discovery unavailable is surfaced honestly; the config step stays locked.
+    expect(screen.getByText("状态不可用")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /配置/ })).toBeDisabled();
+    await user.click(screen.getByRole("button", { name: "下一步" }));
+    expect(screen.getByRole("button", { name: /配置/ })).toBeDisabled();
   });
 
-  it("shows the browser-preview banner and blocks writes when native is unavailable", async () => {
+  it("shows the browser-preview banner and keeps later steps locked when native is unavailable", async () => {
     mocks.connectionSetup.mockReturnValue({ snapshot: null, status: "unavailable", error: "", refresh: vi.fn().mockResolvedValue(null) });
     const { user } = renderPage({ gateState: "unavailable" });
 
     expect(screen.getByText(/浏览器预览/)).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "开始引导" }));
-    await advance(user, 4);
-    expect(screen.getByRole("button", { name: "完成引导" })).toBeDisabled();
+    // Preview mode never fabricates a running service, so later steps stay locked.
+    expect(screen.getByRole("button", { name: /Agent/ })).toBeDisabled();
+    await user.click(screen.getByRole("button", { name: "下一步" }));
+    expect(screen.getByRole("button", { name: "启动并检查本地服务" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "稍后再说" })).toBeEnabled();
   });
 
@@ -301,13 +513,13 @@ describe("OnboardingPage first-run states", () => {
     const { user } = renderPage();
 
     await user.click(screen.getByRole("button", { name: "开始引导" }));
-    await advance(user, 4);
+    await advance(user, 2); // → config
 
-    const detected = screen.getByRole("group", { name: "检测结果" });
-    expect(within(detected).getByText("未通过")).toBeInTheDocument();
-    expect(detected).toHaveAttribute("data-evidence-health", "warning");
-    expect(within(screen.getByRole("group", { name: "接入声明" })).getByText("未知")).toBeInTheDocument();
-    expect(within(screen.getByRole("group", { name: "验证证据" })).getByText("未知")).toBeInTheDocument();
+    // No Agent is selectable, so one-click setup is blocked and the wizard
+    // never fabricates a green/verified state.
+    expect(screen.getByText("本次将自动配置 0 个 Agent")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "开始一键配置" })).toBeDisabled();
+    expect(screen.queryByRole("button", { name: "完成引导" })).not.toBeInTheDocument();
   });
   it("re-entering a completed wizard starts at welcome and keeps the full flow browsable", async () => {
     mocks.connectionSetup.mockReturnValue({ snapshot: connectedSnapshot, status: "ready", error: "", refresh: vi.fn().mockResolvedValue(null) });
@@ -316,7 +528,9 @@ describe("OnboardingPage first-run states", () => {
     expect(screen.getByRole("heading", { level: 1, name: "欢迎使用 d-token" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "开始引导" })).toBeEnabled();
     await user.click(screen.getByRole("button", { name: "开始引导" }));
-    await advance(user, 4);
+    await advance(user, 2);
+    await user.click(screen.getByRole("button", { name: "开始一键配置" }));
+    await advance(user, 1);
     expect(screen.getByRole("group", { name: "检测结果" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "完成引导" })).toBeEnabled();
 
@@ -335,7 +549,9 @@ describe("OnboardingPage actions", () => {
     expect(screen.queryByRole("button", { name: "完成引导" })).not.toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "开始引导" }));
-    await advance(user, 4);
+    await advance(user, 2);
+    await user.click(screen.getByRole("button", { name: "开始一键配置" }));
+    await advance(user, 1);
     await user.click(screen.getByRole("button", { name: "完成引导" }));
     expect(failingComplete).toHaveBeenCalledTimes(1);
     expect(onDismiss).toBeDefined();
@@ -348,7 +564,7 @@ describe("OnboardingPage actions", () => {
     const { user, onStartSetup } = renderPage();
 
     await user.click(screen.getByRole("button", { name: "开始引导" }));
-    await advance(user, 3);
+    await advance(user, 2);
     await user.click(screen.getByRole("button", { name: "开始一键配置" }));
 
     expect(onStartSetup).toHaveBeenCalledWith();
@@ -363,12 +579,12 @@ describe("OnboardingPage actions", () => {
     expect(screen.getAllByText("可自动纳入")).toHaveLength(2);
     expect(screen.queryByText("来源冲突")).not.toBeInTheDocument();
 
-    await advance(user, 2);
+    await advance(user, 1);
     await user.click(screen.getByRole("button", { name: "开始一键配置" }));
     expect(onStartSetup).toHaveBeenCalledWith();
   });
 
-  it("keeps an auto-resolved Agent without a verified write action blocked", async () => {
+  it("keeps an auto-resolved Agent without a verified write action blocked but unblocks the batch", async () => {
     const blockedSnapshot: ConnectionSetupSnapshot = {
       ...autoBatchSnapshot,
       agent_bindings: autoBatchSnapshot.agent_bindings.map((item) => item.agent_id === "codex"
@@ -381,9 +597,12 @@ describe("OnboardingPage actions", () => {
     await user.click(screen.getByRole("button", { name: "开始引导" }));
     await advance(user, 1);
     expect(screen.getByText("来源冲突")).toBeInTheDocument();
-    await advance(user, 2);
-    expect(screen.getByRole("button", { name: "开始一键配置" })).toBeDisabled();
-    expect(onStartSetup).not.toHaveBeenCalled();
+    // The unsupported Agent is not selectable; the supported Agent's batch
+    // still runs (P0.0.10.1: one unsupported Agent never blocks the rest).
+    await advance(user, 1);
+    expect(screen.getByRole("button", { name: "开始一键配置" })).toBeEnabled();
+    await user.click(screen.getByRole("button", { name: "开始一键配置" }));
+    expect(onStartSetup).toHaveBeenCalledTimes(1);
   });
 
   it("shows the automatic batch count and per-Agent current provider/model/protocol/endpoint/target", async () => {
@@ -391,7 +610,7 @@ describe("OnboardingPage actions", () => {
     const { user } = renderPage();
 
     await user.click(screen.getByRole("button", { name: "开始引导" }));
-    await advance(user, 3);
+    await advance(user, 2);
 
     expect(screen.getByText("本次将自动配置 2 个 Agent")).toBeInTheDocument();
     expect(screen.getByText("OpenCode")).toBeInTheDocument();
@@ -408,7 +627,7 @@ describe("OnboardingPage actions", () => {
     expect(screen.getByText("/home/user/.codex/config.json")).toBeInTheDocument();
   });
 
-  it("blocks the whole one-click batch when any Agent has a source conflict", async () => {
+  it("keeps one-click setup enabled when a non-selectable Agent has a source conflict", async () => {
     mocks.connectionSetup.mockReturnValue({ snapshot: detectedSnapshot, status: "ready", error: "", refresh: vi.fn().mockResolvedValue(null) });
     const { user, onStartSetup } = renderPage();
 
@@ -418,10 +637,12 @@ describe("OnboardingPage actions", () => {
     expect(screen.getByText("来源冲突")).toBeInTheDocument();
     expect(screen.getByText("修复来源后重新扫描")).toBeInTheDocument();
 
-    await advance(user, 2);
-    expect(screen.getByRole("button", { name: "开始一键配置" })).toBeDisabled();
-    expect(screen.getByText(/一键配置已阻断/)).toBeInTheDocument();
-    expect(onStartSetup).not.toHaveBeenCalled();
+    // The conflicting Agent is not selectable; it does not block the selected
+    // batch (P0.0.10.1 independent results).
+    await advance(user, 1);
+    expect(screen.getByRole("button", { name: "开始一键配置" })).toBeEnabled();
+    await user.click(screen.getByRole("button", { name: "开始一键配置" }));
+    expect(onStartSetup).toHaveBeenCalledTimes(1);
   });
 
   it("notes next to one-click setup that the next screen shows a diff and asks for confirmation", async () => {
@@ -429,7 +650,7 @@ describe("OnboardingPage actions", () => {
     const { user } = renderPage();
 
     await user.click(screen.getByRole("button", { name: "开始引导" }));
-    await advance(user, 3);
+    await advance(user, 2);
 
     expect(screen.getByRole("button", { name: "开始一键配置" })).toBeInTheDocument();
     expect(screen.getByText(/先展示配置 diff 与备份摘要/)).toBeInTheDocument();
@@ -441,7 +662,9 @@ describe("OnboardingPage actions", () => {
     const { user, onStartSetup } = renderPage();
 
     await user.click(screen.getByRole("button", { name: "开始引导" }));
-    await advance(user, 4);
+    await advance(user, 2);
+    await user.click(screen.getByRole("button", { name: "开始一键配置" }));
+    await advance(user, 1);
 
     await user.click(screen.getByRole("button", { name: "进入安装与连接完成验证" }));
     expect(onStartSetup).toHaveBeenCalledWith();
@@ -554,7 +777,7 @@ describe("OnboardingPage actions", () => {
     vi.stubGlobal("navigator", { ...navigator, clipboard: { writeText } });
 
     await user.click(screen.getByRole("button", { name: "开始引导" }));
-    await advance(user, 3);
+    await advance(user, 2);
 
     await user.click(screen.getByRole("button", { name: "复制检测摘要" }));
     await waitFor(() => expect(writeText).toHaveBeenCalledTimes(1));
@@ -579,7 +802,9 @@ describe("OnboardingPage i18n, keyboard, and reduced motion", () => {
     const { user, onComplete } = renderPage();
 
     await user.click(screen.getByRole("button", { name: "开始引导" }));
-    await advance(user, 4);
+    await advance(user, 2);
+    await user.click(screen.getByRole("button", { name: "开始一键配置" }));
+    await advance(user, 1);
 
     const complete = screen.getByRole("button", { name: "完成引导" });
     complete.focus();

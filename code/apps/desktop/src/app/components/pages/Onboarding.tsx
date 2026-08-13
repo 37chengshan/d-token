@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useSyncExternalStore, useState } from "react";
 import { AlertTriangle, CheckCircle2, ClipboardCopy, Copy, RefreshCw, Rocket, ShieldAlert } from "lucide-react";
 import { useI18n, useT } from "../../lib/i18n";
 import { useConnectionSetup, type AgentUpstreamBinding, type ConnectionSetupSnapshot } from "../../lib/connectionSetup";
@@ -6,8 +6,9 @@ import { useRuntimeDashboardSelector, shallowEqualSlice, type RuntimeDashboardSt
 import { connectionDiscoveryCounts, presentServiceInstance, safeText } from "../../lib/install/presentation";
 import type { DtokenServiceStatus } from "../../lib/install/presentation";
 import type { OnboardingGateState } from "../../lib/onboarding";
-import { canJoinInstallBatch } from "../../lib/installMachine";
+import { canJoinInstallBatch, dispatchInstallMachine, getInstallMachineState, subscribeInstallMachine } from "../../lib/installMachine";
 import { Surface, FlatRows, FlatRow } from "../common/Surface";
+import { StepProgress } from "../common/StepProgress";
 import { StatusBadge } from "../common/StatusBadge";
 import { Button } from "../ui/button";
 import { cn } from "../ui/utils";
@@ -21,15 +22,22 @@ import { cn } from "../ui/utils";
  * Install & Connect page. Completion is only ever a user-confirmed action that
  * persists the first-config marker in the d-token settings store.
  *
- * The wizard is a 6-step guided flow: welcome (value + two modes) → service →
- * agents → upstream → config preview → verify/complete. Step position is local
- * component state so re-entering a completed wizard still starts at welcome
- * and lets the user browse every step again; the completed marker only decides
- * whether the wizard auto-opens on launch, it never freezes the flow.
+ * The wizard is a 5-step guided flow: welcome → service → agents →
+ * config (upstream facts folded in, no standalone upstream step) → verify.
+ * Step position is local component state so re-entering a completed wizard
+ * still starts at welcome and lets the user browse every step again; the
+ * completed marker only decides whether the wizard auto-opens on launch, it
+ * never freezes the flow.
+ *
+ * Steps unlock only on real state, never on intent: agents requires the local
+ * service to be really running, config additionally requires discovery to
+ * have completed, and verify requires the user to have started the one-click
+ * setup. The stepper and "下一步" both respect the same gates; a locked step
+ * cannot be entered by clicking.
  */
 
-/** The six wizard steps; index doubles as the active-step state. */
-const STEP_KEYS = ["welcome", "service", "agents", "upstream", "config", "verify"] as const;
+/** The five wizard steps; index doubles as the active-step state. */
+const STEP_KEYS = ["welcome", "service", "agents", "config", "verify"] as const;
 type StepKey = (typeof STEP_KEYS)[number];
 const TOTAL_STEPS = STEP_KEYS.length;
 
@@ -180,14 +188,41 @@ export function OnboardingPage({
   const { lang } = useI18n();
   const { snapshot, status: discoveryStatus, refresh: refreshDiscovery } = useConnectionSetup();
   const runtimeSlice = useRuntimeDashboardSelector(selectRuntimeSlice, shallowEqualSlice);
+  // The selectable Agent batch lives in the installMachine store (the same
+  // store the Install workbench consumes), so onboarding selection survives
+  // navigation into the one-click flow.
+  const selectedAgentIds = useSyncExternalStore(subscribeInstallMachine, getInstallMachineState).selectedAgentIds;
+  // Keep the installMachine store in sync with the discovery snapshot this
+  // wizard consumes: the store is the single source for the selectable batch
+  // and its default selections (installed Agents default to checked). The
+  // reducer is idempotent for an unchanged revision, so polls preserve any
+  // user opt-out.
+  useEffect(() => {
+    if (snapshot) dispatchInstallMachine({ type: "DISCOVERED", snapshot });
+  }, [snapshot]);
 
   // Local step state: re-entering a completed wizard still starts at welcome.
   const [step, setStep] = useState<StepKey>("welcome");
+  const CONFIG_STARTED_KEY = "d-token.onboarding.config-started";
+  const [configStarted, setConfigStarted] = useState(() => {
+    try {
+      return window.sessionStorage.getItem(CONFIG_STARTED_KEY) === "1";
+    } catch {
+      return false;
+    }
+  });
   const [copied, setCopied] = useState(false);
   const [serviceAction, setServiceAction] = useState<{ phase: "idle" | "loading" | "success" | "error"; summary: string }>({
     phase: "idle",
     summary: "",
   });
+  const serviceStages = useMemo(
+    () => [
+      { key: "start", label: t("onb.service.stage.start") },
+      { key: "confirm", label: t("onb.service.stage.confirm") },
+    ],
+    [t],
+  );
 
   const serviceStatus = runtimeSlice.operational?.service?.data as DtokenServiceStatus | null;
   const restartRequired = serviceStatus?.state === "restart_required" || serviceStatus?.restart_required === true;
@@ -216,8 +251,13 @@ export function OnboardingPage({
     () => visibleBindings.map((binding) => ({ binding, status: agentBatchStatus(binding, t) })),
     [t, visibleBindings],
   );
-  const autoIncludableCount = batchStatuses.filter(({ status }) => status.autoIncludable).length;
-  const batchBlocked = batchStatuses.some(({ status }) => status.conflict);
+  // A conflict blocks the batch only when the conflicting Agent is actually
+  // selected. Conflict-only Agents render disabled (not selectable) and never
+  // block the user's chosen batch — consistent with P0.0.10.1 independent
+  // results: one unsupported Agent must not block every other Agent.
+  const batchBlocked = batchStatuses.some(
+    ({ binding, status }) => status.conflict && selectedAgentIds.includes(binding.agent_id),
+  );
   const ccSwitchStatus = snapshot?.cc_switch_sync?.detected
     ? t("onb.upstream.ccSwitchDetected")
     : t("onb.upstream.ccSwitchNone");
@@ -264,7 +304,27 @@ export function OnboardingPage({
           : null,
   );
 
-  const goNext = () => setStep((current) => STEP_KEYS[Math.min(STEP_KEYS.indexOf(current) + 1, TOTAL_STEPS - 1)]);
+  // Real-state unlock gates. A step is enterable only when its prerequisite
+  // fact holds; locked steps are not reachable via the stepper or "下一步".
+  const discoveryReady = !discovering && !discoveryUnavailable;
+  const canEnterStep = (key: StepKey): boolean => {
+    switch (key) {
+      case "welcome":
+      case "service":
+        return true;
+      case "agents":
+        return !nativeUnavailable && serviceOnline;
+      case "config":
+        return !nativeUnavailable && serviceOnline && discoveryReady;
+      case "verify":
+        return !nativeUnavailable && configStarted;
+    }
+  };
+
+  const goNext = () => {
+    const next = STEP_KEYS[Math.min(STEP_KEYS.indexOf(step) + 1, TOTAL_STEPS - 1)];
+    if (next !== step && canEnterStep(next)) setStep(next);
+  };
   const goPrev = () => setStep((current) => STEP_KEYS[Math.max(STEP_KEYS.indexOf(current) - 1, 0)]);
 
   const handleCopy = async () => {
@@ -317,6 +377,16 @@ export function OnboardingPage({
         return (
           <div className="space-y-3">
             <p className="text-sm leading-relaxed text-muted-foreground">{t("onb.service.desc")}</p>
+            <Surface>
+              <div className="p-4">
+                <StepProgress
+                  steps={serviceStages}
+                  current={serviceAction.phase === "loading" ? 0 : 1}
+                  done={serviceAction.phase === "success"}
+                  reducedMotion={reducedMotion}
+                />
+              </div>
+            </Surface>
             <Surface>
               <FlatRows>
                 <FlatRow className="items-center gap-4">
@@ -373,21 +443,34 @@ export function OnboardingPage({
                     </div>
                     {!discovering && !discoveryUnavailable && batchStatuses.length > 0 && (
                       <ul className="mt-2 grid gap-2" aria-label={t("onb.agents.heading")}>
-                        {batchStatuses.map(({ binding, status }) => (
-                          <li
-                            key={binding.agent_id}
-                            className="flex items-center gap-2 rounded-lg border border-border/60 bg-card/60 px-3 py-2 text-xs text-muted-foreground"
-                          >
-                            <span className="min-w-0 flex-1 truncate font-medium text-foreground">{binding.agent_name || binding.agent_id}</span>
-                            <span className={cn("inline-flex items-center gap-1", status.autoIncludable ? "text-emerald-600" : "text-rose-600")}>
-                              {status.autoIncludable ? <CheckCircle2 aria-hidden="true" className="size-3" /> : <AlertTriangle aria-hidden="true" className="size-3" />}
-                              {status.label}
-                            </span>
-                            {status.conflict && (
-                              <span className="text-xs text-amber-600" title={t("onb.agents.conflictFix")}>{t("onb.agents.conflictFix")}</span>
-                            )}
-                          </li>
-                        ))}
+                        {batchStatuses.map(({ binding, status }) => {
+                          const selectable = canJoinInstallBatch(binding);
+                          const checked = selectedAgentIds.includes(binding.agent_id);
+                          return (
+                            <li
+                              key={binding.agent_id}
+                              className="flex items-center gap-2 rounded-lg border border-border/60 bg-card/60 px-3 py-2 text-xs text-muted-foreground"
+                            >
+                              <label className="flex min-w-0 flex-1 cursor-pointer items-center gap-2">
+                                <input
+                                  type="checkbox"
+                                  checked={checked}
+                                  disabled={!selectable}
+                                  onChange={() => dispatchInstallMachine({ type: "TOGGLE_AGENT", agentId: binding.agent_id })}
+                                  aria-label={t("onb.agents.select", { name: binding.agent_name || binding.agent_id })}
+                                />
+                                <span className="min-w-0 flex-1 truncate font-medium text-foreground">{binding.agent_name || binding.agent_id}</span>
+                              </label>
+                              <span className={cn("inline-flex items-center gap-1", status.autoIncludable ? "text-emerald-600" : "text-rose-600")}>
+                                {status.autoIncludable ? <CheckCircle2 aria-hidden="true" className="size-3" /> : <AlertTriangle aria-hidden="true" className="size-3" />}
+                                {status.label}
+                              </span>
+                              {status.conflict && (
+                                <span className="text-xs text-amber-600" title={t("onb.agents.conflictFix")}>{t("onb.agents.conflictFix")}</span>
+                              )}
+                            </li>
+                          );
+                        })}
                       </ul>
                     )}
                   </div>
@@ -409,10 +492,10 @@ export function OnboardingPage({
           </div>
         );
 
-      case "upstream":
+      case "config": {
         return (
           <div className="space-y-3">
-            <p className="text-sm leading-relaxed text-muted-foreground">{t("onb.upstream.desc")}</p>
+            <p className="text-sm leading-relaxed text-muted-foreground">{t("onb.config.desc")}</p>
             <Surface>
               <FlatRows>
                 <FlatRow className="items-center gap-4">
@@ -432,17 +515,10 @@ export function OnboardingPage({
                 </FlatRow>
               </FlatRows>
             </Surface>
-          </div>
-        );
-
-      case "config":
-        return (
-          <div className="space-y-3">
-            <p className="text-sm leading-relaxed text-muted-foreground">{t("onb.config.desc")}</p>
             <Surface className="overflow-hidden">
               <section role="region" aria-labelledby="onboarding-config-batch">
                 <h2 id="onboarding-config-batch" className="px-4 pt-4 text-sm font-medium text-foreground">
-                  {t("onb.config.batchCount", { count: autoIncludableCount })}
+                  {t("onb.config.batchCount", { count: selectedAgentIds.length })}
                 </h2>
                 <div className="px-4 pb-4 pt-2">
                   {batchStatuses.map(({ binding, status }) => {
@@ -500,11 +576,24 @@ export function OnboardingPage({
                 {copied ? <CheckCircle2 aria-hidden="true" className="size-4 text-emerald-600" /> : <Copy aria-hidden="true" className="size-4" />}
                 {copied ? t("onb.config.copied") : t("onb.config.copy")}
               </Button>
-              <Button type="button" onClick={() => onStartSetup()} disabled={batchBlocked || nativeUnavailable}>{t("onb.config.start")}</Button>
+              <Button
+                type="button"
+                onClick={() => {
+                  setConfigStarted(true);
+                  try {
+                    window.sessionStorage.setItem(CONFIG_STARTED_KEY, "1");
+                  } catch { /* non-persistent context */ }
+                  onStartSetup();
+                }}
+                disabled={batchBlocked || nativeUnavailable || selectedAgentIds.length === 0}
+              >
+                {t("onb.config.start")}
+              </Button>
             </div>
             <p className="text-xs text-muted-foreground">{t("onb.config.startDesc")}</p>
           </div>
         );
+      }
 
       case "verify": {
         const evidence = [
@@ -577,13 +666,15 @@ export function OnboardingPage({
           <li key={key} className="flex items-center gap-1.5">
             <button
               type="button"
-              onClick={() => setStep(key)}
+              onClick={() => canEnterStep(key) && setStep(key)}
+              disabled={!canEnterStep(key)}
               aria-current={key === step ? "step" : undefined}
               className={cn(
                 "inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs transition-colors",
                 key === step
                   ? "border-primary/40 bg-primary/10 font-medium text-foreground"
                   : "border-border/60 bg-card/40 text-muted-foreground hover:bg-card/70 hover:text-foreground",
+                !canEnterStep(key) && "cursor-not-allowed opacity-40 hover:bg-card/40",
               )}
             >
               <span className={cn(
@@ -608,7 +699,13 @@ export function OnboardingPage({
       {step === "welcome" || step === "verify" ? null : (
         <div className="mt-6 flex flex-wrap items-center gap-3">
           <Button type="button" variant="ghost" onClick={goPrev}>{t("onb.prev")}</Button>
-          <Button type="button" onClick={goNext}>{t("onb.next")}</Button>
+          <Button
+            type="button"
+            onClick={goNext}
+            disabled={!canEnterStep(STEP_KEYS[Math.min(STEP_KEYS.indexOf(step) + 1, TOTAL_STEPS - 1)])}
+          >
+            {t("onb.next")}
+          </Button>
         </div>
       )}
 

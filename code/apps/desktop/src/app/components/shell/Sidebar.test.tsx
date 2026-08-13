@@ -1,5 +1,5 @@
 import "@testing-library/jest-dom/vitest";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Sidebar } from "./Sidebar";
 import { I18nContext } from "../../lib/i18n";
@@ -192,7 +192,7 @@ describe("Sidebar", () => {
     expect(iconAfterClick).toHaveAttribute("data-motion-play", "true");
     expect(setPage).toHaveBeenCalledWith("analytics");
   });
-  it("reports pointer hover and keyboard focus as icon engagement", () => {
+  it("keeps hover purely CSS-driven without writing data-motion-play", () => {
     render(
       <Sidebar
         page="overview"
@@ -203,21 +203,39 @@ describe("Sidebar", () => {
       />,
     );
     const settings = screen.getByRole("button", { name: "设置" });
-    const icon = () =>
-      settings.querySelector('[data-motion-id="settings"]');
-    expect(icon()).toHaveAttribute("data-motion-engaged", "false");
+    const icon = () => settings.querySelector('[data-motion-id="settings"]');
     expect(icon()).toHaveAttribute("data-motion-play", "false");
-
     fireEvent.pointerEnter(settings);
-    expect(icon()).toHaveAttribute("data-motion-engaged", "true");
-    expect(icon()).toHaveAttribute("data-motion-play", "true");
+    expect(icon()).toHaveAttribute("data-motion-play", "false");
     fireEvent.pointerLeave(settings);
-    expect(icon()).toHaveAttribute("data-motion-engaged", "false");
-
+    expect(icon()).toHaveAttribute("data-motion-play", "false");
     fireEvent.focus(settings);
-    expect(icon()).toHaveAttribute("data-motion-engaged", "true");
+    expect(icon()).toHaveAttribute("data-motion-play", "false");
     fireEvent.blur(settings);
-    expect(icon()).toHaveAttribute("data-motion-engaged", "false");
+    expect(icon()).toHaveAttribute("data-motion-play", "false");
+  });
+
+  it("clears the click pulse after the recipe window", () => {
+    vi.useFakeTimers();
+    render(
+      <Sidebar
+        page="overview"
+        setPage={vi.fn()}
+        collapsed={false}
+        setCollapsed={vi.fn()}
+        reducedMotion={false}
+      />,
+    );
+    const analytics = () => screen.getByRole("button", { name: "分析" });
+    const icon = () =>
+      analytics().querySelector('[data-motion-id="analytics"]');
+    fireEvent.click(analytics());
+    expect(icon()).toHaveAttribute("data-motion-play", "true");
+    act(() => {
+      vi.advanceTimersByTime(401); // analytics durationMs 360 + 40 margin
+    });
+    expect(icon()).toHaveAttribute("data-motion-play", "false");
+    vi.useRealTimers();
   });
 
   it("uses the shared English product labels without changing the navigation model", () => {

@@ -810,6 +810,7 @@ export function VisualCompression() {
     [t("visual.cap.patcher"), statusOk ? status?.patcher_ready : undefined],
     [t("visual.cap.validator"), capabilitiesOk ? capabilities?.artifact_post_validation : undefined],
     [t("visual.cap.attestation"), capabilitiesOk ? capabilities?.capability_attestation_required : undefined],
+    [t("visual.cap.toolSchema"), capabilitiesOk ? capabilities?.tool_schema_normalization : undefined],
   ] as const, [capabilities, capabilitiesOk, status, statusOk, t]);
 
   const lifecycleRows = useMemo(() => [
