@@ -2841,7 +2841,7 @@ impl AppState {
                 ),
                 _ => return Err(CompressionDecisionError::RouteContextMismatch),
             };
-        let configured_decision = build_configured_route_decision(Uuid::new_v4(), route, provider);
+        let configured_decision = build_configured_route_decision(Uuid::new_v4(), route, provider, Some(&model));
         let context = resolve_optimization_context(
             &configured_decision,
             route,
@@ -3429,7 +3429,11 @@ impl AppState {
                         .unwrap_or(0),
                     context_window_hint: None,
                     max_output_tokens_hint: None,
-                    tool_call_ok: Some(!request_log.transforms_applied.is_empty()),
+                    // A routed request completing is protocol/stream evidence,
+                    // NOT tool-call capability evidence — transforms applied
+                    // say nothing about the model's tool support, so the
+                    // fields stay None and the registry never guesses.
+                    tool_call_ok: None,
                     stream_ok: None,
                     reasoning_ok: None,
                     structured_output_ok: None,
@@ -6054,6 +6058,7 @@ fn build_configured_route_decision(
     request_id: Uuid,
     route: &dtoken_types::RouteProfile,
     provider: &dtoken_types::ProviderProfile,
+    model: Option<&str>,
 ) -> RouteDecision {
     RouteDecision {
         request_id,
@@ -6064,7 +6069,7 @@ fn build_configured_route_decision(
         reason: "matched one explicit configured route; fallback disabled".to_string(),
         input_protocol: Some(route.input_protocol.clone()),
         output_protocol: Some(provider.protocol.clone()),
-        model_identity: None,
+        model_identity: model.map(str::to_string),
         compression_hint: None,
     }
 }
@@ -9783,7 +9788,7 @@ fn anthropic_route_payload(
 ) -> Result<RoutedBridgePayload, RouteSelectionError> {
     let (route, provider) = configured_route(&state.config, Protocol::Anthropic, evidence)?;
     let request_id = Uuid::new_v4();
-    let decision = build_configured_route_decision(request_id, route, provider);
+    let decision = build_configured_route_decision(request_id, route, provider, evidence.model);
     let (upstream_body, adapter) = match provider.protocol {
         Protocol::Anthropic => (body.clone(), RouteAdapterKind::AnthropicMessagesPassthrough),
         Protocol::OpenAi => (
@@ -11638,7 +11643,7 @@ async fn openai_chat_completions(
     );
     if let Ok((route, provider)) = route_selection {
         let request_id = Uuid::new_v4();
-        let decision = build_configured_route_decision(request_id, route, provider);
+        let decision = build_configured_route_decision(request_id, route, provider, request.model.as_deref());
         let optimization_context = match resolve_optimization_context(
             &decision,
             route,
@@ -12099,7 +12104,12 @@ async fn openai_responses(
     );
     if let Ok((route, provider)) = route_selection {
         let request_id = Uuid::new_v4();
-        let decision = build_configured_route_decision(request_id, route, provider);
+        let decision = build_configured_route_decision(
+            request_id,
+            route,
+            provider,
+            body.get("model").and_then(Value::as_str),
+        );
         if provider.wire_api == dtoken_types::ProviderWireApi::OpenAiResponses {
             // Native Responses passthrough: forward the inbound Responses body
             // verbatim to the provider's /v1/responses wire endpoint, bypassing
@@ -13643,6 +13653,13 @@ fn analytics_request_row(log: &RequestLog) -> Value {
         "compression_ms": log.latency_ms,
         "error_type": analytics_error_type(log.error.as_deref()),
         "config_source": log.config_source,
+        // P0-2: Provider actual is projected ONLY when evidence exists; the
+        // UI shows "—" otherwise (never 0, never claimed).
+        "provider_input_tokens": project_optimization_receipt(log).provider_input_tokens,
+        "provider_output_tokens": project_optimization_receipt(log).provider_output_tokens,
+        "claimable_tokens_avoided": project_optimization_receipt(log).claimable_tokens_avoided,
+        "local_original_tokens": project_optimization_receipt(log).local_original_tokens,
+        "local_optimized_tokens": project_optimization_receipt(log).local_optimized_tokens,
     })
 }
 
@@ -15761,7 +15778,7 @@ mod tests {
         for (adapter, ingress_protocol, ingress_endpoint, requested, effective) in cases {
             let mut route = base_route.clone();
             route.input_protocol = ingress_protocol.clone();
-            let decision = build_configured_route_decision(Uuid::new_v4(), &route, &provider);
+            let decision = build_configured_route_decision(Uuid::new_v4(), &route, &provider, None);
             let ingress = json!({"model": requested, "messages": []});
             let upstream = json!({"model": effective, "messages": []});
 
@@ -15791,7 +15808,7 @@ mod tests {
         let config = route_test_config();
         let route = &config.routes[0];
         let provider = &config.providers[0];
-        let mut decision = build_configured_route_decision(Uuid::new_v4(), route, provider);
+        let mut decision = build_configured_route_decision(Uuid::new_v4(), &route, &provider, None);
         decision.provider_id = "spoofed-provider".to_string();
 
         assert_eq!(
@@ -15813,7 +15830,7 @@ mod tests {
         let config = route_test_config();
         let route = &config.routes[0];
         let provider = &config.providers[0];
-        let decision = build_configured_route_decision(Uuid::new_v4(), route, provider);
+        let decision = build_configured_route_decision(Uuid::new_v4(), &route, &provider, None);
 
         assert_eq!(
             resolve_optimization_context(
@@ -15835,7 +15852,7 @@ mod tests {
         let mut route = config.routes[0].clone();
         route.input_protocol = Protocol::Anthropic;
         let provider = &config.providers[0];
-        let decision = build_configured_route_decision(Uuid::new_v4(), &route, provider);
+        let decision = build_configured_route_decision(Uuid::new_v4(), &route, &provider, None);
         let context = resolve_optimization_context(
             &decision,
             &route,

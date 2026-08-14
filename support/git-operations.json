@@ -2331,6 +2331,15 @@
       "summary": "全项目漏洞修复：capability 执行闭环/观测回写/持久化/cc-switch db 边界/凭据 identity/route 一致性/脚本脱敏",
       "head_before": "21b0d9f1c73e",
       "remote": null
+    },
+    {
+      "id": "aef055ac-da1f-4dcf-ae95-d1278e47665c",
+      "timestamp": "2026-08-14T14:39:28+08:00",
+      "operation": "commit",
+      "branch": "codex/final-release-iteration",
+      "summary": "1b 计量闭环：model_identity 进 routed decision/learning 观测修正/Analytics provider actual 投影/R4 文档刷新",
+      "head_before": "066c22ec63da",
+      "remote": null
     }
   ]
 }

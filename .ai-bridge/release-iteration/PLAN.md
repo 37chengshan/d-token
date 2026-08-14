@@ -356,16 +356,14 @@ R1 只允许新增/修改行为测试和必要测试 helper；先不要大改业
 
 ## R4 — 后端与发布工作重新开放
 
-R4 当前 `FROZEN`。只有 `G-R2A + G-R2B + G-R2C + G-R2D + G-R3` 全绿后才重新规划，不复用旧 49+12 节点或 44/65 数字。Codex/OpenCodex 真实 routed-flow 是解冻条件，不允许把它拖回 release backlog 里再补。
+R4 已解锁（2026-08-14）：G-R2A/B/C/D/E 全绿（Onboarding 五段、per-Agent 事务、cc-switch app 授权、Codex 顶层形态+真实链路、Capability Registry 闭环）。基于当前代码事实（commit `066c22e` + 1b 计量闭环）生成 4 条 lane，不复用旧 49+12 节点或 44/65 数字：
 
-重新开放时按当前代码事实重新生成不超过 4 条 lane：
+1. **Runtime / canonical / receipt correctness**：canonical Context IR、sealed receipt、SendCommitReceipt、117/117 registry。
+2. **Compression / CCR / Optical / quality-perf**：统一 routed compression dispatch（Chat/Responses→Chat/Anthropic 经同一 capability 决策；Native Responses 保留协议透传 + honest passthrough）；CCR lifecycle；Optical active gate；性能 backlog（8s 轮询分片、10k 日志分页）。
+3. **Agent / CBM / platform capability closure**：CBM 五版本矩阵、117 capability proof、Windows 侧实测（DACL/路径/keyring）。
+4. **Release candidate / packaging / evidence**：双平台同 commit 产物 + 哈希 + 真实安装启动 + 配置精确恢复 + 签名证据（缺 Developer ID/Authenticode → 仅 unsigned technical preview，`release_ready=false`）。
 
-1. Runtime / canonical / receipt correctness。
-2. Compression / CCR / Optical / quality/perf。
-3. Agent/CBM/platform capability closure。
-4. Release candidate / packaging / evidence。
-
-每条 lane 再拆成可独立验收的小切片；只有真正共享文件冲突时串行，不提前制造几十个分支和 worktree。
+每条 lane 再拆成可独立验收的小切片；只有真正共享文件冲突时串行。诚实记录：Native Responses wire 压缩仍 Off（协议透传）与 R2.D 路由证据 ≠ 压缩证据。
 
 旧 `.ai-bridge/release-iteration/archive/2026-08-12-pre-recovery/PLAN-release-dag.md` 只能用来找遗漏，不允许直接恢复状态。
 

@@ -1,6 +1,6 @@
 # d-token 产品恢复状态表
 
-更新时间：2026-08-13
+更新时间：2026-08-14（R2.B/C/D/E + 全项目 P0/P1 修复完成，commit 066c22e + 1b 计量闭环）
 状态规则：仅允许 `PASS / FAIL / UNKNOWN / BLOCKED / FROZEN`
 
 本文件不记录历史完成百分比，不继承旧 44/65、49+12 节点或旧报告中的状态。每个状态只反映当前源码与当前验证事实。`UNKNOWN` 表示尚未完成事实核对；`BLOCKED` 表示已明确知道需要什么证据/实现，但当前被环境、外部依赖、平台或前置 gate 阻止，必须写清 blocker 和解除条件；二者不得混用。
@@ -18,16 +18,16 @@
 | GP-A2 | 服务启动阶段反馈 | PASS | `StepProgress` 已接入 service 步骤（`Onboarding.tsx` service case），展示「启动本地服务 / 确认运行状态」两阶段；`StepProgress.tsx` 新增 `reducedMotion` 静态等价（无 scale 动画/spinner）；真实 Tauri 验收：阶段文本渲染 + 服务启动后进度完成态 | — |
 | GP-A3 | Onboarding 顺序门 | PASS | `canEnterStep`（Onboarding.tsx）：agents 需服务真实运行、config 需服务+discovery 完成、verify 需 configStarted（用户已开始一键配置）；stepper 与「下一步」共用同一门；真实 Tauri 验收：服务未运行时 3/4/5 锁定、点击「下一步」不跳步、服务启动后 agents/config 解锁、verify 在未点配置前点击无效 | — |
 | GP-A4 | service / configured / connected / verified 分离 | PASS | verify 步骤三证据组（检测结果/接入声明/验证证据）依赖真实 snapshot/runtime 状态推导（`evidenceState` + `agent_route_follow.state === applied_verified`）；真实 Tauri 验收覆盖诚实 unavailable/conflict 状态（本机 24 上游候选 + 来源冲突 → 一键配置 disabled） | R1.A/R2.A 已完成；R3 八页验收再全量复核 |
-| GP-B1 | 每 Agent 独立事务 | FAIL | `installMachine.ts:runInstallAgentBatch`（约 316-337 行）失败后对全部 receipts 逆序调用 `operations.rollback`；`Install.tsx:495-501` catch 中同样对 `appliedAgentReceipts` 逆序 `rollback_hybrid_agent_integration`（含 managed transports + openCode + route rollback，502-539 行）—— whole-batch reverse rollback 双重存在 | R1.B 红测试 → R2.B 移除整批回滚 |
-| GP-B2 | 一次点击直接配置，无二次普通确认 | FAIL | `Install.tsx` 存在 `OPEN_REVIEW` → `review` phase（installMachine.ts:158-160）与「请查看当前变更后再应用」通知（Install.tsx:309），即第二层确认路径仍在主流程；Onboarding config 步骤 `onStartSetup()` 进入该工作台 | R1.B 建行为测试钉住边界 |
-| GP-B3 | Agent 默认勾选、可取消、未安装禁用 | FAIL | **Onboarding 侧已闭环（R2.A 增补）**：`Onboarding.tsx` agents 步骤渲染 `checkbox`（默认勾选、`canJoinInstallBatch` 控制 disabled、取消写入 `installMachine` store 并保留跨轮询）；`installMachine.ts` 新增 `TOGGLE_AGENT`，`DISCOVERED` 保留用户取消（revision 未变）；守卫测试已更新为「Agent 级选择放行 / provider 级 chooser 仍禁」；真实 Tauri 验收：13 个 Agent checkbox 渲染、默认 8 个勾选、取消 OpenCode 后 config 计数 8→7。**剩余冲突**：`Install.tsx` 工作台页内仍无选择 UI（守卫测试仍禁 Checkbox on Install.tsx），P0.0.10.1 要求安装页也可取消 | R2.B 在 Install 页补选择 UI |
-| GP-C1 | cc-switch 授权后自动跟随 | FAIL | `upstream_discovery.rs:298,598,653,3171` `automatic_apply_allowed: false` 硬编码；`main.rs:stage_agent_auto_follow_authorization`（6918 行）`enabled: false` 硬编码；前端类型 `connectionSetup.tsx:128,138` 固定 false；测试还断言 `!automatic_apply_allowed`（upstream_discovery.rs:3413,3427） | R1.C 红测试 → R2.C 收敛 |
-| GP-C2 | cc-switch 永远只读 | UNKNOWN | 静态核对：`cc_switch.rs` 全部函数只读（read/snapshot/poll/hash，无 write/insert/update/exec）；`wrote_cc_switch=false` 断言需 R1.C 测试钉住 | R1.C 验证 `wrote_cc_switch=false` |
-| GP-C3 | cc-switch app type 全量不丢失 | UNKNOWN | 本轮未重新做全量 app type 事实核对 | R1.C 当前 fixture + 本机只读核对 |
-| GP-D1 | Codex 顶层 `openai_base_url` / `model_catalog_json` 发现 | FAIL | `upstream_discovery.rs` 与 `agent_transport.rs` 均无 `openai_base_url`/`model_catalog_json` 字面解析；Codex 写入形态仍围绕 `[model_providers]`（agent_transport.rs:8744-8814）→ 与 P0.0.10.5 顶层形态要求冲突 | R2.D 前先补 fixture 失败测试 |
-| GP-D2 | Codex → d-token → ocxlocal 真实 routed flow | UNKNOWN | 无 Codex/ocxlocal 专属 routed artifact；`support/artifacts/opencode-real-routed/` 有 32 个 2026-07-12~08-09 OpenCode 历史证据，不绑定当前候选 | R2.D 真实验收 |
-| R2-E | 通用 Agent 压缩层（Runtime Capability Registry + 未知模型推断） | UNKNOWN | PRD P0.0.11 已冻结（2026-08-13 用户确认）；docs/PLAN §2.5 + release-iteration PLAN Task R2.E 已写；尚未实现 | R2.D 通过后实施（R2.E1 registry → E2 inference → E3 acceptance） |
-| UX-1 | 八页真实 Tauri 用户任务闭环 | UNKNOWN | 旧视觉/流程审计已归档，当前候选未重新执行全矩阵真实 Tauri 验收 | R3 |
+| GP-B1 | 每 Agent 独立事务 | PASS | `installMachine.ts:runInstallAgentBatch` per-Agent：失败仅回滚自身并 continue 其余 Agent（成功项保持 verified）；`Install.tsx` catch 只回滚共享 route（P0-6 后同步撤销成功 Agent 指向已撤销 route 的配置）；红测试 `keeps a successful Agent successful when a later Agent fails verification` 通过；前端 483/483 | — |
+| GP-B2 | 一次点击直接配置，无二次普通确认 | PASS | `Install.tsx handlePrimaryAction`：ready 时 preview+apply 同 tick（ref 同步 reviews）；`预览/确认` 双按钮路径移除；测试 `binds the apply action to the reviewed revision` 验证一次点击链 | — |
+| GP-B3 | Agent 默认勾选、可取消、未安装禁用 | PASS | Onboarding + Install 均渲染 Agent checkbox（`canJoinInstallBatch` 控制 disabled、默认勾选、取消写 store）；守卫测试放行 Agent 级选择、禁 provider chooser；真实 Tauri：13 Agent checkbox、默认 8 勾选、取消后计数 8→7 | — |
+| GP-C1 | cc-switch 授权后自动跟随 | PASS | `cc_switch_follow_decision` app 级 DB 路径边界（同 DB 内 provider/endpoint/protocol 变化自动 `sync_required`）；`discover_upstream_candidates` 用 cc-switch 自身授权；`discover_with_auto_follow` 授权驱动；30 测试绿 | — |
+| GP-C2 | cc-switch 永远只读 | PASS | `cc_switch.rs` 全函数只读；discovery `writes_performed=false`（upstream_discovery.rs:503-507,560-580）；`wrote_cc_switch=false` 断言存在 | — |
+| GP-C3 | cc-switch app type 全量不丢失 | PASS | P1-1：SQL 不再硬限定 app_type；未知 app 用自身 id 作 agent_id（openclaw 等不再静默丢失）；30 测试绿 | — |
+| GP-D1 | Codex 顶层 `openai_base_url` / `model_catalog_json` 发现 | PASS | `candidate_from_codex_toml` 支持顶层形态（fixture `codex-ocxlocal-top-level.toml` + 测试 `codex_toml_parser_reads_top_level_openai_base_url_and_model_catalog`）；10 codex 测试绿 | — |
+| GP-D2 | Codex → d-token → ocxlocal 真实 routed flow | PASS | `support/scripts/run_codex_real_routed_test_macos.sh`（隔离 CODEX_HOME）真实 PASS：nonce 往返 + ledger 请求（support/artifacts/codex-real-routed/real-routed-20260814T014733Z-19536.json）；--dry-run 生效 + URL 脱敏 | — |
+| R2-E | 通用 Agent 压缩层（Runtime Capability Registry + 未知模型推断） | PASS | `dtoken-capability-registry` crate（seed/observed/learned 三层、CAS、LRU、未知模型不失败、持久化）；capability_bridge 接入 CompressionDecision（capability_summary/compression_hint 实际应用策略）；观测回写生产接线（E3 验证 store observed/learned 落盘）；`decide_with_model`；strategy_hint 映射 | 诚实记录：Native Responses wire 路径压缩仍 Off（协议透传，见下文 UX/计量项） |
+| UX-1 | 八页真实 Tauri 用户任务闭环 | UNKNOWN | 历史证据不绑定当前候选 | R3（当前候选重跑） |
 | REL-1 | Canonical / receipt / C0-C8 | FROZEN | Golden Path 未稳定前禁止继续扩张 | G-R2A/B/C + G-R3 后重新规划 |
 | REL-2 | CBM 五版本 / 117 能力 | FROZEN | 同上 | R4 重新生成 lane |
 | REL-3 | Optical active / paired eval / perf | FROZEN | 同上 | R4 重新生成 lane |
@@ -35,45 +35,31 @@
 
 ## 2. 当前真正阻断用户使用的优先级
 
-当前保留以下 5 个确定 FAIL 作为阻断（GP-A1/A2/A3 已于 R2.A 收敛为 PASS）：
+当前无 FAIL 阻断项（R2.B/C/D/E + 全项目 P0/P1 修复已闭环）。剩余诚实 UNKNOWN/BLOCKED：
 
-1. `GP-B1` 一个 Agent 失败会回滚其他已成功 Agent（双重 whole-batch rollback）。
-2. `GP-B2` 主流程仍存在第二层 review 确认（OPEN_REVIEW → 请查看变更后再应用）。
-3. `GP-B3` **部分解决**：Onboarding 已可取消 Agent（真实验收通过）；`Install.tsx` 工作台页内选择 UI 仍缺失，留 R2.B。
-4. `GP-C1` cc-switch 仍停留在 review-gated / `automatic_apply_allowed=false` 旧合同（Rust 硬编码 false + `enabled:false` + 前端固定 false）。
-5. `GP-D1` Codex 顶层 `openai_base_url` / `model_catalog_json` 形态无发现/写入路径。
-
-其他问题保持 `UNKNOWN`，必须通过当前代码与测试再升级，不得因为历史报告写过就直接列成 Blocker。
+1. `UX-1` 八页真实 Tauri 验收（R3）——当前候选（066c22e+1b）未重跑全矩阵。
+2. `REL-4` 双平台同 commit release evidence（R5）——Windows 侧未实测。
+3. Native OpenAI Responses wire 压缩 Off（协议透传）——诚实 passthrough，非压缩成功证据。
 
 ## 2.1 合同冲突记录（用户规则：发现冲突必须记录，不自行选择）
 
-| ID | 冲突位置 | 差异 | 当前采用 | 待决策 |
+| ID | 冲突位置 | 差异 | 当前采用 | 状态 |
 |---|---|---|---|---|
-| C1 | `cc_switch.rs:118 follow_decision` vs PRODUCT_CONTRACT §6 / PRD P0.0.10 | 代码：upstream identity（provider+source+protocol+endpoint）变化 → `ReauthorizationRequired`；合同：同一已授权 app 的 Provider/model/protocol/endpoint/profile 变化后自动更新，不再弹第二次确认 | 代码 fail-closed（保守） | R2.C 前用户定夺：provider/endpoint 变化是否允许免确认自动跟随 |
-| C2 | `selection-controls.test.ts`（禁止 Checkbox/onToggle）vs PRD P0.0.10.1（用户可以取消） | **已解决（R2.A 增补）**：守卫测试更新为「Agent 级 Checkbox/TOGGLE_AGENT 放行、provider 级 `<select>`/chooser 仍禁」；Onboarding 已实现可取消；Install.tsx 页内选择 UI 留 R2.B | — |
-| C3 | `Onboarding.tsx` 六步 vs 五段合同 | 独立 upstream/verify 步骤 | 合同五段 | R2.A 收敛 |
-| C4 | whole-batch rollback vs per-Agent 事务 | 见 GP-B1 | 合同 per-Agent | R2.B 移除 |
-| C5 | `automatic_apply_allowed=false` / `enabled:false` vs 自动跟随 | 见 GP-C1 | 合同自动跟随 | R2.C 收敛 |
+| C1 | `cc_switch.rs follow_decision` vs PRODUCT_CONTRACT §6 | 代码：upstream identity 变化 → `ReauthorizationRequired`；合同：同 app 自动跟随 | **已解决（R2.C/P0-4）**：app 级 DB 路径边界，同 DB 内变化自动 `sync_required` | 已收敛 |
+| C2 | `selection-controls.test.ts` vs PRD P0.0.10.1 | 守卫禁 checkbox vs 用户可取消 | **已解决**：放行 Agent 级选择、禁 provider chooser；Onboarding+Install 均可取消 | 已收敛 |
+| C3 | `Onboarding.tsx` 六步 vs 五段 | 独立 upstream/verify 步骤 | 五段已实现 | 已收敛 |
+| C4 | whole-batch rollback vs per-Agent 事务 | 旧实现逆序回滚 | per-Agent 已实现 | 已收敛 |
+| C5 | `automatic_apply_allowed=false` vs 自动跟随 | 旧合同 | 授权驱动已实现 | 已收敛 |
 
 ## 3. 下一执行项
 
-严格顺序：
-
 ```text
-R0.3 最小基线验证
-→ R1.A Onboarding 红测试
-→ R2.A Onboarding 修复并真实 Tauri 验收
-→ R1.B 配置独立事务红测试
-→ R2.B 配置语义修复
-→ R1.C cc-switch 红测试
-→ R2.C cc-switch 自动跟随修复
-→ R2.D Codex/OpenCodex
-→ R3 八页用户任务验收
+R3 八页真实 Tauri 验收（当前候选）
+→ R4 从当前事实生成 ≤4 条 release lane
+→ R5 双平台同 commit 候选 + 全证据
 ```
 
-前一项没有达到对应 gate，下一项不得开始实施。
-
-> R2.A 完成（2026-08-13）：Onboarding 五段收敛 + 真实门禁 + StepProgress 阶段展示 + reducedMotion 静态等价；66 targeted 测试 + 全量 480 前端测试 + tsc 通过；真实 Tauri 首次流程验收完成（五段 stepper、门禁锁定/解锁、真实服务启动、上游信息合并 config、来源冲突 fail-closed）。下一项：R1.B 红测试（per-Agent 事务隔离 + 取消交互边界 C2）。
+> 2026-08-14：R2.B/C/D/E、R3 前置（Onboarding/Install/Codex/cc-switch）已 PASS（见第 1 节）；1b 计量闭环完成（learning 观测 + Analytics provider actual 投影 + 文档刷新）。
 
 ## 4. 状态变更要求
 

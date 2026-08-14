@@ -1,11 +1,26 @@
 # d-token 当前实现状态
 
-更新时间：2026-08-13（恢复模式标记；主体事实仍主要来自 2026-08-07 快照，等待 R0 重新复核）
+更新时间：2026-08-14（恢复阶段 R2.B/C/D/E 完成 + 全项目 P0/P1 修复 + 1b 计量闭环；commit 066c22e）
 状态类型：代码事实快照，不替代 `docs/PRD.md` 与 `docs/PLAN.md`
 
-> **恢复模式警告（2026-08-13）**：本文件中的“已通过 / 已支持 / 最新全仓复证”等结论目前只代表其原记录时点，不能直接作为当前候选 PASS。当前恢复计划已确认 Onboarding 六步、whole-batch rollback、cc-switch `automatic_apply_allowed=false` 等现状与最新产品合同冲突。R0 完成前，任何能力状态必须以当前源码、当前测试和 `.ai-bridge/release-iteration/TASKS.md` 为准；R0 结束后必须刷新本文件的结论与测试数字。
+> **2026-08-14 复核标记**：本文件第 2 节之后仍是 2026-08-07 快照，仅作历史参考。当前候选事实以本页顶部结论 + `.ai-bridge/release-iteration/TASKS.md` + 当前源码/测试为准。
 
-## 1. 当前结论
+## 1. 当前结论（2026-08-14 复核）
+
+当前候选（commit `066c22e` + 1b 计量闭环）已完成：
+
+- **Agent 配置**：Onboarding 五段 + 真实门禁 + StepProgress；Install/Onboarding Agent 可取消 checkbox（P0.0.10.1）；一次点击授权（P0.0.10.3）；per-Agent 独立事务（失败仅回滚自身并继续，P0.0.10.5）；shared route 回滚时同步撤销指向已撤销 route 的 Agent 配置。
+- **cc-switch**：app 级 DB 路径授权边界（同 DB 内 provider/endpoint/protocol 变化自动跟随）；永远只读；app_type 全量不丢失。
+- **Codex**：顶层 `openai_base_url`/`model_catalog_json` 解析；真实链路 `Codex → d-token → ocxlocal → upstream` PASS（隔离 CODEX_HOME）。
+- **Runtime Capability Registry（R2.E）**：seed/observed/learned 三层、CAS、LRU、未知模型不失败、持久化 JSON store；`compression_hint` 实际应用策略；真实请求后观测回写（store 落盘）；model_identity 现进 routed decision（learning loop 可达）。
+- **凭据**：exact upstream identity 派生 keyring account（防 slug 碰撞）；keyring-only 无明文 fallback。
+- **计量**：Dashboard/Analytics token 数字来自真实 runtime/ledger（本地估算明确标注 estimated）；Analytics 日志行补 provider actual/claimable 投影（仅证据存在时显示）。
+
+**诚实未闭环（不能写 PASS）**：
+- Native OpenAI Responses wire 路径压缩仍 `Off`（协议逐字节透传，Dashboard 显示 honest passthrough 而非压缩成功）——R2.D 的真实 Codex 链路是路由/ledger 证据，不是压缩证据。
+- 八页真实 Tauri 验收（R3）尚未在当前候选重跑。
+- 双平台同 commit release evidence（R5）未产生。
+- `docs/PLAN.md` R4/R5 lane 尚未基于当前事实重新生成。
 
 d-token 当前已形成可运行的 Rust-owned 本地 runtime、Tauri 2 桌面控制面、React 18/TypeScript UI 与薄 TypeScript SDK。当前工作树已补齐九类 production codec release evidence（id 列表由 compressor registry 编译期投影）、CCR lifecycle/reconciliation 与 Windows DACL 实现、Rust/HTTP/MCP/TS surface parity、23 项 Agent 检测/transport capability matrix、Claude/Codex/Cline 真实临时配置精确恢复、cc-switch A→B→A 只读静态识别以及 macOS managed RTK lifecycle probe；G4 Responses bridge 现已对非法 tool choice/消息角色/函数字段 fail-closed，并将流式 Ledger/CCR finalize 延迟到完整终态。Install 的 MCP/Hook 分支已接入 Rust-owned preview/apply/verify 事务：目标路径必须与 Agent 注册表精确匹配，preview 只返回脱敏摘要，apply 绑定双 hash、备份、receipt、复读验证与失败自动回退，且明确不提供模型上游 route evidence。G7 当前候选真实 OpenCode 已于 2026-08-04 通过（candidate_id=G7，报告 `support/artifacts/opencode-real-routed/real-routed-20260804T112429Z-76558.json`）。G7 macOS package audit 已通过（c124d9f，2026-08-04：DMG d-token_0.2.0-beta.1_aarch64.dmg，SHA-256 1fe3f68e05ffe8903d62551c146320c6c76556f655c2ea4bd85b546f82165216，app 12 文件 46MB，ad-hoc 签名，临时安装/启动/退出/卸载全链路验证通过，无 immediate crash，Window 可见）。2026-08-07 本轮新增：Codex 自动发现支持 `ocxlocal` openai-responses（`ProviderWireApi::OpenAiResponses` 将 `/v1/responses` 原样透传上游、不做 Chat 转换；Codex 排除显式 model 要求，`models=[]` 允许请求 model 动态透传；core native Responses 非流返回上游 body 原样、流 SSE body 原样且仅终态 finalize；Chat-wire 仍桥接并 fail-closed）；Overview/Analytics 从 Settings `model-pricing` 价格表（input/output 每百万 token 单价）估算 input cost before/after/delta，unknown/mixed/过期 fail-closed，`provider_cost_usd` 作为上游账单费用单独呈现；tray 面板 placement 统一在单一物理坐标空间（`monitor_from_point`/`work_area`/`scale_factor`，覆盖 mixed-DPI 与负原点多显示器），placement 单测 8/8。最新全仓复证已通过（`cargo test --workspace` 936 pass/5 ignored、workspace clippy strict pass、前端 Vitest 634 pass、`tsc --noEmit`/build pass、Chromium+WebKit E2E 各 13 pass），macOS rebuilt app+DMG 审计 ad-hoc 通过（SHA-256 60f7d063…，未签名/未公证），Windows 仅 source/CI 合同、无当前实机。它仍不是可发布候选：主工作区本轮 Rust/前端/structure 全量复证受 macOS File Provider `dataless` 文件阻塞，同一候选已于 2026-08-05 在普通副本完成 Cargo 与前端全量复证并全部通过（见 `docs/PLAN.md` 第 13 条）；G6 仅 macOS 本机可执行门通过（PowerShell .ps1 门 fail-closed 未执行），Windows MSVC runner、同 commit 双平台安装包以及 G8 尚未完成；unsigned/unnotarized 与新 ocxlocal 路径的真实 Codex routed acceptance 仍缺失。Headroom/G0-G8 未完成、真实 provider/raw-wire 未验证，公开未签名 prerelease 只有在这些硬门全绿后才允许创建。
 
