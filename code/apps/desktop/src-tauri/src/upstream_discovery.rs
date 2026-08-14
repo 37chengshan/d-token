@@ -2168,7 +2168,7 @@ fn discover_cc_switch_at(
                 COALESCE(json_extract(settings_config,'$.protocol'), json_extract(settings_config,'$.apiFormat'), json_extract(settings_config,'$.api_format')),
                 COALESCE(json_extract(settings_config,'$.model'), json_extract(settings_config,'$.model_name'), json_extract(settings_config,'$.env.ANTHROPIC_MODEL'), json_extract(settings_config,'$.env.OPENAI_MODEL'), json_extract(settings_config,'$.env.GEMINI_MODEL')),
                 CASE WHEN json_type(settings_config,'$.api_key') IS NOT NULL OR json_type(settings_config,'$.apiKey') IS NOT NULL OR json_type(settings_config,'$.token') IS NOT NULL OR json_type(settings_config,'$.auth') IS NOT NULL OR json_type(settings_config,'$.env.ANTHROPIC_AUTH_TOKEN') IS NOT NULL OR json_type(settings_config,'$.env.OPENAI_API_KEY') IS NOT NULL OR json_type(settings_config,'$.env.GEMINI_API_KEY') IS NOT NULL THEN 1 ELSE 0 END
-         FROM providers WHERE app_type IN ('claude','codex','gemini','opencode') ORDER BY app_type, sort_index, id"
+         FROM providers ORDER BY app_type, sort_index, id"
     ) {
         Ok(statement) => statement,
         Err(_) => {
@@ -2990,7 +2990,10 @@ fn agent_ids_for_cc_switch_app(app: &str) -> Vec<String> {
         "codex" => vec!["codex".to_string()],
         "gemini" => vec!["gemini-cli".to_string()],
         "opencode" => vec!["opencode".to_string()],
-        _ => vec![],
+        // P1-1 / R2.C: unknown app types are never silently dropped — the app
+        // itself is a valid agent identity so openclaw and future apps stay
+        // discoverable and fail-closed-safe.
+        _ => vec![app.to_string()],
     }
 }
 
@@ -3012,7 +3015,7 @@ fn cc_switch_db_path() -> Option<PathBuf> {
     }
 }
 
-fn cc_switch_db_paths() -> Vec<PathBuf> {
+pub fn cc_switch_db_paths() -> Vec<PathBuf> {
     if let Some(override_path) = env::var_os("CC_SWITCH_DB_PATH") {
         return vec![PathBuf::from(override_path)];
     }

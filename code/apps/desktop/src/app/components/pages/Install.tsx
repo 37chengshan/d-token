@@ -144,6 +144,9 @@ export function Install({ onOpenAdvanced }: { onOpenAdvanced?: () => void; initi
   const credentialProviderId = credentialBinding?.resolved_candidate?.id
     ?? credentialBinding?.candidates[0]?.id
     ?? "";
+  const credentialCandidate = credentialBinding?.resolved_candidate
+    ?? credentialBinding?.candidates[0]
+    ?? null;
   const openCodeSelection = selectedOpenCode
     ? selectedCandidate(selectedOpenCode, machine.selections[selectedOpenCode.agent_id])
     : null;
@@ -361,6 +364,8 @@ export function Install({ onOpenAdvanced }: { onOpenAdvanced?: () => void; initi
     const wasManaged = serviceManaged;
     let routeReceipt: ConnectionRoutePlanReceipt | null = null;
     let openCodeReceipt: OpenCodeConnectionReceipt | null = null;
+    let appliedManagedTransports: AgentUpstreamBinding[] = [];
+    let agentReceipts: InstallAgentReceipt[] = [];
     try {
       if (!review?.ok || !review.before_sha256 || !review.after_sha256) {
         throw new Error("connection_preview_incomplete");
@@ -429,6 +434,7 @@ export function Install({ onOpenAdvanced }: { onOpenAdvanced?: () => void; initi
         if (receipt.ok === false || receipt.state === "failed" || receipt.verification?.ok === false) {
           throw new Error("managed_transport_apply_failed");
         }
+        appliedManagedTransports.push(binding);
       }
 
       const agentBatch = await runInstallAgentBatch(
@@ -469,6 +475,7 @@ export function Install({ onOpenAdvanced }: { onOpenAdvanced?: () => void; initi
         },
       );
       setAgentIntegrationReceipts(agentBatch.receipts);
+      agentReceipts = agentBatch.receipts;
       if (!agentBatch.ok) throw new Error(agentBatch.error);
 
       dispatch({ type: "SET_PHASE", phase: "verifying" });
@@ -531,6 +538,41 @@ export function Install({ onOpenAdvanced }: { onOpenAdvanced?: () => void; initi
           },
         }).catch(() => null);
         rolledBack = rolledBack || restored?.ok === true;
+        if (restored?.ok) {
+          // P0-6: the shared route was revoked — Agent configs that point at
+          // it are now dangling. Clear d-token-owned transport writes and
+          // roll back applied Agent integration transactions so no Agent
+          // keeps pointing at a revoked route (shared-infra consistency; NOT
+          // the P0.0.10.5 per-Agent failure rollback).
+          for (const binding of appliedManagedTransports) {
+            if (!binding.config_path) continue;
+            const request = {
+              agent_id: binding.agent_id,
+              target_path: binding.config_path,
+              endpoint: serviceEndpoint || "http://127.0.0.1:18001",
+              enabled: false,
+            };
+            const preview = await invokeNative<ManagedAgentTransportReview>("preview_managed_agent_transport", {
+              request,
+              operation: "clear",
+            }).catch(() => null);
+            const review = preview?.review;
+            if (!review) continue;
+            await invokeNative<ManagedAgentTransportReceipt>("apply_reviewed_managed_agent_transport", {
+              request,
+              operation: "clear",
+              reviewedRevision: review.revision,
+              reviewedBeforeSha256: review.before_sha256,
+              reviewedAfterSha256: review.after_sha256,
+            }).catch(() => null);
+          }
+          for (const receipt of agentReceipts) {
+            if (!receipt.transactionId || !["applied", "verified"].includes(receipt.state)) continue;
+            await invokeNative<HybridAgentIntegrationApply>("rollback_hybrid_agent_integration", {
+              request: { transaction_id: receipt.transactionId },
+            }).catch(() => null);
+          }
+        }
         if (restored?.ok && wasManaged) await installRuntime().catch(() => undefined);
       }
       dispatch({ type: "SET_PHASE", phase: rolledBack ? "rolled-back" : "blocked", message: failure.message });
@@ -653,7 +695,20 @@ export function Install({ onOpenAdvanced }: { onOpenAdvanced?: () => void; initi
     setCredentialError("");
     try {
       const result = await invokeNative<NativeActionResult>("store_provider_credential", {
-        request: { provider_id: credentialProviderId, credential: providerCredential },
+        request: {
+          provider_id: credentialProviderId,
+          credential: providerCredential,
+          // P0-5: bind the credential to the exact upstream identity so slug
+          // twins / same-id multi-endpoint candidates never share an entry.
+          upstream_identity: credentialCandidate
+            ? {
+                candidate_id: credentialCandidate.id,
+                source: credentialCandidate.source,
+                endpoint: credentialCandidate.base_url ?? "",
+              }
+            : undefined,
+          discovery_revision: snapshot?.revision,
+        },
       });
       assertNativeActionSucceeded(result);
       setProviderCredential("");

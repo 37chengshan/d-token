@@ -2792,14 +2792,14 @@ impl AppState {
             .filter(|value| !value.trim().is_empty())
             .ok_or(CompressionDecisionError::RouteContextUnavailable)?
             .to_string();
-        if !provider.models.is_empty() && !provider.models.iter().any(|item| item == &model) {
-            return Err(CompressionDecisionError::RouteContextUnavailable);
-        }
 
-        // R2.E: attach capability evidence (seed/observed/learned/inferred)
-        // and, when the capability is known, drive the compression strategy
-        // hint. Unknown models never fail here — the hint stays None and the
-        // route policy governs; the evidence still lands in the decision.
+        // R2.E / P0.0.11: capability resolution runs BEFORE any provider-model
+        // allowlist check, so genuinely new models are never rejected by a
+        // static list — the capability registry (seed/observed/learned/
+        // inferred) is the authority. A configured explicit allowlist still
+        // applies AFTER the capability is known (fail-closed stays intact for
+        // models the user deliberately restricted), but an unknown model with
+        // no allowlist passes through with the default strategy.
         let capability_summary = crate::capability_bridge::resolve_model_capability_summary(
             &model,
             Some(protocol_label(&provider.protocol)),
@@ -2808,6 +2808,11 @@ impl AppState {
             &model,
             Some(protocol_label(&provider.protocol)),
         );
+        // The configured allowlist, when present, remains an explicit
+        // fail-closed boundary; the capability layer never bypasses it.
+        if !provider.models.is_empty() && !provider.models.iter().any(|item| item == &model) {
+            return Err(CompressionDecisionError::RouteContextUnavailable);
+        }
 
         let (adapter, ingress_body, upstream_body) =
             match (&route.input_protocol, &provider.protocol, &request.endpoint) {
@@ -2846,9 +2851,17 @@ impl AppState {
             &upstream_body,
         )
         .map_err(|_| CompressionDecisionError::RouteContextUnavailable)?;
+        // P0.0.11: the capability-driven hint, when present, decides the
+        // actual compression policy (via strategy_hint mapping). Unknown
+        // models (hint=None) keep the route policy, which is the conservative
+        // default — never a guess.
+        let effective_policy = capability_hint
+            .as_deref()
+            .map(|hint| dtoken_compress::compression_strategy_to_policy(Some(hint)))
+            .unwrap_or_else(|| route.compression_policy.clone());
         let summary = compress_for_route_with_frozen(
             Some(&context),
-            route.compression_policy.clone(),
+            effective_policy.clone(),
             upstream_body,
             None,
             request.frozen_message_count,
@@ -2888,7 +2901,7 @@ impl AppState {
                 input_protocol: context.compression_context.input_protocol,
                 output_protocol: context.compression_context.output_protocol,
                 endpoint: context.compression_context.endpoint,
-                compression_policy: route.compression_policy.clone(),
+                compression_policy: effective_policy.clone(),
                 artifact,
                 original_tokens: summary.original_tokens,
                 compressed_tokens: summary.compressed_tokens,
@@ -3400,6 +3413,32 @@ impl AppState {
         }
         if let Ok(mut route_decisions) = self.route_decisions.lock() {
             push_bounded(&mut route_decisions, route_decision);
+        }
+        // P0.0.11 learning loop: a completed routed request records an
+        // observation (tool-call presence inferred from the request log's
+        // transformed body) so the capability registry can promote unknown
+        // models to observed/learned across restarts.
+        if let Some(model) = decision.model_identity.as_deref() {
+            crate::capability_bridge::record_observation(
+                dtoken_capability_registry::ModelObservation {
+                    model_id: model.to_string(),
+                    request_id: decision.request_id.to_string(),
+                    observed_at_ms: std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|duration| duration.as_millis() as u64)
+                        .unwrap_or(0),
+                    context_window_hint: None,
+                    max_output_tokens_hint: None,
+                    tool_call_ok: Some(!request_log.transforms_applied.is_empty()),
+                    stream_ok: None,
+                    reasoning_ok: None,
+                    structured_output_ok: None,
+                    protocol: Some(
+                        protocol_label(&decision.input_protocol.clone().unwrap_or(Protocol::OpenAi))
+                            .to_string(),
+                    ),
+                },
+            );
         }
         if let Ok(mut request_logs) = self.request_logs.lock() {
             push_bounded(&mut request_logs, request_log.clone());

@@ -5584,6 +5584,39 @@ fn normalize_credential_reference(value: Option<String>) -> Result<Option<String
     Ok(Some(value))
 }
 
+/// Derives a stable keyring account segment from an exact upstream identity.
+/// Slug twins (`foo-bar`/`foo_bar`) and same-id candidates from different
+/// sources or endpoints produce distinct accounts (P0-5).
+fn slugify_identity(value: &str) -> String {
+    let mut slug = String::new();
+    let mut last_was_separator = true;
+    for character in value.chars() {
+        if character.is_ascii_alphanumeric() {
+            slug.push(character.to_ascii_lowercase());
+            last_was_separator = false;
+        } else if !last_was_separator {
+            slug.push('-');
+            last_was_separator = true;
+        }
+    }
+    let slug = slug.trim_matches('-');
+    if slug.is_empty() { "id".to_string() } else { slug.to_string() }
+}
+
+fn normalize_endpoint_for_identity(endpoint: &str) -> String {
+    endpoint.trim().trim_end_matches('/').to_string()
+}
+
+fn stable_identity_hash(candidate_id: &str, source: &str, endpoint: &str) -> String {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    let mut hasher = DefaultHasher::new();
+    candidate_id.hash(&mut hasher);
+    source.hash(&mut hasher);
+    endpoint.hash(&mut hasher);
+    format!("{:016x}", hasher.finish())
+}
+
 fn credential_reference_for_provider(provider_id: &str) -> (String, String) {
     let mut provider_slug = String::new();
     let mut last_was_separator = true;
@@ -5643,6 +5676,33 @@ fn store_provider_credential(request: StoreProviderCredentialRequest) -> ActionR
         };
     }
     let (_, account) = credential_reference_for_provider(&request.provider_id);
+    // P0-5: when an exact upstream identity is supplied, the account is
+    // derived from the full identity triple (candidate + source + normalized
+    // endpoint) so slug twins never share a keyring entry. `provider_id`
+    // alone is only a legacy fallback.
+    let account = match request.upstream_identity {
+        Some(identity) => {
+            if request.discovery_revision.is_none() {
+                return ActionResult {
+                    ok: false,
+                    summary: "Exact credential identity requires a discovery revision".to_string(),
+                    logs: vec![log(
+                        "error",
+                        "Credential was not written: exact identity without revision is ambiguous",
+                    )],
+                    tools: all_checks(),
+                };
+            }
+            let endpoint = normalize_endpoint_for_identity(&identity.endpoint);
+            format!(
+                "providers/{}/{}/{}",
+                slugify_identity(identity.candidate_id.trim()),
+                slugify_identity(identity.source.trim()),
+                stable_identity_hash(&identity.candidate_id, &identity.source, &endpoint),
+            )
+        }
+        None => account,
+    };
     match platform_store_credential(&account, credential) {
         Ok(()) => ActionResult {
             ok: true,
@@ -5669,6 +5729,18 @@ fn store_provider_credential(request: StoreProviderCredentialRequest) -> ActionR
 #[tauri::command]
 fn delete_provider_credential(request: DeleteProviderCredentialRequest) -> ActionResult {
     let (_, account) = credential_reference_for_provider(&request.provider_id);
+    let account = match request.upstream_identity {
+        Some(identity) => {
+            let endpoint = normalize_endpoint_for_identity(&identity.endpoint);
+            format!(
+                "providers/{}/{}/{}",
+                slugify_identity(identity.candidate_id.trim()),
+                slugify_identity(identity.source.trim()),
+                stable_identity_hash(&identity.candidate_id, &identity.source, &endpoint),
+            )
+        }
+        None => account,
+    };
     match platform_delete_credential(&account) {
         Ok(()) => ActionResult {
             ok: true,
@@ -8002,16 +8074,18 @@ fn authorizable_cc_switch_upstream_signatures(discovery: &Value) -> Result<Vec<S
 fn cc_switch_follow_decision(
     authorization: &CcSwitchAutoFollowAuthorization,
     identity: &CcSwitchRouteIdentity,
-    current_source_fingerprint: &str,
+    current_db_path: Option<&str>,
 ) -> &'static str {
-    // App-level authorization (PRD P0.0.10.6): the cc-switch source fingerprint
-    // is the authorized identity boundary. Within the authorized source every
-    // provider/model/protocol/endpoint change follows automatically; only an
-    // unapproved source (different cc-switch DB) requires reauthorization.
+    // App-level authorization (PRD P0.0.10.6): the authorized cc-switch
+    // database is the identity boundary. Within the authorized DB every
+    // provider/model/protocol/endpoint change follows automatically (the sync
+    // fingerprint intentionally includes the active upstream and changes on
+    // every legitimate switch); a different or replaced DB requires
+    // reauthorization (fail-closed).
     if !authorization.enabled {
         return "reauthorization_required";
     }
-    if authorization.authorized_source_fingerprint != current_source_fingerprint {
+    if authorization.authorized_db_path.as_deref() != current_db_path {
         return "reauthorization_required";
     }
     if authorization.last_synced_route_signature.as_deref()
@@ -8029,6 +8103,7 @@ fn default_cc_switch_auto_follow_authorization() -> CcSwitchAutoFollowAuthorizat
         enabled: false,
         authorized_at_ms: 0,
         authorized_source_fingerprint: String::new(),
+        authorized_db_path: None,
         authorized_upstream_signatures: Vec::new(),
         last_observed_source_fingerprint: None,
         last_synced_source_fingerprint: None,
@@ -8076,6 +8151,9 @@ fn authorize_cc_switch_auto_follow(
         enabled: true,
         authorized_at_ms: epoch_ms(),
         authorized_source_fingerprint: request.source_fingerprint.clone(),
+        authorized_db_path: upstream_discovery::cc_switch_db_paths()
+            .first()
+            .map(|path| path.display().to_string()),
         authorized_upstream_signatures,
         last_observed_source_fingerprint: Some(request.source_fingerprint.clone()),
         last_synced_source_fingerprint: None,
@@ -8241,7 +8319,11 @@ fn execute_cc_switch_auto_follow() -> Value {
     // fresh evaluation.
     authorization.last_observed_source_fingerprint = Some(request.source_fingerprint.clone());
     authorization.last_observed_route_signature = Some(identity.route_signature.clone());
-    let follow_decision = cc_switch_follow_decision(&authorization, &identity, &request.source_fingerprint);
+    let follow_decision = cc_switch_follow_decision(
+            &authorization,
+            &identity,
+            upstream_discovery::cc_switch_db_paths().first().map(|path| path.display().to_string()).as_deref(),
+        );
     if follow_decision == "reauthorization_required" {
         authorization.last_sync_state = "reauthorization_required".to_string();
         let _ = save_cc_switch_auto_follow_authorization(&authorization);
@@ -10899,7 +10981,9 @@ fn reject_symlink_components(path: &Path) -> Result<(), String> {
 #[tauri::command]
 async fn discover_upstream_candidates() -> Value {
     tauri::async_runtime::spawn_blocking(|| {
-        let auto_follow = load_agent_auto_follow_authorization().enabled;
+        // P0.0.10.6: cc-switch automatic apply is governed by the cc-switch
+        // auto-follow authorization, NOT the Agent auto-follow marker.
+        let auto_follow = load_cc_switch_auto_follow_authorization().enabled;
         upstream_discovery::discover_with_auto_follow(auto_follow)
     })
     .await
@@ -17509,6 +17593,7 @@ mod tests {
             enabled: true,
             authorized_at_ms: 1,
             authorized_source_fingerprint: "cc-a".to_string(),
+            authorized_db_path: Some("cc-a".to_string()),
             authorized_upstream_signatures: approved,
             last_observed_source_fingerprint: Some("cc-a".to_string()),
             last_synced_source_fingerprint: Some("cc-a".to_string()),
@@ -17517,7 +17602,7 @@ mod tests {
             last_sync_state: "applied_verified".to_string(),
         };
         assert_eq!(
-            cc_switch_follow_decision(&authorization, &initial, "cc-a"),
+            cc_switch_follow_decision(&authorization, &initial, Some("cc-a")),
             "unchanged"
         );
 
@@ -17530,7 +17615,7 @@ mod tests {
         );
         assert_ne!(model_change.route_signature, initial.route_signature);
         assert_eq!(
-            cc_switch_follow_decision(&authorization, &model_change, "cc-a"),
+            cc_switch_follow_decision(&authorization, &model_change, Some("cc-a")),
             "sync_required"
         );
 
@@ -17544,7 +17629,7 @@ mod tests {
         let known_switch =
             cc_switch_active_route_identity(&discovery).expect("known provider switch");
         assert_eq!(
-            cc_switch_follow_decision(&authorization, &known_switch, "cc-a"),
+            cc_switch_follow_decision(&authorization, &known_switch, Some("cc-a")),
             "sync_required",
             "a provider present in the reviewed identity set may follow"
         );
@@ -17556,7 +17641,7 @@ mod tests {
         // App-level authorization (PRD P0.0.10.6): within the authorized
         // cc-switch source, endpoint/provider changes follow automatically.
         assert_eq!(
-            cc_switch_follow_decision(&authorization, &new_endpoint, "cc-a"),
+            cc_switch_follow_decision(&authorization, &new_endpoint, Some("cc-a")),
             "sync_required"
         );
 
@@ -17570,7 +17655,7 @@ mod tests {
         let new_protocol =
             cc_switch_active_route_identity(&discovery).expect("new protocol identity");
         assert_eq!(
-            cc_switch_follow_decision(&authorization, &new_protocol, "cc-a"),
+            cc_switch_follow_decision(&authorization, &new_protocol, Some("cc-a")),
             "sync_required"
         );
     }
@@ -17636,6 +17721,7 @@ mod tests {
                 enabled: true,
                 authorized_at_ms: 1,
                 authorized_source_fingerprint: "external-config-safe".to_string(),
+                authorized_db_path: Some("cc-a".to_string()),
                 authorized_upstream_signatures: vec!["approved-upstream".to_string()],
                 last_observed_source_fingerprint: Some("external-config-safe".to_string()),
                 last_synced_source_fingerprint: None,
@@ -19583,6 +19669,7 @@ mod tests {
                 enabled: true,
                 authorized_at_ms: 1000,
                 authorized_source_fingerprint: "prev-source".to_string(),
+                authorized_db_path: Some("cc-a".to_string()),
                 authorized_upstream_signatures: vec!["sig-v1".to_string()],
                 last_observed_source_fingerprint: Some("prev-source".to_string()),
                 last_synced_source_fingerprint: Some("prev-source".to_string()),
@@ -19666,6 +19753,7 @@ mod tests {
                 enabled: true,
                 authorized_at_ms: 2000,
                 authorized_source_fingerprint: "observed-source".to_string(),
+                authorized_db_path: Some("cc-a".to_string()),
                 authorized_upstream_signatures: vec!["sig-v2".to_string()],
                 last_observed_source_fingerprint: Some("observed-source".to_string()),
                 last_synced_source_fingerprint: None,

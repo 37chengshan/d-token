@@ -35,6 +35,30 @@ done
 [[ "$PORT" =~ ^[0-9]+$ ]] || die "port must be numeric"
 (( PORT >= 1024 && PORT <= 65535 )) || die "port must be between 1024 and 65535"
 [[ "$MODEL" == */* ]] || die "model must be PROVIDER/MODEL form"
+# P0-7: never write a credential-bearing upstream URL into the report; the
+# upstream must be a plain http(s) URL without userinfo/query/fragment.
+python3 - "$UPSTREAM_BASE_URL" <<'PY'
+import sys
+from urllib.parse import urlsplit
+url = sys.argv[1]
+parts = urlsplit(url)
+if parts.scheme not in ("http", "https") or not parts.netloc:
+    raise SystemExit("upstream must be a plain http(s) URL")
+if parts.username is not None or parts.password is not None:
+    raise SystemExit("upstream must not contain userinfo credentials")
+if parts.query or parts.fragment:
+    raise SystemExit("upstream must not contain query or fragment")
+PY
+if [[ "$DRY_RUN" -eq 1 ]]; then
+  echo "dry-run: validated upstream=$(python3 - "$UPSTREAM_BASE_URL" <<'PY'
+import sys
+from urllib.parse import urlsplit
+parts = urlsplit(sys.argv[1])
+print(f"{parts.scheme}://{parts.netloc}{parts.path}")
+PY
+) model=$MODEL port=$PORT; no request will be sent"
+  exit 0
+fi
 command -v codex >/dev/null 2>&1 || die "codex CLI is required"
 command -v cargo >/dev/null 2>&1 || die "cargo is required"
 command -v curl >/dev/null 2>&1 || die "curl is required"
@@ -64,6 +88,15 @@ LEDGER_REQUESTS=0
 
 cleanup() {
   [[ -z "$PROXY_PID" ]] || kill "$PROXY_PID" 2>/dev/null || true
+  # P0-7: the report carries the redacted upstream (scheme://host/path only),
+  # never userinfo/query/fragment.
+  REDACTED_UPSTREAM="$(python3 - "$UPSTREAM_BASE_URL" <<'PY'
+import sys
+from urllib.parse import urlsplit
+parts = urlsplit(sys.argv[1])
+print(f"{parts.scheme}://{parts.netloc}{parts.path}")
+PY
+)"
   cat >"$REPORT_PATH" <<JSON
 {
   "test": "codex-real-routed",
@@ -74,7 +107,7 @@ cleanup() {
   "ledger_requests_after": $LEDGER_REQUESTS,
   "model": "$MODEL",
   "listener_port": $PORT,
-  "upstream_base_url": "$UPSTREAM_BASE_URL",
+  "upstream_base_url": "$REDACTED_UPSTREAM",
   "isolated_codex_home": true,
   "user_config_touched": false,
   "report_stamp": "$REPORT_STAMP"

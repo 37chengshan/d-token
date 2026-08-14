@@ -813,7 +813,11 @@ describe("Install", () => {
     fireEvent.click(screen.getByRole("button", { name: "安全保存并继续" }));
 
     await waitFor(() => expect(mocks.invokeNative).toHaveBeenCalledWith("store_provider_credential", {
-      request: { provider_id: "provider-needing-key", credential },
+      request: expect.objectContaining({
+        provider_id: "provider-needing-key",
+        credential,
+        upstream_identity: expect.objectContaining({ candidate_id: "provider-needing-key" }),
+      }),
     }));
     expect(await screen.findByRole("alert")).toHaveTextContent("未能安全保存凭据，请检查后重试。");
     expect(screen.queryByText(credential)).not.toBeInTheDocument();

@@ -177,6 +177,14 @@ pub struct CcSwitchAutoFollowAuthorization {
     pub enabled: bool,
     pub authorized_at_ms: u64,
     pub authorized_source_fingerprint: String,
+    /// Stable identity of the cc-switch database the user authorized
+    /// (absolute path). P0.0.10.6: within the authorized DB every provider/
+    /// model/endpoint/protocol change follows automatically; a different DB
+    /// (or a replaced DB) requires reauthorization. Kept instead of relying
+    /// on the sync fingerprint, which includes the active upstream and
+    /// changes on every legitimate app-internal switch.
+    #[serde(default)]
+    pub authorized_db_path: Option<String>,
     /// Hashes of provider/source/protocol/normalized-endpoint identities that
     /// existed when the user approved follow mode. Model changes within an
     /// approved identity may follow automatically; new providers, endpoints,
@@ -299,6 +307,7 @@ mod tests {
             enabled: true,
             authorized_at_ms: 42,
             authorized_source_fingerprint: "external-config-abc".to_string(),
+            authorized_db_path: Some("/tmp/cc-switch.db".to_string()),
             authorized_upstream_signatures: vec!["approved-upstream-hash".to_string()],
             last_observed_source_fingerprint: Some("external-config-def".to_string()),
             last_synced_source_fingerprint: Some("external-config-abc".to_string()),

@@ -2322,6 +2322,15 @@
       "summary": "rebase 到 origin 167e259（他人后续提交）",
       "head_before": "7fabbd4dd9da",
       "remote": null
+    },
+    {
+      "id": "b4bdb558-d11b-45da-b5c3-3dffdb87f81e",
+      "timestamp": "2026-08-14T09:48:42+08:00",
+      "operation": "commit",
+      "branch": "codex/final-release-iteration",
+      "summary": "全项目漏洞修复：capability 执行闭环/观测回写/持久化/cc-switch db 边界/凭据 identity/route 一致性/脚本脱敏",
+      "head_before": "21b0d9f1c73e",
+      "remote": null
     }
   ]
 }

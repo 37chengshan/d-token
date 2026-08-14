@@ -1,0 +1,11 @@
+{
+  "hosts": {
+    "win10777": {
+      "host": "192.168.0.107",
+      "username": "10777",
+      "port": 22,
+      "description": "Windows 主机",
+      "compat": true
+    }
+  }
+}

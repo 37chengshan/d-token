@@ -60,7 +60,13 @@ pub fn dedupe_tools(tools: &mut Vec<Value>) -> usize {
     let mut kept: Vec<Value> = Vec::with_capacity(tools.len());
     let mut removed = 0;
     for tool in tools.drain(..) {
-        let canonical = serde_json::to_vec(&tool).unwrap_or_default();
+        // A serialization failure means we cannot prove byte identity — the
+        // tool is kept untouched (never treated as a duplicate of an empty
+        // key, which would corrupt distinct definitions).
+        let Ok(canonical) = serde_json::to_vec(&tool) else {
+            kept.push(tool);
+            continue;
+        };
         if seen.iter().any(|existing| existing == &canonical) {
             removed += 1;
             continue;

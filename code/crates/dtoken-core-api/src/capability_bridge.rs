@@ -7,15 +7,87 @@
 //! summaries (never blocking on learning) and attaches them to request logs
 //! and ledger events as receipt evidence.
 
+use std::path::PathBuf;
 use std::sync::{LazyLock, Mutex};
 
-use dtoken_capability_registry::{CapabilityRegistry, ResolveOutcome};
+use dtoken_capability_registry::{
+    CapabilityRegistry, ModelObservation, RegistryLimits, ResolveOutcome,
+};
 use serde_json::{json, Value};
 
+/// Optional persistence path for observed/learned facts. When set, the
+/// registry is hydrated at first access and snapshotted on mutations so
+/// learning survives process restarts (PRD P0.0.11.3 runtime facts).
+fn registry_store_path() -> Option<PathBuf> {
+    std::env::var_os("DTOKEN_CAPABILITY_REGISTRY_STORE").map(PathBuf::from)
+}
+
 fn registry() -> &'static Mutex<CapabilityRegistry> {
-    static REGISTRY: LazyLock<Mutex<CapabilityRegistry>> =
-        LazyLock::new(|| Mutex::new(CapabilityRegistry::default()));
+    static REGISTRY: LazyLock<Mutex<CapabilityRegistry>> = LazyLock::new(|| {
+        let mut registry = CapabilityRegistry::new(RegistryLimits::default());
+        if let Some(path) = registry_store_path() {
+            if let Ok(raw) = std::fs::read_to_string(&path) {
+                if let Ok(json) = serde_json::from_str::<Value>(&raw) {
+                    registry.hydrate(json);
+                }
+            }
+        }
+        Mutex::new(registry)
+    });
     &REGISTRY
+}
+
+fn persist() {
+    if let Some(path) = registry_store_path() {
+        if let Ok(serialized) = registry()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .snapshot_json()
+        {
+            let _ = std::fs::write(path, serialized);
+        }
+    }
+}
+
+/// Records a completed request observation (P0.0.11 learning loop).
+/// Best-effort: never fails the request path; revision conflicts are ignored
+/// (a newer concurrent write wins) and persistence failures are dropped.
+pub fn record_observation(observation: ModelObservation) {
+    let revision = registry()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .current_revision();
+    let mut registry = registry()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if registry.record_observation(observation, revision).is_ok() {
+        drop(registry);
+        persist();
+    }
+}
+
+/// Confirms a previously inferred capability (promotes to Learned).
+pub fn confirm_learned(capability: dtoken_capability_registry::ModelCapability) {
+    let revision = registry()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .current_revision();
+    let mut registry = registry()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if registry.confirm_learned(capability, revision).is_ok() {
+        drop(registry);
+        persist();
+    }
+}
+
+/// Declares an explicit wildcard pattern from agent config/follow.
+pub fn declare_wildcard(pattern: &str) {
+    registry()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .declare_wildcard(pattern);
+    persist();
 }
 
 /// Resolves a request model to a capability summary for receipt evidence.
