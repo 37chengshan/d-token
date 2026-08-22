@@ -165,6 +165,9 @@ mod tests {
 
     #[test]
     fn capability_hint_is_none_for_unknown_model() {
-        assert_eq!(compression_hint_for("brand-new-model-x", Some("responses")), None);
+        assert_eq!(
+            compression_hint_for("brand-new-model-x", Some("responses")),
+            None
+        );
     }
 }

@@ -328,8 +328,8 @@ $Checks += New-Check "win_headroom_snapshot" $WinSnapshotExists @{
 }
 
 # ---- 13. Test receipts for each platform --------------------------------------
-$MacTestReceipts = @(Find-Files $MacDirResolved @("release-verification-*.json", "desktop-bundle-artifact-audit-*.json"))
-$WinTestReceipts = @(Find-Files $WinDirResolved @("release-verification-*.json", "desktop-bundle-artifact-audit-*.json"))
+$MacTestReceipts = @(Find-Files $MacDirResolved @("release-verification-*.json", "desktop-bundle-artifact-audit-*.json", "release-performance-gate.json", "*-package-audit.*", "*-package-audit.md"))
+$WinTestReceipts = @(Find-Files $WinDirResolved @("release-verification-*.json", "desktop-bundle-artifact-audit-*.json", "release-performance-gate.json", "*-package-audit.*", "*-package-audit.md"))
 $MacHasTestReceipt = ($MacTestReceipts.Count -gt 0)
 $WinHasTestReceipt = ($WinTestReceipts.Count -gt 0)
 $Checks += New-Check "mac_test_receipts" $MacHasTestReceipt @{

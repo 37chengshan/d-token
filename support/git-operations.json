@@ -2340,6 +2340,15 @@
       "summary": "1b 计量闭环：model_identity 进 routed decision/learning 观测修正/Analytics provider actual 投影/R4 文档刷新",
       "head_before": "066c22ec63da",
       "remote": null
+    },
+    {
+      "id": "76e564bc-3c02-4199-a9bd-fbdeb7ff4824",
+      "timestamp": "2026-08-22T11:03:57+08:00",
+      "operation": "commit",
+      "branch": "codex/final-release-iteration",
+      "summary": "fix: 修复首屏 JS bundle 体积、Clippy 借用告警、E2E 动画测试与 CI 发布流水线阻断项",
+      "head_before": "1b7c88463d9bdcd5186f6b0080ffa267dc551549",
+      "remote": null
     }
   ]
 }

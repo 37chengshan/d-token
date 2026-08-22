@@ -12,8 +12,9 @@ import { invokeNative, type NativeActionResult } from "../../lib/native";
 import { useConnectionSetup } from "../../lib/connectionSetup";
 import { useRuntimeDashboardSelector } from "../../lib/useRuntimeDashboard";
 import { desktopInstallRoot } from "../../lib/install/presentation";
-import { OnboardingPage, type OnboardingServiceStartResult } from "../pages/Onboarding";
+import type { OnboardingServiceStartResult } from "../pages/Onboarding";
 
+const OnboardingPage = lazy(() => import("../pages/Onboarding").then((module) => ({ default: module.OnboardingPage })));
 const OverviewPage = lazy(() => import("../pages/Overview").then((module) => ({ default: module.Overview })));
 const InstallWorkbenchPage = lazy(() => import("../pages/InstallWorkbench").then((module) => ({ default: module.InstallWorkbench })));
 const CodebaseMemoryPage = lazy(() => import("../pages/CodebaseMemory").then((module) => ({ default: module.CodebaseMemory })));
@@ -217,19 +218,19 @@ export function AppShell() {
               {gate.state === "checking" ? (
                 <PageFallback />
               ) : showOnboarding ? (
-                // The wizard is a page in the shared shell (no new top-level
-                // navigation); it reuses the same stage and motion rules.
-                <PageStage key="onboarding" reducedMotion={reduceMotion}>
-                  <OnboardingPage
-                    gateState={gate.state}
-                    reducedMotion={reduceMotion}
-                    onComplete={handleCompleteOnboarding}
-                    onDismiss={handleDismissOnboarding}
-                    onStartSetup={handleStartSetup}
-                    onOpenOverview={handleOpenOverview}
-                    onStartService={handleStartService}
-                  />
-                </PageStage>
+                <Suspense fallback={<PageFallback />}>
+                  <PageStage key="onboarding" reducedMotion={reduceMotion}>
+                    <OnboardingPage
+                      gateState={gate.state}
+                      reducedMotion={reduceMotion}
+                      onComplete={handleCompleteOnboarding}
+                      onDismiss={handleDismissOnboarding}
+                      onStartSetup={handleStartSetup}
+                      onOpenOverview={handleOpenOverview}
+                      onStartService={handleStartService}
+                    />
+                  </PageStage>
+                </Suspense>
               ) : (
                 // Suspense sits outside the stage so the enter animation runs once,
                 // on real content, instead of playing against the fallback and

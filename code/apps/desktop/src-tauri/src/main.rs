@@ -5600,7 +5600,11 @@ fn slugify_identity(value: &str) -> String {
         }
     }
     let slug = slug.trim_matches('-');
-    if slug.is_empty() { "id".to_string() } else { slug.to_string() }
+    if slug.is_empty() {
+        "id".to_string()
+    } else {
+        slug.to_string()
+    }
 }
 
 fn normalize_endpoint_for_identity(endpoint: &str) -> String {
@@ -8320,10 +8324,13 @@ fn execute_cc_switch_auto_follow() -> Value {
     authorization.last_observed_source_fingerprint = Some(request.source_fingerprint.clone());
     authorization.last_observed_route_signature = Some(identity.route_signature.clone());
     let follow_decision = cc_switch_follow_decision(
-            &authorization,
-            &identity,
-            upstream_discovery::cc_switch_db_paths().first().map(|path| path.display().to_string()).as_deref(),
-        );
+        &authorization,
+        &identity,
+        upstream_discovery::cc_switch_db_paths()
+            .first()
+            .map(|path| path.display().to_string())
+            .as_deref(),
+    );
     if follow_decision == "reauthorization_required" {
         authorization.last_sync_state = "reauthorization_required".to_string();
         let _ = save_cc_switch_auto_follow_authorization(&authorization);
@@ -10987,23 +10994,23 @@ async fn discover_upstream_candidates() -> Value {
         upstream_discovery::discover_with_auto_follow(auto_follow)
     })
     .await
-        .map(enrich_upstream_discovery)
-        .unwrap_or_else(|error| {
-            json!({
-                "source": "dtoken-desktop-read-only-discovery",
-                "freshness": "unknown",
-                "revision": "unavailable",
-                "state": "unavailable",
-                "candidates": [],
-                "agent_bindings": [],
-                "sources": [],
-                "selection_required": false,
-                "cc_switch_sync": null,
-                "writes_performed": false,
-                "privacy": "No credential values were read or returned",
-                "error": format!("Discovery worker failed: {error}")
-            })
+    .map(enrich_upstream_discovery)
+    .unwrap_or_else(|error| {
+        json!({
+            "source": "dtoken-desktop-read-only-discovery",
+            "freshness": "unknown",
+            "revision": "unavailable",
+            "state": "unavailable",
+            "candidates": [],
+            "agent_bindings": [],
+            "sources": [],
+            "selection_required": false,
+            "cc_switch_sync": null,
+            "writes_performed": false,
+            "privacy": "No credential values were read or returned",
+            "error": format!("Discovery worker failed: {error}")
         })
+    })
 }
 
 fn enrich_upstream_discovery(mut discovery: Value) -> Value {

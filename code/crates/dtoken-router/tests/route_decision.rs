@@ -131,7 +131,9 @@ fn decide_with_model_carries_identity_and_hint_without_changing_selection() {
     };
     let router = Router::new(config);
 
-    let plain = router.decide("demo-instance", Protocol::OpenAi).expect("route");
+    let plain = router
+        .decide("demo-instance", Protocol::OpenAi)
+        .expect("route");
     assert!(plain.model_identity.is_none());
     assert!(plain.compression_hint.is_none());
 
@@ -147,7 +149,10 @@ fn decide_with_model_carries_identity_and_hint_without_changing_selection() {
     assert_eq!(with_model.route_id, plain.route_id);
     assert_eq!(with_model.provider_id, plain.provider_id);
     assert_eq!(with_model.compression_policy, plain.compression_policy);
-    assert_eq!(with_model.model_identity.as_deref(), Some("opencode/gemini-3-pro"));
+    assert_eq!(
+        with_model.model_identity.as_deref(),
+        Some("opencode/gemini-3-pro")
+    );
     assert_eq!(with_model.compression_hint.as_deref(), Some("default"));
 }
 

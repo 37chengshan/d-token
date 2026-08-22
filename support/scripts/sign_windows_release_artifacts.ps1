@@ -14,11 +14,20 @@ if ([string]::IsNullOrWhiteSpace($OutputDir)) {
 }
 New-Item -ItemType Directory -Force -Path $OutputDir | Out-Null
 
+$NsisDir = Join-Path $Root "code\target\release\bundle\nsis"
+$NsisInstaller = if (Test-Path -LiteralPath $NsisDir) {
+  Get-ChildItem -LiteralPath $NsisDir -Filter "d-token_*_x64-setup.exe" | Sort-Object LastWriteTime -Descending | Select-Object -First 1 -ExpandProperty FullName
+} else { $null }
+
 $Artifacts = @(
   Join-Path $Root "code\target\release\d-token-desktop.exe"
   Join-Path $Root "code\target\release\dtoken-proxy.exe"
-  Join-Path $Root "code\target\release\bundle\nsis\d-token_0.2.0_x64-setup.exe"
 )
+if ($null -ne $NsisInstaller) {
+  $Artifacts += $NsisInstaller
+} else {
+  $Artifacts += (Join-Path $NsisDir "d-token_0.2.0-beta.1_x64-setup.exe")
+}
 
 function New-ArtifactPlan {
   param([string]$Path)

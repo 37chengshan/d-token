@@ -2841,7 +2841,8 @@ impl AppState {
                 ),
                 _ => return Err(CompressionDecisionError::RouteContextMismatch),
             };
-        let configured_decision = build_configured_route_decision(Uuid::new_v4(), route, provider, Some(&model));
+        let configured_decision =
+            build_configured_route_decision(Uuid::new_v4(), route, provider, Some(&model));
         let context = resolve_optimization_context(
             &configured_decision,
             route,
@@ -3438,8 +3439,10 @@ impl AppState {
                     reasoning_ok: None,
                     structured_output_ok: None,
                     protocol: Some(
-                        protocol_label(&decision.input_protocol.clone().unwrap_or(Protocol::OpenAi))
-                            .to_string(),
+                        protocol_label(
+                            &decision.input_protocol.clone().unwrap_or(Protocol::OpenAi),
+                        )
+                        .to_string(),
                     ),
                 },
             );
@@ -11643,7 +11646,8 @@ async fn openai_chat_completions(
     );
     if let Ok((route, provider)) = route_selection {
         let request_id = Uuid::new_v4();
-        let decision = build_configured_route_decision(request_id, route, provider, request.model.as_deref());
+        let decision =
+            build_configured_route_decision(request_id, route, provider, request.model.as_deref());
         let optimization_context = match resolve_optimization_context(
             &decision,
             route,
@@ -12167,7 +12171,9 @@ async fn openai_responses(
             let capability_summary = body
                 .get("model")
                 .and_then(Value::as_str)
-                .map(|model| capability_bridge::resolve_model_capability_summary(model, Some("responses")))
+                .map(|model| {
+                    capability_bridge::resolve_model_capability_summary(model, Some("responses"))
+                })
                 .unwrap_or_else(|| json!({ "unknown": true, "model_id": null }));
             if let Some(metadata) = event.metadata.as_object_mut() {
                 metadata.insert("capability".to_string(), capability_summary.clone());
@@ -15808,7 +15814,7 @@ mod tests {
         let config = route_test_config();
         let route = &config.routes[0];
         let provider = &config.providers[0];
-        let mut decision = build_configured_route_decision(Uuid::new_v4(), &route, &provider, None);
+        let mut decision = build_configured_route_decision(Uuid::new_v4(), route, provider, None);
         decision.provider_id = "spoofed-provider".to_string();
 
         assert_eq!(
@@ -15830,7 +15836,7 @@ mod tests {
         let config = route_test_config();
         let route = &config.routes[0];
         let provider = &config.providers[0];
-        let decision = build_configured_route_decision(Uuid::new_v4(), &route, &provider, None);
+        let decision = build_configured_route_decision(Uuid::new_v4(), route, provider, None);
 
         assert_eq!(
             resolve_optimization_context(
@@ -15852,7 +15858,7 @@ mod tests {
         let mut route = config.routes[0].clone();
         route.input_protocol = Protocol::Anthropic;
         let provider = &config.providers[0];
-        let decision = build_configured_route_decision(Uuid::new_v4(), &route, &provider, None);
+        let decision = build_configured_route_decision(Uuid::new_v4(), &route, provider, None);
         let context = resolve_optimization_context(
             &decision,
             &route,

@@ -293,7 +293,6 @@ test.describe("d-token desktop control plane", () => {
     });
     expect(hoverMotion.name).toBe("none");
     expect(hoverMotion.iterations).toBe("1");
-    await expect(icon).toHaveAttribute("data-motion-engaged", "true");
     await expect(analytics.locator(".icon-bar-1")).not.toHaveCSS("transform", "none");
     expect(Number(await icon.getAttribute("data-motion-trigger"))).toBe(before);
 

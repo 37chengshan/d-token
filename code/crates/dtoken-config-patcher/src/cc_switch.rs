@@ -148,7 +148,10 @@ pub fn follow_decision_for_app(
     _upstream_signature: &str,
     route_signature: &str,
 ) -> FollowDecision {
-    if !authorized_app_ids.iter().any(|authorized| authorized == app_id) {
+    if !authorized_app_ids
+        .iter()
+        .any(|authorized| authorized == app_id)
+    {
         return FollowDecision::ReauthorizationRequired;
     }
     if last_synced_route_signature == Some(route_signature) {

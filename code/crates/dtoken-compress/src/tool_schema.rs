@@ -225,9 +225,8 @@ pub fn normalize_tool_definitions(body: &mut Value) -> ToolSchemaNormalizeOutcom
         }
     }
 
-    outcome.changed = outcome.tools_reordered
-        || outcome.schemas_key_sorted
-        || outcome.tools_deduped > 0;
+    outcome.changed =
+        outcome.tools_reordered || outcome.schemas_key_sorted || outcome.tools_deduped > 0;
     outcome
 }
 

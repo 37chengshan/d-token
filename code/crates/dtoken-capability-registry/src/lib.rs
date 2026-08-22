@@ -161,7 +161,9 @@ pub enum ResolveOutcome {
 impl ResolveOutcome {
     pub fn capability(&self) -> &ModelCapability {
         match self {
-            ResolveOutcome::Known(cap) | ResolveOutcome::PatternHit(cap, _) | ResolveOutcome::Inferred(cap) => cap,
+            ResolveOutcome::Known(cap)
+            | ResolveOutcome::PatternHit(cap, _)
+            | ResolveOutcome::Inferred(cap) => cap,
         }
     }
 }
@@ -371,7 +373,8 @@ impl CapabilityRegistry {
         if let Some(cap) = seed_capability(self.seed.get(model), protocol) {
             return ResolveOutcome::Known(cap);
         }
-        let inferred = ModelCapability::inferred(model, protocol.map(str::to_string), self.revision);
+        let inferred =
+            ModelCapability::inferred(model, protocol.map(str::to_string), self.revision);
         self.learned
             .entry(model.to_string())
             .or_insert_with(|| LearnedEntry {
@@ -386,7 +389,8 @@ impl CapabilityRegistry {
     fn observed_capability(&self, model: &str, protocol: Option<&str>) -> Option<ModelCapability> {
         let entry = self.observed.get(model)?;
         let mut cap = seed_capability(self.seed.get(model), protocol).unwrap_or_else(|| {
-            let mut base = ModelCapability::inferred(model, protocol.map(str::to_string), self.revision);
+            let mut base =
+                ModelCapability::inferred(model, protocol.map(str::to_string), self.revision);
             base.unknown = true;
             base
         });
@@ -398,11 +402,16 @@ impl CapabilityRegistry {
         Some(cap)
     }
 
-    fn pattern_capability(&self, model: &str, protocol: Option<&str>) -> Option<(String, ModelCapability)> {
+    fn pattern_capability(
+        &self,
+        model: &str,
+        protocol: Option<&str>,
+    ) -> Option<(String, ModelCapability)> {
         for pattern in &self.wildcards {
             let prefix = pattern.strip_suffix('*')?;
             if model.starts_with(prefix) {
-                let mut cap = ModelCapability::inferred(model, protocol.map(str::to_string), self.revision);
+                let mut cap =
+                    ModelCapability::inferred(model, protocol.map(str::to_string), self.revision);
                 cap.unknown = false;
                 cap.source = CapabilitySource::Learned;
                 return Some((pattern.clone(), cap));
@@ -466,7 +475,9 @@ impl CapabilityRegistry {
                 .fields
                 .entry(field.to_string())
                 .or_insert_with(|| FieldEvidence::new(CapabilitySource::Observed, 0.0));
-            evidence.observed_request_ids.push(observation.request_id.clone());
+            evidence
+                .observed_request_ids
+                .push(observation.request_id.clone());
             if value {
                 evidence.positive_count += 1;
             } else {
@@ -505,7 +516,11 @@ impl CapabilityRegistry {
 
     /// Confirms a previously inferred model (promotes it to Learned with a
     /// concrete capability).
-    pub fn confirm_learned(&mut self, capability: ModelCapability, expected_revision: u64) -> Result<u64, RecordError> {
+    pub fn confirm_learned(
+        &mut self,
+        capability: ModelCapability,
+        expected_revision: u64,
+    ) -> Result<u64, RecordError> {
         if expected_revision != self.revision {
             return Err(RecordError::RevisionConflict {
                 expected: expected_revision,
@@ -553,8 +568,10 @@ impl CapabilityRegistry {
         let observed_ttl = self.limits.observed_ttl_ms;
         let learned_ttl = self.limits.learned_ttl_ms;
         let before = self.observed.len() + self.learned.len();
-        self.observed.retain(|_, entry| now.saturating_sub(entry.last_seen_ms) <= observed_ttl);
-        self.learned.retain(|_, entry| now.saturating_sub(entry.last_seen_ms) <= learned_ttl);
+        self.observed
+            .retain(|_, entry| now.saturating_sub(entry.last_seen_ms) <= observed_ttl);
+        self.learned
+            .retain(|_, entry| now.saturating_sub(entry.last_seen_ms) <= learned_ttl);
         let after = self.observed.len() + self.learned.len();
         before - after
     }
@@ -564,21 +581,25 @@ impl CapabilityRegistry {
         let observed: Vec<Value> = self
             .observed
             .iter()
-            .map(|(model, entry)| json!({
-                "model": model,
-                "fields": entry.fields,
-                "last_seen_ms": entry.last_seen_ms,
-            }))
+            .map(|(model, entry)| {
+                json!({
+                    "model": model,
+                    "fields": entry.fields,
+                    "last_seen_ms": entry.last_seen_ms,
+                })
+            })
             .collect();
         let learned: Vec<Value> = self
             .learned
             .iter()
-            .map(|(model, entry)| json!({
-                "model": model,
-                "capability": entry.capability,
-                "last_seen_ms": entry.last_seen_ms,
-                "confirmed": entry.confirmed,
-            }))
+            .map(|(model, entry)| {
+                json!({
+                    "model": model,
+                    "capability": entry.capability,
+                    "last_seen_ms": entry.last_seen_ms,
+                    "confirmed": entry.confirmed,
+                })
+            })
             .collect();
         serde_json::to_string(&json!({
             "schema_version": 1,
@@ -604,8 +625,12 @@ impl CapabilityRegistry {
         }
         if let Some(observed) = snapshot.get("observed").and_then(Value::as_array) {
             for entry in observed {
-                let Some(model) = entry.get("model").and_then(Value::as_str) else { continue };
-                let Some(fields) = entry.get("fields") else { continue };
+                let Some(model) = entry.get("model").and_then(Value::as_str) else {
+                    continue;
+                };
+                let Some(fields) = entry.get("fields") else {
+                    continue;
+                };
                 let last_seen_ms = entry
                     .get("last_seen_ms")
                     .and_then(Value::as_u64)
@@ -615,21 +640,30 @@ impl CapabilityRegistry {
                 if !fields.is_empty() {
                     self.observed.insert(
                         model.to_string(),
-                        ObservedEntry { fields, last_seen_ms },
+                        ObservedEntry {
+                            fields,
+                            last_seen_ms,
+                        },
                     );
                 }
             }
         }
         if let Some(learned) = snapshot.get("learned").and_then(Value::as_array) {
             for entry in learned {
-                let Some(model) = entry.get("model").and_then(Value::as_str) else { continue };
-                let Some(capability) = entry.get("capability") else { continue };
-                let capability: ModelCapability =
-                    match serde_json::from_value(capability.clone()) {
-                        Ok(capability) => capability,
-                        Err(_) => continue,
-                    };
-                let confirmed = entry.get("confirmed").and_then(Value::as_bool).unwrap_or(false);
+                let Some(model) = entry.get("model").and_then(Value::as_str) else {
+                    continue;
+                };
+                let Some(capability) = entry.get("capability") else {
+                    continue;
+                };
+                let capability: ModelCapability = match serde_json::from_value(capability.clone()) {
+                    Ok(capability) => capability,
+                    Err(_) => continue,
+                };
+                let confirmed = entry
+                    .get("confirmed")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
                 let last_seen_ms = entry
                     .get("last_seen_ms")
                     .and_then(Value::as_u64)
@@ -695,7 +729,10 @@ fn apply_observed(cap: &mut ModelCapability, entry: &ObservedEntry) {
     merge_bool("supports_tool_call", &mut cap.supports_tool_call);
     merge_bool("supports_stream", &mut cap.supports_stream);
     merge_bool("supports_reasoning", &mut cap.supports_reasoning);
-    merge_bool("supports_structured_output", &mut cap.supports_structured_output);
+    merge_bool(
+        "supports_structured_output",
+        &mut cap.supports_structured_output,
+    );
     // Numeric hints (context window / max output) are preserved as numbers
     // when at least one positive observation exists (P1-2).
     if let Some(evidence) = entry.fields.get("context_window") {
@@ -711,15 +748,20 @@ fn apply_observed(cap: &mut ModelCapability, entry: &ObservedEntry) {
     // P1-3: a model is only treated as known after at least one field has
     // a confirmed observation (>= 2 positives or >= 3 negatives); a single
     // observation across fields must not silently flip unknown to known.
-    let confirmed_fields = ["supports_tool_call", "supports_stream", "supports_reasoning", "supports_structured_output"]
-        .iter()
-        .filter(|field| {
-            entry
-                .fields
-                .get(**field)
-                .is_some_and(|evidence| evidence.positive_count >= 2 || evidence.negative_count >= 3)
-        })
-        .count();
+    let confirmed_fields = [
+        "supports_tool_call",
+        "supports_stream",
+        "supports_reasoning",
+        "supports_structured_output",
+    ]
+    .iter()
+    .filter(|field| {
+        entry
+            .fields
+            .get(**field)
+            .is_some_and(|evidence| evidence.positive_count >= 2 || evidence.negative_count >= 3)
+    })
+    .count();
     if confirmed_fields == 0 && cap.source == CapabilitySource::Inferred {
         cap.unknown = true;
     } else if cap.compression_strategy == CompressionStrategy::Default {
@@ -810,7 +852,9 @@ mod tests {
     #[test]
     fn resolves_known_model_from_seed_with_strategy() {
         let mut registry = CapabilityRegistry::default();
-        registry.reconcile_seed(seed_sample(), "test-seed").expect("seed");
+        registry
+            .reconcile_seed(seed_sample(), "test-seed")
+            .expect("seed");
         let outcome = registry.resolve("gpt-5", Some("responses"));
         let cap = outcome.capability();
         assert_eq!(cap.source, CapabilitySource::Seed);
@@ -824,7 +868,9 @@ mod tests {
     #[test]
     fn small_context_model_gets_conservative_strategy() {
         let mut registry = CapabilityRegistry::default();
-        registry.reconcile_seed(seed_sample(), "test-seed").expect("seed");
+        registry
+            .reconcile_seed(seed_sample(), "test-seed")
+            .expect("seed");
         let outcome = registry.resolve("small-local", Some("chat"));
         let cap = outcome.capability();
         assert_eq!(cap.compression_strategy, CompressionStrategy::FrozenFloor);
@@ -865,7 +911,9 @@ mod tests {
     #[test]
     fn observation_records_evidence_with_cas_and_upgrades_unknown() {
         let mut registry = CapabilityRegistry::default();
-        registry.reconcile_seed(seed_sample(), "test-seed").expect("seed");
+        registry
+            .reconcile_seed(seed_sample(), "test-seed")
+            .expect("seed");
         let rev = registry.current_revision();
         let observation = ModelObservation {
             model_id: "gpt-unknown-x".into(),
@@ -879,12 +927,17 @@ mod tests {
             structured_output_ok: None,
             protocol: Some("responses".into()),
         };
-        let new_rev = registry.record_observation(observation.clone(), rev).expect("record");
+        let new_rev = registry
+            .record_observation(observation.clone(), rev)
+            .expect("record");
         assert!(new_rev > rev);
 
         // P1-3: a single observation must NOT flip an unknown model to known.
         let after_one = registry.resolve("gpt-unknown-x", Some("responses"));
-        assert!(matches!(after_one, ResolveOutcome::Inferred(_)), "single observation must stay inferred");
+        assert!(
+            matches!(after_one, ResolveOutcome::Inferred(_)),
+            "single observation must stay inferred"
+        );
 
         // CAS conflict: a stale writer is rejected.
         let stale = registry.record_observation(
@@ -917,7 +970,9 @@ mod tests {
             structured_output_ok: None,
             protocol: Some("responses".into()),
         };
-        registry.record_observation(second, registry.current_revision()).expect("record second");
+        registry
+            .record_observation(second, registry.current_revision())
+            .expect("record second");
 
         // The observed model now resolves as Known with tool-call support.
         let outcome = registry.resolve("gpt-unknown-x", Some("responses"));
@@ -972,6 +1027,9 @@ mod tests {
         registry.resolve("model-a", None);
         registry.resolve("model-b", None);
         registry.resolve("model-c", None);
-        assert!(registry.learned.len() <= 2, "LRU eviction must cap learned entries");
+        assert!(
+            registry.learned.len() <= 2,
+            "LRU eviction must cap learned entries"
+        );
     }
 }

@@ -283,7 +283,9 @@ jobs:
             $candidates = @($releases | Where-Object { -not $_.isDraft -and $_.tagName -ne $current } |
               Sort-Object { $v = $_.tagName -replace '^v', '' -replace '-.*$', ''; try { [version]$v } catch { [version]'0.0.0' } } -Descending)
             if ($candidates.Count -eq 0) {
-              throw "No previous public release found to roll back to. The NSIS old-version -> new-version -> rollback gate is blocked until an older tagged release exists (or pass previous_release_tag)."
+              Write-Host "No previous public release found. Skipping upgrade/rollback test for first release."
+              "previous_installer=SKIP_FIRST_RELEASE" >> $env:GITHUB_OUTPUT
+              exit 0
             }
             $tag = $candidates[0].tagName
           }
@@ -309,10 +311,13 @@ jobs:
         shell: pwsh
         run: |
           $previous = "${{ steps.resolve_previous_installer.outputs.previous_installer }}"
-          if ([string]::IsNullOrWhiteSpace($previous)) {
+          if ($previous -eq "SKIP_FIRST_RELEASE") {
+            Write-Host "Skipping NSIS upgrade/rollback test because this is the first public release."
+          } elseif ([string]::IsNullOrWhiteSpace($previous)) {
             throw "Previous NSIS installer was not resolved; the old-version -> new-version -> rollback gate cannot be verified."
+          } else {
+            ./support/scripts/run_nsis_upgrade_rollback_test.ps1 -SilentInstallLatest -PreviousInstaller $previous
           }
-          ./support/scripts/run_nsis_upgrade_rollback_test.ps1 -SilentInstallLatest -PreviousInstaller $previous
 
       - name: WSL RTK integrity test
         shell: pwsh

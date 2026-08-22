@@ -54,7 +54,10 @@ mod tests {
 
     #[test]
     fn unknown_hint_never_fails_and_stays_conservative() {
-        assert_eq!(compression_strategy_to_policy(None), CompressionPolicy::Safe);
+        assert_eq!(
+            compression_strategy_to_policy(None),
+            CompressionPolicy::Safe
+        );
         assert_eq!(
             compression_strategy_to_policy(Some("some-future-strategy")),
             CompressionPolicy::Safe
