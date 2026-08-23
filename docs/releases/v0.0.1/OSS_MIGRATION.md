@@ -10,10 +10,10 @@
 | 轨道 | 上游 | 当前登记 pin | 新事实/漂移 | 许可证 | 分发边界 | 收敛切片 |
 |---|---|---|---|---|---|---|
 | Headroom | `headroomlabs-ai/headroom` | `v0.34.0` / `9fd5ae3d`（唯一 current comparison pin，2026-08-08 PR-H1 决议） | **D2 已闭合（PR-H1）**：三候选审计完成——`01df2452`→`v0.34.0`（33 commit/129 文件/+8936 −1021）、`v0.34.0`→main `7f6950be`（33 commit/74 文件/+4874 −428）；许可证无差异、NOTICE 增量（#2734 vendored dashboard assets）已登记；无必须采用 main 的实际证据，main 只作 post-release delta 跟踪 | Apache-2.0 + NOTICE | 行为对照；`code/runtimes/headroom/` 为 provenance/迁移边界，非 Python sidecar/外部 8787 依赖 | PR-H1✅, PR-H2, PR-H3 |
-| LeanCTX | `yvgude/lean-ctx` | `v3.9.17` / `cf8fce6b`（2026-08-04 release） | **pin 漂移候选**：新克隆 `lean-ctx-main-2026-08-08` HEAD `95a1b7bc`（main）未评估 | Apache-2.0（`clients/python`、`rust/crates/grammar-addons/lua` 子包 MIT） | 行为对照；九边界由 d-token-owned Rust service 提供 | PR-L0, PR-L1..L3 |
-| RTK | `rtk-ai/rtk` | managed RTK（receipt 2026-07-31）；未登记 release pin | **pin 待审计**：新克隆 `rtk-v0.45.0` HEAD `b34be37`（v0.45.0，PR #3468） | Apache-2.0（已核对官方 `LICENSE`；无根 NOTICE，PR-R1 仍需登记） | d-token 内建 managed 能力；不独立分发；`rtk gain` 不作为产品轮询路径 | PR-R1, PR-R2, PR-R3 |
+| LeanCTX | `yvgude/lean-ctx` | `v3.9.17` / `cf8fce6b`（2026-08-04 release） | **D4 已闭合（PR-L0，2026-08-08）**：main `95a1b7bc` 93-commit delta 已评估（93 commit/160 文件/+11209 −2665；ADR-001..013、lean-ctx-protocol v0.1.0、enterprise gating、r15–r18 系列、安全修复 #1428/#1431–35/#1418/#1437；无版本号变化、无 LICENSE/NOTICE 变化），仅作 post-pin 研究，不作第二 pin | Apache-2.0（`clients/python`、`rust/crates/grammar-addons/lua` 子包 MIT） | 行为对照；九边界由 d-token-owned Rust service 提供 | PR-L0✅（PR-L1..L3 继续） |
+| RTK | `rtk-ai/rtk` | `v0.45.0` / `b34be37`（2026-08-07 release；tag `v0.45.0`/`latest` 同 commit） | **D5 已闭合（PR-R1，2026-08-08）**：LICENSE Apache-2.0 核验（SHA-256 `4044ade9…`，标准条款 1–9 完整）；无根 NOTICE；与 PRD「内建能力」对齐 | Apache-2.0（已登记 LICENSE SHA-256 `4044ade9c21d…87cfd`） | d-token 内建 managed 能力；不独立分发；`rtk gain` 不作为产品轮询路径 | PR-R1✅（PR-R2, PR-R3 继续） |
 | pxpipe | `teamchong/pxpipe` | `0ceabbed` / v0.12.0（2026-08-06 release；法律声明、代码常量、计划文档已同步） | **已闭合（PR-O1，2026-08-08）**：v0.12.0 评估完成并固定为唯一参考 pin；旧 pin `7b7d6efa`/v0.8.0 标注为历史；1928×1928 非生产 profile 声明保留 | MIT（代码）；Spleen 字体 BSD-2-Clause | 评测配方参考；d-token Rust renderer 独立实现 | PR-O1 已闭合（PR-O2 管 Spleen） |
-| Codebase Memory | `DeusData/codebase-memory-mcp` | `v0.9.1-rc.1` / `ee9833df`（manifest） | **provenance 漂移（阻断级）**：根 `THIRD_PARTY_NOTICES.md` 仍 pin `v0.9.0` / `b637e333`，与 manifest 不一致 | MIT | 可选外部 sidecar：用户显式导入 pinned archive，App 不携带大文件；Cosign/OIDC 校验 | PR-CBM1, PR-CBM2 |
+| Codebase Memory | `DeusData/codebase-memory-mcp` | `v0.9.1-rc.1` / `ee9833df`（manifest） | **D1 已闭合（PR-CBM1，2026-08-08）**：根 `THIRD_PARTY_NOTICES.md` 已统一为 `v0.9.1-rc.1` / `ee9833df`，与 manifest 一致；`v0.9.0` / `b637e333` 标 superseded（仅作用户 v0.9.0 Bug 复现基线） | MIT | 可选外部 sidecar：用户显式导入 pinned archive，App 不携带大文件；Cosign/OIDC 校验 | PR-CBM1✅（PR-CBM2 继续） |
 | AiMaMi | `borawong/AiMaMi` | `297c7af5` | 无漂移（LICENSE 副本在 `docs/legal/AIMAMI_APACHE_2_0_LICENSE.txt`）；该 commit 无根 NOTICE | Apache-2.0 | 适配声明（PageStage/AnimatedSegmentedControl 等，见 legal notices 适配范围表）；不复制品牌资产 | PR-A |
 | Spleen | `fcambus/spleen` | `2.2.0` / `0493c34`（`spleen-5x8.bdf`） | 无漂移；克隆 `spleen-2.2.0` 已核验 | BSD-2-Clause | 字体数据随 Optical 分发声明；渲染实现 d-token-owned | PR-O2 |
 
@@ -23,7 +23,7 @@
 
 - 评估基线已决议（PR-H1，2026-08-08）：唯一 current comparison pin = release `v0.34.0`/`9fd5ae3d`（2026-08-05 发布）。三候选增量（行为/接口/许可证/NOTICE）已审计并登记于 `code/runtimes/headroom/README.md` §三候选漂移审计与唯一 pin 决议：`01df2452`→`v0.34.0` 为 33 commit/129 文件/+8936 −1021；`v0.34.0`→main `7f6950be`（`headroom-main-2026-08-08` 新克隆，外部路径 `/Users/cc/Documents/d-token-external/headroom/headroom-main-2026-08-08`）为 33 commit/74 文件/+4874 −428；无必须采用 main 的实际证据。`01df2452` 降为历史 pin（仅解释旧证据），main `7f6950be` 作 post-release delta 跟踪。此前已完成 v0.33.0→旧基线迁移决策（PHP codec 吸收；#2694/#2718/#2691 契约对齐评估；frozen_message_count 缺口登记于 `code/runtimes/headroom/README.md`）。
 - 迁移状态：PLAN §1C 逐能力矩阵（117 项）多数为 active candidate/partial；`partial`/`占位`/`缺失` 为发布阻断（PLAN 1C.2）。
-- Headroom 完整迁移是长期发布门（PRD §8 矩阵、PLAN 1C.2 G0–G9），不等于 v0.2.0-beta.1 全部 MUST（PRD P0.0.7 只要求核心可信压缩子集）。用户口径「所有要完成都考虑」→ 完整迁移列入 v0.0.1 计划，release claim 为 BOUNDARY（见 [RISKS_DECISIONS.md](./RISKS_DECISIONS.md#d2)）。
+- Headroom 完整迁移是长期发布门（PRD §8 矩阵、PLAN 1C.2 G0–G9），不等于 v0.0.1 全部 MUST（PRD P0.0.7 只要求核心可信压缩子集）。用户口径「所有要完成都考虑」→ 完整迁移列入 v0.0.1 计划，release claim 为 BOUNDARY（见 [RISKS_DECISIONS.md](./RISKS_DECISIONS.md#d2)）。
 
 ### 2.2 PR-H 切片
 
@@ -93,14 +93,14 @@
 
 | # | 漂移 | 事实 | owner |
 |---|---|---|---|
-| D1 | CBM 根 NOTICE v0.9.0 vs manifest v0.9.1-rc.1 | 根 `THIRD_PARTY_NOTICES.md` 第 52–56 行 pin v0.9.0/`b637e333`；manifest pin v0.9.1-rc.1/`ee9833df` | PR-CBM1 |
+| D1 | CBM 根 NOTICE v0.9.0 vs manifest v0.9.1-rc.1 | ✅ 已闭合（PR-CBM1，2026-08-08）：根 `THIRD_PARTY_NOTICES.md` 已统一为 v0.9.1-rc.1/`ee9833df`；v0.9.0/`b637e333` 标 superseded（仅作用户 v0.9.0 Bug 复现基线），与 manifest 一致 | PR-CBM1（已闭合） |
 | D2 | Headroom 基线 pin 冲突 | ✅ 已闭合（PR-H1，2026-08-08）：唯一 current comparison pin = `v0.34.0`/`9fd5ae3d`；旧基线 `01df2452` 标历史；main `7f6950be` 作 post-release delta 跟踪（无必须采用证据）；三候选漂移审计记录在 `code/runtimes/headroom/README.md` | PR-H1（已闭合） |
 | D3 | pxpipe 旧 pin 未评估 | ✅ 已闭合（PR-O1，2026-08-08）：唯一 pin `0ceabbed`/v0.12.0；法律声明、代码常量与计划文档已同步；旧 pin `7b7d6efa` 标历史 | PR-O1（已闭合） |
-| D4 | lean-ctx release vs main | 登记 pin v3.9.17/`cf8fce6b`；新克隆 main `95a1b7bc` 未评估 | PR-L0 |
-| D5 | RTK 无 release pin 登记 | managed probe 有 receipt 但无来源 pin；新克隆 v0.45.0/`b34be37` 待审计 | PR-R1 |
+| D4 | lean-ctx release vs main | ✅ 已闭合（PR-L0，2026-08-08）：唯一 pin = v3.9.17/`cf8fce6b`；main `95a1b7bc` 93-commit delta 已评估（93 commit/160 文件/+11209 −2665；无版本号变化、无 LICENSE/NOTICE 变化），仅作 post-pin 研究 | PR-L0（已闭合） |
+| D5 | RTK 无 release pin 登记 | ✅ 已闭合（PR-R1，2026-08-08）：唯一 pin = v0.45.0/`b34be37`（tag `v0.45.0`/`latest` 同 commit）；LICENSE Apache-2.0 核验（SHA-256 `4044ade9…`，标准条款 1–9 完整）；无根 NOTICE；已登记 managed 来源 pin | PR-R1（已闭合） |
 
 ## 9. 与发布门的绑定
 
-- OSS-1（pin 唯一）与 OSS-2（NOTICE 随分发）是 **MUST**：D1 未闭合前 `release_ready=false`。
+- OSS-1（pin 唯一）与 OSS-2（NOTICE 随分发）是 **MUST**：D1–D5 已全部闭合（2026-08-08，见 [EVIDENCE.md](./EVIDENCE.md) 标记）；`release_ready` 仍受 G6/G8/N0 门控（见 [VERIFICATION.md](./VERIFICATION.md)），pin 闭合不代表发布就绪。
 - 各轨道迁移完成度（CONTEXT/OPTICAL/OSS 类 requirement）release claim 见 [REQUIREMENTS.md](./REQUIREMENTS.md) 与 [RISKS_DECISIONS.md](./RISKS_DECISIONS.md)；用户最终裁决是否阻断 v0.0.1。
 - 每轨道完成时同步更新 [EVIDENCE.md](./EVIDENCE.md) 证据索引，禁止复用过期 pin 的证据。

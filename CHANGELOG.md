@@ -6,7 +6,11 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
-No user-facing changes have been assigned beyond the `0.2.0-beta.1` candidate.
+No user-facing changes have been assigned beyond the `0.0.1` candidate.
+
+## [0.0.1] — unsigned technical preview (2026-08-08)
+
+Candidate version unified from `0.2.0-beta.1` to `0.0.1` (VERSION-0); candidate scope, publication eligibility, and known limitations are unchanged from the `0.2.0-beta.1` entry below.
 
 ## [0.2.0-beta.1] — unsigned technical preview (2026-07-26)
 
@@ -48,3 +52,5 @@ No user-facing changes have been assigned beyond the `0.2.0-beta.1` candidate.
 - Code Graph requires explicit import of the pinned upstream component and does not bundle its executable in the installer.
 
 [Unreleased]: https://github.com/37chengshan/d-token/compare/v0.2.0-beta.1...HEAD
+[0.0.1]: https://github.com/37chengshan/d-token/compare/v0.2.0-beta.1...v0.0.1
+[0.2.0-beta.1]: https://github.com/37chengshan/d-token/releases/tag/v0.2.0-beta.1

@@ -24,7 +24,7 @@
        echo "loopback-only default bind OK"
      fi
      ```
-8. 版本门：活跃文档无 `0.2.0-beta.1`（除 history/archive）
+8. 版本门：活跃文档无 `0.2.0-beta.1`；旧版本号仅允许出现在明确标注为 V-1 前历史快照、版本迁移说明或历史比较链接的语境，manifest/锁文件/workflow 与活跃当前事实断言不得残留
 9. OSS 漂移 grep：全仓 pin 唯一（[OSS_MIGRATION.md](./OSS_MIGRATION.md) 漂移 D1–D5 全闭合）
 
 输出：`support/artifacts/release-gate-status-<ts>.json`（绑定 `C_final`）+ N0 报告。
@@ -90,7 +90,7 @@
 
 ## 7. 完成度核对清单（W7 主代理逐项）
 
-- [ ] 版本 = v0.0.1（VERSION-0 闭合），活跃文档无旧版本号
+- [ ] 版本 = v0.0.1（VERSION-0 闭合），活跃文档无旧版本号（仅允许明确标注为 V-1 前历史快照、版本迁移说明或历史比较链接的保留）
 - [ ] N0 在 `C_final` 完整通过；任何修复后完整重跑
 - [ ] N1–N8 全部绑定同一 `C_final` + `source_digest`（含 OpenCode 重跑与 Windows/G6/G8 外部节点）
 - [ ] 两个 Agent relay（N2 Codex / N3 OpenCode）真实证据在仓

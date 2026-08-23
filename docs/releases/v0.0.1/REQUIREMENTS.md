@@ -8,7 +8,7 @@
 
 | ID | 需求（来源） | current | gap | owner | acceptance | release claim |
 |---|---|---|---|---|---|---|
-| VERSION-0 | 目标版本 v0.0.1 一次性统一（用户指定；当前 manifest/PRD 为 0.2.0-beta.1） | `tauri.conf.json`/`package.json` = 0.2.0-beta.1；PRD P0.0.7 以 0.2.0-beta.1 为发布门；PLAN/IMPLEMENTATION_STATUS/CHANGELOG 同口径 | 无任何 v0.0.1 事实源；多版本事实源并存 | V-1 | 用户确认后：manifest、PRD 版本门、PLAN、IMPLEMENTATION_STATUS、CHANGELOG、release workflow、`check_release_version.py` 全部收敛为 v0.0.1；`python3 support/scripts/check_structure.py` 通过；旧版本号仅存于 history/archive | **MUST（阻断）** |
+| VERSION-0 | 目标版本 v0.0.1 一次性统一（用户指定；统一前 manifest/PRD 为 0.2.0-beta.1） | V-1 已执行（2026-08-08）：manifest/PRD 版本门/PLAN/IMPLEMENTATION_STATUS/CHANGELOG/README/`check_release_version.py` 已收敛为 v0.0.1；旧版本号仅允许出现在明确标注为 V-1 前历史快照、版本迁移说明或历史比较链接的语境；manifest、锁文件、workflow 与活跃当前事实断言不得残留 | 无（V-1 已闭合；N0 版本门复核） | V-1 | 用户确认后：manifest、PRD 版本门、PLAN、IMPLEMENTATION_STATUS、CHANGELOG、release workflow、`check_release_version.py` 全部收敛为 v0.0.1；`python3 support/scripts/check_structure.py` 通过；旧版本号仅允许出现在明确标注为 V-1 前历史快照、版本迁移说明或历史比较链接的语境；manifest、锁文件、workflow 与活跃当前事实断言不得残留 | **MUST（阻断）** |
 | VERSION-1 | 发布结论绑定版本与候选 commit（PRD P0.2 发布目标第 13 条「artifact 携带 SHA-256 manifest、候选 provenance、版本…绑定同一候选提交」、§19 验收标准第 32 条「发布候选必须绑定同一 commit 的 macOS/Windows 安装产物、哈希、自动化门禁、真实安装启动、功能链路、配置精确恢复与已知限制」） | `generate_release_gate_status.py` fail-closed 已存在；candidate binding 契约待接线 | 聚合器未强制 `expected_commit`/`expected_source_digest` | PR-7, PR-9 | 任何 artifact 缺 commit/digest 或不匹配即 blocked；结论文档必须写版本号 | MUST |
 
 ## 2. PRODUCT（产品功能）
@@ -138,7 +138,7 @@
 | DOCS-1 | v0.0.1 九文件计划包（本任务） | 本包已建 | 执行期保持同步 | Main | 九文件存在且无断链；`check_structure.py` 通过 | N/A（本包） |
 | DOCS-2 | 入口更新：`docs/index.md`、`docs/DOCS_ORGANIZATION.md`、`docs/PLAN.md`（本任务） | 本任务同步修改 | — | Main | 入口指向本包；DOCS_ORGANIZATION 允许 `docs/releases/<version>`；PLAN 顶部标注本包定位 | N/A（本包） |
 | DOCS-3 | 发布收口文档更新（GOAL 完成定义） | 历史快照 | 最终候选后同步 PRD 版本门/PLAN/IMPLEMENTATION_STATUS/README/发布报告 | PR-9 → N9 | 收口文档与 `C_final` 一致；本包滚动更新 | MUST |
-| DOCS-4 | 版本统一后文档同步（VERSION-0 配套） | 版本未统一 | V-1 执行 | V-1 | 活跃文档无 0.2.0-beta.1 残留（除历史） | MUST |
+| DOCS-4 | 版本统一后文档同步（VERSION-0 配套） | V-1 已执行（2026-08-08）：活跃文档版本事实已统一为 v0.0.1 | V-1 执行 | V-1 | 活跃文档无 0.2.0-beta.1 残留；旧版本号仅允许出现在明确标注为 V-1 前历史快照、版本迁移说明或历史比较链接的语境 | MUST |
 
 ## 14. 覆盖核对
 

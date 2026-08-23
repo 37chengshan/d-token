@@ -10,8 +10,8 @@
 
 ## 2. 版本统一（V-1）
 
-- [ ] T-V1 版本统一切片：用户确认目标版本 v0.0.1 后，一次性统一 manifest/PRD 版本门/PLAN/IMPLEMENTATION_STATUS/CHANGELOG/release workflow/`check_release_version.py`（`docs/PLAN.md` 与 `docs/product/IMPLEMENTATION_STATUS.md` 的版本修改由主代理合并期统一执行）。REQ：VERSION-0, VERSION-1, DOCS-4｜owner：V-1 Agent / Main｜output：版本检查通过 + 结构检查通过。依赖：T-P0, 全部功能切片（含 T-PR7，workflow 先合）。验证：N0（版本门）。
-- [ ] T-V2 版本回归断言：活跃文档 grep 无 `0.2.0-beta.1`（除 history/archive/CHANGELOG 历史条目）。REQ：VERSION-0｜owner：Main｜output：grep 输出。依赖：T-V1。验证：N0。
+- [x] T-V1 版本统一切片：用户确认目标版本 v0.0.1 后，一次性统一 manifest/PRD 版本门/PLAN/IMPLEMENTATION_STATUS/CHANGELOG/release workflow/`check_release_version.py`（`docs/PLAN.md` 与 `docs/product/IMPLEMENTATION_STATUS.md` 的版本修改由主代理合并期统一执行）。REQ：VERSION-0, VERSION-1, DOCS-4｜owner：V-1 Agent / Main｜output：版本检查通过 + 结构检查通过。依赖：T-P0, 全部功能切片（含 T-PR7，workflow 先合）。验证：N0（版本门）。完成 2026-08-08：manifest/PRD 版本门/PLAN/STATUS/CHANGELOG/README/`check_release_version.py` 全部收敛为 v0.0.1（worktree `final-version-unification` / 分支 `codex/final/version-unification`，base `927958d`）；旧版本号仅允许出现在明确标注为 V-1 前历史快照、版本迁移说明或历史比较链接的语境；manifest、锁文件、workflow 与活跃当前事实断言不得残留。
+- [x] T-V2 版本回归断言：活跃文档 grep 无 `0.2.0-beta.1`；旧版本号仅允许出现在明确标注为 V-1 前历史快照、版本迁移说明或历史比较链接的语境，manifest/锁文件/workflow 与活跃当前事实断言不得残留。REQ：VERSION-0｜owner：Main｜output：grep 输出。依赖：T-V1。验证：N0。完成 2026-08-08：V-1 切片 grep 输出见切片报告，剩余命中均为明确标注的历史语境（CHANGELOG 历史章节、比较链接、V-1 前快照说明）。
 
 ## 3. 在途收口切片（PR-1..9）
 
@@ -33,7 +33,7 @@
 
 ## 5. LeanCTX 轨道（PR-L，九边界）
 
-- [ ] T-L0 leanctx-pin：v3.9.17 vs main `95a1b7bc` 评估；唯一 pin。REQ：OSS-1｜依赖：T-P0｜owner：PR-L0 Agent｜output：评估记录 + 漂移 D4 闭合。验证：N0。
+- [x] T-L0 leanctx-pin：v3.9.17 vs main `95a1b7bc` 评估；唯一 pin。REQ：OSS-1｜依赖：T-P0｜owner：PR-L0 Agent｜output：评估记录 + 漂移 D4 闭合。验证：N0。完成 2026-08-08：唯一参考 pin = v3.9.17/`cf8fce6b`；main `95a1b7bc` 93-commit delta（93 commit/160 文件/+11209 −2665）已评估，仅作 post-pin 研究；D4 闭合。
 - [ ] T-L1 leanctx-core：Context Bus + Session Cache + 同 Agent 自命中防护（d-token-owned Rust）。REQ：CONTEXT-1｜依赖：T-L0｜owner：PR-L1 Agent｜output：crate + 测试。验证：N1（契约）。
 - [ ] T-L2 leanctx-relay：Context Relay + Query-aware Retrieval + 收益分离计量。REQ：CONTEXT-1, CONTEXT-3｜依赖：T-L1｜owner：PR-L2 Agent｜output：crate + 测试。验证：N1。
 - [ ] T-L3 leanctx-recovery：Recovery Pointer/Manifest + Stale/Superseded + SharedContext。REQ：CONTEXT-1｜依赖：T-L2｜owner：PR-L3 Agent｜output：crate + 测试。验证：N1。
@@ -46,12 +46,12 @@
 
 ## 7. Codebase Memory 轨道（PR-CBM）
 
-- [ ] T-CBM1 notice-drift：根 NOTICE v0.9.0→v0.9.1-rc.1 统一（v0.9.0 标 superseded）。REQ：OSS-1, OSS-4｜依赖：T-P0｜owner：PR-CBM1 Agent｜output：漂移 D1 闭合 + 结构检查。验证：N0。
+- [x] T-CBM1 notice-drift：根 NOTICE v0.9.0→v0.9.1-rc.1 统一（v0.9.0 标 superseded）。REQ：OSS-1, OSS-4｜依赖：T-P0｜owner：PR-CBM1 Agent｜output：漂移 D1 闭合 + 结构检查。验证：N0。完成 2026-08-08：根 `THIRD_PARTY_NOTICES.md` CBM 条目统一为 v0.9.1-rc.1/`ee9833df`，v0.9.0/`b637e333` 标 superseded；与 `artifact-manifest.json` 一致；D1 闭合。
 - [ ] T-CBM2 cbm-windows-fix：v0.9.0 配置 Bug 复现→失败测试→临时 Agent 配置 preview/apply/verify/rollback + 原始 hash/权限恢复；Windows archive/binary SHA + Cosign/OIDC 落证；状态五维不冒充。REQ：PRODUCT-6, OSS-4, CONFIG-1, CONFIG-2｜依赖：T-CBM1, T-PR6｜owner：PR-CBM2 Agent｜output：先红后绿测试 + Windows 证据。验证：N4/N8。
 
 ## 8. RTK 轨道（PR-R）
 
-- [ ] T-R1 rtk-pin：v0.45.0/`b34be37` 许可证/NOTICE 核验 + pin 登记；与 PRD「内建能力」对齐。REQ：OSS-1, PLATFORM-5｜依赖：T-P0｜owner：PR-R1 Agent｜output：漂移 D5 闭合 + 登记更新。验证：N0。
+- [x] T-R1 rtk-pin：v0.45.0/`b34be37` 许可证/NOTICE 核验 + pin 登记；与 PRD「内建能力」对齐。REQ：OSS-1, PLATFORM-5｜依赖：T-P0｜owner：PR-R1 Agent｜output：漂移 D5 闭合 + 登记更新。验证：N0。完成 2026-08-08：唯一 pin = v0.45.0/`b34be37`（tag `v0.45.0`/`latest` 同 commit）；LICENSE Apache-2.0 SHA-256 `4044ade9…` 核验；固定 commit 无根 NOTICE；D5 闭合。
 - [ ] T-R2 rtk-windows：Windows/WSL managed lifecycle + hook integrity 证据（runner 或 external/blocked）。REQ：PLATFORM-5｜依赖：T-R1｜owner：PR-R2 Agent｜output：runner 报告或 external 标注。验证：N8。
 - [ ] T-R3 rtk-savings：savings 分账契约测试；无双计路径。REQ：RUNTIME-5, CONTEXT-3｜依赖：T-R2｜owner：PR-R3 Agent｜output：契约测试。验证：N1。
 

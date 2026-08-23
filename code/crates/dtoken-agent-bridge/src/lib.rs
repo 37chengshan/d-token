@@ -948,7 +948,7 @@ mod tests {
             bridge: dtoken_preprocessor::ManagedHookBridgeIdentity {
                 component: BRIDGE_COMPONENT.to_string(),
                 protocol_version: 1,
-                version: "0.2.0-beta.1".to_string(),
+                version: "0.0.1".to_string(),
                 arch: "fixture".to_string(),
                 os: "fixture".to_string(),
                 sha256: "b".repeat(64),

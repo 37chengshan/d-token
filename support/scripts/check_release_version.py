@@ -10,9 +10,9 @@ from typing import Any, Optional
 
 ROOT = Path(__file__).resolve().parents[2]
 DESKTOP = ROOT / "code" / "apps" / "desktop"
-SEMVER_PRERELEASE = re.compile(
-    r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)-"
-    r"[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*$"
+SEMVER = re.compile(
+    r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)"
+    r"(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$"
 )
 
 
@@ -89,9 +89,9 @@ def main() -> int:
     expected = args.expected or package_json.get("version")
     failures: list[str] = []
 
-    if not isinstance(expected, str) or not SEMVER_PRERELEASE.fullmatch(expected):
+    if not isinstance(expected, str) or not SEMVER.fullmatch(expected):
         failures.append(
-            f"expected version must be a SemVer pre-release string, got {expected!r}"
+            f"expected version must be a SemVer version string, got {expected!r}"
         )
         expected = str(expected)
 

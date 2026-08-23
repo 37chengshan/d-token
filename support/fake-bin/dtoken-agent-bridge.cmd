@@ -2,7 +2,7 @@
 setlocal
 
 if "%~1"=="identity" (
-  echo {"component":"dtoken-agent-bridge","protocol_version":1,"version":"0.2.0-beta.1","arch":"fixture","os":"fixture"}
+  echo {"component":"dtoken-agent-bridge","protocol_version":1,"version":"0.0.1","arch":"fixture","os":"fixture"}
   exit /b 0
 )
 

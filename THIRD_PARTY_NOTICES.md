@@ -1,7 +1,7 @@
 # d-token Third-Party Notices
 
 Last updated: 2026-08-08
-Applies to: d-token `0.2.0-beta.1` source and desktop distribution candidates
+Applies to: d-token `0.0.1` source and desktop distribution candidates
 
 This file is the distribution-facing third-party notice for d-token. The project itself is licensed under the Apache License 2.0; see [`LICENSE`](LICENSE). Release installers must include both `LICENSE` and this file under their legal resources.
 

@@ -2,7 +2,7 @@
 
 - 计划日期：2026-08-08
 - 目标版本：**v0.0.1**（用户指定最终发布目标）
-- 当前事实版本：`0.2.0-beta.1`（manifest / PRD 现行口径，见 [版本冲突](#2-版本冲突v0-0-1-vs-0-2-0-beta-1)）
+- 当前事实版本：**v0.0.1**（V-1 版本统一，2026-08-08；V-1 前为 `0.2.0-beta.1`，见 [版本冲突](#2-版本冲突v0-0-1-vs-0-2-0-beta-1)）
 - 执行基线：分支 `codex/final-release-iteration`（P0 freeze 时点 `1ddb30e`；截至 2026-08-08 工作树 HEAD 已推进，见 [EXECUTION.md](./EXECUTION.md#1-执行起点事实)）
 - 权威输入：`docs/PRD.md`（唯一产品真理源）、`docs/d-token_AI_product_target_spec_v2.md`、`docs/PLAN.md`（唯一 Living Plan）、`docs/product/IMPLEMENTATION_STATUS.md`（代码事实快照）、`.ai-bridge/release-iteration/*`（过程输入，非权威链接）
 
@@ -22,23 +22,25 @@
 | [RISKS_DECISIONS.md](./RISKS_DECISIONS.md) | 关键决策记录与风险登记（版本冲突、完整迁移纳入范围、外部签名、Optical active、LeanCTX storage、公开 prerelease、no-touch 等） |
 | [EVIDENCE.md](./EVIDENCE.md) | 证据索引：已有 / 过期 / 待生成路径；禁止旧 artifact 冒充最终候选 |
 
-## 2. 版本冲突：v0.0.1 vs 0.2.0-beta.1
+## 2. 版本冲突：v0.0.1 vs 0.2.0-beta.1（历史记录）
 
-用户指定目标版本 **v0.0.1**，但当前仓库事实版本为 `0.2.0-beta.1`：
+> 本节记录 **V-1（`version-unify`）执行前**的版本冲突快照，属历史语境。V-1 已于 2026-08-08 执行：manifest、PRD 版本门、PLAN / IMPLEMENTATION_STATUS / CHANGELOG、release workflow 与版本检查脚本均已收敛到 **v0.0.1**。`0.2.0-beta.1` 只作为 V-1 前候选追踪名保留在历史文档与 CHANGELOG 历史条目中，不再是当前仓库事实或现行 manifest / PRD 版本。
 
-| 事实源 | 当前值 |
-|---|---|
-| `code/apps/desktop/src-tauri/tauri.conf.json` | `0.2.0-beta.1` |
-| `code/apps/desktop/package.json` | `0.2.0-beta.1` |
-| `docs/PRD.md`（P0.0.7「v0.2.0-beta.1 发布门」及多处版本边界） | `0.2.0-beta.1` |
-| `docs/PLAN.md` / `docs/product/IMPLEMENTATION_STATUS.md` / `CHANGELOG.md` | `0.2.0-beta.1` |
-| 发布 workflow（tag 模式 `v*`） | 未绑定具体版本号 |
-| `support/scripts/check_release_version.py` | 依赖 manifest 版本一致性 |
+用户指定目标版本 **v0.0.1**；V-1 前仓库事实版本为 `0.2.0-beta.1`（下表为 V-1 前快照，仅供追溯）：
 
-**处理原则（本任务不直接改版本）**：
+| 事实源 | V-1 前值（历史快照） | V-1 后当前值 |
+|---|---|---|
+| `code/apps/desktop/src-tauri/tauri.conf.json` | `0.2.0-beta.1` | `0.0.1` |
+| `code/apps/desktop/package.json` | `0.2.0-beta.1` | `0.0.1` |
+| `docs/PRD.md`（P0.0.7 发布门及版本边界） | `0.2.0-beta.1` | `0.0.1` |
+| `docs/PLAN.md` / `docs/product/IMPLEMENTATION_STATUS.md` / `CHANGELOG.md` | `0.2.0-beta.1` | `0.0.1` |
+| 发布 workflow（tag 模式 `v*`） | 未绑定具体版本号 | 未绑定具体版本号 |
+| `support/scripts/check_release_version.py` | 依赖 manifest 版本一致性 | 依赖 manifest 版本一致性 |
 
-1. 本计划包把版本统一列为 **VERSION-0 阻断**（见 [REQUIREMENTS.md](./REQUIREMENTS.md#version)），由执行切片 **V-1**（`version-unify`，见 [EXECUTION.md](./EXECUTION.md#v-1-version-unify)）一次性统一：manifest、PRD 版本门、PLAN/IMPLEMENTATION_STATUS/CHANGELOG、release workflow、版本检查脚本全部收敛到用户确认的 v0.0.1。
-2. V-1 执行前必须由用户对「目标版本 = v0.0.1」做一次明确确认（历史版本语义、`0.2.0-beta.1` 的 prerelease 定位、GitHub public prerelease 命名都会被改写）。
+**处理原则（V-1 已执行，下述为当时约定及其现况）**：
+
+1. 版本统一列为 **VERSION-0 阻断**（见 [REQUIREMENTS.md](./REQUIREMENTS.md#version)），由执行切片 **V-1**（`version-unify`，见 [EXECUTION.md](./EXECUTION.md#v-1-version-unify)）一次性统一到用户确认的 v0.0.1；该切片已于 2026-08-08 执行完成。
+2. V-1 执行前由用户对「目标版本 = v0.0.1」做明确确认（历史版本语义、`0.2.0-beta.1` 的 prerelease 定位、GitHub public prerelease 命名均被改写）——已确认并执行。
 3. 在 V-1 合并前，任何发布结论不得以 v0.0.1 名义落盘；在 V-1 合并后，任何证据不得再以 `0.2.0-beta.1` 名义声称有效。
 4. 旧版本字符串只允许存在于历史文档与归档（`docs/history/`、`docs/archive/`、CHANGELOG 历史条目），不得存在于活跃契约。
 

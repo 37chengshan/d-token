@@ -18,8 +18,11 @@
 | 视觉审计原生截图 | `/tmp/dtoken_audit/native_1180x780.png`（2026-08-07，进程外临时目录） | 1180×780 中文浅色折叠态实测；C1/C2 确认 | 2026-08-07（非 C_final） | N6 全组合重做 |
 | release gate 聚合状态 | `support/artifacts/release-gate-status-20260807T092350Z.json`、`...T110417Z.json` | fail-closed 输出；G6/G8 未通过 | 2026-08-07 | N9 重新生成 |
 | RTK 研究/内部实现 | `docs/archive/` REPORT_01_RTK_HEADROOM_INTERNALS 等 | RTK 行为/边界研究 | 历史 | 背景 |
-| provenance 登记 | `docs/legal/THIRD_PARTY_NOTICES.md`、根 `THIRD_PARTY_NOTICES.md`、`code/runtimes/headroom/README.md`、`code/runtimes/codebase-memory/README.md`+`artifact-manifest.json` | 七轨道来源/pin/许可证/NOTICE | 2026-08-06 更新 | OSS 漂移 D1–D5 基线 |
+| provenance 登记 | `docs/legal/THIRD_PARTY_NOTICES.md`、根 `THIRD_PARTY_NOTICES.md`、`code/runtimes/headroom/README.md`、`code/runtimes/codebase-memory/README.md`+`artifact-manifest.json` | 七轨道来源/pin/许可证/NOTICE | 2026-08-08 更新 | OSS 漂移 D1–D5 已全部闭合（见本表 Headroom/pxpipe 行与下述 CBM/LeanCTX/RTK 闭合行） |
 | Headroom 三候选 pin 审计（PR-H1，2026-08-08） | `code/runtimes/headroom/README.md` §三候选漂移审计与唯一 pin 决议；`docs/legal/THIRD_PARTY_NOTICES.md`；根 `THIRD_PARTY_NOTICES.md` | 唯一 current comparison pin = `v0.34.0`/`9fd5ae3d`；`01df2452`→`v0.34.0`（33 commit/129 文件/+8936 −1021）、`v0.34.0`→main `7f6950be`（33 commit/74 文件/+4874 −428）漂移已审计；许可证 Apache-2.0 三 pin 无差异；NOTICE 增量（#2734 vendored dashboard assets）已登记；无必须采用 main 的实际证据；`01df2452` 标历史、main 只作 post-release delta | worktree `codex/final/headroom-pin`（base `c5a5849`）；三候选 commit 于外部克隆 `headroom-main-2026-08-08` 核验 | OSS 漂移 D2 闭合（只闭合 pin 漂移，不涉及能力迁移完成度） |
+| CBM pin 统一（PR-CBM1，2026-08-08） | 根 `THIRD_PARTY_NOTICES.md` CBM 条目；`code/runtimes/codebase-memory/artifact-manifest.json` | 根 NOTICE 已统一为 v0.9.1-rc.1/`ee9833df2c72…4f2`（2026-07-30 immutable prerelease），与 manifest 一致；v0.9.0/`b637e333…` 标 superseded（仅作用户 v0.9.0 Bug 复现基线） | worktree `codex/final/cbm-notice-drift` | OSS 漂移 D1 闭合 |
+| LeanCTX pin 决议（PR-L0，2026-08-08） | `code/runtimes/headroom/README.md` LeanCTX 节；`docs/legal/THIRD_PARTY_NOTICES.md`；根 `THIRD_PARTY_NOTICES.md` | 唯一参考 pin = `v3.9.17`/`cf8fce6bb175…5a9`；main `95a1b7bc60a0…93ba` 评估后仅作 post-pin 研究：93 commit/160 文件/+11209 −2665（ADR-001..013、`lean-ctx-protocol` v0.1.0、enterprise gating、r15–r18 系列、安全修复 #1428/#1431–35/#1418/#1437），无版本号变化、无 LICENSE/NOTICE 变化 | worktree `codex/final/leanctx-pin`；delta 于外部克隆 `lean-ctx-main-2026-08-08` 核验 | OSS 漂移 D4 闭合 |
+| RTK pin 审计（PR-R1，2026-08-08） | `docs/legal/THIRD_PARTY_NOTICES.md` RTK 节；根 `THIRD_PARTY_NOTICES.md` | 唯一参考 pin = `v0.45.0`/`b34be37caf3…ad43`（tag `v0.45.0`/`latest` 同 commit）；LICENSE Apache-2.0 SHA-256 `4044ade9…` 核验（标准条款 1–9 完整）；固定 commit 无根 NOTICE | worktree `codex/final/rtk-pin`；外部克隆 `rtk-v0.45.0` 核验 | OSS 漂移 D5 闭合 |
 
 ## 2. 过期证据隔离清单（禁止绑定 `C_final`，禁止写入最终证据表）
 
@@ -50,7 +53,7 @@
 | N0 门禁报告 | `support/artifacts/release-gate-status-<ts>.json` | N0 | C_final |
 | N1–N8 各域证据 | 对应 artifact 目录 | Main/外部 | C_final |
 | N9 最终聚合 + 三结论判定 + 发布报告 | `.ai-bridge/release-iteration/final-candidate-evidence.md`（模板）+ 发布报告 | PR-9 → N9 | C_final |
-| OSS 漂移闭合记录（D1–D5） | 各切片报告（D2 已闭合：PR-H1 审计记录在 `code/runtimes/headroom/README.md` §三候选漂移审计与唯一 pin 决议） | PR-CBM1/H1✅/O1/L0/R1 | 切片 commit |
+| OSS 漂移闭合记录（D1–D5） | 各切片报告（D1–D5 已全部闭合：D1 PR-CBM1（根 NOTICE v0.9.1-rc.1/`ee9833df`，v0.9.0 superseded）、D2 PR-H1（`code/runtimes/headroom/README.md` §三候选漂移审计与唯一 pin 决议）、D3 PR-O1（pxpipe v0.12.0/`0ceabbe` 唯一 pin）、D4 PR-L0（lean-ctx v3.9.17/`cf8fce6b` 唯一 pin，main `95a1b7bc` 93-commit delta 已评估）、D5 PR-R1（RTK v0.45.0/`b34be37` + LICENSE SHA-256 `4044ade9…`）） | PR-CBM1/H1✅/O1✅/L0/R1（已闭合） | 切片 commit |
 | Headroom 矩阵/G9 判定表 | `docs/PLAN.md` §1C、切片报告 | PR-H2/H3 | C_final |
 | LeanCTX 九边界实现与测试 | 对应 crate tests | PR-L1..L3 | 切片 commit |
 | pxpipe v0.12.0 评估记录 | 切片报告 | PR-O1 | 切片 commit |

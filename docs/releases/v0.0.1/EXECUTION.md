@@ -13,7 +13,7 @@
 | P0 freeze 时点 | `1ddb30e`（preflight-report 记录） |
 | 当前工作树 HEAD | 已推进至 `51941806`（CI 稳定化提交链：16bb7ad/7ffa4fd/374368f/417ffd7/51941806…，仍在变动） |
 | dirty | `support/git-operations.json`（M）；`code/crates/dtoken-compress/examples/_diag_tmp.rs`（untracked，诊断临时文件，P0 需裁决删除或忽略） |
-| 版本事实 | manifest/PRD = 0.2.0-beta.1；目标 v0.0.1（VERSION-0） |
+| 版本事实 | **V-1 前执行快照（2026-08-08 核对）**：manifest/PRD = 0.2.0-beta.1；目标 v0.0.1（VERSION-0）。**V-1 后现状**：全仓版本已单源化为 v0.0.1（manifest/PRD/workflow/docs 一致） |
 | 外部克隆 | `/Users/cc/Documents/d-token-external/`（rtk-v0.45.0、pxpipe-main-2026-08-08、lean-ctx-main-2026-08-08、spleen-2.2.0、codebase-memory-mcp-v0.9.1-rc.1、`headroom/headroom-main-2026-08-08` HEAD `7f6950be`、aimami-pinned-297c7af5 等；见 [OSS_MIGRATION.md](./OSS_MIGRATION.md)） |
 | 切片独立分支 | **尚未创建**（截至 2026-08-08 不存在 P0 独立分支；§3 表内分支名均为计划名，执行时由主代理新建，不得指向/借用任何现有分支） |
 
