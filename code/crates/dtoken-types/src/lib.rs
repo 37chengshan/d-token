@@ -1231,6 +1231,76 @@ pub struct SignedSavings {
     pub cost_microusd: Option<i64>,
 }
 
+/// Per-model price evidence (C10). A price is usable for per-request cost
+/// estimation only when currency/unit/source/updated_at are present together
+/// with the price value; a partial or missing price is unavailable and is
+/// never treated as zero. Prices are integral micro-units (1/1,000,000 of
+/// `currency`) per `unit_tokens` tokens so estimates stay integer-only.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PriceEvidence {
+    /// Currency code, e.g. "USD".
+    pub currency: String,
+    /// Human-readable pricing unit, e.g. "per_1k_tokens".
+    pub unit: String,
+    /// Number of tokens the unit covers (1000 for "per_1k_tokens").
+    pub unit_tokens: u64,
+    /// Input price in micro-units of `currency` per `unit_tokens`.
+    pub input_price_micros: Option<u64>,
+    /// Output price in micro-units of `currency` per `unit_tokens`.
+    pub output_price_micros: Option<u64>,
+    /// Source of the price evidence, e.g. "settings" or "provider_pricing".
+    pub source: String,
+    /// When the price evidence was last updated (ms since epoch).
+    pub updated_at_ms: u64,
+}
+
+impl PriceEvidence {
+    /// Integral input cost estimate for `tokens`; `None` when the input price
+    /// is missing (unavailable), never 0.
+    pub fn input_cost_micros(&self, tokens: u64) -> Option<u64> {
+        cost_micros(tokens, self.unit_tokens, self.input_price_micros)
+    }
+
+    /// Integral output cost estimate for `tokens`; `None` when the output
+    /// price is missing (unavailable), never 0.
+    pub fn output_cost_micros(&self, tokens: u64) -> Option<u64> {
+        cost_micros(tokens, self.unit_tokens, self.output_price_micros)
+    }
+
+    /// Combined input+output cost estimate. A present token bucket with a
+    /// missing price makes the whole estimate unavailable (fail-closed); an
+    /// absent bucket contributes nothing (no usage, no cost), and no bucket at
+    /// all stays `None` (unavailable), never 0.
+    pub fn estimate_cost(
+        &self,
+        input_tokens: Option<u64>,
+        output_tokens: Option<u64>,
+    ) -> Option<u64> {
+        if input_tokens.is_none() && output_tokens.is_none() {
+            return None;
+        }
+        let input = match input_tokens {
+            Some(tokens) => self.input_cost_micros(tokens)?,
+            None => 0,
+        };
+        let output = match output_tokens {
+            Some(tokens) => self.output_cost_micros(tokens)?,
+            None => 0,
+        };
+        input.checked_add(output)
+    }
+}
+
+/// `tokens * price_micros / unit_tokens`, saturating to `None` on overflow or
+/// a degenerate unit; a missing price stays `None` (unavailable), never 0.
+fn cost_micros(tokens: u64, unit_tokens: u64, price_micros: Option<u64>) -> Option<u64> {
+    let price = price_micros?;
+    if unit_tokens == 0 {
+        return None;
+    }
+    Some(tokens.checked_mul(price)? / unit_tokens)
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct UsageComparison {
     pub baseline: UsageMeasurement,
@@ -1505,6 +1575,10 @@ pub struct RequestLog {
     pub quota_metadata: Option<serde_json::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_accounting: Option<HybridContextAccounting>,
+    /// Price evidence used to estimate per-request cost (C10). Absent when no
+    /// price is available; never fabricated or defaulted to 0.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub price_evidence: Option<PriceEvidence>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -2308,6 +2382,53 @@ pub enum ValidationStatus {
     Unavailable,
 }
 
+/// Per-request cost projection (C10). Every field is `None` (unavailable)
+/// whenever the required token or price evidence is missing — a missing
+/// price is never rendered as `0`. `original_cost_micros` is the estimated
+/// cost of the pre-compression tokens, `optimized_cost_micros` the estimated
+/// cost of the optimized/actual tokens, and `cost_delta_micros` the signed
+/// difference (positive when the optimized request is cheaper).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RequestCost {
+    pub original_cost_micros: Option<u64>,
+    pub optimized_cost_micros: Option<u64>,
+    pub cost_delta_micros: Option<i64>,
+    pub currency: Option<String>,
+    pub unit: Option<String>,
+    pub price_source: Option<String>,
+    pub price_updated_at_ms: Option<u64>,
+}
+
+impl RequestCost {
+    /// Estimates the per-request cost from local pre/post input tokens, the
+    /// provider output tokens, and the price evidence. Returns `None` when no
+    /// price evidence exists or when no token bucket can be priced; a present
+    /// token bucket with a missing price makes the whole estimate
+    /// unavailable (fail-closed, never 0).
+    pub fn estimate(
+        original_input_tokens: Option<u64>,
+        optimized_input_tokens: Option<u64>,
+        output_tokens: Option<u64>,
+        price: Option<&PriceEvidence>,
+    ) -> Option<Self> {
+        let price = price?;
+        let original = price.estimate_cost(original_input_tokens, output_tokens);
+        let optimized = price.estimate_cost(optimized_input_tokens, output_tokens);
+        if original.is_none() && optimized.is_none() {
+            return None;
+        }
+        Some(Self {
+            original_cost_micros: original,
+            optimized_cost_micros: optimized,
+            cost_delta_micros: signed_difference(original, optimized),
+            currency: Some(price.currency.clone()),
+            unit: Some(price.unit.clone()),
+            price_source: Some(price.source.clone()),
+            price_updated_at_ms: Some(price.updated_at_ms),
+        })
+    }
+}
+
 /// OptimizationReceipt (§7.2 minimal fields, §6.2 Local/Provider/claimable
 /// separation). `protected_content` is one of the minimal fields and is a
 /// descriptor only — it must never carry actual protected content. Provider
@@ -2338,6 +2459,11 @@ pub struct OptimizationReceipt {
     pub recovery_pointer: Option<String>,
     pub validation_status: ValidationStatus,
     pub skip_or_failure_reason: Option<String>,
+    /// Per-request cost projection (C10): fields stay `None` (unavailable)
+    /// unless token and price evidence are both present; a missing price is
+    /// never rendered as 0.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request_cost: Option<RequestCost>,
 }
 
 /// Artifact-derived ValidationReceipt (§6.2): sealed only from artifact
@@ -2575,5 +2701,123 @@ mod capability_contract_tests {
         artifact.quality_delta = 0.0;
         artifact.passed = true;
         assert!(!artifact.passes_derived_quality_gate());
+    }
+}
+
+#[cfg(test)]
+mod request_cost_contract_tests {
+    use super::*;
+
+    fn price(input: Option<u64>, output: Option<u64>) -> PriceEvidence {
+        PriceEvidence {
+            currency: "USD".to_string(),
+            unit: "per_1k_tokens".to_string(),
+            unit_tokens: 1_000,
+            input_price_micros: input,
+            output_price_micros: output,
+            source: "settings".to_string(),
+            updated_at_ms: 1_700_000_000_000,
+        }
+    }
+
+    #[test]
+    fn price_evidence_missing_price_is_none_never_zero() {
+        let evidence = price(None, Some(2_000));
+        assert_eq!(evidence.input_cost_micros(1_000), None);
+        assert_eq!(evidence.output_cost_micros(1_000), Some(2_000));
+        assert_eq!(evidence.estimate_cost(Some(1_000), None), None);
+    }
+
+    #[test]
+    fn price_evidence_converts_units_integrally() {
+        let evidence = price(Some(1_500), Some(2_000));
+        // 1500 micros per 1k tokens -> 1.5 micros per token.
+        assert_eq!(evidence.input_cost_micros(1_000), Some(1_500));
+        assert_eq!(evidence.input_cost_micros(500), Some(750));
+        assert_eq!(evidence.output_cost_micros(250), Some(500));
+        assert_eq!(evidence.estimate_cost(Some(1_000), Some(250)), Some(2_000));
+    }
+
+    #[test]
+    fn degenerate_unit_or_overflow_is_unavailable() {
+        let mut evidence = price(Some(1_500), None);
+        evidence.unit_tokens = 0;
+        assert_eq!(evidence.input_cost_micros(1_000), None);
+        let evidence = price(Some(u64::MAX), None);
+        assert_eq!(evidence.input_cost_micros(2), None);
+    }
+
+    #[test]
+    fn request_cost_requires_price_and_tokens() {
+        assert_eq!(
+            RequestCost::estimate(Some(1_000), Some(800), Some(100), None),
+            None
+        );
+        let evidence = price(Some(1_500), Some(2_000));
+        assert_eq!(
+            RequestCost::estimate(None, None, None, Some(&evidence)),
+            None
+        );
+    }
+
+    #[test]
+    fn request_cost_prices_original_optimized_and_delta() {
+        let evidence = price(Some(1_500), Some(2_000));
+        let cost = RequestCost::estimate(Some(1_200), Some(1_000), Some(250), Some(&evidence))
+            .expect("tokens and price present");
+        // original: 1200*1.5 + 250*2 = 1800 + 500 = 2300
+        assert_eq!(cost.original_cost_micros, Some(2_300));
+        // optimized: 1000*1.5 + 250*2 = 1500 + 500 = 2000
+        assert_eq!(cost.optimized_cost_micros, Some(2_000));
+        // delta positive when the optimized request is cheaper.
+        assert_eq!(cost.cost_delta_micros, Some(300));
+        assert_eq!(cost.currency.as_deref(), Some("USD"));
+        assert_eq!(cost.unit.as_deref(), Some("per_1k_tokens"));
+        assert_eq!(cost.price_source.as_deref(), Some("settings"));
+        assert_eq!(cost.price_updated_at_ms, Some(1_700_000_000_000));
+    }
+
+    #[test]
+    fn request_cost_missing_output_price_fails_closed() {
+        // Output tokens are present but no output price exists: the whole
+        // estimate is unavailable, never a partial/zero value.
+        let evidence = price(Some(1_500), None);
+        assert_eq!(
+            RequestCost::estimate(Some(1_200), Some(1_000), Some(250), Some(&evidence)),
+            None
+        );
+    }
+
+    #[test]
+    fn receipt_cost_stays_unavailable_in_json_without_evidence() {
+        let receipt = OptimizationReceipt {
+            schema_version: 1,
+            request_id: Uuid::new_v4(),
+            timestamp_ms: 1,
+            source_agent: None,
+            project_scope: None,
+            user_target_provider: None,
+            user_target_model: None,
+            actual_provider: None,
+            actual_model: None,
+            provider_or_model_changed: false,
+            transformations: vec![],
+            protected_content: String::new(),
+            local_original_tokens: None,
+            local_optimized_tokens: None,
+            provider_input_tokens: None,
+            provider_output_tokens: None,
+            estimated_local_tokens_avoided: None,
+            claimable_tokens_avoided: None,
+            recovery_status: None,
+            recovery_pointer: None,
+            validation_status: ValidationStatus::Unavailable,
+            skip_or_failure_reason: None,
+            request_cost: None,
+        };
+        let json = serde_json::to_value(&receipt).expect("serialize receipt");
+        assert!(json.get("request_cost").is_none());
+        let back: OptimizationReceipt = serde_json::from_value(json).expect("deserialize receipt");
+        assert_eq!(back.request_cost, None);
     }
 }

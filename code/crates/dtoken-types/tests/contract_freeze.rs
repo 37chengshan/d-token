@@ -227,6 +227,7 @@ fn optimization_receipt_round_trip_separates_buckets() {
         recovery_pointer: Some("recovery://ccr/1".to_string()),
         validation_status: ValidationStatus::Passed,
         skip_or_failure_reason: None,
+        request_cost: None,
     };
     assert_round_trip(&receipt);
     let encoded = serde_json::to_string(&receipt).expect("serialize");
@@ -262,6 +263,7 @@ fn provider_usage_missing_stays_unavailable_not_zero() {
         recovery_pointer: None,
         validation_status: ValidationStatus::Unavailable,
         skip_or_failure_reason: Some("no_provider_usage".to_string()),
+        request_cost: None,
     };
     let encoded = serde_json::to_string(&receipt).expect("serialize");
     assert!(encoded.contains("\"provider_input_tokens\":null"));
@@ -576,6 +578,7 @@ fn no_frozen_type_carries_credential_fields() {
             recovery_pointer: None,
             validation_status: ValidationStatus::Unavailable,
             skip_or_failure_reason: None,
+            request_cost: None,
         })
         .expect("serialize"),
         serde_json::to_string(&ValidationReceipt {

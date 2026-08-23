@@ -57,9 +57,9 @@ use dtoken_types::{
     OpticalCapabilitiesPublicSummary, OpticalCapabilityLifecyclePublicSummary, OpticalEndpoint,
     OpticalEventMetadataPublicSummary, OpticalEventPublicSummary, OpticalMode,
     OpticalPlanPublicSummary, OpticalPlanStatus, OpticalPreviewRequest, OpticalStatusPublicSummary,
-    OptimizationReceipt, PayloadByteUsage, Protocol, ProtocolInjectionProfile, RequestLog,
-    RequestScope, RequestScopeError, RouteDecision, SupportLevel, UpstreamSendState, UsageEvidence,
-    UsageEvidenceKind, UsageMeasurement, UsageVector, ValidationStatus,
+    OptimizationReceipt, PayloadByteUsage, Protocol, ProtocolInjectionProfile, RequestCost,
+    RequestLog, RequestScope, RequestScopeError, RouteDecision, SupportLevel, UpstreamSendState,
+    UsageEvidence, UsageEvidenceKind, UsageMeasurement, UsageVector, ValidationStatus,
 };
 use futures_util::{Stream, TryStreamExt};
 use reqwest::StatusCode;
@@ -463,6 +463,19 @@ pub fn project_optimization_receipt(log: &RequestLog) -> OptimizationReceipt {
         .and_then(|accounting| accounting.claimable_signed_savings())
         .and_then(|savings| savings.total_tokens.or(savings.input_tokens))
         .filter(|tokens| *tokens > 0);
+    // C10: per-request cost is projected only when token and price evidence
+    // are both present; a missing price stays unavailable, never 0.
+    let request_cost = log.price_evidence.as_ref().and_then(|price| {
+        RequestCost::estimate(
+            log.input_tokens_before
+                .and_then(|tokens| u64::try_from(tokens).ok()),
+            log.input_tokens_after
+                .and_then(|tokens| u64::try_from(tokens).ok()),
+            log.output_tokens
+                .and_then(|tokens| u64::try_from(tokens).ok()),
+            Some(price),
+        )
+    });
     OptimizationReceipt {
         schema_version: 1,
         request_id: log.request_id,
@@ -496,6 +509,7 @@ pub fn project_optimization_receipt(log: &RequestLog) -> OptimizationReceipt {
         // evidence; unavailable is the honest value, never Passed/Failed.
         validation_status: ValidationStatus::Unavailable,
         skip_or_failure_reason: log.error.clone(),
+        request_cost,
     }
 }
 
@@ -6039,6 +6053,7 @@ fn build_request_log(
         config_source: Some("dtoken-owned-runtime".to_string()),
         quota_metadata: None,
         context_accounting: compression.context_accounting.clone(),
+        price_evidence: None,
     }
 }
 
@@ -21160,6 +21175,7 @@ mod tests {
             config_source: Some("dtoken-owned-runtime".to_string()),
             quota_metadata: None,
             context_accounting: None,
+            price_evidence: None,
         }
     }
 
@@ -21595,6 +21611,100 @@ mod tests {
         let receipt = project_optimization_receipt(&log);
         assert_eq!(receipt.provider_input_tokens, None);
         assert_eq!(receipt.provider_output_tokens, None);
+    }
+
+    #[test]
+    fn projection_includes_request_cost_when_price_and_tokens_present() {
+        let mut log = request_log_without_provider_usage();
+        log.price_evidence = Some(dtoken_types::PriceEvidence {
+            currency: "USD".to_string(),
+            unit: "per_1k_tokens".to_string(),
+            unit_tokens: 1_000,
+            input_price_micros: Some(1_500),
+            output_price_micros: Some(2_000),
+            source: "settings".to_string(),
+            updated_at_ms: 1_700_000_000_000,
+        });
+        let receipt = project_optimization_receipt(&log);
+        let cost = receipt.request_cost.expect("cost projected");
+        // original: 1200*1.5 + 300*2 = 1800 + 600 = 2400
+        assert_eq!(cost.original_cost_micros, Some(2_400));
+        // optimized: 1000*1.5 + 300*2 = 1500 + 600 = 2100
+        assert_eq!(cost.optimized_cost_micros, Some(2_100));
+        assert_eq!(cost.cost_delta_micros, Some(300));
+        assert_eq!(cost.currency.as_deref(), Some("USD"));
+        assert_eq!(cost.unit.as_deref(), Some("per_1k_tokens"));
+        assert_eq!(cost.price_source.as_deref(), Some("settings"));
+        assert_eq!(cost.price_updated_at_ms, Some(1_700_000_000_000));
+        // Provider usage alone never elevates claimable.
+        assert_eq!(receipt.claimable_tokens_avoided, None);
+    }
+
+    #[test]
+    fn projection_keeps_request_cost_unavailable_without_price() {
+        let log = request_log_without_provider_usage();
+        assert!(log.price_evidence.is_none());
+        let receipt = project_optimization_receipt(&log);
+        assert_eq!(receipt.request_cost, None);
+    }
+
+    #[test]
+    fn projection_keeps_request_cost_unavailable_without_usage() {
+        let mut log = request_log_without_provider_usage();
+        log.input_tokens_before = None;
+        log.input_tokens_after = None;
+        log.output_tokens = None;
+        log.price_evidence = Some(dtoken_types::PriceEvidence {
+            currency: "USD".to_string(),
+            unit: "per_1k_tokens".to_string(),
+            unit_tokens: 1_000,
+            input_price_micros: Some(1_500),
+            output_price_micros: Some(2_000),
+            source: "settings".to_string(),
+            updated_at_ms: 1_700_000_000_000,
+        });
+        let receipt = project_optimization_receipt(&log);
+        // No token usage -> cost unavailable (None), never 0.
+        assert_eq!(receipt.request_cost, None);
+    }
+
+    #[test]
+    fn mark_upstream_outcome_writes_provider_actual_usage_into_projection() {
+        // End-to-end: an upstream response carrying usage flows through
+        // mark_upstream_outcome into the projection as Provider actual
+        // usage, and Provider usage alone never elevates claimable.
+        let mut log = request_log_without_provider_usage();
+        log.context_accounting = Some(completed_active_accounting());
+        let mut event = optical_test_event(
+            LayeredStage::RouteForward,
+            EventStatus::Passthrough,
+            1_700_000_000_000,
+            json!({"route_id": "route-1", "provider_id": "provider-1"}),
+            log.context_accounting.clone(),
+        );
+        let upstream = UpstreamResult {
+            response: json!({
+                "usage": {"prompt_tokens": 900, "completion_tokens": 250}
+            }),
+            status: Some(200),
+            error_category: None,
+            send_state: UpstreamSendState::Completed,
+            quota_metadata: None,
+        };
+        mark_upstream_outcome(&upstream, &mut log, &mut event);
+        let accounting = log.context_accounting.as_ref().expect("accounting present");
+        let measurement = accounting
+            .provider_actual_sent
+            .measurement
+            .as_ref()
+            .expect("provider actual usage written");
+        assert_eq!(measurement.evidence.kind, UsageEvidenceKind::ProviderActual);
+        assert_eq!(measurement.usage.input.normalized_total, Some(900));
+        assert_eq!(measurement.usage.output_tokens, Some(250));
+        let receipt = project_optimization_receipt(&log);
+        assert_eq!(receipt.provider_input_tokens, Some(900));
+        assert_eq!(receipt.provider_output_tokens, Some(250));
+        assert_eq!(receipt.claimable_tokens_avoided, None);
     }
 
     #[test]
