@@ -613,6 +613,11 @@
     transition-duration: 0ms !important;
   }
 
+  .shell-statusbar-chevron {
+    transform: none !important;
+    transition: none !important;
+  }
+
   .animated-nav-icon .icon-part,
   .nav-motion-item,
   .nav-motion-item:active > svg,

@@ -78,6 +78,7 @@ describe("CodebaseMemory", () => {
     renderPage();
 
     expect(await screen.findByRole("heading", { level: 1, name: "代码图谱（实验性）" })).toBeInTheDocument();
+    expect(screen.getByText("实验性", { exact: true })).toBeVisible();
     expect(screen.getByText("正在读取代码图谱状态…")).toBeVisible();
     expect(screen.getByRole("button", { name: "刷新" })).toBeDisabled();
 

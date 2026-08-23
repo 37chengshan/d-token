@@ -548,6 +548,7 @@ export function CodebaseMemory() {
         <div className="min-w-0 space-y-1">
           <div className="flex flex-wrap items-center gap-2">
             <h1 className="sr-only">{t("cbm.title")}</h1>
+            <Badge variant="outline">{lang === "zh" ? "实验性" : "Experimental"}</Badge>
             <DataSourceBadge mode={dataMode} />
           </div>
           <p className="max-w-3xl text-sm text-muted-foreground">{t("cbm.subtitle")}</p>

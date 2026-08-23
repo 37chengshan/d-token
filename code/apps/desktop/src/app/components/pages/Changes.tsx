@@ -274,8 +274,8 @@ export function Changes({ setPage }: { setPage?: (page: PageId) => void } = {}) 
                 </Button>
               </div>
               <div className="mt-3 grid gap-2 text-xs sm:grid-cols-2">
-                <EvidenceRow label={zh ? "备份完整性" : "Backup integrity"} ok={point.integrityVerified} detail={point.integrityVerified ? (zh ? "元数据与备份内容已验证" : "Metadata and content verified") : (zh ? "完整性未验证" : "Integrity unverified")} />
-                <EvidenceRow label={zh ? "当前可恢复性" : "Currently restorable"} ok={point.currentlyRestorable} detail={point.currentlyRestorable ? (zh ? "当前哈希与事务前置条件匹配" : "Current hash and transaction preconditions match") : point.blockedReason} />
+                <EvidenceRow label={zh ? "备份完整性" : "Backup integrity"} ok={point.integrityVerified} detail={point.integrityVerified ? (zh ? "元数据与备份内容已验证" : "Metadata and content verified") : (zh ? "完整性未验证" : "Integrity unverified")} lang={lang} />
+                <EvidenceRow label={zh ? "当前可恢复性" : "Currently restorable"} ok={point.currentlyRestorable} detail={point.currentlyRestorable ? (zh ? "当前哈希与事务前置条件匹配" : "Current hash and transaction preconditions match") : point.blockedReason} lang={lang} />
               </div>
             </Surface>
           ))}
@@ -350,10 +350,10 @@ export function Changes({ setPage }: { setPage?: (page: PageId) => void } = {}) 
   );
 }
 
-function EvidenceRow({ label, ok, detail }: { label: string; ok: boolean; detail: string }) {
+function EvidenceRow({ label, ok, detail, lang }: { label: string; ok: boolean; detail: string; lang: "zh" | "en" }) {
   return (
     <div className="rounded-md border border-border/70 bg-muted/20 p-3">
-      <div className="flex items-center justify-between gap-2"><span className="font-medium text-foreground">{label}</span><Badge variant={ok ? "secondary" : "outline"}>{ok ? "OK" : "LOCKED"}</Badge></div>
+      <div className="flex items-center justify-between gap-2"><span className="font-medium text-foreground">{label}</span><Badge variant={ok ? "secondary" : "outline"}>{ok ? (lang === "zh" ? "通过" : "OK") : (lang === "zh" ? "已锁定" : "LOCKED")}</Badge></div>
       <div className="mt-1 text-muted-foreground">{detail || "—"}</div>
     </div>
   );
