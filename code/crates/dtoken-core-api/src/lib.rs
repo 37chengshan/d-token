@@ -47,7 +47,7 @@ use dtoken_project_policy::{
     PROJECT_POLICY_CAPABILITY_REVISION,
 };
 use dtoken_runtime_pipeline::{
-    PipelineInput, ReadyToSend, RecoveryPrepareReceipt, TransformArtifact,
+    PipelineInput, ReadyToSend, RecoveryPrepareReceipt, RequestDeadline, TransformArtifact,
 };
 use dtoken_types::{
     AgentSupportProfile, AvailabilityState, BaselineKind, CacheTokens, CapabilityEvidence,
@@ -7424,6 +7424,27 @@ fn anthropic_oauth_token<'a>(
         })
 }
 
+/// Cap a transport timeout to the request-wide deadline.
+///
+/// The provider's `timeout_ms` is the default per-hop timeout; when a
+/// request-wide deadline is in force it must never be exceeded by the sum of
+/// all hops, so the effective per-hop timeout is the minimum of the provider
+/// timeout and the remaining request budget.  An already-expired budget
+/// yields a 1ms floor so the request fails fast instead of hanging.
+fn capped_transport_timeout(
+    provider: &dtoken_types::ProviderProfile,
+    deadline: Option<RequestDeadline>,
+) -> std::time::Duration {
+    let provider_ms = provider.timeout_ms.max(1);
+    let effective = deadline
+        .and_then(|deadline| deadline.remaining_ms(dtoken_event_ledger::now_ms()))
+        .map(|remaining| {
+            remaining.max(1).min(provider_ms.min(u64::try_from(u128::from(provider_ms)).unwrap_or(u64::MAX)))
+        })
+        .unwrap_or(provider_ms);
+    std::time::Duration::from_millis(effective)
+}
+
 /// POST a JSON body to an arbitrary upstream URL with the provider's
 /// credential and Codex/chatgpt metadata handling. Shared by the Chat wire
 /// (`forward_openai_chat`) and the native Responses passthrough
@@ -7434,6 +7455,7 @@ async fn forward_openai_url(
     url: String,
     original_body: Value,
     inbound_headers: Option<&HeaderMap>,
+    deadline: Option<RequestDeadline>,
 ) -> UpstreamResult {
     let credential = match resolve_provider_credential(provider).await {
         Ok(credential) => credential,
@@ -7456,7 +7478,7 @@ async fn forward_openai_url(
         .flatten();
     let mut request = client
         .post(url)
-        .timeout(std::time::Duration::from_millis(provider.timeout_ms.max(1)))
+        .timeout(capped_transport_timeout(provider, deadline))
         .json(&original_body);
     if let Some(credential) = credential.as_deref() {
         let header = match provider_authorization_header(credential) {
@@ -7552,6 +7574,7 @@ async fn forward_openai_chat(
     provider: &dtoken_types::ProviderProfile,
     original_body: Value,
     inbound_headers: Option<&HeaderMap>,
+    deadline: Option<RequestDeadline>,
 ) -> UpstreamResult {
     forward_openai_url(
         client,
@@ -7559,6 +7582,7 @@ async fn forward_openai_chat(
         upstream_chat_url(&provider.base_url),
         original_body,
         inbound_headers,
+        deadline,
     )
     .await
 }
@@ -7571,6 +7595,7 @@ async fn forward_openai_responses(
     provider: &dtoken_types::ProviderProfile,
     original_body: Value,
     inbound_headers: Option<&HeaderMap>,
+    deadline: Option<RequestDeadline>,
 ) -> UpstreamResult {
     forward_openai_url(
         client,
@@ -7578,6 +7603,7 @@ async fn forward_openai_responses(
         upstream_responses_url(&provider.base_url),
         original_body,
         inbound_headers,
+        deadline,
     )
     .await
 }
@@ -7592,6 +7618,7 @@ async fn forward_openai_url_stream(
     url: String,
     original_body: Value,
     inbound_headers: Option<&HeaderMap>,
+    deadline: Option<RequestDeadline>,
 ) -> Result<(u16, axum::http::HeaderMap, Body, Option<Value>), UpstreamResult> {
     let credential = resolve_provider_credential(provider).await?;
     let quota_context_ref = credential
@@ -7611,7 +7638,7 @@ async fn forward_openai_url_stream(
         .flatten();
     let mut request = client
         .post(url)
-        .timeout(std::time::Duration::from_millis(provider.timeout_ms.max(1)))
+        .timeout(capped_transport_timeout(provider, deadline))
         .json(&original_body);
     if let Some(credential) = credential.as_deref() {
         let header = provider_authorization_header(credential).map_err(|()| {
@@ -7722,6 +7749,7 @@ async fn forward_openai_chat_stream(
     provider: &dtoken_types::ProviderProfile,
     original_body: Value,
     inbound_headers: Option<&HeaderMap>,
+    deadline: Option<RequestDeadline>,
 ) -> Result<(u16, axum::http::HeaderMap, Body, Option<Value>), UpstreamResult> {
     forward_openai_url_stream(
         client,
@@ -7729,6 +7757,7 @@ async fn forward_openai_chat_stream(
         upstream_chat_url(&provider.base_url),
         original_body,
         inbound_headers,
+        deadline,
     )
     .await
 }
@@ -7742,6 +7771,7 @@ async fn forward_openai_responses_stream(
     provider: &dtoken_types::ProviderProfile,
     original_body: Value,
     inbound_headers: Option<&HeaderMap>,
+    deadline: Option<RequestDeadline>,
 ) -> Result<(u16, axum::http::HeaderMap, Body, Option<Value>), UpstreamResult> {
     forward_openai_url_stream(
         client,
@@ -7749,6 +7779,7 @@ async fn forward_openai_responses_stream(
         upstream_responses_url(&provider.base_url),
         original_body,
         inbound_headers,
+        deadline,
     )
     .await
 }
@@ -7771,6 +7802,7 @@ async fn forward_anthropic_messages(
     body: Value,
     raw_body: Option<&[u8]>,
     inbound_headers: &HeaderMap,
+    deadline: Option<RequestDeadline>,
 ) -> UpstreamResult {
     let credential = match resolve_provider_credential(provider).await {
         Ok(credential) => credential,
@@ -7785,7 +7817,7 @@ async fn forward_anthropic_messages(
     let url = upstream_anthropic_messages_url(&provider.base_url);
     let request = client
         .post(url)
-        .timeout(std::time::Duration::from_millis(provider.timeout_ms.max(1)));
+        .timeout(capped_transport_timeout(provider, deadline));
     let mut request = if let Some(raw_body) = raw_body {
         request
             .header(reqwest::header::CONTENT_TYPE, "application/json")
@@ -8232,6 +8264,7 @@ async fn forward_anthropic_messages_stream(
     body: Value,
     raw_body: Option<&[u8]>,
     inbound_headers: &HeaderMap,
+    deadline: Option<RequestDeadline>,
 ) -> Result<(u16, axum::http::HeaderMap, UpstreamByteStream), UpstreamResult> {
     let credential = resolve_provider_credential(provider).await?;
     if is_anthropic_upstream(&provider.base_url) {
@@ -8243,7 +8276,7 @@ async fn forward_anthropic_messages_stream(
     let url = upstream_anthropic_messages_url(&provider.base_url);
     let request = client
         .post(url)
-        .timeout(std::time::Duration::from_millis(provider.timeout_ms.max(1)));
+        .timeout(capped_transport_timeout(provider, deadline));
     let mut request = if let Some(raw_body) = raw_body {
         request
             .header(reqwest::header::CONTENT_TYPE, "application/json")
@@ -11724,6 +11757,7 @@ async fn openai_chat_completions(
                 provider,
                 upstream_body.clone(),
                 Some(&headers),
+                Some(scheduler_deadline),
             )
             .await;
             match upstream {
@@ -11844,8 +11878,14 @@ async fn openai_chat_completions(
         ) {
             return response;
         }
-        let mut upstream =
-            forward_openai_chat(&state.http_client, provider, upstream_body, Some(&headers)).await;
+        let mut upstream = forward_openai_chat(
+            &state.http_client,
+            provider,
+            upstream_body,
+            Some(&headers),
+            Some(scheduler_deadline),
+        )
+        .await;
         attach_quota_account_ref(
             &mut upstream.quota_metadata,
             opaque_codex_account_ref(&headers).as_deref(),
@@ -12267,6 +12307,7 @@ async fn openai_responses(
                     provider,
                     upstream_body.clone(),
                     Some(&headers),
+                    Some(scheduler_deadline),
                 )
                 .await;
                 match upstream {
@@ -12390,6 +12431,7 @@ async fn openai_responses(
                 provider,
                 upstream_body.clone(),
                 Some(&headers),
+                Some(scheduler_deadline),
             )
             .await;
             attach_quota_account_ref(
@@ -12757,6 +12799,7 @@ async fn openai_responses(
                 provider,
                 upstream_body.clone(),
                 Some(&headers),
+                Some(scheduler_deadline),
             )
             .await;
             match upstream {
@@ -12902,7 +12945,14 @@ async fn openai_responses(
             return response;
         }
         let mut upstream = require_openai_message(
-            forward_openai_chat(&state.http_client, provider, upstream_body, Some(&headers)).await,
+            forward_openai_chat(
+                &state.http_client,
+                provider,
+                upstream_body,
+                Some(&headers),
+                Some(scheduler_deadline),
+            )
+            .await,
             "OpenAI Responses",
         );
         attach_quota_account_ref(
@@ -13164,6 +13214,7 @@ async fn anthropic_messages(
             );
         }
 
+        let anthropic_deadline = scheduler::request_deadline();
         let (prepared_ccr, pipeline_variant, cache_wire) =
             prepare_direct_anthropic_pipeline_for_send(
                 &state,
@@ -13188,6 +13239,7 @@ async fn anthropic_messages(
                 payload.upstream_body.clone(),
                 send_raw_body.then_some(raw_body.as_slice()),
                 &headers,
+                Some(anthropic_deadline),
             )
             .await
             {
@@ -13335,6 +13387,7 @@ async fn anthropic_messages(
                 payload.upstream_body.clone(),
                 send_raw_body.then_some(raw_body.as_slice()),
                 &headers,
+                Some(anthropic_deadline),
             )
             .await,
         );
@@ -13490,6 +13543,7 @@ async fn anthropic_messages(
             &payload.provider,
             payload.upstream_body.clone(),
             Some(&headers),
+            Some(anthropic_deadline),
         )
         .await,
         "Anthropic bridge",
@@ -17701,6 +17755,7 @@ mod tests {
                 "messages": [{"role": "user", "content": "hello"}],
                 "stream": true
             }),
+            Some(&HeaderMap::new()),
             None,
         )
         .await
@@ -20096,6 +20151,7 @@ mod tests {
             parsed,
             Some(raw),
             &HeaderMap::new(),
+            None,
         )
         .await
         .expect("direct Anthropic stream succeeds");
