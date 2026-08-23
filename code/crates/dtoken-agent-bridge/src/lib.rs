@@ -139,6 +139,74 @@ pub fn render_session_context(summary: &RuntimeSummary) -> String {
     text
 }
 
+/// Production command-wrapper consumer for a verified d-token managed root
+/// (PR-C4B). An Agent shell/custom-tool hook that wants every command to
+/// route through the reviewed RTK wrap executes `dtoken-agent-bridge rtk
+/// shim --managed-root <root> [--max-bytes <n>] -- <tool-command> [args...]`.
+/// The managed root is re-verified first; an unverified/unavailable root
+/// fails closed to an exact passthrough of the command (no filter, no usage
+/// claim), and the tool's own exit status is always preserved.
+pub fn run_rtk_shim(
+    args: &[String],
+    stdout: impl Write + Send,
+    stderr: impl Write + Send,
+) -> Result<i32> {
+    let Some(wrap_args) = shim_to_wrap_args(args)? else {
+        // `rtk shim` invoked without a wrapped command (e.g. an empty hook
+        // probe): success with no output so the Agent hook harness never
+        // sees a spurious failure.
+        return Ok(0);
+    };
+    run_rtk_wrap(&wrap_args, stdout, stderr)
+}
+
+/// Turns `rtk shim --managed-root <root> [--max-bytes <n>] -- <cmd>...` into
+/// the canonical `rtk wrap` argv. Returns `None` when there is no command
+/// after `--` (a probe invocation).
+pub fn shim_to_wrap_args(args: &[String]) -> Result<Option<Vec<String>>> {
+    let mut index = 0usize;
+    let mut managed_root = None;
+    let mut max_output_bytes = None;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--managed-root" => {
+                let value = args
+                    .get(index + 1)
+                    .context("missing value for --managed-root")?;
+                managed_root = Some(value.clone());
+                index += 2;
+            }
+            "--max-bytes" => {
+                let value = args
+                    .get(index + 1)
+                    .context("missing value for --max-bytes")?;
+                max_output_bytes = Some(value.clone());
+                index += 2;
+            }
+            "--" => {
+                let command = args[index + 1..].to_vec();
+                if command.is_empty() {
+                    return Ok(None);
+                }
+                let mut wrap = vec!["rtk".to_string(), "wrap".to_string()];
+                if let Some(root) = managed_root {
+                    wrap.push("--managed-root".to_string());
+                    wrap.push(root);
+                }
+                if let Some(bytes) = max_output_bytes {
+                    wrap.push("--max-bytes".to_string());
+                    wrap.push(bytes);
+                }
+                wrap.push("--".to_string());
+                wrap.extend(command);
+                return Ok(Some(wrap));
+            }
+            flag => bail!("unsupported rtk shim argument: {flag}"),
+        }
+    }
+    Ok(None)
+}
+
 pub fn run_rtk_wrap(
     args: &[String],
     mut stdout: impl Write + Send,

@@ -1,7 +1,7 @@
 use anyhow::{bail, Result};
 use dtoken_agent_bridge::{
-    run_hook_session_start, run_mcp, run_rtk_wrap, BRIDGE_COMPONENT, BRIDGE_PROTOCOL_VERSION,
-    BRIDGE_VERSION,
+    run_hook_session_start, run_mcp, run_rtk_shim, run_rtk_wrap, BRIDGE_COMPONENT,
+    BRIDGE_PROTOCOL_VERSION, BRIDGE_VERSION,
 };
 use std::io;
 
@@ -10,6 +10,10 @@ fn main() -> Result<()> {
     match args.as_slice() {
         [area, command, rest @ ..] if area == "rtk" && command == "wrap" => {
             let code = run_rtk_wrap(rest, io::stdout(), io::stderr())?;
+            std::process::exit(code);
+        }
+        [area, command, rest @ ..] if area == "rtk" && command == "shim" => {
+            let code = run_rtk_shim(rest, io::stdout(), io::stderr())?;
             std::process::exit(code);
         }
         [area, command] if area == "hook" && command == "session-start" => {
@@ -32,7 +36,7 @@ fn main() -> Result<()> {
             Ok(())
         }
         _ => bail!(
-            "usage: dtoken-agent-bridge identity | hook session-start | mcp stdio | rtk wrap --managed-root <path> [--max-bytes <n>] -- <command> [args...]"
+            "usage: dtoken-agent-bridge identity | hook session-start | mcp stdio | rtk wrap --managed-root <path> [--max-bytes <n>] -- <command> [args...] | rtk shim --managed-root <path> [--max-bytes <n>] -- <tool-command> [args...]"
         ),
     }
 }

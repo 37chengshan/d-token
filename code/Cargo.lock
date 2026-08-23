@@ -1172,6 +1172,7 @@ version = "0.0.1"
 dependencies = [
  "anyhow",
  "dtoken-compress",
+ "dtoken-preprocessor",
  "dtoken-types",
  "json5",
  "rusqlite",

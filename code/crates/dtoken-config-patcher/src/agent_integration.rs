@@ -1,4 +1,5 @@
 use anyhow::{bail, Context, Result};
+use dtoken_preprocessor::verify_managed_hook_root;
 use dtoken_types::{ConfigToolKind, RiskLevel};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
@@ -79,6 +80,13 @@ pub struct AgentIntegrationRequest {
     pub bridge_path: PathBuf,
     #[serde(default)]
     pub managed_mcp_launches: BTreeMap<String, ManagedMcpLaunch>,
+    /// Optional verified d-token managed RTK root (PR-C4B). When present,
+    /// supported Agents get a d-token-owned command hook that routes every
+    /// tool command through `dtoken-agent-bridge rtk shim` (the verified
+    /// managed wrap). Absent (default): no command hook is written and all
+    /// existing Agent command hooks are preserved untouched.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub managed_rtk_root: Option<PathBuf>,
     pub install_instructions: bool,
     pub install_hook_or_plugin: bool,
     pub install_skill: bool,
@@ -242,6 +250,40 @@ pub fn prepare_agent_integration(
                 },
             )?;
         }
+    }
+
+    // PR-C4B: when a verified d-token managed RTK root is supplied, the
+    // supported Agent's tool commands route through the reviewed wrap.
+    // claude-code uses a d-token-owned PreToolUse Bash hook whose command is
+    // the canonical `dtoken-agent-bridge rtk shim` wrapper. The managed root
+    // must be verified at this point (fail closed otherwise), and the hook
+    // target is the same hooks.json/settings.json document the SessionStart
+    // entry uses, so the two entries are transacted together.
+    if let Some(managed_rtk_root) = request.managed_rtk_root.as_ref() {
+        let claude_settings = hook_target(
+            "claude-code",
+            request.scope,
+            home_dir,
+            project_root.as_deref(),
+            &request.bridge_path,
+        )?
+        .0;
+        let content = merge_pretool_wrap_hook(
+            &claude_settings,
+            &request.bridge_path,
+            managed_rtk_root,
+            false,
+        )?;
+        merge_pending(
+            &mut pending,
+            PendingTarget {
+                agent_ids: BTreeSet::from(["claude-code".to_string()]),
+                surface: AgentIntegrationSurface::HookOrPlugin,
+                path: claude_settings,
+                content,
+                trust_required: true,
+            },
+        )?;
     }
 
     if request.install_skill {
@@ -940,6 +982,20 @@ fn validate_request(request: &AgentIntegrationRequest, home_dir: &Path) -> Resul
             bail!("unsupported Agent integration target: {id}");
         }
     }
+    if let Some(managed_rtk_root) = request.managed_rtk_root.as_ref() {
+        if !managed_rtk_root.is_absolute() {
+            bail!("managed RTK root must be absolute");
+        }
+        reject_parent_components(managed_rtk_root)?;
+        // The managed root must be a verified d-token-owned runtime before a
+        // command hook is authored (fail closed; no verification, no hook).
+        verify_managed_hook_root(managed_rtk_root, false).with_context(|| {
+            format!(
+                "managed RTK root is not verified: {}",
+                managed_rtk_root.display()
+            )
+        })?;
+    }
     Ok(())
 }
 
@@ -1156,6 +1212,79 @@ fn hook_target(
         }
         _ => bail!("unsupported Agent Hook target"),
     }
+}
+
+/// d-token-owned PreToolUse command-hook id for the managed RTK wrap
+/// (PR-C4B). Every tool command on a supported Agent routes through the
+/// verified `dtoken-agent-bridge rtk shim` wrapper when this entry is
+/// present.
+pub const DTOKEN_PRETOOL_WRAP_ID: &str = "dtoken-managed-rtk-wrap-v1";
+
+/// Merges a d-token-owned `PreToolUse` Bash command hook into a Claude Code
+/// settings document. The hook command is the canonical
+/// `dtoken-agent-bridge rtk shim --managed-root <root>` wrapper; the managed
+/// root is verified by the caller before this runs. Existing user-owned hook
+/// entries are always preserved; the d-token-owned entry is replaced
+/// in-place on re-apply.
+pub fn merge_pretool_wrap_hook(
+    path: &Path,
+    bridge: &Path,
+    managed_root: &Path,
+    codex: bool,
+) -> Result<String> {
+    let mut root = read_json_object(path)?;
+    let hooks = object_field(&mut root, "hooks")?;
+    let pretool = hooks
+        .entry("PreToolUse".to_string())
+        .or_insert_with(|| Value::Array(Vec::new()));
+    let list = pretool
+        .as_array_mut()
+        .context("hooks.PreToolUse must be an array")?;
+    list.retain(|value| {
+        value.get("dtoken_managed_id").and_then(Value::as_str)
+            != Some(DTOKEN_PRETOOL_WRAP_ID)
+    });
+    let shim = dtoken_preprocessor::managed_shim_command(bridge, managed_root);
+    let mut matcher = json!({
+        "dtoken_managed_id": DTOKEN_PRETOOL_WRAP_ID,
+        "matcher": "Bash|ExecuteCommand",
+        "hooks": [{
+            "type": "command",
+            "command": shim,
+            "timeout": 5
+        }]
+    });
+    if codex {
+        matcher["hooks"][0]["statusMessage"] =
+            json!("d-token managed RTK command wrapper active");
+    }
+    list.push(matcher);
+    Ok(serde_json::to_string_pretty(&Value::Object(root))? + "\n")
+}
+
+/// Verify that a Claude Code settings document contains the exact
+/// d-token-owned PreToolUse wrap entry for a bridge + managed root.
+pub fn verify_pretool_wrap_hook(path: &Path, bridge: &Path, managed_root: &Path) -> Result<()> {
+    let root = read_json_object(path)?;
+    let hooks = root
+        .get("hooks")
+        .context("hooks must be present in the settings document")?;
+    let pretool = hooks
+        .get("PreToolUse")
+        .and_then(Value::as_array)
+        .context("hooks.PreToolUse must be an array")?;
+    let expected = dtoken_preprocessor::managed_shim_command(bridge, managed_root);
+    let present = pretool.iter().any(|entry| {
+        entry.pointer("/dtoken_managed_id").and_then(Value::as_str)
+            == Some(DTOKEN_PRETOOL_WRAP_ID)
+            && entry.pointer("/matcher").and_then(Value::as_str) == Some("Bash|ExecuteCommand")
+            && entry.pointer("/hooks/0/command").and_then(Value::as_str) == Some(expected.as_str())
+            && entry.pointer("/hooks/0/type").and_then(Value::as_str) == Some("command")
+    });
+    if !present {
+        bail!("d-token managed RTK wrap hook is missing or does not match the reviewed command");
+    }
+    Ok(())
 }
 
 fn merge_session_start_hook(path: &Path, bridge: &Path, codex: bool) -> Result<String> {
@@ -1515,6 +1644,7 @@ mod tests {
             project_root: project,
             bridge_path,
             managed_mcp_launches: BTreeMap::new(),
+            managed_rtk_root: None,
             install_instructions: true,
             install_hook_or_plugin: true,
             install_skill: true,

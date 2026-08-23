@@ -128,6 +128,28 @@ pub fn bounded_truncate_marker(output: &str, limit: usize) -> (String, bool) {
     }
 }
 
+/// Build the exact, quoted `dtoken-agent-bridge rtk shim` command that a
+/// d-token-owned Agent command hook executes for a verified managed root.
+/// This is the single, canonical consumer of the [`ManagedCommandRewrite`]
+/// contract that Agent hook authors rely on: the command routes every tool
+/// command through the reviewed RTK wrap (PR-C4B). The bridge path and
+/// managed root must be absolute d-token-owned paths; callers verify the root
+/// before writing it into an Agent configuration.
+pub fn managed_shim_command(bridge: &Path, managed_root: &Path) -> String {
+    let mut parts = vec![format!(
+        "\"{}\"",
+        bridge.display().to_string().replace('"', "\\\"")
+    )];
+    parts.push("rtk".to_string());
+    parts.push("shim".to_string());
+    parts.push("--managed-root".to_string());
+    parts.push(format!(
+        "\"{}\"",
+        managed_root.display().to_string().replace('"', "\\\"")
+    ));
+    parts.join(" ")
+}
+
 /// Metadata describing how a host would invoke a managed RTK wrapper. It does
 /// not contain argv or output, so it is safe to store with a lifecycle plan.
 #[derive(Debug, Clone, PartialEq, Eq)]

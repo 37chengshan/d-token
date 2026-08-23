@@ -151,6 +151,7 @@ fn integration_request(project: &Path, bridge: &Path) -> AgentIntegrationRequest
         project_root: Some(project.to_path_buf()),
         bridge_path: bridge.to_path_buf(),
         managed_mcp_launches,
+        managed_rtk_root: None,
         install_instructions: true,
         install_hook_or_plugin: true,
         install_skill: true,
@@ -403,7 +404,138 @@ fn transport_request(agent_id: &str, target_path: PathBuf) -> AgentTransportRequ
 }
 
 #[test]
-fn transport_fixture_restores_prior_routes_and_external_edits_fail_closed() {
+#[test]
+fn managed_rtk_command_hook_routes_tool_commands_through_bridge_wrap_and_rolls_back() {
+    use dtoken_config_patcher::agent_integration::verify_pretool_wrap_hook;
+    use dtoken_preprocessor::{ManagedHookPaths, ManagedRtkLifecycle};
+    use std::process::{Command, Stdio};
+
+    let root = workspace_tempdir();
+    let root = fs::canonicalize(root.path()).expect("canonical fixture root");
+    let home = root.join("home");
+    let project = root.join("project");
+    let backups = root.join("backups");
+    fs::create_dir_all(&home).expect("fixture home");
+    fs::create_dir_all(&project).expect("fixture project");
+
+    // The real bridge binary from the current build is the managed wrapper.
+    let bridge_bin = PathBuf::from(env!("CARGO_BIN_EXE_dtoken-agent-bridge"));
+    let bridge = fs::canonicalize(&bridge_bin).expect("canonical bridge");
+
+    // A fully verified d-token managed RTK root bound to that bridge.
+    let managed_root = root.join("managed-rtk");
+    let mut lifecycle = ManagedRtkLifecycle::plan(
+        "rtk-hook-fixture.1",
+        if cfg!(windows) {
+            dtoken_types::agent::HostPlatform::Windows
+        } else {
+            dtoken_types::agent::HostPlatform::Macos
+        },
+        &"e".repeat(64),
+    );
+    lifecycle
+        .install_hook(ManagedHookPaths {
+            managed_root: managed_root.clone(),
+            bridge_path: bridge.clone(),
+            max_output_bytes: Some(1_024),
+            filter_dsl: None,
+        })
+        .expect("install managed hook");
+    lifecycle.verify_hook().expect("verify managed hook");
+
+    // A user-owned PreToolUse hook must be preserved alongside the
+    // d-token-owned wrap entry.
+    write_text(
+        &project.join(".claude/settings.local.json"),
+        r#"{"hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":"user-hook"}]}]}}"#,
+    );
+
+    let mut request = integration_request(&project, &bridge);
+    request.managed_rtk_root = Some(managed_root.clone());
+    request.install_mcp = false;
+    request.install_skill = false;
+    request.install_instructions = false;
+    let prepared = prepare_agent_integration(&request, &home, &backups).expect("prepare");
+    let digest = prepared.plan.review_digest.clone();
+    let receipt = apply_agent_integration(prepared, &backups, &digest).expect("apply");
+    assert_eq!(receipt.verified_targets.len(), 1);
+
+    let settings_path = project.join(".claude/settings.local.json");
+    verify_pretool_wrap_hook(&settings_path, &bridge, &managed_root)
+        .expect("generated PreToolUse wrap hook matches the canonical shim command");
+    let document: Value = serde_json::from_slice(
+        &fs::read(&settings_path).expect("settings after apply"),
+    )
+    .expect("settings JSON");
+    let pretool = document["hooks"]["PreToolUse"].as_array().expect("array");
+    assert_eq!(pretool.len(), 2, "user hook is preserved beside the wrap hook");
+    assert!(pretool.iter().any(|entry| {
+        entry["hooks"][0]["command"].as_str() == Some("user-hook")
+    }));
+
+    // EXECUTE the generated hook command against a fake tool command through
+    // the real bridge: the shim must route it through the managed wrap,
+    // filter the JSON output, and preserve the tool exit code (7).
+    let wrap_entry = pretool
+        .iter()
+        .find(|entry| {
+            entry["dtoken_managed_id"].as_str() == Some("dtoken-managed-rtk-wrap-v1")
+        })
+        .expect("wrap hook entry");
+    let command = wrap_entry["hooks"][0]["command"]
+        .as_str()
+        .expect("wrap command");
+    let argv = parse_generated_hook_command(command);
+    let mut invocation = Command::new(&argv[0]);
+    invocation
+        .args(&argv[1..])
+        .arg("--")
+        .arg(if cfg!(windows) {
+            "cmd"
+        } else {
+            "/usr/bin/printf"
+        });
+    if cfg!(windows) {
+        invocation.arg("/c").arg("exit 7");
+    } else {
+        invocation.arg("{\\n  \\\"name\\\": \\\"tool\\\",\\n  \\\"ok\\\": true\\n}\\n");
+    }
+    let output = invocation
+        .stdin(Stdio::null())
+        .output()
+        .expect("execute generated hook command");
+    assert_eq!(
+        output.status.code(),
+        Some(7),
+        "hook must preserve the tool exit code (stderr={})",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("\"ok\":true") || stdout.contains("\"name\":\"tool\""),
+        "hook must route tool output through the managed wrap: {stdout}"
+    );
+
+    // The wrap produced one usage receipt under the verified root.
+    let usage_dir = managed_root.join("usage");
+    assert_eq!(
+        fs::read_dir(&usage_dir).expect("usage dir").count(),
+        1,
+        "the generated hook invocation must tee a usage receipt"
+    );
+
+    // Rollback removes the d-token-owned wrap entry and restores the user's
+    // original document exactly.
+    rollback_agent_integration(&receipt.transaction_id, &backups).expect("rollback");
+    let restored: Value = serde_json::from_slice(
+        &fs::read(&settings_path).expect("settings after rollback"),
+    )
+    .expect("restored settings JSON");
+    assert_eq!(
+        restored,
+        json!({"hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":"user-hook"}]}]}})
+    );
+}
     let root = workspace_tempdir();
     let root = fs::canonicalize(root.path()).expect("canonical fixture root");
     let backups = root.join("backups");
