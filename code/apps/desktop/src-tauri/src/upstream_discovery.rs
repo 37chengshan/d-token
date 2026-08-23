@@ -4713,7 +4713,7 @@ wire_api = "responses"
     }
 
     #[test]
-    #[ignore = "requires an explicitly supplied real cc-switch database; read-only static UAT"]
+    #[ignore = "requires an explicitly supplied real cc-switch database; read-only static check"]
     fn live_cc_switch_static_snapshot_is_redacted_when_explicitly_enabled() {
         let snapshot = discover()["external_config_snapshot"]["cc_switch"].clone();
         assert_eq!(snapshot["source_state"], "loaded", "{snapshot:#}");

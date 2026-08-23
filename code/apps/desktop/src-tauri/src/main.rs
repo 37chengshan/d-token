@@ -12800,7 +12800,7 @@ fn run_doctor() -> DoctorReport {
             category: "route".to_string(),
             severity: "warning".to_string(),
             state: "manual".to_string(),
-            title: "未检测到当前验收 Agent".to_string(),
+            title: "未检测到当前可用的 Agent".to_string(),
             impact: "无法证明真实 Agent 请求已经连接到 d-token。".to_string(),
             cause: "OpenCode 当前不在 PATH，或尚未完成安装与连接。".to_string(),
             evidence: "本次本地工具扫描未检测到 OpenCode；RTK 与外部 Headroom 不参与此门禁。"
