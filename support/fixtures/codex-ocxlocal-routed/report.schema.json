@@ -1,0 +1,125 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://d-token.local/schemas/codex-ocxlocal-routed/report.schema.json",
+  "title": "N2 Codex ocxlocal routed-flow report",
+  "description": "Frozen N2 report schema (PLAN §12.3 PR-2, W2). The report consumes the frozen CF-3 CandidateEvidenceEnvelope ($ref to https://d-token.local/schemas/candidate-evidence-envelope.schema.json) plus structured route/ledger/metrics/failure/restore evidence payloads. agent_id=codex, capability_tier=route, evidence_kind=route, and route_decision_digest/capability_digest are non-null. Privacy: the envelope's six privacy_assertions are all true; report payloads never contain secrets, complete prompts/responses, source code, absolute paths, or raw command output. C8: restore evidence declares config_changes_made=false and config_transaction_not_substitute=true — a config transaction with exact restore is NOT routed-flow evidence. Dry-run/fixture documents never claim a real routed flow (status is never pass without a real run).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "envelope",
+    "route",
+    "ledger",
+    "metrics",
+    "failure",
+    "restore"
+  ],
+  "properties": {
+    "envelope": {
+      "allOf": [
+        { "$ref": "https://d-token.local/schemas/candidate-evidence-envelope.schema.json" },
+        {
+          "properties": {
+            "node_id": { "const": "N2" },
+            "agent_id": { "const": "codex" },
+            "capability_tier": { "const": "route" },
+            "evidence_kind": { "const": "route" },
+            "route_decision_digest": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+            "capability_digest": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+          }
+        }
+      ]
+    },
+    "route": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "protocol",
+        "requires_openai_auth",
+        "models_passthrough",
+        "provider",
+        "model",
+        "upstream",
+        "route_verified",
+        "request_match_count",
+        "failure_classifications"
+      ],
+      "properties": {
+        "protocol": { "const": "responses" },
+        "requires_openai_auth": { "const": false },
+        "models_passthrough": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "models_list_empty",
+            "model_dynamic",
+            "model_pinned_to_install_time"
+          ],
+          "properties": {
+            "models_list_empty": { "const": true },
+            "model_dynamic": { "const": true },
+            "model_pinned_to_install_time": { "const": false }
+          }
+        },
+        "provider": { "type": "string", "minLength": 1 },
+        "model": { "type": "string", "minLength": 1 },
+        "upstream": { "type": "string", "minLength": 1 },
+        "route_verified": { "type": "boolean" },
+        "request_match_count": { "type": "integer", "minimum": 0 },
+        "failure_classifications": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1, "pattern": "\\S" }
+        }
+      }
+    },
+    "ledger": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["events", "route_decisions", "request_logs", "ccr_metadata"],
+      "properties": {
+        "events": { "type": "integer", "minimum": 0 },
+        "route_decisions": { "type": "integer", "minimum": 0 },
+        "request_logs": { "type": "integer", "minimum": 0 },
+        "ccr_metadata": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "metrics": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["requests_sent", "responses_received", "duration_seconds"],
+      "properties": {
+        "requests_sent": { "type": "integer", "minimum": 0 },
+        "responses_received": { "type": "integer", "minimum": 0 },
+        "duration_seconds": { "type": "number", "minimum": 0 }
+      }
+    },
+    "failure": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["stage", "classifications", "exit_code"],
+      "properties": {
+        "stage": { "type": ["string", "null"] },
+        "classifications": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1, "pattern": "\\S" }
+        },
+        "exit_code": { "type": "integer" }
+      }
+    },
+    "restore": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "config_changes_made",
+        "restore_status",
+        "config_transaction_not_substitute",
+        "routed_flow_evidence"
+      ],
+      "properties": {
+        "config_changes_made": { "const": false },
+        "restore_status": { "const": "not_applicable_no_config_write" },
+        "config_transaction_not_substitute": { "const": true },
+        "routed_flow_evidence": { "const": true }
+      }
+    }
+  }
+}

@@ -1,0 +1,93 @@
+{
+  "envelope": {
+    "schema_version": "1.0.0",
+    "node_id": "N2",
+    "status": "unavailable",
+    "reason_codes": ["template-fixture-not-a-real-routed-flow"],
+    "candidate_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "source_digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "registry_digest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "corpus_digests": {
+      "route": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "ledger": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "metrics": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "failure": "1111111111111111111111111111111111111111111111111111111111111111",
+      "restore": "2222222222222222222222222222222222222222222222222222222222222222"
+    },
+    "started_at": "2026-08-12T00:00:00Z",
+    "finished_at": "2026-08-12T00:01:00Z",
+    "platform": {
+      "os": "macos",
+      "arch": "aarch64",
+      "toolchain": "template-fixture"
+    },
+    "producer_revision": "template-fixture",
+    "artifact_sha256": "3333333333333333333333333333333333333333333333333333333333333333",
+    "agent_id": "codex",
+    "capability_tier": "route",
+    "privacy_assertions": {
+      "no_secret": true,
+      "no_complete_prompt_or_response": true,
+      "no_source_code": true,
+      "no_absolute_paths": true,
+      "no_raw_command_output": true,
+      "redaction_verified": true
+    },
+    "not_applicable_reasons": {
+      "renderer_digest": "not applicable for route evidence: renderer_digest",
+      "profile_digest": "not applicable for route evidence: profile_digest",
+      "font_digest": "not applicable for route evidence: font_digest",
+      "tokenizer_digest": "not applicable for route evidence: tokenizer_digest",
+      "pricing_digest": "not applicable for route evidence: pricing_digest",
+      "cache_digest": "not applicable for route evidence: cache_digest",
+      "eval_digest": "not applicable for route evidence: eval_digest"
+    },
+    "evidence_kind": "route",
+    "route_decision_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+    "capability_digest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "renderer_digest": null,
+    "profile_digest": null,
+    "font_digest": null,
+    "tokenizer_digest": null,
+    "pricing_digest": null,
+    "cache_digest": null,
+    "eval_digest": null
+  },
+  "route": {
+    "protocol": "responses",
+    "requires_openai_auth": false,
+    "models_passthrough": {
+      "models_list_empty": true,
+      "model_dynamic": true,
+      "model_pinned_to_install_time": false
+    },
+    "provider": "ocxlocal",
+    "model": "dynamic-model-placeholder",
+    "upstream": "ocxlocal:10100",
+    "route_verified": false,
+    "request_match_count": 0,
+    "failure_classifications": ["template-fixture-not-a-real-routed-flow"]
+  },
+  "ledger": {
+    "events": 0,
+    "route_decisions": 0,
+    "request_logs": 0,
+    "ccr_metadata": 0
+  },
+  "metrics": {
+    "requests_sent": 0,
+    "responses_received": 0,
+    "duration_seconds": 0
+  },
+  "failure": {
+    "stage": "template",
+    "classifications": ["template-fixture-not-a-real-routed-flow"],
+    "exit_code": 1
+  },
+  "restore": {
+    "config_changes_made": false,
+    "restore_status": "not_applicable_no_config_write",
+    "config_transaction_not_substitute": true,
+    "routed_flow_evidence": true
+  }
+}
