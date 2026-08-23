@@ -473,6 +473,23 @@ REPORT_DIR="$ROOT/support/artifacts/opencode-real-routed"
 REPORT_STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
 REPORT_PATH="$REPORT_DIR/real-routed-${REPORT_STAMP}-$$.json"
 REPORT_PATH_REDACTED="support/artifacts/opencode-real-routed/$(basename "$REPORT_PATH")"
+CANDIDATE_BINDING="$(python3 "$ROOT/support/scripts/canonical_source_digest.py" --repo-root "$ROOT" --revision HEAD)" \
+  || die "cannot resolve N0 canonical candidate binding"
+CANDIDATE_COMMIT="$(python3 - "$CANDIDATE_BINDING" <<'PY'
+import json
+import sys
+print(json.loads(sys.argv[1])["candidate_commit"])
+PY
+)"
+SOURCE_DIGEST="$(python3 - "$CANDIDATE_BINDING" <<'PY'
+import json
+import sys
+print(json.loads(sys.argv[1])["source_digest"])
+PY
+)"
+if [[ -n "${DTOKEN_RELEASE_CANDIDATE_ID:-}" && "$DTOKEN_RELEASE_CANDIDATE_ID" != "$CANDIDATE_COMMIT" ]]; then
+  die "DTOKEN_RELEASE_CANDIDATE_ID does not match the current candidate commit"
+fi
 BACKUP_PATH="${CONFIG_PATH}.dtoken-backup-${REPORT_STAMP}-$$"
 BACKUP_PATH_REDACTED="$(redact_home_path "$BACKUP_PATH")"
 PROXY_PID=""
@@ -515,7 +532,7 @@ write_redacted_report() {
     final_status="failed"
   fi
   mkdir -p "$REPORT_DIR"
-  DTOKEN_OPENCODE_REAL_ROOT="$TEMP_ROOT" python3 - "$REPORT_PATH" "$final_status" "$exit_code" "$FAILURE_STAGE" \
+  DTOKEN_OPENCODE_REAL_ROOT="$TEMP_ROOT" DTOKEN_CANDIDATE_COMMIT="$CANDIDATE_COMMIT" DTOKEN_SOURCE_DIGEST="$SOURCE_DIGEST" python3 - "$REPORT_PATH" "$final_status" "$exit_code" "$FAILURE_STAGE" \
     "$SELECTED_PROVIDER" "$MODEL" "$PORT" "$CREDENTIAL_MODE" \
     "$CONFIG_PATH_REDACTED" "$BACKUP_PATH_REDACTED" "$BACKUP_CREATED" \
     "$RESTORE_STATUS" "$REPORT_PATH_REDACTED" "$PERSISTED_COUNTS" "$CCR_ENTRIES" "$COMPRESSION_WORKLOAD" "$COMPRESSION_EVIDENCE" "$CCR_EVIDENCE" "$CONFIG_PREFLIGHT" "$OPENCODE_FAILURE_CODE" "$OPENCODE_PURE" "$CCR_KEYCHAIN_CLEANUP_STATUS" <<'PY'
@@ -533,7 +550,8 @@ from datetime import datetime, timezone
     compression_evidence, ccr_evidence, config_preflight, opencode_failure_code,
     opencode_pure, ccr_keychain_cleanup_status,
 ) = sys.argv[1:]
-candidate_id = os.environ.get("DTOKEN_RELEASE_CANDIDATE_ID") or None
+candidate_id = os.environ["DTOKEN_CANDIDATE_COMMIT"]
+source_digest = os.environ["DTOKEN_SOURCE_DIGEST"]
 root_path = pathlib.Path(os.environ["DTOKEN_OPENCODE_REAL_ROOT"])
 health_path = root_path / "health.json"
 health = json.loads(health_path.read_text(encoding="utf-8")) if health_path.exists() else {}
@@ -552,6 +570,8 @@ payload = {
     "exit_code": int(exit_code),
     "failure_stage": None if status == "pass" else failure_stage,
     "candidate_id": candidate_id,
+    "candidate_commit": candidate_id,
+    "source_digest": source_digest,
     "runtime_identity": health.get("runtime_identity"),
     "service_url": f"http://127.0.0.1:{port}",
     "selected_provider": provider,

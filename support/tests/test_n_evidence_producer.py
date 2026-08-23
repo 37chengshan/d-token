@@ -192,6 +192,27 @@ class NEvidenceProducerContractTest(unittest.TestCase):
                     artifact["artifact_sha256"], canonical_sha(artifact)
                 )
 
+    def test_upstream_evidence_without_source_digest_remains_blocked(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_n0(root)
+            evidence = root / "tauri-ui-acceptance" / "missing-digest.json"
+            evidence.parent.mkdir(parents=True)
+            artifact = make_envelope("N6")
+            artifact.pop("source_digest")
+            artifact["artifact_sha256"] = canonical_sha(artifact)
+            evidence.write_text(json.dumps(artifact) + "\n", encoding="utf-8")
+            proc = run_runner(
+                root, make_clean_worktree(), nodes="N6", extra=["--skip-local"]
+            )
+            self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+            staged = json.loads((root / "N6-ui.json").read_text(encoding="utf-8"))
+            self.assertEqual(staged["status"], "blocked")
+            self.assertIn(
+                "source_digest missing or mismatched with frozen candidate",
+                staged["reason_codes"],
+            )
+
     def test_u7_demo_fixture_rejected_as_real_evidence(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -224,6 +245,137 @@ class NEvidenceProducerContractTest(unittest.TestCase):
                 any("demo" in reason for reason in artifact["reason_codes"]),
                 artifact["reason_codes"],
             )
+
+
+    def test_u7_requires_full_exact_active_runtime_contract(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_n0(root)
+            incomplete = root / "optical-exact-active" / "real-provider.json"
+            incomplete.parent.mkdir(parents=True)
+            incomplete.write_text(
+                json.dumps(
+                    make_envelope(
+                        "N10-U7",
+                        authority="prod-authority",
+                        provider_id="anthropic-main",
+                        route_id="route-main",
+                        model="claude-exact",
+                        api_revision="anthropic-messages-v1",
+                        fresh_paired_eval=True,
+                        automatic_active_observed=False,
+                    )
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            proc = run_runner(
+                root, make_clean_worktree(), nodes="N10-U7", extra=["--skip-local"]
+            )
+            self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+            artifact = json.loads(
+                (root / "N10-U7-optical-active.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(artifact["status"], "blocked")
+            self.assertTrue(
+                any("automatic active" in reason for reason in artifact["reason_codes"]),
+                artifact["reason_codes"],
+            )
+
+    def test_u7_preserves_original_validation_reasons_without_rewriting(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_n0(root)
+            invalid = root / "optical-exact-active" / "real-provider.json"
+            invalid.parent.mkdir(parents=True)
+            invalid.write_text(
+                json.dumps(
+                    make_envelope(
+                        "N10-U7",
+                        authority="prod-authority",
+                        provider_id="anthropic-main",
+                        route_id="route-main",
+                        model="claude-exact",
+                        api_revision="anthropic-messages-v1",
+                        fresh_paired_eval=True,
+                        automatic_active_observed=True,
+                        exact_route_match=True,
+                        capability_attested=True,
+                        eval_gate_passed=True,
+                        resource_gate_passed=True,
+                        patch_validated=True,
+                        post_validator_passed=True,
+                        ledger_completed=True,
+                        unsupported_protocol_preserved=True,
+                        failure_preservation_passed=False,
+                        failure_reasons=["provider returned literal sentinel failure"],
+                    )
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            proc = run_runner(
+                root, make_clean_worktree(), nodes="N10-U7", extra=["--skip-local"]
+            )
+            self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+            artifact = json.loads(
+                (root / "N10-U7-optical-active.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(artifact["status"], "blocked")
+            self.assertIn(
+                "provider returned literal sentinel failure", artifact["reason_codes"]
+            )
+    def test_u7_accepts_only_complete_real_exact_active_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_n0(root)
+            evidence = root / "optical-exact-active" / "real-provider.json"
+            evidence.parent.mkdir(parents=True)
+            evidence.write_text(
+                json.dumps(make_envelope(
+                    "N10-U7",
+                    authority="prod-authority",
+                    provider_id="anthropic-main",
+                    route_id="route-main",
+                    model="claude-exact",
+                    api_revision="anthropic-messages-v1",
+                    renderer_profile_digest="renderer",
+                    font_digest="font",
+                    transform_contract_digest="transform",
+                    corpus_digest="corpus",
+                    tokenizer_revision="tokenizer",
+                    pricing_revision="pricing",
+                    cache_policy_revision="cache",
+                    eval_artifact_digest="eval",
+                    fresh_paired_eval=True,
+                    automatic_active_observed=True,
+                    exact_route_match=True,
+                    capability_attested=True,
+                    eval_gate_passed=True,
+                    resource_gate_passed=True,
+                    patch_validated=True,
+                    post_validator_passed=True,
+                    ledger_completed=True,
+                    unsupported_protocol_preserved=True,
+                    failure_preservation_passed=True,
+                    ordinary_image_entry_used=False,
+                    ui_switch_required=False,
+                    preserve_text_on_gate_failure=True,
+                    provider_response_preserved_verbatim=True,
+                    claimable_actual_usage=True,
+                    baseline_request_id="baseline-request",
+                    optimized_request_id="optimized-request",
+                )) + "\n",
+                encoding="utf-8",
+            )
+            proc = run_runner(
+                root, make_clean_worktree(), nodes="N10-U7", extra=["--skip-local"]
+            )
+            self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+            artifact = json.loads(
+                (root / "N10-U7-optical-active.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(artifact["status"], "pass", artifact["reason_codes"])
 
     def test_u5_blocks_when_tracked_baseline_missing(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -259,6 +411,61 @@ class NEvidenceProducerContractTest(unittest.TestCase):
             coverage = artifact["coverage"]
             self.assertEqual(coverage["total"], 117)
             self.assertEqual(coverage["verified"], 117)
+
+    def test_n1_rejects_incomplete_accounting_artifact(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_n0(root)
+            receipt = root / "receipt" / "post-n0.json"
+            receipt.parent.mkdir(parents=True)
+            artifact = make_envelope(
+                "N1",
+                started_at="2026-08-10T00:02:00Z",
+                finished_at="2026-08-10T00:03:00Z",
+                request_receipts=[{"request_id": "request-1"}],
+            )
+            receipt.write_text(json.dumps(artifact) + "\n", encoding="utf-8")
+            proc = run_runner(
+                root, make_clean_worktree(), nodes="N1", extra=["--skip-local"]
+            )
+            self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+            staged = json.loads((root / "N1-receipt.json").read_text(encoding="utf-8"))
+            self.assertEqual(staged["status"], "blocked")
+            self.assertTrue(
+                any("four accounting buckets" in reason for reason in staged["reason_codes"]),
+                staged["reason_codes"],
+            )
+
+    def test_u6_rejects_missing_provider_actual_usage(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_n0(root)
+            paired = root / "provider-paired" / "post-n0.json"
+            paired.parent.mkdir(parents=True)
+            artifact = make_envelope(
+                "N10-U6",
+                started_at="2026-08-10T00:02:00Z",
+                finished_at="2026-08-10T00:03:00Z",
+                provider_id="provider-a",
+                route_id="route-a",
+                model="model-a",
+                api_revision="api-v1",
+                baseline={"request_id": "baseline-request"},
+                optimized={"request_id": "optimized-request"},
+            )
+            paired.write_text(json.dumps(artifact) + "\n", encoding="utf-8")
+            proc = run_runner(
+                root, make_clean_worktree(), nodes="N10-U6", extra=["--skip-local"]
+            )
+            self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+            staged = json.loads(
+                (root / "N10-U6-provider-paired.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(staged["status"], "blocked")
+            self.assertTrue(
+                any("provider actual usage" in reason for reason in staged["reason_codes"]),
+                staged["reason_codes"],
+            )
 
     def test_u9_116_of_117_blocks(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

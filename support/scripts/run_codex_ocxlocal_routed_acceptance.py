@@ -66,6 +66,11 @@ import time
 import urllib.request
 from pathlib import Path
 from typing import Any, Callable
+from canonical_source_digest import (  # noqa: E402
+    SourceDigestError,
+    resolve_candidate_binding,
+)
+
 from urllib.parse import urlsplit
 
 MODE = "codex-ocxlocal-routed-acceptance"
@@ -266,40 +271,12 @@ def _sha256(text: str) -> str:
 
 
 def git_provenance() -> tuple[str, str, bool]:
-    """Read-only candidate provenance: (commit, source_digest, resolved).
-
-    commit is the full 40-64 hex git HEAD; source_digest is the unified N0
-    definition — SHA-256 of the canonical JSON of {tracked path: blob sha256}
-    over every tracked file at the candidate commit, computed by the shared
-    producer generate_n0_candidate_evidence.compute_source_manifest (git
-    ls-tree + git cat-file --batch, paths sorted by UTF-8). This is the exact
-    digest definition the release aggregator and the N0 freeze producer use;
-    the former commit-tree-object-sha256 anchor is retired. Returns
-    ("", "", False) when git is unavailable, HEAD is not a full object id,
-    the manifest cannot be produced, or the checkout is not a repository.
-    Never writes anything and never prints."""
+    """Read-only candidate provenance using the N0 canonical source digest."""
     try:
-        head = subprocess.run(
-            ["git", "rev-parse", "HEAD"],
-            cwd=str(REPO_ROOT),
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-        if head.returncode != 0:
-            return "", "", False
-        commit = head.stdout.strip()
-        if not re.fullmatch(r"[0-9a-fA-F]{40,64}", commit):
-            return "", "", False
-        sys.path.insert(0, str(Path(__file__).resolve().parent))
-        from generate_n0_candidate_evidence import compute_source_manifest
-
-        _, digest = compute_source_manifest(REPO_ROOT, "HEAD")
-        if not re.fullmatch(r"[0-9a-f]{64}", digest):
-            return "", "", False
-        return commit, digest, True
-    except Exception:
+        commit, digest = resolve_candidate_binding(REPO_ROOT, "HEAD")
+    except SourceDigestError:
         return "", "", False
+    return commit, digest, True
 
 
 def _redact_id(identifier: str) -> str:
@@ -983,10 +960,9 @@ def _fail_report(args: argparse.Namespace, failure_class: str, detail: str) -> i
 
 
 def finalize_report(args: argparse.Namespace, report: dict[str, Any]) -> int:
-    # Every real-mode artifact is bound to the candidate commit and the
-    # source digest (read-only git rev-parse HEAD / HEAD^{tree} tree anchor).
-    # A report that would otherwise pass must fail closed when provenance is
-    # unresolvable; blocked/failed artifacts just record empty values.
+    # Every real-mode artifact binds to the exact HEAD commit and the N0
+    # canonical tracked-file manifest digest. A report that would otherwise
+    # pass must fail closed when either value is unresolved.
     # Schema-only mode never reaches this function, so --dry-run/--check-schema
     # artifacts stay empty (never fabricated provenance).
     commit, source_digest, resolved = git_provenance()

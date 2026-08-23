@@ -2217,6 +2217,13 @@ fn optical_safe_mode(raw: &str) -> Result<&'static str, String> {
     }
 }
 
+fn existing_optical_active_authority(config: &Value) -> bool {
+    let Ok(parsed) = serde_json::from_value::<dtoken_config::DtokenConfig>(config.clone()) else {
+        return false;
+    };
+    parsed.optical.global_policy.allow_active && parsed.optical_config_issues().is_empty()
+}
+
 fn read_active_config_value() -> Result<Value, String> {
     let path = active_config_path();
     if !path.exists() {
@@ -2253,12 +2260,22 @@ fn known_route_ids(config: &Value) -> Vec<String> {
 fn clamp_optical_draft(
     draft: &OpticalConfigDraftRequest,
     known_routes: &[String],
+    existing_config: &Value,
 ) -> Result<Value, String> {
     let known: std::collections::HashSet<&str> = known_routes.iter().map(String::as_str).collect();
     if known.is_empty() {
         return Err("Active config has no routes; configure a route first".to_string());
     }
-    let global_mode = optical_safe_mode(&draft.global.default_mode)?;
+    let existing_optical = existing_config.get("optical");
+    let preserve_active = existing_optical_active_authority(existing_config);
+    let global_mode = if preserve_active {
+        existing_optical
+            .and_then(|optical| optical.pointer("/global_policy/default_mode"))
+            .and_then(Value::as_str)
+            .unwrap_or("tool_results_only")
+    } else {
+        optical_safe_mode(&draft.global.default_mode)?
+    };
     let mut route_policies = Vec::new();
     let mut seen = std::collections::HashSet::new();
     for route in &draft.routes {
@@ -2272,7 +2289,21 @@ fn clamp_optical_draft(
         if !seen.insert(route_id.to_string()) {
             return Err(format!("duplicate route policy: {route_id}"));
         }
-        let mode = optical_safe_mode(&route.mode)?;
+        let mode = if preserve_active {
+            existing_optical
+                .and_then(|optical| optical.get("route_policies"))
+                .and_then(Value::as_array)
+                .and_then(|entries| {
+                    entries.iter().find(|entry| {
+                        entry.get("route_id").and_then(Value::as_str) == Some(route_id)
+                    })
+                })
+                .and_then(|entry| entry.pointer("/policy/mode"))
+                .and_then(Value::as_str)
+                .unwrap_or("tool_results_only")
+        } else {
+            optical_safe_mode(&route.mode)?
+        };
         route_policies.push(json!({
             "route_id": route_id,
             "policy": {
@@ -2312,8 +2343,8 @@ fn clamp_optical_draft(
         "global_policy": {
             "enabled": draft.global.enabled,
             "default_mode": global_mode,
-            "allow_active": false,
-            "public_summary_only": true,
+            "allow_active": preserve_active,
+            "public_summary_only": !preserve_active,
         },
         "route_policies": route_policies,
     }))
@@ -2359,9 +2390,6 @@ fn merge_optical_into_active_config(
             }
         }
     }
-    // Hard close active regardless of prior disk state for this product path.
-    global_object.insert("allow_active".to_string(), json!(false));
-    global_object.insert("public_summary_only".to_string(), json!(true));
     object.insert("global_policy".to_string(), global);
     object.insert(
         "route_policies".to_string(),
@@ -2390,7 +2418,7 @@ fn prepare_optical_config_change(
 ) -> Result<(dtoken_config_patcher::PreparedChange, Value), String> {
     let current = read_active_config_value()?;
     let known = known_route_ids(&current);
-    let optical_patch = clamp_optical_draft(draft, &known)?;
+    let optical_patch = clamp_optical_draft(draft, &known, &current)?;
     let merged = merge_optical_into_active_config(current, optical_patch.clone())?;
     let serialized = serde_json::to_string_pretty(&merged)
         .map_err(|err| format!("Active config serialize failed: {err}"))?;
@@ -2529,7 +2557,11 @@ fn optical_editor_value() -> Value {
         .get("default_mode")
         .and_then(Value::as_str)
         .unwrap_or("shadow_preview");
-    let default_mode = optical_safe_mode(default_mode).unwrap_or("shadow_preview");
+    let default_mode = if existing_optical_active_authority(&config) {
+        default_mode
+    } else {
+        optical_safe_mode(default_mode).unwrap_or("shadow_preview")
+    };
 
     let policy_by_route: HashMap<String, Value> = optical
         .get("route_policies")
@@ -2555,7 +2587,11 @@ fn optical_editor_value() -> Value {
                 .get("mode")
                 .and_then(Value::as_str)
                 .unwrap_or("off");
-            let mode = optical_safe_mode(mode).unwrap_or("shadow_preview");
+            let mode = if existing_optical_active_authority(&config) {
+                mode
+            } else {
+                optical_safe_mode(mode).unwrap_or("shadow_preview")
+            };
             Some(json!({
                 "route_id": route_id,
                 "enabled": policy.get("enabled").and_then(Value::as_bool).unwrap_or(false),
@@ -2594,7 +2630,7 @@ fn optical_editor_value() -> Value {
             "routes": draft_routes,
         },
         "issues": issues,
-        "allow_active_forced_off": true,
+        "allow_active_forced_off": false,
         "privacy": "Only optical policy fields and route ids/names are exposed; credentials and request bodies are not read into this editor payload."
     })
 }
@@ -2636,7 +2672,7 @@ fn preview_optical_config_change(request: PreviewOpticalConfigRequest) -> Value 
             "risk_level": prepared.plan.risk_level,
             "requires_explicit_confirmation": true,
             "restart_required": true,
-            "allow_active": false,
+            "allow_active": optical_patch.pointer("/global_policy/allow_active").cloned().unwrap_or(json!(false)),
             "optical_summary": optical_patch,
             "privacy": "Read-only review. No config, backup, runtime, external agent, or credential state was changed."
         }),
@@ -2735,7 +2771,11 @@ fn apply_optical_config_change(request: ApplyOpticalConfigRequest) -> Value {
         "ok": runtime_verified,
         "source": "dtoken-desktop-control-plane",
         "summary": if runtime_verified {
-            "Optical shadow config applied, reloaded, and verified with a durable rollback point"
+            if optical_patch.pointer("/global_policy/allow_active").and_then(Value::as_bool) == Some(true) {
+                "Optical authority policy applied, reloaded, and verified with a durable rollback point"
+            } else {
+                "Optical shadow config applied, reloaded, and verified with a durable rollback point"
+            }
         } else {
             "Optical config was written, but the managed service could not be reloaded; retry restart or restore the rollback point"
         },
@@ -2747,7 +2787,7 @@ fn apply_optical_config_change(request: ApplyOpticalConfigRequest) -> Value {
         "runtime_verified": runtime_verified,
         "restarted": restart_requested && restart.ok,
         "restart_summary": restart.summary,
-        "allow_active": false,
+        "allow_active": optical_patch.pointer("/global_policy/allow_active").cloned().unwrap_or(json!(false)),
         "optical_summary": optical_patch,
         "privacy": "Only d-token active-config optical fields were changed. No external Agent configs or credentials were written."
     })
@@ -2843,7 +2883,11 @@ fn rollback_optical_config_change(request: RollbackOpticalConfigRequest) -> Valu
         "runtime_verified": runtime_verified,
         "restarted": restart.ok,
         "restart_summary": restart.summary,
-        "allow_active": false,
+        "allow_active": restored_optical
+            .as_ref()
+            .and_then(|optical| optical.pointer("/global_policy/allow_active"))
+            .cloned()
+            .unwrap_or(json!(false)),
     })
 }
 
@@ -16621,18 +16665,80 @@ mod tests {
     }
 
     #[test]
-    fn optical_product_path_rejects_active_modes_and_unknown_routes() {
+    fn optical_product_path_preserves_authority_owned_active_and_rejects_unknown_routes() {
         let known = vec!["route-a".to_string()];
-        let blocked = OpticalConfigDraftRequest {
+        let active = OpticalConfigDraftRequest {
             global: OpticalGlobalDraftRequest {
                 enabled: true,
-                default_mode: "tool_results_only".to_string(),
+                default_mode: "shadow_preview".to_string(),
             },
-            routes: vec![],
+            routes: vec![OpticalRouteDraftRequest {
+                route_id: "route-anthropic-main".to_string(),
+                enabled: true,
+                mode: "shadow_preview".to_string(),
+                allow_tool_result: true,
+                allow_history: false,
+                confirmed_experimental_lossy: true,
+            }],
         };
-        assert!(clamp_optical_draft(&blocked, &known)
-            .unwrap_err()
-            .contains("active-leaning"));
+        let snapshot: Value = serde_json::from_str(include_str!(
+            "../../../../support/fixtures/optical/anthropic-snapshot-claude-sonnet-4-5-signed.json"
+        ))
+        .expect("tracked snapshot");
+        let authority: Value = serde_json::from_str(include_str!(
+            "../../../../support/fixtures/optical/demo-verification-key.json"
+        ))
+        .expect("tracked authority");
+        let eval: Value = serde_json::from_str(include_str!(
+            "../../../../support/fixtures/optical/anthropic-eval-claude-sonnet-4-5.json"
+        ))
+        .expect("tracked eval");
+        let existing_config = json!({
+            "providers": [{
+                "id":"anthropic-main", "name":"Anthropic", "kind":"custom",
+                "protocol":"anthropic", "base_url":"https://api.anthropic.com",
+                "api_key_ref":"keychain://provider", "models":["claude-sonnet-4-5"],
+                "timeout_ms":30000, "healthcheck_path":null
+            }],
+            "routes": [{
+                "id":"route-anthropic-main", "name":"Route", "input_protocol":"anthropic",
+                "instance_id":"instance-a", "target_provider_id":"anthropic-main",
+                "fallback_provider_id":null, "chain_mode":"direct",
+                "compression_policy":"balanced", "bind_host":"127.0.0.1", "local_port":18001
+            }],
+            "instances": [],
+            "optical": {
+                "schema_version": 1,
+                "global_policy": {
+                    "enabled": true,
+                    "default_mode": "tool_results_only",
+                    "allow_active": true,
+                    "public_summary_only": false
+                },
+                "route_policies": [{
+                    "route_id": "route-anthropic-main",
+                    "policy": {
+                        "enabled": true,
+                        "mode": "tool_results_only",
+                        "allow_tool_result": true,
+                        "allow_history": false,
+                        "confirmed_experimental_lossy": true
+                    }
+                }],
+                "capability_snapshots": [snapshot],
+                "trusted_authorities": [authority],
+                "eval_artifacts": [eval]
+            }
+        });
+        let known = vec!["route-anthropic-main".to_string()];
+        let patch = clamp_optical_draft(&active, &known, &existing_config)
+            .expect("existing exact authority may retain active policy");
+        assert_eq!(patch["global_policy"]["allow_active"], true);
+        assert_eq!(patch["global_policy"]["public_summary_only"], false);
+        assert_eq!(
+            patch["route_policies"][0]["policy"]["mode"],
+            "tool_results_only"
+        );
 
         let unknown = OpticalConfigDraftRequest {
             global: OpticalGlobalDraftRequest {
@@ -16648,31 +16754,53 @@ mod tests {
                 confirmed_experimental_lossy: false,
             }],
         };
-        assert!(clamp_optical_draft(&unknown, &known)
+        assert!(clamp_optical_draft(&unknown, &known, &json!({"optical": {}}))
             .unwrap_err()
             .contains("unknown route_id"));
+    }
 
-        let ok = OpticalConfigDraftRequest {
-            global: OpticalGlobalDraftRequest {
-                enabled: true,
-                default_mode: "shadow_preview".to_string(),
-            },
-            routes: vec![OpticalRouteDraftRequest {
-                route_id: "route-a".to_string(),
-                enabled: true,
-                mode: "shadow_preview".to_string(),
-                allow_tool_result: true,
-                allow_history: false,
-                confirmed_experimental_lossy: true,
-            }],
-        };
-        let patch = clamp_optical_draft(&ok, &known).expect("safe draft");
-        assert_eq!(patch["global_policy"]["allow_active"], false);
-        assert_eq!(patch["global_policy"]["public_summary_only"], true);
-        assert_eq!(patch["global_policy"]["enabled"], true);
+    #[test]
+    fn desktop_merge_never_downgrades_existing_active_authority_chain() {
+        let config = json!({
+            "providers": [],
+            "routes": [{"id":"route-a"}],
+            "instances": [],
+            "optical": {
+                "global_policy": {
+                    "enabled": true,
+                    "default_mode": "tool_results_only",
+                    "allow_active": true,
+                    "public_summary_only": false
+                },
+                "route_policies": [],
+                "capability_snapshots": [{"snapshot_id":"authority-owned"}],
+                "trusted_authorities": [{"authority_id":"authority-owned"}],
+                "eval_artifacts": [{"artifact_id":"provider-eval"}]
+            }
+        });
+        let merged = merge_optical_into_active_config(
+            config,
+            json!({
+                "schema_version": 1,
+                "global_policy": {
+                    "enabled": true,
+                    "default_mode": "tool_results_only",
+                    "allow_active": true,
+                    "public_summary_only": false
+                },
+                "route_policies": []
+            }),
+        )
+        .expect("merge");
+
+        assert_eq!(merged["optical"]["global_policy"]["allow_active"], true);
         assert_eq!(
-            patch["route_policies"][0]["policy"]["mode"],
-            "shadow_preview"
+            merged["optical"]["global_policy"]["public_summary_only"],
+            false
+        );
+        assert_eq!(
+            merged["optical"]["capability_snapshots"][0]["snapshot_id"],
+            "authority-owned"
         );
     }
 

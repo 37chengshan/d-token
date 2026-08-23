@@ -103,12 +103,15 @@ function Get-ReleaseCandidateProvenance {
   $GitHeadResult = Invoke-ReleaseMetadataCommand -WorkingDirectory $RootPath -FilePath "git" -ArgumentList @("rev-parse", "HEAD")
   $GitStatusResult = Invoke-ReleaseMetadataCommand -WorkingDirectory $RootPath -FilePath "git" -ArgumentList @("-c", "core.quotepath=false", "status", "--porcelain=v1", "--untracked-files=all")
   $TrackedDiffResult = Invoke-ReleaseMetadataCommand -WorkingDirectory $RootPath -FilePath "git" -ArgumentList @("diff", "--binary", "HEAD", "--", ".")
-  # System-wide source digest anchor (PR-7 contract): content-bearing and
-  # worktree-invariant — sha256 of the ASCII hex bytes of the commit's tree
-  # object id.  The legacy tracked_diff_sha256 (git-diff anchor) is retained
-  # as-is for backward compatibility; the tree-anchor value is stamped
-  # separately in `source_digest` and is empty when unresolvable.
-  $TreeIdResult = Invoke-ReleaseMetadataCommand -WorkingDirectory $RootPath -FilePath "git" -ArgumentList @("rev-parse", "HEAD^{tree}")
+  # N0 canonical source digest: SHA-256 of canonical JSON for
+  # {tracked path: blob SHA-256} at HEAD. The tracked Python helper is shared
+  # by N0 and every upstream producer; failures remain unresolved/fail-closed.
+  $SourceDigestResult = Invoke-ReleaseMetadataCommand -WorkingDirectory $RootPath -FilePath "python3" -ArgumentList @(
+    (Join-Path $PSScriptRoot "canonical_source_digest.py"),
+    "--repo-root", $RootPath,
+    "--revision", "HEAD",
+    "--digest-only"
+  ) -AllowFailure
   $UntrackedResult = Invoke-ReleaseMetadataCommand -WorkingDirectory $RootPath -FilePath "git" -ArgumentList @("-c", "core.quotepath=false", "ls-files", "--others", "--exclude-standard")
 
   $AdditionalExcludedPrefixes = @()
@@ -134,8 +137,8 @@ function Get-ReleaseCandidateProvenance {
   }
 
   $TrackedDiffSha256 = Get-ReleaseSha256Text $TrackedDiffResult.text
-  $SourceDigest = if ($TreeIdResult.ok -and $TreeIdResult.text -match "^[0-9a-fA-F]{40}$") {
-    Get-ReleaseSha256Text $TreeIdResult.text
+  $SourceDigest = if ($SourceDigestResult.ok -and $SourceDigestResult.text -match "^[0-9a-f]{64}$") {
+    $SourceDigestResult.text
   } else {
     ""
   }

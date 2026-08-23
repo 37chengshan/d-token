@@ -91,6 +91,37 @@ class N0CandidateEvidenceProducerTest(unittest.TestCase):
         canonical = self.producer.gate_status.canonical_json_bytes(manifest)
         self.assertEqual(source_digest, hashlib.sha256(canonical).hexdigest())
 
+    def test_n0_and_upstream_producers_share_one_digest_helper(self) -> None:
+        helper = REPO_ROOT / "support" / "scripts" / "canonical_source_digest.py"
+        self.assertTrue(helper.is_file())
+        helper_text = helper.read_text(encoding="utf-8")
+        self.assertIn("def compute_source_manifest", helper_text)
+        self.assertNotIn("^{tree}", helper_text)
+
+        python_consumers = (
+            "generate_n0_candidate_evidence.py",
+            "run_codex_ocxlocal_routed_acceptance.py",
+            "run_agent_config_acceptance.py",
+            "run_cc_switch_aba_check.py",
+            "run_tauri_ui_acceptance.py",
+        )
+        for name in python_consumers:
+            with self.subTest(producer=name):
+                text = (REPO_ROOT / "support" / "scripts" / name).read_text(encoding="utf-8")
+                self.assertIn("canonical_source_digest", text)
+                self.assertNotIn("HEAD^{tree}", text)
+
+        powershell_consumers = (
+            "release_candidate_provenance.ps1",
+            "run_fan_in_artifact_contract.ps1",
+        )
+        for name in powershell_consumers:
+            with self.subTest(producer=name):
+                text = (REPO_ROOT / "support" / "scripts" / name).read_text(encoding="utf-8")
+                self.assertIn("canonical_source_digest.py", text)
+                self.assertNotIn("HEAD^{tree}", text)
+                self.assertNotIn("commit-tree-object-sha256", text)
+
     def test_registry_digest_binds_fixture(self) -> None:
         digest = self.producer.registry_digest(REPO_ROOT, self.commit)
         self.assertRegex(digest, r"^[0-9a-f]{64}$")

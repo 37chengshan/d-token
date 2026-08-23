@@ -56,6 +56,10 @@ if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
 
 import generate_release_gate_status as gate_status  # noqa: E402
+from canonical_source_digest import (  # noqa: E402
+    compute_source_manifest,
+    tracked_files_at,
+)
 
 REPO_ROOT = SCRIPTS_DIR.parents[1]
 REGISTRY = REPO_ROOT / "support" / "fixtures" / "unified-capability-registry-v1.json"
@@ -84,71 +88,10 @@ def run_git(root: Path, *arguments: str) -> subprocess.CompletedProcess[bytes]:
     )
 
 
-def tracked_files_at(root: Path, commit: str) -> list[str]:
-    """Tracked file paths at ``commit`` (gitignored/untracked never appear)."""
-    proc = run_git(root, "ls-tree", "-r", "-z", "--name-only", commit)
-    if proc.returncode != 0:
-        raise RuntimeError(f"git ls-tree failed for {commit}: {proc.stderr.decode()!r}")
-    return sorted(proc.stdout.decode("utf-8").split("\0"))
-
-
 def blob_sha256_at(root: Path, commit: str, paths: list[str]) -> dict[str, str]:
-    """SHA-256 of each tracked file's bytes at ``commit`` (deterministic)."""
-    ls = run_git(root, "ls-tree", "-r", "-z", commit)
-    if ls.returncode != 0:
-        raise RuntimeError(f"git ls-tree failed for {commit}")
-    entries: list[tuple[str, str]] = []
-    for raw in ls.stdout.decode("utf-8").split("\0"):
-        if not raw:
-            continue
-        # <mode> <type> <sha>\t<path>
-        meta, _, path = raw.partition("\t")
-        parts = meta.split(" ")
-        if len(parts) == 3 and parts[1] == "blob":
-            entries.append((path, parts[2]))
-    if not entries:
-        return {}
-    # One --batch process for all blobs.
-    payload = b"".join(f"{oid}\n".encode("ascii") for _, oid in entries)
-    cat = subprocess.run(
-        ["git", "cat-file", "--batch"],
-        cwd=root,
-        check=False,
-        input=payload,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-    )
-    if cat.returncode != 0:
-        raise RuntimeError(f"git cat-file --batch failed: {cat.stderr.decode()!r}")
-    # Stream-parse: each object is "<oid> <type> <size>\n" followed by exactly
-    # <size> content bytes and one trailing newline.  Content may itself
-    # contain newlines, so line-splitting is never used.
-    results: dict[str, str] = {}
-    out = cat.stdout
-    pos = 0
-    for path, _oid in entries:
-        nl = out.index(b"\n", pos)
-        header = out[pos:nl]
-        pos = nl + 1
-        parts = header.split(b" ")
-        if len(parts) != 3:
-            raise RuntimeError(f"unexpected cat-file header for {path!r}: {header!r}")
-        size = int(parts[2])
-        blob = out[pos:pos + size]
-        pos += size
-        if pos < len(out) and out[pos:pos + 1] == b"\n":
-            pos += 1
-        results[path] = sha256_bytes(blob)
-    return results
-
-
-def compute_source_manifest(root: Path, commit: str) -> tuple[dict[str, str], str]:
-    """Tracked-file canonical manifest + source_digest (VERIFICATION.md §1)."""
-    paths = tracked_files_at(root, commit)
-    hashes = blob_sha256_at(root, commit, paths)
-    manifest = {path: hashes[path] for path in paths if path in hashes}
-    canonical = gate_status.canonical_json_bytes(manifest)
-    return manifest, sha256_bytes(canonical)
+    """Compatibility wrapper over the canonical tracked-file manifest helper."""
+    manifest, _ = compute_source_manifest(root, commit)
+    return {path: manifest[path] for path in paths if path in manifest}
 
 
 def json_blob_at(root: Path, commit: str, path: str) -> dict[str, Any]:

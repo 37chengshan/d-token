@@ -28,10 +28,8 @@ Boundaries (do not weaken):
   collect and the verify run (when ``--db`` is provided), and (6) the
   candidate commit is resolvable.
 * When ``--expected-commit`` / ``--expected-source-digest`` are provided the
-  artifact fails closed on mismatch. The source digest anchor is
-  content-bearing and worktree-invariant: sha256 of the ASCII hex bytes of
-  ``git rev-parse HEAD^{tree}`` (the candidate commit's content-addressed
-  tree object id), reproducible at any clean checkout of the same commit.
+  artifact fails closed on mismatch. The source digest is the N0 canonical
+  tracked-file manifest digest, reproducible at any checkout of the commit.
 * Route identity mirrors the d-token-config-patcher pinned formats
   (cc_switch.rs / cc_switch_fixture.rs):
     upstream_signature = sha256("cc-switch-upstream-v1\\n{provider_id}\\n"
@@ -79,6 +77,11 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
+from canonical_source_digest import (  # noqa: E402
+    SourceDigestError,
+    resolve_candidate_binding,
+)
+
 
 SCHEMA_VERSION = "1.1"
 
@@ -501,46 +504,23 @@ def _parse_active_upstream(connection: sqlite3.Connection, provider_id: str, app
 
 # --- Candidate binding ------------------------------------------------------
 
-def git_head(repo_root: Path) -> tuple[str, bool]:
-    """Read-only git rev-parse HEAD; (commit, resolved)."""
+def candidate_binding(repo_root: Path) -> tuple[str, str, bool]:
+    """Resolve HEAD and the N0 canonical tracked-file manifest digest once."""
     try:
-        result = subprocess.run(
-            ["git", "rev-parse", "HEAD"],
-            cwd=str(repo_root),
-            capture_output=True,
-            text=True,
-            timeout=15,
-            check=False,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return "", False
-    commit = result.stdout.strip()
-    if result.returncode != 0 or not COMMIT_RE.fullmatch(commit):
-        return "", False
-    return commit.lower(), True
+        commit, digest = resolve_candidate_binding(repo_root, "HEAD")
+    except SourceDigestError:
+        return "", "", False
+    return commit, digest, True
+
+
+def git_head(repo_root: Path) -> tuple[str, bool]:
+    commit, _, resolved = candidate_binding(repo_root)
+    return commit, resolved
 
 
 def source_tree_digest(repo_root: Path) -> tuple[str, bool]:
-    """Unified N0 source digest anchor: SHA-256 of the canonical JSON of
-    {tracked path: blob sha256} over every tracked file at the candidate
-    commit, computed by the shared producer
-    generate_n0_candidate_evidence.compute_source_manifest (git ls-tree +
-    git cat-file --batch, paths sorted by UTF-8). This is the exact digest
-    definition the release aggregator (generate_release_gate_status) and the
-    N0 freeze producer use; the former commit-tree-object-sha256 anchor is
-    retired because it can never match the aggregator's frozen source digest.
-    """
-    try:
-        if str(SCRIPTS_DIR) not in sys.path:
-            sys.path.insert(0, str(SCRIPTS_DIR))
-        from generate_n0_candidate_evidence import compute_source_manifest
-
-        _, digest = compute_source_manifest(repo_root, "HEAD")
-    except Exception:
-        return "", False
-    if not re.fullmatch(r"[0-9a-f]{64}", digest):
-        return "", False
-    return digest, True
+    _, digest, resolved = candidate_binding(repo_root)
+    return digest, resolved
 
 
 # --- Actions ledger ---------------------------------------------------------
@@ -782,15 +762,16 @@ def cmd_verify(args: argparse.Namespace) -> int:
              "post identity does not match pre identity (route identity was not restored)")
 
     # Candidate binding (read-only git).
-    commit, commit_resolved = git_head(args.repo_root)
-    digest, digest_resolved = source_tree_digest(args.repo_root)
+    commit, digest, binding_resolved = candidate_binding(args.repo_root)
+    commit_resolved = binding_resolved
+    digest_resolved = binding_resolved
     if not commit_resolved:
         fail("candidate_unbound", "candidate commit unresolvable (read-only git rev-parse HEAD failed)")
     if args.expected_commit is not None and commit.lower() != args.expected_commit.lower():
         fail("commit_mismatch", f"expected commit {args.expected_commit} != resolved {commit}")
     if args.expected_source_digest is not None:
         if not digest_resolved:
-            fail("digest_mismatch", "source digest unresolvable (read-only git rev-parse HEAD^{tree} failed)")
+            fail("digest_mismatch", "N0 canonical source digest unresolvable")
         elif digest != args.expected_source_digest.lower():
             fail("digest_mismatch", f"expected source digest {args.expected_source_digest} != resolved {digest}")
 

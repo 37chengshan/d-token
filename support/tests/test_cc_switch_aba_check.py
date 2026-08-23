@@ -213,15 +213,9 @@ def repo_commit() -> str:
 
 
 def repo_digest() -> str:
-    """Unified N0 source digest: SHA-256 of the canonical JSON of
-    {tracked path: blob sha256} over every tracked file at HEAD (shared
-    producer generate_n0_candidate_evidence.compute_source_manifest).
-
-    Must mirror the harness's source_tree_digest exactly so bound-mode tests
-    reproduce the producer value (invariant to worktree dirtiness).
-    """
+    """N0 canonical tracked-file manifest source digest at HEAD."""
     sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
-    from generate_n0_candidate_evidence import compute_source_manifest
+    from canonical_source_digest import compute_source_manifest
 
     _, digest = compute_source_manifest(REPO_ROOT, "HEAD")
     return digest

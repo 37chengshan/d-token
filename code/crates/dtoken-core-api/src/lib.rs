@@ -1258,19 +1258,19 @@ fn backend_capability_registry(
         if optical_active_configured {
             AvailabilityState::Ready
         } else {
-            AvailabilityState::ImplementedDisabled
+            AvailabilityState::Degraded
         },
         OPTICAL_SHADOW_EVIDENCE_REVISION,
         &[
             if optical_active_configured {
                 "exact_attested_route_configured"
             } else {
-                "policy_shadow_only"
+                "exact_attested_route_not_configured"
             },
             if optical_active_configured {
                 "release_gate_enabled"
             } else {
-                "release_gate_disabled"
+                "runtime_gate_closed"
             },
         ],
     ));
@@ -1578,9 +1578,24 @@ fn backend_capability_registry(
     ));
     capabilities.push(verified(
         "optical_active_transform",
-        AvailabilityState::ImplementedDisabled,
+        if optical_active_configured {
+            AvailabilityState::Ready
+        } else {
+            AvailabilityState::Degraded
+        },
         HEADROOM_AGGREGATE_EVIDENCE_REVISION,
-        &["policy_shadow_only", "release_gate_disabled"],
+        &[
+            if optical_active_configured {
+                "exact_attested_route_configured"
+            } else {
+                "exact_attested_route_not_configured"
+            },
+            if optical_active_configured {
+                "release_gate_enabled"
+            } else {
+                "runtime_gate_closed"
+            },
+        ],
     ));
 
     CapabilityRegistrySnapshot::new(
@@ -10378,12 +10393,16 @@ fn mint_transport_send_commit(
             return Err(PipelineError::SourceDigestMismatch);
         }
     }
+    let validation_digest = validation.map(|receipt| receipt.validated_digest().to_string());
     let receipt = ready.mint_send_commit(committed_at_ms);
     if let Some(metadata) = event.metadata.as_object_mut() {
         metadata.insert(
             "send_commit_digest".to_string(),
             json!(receipt.sent_digest()),
         );
+        if let Some(validation_digest) = validation_digest {
+            metadata.insert("validation_digest".to_string(), json!(validation_digest));
+        }
         metadata.insert("send_commit_state".to_string(), json!(receipt.state()));
         metadata.insert("send_commit_variant".to_string(), json!(receipt.variant()));
         metadata.insert(
@@ -17176,10 +17195,10 @@ mod tests {
             .find("optical-active")
             .expect("active capability");
         assert_eq!(shadow.state, AvailabilityState::Ready);
-        assert_eq!(active.state, AvailabilityState::ImplementedDisabled);
+        assert_eq!(active.state, AvailabilityState::Degraded);
         assert_eq!(
             active.reason_codes,
-            vec!["policy_shadow_only", "release_gate_disabled"]
+            vec!["exact_attested_route_not_configured", "runtime_gate_closed"]
         );
 
         let Json(status) = optical_status(State(state.clone())).await;
@@ -21587,10 +21606,7 @@ mod tests {
             ("doctor_dashboard_logs_export", AvailabilityState::Degraded),
             ("project_policy", AvailabilityState::Degraded),
             ("backup_rollback", AvailabilityState::Degraded),
-            (
-                "optical_active_transform",
-                AvailabilityState::ImplementedDisabled,
-            ),
+            ("optical_active_transform", AvailabilityState::Degraded),
         ];
 
         for (id, state) in expected {
@@ -21607,7 +21623,27 @@ mod tests {
             .find("optical_active_transform")
             .expect("Optical aggregate")
             .reason_codes
-            .contains(&"policy_shadow_only".to_string()));
+            .contains(&"exact_attested_route_not_configured".to_string()));
+    }
+
+    #[test]
+    fn release_aggregate_reports_ready_for_exact_attested_optical_route() {
+        let registry = backend_capability_registry(
+            None,
+            ContextStoreCapabilityState::Ready { schema_version: 6 },
+            true,
+            None,
+            true,
+        );
+        let active = registry
+            .find("optical_active_transform")
+            .expect("Optical aggregate");
+
+        assert_eq!(active.state, AvailabilityState::Ready);
+        assert_eq!(
+            active.reason_codes,
+            vec!["exact_attested_route_configured", "release_gate_enabled"]
+        );
     }
 
     #[test]
@@ -23954,6 +23990,29 @@ mod tests {
         assert!(
             event.metadata.get("send_commit_state").is_none(),
             "no terminal receipt evidence may be recorded on refusal"
+        );
+
+        let payload = prepare_json_pipeline_payload(
+            scope,
+            &decision,
+            &baseline,
+            &candidate,
+            &transforms,
+            &prepared,
+        )
+        .expect("validated payload");
+        let validation = payload.validation.expect("validation receipt present");
+        mint_transport_send_commit(
+            payload.ready,
+            Some(&validation),
+            1,
+            &mut request_log,
+            &mut event,
+        )
+        .expect("matching validated payload commits");
+        assert_eq!(
+            event.metadata["validation_digest"],
+            event.metadata["send_commit_digest"],
         );
     }
 

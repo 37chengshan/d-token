@@ -19,6 +19,7 @@ pub enum OpticalConfigIssue {
     ActiveWithoutTrustedAuthority,
     ActiveWithoutPassingEval,
     ActiveWithoutAttestedCapability,
+    ActiveWithoutExactVerifiedRoute,
     ActiveDisabledByReleasePolicy,
 }
 
@@ -179,8 +180,49 @@ impl DtokenConfig {
             {
                 issues.push(OpticalConfigIssue::ActiveWithoutAttestedCapability);
             }
+            if !self.has_exact_optical_active_route() {
+                issues.push(OpticalConfigIssue::ActiveWithoutExactVerifiedRoute);
+            }
         }
         issues
+    }
+
+    fn has_exact_optical_active_route(&self) -> bool {
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_millis() as u64)
+            .unwrap_or_default();
+        let registry = dtoken_compress::optical::OpticalCapabilityRegistry::from_runtime_config(
+            &self.optical,
+            now_ms,
+        );
+        self.routes.iter().any(|route| {
+            route.input_protocol == dtoken_types::Protocol::Anthropic
+                && route.fallback_provider_id.is_none()
+                && self
+                    .find_provider(&route.target_provider_id)
+                    .is_some_and(|provider| {
+                        provider.protocol == dtoken_types::Protocol::Anthropic
+                            && provider.models.iter().any(|model| {
+                                dtoken_compress::optical::resolve_model_capability_record_for_route_with_registry(
+                                    Some(&dtoken_types::Protocol::Anthropic),
+                                    Some(&provider.id),
+                                    Some(&route.id),
+                                    Some(model),
+                                    dtoken_types::OpticalEndpoint::AnthropicMessages,
+                                    &registry,
+                                )
+                                .revision
+                                .is_some()
+                            })
+                    })
+                && self.find_optical_route_policy(&route.id).is_some_and(|policy| {
+                    policy.enabled
+                        && policy.mode == dtoken_types::OpticalMode::ToolResultsOnly
+                        && policy.allow_tool_result
+                        && policy.confirmed_experimental_lossy
+                })
+        })
     }
 
     pub fn normalize_optical_fail_closed(&mut self) -> Vec<OpticalConfigIssue> {
@@ -198,6 +240,7 @@ impl DtokenConfig {
                     | OpticalConfigIssue::ActiveWithoutTrustedAuthority
                     | OpticalConfigIssue::ActiveWithoutPassingEval
                     | OpticalConfigIssue::ActiveWithoutAttestedCapability
+                    | OpticalConfigIssue::ActiveWithoutExactVerifiedRoute
             )
         }) {
             self.optical.global_policy.allow_active = false;
@@ -223,6 +266,7 @@ impl DtokenConfig {
         }
         issues
     }
+
 }
 
 #[cfg(test)]
@@ -313,106 +357,89 @@ mod tests {
         assert!(issues.contains(&OpticalConfigIssue::ActiveWithoutTrustedAuthority));
         assert!(issues.contains(&OpticalConfigIssue::ActiveWithoutPassingEval));
         assert!(issues.contains(&OpticalConfigIssue::ActiveWithoutAttestedCapability));
+        assert!(issues.contains(&OpticalConfigIssue::ActiveWithoutExactVerifiedRoute));
         assert!(issues.contains(&OpticalConfigIssue::ActiveDisabledByReleasePolicy));
     }
 
+
     #[test]
-    fn fully_green_config_keeps_requested_optical_active() {
-        // A config with a trusted authority, a passing eval artifact and an
-        // attested capability snapshot is the only config that may keep
-        // allow_active: the exact route is then automatic active with no UI
-        // switch (OPTICAL-1 / PR-C5D).
-        let mut config = DtokenConfig::default();
-        config.optical.global_policy.allow_active = true;
-        config
-            .optical
-            .trusted_authorities
-            .push(dtoken_types::OpticalTrustedAuthority {
-                authority_id: "fixture-authority".to_string(),
-                key_id: "fixture-key-v1".to_string(),
-                public_key_base64: "QUJD".to_string(),
-            });
-        config
-            .optical
-            .eval_artifacts
-            .push(dtoken_types::OpticalEvalArtifact {
-                schema_version: 2,
-                artifact_id: "eval-green".to_string(),
-                model_base: "claude-fable-5".to_string(),
-                endpoint: dtoken_types::OpticalEndpoint::AnthropicMessages,
-                renderer_profile_digest: "renderer".to_string(),
-                font_digest: "font".to_string(),
-                transform_contract_digest: "contract".to_string(),
-                corpus_digest: "corpus".to_string(),
-                evaluated_at_ms: 1,
-                sample_count: 20,
-                exact_failures: 0,
-                unsafe_failures: 0,
-                baseline_passes: 19,
-                candidate_passes: 20,
-                quality_delta: 0.05,
-                signed_input_token_delta: 1,
-                signed_cost_delta_microusd: 1,
-                latency_p95_delta_ms: 0,
-                passed: false,
-            });
-        config
-            .optical
-            .capability_snapshots
-            .push(dtoken_types::OpticalCapabilitySnapshot {
-                schema_version: 1,
-                snapshot_id: "snapshot-green".to_string(),
-                revision: 1,
-                enabled: true,
-                lifecycle: dtoken_types::OpticalCapabilityLifecycle::Active,
-                revoked_at_ms: None,
-                revocation_reason: None,
-                supersedes_snapshot_id: None,
-                provider_family: dtoken_types::ProviderFamily::Anthropic,
-                provider_id: Some("anthropic-main".to_string()),
-                route_id: Some("route-main".to_string()),
-                model_base: "claude-fable-5".to_string(),
-                endpoint: dtoken_types::OpticalEndpoint::AnthropicMessages,
-                capability: dtoken_types::OpticalModelCapability {
-                    provider_family: dtoken_types::ProviderFamily::Anthropic,
-                    provider_id: Some("anthropic-main".to_string()),
-                    model_base: Some("claude-fable-5".to_string()),
-                    endpoint: dtoken_types::OpticalEndpoint::AnthropicMessages,
-                    status: dtoken_types::CapabilityStatus::Supported,
-                    max_mode: dtoken_types::OpticalMode::ToolResultsOnly,
-                    ..Default::default()
-                },
-                verified_at_ms: 1,
-                source: "fixture".to_string(),
-                notes: None,
-                attestation: Some(dtoken_types::OpticalCapabilityAttestation {
-                    schema_version: 2,
-                    algorithm: "ed25519".to_string(),
-                    authority_id: "fixture-authority".to_string(),
-                    key_id: "fixture-key-v1".to_string(),
-                    issued_at_ms: 1,
-                    expires_at_ms: 1_000,
-                    renderer_profile_digest: "renderer".to_string(),
-                    font_digest: "font".to_string(),
-                    transform_contract_digest: "contract".to_string(),
-                    eval_artifact_digest: "eval".to_string(),
-                    signature_base64: String::new(),
-                }),
-                economics: Some(dtoken_types::OpticalEconomicsAttestation {
-                    schema_version: 1,
-                    tokenizer_revision: "tokenizer-v1".to_string(),
-                    pricing_revision: "pricing-v1".to_string(),
-                    cache_policy_revision: "cache-v1".to_string(),
-                    chars_per_text_token: 4.0,
-                    cache_create_rate: 1.25,
-                    cache_read_rate: 0.1,
-                }),
-            });
+    fn active_requires_one_exact_route_bound_verified_attestation_chain() {
+        let mut config = fully_green_optical_config();
+        config.optical.capability_snapshots[0].route_id = Some("route-other".to_string());
+
+        let issues = config.normalize_optical_fail_closed();
+
+        assert!(!config.optical.global_policy.allow_active);
+        assert!(issues.contains(&OpticalConfigIssue::ActiveWithoutExactVerifiedRoute));
+    }
+
+    #[test]
+    fn exact_verified_optical_route_keeps_active_requested() {
+        let mut config = fully_green_optical_config();
 
         let issues = config.normalize_optical_fail_closed();
 
         assert!(config.optical.global_policy.allow_active);
         assert!(issues.is_empty());
+    }
+
+    fn fully_green_optical_config() -> DtokenConfig {
+        let mut config = DtokenConfig::default();
+        config.providers.push(dtoken_types::ProviderProfile {
+            id: "anthropic-main".to_string(),
+            name: "Anthropic main".to_string(),
+            kind: dtoken_types::ProviderKind::Custom,
+            protocol: dtoken_types::Protocol::Anthropic,
+            base_url: "https://api.anthropic.com".to_string(),
+            api_key_ref: Some("keychain://optical-provider".to_string()),
+            models: vec!["claude-sonnet-4-5".to_string()],
+            timeout_ms: 30_000,
+            healthcheck_path: None,
+            wire_api: dtoken_types::ProviderWireApi::OpenAiChat,
+        });
+        config.routes.push(dtoken_types::RouteProfile {
+            id: "route-anthropic-main".to_string(),
+            name: "Optical route".to_string(),
+            input_protocol: dtoken_types::Protocol::Anthropic,
+            instance_id: "instance-main".to_string(),
+            target_provider_id: "anthropic-main".to_string(),
+            fallback_provider_id: None,
+            chain_mode: dtoken_types::ChainMode::Direct,
+            compression_policy: dtoken_types::CompressionPolicy::Balanced,
+            bind_host: "127.0.0.1".to_string(),
+            local_port: 18_001,
+        });
+        config.optical.global_policy.enabled = true;
+        config.optical.global_policy.allow_active = true;
+        config.optical.route_policies.push(RouteOpticalPolicyEntry {
+            route_id: "route-anthropic-main".to_string(),
+            policy: RouteOpticalPolicy {
+                enabled: true,
+                mode: OpticalMode::ToolResultsOnly,
+                allow_tool_result: true,
+                confirmed_experimental_lossy: true,
+                ..Default::default()
+            },
+        });
+        config.optical.trusted_authorities.push(
+            serde_json::from_str(include_str!(
+                "../../../../support/fixtures/optical/demo-verification-key.json"
+            ))
+            .expect("tracked authority fixture"),
+        );
+        config.optical.eval_artifacts.push(
+            serde_json::from_str(include_str!(
+                "../../../../support/fixtures/optical/anthropic-eval-claude-sonnet-4-5.json"
+            ))
+            .expect("tracked eval fixture"),
+        );
+        config.optical.capability_snapshots.push(
+            serde_json::from_str(include_str!(
+                "../../../../support/fixtures/optical/anthropic-snapshot-claude-sonnet-4-5-signed.json"
+            ))
+            .expect("tracked signed snapshot fixture"),
+        );
+        config
     }
 
     #[test]

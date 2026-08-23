@@ -44,6 +44,11 @@ import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
+from canonical_source_digest import (  # noqa: E402
+    SourceDigestError,
+    resolve_candidate_binding,
+)
+
 
 SCHEMA_VERSION = "1.0"
 NODE_ID = "N6"
@@ -109,10 +114,8 @@ def recompute_artifact_sha256(data: dict) -> str:
 
 
 def resolve_git_bindings(root: Path) -> tuple[str, str]:
-    """candidate_commit = HEAD; source_digest = sha256 of HEAD tree id."""
-    commit = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root, text=True).strip()
-    tree = subprocess.check_output(["git", "rev-parse", "HEAD^{tree}"], cwd=root, text=True).strip()
-    return commit, sha256_bytes(tree.encode("utf-8"))
+    """Resolve HEAD and the N0 canonical tracked-file manifest digest."""
+    return resolve_candidate_binding(root, "HEAD")
 
 
 def platform_info() -> dict[str, str]:
@@ -377,7 +380,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     # N9 bound mode: resolve candidate + source digest before any execution.
     try:
         candidate_commit, source_digest = resolve_git_bindings(REPO_ROOT)
-    except (subprocess.CalledProcessError, OSError) as exc:
+    except (SourceDigestError, subprocess.CalledProcessError, OSError) as exc:
         print(f"run failed: cannot resolve candidate binding: {exc}", file=sys.stderr)
         return 2
     if args.expected_commit and candidate_commit != args.expected_commit:

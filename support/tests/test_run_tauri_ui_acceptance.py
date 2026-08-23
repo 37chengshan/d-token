@@ -60,8 +60,19 @@ class N6ProducerContract(unittest.TestCase):
 
         self.producer = producer
         self.commit = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=REPO_ROOT, text=True).strip()
-        tree = subprocess.check_output(["git", "rev-parse", "HEAD^{tree}"], cwd=REPO_ROOT, text=True).strip()
-        self.source_digest = producer.sha256_bytes(tree.encode("utf-8"))
+        from canonical_source_digest import compute_source_manifest
+
+        _, self.source_digest = compute_source_manifest(REPO_ROOT, self.commit)
+        self.n0_source_digest = self.source_digest
+
+    def test_resolve_git_bindings_matches_n0_canonical_source_digest(self) -> None:
+        candidate_commit, source_digest = self.producer.resolve_git_bindings(REPO_ROOT)
+        self.assertEqual(candidate_commit, self.commit)
+        self.assertEqual(
+            source_digest,
+            self.n0_source_digest,
+            "N6 must bind to N0's canonical tracked-file manifest digest, not a tree-id hash",
+        )
 
     def tearDown(self) -> None:
         for name in [n for n in list(sys.modules) if n.startswith("run_tauri_ui_acceptance")]:

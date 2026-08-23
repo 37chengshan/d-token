@@ -30,12 +30,11 @@ is one of verified|failed|blocked; mode is always executed (--dry-run and
 HEAD commit and source_digest is the unified N0 definition — SHA-256 of the
 canonical JSON of {tracked path: blob sha256} over every tracked file at the
 candidate commit (git ls-tree + git cat-file --batch, paths sorted by UTF-8;
-gitignored/untracked content never enters), computed by the shared producer
-generate_n0_candidate_evidence.compute_source_manifest so every evidence
-artifact binds the exact same candidate tree (N9 bound mode, resolved
-fail-closed before any executed artifact); artifact_sha256 is SHA-256 of the
-canonical JSON of the artifact WITHOUT the artifact_sha256 field (the
-aggregator recomputes this exactly, generate_release_gate_status rule);
+gitignored/untracked content never enters), computed by the shared
+canonical_source_digest helper so every evidence artifact binds the exact
+same candidate tree (N9 bound mode, resolved fail-closed before execution);
+artifact_sha256 is SHA-256 of canonical JSON without the artifact_sha256 field;
+the aggregator recomputes it exactly using generate_release_gate_status.
 agents is an array of per-agent records containing exactly agent_id, adapter,
 source_fingerprint, source_mode, status, error_class, steps; restore_order is
 the list of agent ids exact-restored during a rollback, in the actual
@@ -91,10 +90,9 @@ _O_BINARY = getattr(os, "O_BINARY", 0)
 # --check-schema never write an artifact. candidate_commit and source_digest
 # bind the evidence to a concrete candidate revision (N9 bound mode):
 # candidate_commit is the repository HEAD commit and source_digest is the
-# unified N0 definition — SHA-256 of the canonical JSON of
 # {tracked path: blob sha256} over every tracked file at the candidate commit
-# (generate_n0_candidate_evidence.compute_source_manifest), a content-bearing
-# anchor that is never empty; both are resolved before any run.
+# (canonical_source_digest.compute_source_manifest), a content-bearing anchor
+# that is never empty; both bindings are resolved before any run.
 # artifact_sha256 is SHA-256 of the canonical JSON of the artifact WITHOUT the
 # artifact_sha256 field (aggregator recompute rule).
 SCHEMA_VERSION = "1.1"
@@ -204,14 +202,15 @@ ENV_REJECT_MARKERS = (
 REPO_ROOT = Path(__file__).resolve().parents[2]
 CARGO_DIR = REPO_ROOT / "code"
 
-# Shared N0 candidate-evidence producer (VERIFICATION.md §1): the single
-# source of truth for the canonical source_digest over tracked blobs at the
-# candidate commit. Imported as a module so this runner and the N0 freeze
-# producer can never drift into two digest definitions.
+# Shared N0 candidate binding helper (VERIFICATION.md §1): the single source
+# of truth for candidate_commit and canonical tracked-file source_digest.
 _SCRIPTS_DIR = Path(__file__).resolve().parent
 if str(_SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(_SCRIPTS_DIR))
-from generate_n0_candidate_evidence import compute_source_manifest  # noqa: E402
+from canonical_source_digest import (  # noqa: E402
+    SourceDigestError,
+    resolve_candidate_binding,
+)
 
 
 class AcceptanceError(Exception):
@@ -723,44 +722,14 @@ def write_artifact_atomic(artifact_path: Path, artifact: dict[str, Any]) -> None
 
 
 def resolve_git_bindings(repo_root: Path) -> tuple[str, str]:
-    """Resolve the N9 bound-mode evidence for the artifact.
+    """Resolve HEAD and the exact N0 canonical tracked-file source digest.
 
-    Returns (candidate_commit, source_digest): the repository HEAD commit
-    and the unified N0 source digest — SHA-256 of the canonical JSON of
-    {tracked path: blob sha256} over every tracked file at the candidate
-    commit, computed by the shared producer
-    generate_n0_candidate_evidence.compute_source_manifest. This is the exact
-    digest definition the release aggregator (generate_release_gate_status)
-    and the N0 freeze producer use; no second digest definition exists. The
-    manifest is content-bearing and never empty (every candidate has tracked
-    files). Any failure — git missing, the path not being a repository, a
-    non-zero exit, or a hang — fails closed with GitBindingUnresolved, and no
-    executed artifact may be written.
+    Any Git or manifest failure aborts before executed evidence is written.
     """
     try:
-        head = subprocess.run(
-            ["git", "-C", str(repo_root), "rev-parse", "HEAD"],
-            capture_output=True,
-            timeout=60,
-        )
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        raise GitBindingUnresolved(
-            f"cannot resolve git HEAD: {exc}"
-        ) from exc
-    if head.returncode != 0 or not head.stdout.strip():
-        raise GitBindingUnresolved(
-            "cannot resolve git HEAD (not a repository?)"
-        )
-    try:
-        _, source_digest = compute_source_manifest(repo_root, "HEAD")
-    except Exception as exc:  # the shared producer raises RuntimeError on git failure
-        raise GitBindingUnresolved(
-            f"cannot resolve source digest: {exc}"
-        ) from exc
-    return (
-        head.stdout.decode("utf-8", errors="replace").strip(),
-        source_digest,
-    )
+        return resolve_candidate_binding(repo_root, "HEAD")
+    except SourceDigestError as exc:
+        raise GitBindingUnresolved(f"cannot resolve candidate binding: {exc}") from exc
 
 
 def run_acceptance(

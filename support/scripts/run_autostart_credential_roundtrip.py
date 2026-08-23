@@ -110,6 +110,7 @@ NS_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 HKCU_RUN = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run"
 
 
+
 class RoundtripError(Exception):
     """Base class for fail-closed round-trip failures."""
 

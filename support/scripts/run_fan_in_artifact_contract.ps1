@@ -11,13 +11,10 @@
   1. Both macOS and Windows release-candidate artifacts exist and are
      present in the staged release directory.
   2. Both platforms share the same Git commit (GITHUB_SHA or local HEAD).
-  3. Source digest is identical across platforms and matches the expected
-     commit's tree digest (sha256 of the ASCII hex bytes of
-     `git rev-parse <ExpectedCommit>^{tree}`) — the system-wide, content-
-     bearing source digest anchor that is invariant to worktree dirtiness.
-     Producers stamp the digest in `source_digest` (legacy candidate field
-     `tracked_diff_sha256` is read as a fallback and fails the anchor match
-     until the producer cutover completes).
+  3. Source digest is identical across platforms and matches the N0 canonical
+     tracked-file manifest digest for ExpectedCommit, computed independently
+     by the same tracked helper used by N0 and all upstream producers. Legacy
+     tracked_diff_sha256 is never accepted as source_digest evidence.
   4. Each platform's release-candidate.json is valid and self-consistent.
   5. Each platform's SHA-256 manifest is present and verifies its artifacts.
   6. Each platform's SBOM, license inventory, and security scan are present
@@ -252,53 +249,36 @@ $Checks += New-Check "commit_matches_expected" $CommitMatchesExpected @{
   expected = $ExpectedCommit; mac = $MacHead; win = $WinHead
 }
 
-# ---- 5. Same source digest (tree anchor) -----------------------------------
-# System-wide source digest anchor: content-bearing and worktree-invariant —
-# sha256 of the ASCII hex bytes of the expected commit's tree object id
-# (`git rev-parse <ExpectedCommit>^{tree}`).  The legacy `git diff --binary
-# HEAD -- .` anchor is the constant sha256 of an empty diff at any clean
-# checkout and can never discriminate candidates (EVID-1), so it is no longer
-# an acceptable anchor.  Producers stamp the digest in `source_digest`; the
-# legacy candidate field `tracked_diff_sha256` is read as a fallback so
-# pre-cutover artifacts remain parseable — they fail the anchor match below,
-# blocking G8 honestly until the producer cutover completes.
-$MacSourceDigest = ""
-$WinSourceDigest = ""
-if ($null -ne $MacCandidate.PSObject.Properties["source_digest"]) {
-  $MacSourceDigest = [string]$MacCandidate.source_digest
-} else {
-  $MacSourceDigest = [string]$MacCandidate.tracked_diff_sha256
-}
-if ($null -ne $WinCandidate.PSObject.Properties["source_digest"]) {
-  $WinSourceDigest = [string]$WinCandidate.source_digest
-} else {
-  $WinSourceDigest = [string]$WinCandidate.tracked_diff_sha256
-}
-$ExpectedTreeDigest = ""
-$ExpectedTreeResolved = $false
+# ---- 5. Same N0 canonical source digest ------------------------------------
+$MacSourceDigest = if ($null -ne $MacCandidate.PSObject.Properties["source_digest"]) {
+  [string]$MacCandidate.source_digest
+} else { "" }
+$WinSourceDigest = if ($null -ne $WinCandidate.PSObject.Properties["source_digest"]) {
+  [string]$WinCandidate.source_digest
+} else { "" }
+$ExpectedSourceDigest = ""
+$ExpectedSourceDigestResolved = $false
 if (-not [string]::IsNullOrWhiteSpace($ExpectedCommit)) {
   try {
-    Push-Location $Root
-    $TreeId = (& "git" "rev-parse" "$ExpectedCommit^{tree}" 2>$null).Trim()
-    if ($global:LASTEXITCODE -eq 0 -and $TreeId -match "^[0-9a-fA-F]{40}$") {
-      $ExpectedTreeDigest = Get-TextSha256 -Text $TreeId
-      $ExpectedTreeResolved = $true
+    $DigestOutput = (& "python3" (Join-Path $PSScriptRoot "canonical_source_digest.py") `
+      "--repo-root" $Root "--revision" $ExpectedCommit "--digest-only" 2>$null).Trim()
+    if ($global:LASTEXITCODE -eq 0 -and $DigestOutput -match "^[0-9a-f]{64}$") {
+      $ExpectedSourceDigest = $DigestOutput
+      $ExpectedSourceDigestResolved = $true
     }
   } catch {
     # Left unresolved; the digest check fails closed below.
-  } finally {
-    Pop-Location
   }
 }
 $SameSourceDigest = ($MacSourceDigest -eq $WinSourceDigest) -and
                     (-not [string]::IsNullOrWhiteSpace($MacSourceDigest)) -and
-                    $ExpectedTreeResolved -and
-                    ($MacSourceDigest -eq $ExpectedTreeDigest)
+                    $ExpectedSourceDigestResolved -and
+                    ($MacSourceDigest -eq $ExpectedSourceDigest)
 $Checks += New-Check "same_source_digest" $SameSourceDigest @{
   mac = $MacSourceDigest; win = $WinSourceDigest
-  expected_tree_digest = $ExpectedTreeDigest
-  anchor = "commit-tree-object-sha256"
-  note = "Two self-reported digests that merely equal each other are not proof. The authoritative anchor is the independently computed tree digest of the expected commit: sha256 of the ASCII hex bytes of 'git rev-parse <ExpectedCommit>^{tree}', which is content-bearing and worktree-invariant; the git_head binding asserted above completes the candidate binding."
+  expected_source_digest = $ExpectedSourceDigest
+  anchor = "n0-canonical-source-manifest"
+  note = "Both platform stamps must equal the independently recomputed N0 canonical tracked-file manifest digest for ExpectedCommit. Legacy diff or tree-id hashes are rejected."
 }
 
 # ---- 6. Dirty state consistency ----------------------------------------------
@@ -515,8 +495,8 @@ $Report = [pscustomobject]@{
   win_candidate_id = if ($null -ne $WinCandidate) { $WinCandidate.candidate_id } else { $null }
   same_commit = $SameCommit
   same_source_digest = $SameSourceDigest
-  source_digest_anchor = "commit-tree-object-sha256"
-  expected_tree_digest = $ExpectedTreeDigest
+  source_digest_anchor = "n0-canonical-source-manifest"
+  expected_source_digest = $ExpectedSourceDigest
   passed = $Passed
   total = $Total
   # critical_passed must be derived from the critical list, not from the full

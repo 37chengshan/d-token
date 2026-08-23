@@ -395,17 +395,20 @@ def validate_upstream_artifact(
         reasons.append(f"upstream status {data.get('status')!r} is not a pass")
     if all(field not in data for field in gate_status.ENVELOPE_FIELDS):
         reasons.append("no unified envelope (pass-only claim rejected)")
-    if data.get("candidate_commit") not in (None, expected.get("commit")):
+    artifact_commit = data.get("candidate_commit", data.get("candidate_id"))
+    if artifact_commit != expected.get("commit"):
         reasons.append(
-            f"candidate_commit={data.get('candidate_commit')!r} != {expected.get('commit')}"
+            f"candidate binding {artifact_commit!r} != {expected.get('commit')} "
+            "(missing/old candidate rejected)"
         )
-    if data.get("candidate_id") not in (None, expected.get("commit")):
-        reasons.append(
-            f"candidate_id={data.get('candidate_id')!r} != C_final (old candidate rejected)"
-        )
-    if data.get("source_digest") not in (None, expected.get("source_digest")):
-        reasons.append("source_digest mismatch with frozen candidate")
-    if data.get("registry_digest") not in (None, expected.get("registry_digest")):
+    artifact_source_digest = data.get("source_digest")
+    if isinstance(artifact_source_digest, dict):
+        if artifact_source_digest.get("scope") != "n0-canonical-source-manifest":
+            reasons.append("source_digest scope is not N0 canonical manifest")
+        artifact_source_digest = artifact_source_digest.get("value")
+    if artifact_source_digest != expected.get("source_digest"):
+        reasons.append("source_digest missing or mismatched with frozen candidate")
+    if "registry_digest" in data and data.get("registry_digest") != expected.get("registry_digest"):
         reasons.append("registry_digest mismatch with frozen candidate")
     corpus = data.get("corpus_digests")
     if isinstance(corpus, dict):
@@ -421,6 +424,58 @@ def validate_upstream_artifact(
             f"started {data.get('started_at')} before N0 freeze finished "
             f"{n0.get('finished_at')} (pre-N0 evidence rejected)"
         )
+    if node_id == "N1":
+        request_receipts = data.get("request_receipts")
+        if not isinstance(request_receipts, list) or not request_receipts:
+            reasons.append("N1 requires routed request receipts with stable request ids")
+        else:
+            request_ids = [item.get("request_id") for item in request_receipts if isinstance(item, dict)]
+            if len(request_ids) != len(request_receipts) or any(
+                not isinstance(request_id, str) or not request_id.strip()
+                for request_id in request_ids
+            ) or len(request_ids) != len(set(request_ids)):
+                reasons.append("N1 request receipts require unique non-empty request ids")
+        buckets = data.get("accounting_buckets")
+        required_buckets = {"compression", "command_output", "provider_cache", "relay"}
+        if not isinstance(buckets, dict) or set(buckets) != required_buckets:
+            reasons.append("N1 requires four accounting buckets: compression, command_output, provider_cache, relay")
+        digest_binding = data.get("digest_binding")
+        if not isinstance(digest_binding, dict) or digest_binding.get("all_match") is not True:
+            reasons.append("N1 requires validation digest = sent digest for every routed request")
+        reconciliation = data.get("reconciliation")
+        if not isinstance(reconciliation, dict) or not all(
+            reconciliation.get(field) is True
+            for field in ("ledger", "overview", "analytics", "export", "no_double_count", "unknown_not_zero")
+        ):
+            reasons.append("N1 requires ledger/overview/analytics/export reconciliation without double count")
+        if data.get("no_raw_payloads") is not True:
+            reasons.append("N1 requires no_raw_payloads=true")
+    if node_id == "N10-U6":
+        for field in ("provider_id", "route_id", "model", "api_revision"):
+            if not isinstance(data.get(field), str) or not data[field].strip():
+                reasons.append(f"U6 requires exact {field}")
+        baseline = data.get("baseline")
+        optimized = data.get("optimized")
+        for lane_name, lane in (("baseline", baseline), ("optimized", optimized)):
+            if not isinstance(lane, dict) or not isinstance(lane.get("request_id"), str):
+                reasons.append(f"U6 {lane_name} requires a stable request id")
+                continue
+            usage = lane.get("provider_actual_usage")
+            if not isinstance(usage, dict) or usage.get("evidence_kind") != "provider_actual":
+                reasons.append(f"U6 {lane_name} requires provider actual usage")
+        identity = data.get("identity_match")
+        if not isinstance(identity, dict) or not all(
+            identity.get(field) is True
+            for field in ("provider", "route", "model", "api_revision")
+        ):
+            reasons.append("U6 baseline/optimized identity must match provider, route, model, and API revision")
+        if data.get("claimable_from_actual_only") is not True:
+            reasons.append("U6 claimable savings must come from actual provider usage only")
+        exclusions = data.get("excluded_from_savings")
+        if not isinstance(exclusions, dict) or not all(
+            exclusions.get(field) is True for field in ("failed", "shadow", "fallback")
+        ):
+            reasons.append("U6 failure/shadow/fallback outcomes must be excluded from savings")
     if node_id == "N5":
         if data.get("wrote_cc_switch") is not False:
             reasons.append("N5 requires wrote_cc_switch=false")
@@ -435,11 +490,59 @@ def validate_upstream_artifact(
         # exact-active provider run (VERIFICATION.md §5 U7 boundary).
         if data.get("demo_fixture") is True or "demo" in str(path):
             reasons.append("demo fixture is not real exact-active provider evidence")
-        for field in ("authority", "provider_id", "model", "api_revision"):
-            if not data.get(field):
+        for field in ("authority", "provider_id", "route_id", "model", "api_revision"):
+            value = data.get(field)
+            if not isinstance(value, str) or not value.strip():
                 reasons.append(f"U7 requires real {field}")
+        for field in (
+            "renderer_profile_digest", "font_digest", "transform_contract_digest",
+            "corpus_digest", "tokenizer_revision", "pricing_revision",
+            "cache_policy_revision", "eval_artifact_digest",
+        ):
+            value = data.get(field)
+            if not isinstance(value, str) or not value.strip():
+                reasons.append(f"U7 requires bound {field}")
         if data.get("fresh_paired_eval") is not True:
             reasons.append("U7 requires fresh paired eval evidence")
+        required_true = {
+            "automatic_active_observed": "U7 requires automatic active observation",
+            "exact_route_match": "U7 requires exact route/provider/model/API revision match",
+            "capability_attested": "U7 requires verified capability attestation",
+            "eval_gate_passed": "U7 requires passing fidelity/cost/latency eval gate",
+            "resource_gate_passed": "U7 requires passing resource gate",
+            "patch_validated": "U7 requires validated request patch",
+            "post_validator_passed": "U7 requires passing post-validator",
+            "ledger_completed": "U7 requires completed Event Ledger evidence",
+            "unsupported_protocol_preserved": "U7 requires unsupported protocols to remain non-active",
+            "failure_preservation_passed": "U7 requires original provider failures to be preserved",
+        }
+        for field, message in required_true.items():
+            if data.get(field) is not True:
+                reasons.append(message)
+        if data.get("failure_preservation_passed") is not True:
+            original_reasons = data.get("failure_reasons")
+            if isinstance(original_reasons, list):
+                reasons.extend(
+                    reason for reason in original_reasons
+                    if isinstance(reason, str) and reason
+                )
+        if data.get("ordinary_image_entry_used") is not False:
+            reasons.append("U7 forbids ordinary image entry activation")
+        if data.get("ui_switch_required") is not False:
+            reasons.append("U7 active selection must not depend on a UI switch")
+        if data.get("preserve_text_on_gate_failure") is not True:
+            reasons.append("U7 requires PreserveText for every failed active gate")
+        if data.get("provider_response_preserved_verbatim") is not True:
+            reasons.append("U7 requires provider response and error text preserved verbatim")
+        if data.get("claimable_actual_usage") is not True:
+            reasons.append("U7 requires claimable economics from actual provider usage")
+        if data.get("baseline_request_id") == data.get("optimized_request_id"):
+            reasons.append("U7 paired eval requires distinct baseline and optimized request ids")
+        for field in ("baseline_request_id", "optimized_request_id"):
+            value = data.get(field)
+            if not isinstance(value, str) or not value.strip():
+                reasons.append(f"U7 requires stable {field}")
+        reasons = list(dict.fromkeys(reasons))
     return not reasons, reasons
 
 

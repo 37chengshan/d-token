@@ -7,6 +7,7 @@ repository.workspace = true
 
 [dependencies]
 anyhow.workspace = true
+dtoken-compress = { path = "../dtoken-compress" }
 dtoken-types = { path = "../dtoken-types" }
 serde.workspace = true
 serde_json.workspace = true

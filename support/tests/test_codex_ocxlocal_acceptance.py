@@ -980,10 +980,9 @@ class CodexOcxlocalFreshRunTests(unittest.TestCase):
         self.assertEqual(freshness["source_mode"], self.source_mode)
         self.assertTrue(freshness["source_fingerprint_sha256"])
         # The artifact is bound top-level to the candidate commit (40-hex,
-        # read-only git HEAD) AND the source digest (64-hex, sha256 of the
-        # bytes of `git rev-parse HEAD^{tree}` without the trailing newline —
-        # the content-bearing clean candidate tree anchor); the report
-        # protocol is derived from the verified wire_api.
+        # read-only Git HEAD) AND the N0 canonical tracked-file manifest
+        # source digest (64-hex); the report protocol is derived from the
+        # verified wire_api.
         self.assertRegex(report["candidate_commit"], r"[0-9a-f]{40}")
         self.assertRegex(report["source_digest"], r"[0-9a-f]{64}")
         self.assertEqual(report["protocol"], "open_ai_responses")

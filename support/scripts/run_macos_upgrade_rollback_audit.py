@@ -109,6 +109,7 @@ COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
 DIGEST_RE = re.compile(r"^[0-9a-f]{64}$")
 
 
+
 class AuditError(Exception):
     """Base class for fail-closed audit failures."""
 
