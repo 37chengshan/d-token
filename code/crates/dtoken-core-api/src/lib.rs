@@ -5170,6 +5170,7 @@ fn inject_memory_into_body(body: Value, protocol: &Protocol, blocks: &[Value]) -
 #[derive(Debug, Clone)]
 struct RoutedBridgePayload {
     scope: RequestScope,
+    received_at_ms: u64,
     upstream_body: Value,
     decision: RouteDecision,
     request_log: RequestLog,
@@ -5555,6 +5556,7 @@ fn route_decision_to_value(decision: &RouteDecision) -> Value {
     })
 }
 
+#[cfg(test)]
 fn build_request_log(
     request_id: Uuid,
     decision: &RouteDecision,
@@ -5563,7 +5565,26 @@ fn build_request_log(
     compression: &CompressionSummary,
     attribution: &RequestAttribution,
 ) -> RequestLog {
-    let received_at_ms = dtoken_event_ledger::now_ms();
+    build_request_log_at(
+        request_id,
+        decision,
+        model,
+        input_protocol,
+        compression,
+        attribution,
+        dtoken_event_ledger::now_ms(),
+    )
+}
+
+fn build_request_log_at(
+    request_id: Uuid,
+    decision: &RouteDecision,
+    model: Option<String>,
+    input_protocol: Protocol,
+    compression: &CompressionSummary,
+    attribution: &RequestAttribution,
+    received_at_ms: u64,
+) -> RequestLog {
     RequestLog {
         request_id,
         timestamp_ms: received_at_ms,
@@ -8487,10 +8508,7 @@ fn responses_tool_choice_to_chat(choice: Option<&Value>) -> Result<Value, String
     }
 }
 
-/// Convert an OpenAI Chat completions response into an OpenAI Responses
-/// response object. Text becomes a `message` output item with `output_text`;
-/// `tool_calls` become `function_call` output items. `finish_reason=length`
-/// maps to an incomplete response, everything else to completed.
+/// Convert an OpenAI Chat completions response into an OpenAI Responses response object.
 pub fn openai_chat_to_responses_response(
     upstream: &Value,
     model: Option<&str>,
@@ -8535,7 +8553,7 @@ pub fn openai_chat_to_responses_response(
         Some("length") => "incomplete",
         _ => "completed",
     };
-    json!({
+    let mut response = json!({
         "id": response_id,
         "object": "response",
         "status": status,
@@ -8545,12 +8563,25 @@ pub fn openai_chat_to_responses_response(
                 .and_then(Value::as_str)
                 .unwrap_or("dtoken-response-route")
         }),
-        "output": output,
-        "usage": {
-            "input_tokens": upstream["usage"]["prompt_tokens"].as_u64().unwrap_or_default(),
-            "output_tokens": upstream["usage"]["completion_tokens"].as_u64().unwrap_or_default(),
-            "total_tokens": upstream["usage"]["total_tokens"].as_u64().unwrap_or_default()
-        }
+        "output": output
+    });
+    if let Some(usage) = openai_usage_value(upstream.get("usage")) {
+        response["usage"] = usage;
+    }
+    response
+}
+
+fn openai_usage_value(usage: Option<&Value>) -> Option<Value> {
+    let usage = usage?.as_object()?;
+    let input = usage.get("prompt_tokens").and_then(Value::as_u64);
+    let output = usage.get("completion_tokens").and_then(Value::as_u64);
+    let total = usage.get("total_tokens").and_then(Value::as_u64);
+    (input.is_some() || output.is_some() || total.is_some()).then(|| {
+        json!({
+            "input_tokens": input,
+            "output_tokens": output,
+            "total_tokens": total
+        })
     })
 }
 
@@ -9038,11 +9069,21 @@ impl Stream for ResponsesSseStream {
         }
     }
 }
+#[cfg(test)]
 
 fn anthropic_route_payload(
     state: &AppState,
     body: Value,
     evidence: RouteEvidence<'_>,
+) -> Result<RoutedBridgePayload, RouteSelectionError> {
+    anthropic_route_payload_at(state, body, evidence, dtoken_event_ledger::now_ms())
+}
+
+fn anthropic_route_payload_at(
+    state: &AppState,
+    body: Value,
+    evidence: RouteEvidence<'_>,
+    received_at_ms: u64,
 ) -> Result<RoutedBridgePayload, RouteSelectionError> {
     let (route, provider) = configured_route(&state.config, Protocol::Anthropic, evidence)?;
     let request_id = Uuid::new_v4();
@@ -9092,7 +9133,7 @@ fn anthropic_route_payload(
     let memory_injected_body =
         inject_memory_into_body(compression.body.clone(), &provider.protocol, &memory_blocks);
     let attribution = request_attribution_from_scope(&scope);
-    let request_log = build_request_log(
+    let request_log = build_request_log_at(
         request_id,
         &decision,
         body.get("model")
@@ -9101,6 +9142,7 @@ fn anthropic_route_payload(
         Protocol::Anthropic,
         &compression,
         &attribution,
+        received_at_ms,
     );
     let mut event = build_ledger_event(
         request_id,
@@ -9127,6 +9169,7 @@ fn anthropic_route_payload(
     }
     Ok(RoutedBridgePayload {
         scope,
+        received_at_ms,
         upstream_body: memory_injected_body,
         decision,
         request_log,
@@ -9388,7 +9431,6 @@ fn apply_hybrid_preparation(payload: &mut RoutedBridgePayload, prepared: &Prepar
         );
     }
 }
-
 fn force_payload_ccr_pre_send_baseline(
     payload: &mut RoutedBridgePayload,
     original_body: &Value,
@@ -9410,13 +9452,14 @@ fn force_payload_ccr_pre_send_baseline(
         .get("model")
         .and_then(Value::as_str)
         .map(ToString::to_string);
-    let request_log = build_request_log(
+    let request_log = build_request_log_at(
         request_id,
         &payload.decision,
         model,
         Protocol::Anthropic,
         &compression,
         &attribution,
+        payload.received_at_ms,
     );
     let mut event = build_ledger_event(
         request_id,
@@ -10863,6 +10906,7 @@ async fn openai_chat_completions(
     headers: HeaderMap,
     body_bytes: Bytes,
 ) -> impl IntoResponse {
+    let received_at_ms = dtoken_event_ledger::now_ms();
     let original_body: Value = match serde_json::from_slice(&body_bytes) {
         Ok(body) => body,
         Err(error) => {
@@ -10967,13 +11011,14 @@ async fn openai_chat_completions(
             None,
         );
         let attribution = request_attribution_from_scope(&scope);
-        let mut request_log = build_request_log(
+        let mut request_log = build_request_log_at(
             request_id,
             &decision,
             request.model.clone(),
             Protocol::OpenAi,
             &compression,
             &attribution,
+            received_at_ms,
         );
         let mut event = build_ledger_event(
             request_id,
@@ -10996,13 +11041,14 @@ async fn openai_chat_completions(
                 Err(_) => {
                     compression =
                         compress_for_route(None, CompressionPolicy::Off, baseline_body.clone());
-                    request_log = build_request_log(
+                    request_log = build_request_log_at(
                         request_id,
                         &decision,
                         request.model.clone(),
                         Protocol::OpenAi,
                         &compression,
                         &attribution,
+                        received_at_ms,
                     );
                     event = build_ledger_event(
                         request_id,
@@ -11054,13 +11100,14 @@ async fn openai_chat_completions(
         };
         if let Some(reason) = pipeline_payload.fallback_reason {
             compression = compress_for_route(None, CompressionPolicy::Off, baseline_body.clone());
-            request_log = build_request_log(
+            request_log = build_request_log_at(
                 request_id,
                 &decision,
                 request.model.clone(),
                 Protocol::OpenAi,
                 &compression,
                 &attribution,
+                received_at_ms,
             );
             event = build_ledger_event(
                 request_id,
@@ -11340,6 +11387,7 @@ async fn openai_responses(
     headers: HeaderMap,
     body_bytes: Bytes,
 ) -> impl IntoResponse {
+    let received_at_ms = dtoken_event_ledger::now_ms();
     let body: Value = match serde_json::from_slice(&body_bytes) {
         Ok(body) => body,
         Err(error) => {
@@ -11468,13 +11516,14 @@ async fn openai_responses(
             None,
         );
         let attribution = request_attribution_from_scope(&scope);
-        let mut request_log = build_request_log(
+        let mut request_log = build_request_log_at(
             request_id,
             &decision,
             request.model.clone(),
             Protocol::OpenAi,
             &compression,
             &attribution,
+            received_at_ms,
         );
         let mut event = build_ledger_event(
             request_id,
@@ -11497,13 +11546,14 @@ async fn openai_responses(
                 Err(_) => {
                     compression =
                         compress_for_route(None, CompressionPolicy::Off, baseline_body.clone());
-                    request_log = build_request_log(
+                    request_log = build_request_log_at(
                         request_id,
                         &decision,
                         request.model.clone(),
                         Protocol::OpenAi,
                         &compression,
                         &attribution,
+                        received_at_ms,
                     );
                     event = build_ledger_event(
                         request_id,
@@ -11559,13 +11609,14 @@ async fn openai_responses(
         };
         if let Some(reason) = pipeline_payload.fallback_reason {
             compression = compress_for_route(None, CompressionPolicy::Off, baseline_body.clone());
-            request_log = build_request_log(
+            request_log = build_request_log_at(
                 request_id,
                 &decision,
                 request.model.clone(),
                 Protocol::OpenAi,
                 &compression,
                 &attribution,
+                received_at_ms,
             );
             event = build_ledger_event(
                 request_id,
@@ -11897,6 +11948,7 @@ async fn anthropic_messages(
     headers: HeaderMap,
     body_bytes: Bytes,
 ) -> impl IntoResponse {
+    let received_at_ms = dtoken_event_ledger::now_ms();
     let body: Value = match serde_json::from_slice(&body_bytes) {
         Ok(body) => body,
         Err(_) => {
@@ -11915,7 +11967,12 @@ async fn anthropic_messages(
     let raw_body = body_bytes.to_vec();
     let ccr_original_body = raw_body.clone();
     let evidence = header_evidence(&headers, body.get("model").and_then(Value::as_str));
-    let mut payload = match anthropic_route_payload(&state, body.clone(), evidence) {
+    let mut payload = match anthropic_route_payload_at(
+        &state,
+        body.clone(),
+        evidence,
+        received_at_ms,
+    ) {
         Ok(payload) => payload,
         Err(error) => {
             let request_id = Uuid::new_v4();
