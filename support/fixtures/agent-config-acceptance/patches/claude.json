@@ -1,0 +1,12 @@
+{
+  "agent_id": "claude",
+  "files": [
+    {
+      "path": "claude/settings.json",
+      "action": "replace_marker",
+      "marker": "\"DT_TOKEN_ROUTE\": \"0\"",
+      "replacement": "\"DT_TOKEN_ROUTE\": \"1\"",
+      "label": "dtoken_route_flag"
+    }
+  ]
+}

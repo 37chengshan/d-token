@@ -1,0 +1,9 @@
+# d-token PR-6 config-acceptance fixture (synthetic; not a real Codex config).
+[model]
+provider = "synthetic-local"
+base_url = "http://127.0.0.1:18001/v1"
+model = "fixture-model"
+api_key = "sk-acceptance-marker-7f3a9c1e5b2d4f608a9c1e5b2d4f608a"
+
+[experimental]
+enable_dtoken = false

@@ -1,0 +1,19 @@
+{
+  "agent_id": "opencode",
+  "files": [
+    {
+      "path": "opencode/opencode.json",
+      "action": "replace_marker",
+      "marker": "\"dtokenRoute\": false",
+      "replacement": "\"dtokenRoute\": true",
+      "label": "dtoken_route_flag"
+    },
+    {
+      "path": "opencode/opencode.local.json",
+      "action": "replace_marker",
+      "marker": "\"dtokenRoute\": false",
+      "replacement": "\"dtokenRoute\": true",
+      "label": "dtoken_route_flag"
+    }
+  ]
+}

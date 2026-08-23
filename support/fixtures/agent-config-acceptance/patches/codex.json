@@ -1,0 +1,12 @@
+{
+  "agent_id": "codex",
+  "files": [
+    {
+      "path": "codex/config.toml",
+      "action": "replace_marker",
+      "marker": "enable_dtoken = false",
+      "replacement": "enable_dtoken = true",
+      "label": "dtoken_route_flag"
+    }
+  ]
+}
