@@ -1,0 +1,77 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "final-candidate-verification/node-artifact/v1",
+  "title": "PR-9 node artifact",
+  "description": "Structured node artifact produced by run_final_candidate_verification.py (N0 executor, N1-N8 consumption, N9 conclusion). Every artifact is bound to the candidate commit and source_digest (sha256 of the ASCII hex bytes of `git rev-parse HEAD^{tree}`).",
+  "type": "object",
+  "required": [
+    "schema", "node_id", "kind", "status", "ok",
+    "candidate_commit", "source_digest", "generated_at", "detail"
+  ],
+  "properties": {
+    "schema": { "const": "final-candidate-verification/node-artifact/v1" },
+    "node_id": { "enum": ["N0", "N1", "N2", "N3", "N4", "N5", "N6", "N7", "N8", "N9"] },
+    "kind": { "enum": ["executor", "consumer", "manual-computer", "external", "conclusion"] },
+    "status": { "enum": ["planned", "verified", "blocked", "external", "failed"] },
+    "ok": { "type": "boolean" },
+    "candidate_commit": { "type": "string", "pattern": "^[0-9a-fA-F]{40,64}$" },
+    "source_digest": { "type": "string", "pattern": "^[0-9a-fA-F]{64}$" },
+    "worktree_dirty": { "type": "boolean" },
+    "label": { "type": "string" },
+    "detail": { "type": "string" },
+    "generated_at": { "type": "string", "pattern": "^[0-9]{8}T[0-9]{6}Z$" },
+    "evidence": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["group", "patterns", "path", "bound", "green"],
+        "properties": {
+          "group": { "type": "integer" },
+          "patterns": { "type": "array", "items": { "type": "string" } },
+          "path": { "type": "string" },
+          "bound": { "const": true },
+          "green": { "type": "boolean" }
+        }
+      }
+    },
+    "stale": {
+      "type": "array",
+      "description": "Artifacts found but not bound to the current candidate (EVID-1); never accepted.",
+      "items": {
+        "type": "object",
+        "properties": {
+          "group": { "type": "integer" },
+          "path": { "type": "string" },
+          "candidate_commit": { "type": ["string", "null"] },
+          "source_digest": { "type": ["string", "null"] }
+        }
+      }
+    },
+    "commands": {
+      "type": "array",
+      "description": "N0 per-command results (execute mode only).",
+      "items": {
+        "type": "object",
+        "required": ["id", "argv", "ok"],
+        "properties": {
+          "id": { "type": "string" },
+          "description": { "type": "string" },
+          "argv": { "type": "array", "items": { "type": "string" } },
+          "returncode": { "type": ["integer", "null"] },
+          "ok": { "type": "boolean" },
+          "output_tail": { "type": "string" }
+        }
+      }
+    },
+    "conclusion": { "enum": ["signed-release", "unsigned-technical-preview", "blocked"] },
+    "release_ready": { "type": "boolean" },
+    "distribution_ready_public": { "type": "boolean" },
+    "labels": { "type": "array", "items": { "type": "string" } },
+    "missing_items": { "type": "array", "items": { "type": "string" } },
+    "node_states": { "type": "object" },
+    "n0_ok": { "type": "boolean" },
+    "gate_report": { "type": ["string", "null"] },
+    "signing": { "type": "object" },
+    "evidence_output": { "type": "string" }
+  }
+}
