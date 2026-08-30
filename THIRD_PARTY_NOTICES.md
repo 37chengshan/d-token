@@ -1,6 +1,6 @@
 # d-token Third-Party Notices
 
-Last updated: 2026-08-06
+Last updated: 2026-08-08
 Applies to: d-token `0.2.0-beta.1` source and desktop distribution candidates
 
 This file is the distribution-facing third-party notice for d-token. The project itself is licensed under the Apache License 2.0; see [`LICENSE`](LICENSE). Release installers must include both `LICENSE` and this file under their legal resources.
@@ -81,6 +81,15 @@ Versioned `headroom-*/` directories are local reference workspaces and are exclu
 - Local read-only research copy: `/Users/cc/Documents/d-token-external/lean-ctx/` (not distributed)
 
 lean-ctx informed behavior studies for the LeanCTX / Context Bus / Context Relay capability domain (`docs/PRD.md` P0.0.5). Its source code and binaries are not distributed as part of d-token. Headroom upstream removed its lean-ctx integration in `#2677` (merged 2026-07-31); d-token's LeanCTX alignment layer must be implemented as a d-token-owned Rust service and remains `unavailable`/`partial` until real cross-agent evidence exists.
+
+### RTK (integrated command-layer behavior baseline)
+
+- Upstream: `rtk-ai/rtk` (official remote `https://github.com/rtk-ai/rtk.git`)
+- Pinned release/commit: `v0.45.0` / `b34be37caf3796b69a50952a28e60e32b5daad43` (released 2026-08-07; git tags `v0.45.0` and `latest` both point at this commit; `Cargo.toml` version `0.45.0`)
+- License: Apache License 2.0 (root `LICENSE` verified 2026-08-08; standard sections 1-9 complete, ends with an embedded `Copyright 2024 rtk-ai and rtk-ai Labs` line instead of the appendix boilerplate)
+- NOTICE: none — the pinned commit has no root `NOTICE` file (no `NOTICE*` file anywhere in the repository)
+
+RTK is a behavior-migration baseline for d-token's integrated/managed command-output layer, not an implicitly bundled external runtime and not a standalone product path (`docs/PRD.md` §0.3/§4.2/§7). d-token does not install RTK separately by default and does not distribute the RTK binary. The d-token managed RTK lifecycle (command rewrite, shim/hook, fail-safe, usage metadata, precise uninstall) is implemented by the d-token-owned `dtoken-preprocessor` crate. External standalone RTK installs are only detected read-only as conflict hints. `rtk gain` is not used as a product polling path; RTK savings shown in d-token come from d-token runtime metrics or integrated RTK metrics only.
 
 ### pxpipe
 
