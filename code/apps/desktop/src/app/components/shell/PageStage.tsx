@@ -1,8 +1,10 @@
 /*
  * Adapted for d-token from AiMaMi's PageStage at
  * commit 297c7af56f10fb371b77bc9b6b65aa320afcbe7e (Apache-2.0).
- * Modified: AnimatePresence lifecycle, d-token spacing, reduced-motion path,
- * and non-interactive heading readiness measurement for lazy content.
+ * Modified: CSS-attribute-driven shell wrapper (shell-page-stage plus
+ * data-page-motion/data-reduced-motion consumed by shell.css) instead of
+ * upstream's inline state transitions; d-token spacing; explicit reduced-motion
+ * data state; non-interactive heading readiness measurement for lazy content.
  */
 import { type ReactNode, useEffect, useRef } from "react";
 import { performanceNow, recordPerformanceDuration } from "../../lib/performance";
