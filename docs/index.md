@@ -24,6 +24,7 @@
 ## 2. 当前代码与产品专题
 
 - [`product/IMPLEMENTATION_STATUS.md`](product/IMPLEMENTATION_STATUS.md) — 当前代码事实快照。
+- [`superpowers/specs/2026-09-19-context-engine-five-page-refactor-design.md`](superpowers/specs/2026-09-19-context-engine-five-page-refactor-design.md) — 已确认方向 A 的五页应用、统一上下文引擎、Local/Jev 双模式与 Optical 退出设计规格；实施前仍需完成书面规格复核与计划评审。
 - [`PRD.md`](PRD.md#125-桌面视觉布局与交互产品契约) — UI 视觉、布局、交互、真实性和验收的唯一产品契约。
 - [`research/open-source-reference.md`](research/open-source-reference.md) — 外部项目参考，只用于设计与研究，不是运行时依赖。
 - [`research/aimami-dtoken-deep-study-2026-07-12/README.md`](research/aimami-dtoken-deep-study-2026-07-12/README.md) — AiMaMi 源码、桌面产品、前端 UI/动画、Tauri/Rust、状态、算法、安全、差距与三轮审核的完整专题研究。

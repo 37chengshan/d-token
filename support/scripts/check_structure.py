@@ -25,6 +25,7 @@ REQUIRED = [
     "docs/legal/THIRD_PARTY_NOTICES.md",
     "docs/legal/AIMAMI_APACHE_2_0_LICENSE.txt",
     "docs/product/IMPLEMENTATION_STATUS.md",
+    "docs/superpowers/specs/2026-09-19-context-engine-five-page-refactor-design.md",
     "docs/research/FRONTEND_UI_PERFORMANCE_AUDIT_2026-07-15.md",
     "docs/research/BACKEND_PERFORMANCE_AUDIT_2026-07-15.md",
     "docs/research/PERFORMANCE_REPORTS_MULTIDIMENSIONAL_REVIEW_2026-07-15.md",
