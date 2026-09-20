@@ -2,7 +2,9 @@
 
 日期：2026-09-19
 
-状态：方向 A 已获用户确认，等待书面规格复核
+修订：2026-09-20，扩大 Jev 为完整实时上下文决策层
+
+状态：方向 A 与扩大后的 Jev 定位已获用户确认，等待书面规格复核
 
 类型：产品与系统架构规格
 
@@ -19,10 +21,11 @@ d-token 将从按技术模块堆叠能力的桌面控制面，收敛为面向 AI
 1. 一级页面收敛为五个：配置、高级配置、分析日志、诊断、设置。
 2. 删除 Optical 图片转文本压缩产品线；普通多模态输入继续按上游协议透传。
 3. 无 Jev Key 时，本地 Rust 引擎提供完整基础能力，不下载额外大模型，不依赖 Python sidecar。
-4. 有 Jev Key 时，Jev 作为可选的结构化决策器参与候选筛选；压缩执行、保护、预算、恢复和校验仍由本地引擎负责。
+4. 有 Jev Key 时，Jev 作为完整实时上下文决策层，参与工具输出在线裁剪、增量历史选择、会话级 compaction、恢复与检索排序；压缩执行、保护、预算、恢复存储和校验仍由本地引擎负责。
 5. 模型路由与上下文压缩分开授权、分开配置、分开计量。启用 Jev 判断不授权自动更换主模型。
 6. 建立唯一上下文编排链路，普通 HTTP、MCP 和桌面入口只承担协议适配，不复制压缩业务逻辑。
 7. 采用渐进迁移：先建立可观测基线和新信息架构，再迁移本地引擎、Jev shadow 与 Optical 退出，最后删除兼容层。
+8. 代码、规则、Skill、MCP、工具和模型路由复用同一套版本化 Decision Workflow 基础，但分别授权、校准、发布和关闭。
 
 该规格定义目标状态和迁移边界。它不声明当前代码已经实现这些能力，也不替代后续逐文件实施计划。
 
@@ -35,6 +38,7 @@ d-token 将从按技术模块堆叠能力的桌面控制面，收敛为面向 AI
 - 连接已有编码工具并知道连接是否真正生效。
 - 在没有 Jev Key 时使用可靠的本地上下文优化。
 - 在有 Jev Key 时选择是否启用语义判断增强。
+- 在工具结果进入上下文前实时去除可恢复的噪声，并在长会话中保留仍然有效的历史。
 - 查看一次请求执行了什么、为什么执行、去了哪个上游、能否恢复。
 - 在出现问题时完成诊断、修复、复检和必要回退。
 - 使用代码图谱和智能学习，而不让它们阻塞核心请求链路。
@@ -50,6 +54,7 @@ d-token 将从按技术模块堆叠能力的桌面控制面，收敛为面向 AI
 5. 压缩失败可以安全保留原请求；请求已经向上游提交后不得自动重复发送原文。
 6. Optical 旧配置无法重新激活已经删除的生产能力，历史记录仍可解释。
 7. Jev active 只有在 shadow、replay、人工复核和预设质量门槛通过后才允许开启。
+8. 实时压缩同时覆盖工具结果、增量历史和上下文压力 compaction，且每条链路可以独立停用和降级。
 
 ## 3. 范围与非目标
 
@@ -58,6 +63,8 @@ d-token 将从按技术模块堆叠能力的桌面控制面，收敛为面向 AI
 - 五个一级页面及其信息职责。
 - 统一上下文引擎的领域边界与请求生命周期。
 - 本地确定性模式和 Jev 增强模式。
+- 工具结果进入上下文前的在线裁剪、历史新 span 的 sticky 判断和会话级 compaction。
+- 原文归档、恢复引用、代码/规则/Skill 相关性选择。
 - 决策问题的版本、静态检查、预算和失败语义。
 - 模型路由的独立授权边界。
 - 代码图谱与智能学习在新信息架构中的位置。
@@ -70,6 +77,7 @@ d-token 将从按技术模块堆叠能力的桌面控制面，收敛为面向 AI
 - 本轮不把 Figma 设计导入列为交付内容。
 - 不将 fast-jev-compaction、Winnow、Jev Codex Router、LitJev、LLMLingua 或外部 Headroom 作为运行时依赖。
 - 不在首版默认下载或打包本地大模型。
+- 不默认启用工具风险拦截、完成声明拦截或长期记忆写入；这些 workflow 只预留统一接口，必须独立评审和授权。
 - 不承诺未经 d-token 工作负载实验验证的压缩率、成本降低或准确率。
 - 不把所有历史 Headroom 能力继续定义为必须追平的功能清单。
 - 不在应用中建立独立 benchmark、fixture、smoke test 或 testing center 一级页面。
@@ -101,6 +109,10 @@ DecisionProvider 只输出结构化建议。保护规则、动作许可、预算
 
 内部模块可以保留技术名称，一级页面只按用户任务组织。状态卡、动效和说明不能取代主要任务入口。
 
+### 4.7 把判断移出请求临界路径
+
+工具输出裁剪可以在结果回传前执行，增量历史判断优先在工具调用结束后或两轮请求之间执行。Provider 请求发送阶段只重放已验证的 sticky decision，避免对同一历史重复调用 Jev。必须同步判断时使用明确的数量、延迟和费用上限；达到期限时保留原文并继续请求。
+
 ## 5. 产品信息架构
 
 ### 5.1 配置
@@ -114,8 +126,9 @@ DecisionProvider 只输出结构化建议。保护规则、动作许可、预算
 1. 当前实际状态：服务是否运行、模式是什么、最近是否观察到真实请求。
 2. 已发现的编码工具：选择目标后执行一次配置事务。
 3. 每个工具分别显示待配置、配置完成、已观察到请求、失败或证据不足。
-4. Jev 可选增强：Key 状态、连接状态、允许发送的内容范围、预算和 shadow/active 状态。
-5. 最近一次有效请求及“查看效果”入口，跳转到分析日志的对应记录。
+4. 引擎模式：本地智能压缩或 Jev 实时压缩。Jev 模式展示 Key 状态、连接状态、允许发送的内容范围、预算和 shadow/active 状态。
+5. Jev 实时能力：工具输出裁剪、增量历史优化、会话 compaction、代码上下文排序；每项显示真实运行和降级状态。
+6. 最近一次有效请求及“查看效果”入口，跳转到分析日志的对应记录。
 
 配置写入成功与运行时请求生效必须分开显示。用户完成一次点击配置即授权该批已选 Agent 的受管写入；该流程沿用 PRD P0.0.10 的事务、备份、验证和回退合同。
 
@@ -138,6 +151,8 @@ DecisionProvider 只输出结构化建议。保护规则、动作许可、预算
 - 压缩策略和上下文预算。
 - 智能学习和项目说明。
 - Jev 决策策略和 shadow/active 控制。
+- 工具输出阈值、增量判断、sticky decision 生命周期和会话 compaction 阈值。
+- Jev Workflow：代码/文件排序、规则/Skill 选择、完成验证、记忆候选和诊断分级。
 - 模型路由候选及授权。
 - 原文恢复、决策缓存、TTL 和配额。
 
@@ -155,6 +170,7 @@ DecisionProvider 只输出结构化建议。保护规则、动作许可、预算
 - 本地估算的输入变化。
 - Provider 返回的 usage 字段。
 - Jev 调用次数、延迟和可用成本。
+- 工具输出、增量历史、会话 compaction 分别产生的保留、裁剪、恢复和降级结果。
 - 压缩跳过、降级和恢复次数。
 - 有明确证据时的净成本估算。
 
@@ -165,6 +181,8 @@ DecisionProvider 只输出结构化建议。保护规则、动作许可、预算
 - 实际目标 Provider 和模型。
 - 候选内容、实际变换和跳过原因。
 - Jev 是否参与、采用哪个问题集版本、返回何种判断。
+- 判断发生在工具返回、轮次间、请求发送或 compaction 中的哪个阶段。
+- sticky decision 是首次生成还是直接重放。
 - 本地校验是否接受或否决决策。
 - 恢复引用是否创建、是否使用、是否过期。
 - usage 来源和估算方法。
@@ -197,7 +215,7 @@ OpenCode / Claude Code / Codex / Cursor / Cline / other Agent
   → dtoken-runtime-pipeline
   → dtoken-context-engine
       ├─ dtoken-compress
-      ├─ dtoken-decision
+      ├─ dtoken-decision / workflow registry
       ├─ dtoken-context-store
       └─ dtoken-router
   → configured upstream
@@ -223,6 +241,7 @@ ContextEnvelope
 作为唯一领域编排器，负责：
 
 - 识别保护块和候选块。
+- 在工具返回、轮次间、请求发送和 compaction 四个时机调度对应 workflow。
 - 调用内容类型 codec。
 - 按策略调用 DecisionProvider。
 - 执行预算和收益检查。
@@ -248,13 +267,15 @@ ContextEnvelope
 
 ### 6.4 `dtoken-decision`
 
-定义统一的 DecisionProvider 接口及三类实现：
+定义统一的 DecisionProvider、StateBuilder、QuestionSet、DecisionPolicy 和 WorkflowRegistry，以及三类 provider 实现：
 
 1. `LocalDecisionProvider`：确定性规则、结构和有限词面证据。
 2. `JevDecisionProvider`：TypeSafe Jev 托管 API，可选启用。
 3. `ExperimentalCompatibleProvider`：未来 LitJev 风格 HTTP 端点，仅实验配置可见。
 
-DecisionProvider 的最小输入包括：任务摘要、候选描述、允许发送的候选正文、保护信息、预算和问题集版本。
+每个 Decision Workflow 绑定自己的触发时机、StateBuilder、问题集、动作集合、阈值、超时、fallback、shadow 状态和 kill switch。工具输出裁剪、历史淘汰、代码排序、模型路由和完成验证不得共用一个固定阈值。
+
+DecisionProvider 的最小输入包括：workflow_id、任务摘要、候选描述、允许发送的候选正文、保护信息、预算和问题集版本。
 
 最小输出包括：
 
@@ -263,6 +284,7 @@ DecisionProvider 的最小输入包括：任务摘要、候选描述、允许发
 - Choice/Score 分布或 Noul 概率。
 - 置信度是否可用。
 - 决策 provider 和模型身份。
+- workflow_id、workflow_version 和 policy_version。
 - 问题集版本。
 - 理由码。
 - 延迟、usage 或失败原因。
@@ -273,6 +295,8 @@ DecisionProvider 的最小输入包括：任务摘要、候选描述、允许发
 
 - 原文恢复对象。
 - 决策缓存。
+- sticky keep/omit decision、源内容 hash、精确 offset 和连续性边界。
+- 工具输出 archive 及其权限、TTL 和恢复状态。
 - replay 所需的脱敏候选和结果。
 - 项目、会话、策略版本之间的关联。
 
@@ -357,6 +381,24 @@ DecisionProvider 的最小输入包括：任务摘要、候选描述、允许发
 
 上游提交前失败可以安全使用原请求。上游已经接收请求后，不自动补发原文，避免重复执行工具、重复修改和重复计费。
 
+### 7.7 四个实时执行时机
+
+#### 工具结果回传前
+
+对超过内容类型阈值的 Bash、构建、测试、搜索和其他大结果分块。错误、诊断、结果汇总、路径、首尾、源代码、diff、结构化文档和未完整评分的块强制保留。原文先进入受控 archive；Jev 失败或 archive 不可用时原样返回。
+
+#### 两轮请求之间
+
+对新进入会话的闭合 tool call/result、teammate report 和大型历史字段做增量判断。决定与源 hash、offset、策略版本和连续性边界一起保存。后续请求只重放 sticky decision，不重新判断旧内容。
+
+#### Provider 请求发送前
+
+执行协议校验、保护规则、sticky decision 重放和最终预算检查。该阶段默认不发起大量新的 Jev 调用；同步缺失判断达到期限后保留原文。
+
+#### 上下文压力触发时
+
+对超出宿主保留窗口的历史执行会话级 compaction。用户与 assistant 文本默认保持原文；tool call/result 成对选择保留全文、保留调用并截断结果、或成对淘汰。收益不足、状态无法装入、响应不完整或 Jev 不可用时回到宿主原生 compaction 或安全保留路径。
+
 ## 8. 无 Jev Key 的本地模式
 
 本地模式默认启用，并满足：
@@ -382,12 +424,25 @@ DecisionProvider 的最小输入包括：任务摘要、候选描述、允许发
 
 ### 9.1 Jev 的职责
 
-Jev 只用于适合 Choice、Score、Noul 的结构化问题，例如：
+Jev 是实时上下文决策层，负责把模糊的相关性、保留价值、优先级和验证问题转换成 Choice、Score、Noul 结果。首批压缩 workflow 包括：
 
-- 某个闭合工具结果是否仍与当前任务相关。
-- 某个旧结果是否已被新结果取代。
-- 多个检索结果的保留优先级。
-- 在独立启用模型路由时，任务属于哪个批准的复杂度层级。
+| Workflow | 触发时机 | 判断目标 | 可执行动作 |
+|---|---|---|---|
+| `tool_output_retention` | 工具结果回传前 | 输出块是否仍需进入主模型上下文 | 保留、局部裁剪、原样降级 |
+| `arrival_span_retention` | 工具结束或轮次间 | 新增历史 span 是否值得后续重复发送 | sticky keep、sticky omit、defer |
+| `session_compaction` | 宿主 compaction 或压力阈值 | 旧 tool call/result 是否仍需完整存在 | 保留全文、截断结果、成对淘汰 |
+| `context_ranking` | 检索或图谱查询后 | 文件、符号、代码片段和搜索结果的优先级 | 排序、top-k、abstain |
+| `rule_skill_selection` | 新任务开始或意图改变 | 哪些项目规则、Skill、MCP 或命令需要加载 | 选择、拒绝、abstain |
+
+架构预留但不随首批压缩自动开启的 workflow 包括：
+
+- `memory_write_qualification`：候选事实是否值得进入长期项目记忆。
+- `completion_verification`：Agent 的完成声明是否具有测试或结果证据。
+- `diagnostic_priority`：Doctor 和日志问题的影响等级及处理顺序。
+- `tool_action_review`：工具调用是否与当前用户目标一致；它不是操作系统安全边界。
+- `model_effort_routing`：在用户批准的候选集合中选择模型层级和推理强度。
+
+这些 workflow 共用 provider、凭据、预算和可观测性基础，但不共用动作权限和发布状态。
 
 Jev 不负责：
 
@@ -396,10 +451,11 @@ Jev 不负责：
 - 改写用户凭据。
 - 绕过本地保护与预算。
 - 从未批准模型中自行选择路由。
+- 把 schema-valid 判断宣传为一定正确。
 
 ### 9.2 数据最小化
 
-默认只发送完成判断所需的最小状态：当前任务、候选描述、必要候选正文和稳定约束。用户可选择更严格的数据范围；如果授权范围不足以判断正文语义，引擎使用本地策略，不伪装为语义判断成功。
+默认只发送完成当前 workflow 判断所需的最小状态：当前任务、候选描述、必要候选正文、稳定约束和有限历史证据。不同 workflow 分别声明会发送的字段。用户可选择更严格的数据范围；如果授权范围不足以判断正文语义，引擎使用本地策略，不伪装为语义判断成功。
 
 ### 9.3 问题集管理
 
@@ -411,16 +467,18 @@ Jev 不负责：
 - 允许动作映射。
 - 校准数据版本。
 - 风险等级。
+- 触发时机和允许读取的数据范围。
+- 超时、abstain、fallback 和 kill switch。
 
 发送前执行离线 lint，拒绝：单选项 Choice、单层级 Score、复合问题、条件问题、裸标签、缺少逃生选项、上下文超限和无法映射的输出。
 
 ### 9.4 批处理和预算
 
-同一请求中共享 state 的独立问题可批量发送，但受总 token、问题数量、延迟和费用预算约束。缓存键至少绑定项目/会话范围、候选内容摘要、任务版本、Jev 模型和问题集版本。
+同一 workflow 中共享 state 的独立问题可批量发送，但受总 token、问题数量、延迟和费用预算约束。不同 workflow 不为节省一次请求而混合不相关 state。缓存键至少绑定项目/会话范围、候选内容摘要、任务版本、Jev 模型、workflow 版本和问题集版本。
 
 ### 9.5 失败与降级
 
-Key 缺失、凭据错误、超时、限流、响应不完整、解析失败或低置信度都生成明确 reason code，并回到本地确定性基线。降级不改变用户主模型。
+Key 缺失、凭据错误、超时、限流、响应不完整、解析失败、低置信度或覆盖不完整都生成明确 reason code，并回到该 workflow 的保守动作：上下文 workflow 保留原文，排序 workflow abstain，路由 workflow 保留原模型，验证 workflow 只记录 unknown。
 
 ### 9.6 Shadow 到 Active
 
@@ -428,9 +486,9 @@ Jev 上线分三步：
 
 1. Shadow：记录判断，不修改生产请求。
 2. Guarded active：只对已验证内容类型和低风险动作生效。
-3. Expanded active：在新内容类型单独通过门槛后扩展。
+3. Expanded active：在新内容类型或新 workflow 单独通过门槛后扩展。
 
-每一步都保留 kill switch，可以立即回到本地模式。
+每个 workflow 独立推进这三个状态并保留 kill switch。工具输出 active 不代表历史 compaction、模型路由或完成验证已经获得授权。
 
 ## 10. 模型路由边界
 
@@ -521,8 +579,10 @@ Optical 迁移必须在删除配置类型前先提供读取与转换路径，避
 - request_id、session_id、project_id、agent_id。
 - 原目标与实际 Provider/model。
 - provider/model 是否变化。
-- engine_mode、policy_version、question_set_version。
+- engine_mode、workflow_id、workflow_version、policy_version、question_set_version。
+- decision_stage、source_hash、source_offset 和 sticky decision 是否重放。
 - 候选、采用动作、否决动作和原因码。
+- 输入覆盖是否完整、保护规则是否覆盖决策、archive 和 recovery reference 状态。
 - 本地估算 token、Provider usage 和估算来源。
 - Jev usage、延迟和成本字段。
 - validation、recovery 和降级结果。
@@ -535,6 +595,7 @@ Optical 迁移必须在删除配置类型前先提供读取与转换路径，避
 - 所有服务默认只绑定 `127.0.0.1`。
 - Jev Key 只进入操作系统凭据库，配置保存不透明引用。
 - UI 明确区分“保存 Key”和“授权发送哪些上下文”。
+- 每个 Decision Workflow 分别声明数据范围；启用工具输出裁剪不自动授权发送源代码、完整历史或长期记忆候选。
 - 日志、导出和错误消息不包含凭据、Authorization、cookie、完整 prompt/response 或源代码。
 - 决策缓存和恢复对象按项目、会话、用户权限隔离。
 - Jev 请求遵循内容范围、预算和 retention 设置。
@@ -552,8 +613,12 @@ Optical 迁移必须在删除配置类型前先提供读取与转换路径，避
 - 精确字符串替换。
 - 代码搜索和多轮工具调用。
 - 长测试输出。
+- 大型 Bash、搜索、构建和安装输出在进入上下文前的在线裁剪。
+- 新 span sticky 决策在后续轮次的一致重放。
+- 多次 compaction 后原始 tool call/result 的成对完整性。
 - 历史约束保留。
 - 恢复引用调用。
+- 代码、规则和 Skill 排序的 abstain 与错误候选。
 
 ### 15.2 比较组
 
@@ -561,7 +626,10 @@ Optical 迁移必须在删除配置类型前先提供读取与转换路径，避
 
 1. 原文基线。
 2. 本地模式。
-3. Jev shadow/active 候选。
+3. Jev 工具输出 shadow/active。
+4. Jev sticky history shadow/active。
+5. Jev session compaction 候选。
+6. 宿主原生 compaction 对照。
 
 控制主模型、输入、预算和缓存条件。随机任务执行多次。
 
@@ -573,6 +641,8 @@ Optical 迁移必须在删除配置类型前先提供读取与转换路径，避
 - 本地估算输入变化。
 - Provider usage 与缓存字段。
 - Jev 附加延迟和成本。
+- 各 workflow 的调用次数、缓存命中、sticky replay、超时和失败率。
+- 请求临界路径等待时间与轮次间后台判断时间。
 - 恢复次数、恢复成功率和恢复后任务结果。
 - regret：被删除内容随后是否需要取回，以及未能及时取回造成的失败。
 - 校准误差和人工盲标一致性。
@@ -599,7 +669,13 @@ Optical 迁移必须在删除配置类型前先提供读取与转换路径，避
 
 ### D4：Jev Shadow
 
-实现 Jev adapter、问题 lint、预算、缓存和 shadow evidence。退出条件是没有生产删除，replay、校准和人工复核达到预先设定门槛。
+先实现共享 provider、workflow registry、问题 lint、预算、决策缓存和 shadow evidence，再分三个独立 lane 验证：
+
+1. 工具输出块级裁剪 shadow。
+2. 新历史 span sticky keep/omit shadow。
+3. 会话级 compaction shadow。
+
+退出条件是没有生产删除，每个 lane 分别完成 replay、校准、人工复核、超时和费用评估；一个 lane 通过不能替代其他 lane 的证据。
 
 ### D5：Optical 退出
 
@@ -607,7 +683,7 @@ Optical 迁移必须在删除配置类型前先提供读取与转换路径，避
 
 ### D6：Jev Active
 
-按内容类型启用 guarded active，保留 kill switch 和本地降级。退出条件是任务质量、附加延迟、净成本和恢复指标同时满足门槛。
+按风险和执行时机逐步启用：先启用具备本地 archive 的工具输出 guarded active，再启用轮次间 sticky history，最后评审会话级 compaction。代码/规则/Skill 排序作为独立 workflow 进入 shadow；模型路由、完成验证和记忆写入仍保持关闭。所有 workflow 保留独立 kill switch 和本地降级。退出条件是任务质量、附加延迟、净成本、缓存行为和恢复指标同时满足各自门槛。
 
 ### D7：收尾与候选验收
 
@@ -638,7 +714,12 @@ Optical 迁移必须在删除配置类型前先提供读取与转换路径，避
 | 项目 | Commit | License | 采用边界 |
 |---|---|---|---|
 | [awesome-jev](https://github.com/fatwang2/awesome-jev) | `f036095ba8203001d40be955f3486cd3e0d0a81b` | MIT | 项目发现 |
+| [awesome-jev-typesafe](https://github.com/valentynkit/awesome-jev-typesafe) | `bfe207b05b6a8ede9f7b76fcdc113f393415e933` | MIT | 实时 compaction、agent workflow 补充索引 |
 | [fast-jev-compaction](https://github.com/tamaratran/fast-jev-compaction) | `e3f262a7f4d42bd8dd32ced30d26176f7cb545b0` | MIT | 工具配对、批量判断参考 |
+| [Yoshi](https://github.com/compozy/yoshi) | `55c719718e5039f2276fbad804211682ae012f1e` | MIT | Claude/Codex 代理、sticky span 决策和实测正负结果 |
+| [save-token-jev](https://github.com/IAmUnbounded/save-token-jev-clean) | `a7007354a8d3747f06ff82130561edb2822a17df` | MIT | Claude、Codex、OpenCode 与 transcript compaction 适配 |
+| [jev-pruner](https://github.com/tamaratran/jev-pruner) | `47d017c34eab7690b95f075ce6f4839247c5dc0a` | MIT | 工具输出进入上下文前的实时裁剪、archive 和恢复 |
+| [pi-jev-compaction](https://github.com/vava-nessa/pi-jev-compaction) | `4fcb116ef575ee69e6dcc5201771028bb91b00b0` | MIT | 宿主 compaction hook、原文保留和显式 fallback |
 | [Jev Codex Router](https://github.com/0xNatoshi/jev-codex-router) | `8292b519659280884627a962c826ac7721136a64` | MIT | shadow、kill switch、路由分层参考 |
 | [Winnow](https://github.com/GhalebDweikat/winnow) | `51d80b945c74c8384bc47fa817179f668289afd8` | MIT | replay、regret、恢复评估参考 |
 | Jevkit | `4bda844160cca340897a72d4fa2763dd7b826a82` | MIT | 问题 lint 参考 |
@@ -651,6 +732,8 @@ Jev 的协议和概率解释以 [TypeSafe AI Primitives](https://docs.typesafe.a
 ## 19. 已知不确定项
 
 - Jev 在 d-token 编码任务上的阈值、延迟和净收益尚未实测。
+- 工具输出、sticky history 和 session compaction 的最佳执行阈值可能完全不同，不能从社区默认值继承。
+- Yoshi 的公开结果同时包含有效裁剪和零收益高延迟案例，d-token 是否能通过轮次间判断消除热路径延迟需要实测。
 - 本地规则对深层语义的上限需要通过 replay 数据确认。
 - 现有 Optical 类型中哪些属于通用保护 IR，需要实施前按调用图确认。
 - `dtoken-context-engine` 最终采用新 crate 还是 core-api 内部模块，需要在依赖图与最小迁移切片中决定。
@@ -664,6 +747,8 @@ Jev 的协议和概率解释以 [TypeSafe AI Primitives](https://docs.typesafe.a
 - [x] 目标、用户和成功标准明确。
 - [x] 五页职责没有重复配置入口。
 - [x] 本地模式与 Jev 模式职责清楚。
+- [x] Jev 覆盖工具输出实时裁剪、sticky history、session compaction 和上下文排序。
+- [x] 每个 Decision Workflow 具有独立状态、阈值、fallback 和 kill switch。
 - [x] 模型路由具有独立授权边界。
 - [x] 请求生命周期包含保护、恢复和发送前校验。
 - [x] Optical 退出包含配置、运行时、历史和多模态兼容。
