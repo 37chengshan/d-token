@@ -2367,6 +2367,15 @@
       "summary": "docs: 扩展 Jev 为实时上下文决策层并补充在线压缩研究",
       "head_before": "eefd30619855",
       "remote": null
+    },
+    {
+      "id": "d0b1aa27-b16b-4bcb-a146-a4bc022ae54e",
+      "timestamp": "2026-09-20T09:27:47+08:00",
+      "operation": "commit",
+      "branch": "codex/final-release-iteration",
+      "summary": "add executable context engine refactor plans",
+      "head_before": "81d77740c167",
+      "remote": null
     }
   ]
 }

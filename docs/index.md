@@ -24,7 +24,13 @@
 ## 2. 当前代码与产品专题
 
 - [`product/IMPLEMENTATION_STATUS.md`](product/IMPLEMENTATION_STATUS.md) — 当前代码事实快照。
-- [`superpowers/specs/2026-09-19-context-engine-five-page-refactor-design.md`](superpowers/specs/2026-09-19-context-engine-five-page-refactor-design.md) — 已确认方向 A 的五页应用、统一上下文引擎、Local/Jev 双模式与 Optical 退出设计规格；实施前仍需完成书面规格复核与计划评审。
+- [`superpowers/specs/2026-09-19-context-engine-five-page-refactor-design.md`](superpowers/specs/2026-09-19-context-engine-five-page-refactor-design.md) — 已批准的方向 A 设计规格：五页应用、统一上下文引擎、Local/Jev 双模式与 Optical 退出边界。
+- [`superpowers/plans/2026-09-20-dtoken-refactor-program.md`](superpowers/plans/2026-09-20-dtoken-refactor-program.md) — 已批准规格的总实施入口；按合同与可观测性、本地引擎、Jev 实时工作流、五页桌面端、Optical 退出五个阶段串行执行。
+- [`superpowers/plans/2026-09-20-dtoken-refactor-01-contract-observability.md`](superpowers/plans/2026-09-20-dtoken-refactor-01-contract-observability.md) — 阶段 1：决策合同、SQLite 投影、Event Ledger 与脱敏可观测性。
+- [`superpowers/plans/2026-09-20-dtoken-refactor-02-local-context-engine.md`](superpowers/plans/2026-09-20-dtoken-refactor-02-local-context-engine.md) — 阶段 2：无 Jev Key 也完整可用的确定性本地上下文引擎。
+- [`superpowers/plans/2026-09-20-dtoken-refactor-03-jev-realtime-workflows.md`](superpowers/plans/2026-09-20-dtoken-refactor-03-jev-realtime-workflows.md) — 阶段 3：五个隔离、可降级、可停用的 Jev 实时上下文工作流。
+- [`superpowers/plans/2026-09-20-dtoken-refactor-04-five-page-desktop.md`](superpowers/plans/2026-09-20-dtoken-refactor-04-five-page-desktop.md) — 阶段 4：配置、高级配置、分析日志、诊断、设置五页桌面信息架构。
+- [`superpowers/plans/2026-09-20-dtoken-refactor-05-optical-retirement-release.md`](superpowers/plans/2026-09-20-dtoken-refactor-05-optical-retirement-release.md) — 阶段 5：Optical 主动能力退出、历史兼容与同一候选提交发布验收。
 - [`PRD.md`](PRD.md#125-桌面视觉布局与交互产品契约) — UI 视觉、布局、交互、真实性和验收的唯一产品契约。
 - [`research/open-source-reference.md`](research/open-source-reference.md) — 外部项目参考，只用于设计与研究，不是运行时依赖。
 - [`research/aimami-dtoken-deep-study-2026-07-12/README.md`](research/aimami-dtoken-deep-study-2026-07-12/README.md) — AiMaMi 源码、桌面产品、前端 UI/动画、Tauri/Rust、状态、算法、安全、差距与三轮审核的完整专题研究。
