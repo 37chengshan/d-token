@@ -6,6 +6,18 @@ use dtoken_types::{
 use serde::{Deserialize, Serialize};
 use std::{collections::HashSet, fs, path::Path};
 
+pub use dtoken_decision::{
+    DecisionConfigError, DecisionRuntimeConfig, DecisionWorkflow, WorkflowFallback, WorkflowMode,
+    WorkflowPolicy,
+};
+
+/// Validate the optional decision section at its config boundary. The main
+/// `DtokenConfig` keeps this section separate until the desktop transaction
+/// wiring is ready, so legacy literals remain byte-compatible.
+pub fn validate_decision_config(config: &DecisionRuntimeConfig) -> Result<(), DecisionConfigError> {
+    config.validate()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum OpticalConfigIssue {

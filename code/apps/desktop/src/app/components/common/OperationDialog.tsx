@@ -21,6 +21,7 @@ export function OperationDialog({
   summary,
   impact,
   details,
+  error,
   confirmLabel,
   cancelLabel,
   risk = "normal",
@@ -34,6 +35,7 @@ export function OperationDialog({
   summary: string;
   impact?: string;
   details?: ReactNode;
+  error?: string;
   confirmLabel: string;
   cancelLabel: string;
   risk?: OperationRisk;
@@ -43,7 +45,7 @@ export function OperationDialog({
 }) {
   return (
     <AlertDialog open={open} onOpenChange={(next) => { if (!pending) onOpenChange(next); }}>
-      <AlertDialogContent className="max-w-xl" data-operation-risk={risk}>
+      <AlertDialogContent className="max-w-xl" data-operation-risk={risk} aria-busy={pending}>
         <AlertDialogHeader>
           <AlertDialogTitle className="flex items-center gap-2">
             {risk !== "normal" && <AlertTriangle className={cn("size-4", risk === "danger" ? "text-destructive" : "text-amber-600")} />}
@@ -53,6 +55,7 @@ export function OperationDialog({
         </AlertDialogHeader>
         {impact && <div className="rounded-lg border border-border bg-muted/40 p-3 text-sm text-muted-foreground">{impact}</div>}
         {details}
+        {error && <p role="alert" className="text-sm leading-relaxed text-destructive">{error}</p>}
         <AlertDialogFooter>
           <AlertDialogCancel disabled={pending}>{cancelLabel}</AlertDialogCancel>
           <AlertDialogAction

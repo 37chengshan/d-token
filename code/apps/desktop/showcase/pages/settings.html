@@ -1,0 +1,150 @@
+<!-- ============================================================
+     页面：系统设置 (Settings)
+     ============================================================ -->
+<div class="settings-page space-y-5">
+  <!-- 标题与说明 -->
+  <div class="border-b border-border/70 pb-3">
+    <h2 class="text-base font-semibold tracking-tight text-foreground">系统设置</h2>
+    <p class="mt-0.5 text-xs text-muted-foreground">管理 d-token 本地运行时、外观主题、网络代理与安全脱敏规则</p>
+  </div>
+
+  <!-- 分组 1: 外观与个性化 -->
+  <div class="rounded-xl border border-border/70 bg-card p-5 shadow-sm space-y-4" data-settings-section="appearance">
+    <header class="border-b border-border/50 pb-2.5">
+      <h3 class="text-sm font-semibold text-foreground">外观与界面个性化</h3>
+      <p class="text-xs text-muted-foreground">自定义深浅色模式、强调色调与无障碍动效体验</p>
+    </header>
+
+    <div class="space-y-4 pt-1 text-xs">
+      <!-- 主题外观选择 -->
+      <div class="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <div class="font-medium text-foreground">界面外观模式</div>
+          <div class="text-muted-foreground text-[11px]">选择明亮浅色、冷青灰深色或跟随系统设置</div>
+        </div>
+        <div class="segmented-control">
+          <button class="segmented-control-item" id="setting-theme-light">浅色</button>
+          <button class="segmented-control-item active" id="setting-theme-dark">深色</button>
+          <button class="segmented-control-item" id="setting-theme-system">跟随系统</button>
+        </div>
+      </div>
+
+      <!-- 强调色选择 -->
+      <div class="flex flex-wrap items-center justify-between gap-3 border-t border-border/40 pt-3">
+        <div>
+          <div class="font-medium text-foreground">品牌强调色</div>
+          <div class="text-muted-foreground text-[11px]">影响激活状态指示器、图表强调线与聚焦环颜色</div>
+        </div>
+        <div class="flex items-center gap-2">
+          <button class="size-6 rounded-full bg-orange-500 ring-2 ring-orange-500 ring-offset-2 ring-offset-background"></button>
+          <button class="size-6 rounded-full bg-sky-500 hover:opacity-80"></button>
+          <button class="size-6 rounded-full bg-emerald-500 hover:opacity-80"></button>
+          <button class="size-6 rounded-full bg-purple-500 hover:opacity-80"></button>
+        </div>
+      </div>
+
+      <!-- 减弱动画 -->
+      <div class="flex items-center justify-between border-t border-border/40 pt-3">
+        <div>
+          <div class="font-medium text-foreground">减弱动画 (Reduce Motion)</div>
+          <div class="text-muted-foreground text-[11px]">关闭页面进入缩放过渡与后台微光动效</div>
+        </div>
+        <input type="checkbox" class="size-4 accent-orange-500 cursor-pointer" />
+      </div>
+    </div>
+  </div>
+
+  <!-- 分组 2: 网络与本地代理安全 -->
+  <div class="rounded-xl border border-border/70 bg-card p-5 shadow-sm space-y-4" data-settings-section="network">
+    <header class="border-b border-border/50 pb-2.5">
+      <h3 class="text-sm font-semibold text-foreground">网络与本地代理安全</h3>
+      <p class="text-xs text-muted-foreground">本地优先安全边界保障，杜绝非授权网络监听</p>
+    </header>
+
+    <div class="space-y-4 pt-1 text-xs">
+      <div class="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <div class="font-medium text-foreground">本地回环监听地址 (Loopback Only)</div>
+          <div class="text-muted-foreground text-[11px]">安全策略强制锁定为本地环回，不可更改</div>
+        </div>
+        <span class="rounded bg-secondary px-2.5 py-1 font-mono text-[11px] text-emerald-400 font-semibold">
+          127.0.0.1 (已锁定)
+        </span>
+      </div>
+
+      <div class="flex flex-wrap items-center justify-between gap-3 border-t border-border/40 pt-3">
+        <div>
+          <div class="font-medium text-foreground">代理端口 (Proxy Port)</div>
+          <div class="text-muted-foreground text-[11px]">所有本地 Agent 请求重定向的目标端口</div>
+        </div>
+        <input type="text" value="18001" class="w-24 rounded border border-border bg-input-background px-2.5 py-1 text-center font-mono text-xs text-foreground" />
+      </div>
+
+      <div class="flex flex-wrap items-center justify-between gap-3 border-t border-border/40 pt-3">
+        <div>
+          <div class="font-medium text-foreground">上游网络请求超时时间</div>
+          <div class="text-muted-foreground text-[11px]">向 OpenAI / Anthropic / DeepSeek 发送请求的最大等待时限</div>
+        </div>
+        <span class="text-foreground font-mono">60 秒</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- 分组 3: 凭据与安全脱敏 -->
+  <div class="rounded-xl border border-border/70 bg-card p-5 shadow-sm space-y-4" data-settings-section="security">
+    <header class="border-b border-border/50 pb-2.5">
+      <h3 class="text-sm font-semibold text-foreground">凭据保护与审计日志</h3>
+      <p class="text-xs text-muted-foreground">API Key 与代码脱敏规则</p>
+    </header>
+
+    <div class="space-y-4 pt-1 text-xs">
+      <div class="flex items-center justify-between">
+        <div>
+          <div class="font-medium text-foreground">凭据存储位置</div>
+          <div class="text-muted-foreground text-[11px]">凭据只进入操作系统钥匙串，配置中只留不透明引用</div>
+        </div>
+        <span class="rounded bg-emerald-500/10 text-emerald-400 px-2 py-0.5 font-mono text-[11px]">macOS Keychain</span>
+      </div>
+
+      <div class="flex items-center justify-between border-t border-border/40 pt-3">
+        <div>
+          <div class="font-medium text-foreground">敏感信息自动脱敏 (Redaction)</div>
+          <div class="text-muted-foreground text-[11px]">禁止在屏幕、日志与导出报告中打印任何密钥与私有凭据</div>
+        </div>
+        <input type="checkbox" checked disabled class="size-4 accent-orange-500 cursor-not-allowed" />
+      </div>
+
+      <div class="flex items-center justify-between border-t border-border/40 pt-3">
+        <div>
+          <div class="font-medium text-foreground">审计账本保留周期</div>
+          <div class="text-muted-foreground text-[11px]">超时事件日志将自动在本地安全轮转清理</div>
+        </div>
+        <select class="rounded border border-border bg-input-background px-2.5 py-1 text-xs text-foreground">
+          <option>30 天 (推荐)</option>
+          <option>7 天</option>
+          <option>90 天</option>
+        </select>
+      </div>
+    </div>
+  </div>
+
+  <!-- 分组 4: 导出与重置 -->
+  <div class="rounded-xl border border-border/70 bg-card p-5 shadow-sm space-y-4" data-settings-section="export">
+    <header class="border-b border-border/50 pb-2.5">
+      <h3 class="text-sm font-semibold text-foreground">数据管理与导出</h3>
+      <p class="text-xs text-muted-foreground">导出备份配置或清空本地数据</p>
+    </header>
+
+    <div class="flex flex-wrap items-center gap-3 pt-1">
+      <button class="rounded-lg border border-border bg-secondary/60 px-3 py-2 text-xs font-medium text-foreground hover:bg-secondary">
+        导出配置备份 (.json)
+      </button>
+      <button class="rounded-lg border border-border bg-secondary/60 px-3 py-2 text-xs font-medium text-foreground hover:bg-secondary">
+        导出脱敏审计日志 (.jsonl)
+      </button>
+      <button class="rounded-lg border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs font-medium text-destructive hover:bg-destructive/20">
+        重置所有本地配置
+      </button>
+    </div>
+  </div>
+</div>

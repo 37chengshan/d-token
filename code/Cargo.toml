@@ -2,6 +2,8 @@
 members = [
   "crates/dtoken-types",
   "crates/dtoken-config",
+  "crates/dtoken-decision",
+  "crates/dtoken-context-engine",
   "crates/dtoken-router",
   "crates/dtoken-compress",
   "crates/dtoken-context-store",

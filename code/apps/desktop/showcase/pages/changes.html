@@ -1,0 +1,117 @@
+<!-- ============================================================
+     页面：变更与回退 (Changes & Rollback)
+     ============================================================ -->
+<div class="changes-page space-y-4">
+  <!-- 标题与子标签切换 -->
+  <div class="flex flex-wrap items-center justify-between gap-3 border-b border-border/70 pb-3" data-tab-group="changes-tabs">
+    <div class="flex items-center gap-2">
+      <button class="segmented-control-item active" data-tab-target="backup">还原点与备份 (Rollback Points)</button>
+      <button class="segmented-control-item" data-tab-target="history">事务审计流水 (Transaction Ledger)</button>
+    </div>
+    <div class="text-xs text-muted-foreground">
+      所有破坏性写操作必须具备可读摘要、Diff、受限持久备份与秒级回退证据
+    </div>
+  </div>
+
+  <div data-tab-content-group="changes-tabs">
+    <!-- 子标签 1: 还原点与备份 -->
+    <div class="tab-pane active space-y-4" data-tab-pane="backup">
+      <!-- 还原点卡片列表 -->
+      <div class="space-y-3">
+        <!-- 还原点 1 -->
+        <div class="rounded-xl border border-border/70 bg-card p-5 shadow-sm">
+          <div class="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <div class="flex items-center gap-2">
+                <span class="rounded bg-orange-500/10 px-2 py-0.5 font-mono text-xs font-bold text-orange-400">
+                  #BKP-20260906-004
+                </span>
+                <h3 class="text-sm font-semibold text-foreground">配置 Agent: OpenCode 代理端口指向 127.0.0.1:18001</h3>
+                <span class="rounded-full bg-emerald-500/15 px-2 py-0.5 text-[11px] font-medium text-emerald-400">完整性已校验</span>
+              </div>
+              <div class="mt-2 flex flex-wrap items-center gap-4 text-xs text-muted-foreground">
+                <span>操作时间：2026-09-06 16:42:15</span>
+                <span>目标：<code class="font-mono text-foreground">~/.config/opencode/config.json</code></span>
+                <span>受影响文件：1 个</span>
+                <span>操作员：用户一键配置授权</span>
+              </div>
+            </div>
+            <div class="flex items-center gap-2">
+              <button class="rounded-lg border border-border bg-secondary/60 px-3 py-1.5 text-xs font-medium text-foreground hover:bg-secondary">
+                查看 Diff
+              </button>
+              <button class="rounded-lg border border-destructive/40 bg-destructive/10 px-3 py-1.5 text-xs font-medium text-destructive hover:bg-destructive/20" data-open-modal="modal-rollback">
+                一键回退到此点
+              </button>
+            </div>
+          </div>
+
+          <!-- 展开的配置 Diff 视窗 -->
+          <div class="mt-4 rounded-lg border border-border/50 bg-black/40 p-3 diff-container">
+            <div class="text-[11px] text-muted-foreground pb-2 border-b border-border/30 mb-2">
+              Diff 比较: ~/.config/opencode/config.json
+            </div>
+            <div class="text-slate-400">  {</div>
+            <div class="text-slate-400">    "provider": "openai",</div>
+            <div class="diff-line-removed">-   "api_base": "https://api.openai.com/v1",</div>
+            <div class="diff-line-added">+   "api_base": "http://127.0.0.1:18001/v1",</div>
+            <div class="diff-line-added">+   "dtoken_managed": true,</div>
+            <div class="text-slate-400">    "model": "gpt-4o"</div>
+            <div class="text-slate-400">  }</div>
+          </div>
+        </div>
+
+        <!-- 还原点 2 -->
+        <div class="rounded-xl border border-border/70 bg-card p-5 shadow-sm">
+          <div class="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <div class="flex items-center gap-2">
+                <span class="rounded bg-secondary px-2 py-0.5 font-mono text-xs font-bold text-muted-foreground">
+                  #BKP-20260906-003
+                </span>
+                <h3 class="text-sm font-semibold text-foreground">配置 Agent: Claude Code 启用 d-token 代理</h3>
+                <span class="rounded-full bg-emerald-500/15 px-2 py-0.5 text-[11px] font-medium text-emerald-400">完整性已校验</span>
+              </div>
+              <div class="mt-2 flex flex-wrap items-center gap-4 text-xs text-muted-foreground">
+                <span>操作时间：2026-09-06 14:20:02</span>
+                <span>目标：<code class="font-mono text-foreground">~/.claude/config.json</code></span>
+                <span>受影响文件：1 个</span>
+              </div>
+            </div>
+            <div class="flex items-center gap-2">
+              <button class="rounded-lg border border-border bg-secondary/60 px-3 py-1.5 text-xs font-medium text-foreground hover:bg-secondary">
+                查看 Diff
+              </button>
+              <button class="rounded-lg border border-destructive/40 bg-destructive/10 px-3 py-1.5 text-xs font-medium text-destructive hover:bg-destructive/20" data-open-modal="modal-rollback">
+                一键回退到此点
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 子标签 2: 事务审计流水 -->
+    <div class="tab-pane space-y-4" data-tab-pane="history">
+      <div class="rounded-xl border border-border/70 bg-card p-5 shadow-sm">
+        <h3 class="text-sm font-semibold text-foreground border-b border-border/50 pb-3">不可篡改变更流水</h3>
+        <div class="mt-3 space-y-3 text-xs">
+          <div class="flex items-center justify-between py-2 border-b border-border/30">
+            <div>
+              <span class="font-mono text-[11px] text-muted-foreground">2026-09-06 16:42:15</span>
+              <span class="ml-2 font-medium text-foreground">OpenCode 配置注入</span>
+            </div>
+            <span class="text-emerald-400">已应用 (sha256 校验成功)</span>
+          </div>
+          <div class="flex items-center justify-between py-2 border-b border-border/30">
+            <div>
+              <span class="font-mono text-[11px] text-muted-foreground">2026-09-06 14:20:02</span>
+              <span class="ml-2 font-medium text-foreground">Claude Code 配置注入</span>
+            </div>
+            <span class="text-emerald-400">已应用 (sha256 校验成功)</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>

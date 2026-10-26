@@ -26,11 +26,16 @@ reqwest.workspace = true
 ring = "0.17"
 serde.workspace = true
 serde_json.workspace = true
+# Codex ships `/v1/responses` bodies with `content-encoding: zstd`; the
+# listener must decode them before JSON parsing (upstream headroom fixed the
+# same contract for its proxy).
+zstd = "0.13"
 tokio.workspace = true
 uuid.workspace = true
 url = "2"
 
 [target.'cfg(target_os = "windows")'.dependencies]
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Storage_FileSystem"] }
 keyring = { version = "3", default-features = false, features = ["windows-native"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]

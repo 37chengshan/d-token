@@ -14,7 +14,6 @@ import {
   Cable,
 } from "lucide-react";
 import { MetricStrip, Surface } from "../../components/common/Surface";
-import { DataSourceBadge } from "../../components/common/DataSourceBadge";
 import { EmptyState } from "../../components/common/EmptyState";
 import { OperationDialog } from "../../components/common/OperationDialog";
 import { Badge } from "../../components/ui/badge";
@@ -810,7 +809,6 @@ export function VisualCompression() {
     [t("visual.cap.patcher"), statusOk ? status?.patcher_ready : undefined],
     [t("visual.cap.validator"), capabilitiesOk ? capabilities?.artifact_post_validation : undefined],
     [t("visual.cap.attestation"), capabilitiesOk ? capabilities?.capability_attestation_required : undefined],
-    [t("visual.cap.toolSchema"), capabilitiesOk ? capabilities?.tool_schema_normalization : undefined],
   ] as const, [capabilities, capabilitiesOk, status, statusOk, t]);
 
   const lifecycleRows = useMemo(() => [
@@ -844,9 +842,8 @@ export function VisualCompression() {
             <Badge variant="secondary" className="rounded-full px-2 py-0.5 text-[11px] font-medium">
               Beta
             </Badge>
-            <DataSourceBadge mode={dataSourceMode} />
           </div>
-          <p className="max-w-3xl text-sm text-muted-foreground">{t("visual.limit")}</p>
+          <p className="max-w-3xl text-xs leading-5 text-muted-foreground">{t("visual.limit")}</p>
           {staleNotice ? (
             <p className="text-xs text-amber-700 dark:text-amber-300" role="status">{staleNotice}</p>
           ) : null}
@@ -873,22 +870,22 @@ export function VisualCompression() {
       </div>
 
       <Tabs value={tab} onValueChange={setTab} className="gap-5">
-        <TabsList className="install-workbench-nav grid h-20 w-full grid-cols-3 overflow-hidden rounded-lg border border-border/70 bg-card/80 p-0 shadow-sm">
+        <TabsList className="install-workbench-nav grid h-16 w-full grid-cols-3 overflow-hidden rounded-lg border border-border/70 bg-card/80 p-0 shadow-sm">
           {workbenchTabs.map((item) => {
             const Icon = item.icon;
             return (
               <TabsTrigger
                 key={item.value}
                 value={item.value}
-                className="install-workbench-nav-item relative h-full min-w-0 flex-none flex-col items-stretch justify-center gap-1 rounded-none border-0 border-r border-border/60 px-3 py-2 text-left whitespace-normal last:border-r-0"
+                className="install-workbench-nav-item relative h-full min-w-0 flex-none flex-col items-stretch justify-center gap-0.5 rounded-none border-0 border-r border-border/60 px-3 py-2 text-left whitespace-normal last:border-r-0"
               >
                 <span className="flex min-w-0 items-center gap-2">
-                  <span className="install-workbench-nav-icon flex size-7 shrink-0 items-center justify-center rounded-md">
-                    <Icon aria-hidden className="size-4" />
+                  <span className="install-workbench-nav-icon flex size-6 shrink-0 items-center justify-center rounded-md">
+                    <Icon aria-hidden className="size-3.5" />
                   </span>
-                  <span className="truncate text-sm font-medium text-foreground">{item.title}</span>
+                  <span className="truncate text-[13px] font-medium text-foreground">{item.title}</span>
                 </span>
-                <span className="install-workbench-nav-description pl-9 text-xs font-normal text-muted-foreground">
+                <span className="install-workbench-nav-description pl-8 text-[11px] font-normal leading-4 text-muted-foreground">
                   {item.description}
                 </span>
               </TabsTrigger>
@@ -898,19 +895,19 @@ export function VisualCompression() {
 
         {/* —— 一键启用 —— */}
         <TabsContent value="one-click" className="space-y-4">
-          <Surface className="p-5" data-testid="hybrid-agent-integration">
-            <div className="flex flex-wrap items-start justify-between gap-4">
-              <div className="min-w-0 space-y-2">
+          <Surface className="p-4" data-testid="hybrid-agent-integration">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div className="min-w-0 space-y-1">
                 <div className="flex items-center gap-2">
-                  <Cable className="size-4 text-muted-foreground" aria-hidden />
-                  <h2 className="text-base font-semibold">
+                  <Cable className="size-3.5 text-muted-foreground" aria-hidden />
+                  <h2 className="text-sm font-semibold">
                     {lang === "zh" ? "Agent 接入" : "Agent integration"}
                   </h2>
                 </div>
-                <p className="max-w-3xl text-sm text-muted-foreground">
+                <p className="max-w-3xl text-xs leading-5 text-muted-foreground">
                   {lang === "zh"
-                    ? "为 Claude Code、Codex 和 OpenCode 安装精简规则、会话状态 Hook/Plugin 与恢复 Skill。真实压缩仍由 d-token 本地代理完成，MCP 只提供元数据诊断。"
-                    : "Install concise rules, session status Hook/Plugin, and recovery Skill for Claude Code, Codex, and OpenCode. The local d-token proxy still performs compression; MCP is metadata-only diagnostics."}
+                    ? "为已安装 Agent 接入恢复规则与状态组件；真实压缩仍由 d-token 本地代理完成。"
+                    : "Connect installed agents to recovery rules and status components; the local d-token proxy still performs compression."}
                 </p>
               </div>
               <Badge variant={agentTransactionState === "verified" ? "default" : "secondary"}>
@@ -924,8 +921,8 @@ export function VisualCompression() {
               </Badge>
             </div>
 
-            <div className="mt-4 grid gap-3 md:grid-cols-3">
-              <div className="rounded-xl border border-border/70 bg-muted/15 p-3 text-sm">
+            <div className="mt-4 grid gap-3 border-y border-border/60 py-3 md:grid-cols-3">
+              <div className="text-sm">
                 <div className="text-xs text-muted-foreground">d-token service</div>
                 <div className="mt-1 font-medium">{agentDiscovery?.service.state ?? "unknown"}</div>
                 <div className="mt-1 text-xs text-muted-foreground">
@@ -955,7 +952,7 @@ export function VisualCompression() {
                   </Button>
                 ) : null}
               </div>
-              <div className="rounded-xl border border-border/70 bg-muted/15 p-3 text-sm">
+              <div className="border-t border-border/40 pt-3 text-sm md:border-l md:border-t-0 md:pl-3 md:pt-0">
                 <div className="text-xs text-muted-foreground">Transport</div>
                 <div className="mt-1 font-medium">
                   {agentDiscovery?.transport.configured
@@ -968,7 +965,7 @@ export function VisualCompression() {
                     : `${agentDiscovery?.transport.route_count ?? 0} routes found; this transaction never changes provider credentials.`}
                 </div>
               </div>
-              <div className="rounded-xl border border-border/70 bg-muted/15 p-3 text-sm">
+              <div className="border-t border-border/40 pt-3 text-sm md:border-l md:border-t-0 md:pl-3 md:pt-0">
                 <div className="text-xs text-muted-foreground">Agent bridge</div>
                 <div className="mt-1 font-medium">
                   {agentDiscovery?.bridge.available
@@ -982,11 +979,11 @@ export function VisualCompression() {
             </div>
 
             <div className="mt-4 grid gap-4 lg:grid-cols-[1.1fr_0.9fr]">
-              <div className="space-y-3 rounded-xl border border-border/70 p-4">
+              <div className="space-y-3">
                 <h3 className="text-sm font-semibold">{lang === "zh" ? "目标 Agent" : "Target Agents"}</h3>
                 <div className="grid gap-2 sm:grid-cols-3">
                   {(agentDiscovery?.agents ?? []).map((agent) => (
-                    <label key={agent.id} className="flex items-center justify-between gap-2 rounded-lg border border-border/60 px-3 py-2 text-sm">
+                    <label key={agent.id} className="flex items-center justify-between gap-2 rounded-md border border-border/60 bg-background/35 px-3 py-2 text-sm">
                       <span>
                         <span className="block font-medium">{agent.name}</span>
                         <span className="block text-[11px] text-muted-foreground">
@@ -1045,7 +1042,7 @@ export function VisualCompression() {
                 </div>
               </div>
 
-              <div className="space-y-3 rounded-xl border border-border/70 p-4">
+              <div className="space-y-3 border-t border-border/60 pt-4 lg:border-l lg:border-t-0 lg:pl-4 lg:pt-0">
                 <h3 className="text-sm font-semibold">{lang === "zh" ? "接入组件" : "Integration surfaces"}</h3>
                 {([
                   ["install_instructions", lang === "zh" ? "规则 / Instructions" : "Rules / Instructions", true],
@@ -1069,10 +1066,10 @@ export function VisualCompression() {
                     />
                   </label>
                 ))}
-                <p className="text-xs text-muted-foreground">
+                <p className="text-xs leading-5 text-muted-foreground">
                   {lang === "zh"
-                    ? "Codex Hook 写入后仍需你在 /hooks 中确认信任；不会绕过 hash trust。"
-                    : "After writing, the Codex Hook still requires your trust in /hooks; hash trust is never bypassed."}
+                    ? "Codex Hook 写入后仍需在 /hooks 中确认信任。"
+                    : "Codex Hook writes still require trust confirmation in /hooks."}
                 </p>
               </div>
             </div>
@@ -1101,11 +1098,11 @@ export function VisualCompression() {
             </div>
           </Surface>
 
-          <Surface className="p-5">
-            <div className="flex flex-wrap items-start justify-between gap-4">
-              <div className="min-w-0 space-y-2">
-                <h2 className="text-base font-semibold">{t("visual.oneClick.title")}</h2>
-                <p className="max-w-2xl text-sm text-muted-foreground">{t("visual.oneClick.detail")}</p>
+          <Surface className="p-4">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div className="min-w-0 space-y-1">
+                <h2 className="text-sm font-semibold">{t("visual.oneClick.title")}</h2>
+                <p className="max-w-2xl text-xs leading-5 text-muted-foreground">{t("visual.oneClick.detail")}</p>
                 <p className="text-xs text-muted-foreground">{t("visual.config.activeForced")}</p>
               </div>
               <Badge variant={oneClickPhase === "enabled" ? "default" : "secondary"}>
@@ -1133,7 +1130,7 @@ export function VisualCompression() {
 
             {oneClickPhase === "ready" && editor ? (
               <div className="mt-4 space-y-4">
-                <div className="rounded-xl border border-border/70 bg-muted/20 p-4 text-sm">
+                <div className="border-l border-primary/35 bg-muted/20 px-3 py-2 text-sm">
                   <div className="font-medium">{t("visual.oneClick.readyTitle")}</div>
                   <ul className="mt-2 list-disc space-y-1 pl-5 text-muted-foreground">
                     <li>{t("visual.oneClick.bulletService")}</li>
@@ -1145,7 +1142,7 @@ export function VisualCompression() {
                 <div className="flex flex-wrap gap-2">
                   <Button
                     type="button"
-                    size="lg"
+                    size="sm"
                     className="gap-2"
                     disabled={configBusy !== ""}
                     onClick={() => void beginApply(buildOneClickEnableDraft(editor), "one-click-enable")}
@@ -1174,7 +1171,7 @@ export function VisualCompression() {
 
             {oneClickPhase === "enabled" && editor ? (
               <div className="mt-4 space-y-4">
-                <div className="rounded-xl border border-emerald-500/25 bg-emerald-500/5 p-4 text-sm">
+                <div className="border-l border-emerald-500/40 bg-emerald-500/5 px-3 py-2 text-sm">
                   <div className="font-medium text-emerald-800 dark:text-emerald-200">
                     {t("visual.oneClick.enabledTitle")}
                   </div>
@@ -1225,7 +1222,7 @@ export function VisualCompression() {
           <Surface className="p-4">
             <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
               <div>
-                <h2 className="text-base font-semibold">{t("visual.config.title")}</h2>
+                <h2 className="text-sm font-semibold">{t("visual.config.title")}</h2>
                 <p className="mt-1 text-xs text-muted-foreground">{t("visual.tab.advancedDesc")}</p>
               </div>
               <div className="flex flex-wrap gap-2">
@@ -1265,7 +1262,7 @@ export function VisualCompression() {
               />
             ) : draft ? (
               <div className="space-y-4">
-                <div className="rounded-xl border border-border/70 p-3">
+                <div className="border-y border-border/60 py-3">
                   <h3 className="text-sm font-semibold">{t("visual.config.global")}</h3>
                   <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
                     <label className="flex items-center gap-2 text-sm">
@@ -1292,7 +1289,7 @@ export function VisualCompression() {
                   </div>
                 </div>
 
-                <div className="rounded-xl border border-border/70 p-3">
+                <div>
                   <h3 className="mb-2 text-sm font-semibold">{t("visual.config.routes")}</h3>
                   {draft.routes.length === 0 ? (
                     <p className="text-sm text-muted-foreground">{t("visual.config.routesEmpty")}</p>
@@ -1305,7 +1302,7 @@ export function VisualCompression() {
                         return (
                           <div
                             key={route.route_id}
-                            className="grid gap-2 rounded-lg border border-border/50 p-3 sm:grid-cols-2"
+                            className="grid gap-2 border-t border-border/55 py-3 sm:grid-cols-2"
                           >
                             <div className="text-sm font-medium">{label}</div>
                             <div className="text-xs text-muted-foreground">{route.route_id}</div>
@@ -1392,9 +1389,9 @@ export function VisualCompression() {
             <>
               <MetricStrip className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
                 {kpiItems.map((item) => (
-                  <div key={item.label} className="rounded-xl border border-border/60 bg-background/40 p-4">
+                  <div key={item.label} className="rounded-lg border border-border/60 bg-background/40 p-3">
                     <div className="text-xs font-medium text-muted-foreground">{item.label}</div>
-                    <div className="mt-2 text-2xl font-semibold tracking-tight tabular-nums">{item.value}</div>
+                    <div className="mt-1 text-xl font-semibold tracking-tight tabular-nums">{item.value}</div>
                     <div className="mt-1 text-xs text-muted-foreground">{item.detail}</div>
                   </div>
                 ))}
@@ -1402,9 +1399,9 @@ export function VisualCompression() {
 
               <div className="grid gap-3 lg:grid-cols-2">
                 <Surface className="p-4">
-                  <div className="mb-3 flex items-center gap-2">
+                  <div className="mb-2 flex items-center gap-2">
                     <Eye className="size-4 text-muted-foreground" aria-hidden />
-                    <h2 className="text-base font-semibold">{t("visual.capabilities")}</h2>
+                    <h2 className="text-sm font-semibold">{t("visual.capabilities")}</h2>
                   </div>
                   <div className="divide-y divide-border/60">
                     {capabilityRows.map(([label, value]) => (
@@ -1418,9 +1415,9 @@ export function VisualCompression() {
                   </div>
                 </Surface>
                 <Surface className="p-4">
-                  <div className="mb-3 flex items-center gap-2">
+                  <div className="mb-2 flex items-center gap-2">
                     <Shield className="size-4 text-muted-foreground" aria-hidden />
-                    <h2 className="text-base font-semibold">{t("visual.lifecycle")}</h2>
+                    <h2 className="text-sm font-semibold">{t("visual.lifecycle")}</h2>
                   </div>
                   <div className="divide-y divide-border/60">
                     {lifecycleRows.map(([label, value]) => (
@@ -1435,7 +1432,7 @@ export function VisualCompression() {
 
               <Surface className="p-4">
                 <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-                  <h2 className="text-base font-semibold">{t("visual.events")}</h2>
+                  <h2 className="text-sm font-semibold">{t("visual.events")}</h2>
                   <span className="text-xs text-muted-foreground">
                     {eventsOk
                       ? `${events.length} ${lang === "zh" ? "条" : "items"} · ${t("visual.estimateNote")}`
@@ -1491,7 +1488,7 @@ export function VisualCompression() {
                   id="visual-preview-toggle"
                 >
                   <div>
-                    <h2 className="text-base font-semibold">{t("visual.preview.title")}</h2>
+                    <h2 className="text-sm font-semibold">{t("visual.preview.title")}</h2>
                     <p className="mt-1 text-xs text-muted-foreground">{t("visual.preview.detail")}</p>
                   </div>
                   <ChevronDown
@@ -1550,7 +1547,7 @@ export function VisualCompression() {
                       <p className="text-sm text-amber-700 dark:text-amber-300" role="alert">{previewError}</p>
                     ) : null}
                     {previewResult ? (
-                      <div className="rounded-xl border border-border/70 bg-muted/20 p-3 text-sm">
+                      <div className="border-l border-border bg-muted/20 px-3 py-2 text-sm">
                         <div className="grid gap-2 sm:grid-cols-2">
                           <div>
                             <div className="text-xs text-muted-foreground">{t("visual.preview.finalStatus")}</div>
@@ -1620,6 +1617,7 @@ export function VisualCompression() {
         impact={pendingDraft ? summarizeOpticalDraft(pendingDraft, lang) : undefined}
         risk="warning"
         pending={configBusy === "apply"}
+        error={confirmOpen ? configNotice : undefined}
         confirmDisabled={!review?.ok || !review.before_sha256 || !review.after_sha256}
         confirmLabel={t("visual.config.apply")}
         cancelLabel={lang === "zh" ? "取消" : "Cancel"}
@@ -1650,6 +1648,7 @@ export function VisualCompression() {
           : undefined}
         risk="warning"
         pending={agentBusy === "apply" || agentBusy === "verify"}
+        error={agentConfirmOpen ? agentNotice : undefined}
         confirmDisabled={!agentReview?.ok || !agentReview.plan}
         confirmLabel={agentBusy === "verify"
           ? lang === "zh" ? "正在验证…" : "Verifying…"

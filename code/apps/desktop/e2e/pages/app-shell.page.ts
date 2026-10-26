@@ -1,13 +1,10 @@
 import type { Locator, Page } from "@playwright/test";
 
 export const MAIN_PAGES = [
-  { id: "overview", navLabel: "总体概览", heading: "总体概览", english: { navLabel: "Overview", heading: "Overview" } },
-  { id: "install", navLabel: "安装与连接", heading: "安装与连接", english: { navLabel: "Install & Connect", heading: "Install & Connect" } },
-  { id: "codebase-memory", navLabel: "代码图谱", heading: "代码图谱（实验性）", english: { navLabel: "Code Graph", heading: "Code Graph (Experimental)" } },
-  { id: "analytics", navLabel: "分析", heading: "分析", english: { navLabel: "Analytics", heading: "Analytics" } },
-  { id: "visual", navLabel: "视觉压缩 Beta", heading: "视觉压缩", english: { navLabel: "Visual Compression Beta", heading: "Visual Compression" } },
-  { id: "doctor", navLabel: "Doctor", heading: "Doctor", english: { navLabel: "Doctor", heading: "Doctor" } },
-  { id: "changes", navLabel: "变更与回退", heading: "变更与回退", english: { navLabel: "Changes & Rollback", heading: "Changes & Rollback" } },
+  { id: "configuration", navLabel: "配置", heading: "配置", english: { navLabel: "Configuration", heading: "Configuration" } },
+  { id: "advanced-configuration", navLabel: "高级配置", heading: "高级配置", english: { navLabel: "Advanced Configuration", heading: "Advanced Configuration" } },
+  { id: "analysis-logs", navLabel: "分析日志", heading: "分析日志", english: { navLabel: "Analysis & Logs", heading: "Analysis & Logs" } },
+  { id: "diagnostics", navLabel: "诊断", heading: "诊断", english: { navLabel: "Diagnostics", heading: "Diagnostics" } },
   { id: "settings", navLabel: "设置", heading: "系统设置", english: { navLabel: "Settings", heading: "Settings" } },
 ] as const;
 
@@ -26,7 +23,7 @@ export class AppShellPage {
 
   async open() {
     await this.page.goto("/");
-    await this.main.getByRole("heading", { level: 1, name: "总体概览", exact: true }).waitFor();
+    await this.main.getByRole("heading", { level: 1, name: "配置", exact: true }).waitFor();
   }
 
   navItem(label: string) {

@@ -1,0 +1,8 @@
+{
+  "name": "d-token Five Page Review Generator",
+  "id": "d-token-five-page-review-generator",
+  "api": "1.0.0",
+  "main": "dtoken-five-pages-generator.js",
+  "editorType": ["figma"],
+  "documentAccess": "dynamic-page"
+}

@@ -3,7 +3,6 @@ import { motion } from "motion/react";
 import { Download, KeyRound, RefreshCcw, ShieldCheck, Filter, Route, Gauge, Server, AlertTriangle, Layers, ListChecks } from "lucide-react";
 import { Surface } from "../common/Surface";
 import { StatusBadge } from "../common/StatusBadge";
-import { DataSourceBadge } from "../common/DataSourceBadge";
 import { Terminal } from "../common/Terminal";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "../ui/tabs";
 import { Button } from "../ui/button";
@@ -32,7 +31,7 @@ const filterMeta: Record<
   error: { zh: "error", en: "error", icon: AlertTriangle },
 };
 
-export function LogsSecurity() {
+export function LogsSecurity({ embedded = false }: { embedded?: boolean } = {}) {
   const t = useT();
   const { lang } = useI18n();
   const { addNotification } = useNotifications();
@@ -135,9 +134,8 @@ export function LogsSecurity() {
   return (
     <div className="space-y-6">
       <div className="flex items-center gap-3">
-        <h1>{t("ls.title")}</h1>
-        <DataSourceBadge mode={payloadStatus === "runtime" ? "runtime" : payloadStatus === "unavailable" ? "unavailable" : "preview"} />
-        <Badge variant={payloadStatus === "runtime" ? "default" : "secondary"}>{dataSourceLabel}</Badge>
+        {!embedded && <h1 className="sr-only">{t("ls.title")}</h1>}
+        <h2 className="text-xl font-bold tracking-tight">{t("ls.title")}</h2>
       </div>
 
       <Tabs value={tab} onValueChange={setTab}>
@@ -254,8 +252,7 @@ export function LogsSecurity() {
                   </div>
                 </div>
               </div>
-              <Badge variant={payloadStatus === "runtime" ? "default" : "secondary"}>{dataSourceLabel}</Badge>
-            </div>
+                  </div>
           </Surface>
 
           {ledgerRows.length === 0 ? (
@@ -588,10 +585,10 @@ function runtimePayloadToLogs(payload: Record<string, any> | null): LogEntry[] {
       type: log.error ? "error" : "provider",
       agent,
       msg: log.error
-        ? `Provider ${provider} 请求失败。请检查连接状态后重试。`
+        ? presentOperationFailure("connection", log.error, "zh").message
         : `Provider ${provider} · model=${model} · route=${route} · latency=${latency === null ? "—" : `${latency}ms`}`,
       msgEn: log.error
-        ? `Provider ${provider} request failed. Check the connection status, then retry.`
+        ? presentOperationFailure("connection", log.error, "en").message
         : `Provider ${provider} · model=${model} · route=${route} · latency=${latency === null ? "—" : `${latency}ms`}`,
     }, log.timestamp_ms));
   }

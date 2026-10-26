@@ -24,3 +24,10 @@
 5. 外部 Headroom dashboard 不是该 API 的产品数据源。
 
 完整端点以 `src/lib.rs` 的 Router 注册为准，当前状态见 `docs/product/IMPLEMENTATION_STATUS.md`。
+
+## 后端对接说明（2026-09-06）
+
+- `/dashboard/summary` 是轻量汇总；核对单次模型、路由、压缩与结果请使用 `/dashboard/payload` 或脱敏导出中的 `request_id`，不能以 summary 缺少明细字段判定未执行。
+- 压缩跳过/拒绝原因写入 Event Ledger 的 `metadata.compression_fallback_reason`，仅含固定原因码。无压缩候选仍可正常完成模型请求；上游失败不能显示成节省成功。
+- 实际压缩验收需同时满足上游完成、前后输入减少、已应用变换、同请求 accounting 与四类账本关联。单次没有历史工具输出的转发成功不证明压缩生效。
+- Runtime capability learning only records bounded metadata observed from successful upstream responses: completed stream terminals and structurally valid provider tool/function-call responses. Declared request tool schemas, generic HTTP success, failed/cancelled/incomplete streams, payload content, and secrets are not learning evidence. The bridge passes the actual upstream protocol observed by the route, but the current registry schema does not persist protocol as an observed field; capability summaries continue to show the protocol supplied by the resolve caller.

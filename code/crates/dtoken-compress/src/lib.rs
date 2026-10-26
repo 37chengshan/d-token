@@ -2,6 +2,9 @@ pub mod code_codec;
 pub mod codec_evidence;
 pub mod compressor_registry;
 pub mod strategy_hint;
+pub mod inventory;
+pub mod protection;
+pub mod secret;
 
 pub use strategy_hint::compression_strategy_to_policy;
 pub mod content_router;
@@ -32,7 +35,7 @@ impl CompressionEngine {
         Self
     }
 
-    pub fn compress(&self, _policy: CompressionPolicy, body: Value) -> Result<CompressionResult> {
+    pub fn compress(&self, policy: CompressionPolicy, body: Value) -> Result<CompressionResult> {
         let started = Instant::now();
         let original_tokens = estimate_tokens(&body);
         Ok(CompressionResult {
@@ -41,6 +44,14 @@ impl CompressionEngine {
             tokens_saved: 0,
             elapsed_us: started.elapsed().as_micros().max(1),
             transforms_applied: Vec::new(),
+            fallback_reason_code: Some(
+                if policy == CompressionPolicy::Off {
+                    "compression_disabled"
+                } else {
+                    "compression_context_unresolved"
+                }
+                .to_string(),
+            ),
             body,
             context_accounting: None,
         })
@@ -72,6 +83,14 @@ impl CompressionEngine {
                 tokens_saved: 0,
                 elapsed_us: started.elapsed().as_micros().max(1),
                 transforms_applied: Vec::new(),
+                fallback_reason_code: Some(
+                    if policy == CompressionPolicy::Off {
+                        "compression_disabled"
+                    } else {
+                        "compression_unsupported_context"
+                    }
+                    .to_string(),
+                ),
                 body,
                 context_accounting: None,
             });
@@ -99,7 +118,7 @@ impl CompressionEngine {
         // from the normalized baseline the pipeline actually transforms.
         let original_tokens = estimate_tokens(&body);
         let original_body = body.clone();
-        let (compressed_body, pipeline_transforms) =
+        let (compressed_body, pipeline_transforms, fallback_reason_code) =
             match context_pipeline::prepare_context_transform_with_cache_evidence(
                 context,
                 policy,
@@ -110,11 +129,24 @@ impl CompressionEngine {
                 Ok(Some(prepared)) => match prepared.validate() {
                     Ok(validated) => {
                         let (body, manifest) = validated.into_parts();
-                        (body, manifest.transforms().to_vec())
+                        (body, manifest.transforms().to_vec(), None)
                     }
-                    Err(_) => (original_body.clone(), Vec::new()),
+                    Err(error) => (
+                        original_body.clone(),
+                        Vec::new(),
+                        Some(context_transform_reason(error).to_string()),
+                    ),
                 },
-                Ok(None) | Err(_) => (original_body.clone(), Vec::new()),
+                Ok(None) => (
+                    original_body.clone(),
+                    Vec::new(),
+                    Some("compression_no_safe_candidate".to_string()),
+                ),
+                Err(error) => (
+                    original_body.clone(),
+                    Vec::new(),
+                    Some(context_transform_reason(error).to_string()),
+                ),
             };
         for transform in pipeline_transforms {
             push_transform(&mut transforms_applied, &transform);
@@ -136,6 +168,7 @@ impl CompressionEngine {
             tokens_saved,
             elapsed_us: started.elapsed().as_micros().max(1),
             transforms_applied,
+            fallback_reason_code,
             body: compressed_body,
             context_accounting,
         })
@@ -362,6 +395,24 @@ fn collapse_long_text(text: &str) -> String {
     )
 }
 
+fn context_transform_reason(error: context_pipeline::ContextTransformError) -> &'static str {
+    use context_pipeline::ContextTransformError;
+    match error {
+        ContextTransformError::UnsupportedContext => "compression_unsupported_context",
+        ContextTransformError::NonBeneficialCandidate => "compression_non_beneficial",
+        ContextTransformError::InvalidProviderCacheEvidence => "compression_cache_evidence_invalid",
+        ContextTransformError::ProviderCacheEvidenceMismatch => {
+            "compression_cache_evidence_mismatch"
+        }
+        ContextTransformError::MissingSourceValue
+        | ContextTransformError::SourceDigestMismatch
+        | ContextTransformError::CandidateDigestMismatch
+        | ContextTransformError::MutationOutsideManifest
+        | ContextTransformError::MissingDeclaredMutation
+        | ContextTransformError::CodecSemanticMismatch => "compression_validation_failed",
+    }
+}
+
 fn push_transform(transforms: &mut Vec<String>, name: &str) {
     if !transforms.iter().any(|item| item == name) {
         transforms.push(name.to_string());
@@ -412,6 +463,10 @@ mod tests {
         assert_eq!(result.body, body);
         assert_eq!(result.tokens_saved, 0);
         assert!(result.transforms_applied.is_empty());
+        assert_eq!(
+            serde_json::to_value(&result).unwrap()["fallback_reason_code"],
+            "compression_context_unresolved"
+        );
     }
 
     #[test]
@@ -445,6 +500,7 @@ mod tests {
             .any(|item| item == "repeat_line_fold"));
         assert!(result.elapsed_us > 0);
         assert!(result.body.to_string().contains("repeated x12"));
+        assert!(serde_json::to_value(&result).unwrap()["fallback_reason_code"].is_null());
     }
 
     #[test]
@@ -512,6 +568,28 @@ mod tests {
         assert_eq!(result.transforms_applied, Vec::<String>::new());
         assert_eq!(result.body, body);
         assert!(result.elapsed_us > 0);
+    }
+
+    #[test]
+    fn protected_current_text_reports_why_no_transform_was_applied() {
+        let context = ResolvedOptimizationContext {
+            route_id: "r".into(),
+            provider_id: "p".into(),
+            model: "m".into(),
+            input_protocol: dtoken_types::Protocol::OpenAi,
+            output_protocol: dtoken_types::Protocol::OpenAi,
+            endpoint: dtoken_types::OpticalEndpoint::OpenAiChatCompletions,
+        };
+        let body = json!({"messages":[{"role":"user","content":"keep this exact"}]});
+        let result = CompressionEngine::new()
+            .compress_resolved(&context, CompressionPolicy::Balanced, body.clone())
+            .unwrap();
+        assert_eq!(result.body, body);
+        assert_eq!(result.tokens_saved, 0);
+        assert_eq!(
+            serde_json::to_value(&result).unwrap()["fallback_reason_code"],
+            "compression_no_safe_candidate"
+        );
     }
 
     #[test]

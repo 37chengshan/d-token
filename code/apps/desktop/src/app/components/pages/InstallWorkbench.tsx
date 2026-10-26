@@ -5,6 +5,7 @@ import { Rocket, ScanSearch, ScrollText, SlidersHorizontal } from "lucide-react"
 import { useT } from "../../lib/i18n";
 import { lazy, Suspense, useState } from "react";
 import { Install } from "./Install";
+import { clearInstallHandoff, hasPendingInstallHandoff } from "../../lib/installMachine";
 
 const SmartLearning = lazy(() => import("./SmartLearning").then((module) => ({ default: module.SmartLearning })));
 const Advanced = lazy(() => import("./Advanced").then((module) => ({ default: module.Advanced })));
@@ -15,6 +16,7 @@ const WORKBENCH_TABS = ["one-click", "smart-learning", "advanced", "logs"] as co
 type WorkbenchTab = (typeof WORKBENCH_TABS)[number];
 
 function readWorkbenchTab(): WorkbenchTab {
+  if (hasPendingInstallHandoff()) return "one-click";
   if (typeof window === "undefined") return "one-click";
   try {
     const saved = window.sessionStorage.getItem(WORKBENCH_TAB_KEY);
@@ -36,6 +38,7 @@ export function InstallWorkbench({ initialAgentId }: { initialAgentId?: string }
   const setActiveTab = (value: string) => {
     if (!(WORKBENCH_TABS as readonly string[]).includes(value)) return;
     const next = value as WorkbenchTab;
+    if (next !== "one-click") clearInstallHandoff("workbench-navigation");
     setActiveTabState(next);
     try {
       window.sessionStorage.setItem(WORKBENCH_TAB_KEY, next);
@@ -74,24 +77,21 @@ export function InstallWorkbench({ initialAgentId }: { initialAgentId?: string }
   return (
     <div>
       <h1 className="sr-only">{t("in.title")}</h1>
-      <Tabs value={activeTab} onValueChange={setActiveTab} className="gap-5">
-        <TabsList className="install-workbench-nav grid h-20 w-full grid-cols-4 overflow-hidden rounded-lg border border-border/70 bg-card/80 p-0 shadow-sm">
+      <Tabs value={activeTab} onValueChange={setActiveTab} className="gap-4">
+        <TabsList className="install-workbench-nav grid h-10 w-full grid-cols-4 overflow-hidden rounded-lg bg-muted/30 p-0">
           {workbenchTabs.map((item) => {
             const Icon = item.icon;
             return (
               <TabsTrigger
                 key={item.value}
                 value={item.value}
-                className="install-workbench-nav-item relative h-full min-w-0 flex-none flex-col items-stretch justify-center gap-1 rounded-none border-0 border-r border-border/60 px-3 py-2 text-left whitespace-normal last:border-r-0"
+                className="install-workbench-nav-item relative h-full min-w-0 flex-none justify-center rounded-md px-2 py-1 whitespace-nowrap"
               >
                 <span className="flex min-w-0 items-center gap-2">
-                  <span className="install-workbench-nav-icon flex size-7 shrink-0 items-center justify-center rounded-md">
+                  <span className="install-workbench-nav-icon flex size-5 shrink-0 items-center justify-center rounded-md">
                     <Icon aria-hidden="true" className="size-4" />
                   </span>
                   <span className="truncate text-sm font-medium text-foreground">{item.title}</span>
-                </span>
-                <span className="install-workbench-nav-description pl-9 text-xs font-normal text-muted-foreground">
-                  {item.description}
                 </span>
               </TabsTrigger>
             );

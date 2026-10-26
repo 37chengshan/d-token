@@ -130,11 +130,11 @@ Dashboard 中永远不明文展示：
 
 ### 7.1 Codebase Memory 额外边界
 
-1. `codebase-memory-mcp` 不进入 d-token App bundle。App 只打开当前 manifest 指向的官方 release，由用户自行下载并解压到默认或自定义目录；d-token 不代为联网下载、安装或更新，也不接受可控下载 URL。只有当前 manifest/allowlist 绑定的官方来源、版本、平台、架构和 SHA-256 全部通过才可执行；目录内任意其他 binary 必须 fail closed。应用更新时更新 manifest/allowlist；非常老或协议/配置方式不兼容的版本仍然阻止。
+1. `codebase-memory-mcp` 不进入 d-token App bundle。App 只读识别用户已有安装，也允许用户选择从当前 manifest 官方 release 下载的压缩包，或选择已经解压的目录。压缩包必须对同一份受限字节校验后导入新的 d-token 自有目录，并继续验证其中二进制；失败恢复之前的位置与导入记录。d-token 不代为联网下载或自动更新，也不接受可控下载 URL。只有当前 manifest/allowlist 绑定的官方来源、版本、平台、架构和 SHA-256 全部通过才可执行；目录内任意其他 binary 必须 fail closed。应用更新时更新 manifest/allowlist；非常老或协议/配置方式不兼容的版本仍然阻止。
 2. Agent-owned MCP 会话与 d-token-owned index/UI host 必须是两类独立实例；d-token 不得接管 Agent 的 stdio、PID 或停止权限。
 3. launcher 必须强制 `persistence=false`、项目 canonical root allowlist、私有 cache namespace、受限 tool allowlist，并拒绝跨项目查询、ADR write、artifact export 与任意路径访问。
 4. d-token 只允许打开自己生成并复检过的短期授权 loopback graph URL；不得直接暴露 upstream 原生 HTTP UI。
-5. 自动扫描 Agent 只读取白名单安装证据；批量配置仍必须逐 Agent diff/backup/confirm/verify/receipt，任一失败逆序回退，不得扩大为批量读取 auth、凭据或会话正文。
+5. 自动扫描 Agent 只读取白名单安装证据；批量配置仍必须逐 Agent diff/backup/授权/verify/receipt，授权语义遵循 PRD P0.0.10，不新增第二层确认。失败只恢复本项，保留已验证的独立成功项；共享配置失败只影响其依赖项。不得扩大为批量读取 auth、凭据或会话正文。
 
 ## 8. Doctor 与回退动作安全
 

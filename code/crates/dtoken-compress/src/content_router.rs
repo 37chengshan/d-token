@@ -99,7 +99,7 @@ pub fn route_content_with_budget(text: &str, budget: RoutingBudget) -> ContentRo
             text.len(),
         );
     }
-    if crate::optical::secret::contains_secret_like(text) {
+    if crate::secret::contains_secret_like(text) {
         return decision(
             ContentKind::Unknown,
             CodecKind::Passthrough,
@@ -126,8 +126,8 @@ pub fn route_content_with_budget(text: &str, budget: RoutingBudget) -> ContentRo
             text.len(),
         );
     }
-    let risk = crate::optical::risk::classify_block(text);
-    let exact_preserve = risk.tier == crate::optical::risk::RiskTier::ExactTextRequired
+    let risk = crate::protection::classify_block(text);
+    let exact_preserve = risk.tier == crate::protection::RiskTier::ExactTextRequired
         || risk
             .anchors
             .as_ref()
@@ -197,7 +197,7 @@ pub fn route_content_with_budget(text: &str, budget: RoutingBudget) -> ContentRo
             text.len(),
         );
     }
-    if risk.tier == crate::optical::risk::RiskTier::StructuralUnsafe {
+    if risk.tier == crate::protection::RiskTier::StructuralUnsafe {
         return decision(
             ContentKind::Unknown,
             CodecKind::Passthrough,
@@ -402,7 +402,7 @@ pub fn contains_decision_signal(text: &str) -> bool {
     })
 }
 
-pub(crate) fn apply_routed_codec(
+pub fn apply_routed_codec(
     policy: CompressionPolicy,
     text: &str,
     transforms: &mut Vec<String>,

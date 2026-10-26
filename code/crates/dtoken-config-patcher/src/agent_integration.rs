@@ -143,6 +143,9 @@ pub struct AgentIntegrationReceipt {
     pub verified_targets: Vec<PathBuf>,
     pub trust_required: bool,
     pub new_session_required: bool,
+    pub state: AgentIntegrationTransactionState,
+    pub group_results: Vec<AgentIntegrationGroupResult>,
+    pub agent_results: Vec<AgentIntegrationAgentResult>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -165,6 +168,27 @@ pub enum AgentIntegrationTransactionState {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AgentIntegrationGroupResult {
+    pub agent_ids: Vec<String>,
+    pub target_paths: Vec<PathBuf>,
+    pub transaction_id: Option<String>,
+    pub rollback_ids: Vec<String>,
+    pub created_directories: Vec<PathBuf>,
+    pub state: AgentIntegrationTransactionState,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AgentIntegrationAgentResult {
+    pub agent_id: String,
+    pub state: AgentIntegrationTransactionState,
+    pub applied_targets: Vec<PathBuf>,
+    pub failed_targets: Vec<PathBuf>,
+    pub transaction_ids: Vec<String>,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AgentIntegrationTransactionManifest {
     pub schema_version: u32,
     pub transaction_id: String,
@@ -173,6 +197,12 @@ pub struct AgentIntegrationTransactionManifest {
     pub planned_after_hashes: BTreeMap<PathBuf, String>,
     pub rollback_ids: Vec<String>,
     pub created_directories: Vec<PathBuf>,
+    #[serde(default)]
+    pub applied_target_paths: Vec<PathBuf>,
+    #[serde(default)]
+    pub group_results: Vec<AgentIntegrationGroupResult>,
+    #[serde(default)]
+    pub agent_results: Vec<AgentIntegrationAgentResult>,
     pub state: AgentIntegrationTransactionState,
     pub applied_at_ms: u64,
     pub verified_at_ms: Option<u64>,
@@ -182,7 +212,56 @@ pub struct AgentIntegrationTransactionManifest {
 
 pub struct PreparedAgentIntegration {
     pub plan: AgentIntegrationPlan,
-    changes: Vec<PreparedChange>,
+    changes: Vec<PreparedAgentIntegrationChange>,
+    accepted_review_digest: Option<String>,
+}
+
+impl PreparedAgentIntegration {
+    pub fn filter_agent_ids(mut self, agent_ids: &[String]) -> Self {
+        let allowed = agent_ids.iter().cloned().collect::<BTreeSet<_>>();
+        let parent_review_digest = self.plan.review_digest.clone();
+        self.plan.targets = self
+            .plan
+            .targets
+            .into_iter()
+            .filter_map(|mut target| {
+                target
+                    .agent_ids
+                    .retain(|agent_id| allowed.contains(agent_id));
+                (!target.agent_ids.is_empty()).then_some(target)
+            })
+            .collect();
+        self.changes = self
+            .changes
+            .into_iter()
+            .filter_map(|mut change| {
+                change
+                    .target
+                    .agent_ids
+                    .retain(|agent_id| allowed.contains(agent_id));
+                (!change.target.agent_ids.is_empty()).then_some(change)
+            })
+            .collect();
+        self.plan.review_digest = review_digest(&self.plan.targets);
+        self.accepted_review_digest = Some(parent_review_digest);
+        self
+    }
+
+    pub fn planned_agent_ids(&self) -> Vec<String> {
+        self.plan
+            .targets
+            .iter()
+            .flat_map(|target| target.agent_ids.iter().cloned())
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect()
+    }
+}
+
+#[derive(Clone)]
+struct PreparedAgentIntegrationChange {
+    target: AgentIntegrationTargetPlan,
+    prepared: PreparedChange,
 }
 
 #[derive(Clone)]
@@ -319,7 +398,10 @@ pub fn prepare_agent_integration(
             new_session_required: true,
         });
         if prepared.plan.before_hash != prepared.plan.after_hash {
-            changes.push(prepared);
+            changes.push(PreparedAgentIntegrationChange {
+                target: targets.last().expect("target plan was just pushed").clone(),
+                prepared,
+            });
         }
     }
     targets.sort_by(|left, right| left.target_path.cmp(&right.target_path));
@@ -340,6 +422,7 @@ pub fn prepare_agent_integration(
             new_session_required: true,
         },
         changes,
+        accepted_review_digest: None,
     })
 }
 
@@ -349,25 +432,98 @@ pub fn apply_agent_integration(
     reviewed_digest: &str,
 ) -> Result<AgentIntegrationReceipt> {
     if reviewed_digest != prepared.plan.review_digest {
-        bail!("Agent integration review is stale");
+        match prepared.accepted_review_digest.as_deref() {
+            Some(parent_digest) if reviewed_digest == parent_digest => {}
+            _ => bail!("Agent integration review is stale"),
+        }
     }
     let patcher = ConfigPatcher::new(backup_root);
-    let created_directories = create_missing_target_directories(&prepared.plan.targets)?;
-    let transaction = match patcher.apply_transaction(&prepared.changes) {
-        Ok(transaction) => transaction,
-        Err(error) => {
-            let _ = remove_created_directories(&created_directories);
-            return Err(error);
+    let transaction_id = Uuid::new_v4().to_string();
+    let groups = integration_apply_groups(&prepared);
+    let mut rollback_ids = Vec::new();
+    let mut created_directories = Vec::new();
+    let mut applied_target_paths = Vec::new();
+    let mut group_results = Vec::new();
+
+    for group in groups {
+        let group_directories = match create_missing_target_directories(&group.targets) {
+            Ok(directories) => directories,
+            Err(error) => {
+                group_results.push(AgentIntegrationGroupResult {
+                    agent_ids: group.agent_ids,
+                    target_paths: group
+                        .targets
+                        .into_iter()
+                        .map(|target| target.target_path)
+                        .collect(),
+                    transaction_id: None,
+                    rollback_ids: Vec::new(),
+                    created_directories: Vec::new(),
+                    state: AgentIntegrationTransactionState::Failed,
+                    error: Some(format!("{error:#}")),
+                });
+                continue;
+            }
+        };
+        let group_changes = group
+            .changes
+            .iter()
+            .map(|change| change.prepared.clone())
+            .collect::<Vec<_>>();
+        match patcher.apply_transaction(&group_changes) {
+            Ok(transaction) => {
+                let group_rollback_ids = transaction
+                    .changes
+                    .iter()
+                    .map(|item| item.backup.rollback_id.clone())
+                    .collect::<Vec<_>>();
+                let target_paths = group
+                    .targets
+                    .iter()
+                    .map(|target| target.target_path.clone())
+                    .collect::<Vec<_>>();
+                rollback_ids.extend(group_rollback_ids.iter().cloned());
+                created_directories.extend(group_directories.iter().cloned());
+                applied_target_paths.extend(
+                    group
+                        .changes
+                        .iter()
+                        .map(|change| change.target.target_path.clone()),
+                );
+                group_results.push(AgentIntegrationGroupResult {
+                    agent_ids: group.agent_ids,
+                    target_paths,
+                    transaction_id: Some(transaction.transaction_id),
+                    rollback_ids: group_rollback_ids,
+                    created_directories: group_directories,
+                    state: AgentIntegrationTransactionState::Applied,
+                    error: None,
+                });
+            }
+            Err(error) => {
+                let _ = remove_created_directories(&group_directories);
+                group_results.push(AgentIntegrationGroupResult {
+                    agent_ids: group.agent_ids,
+                    target_paths: group
+                        .targets
+                        .into_iter()
+                        .map(|target| target.target_path)
+                        .collect(),
+                    transaction_id: None,
+                    rollback_ids: Vec::new(),
+                    created_directories: Vec::new(),
+                    state: AgentIntegrationTransactionState::Failed,
+                    error: Some(format!("{error:#}")),
+                });
+            }
         }
-    };
-    let rollback_ids = transaction
-        .changes
-        .iter()
-        .map(|item| item.backup.rollback_id.clone())
-        .collect::<Vec<_>>();
+    }
+
+    let agent_results = agent_results_for_groups(&prepared.plan.targets, &group_results);
+    let state = aggregate_state(&group_results);
     let manifest = AgentIntegrationTransactionManifest {
         schema_version: 1,
-        transaction_id: transaction.transaction_id.clone(),
+        transaction_id: transaction_id.clone(),
         review_digest: prepared.plan.review_digest.clone(),
         planned_after_hashes: prepared
             .plan
@@ -378,11 +534,15 @@ pub fn apply_agent_integration(
         targets: prepared.plan.targets.clone(),
         rollback_ids: rollback_ids.clone(),
         created_directories: created_directories.clone(),
-        state: AgentIntegrationTransactionState::Applied,
+        applied_target_paths: applied_target_paths.clone(),
+        group_results: group_results.clone(),
+        agent_results: agent_results.clone(),
+        state,
         applied_at_ms: now_ms(),
         verified_at_ms: None,
         rolled_back_at_ms: None,
-        failure_reason: None,
+        failure_reason: (state != AgentIntegrationTransactionState::Applied)
+            .then(|| "One or more Agent integration target groups failed".to_string()),
     };
     if let Err(error) = save_transaction_manifest(backup_root, &manifest) {
         rollback_transaction(&rollback_ids, backup_root).with_context(|| {
@@ -394,7 +554,7 @@ pub fn apply_agent_integration(
         );
     }
     Ok(AgentIntegrationReceipt {
-        transaction_id: transaction.transaction_id,
+        transaction_id,
         review_digest: prepared.plan.review_digest,
         rollback_ids,
         created_directories,
@@ -405,7 +565,134 @@ pub fn apply_agent_integration(
             .iter()
             .any(|target| target.trust_required),
         new_session_required: prepared.plan.new_session_required,
+        state,
+        group_results,
+        agent_results,
     })
+}
+
+struct AgentIntegrationApplyGroup {
+    agent_ids: Vec<String>,
+    targets: Vec<AgentIntegrationTargetPlan>,
+    changes: Vec<PreparedAgentIntegrationChange>,
+}
+
+fn integration_apply_groups(
+    prepared: &PreparedAgentIntegration,
+) -> Vec<AgentIntegrationApplyGroup> {
+    let mut groups: BTreeMap<Vec<String>, AgentIntegrationApplyGroup> = BTreeMap::new();
+    for target in &prepared.plan.targets {
+        let mut agent_ids = target.agent_ids.clone();
+        agent_ids.sort();
+        agent_ids.dedup();
+        groups
+            .entry(agent_ids.clone())
+            .or_insert_with(|| AgentIntegrationApplyGroup {
+                agent_ids,
+                targets: Vec::new(),
+                changes: Vec::new(),
+            })
+            .targets
+            .push(target.clone());
+    }
+    for change in &prepared.changes {
+        let mut agent_ids = change.target.agent_ids.clone();
+        agent_ids.sort();
+        agent_ids.dedup();
+        groups
+            .entry(agent_ids.clone())
+            .or_insert_with(|| AgentIntegrationApplyGroup {
+                agent_ids,
+                targets: Vec::new(),
+                changes: Vec::new(),
+            })
+            .changes
+            .push(change.clone());
+    }
+    groups.into_values().collect()
+}
+
+fn aggregate_state(
+    group_results: &[AgentIntegrationGroupResult],
+) -> AgentIntegrationTransactionState {
+    let applied = group_results
+        .iter()
+        .filter(|group| group.state == AgentIntegrationTransactionState::Applied)
+        .count();
+    let failed = group_results
+        .iter()
+        .filter(|group| group.state == AgentIntegrationTransactionState::Failed)
+        .count();
+    if failed == 0 {
+        AgentIntegrationTransactionState::Applied
+    } else if applied == 0 {
+        AgentIntegrationTransactionState::Failed
+    } else {
+        AgentIntegrationTransactionState::Partial
+    }
+}
+
+fn agent_results_for_groups(
+    targets: &[AgentIntegrationTargetPlan],
+    group_results: &[AgentIntegrationGroupResult],
+) -> Vec<AgentIntegrationAgentResult> {
+    let mut agents = BTreeSet::new();
+    for target in targets {
+        agents.extend(target.agent_ids.iter().cloned());
+    }
+    agents
+        .into_iter()
+        .map(|agent_id| {
+            let mut applied_targets = Vec::new();
+            let mut failed_targets = Vec::new();
+            let mut transaction_ids = Vec::new();
+            let mut errors = Vec::new();
+            for group in group_results
+                .iter()
+                .filter(|group| group.agent_ids.contains(&agent_id))
+            {
+                match group.state {
+                    AgentIntegrationTransactionState::Applied
+                    | AgentIntegrationTransactionState::Verified => {
+                        applied_targets.extend(group.target_paths.iter().cloned());
+                        if let Some(transaction_id) = group.transaction_id.as_ref() {
+                            transaction_ids.push(transaction_id.clone());
+                        }
+                    }
+                    AgentIntegrationTransactionState::Failed
+                    | AgentIntegrationTransactionState::Changed
+                    | AgentIntegrationTransactionState::Partial
+                    | AgentIntegrationTransactionState::RolledBack => {
+                        failed_targets.extend(group.target_paths.iter().cloned());
+                        if let Some(error) = group.error.as_ref() {
+                            errors.push(error.clone());
+                        }
+                    }
+                }
+            }
+            applied_targets.sort();
+            applied_targets.dedup();
+            failed_targets.sort();
+            failed_targets.dedup();
+            transaction_ids.sort();
+            transaction_ids.dedup();
+            let state = if failed_targets.is_empty() {
+                AgentIntegrationTransactionState::Applied
+            } else if applied_targets.is_empty() {
+                AgentIntegrationTransactionState::Failed
+            } else {
+                AgentIntegrationTransactionState::Partial
+            };
+            AgentIntegrationAgentResult {
+                agent_id,
+                state,
+                applied_targets,
+                failed_targets,
+                transaction_ids,
+                error: (!errors.is_empty()).then(|| errors.join("; ")),
+            }
+        })
+        .collect()
 }
 
 pub fn get_agent_integration_transaction(
@@ -492,6 +779,9 @@ fn verify_agent_integration_transaction_locked(
 fn verify_manifest_targets(
     manifest: &AgentIntegrationTransactionManifest,
 ) -> Result<AgentIntegrationVerification> {
+    if !manifest.group_results.is_empty() {
+        return verify_manifest_group_results(manifest);
+    }
     let plan = AgentIntegrationPlan {
         schema_version: 1,
         scope: AgentIntegrationScope::Global,
@@ -507,6 +797,44 @@ fn verify_manifest_targets(
         new_session_required: true,
     };
     verify_plan(&plan)
+}
+
+fn verify_manifest_group_results(
+    manifest: &AgentIntegrationTransactionManifest,
+) -> Result<AgentIntegrationVerification> {
+    let mut failed_targets = BTreeSet::new();
+    for group in &manifest.group_results {
+        if group.state != AgentIntegrationTransactionState::Applied
+            && group.state != AgentIntegrationTransactionState::Verified
+        {
+            failed_targets.extend(group.target_paths.iter().cloned());
+        }
+    }
+
+    let mut verified_targets = Vec::new();
+    let mut changed_targets = Vec::new();
+    for target in &manifest.targets {
+        if failed_targets.contains(&target.target_path) {
+            changed_targets.push(target.target_path.clone());
+            continue;
+        }
+        match fs::read(&target.target_path) {
+            Ok(current) if sha256_hex(&current) == target.after_sha256 => {
+                verified_targets.push(target.target_path.clone());
+            }
+            Ok(_) => changed_targets.push(target.target_path.clone()),
+            Err(error) => {
+                return Err(error)
+                    .with_context(|| format!("failed to read {}", target.target_path.display()));
+            }
+        }
+    }
+    Ok(AgentIntegrationVerification {
+        ok: changed_targets.is_empty(),
+        review_digest: manifest.review_digest.clone(),
+        verified_targets,
+        changed_targets,
+    })
 }
 
 pub fn verify_plan(plan: &AgentIntegrationPlan) -> Result<AgentIntegrationVerification> {
@@ -743,11 +1071,7 @@ fn validate_transaction_backups(
     manifest: &AgentIntegrationTransactionManifest,
     backup_root: &Path,
 ) -> Result<()> {
-    let changed_targets = manifest
-        .targets
-        .iter()
-        .filter(|target| target.before_sha256 != target.after_sha256)
-        .collect::<Vec<_>>();
+    let changed_targets = manifest_changed_targets_with_backups(manifest)?;
     if manifest.rollback_ids.len() != changed_targets.len() {
         bail!("Agent integration transaction rollback count is inconsistent");
     }
@@ -768,6 +1092,41 @@ fn validate_transaction_backups(
         }
     }
     Ok(())
+}
+
+fn manifest_changed_targets_with_backups(
+    manifest: &AgentIntegrationTransactionManifest,
+) -> Result<Vec<&AgentIntegrationTargetPlan>> {
+    if manifest.applied_target_paths.is_empty() && manifest.group_results.is_empty() {
+        return Ok(manifest
+            .targets
+            .iter()
+            .filter(|target| target.before_sha256 != target.after_sha256)
+            .collect());
+    }
+
+    let target_by_path = manifest
+        .targets
+        .iter()
+        .map(|target| (target.target_path.clone(), target))
+        .collect::<BTreeMap<_, _>>();
+    let mut seen = BTreeSet::new();
+    let mut changed_targets = Vec::new();
+    for path in &manifest.applied_target_paths {
+        if !seen.insert(path) {
+            bail!("Agent integration transaction contains duplicate applied targets");
+        }
+        let target = target_by_path.get(path).with_context(|| {
+            format!(
+                "applied target {} is not in the reviewed plan",
+                path.display()
+            )
+        })?;
+        if target.before_sha256 != target.after_sha256 {
+            changed_targets.push(*target);
+        }
+    }
+    Ok(changed_targets)
 }
 
 fn validate_transaction_manifest(
@@ -795,6 +1154,59 @@ fn validate_transaction_manifest(
         || planned_after_hashes != manifest.planned_after_hashes
     {
         bail!("Agent integration transaction manifest target hashes are inconsistent");
+    }
+    validate_transaction_result_fields(manifest)?;
+    Ok(())
+}
+
+fn validate_transaction_result_fields(
+    manifest: &AgentIntegrationTransactionManifest,
+) -> Result<()> {
+    if manifest.group_results.is_empty() && manifest.agent_results.is_empty() {
+        return Ok(());
+    }
+    let target_paths = manifest
+        .targets
+        .iter()
+        .map(|target| target.target_path.clone())
+        .collect::<BTreeSet<_>>();
+    for path in &manifest.applied_target_paths {
+        if !target_paths.contains(path) {
+            bail!("Agent integration transaction applied target is outside the reviewed plan");
+        }
+    }
+    let rollback_id_set = manifest.rollback_ids.iter().collect::<BTreeSet<_>>();
+    let mut group_rollback_ids = BTreeSet::new();
+    for group in &manifest.group_results {
+        if group.agent_ids.is_empty() || group.target_paths.is_empty() {
+            bail!("Agent integration transaction group result is empty");
+        }
+        for path in &group.target_paths {
+            if !target_paths.contains(path) {
+                bail!("Agent integration transaction group target is outside the reviewed plan");
+            }
+        }
+        for rollback_id in &group.rollback_ids {
+            if !rollback_id_set.contains(rollback_id) || !group_rollback_ids.insert(rollback_id) {
+                bail!("Agent integration transaction group rollback id is inconsistent");
+            }
+        }
+    }
+    if group_rollback_ids != rollback_id_set {
+        bail!("Agent integration transaction rollback ids are not represented by groups");
+    }
+    let result_agents = manifest
+        .agent_results
+        .iter()
+        .map(|result| result.agent_id.clone())
+        .collect::<BTreeSet<_>>();
+    let target_agents = manifest
+        .targets
+        .iter()
+        .flat_map(|target| target.agent_ids.iter().cloned())
+        .collect::<BTreeSet<_>>();
+    if result_agents != target_agents {
+        bail!("Agent integration transaction Agent results do not match the reviewed plan");
     }
     Ok(())
 }
@@ -1615,6 +2027,198 @@ mod tests {
             .targets
             .iter()
             .any(|target| target.trust_required));
+    }
+
+    fn agent_result<'a>(
+        receipt: &'a AgentIntegrationReceipt,
+        agent_id: &str,
+    ) -> &'a AgentIntegrationAgentResult {
+        receipt
+            .agent_results
+            .iter()
+            .find(|result| result.agent_id == agent_id)
+            .expect("agent result")
+    }
+
+    #[test]
+    fn stale_target_failure_preserves_successful_independent_agent_group() {
+        let root = tempdir().unwrap();
+        let root_path = fs::canonicalize(root.path()).unwrap();
+        let home = root_path.join("home");
+        let project = root_path.join("project");
+        let backups = root_path.join("backups");
+        fs::create_dir_all(&home).unwrap();
+        fs::create_dir_all(&project).unwrap();
+        let mut request = request(
+            AgentIntegrationScope::Project,
+            Some(project.clone()),
+            PathBuf::from("/opt/dtoken-agent-bridge"),
+        );
+        request.agent_ids = vec!["codex".to_string(), "claude-code".to_string()];
+        request.install_instructions = false;
+        request.install_skill = false;
+        request.install_mcp = false;
+
+        let prepared = prepare_agent_integration(&request, &home, &backups).unwrap();
+        let digest = prepared.plan.review_digest.clone();
+        fs::create_dir_all(project.join(".claude")).unwrap();
+        fs::write(
+            project.join(".claude/settings.local.json"),
+            r#"{"external":true}"#,
+        )
+        .unwrap();
+
+        let receipt = apply_agent_integration(prepared, &backups, &digest).unwrap();
+        assert_eq!(receipt.state, AgentIntegrationTransactionState::Partial);
+        assert_eq!(
+            agent_result(&receipt, "codex").state,
+            AgentIntegrationTransactionState::Applied
+        );
+        assert_eq!(
+            agent_result(&receipt, "claude-code").state,
+            AgentIntegrationTransactionState::Failed
+        );
+        assert!(fs::read_to_string(project.join(".codex/hooks.json"))
+            .unwrap()
+            .contains("dtoken-agent-bridge"));
+        assert_eq!(
+            fs::read_to_string(project.join(".claude/settings.local.json")).unwrap(),
+            r#"{"external":true}"#
+        );
+
+        let verification =
+            verify_agent_integration_transaction(&receipt.transaction_id, &backups).unwrap();
+        assert!(!verification.ok);
+        assert!(verification
+            .verified_targets
+            .contains(&project.join(".codex/hooks.json")));
+        assert!(verification
+            .changed_targets
+            .contains(&project.join(".claude/settings.local.json")));
+
+        let restored = rollback_agent_integration(&receipt.transaction_id, &backups).unwrap();
+        assert_eq!(restored, vec![project.join(".codex/hooks.json")]);
+        assert!(!project.join(".codex/hooks.json").exists());
+        assert_eq!(
+            fs::read_to_string(project.join(".claude/settings.local.json")).unwrap(),
+            r#"{"external":true}"#
+        );
+        assert!(
+            rollback_agent_integration(&receipt.transaction_id, &backups)
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn failed_group_that_matches_after_hash_still_verifies_as_partial() {
+        let root = tempdir().unwrap();
+        let root_path = fs::canonicalize(root.path()).unwrap();
+        let home = root_path.join("home");
+        let project = root_path.join("project");
+        let backups = root_path.join("backups");
+        fs::create_dir_all(&home).unwrap();
+        fs::create_dir_all(&project).unwrap();
+        let mut request = request(
+            AgentIntegrationScope::Project,
+            Some(project.clone()),
+            PathBuf::from("/opt/dtoken-agent-bridge"),
+        );
+        request.agent_ids = vec!["codex".to_string(), "claude-code".to_string()];
+        request.install_instructions = false;
+        request.install_skill = false;
+        request.install_mcp = false;
+
+        let prepared = prepare_agent_integration(&request, &home, &backups).unwrap();
+        let digest = prepared.plan.review_digest.clone();
+        let (claude_target, claude_desired, _) = hook_target(
+            "claude-code",
+            AgentIntegrationScope::Project,
+            &home,
+            Some(&project),
+            &PathBuf::from("/opt/dtoken-agent-bridge"),
+        )
+        .unwrap();
+        fs::create_dir_all(claude_target.parent().unwrap()).unwrap();
+        fs::write(&claude_target, claude_desired).unwrap();
+
+        let receipt = apply_agent_integration(prepared, &backups, &digest).unwrap();
+        assert_eq!(receipt.state, AgentIntegrationTransactionState::Partial);
+        let verification =
+            verify_agent_integration_transaction(&receipt.transaction_id, &backups).unwrap();
+        assert!(!verification.ok);
+        assert!(verification
+            .verified_targets
+            .contains(&project.join(".codex/hooks.json")));
+        assert!(verification.changed_targets.contains(&claude_target));
+        assert_eq!(
+            get_agent_integration_transaction(&receipt.transaction_id, &backups)
+                .unwrap()
+                .state,
+            AgentIntegrationTransactionState::Partial
+        );
+    }
+
+    #[test]
+    fn shared_codex_opencode_group_failure_does_not_rollback_independent_claude() {
+        let root = tempdir().unwrap();
+        let root_path = fs::canonicalize(root.path()).unwrap();
+        let home = root_path.join("home");
+        let project = root_path.join("project");
+        let backups = root_path.join("backups");
+        fs::create_dir_all(&home).unwrap();
+        fs::create_dir_all(&project).unwrap();
+        let mut request = request(
+            AgentIntegrationScope::Project,
+            Some(project.clone()),
+            PathBuf::from("/opt/dtoken-agent-bridge"),
+        );
+        request.install_hook_or_plugin = false;
+        request.install_skill = false;
+        request.install_mcp = false;
+
+        let prepared = prepare_agent_integration(&request, &home, &backups).unwrap();
+        let digest = prepared.plan.review_digest.clone();
+        fs::write(project.join("AGENTS.md"), "# externally created\n").unwrap();
+
+        let receipt = apply_agent_integration(prepared, &backups, &digest).unwrap();
+        assert_eq!(receipt.state, AgentIntegrationTransactionState::Partial);
+        assert_eq!(
+            agent_result(&receipt, "claude-code").state,
+            AgentIntegrationTransactionState::Applied
+        );
+        assert_eq!(
+            agent_result(&receipt, "codex").state,
+            AgentIntegrationTransactionState::Failed
+        );
+        assert_eq!(
+            agent_result(&receipt, "opencode").state,
+            AgentIntegrationTransactionState::Failed
+        );
+        assert!(fs::read_to_string(project.join("CLAUDE.md"))
+            .unwrap()
+            .contains(MANAGED_START));
+        assert_eq!(
+            fs::read_to_string(project.join("AGENTS.md")).unwrap(),
+            "# externally created\n"
+        );
+
+        let verification =
+            verify_agent_integration_transaction(&receipt.transaction_id, &backups).unwrap();
+        assert!(!verification.ok);
+        assert!(verification
+            .verified_targets
+            .contains(&project.join("CLAUDE.md")));
+        assert!(verification
+            .changed_targets
+            .contains(&project.join("AGENTS.md")));
+
+        rollback_agent_integration(&receipt.transaction_id, &backups).unwrap();
+        assert!(!project.join("CLAUDE.md").exists());
+        assert_eq!(
+            fs::read_to_string(project.join("AGENTS.md")).unwrap(),
+            "# externally created\n"
+        );
     }
 
     #[test]

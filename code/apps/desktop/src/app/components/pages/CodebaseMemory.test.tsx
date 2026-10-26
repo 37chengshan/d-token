@@ -2,7 +2,7 @@ import "@testing-library/jest-dom/vitest";
 import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { NotificationProvider } from "../../lib/notifications";
+import { NotificationProvider, useNotifications } from "../../lib/notifications";
 import { CodebaseMemory } from "./CodebaseMemory";
 
 const native = vi.hoisted(() => ({ invokeNative: vi.fn() }));
@@ -82,7 +82,35 @@ describe("CodebaseMemory", () => {
     expect(screen.getByRole("button", { name: "刷新" })).toBeDisabled();
 
     resolveStatus?.(status());
-    expect(await screen.findByRole("heading", { level: 3, name: "图谱组件" })).toBeVisible();
+    expect(await screen.findByRole("heading", { level: 2, name: "图谱组件" })).toBeVisible();
+  });
+
+  it("refreshes an in-progress index without native events and reports its terminal result once", async () => {
+    vi.useFakeTimers();
+    let reads = 0;
+    let titles: string[] = [];
+    function Probe() { titles = useNotifications().notifications.map((item) => item.title); return null; }
+    try {
+      native.invokeNative.mockImplementation(async (command: string) => {
+        if (command === "get_codebase_memory_status") {
+          reads += 1;
+          return status({ index: dimension(reads === 1 ? "busy" : "failed", "Index result") });
+        }
+        return agentDiscovery;
+      });
+      await act(async () => { render(<NotificationProvider><CodebaseMemory /><Probe /></NotificationProvider>); });
+      await act(async () => { vi.advanceTimersByTime(0); });
+      await act(async () => { vi.advanceTimersByTime(1000); });
+      const row = screen.getByRole("heading", { level: 3, name: "项目索引" }).closest("[data-flat-row]");
+      expect(within(row as HTMLElement).getByText("失败")).toBeVisible();
+      expect(titles.filter((title) => title === "索引任务已结束，请查看结果")).toHaveLength(1);
+      const finalReads = reads;
+      await act(async () => { vi.advanceTimersByTime(5000); });
+      expect(reads).toBe(finalReads);
+    } finally {
+      cleanup();
+      vi.useRealTimers();
+    }
   });
 
   it("renders five independent evidence dimensions without collapsing them to green", async () => {
@@ -92,17 +120,17 @@ describe("CodebaseMemory", () => {
     await screen.findByRole("heading", { level: 1, name: "代码图谱（实验性）" });
     const expected = [
       ["图谱组件", "已验证"],
-      ["Agent 连接", "未配置"],
-      ["Agent 使用情况", "已验证"],
+      ["编码工具连接", "未配置"],
+      ["编码工具使用情况", "已验证"],
       ["图谱页面", "失败"],
       ["项目索引", "部分可用"],
     ];
     for (const [heading, stateLabel] of expected) {
-      const row = screen.getByRole("heading", { level: 3, name: heading }).closest("[data-flat-row]");
+      const row = heading === "图谱组件" ? screen.getByRole("region", { name: "图谱组件" }) : screen.getByRole("heading", { level: 3, name: heading }).closest("[data-flat-row]");
       expect(row).toBeTruthy();
-      expect(within(row as HTMLElement).getByText(stateLabel)).toBeVisible();
+      expect(await within(row as HTMLElement).findByText(stateLabel)).toBeVisible();
     }
-    expect(screen.getByText(/连接完成不代表图谱页面或索引已经可用/)).toBeVisible();
+    expect(screen.queryByText(/连接完成不代表图谱页面或索引已经可用/)).not.toBeInTheDocument();
   });
 
   it("restores every persisted Agent transaction as a batch rollback after reload", async () => {
@@ -122,6 +150,41 @@ describe("CodebaseMemory", () => {
     expect(await screen.findByRole("button", { name: "批量回退本次配置" })).toBeVisible();
   });
 
+  it("retries incomplete recovery without rolling back a verified connection", async () => {
+    const user = userEvent.setup();
+    let attempts = 0;
+    native.invokeNative.mockImplementation(async (command: string) => {
+      if (command === "get_codebase_memory_status") return status({
+        active_integrations: [
+          { transaction_id: "tx-opencode", agent_id: "opencode", state: "verified", rollback_id: "rb-opencode" },
+          ...(attempts < 2 ? [{ transaction_id: "tx-codex", agent_id: "codex", state: "recovery_required", rollback_id: "rb-codex" }] : []),
+        ],
+      });
+      if (command === "get_hybrid_agent_integrations") return agentDiscovery;
+      if (command === "rollback_codebase_memory_integration") {
+        attempts += 1;
+        return { ok: attempts > 1, state: attempts > 1 ? "rolled_back" : "recovery_required" };
+      }
+      throw new Error(`unexpected command ${command}`);
+    });
+    renderPage();
+    await user.click(await screen.findByRole("button", { name: "重试恢复未完成的配置" }));
+    const dialog = screen.getByRole("alertdialog");
+    expect(within(dialog).getByText("Codex")).toBeVisible();
+    expect(within(dialog).queryByText("OpenCode")).not.toBeInTheDocument();
+    await user.click(within(dialog).getByRole("button", { name: "确认回退" }));
+    await waitFor(() => expect(attempts).toBe(1));
+    expect(await within(dialog).findByRole("alert")).toHaveTextContent("恢复失败");
+    await waitFor(() => expect(within(dialog).getByRole("button", { name: "确认回退" })).toBeEnabled());
+    await user.click(within(dialog).getByRole("button", { name: "确认回退" }));
+    await waitFor(() => expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument());
+    expect(screen.queryByRole("button", { name: "重试恢复未完成的配置" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "批量回退本次配置" })).toBeVisible();
+    const calls = native.invokeNative.mock.calls.filter(([command]) => command === "rollback_codebase_memory_integration");
+    expect(calls).toHaveLength(2);
+    for (const [, args] of calls) expect(args).toEqual({ request: { transaction_id: "tx-codex" } });
+  });
+
   it("guides a lightweight user import and saves an existing custom component directory", async () => {
     const user = userEvent.setup();
     native.invokeNative.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
@@ -136,13 +199,14 @@ describe("CodebaseMemory", () => {
     });
     renderPage();
 
-    // The supported release is pinned by the supply-chain manifest/allowlist,
-    // not by a hard-coded version number in the UI.
-    expect(await screen.findByRole("heading", { level: 2, name: "导入当前受支持的图谱组件" })).toBeVisible();
-    expect(screen.getByText(/按当前 manifest\/allowlist 校验来源、平台、架构和 SHA-256/)).toBeVisible();
+    // The user sees only the current supported component, never an internal
+    // verification mechanism or a hard-coded version number.
+    expect(await screen.findByRole("heading", { level: 2, name: "图谱组件" })).toBeVisible();
+    expect(screen.getByText("未找到可用组件，可导入下载好的压缩包。")).toBeVisible();
     expect(screen.queryByText(/v0\.9\.1/)).not.toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "打开当前官方下载页" }));
+    await user.click(screen.getByRole("button", { name: "官方下载" }));
     expect(native.invokeNative).toHaveBeenCalledWith("open_codebase_memory_download_page");
+    await user.click(screen.getByText("位置与其他导入方式"));
     const directory = screen.getByRole("textbox", { name: "已解压组件的位置" });
     await user.clear(directory);
     await user.type(directory, "/custom/code-graph");
@@ -150,6 +214,150 @@ describe("CodebaseMemory", () => {
     await waitFor(() => expect(native.invokeNative).toHaveBeenCalledWith("set_codebase_memory_package_directory", {
       request: { directory: "/custom/code-graph" },
     }));
+  });
+
+  it("recognizes an installed component and keeps its path in optional details", async () => {
+    const user = userEvent.setup();
+    native.invokeNative.mockImplementation(async (command: string) => command === "get_codebase_memory_status"
+      ? status({ package_candidates: [{ path: "/installed/bin/codebase-memory-mcp", compatible: true, source: "installed", reason_code: "verified" }] })
+      : agentDiscovery);
+    renderPage();
+    expect(await screen.findByText("已找到并验证本机组件。")).toBeVisible();
+    expect(screen.getByText("/installed/bin/codebase-memory-mcp")).not.toBeVisible();
+    expect(screen.getByLabelText("已解压组件的位置")).not.toBeVisible();
+    await user.click(screen.getByText("位置与其他导入方式"));
+    expect(screen.getByText("/installed/bin/codebase-memory-mcp")).toBeVisible();
+    expect(native.invokeNative.mock.calls.map(([command]) => command)).not.toContain("set_codebase_memory_package_directory");
+  });
+
+  it("selects an archive without writing and imports it only after the shown confirmation", async () => {
+    const user = userEvent.setup();
+    let imported = false;
+    native.invokeNative.mockImplementation(async (command: string) => {
+      if (command === "get_codebase_memory_status") return status({ package: dimension(imported ? "ready" : "unavailable", "Component state") });
+      if (command === "get_hybrid_agent_integrations") return agentDiscovery;
+      if (command === "select_codebase_memory_archive") return "/downloads/graph.tar.gz";
+      if (command === "import_codebase_memory_archive") { imported = true; return { ok: true, state: "imported" }; }
+      throw new Error(`unexpected command ${command}`);
+    });
+    renderPage();
+    await user.click(await screen.findByRole("button", { name: "导入压缩包" }));
+    const dialog = screen.getByRole("alertdialog");
+    expect(within(dialog).getByText("graph.tar.gz")).toBeVisible();
+    expect(imported).toBe(false);
+    await user.click(within(dialog).getByRole("button", { name: "校验并导入" }));
+    await waitFor(() => expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument());
+    expect(await screen.findByText("已找到并验证本机组件。")).toBeVisible();
+    expect(native.invokeNative).toHaveBeenCalledWith("import_codebase_memory_archive", { request: { archive_path: "/downloads/graph.tar.gz" } });
+  });
+
+  it("keeps the original component when an archive is rejected and explains how to retry", async () => {
+    const user = userEvent.setup();
+    native.invokeNative.mockImplementation(async (command: string) => {
+      if (command === "get_codebase_memory_status") return status();
+      if (command === "get_hybrid_agent_integrations") return agentDiscovery;
+      if (command === "select_codebase_memory_archive") return "/downloads/wrong.zip";
+      if (command === "import_codebase_memory_archive") return { ok: false, error: "archive_hash_mismatch" };
+      throw new Error(`unexpected command ${command}`);
+    });
+    renderPage();
+    await user.click(await screen.findByRole("button", { name: "导入压缩包" }));
+    const dialog = screen.getByRole("alertdialog");
+    await user.click(within(dialog).getByRole("button", { name: "校验并导入" }));
+    expect(await within(dialog).findByRole("alert")).toHaveTextContent("原有组件未更改");
+    expect(within(dialog).getByRole("button", { name: "校验并导入" })).toBeEnabled();
+    await user.click(within(dialog).getByRole("button", { name: "取消" }));
+    expect(screen.getByText("已找到并验证本机组件。")).toBeVisible();
+    expect(native.invokeNative.mock.calls.map(([command]) => command)).not.toContain("set_codebase_memory_package_directory");
+  });
+
+  it("does nothing when archive selection is cancelled", async () => {
+    const user = userEvent.setup();
+    native.invokeNative.mockImplementation(async (command: string) => {
+      if (command === "get_codebase_memory_status") return status();
+      if (command === "get_hybrid_agent_integrations") return agentDiscovery;
+      if (command === "select_codebase_memory_archive") return null;
+      throw new Error(`unexpected command ${command}`);
+    });
+    renderPage();
+    await user.click(await screen.findByRole("button", { name: "导入压缩包" }));
+    expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
+    expect(native.invokeNative.mock.calls.map(([command]) => command)).not.toContain("import_codebase_memory_archive");
+  });
+
+  it("clears the old ready status if native activation cannot restore previous settings", async () => {
+    const user = userEvent.setup();
+    native.invokeNative.mockImplementation(async (command: string) => {
+      if (command === "get_codebase_memory_status") return status();
+      if (command === "get_hybrid_agent_integrations") return agentDiscovery;
+      if (command === "select_codebase_memory_archive") return "/downloads/graph.tar.gz";
+      if (command === "import_codebase_memory_archive") return { ok: false, state: "recovery_required" };
+      throw new Error(`unexpected command ${command}`);
+    });
+    renderPage();
+    await user.click(await screen.findByRole("button", { name: "导入压缩包" }));
+    const dialog = screen.getByRole("alertdialog");
+    await user.click(within(dialog).getByRole("button", { name: "校验并导入" }));
+    expect(await within(dialog).findByRole("alert")).toHaveTextContent("原有设置未能完整恢复");
+    expect(screen.queryByText("已找到并验证本机组件。")).not.toBeInTheDocument();
+    await user.click(within(dialog).getByRole("button", { name: "取消" }));
+    expect(screen.getByRole("button", { name: "查看并连接编码工具" })).toBeDisabled();
+  });
+
+  it("lets the user choose an extracted component directory and save the selected draft", async () => {
+    const user = userEvent.setup();
+    native.invokeNative.mockImplementation(async (command: string) => {
+      if (command === "get_codebase_memory_status") return status();
+      if (command === "get_hybrid_agent_integrations") return agentDiscovery;
+      if (command === "select_codebase_memory_package_directory") return "/custom/chosen-code-graph";
+      if (command === "set_codebase_memory_package_directory") return { ok: true, summary: "Directory saved" };
+      throw new Error(`unexpected command ${command}`);
+    });
+    renderPage();
+
+    await user.click(await screen.findByText("位置与其他导入方式"));
+    await user.click(screen.getByRole("button", { name: "选择已解压目录" }));
+    const directory = screen.getByRole("textbox", { name: "已解压组件的位置" });
+    expect(directory).toHaveValue("/custom/chosen-code-graph");
+    expect(native.invokeNative).not.toHaveBeenCalledWith("set_codebase_memory_package_directory", expect.anything());
+
+    await user.click(screen.getByRole("button", { name: "保存目录" }));
+    await waitFor(() => expect(native.invokeNative).toHaveBeenCalledWith("set_codebase_memory_package_directory", {
+      request: { directory: "/custom/chosen-code-graph" },
+    }));
+  });
+
+  it("keeps the current directory unchanged when the native picker is cancelled", async () => {
+    const user = userEvent.setup();
+    native.invokeNative.mockImplementation(async (command: string) => {
+      if (command === "get_codebase_memory_status") return status();
+      if (command === "get_hybrid_agent_integrations") return agentDiscovery;
+      if (command === "select_codebase_memory_package_directory") return null;
+      throw new Error(`unexpected command ${command}`);
+    });
+    renderPage();
+
+    await user.click(await screen.findByText("位置与其他导入方式"));
+    await user.click(screen.getByRole("button", { name: "选择已解压目录" }));
+    expect(screen.getByRole("textbox", { name: "已解压组件的位置" })).toHaveValue("/components/codebase-memory");
+    expect(screen.queryByRole("status", { name: /错误/i })).toBeNull();
+    expect(native.invokeNative).not.toHaveBeenCalledWith("set_codebase_memory_package_directory", expect.anything());
+  });
+
+  it("requires fresh status when changing a component directory cannot restore old settings", async () => {
+    const user = userEvent.setup();
+    native.invokeNative.mockImplementation(async (command: string) => {
+      if (command === "get_codebase_memory_status") return status();
+      if (command === "get_hybrid_agent_integrations") return agentDiscovery;
+      if (command === "set_codebase_memory_package_directory") return { ok: false, state: "recovery_required" };
+      throw new Error(`unexpected command ${command}`);
+    });
+    renderPage();
+    await user.click(await screen.findByText("位置与其他导入方式"));
+    await user.click(screen.getByRole("button", { name: "保存目录" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "查看并连接编码工具" })).toBeDisabled());
+    expect(screen.queryByText("已找到并验证本机组件。")).not.toBeInTheDocument();
+    expect(screen.getAllByText(/原有设置未能完整恢复/).length).toBeGreaterThan(0);
   });
 
   it("truthfully explains an untrusted imported component instead of asking the user to import again", async () => {
@@ -162,15 +370,15 @@ describe("CodebaseMemory", () => {
     renderPage();
 
     await screen.findByRole("heading", { level: 1, name: "代码图谱（实验性）" });
-    const configure = screen.getByRole("button", { name: "查看并连接 Agent" });
+    const configure = screen.getByRole("button", { name: "查看并连接编码工具" });
     expect(configure).toBeDisabled();
-    // The blocked reason must be truthful about the failed manifest/allowlist
-    // check, not ask the user to import again when a component was already detected.
+    // The blocked reason explains what the user can do without exposing the
+    // internal verification mechanism or asking them to import blindly.
     expect(screen.queryByText("请先导入并通过校验图谱组件。")).not.toBeInTheDocument();
-    expect(screen.getAllByText(/未通过当前 manifest\/allowlist 校验/).length).toBeGreaterThanOrEqual(1);
-    const packageRow = screen.getByRole("heading", { level: 3, name: "图谱组件" }).closest("[data-flat-row]");
-    expect(within(packageRow as HTMLElement).getByText("未受信任")).toBeVisible();
-    expect(within(packageRow as HTMLElement).getByText(/未通过当前 manifest\/allowlist 校验/)).toBeVisible();
+    expect(screen.getAllByText(/当前组件版本不兼容或文件不完整/).length).toBeGreaterThanOrEqual(1);
+    const packageRow = screen.getByRole("region", { name: "图谱组件" });
+    expect(within(packageRow as HTMLElement).getByText("组件校验未通过")).toBeVisible();
+    expect(within(packageRow as HTMLElement).getByText(/当前组件版本不兼容或文件不完整/)).toBeVisible();
   });
 
   it("truthfully explains a missing launcher when the pinned upstream is verified instead of asking the user to import again", async () => {
@@ -183,13 +391,13 @@ describe("CodebaseMemory", () => {
     renderPage();
 
     await screen.findByRole("heading", { level: 1, name: "代码图谱（实验性）" });
-    const configure = screen.getByRole("button", { name: "查看并连接 Agent" });
+    const configure = screen.getByRole("button", { name: "查看并连接编码工具" });
     expect(configure).toBeDisabled();
     // The upstream is verified; the real blocker is the missing launcher, so
     // the page must not claim the component was never imported.
     expect(screen.queryByText("请先导入并通过校验图谱组件。")).not.toBeInTheDocument();
     expect(screen.getAllByText(/受限 launcher 未找到/).length).toBeGreaterThanOrEqual(1);
-    const packageRow = screen.getByRole("heading", { level: 3, name: "图谱组件" }).closest("[data-flat-row]");
+    const packageRow = screen.getByRole("region", { name: "图谱组件" });
     expect(within(packageRow as HTMLElement).getByText("不可用")).toBeVisible();
   });
 
@@ -198,12 +406,38 @@ describe("CodebaseMemory", () => {
     renderPage();
 
     expect(await screen.findByText("浏览器预览不读取或修改本机代码图谱状态。")).toBeVisible();
-    expect(screen.getByRole("button", { name: "查看并连接 Agent" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "查看并连接编码工具" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "建立索引" })).toBeDisabled();
     expect(screen.queryByRole("button", { name: "打开图谱" })).not.toBeInTheDocument();
     expect(native.invokeNative).toHaveBeenCalledTimes(2);
     expect(native.invokeNative).toHaveBeenCalledWith("get_codebase_memory_status");
     expect(native.invokeNative).toHaveBeenCalledWith("get_hybrid_agent_integrations");
+  });
+
+  it("lets users exclude tools, keeps that choice on rescan, and previews only selected tools", async () => {
+    const user = userEvent.setup();
+    native.invokeNative.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
+      if (command === "get_codebase_memory_status") return status();
+      if (command === "get_hybrid_agent_integrations") return agentDiscovery;
+      if (command === "preview_codebase_memory_integration") {
+        const agentId = (args?.request as { agent_id: string }).agent_id;
+        return { ok: true, reviewed_digest: `review-${agentId}`, diff: `+ ${agentId}`, draft: { agent_id: agentId, scope: "project", project_root: "/approved/project", surface: "mcp" } };
+      }
+      throw new Error(`unexpected command ${command}`);
+    });
+    renderPage();
+    const codex = await screen.findByRole("checkbox", { name: "连接 Codex" });
+    expect(codex).toBeChecked();
+    expect(screen.getByRole("checkbox", { name: "连接 Cursor" })).toBeDisabled();
+    await user.click(codex);
+    await user.click(screen.getByRole("button", { name: "重新扫描" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "查看并连接编码工具" })).toBeEnabled());
+    expect(screen.getByRole("checkbox", { name: "连接 Codex" })).not.toBeChecked();
+    await user.click(screen.getByRole("button", { name: "查看并连接编码工具" }));
+    await screen.findByRole("button", { name: "确认并连接" });
+    const ids = native.invokeNative.mock.calls.filter(([command]) => command === "preview_codebase_memory_integration")
+      .map(([, args]) => (args as { request: { agent_id: string } }).request.agent_id);
+    expect(ids).toEqual(["opencode"]);
   });
 
   it("renders per-Agent progress before native work and avoids concurrent preview storms", async () => {
@@ -222,10 +456,10 @@ describe("CodebaseMemory", () => {
     });
     renderPage();
 
-    await user.click(await screen.findByRole("button", { name: "查看并连接 Agent" }));
+    await user.click(await screen.findByRole("button", { name: "查看并连接编码工具" }));
     expect(await screen.findByText("正在为 OpenCode 准备配置预览（1/2）…")).toBeVisible();
     expect(previewCalls).toBe(1);
-    expect(screen.getByRole("button", { name: "查看并连接 Agent" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "查看并连接编码工具" })).toBeDisabled();
 
     await act(async () => first.resolve({
       ok: true,
@@ -279,7 +513,7 @@ describe("CodebaseMemory", () => {
 
     expect(await screen.findByText("Cursor")).toBeVisible();
     expect(screen.getByText("暂不能连接")).toBeVisible();
-    await user.click(await screen.findByRole("button", { name: "查看并连接 Agent" }));
+    await user.click(await screen.findByRole("button", { name: "查看并连接编码工具" }));
     expect(await screen.findByText("+ opencode codebase-memory MCP managed entry")).toBeVisible();
     expect(screen.getByText("+ codex codebase-memory MCP managed entry")).toBeVisible();
     await user.click(screen.getByRole("button", { name: "确认并连接" }));
@@ -295,7 +529,7 @@ describe("CodebaseMemory", () => {
     expect(rollbackCalls.map(([, args]) => ((args as { request: { transaction_id: string } }).request.transaction_id))).toEqual(["tx-codex", "tx-opencode"]);
   });
 
-  it("fails closed and rolls back earlier Agent writes when a batch target fails verification", async () => {
+  it.each(["tx-codex", "tx-opencode"])("restores only %s when verification fails and keeps other tools connected", async (failedId) => {
     const user = userEvent.setup();
     native.invokeNative.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
       if (command === "get_codebase_memory_status") return status();
@@ -310,7 +544,7 @@ describe("CodebaseMemory", () => {
       }
       if (command === "verify_codebase_memory_integration") {
         const transactionId = (args?.request as { transaction_id: string }).transaction_id;
-        return transactionId === "tx-codex"
+        return transactionId === failedId
           ? { ok: false, state: "failed", error: "semantic mismatch" }
           : { ok: true, state: "verified", verified: true };
       }
@@ -319,13 +553,14 @@ describe("CodebaseMemory", () => {
     });
     renderPage();
 
-    await user.click(await screen.findByRole("button", { name: "查看并连接 Agent" }));
+    await user.click(await screen.findByRole("button", { name: "查看并连接编码工具" }));
     await user.click(await screen.findByRole("button", { name: "确认并连接" }));
-    await waitFor(() => expect(screen.getAllByText(/本批次已写入的配置已回退/).length).toBeGreaterThanOrEqual(1));
+    await waitFor(() => expect(screen.getAllByText(/已完成 1\/2 个工具连接/).length).toBeGreaterThanOrEqual(1));
     const rollbackIds = native.invokeNative.mock.calls
       .filter(([command]) => command === "rollback_codebase_memory_integration")
       .map(([, args]) => ((args as { request: { transaction_id: string } }).request.transaction_id));
-    expect(rollbackIds).toEqual(["tx-codex", "tx-opencode"]);
+    expect(rollbackIds).toEqual([failedId]);
+    expect(native.invokeNative.mock.calls.filter(([command]) => command === "apply_codebase_memory_integration")).toHaveLength(2);
   });
 
   it("retries rollback when a failed apply returns a recovery transaction", async () => {
@@ -351,13 +586,13 @@ describe("CodebaseMemory", () => {
     });
     renderPage();
 
-    await user.click(await screen.findByRole("button", { name: "查看并连接 Agent" }));
+    await user.click(await screen.findByRole("button", { name: "查看并连接编码工具" }));
     await user.click(await screen.findByRole("button", { name: "确认并连接" }));
     await waitFor(() => expect(native.invokeNative).toHaveBeenCalledWith(
       "rollback_codebase_memory_integration",
       { request: { transaction_id: "tx-opencode-recovery" } },
     ));
-    expect(screen.getAllByText(/本批次已写入的配置已回退/).length).toBeGreaterThanOrEqual(1);
+    await waitFor(() => expect(screen.getAllByText(/已完成 0\/2 个工具连接/).length).toBeGreaterThanOrEqual(1));
   });
 
   it("starts and opens the owned graph in one click without a caller-supplied URL", async () => {
@@ -414,5 +649,77 @@ describe("CodebaseMemory", () => {
     expect(native.invokeNative).not.toHaveBeenCalledWith("stop_codebase_memory_ui");
     await user.click(screen.getByRole("button", { name: "确认停止" }));
     await waitFor(() => expect(native.invokeNative).toHaveBeenCalledWith("stop_codebase_memory_ui"));
+  });
+
+  it("keeps destructive dialogs open after a failed action so the operator can read the reason and retry", async () => {
+    const user = userEvent.setup();
+    let deleteAttempts = 0;
+    native.invokeNative.mockImplementation(async (command: string) => {
+      if (command === "get_hybrid_agent_integrations") return agentDiscovery;
+      if (command === "get_codebase_memory_status") return status({
+        ui_session: ownedUiDimension("stopped", "d-token-owned graph host"),
+        index: dimension("stopped", "No current index"),
+      });
+      if (command === "delete_codebase_memory_index") {
+        deleteAttempts += 1;
+        return deleteAttempts === 1
+          ? { ok: false, error: "index is still in use" }
+          : { ok: true, summary: "Index deleted" };
+      }
+      throw new Error(`unexpected command ${command}`);
+    });
+    renderPage();
+
+    await user.click(await screen.findByRole("button", { name: "删除索引" }));
+    const dialog = await screen.findByRole("alertdialog", { name: "删除此项目的本机索引？" });
+    await user.click(within(dialog).getByRole("button", { name: "确认删除索引" }));
+
+    expect(await within(dialog).findByRole("alert")).toHaveTextContent("操作未完成");
+    expect(within(dialog).getByRole("button", { name: "确认删除索引" })).toBeEnabled();
+
+    await user.click(within(dialog).getByRole("button", { name: "确认删除索引" }));
+    await waitFor(() => expect(screen.queryByRole("alertdialog", { name: "删除此项目的本机索引？" })).toBeNull());
+  });
+
+  it("keeps the graph-host stop dialog open when the owned UI cannot be stopped", async () => {
+    const user = userEvent.setup();
+    let stopAttempts = 0;
+    native.invokeNative.mockImplementation(async (command: string) => {
+      if (command === "get_hybrid_agent_integrations") return agentDiscovery;
+      if (command === "get_codebase_memory_status") return status({
+        ui_session: ownedUiDimension("ready", "d-token-owned graph host"),
+        index: dimension("stopped", "No current index"),
+      });
+      if (command === "stop_codebase_memory_ui") {
+        stopAttempts += 1;
+        return stopAttempts === 1 ? { ok: false, error: "runtime identity changed" } : { ok: true, summary: "UI stopped" };
+      }
+      throw new Error(`unexpected command ${command}`);
+    });
+    renderPage();
+
+    await user.click(await screen.findByRole("button", { name: "停止页面服务" }));
+    const dialog = await screen.findByRole("alertdialog", { name: "停止图谱页面服务" });
+    await user.click(within(dialog).getByRole("button", { name: "确认停止" }));
+
+    expect(await within(dialog).findByRole("alert")).toHaveTextContent("操作未完成");
+    await user.click(within(dialog).getByRole("button", { name: "确认停止" }));
+    await waitFor(() => expect(screen.queryByRole("alertdialog", { name: "停止图谱页面服务" })).toBeNull());
+  });
+
+  it("reports a completed manual Agent scan while keeping the initial scan quiet", async () => {
+    const user = userEvent.setup();
+    native.invokeNative.mockImplementation(async (command: string) => {
+      if (command === "get_codebase_memory_status") return status();
+      if (command === "get_hybrid_agent_integrations") return agentDiscovery;
+      throw new Error(`unexpected command ${command}`);
+    });
+    const { container } = renderPage();
+    await screen.findByRole("button", { name: "重新扫描" });
+    expect(container.textContent).not.toContain("本机 Agent 扫描完成");
+
+    await user.click(screen.getByRole("button", { name: "重新扫描" }));
+    expect(await screen.findByText("找到 2 个可接入的编码工具"))
+      .toBeVisible();
   });
 });

@@ -2,7 +2,6 @@ import { useCallback, useEffect, useRef, useState, type ReactNode } from "react"
 import {
   Bot,
   Boxes,
-  CheckCircle2,
   DatabaseZap,
   Download,
   ExternalLink,
@@ -16,12 +15,12 @@ import {
   Square,
   Trash2,
 } from "lucide-react";
-import { DataSourceBadge } from "../common/DataSourceBadge";
 import { EmptyState } from "../common/EmptyState";
 import { OperationDialog } from "../common/OperationDialog";
 import { FlatRow, FlatRows, Surface } from "../common/Surface";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
+import { Checkbox } from "../ui/checkbox";
 import { Input } from "../ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../ui/select";
 import { cn } from "../ui/utils";
@@ -34,6 +33,7 @@ import {
   deleteCodebaseMemoryIndex,
   detectCodebaseMemoryAgents,
   getCodebaseMemoryStatus,
+  importCodebaseMemoryArchive,
   integrationDigest,
   integrationDraft,
   openCodebaseMemoryGraph,
@@ -42,6 +42,8 @@ import {
   previewCodebaseMemoryIntegration,
   rollbackCodebaseMemoryIntegration,
   setCodebaseMemoryPackageDirectory,
+  selectCodebaseMemoryPackageDirectory,
+  selectCodebaseMemoryArchive,
   startCodebaseMemoryIndex,
   startCodebaseMemoryUi,
   stopCodebaseMemoryUi,
@@ -120,7 +122,7 @@ const UNAVAILABLE_DIMENSION: CodebaseMemoryDimension = {
   checked_at_ms: 0,
 };
 
-export function CodebaseMemory() {
+export function CodebaseMemory({ embedded = false }: { embedded?: boolean } = {}) {
   const { lang = "zh" } = useI18n();
   const t = useT();
   const { addNotification } = useNotifications();
@@ -136,14 +138,22 @@ export function CodebaseMemory() {
   const [receipts, setReceipts] = useState<AppliedIntegration[]>([]);
   const [integrationDialogOpen, setIntegrationDialogOpen] = useState(false);
   const [rollbackDialogOpen, setRollbackDialogOpen] = useState(false);
+  const [rollbackRecoveryOnly, setRollbackRecoveryOnly] = useState(false);
+  const [rollbackDialogError, setRollbackDialogError] = useState("");
   const [stopDialogOpen, setStopDialogOpen] = useState(false);
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
+  const [stopDialogError, setStopDialogError] = useState("");
+  const [deleteDialogError, setDeleteDialogError] = useState("");
   const [manualProjectRoot, setManualProjectRoot] = useState("");
   const [packageDirectoryDraft, setPackageDirectoryDraft] = useState("");
+  const [archiveDraft, setArchiveDraft] = useState<string | null>(null);
+  const [archiveError, setArchiveError] = useState("");
   const [agents, setAgents] = useState<CodebaseMemoryDetectedAgent[]>([]);
+  const [excludedAgents, setExcludedAgents] = useState<Set<string>>(new Set());
   const [scope, setScope] = useState<CodebaseMemoryIntegrationDraft["scope"]>("project");
   const [surface, setSurface] = useState<CodebaseMemoryIntegrationDraft["surface"]>("mcp");
   const [operationProgress, setOperationProgress] = useState<OperationProgress | null>(null);
+  const lastIndexState = useRef<string | undefined>(undefined);
 
   const refresh = useCallback(async (manual = false) => {
     const sequence = ++refreshSequence.current;
@@ -154,6 +164,16 @@ export function CodebaseMemory() {
     try {
       const next = await getCodebaseMemoryStatus();
       if (!mountedRef.current || sequence !== refreshSequence.current) return;
+      if (lastIndexState.current === "busy" && next.index.state !== "busy") {
+        const success = next.index.state === "ready";
+        addNotification({
+          dedupeKey: `codebase-index-result-${next.revision ?? next.index.checked_at_ms}`,
+          level: success ? "success" : next.index.state === "failed" ? "error" : "warning",
+          title: success ? (lang === "zh" ? "项目索引已完成" : "Project index complete") : (lang === "zh" ? "索引任务已结束，请查看结果" : "Indexing ended; check the result"),
+          message: localizedDimensionDetail(next.index, t),
+        });
+      }
+      lastIndexState.current = next.index.state;
       setStatus(next);
       if (next.active_integrations) {
         const persisted = next.active_integrations
@@ -171,8 +191,9 @@ export function CodebaseMemory() {
         setReceipts(persisted);
       }
       setPackageDirectoryDraft((current) => current || next.package_directory || "");
-      setError("");
+      if (manual) setError("");
       setStale(false);
+      if (manual) addNotification({ dedupeKey: "codebase-memory-refreshed", level: "success", title: lang === "zh" ? "图谱状态已刷新" : "Graph status refreshed", message: "" });
     } catch (reason) {
       if (!mountedRef.current || sequence !== refreshSequence.current) return;
       const failure = presentOperationFailure("codebaseMemory", reason, lang);
@@ -197,25 +218,47 @@ export function CodebaseMemory() {
   }, [addNotification, lang, status, t]);
   refreshRef.current = refresh;
 
-  const scanAgents = useCallback(async () => {
+  useEffect(() => {
+    if (status?.index.state !== "busy") return;
+    let disposed = false;
+    let timer: ReturnType<typeof setTimeout>;
+    const poll = async () => {
+      await refreshRef.current();
+      if (!disposed) timer = setTimeout(poll, 1000);
+    };
+    timer = setTimeout(poll, 1000);
+    return () => { disposed = true; clearTimeout(timer); };
+  }, [status?.index.state]);
+
+  const scanAgents = useCallback(async (manual = false) => {
     setBusy("agents");
     await yieldToPaint();
     try {
       const detected = await detectCodebaseMemoryAgents();
       if (!mountedRef.current) return;
       setAgents(detected);
-      // Every locally detected and writer-supported Agent is included
-      // automatically; the page never lets the user pick Agents, providers,
-      // or models. Previews are cleared so a rescan never reuses a stale batch.
+      // New supported tools default to selected; rescans retain explicit exclusions.
+      // Previews are cleared so a rescan never reuses a stale batch.
       setPreviews([]);
       setOperationProgress(null);
+      if (manual) {
+        const count = detected.filter((agent) => agent.installed && agent.integration_supported !== false).length;
+        const message = t("pageFeedback.codebaseMemory.agentScanSuccess", { count });
+        setOperationProgress({ state: "success", message, current: count, total: count });
+        addNotification({
+          dedupeKey: "codebase-memory-agent-scan-success",
+          level: "success",
+          title: message,
+          message,
+        });
+      }
     } catch (reason) {
       if (!mountedRef.current) return;
       const failure = presentOperationFailure("codebaseMemory", reason, lang);
       setAgents([]);
       setPreviews([]);
       setOperationProgress(null);
-      addNotification({
+      if (manual) addNotification({
         dedupeKey: "codebase-memory-agent-scan-failed",
         level: "error",
         title: t("cbm.scanAgentsFailed"),
@@ -259,10 +302,8 @@ export function CodebaseMemory() {
   const visibleProgress = actionPending && !["preview", "apply", "rollback"].includes(busy)
     ? { state: "working", message: t("cbm.progressGeneric") } as OperationProgress
     : operationProgress;
-  // The batch is automatic: every locally detected and writer-supported Agent
-  // is included. There is no per-Agent/provider/model selection on this page.
   const selectedAgents = agents
-    .filter((agent) => agent.installed && agent.integration_supported)
+    .filter((agent) => agent.installed && agent.integration_supported && isCodebaseMemoryAgentId(agent.id) && !excludedAgents.has(agent.id))
     .map((agent) => agent.id as CodebaseMemoryIntegrationDraft["agent_id"]);
   const unsupportedAgentIds = selectedAgents.filter((id) =>
     surface === "hook" ? id !== "claude-code" : id === "claude-code" && scope === "global");
@@ -382,99 +423,88 @@ export function CodebaseMemory() {
   const applyAndVerifyIntegration = async () => {
     if (!previews.length || !projectRoot) return;
     setBusy("apply");
-    const appliedBatch: AppliedIntegration[] = [];
+    const completed: AppliedIntegration[] = [];
+    const recoveryRequired: AppliedIntegration[] = [];
+    const failures: string[] = [];
+    const batch = previews;
     try {
-      for (const [index, item] of previews.entries()) {
-        const digest = integrationDigest(item.preview);
-        const selection = { agent_id: item.agentId, scope, surface } as const;
+      for (const [index, item] of batch.entries()) {
         const name = agentName(item.agentId, agents);
-        setOperationProgress({
-          state: "working",
-          current: index + 1,
-          total: previews.length,
-          message: translateCopy("cbm.progressApply", lang, { agent: name, current: index + 1, total: previews.length }),
-        });
-        await yieldToPaint();
-        const applied = await applyCodebaseMemoryIntegration(integrationDraft(item.preview, projectRoot, selection), digest);
-        if (!applied.ok || !applied.transaction_id) {
-          if (applied.transaction_id) {
-            // A post-write persistence failure may return a recovery handle.
-            // Keep it in the batch so the compensating rollback path retries
-            // instead of orphaning a successfully written Agent config.
-            appliedBatch.push({ agentId: item.agentId, receipt: applied });
-          }
-          throw new Error(`${agentName(item.agentId, agents)}: ${applied.error || applied.summary || t("cbm.applyFailed")}`);
-        }
-        appliedBatch.push({ agentId: item.agentId, receipt: applied });
-        setOperationProgress({
-          state: "working",
-          current: index + 1,
-          total: previews.length,
-          message: translateCopy("cbm.progressVerify", lang, { agent: name, current: index + 1, total: previews.length }),
-        });
-        await yieldToPaint();
-        const verified = await verifyCodebaseMemoryIntegration(applied.transaction_id);
-        const verifiedOk = verified.ok && (verified.verified === true || verified.state === "verified");
-        const combined = { ...applied, ...verified, transaction_id: applied.transaction_id };
-        appliedBatch[appliedBatch.length - 1] = { agentId: item.agentId, receipt: combined };
-        if (!verifiedOk) {
-          throw new Error(`${agentName(item.agentId, agents)}: ${verified.error || verified.summary || t("cbm.verifyFailed")}`);
+        let current: AppliedIntegration | null = null;
+        try {
+          const selection = { agent_id: item.agentId, scope, surface } as const;
+          setOperationProgress({ state: "working", current: index + 1, total: batch.length,
+            message: translateCopy("cbm.progressApply", lang, { agent: name, current: index + 1, total: batch.length }) });
+          await yieldToPaint();
+          const applied = await applyCodebaseMemoryIntegration(integrationDraft(item.preview, projectRoot, selection), integrationDigest(item.preview));
+          if (applied.transaction_id) current = { agentId: item.agentId, receipt: applied };
+          if (!applied.ok || !applied.transaction_id) throw new Error(applied.error || applied.summary || t("cbm.applyFailed"));
+          setOperationProgress({ state: "working", current: index + 1, total: batch.length,
+            message: translateCopy("cbm.progressVerify", lang, { agent: name, current: index + 1, total: batch.length }) });
+          await yieldToPaint();
+          const verified = await verifyCodebaseMemoryIntegration(applied.transaction_id);
+          current = { agentId: item.agentId, receipt: { ...applied, ...verified, transaction_id: applied.transaction_id } };
+          if (!verified.ok || !(verified.verified === true || verified.state === "verified")) throw new Error(verified.error || verified.summary || t("cbm.verifyFailed"));
+          completed.push(current);
+        } catch (reason) {
+          const failure = presentOperationFailure("codebaseMemory", reason, lang);
+          const unresolved = current ? await rollbackApplied([current]) : [];
+          recoveryRequired.push(...unresolved);
+          const recovery = !current ? "" : unresolved.length
+            ? (lang === "zh" ? " 当前工具的恢复尚未完成。" : " Recovery for this tool is still incomplete.")
+            : (lang === "zh" ? " 当前工具的改动已恢复。" : " This tool's changes were restored.");
+          const message = `${name}: ${failure.message}${recovery}`;
+          failures.push(message);
         }
       }
       if (!mountedRef.current) return;
-      setReceipts(appliedBatch);
+      setReceipts([...completed, ...recoveryRequired]);
       setIntegrationDialogOpen(false);
       setPreviews([]);
-      setError("");
-      setOperationProgress({ state: "success", message: t("cbm.progressComplete"), current: appliedBatch.length, total: appliedBatch.length });
-      const last = appliedBatch[appliedBatch.length - 1]?.receipt;
-      notifyResult(
-        `codebase-memory-verified-${last?.transaction_id ?? "batch"}`,
-        true,
-        t("cbm.integrationVerified"),
-        translateCopy("cbm.integrationVerifiedMessage", lang, { count: appliedBatch.length }),
-        last?.transaction_id,
-        last?.rollback_id,
-      );
+      const summary = failures.length
+        ? translateCopy("cbm.integrationPartial", lang, { completed: completed.length, total: batch.length, failed: failures.length })
+        : translateCopy("cbm.integrationVerifiedMessage", lang, { count: completed.length });
+      const message = failures.length ? `${summary} ${failures.join(" ")}` : summary;
+      setError(failures.length ? message : "");
+      setOperationProgress({ state: failures.length ? "error" : "success", message, current: batch.length, total: batch.length });
+      addNotification({ dedupeKey: "codebase-memory-batch-result", level: failures.length ? completed.length ? "warning" : "error" : "success",
+        title: failures.length ? t("cbm.applyFailed") : t("cbm.integrationVerified"), message: summary, details: failures.join(" ") || undefined });
       await refresh();
-    } catch (reason) {
-      const failedRollbacks = await rollbackApplied(appliedBatch);
-      if (!mountedRef.current) return;
-      const failure = presentOperationFailure("codebaseMemory", reason, lang);
-      const finalMessage = failedRollbacks.length
-        ? `${failure.message} · ${translateCopy("cbm.rollbackPartial", lang, { count: failedRollbacks.length })}`
-        : `${failure.message} · ${translateCopy("cbm.rollbackBatchRestored", lang)}`;
-      setReceipts(failedRollbacks);
-      setError(finalMessage);
-      setOperationProgress({ state: "error", message: finalMessage });
-      notifyResult("codebase-memory-apply-error", false, t("cbm.applyFailed"), finalMessage);
     } finally {
       if (mountedRef.current) setBusy("");
     }
   };
 
+  const recoveryReceipts = receipts.filter((item) => item.receipt.state !== "verified" && !item.receipt.verified);
+  const rollbackTargets = rollbackRecoveryOnly ? recoveryReceipts : receipts;
+
   const rollbackIntegration = async () => {
-    if (!receipts.length) return;
+    const targets = rollbackTargets;
+    if (!targets.length) return;
+    const targetIds = new Set(targets.map((item) => item.receipt.transaction_id));
     setBusy("rollback");
+    setRollbackDialogError("");
     try {
-      const failed = await rollbackApplied(receipts);
+      const failed = await rollbackApplied(targets);
       if (!mountedRef.current) return;
       const ok = failed.length === 0;
       const message = ok ? t("cbm.rollbackDone") : `${t("cbm.rollbackFailed")} (${failed.length})`;
-      const last = receipts[receipts.length - 1]?.receipt;
+      const last = targets[targets.length - 1]?.receipt;
       notifyResult(`codebase-memory-rollback-${last?.transaction_id ?? "batch"}`, ok, ok ? t("cbm.rollbackDone") : t("cbm.rollbackFailed"), message, last?.transaction_id, last?.rollback_id);
-      setReceipts(failed);
+      setReceipts((current) => [...current.filter((item) => !targetIds.has(item.receipt.transaction_id)), ...failed]);
       if (ok) {
-        setOperationProgress({ state: "success", message: t("cbm.rollbackDone"), current: receipts.length, total: receipts.length });
+        setOperationProgress({ state: "success", message: t("cbm.rollbackDone"), current: targets.length, total: targets.length });
         setRollbackDialogOpen(false);
         await refresh();
       } else {
+        setRollbackDialogError(message);
         setError(message);
         setOperationProgress({ state: "error", message });
       }
     } catch (reason) {
       if (!mountedRef.current) return;
       const failure = presentOperationFailure("codebaseMemory", reason, lang);
+      setRollbackDialogError(failure.message);
       setError(failure.message);
       setOperationProgress({ state: "error", message: failure.message });
       notifyResult("codebase-memory-rollback-error", false, failure.title, failure.message);
@@ -489,23 +519,25 @@ export function CodebaseMemory() {
     successTitle: string,
     failureTitle: string,
     refreshAfter = true,
-  ) => {
+  ): Promise<boolean> => {
     setBusy(action);
     setError("");
     await yieldToPaint();
     try {
       const result = await operation();
-      if (!mountedRef.current) return;
+      if (!mountedRef.current) return false;
       const failure = result.ok ? null : presentOperationFailure("codebaseMemory", result.error || result.summary, lang);
       const message = result.ok ? successTitle : failure!.message;
       notifyResult(`codebase-memory-${action}-${result.ok ? "ok" : "failed"}`, result.ok, result.ok ? successTitle : failure!.title, message);
       if (!result.ok) setError(message);
       if (refreshAfter) await refresh();
+      return result.ok;
     } catch (reason) {
-      if (!mountedRef.current) return;
+      if (!mountedRef.current) return false;
       const failure = presentOperationFailure("codebaseMemory", reason, lang);
       setError(failure.message);
       notifyResult(`codebase-memory-${action}-error`, false, failure.title, failure.message);
+      return false;
     } finally {
       if (mountedRef.current) setBusy("");
     }
@@ -518,6 +550,15 @@ export function CodebaseMemory() {
     try {
       const result = await setCodebaseMemoryPackageDirectory(restoreDefault ? undefined : packageDirectoryDraft);
       if (!mountedRef.current) return;
+      if (!result.ok && result.state === "recovery_required") {
+        const message = t("cbm.archiveRecoveryRequired");
+        setStatus(null);
+        setPackageDirectoryDraft("");
+        setStale(true);
+        setError(message);
+        notifyResult("codebase-memory-package-directory-failed", false, t("cbm.packageSaveFailed"), message);
+        return;
+      }
       if (!result.ok) throw new Error(result.error || result.summary || t("cbm.packageSaveFailed"));
       notifyResult("codebase-memory-package-directory", true, t("cbm.packageSaved"), t("cbm.packageSaved"));
       setPackageDirectoryDraft(restoreDefault ? "" : packageDirectoryDraft.trim());
@@ -532,34 +573,103 @@ export function CodebaseMemory() {
     }
   };
 
+  const selectPackageDirectory = async () => {
+    setBusy("package");
+    setError("");
+    await yieldToPaint();
+    try {
+      const selected = await selectCodebaseMemoryPackageDirectory();
+      if (!mountedRef.current || !selected) return;
+      setPackageDirectoryDraft(selected);
+      notifyResult(
+        "codebase-memory-package-directory-selected",
+        true,
+        t("cbm.directorySelected"),
+        t("cbm.directorySelected"),
+      );
+    } catch (reason) {
+      if (!mountedRef.current) return;
+      const failure = presentOperationFailure("codebaseMemory", reason, lang);
+      setError(failure.message);
+      notifyResult("codebase-memory-package-directory-select-failed", false, failure.title, failure.message);
+    } finally {
+      if (mountedRef.current) setBusy("");
+    }
+  };
+
+  const selectArchive = async () => {
+    setBusy("package");
+    setError("");
+    setArchiveError("");
+    try {
+      const selected = await selectCodebaseMemoryArchive();
+      if (mountedRef.current && selected) setArchiveDraft(selected);
+    } catch (reason) {
+      if (!mountedRef.current) return;
+      const failure = presentOperationFailure("codebaseMemory", reason, lang);
+      setError(failure.message);
+      notifyResult("codebase-memory-archive-select-failed", false, failure.title, failure.message);
+    } finally {
+      if (mountedRef.current) setBusy("");
+    }
+  };
+
+  const importArchive = async () => {
+    if (!archiveDraft) return;
+    setBusy("package");
+    setArchiveError("");
+    await yieldToPaint();
+    try {
+      const result = await importCodebaseMemoryArchive(archiveDraft);
+      if (!mountedRef.current) return;
+      if (!result.ok) throw new Error(result.state === "recovery_required" ? "archive_recovery_required" : result.error || "archive_import_failed");
+      setArchiveDraft(null);
+      setPackageDirectoryDraft("");
+      notifyResult("codebase-memory-archive-imported", true, t("cbm.archiveImported"), t("cbm.archiveImported"));
+      await refresh();
+    } catch (reason) {
+      if (!mountedRef.current) return;
+      const failure = reason instanceof Error ? reason.message.toLowerCase() : "";
+      const recoveryRequired = failure === "archive_recovery_required";
+      const message = t(recoveryRequired ? "cbm.archiveRecoveryRequired" : /permission|denied|no space|failed to (create|activate|save|write)|state.*(failed|unavailable)/.test(failure)
+        ? "cbm.archiveStorageFailed"
+        : /no such file|not found|not a regular file|path is required/.test(failure)
+          ? "cbm.archiveFileMissing"
+          : "cbm.archiveImportFailed");
+      setArchiveError(message);
+      if (recoveryRequired) {
+        setStatus(null);
+        setPackageDirectoryDraft("");
+        setStale(true);
+        setError(message);
+      }
+      notifyResult("codebase-memory-archive-import-failed", false, t("cbm.archiveImportFailedTitle"), message);
+    } finally {
+      if (mountedRef.current) setBusy("");
+    }
+  };
+
   const dimensions = [
-    { id: "package", label: t("cbm.dimension.package"), icon: PackageCheck, value: status?.package ?? UNAVAILABLE_DIMENSION },
     { id: "integration", label: t("cbm.dimension.integration"), icon: Boxes, value: status?.integration ?? UNAVAILABLE_DIMENSION },
     { id: "agent", label: t("cbm.dimension.agentSession"), icon: Bot, value: status?.agent_session ?? UNAVAILABLE_DIMENSION },
     { id: "ui", label: t("cbm.dimension.uiSession"), icon: MonitorUp, value: status?.ui_session ?? UNAVAILABLE_DIMENSION },
     { id: "index", label: t("cbm.dimension.index"), icon: DatabaseZap, value: status?.index ?? UNAVAILABLE_DIMENSION },
   ] as const;
 
-  const dataMode = status ? "native" : error === t("cbm.browserPreview") ? "preview" : "unavailable";
+  const componentSummary = stale ? "cbm.staleEvidence" : loading ? "cbm.componentScanning"
+    : packageReady ? status?.active_package_source === "installed" ? "cbm.componentFoundInstalled"
+      : status?.active_package_source === "imported_archive" ? "cbm.componentFoundImported" : "cbm.componentFound"
+    : status?.package_candidates?.some((item) => item.compatible) ? "cbm.componentFoundIncomplete"
+    : status?.package_candidates?.some((item) => !item.compatible) ? "cbm.componentIncompatible"
+    : "cbm.installDetail";
 
   return (
     <div className="space-y-4" data-flat-page data-page="codebase-memory">
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div className="min-w-0 space-y-1">
-          <div className="flex flex-wrap items-center gap-2">
-            <h1 className="sr-only">{t("cbm.title")}</h1>
-            <DataSourceBadge mode={dataMode} />
-          </div>
-          <p className="max-w-3xl text-sm text-muted-foreground">{t("cbm.subtitle")}</p>
-          <p className="max-w-3xl text-xs text-muted-foreground">{t("cbm.privacy")}</p>
+      {!embedded && <h1 className="sr-only">{t("cbm.title")}</h1>}
+      {(stale || error) && <div className="min-w-0 space-y-1">
           {stale ? <p className="text-xs text-amber-700 dark:text-amber-300" role="status">{t("cbm.staleEvidence")}</p> : null}
           {error ? <p className="text-xs text-destructive" role="status">{error}</p> : null}
-        </div>
-        <Button type="button" variant="outline" size="sm" disabled={actionPending || loading} onClick={() => void refresh(true)}>
-          <RefreshCw className={cn("size-3.5", busy === "refresh" && "animate-spin")} aria-hidden />
-          {t("cbm.refresh")}
-        </Button>
-      </div>
+      </div>}
 
       {visibleProgress ? (
         <Surface strong className="overflow-hidden border-primary/25" aria-label={t("cbm.progressTitle")}>
@@ -571,15 +681,41 @@ export function CodebaseMemory() {
         <EmptyState status="loading" title={t("cbm.loading")} description={t("cbm.loadingDetail")} />
       ) : null}
 
-      <Surface strong className="overflow-hidden" aria-label={t("cbm.installTitle")}>
-        <div className="flex flex-wrap items-start justify-between gap-3 border-b border-border/60 px-4 py-3">
-          <div className="max-w-3xl">
-            <h2 className="text-base font-semibold">{t("cbm.installTitle")}</h2>
-            <p className="mt-1 text-xs leading-relaxed text-muted-foreground">{t("cbm.installDetail")}</p>
+      <section className="border-b border-border pb-3" aria-label={t("cbm.installTitle")}>
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="flex min-w-0 items-start gap-3">
+            <PackageCheck className="mt-0.5 size-4 shrink-0 text-muted-foreground" aria-hidden />
+            <div>
+              <div className="flex items-center gap-2">
+                <h2 className="text-sm font-semibold">{t("cbm.installTitle")}</h2>
+                <DimensionBadge dimension={status?.package ?? UNAVAILABLE_DIMENSION} label={stateLabel(status?.package.state ?? "unavailable", t)} />
+              </div>
+              <p className="mt-1 text-xs text-muted-foreground">{t(componentSummary)}</p>
+              {status?.package && ["untrusted", "failed"].includes(status.package.state) && <p className="mt-1 text-xs text-destructive">{localizedDimensionDetail(status.package, t)}</p>}
+            </div>
           </div>
-          <Badge variant={packageReady ? "secondary" : "outline"}>{packageReady ? t("cbm.state.ready") : t("cbm.state.unavailable")}</Badge>
+          <div className="flex flex-wrap items-center gap-2">
+            <Button type="button" variant="ghost" size="sm" disabled={actionPending || loading} onClick={() => void refresh(true)}>
+              <RefreshCw className={cn("size-3.5", busy === "refresh" && "animate-spin")} aria-hidden />
+              {t("cbm.refresh")}
+            </Button>
+            <Button type="button" size="sm" variant="ghost" onClick={() => void runSimpleAction("package", openCodebaseMemoryDownloadPage, t("cbm.download"), t("cbm.packageSaveFailed"), false)} disabled={actionPending}>
+              <Download aria-hidden />{t("cbm.download")}
+            </Button>
+            <Button type="button" size="sm" variant={packageReady ? "outline" : "default"} onClick={() => void selectArchive()} disabled={actionPending || loading}>
+              <FolderOpen aria-hidden />{t("cbm.importArchive")}
+            </Button>
+          </div>
         </div>
-        <div className="space-y-3 px-4 py-4">
+        <details className="mt-3 text-xs text-muted-foreground">
+          <summary className="cursor-pointer">{t("cbm.componentLocations")}</summary>
+          <div className="space-y-3 py-3">
+          {status?.package_candidates && status.package_candidates.length > 0 && <ul className="space-y-2" aria-label={t("cbm.detectedComponents")}>
+            {status.package_candidates.map((candidate) => <li key={candidate.path} className="min-w-0">
+              <span>{t(candidate.compatible ? "cbm.componentCompatible" : "cbm.componentUnsupported")}</span>
+              <span className="ml-2 break-all font-mono text-[11px]">{candidate.path}</span>
+            </li>)}
+          </ul>}
           <label className="grid gap-1.5 text-xs font-medium" htmlFor="codebase-memory-package-directory">
             {t("cbm.packageDirectory")}
             <Input
@@ -593,11 +729,11 @@ export function CodebaseMemory() {
           </label>
           <p className="text-xs text-muted-foreground">{t("cbm.packageDirectoryHint")}</p>
           <div className="flex flex-wrap gap-2">
-            <Button type="button" size="sm" onClick={() => void runSimpleAction("package", openCodebaseMemoryDownloadPage, t("cbm.download"), t("cbm.packageSaveFailed"), false)} disabled={actionPending}>
-              <Download aria-hidden />{t("cbm.download")}
-            </Button>
             <Button type="button" size="sm" variant="outline" onClick={() => void runSimpleAction("package", openCodebaseMemoryPackageDirectory, t("cbm.openDirectory"), t("cbm.packageSaveFailed"), false)} disabled={actionPending}>
               <FolderOpen aria-hidden />{t("cbm.openDirectory")}
+            </Button>
+            <Button type="button" size="sm" variant="outline" onClick={() => void selectPackageDirectory()} disabled={actionPending}>
+              <FolderOpen aria-hidden />{t("cbm.chooseDirectory")}
             </Button>
             <Button type="button" size="sm" variant="outline" onClick={() => void savePackageDirectory(false)} disabled={actionPending || !packageDirectoryDraft.trim()}>
               {busy === "package" ? <Loader2 className="animate-spin" aria-hidden /> : null}{t("cbm.saveDirectory")}
@@ -606,22 +742,12 @@ export function CodebaseMemory() {
               <Button type="button" size="sm" variant="ghost" onClick={() => void savePackageDirectory(true)} disabled={actionPending}>{t("cbm.restoreDefault")}</Button>
             ) : null}
           </div>
-        </div>
-      </Surface>
-
-      <Surface strong className="overflow-hidden" aria-label={t("cbm.statusTitle")}>
-        <div className="flex flex-wrap items-start justify-between gap-3 border-b border-border/60 px-4 py-3">
-          <div>
-            <h2 className="text-base font-semibold">{t("cbm.statusTitle")}</h2>
-            <p className="mt-1 text-xs text-muted-foreground">{t("cbm.statusDetail")}</p>
           </div>
-          {approvedProjectRoot
-            ? <Badge variant="secondary">{t("cbm.projectApproved")}</Badge>
-            : projectRoot
-              ? <Badge variant="outline">{t("cbm.projectSelected")}</Badge>
-              : <Badge variant="outline">{t("cbm.projectMissing")}</Badge>}
-        </div>
-        <div className="border-b border-border/60 px-4 py-3">
+        </details>
+      </section>
+
+      <section aria-label={t("cbm.statusTitle")}>
+        <div className="border-b border-border/60 pb-3">
           <label className="grid gap-1.5 text-xs font-medium" htmlFor="codebase-memory-project-root">
             {t("cbm.projectRootLabel")}
             <Input
@@ -634,29 +760,40 @@ export function CodebaseMemory() {
               onChange={(event) => setManualProjectRoot(event.target.value)}
             />
           </label>
-          <p className="mt-1.5 text-xs text-muted-foreground">{t("cbm.projectRootHint")}</p>
-          <div className="mt-3 rounded-xl border border-border/70 p-3">
+          <div className="mt-3">
             <div className="flex items-center justify-between gap-3">
               <span className="text-xs font-medium">{t("cbm.agentLabel")}</span>
-              <Button type="button" size="sm" variant="ghost" disabled={actionPending} onClick={() => void scanAgents()}>
+              <Button type="button" size="sm" variant="ghost" disabled={actionPending} onClick={() => void scanAgents(true)}>
                 <Search className={cn("size-3.5", busy === "agents" && "animate-pulse")} aria-hidden />{t("cbm.scanAgents")}
               </Button>
             </div>
             {agents.length ? (
               <div className="mt-2 grid gap-2 sm:grid-cols-3">
                 {agents.map((agent) => {
-                  const included = Boolean(agent.installed && agent.integration_supported);
+                  const eligible = Boolean(agent.installed && agent.integration_supported);
                   return (
-                    <div key={agent.id} className="flex items-center justify-between gap-3 rounded-lg border border-border/60 px-3 py-2 text-sm" aria-label={`${agent.name} ${t("cbm.agentLabel")}`}>
+                    <div key={agent.id} className="flex items-center justify-between gap-3 py-2 pr-3 text-sm" aria-label={`${agent.name} ${t("cbm.agentLabel")}`}>
                       <span className="min-w-0">
                         <span className="block truncate font-medium">{agent.name}</span>
                         <span className="block text-[11px] text-muted-foreground">
                           {!agent.installed ? t("cbm.agentNotDetected") : agent.integration_supported === false ? t("cbm.agentUnsupported") : t("cbm.agentDetected")}
                         </span>
                       </span>
-                      {included ? (
-                        <CheckCircle2 className="size-4 shrink-0 text-emerald-600" aria-label={t("cbm.agentDetected")} />
-                      ) : null}
+                      <Checkbox
+                        aria-label={lang === "zh" ? `连接 ${agent.name}` : `Connect ${agent.name}`}
+                        checked={eligible && !excludedAgents.has(agent.id)}
+                        disabled={actionPending || !eligible}
+                        onCheckedChange={(checked) => {
+                          setExcludedAgents((current) => {
+                            const next = new Set(current);
+                            if (checked === true) next.delete(agent.id);
+                            else next.add(agent.id);
+                            return next;
+                          });
+                          setPreviews([]);
+                          setOperationProgress(null);
+                        }}
+                      />
                     </div>
                   );
                 })}
@@ -702,8 +839,13 @@ export function CodebaseMemory() {
                       {busy === "preview" ? <Loader2 className="animate-spin" aria-hidden /> : null}
                       {surface === "hook" ? t("cbm.configureHook") : t("cbm.configureMcp")}
                     </Button>
+                    {recoveryReceipts.length ? (
+                      <Button type="button" size="sm" variant="outline" disabled={actionPending} onClick={() => { setRollbackDialogError(""); setRollbackRecoveryOnly(true); setRollbackDialogOpen(true); }}>
+                        <RotateCcw aria-hidden />{t("cbm.retryRecovery")}
+                      </Button>
+                    ) : null}
                     {receipts.length ? (
-                      <Button type="button" size="sm" variant="outline" disabled={actionPending} onClick={() => setRollbackDialogOpen(true)}>
+                      <Button type="button" size="sm" variant="outline" disabled={actionPending} onClick={() => { setRollbackDialogError(""); setRollbackRecoveryOnly(false); setRollbackDialogOpen(true); }}>
                         <RotateCcw aria-hidden />{t("cbm.rollback")}
                       </Button>
                     ) : null}
@@ -715,7 +857,7 @@ export function CodebaseMemory() {
                         <Button type="button" size="sm" variant="outline" disabled={actionPending} onClick={() => void runSimpleAction("open", openCodebaseMemoryGraph, t("cbm.graphOpened"), t("cbm.graphOpenFailed"))}>
                           <ExternalLink aria-hidden />{t("cbm.openGraph")}
                         </Button>
-                        <Button type="button" size="sm" variant="outline" disabled={actionPending || !uiOwned} onClick={() => setStopDialogOpen(true)}>
+                        <Button type="button" size="sm" variant="outline" disabled={actionPending || !uiOwned} onClick={() => { setStopDialogError(""); setStopDialogOpen(true); }}>
                           <Square aria-hidden />{t("cbm.stopUi")}
                         </Button>
                       </>
@@ -735,10 +877,14 @@ export function CodebaseMemory() {
                     </Button>
                   ) : (
                     <div className="flex flex-wrap gap-2">
-                      <Button type="button" size="sm" disabled={actionPending || !packageReady || !projectRoot} onClick={() => void runSimpleAction("index", () => startCodebaseMemoryIndex(projectRoot), t("cbm.indexStarted"), t("cbm.indexStartFailed"))}>
+                      <Button type="button" size="sm" disabled={actionPending || !packageReady || !projectRoot} onClick={() => void runSimpleAction("index", async () => {
+                        const result = await startCodebaseMemoryIndex(projectRoot);
+                        if (result.ok) lastIndexState.current = "busy";
+                        return result;
+                      }, t("cbm.indexStarted"), t("cbm.indexStartFailed"))}>
                         {busy === "index" ? <Loader2 className="animate-spin" aria-hidden /> : null}{t("cbm.startIndex")}
                       </Button>
-                      <Button type="button" size="sm" variant="outline" disabled={actionPending || !projectRoot || uiReady} onClick={() => setDeleteDialogOpen(true)}>
+                      <Button type="button" size="sm" variant="outline" disabled={actionPending || !projectRoot || uiReady} onClick={() => { setDeleteDialogError(""); setDeleteDialogOpen(true); }}>
                         <Trash2 aria-hidden />{t("cbm.deleteIndex")}
                       </Button>
                     </div>
@@ -748,8 +894,20 @@ export function CodebaseMemory() {
             />
           ))}
         </FlatRows>
-      </Surface>
+      </section>
 
+      <OperationDialog
+        open={archiveDraft !== null}
+        onOpenChange={(open) => { if (!open && busy !== "package") { setArchiveDraft(null); setArchiveError(""); } }}
+        title={t("cbm.archiveImportTitle")}
+        summary={t("cbm.archiveImportSummary")}
+        impact={archiveDraft?.split(/[\\/]/).pop() || ""}
+        confirmLabel={t("cbm.archiveImportConfirm")}
+        cancelLabel={t("common.cancel")}
+        pending={busy === "package"}
+        error={archiveError}
+        onConfirm={importArchive}
+      />
       <OperationDialog
         open={integrationDialogOpen}
         onOpenChange={(open) => {
@@ -770,13 +928,16 @@ export function CodebaseMemory() {
       <OperationDialog
         open={rollbackDialogOpen}
         onOpenChange={setRollbackDialogOpen}
-        title={t("cbm.rollbackTitle")}
-        summary={t("cbm.rollbackSummary")}
-        impact={t("cbm.rollbackImpact")}
+        title={t(rollbackRecoveryOnly ? "cbm.retryRecovery" : "cbm.rollbackTitle")}
+        summary={t(rollbackRecoveryOnly ? "cbm.recoverySummary" : "cbm.rollbackSummary")}
+        impact={t(rollbackRecoveryOnly ? "cbm.recoveryImpact" : "cbm.rollbackImpact")}
+        details={<ul className="text-sm">{rollbackTargets.map((item) => <li key={item.receipt.transaction_id}>{agentName(item.agentId, agents)}</li>)}</ul>}
         confirmLabel={t("cbm.rollbackConfirm")}
+        confirmDisabled={!rollbackTargets.length}
         cancelLabel={t("common.cancel")}
         risk="danger"
         pending={busy === "rollback"}
+        error={rollbackDialogError}
         onConfirm={rollbackIntegration}
       />
       <OperationDialog
@@ -789,9 +950,16 @@ export function CodebaseMemory() {
         cancelLabel={t("common.cancel")}
         risk="danger"
         pending={busy === "delete"}
+        error={deleteDialogError}
         onConfirm={async () => {
-          await runSimpleAction("delete", () => deleteCodebaseMemoryIndex(projectRoot), t("cbm.indexDeleted"), t("cbm.indexDeleteFailed"));
-          if (mountedRef.current) setDeleteDialogOpen(false);
+          const deleted = await runSimpleAction("delete", () => deleteCodebaseMemoryIndex(projectRoot), t("cbm.indexDeleted"), t("cbm.indexDeleteFailed"));
+          if (!mountedRef.current) return;
+          if (deleted) {
+            setDeleteDialogError("");
+            setDeleteDialogOpen(false);
+          } else {
+            setDeleteDialogError(t("pageFeedback.codebaseMemory.operationFailed"));
+          }
         }}
       />
       <OperationDialog
@@ -804,9 +972,16 @@ export function CodebaseMemory() {
         cancelLabel={t("common.cancel")}
         risk="warning"
         pending={busy === "ui"}
+        error={stopDialogError}
         onConfirm={async () => {
-          await runSimpleAction("ui", stopCodebaseMemoryUi, t("cbm.uiStopped"), t("cbm.uiStopFailed"));
-          if (mountedRef.current) setStopDialogOpen(false);
+          const stopped = await runSimpleAction("ui", stopCodebaseMemoryUi, t("cbm.uiStopped"), t("cbm.uiStopFailed"));
+          if (!mountedRef.current) return;
+          if (stopped) {
+            setStopDialogError("");
+            setStopDialogOpen(false);
+          } else {
+            setStopDialogError(t("pageFeedback.codebaseMemory.operationFailed"));
+          }
         }}
       />
     </div>
@@ -829,15 +1004,14 @@ function DimensionRow({
   const t = useT();
   const detail = localizedDimensionDetail(dimension, t);
   return (
-    <FlatRow className="grid gap-3 px-4 py-4 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center">
+    <FlatRow className="grid gap-3 py-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center">
       <div className="min-w-0">
         <div className="flex flex-wrap items-center gap-2">
           <span className="text-muted-foreground">{icon}</span>
           <h3 className="text-sm font-semibold">{label}</h3>
           <DimensionBadge dimension={dimension} label={labelForState} />
-          {dimension.owner === "agent" || dimension.owner === "dtoken" ? <Badge variant="outline">{ownerLabel(dimension.owner, t)}</Badge> : null}
         </div>
-        <p className="mt-1 text-xs text-muted-foreground">{detail}</p>
+        {dimension.state !== "ready" && dimension.reason_code !== "status_unavailable" && <p className="mt-1 text-xs text-muted-foreground">{detail}</p>}
         {dimension.warnings?.length ? <p className="mt-1 text-xs text-amber-700 dark:text-amber-300">{t("cbm.detail.warning")}</p> : null}
       </div>
       {action ? <div className="flex justify-start sm:justify-end">{action}</div> : null}
@@ -849,12 +1023,6 @@ function localizedDimensionDetail(dimension: CodebaseMemoryDimension, t: (key: s
   const key = `cbm.detail.${dimension.reason_code}`;
   const resolved = t(key);
   return resolved === key ? t("cbm.detail.generic") : resolved;
-}
-
-function ownerLabel(owner: NonNullable<CodebaseMemoryDimension["owner"]>, t: (key: string) => string) {
-  if (owner === "agent") return t("cbm.owner.agent");
-  if (owner === "dtoken") return t("cbm.owner.dtoken");
-  return "";
 }
 
 function DimensionBadge({ dimension, label }: { dimension: CodebaseMemoryDimension; label: string }) {

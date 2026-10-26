@@ -518,3 +518,182 @@ fn claude_settings_with_a_mismatched_schema_is_rejected() {
         "no upstream signature is produced from a mismatched Claude schema"
     );
 }
+
+/// Builds a schema-16 database mirroring the real 2026-08 cc-switch desktop
+/// layout: provider metadata columns, `provider_endpoints.url`, and the
+/// chatgpt-auth Codex shape whose `config` is empty. Built in-test (never a
+/// real user database) and never containing real credentials.
+fn build_schema_16_fixture(active_codex_with_endpoint: bool) -> (tempfile::TempDir, PathBuf) {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = dir.path().join("cc-switch-v16.db");
+    let conn = rusqlite::Connection::open(&path).expect("open v16 fixture");
+    conn.execute_batch(
+        "PRAGMA user_version = 16;
+         CREATE TABLE providers (
+           id TEXT PRIMARY KEY, app_type TEXT NOT NULL, name TEXT NOT NULL,
+           settings_config TEXT NOT NULL, sort_index INTEGER NOT NULL DEFAULT 0,
+           is_current INTEGER NOT NULL DEFAULT 0, meta TEXT, provider_type TEXT
+         );
+         CREATE TABLE provider_endpoints (
+           id TEXT PRIMARY KEY, provider_id TEXT NOT NULL, app_type TEXT NOT NULL,
+           url TEXT NOT NULL, added_at TEXT
+         );
+         CREATE TABLE profiles (id TEXT PRIMARY KEY, name TEXT NOT NULL);",
+    )
+    .expect("create v16 schema");
+
+    let claude_settings = format!(
+        "{{\"env\":{{\"ANTHROPIC_BASE_URL\":\"https://fixture-claude.example.test/v1\",\
+         \"ANTHROPIC_MODEL\":\"claude-fixture-model\",\"ANTHROPIC_AUTH_TOKEN\":\"{FIXTURE_SECRET_MARKER}\"}}}}"
+    );
+    let codex_chatgpt_settings = "{\"auth\":{\"auth_mode\":\"chatgpt\",\"OPENAI_API_KEY\":\"\",\
+        \"tokens\":{}},\"config\":\"\"}"
+        .to_string();
+    let codex_endpoint_settings = format!(
+        "{{\"auth\":{{\"auth_mode\":\"api_key\",\"OPENAI_API_KEY\":\"{FIXTURE_SECRET_MARKER}\"}},\"config\":\"\"}}"
+    );
+    let gemini_settings =
+        "{\"baseUrl\":\"https://fixture-gemini-v16.example.test/v1\",\"protocol\":\"open_ai\",\"model\":\"gemini-fixture-model\"}"
+            .to_string();
+
+    let (codex_settings, codex_current) = if active_codex_with_endpoint {
+        (codex_endpoint_settings, true)
+    } else {
+        (codex_chatgpt_settings, true)
+    };
+    conn.execute(
+        "INSERT INTO providers (id, app_type, name, settings_config, sort_index, is_current)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        rusqlite::params![
+            "fixture-v16-claude-current",
+            "claude",
+            "Fixture Claude",
+            claude_settings,
+            1,
+            true
+        ],
+    )
+    .expect("insert claude");
+    conn.execute(
+        "INSERT INTO providers (id, app_type, name, settings_config, sort_index, is_current)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        rusqlite::params![
+            "default",
+            "codex",
+            "Fixture Codex",
+            codex_settings,
+            2,
+            codex_current
+        ],
+    )
+    .expect("insert codex");
+    conn.execute(
+        "INSERT INTO providers (id, app_type, name, settings_config, sort_index, is_current)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        rusqlite::params![
+            "fixture-v16-gemini-current",
+            "gemini",
+            "Fixture Gemini",
+            gemini_settings,
+            3,
+            true
+        ],
+    )
+    .expect("insert gemini");
+    if active_codex_with_endpoint {
+        conn.execute(
+            "INSERT INTO provider_endpoints (id, provider_id, app_type, url) VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params![
+                "fixture-v16-endpoint-codex",
+                "default",
+                "codex",
+                "https://fixture-codex.example.test/v1"
+            ],
+        )
+        .expect("insert codex endpoint");
+    }
+    drop(conn);
+    (dir, path)
+}
+
+#[test]
+fn schema_16_snapshot_resolves_apps_and_reports_chatgpt_codex_per_app_blocked() {
+    let (_dir, path) = build_schema_16_fixture(false);
+    let snapshot = read_cc_switch_snapshot(&path).expect("parse schema-16 snapshot");
+
+    assert_eq!(snapshot.schema_version, 16);
+    assert_eq!(snapshot.schema_kind, "loaded");
+    assert_eq!(snapshot.source_state, "loaded");
+    // The chatgpt-auth Codex provider has no followable endpoint, but it must
+    // not block the independently resolvable claude/gemini apps.
+    assert_eq!(snapshot.selection_state, "resolved");
+    assert_eq!(
+        snapshot.blocked_app_types,
+        vec!["codex".to_string()],
+        "chatgpt-auth codex is reported per-app blocked, never silently dropped"
+    );
+    let ids: Vec<&str> = snapshot
+        .active_upstreams
+        .iter()
+        .map(|upstream| upstream.provider_id.as_str())
+        .collect();
+    assert_eq!(
+        ids,
+        vec!["fixture-v16-claude-current", "fixture-v16-gemini-current"]
+    );
+    let serialized = serde_json::to_string(&snapshot).expect("serialize snapshot");
+    assert!(
+        !serialized.contains(FIXTURE_SECRET_MARKER),
+        "schema-16 snapshot serialization must never leak credential markers"
+    );
+}
+
+#[test]
+fn schema_16_codex_auth_with_custom_endpoint_follows_as_responses_passthrough() {
+    let (_dir, path) = build_schema_16_fixture(true);
+    let snapshot = read_cc_switch_snapshot(&path).expect("parse schema-16 snapshot");
+
+    assert_eq!(snapshot.selection_state, "resolved");
+    assert!(snapshot.blocked_app_types.is_empty());
+    let codex = snapshot
+        .active_upstreams
+        .iter()
+        .find(|upstream| upstream.provider_id == "default")
+        .expect("codex custom-endpoint provider resolves");
+    assert_eq!(codex.protocol, "responses");
+    assert_eq!(
+        codex.model, "",
+        "auth-shaped codex uses the dynamic model passthrough marker"
+    );
+    assert_eq!(
+        codex.normalized_endpoint, "https://fixture-codex.example.test/v1",
+        "the provider_endpoints.url row is authoritative for schema 16"
+    );
+    assert!(codex.credential_present);
+}
+
+#[test]
+fn schema_16_version_column_drift_fails_closed_to_blocked() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = dir.path().join("cc-switch-drift.db");
+    let conn = rusqlite::Connection::open(&path).expect("open drift db");
+    conn.execute_batch(
+        "PRAGMA user_version = 16;
+         CREATE TABLE providers (
+           id TEXT PRIMARY KEY, app_type TEXT NOT NULL, name TEXT NOT NULL,
+           is_current INTEGER NOT NULL DEFAULT 0
+         );
+         CREATE TABLE provider_endpoints (
+           id TEXT PRIMARY KEY, provider_id TEXT NOT NULL, url TEXT NOT NULL
+         );
+         CREATE TABLE profiles (id TEXT PRIMARY KEY, name TEXT NOT NULL);",
+    )
+    .expect("create drift schema");
+    drop(conn);
+
+    let snapshot = read_cc_switch_snapshot(&path).expect("snapshot resolves fail-closed");
+    assert_eq!(snapshot.schema_kind, "unknown");
+    assert_eq!(snapshot.source_state, "blocked");
+    assert_eq!(snapshot.selection_state, "blocked");
+    assert!(snapshot.active_upstreams.is_empty());
+}

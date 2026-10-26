@@ -202,8 +202,9 @@ describe("Doctor common-problem workbench", () => {
 
     render(<Doctor setPage={vi.fn()} />);
 
-    expect(await screen.findByText("旧诊断快照不可用于修复")).toBeVisible();
-    expect(screen.getByText(/字面量 fresh 不会被信任/)).toBeVisible();
+    expect(await screen.findByText("诊断结果已过期")).toBeVisible();
+    expect(screen.getByText(/重新扫描当前本机状态/)).toBeVisible();
+    expect(screen.queryByText(/Doctor v2|Doctor v3|fresh|统一、本地、可复验/)).not.toBeInTheDocument();
     expect(screen.queryByRole("checkbox", { name: "选择 d-token 本地服务未运行" })).not.toBeInTheDocument();
     expect(native.invokeNative).toHaveBeenCalledTimes(1);
   });
@@ -211,11 +212,15 @@ describe("Doctor common-problem workbench", () => {
   it("runs one user-triggered scan and renders evidence, impact, and a repair candidate", async () => {
     render(<Doctor setPage={vi.fn()} />);
 
-    expect(await screen.findByText("尚未扫描常规问题")).toBeVisible();
+    expect(await screen.findByText("检查连接是否正常")).toBeVisible();
+    expect(screen.queryByText("0/—")).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "扫描常规问题" }));
 
     expect(await screen.findByText("d-token 本地服务未运行")).toBeVisible();
     expect(screen.getByText("Agent 请求当前无法经过 d-token。")).toBeVisible();
+    const issueRow = screen.getByText("d-token 本地服务未运行").closest(".grid");
+    expect(issueRow).not.toBeNull();
+    fireEvent.click(within(issueRow as HTMLElement).getByText("查看原因"));
     expect(screen.getByText(/127\.0\.0\.1:18001/)).toBeVisible();
     expect(native.invokeNative.mock.calls.filter(([command]) => command === "run_doctor_scan")).toHaveLength(1);
     expect(native.invokeNative.mock.calls.some(([command]) => command === "run_product_readiness_check")).toBe(false);
@@ -224,7 +229,7 @@ describe("Doctor common-problem workbench", () => {
 
   it("previews selected repairs, requires confirmation, and displays the post-repair verification", async () => {
     render(<Doctor setPage={vi.fn()} />);
-    await screen.findByText("尚未扫描常规问题");
+    await screen.findByText("检查连接是否正常");
     fireEvent.click(screen.getByRole("button", { name: "扫描常规问题" }));
     await screen.findByText("d-token 本地服务未运行");
 
@@ -256,18 +261,57 @@ describe("Doctor common-problem workbench", () => {
     });
 
     render(<Doctor setPage={vi.fn()} />);
-    await screen.findByText("尚未扫描常规问题");
-    fireEvent.click(screen.getByText("仅扫描"));
+    await screen.findByText("检查连接是否正常");
+    fireEvent.click(screen.getByRole("button", { name: "扫描常规问题" }));
 
-    expect(screen.getByText("正在生成统一诊断快照")).toBeVisible();
+    expect(screen.getByRole("status")).toHaveTextContent("正在检查本地服务与工具连接");
     resolveScan(v3Snapshot);
 
-    expect(await screen.findByText("覆盖 5/5")).toBeVisible();
-    expect(screen.getByText("新鲜")).toBeVisible();
-    expect(screen.getByText("可修复 2")).toBeVisible();
-    expect(screen.getByText("Agent 接入")).toBeVisible();
-    expect(screen.getByText("混合上下文优化")).toBeVisible();
+    expect(await screen.findByText("2/5")).toBeVisible();
+    expect(screen.getByText("检查范围")).toBeVisible();
+    expect(screen.getByText("5/5")).toBeVisible();
+    expect(screen.getByText("需要处理")).toBeVisible();
+    expect(screen.getByText("工具配置")).toBeVisible();
+    expect(screen.getByText("视觉压缩")).toBeVisible();
     expect(native.invokeNative.mock.calls.filter(([command]) => command === "run_doctor_scan")).toHaveLength(1);
+  });
+
+  it("accepts the native product snapshot with its registered sync check and shows all six results", async () => {
+    native.invokeNative.mockImplementation(async (command: string) => {
+      if (command === "get_doctor_snapshot") return null;
+      if (command === "run_doctor_scan") return {
+        ...v3Snapshot, collected_at_ms: Date.now(), state: "blocked",
+        coverage: { completed: 5, total: 6 },
+        counts: { healthy: 1, repairable: 1, manual: 2, blocked: 1 },
+        modules: [
+          { module_id: "core", state: "manual" },
+          { module_id: "agent", state: "repairable" },
+          { module_id: "agent_cc_switch_sync", state: "manual", summary: "连接需要同步" },
+          { module_id: "optical", state: "unknown" },
+          { module_id: "platform", state: "healthy" },
+          { module_id: "recovery", state: "blocked" },
+        ],
+      };
+      throw new Error("unexpected command");
+    });
+    render(<Doctor setPage={vi.fn()} />);
+    fireEvent.click(await screen.findByRole("button", { name: "扫描常规问题" }));
+    expect(await screen.findByText("1/6")).toBeVisible();
+    expect(screen.getByText("配置同步")).toBeVisible();
+    expect(screen.getByText("5/6")).toBeVisible();
+    expect(screen.getByText(/修复保持锁定/)).toBeVisible();
+    expect(screen.queryByText("Doctor 扫描失败")).not.toBeInTheDocument();
+  });
+
+  it("still rejects unregistered modules instead of silently discarding their results", async () => {
+    native.invokeNative.mockImplementation(async (command: string) => command === "get_doctor_snapshot" ? null : ({
+      ...v3Snapshot, collected_at_ms: Date.now(),
+      modules: [...v3Snapshot.modules, { module_id: "unregistered-check", state: "healthy" }],
+    }));
+    render(<Doctor setPage={vi.fn()} />);
+    fireEvent.click(await screen.findByRole("button", { name: "扫描常规问题" }));
+    expect(await screen.findByText(/请重试；如果问题仍然存在/)).toBeVisible();
+    expect(screen.queryByText("0/—")).not.toBeInTheDocument();
   });
 
   it("aggregates the Rust v3 domain snapshot into product modules and keeps evidence-only attention non-actionable", async () => {
@@ -280,9 +324,11 @@ describe("Doctor common-problem workbench", () => {
 
     render(<Doctor setPage={vi.fn()} />);
 
-    expect(await screen.findByText("覆盖 16/16")).toBeVisible();
-    expect(screen.getByText("需手动 1")).toBeVisible();
-    expect(screen.getByRole("button", { name: "配置 Agent 修复" })).toBeDisabled();
+    expect(await screen.findByText("15/16")).toBeVisible();
+    expect(screen.getByText("检查范围")).toBeVisible();
+    expect(screen.getByText("16/16")).toBeVisible();
+    expect(screen.getByText("1 项需要处理，已优先排在右侧。")).toBeVisible();
+    expect(screen.queryByRole("button", { name: "处理工具配置" })).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "自动扫描并修复" }));
     await waitFor(() => expect(native.invokeNative).toHaveBeenCalledWith("run_doctor_scan"));
@@ -319,7 +365,7 @@ describe("Doctor common-problem workbench", () => {
 
     render(<Doctor setPage={vi.fn()} />);
     expect(await screen.findByText("2 个 Agent 接入需要审阅。")).toBeVisible();
-    fireEvent.click(screen.getByRole("button", { name: "配置 Agent 修复" }));
+    fireEvent.click(screen.getByRole("button", { name: "处理工具配置" }));
 
     const dialog = await screen.findByRole("dialog", { name: "Agent 接入诊断与修复" });
     expect(within(dialog).getByRole("checkbox", { name: "选择 Claude Code" })).toBeChecked();
@@ -381,10 +427,13 @@ describe("Doctor common-problem workbench", () => {
       throw new Error(`unexpected command: ${command}`);
     });
 
-    render(<Doctor setPage={vi.fn()} />);
-    expect(await screen.findByText("部分证据 · 已过期")).toBeVisible();
-    expect(screen.getByRole("button", { name: "配置 Agent 修复" })).toBeDisabled();
+    const navigate = vi.fn();
+    render(<Doctor setPage={navigate} />);
+    expect((await screen.findAllByText("部分证据 · 已过期")).length).toBeGreaterThan(0);
+    expect(screen.queryByRole("button", { name: "处理工具配置" })).not.toBeInTheDocument();
 
+    fireEvent.click(screen.getByRole("button", { name: "查看工具设置" }));
+    expect(navigate).toHaveBeenCalledWith("configuration");
     fireEvent.click(screen.getByRole("button", { name: "自动扫描并修复" }));
     await waitFor(() => expect(native.invokeNative).toHaveBeenCalledWith("run_doctor_scan"));
     expect(native.invokeNative.mock.calls.some(([command]) => command === "preview_doctor_repair")).toBe(false);

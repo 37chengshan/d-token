@@ -4,7 +4,7 @@ import { cleanup, render, screen, waitFor, within } from "@testing-library/react
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-afterEach(cleanup);
+afterEach(() => { cleanup(); window.sessionStorage.clear(); resetInstallMachineState(); });
 
 vi.mock("./Install", () => ({ Install: ({ initialAgentId }: { initialAgentId?: string }) => <div>一键安装内容:{initialAgentId ?? "none"}</div> }));
 vi.mock("./SmartLearning", () => ({ SmartLearning: () => <div>智能学习内容</div> }));
@@ -12,13 +12,14 @@ vi.mock("./Advanced", () => ({ Advanced: () => <div>高级安装内容</div> }))
 vi.mock("./LogsSecurity", () => ({ LogsSecurity: () => <div>日志内容</div> }));
 
 import { InstallWorkbench } from "./InstallWorkbench";
+import { hasPendingInstallHandoff, requestInstallHandoff, resetInstallMachineState } from "../../lib/installMachine";
 
 describe("InstallWorkbench", () => {
   it("renders a full-width four-column task navigation", () => {
     render(<InstallWorkbench />);
 
     const tablist = screen.getByRole("tablist");
-    expect(tablist).toHaveClass("install-workbench-nav", "grid", "h-20", "w-full", "grid-cols-4");
+    expect(tablist).toHaveClass("install-workbench-nav", "grid", "h-10", "w-full", "grid-cols-4");
     expect(screen.getAllByRole("tab")).toHaveLength(4);
 
     const expectedTabs = [
@@ -30,10 +31,7 @@ describe("InstallWorkbench", () => {
     for (const [title, description] of expectedTabs) {
       const tab = screen.getByRole("tab", { name: new RegExp(title) });
       expect(within(tab).getByText(title)).toBeVisible();
-      const descriptionNode = within(tab).getByText(description);
-      expect(descriptionNode).toBeVisible();
-      expect(descriptionNode).toHaveClass("install-workbench-nav-description");
-      expect(descriptionNode).not.toHaveClass("truncate");
+      expect(within(tab).queryByText(description)).not.toBeInTheDocument();
     }
   });
 
@@ -41,6 +39,21 @@ describe("InstallWorkbench", () => {
     render(<InstallWorkbench initialAgentId="codex" />);
 
     expect(screen.getByText("一键安装内容:codex")).toBeInTheDocument();
+  });
+
+  it("opens the connection panel for an authorized handoff despite the remembered tab", async () => {
+    window.sessionStorage.setItem("d-token.install.workbench-tab", "advanced");
+    requestInstallHandoff({ agentIds: ["opencode"], discoveryRevision: "r1", source: "onboarding-start-setup" });
+    render(<InstallWorkbench />);
+    expect(screen.getByRole("tabpanel")).toHaveTextContent("一键安装内容");
+    await userEvent.setup().click(screen.getByRole("tab", { name: /高级安装/ }));
+    expect(hasPendingInstallHandoff()).toBe(false);
+  });
+
+  it("retains the remembered panel during ordinary navigation", async () => {
+    window.sessionStorage.setItem("d-token.install.workbench-tab", "advanced");
+    render(<InstallWorkbench />);
+    await waitFor(() => expect(screen.getByRole("tabpanel")).toHaveTextContent("高级安装内容"));
   });
 
   it("switches panels through accessible tabs", async () => {

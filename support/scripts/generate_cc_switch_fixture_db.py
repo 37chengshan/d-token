@@ -33,6 +33,12 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent.parent
 FIXTURE_DIR = ROOT / "support" / "fixtures" / "cc-switch"
 FIXTURE_PATH = FIXTURE_DIR / "cc-switch.db"
 EXPECTED_FIXTURE_SHA256 = "9df5d00a215b8a3e6e14a73574bf0320d6989fcb7534bf6769f20b0862b91b97"
+# Schema-16 fixture mirrors a real 2026-08 cc-switch desktop database layout
+# (providers with meta/provider_type columns, provider_endpoints with a `url`
+# column) including a chatgpt-auth Codex provider whose settings_config has no
+# baseUrl/model — the per-app fail-closed contract case.
+FIXTURE_V16_PATH = FIXTURE_DIR / "cc-switch-v16.db"
+EXPECTED_FIXTURE_V16_SHA256 = "pending-first-generation"
 
 # A deliberate secret-shaped marker that any leak path must never emit.
 SECRET_MARKER = "fixture-cc-switch-token-marker-8f31"
@@ -73,8 +79,17 @@ PROVIDERS = [
         "fixture-claude-current",
         "claude",
         "Fixture Claude current",
-        '{"env":{"ANTHROPIC_BASE_URL":"%s","ANTHROPIC_MODEL":"claude-fixture-model",'
-        '"ANTHROPIC_AUTH_TOKEN":"%s"},"private_metadata":"%s"}' % (CLAUDE_ENDPOINT, SECRET_MARKER, SECRET_MARKER),
+        json.dumps(
+            {
+                "env": {
+                    "ANTHROPIC_BASE_URL": CLAUDE_ENDPOINT,
+                    "ANTHROPIC_MODEL": "claude-fixture-model",
+                    "ANTHROPIC_AUTH_TOKEN": SECRET_MARKER,
+                },
+                "private_metadata": SECRET_MARKER,
+            },
+            separators=(",", ":"),
+        ),
         True,
         1,
     ),
@@ -82,7 +97,14 @@ PROVIDERS = [
         "fixture-codex-current",
         "codex",
         "Fixture Codex current",
-        '{"baseUrl":"%s","protocol":"open_ai","model":"codex-fixture-model"}' % CODEX_ENDPOINT,
+        json.dumps(
+            {
+                "baseUrl": CODEX_ENDPOINT,
+                "protocol": "open_ai",
+                "model": "codex-fixture-model",
+            },
+            separators=(",", ":"),
+        ),
         True,
         1,
     ),
@@ -90,7 +112,14 @@ PROVIDERS = [
         "fixture-codex-alt",
         "codex",
         "Fixture Codex alternative",
-        '{"baseUrl":"%s","protocol":"open_ai","model":"codex-alt-model"}' % CODEX_ALT_ENDPOINT,
+        json.dumps(
+            {
+                "baseUrl": CODEX_ALT_ENDPOINT,
+                "protocol": "open_ai",
+                "model": "codex-alt-model",
+            },
+            separators=(",", ":"),
+        ),
         False,
         2,
     ),
@@ -98,8 +127,14 @@ PROVIDERS = [
         "fixture-gemini-current",
         "gemini",
         "Fixture Gemini current",
-        '{"baseUrl":"https://fixture-gemini.example.test/v1","protocol":"open_ai",'
-        '"model":"gemini-fixture-model"}',
+        json.dumps(
+            {
+                "baseUrl": "https://fixture-gemini.example.test/v1",
+                "protocol": "open_ai",
+                "model": "gemini-fixture-model",
+            },
+            separators=(",", ":"),
+        ),
         True,
         1,
     ),
@@ -151,36 +186,18 @@ def generate(path: pathlib.Path) -> None:
 
 
 def canonical_digest(path: pathlib.Path) -> str:
+    """Content digest that never builds SQL from identifiers.
+
+    Both sides of the ``--check`` comparison run on the same host library, so
+    a sorted ``iterdump()`` projection is a stable semantic fingerprint of the
+    schema + rows without any dynamic table/column interpolation.
+    """
     connection = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
     try:
         user_version = connection.execute("PRAGMA user_version").fetchone()[0]
-        tables = [
-            row[0]
-            for row in connection.execute(
-                "SELECT name FROM sqlite_master"
-                " WHERE type = 'table' AND name NOT LIKE 'sqlite_%'"
-                " ORDER BY name"
-            )
-        ]
-        canonical_tables = []
-        for table in tables:
-            columns = list(connection.execute(f'PRAGMA table_info("{table}")'))
-            column_names = [column[1] for column in columns]
-            order_by = ", ".join(f'"{name}"' for name in column_names)
-            rows = list(
-                connection.execute(
-                    f'SELECT * FROM "{table}" ORDER BY {order_by}'
-                )
-            )
-            canonical_tables.append(
-                {
-                    "name": table,
-                    "columns": columns,
-                    "rows": rows,
-                }
-            )
+        dump_lines = sorted(connection.iterdump())
         payload = json.dumps(
-            {"user_version": user_version, "tables": canonical_tables},
+            {"user_version": user_version, "dump": dump_lines},
             ensure_ascii=False,
             sort_keys=True,
             separators=(",", ":"),

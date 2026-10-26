@@ -1,6 +1,9 @@
 use crate::{
     enforce_cache_quota,
-    proxy::{base_command, configure_upstream},
+    proxy::{
+        base_command, configure_upstream, isolate_process_group, run_bounded_output_with_cancel,
+        terminate_process_group,
+    },
     LaunchConfig, RepositoryWriteSentinel, MAX_MCP_RESPONSE_BYTES, POLICY_VERSION,
 };
 use anyhow::{bail, Context, Result};
@@ -11,6 +14,7 @@ use axum::{
     routing::get,
     Json, Router,
 };
+use dtoken_process::is_process_running;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -18,7 +22,10 @@ use std::{
     io::{BufRead, BufReader, Read, Write},
     net::{IpAddr, Ipv4Addr, SocketAddr},
     process::Stdio,
-    sync::mpsc,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        mpsc, Arc,
+    },
     thread,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
@@ -72,6 +79,7 @@ struct HostState {
     instance_id: String,
     expires_at_ms: u64,
     port: u16,
+    shutdown: Arc<AtomicBool>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -90,7 +98,27 @@ pub fn run_index_controlled(
     }
     config.validate_repository_inputs()?;
     config.ensure_repository_zero_write_precondition()?;
-    configure_upstream(config)?;
+    if let Err(error) = configure_upstream(config) {
+        return Ok(IndexReceipt {
+            schema_version: 1,
+            operation: "index_repository".to_string(),
+            outcome: "failed".to_string(),
+            reason_code: if error
+                .chain()
+                .any(|cause| cause.to_string() == "upstream_version_conflict")
+            {
+                "upstream_version_conflict"
+            } else {
+                "upstream_configuration_failed"
+            }
+            .to_string(),
+            policy_version: POLICY_VERSION,
+            indexed_files: None,
+            node_count: None,
+            edge_count: None,
+            occurred_at_ms: now_ms(),
+        });
+    }
     let sentinel = RepositoryWriteSentinel::capture(&config.repository_root)?;
     let arguments = serde_json::to_string(&json!({
         "repo_path": config.repository_root,
@@ -103,11 +131,7 @@ pub fn run_index_controlled(
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::CommandExt;
-        command.process_group(0);
-    }
+    isolate_process_group(&mut command);
     let mut child = command
         .spawn()
         .context("failed to start controlled codebase-memory index")?;
@@ -151,6 +175,7 @@ pub fn run_index_controlled(
         thread::sleep(Duration::from_millis(50));
     };
 
+    terminate_process_group(child.id());
     let mut stdout = child.stdout.take().context("index stdout unavailable")?;
     let mut bytes = Vec::new();
     stdout
@@ -165,18 +190,170 @@ pub fn run_index_controlled(
         bail!("controlled codebase-memory index failed");
     }
     let value: Value = serde_json::from_slice(&bytes).context("invalid index response JSON")?;
-    enforce_cache_quota(&config.cache_dir)?;
-    Ok(IndexReceipt {
+    let receipt = index_receipt_from_value(&value);
+    if receipt.outcome == "ready" {
+        enforce_cache_quota(&config.cache_dir)?;
+    }
+    Ok(receipt)
+}
+
+fn index_receipt_from_value(value: &Value) -> IndexReceipt {
+    let indexed_files = first_u64(value, &["files_indexed", "indexed_files", "file_count"]);
+    let node_count = first_u64(value, &["nodes", "node_count", "total_nodes"]);
+    let edge_count = first_u64(value, &["edges", "edge_count", "total_edges"]);
+    let terminal = terminal_index_marker(value);
+    if terminal == Some(false) {
+        return non_ready_index_receipt(
+            "index_not_complete",
+            indexed_files,
+            node_count,
+            edge_count,
+        );
+    }
+    if node_count.is_none() || edge_count.is_none() {
+        return non_ready_index_receipt(
+            "terminal_evidence_missing",
+            indexed_files,
+            node_count,
+            edge_count,
+        );
+    }
+    IndexReceipt {
         schema_version: 1,
         operation: "index_repository".to_string(),
         outcome: "ready".to_string(),
         reason_code: "index_completed".to_string(),
         policy_version: POLICY_VERSION,
-        indexed_files: first_u64(&value, &["files_indexed", "indexed_files", "file_count"]),
-        node_count: first_u64(&value, &["nodes", "node_count", "total_nodes"]),
-        edge_count: first_u64(&value, &["edges", "edge_count", "total_edges"]),
+        indexed_files,
+        node_count,
+        edge_count,
         occurred_at_ms: now_ms(),
-    })
+    }
+}
+
+fn non_ready_index_receipt(
+    reason_code: &str,
+    indexed_files: Option<u64>,
+    node_count: Option<u64>,
+    edge_count: Option<u64>,
+) -> IndexReceipt {
+    IndexReceipt {
+        schema_version: 1,
+        operation: "index_repository".to_string(),
+        outcome: "failed".to_string(),
+        reason_code: reason_code.to_string(),
+        policy_version: POLICY_VERSION,
+        indexed_files,
+        node_count,
+        edge_count,
+        occurred_at_ms: now_ms(),
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum IndexMarker {
+    Positive,
+    Negative,
+}
+
+fn terminal_index_marker(value: &Value) -> Option<bool> {
+    let mut found_positive = false;
+    if scan_index_markers(value, &mut found_positive) {
+        Some(false)
+    } else if found_positive {
+        Some(true)
+    } else {
+        None
+    }
+}
+
+fn scan_index_markers(value: &Value, found_positive: &mut bool) -> bool {
+    match value {
+        Value::Object(object) => object.iter().any(|(key, value)| {
+            if is_negative_index_envelope(key, value) {
+                return true;
+            }
+            if is_index_marker_key(key) {
+                match value.as_str().and_then(classify_index_marker) {
+                    Some(IndexMarker::Negative) => return true,
+                    Some(IndexMarker::Positive) => *found_positive = true,
+                    None => {}
+                }
+            }
+            scan_index_markers(value, found_positive)
+        }),
+        Value::Array(values) => values
+            .iter()
+            .any(|value| scan_index_markers(value, found_positive)),
+        _ => false,
+    }
+}
+
+fn is_index_marker_key(key: &str) -> bool {
+    matches!(
+        key,
+        "status" | "state" | "phase" | "outcome" | "reason_code"
+    )
+}
+
+fn is_negative_index_envelope(key: &str, value: &Value) -> bool {
+    match (key, value) {
+        ("isError", Value::Bool(true))
+        | ("ok", Value::Bool(false))
+        | ("success", Value::Bool(false)) => true,
+        ("error", Value::Null) | ("errors", Value::Null) => false,
+        ("error", Value::Bool(has_error)) | ("errors", Value::Bool(has_error)) => *has_error,
+        ("error", Value::String(message)) | ("errors", Value::String(message)) => {
+            !message.trim().is_empty()
+        }
+        ("error", Value::Array(errors)) | ("errors", Value::Array(errors)) => !errors.is_empty(),
+        ("error", Value::Object(error)) | ("errors", Value::Object(error)) => !error.is_empty(),
+        _ => false,
+    }
+}
+
+fn classify_index_marker(raw: &str) -> Option<IndexMarker> {
+    let normalized = raw.trim().to_ascii_lowercase();
+    if matches!(
+        normalized.as_str(),
+        "queued"
+            | "started"
+            | "starting"
+            | "running"
+            | "pending"
+            | "indexing"
+            | "scheduled"
+            | "in_progress"
+            | "in-progress"
+            | "failed"
+            | "failure"
+            | "error"
+            | "errored"
+            | "cancelled"
+            | "canceled"
+            | "partial"
+            | "timed_out"
+            | "timed-out"
+            | "timeout"
+            | "not_complete"
+            | "not-complete"
+            | "blocked"
+    ) {
+        return Some(IndexMarker::Negative);
+    }
+    if matches!(
+        normalized.as_str(),
+        "ready"
+            | "complete"
+            | "completed"
+            | "success"
+            | "succeeded"
+            | "indexed"
+            | "index_completed"
+    ) {
+        return Some(IndexMarker::Positive);
+    }
+    None
 }
 
 fn terminate_index_child(child: &mut std::process::Child) {
@@ -242,12 +419,14 @@ pub fn run_ui_host(
         let port = listener.local_addr()?.port();
         let instance_id = Uuid::new_v4().to_string();
         let expires_at_ms = now_ms().saturating_add(ttl_secs.saturating_mul(1000));
+        let shutdown_flag = Arc::new(AtomicBool::new(false));
         let state = HostState {
             config,
             token_digest: Sha256::digest(secret.token.as_bytes()).into(),
             instance_id: instance_id.clone(),
             expires_at_ms,
             port,
+            shutdown: shutdown_flag.clone(),
         };
         let router = Router::new()
             .route("/s/{token}/", get(graph_page))
@@ -287,7 +466,9 @@ pub fn run_ui_host(
             tokio::select! {
                 _ = closed_rx => {},
                 _ = tokio::time::sleep(Duration::from_secs(ttl_secs)) => {},
+                _ = wait_for_parent_exit(parent_pid) => {},
             }
+            shutdown_flag.store(true, Ordering::SeqCst);
         };
         axum::serve(listener, router)
             .with_graceful_shutdown(shutdown)
@@ -295,6 +476,19 @@ pub fn run_ui_host(
             .context("codebase-memory UI host failed")?;
         Ok::<_, anyhow::Error>(())
     })
+}
+
+async fn wait_for_parent_exit(parent_pid: u32) {
+    if parent_pid == 0 {
+        std::future::pending::<()>().await;
+        return;
+    }
+    loop {
+        if !is_process_running(parent_pid) {
+            return;
+        }
+        tokio::time::sleep(Duration::from_secs(1)).await;
+    }
 }
 
 fn read_host_secret(reader: &mut impl BufRead) -> Result<HostSecret> {
@@ -380,7 +574,11 @@ async fn search(
 }
 
 async fn cli_response(state: HostState, tool: &'static str, arguments: Value) -> Response {
-    match tokio::task::spawn_blocking(move || run_cli_tool(&state.config, tool, arguments)).await {
+    match tokio::task::spawn_blocking(move || {
+        run_cli_tool(&state.config, tool, arguments, &state.shutdown)
+    })
+    .await
+    {
         Ok(Ok(value)) => secured(Json(value).into_response(), "application/json"),
         _ => secured(
             (
@@ -393,7 +591,12 @@ async fn cli_response(state: HostState, tool: &'static str, arguments: Value) ->
     }
 }
 
-fn run_cli_tool(config: &LaunchConfig, tool: &str, arguments: Value) -> Result<Value> {
+fn run_cli_tool(
+    config: &LaunchConfig,
+    tool: &str,
+    arguments: Value,
+    shutdown: &AtomicBool,
+) -> Result<Value> {
     if !matches!(tool, "get_architecture" | "search_graph" | "index_status") {
         bail!("UI host tool is not allowed");
     }
@@ -401,57 +604,60 @@ fn run_cli_tool(config: &LaunchConfig, tool: &str, arguments: Value) -> Result<V
         .as_object()
         .cloned()
         .context("read-only graph arguments must be an object")?;
+    if arguments.contains_key("project") {
+        bail!("read-only graph query cannot choose a project");
+    }
     arguments.insert(
         "project".to_string(),
-        Value::String(resolve_project(config)?),
+        Value::String(resolve_project(config, shutdown)?),
     );
     let input = serde_json::to_vec(&arguments)?;
-    let mut child = base_command(config)
-        .args(["cli", tool])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()?;
-    child
-        .stdin
-        .as_mut()
-        .context("upstream CLI stdin unavailable")?
-        .write_all(&input)?;
-    drop(child.stdin.take());
-    let output = child.wait_with_output()?;
-    if !output.status.success() || output.stdout.len() > MAX_MCP_RESPONSE_BYTES {
+    let mut command = base_command(config);
+    command.args(["cli", tool]);
+    let output = run_bounded_output_with_cancel(
+        &mut command,
+        Some(&input),
+        Duration::from_secs(30),
+        MAX_MCP_RESPONSE_BYTES,
+        "read-only graph query",
+        Some(shutdown),
+    )?;
+    if !output.status.success() {
         bail!("read-only graph query failed");
     }
     serde_json::from_slice(&output.stdout).context("invalid read-only graph response")
 }
 
-fn resolve_project(config: &LaunchConfig) -> Result<String> {
-    let mut child = base_command(config)
-        .args(["cli", "list_projects"])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()?;
-    child
-        .stdin
-        .as_mut()
-        .context("upstream CLI stdin unavailable")?
-        .write_all(b"{}")?;
-    drop(child.stdin.take());
-    let output = child.wait_with_output()?;
-    if !output.status.success() || output.stdout.len() > MAX_MCP_RESPONSE_BYTES {
+fn resolve_project(config: &LaunchConfig, shutdown: &AtomicBool) -> Result<String> {
+    let mut command = base_command(config);
+    command.args(["cli", "list_projects"]);
+    let output = run_bounded_output_with_cancel(
+        &mut command,
+        Some(br#"{"include_details":true}"#),
+        Duration::from_secs(30),
+        MAX_MCP_RESPONSE_BYTES,
+        "project discovery",
+        Some(shutdown),
+    )?;
+    if !output.status.success() {
         bail!("project discovery failed");
     }
     let value: Value = serde_json::from_slice(&output.stdout)?;
     resolve_project_name(&value, &config.repository_root)
 }
 
-fn resolve_project_name(value: &Value, approved_root: &std::path::Path) -> Result<String> {
+pub(crate) fn resolve_project_name(
+    value: &Value,
+    approved_root: &std::path::Path,
+) -> Result<String> {
     let projects = value
         .get("projects")
         .and_then(Value::as_array)
         .context("project discovery response is invalid")?;
     let approved_root = approved_root.to_string_lossy();
+    if projects.len() != 1 {
+        bail!("d-token Code Graph cache must contain exactly one approved project");
+    }
     projects
         .iter()
         .find(|project| project.get("root_path").and_then(Value::as_str) == Some(&approved_root))
@@ -575,7 +781,9 @@ mod tests {
                 upstream_path: "upstream".into(),
                 repository_root: "repo".into(),
                 cache_dir: "cache".into(),
+                runtime_dir: "runtime".into(),
             },
+            shutdown: Arc::new(AtomicBool::new(false)),
             token_digest: Sha256::digest(token.as_bytes()).into(),
             instance_id: "instance".to_string(),
             expires_at_ms: now_ms() + 10_000,
@@ -615,6 +823,44 @@ mod tests {
     }
 
     #[test]
+    fn index_receipt_requires_completed_graph_evidence() {
+        for value in [
+            json!({"status":"completed","nodes":0,"edges":0}),
+            json!({"nodes":0,"edges":0}),
+        ] {
+            let receipt = index_receipt_from_value(&value);
+            assert_eq!(receipt.outcome, "ready");
+            assert_eq!(receipt.reason_code, "index_completed");
+        }
+
+        for value in [
+            json!({"status":"queued","nodes":1,"edges":1}),
+            json!({"state":"started","nodes":1,"edges":1}),
+            json!({"phase":"running","nodes":1,"edges":1}),
+            json!({"status":"failed","nodes":1,"edges":1}),
+            json!({"state":"error","nodes":1,"edges":1}),
+            json!({"phase":"cancelled","nodes":1,"edges":1}),
+            json!({"status":"partial","nodes":1,"edges":1}),
+            json!({"status":"in_progress","nodes":1,"edges":1}),
+            json!({"status":"timed_out","nodes":1,"edges":1}),
+            json!({"phase":"completed","nested":{"status":"queued"},"nodes":1,"edges":1}),
+            json!({"events":[{"status":"completed"},{"status":"running"}],"nodes":1,"edges":1}),
+            json!({"isError":true,"nodes":1,"edges":1}),
+            json!({"ok":false,"nodes":1,"edges":1}),
+            json!({"error":{"message":"boom"},"nodes":1,"edges":1}),
+            json!({"errors":"boom","nodes":1,"edges":1}),
+        ] {
+            let receipt = index_receipt_from_value(&value);
+            assert_eq!(receipt.outcome, "failed", "value={value}");
+            assert_eq!(receipt.reason_code, "index_not_complete", "value={value}");
+        }
+
+        let missing = index_receipt_from_value(&json!({"status":"completed","nodes":1}));
+        assert_eq!(missing.outcome, "failed");
+        assert_eq!(missing.reason_code, "terminal_evidence_missing");
+    }
+
+    #[test]
     fn project_resolution_requires_an_exact_approved_root_match() {
         let projects = json!({"projects":[{"name":"other","root_path":"/other"}]});
         assert!(resolve_project_name(&projects, std::path::Path::new("/approved")).is_err());
@@ -622,5 +868,10 @@ mod tests {
             resolve_project_name(&projects, std::path::Path::new("/other")).unwrap(),
             "other"
         );
+        let polluted = json!({"projects":[
+            {"name":"approved","root_path":"/approved"},
+            {"name":"other","root_path":"/other"}
+        ]});
+        assert!(resolve_project_name(&polluted, std::path::Path::new("/approved")).is_err());
     }
 }

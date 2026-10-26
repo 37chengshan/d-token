@@ -1,0 +1,134 @@
+<!-- ============================================================
+     页面：分析 (Analytics)
+     ============================================================ -->
+<div class="analytics-page space-y-4">
+  <!-- 标题与子标签切换 -->
+  <div class="flex flex-wrap items-center justify-between gap-3 border-b border-border/70 pb-3" data-tab-group="analytics-tabs">
+    <div class="flex items-center gap-2">
+      <button class="segmented-control-item active" data-tab-target="live">实时指标 (Live)</button>
+      <button class="segmented-control-item" data-tab-target="history">历史趋势 (History)</button>
+      <button class="segmented-control-item" data-tab-target="models">模型阶梯计费</button>
+      <button class="segmented-control-item" data-tab-target="latency">延迟与网络耗时</button>
+    </div>
+    <div class="text-xs text-muted-foreground">
+      数据源：d-token 本地 Event Ledger 不可篡改账本
+    </div>
+  </div>
+
+  <div data-tab-content-group="analytics-tabs">
+    <!-- 子标签 1: 实时指标与概览 -->
+    <div class="tab-pane active space-y-4" data-tab-pane="live">
+      <!-- 3 组分析 KPI -->
+      <div class="grid grid-cols-1 gap-3 sm:grid-cols-3">
+        <div class="rounded-xl border border-border/70 bg-card p-4 shadow-sm">
+          <span class="text-xs font-medium text-muted-foreground">今日总削减 Token</span>
+          <div class="mt-2 flex items-baseline gap-2">
+            <span class="text-2xl font-bold text-foreground">348,920</span>
+            <span class="text-xs font-semibold text-emerald-400">-39.1%</span>
+          </div>
+          <span class="text-[11px] text-muted-foreground">原始输入 892k → 压缩后 543k</span>
+        </div>
+        <div class="rounded-xl border border-border/70 bg-card p-4 shadow-sm">
+          <span class="text-xs font-medium text-muted-foreground">今日净节省成本</span>
+          <div class="mt-2 flex items-baseline gap-2">
+            <span class="text-2xl font-bold text-foreground">¥42.80</span>
+            <span class="text-xs text-muted-foreground">($5.94)</span>
+          </div>
+          <span class="text-[11px] text-muted-foreground">基于当前配置的官方上游费率</span>
+        </div>
+        <div class="rounded-xl border border-border/70 bg-card p-4 shadow-sm">
+          <span class="text-xs font-medium text-muted-foreground">本地代理附加延迟</span>
+          <div class="mt-2 flex items-baseline gap-2">
+            <span class="text-2xl font-bold text-emerald-400">2.8 ms</span>
+            <span class="text-xs text-muted-foreground">极低开销</span>
+          </div>
+          <span class="text-[11px] text-muted-foreground">Rust 零拷贝流水线与并发拦截</span>
+        </div>
+      </div>
+
+      <!-- 模型收益矩阵与调用占比 (2列) -->
+      <div class="grid grid-cols-1 gap-4 lg:grid-cols-3">
+        <!-- 模型分析表格 (2列) -->
+        <div class="rounded-xl border border-border/70 bg-card p-5 shadow-sm lg:col-span-2">
+          <h3 class="text-sm font-semibold text-foreground border-b border-border/50 pb-3">
+            各模型上下文压缩与费用节省明细
+          </h3>
+          <div class="mt-3 overflow-x-auto">
+            <table class="w-full text-left text-xs">
+              <thead class="border-b border-border/40 text-muted-foreground">
+                <tr>
+                  <th class="py-2">模型标识</th>
+                  <th class="py-2">请求量</th>
+                  <th class="py-2">原始 Token</th>
+                  <th class="py-2">压缩后 Token</th>
+                  <th class="py-2">压缩率</th>
+                  <th class="py-2 text-right">累计节省费用</th>
+                </tr>
+              </thead>
+              <tbody class="divide-y divide-border/30 font-mono text-[11px]">
+                <tr>
+                  <td class="py-2.5 text-foreground font-semibold">deepseek-reasoner</td>
+                  <td class="py-2.5 text-muted-foreground">1,420</td>
+                  <td class="py-2.5">2,140,000</td>
+                  <td class="py-2.5">1,320,000</td>
+                  <td class="py-2.5 text-emerald-400 font-bold">-38.3%</td>
+                  <td class="py-2.5 text-right text-emerald-400 font-bold">¥28.40</td>
+                </tr>
+                <tr>
+                  <td class="py-2.5 text-foreground font-semibold">claude-3-5-sonnet</td>
+                  <td class="py-2.5 text-muted-foreground">890</td>
+                  <td class="py-2.5">1,450,000</td>
+                  <td class="py-2.5">880,000</td>
+                  <td class="py-2.5 text-emerald-400 font-bold">-39.3%</td>
+                  <td class="py-2.5 text-right text-emerald-400 font-bold">¥72.50</td>
+                </tr>
+                <tr>
+                  <td class="py-2.5 text-foreground font-semibold">gpt-4o</td>
+                  <td class="py-2.5 text-muted-foreground">580</td>
+                  <td class="py-2.5">850,000</td>
+                  <td class="py-2.5">520,000</td>
+                  <td class="py-2.5 text-emerald-400 font-bold">-38.8%</td>
+                  <td class="py-2.5 text-right text-emerald-400 font-bold">¥41.70</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- 流量分布与占比 (1列) -->
+        <div class="rounded-xl border border-border/70 bg-card p-5 shadow-sm">
+          <h3 class="text-sm font-semibold text-foreground border-b border-border/50 pb-3">Agent 流量占比</h3>
+          <div class="mt-4 space-y-3">
+            <div>
+              <div class="flex justify-between text-xs mb-1">
+                <span class="text-foreground">OpenCode</span>
+                <span class="text-muted-foreground">58% (1,988 次)</span>
+              </div>
+              <div class="h-2 w-full rounded-full bg-secondary overflow-hidden">
+                <div class="h-full bg-orange-500 rounded-full" style="width: 58%"></div>
+              </div>
+            </div>
+            <div>
+              <div class="flex justify-between text-xs mb-1">
+                <span class="text-foreground">Claude Code</span>
+                <span class="text-muted-foreground">34% (1,165 次)</span>
+              </div>
+              <div class="h-2 w-full rounded-full bg-secondary overflow-hidden">
+                <div class="h-full bg-emerald-500 rounded-full" style="width: 34%"></div>
+              </div>
+            </div>
+            <div>
+              <div class="flex justify-between text-xs mb-1">
+                <span class="text-foreground">Cursor</span>
+                <span class="text-muted-foreground">8% (275 次)</span>
+              </div>
+              <div class="h-2 w-full rounded-full bg-secondary overflow-hidden">
+                <div class="h-full bg-sky-500 rounded-full" style="width: 8%"></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>

@@ -31,6 +31,7 @@ function Harness() {
       <output data-testid="theme">{appearance.theme}</output>
       <output data-testid="state">{appearance.loadState}</output>
       <output data-testid="notice">{appearance.persistenceNotice}</output>
+      <output data-testid="receipt-revision">{appearance.persistenceRevision}</output>
       <button type="button" onClick={() => appearance.setTheme("light")}>light</button>
       <button type="button" onClick={() => appearance.setTheme("dark")}>dark</button>
     </div>
@@ -61,6 +62,19 @@ afterEach(() => {
 });
 
 describe("AppearanceProvider", () => {
+  it("advances its completed receipt when consecutive saves have the same outcome", async () => {
+    native.invokeNative.mockImplementation(async (command: string) => command === "get_app_settings"
+      ? { state: "loaded", payload: {} }
+      : { ok: true, summary: "saved", logs: [], tools: [] });
+    const user = userEvent.setup();
+    render(<AppProviders><Harness /></AppProviders>);
+    await user.click(screen.getByRole("button", { name: "dark" }));
+    await waitFor(() => expect(screen.getByTestId("receipt-revision")).toHaveTextContent("1"));
+    await user.click(screen.getByRole("button", { name: "light" }));
+    await waitFor(() => expect(screen.getByTestId("receipt-revision")).toHaveTextContent("2"));
+    expect(screen.getByTestId("notice")).toHaveTextContent("saved");
+  });
+
   it("does not let late native hydration overwrite a user light-theme choice", async () => {
     window.localStorage.setItem("d-token.appearance.v2", JSON.stringify({ theme: "dark" }));
     const hydration = deferred<{ state: string; payload: { appearance: { theme: string } } }>();

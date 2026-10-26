@@ -1,11 +1,11 @@
 import "@testing-library/jest-dom/vitest";
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const native = vi.hoisted(() => ({ invokeNative: vi.fn() }));
 
-vi.mock("../../lib/native", () => ({ invokeNative: native.invokeNative }));
+vi.mock("../../lib/native", () => ({ invokeNative: native.invokeNative, RUNTIME_INVALIDATED_EVENT: "d-token:runtime-invalidated" }));
 
 import { Changes } from "./Changes";
 
@@ -14,14 +14,15 @@ const currentSha = "a".repeat(64);
 function desktopPayload(overrides: Record<string, unknown> = {}) {
   return {
     desktop_revision: "changes-test-revision",
-    source: "dtoken-owned-runtime",
-    desktop_data_source: "dtoken-local-service",
+    source: "dtoken-desktop-control-plane",
+    desktop_data_source: "dtoken-desktop-control-plane",
     freshness: "fresh",
     complete: true,
     transaction_provenance: {
-      source: "dtoken-owned-runtime",
-      command: "get_desktop_data",
+      source: "dtoken-desktop-control-plane",
+      command: "get_config_change_records",
       schema_version: 1,
+      runtime_required: false,
       generated_at: "2026-07-15T10:00:00Z",
     },
     routeDrafts: [],
@@ -47,7 +48,7 @@ function desktopPayload(overrides: Record<string, unknown> = {}) {
 
 function mockDesktop(payload = desktopPayload()) {
   native.invokeNative.mockImplementation(async (command: string) => {
-    if (command === "get_desktop_data") return payload;
+    if (command === "get_config_change_records") return payload;
     if (command === "preview_rollback") {
       return {
         ok: true,
@@ -85,6 +86,42 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe("Changes rollback safety", () => {
+  it.each([
+    { integrity_verified: false, verified: true },
+    { scope: "unknown" },
+  ])("keeps conflicting or unknown backup metadata locked: %j", async (invalid) => {
+    mockDesktop(desktopPayload({ backupPoints: [{ ...desktopPayload().backupPoints[0], ...invalid }] }));
+    render(<Changes />);
+    expect(await screen.findByRole("button", { name: "预览回退" })).toBeDisabled();
+    expect(native.invokeNative).toHaveBeenCalledWith("get_config_change_records");
+    expect(native.invokeNative).not.toHaveBeenCalledWith("get_desktop_data");
+  });
+
+  it("keeps a verified tool backup available without requiring runtime metrics", async () => {
+    mockDesktop(desktopPayload({ backupPoints: [{ ...desktopPayload().backupPoints[0], scope: "managed-agent-config" }] }));
+    render(<Changes />);
+    expect(await screen.findByRole("button", { name: "预览回退" })).toBeEnabled();
+    expect(screen.getByRole("heading", { name: "工具配置恢复点" })).toBeVisible();
+  });
+
+  it("retains records but locks confirmation when a refresh fails", async () => {
+    mockDesktop();
+    render(<Changes />);
+    fireEvent.click(await screen.findByRole("button", { name: "预览回退" }));
+    await screen.findByRole("alertdialog");
+    native.invokeNative.mockRejectedValue(new Error("read_failed"));
+    await act(async () => { window.dispatchEvent(new Event("d-token:runtime-invalidated")); });
+    expect(screen.getByRole("button", { name: "确认回退并复检" })).toBeDisabled();
+    expect(screen.getByRole("alertdialog")).toHaveTextContent("数据已过期");
+  });
+
+  it("distinguishes a failed local read from an empty backup list", async () => {
+    native.invokeNative.mockRejectedValue(new Error("read_failed"));
+    render(<Changes />);
+    expect(await screen.findByText("恢复记录暂时无法读取，请刷新后重试。")).toBeVisible();
+    expect(screen.queryByText("当前没有可用回滚点")).not.toBeInTheDocument();
+  });
+
   it("keeps browser preview view-only and free of executable rollback actions", async () => {
     native.invokeNative.mockRejectedValue(new Error("native_unavailable"));
     render(<Changes />);
@@ -106,7 +143,7 @@ describe("Changes rollback safety", () => {
     render(<Changes />);
 
     expect(await screen.findByText("元数据与备份内容已验证")).toBeVisible();
-    expect(screen.getByText("The current target hash changed after this rollback point was created.")).toBeVisible();
+    expect(screen.getByText("文件在备份后发生了变化。请先查看当前配置，避免覆盖后续修改。")).toBeVisible();
     expect(screen.getByRole("button", { name: "预览回退" })).toBeDisabled();
   });
 
@@ -152,7 +189,7 @@ describe("Changes rollback safety", () => {
       }],
     });
     native.invokeNative.mockImplementation(async (command: string) => {
-      if (command === "get_desktop_data") return payload;
+      if (command === "get_config_change_records") return payload;
       if (command === "preview_rollback") {
         return {
           ok: true,
@@ -186,7 +223,9 @@ describe("Changes rollback safety", () => {
 
     render(<Changes />);
 
-    expect(await screen.findByText("tx-agent-1")).toBeVisible();
+    await screen.findByText(/3 个文件/);
+    fireEvent.click(screen.getByText("文件与记录信息"));
+    expect(screen.getByText("tx-agent-1")).toBeVisible();
     expect(screen.getByText(/3 个文件/)).toBeVisible();
     fireEvent.click(screen.getByRole("button", { name: "预览回退" }));
     const dialog = await screen.findByRole("alertdialog", { name: "确认回退" });
@@ -209,7 +248,7 @@ describe("Changes rollback safety", () => {
   it("fails closed when rollback preview says the current state changed", async () => {
     mockDesktop();
     native.invokeNative.mockImplementation(async (command: string) => {
-      if (command === "get_desktop_data") return desktopPayload();
+      if (command === "get_config_change_records") return desktopPayload();
       if (command === "preview_rollback") {
         return {
           ok: false,
@@ -228,6 +267,48 @@ describe("Changes rollback safety", () => {
     expect(await screen.findByText("当前回滚点已不可恢复，请刷新后重试。")).toBeVisible();
     expect(screen.queryByRole("alertdialog", { name: "确认回退" })).not.toBeInTheDocument();
     expect(native.invokeNative.mock.calls.some(([command]) => command === "apply_rollback")).toBe(false);
+  });
+
+  it("keeps rollback confirmation open with an inline retry error when apply fails", async () => {
+    mockDesktop();
+    native.invokeNative.mockImplementation(async (command: string) => {
+      if (command === "get_config_change_records") return desktopPayload();
+      if (command === "preview_rollback") {
+        return {
+          ok: true,
+          mode: "rollback-preview",
+          revision: "rollback-rev-1",
+          rollback_id: "backup-verified",
+          scope: "dtoken-active-config",
+          target: "/safe/d-token-config.json",
+          files: 1,
+          integrity_verified: true,
+          currently_restorable: true,
+          blocked_reason: "",
+          expected_current_sha256: currentSha,
+          summary: "verified",
+        };
+      }
+      if (command === "apply_rollback") {
+        return {
+          ok: false,
+          mode: "rollback-receipt",
+          rollback_id: "backup-verified",
+          summary: "rollback failed",
+          verification_state: "failed",
+        };
+      }
+      throw new Error(`unexpected command: ${command}`);
+    });
+    render(<Changes />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "预览回退" }));
+    const dialog = await screen.findByRole("alertdialog", { name: "确认回退" });
+    fireEvent.click(within(dialog).getByRole("button", { name: "确认回退并复检" }));
+
+    expect(await within(dialog).findByRole("alert")).toHaveTextContent("请重试");
+    expect(dialog).toBeInTheDocument();
+    expect(native.invokeNative.mock.calls.filter(([command]) => command === "apply_rollback")).toHaveLength(1);
   });
 
   it("locks actions when the desktop snapshot is stale", async () => {

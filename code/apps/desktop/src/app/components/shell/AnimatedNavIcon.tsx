@@ -2,10 +2,39 @@ import { memo, useEffect, useState } from "react";
 import type { PageId } from "../../lib/nav";
 import { cn } from "../ui/utils";
 
-export type AnimatedNavIconId = PageId | "theme" | "collapse";
+type LegacyAnimatedNavIconId =
+  | "overview"
+  | "install"
+  | "codebase-memory"
+  | "advanced"
+  | "analytics"
+  | "visual"
+  | "doctor"
+  | "changes"
+  | "logs"
+  | "compatibility";
+/** Legacy icon IDs remain renderable for old embedded callers during migration. */
+export type AnimatedNavIconId = LegacyAnimatedNavIconId | "settings" | "theme" | "collapse";
+export type AnimatedNavIconIdWithLegacy = PageId | AnimatedNavIconId;
 export type VisibleAnimatedNavIconId = Extract<
-  AnimatedNavIconId,
-  "overview" | "install" | "codebase-memory" | "analytics" | "visual" | "doctor" | "changes" | "settings" | "theme" | "collapse"
+  AnimatedNavIconIdWithLegacy,
+  | "configuration"
+  | "advanced-configuration"
+  | "analysis-logs"
+  | "diagnostics"
+  | "settings"
+  | "theme"
+  | "collapse"
+  | "overview"
+  | "install"
+  | "codebase-memory"
+  | "advanced"
+  | "analytics"
+  | "visual"
+  | "doctor"
+  | "changes"
+  | "logs"
+  | "compatibility"
 >;
 
 /**
@@ -21,20 +50,27 @@ export const NAV_MOTION_RECIPES: Record<
   VisibleAnimatedNavIconId,
   { durationMs: number; iterationCount: 1; recipe: string }
 > = {
+  configuration: { durationMs: 280, iterationCount: 1, recipe: "arrow-land-tray-bounce" },
+  "advanced-configuration": { durationMs: 280, iterationCount: 1, recipe: "gear-quarter-turn" },
+  "analysis-logs": { durationMs: 360, iterationCount: 1, recipe: "staggered-bar-grow" },
+  diagnostics: { durationMs: 280, iterationCount: 1, recipe: "path-trace-status-pulse" },
   overview: { durationMs: 400, iterationCount: 1, recipe: "staggered-grid-lift" },
   install: { durationMs: 280, iterationCount: 1, recipe: "arrow-land-tray-bounce" },
   "codebase-memory": { durationMs: 280, iterationCount: 1, recipe: "graph-nodes-connect" },
+  advanced: { durationMs: 280, iterationCount: 1, recipe: "gear-quarter-turn" },
   analytics: { durationMs: 360, iterationCount: 1, recipe: "staggered-bar-grow" },
   visual: { durationMs: 280, iterationCount: 1, recipe: "image-frame-focus" },
   doctor: { durationMs: 280, iterationCount: 1, recipe: "path-trace-status-pulse" },
   changes: { durationMs: 280, iterationCount: 1, recipe: "paired-arrow-converge" },
+  logs: { durationMs: 280, iterationCount: 1, recipe: "paired-arrow-converge" },
+  compatibility: { durationMs: 280, iterationCount: 1, recipe: "path-trace-status-pulse" },
   settings: { durationMs: 280, iterationCount: 1, recipe: "gear-quarter-turn" },
   theme: { durationMs: 280, iterationCount: 1, recipe: "sun-rays-or-moon-arc" },
   collapse: { durationMs: 280, iterationCount: 1, recipe: "panel-fold" },
 };
 
 export type AnimatedNavIconProps = {
-  id: AnimatedNavIconId;
+  id: AnimatedNavIconIdWithLegacy;
   active: boolean;
   reducedMotion: boolean;
   className?: string;
@@ -111,6 +147,7 @@ export const AnimatedNavIcon = memo(function AnimatedNavIcon({
           <rect className="icon-part icon-grid-4" x="13.5" y="13.5" width="7" height="7" rx="1.4" />
         </svg>
       );
+    case "configuration":
     case "install":
       return (
         <svg {...common}>
@@ -128,7 +165,9 @@ export const AnimatedNavIcon = memo(function AnimatedNavIcon({
           <circle className="icon-part icon-memory-node-4" cx="12" cy="19.5" r="2" />
         </svg>
       );
+    case "analysis-logs":
     case "analytics":
+    case "logs":
       return (
         <svg {...common}>
           <path d="M3.5 20.5h17" />
@@ -145,7 +184,9 @@ export const AnimatedNavIcon = memo(function AnimatedNavIcon({
           <path className="icon-part icon-landscape" d="m5.5 16.5 3.2-3.4 2.4 2.1 3.1-3.8 4.3 5.1" />
         </svg>
       );
+    case "diagnostics":
     case "doctor":
+    case "compatibility":
       return (
         <svg {...common}>
           <path className="icon-part icon-doctor-path" d="M6 4.5v5a6 6 0 0 0 12 0v-5M4 4.5h4M16 4.5h4" />
@@ -160,6 +201,8 @@ export const AnimatedNavIcon = memo(function AnimatedNavIcon({
           <path className="icon-part icon-change-bottom" d="M20 16H6m3 3-3-3 3-3" />
         </svg>
       );
+    case "advanced-configuration":
+    case "advanced":
     case "settings":
       return (
         <svg {...common}>

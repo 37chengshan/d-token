@@ -1,8 +1,14 @@
 use dtoken_codebase_memory::{
-    artifact_spec_for_current_platform, inspect_cache, scope_ref,
-    verify_upstream_artifact_with_digest, AgentSessionReceipt, IndexReceipt, UiHostReady,
-    VerifiedUpstreamArtifact, AGENT_SESSION_RECEIPT_FILE, COMPONENT as LAUNCHER_COMPONENT,
-    DEFAULT_CACHE_QUOTA_BYTES, POLICY_VERSION, PROTOCOL_VERSION, VERSION as LAUNCHER_VERSION,
+    artifact_spec_for_current_platform, cleanup_runtime_dir_for_cache, inspect_cache,
+    package_import::{
+        discover_package_candidates_cached, import_archive, package_directory_candidates,
+        PackageCandidate, PackageCandidateInspectionCache, PackageDirectorySource,
+        PackageImportReceipt,
+    },
+    scope_ref, verify_upstream_artifact_with_digest, AgentSessionReceipt, IndexReceipt,
+    UiHostReady, VerifiedUpstreamArtifact, AGENT_SESSION_RECEIPT_FILE,
+    COMPONENT as LAUNCHER_COMPONENT, DEFAULT_CACHE_QUOTA_BYTES, MAX_MCP_RESPONSE_BYTES,
+    POLICY_VERSION, PROTOCOL_VERSION, VERSION as LAUNCHER_VERSION,
 };
 use dtoken_config_patcher::codebase_memory_integration::{
     apply_codebase_memory_integration as apply_cbm_integration_tx,
@@ -29,6 +35,7 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use tauri::{AppHandle, Emitter};
+use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_opener::OpenerExt;
 use url::Url;
 use uuid::Uuid;
@@ -47,15 +54,18 @@ const INTEGRATION_STATE_SCHEMA_VERSION: u32 = 2;
 const MAX_INTEGRATION_STATE_RECORDS: usize = 128;
 const INDEX_STATE_PATH: &[&str] = &["codebase-memory", "index.json"];
 const PACKAGE_LOCATION_STATE_PATH: &[&str] = &["codebase-memory", "package-location.json"];
+const PACKAGE_IMPORT_STATE_PATH: &[&str] = &["codebase-memory", "package-import.json"];
 // Mirrors the release tag of the current manifest/allowlist
 // (ARTIFACT_SPECS upstream_version) at release time; an app update bumps this
 // URL together with the manifest so the download page stays current.
 const UPSTREAM_RELEASE_URL: &str =
-    "https://github.com/DeusData/codebase-memory-mcp/releases/tag/v0.9.1-rc.1";
+    "https://github.com/DeusData/codebase-memory-mcp/releases/tag/v0.10.8";
 
 static CONTROLLER: OnceLock<Mutex<ControllerState>> = OnceLock::new();
 static STATUS_MONITOR: OnceLock<()> = OnceLock::new();
 static UPSTREAM_VERIFICATION_CACHE: OnceLock<Mutex<UpstreamVerificationCache>> = OnceLock::new();
+static PACKAGE_CANDIDATE_CACHE: OnceLock<Mutex<PackageCandidateInspectionCache>> = OnceLock::new();
+static PACKAGE_STATE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 static INTEGRATION_STATE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
 #[derive(Default)]
@@ -179,6 +189,10 @@ pub struct CodebaseMemoryStatusDto {
     approved_project_root: Option<String>,
     package_directory: String,
     package_directory_custom: bool,
+    active_package_source: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    active_package_path: Option<String>,
+    package_candidates: Vec<PackageCandidate>,
     package: StatusDimensionDto,
     integration: StatusDimensionDto,
     agent_session: StatusDimensionDto,
@@ -247,6 +261,19 @@ pub struct CodebaseMemoryActionResultDto {
     summary: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PackageImportState {
+    schema_version: u32,
+    package_directory: String,
+    upstream_path: String,
+    upstream_version: String,
+    upstream_commit: String,
+    archive_sha256: String,
+    binary_sha256: String,
+    activated_at_ms: u64,
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct CodebaseMemoryDraftRequest {
     agent_id: String,
@@ -287,13 +314,52 @@ pub struct SetCodebaseMemoryPackageDirectoryPayload {
     directory: Option<String>,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+pub struct ImportCodebaseMemoryArchivePayload {
+    archive_path: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PackageActivationError {
+    message: String,
+    recovery_required: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PackageStateSnapshot {
+    import: Option<PackageImportState>,
+    location: Option<PackageLocationState>,
+}
+
+impl PackageActivationError {
+    fn blocked(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            recovery_required: false,
+        }
+    }
+
+    fn recovery_required(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            recovery_required: true,
+        }
+    }
+}
+
+impl From<String> for PackageActivationError {
+    fn from(message: String) -> Self {
+        Self::blocked(message)
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct SelectionState {
     approved_project_root: String,
     updated_at_ms: u64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct PackageLocationState {
     directory: String,
     updated_at_ms: u64,
@@ -458,14 +524,165 @@ fn package_location_state() -> Option<PackageLocationState> {
     serde_json::from_value(value).ok()
 }
 
+fn package_import_state() -> Option<PackageImportState> {
+    let value = super::read_app_state(PACKAGE_IMPORT_STATE_PATH).ok()?;
+    serde_json::from_value(value).ok()
+}
+
 fn write_package_location_state(directory: &Path) -> Result<(), String> {
-    super::write_json_app_state(
-        PACKAGE_LOCATION_STATE_PATH,
-        &json!(PackageLocationState {
-            directory: directory.display().to_string(),
-            updated_at_ms: now_ms(),
-        }),
-    )?;
+    write_package_location_state_record(&PackageLocationState {
+        directory: directory.display().to_string(),
+        updated_at_ms: now_ms(),
+    })
+}
+
+fn write_package_location_state_record(record: &PackageLocationState) -> Result<(), String> {
+    super::write_json_app_state(PACKAGE_LOCATION_STATE_PATH, &json!(record))?;
+    Ok(())
+}
+
+fn write_package_import_state(receipt: &PackageImportReceipt) -> Result<(), String> {
+    write_package_import_state_record(&PackageImportState {
+        schema_version: 1,
+        package_directory: receipt.package_directory.clone(),
+        upstream_path: receipt.upstream_path.clone(),
+        upstream_version: receipt.upstream_version.clone(),
+        upstream_commit: receipt.upstream_commit.clone(),
+        archive_sha256: receipt.archive_sha256.clone(),
+        binary_sha256: receipt.binary_sha256.clone(),
+        activated_at_ms: now_ms(),
+    })
+}
+
+fn write_package_import_state_record(record: &PackageImportState) -> Result<(), String> {
+    super::write_json_app_state(PACKAGE_IMPORT_STATE_PATH, &json!(record))?;
+    Ok(())
+}
+
+fn restore_package_import_state(record: Option<PackageImportState>) -> Result<(), String> {
+    if let Some(record) = record {
+        write_package_import_state_record(&record)?;
+    } else {
+        clear_package_import_state()?;
+    }
+    Ok(())
+}
+
+fn clear_package_import_state() -> Result<(), String> {
+    let state_path = super::app_state_path(PACKAGE_IMPORT_STATE_PATH);
+    if state_path.exists() {
+        super::durable_remove_file(&state_path)?;
+    }
+    Ok(())
+}
+
+fn clear_package_location_state() -> Result<(), String> {
+    let state_path = super::app_state_path(PACKAGE_LOCATION_STATE_PATH);
+    if state_path.exists() {
+        super::durable_remove_file(&state_path)?;
+    }
+    Ok(())
+}
+
+fn restore_package_location_state(record: Option<PackageLocationState>) -> Result<(), String> {
+    if let Some(record) = record {
+        write_package_location_state_record(&record)?;
+    } else {
+        clear_package_location_state()?;
+    }
+    Ok(())
+}
+
+fn activation_rollback_error(
+    activation_error: String,
+    import_restore: Result<(), String>,
+    location_restore: Result<(), String>,
+) -> PackageActivationError {
+    let mut rollback_errors = Vec::new();
+    if let Err(error) = import_restore {
+        rollback_errors.push(format!("import receipt restore failed: {error}"));
+    }
+    if let Err(error) = location_restore {
+        rollback_errors.push(format!("package location restore failed: {error}"));
+    }
+    if rollback_errors.is_empty() {
+        PackageActivationError::blocked(activation_error)
+    } else {
+        PackageActivationError::recovery_required(format!(
+            "{activation_error}; previous Code Graph package state could not be fully restored: {}",
+            rollback_errors.join("; ")
+        ))
+    }
+}
+
+fn activate_imported_package_state<WriteImport, WriteLocation, RestoreImport, RestoreLocation>(
+    receipt: &PackageImportReceipt,
+    directory: &Path,
+    previous: PackageStateSnapshot,
+    mut write_import: WriteImport,
+    mut write_location: WriteLocation,
+    mut restore_import: RestoreImport,
+    mut restore_location: RestoreLocation,
+) -> Result<(), PackageActivationError>
+where
+    WriteImport: FnMut(&PackageImportReceipt) -> Result<(), String>,
+    WriteLocation: FnMut(&Path) -> Result<(), String>,
+    RestoreImport: FnMut(Option<PackageImportState>) -> Result<(), String>,
+    RestoreLocation: FnMut(Option<PackageLocationState>) -> Result<(), String>,
+{
+    if let Err(error) = write_import(receipt) {
+        let import_restore = restore_import(previous.import.clone());
+        let location_restore = restore_location(previous.location.clone());
+        return Err(activation_rollback_error(
+            error,
+            import_restore,
+            location_restore,
+        ));
+    }
+    if let Err(error) = write_location(directory) {
+        let import_restore = restore_import(previous.import.clone());
+        let location_restore = restore_location(previous.location.clone());
+        return Err(activation_rollback_error(
+            error,
+            import_restore,
+            location_restore,
+        ));
+    }
+    Ok(())
+}
+
+fn activate_manual_package_state<ClearImport, WriteLocation, RestoreImport, RestoreLocation>(
+    directory: Option<&Path>,
+    previous: PackageStateSnapshot,
+    mut clear_import: ClearImport,
+    mut write_location: WriteLocation,
+    mut restore_import: RestoreImport,
+    mut restore_location: RestoreLocation,
+) -> Result<(), PackageActivationError>
+where
+    ClearImport: FnMut() -> Result<(), String>,
+    WriteLocation: FnMut(Option<&Path>) -> Result<(), String>,
+    RestoreImport: FnMut(Option<PackageImportState>) -> Result<(), String>,
+    RestoreLocation: FnMut(Option<PackageLocationState>) -> Result<(), String>,
+{
+    if let Err(error) = clear_import() {
+        let import_restore = restore_import(previous.import.clone());
+        let location_restore = restore_location(previous.location.clone());
+        return Err(activation_rollback_error(
+            error,
+            import_restore,
+            location_restore,
+        ));
+    }
+    if let Err(error) = write_location(directory) {
+        let import_restore = restore_import(previous.import.clone());
+        let location_restore = restore_location(previous.location.clone());
+        return Err(activation_rollback_error(
+            error,
+            import_restore,
+            location_restore,
+        ));
+    }
     Ok(())
 }
 
@@ -677,39 +894,6 @@ fn validate_package_directory(path: &Path) -> Result<PathBuf, String> {
     Ok(canonical)
 }
 
-fn upstream_names() -> &'static [&'static str] {
-    if cfg!(target_os = "windows") {
-        &["codebase-memory-mcp.exe"]
-    } else {
-        &["codebase-memory-mcp"]
-    }
-}
-
-fn package_directory_candidates(directory: &Path) -> Vec<PathBuf> {
-    let mut candidates = Vec::new();
-    for base in [directory.to_path_buf(), directory.join("bin")] {
-        for name in upstream_names() {
-            candidates.push(base.join(name));
-        }
-    }
-    if let Ok(entries) = fs::read_dir(directory) {
-        for entry in entries.flatten().take(128) {
-            let path = entry.path();
-            let Ok(metadata) = fs::symlink_metadata(&path) else {
-                continue;
-            };
-            if !metadata.is_dir() || metadata.file_type().is_symlink() {
-                continue;
-            }
-            for name in upstream_names() {
-                candidates.push(path.join(name));
-                candidates.push(path.join("bin").join(name));
-            }
-        }
-    }
-    candidates
-}
-
 fn short_hash(path: &Path) -> String {
     use sha2::{Digest, Sha256};
     let digest = Sha256::digest(path.display().to_string().as_bytes());
@@ -778,11 +962,107 @@ fn current_platform_upstream_candidates() -> Vec<PathBuf> {
     if let Ok((directory, _)) = effective_package_directory() {
         candidates.extend(package_directory_candidates(&directory));
     }
+    candidates.extend(
+        codebase_memory_package_candidates()
+            .into_iter()
+            .filter(|candidate| candidate.compatible && candidate.source == "installed")
+            .map(|candidate| PathBuf::from(candidate.path)),
+    );
     #[cfg(debug_assertions)]
     if let Ok(explicit) = env::var("DTOKEN_CODEBASE_MEMORY_UPSTREAM_EXE") {
         candidates.push(PathBuf::from(explicit));
     }
     candidates
+}
+
+fn codebase_memory_package_candidates() -> Vec<PackageCandidate> {
+    let mut package_directories = Vec::new();
+    if let Ok((directory, custom)) = effective_package_directory() {
+        package_directories.push(PackageDirectorySource {
+            path: directory,
+            source: if custom {
+                "active_custom_directory".to_string()
+            } else {
+                "active_default_directory".to_string()
+            },
+        });
+    }
+    if let Ok(default) = default_package_directory() {
+        let already_included = package_directories
+            .iter()
+            .any(|candidate| candidate.path == default);
+        if !already_included {
+            package_directories.push(PackageDirectorySource {
+                path: default,
+                source: "dtoken_default_directory".to_string(),
+            });
+        }
+    }
+    let home_dir = env::var_os("HOME").map(PathBuf::from);
+    let local_app_data = env::var_os("LOCALAPPDATA").map(PathBuf::from);
+    let mut cache = PACKAGE_CANDIDATE_CACHE
+        .get_or_init(|| Mutex::new(PackageCandidateInspectionCache::default()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    discover_package_candidates_cached(
+        &package_directories,
+        home_dir.as_deref(),
+        local_app_data.as_deref(),
+        env::var_os("PATH"),
+        &mut cache,
+    )
+}
+
+fn configured_package_source(directory: &Path, custom: bool) -> String {
+    let directory = directory.display().to_string();
+    package_import_state()
+        .filter(|state| state.package_directory == directory)
+        .map(|_| "imported_archive".to_string())
+        .unwrap_or_else(|| {
+            if custom {
+                "custom_directory".to_string()
+            } else {
+                "default_directory".to_string()
+            }
+        })
+}
+
+fn resolved_package_source(
+    resolved: Option<&ResolvedUpstream>,
+    directory: &Path,
+    custom: bool,
+    candidates: &[PackageCandidate],
+) -> (String, Option<String>) {
+    let Some(resolved) = resolved else {
+        return (configured_package_source(directory, custom), None);
+    };
+    if package_import_state().is_some_and(|state| {
+        state.package_directory == directory.display().to_string()
+            && resolved
+                .path
+                .starts_with(Path::new(&state.package_directory))
+    }) {
+        return (
+            "imported_archive".to_string(),
+            Some(resolved.path.display().to_string()),
+        );
+    }
+    for candidate in candidates.iter().filter(|candidate| candidate.compatible) {
+        if canonical_existing_file(Path::new(&candidate.path), "Code Graph candidate")
+            .ok()
+            .as_ref()
+            == Some(&resolved.path)
+        {
+            return (
+                candidate.source.clone(),
+                Some(resolved.path.display().to_string()),
+            );
+        }
+    }
+    (
+        configured_package_source(directory, custom),
+        Some(resolved.path.display().to_string()),
+    )
 }
 
 fn canonical_existing_file(path: &Path, label: &str) -> Result<PathBuf, String> {
@@ -1030,8 +1310,10 @@ fn index_record_from_receipt(receipt: IndexReceipt, project_root: &Path) -> Inde
     IndexStateRecord {
         state: if receipt.outcome == "ready" {
             "ready".to_string()
-        } else {
+        } else if receipt.outcome == "cancelled" {
             "stopped".to_string()
+        } else {
+            "failed".to_string()
         },
         outcome: Some(receipt.outcome.clone()),
         reason_code: receipt.reason_code.clone(),
@@ -1053,6 +1335,24 @@ fn index_record_from_receipt(receipt: IndexReceipt, project_root: &Path) -> Inde
     }
 }
 
+fn read_bounded_index_receipt_stdout(
+    stdout: Option<std::process::ChildStdout>,
+) -> Result<Vec<u8>, String> {
+    let Some(mut stdout) = stdout else {
+        return Err("Index process completed without a receipt stream".to_string());
+    };
+    let mut bytes = Vec::new();
+    stdout
+        .by_ref()
+        .take(u64::try_from(MAX_MCP_RESPONSE_BYTES).unwrap_or(u64::MAX) + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|error| format!("Index receipt could not be read: {error}"))?;
+    if bytes.len() > MAX_MCP_RESPONSE_BYTES {
+        return Err("Index receipt exceeded the bounded size limit".to_string());
+    }
+    Ok(bytes)
+}
+
 fn refresh_index_session(state: &mut ControllerState) {
     let finished = state
         .index
@@ -1065,20 +1365,19 @@ fn refresh_index_session(state: &mut ControllerState) {
     let Some(mut session) = state.index.take() else {
         return;
     };
-    let mut output = String::new();
-    if let Some(mut stdout) = session.child.stdout.take() {
-        let _ = stdout.read_to_string(&mut output);
-    }
+    let output = read_bounded_index_receipt_stdout(session.child.stdout.take());
     let record = if success {
-        match serde_json::from_str::<IndexReceipt>(&output) {
+        match output.and_then(|bytes| {
+            serde_json::from_slice::<IndexReceipt>(&bytes).map_err(|error| {
+                format!("Index process completed but receipt was invalid: {error}")
+            })
+        }) {
             Ok(receipt) => index_record_from_receipt(receipt, &session.project_root),
             Err(error) => IndexStateRecord {
                 state: "failed".to_string(),
                 outcome: Some("invalid_receipt".to_string()),
                 reason_code: "invalid_receipt".to_string(),
-                summary: sanitize_command_output(&format!(
-                    "Index process completed but receipt was invalid: {error}"
-                )),
+                summary: sanitize_command_output(&error),
                 updated_at_ms: now_ms(),
                 project_root: session.project_root.display().to_string(),
                 node_count: None,
@@ -1101,7 +1400,13 @@ fn refresh_index_session(state: &mut ControllerState) {
     let _ = write_index_state(&record);
     let _ = super::append_desktop_event(
         "codebase_memory_index",
-        if success { "ok" } else { "failed" },
+        if record.state == "ready" {
+            "ok"
+        } else if record.outcome.as_deref() == Some("cancelled") {
+            "cancelled"
+        } else {
+            "failed"
+        },
         json!({
             "project_ref": short_hash(&session.project_root),
             "state": record.state,
@@ -1540,6 +1845,14 @@ fn build_codebase_memory_status(app: &AppHandle) -> CodebaseMemoryStatusDto {
     let approved_project_root = selection_state().map(|record| record.approved_project_root);
     let (package_directory, package_directory_custom) =
         effective_package_directory().unwrap_or_else(|_| (PathBuf::new(), false));
+    let package_candidates = codebase_memory_package_candidates();
+    let resolved_upstream = resolve_upstream().ok();
+    let (active_package_source, active_package_path) = resolved_package_source(
+        resolved_upstream.as_ref(),
+        &package_directory,
+        package_directory_custom,
+        &package_candidates,
+    );
     let active_integrations = integration_states()
         .into_iter()
         .filter(|record| record.state != "rolled_back")
@@ -1564,6 +1877,9 @@ fn build_codebase_memory_status(app: &AppHandle) -> CodebaseMemoryStatusDto {
         approved_project_root: approved_project_root.clone(),
         package_directory: package_directory.display().to_string(),
         package_directory_custom,
+        active_package_source,
+        active_package_path,
+        package_candidates,
         package: package.clone(),
         integration,
         agent_session: agent_session_dimension(checked_at_ms),
@@ -1589,25 +1905,53 @@ pub fn set_codebase_memory_package_directory(
     app: AppHandle,
     request: SetCodebaseMemoryPackageDirectoryPayload,
 ) -> CodebaseMemoryActionResultDto {
-    let result = (|| -> Result<String, String> {
+    let result = (|| -> Result<String, PackageActivationError> {
+        let _package_state_guard = PACKAGE_STATE_LOCK
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let directory = request
             .directory
             .as_deref()
             .map(str::trim)
             .filter(|value| !value.is_empty());
+        let previous = PackageStateSnapshot {
+            import: package_import_state(),
+            location: package_location_state(),
+        };
         let selected = if let Some(directory) = directory {
-            let selected = validate_package_directory(Path::new(directory))?;
-            write_package_location_state(&selected)?;
+            let selected = validate_package_directory(Path::new(directory))
+                .map_err(PackageActivationError::blocked)?;
+            activate_manual_package_state(
+                Some(&selected),
+                previous.clone(),
+                clear_package_import_state,
+                |directory| match directory {
+                    Some(directory) => write_package_location_state(directory),
+                    None => clear_package_location_state(),
+                },
+                restore_package_import_state,
+                restore_package_location_state,
+            )?;
             selected
         } else {
-            let state_path = super::app_state_path(PACKAGE_LOCATION_STATE_PATH);
-            if state_path.exists() {
-                super::durable_remove_file(&state_path)?;
-            }
             let selected = default_package_directory()?;
             fs::create_dir_all(&selected).map_err(|error| {
-                format!("Default Code Graph package directory could not be created: {error}")
+                PackageActivationError::blocked(format!(
+                    "Default Code Graph package directory could not be created: {error}"
+                ))
             })?;
+            activate_manual_package_state(
+                None,
+                previous,
+                clear_package_import_state,
+                |directory| match directory {
+                    Some(directory) => write_package_location_state(directory),
+                    None => clear_package_location_state(),
+                },
+                restore_package_import_state,
+                restore_package_location_state,
+            )?;
             selected
         };
         UPSTREAM_VERIFICATION_CACHE
@@ -1628,9 +1972,132 @@ pub fn set_codebase_memory_package_directory(
         Ok(summary) => action_result(true, "ready", summary, None),
         Err(error) => action_result(
             false,
-            "blocked",
+            if error.recovery_required {
+                "recovery_required"
+            } else {
+                "blocked"
+            },
             "Code Graph package directory was not changed.",
-            Some(sanitize_command_output(&error)),
+            Some(sanitize_command_output(&error.message)),
+        ),
+    }
+}
+
+/// Opens a native folder picker for a previously extracted Code Graph package.
+/// The selected path is only returned to the UI as a draft; the existing
+/// set_codebase_memory_package_directory command remains the sole durable,
+/// validating write path.
+#[tauri::command]
+pub async fn select_codebase_memory_package_directory(
+    app: AppHandle,
+) -> Result<Option<String>, String> {
+    let selected = tauri::async_runtime::spawn_blocking(move || {
+        app.dialog()
+            .file()
+            .set_title("Select extracted Code Graph directory")
+            .blocking_pick_folder()
+    })
+    .await
+    .map_err(|_| "Code Graph directory picker stopped unexpectedly".to_string())?;
+    selected
+        .map(|path| {
+            path.into_path()
+                .map_err(|_| "Selected Code Graph directory is not a local path".to_string())
+                .map(|path| path.display().to_string())
+        })
+        .transpose()
+}
+
+#[tauri::command]
+pub async fn select_codebase_memory_archive(app: AppHandle) -> Result<Option<String>, String> {
+    let selected = tauri::async_runtime::spawn_blocking(move || {
+        app.dialog()
+            .file()
+            .set_title("Select Code Graph release archive")
+            .add_filter("Code Graph archive", &["gz", "tgz", "zip"])
+            .blocking_pick_file()
+    })
+    .await
+    .map_err(|_| "Code Graph archive picker stopped unexpectedly".to_string())?;
+    selected
+        .map(|path| {
+            path.into_path()
+                .map_err(|_| "Selected Code Graph archive is not a local path".to_string())
+                .map(|path| path.display().to_string())
+        })
+        .transpose()
+}
+
+#[tauri::command]
+pub async fn import_codebase_memory_archive(
+    app: AppHandle,
+    request: ImportCodebaseMemoryArchivePayload,
+) -> CodebaseMemoryActionResultDto {
+    let archive_path = request.archive_path.trim().to_string();
+    let result =
+        tauri::async_runtime::spawn_blocking(move || -> Result<PackageImportReceipt, String> {
+            if archive_path.is_empty() {
+                return Err("Code Graph archive path is required".to_string());
+            }
+            let owned_root = default_package_directory()?.join("imports");
+            import_archive(Path::new(&archive_path), &owned_root)
+                .map_err(|error| sanitize_command_output(&format!("{error:#}")))
+        })
+        .await
+        .map_err(|_| "Code Graph archive import worker stopped unexpectedly".to_string())
+        .and_then(|receipt| receipt)
+        .map_err(PackageActivationError::blocked)
+        .and_then(|receipt| {
+            let _package_state_guard = PACKAGE_STATE_LOCK
+                .get_or_init(|| Mutex::new(()))
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let directory = PathBuf::from(&receipt.package_directory);
+            validate_package_directory(&directory).map_err(PackageActivationError::blocked)?;
+            let previous = PackageStateSnapshot {
+                import: package_import_state(),
+                location: package_location_state(),
+            };
+            activate_imported_package_state(
+                &receipt,
+                &directory,
+                previous,
+                write_package_import_state,
+                write_package_location_state,
+                restore_package_import_state,
+                restore_package_location_state,
+            )?;
+            UPSTREAM_VERIFICATION_CACHE
+                .get_or_init(|| Mutex::new(UpstreamVerificationCache::default()))
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .clear();
+            let _ = app.emit(
+                "dtoken:codebase-memory-status",
+                json!({"revision": now_ms()}),
+            );
+            Ok(receipt)
+        });
+
+    match result {
+        Ok(receipt) => action_result(
+            true,
+            "ready",
+            format!(
+                "Code Graph archive imported and verified for release {}.",
+                receipt.upstream_version
+            ),
+            None,
+        ),
+        Err(error) => action_result(
+            false,
+            if error.recovery_required {
+                "recovery_required"
+            } else {
+                "blocked"
+            },
+            "Code Graph archive was not imported.",
+            Some(sanitize_command_output(&error.message)),
         ),
     }
 }
@@ -1706,7 +2173,7 @@ fn preview_codebase_memory_integration_sync(
                 backup_summary: None,
                 warnings: None,
                 draft: None,
-            }
+            };
         }
     };
     let install = match resolve_install_context() {
@@ -1724,7 +2191,7 @@ fn preview_codebase_memory_integration_sync(
                 backup_summary: None,
                 warnings: None,
                 draft: None,
-            }
+            };
         }
     };
     if let Err(error) = validate_integration_paths(&install, &project_root) {
@@ -1757,7 +2224,7 @@ fn preview_codebase_memory_integration_sync(
                 backup_summary: None,
                 warnings: None,
                 draft: None,
-            }
+            };
         }
     };
     let home = match super::user_home_dir() {
@@ -1775,7 +2242,7 @@ fn preview_codebase_memory_integration_sync(
                 backup_summary: None,
                 warnings: None,
                 draft: None,
-            }
+            };
         }
     };
     match prepare_cbm_integration_tx(&integration_request, &home, &super::config_backup_root()) {
@@ -1833,7 +2300,7 @@ fn apply_codebase_memory_integration_sync(
                 "blocked",
                 "Codebase Memory integration apply is blocked.",
                 &error,
-            )
+            );
         }
     };
     let install = match resolve_install_context() {
@@ -1843,7 +2310,7 @@ fn apply_codebase_memory_integration_sync(
                 "failed",
                 "Codebase Memory package verification failed.",
                 &error,
-            )
+            );
         }
     };
     if let Err(error) = validate_integration_paths(&install, &paths) {
@@ -1860,13 +2327,13 @@ fn apply_codebase_memory_integration_sync(
                 "blocked",
                 "Codebase Memory integration request is invalid.",
                 &error,
-            )
+            );
         }
     };
     let home = match super::user_home_dir() {
         Ok(home) => home,
         Err(error) => {
-            return failure_receipt("failed", "User home directory is unavailable.", &error)
+            return failure_receipt("failed", "User home directory is unavailable.", &error);
         }
     };
     let prepared =
@@ -1878,7 +2345,7 @@ fn apply_codebase_memory_integration_sync(
                     "failed",
                     "Codebase Memory integration prepare failed.",
                     &format!("{error:#}"),
-                )
+                );
             }
         };
     match apply_cbm_integration_tx(
@@ -1995,7 +2462,7 @@ fn verify_codebase_memory_integration_sync(
                         &error,
                         &verification.transaction_id,
                         None,
-                    )
+                    );
                 }
             };
             if let Err(error) = write_integration_state(&record) {
@@ -2058,7 +2525,7 @@ fn rollback_codebase_memory_integration_sync(
                         &error,
                         &receipt.transaction_id,
                         Some(format!("rollback-{}", receipt.rolled_back_at_ms)),
-                    )
+                    );
                 }
             };
             if let Err(error) = write_integration_state(&record) {
@@ -2284,7 +2751,7 @@ fn start_codebase_memory_ui_sync(
                 source: CODEBASE_MEMORY_SOURCE.to_string(),
                 error: Some(sanitize_command_output(&error)),
                 summary: "Select a valid project root before starting the graph page.".to_string(),
-            }
+            };
         }
     };
     let paths = match project_paths(&project_root) {
@@ -2296,7 +2763,7 @@ fn start_codebase_memory_ui_sync(
                 source: CODEBASE_MEMORY_SOURCE.to_string(),
                 error: Some(sanitize_command_output(&error)),
                 summary: "Codebase Memory cache path is unavailable.".to_string(),
-            }
+            };
         }
     };
     let install = match resolve_install_context() {
@@ -2308,7 +2775,7 @@ fn start_codebase_memory_ui_sync(
                 source: CODEBASE_MEMORY_SOURCE.to_string(),
                 error: Some(sanitize_command_output(&error)),
                 summary: "Manifest-verified Code Graph package is unavailable.".to_string(),
-            }
+            };
         }
     };
     if let Err(error) = dtoken_codebase_memory::LaunchConfig::validate_verified(
@@ -2372,7 +2839,7 @@ fn start_codebase_memory_ui_sync(
                 source: CODEBASE_MEMORY_SOURCE.to_string(),
                 error: Some(sanitize_command_output(&error.to_string())),
                 summary: "Failed to start the constrained Codebase Memory graph host.".to_string(),
-            }
+            };
         }
     };
     let mut stdin = match child.stdin.take() {
@@ -2574,7 +3041,7 @@ fn start_codebase_memory_index_sync(
                     source: CODEBASE_MEMORY_SOURCE.to_string(),
                     error: Some(sanitize_command_output(&error)),
                     summary: "Select a valid project root before indexing.".to_string(),
-                }
+                };
             }
         };
     let install = match resolve_install_context() {
@@ -2586,7 +3053,7 @@ fn start_codebase_memory_index_sync(
                 source: CODEBASE_MEMORY_SOURCE.to_string(),
                 error: Some(sanitize_command_output(&error)),
                 summary: "Manifest-verified Code Graph package is unavailable.".to_string(),
-            }
+            };
         }
     };
     let mode = match request.mode.as_str() {
@@ -2599,7 +3066,7 @@ fn start_codebase_memory_index_sync(
                 source: CODEBASE_MEMORY_SOURCE.to_string(),
                 error: Some("Index mode must be explicit, fast, moderate, or full".to_string()),
                 summary: "Index request is invalid.".to_string(),
-            }
+            };
         }
     };
     if let Err(error) = dtoken_codebase_memory::LaunchConfig::validate_verified(
@@ -2668,7 +3135,7 @@ fn start_codebase_memory_index_sync(
                 source: CODEBASE_MEMORY_SOURCE.to_string(),
                 error: Some(sanitize_command_output(&error.to_string())),
                 summary: "Failed to start Codebase Memory indexing.".to_string(),
-            }
+            };
         }
     };
     let stdin = child.stdin.take();
@@ -2774,7 +3241,7 @@ fn delete_codebase_memory_index_sync(
                 source: CODEBASE_MEMORY_SOURCE.to_string(),
                 error: Some(sanitize_command_output(&error)),
                 summary: "The Codebase Memory cache path is unavailable.".to_string(),
-            }
+            };
         }
     };
     let cache_base = match cache_base_dir() {
@@ -2786,7 +3253,7 @@ fn delete_codebase_memory_index_sync(
                 source: CODEBASE_MEMORY_SOURCE.to_string(),
                 error: Some(sanitize_command_output(&error)),
                 summary: "The Codebase Memory cache base path is unavailable.".to_string(),
-            }
+            };
         }
     };
     let canonical_parent = cache_namespace
@@ -2868,6 +3335,7 @@ fn delete_codebase_memory_index_sync(
         };
     }
     if !cache_namespace.exists() {
+        let _ = cleanup_runtime_dir_for_cache(&cache_namespace);
         return CodebaseMemoryActionResultDto {
             ok: true,
             state: "stopped".to_string(),
@@ -2876,8 +3344,30 @@ fn delete_codebase_memory_index_sync(
             summary: "The Codebase Memory cache directory was already absent.".to_string(),
         };
     }
+    let runtime_cleanup = cleanup_runtime_dir_for_cache(&cache_namespace).map_err(|error| {
+        sanitize_command_output(&format!("Isolated runtime cleanup failed: {error}"))
+    });
     match fs::remove_dir_all(&cache_namespace) {
         Ok(()) => {
+            if let Err(error) = runtime_cleanup {
+                let _ = write_index_state(&IndexStateRecord {
+                    state: "failed".to_string(),
+                    outcome: Some("runtime_cleanup_failed".to_string()),
+                    reason_code: "runtime_cleanup_failed".to_string(),
+                    summary: "Deleted the Codebase Memory cache but could not clean the isolated runtime directory.".to_string(),
+                    updated_at_ms: now_ms(),
+                    project_root: project_root.display().to_string(),
+                    node_count: None,
+                    edge_count: None,
+                });
+                return CodebaseMemoryActionResultDto {
+                    ok: false,
+                    state: "failed".to_string(),
+                    source: CODEBASE_MEMORY_SOURCE.to_string(),
+                    error: Some(error),
+                    summary: "The Codebase Memory cache was deleted, but isolated runtime cleanup failed.".to_string(),
+                };
+            }
             let _ = write_index_state(&IndexStateRecord {
                 state: "stopped".to_string(),
                 outcome: Some("deleted".to_string()),
@@ -2978,7 +3468,7 @@ fn open_codebase_memory_graph_sync(app: AppHandle) -> CodebaseMemoryActionResult
                 source: CODEBASE_MEMORY_SOURCE.to_string(),
                 error: Some(sanitize_command_output(&error)),
                 summary: "The Codebase Memory graph URL failed validation.".to_string(),
-            }
+            };
         }
     };
     match app.opener().open_url(url, None::<&str>) {
@@ -3044,9 +3534,13 @@ mod tests {
     #[test]
     fn package_directory_candidates_cover_common_extract_layouts() {
         let root = env::temp_dir().join(format!("dtoken-cbm-package-test-{}", Uuid::new_v4()));
-        let nested = root.join("codebase-memory-mcp-v0.9.1-rc.1").join("bin");
+        let nested = root.join("codebase-memory-mcp-v0.10.8").join("bin");
         fs::create_dir_all(&nested).expect("create package layout");
-        let binary = nested.join(upstream_names()[0]);
+        let binary = nested.join(if cfg!(target_os = "windows") {
+            "codebase-memory-mcp.exe"
+        } else {
+            "codebase-memory-mcp"
+        });
         fs::write(&binary, b"fixture").expect("write package fixture");
 
         let candidates = package_directory_candidates(&root);
@@ -3096,6 +3590,159 @@ mod tests {
         assert_ne!(second.sha256, third.sha256);
 
         fs::remove_dir_all(root).expect("remove cache test root");
+    }
+
+    fn test_import_receipt(directory: &str) -> PackageImportReceipt {
+        PackageImportReceipt {
+            package_directory: directory.to_string(),
+            upstream_path: format!("{directory}/codebase-memory-mcp"),
+            upstream_version: "0.10.8".to_string(),
+            upstream_commit: "46ae198fc11cda80e817acbc5f5908d7c2de7032".to_string(),
+            archive_sha256: "a".repeat(64),
+            binary_sha256: "b".repeat(64),
+        }
+    }
+
+    fn test_import_state(directory: &str) -> PackageImportState {
+        PackageImportState {
+            schema_version: 1,
+            package_directory: directory.to_string(),
+            upstream_path: format!("{directory}/codebase-memory-mcp"),
+            upstream_version: "0.10.8".to_string(),
+            upstream_commit: "46ae198fc11cda80e817acbc5f5908d7c2de7032".to_string(),
+            archive_sha256: "a".repeat(64),
+            binary_sha256: "b".repeat(64),
+            activated_at_ms: 1,
+        }
+    }
+
+    fn test_location_state(directory: &str) -> PackageLocationState {
+        PackageLocationState {
+            directory: directory.to_string(),
+            updated_at_ms: 1,
+        }
+    }
+
+    #[test]
+    fn imported_package_activation_restores_after_first_writer_reports_late_failure() {
+        let previous_import = test_import_state("/old-import");
+        let previous_location = test_location_state("/old-import");
+        let import_state = std::cell::RefCell::new(Some(previous_import.clone()));
+        let location_state = std::cell::RefCell::new(Some(previous_location.clone()));
+        let receipt = test_import_receipt("/new-import");
+
+        let error = activate_imported_package_state(
+            &receipt,
+            Path::new("/new-import"),
+            PackageStateSnapshot {
+                import: Some(previous_import.clone()),
+                location: Some(previous_location.clone()),
+            },
+            |receipt| {
+                *import_state.borrow_mut() = Some(test_import_state(&receipt.package_directory));
+                Err("import receipt sync failed".to_string())
+            },
+            |directory| {
+                *location_state.borrow_mut() =
+                    Some(test_location_state(&directory.display().to_string()));
+                Ok(())
+            },
+            |previous| {
+                *import_state.borrow_mut() = previous;
+                Ok(())
+            },
+            |previous| {
+                *location_state.borrow_mut() = previous;
+                Ok(())
+            },
+        )
+        .expect_err("late first-writer failure must fail activation");
+
+        assert!(!error.recovery_required);
+        assert_eq!(*import_state.borrow(), Some(previous_import));
+        assert_eq!(*location_state.borrow(), Some(previous_location));
+    }
+
+    #[test]
+    fn imported_package_activation_reports_recovery_required_when_restore_fails() {
+        let previous_import = test_import_state("/old-import");
+        let previous_location = test_location_state("/old-import");
+        let import_state = std::cell::RefCell::new(Some(previous_import.clone()));
+        let location_state = std::cell::RefCell::new(Some(previous_location));
+        let receipt = test_import_receipt("/new-import");
+
+        let error = activate_imported_package_state(
+            &receipt,
+            Path::new("/new-import"),
+            PackageStateSnapshot {
+                import: Some(previous_import.clone()),
+                location: Some(test_location_state("/old-import")),
+            },
+            |receipt| {
+                *import_state.borrow_mut() = Some(test_import_state(&receipt.package_directory));
+                Ok(())
+            },
+            |directory| {
+                *location_state.borrow_mut() =
+                    Some(test_location_state(&directory.display().to_string()));
+                Err("package location sync failed".to_string())
+            },
+            |previous| {
+                *import_state.borrow_mut() = previous;
+                Ok(())
+            },
+            |_previous| Err("package location restore failed".to_string()),
+        )
+        .expect_err("failed restore must require recovery");
+
+        assert!(error.recovery_required);
+        assert!(error.message.contains("could not be fully restored"));
+        assert_eq!(*import_state.borrow(), Some(previous_import));
+        assert_eq!(
+            location_state
+                .borrow()
+                .as_ref()
+                .map(|state| state.directory.as_str()),
+            Some("/new-import")
+        );
+    }
+
+    #[test]
+    fn manual_package_activation_restores_after_clear_receipt_reports_late_failure() {
+        let previous_import = test_import_state("/old-import");
+        let previous_location = test_location_state("/old-import");
+        let import_state = std::cell::RefCell::new(Some(previous_import.clone()));
+        let location_state = std::cell::RefCell::new(Some(previous_location.clone()));
+
+        let error = activate_manual_package_state(
+            Some(Path::new("/manual")),
+            PackageStateSnapshot {
+                import: Some(previous_import.clone()),
+                location: Some(previous_location.clone()),
+            },
+            || {
+                *import_state.borrow_mut() = None;
+                Err("import receipt removal sync failed".to_string())
+            },
+            |directory| {
+                *location_state.borrow_mut() =
+                    directory.map(|path| test_location_state(&path.display().to_string()));
+                Ok(())
+            },
+            |previous| {
+                *import_state.borrow_mut() = previous;
+                Ok(())
+            },
+            |previous| {
+                *location_state.borrow_mut() = previous;
+                Ok(())
+            },
+        )
+        .expect_err("late clear failure must fail activation");
+
+        assert!(!error.recovery_required);
+        assert_eq!(*import_state.borrow(), Some(previous_import));
+        assert_eq!(*location_state.borrow(), Some(previous_location));
     }
 
     #[test]
@@ -3203,6 +3850,27 @@ mod tests {
             }
         }))
         .is_err());
+    }
+
+    #[test]
+    fn failed_index_receipt_preserves_failure_and_reason() {
+        let record = index_record_from_receipt(
+            IndexReceipt {
+                schema_version: 1,
+                operation: "index_repository".into(),
+                outcome: "failed".into(),
+                reason_code: "upstream_version_conflict".into(),
+                policy_version: POLICY_VERSION,
+                indexed_files: None,
+                node_count: None,
+                edge_count: None,
+                occurred_at_ms: 1,
+            },
+            Path::new("/test/project"),
+        );
+        assert_eq!(record.state, "failed");
+        assert_eq!(record.reason_code, "upstream_version_conflict");
+        assert!(record.node_count.is_none());
     }
 
     #[test]

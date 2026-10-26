@@ -1,6 +1,6 @@
 # d-token 文档导航
 
-更新时间：2026-08-13
+更新时间：2026-09-06
 
 本页是 `docs/` 的唯一导航入口。当前事实、执行计划、历史证据和归档材料必须分开理解。当前仓库处于“产品恢复模式”：先收敛首次使用、一键配置、cc-switch 日常跟随和八页真实用户任务，再重新生成发布 lane。旧 release DAG、旧完成百分比和旧审计结论不得覆盖当前源码与当前验证事实。
 
@@ -9,17 +9,18 @@
 1. [`PRD.md`](PRD.md) — 唯一产品真理源：产品边界、信息架构、安全要求和验收标准；自动配置优先看 P0.0.10 最新条款。
 2. [`PLAN.md`](PLAN.md) — 唯一 Living Plan：当前处于产品恢复模式，按 Golden Path 串行收敛。
 3. [`product/IMPLEMENTATION_STATUS.md`](product/IMPLEMENTATION_STATUS.md) — 当前能力与限制快照；如与当前源码/测试冲突，以当前源码和当前验证为事实依据并回写本文件。
-4. [`../.ai-bridge/release-iteration/README.md`](../.ai-bridge/release-iteration/README.md) — 本轮 Agent 协作入口：PRODUCT_CONTRACT / PLAN / TASKS 与旧 release-iteration 归档说明。
+4. [`archive/release/2026-08-14-recovery-agent-ledger/README.md`](archive/release/2026-08-14-recovery-agent-ledger/README.md) — 恢复阶段（R0–R2）Agent 执行账本归档：PLAN/TASKS 与诚实未闭环项，只作追溯。
 5. [`releases/v0.0.1/README.md`](releases/v0.0.1/README.md) — 保留中的 v0.0.1 旧执行工作集；当前存在未吸收本地修改，产品恢复门通过前不是当前执行入口，也不得覆盖 `PLAN.md`。
 6. [`ARCHITECTURE.md`](ARCHITECTURE.md) — Rust-owned runtime、Tauri 桌面壳和本地服务架构。
 7. [`RUNTIME_CAPABILITY_REGISTRY_ARCHITECTURE.md`](RUNTIME_CAPABILITY_REGISTRY_ARCHITECTURE.md) — Runtime Capability Registry（R2.E 通用 Agent 压缩层）落地架构：开源调研结论、三层能力注册表、每请求管线、未知模型处理、与现有 crate 映射。
-7. [`TECH_STACK.md`](TECH_STACK.md) — Windows/macOS 技术选型和平台边界。
-8. [`SECURITY_BOUNDARIES.md`](SECURITY_BOUNDARIES.md) — loopback、凭据、脱敏、配置写入和进程边界。
-9. [`APP_FUNCTIONS_AND_PAGES.md`](APP_FUNCTIONS_AND_PAGES.md) — 当前八个一级页面（含视觉压缩 Beta 与代码图谱实验页）与实际代码组件映射。
-10. [`../CHANGELOG.md`](../CHANGELOG.md) — 未签名技术预览的版本措辞、用户可见变化与已知限制。
-11. [`../SECURITY.md`](../SECURITY.md) — 漏洞报告、支持范围、系统安全警告与发布完整性策略。
-12. [`../THIRD_PARTY_NOTICES.md`](../THIRD_PARTY_NOTICES.md) — 面向源码与安装包分发的第三方声明。
-13. [`../LICENSE`](../LICENSE) — d-token 项目的 Apache License 2.0 授权文本。
+8. [`TECH_STACK.md`](TECH_STACK.md) — Windows/macOS 技术选型和平台边界。
+9. [`SECURITY_BOUNDARIES.md`](SECURITY_BOUNDARIES.md) — loopback、凭据、脱敏、配置写入和进程边界。
+10. [`APP_FUNCTIONS_AND_PAGES.md`](APP_FUNCTIONS_AND_PAGES.md) — 当前八个一级页面（含视觉压缩 Beta 与代码图谱实验页）与实际代码组件映射。
+11. [`FRONTEND_CONSTRAINTS.md`](FRONTEND_CONSTRAINTS.md) — 已安装前端基准、恢复范围、前后端职责与待用户对齐的设计事项；当前暂停继续重构视觉。
+12. [`../CHANGELOG.md`](../CHANGELOG.md) — 未签名技术预览的版本措辞、用户可见变化与已知限制。
+13. [`../SECURITY.md`](../SECURITY.md) — 漏洞报告、支持范围、系统安全警告与发布完整性策略。
+14. [`../THIRD_PARTY_NOTICES.md`](../THIRD_PARTY_NOTICES.md) — 面向源码与安装包分发的第三方声明。
+15. [`../LICENSE`](../LICENSE) — d-token 项目的 Apache License 2.0 授权文本。
 
 ## 2. 当前代码与产品专题
 
@@ -33,6 +34,7 @@
 - [`superpowers/plans/2026-09-20-dtoken-refactor-05-optical-retirement-release.md`](superpowers/plans/2026-09-20-dtoken-refactor-05-optical-retirement-release.md) — 阶段 5：Optical 主动能力退出、历史兼容与同一候选提交发布验收。
 - [`PRD.md`](PRD.md#125-桌面视觉布局与交互产品契约) — UI 视觉、布局、交互、真实性和验收的唯一产品契约。
 - [`research/open-source-reference.md`](research/open-source-reference.md) — 外部项目参考，只用于设计与研究，不是运行时依赖。
+- [`research/HEADROOM_DELTA_LEDGER_2026-08-24.md`](research/HEADROOM_DELTA_LEDGER_2026-08-24.md) — Headroom v0.33→v0.36.5（246 commits）delta 处置账本：安全直收/评测门控/只记录分类、Responses 压缩自研决策、provenance 基线统一（v0.36.5）。
 - [`research/aimami-dtoken-deep-study-2026-07-12/README.md`](research/aimami-dtoken-deep-study-2026-07-12/README.md) — AiMaMi 源码、桌面产品、前端 UI/动画、Tauri/Rust、状态、算法、安全、差距与三轮审核的完整专题研究。
 - [`research/DESKTOP_UI_OPTIMIZATION_RESEARCH_2026-07-13.md`](research/DESKTOP_UI_OPTIMIZATION_RESEARCH_2026-07-13.md) — 2026-07-13 基于生产入口源码的桌面 UI 优化研究：UX、性能、Claude/神话感视觉、二级页与切页、侧栏 Tooltip/图标动画对照 AiMaMi。
 - [`research/FRONTEND_UI_PERFORMANCE_AUDIT_2026-07-15.md`](research/FRONTEND_UI_PERFORMANCE_AUDIT_2026-07-15.md) — 当前 React/Tauri 前端 UI、启动、渲染、IPC、长列表、动画与性能门禁的系统性审计。
@@ -88,7 +90,7 @@
 - Optical V6、早期 Phase A 报告和 review round 1–4。
 - 根目录 Agent 会话文件 `task_plan.md`、`findings.md`、`progress.md`。
 - `support/` 根目录重复 notes、placeholder 和仓库整理过程文件。
-- 2026-08-12 旧 Living Plan 已归档到 `archive/release/2026-08-12-PLAN-pre-product-recovery.md`；旧 release-iteration 蓝图/DAG/审计集中到 `.ai-bridge/release-iteration/archive/2026-08-12-pre-recovery/`。
+- 2026-08-12 旧 Living Plan 已归档到 `archive/release/2026-08-12-PLAN-pre-product-recovery.md`；旧 release-iteration 蓝图/DAG/审计曾集中到 `.ai-bridge/release-iteration/archive/2026-08-12-pre-recovery/`，`.ai-bridge/` 目录已于 2026-08-23 前整体退出工作树（可从 git 历史追溯）；恢复阶段（R0–R2）执行账本见 `archive/release/2026-08-14-recovery-agent-ledger/`。
 
 ## 7. 文档优先级
 

@@ -35,6 +35,7 @@ export type InstallMachineEvent =
   | { type: "DISCOVERY_FAILED"; message: string }
   | { type: "OPEN_REVIEW" }
   | { type: "TOGGLE_AGENT"; agentId: string }
+  | { type: "SET_AGENT_SELECTION"; agentIds: string[] }
   | { type: "SET_PHASE"; phase: InstallPhase; message?: string }
   | { type: "RESET" };
 
@@ -48,7 +49,7 @@ export type InstallAgentBatchItem = {
 export type InstallAgentReceipt = {
   agentId: string;
   agentName: string;
-  state: "already-connected" | "applied" | "verified" | "failed" | "rolled-back" | "rollback-failed";
+  state: "already-connected" | "applied" | "verified" | "failed" | "blocked" | "rolled-back" | "rollback-failed";
   transactionId?: string;
   summary: string;
 };
@@ -64,6 +65,45 @@ export type InstallAgentBatchResult = {
   receipts: InstallAgentReceipt[];
   error: string;
 };
+
+
+export type InstallHandoffIntent = {
+  agentIds: string[];
+  discoveryRevision: string;
+  source: "onboarding-start-setup";
+  requestedAtMs: number;
+};
+
+let pendingInstallHandoff: InstallHandoffIntent | null = null;
+
+function copyInstallHandoff(intent: InstallHandoffIntent): InstallHandoffIntent {
+  return { ...intent, agentIds: [...intent.agentIds] };
+}
+
+export function requestInstallHandoff(intent: Omit<InstallHandoffIntent, "requestedAtMs"> & { requestedAtMs?: number }): InstallHandoffIntent {
+  const agentIds = Array.from(new Set(intent.agentIds.filter((id) => id.trim().length > 0)));
+  pendingInstallHandoff = {
+    agentIds,
+    discoveryRevision: intent.discoveryRevision,
+    source: intent.source,
+    requestedAtMs: intent.requestedAtMs ?? Date.now(),
+  };
+  return copyInstallHandoff(pendingInstallHandoff);
+}
+
+export function consumeInstallHandoff(): InstallHandoffIntent | null {
+  const intent = pendingInstallHandoff;
+  pendingInstallHandoff = null;
+  return intent ? copyInstallHandoff(intent) : null;
+}
+
+export function hasPendingInstallHandoff(): boolean {
+  return pendingInstallHandoff !== null;
+}
+
+export function clearInstallHandoff(_reason?: string): void {
+  pendingInstallHandoff = null;
+}
 
 export const initialInstallMachineState: InstallMachineState = {
   phase: "idle",
@@ -92,6 +132,9 @@ export function subscribeInstallMachine(listener: () => void): () => void {
 }
 
 export function dispatchInstallMachine(event: InstallMachineEvent): void {
+  if (event.type === "TOGGLE_AGENT" || event.type === "SET_AGENT_SELECTION" || event.type === "RESET") {
+    clearInstallHandoff("selection-changed");
+  }
   const next = installMachineReducer(installMachineState, event);
   if (next === installMachineState) return;
   installMachineState = next;
@@ -99,6 +142,7 @@ export function dispatchInstallMachine(event: InstallMachineEvent): void {
 }
 
 export function resetInstallMachineState(): void {
+  clearInstallHandoff("reset");
   dispatchInstallMachine({ type: "RESET" });
 }
 
@@ -110,16 +154,15 @@ export function installMachineReducer(state: InstallMachineState, event: Install
         : state;
     case "DISCOVERED": {
       const revisionChanged = state.snapshot !== null && state.snapshot.revision !== event.snapshot.revision;
-      // The batch is automatic: every installed Agent with a verified write
-      // action joins by default. Users may opt Agents out (TOGGLE_AGENT);
-      // opt-outs survive identical polls but are re-evaluated when the
-      // discovery revision changes (the source set may have moved).
-      const selectedAgentIds = state.snapshot === null || revisionChanged
+      // First discovery defaults all actionable installed Agents into the
+      // batch. Later refreshes preserve the user's explicit batch scope.
+      const nextActionableIds = new Set(actionableBindings(event.snapshot).map((binding) => binding.agent_id));
+      const selectedAgentIds = state.snapshot === null
         ? defaultSelectedAgentIds(event.snapshot)
-        : state.selectedAgentIds.filter((id) => actionableBindings(event.snapshot).some((b) => b.agent_id === id));
+        : state.selectedAgentIds.filter((id) => nextActionableIds.has(id));
       const selections = mergeSelections(event.snapshot, revisionChanged ? {} : state.selections);
       const nextPhase = deriveInstallPhase(event.snapshot, selections, selectedAgentIds);
-      if (!revisionChanged && ["review", "applying-runtime", "applying-agent-configs", "verifying", "verified"].includes(state.phase)) {
+      if (!revisionChanged && ["review", "applying-runtime", "applying-agent-configs", "verifying", "verified", "partial", "blocked", "rolled-back"].includes(state.phase)) {
         return { ...state, snapshot: event.snapshot, selectedAgentIds, selections };
       }
       return {
@@ -140,7 +183,24 @@ export function installMachineReducer(state: InstallMachineState, event: Install
       const selectedAgentIds = state.selectedAgentIds.includes(event.agentId)
         ? state.selectedAgentIds.filter((id) => id !== event.agentId)
         : [...state.selectedAgentIds, event.agentId];
-      return { ...state, selectedAgentIds, phase: "idle" };
+      return {
+        ...state,
+        selectedAgentIds,
+        phase: state.snapshot ? deriveInstallPhase(state.snapshot, state.selections, selectedAgentIds) : state.phase,
+        reviewDiscoveryRevision: null,
+        message: "",
+      };
+    }
+    case "SET_AGENT_SELECTION": {
+      const actionableIds = new Set((state.snapshot ? actionableBindings(state.snapshot) : []).map((binding) => binding.agent_id));
+      const selectedAgentIds = event.agentIds.filter((id) => actionableIds.has(id));
+      return {
+        ...state,
+        selectedAgentIds,
+        phase: state.snapshot ? deriveInstallPhase(state.snapshot, state.selections, selectedAgentIds) : state.phase,
+        reviewDiscoveryRevision: null,
+        message: "",
+      };
     }
     case "DISCOVERY_FAILED":
       if (["applying-runtime", "applying-agent-configs", "verifying"].includes(state.phase)) return state;
@@ -173,7 +233,11 @@ export function bindingOptions(binding: AgentUpstreamBinding) {
 
 export function selectedCandidate(binding: AgentUpstreamBinding, selection?: AgentSelection) {
   if (!selection) return null;
-  return bindingOptions(binding).find((option) => option.key === selection.candidateKey) ?? null;
+  const resolved = binding.resolved_candidate;
+  if (!resolved || candidateKey(resolved, selection.model) !== selection.candidateKey) return null;
+  if (!resolved.models.includes(selection.model)
+    && !(binding.agent_id === "codex" && resolved.protocol === "responses" && resolved.models.length === 0 && selection.model === "")) return null;
+  return { key: selection.candidateKey, candidate: resolved, model: selection.model };
 }
 
 export type ResolvedAgentBinding = {
@@ -181,6 +245,19 @@ export type ResolvedAgentBinding = {
   /** The unique auto-resolved model; "" means request-model passthrough. */
   model: string;
 };
+
+export type InstallSelectedPreparation = {
+  agentId: string;
+  agentName: string;
+  binding: AgentUpstreamBinding;
+  ready: boolean;
+  reason: "ready" | "already-connected" | "credential-required" | "ambiguous-route" | "model-unresolved" | "safe-adapter-unavailable";
+};
+
+export function requiresAgentRouteRepair(binding: AgentUpstreamBinding): boolean {
+  return binding.follow?.transport_out_of_sync === true
+    || binding.follow?.state === "transport_out_of_sync";
+}
 
 /**
  * The only model d-token may ever write is the uniquely auto-resolved one
@@ -190,9 +267,9 @@ export type ResolvedAgentBinding = {
  * closed to null — callers must block, never guess or pick models[0].
  */
 export function resolveAgentBinding(binding: AgentUpstreamBinding, selection?: AgentSelection): ResolvedAgentBinding | null {
-  const chosen = selection ? selectedCandidate(binding, selection) : null;
-  const candidate = chosen?.candidate ?? binding.resolved_candidate;
+  const candidate = binding.resolved_candidate;
   if (!candidate) return null;
+  if (selection && !selectedCandidate(binding, selection)) return null;
   if (candidate.models.length === 1) return { candidate, model: candidate.models[0] };
   if (candidate.models.length === 0 && binding.agent_id === "codex" && candidate.protocol === "responses") {
     return { candidate, model: "" };
@@ -200,20 +277,28 @@ export function resolveAgentBinding(binding: AgentUpstreamBinding, selection?: A
   return null;
 }
 
-export function canReviewInstall(snapshot: ConnectionSetupSnapshot, selections: Record<string, AgentSelection>, selectedAgentIds = defaultSelectedAgentIds(snapshot)) {
-  const actionable = selectedBindings(snapshot, selectedAgentIds);
-  if (actionable.length === 0) return false;
-  return actionable.every((binding) => {
-    if (binding.already_connected) return true;
-    if (binding.resolution === "needs-credential") return false;
-    // Ambiguity is never resolvable by the user; the plan fails closed.
-    if (binding.resolution === "needs-choice") return false;
-    // A selection exists only when the resolved candidate exposes exactly one
-    // model (or the Codex Responses passthrough marker). Multi-model or
-    // unresolvable bindings have no selection and block the plan.
-    if (binding.resolution === "auto-resolved") return resolveAgentBinding(binding, selections[binding.agent_id]) !== null;
-    return false;
+export function prepareSelectedInstallBindings(
+  snapshot: ConnectionSetupSnapshot,
+  selections: Record<string, AgentSelection>,
+  selectedAgentIds = defaultSelectedAgentIds(snapshot),
+): InstallSelectedPreparation[] {
+  return selectedBindings(snapshot, selectedAgentIds).map((binding) => {
+    const base = { agentId: binding.agent_id, agentName: binding.agent_name, binding };
+    if (binding.already_connected && !requiresAgentRouteRepair(binding)) {
+      return { ...base, ready: true, reason: "already-connected" as const };
+    }
+    if (binding.resolution === "needs-credential") return { ...base, ready: false, reason: "credential-required" as const };
+    if (binding.resolution === "needs-choice") return { ...base, ready: false, reason: "ambiguous-route" as const };
+    if (binding.resolution !== "auto-resolved") return { ...base, ready: false, reason: "safe-adapter-unavailable" as const };
+    if (!resolveAgentBinding(binding, selections[binding.agent_id])) {
+      return { ...base, ready: false, reason: "model-unresolved" as const };
+    }
+    return { ...base, ready: true, reason: "ready" as const };
   });
+}
+
+export function canReviewInstall(snapshot: ConnectionSetupSnapshot, selections: Record<string, AgentSelection>, selectedAgentIds = defaultSelectedAgentIds(snapshot)) {
+  return prepareSelectedInstallBindings(snapshot, selections, selectedAgentIds).some((item) => item.ready);
 }
 
 export function deriveInstallPhase(snapshot: ConnectionSetupSnapshot, selections: Record<string, AgentSelection>, selectedAgentIds = defaultSelectedAgentIds(snapshot)): InstallPhase {
@@ -224,12 +309,11 @@ export function deriveInstallPhase(snapshot: ConnectionSetupSnapshot, selections
   // UI, but they cannot enter a route batch until native discovery proves a
   // verified transport adapter.
   if (actionable.length === 0) return "partial";
-  if (actionable.every((binding) => binding.already_connected)) return "already-connected";
-  if (actionable.some((binding) => binding.resolution === "needs-credential")) return "needs-credential";
-  // A genuinely ambiguous upstream/model blocks the whole plan until the
-  // source is fixed and rescanned; no chooser is offered.
-  if (actionable.some((binding) => binding.resolution === "needs-choice")) return "blocked";
-  return canReviewInstall(snapshot, selections, selectedAgentIds) ? "ready" : "blocked";
+  const preparation = prepareSelectedInstallBindings(snapshot, selections, selectedAgentIds);
+  if (preparation.every((item) => item.reason === "already-connected")) return "already-connected";
+  if (preparation.some((item) => item.ready)) return "ready";
+  if (preparation.some((item) => item.reason === "credential-required")) return "needs-credential";
+  return "blocked";
 }
 
 /// Bindings that are eligible for transport-level connection. A historical
@@ -309,7 +393,7 @@ export async function runInstallAgentBatch(
 
     try {
       const applied = await operations.apply(item);
-      if (!applied.ok || !applied.transactionId) {
+      if (!applied.transactionId) {
         throw new Error(applied.summary || `Agent integration apply failed for ${item.agentName}`);
       }
       const receipt: InstallAgentReceipt = {
@@ -320,11 +404,11 @@ export async function runInstallAgentBatch(
         summary: applied.summary,
       };
       receipts.push(receipt);
+      if (!applied.ok) {
+        throw new Error(applied.summary || `Agent integration apply failed for ${item.agentName}`);
+      }
       const verified = await operations.verify(receipt);
       if (!verified.ok) {
-        // P0.0.10.5: a failure only rolls back this Agent's own incomplete
-        // write and continues with the remaining selected Agents, so every
-        // selected Agent gets an independent result and a retry path.
         receipt.state = "failed";
         receipt.summary = verified.summary || `Agent integration verification failed for ${item.agentName}`;
         error = receipt.summary;
@@ -345,7 +429,6 @@ export async function runInstallAgentBatch(
       const current = receipts.find((receipt) => receipt.agentId === item.agentId);
       if (!current) receipts.push({ ...item, state: "failed", summary: error });
       else {
-        // Apply failed after a transaction was recorded: roll back only this Agent.
         current.state = "failed";
         current.summary = error;
         if (current.transactionId) {

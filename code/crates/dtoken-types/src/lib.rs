@@ -221,6 +221,7 @@ pub enum LayeredStage {
     OpticalComplete,
     InstallStep,
     ConfigPatch,
+    ContextDecision,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -240,6 +241,353 @@ pub enum EventStatus {
     Failed,
     Disabled,
     Skipped,
+}
+
+/// The confidence band attached to a context decision.  The band is a
+/// provider-neutral summary and deliberately does not expose a model score or
+/// model-specific response text.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ConfidenceBand {
+    Unknown,
+    Low,
+    Medium,
+    High,
+}
+
+/// A decision point in the context lifecycle.  The first five workflows are
+/// active candidates; the remaining values reserve stable vocabulary for
+/// later rollout without making them executable here.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[serde(rename_all = "snake_case")]
+pub enum DecisionWorkflow {
+    ToolOutputRetention,
+    ArrivalSpanRetention,
+    SessionCompaction,
+    ContextRanking,
+    RuleSkillSelection,
+    MemoryWriteQualification,
+    CompletionVerification,
+    DiagnosticPriority,
+    ToolActionReview,
+    ModelEffortRouting,
+}
+
+impl DecisionWorkflow {
+    pub const fn is_executable(self) -> bool {
+        matches!(
+            self,
+            Self::ToolOutputRetention
+                | Self::ArrivalSpanRetention
+                | Self::SessionCompaction
+                | Self::ContextRanking
+                | Self::RuleSkillSelection
+        )
+    }
+
+    pub const fn is_reserved(self) -> bool {
+        !self.is_executable()
+    }
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::ToolOutputRetention => "tool_output_retention",
+            Self::ArrivalSpanRetention => "arrival_span_retention",
+            Self::SessionCompaction => "session_compaction",
+            Self::ContextRanking => "context_ranking",
+            Self::RuleSkillSelection => "rule_skill_selection",
+            Self::MemoryWriteQualification => "memory_write_qualification",
+            Self::CompletionVerification => "completion_verification",
+            Self::DiagnosticPriority => "diagnostic_priority",
+            Self::ToolActionReview => "tool_action_review",
+            Self::ModelEffortRouting => "model_effort_routing",
+        }
+    }
+}
+
+impl std::fmt::Display for DecisionWorkflow {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
+/// Where a decision came from.  A Jev result is never implied by the route or
+/// provider name; it must be explicitly recorded as this source.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum DecisionSource {
+    Baseline,
+    Local,
+    Jev,
+    StickyReplay,
+}
+
+/// Explicit reason vocabulary for a decision fallback.  Every fallback must
+/// carry one of these values so a low-confidence or unavailable decision does
+/// not look like a successful optimization in analytics.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum DecisionFallback {
+    NotRequired,
+    PolicyDisabled,
+    LowConfidence,
+    JevUnavailable,
+    JevTimeout,
+    JevInvalidResponse,
+    CircuitOpen,
+    ValidationFailed,
+    BaselineOnly,
+}
+
+/// Redacted, provider-neutral evidence for one context decision.  This type
+/// contains identifiers, digests, counts, and reason vocabulary only; it must
+/// never be extended with prompt, response, tool output, or candidate text.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(try_from = "ContextDecisionReceiptWire")]
+pub struct ContextDecisionReceipt {
+    pub schema_version: u8,
+    pub request_id: String,
+    pub workflow: DecisionWorkflow,
+    pub source: DecisionSource,
+    pub confidence_band: ConfidenceBand,
+    pub latency_ms: u64,
+    pub input_digest: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub candidate_digest: Option<String>,
+    pub selected_units: u32,
+    pub dropped_units: u32,
+    pub fallback: DecisionFallback,
+    pub reason_code: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recovery_ref: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ContextDecisionReceiptWire {
+    schema_version: u8,
+    request_id: String,
+    workflow: DecisionWorkflow,
+    source: DecisionSource,
+    confidence_band: ConfidenceBand,
+    latency_ms: u64,
+    input_digest: String,
+    candidate_digest: Option<String>,
+    selected_units: u32,
+    dropped_units: u32,
+    fallback: DecisionFallback,
+    reason_code: String,
+    recovery_ref: Option<String>,
+}
+
+/// Fixed errors never interpolate invalid metadata, because it may itself be
+/// a prompt, an upstream response, or a credential-shaped value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DecisionMetadataError {
+    UnsupportedSchemaVersion,
+    InvalidRequestId,
+    InvalidInputDigest,
+    InvalidCandidateDigest,
+    InvalidReasonCode,
+    InvalidRecoveryRef,
+}
+
+impl std::fmt::Display for DecisionMetadataError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            Self::UnsupportedSchemaVersion => "unsupported decision schema version",
+            Self::InvalidRequestId => "invalid decision request identifier",
+            Self::InvalidInputDigest => "invalid decision input digest",
+            Self::InvalidCandidateDigest => "invalid decision candidate digest",
+            Self::InvalidReasonCode => "invalid decision reason code",
+            Self::InvalidRecoveryRef => "invalid decision recovery reference",
+        })
+    }
+}
+
+impl std::error::Error for DecisionMetadataError {}
+
+impl TryFrom<ContextDecisionReceiptWire> for ContextDecisionReceipt {
+    type Error = DecisionMetadataError;
+
+    fn try_from(wire: ContextDecisionReceiptWire) -> Result<Self, Self::Error> {
+        let receipt = Self {
+            schema_version: wire.schema_version,
+            request_id: wire.request_id,
+            workflow: wire.workflow,
+            source: wire.source,
+            confidence_band: wire.confidence_band,
+            latency_ms: wire.latency_ms,
+            input_digest: wire.input_digest,
+            candidate_digest: wire.candidate_digest,
+            selected_units: wire.selected_units,
+            dropped_units: wire.dropped_units,
+            fallback: wire.fallback,
+            reason_code: wire.reason_code,
+            recovery_ref: wire.recovery_ref,
+        };
+        receipt.validate()?;
+        Ok(receipt)
+    }
+}
+
+impl ContextDecisionReceipt {
+    pub const SCHEMA_VERSION: u8 = 1;
+
+    pub fn new(
+        request_id: impl Into<String>,
+        workflow: DecisionWorkflow,
+        source: DecisionSource,
+        confidence_band: ConfidenceBand,
+        latency_ms: u64,
+    ) -> Self {
+        Self {
+            schema_version: Self::SCHEMA_VERSION,
+            request_id: request_id.into(),
+            workflow,
+            source,
+            confidence_band,
+            latency_ms,
+            // A builder is incomplete until the producer supplies an actual
+            // digest; every persistence/deserialization boundary validates it.
+            input_digest: String::new(),
+            candidate_digest: None,
+            selected_units: 0,
+            dropped_units: 0,
+            fallback: DecisionFallback::BaselineOnly,
+            reason_code: "baseline".to_string(),
+            recovery_ref: None,
+        }
+    }
+
+    pub fn with_digests(
+        mut self,
+        input_digest: impl Into<String>,
+        candidate_digest: Option<String>,
+    ) -> Self {
+        self.input_digest = input_digest.into();
+        self.candidate_digest = candidate_digest;
+        self
+    }
+
+    pub fn with_counts(mut self, selected_units: u32, dropped_units: u32) -> Self {
+        self.selected_units = selected_units;
+        self.dropped_units = dropped_units;
+        self
+    }
+
+    pub fn with_fallback(mut self, fallback: DecisionFallback) -> Self {
+        self.fallback = fallback;
+        self
+    }
+
+    pub fn with_reason_code(mut self, reason_code: impl Into<String>) -> Self {
+        self.reason_code = reason_code.into();
+        self
+    }
+
+    pub fn with_recovery_ref(mut self, recovery_ref: Option<String>) -> Self {
+        self.recovery_ref = recovery_ref;
+        self
+    }
+
+    /// The contract-level validation used at persistence boundaries.  It is
+    /// intentionally conservative: an invalid receipt is rejected instead of
+    /// being interpreted as a successful optimization.
+    pub fn is_valid(&self) -> bool {
+        self.validate().is_ok()
+    }
+
+    pub fn validate(&self) -> Result<(), DecisionMetadataError> {
+        if self.schema_version != Self::SCHEMA_VERSION {
+            return Err(DecisionMetadataError::UnsupportedSchemaVersion);
+        }
+        if !is_decision_identifier(&self.request_id) {
+            return Err(DecisionMetadataError::InvalidRequestId);
+        }
+        if !is_decision_digest(&self.input_digest) {
+            return Err(DecisionMetadataError::InvalidInputDigest);
+        }
+        if self
+            .candidate_digest
+            .as_deref()
+            .is_some_and(|value| !is_decision_digest(value))
+        {
+            return Err(DecisionMetadataError::InvalidCandidateDigest);
+        }
+        if !is_decision_reason_code(&self.reason_code) {
+            return Err(DecisionMetadataError::InvalidReasonCode);
+        }
+        if self
+            .recovery_ref
+            .as_deref()
+            .is_some_and(|value| match value.strip_prefix("ccr:") {
+                Some(id) => Uuid::parse_str(id).is_err(),
+                None => true,
+            })
+        {
+            return Err(DecisionMetadataError::InvalidRecoveryRef);
+        }
+        Ok(())
+    }
+}
+
+/// An opaque identifier, not a display label or a path.  Restricting the
+/// alphabet prevents whitespace, JSON, URLs, and header text from entering
+/// decision metadata through identifier fields.
+pub fn is_decision_identifier(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 256
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.' | b':'))
+}
+
+pub fn is_decision_digest(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+/// Producers select a fixed code; model reasoning and upstream error text are
+/// never accepted as a reason.  Additions must be deliberate contract changes.
+pub fn is_decision_reason_code(value: &str) -> bool {
+    matches!(
+        value,
+        "baseline"
+            | "baseline_preserved"
+            | "local_policy_match"
+            | "local_fallback"
+            | "local_selected"
+            | "local_no_gain"
+            | "no_safe_candidate"
+            | "jev_selected"
+            | "jev_no_change"
+            | "jev_unavailable"
+            | "jev_timeout"
+            | "jev_invalid_response"
+            | "jev_low_confidence"
+            | "incomplete_coverage"
+            | "low_confidence"
+            | "policy_disabled"
+            | "circuit_open"
+            | "validation_failed"
+            | "recovery_unavailable"
+            | "budget_exhausted"
+            | "sticky_replay"
+            | "sticky_hit"
+            | "sticky_expired"
+            | "source_changed"
+            | "protected_content"
+            | "workflow_reserved"
+            | "workflow_disabled"
+            | "missing_key"
+            | "kill_switch"
+            | "shadow_only"
+            | "passthrough"
+            | "unsupported_content"
+    )
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1158,6 +1506,9 @@ pub struct CompressionResult {
     #[serde(default)]
     pub elapsed_us: u128,
     pub transforms_applied: Vec<String>,
+    /// A fixed, non-content reason when the content transform was skipped or rejected.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fallback_reason_code: Option<String>,
     pub body: serde_json::Value,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_accounting: Option<HybridContextAccounting>,

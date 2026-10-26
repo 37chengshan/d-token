@@ -1,6 +1,6 @@
 # d-token Desktop
 
-更新时间：2026-07-18
+更新时间：2026-09-06
 
 `code/apps/desktop/` 是 d-token 唯一正式桌面 App：Tauri 2 + React 18 + TypeScript + Vite，Windows/macOS 共用同一套 UI、信息架构和产品语义。
 
@@ -56,15 +56,17 @@ src-tauri/                            Tauri native commands、凭据、进程和
 - d-token Rust runtime 状态、启动、停止和 identity 检查。
 - 安装事务、Doctor v3 自动扫描并修复/仅扫描、专项模块、Agent 多选逐项事务、确认与自动复检、route 验证、产品 readiness、Dashboard 与脱敏导出。
 - Changes 默认备份与回滚，提供 integrity/current-state 预检、revision/hash-bound 确认、可逆安全备份和文件/runtime 分层复检；Agent 多文件事务聚合为一个回退点，Agent Integration/Optical 按 `executor_kind` 调用来源 executor。
-- OpenCode 配置 preview/diff/双 hash/backup/apply/verify/exact rollback。
+- Changes 通过 `get_config_change_records` 独立读取本机备份、草稿和操作记录，不依赖模型服务在线或历史统计新鲜度。工具登记范围内的配置备份复用精确恢复；失败历史、旧版记录与损坏备份使用可操作的中英文说明。
+- 外观保存以本次完成 revision 通知，连续同结果保存也能反馈；重新进入设置不重放旧 Toast，成功不插入会挤动布局的横幅。分析无请求时只显示一处空态，加载/失败仍明确，实际请求存在时保留详细统计和分页。
+- OpenCode 安装统一走受管事务：连接与默认模型一起应用，原默认选择单独记录，清除恢复原选择；preview/diff/双 hash/backup/apply/verify/exact rollback 覆盖配置及记录。最新真实 App 点击复验仍待完成。
 - Smart Learning 本地扫描、managed block preview/apply 与 exact rollback。
-- 代码图谱实验页：App 不内置或下载大型 upstream；用户从固定官方 release 解压到默认/自定义目录，App 自动识别并 pinned 校验。批准项目后自动扫描本机 Agent，多选批量 preview/apply/verify/rollback MCP（Hook 仍单独授权），管理 d-token-owned 索引与短期授权只读图页，并独立显示 package、integration、Agent session、UI session、index 五维证据。
+- 代码图谱实验页：App 不内置或下载大型 upstream；App 先只读识别本机安装，也可导入用户下载的官方压缩包；压缩包与二进制均通过固定版本校验后才切换到新的自有目录。已解压目录保留为可展开的替代入口。批准项目后自动扫描本机 Agent，多选批量 preview/apply/verify/rollback MCP（Hook 仍单独授权），管理 d-token-owned 索引与短期授权只读图页，并独立显示 package、integration、Agent session、UI session、index 五维证据。
 - 代码图谱（实验性）批量事务、独立 index/UI host、只读 graph open/start/stop/delete；按钮不可用时显示明确的 package/project/Agent/组合原因。
 - Claude Code/Codex/OpenCode Hybrid Agent 接入 preview/diff/backup/apply/verify/rollback；规则、Hook/Plugin、Skill 与可选 MCP 由 Rust-owned 事务生成。
 - `dtoken-agent-bridge` sidecar：SessionStart 状态说明与 `hybrid_status`/`explain_last_decision` 两个 metadata-only MCP 工具。
-- 本地持久化通知和统一 `OperationDialog`，危险动作在确认前显示影响、备份与恢复方式。
+- 本地持久化通知和统一 `OperationDialog`：右下角 Toast 两秒后退出，悬停/键盘聚焦暂停，最多三条并保留通知历史；查看打开对应详情，关闭提示不删除记录。操作错误保留在弹窗/页面供重试；危险动作按影响确认。
 
-OpenCode 已完成真实配置事务与 routed compression 验收；该结论不扩展到 Claude Code、Codex、Cursor、Cline 或 cc-switch。缺失 RTK/Headroom 时只检测并安全失败，不执行未经验证的下载；Headroom 是可选能力，不阻断 Doctor readiness。
+OpenCode 历史验收与当前候选分开记录。2026-09-06 的真实基础请求已有路由记录，但当前免费 MiMo 历史工具输出压缩验收被 HTTP 429 阻断，尚不能声明当前候选真实压缩通过；每次临时配置均使用私有备份并精确恢复。该授权不扩展到其他工具真实配置。缺失 RTK/Headroom 时只检测并安全失败，不执行未经验证的下载；Headroom 是可选能力，不阻断 Doctor readiness。
 
 ## 当前 UI
 
@@ -72,6 +74,7 @@ OpenCode 已完成真实配置事务与 routed compression 验收；该结论不
 - 页面层级与密度参考 AiMaMi，但保留 d-token 自有品牌、数据和交互语义。
 - 概览默认全年 heatmap，四格指标严格展示真实请求、物理减少、物理比例与错误数。
 - Doctor 采用“自动扫描/规划 → 脱敏 Diff → 一次确认 → 逐项执行 → 自动复检”的维护中心；Agent 专项修复支持多选、独立事务和部分成功。变更与回退只保留“备份与回滚 / 变更记录”两个顶级标签。
+- 安装工具采用局部三列响应式网格，扫描与批量配置共用工具栏；删除重复大标题和导航外框，详情用就近弹出层避免撑开整行。首页保持原有样式。
 - 设置使用 grouped rows；1180×780 展开侧栏，920×640 自动折叠且保持可滚动。
 - success 通知留在 Notification Center；只有未读 warning/error/action-required 可占用顶栏 banner。
 
@@ -82,7 +85,7 @@ OpenCode 已完成真实配置事务与 routed compression 验收；该结论不
 - 文案使用“事实 → 影响 → 下一步”，按钮使用“动词 + 对象”。不要使用审核口吻、测试/演示词或拟人化 AI 话术；真实产品语义的 preview 除外。
 - `src/app/lib/copyPolicy.test.ts` 检查生产源的禁用表达与可见错误直传。内部协议字段、命令名和测试代码可以保留其技术名称。
 
-## 当前 macOS 实证
+## 历史 macOS 实证（2026-07-18 快照）
 
 - `OpenCode -> d-token 127.0.0.1:18001 -> OpenCode Zen` 已真实通过。
 - 关键请求物理减少 33,705 Token，claimable 0；runtime 重启后保留 89 条 routed request、20 条可见 record，汇总物理减少 279,270（4.0%）。

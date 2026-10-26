@@ -42,11 +42,24 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe("LogsSecurity", () => {
+  it("explains a real request rate limit without showing the raw failure payload", () => {
+    mocks.useRuntimeDashboard.mockReturnValue({
+      payload: { source: "dtoken-owned-runtime", desktop_data_source: "dtoken-local-service",
+        request_logs: [{ request_id: "limited-request", timestamp_ms: Date.now(), provider_id: "opencode", error: "upstream_http_429 private-native-detail" }],
+        route_decisions: [], events: [],
+      },
+      status: "runtime", updatedAt: new Date(), error: "", refresh: vi.fn(),
+    });
+    render(<LogsSecurity />);
+    expect(screen.getByText("模型服务暂时限制了请求次数或可用额度。请稍后重试；如果持续出现，请检查该服务的额度。")).toBeVisible();
+    expect(screen.queryByText(/private-native-detail/)).not.toBeInTheDocument();
+  });
+
   it("does not substitute fixture logs or verified security claims in preview", async () => {
     const user = userEvent.setup();
     render(<LogsSecurity />);
 
-    expect(screen.getByText("浏览器预览 · 无本机日志")).toBeVisible();
+    expect(screen.queryByText("浏览器预览 · 无本机日志")).not.toBeInTheDocument();
     expect(screen.getByText("暂无真实日志记录")).toBeVisible();
     expect(screen.getByRole("button", { name: "JSON" })).toBeEnabled();
     expect(screen.getByRole("button", { name: "CSV" })).toBeEnabled();

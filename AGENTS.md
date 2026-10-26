@@ -1,6 +1,6 @@
 # AGENTS.md
 
-更新时间：2026-08-13
+更新时间：2026-08-23
 
 本文件是 Codex、Claude Code、Cline、OpenCode 等 AI coding agent 的仓库入口。
 
@@ -86,7 +86,7 @@ OpenCode 是当前第一条真实 Agent 验收入口，不是产品信息架构�
 3. 如需临时加入 d-token provider/route，必须先创建权限受限的持久备份，只写最小变更，验证后按精确内容恢复。
 4. 不读取或打印 `auth.json`、密钥、token、cookie、完整 prompt/response 或原始模型输出。
 5. 必须证明 `OpenCode -> d-token listener -> configured upstream`，并关联 runtime identity、route/provider、Event Ledger 和脱敏报告。
-6. 该授权不得扩展到 Claude Code、Codex、Cursor、Cline 或系统代理的真实配置写入。
+6. 该授权不得扩展到 Claude Code、Cursor、Cline 或系统代理的真实配置写入。唯一例外（2026-08-23 用户明确授权，见 `docs/PLAN.md` §6.1）：为验证 Codex Responses wire 压缩质量，允许以「真配置事务 + 精确恢复」模式临时将真实 Codex 配置指向 d-token 并发送少量真实模型请求；执行时同样遵守受限持久备份、最小变更、验证后精确恢复、不读取/打印 `auth.json` 与凭据的边界，并关联 Event Ledger 证据。
 
 ## 6. UI 与产品语言
 

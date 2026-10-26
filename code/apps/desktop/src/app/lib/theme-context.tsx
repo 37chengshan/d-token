@@ -59,6 +59,7 @@ type AppearanceContextValue = AppearanceState & {
   loadState: AppearanceLoadState;
   saving: boolean;
   persistenceNotice: string;
+  persistenceRevision: number;
   updateAppearance: (patch: AppearancePatch) => void;
   setAccent: (accent: Accent) => void;
   setChartAccent: (accent: ChartAccent) => void;
@@ -71,6 +72,7 @@ const fallbackContext: AppearanceContextValue = {
   loadState: "loading",
   saving: false,
   persistenceNotice: "",
+  persistenceRevision: 0,
   updateAppearance: () => {},
   setAccent: () => {},
   setChartAccent: () => {},
@@ -93,6 +95,7 @@ function AppearanceProvider({ children, initial }: { children: ReactNode; initia
   const [loadState, setLoadState] = useState<AppearanceLoadState>("loading");
   const [saving, setSaving] = useState(false);
   const [persistenceNotice, setPersistenceNotice] = useState("");
+  const [persistenceRevision, setPersistenceRevision] = useState(0);
   const appearanceRef = useRef(appearance);
   const touchedKeysRef = useRef(new Set<keyof AppearancePatch>());
   const loadPromiseRef = useRef<Promise<void> | null>(null);
@@ -168,6 +171,7 @@ function AppearanceProvider({ children, initial }: { children: ReactNode; initia
         if (revision === updateRevisionRef.current) {
           setLoadState("loaded");
           setPersistenceNotice("saved");
+          setPersistenceRevision(revision);
         }
       })
       .catch((error) => {
@@ -175,6 +179,7 @@ function AppearanceProvider({ children, initial }: { children: ReactNode; initia
         if (revision === updateRevisionRef.current) {
           if (preview) setLoadState("preview");
           setPersistenceNotice(preview ? "session_only" : "save_failed:OPERATION_FAILED");
+          setPersistenceRevision(revision);
         }
       })
       .finally(() => {
@@ -195,6 +200,7 @@ function AppearanceProvider({ children, initial }: { children: ReactNode; initia
     loadState,
     saving,
     persistenceNotice,
+    persistenceRevision,
     updateAppearance,
     setAccent: (accent) => updateAppearance({ accent }),
     setChartAccent: (chartAccent) => updateAppearance({ chartAccent }),

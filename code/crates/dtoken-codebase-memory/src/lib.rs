@@ -1,3 +1,4 @@
+pub mod package_import;
 mod proxy;
 mod ui_host;
 
@@ -21,11 +22,6 @@ pub const COMPONENT: &str = "dtoken-codebase-memory-launcher";
 pub const POLICY_VERSION: u32 = 1;
 pub const PROTOCOL_VERSION: u32 = 1;
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
-/// Deterministic `lipo -create` result from the two verified v0.9.1-rc.1 macOS
-/// release binaries. It is a d-token-derived universal artifact, not an
-/// independently upstream-signed release asset.
-pub const MACOS_UNIVERSAL_BINARY_SHA256: &str =
-    "c18762b9ecd5faf7a5c2c9c495f51d02344390f315b8907ea81ce33c3a078f66";
 pub const MAX_MCP_REQUEST_BYTES: usize = 512 * 1024;
 pub const MAX_MCP_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
 pub const DEFAULT_CACHE_QUOTA_BYTES: u64 = 2 * 1024 * 1024 * 1024;
@@ -33,6 +29,7 @@ pub const DEFAULT_CACHE_TTL_MS: u64 = 30 * 24 * 60 * 60 * 1000;
 const MAX_CACHE_ENTRIES: u64 = 1_000_000;
 const MAX_HOOK_INPUT_BYTES: u64 = 64 * 1024;
 const MAX_HOOK_OUTPUT_CHARS: usize = 700;
+const RUNTIME_NAMESPACE_PREFIX: &str = "dtoken-cbm-runtime";
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -50,38 +47,38 @@ pub const ARTIFACT_SPECS: &[ArtifactSpec] = &[
     ArtifactSpec {
         os: "macos",
         arch: "aarch64",
-        upstream_version: "0.9.1-rc.1",
-        upstream_commit: "ee9833df2c72b750378273897ffec9410fc2c4f2",
+        upstream_version: "0.10.8",
+        upstream_commit: "46ae198fc11cda80e817acbc5f5908d7c2de7032",
         archive_name: "codebase-memory-mcp-darwin-arm64.tar.gz",
-        archive_sha256: "5a93a7a02a5de4f91d6d5ce4bc9a8dc471a0b141fdb9062dc1d5779205266996",
-        binary_sha256: "e4fe1cf4f764308f19a65e98b6cc2fcad5d8996b0745af321e75aacfd0c9bb1b",
+        archive_sha256: "9bd840dfb3ec7eaef4f310382057adaa5b0e904df883104d03ffcf39836afd07",
+        binary_sha256: "2412e017268bef8f847f38d1b0f79f63185b38c27fe6fba637067bfc87c0eedf",
     },
     ArtifactSpec {
         os: "macos",
         arch: "x86_64",
-        upstream_version: "0.9.1-rc.1",
-        upstream_commit: "ee9833df2c72b750378273897ffec9410fc2c4f2",
+        upstream_version: "0.10.8",
+        upstream_commit: "46ae198fc11cda80e817acbc5f5908d7c2de7032",
         archive_name: "codebase-memory-mcp-darwin-amd64.tar.gz",
-        archive_sha256: "82b66ad5b4663552191ac7ae229cbca0e4fed2eb767d2cf9f46e4c9573e4348c",
-        binary_sha256: "661bd7320b4b3ec9b681b38860d283d40f6a94d972821a60010999b04ff449a1",
+        archive_sha256: "2b193085410af3801634a522f4b17dcd6699695e015a068393c87817c1d260d4",
+        binary_sha256: "1d5b79257d91973809ee70482781db3d1a78f62fc1cd5d18a5ab0608451d16d4",
     },
     ArtifactSpec {
         os: "windows",
         arch: "x86_64",
-        upstream_version: "0.9.1-rc.1",
-        upstream_commit: "ee9833df2c72b750378273897ffec9410fc2c4f2",
+        upstream_version: "0.10.8",
+        upstream_commit: "46ae198fc11cda80e817acbc5f5908d7c2de7032",
         archive_name: "codebase-memory-mcp-windows-amd64.zip",
-        archive_sha256: "c6f65d94ac039e3a8fdc7bffac2e20fb0b0bc1d2d8d36de72ef34c531b8d4cbd",
-        binary_sha256: "7d82ca2faedce72113b17f749a63a11860b9d78cbfc73691fab9b31cb7e71c22",
+        archive_sha256: "b43ad982994c4d829670749e08d3b622a74bb20041fc0a7d02bef6113f81c34d",
+        binary_sha256: "b4b403b1d7c4def3785f148b93f345ce8427858f4f5489ce28580c4387a336a6",
     },
     ArtifactSpec {
         os: "windows",
         arch: "aarch64",
-        upstream_version: "0.9.1-rc.1",
-        upstream_commit: "ee9833df2c72b750378273897ffec9410fc2c4f2",
+        upstream_version: "0.10.8",
+        upstream_commit: "46ae198fc11cda80e817acbc5f5908d7c2de7032",
         archive_name: "codebase-memory-mcp-windows-arm64.zip",
-        archive_sha256: "75f8823ba5f9c608d1e2b41b2c95e2621ed8070d42620d71b11b3f98cef27c9c",
-        binary_sha256: "af0e9c551e9d418273b7fea1f0b4cca2e3dc5a9ddec573b019fde7ad1ba3869d",
+        archive_sha256: "254b26e819f00bab7f430c5f809d37d22b07bb3eb6427e290e5a27ba5b8e983e",
+        binary_sha256: "67b0341ee62f07f850d3954e4f387855f90ea8c6c4b7ed41b8a62d61344373a4",
     },
 ];
 
@@ -113,9 +110,7 @@ pub fn verify_upstream_artifact_with_digest(
     let upstream_path = canonical_file(path.as_ref(), "upstream executable")?;
     let expected = artifact_spec_for_current_platform()?;
     let actual_sha256 = sha256_file(&upstream_path)?;
-    let verified_universal =
-        cfg!(target_os = "macos") && actual_sha256 == MACOS_UNIVERSAL_BINARY_SHA256;
-    if actual_sha256 != expected.binary_sha256 && !verified_universal {
+    if actual_sha256 != expected.binary_sha256 {
         bail!("upstream executable SHA-256 does not match the pinned artifact manifest");
     }
     Ok(VerifiedUpstreamArtifact {
@@ -337,6 +332,7 @@ pub struct LaunchConfig {
     pub upstream_path: PathBuf,
     pub repository_root: PathBuf,
     pub cache_dir: PathBuf,
+    pub runtime_dir: PathBuf,
 }
 
 impl LaunchConfig {
@@ -399,12 +395,14 @@ impl LaunchConfig {
         if cache_dir.starts_with(&repository_root) || repository_root.starts_with(&cache_dir) {
             bail!("isolated cache must not overlap the approved repository root");
         }
+        let runtime_dir = prepare_runtime_dir(&cache_dir)?;
         enforce_cache_quota(&cache_dir)?;
 
         let config = Self {
             upstream_path,
             repository_root,
             cache_dir,
+            runtime_dir,
         };
         config.validate_repository_inputs()?;
         config.ensure_repository_zero_write_precondition()?;
@@ -437,6 +435,124 @@ impl LaunchConfig {
         }
         Ok(())
     }
+}
+
+pub fn runtime_dir_for_cache(cache_dir: impl AsRef<Path>) -> Result<PathBuf> {
+    let cache_path = cache_dir.as_ref();
+    let cache_identity = fs::canonicalize(cache_path)
+        .or_else(|error| {
+            if cache_path.is_absolute() {
+                Ok(cache_path.to_path_buf())
+            } else {
+                Err(error)
+            }
+        })
+        .with_context(|| format!("failed to resolve isolated cache {}", cache_path.display()))?;
+    let mut hasher = Sha256::new();
+    hasher.update(b"dtoken-codebase-memory-runtime-v1 ");
+    hasher.update(cache_identity.to_string_lossy().as_bytes());
+    let digest = hasher.finalize();
+    let digest = digest
+        .iter()
+        .take(12)
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    Ok(runtime_base_dir().join(digest))
+}
+
+pub fn cleanup_runtime_dir_for_cache(cache_dir: impl AsRef<Path>) -> Result<bool> {
+    let runtime_dir = runtime_dir_for_cache(cache_dir)?;
+    if !runtime_dir.exists() {
+        return Ok(false);
+    }
+    let metadata = fs::symlink_metadata(&runtime_dir).with_context(|| {
+        format!(
+            "failed to inspect isolated runtime directory {}",
+            runtime_dir.display()
+        )
+    })?;
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        bail!("isolated runtime path is not a d-token-owned directory");
+    }
+    let runtime_dir = fs::canonicalize(&runtime_dir).with_context(|| {
+        format!(
+            "failed to resolve isolated runtime directory {}",
+            runtime_dir.display()
+        )
+    })?;
+    let runtime_base = fs::canonicalize(runtime_base_dir())
+        .context("failed to resolve d-token runtime namespace")?;
+    if !runtime_dir.starts_with(&runtime_base) {
+        bail!("isolated runtime directory escaped the d-token runtime namespace");
+    }
+    fs::remove_dir_all(&runtime_dir).with_context(|| {
+        format!(
+            "failed to remove isolated runtime directory {}",
+            runtime_dir.display()
+        )
+    })?;
+    Ok(true)
+}
+
+fn prepare_runtime_dir(cache_dir: &Path) -> Result<PathBuf> {
+    let runtime_base = runtime_base_dir();
+    fs::create_dir_all(&runtime_base).with_context(|| {
+        format!(
+            "failed to create d-token runtime namespace {}",
+            runtime_base.display()
+        )
+    })?;
+    secure_cache_permissions(&runtime_base)?;
+    let runtime_base = fs::canonicalize(&runtime_base).with_context(|| {
+        format!(
+            "failed to resolve d-token runtime namespace {}",
+            runtime_base.display()
+        )
+    })?;
+    let runtime_dir = runtime_dir_for_cache(cache_dir)?;
+    fs::create_dir_all(&runtime_dir).with_context(|| {
+        format!(
+            "failed to create isolated runtime directory {}",
+            runtime_dir.display()
+        )
+    })?;
+    secure_cache_permissions(&runtime_dir)?;
+    let runtime_dir = fs::canonicalize(&runtime_dir).with_context(|| {
+        format!(
+            "failed to resolve isolated runtime directory {}",
+            runtime_dir.display()
+        )
+    })?;
+    if !runtime_dir.is_dir() || !runtime_dir.starts_with(&runtime_base) {
+        bail!("isolated runtime directory must stay within the d-token runtime namespace");
+    }
+    Ok(runtime_dir)
+}
+
+fn runtime_base_dir() -> PathBuf {
+    runtime_parent_dir().join(runtime_namespace_name())
+}
+
+#[cfg(unix)]
+fn runtime_parent_dir() -> PathBuf {
+    PathBuf::from("/tmp")
+}
+
+#[cfg(not(unix))]
+fn runtime_parent_dir() -> PathBuf {
+    std::env::temp_dir()
+}
+
+#[cfg(unix)]
+fn runtime_namespace_name() -> String {
+    format!("{}-{}", RUNTIME_NAMESPACE_PREFIX, unsafe {
+        libc::geteuid()
+    })
+}
+
+#[cfg(not(unix))]
+fn runtime_namespace_name() -> String {
+    RUNTIME_NAMESPACE_PREFIX.to_string()
 }
 
 #[cfg(unix)]
@@ -646,7 +762,7 @@ fn fingerprint_path(
     Ok(())
 }
 
-fn sha256_file(path: &Path) -> Result<String> {
+pub(crate) fn sha256_file(path: &Path) -> Result<String> {
     let bytes =
         fs::read(path).with_context(|| format!("failed to read artifact {}", path.display()))?;
     Ok(format!("{:x}", Sha256::digest(bytes)))
@@ -716,7 +832,8 @@ pub fn evaluate_request(
                 .and_then(Value::as_str)
                 .ok_or(PolicyError::InvalidRequest)?;
             if SAFE_READ_TOOLS.contains(&name) {
-                return Ok(RequestDisposition::Forward(request.clone()));
+                let forwarded = constrained_read_arguments(request, name, repository_root)?;
+                return Ok(RequestDisposition::Forward(forwarded));
             }
             if name != "index_repository" {
                 return Err(PolicyError::ToolDenied);
@@ -728,6 +845,77 @@ pub fn evaluate_request(
             })))
         }
         _ => Err(PolicyError::MethodDenied),
+    }
+}
+
+fn constrained_read_arguments(
+    request: &Value,
+    name: &str,
+    repository_root: &Path,
+) -> std::result::Result<Value, PolicyError> {
+    let id = request
+        .get("id")
+        .cloned()
+        .ok_or(PolicyError::InvalidRequest)?;
+    let arguments = request
+        .pointer("/params/arguments")
+        .cloned()
+        .unwrap_or_else(|| json!({}));
+    let arguments = arguments
+        .as_object()
+        .ok_or(PolicyError::InvalidRequest)?
+        .clone();
+    if arguments_reference_external_project(&Value::Object(arguments.clone()), repository_root) {
+        return Err(PolicyError::InvalidIndexArguments);
+    }
+    Ok(json!({
+        "jsonrpc":"2.0",
+        "id":id,
+        "method":"tools/call",
+        "params":{"name":name, "arguments":arguments}
+    }))
+}
+
+fn arguments_reference_external_project(value: &Value, repository_root: &Path) -> bool {
+    match value {
+        Value::Object(object) => object.iter().any(|(key, value)| {
+            if project_selector_key(key) {
+                return !selector_value_matches_root(value, repository_root);
+            }
+            arguments_reference_external_project(value, repository_root)
+        }),
+        Value::Array(values) => values
+            .iter()
+            .any(|value| arguments_reference_external_project(value, repository_root)),
+        _ => false,
+    }
+}
+
+pub(crate) fn project_selector_key(key: &str) -> bool {
+    matches!(
+        key,
+        "project"
+            | "project_name"
+            | "project_id"
+            | "projects"
+            | "repo"
+            | "repo_path"
+            | "repository"
+            | "repository_root"
+            | "root"
+            | "root_path"
+            | "target_project"
+            | "target_projects"
+    )
+}
+
+fn selector_value_matches_root(value: &Value, repository_root: &Path) -> bool {
+    match value {
+        Value::String(raw) => fs::canonicalize(raw).ok().as_deref() == Some(repository_root),
+        Value::Array(values) => values
+            .iter()
+            .all(|value| selector_value_matches_root(value, repository_root)),
+        _ => false,
     }
 }
 
@@ -767,6 +955,66 @@ fn constrained_index_arguments(
         "mode": mode,
         "persistence": false
     }))
+}
+
+pub fn filter_list_projects_response(mut response: Value, repository_root: &Path) -> Result<Value> {
+    let mut filtered_any = false;
+    if let Some(container) = response.pointer_mut("/result") {
+        filtered_any |= filter_projects_container(container, repository_root);
+    }
+    if let Some(container) = response.pointer_mut("/result/structuredContent") {
+        filtered_any |= filter_projects_container(container, repository_root);
+    }
+
+    if let Some(content) = response
+        .pointer_mut("/result/content")
+        .and_then(Value::as_array_mut)
+    {
+        for item in content {
+            let Some(text) = item.get("text").and_then(Value::as_str) else {
+                continue;
+            };
+            let Ok(mut value) = serde_json::from_str::<Value>(text) else {
+                continue;
+            };
+            if filter_projects_container(&mut value, repository_root) {
+                *item.get_mut("text").expect("text was already present") =
+                    Value::String(serde_json::to_string(&value)?);
+                filtered_any = true;
+            }
+        }
+    }
+
+    if filtered_any {
+        return Ok(response);
+    }
+    bail!("list_projects response is missing its project list")
+}
+
+fn filter_projects_container(container: &mut Value, repository_root: &Path) -> bool {
+    let Some(projects) = container.get_mut("projects").and_then(Value::as_array_mut) else {
+        return false;
+    };
+    filter_projects_array(projects, repository_root);
+    let visible = Value::from(projects.len());
+    if let Some(object) = container.as_object_mut() {
+        object.insert("total".to_string(), visible.clone());
+        object.insert("returned".to_string(), visible);
+        object.insert("offset".to_string(), Value::from(0));
+        object.insert("has_more".to_string(), Value::Bool(false));
+    }
+    true
+}
+
+fn filter_projects_array(projects: &mut Vec<Value>, repository_root: &Path) {
+    projects.retain(|project| {
+        project
+            .get("root_path")
+            .and_then(Value::as_str)
+            .and_then(|root| fs::canonicalize(root).ok())
+            .as_deref()
+            == Some(repository_root)
+    });
 }
 
 pub fn public_tool_definitions() -> Vec<Value> {
@@ -832,6 +1080,47 @@ mod tests {
     }
 
     #[test]
+    fn runtime_directory_is_private_and_derived_from_cache_namespace() {
+        let (_temp, _repo, cache) = fixture();
+        let runtime = prepare_runtime_dir(&cache).unwrap();
+        assert_eq!(
+            runtime,
+            runtime_dir_for_cache(&cache)
+                .unwrap()
+                .canonicalize()
+                .unwrap()
+        );
+        assert!(runtime.starts_with(runtime_base_dir().canonicalize().unwrap()));
+        assert!(!runtime.starts_with(&cache));
+        let sibling_cache = cache.parent().unwrap().join("sibling-role");
+        fs::create_dir_all(&sibling_cache).unwrap();
+        assert_ne!(runtime, runtime_dir_for_cache(&sibling_cache).unwrap());
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = fs::symlink_metadata(&runtime).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o700);
+            let socket_path = runtime
+                .join(format!("cbm-daemon-{}", unsafe { libc::geteuid() }))
+                .join("sock");
+            assert!(
+                socket_path.to_string_lossy().len() < 100,
+                "runtime socket path is too long: {}",
+                socket_path.display()
+            );
+        }
+        assert!(cleanup_runtime_dir_for_cache(&cache).unwrap());
+        assert!(!runtime.exists());
+
+        let absent_cache = cache.parent().unwrap().join("absent-cache");
+        let absent_runtime = runtime_dir_for_cache(&absent_cache).unwrap();
+        fs::create_dir_all(&absent_runtime).unwrap();
+        assert!(cleanup_runtime_dir_for_cache(&absent_cache).unwrap());
+        assert!(!absent_runtime.exists());
+    }
+
+    #[test]
     fn exposes_only_versioned_safe_tool_set() {
         let names = public_tool_definitions()
             .into_iter()
@@ -868,6 +1157,104 @@ mod tests {
         assert_eq!(
             value.pointer("/params/arguments/persistence"),
             Some(&json!(false))
+        );
+    }
+
+    #[test]
+    fn read_tools_reject_caller_selected_project_scope() {
+        let (_temp, repo, _cache) = fixture();
+        let request = json!({
+            "jsonrpc":"2.0", "id":7, "method":"tools/call",
+            "params":{"name":"search_graph", "arguments":{"query":"main", "project":"foreign"}}
+        });
+        assert_eq!(
+            evaluate_request(&request, &repo),
+            Err(PolicyError::InvalidIndexArguments)
+        );
+        let request = json!({
+            "jsonrpc":"2.0", "id":7, "method":"tools/call",
+            "params":{"name":"search_graph", "arguments":{"query":"main", "repo_path":repo}}
+        });
+        assert!(matches!(
+            evaluate_request(&request, &repo),
+            Ok(RequestDisposition::Forward(_))
+        ));
+    }
+
+    #[test]
+    fn list_projects_response_is_filtered_to_approved_root() {
+        let (temp, repo, _cache) = fixture();
+        let other = temp.path().join("other");
+        fs::create_dir_all(&other).unwrap();
+        let other = other.canonicalize().unwrap();
+        let response = json!({
+            "jsonrpc":"2.0",
+            "id":1,
+            "result":{"projects":[
+                {"name":"approved","root_path":repo},
+                {"name":"other","root_path":other}
+            ]}
+        });
+        let filtered = filter_list_projects_response(response, &repo).unwrap();
+        let projects = filtered
+            .pointer("/result/projects")
+            .and_then(Value::as_array)
+            .unwrap();
+        assert_eq!(projects.len(), 1);
+        assert_eq!(
+            projects[0].get("name").and_then(Value::as_str),
+            Some("approved")
+        );
+
+        let response = json!({
+            "jsonrpc":"2.0",
+            "id":1,
+            "result":{
+                "content":[{"type":"text","text":serde_json::to_string(&json!({
+                    "projects":[
+                        {"name":"approved","root_path":repo},
+                        {"name":"other","root_path":other}
+                    ],
+                    "total":2,
+                    "returned":2,
+                    "has_more":true,
+                    "offset":0
+                })).unwrap()}],
+                "structuredContent":{
+                    "projects":[
+                        {"name":"approved","root_path":repo},
+                        {"name":"other","root_path":other}
+                    ],
+                    "total":2,
+                    "returned":2,
+                    "has_more":true,
+                    "offset":0
+                }
+            }
+        });
+        let filtered = filter_list_projects_response(response, &repo).unwrap();
+        let text = filtered
+            .pointer("/result/content/0/text")
+            .and_then(Value::as_str)
+            .unwrap();
+        let value: Value = serde_json::from_str(text).unwrap();
+        let projects = value.get("projects").and_then(Value::as_array).unwrap();
+        assert_eq!(projects.len(), 1);
+        assert_eq!(value.get("total"), Some(&json!(1)));
+        assert_eq!(value.get("returned"), Some(&json!(1)));
+        assert_eq!(value.get("has_more"), Some(&json!(false)));
+        assert_eq!(
+            projects[0].get("name").and_then(Value::as_str),
+            Some("approved")
+        );
+        let structured = filtered
+            .pointer("/result/structuredContent/projects")
+            .and_then(Value::as_array)
+            .unwrap();
+        assert_eq!(structured.len(), 1);
+        assert_eq!(
+            filtered.pointer("/result/structuredContent/total"),
+            Some(&json!(1))
         );
     }
 
@@ -940,6 +1327,7 @@ mod tests {
             upstream_path: upstream,
             repository_root: repo.clone(),
             cache_dir: temp.path().join("external-cache"),
+            runtime_dir: temp.path().join("external-cache/runtime"),
         };
         fs::create_dir_all(repo.join(".codebase-memory")).unwrap();
         fs::write(repo.join(".codebase-memory/graph.db.zst"), b"existing").unwrap();
@@ -955,7 +1343,7 @@ mod tests {
             .collect::<BTreeSet<_>>();
         assert_eq!(keys.len(), ARTIFACT_SPECS.len());
         assert!(ARTIFACT_SPECS.iter().all(|spec| {
-            spec.upstream_version == "0.9.1-rc.1"
+            spec.upstream_version == "0.10.8"
                 && spec.upstream_commit.len() == 40
                 && spec.archive_sha256.len() == 64
                 && spec.binary_sha256.len() == 64
@@ -970,7 +1358,7 @@ mod tests {
         } else {
             "codebase-memory-mcp"
         });
-        fs::write(&upstream, b"not-the-pinned-v0.9.1-rc.1-binary").expect("write wrong artifact");
+        fs::write(&upstream, b"not-the-pinned-v0.10.8-binary").expect("write wrong artifact");
         let error = verify_upstream_artifact(&upstream).expect_err("wrong hash must fail closed");
         // ARTIFACT_SPECS only pins upstream binaries for supported desktop
         // targets (macOS/Windows). On other hosts verification fails closed
@@ -995,6 +1383,7 @@ mod tests {
             upstream_path: repo.join("upstream"),
             repository_root: repo,
             cache_dir: PathBuf::from("/tmp/cache"),
+            runtime_dir: PathBuf::from("/tmp/cache/runtime"),
         };
         assert!(config.validate_repository_inputs().is_err());
     }

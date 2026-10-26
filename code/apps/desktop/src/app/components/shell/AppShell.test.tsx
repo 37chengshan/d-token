@@ -3,24 +3,21 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("./Sidebar", () => ({
-  Sidebar: ({ page, setPage }: { page: string; setPage: (page: "analytics" | "codebase-memory") => void }) => (
+  Sidebar: ({ page, setPage }: { page: string; setPage: (page: "analysis-logs" | "advanced-configuration") => void }) => (
     <nav>
       <span data-testid="sidebar-page">{page}</span>
-      <button type="button" onClick={() => setPage("codebase-memory")}>打开代码图谱</button>
-      <button type="button" onClick={() => setPage("analytics")}>打开分析</button>
+      <button type="button" onClick={() => setPage("advanced-configuration")}>打开高级配置</button>
+      <button type="button" onClick={() => setPage("analysis-logs")}>打开分析</button>
     </nav>
   ),
 }));
 vi.mock("./Topbar", () => ({ Topbar: ({ page }: { page: string }) => <div data-testid="topbar-page">{page}</div> }));
 vi.mock("./StatusBar", () => ({ StatusBar: () => null }));
 vi.mock("../common/NotificationCenter", () => ({ NotificationBanner: () => null, NotificationLiveRegion: () => null }));
-vi.mock("../pages/Overview", () => ({ Overview: () => <div data-testid="overview-page"><h1>总体概览</h1></div> }));
-vi.mock("../pages/Analytics", () => ({ Analytics: () => <div data-testid="analytics-page"><h1>分析</h1></div> }));
-vi.mock("../pages/InstallWorkbench", () => ({ InstallWorkbench: () => <h1>安装与连接</h1> }));
-vi.mock("../pages/CodebaseMemory", () => ({ CodebaseMemory: () => <h1>代码图谱</h1> }));
-vi.mock("../pages/VisualCompression", () => ({ VisualCompression: () => <h1>视觉压缩</h1> }));
-vi.mock("../pages/Doctor", () => ({ Doctor: () => <h1>Doctor</h1> }));
-vi.mock("../pages/Changes", () => ({ Changes: () => <h1>变更与回退</h1> }));
+vi.mock("../pages/Configuration", () => ({ Configuration: () => <div data-testid="configuration-page"><h1>配置</h1></div> }));
+vi.mock("../pages/AdvancedConfiguration", () => ({ AdvancedConfiguration: () => <h1>高级配置</h1> }));
+vi.mock("../pages/AnalysisLogs", () => ({ AnalysisLogs: () => <div data-testid="analysis-logs-page"><h1>分析日志</h1></div> }));
+vi.mock("../pages/Diagnostics", () => ({ Diagnostics: () => <h1>诊断</h1> }));
 vi.mock("../pages/Settings", () => ({ Settings: () => <h1>设置</h1> }));
 
 import { AppShell } from "./AppShell";
@@ -59,23 +56,24 @@ describe("AppShell page transitions", () => {
     window.sessionStorage.setItem("d-token.shell.page", "codebase-memory");
     render(<AppShell />);
 
-    const restoredHeading = await screen.findByRole("heading", { level: 1, name: "代码图谱" });
+    const restoredHeading = await screen.findByRole("heading", { level: 1, name: "配置" });
     expect(restoredHeading).not.toHaveFocus();
     expect(restoredHeading).not.toHaveAttribute("tabindex");
+    expect(window.sessionStorage.getItem("d-token.shell.page")).toBe("configuration");
   });
 
-  it("routes the dedicated Codebase Memory destination through the shared shell", async () => {
+  it("routes the five-page destinations through the shared shell", async () => {
     stubMatchMedia(false);
     render(<AppShell />);
 
-    expect(await screen.findByTestId("overview-page")).toBeInTheDocument();
-    const initialHeading = screen.getByRole("heading", { level: 1, name: "总体概览" });
+    expect(await screen.findByTestId("configuration-page")).toBeInTheDocument();
+    const initialHeading = screen.getByRole("heading", { level: 1, name: "配置" });
     expect(initialHeading).not.toHaveFocus();
     expect(initialHeading).not.toHaveAttribute("tabindex");
-    fireEvent.click(screen.getByRole("button", { name: "打开代码图谱" }));
+    fireEvent.click(screen.getByRole("button", { name: "打开高级配置" }));
 
-    expect(screen.getByTestId("topbar-page")).toHaveTextContent("codebase-memory");
-    const graphHeading = await screen.findByRole("heading", { level: 1, name: "代码图谱" });
+    expect(screen.getByTestId("topbar-page")).toHaveTextContent("advanced-configuration");
+    const graphHeading = await screen.findByRole("heading", { level: 1, name: "高级配置" });
     expect(graphHeading).not.toHaveFocus();
     expect(graphHeading).not.toHaveAttribute("tabindex");
   });
@@ -84,12 +82,12 @@ describe("AppShell page transitions", () => {
     stubMatchMedia(true);
     render(<AppShell />);
 
-    expect(await screen.findByTestId("overview-page")).toBeInTheDocument();
+    expect(await screen.findByTestId("configuration-page")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "打开分析" }));
 
-    expect(screen.getByTestId("topbar-page")).toHaveTextContent("analytics");
-    expect(await screen.findByTestId("analytics-page")).toBeInTheDocument();
-    expect(screen.queryByTestId("overview-page")).not.toBeInTheDocument();
+    expect(screen.getByTestId("topbar-page")).toHaveTextContent("analysis-logs");
+    expect(await screen.findByTestId("analysis-logs-page")).toBeInTheDocument();
+    expect(screen.queryByTestId("configuration-page")).not.toBeInTheDocument();
     expect(document.querySelector("[data-reduced-motion='true']")).toBeInTheDocument();
   });
 
@@ -97,11 +95,11 @@ describe("AppShell page transitions", () => {
     stubMatchMedia(false);
     render(<AppShell />);
 
-    expect(await screen.findByTestId("overview-page")).toBeInTheDocument();
+    expect(await screen.findByTestId("configuration-page")).toBeInTheDocument();
     expect(document.querySelector("[data-reduced-motion='false']")).toHaveAttribute("data-page-motion", "enter");
     fireEvent.click(screen.getByRole("button", { name: "打开分析" }));
-    expect(await screen.findByTestId("analytics-page")).toBeInTheDocument();
-    expect(screen.queryByTestId("overview-page")).not.toBeInTheDocument();
+    expect(await screen.findByTestId("analysis-logs-page")).toBeInTheDocument();
+    expect(screen.queryByTestId("configuration-page")).not.toBeInTheDocument();
     expect(document.querySelector("[data-reduced-motion='false']")).toHaveAttribute("data-page-motion", "enter");
   });
 });

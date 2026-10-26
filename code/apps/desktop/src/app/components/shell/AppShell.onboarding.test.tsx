@@ -11,18 +11,19 @@ vi.mock("../../lib/native", () => ({
 }));
 
 vi.mock("./Sidebar", () => ({
-  Sidebar: ({ page, setPage }: { page: string; setPage: (page: "analytics") => void }) => (
+  Sidebar: ({ page, setPage }: { page: string; setPage: (page: "analysis-logs") => void }) => (
     <nav>
       <span data-testid="sidebar-page">{page}</span>
-      <button type="button" onClick={() => setPage("analytics")}>打开分析</button>
+      <button type="button" onClick={() => setPage("analysis-logs")}>打开分析</button>
     </nav>
   ),
 }));
 vi.mock("./StatusBar", () => ({ StatusBar: () => null }));
 vi.mock("../common/NotificationCenter", () => ({ NotificationBanner: () => null, NotificationLiveRegion: () => null, NotificationCenter: () => <span>通知</span> }));
-vi.mock("../pages/Overview", () => ({ Overview: () => <div data-testid="overview-page"><h1>总体概览</h1></div> }));
-vi.mock("../pages/Analytics", () => ({ Analytics: () => <div data-testid="analytics-page"><h1>分析</h1></div> }));
-vi.mock("../pages/InstallWorkbench", () => ({ InstallWorkbench: () => <><h1>安装与连接</h1><span data-testid="install-agent">none</span></> }));
+vi.mock("../pages/Configuration", () => ({ Configuration: () => <div data-testid="configuration-page"><h1>配置</h1><span data-testid="install-agent">none</span></div> }));
+vi.mock("../pages/AdvancedConfiguration", () => ({ AdvancedConfiguration: () => <h1>高级配置</h1> }));
+vi.mock("../pages/AnalysisLogs", () => ({ AnalysisLogs: () => <div data-testid="analysis-logs-page"><h1>分析日志</h1></div> }));
+vi.mock("../pages/Diagnostics", () => ({ Diagnostics: () => <h1>诊断</h1> }));
 vi.mock("../pages/Onboarding", () => ({
   OnboardingPage: ({
     gateState,
@@ -53,7 +54,7 @@ vi.mock("../pages/Onboarding", () => ({
           启动并检查本地服务
         </button>
         <span data-testid="service-result">{serviceResult}</span>
-        <button type="button" onClick={onOpenOverview}>返回总体概览</button>
+        <button type="button" onClick={onOpenOverview}>返回配置</button>
       </div>
     );
   },
@@ -147,16 +148,16 @@ describe("AppShell first-run onboarding gate", () => {
 
     expect(await screen.findByTestId("onboarding-page")).toBeInTheDocument();
     expect(screen.getByTestId("onboarding-gate")).toHaveTextContent("pending");
-    expect(screen.queryByTestId("overview-page")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("configuration-page")).not.toBeInTheDocument();
   });
 
-  it("returns to Overview and persists the marker after completion", async () => {
+  it("returns to Configuration and persists the marker after completion", async () => {
     stubMatchMedia(false);
     missingMarker();
     render(<AppShell />);
 
     fireEvent.click(await screen.findByRole("button", { name: "完成首次配置" }));
-    await waitFor(() => expect(screen.getByTestId("overview-page")).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByTestId("configuration-page")).toBeInTheDocument());
     expect(mocks.invokeNative).toHaveBeenCalledWith("save_app_settings", expect.objectContaining({
       section: "preferences",
       payload: expect.objectContaining({ onboarding: expect.objectContaining({ completed: true }) }),
@@ -169,7 +170,7 @@ describe("AppShell first-run onboarding gate", () => {
     completedMarker();
     render(<AppShell />);
 
-    expect(await screen.findByTestId("overview-page")).toBeInTheDocument();
+    expect(await screen.findByTestId("configuration-page")).toBeInTheDocument();
     expect(screen.queryByTestId("onboarding-page")).not.toBeInTheDocument();
   });
 
@@ -178,7 +179,7 @@ describe("AppShell first-run onboarding gate", () => {
     mocks.invokeNative.mockRejectedValue(new Error("native_unavailable"));
     render(<AppShell />);
 
-    expect(await screen.findByTestId("overview-page")).toBeInTheDocument();
+    expect(await screen.findByTestId("configuration-page")).toBeInTheDocument();
     expect(screen.queryByTestId("onboarding-page")).not.toBeInTheDocument();
   });
 
@@ -187,7 +188,7 @@ describe("AppShell first-run onboarding gate", () => {
     completedMarker();
     render(<AppShell />);
 
-    await screen.findByTestId("overview-page");
+    await screen.findByTestId("configuration-page");
     expect(screen.getByRole("button", { name: "首次配置" })).toBeInTheDocument();
     expect(screen.getByText("通知")).toBeInTheDocument();
 
@@ -196,20 +197,20 @@ describe("AppShell first-run onboarding gate", () => {
     expect(screen.getByTestId("onboarding-gate")).toHaveTextContent("completed");
     expect(screen.getByText("通知")).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("button", { name: "返回总体概览" }));
-    expect(await screen.findByTestId("overview-page")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "返回配置" }));
+    expect(await screen.findByTestId("configuration-page")).toBeInTheDocument();
   });
 
-  it("navigates to Install & Connect for the automatic batch without an Agent preselection", async () => {
+  it("navigates to Configuration for the automatic batch without an Agent preselection", async () => {
     stubMatchMedia(false);
     completedMarker();
     render(<AppShell />);
 
-    await screen.findByTestId("overview-page");
+    await screen.findByTestId("configuration-page");
     fireEvent.click(screen.getByRole("button", { name: "首次配置" }));
     fireEvent.click(await screen.findByRole("button", { name: "开始配置" }));
 
-    expect(await screen.findByRole("heading", { name: "安装与连接" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "配置" })).toBeInTheDocument();
     expect(screen.getByTestId("install-agent")).toHaveTextContent("none");
   });
 
@@ -219,7 +220,7 @@ describe("AppShell first-run onboarding gate", () => {
     render(<AppShell />);
 
     fireEvent.click(await screen.findByRole("button", { name: "稍后再说" }));
-    await waitFor(() => expect(screen.getByTestId("overview-page")).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByTestId("configuration-page")).toBeInTheDocument());
     expect(mocks.invokeNative).not.toHaveBeenCalledWith("save_app_settings", expect.anything());
   });
 
@@ -231,7 +232,7 @@ describe("AppShell first-run onboarding gate", () => {
     await screen.findByTestId("onboarding-page");
     fireEvent.click(screen.getByRole("button", { name: "打开分析" }));
 
-    expect(await screen.findByTestId("analytics-page")).toBeInTheDocument();
+    expect(await screen.findByTestId("analysis-logs-page")).toBeInTheDocument();
     expect(screen.queryByTestId("onboarding-page")).not.toBeInTheDocument();
 
     // The session dismissal is not persisted: a fresh launch re-enters the wizard.
@@ -247,7 +248,7 @@ describe("AppShell first-run onboarding gate", () => {
 
     await screen.findByTestId("onboarding-page");
     fireEvent.click(screen.getByRole("button", { name: "稍后再说" }));
-    await waitFor(() => expect(screen.getByTestId("overview-page")).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByTestId("configuration-page")).toBeInTheDocument());
 
     unmount();
     render(<AppShell />);

@@ -4,10 +4,11 @@
 use anyhow::{bail, Context, Result};
 use dtoken_types::{
     agent::{AgentDiscoverySnapshot, DetectedAgent},
-    CapabilityEvidence, Protocol, ProviderCacheObservation,
+    CapabilityEvidence, ConfidenceBand, ContextDecisionReceipt, DecisionFallback, DecisionSource,
+    DecisionWorkflow, Protocol, ProviderCacheObservation,
 };
 use rusqlite::{params, types::Type, Connection, OptionalExtension, Row};
-use serde::{Deserialize, Serialize};
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 use std::{path::Path, time::Duration};
@@ -34,7 +35,7 @@ pub use windows_private_acl::{
     verify_private_file_acl,
 };
 
-const SCHEMA_VERSION: i64 = 7;
+const SCHEMA_VERSION: i64 = 8;
 const MAX_FAILURE_PATTERN_TTL_MS: u64 = 180 * 24 * 60 * 60 * 1_000;
 const MAX_FAILURE_PATTERN_RESULTS: usize = 1_000;
 
@@ -65,6 +66,61 @@ pub struct CcrMetadataProjection {
     pub plaintext_bytes: Option<u64>,
     pub state: String,
     pub updated_at_ms: u64,
+}
+
+/// Redacted decision evidence persisted in the query projection.  This type
+/// intentionally mirrors only the metadata contract; raw prompt, response,
+/// tool output, and candidate text never enter this store.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DecisionProjection {
+    pub request_id: String,
+    pub workflow: DecisionWorkflow,
+    pub source: DecisionSource,
+    pub confidence_band: ConfidenceBand,
+    pub latency_ms: u64,
+    pub input_digest: String,
+    pub candidate_digest: Option<String>,
+    pub selected_units: u32,
+    pub dropped_units: u32,
+    pub fallback: DecisionFallback,
+    pub reason_code: String,
+    pub created_at_ms: u64,
+}
+
+impl DecisionProjection {
+    pub fn from_receipt(receipt: &ContextDecisionReceipt, created_at_ms: u64) -> Result<Self> {
+        if !receipt.is_valid() {
+            bail!("invalid context decision receipt");
+        }
+        let projection = Self {
+            request_id: receipt.request_id.clone(),
+            workflow: receipt.workflow,
+            source: receipt.source,
+            confidence_band: receipt.confidence_band,
+            latency_ms: receipt.latency_ms,
+            input_digest: receipt.input_digest.clone(),
+            candidate_digest: receipt.candidate_digest.clone(),
+            selected_units: receipt.selected_units,
+            dropped_units: receipt.dropped_units,
+            fallback: receipt.fallback,
+            reason_code: receipt.reason_code.clone(),
+            created_at_ms,
+        };
+        validate_decision_projection(&projection)?;
+        Ok(projection)
+    }
+}
+
+/// Sticky replay metadata.  The digest is the only key for the decision and
+/// is never accompanied by the content it represents.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct StickyDecisionProjection {
+    pub scope: String,
+    pub workflow: DecisionWorkflow,
+    pub source_digest: String,
+    pub decision_digest: String,
+    pub expires_at_ms: u64,
+    pub created_at_ms: u64,
 }
 
 /// A closed vocabulary prevents raw upstream errors, prompts, responses, or
@@ -421,6 +477,132 @@ impl ContextStore {
             ],
         )?;
         Ok(())
+    }
+
+    /// Upserts one redacted decision receipt.  The primary key is the request
+    /// and workflow pair, so retries are idempotent and never create duplicate
+    /// analytics rows.
+    pub fn record_decision(&self, projection: &DecisionProjection) -> Result<()> {
+        validate_decision_projection(projection)?;
+        self.connection.execute(
+            "INSERT INTO decision_receipts (
+                 request_id, workflow, source, confidence_band, latency_ms,
+                 input_digest, candidate_digest, selected_units, dropped_units,
+                 fallback, reason_code, created_at_ms
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+             ON CONFLICT(request_id, workflow) DO UPDATE SET
+                 source = excluded.source,
+                 confidence_band = excluded.confidence_band,
+                 latency_ms = excluded.latency_ms,
+                 input_digest = excluded.input_digest,
+                 candidate_digest = excluded.candidate_digest,
+                 selected_units = excluded.selected_units,
+                 dropped_units = excluded.dropped_units,
+                 fallback = excluded.fallback,
+                 reason_code = excluded.reason_code,
+                 created_at_ms = excluded.created_at_ms
+             WHERE excluded.created_at_ms >= decision_receipts.created_at_ms",
+            params![
+                projection.request_id,
+                enum_text(&projection.workflow)?,
+                enum_text(&projection.source)?,
+                enum_text(&projection.confidence_band)?,
+                decision_sql_integer(projection.latency_ms)?,
+                projection.input_digest,
+                projection.candidate_digest,
+                i64::from(projection.selected_units),
+                i64::from(projection.dropped_units),
+                enum_text(&projection.fallback)?,
+                projection.reason_code,
+                decision_sql_integer(projection.created_at_ms)?,
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn decision_for(
+        &self,
+        request_id: &str,
+        workflow: DecisionWorkflow,
+    ) -> Result<Option<DecisionProjection>> {
+        validate_identifier("decision request_id", request_id, 256)?;
+        let workflow_text = enum_text(&workflow)?;
+        self.connection
+            .query_row(
+                "SELECT request_id, workflow, source, confidence_band, latency_ms,
+                        input_digest, candidate_digest, selected_units, dropped_units,
+                        fallback, reason_code, created_at_ms
+                 FROM decision_receipts
+                 WHERE request_id = ?1 AND workflow = ?2",
+                params![request_id, workflow_text],
+                decision_projection_from_row,
+            )
+            .optional()
+            .map_err(Into::into)
+    }
+
+    /// Stores a sticky decision by content digest.  Replaying the same digest
+    /// is idempotent and updates the lease atomically.
+    pub fn put_sticky_decision(&self, projection: &StickyDecisionProjection) -> Result<()> {
+        validate_sticky_decision_projection(projection)?;
+        self.connection.execute(
+            "INSERT INTO sticky_decisions (
+                 scope, workflow, source_digest, decision_digest,
+                 expires_at_ms, created_at_ms
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+             ON CONFLICT(scope, workflow, source_digest) DO UPDATE SET
+                 decision_digest = excluded.decision_digest,
+                 expires_at_ms = excluded.expires_at_ms,
+                 created_at_ms = excluded.created_at_ms
+             WHERE excluded.created_at_ms >= sticky_decisions.created_at_ms",
+            params![
+                projection.scope,
+                enum_text(&projection.workflow)?,
+                projection.source_digest,
+                projection.decision_digest,
+                decision_sql_integer(projection.expires_at_ms)?,
+                decision_sql_integer(projection.created_at_ms)?,
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn get_live_sticky_decision(
+        &self,
+        scope: &str,
+        workflow: DecisionWorkflow,
+        source_digest: &str,
+        now_ms: u64,
+    ) -> Result<Option<StickyDecisionProjection>> {
+        validate_identifier("sticky decision scope", scope, 256)?;
+        validate_digest("sticky decision source_digest", source_digest)?;
+        if now_ms == 0 {
+            bail!("sticky decision query time must be positive");
+        }
+        let workflow_text = enum_text(&workflow)?;
+        self.connection
+            .query_row(
+                "SELECT scope, workflow, source_digest, decision_digest,
+                        expires_at_ms, created_at_ms
+                 FROM sticky_decisions
+                 WHERE scope = ?1 AND workflow = ?2 AND source_digest = ?3
+                   AND expires_at_ms > ?4",
+                params![scope, workflow_text, source_digest, decision_sql_integer(now_ms)?],
+                sticky_decision_from_row,
+            )
+            .optional()
+            .map_err(Into::into)
+    }
+
+    pub fn purge_expired_sticky_decisions(&self, now_ms: u64) -> Result<u64> {
+        if now_ms == 0 {
+            bail!("sticky decision prune time must be positive");
+        }
+        let deleted = self.connection.execute(
+            "DELETE FROM sticky_decisions WHERE expires_at_ms <= ?1",
+            [decision_sql_integer(now_ms)?],
+        )?;
+        u64::try_from(deleted).context("sticky decision purge count is out of range")
     }
 
     /// Rebuilds the disposable SQLite request view from the append-only
@@ -1277,6 +1459,88 @@ impl ContextStore {
     }
 }
 
+fn enum_text<T: Serialize>(value: &T) -> Result<String> {
+    serde_json::to_value(value)?
+        .as_str()
+        .map(str::to_string)
+        .context("decision enum must serialize as a string")
+}
+
+fn parse_enum<T: DeserializeOwned>(value: String, column: usize) -> rusqlite::Result<T> {
+    let encoded = serde_json::to_string(&value).map_err(|error| {
+        rusqlite::Error::FromSqlConversionFailure(column, Type::Text, Box::new(error))
+    })?;
+    serde_json::from_str(&encoded).map_err(|error| {
+        rusqlite::Error::FromSqlConversionFailure(column, Type::Text, Box::new(error))
+    })
+}
+
+fn decision_projection_from_row(row: &Row<'_>) -> rusqlite::Result<DecisionProjection> {
+    Ok(DecisionProjection {
+        request_id: row.get(0)?,
+        workflow: parse_enum(row.get(1)?, 1)?,
+        source: parse_enum(row.get(2)?, 2)?,
+        confidence_band: parse_enum(row.get(3)?, 3)?,
+        latency_ms: row.get(4)?,
+        input_digest: row.get(5)?,
+        candidate_digest: row.get(6)?,
+        selected_units: row.get(7)?,
+        dropped_units: row.get(8)?,
+        fallback: parse_enum(row.get(9)?, 9)?,
+        reason_code: row.get(10)?,
+        created_at_ms: row.get(11)?,
+    })
+}
+
+fn sticky_decision_from_row(row: &Row<'_>) -> rusqlite::Result<StickyDecisionProjection> {
+    Ok(StickyDecisionProjection {
+        scope: row.get(0)?,
+        workflow: parse_enum(row.get(1)?, 1)?,
+        source_digest: row.get(2)?,
+        decision_digest: row.get(3)?,
+        expires_at_ms: row.get(4)?,
+        created_at_ms: row.get(5)?,
+    })
+}
+
+fn validate_identifier(label: &str, value: &str, max_len: usize) -> Result<()> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() || trimmed.len() > max_len || trimmed.chars().any(char::is_control) {
+        bail!("{label} is invalid");
+    }
+    Ok(())
+}
+
+fn validate_digest(label: &str, value: &str) -> Result<()> {
+    validate_identifier(label, value, 256)
+}
+
+fn validate_decision_projection(projection: &DecisionProjection) -> Result<()> {
+    validate_identifier("decision request_id", &projection.request_id, 256)?;
+    validate_digest("decision input_digest", &projection.input_digest)?;
+    if let Some(candidate_digest) = projection.candidate_digest.as_deref() {
+        validate_digest("decision candidate_digest", candidate_digest)?;
+    }
+    validate_identifier("decision reason_code", &projection.reason_code, 128)?;
+    if projection.created_at_ms == 0 {
+        bail!("decision created_at_ms must be positive");
+    }
+    Ok(())
+}
+
+fn validate_sticky_decision_projection(projection: &StickyDecisionProjection) -> Result<()> {
+    validate_identifier("sticky decision scope", &projection.scope, 256)?;
+    validate_digest("sticky decision source_digest", &projection.source_digest)?;
+    validate_digest(
+        "sticky decision decision_digest",
+        &projection.decision_digest,
+    )?;
+    if projection.created_at_ms == 0 || projection.expires_at_ms <= projection.created_at_ms {
+        bail!("sticky decision lease is invalid");
+    }
+    Ok(())
+}
+
 fn failure_pattern_from_row(row: &Row<'_>) -> rusqlite::Result<FailurePatternRecord> {
     let failure_class_text: String = row.get(1)?;
     let failure_class = FailureClass::from_reason_code(&failure_class_text).ok_or_else(|| {
@@ -1848,6 +2112,44 @@ fn migrate(connection: &mut Connection) -> Result<()> {
             [now_ms()],
         )?;
     }
+    if current < 8 {
+        transaction.execute_batch(
+            "CREATE TABLE decision_receipts (
+                 request_id TEXT NOT NULL,
+                 workflow TEXT NOT NULL,
+                 source TEXT NOT NULL,
+                 confidence_band TEXT NOT NULL,
+                 latency_ms INTEGER NOT NULL,
+                 input_digest TEXT NOT NULL,
+                 candidate_digest TEXT,
+                 selected_units INTEGER NOT NULL,
+                 dropped_units INTEGER NOT NULL,
+                 fallback TEXT NOT NULL,
+                 reason_code TEXT NOT NULL,
+                 created_at_ms INTEGER NOT NULL,
+                 PRIMARY KEY (request_id, workflow)
+             );
+             CREATE INDEX decision_receipts_workflow_lookup
+               ON decision_receipts(workflow, created_at_ms);
+             CREATE TABLE sticky_decisions (
+                 scope TEXT NOT NULL,
+                 workflow TEXT NOT NULL,
+                 source_digest TEXT NOT NULL,
+                 decision_digest TEXT NOT NULL,
+                 expires_at_ms INTEGER NOT NULL,
+                 created_at_ms INTEGER NOT NULL,
+                 PRIMARY KEY (scope, workflow, source_digest)
+             );
+             CREATE INDEX sticky_decisions_expiry_lookup
+               ON sticky_decisions(expires_at_ms);
+             CREATE INDEX sticky_decisions_scope_lookup
+               ON sticky_decisions(scope, workflow, expires_at_ms);",
+        )?;
+        transaction.execute(
+            "INSERT INTO schema_migrations (version, applied_at_ms) VALUES (8, ?1)",
+            [now_ms()],
+        )?;
+    }
     transaction.commit()?;
     Ok(())
 }
@@ -1860,6 +2162,10 @@ fn now_ms() -> i64 {
 
 fn capped_i64(value: u64) -> i64 {
     i64::try_from(value).unwrap_or(i64::MAX)
+}
+
+fn decision_sql_integer(value: u64) -> Result<i64> {
+    i64::try_from(value).context("decision timestamp or latency exceeds SQLite integer range")
 }
 
 fn to_i64(value: Option<u64>) -> Option<i64> {

@@ -1,0 +1,20 @@
+[package]
+name = "dtoken-context-engine"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+dtoken-compress = { path = "../dtoken-compress" }
+dtoken-runtime-pipeline = { path = "../dtoken-runtime-pipeline" }
+dtoken-types = { path = "../dtoken-types" }
+serde.workspace = true
+serde_json.workspace = true
+sha2 = "0.10"
+thiserror.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+proptest = "1"
+

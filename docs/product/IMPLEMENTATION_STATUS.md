@@ -1,11 +1,105 @@
 # d-token 当前实现状态
 
-更新时间：2026-08-14（恢复阶段 R2.B/C/D/E 完成 + 全项目 P0/P1 修复 + 1b 计量闭环；commit 066c22e）
+更新时间：2026-09-07（发布前功能与用户体验收尾；当前未提交工作树）
 状态类型：代码事实快照，不替代 `docs/PRD.md` 与 `docs/PLAN.md`
 
-> **2026-08-14 复核标记**：本文件第 2 节之后仍是 2026-08-07 快照，仅作历史参考。当前候选事实以本页顶部结论 + `.ai-bridge/release-iteration/TASKS.md` + 当前源码/测试为准。
+> **当前与历史证据边界**：下方「2026-09-06 当前工作树」是本轮代码事实与验证边界；后续 2026-08-14/08-07 快照用于追溯，不能充当当前候选的发布证据。执行顺序以 `docs/PLAN.md` 为准。
 
-## 1. 当前结论（2026-08-14 复核）
+
+2026-09-07 功能优先修复（覆盖上轮候选结论）：
+
+- 后续恢复复核：路由写入失败后，仅在重新读取并核对原配置字节摘要后恢复原托管服务。任一文件恢复或服务重启失败都显示恢复未完成；错误正文不再作为“已回退”的证据。零工具成功显示连接未完成，部分失败保留成功工具；自动刷新不抹掉本次终态。请求日志的限流/超时增加用户可执行说明。
+- 已暂停视觉调整。Doctor 将明确未配置的 Optical / 未安装的 cc-switch 识别为待设置，而非未知数据；真实 Preview 已完成核心服务修复、启动和复检。缺失/损坏配置仍区分，未降低未知和过期结果的写入门槛。
+- OpenCode 原先仅注册 provider，未设置默认请求模型；安装入口现统一使用受管 transport，将 provider、默认模型和私有的原选择记录作为一个事务。支持旧自有 provider 更新、幂等重试、清除恢复原默认值；配置/记录变动、同名外部 provider 和符号链接阻止覆盖。普通安装不再走旧的 provider-only command。
+- 安装预检失败发生在停启服务和写路由前；混合批次只应用通过预检的工具。事务后发生失败时按本次实际回执精确恢复，不能用清除全部接入代替回退。transport 应用阶段已按工具隔离失败，后续 Hybrid 部分完成回执触发该工具恢复，其他成功工具保留；仍待真实 App 批量点击复验。
+- 当前源码前端 506 项全量、类型检查通过；新增混合预检/应用失败隔离和部分写入恢复用例通过。Rust 配置 crate 全量、OpenCode 11 项定向及原生发现回归通过；当前模块严格 Clippy 通过。随后全工作区 1072 项通过、6 项忽略；最终安装定向 35 项、类型检查及独立 debug Preview 构建通过。旧 release DMG 不能代表这些修改。
+- 真实免费 MiMo 再试 `real-routed-20260906T155332Z-38784.json` 仍为 6 个 HTTP 429；原配置字节已核对恢复。OpenCode 默认接入的最新真实 App 点击链尚未复验；桌面工具再次报告锁屏，已通知用户。Goal 保持 ACTIVE，不宣称全部功能可用。
+
+
+## 1. 2026-09-06 当前工作树
+
+- **后续原生复核（22:50）**：发现恢复后的 Changes 仍调用 runtime 统计接口；此前专用接口在后端存在，但前端接线实际缺失，现已接回 `get_config_change_records`。原生服务停止时已实际读取本机备份；旧记录明确显示未通过并保持锁定，不再被旧 verified 字段误标通过。分析原生无请求时已合并空图表墙，已有数据明细保持；图谱文件选择器打开/取消与现有安装识别通过。设置强调色切换/恢复及右下角保存 Toast 在独立 Preview 实看，成功不再新增顶部标签或推动布局。上述是 Preview 原生证据，不冒充最终 release 全链路验收。
+
+- **最后一轮实测纠偏**：原生 Doctor 的五类产品模块加配置同步项被前端误拒，已修复为明确的混合合同，并显示第六项；实际只读扫描通过，1/6 正常、5/6 完成，缺失项仍锁定修复。安装整卡点击、选择保留、独立详情弹窗和关闭后焦点均已在 macOS 验证。按用户指出的空态布局问题，Doctor 未扫描页已收为单一说明/扫描入口；不再显示空圆环，常规桌面结果页左右分列。
+- **当前发布准备**：前端 502 项、类型检查通过。Chromium/WebKit 全量先通过 26 项，另两项因旧测试要求两个重复标签失败；更新为当前一个服务状态标签后，两项复检通过，禁用原生写入的断言保持。macOS release App/DMG、包内容、ad-hoc 签名和临时安装启动审计通过；当前 DMG SHA-256 为 `226800cd111408c2bee156a4b12f82458bf173d88adec6c771fa6af307bb7746`。npm/Cargo 上轮同依赖扫描无已知漏洞（Cargo 18 条警告另列）。当前源码的独立 Preview 已验证本节列出的交互，最终 release 全部原生点击链仍未完成。
+- **真实模型仍未通过**：间隔后复试 `real-routed-20260906T140243Z-80548.json` 仍为 6 个 `upstream_http_429` 失败请求。正常配置已精确恢复、临时凭据已删除；没有压缩成功数据。签名公证/Windows 实包按 PLAN §6.1 分期，不把本机 ad-hoc 包称为正式分发完成。
+
+- **当前收敛结果**：全工作区 Rust 1065 项通过、6 项忽略；严格 Clippy 与格式检查通过。阶段前端 486 项、类型检查和 Chromium/WebKit 28 项通过；引导按需加载使初始 JS 从约 207 KiB 回到 158 KiB（门限 176 KiB）。这些结果早于最后的原生辅助功能、背景与重复标签纠偏，最终候选仍须重验。
+- **原生实测后的修正**：安装清单完整显示 23 项工具，初次“查看连接状态”只导航，不自动写入。整卡 button 会让原生辅助功能隐藏内部详情，现改为分组容器、独立可聚焦复选框与详情按钮，整卡鼠标选择继续保留。诊断未扫描时不再声称“没有待处理项”。底部常驻栏收敛为服务/连接/诊断与处理入口，端口等信息移入详情；旧绿色诊断不再覆盖当前过期或不完整状态。
+- **最新用户视觉纠偏**：加深浅色底纸（外层 #e9e5dc、工作区 #f0ede5、纸面 #fbf8f2），设置强调色与深色主题保持各自规则。删除概览/分析/高级设置/日志等页面重复来源标签，保留无法操作时的原因、过期数据提示和重试；本轮未重排概览内容。
+- **图谱边界已补强**：非终态与失败 JSON 优先于正向字段，必须有完成计数；CLI 输出、运行时间、取消与进程清理有界。实际 v0.10.8 私有目录中完成 8 节点/8 边索引和隔离查询。平台验证仅 macOS arm64 实机，不能据此声称 Windows 通过。
+
+- **最新阶段：按已对齐约定实施发布前收尾**。恢复基准源码为 `5572998` 加 `99a7289` 的七个文件，基准构建 46 个 JS/CSS 与已安装 App 同名同字节；基准 54 文件/473 项测试、TypeScript、构建通过。随后用户已授权 Goal 完成全部发布前任务，正在实现新的局部页面约定；新源码不再要求与旧安装包资源相同。完整备份保存在 `.ai-bridge/frontend-baseline-recovery/20260906T112121Z/`，已安装 App 保持原样。
+
+- **统一通知与图谱前端**。新增仅本次操作产生的 Toast 队列，右下角最多三条、两秒后退出，悬停/聚焦暂停且按剩余时间继续；通知历史与临时提示分开。查看打开并展开对应记录，关闭提示不会删除失败记录；重复事件返回真实记录 ID，并清除上次失败的详情/回执。公共 `OperationDialog` 支持行内错误。图谱接回本机组件发现、官方压缩包选择/确认导入、目录选择和失败恢复；路径收进详情，删除无用说明和包围层，保留独立状态。通知/Shell 27 项与图谱/弹窗/通知 40 项专项通过，最终实际窗口验证未完成。
+
+- **Hybrid 事务与真实服务**。部分失败 verify 不会晋升整体成功，撤销失败的 capability 继续保留，验证和配置竞争早退会保存恢复 manifest；17 项事务/10 项 native capability 测试和对应严格 Clippy 通过。生命周期失败来自测试旧配置缺失 `log_path`；修正 fixture、重建真实代理后，隔离状态下服务启动/停止、空配置启动、Doctor 启动修复、托管重载通过。cc-switch 的真实重载测试使用隔离 route 配置，不扩展为用户真实数据库全流程证明。
+
+- **当前验证与缺口**。本轮 `cargo test --workspace` 为 1062 passed / 6 ignored；这是图谱新增审查修复前的快照。图谱已有官方 v0.10.8 来源核验和小项目真实索引/查询，但独立审查发现索引非终态误报与子进程输出/超时清理边界，尚在补强。安装卡片、诊断和分析正在实施；最终全量前端、原生窗口、候选包及平台发布证据未闭合。免费 MiMo 最新真实压缩准备仍返回 HTTP 429（`real-routed-20260906T124219Z-40014.json`），原配置精确恢复，无真实压缩成功结论。
+
+### 恢复前的工作记录（仅追溯，不代表当前页面已完成）
+
+- **恢复前的分工记录**：用户负责前端重构，Codex 推进后端与真实功能验收。停止前安装工具曾改为完整显示已检测项，批量选择仍仅限可参与路由的工具；概览重复状态合并。110 项相关前端回归通过；这些修改现已备份，不是本次恢复后的页面。
+
+- **图谱组件发现与压缩包导入**：原生层已只读识别配置目录、PATH 和常用安装位置；兼容性缓存绑定文件标识，状态返回实际使用来源。用户可选择官方压缩包，校验同一份受限字节后解压到新的自有目录；同时校验二进制，失败恢复原位置与导入记录，恢复失败返回 `recovery_required` 并清除前端旧就绪状态。主界面仅保留组件结果、官方下载与导入，路径和已解压目录入口收进详情。组件 crate 25 项、桌面相关 12 项测试及 1 项实际官方压缩包导入测试通过；严格 Clippy、575 项前端测试、类型检查与规范 Tauri Preview 打包通过。最后的文件选择器点击与导入后窗口反馈因 Mac 锁屏未完成，不能据此宣称整个图谱链路已验收。
+
+- **非首页编辑风重构进行中**：按用户最新授权，新增仅非 overview 使用的 `data-workbench` 样式范围；标题、表面、控件采用暖纸/碳墨体系，设置已取消用户否定的双列说明栏和包围卡片，改为标题下的紧凑全宽设置行，普通分组标题 14px、正文 13px、辅助说明 12px；安装页已移除重复大标题与说明段，导航仅保留文字标签。移除图谱主界面的来源标签、内部状态解释与隐私长段落，项目来源统计默认收起；保存失败等可操作错误仍直接显示。当前仅阶段实现，整组原生视觉和功能验收未完成，不代表用户已认可最终外观。
+
+- **MiMo 真实链路**：基础单请求已通过且正常配置精确恢复，但没有可压缩历史工具输出。后续压缩准备已补充脱敏失败分类；两次真实请求均确认上游 HTTP 429，其中 `real-routed-20260906T100144Z-83232.json` 使用临时公共示例项目、正常 HOME/config/state，6 条请求均失败。配置精确恢复、私有备份与验证凭据清理均已确认；没有真实压缩成功证据，不能把限流失败写成引擎验收通过。
+
+- **后端完整工具清单**：`discover_upstream_candidates.agent_catalog` 从同一 Rust 注册表返回全部 23 项工具，`agent_bindings` 仍只包含真实检测项。扫描失败的 `installed` 为 `null`，未安装/未知项不可执行配置或清除；2 项 catalog 测试与已检测范围回归通过，接口说明已写入 Tauri README。
+
+- **压缩结果可解释**：压缩关闭、上下文未识别、不支持、没有安全候选、无收益及校验失败均返回固定 `fallback_reason_code`，由实际引擎结果进入请求与事件元数据；成功变换不附加失败原因。256 项压缩测试通过，core 路由元数据与 MCP 原因码回归通过。
+
+- **模型能力来自实际证据**：不再按观测次数推算上下文/输出容量；数值只来自实际提示，冲突采用保守值。成功上游工具调用和完整流终态可积累能力观测，请求 schema、普通 HTTP 成功、失败/取消/截断不算证据；参数必须为对象且同一响应全部工具调用有效。观测以私有原子文件持久化，串行保存避免旧快照覆盖新事实，迟绑定路径会先加载已有数据；协议仍为解析提示而非已持久化的观测字段。registry 14 项、core 201 项单元测试及 29 项集成测试通过（另 1 项忽略）。
+
+- **Doctor 与连接同步的后端结果**：完整且有效的 `repairable/manual` 报告可进入修复，部分/未知/过期报告继续拒绝。手动 cc-switch 同步即使不启用自动跟随，也必须检查本地服务重新加载结果；失败精确恢复旧配置。只有明确证明服务已停止，才报告下次启动使用新配置，未知运行状态不能当作离线成功。定向 7 项原生回归通过；重启失败后可能仍需用户显式启动，不能把配置已恢复宣称为服务已恢复。
+
+- **图谱恢复重试入口**：新增仅恢复未验证成功配置的入口，保留已验证连接；确认框列出目标工具，恢复失败直接在框内显示错误并允许再次执行。新增混合成功/待恢复状态回归，验证首次恢复失败后重试成功、两次调用均只针对失败工具；图谱与文案 24 项、类型检查通过。未通过真实工具配置制造故障，原生完整恢复仍需最终事务验收。
+
+- **图谱逐工具失败隔离**：配置或验证失败仅恢复当前工具，保留成功连接并继续后续工具；页面报告完成数量与各项失败原因，恢复失败的回执仍保留供重试。回归覆盖第一项和末项验证失败、失败配置返回恢复事务；全量前端 566 项及类型检查通过，规范 Tauri Preview 构建完成。真实工具配置事务未在本轮桌面检查中执行。
+
+- **图谱工具选择范围**：原页面仅以静态图标展示自动纳入的工具，现提供真正的复选框；已安装且支持项默认选中，未安装/不支持项禁用。取消选择在重新扫描后保留，预览仅包含选中工具，修改选择清除旧预览。新增回归验证取消 Codex 后重扫仍不选中，并只为 OpenCode 生成预览；重建原生 App 已实际验证取消选择和重新扫描保留选择。
+
+- **图谱终态桌面复验与视觉压缩语言**：重建 App 中重试独立项目索引，无手动刷新即从 busy 变为失败并通知版本冲突原因，处理入口恢复；后台状态与界面一致。视觉压缩主流程改为连接规则、启动插件、恢复功能与压缩预览等任务说明，保留 Codex `/hooks` 信任要求和不改变实际请求的 Beta 边界；该文案已重新打包，并在原生 App 验证显示。
+
+- **图谱索引失败根因与回执**：固定组件 v0.9.1-rc.1 与本机已有 v0.10.8 会话发生同用户进程版本冲突；固定版本 IPC 使用共享 `/private/tmp/cbm-daemon-<uid>`，更换缓存目录不能解决。未停止外部会话或绕过协调限制。启动器将该错误转换为仅含原因码的失败回执，桌面保留失败状态并提供中英处理说明；退出码成功但回执失败不再记录为成功。重建启动器实测 `outcome=failed / upstream_version_conflict`，未泄露原始诊断内容。crate 19 项、native 9 项通过（1 项环境测试单独已验证），严格 clippy 通过；完整索引仍待无版本冲突环境复验。
+
+- **图谱组件与索引实测**：本机默认组件哈希不匹配，保持原文件；下载当前清单固定的 v0.9.1-rc.1 到临时验证目录，压缩包及二进制哈希均匹配。真实 App 保存目录后显示已验证；真实组件校验缓存测试通过（295578848 字节，冷校验约 1495ms，热缓存约 24µs）。独立双文件示例项目索引返回 `process_failed`，完整索引尚未通过。实测同时发现原生任务结束后页面仍显示处理中，已补充仅在索引 busy 时的顺序状态刷新及结束通知；该改动待重建 App 复验，索引失败根因待继续定位。未更改编码工具配置。
+
+- **Doctor 到期状态更新**：报告到期时主动更新为过期并禁用修复，窗口重新获得焦点时再次检查；不再依赖其他交互触发渲染。11 项 Doctor 回归通过，包含无额外用户动作的 TTL 到期检查；该变更尚未重新打包实测。
+
+- **Doctor 摘要准确性与本地化**：没有自动修复项但仍有手动/阻止项时，不再显示绿色通过图标；只有完整、健康且没有待处理项的报告显示通过。已知原生服务、工具辅助功能、视觉压缩、启动与备份摘要映射为中英用户说明，避免中文页直接出现英文启动回执。
+
+- **日志导出真实桌面验收**：使用独立测试状态目录启动无模型连接的本地服务，macOS Preview 的 JSON/CSV 按钮均在下载目录生成文件（6296/315 字节），JSON 可解析且 `redacted=true`，CSV 可解析。测试后通过 App 停止服务并确认 18001 不再监听；未配置编码工具、未发模型请求。日志筛选与空状态改用中英用户语言，日志/文案 5 项回归通过；这次文案变更已通过规范 Tauri 构建打入 Preview。
+
+- **Doctor 后端修复条件**：准备与执行共用的报告检查补充本地来源、总体状态、逐项状态及覆盖数量一致性校验，不能只凭 TTL/revision 放行不完整报告。新增回归覆盖部分检查、未知状态、来源不符及覆盖数量矛盾；7 项原生 Doctor 回归和 desktop 严格 clippy 通过。加入该条件后重新运行 Rust 全工作区、全工作区严格 clippy、格式检查与规范 Tauri Preview 构建均通过；Chromium/WebKit 36 项检查通过。日志导出的真实桌面文件落盘已单独验收，见本节日志导出条目。
+
+- **Doctor 处理入口**：诊断不完整时，专项工具的设置导航、备份查看和只读重扫保持可用；准备配置改动的操作仍要求完整有效检查。专项工具标题和说明改为中英用户任务，避免英文界面出现整段中文。回归覆盖不完整报告下打开连接设置和备份页，以及修复按钮仍禁用；全量前端 561 项通过。
+
+- **Doctor 原生扫描兼容**：实际 App 复现原生已生成报告但前端误报扫描失败；原因是产品模块报告新增 `agent_cc_switch_sync` 后被前端格式校验拒绝。现接受该明确登记的补充项，仍拒绝未知模块；未完成检查保持修复锁定。重建 Preview 只读重扫确认显示 5/6 检查结果及完成通知。9 项 Doctor 回归通过；全量 560 项通过、1 项英文文案规则失败，调整文案后该规则 2 项复检通过。修复入口的完整实际执行验收仍待继续。
+
+- **总体概览语言与单日趋势**：将连接/同步/额度说明中的工程术语改为当前情况和检查入口，仍保留过期、未确认与缺少价格时不估算的边界。单日趋势直接显示节省数值，日期居中，数据点保留键盘与悬停说明。概览相关 42 项及全量前端 560 项测试通过。
+
+- **底部状态栏**：常驻区域显示服务、连接、诊断与处理入口，端口和数据状态移入可展开详情；服务停止明确提示启动后检查。旧诊断为正常但当前数据已过期、部分可用或不可用时，不再亮绿色诊断状态。14 项状态栏回归、类型检查及 36 项 Chromium/WebKit 检查通过，并在重建的 macOS Preview 中确认停止状态及详情展开。
+
+- **安装与连接**：已重排为局部三列工具网格（按内容宽度降为两列/一列），工具名称、选择与状态集中在卡片内，扫描与批量配置共用一条工具栏；服务状态收为简短一行。详情改为弹出层，辅助集成单独折叠，路径/变更证据按需查看。未操作工具不显示「配置失败」。只读预检为每个工具提供准备情况；取消选择后仍保留其真实状态。
+- **设置与可读性**：主题/图表根变量直接由设置色块数组投影，主按钮、选中标记和图表不再使用各自覆盖的调色板；按钮保留白字，主要操作文字加重，小字 12–13px、正文 14px。开屏路径绘制和图标弹入已恢复；减少动态效果仍可跳过开屏并关闭相关动效。
+- **查看与配置的授权区分**：引导的查看状态/进入验证入口只打开安装页；只有明确的一键接入按钮设置自动配置标记。普通页面跳转清除遗留标记。新目录下实际点击查看入口，没有配置事务、active config 或受保护文件变更；此前复现导致的 Codex 三文件已精确恢复。
+- **逐项结果准确性**：准备失败与预检失败也计入批次未完成数；部分工具成功时明确给出已完成/需处理数量并保留 warning。成功工具的原生英文回执不再直接占据中文列表主文案。
+- **恢复工具配置**：已验证备份中、目标路径仍属于工具登记范围的配置使用 `managed-agent-config` 恢复类型，复用精确恢复与反向备份机制；当前文件变化、损坏备份、未登记路径与符号链接仍拒绝恢复。10 项原生回退回归通过。回退页的标题、时间和不能恢复的原因已本地化；文件路径/记录号按需展开，并提供返回当前配置的入口。成功说明只声称实际完成的文件检查，失败与未知历史不再被描述成完成。
+- **离线恢复记录**：`get_config_change_records` 与 `useConfigChangeRecords` 独立读取本机恢复记录，避免 runtime 统计过期导致新鲜备份被锁定；读取失败保留旧记录但锁定写操作，加载/读取失败不显示为“没有备份”。服务停止时仍可预览恢复，实际应用仍重新检查 revision/hash。原生离线读取回归通过。
+- **Codex 当前连接发现**：未选中的内联 profiles 与 companion 配置不再遮蔽根 config.toml 的当前设置；显式 legacy profile 选择仍拒绝猜测。针对本机实际形态的 12 项原生测试和严格 Clippy 已通过，重新构建 App 已实际显示可沿用当前连接。
+- **通知与结果**：本次错误、警告与待处理通知不会定时消失；成功/普通信息 5 秒后收起，悬停/键盘聚焦暂停计时。详情打开对应历史记录；跨引导/工作台切换保留本次通知；历史通知不会在重启后自动重放。重复结果使用实际记录 ID，清除旧的详情/跳转/回执字段，失败保留重试入口。
+- **真实操作反馈**：安装、Doctor、变更回退、设置、图谱、视觉压缩的主操作已补充进行中、成功、部分完成与失败状态。回退/停止/删除失败保持对话框可重试；刷新不再把部分读取失败报告为完整成功。
+- **首次服务启动**：真实 active config 不存在时，仅创建独立、私有、无 Provider/Route 的设置用配置并启动服务；现有非法配置、符号链接、权限错误仍拒绝。设置服务可用于完成连接准备，但模型请求在无路由时返回 `503 dtoken_route_not_configured`，不宣称已经连接模型。
+- **用户任务语言**：安装工作台为连接工具、复用现有配置、高级设置、操作记录；底部故障状态有安装/诊断入口；视觉压缩服务与接入卡用任务状态替代 raw enum，运行标识、端口和路径收至详情；图谱可通过系统目录选择器回填已解压目录，再调用原有来源与完整性校验。
+- **核心输入边界**：保留工作树既有 Responses C1 历史 tool output 压缩；本轮为压缩请求体增加有界解压，超限返回 413、损坏返回 400，不进入路由或普通事件账本。C1 的本地回归不能替代真实 Provider 质量/延迟验收；历史「Responses 始终 Off」结论不适用于该工作树实现。
+- **已观察的桌面行为**：macOS ad-hoc debug `.app` 的独立 Preview 标识避免与已安装旧 App 操作通道混淆。测试状态目录下启动/停止服务、未就绪工具提示、通知详情、原生目录选择器打开与取消均已实际验证。更紧凑的安装页已在同一窗口观察，最终事务 scope/失败隔离与全量验证仍在收尾。
+
+**尚不能宣称可发布**：当前是包含既有修改的未提交工作树；最终同候选全量结果、真实 Agent 请求链路、Developer ID/公证和 Windows 实包证据须分别完成。当前 debug/ad-hoc macOS 包及浏览器测试不代替这些门禁。
+
+## 1.1 历史结论（2026-08-14 复核）
 
 当前候选（commit `066c22e` + 1b 计量闭环）已完成：
 
@@ -24,7 +118,7 @@
 
 d-token 当前已形成可运行的 Rust-owned 本地 runtime、Tauri 2 桌面控制面、React 18/TypeScript UI 与薄 TypeScript SDK。当前工作树已补齐九类 production codec release evidence（id 列表由 compressor registry 编译期投影）、CCR lifecycle/reconciliation 与 Windows DACL 实现、Rust/HTTP/MCP/TS surface parity、23 项 Agent 检测/transport capability matrix、Claude/Codex/Cline 真实临时配置精确恢复、cc-switch A→B→A 只读静态识别以及 macOS managed RTK lifecycle probe；G4 Responses bridge 现已对非法 tool choice/消息角色/函数字段 fail-closed，并将流式 Ledger/CCR finalize 延迟到完整终态。Install 的 MCP/Hook 分支已接入 Rust-owned preview/apply/verify 事务：目标路径必须与 Agent 注册表精确匹配，preview 只返回脱敏摘要，apply 绑定双 hash、备份、receipt、复读验证与失败自动回退，且明确不提供模型上游 route evidence。G7 当前候选真实 OpenCode 已于 2026-08-04 通过（candidate_id=G7，报告 `support/artifacts/opencode-real-routed/real-routed-20260804T112429Z-76558.json`）。G7 macOS package audit 已通过（c124d9f，2026-08-04：DMG d-token_0.2.0-beta.1_aarch64.dmg，SHA-256 1fe3f68e05ffe8903d62551c146320c6c76556f655c2ea4bd85b546f82165216，app 12 文件 46MB，ad-hoc 签名，临时安装/启动/退出/卸载全链路验证通过，无 immediate crash，Window 可见）。2026-08-07 本轮新增：Codex 自动发现支持 `ocxlocal` openai-responses（`ProviderWireApi::OpenAiResponses` 将 `/v1/responses` 原样透传上游、不做 Chat 转换；Codex 排除显式 model 要求，`models=[]` 允许请求 model 动态透传；core native Responses 非流返回上游 body 原样、流 SSE body 原样且仅终态 finalize；Chat-wire 仍桥接并 fail-closed）；Overview/Analytics 从 Settings `model-pricing` 价格表（input/output 每百万 token 单价）估算 input cost before/after/delta，unknown/mixed/过期 fail-closed，`provider_cost_usd` 作为上游账单费用单独呈现；tray 面板 placement 统一在单一物理坐标空间（`monitor_from_point`/`work_area`/`scale_factor`，覆盖 mixed-DPI 与负原点多显示器），placement 单测 8/8。最新全仓复证已通过（`cargo test --workspace` 936 pass/5 ignored、workspace clippy strict pass、前端 Vitest 634 pass、`tsc --noEmit`/build pass、Chromium+WebKit E2E 各 13 pass），macOS rebuilt app+DMG 审计 ad-hoc 通过（SHA-256 60f7d063…，未签名/未公证），Windows 仅 source/CI 合同、无当前实机。它仍不是可发布候选：主工作区本轮 Rust/前端/structure 全量复证受 macOS File Provider `dataless` 文件阻塞，同一候选已于 2026-08-05 在普通副本完成 Cargo 与前端全量复证并全部通过（见 `docs/PLAN.md` 第 13 条）；G6 仅 macOS 本机可执行门通过（PowerShell .ps1 门 fail-closed 未执行），Windows MSVC runner、同 commit 双平台安装包以及 G8 尚未完成；unsigned/unnotarized 与新 ocxlocal 路径的真实 Codex routed acceptance 仍缺失。Headroom/G0-G8 未完成、真实 provider/raw-wire 未验证，公开未签名 prerelease 只有在这些硬门全绿后才允许创建。
 
-### 1.1 发布门禁 G0-G8 状态（2026-08-05 门禁补齐轮）
+### 1.2 历史发布门禁 G0-G8 状态（2026-08-05 门禁补齐轮）
 
 - 门禁聚合：新增 `support/scripts/generate_release_gate_status.py`（跨平台、fail-closed）。任一 gate 非 `passed` 即默认 exit 1；`--report-only` 仅供诊断且仍报告 `release_ready=false`。契约测试 13 项位于 `support/tests/test_release_gate_status_aggregation.py`，并已接入 `run_release_gate_contract_test.ps1` 动态运行。
 - G6 Ops：本机（macOS，无 pwsh）仅 Python 可执行门通过；PowerShell 门（verification/gate_contract/provenance/performance/codec/capability/redaction/cleanup/distribution/handoff/signing）未执行 → 聚合为 `unavailable`/`blocked`。`release-verification-*.json` 缺席即 G6 blocked；“脚本可解析 / metadata-only / unsigned 存在”均不构成通过。
@@ -97,7 +191,7 @@ AI coding agent
 
 ### Headroom 全能力迁移事实
 
-当前固定对照基线为 `headroomlabs-ai/headroom@main` / `0cb72f45b23bdf7129822b16dd1d4cb7d6e0b062`（未发布，2026-08-04 获取）；前一发布基线 `v0.33.0` / `28aa53dc7ca51e687cc719c3fe160f3be50c6570`，历史 `1725cd1f8376828849c0e48fd9008afa25d24fff` 仅用于解释旧证据。当前事实如下：
+当前固定对照基线为 `headroomlabs-ai/headroom` `v0.36.5` / `34a551756222b24ea4bc064f4250b8e7d169daf1`（2026-08-22 发布；2026-08-24 delta 扫描统一，见 `docs/research/HEADROOM_DELTA_LEDGER_2026-08-24.md`）；上一扫描记录 `0cb72f45b23bdf7129822b16dd1d4cb7d6e0b062`（2026-08-04）与历史 `1725cd1f`、`v0.33.0` 仅用于解释旧证据。当前事实如下：
 
 - proxy、显式 route、Ledger、stats/history/metrics、Dashboard/export 已有真实 d-token-owned 基础，但 Provider/Agent 矩阵未完整验收。v0.33 delta 已开始吸收：九类 production codec 现由 Rust-owned declarative compressor registry 统一登记和门控，release evidence 的 codec id 列表由 registry 编译期投影（`production_registry_codec_ids()`），计数无法与登记表漂移；`POST /v1/compress` 使用显式 route/provider/model/protocol 生成 validated candidate body，不发送上游、不持久化请求，并与 MCP 和 TS SDK 共用合同。d-token 不加载 Python entry point 或任意第三方进程内插件，第三方中转只能通过显式 RouteProfile 接入。
 - resolved production path 已接入 `FrozenPrefix → TransformableWindow → ProtectedTail`、route/provider/model-bound cache key、ContentRouter、manifest 与 post-validation。JSON、log、search、build、diff、text、HTML、config、code-compressor 九类 codec 在本地 release probe 中均为 active；每类至少 128 个 property/semantic/rollback cases，negative、budget/cancellation 门零失败。`config-codec` 已进入生产 evidence（registry 第 8 项），且混合/多类型内容已接入 IR-safe section router：`route_mixed_content` 逐 section 走同一 codec/secret/marker/负收益门并字节精确还原（统一 CRLF 保留、混合行尾 fail-closed），`compress_resolved` 与 `/v1/compress` 公共表面会把 closed historical tool result 中的 config 与 mixed 内容按 section 路由；manifest 以 `Mixed` codec 声明并用同一 section router 重推导校验。tool-schema PR-E1/PR-E2（工具表按名排序 + schema key 规范化）已接入 `compress_resolved` 与公共 surface：任一工具携带客户 `cache_control` 时跳过 E1（位置敏感），PR-E3 自动放置 `cache_control` 仍由 proxy 层在 fresh/exact provider cache evidence 门控下执行，engine 不擅自改变客户缓存意图。code-compressor corpus 覆盖 Rust/TS/JS/Python/Go/Java/C/C++。未知、secret、风险和负收益输入继续精确 passthrough。该 evidence 尚未绑定最终 clean candidate 或真实 Provider 质量/延迟，因此 G2 不能据此单独宣布完成。普通输入图片文件压缩明确不在产品范围。
@@ -138,7 +232,7 @@ AI coding agent
 - Smart Learning：多 Agent 会话 metadata 项目发现、有界安全结构索引、项目分析、敏感路径排除、持久化结果恢复，以及带即时反馈、diff/confirm、managed block transaction 与 exact rollback 的文档动作。
 - Codebase Memory（实验性）：固定上游 headless artifact、`dtoken-codebase-memory-launcher`、项目级私有 cache、MCP transaction、Claude Hook、d-token-owned index/UI host、五维状态，以及只读 graph open/start/stop/delete。上游原生 UI、运行时下载、repo persistence 与 Agent-owned 进程停止均保持禁止。
 - Codebase Memory 真实验收：OpenCode 1.14.51 使用官方免费模型经项目事务连接 managed canonical MCP entry；metadata-only receipt 为 initialize=1、tools/list=1、allowed tools/call=3、denied=0，随后项目配置精确恢复，批准仓库未生成 `.codebase-memory/` 或 `artifact.json`。
-- 统一 `OperationDialog` 与本地持久化 `NotificationCenter`；success/info/warning/error/action-required 均可即时占用顶栏 banner。普通成功/信息 5 秒后收起，error/action-required 8 秒后收起；持久 receipt 收起后仍保留在通知中心。安装与连接、Doctor、变更回退、视觉压缩、设置、Smart Learning、日志/安全等正式动作均使用页内中间态与顶部结果通知，失败详情经过统一脱敏并保持简短。
+- 统一 `OperationDialog` 与本地持久化 `NotificationCenter`；success/info/warning/error/action-required 均可即时占用顶栏 banner。普通成功/信息 5 秒后收起，error/action-required 保持可见直到用户处理；普通通知收起后仍保留在通知中心。安装与连接、Doctor、变更回退、视觉压缩、设置、Smart Learning、日志/安全等正式动作均使用页内中间态与顶部结果通知，失败详情经过统一脱敏并保持简短。
 
 OpenCode workload、模型测试、Headroom capability smoke 等开发命令只在 debug build 注册；release build 不注册这些测试入口。
 

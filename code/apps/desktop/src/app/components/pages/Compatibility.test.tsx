@@ -50,7 +50,8 @@ describe("Compatibility evidence boundaries", () => {
 
     render(<Compatibility />);
 
-    expect(await screen.findByText(/^本机实时数据/)).toBeInTheDocument();
+    await screen.findByText("暂无 Agent 能力目录");
+    expect(screen.queryByText(/^本机实时数据/)).not.toBeInTheDocument();
     expect(screen.getByText("暂无 Agent 能力目录")).toBeInTheDocument();
     expect(screen.getByText("暂无本机路由")).toBeInTheDocument();
     expect(screen.getByText("暂无本机项目策略")).toBeInTheDocument();
@@ -104,7 +105,8 @@ describe("Compatibility evidence boundaries", () => {
 
     render(<Compatibility />);
 
-    expect(await screen.findByText(/^本机实时数据/)).toBeInTheDocument();
+    await screen.findAllByText("OpenCode");
+    expect(screen.queryByText(/^本机实时数据/)).not.toBeInTheDocument();
     expect(screen.getAllByText("OpenCode")).not.toHaveLength(0);
     expect(screen.getAllByText("OpenAI")).not.toHaveLength(0);
     expect(screen.getAllByText("主路由")).not.toHaveLength(0);

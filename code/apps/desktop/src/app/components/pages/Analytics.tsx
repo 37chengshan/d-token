@@ -26,7 +26,6 @@ import {
   XAxis,
 } from "recharts";
 import { MetricStrip, Surface } from "../common/Surface";
-import { DataSourceBadge } from "../common/DataSourceBadge";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../ui/tabs";
@@ -41,6 +40,7 @@ import {
 import {
   estimateRequestInputCost,
   loadModelPriceCache,
+  normalizeModelId,
   type ModelPriceCache,
 } from "../../lib/analytics/pricing";
 import { useSessionTab } from "../../lib/sessionTab";
@@ -66,6 +66,13 @@ type AnalyticsRequestPage = {
   warning?: string;
   coverage?: { loaded_limit?: number; complete?: boolean };
   error?: string;
+};
+
+type ModelUsageRow = {
+  label: string;
+  count: number;
+  tokensSaved: number | null;
+  cost: string;
 };
 
 /** Analytics reads the summary evidence only; other slices must not repaint it. */
@@ -237,38 +244,21 @@ export function Analytics() {
     : summaryRevision === requestRevision;
 
   const sourceLabel = analyticsSourceLabel(evidenceState, snapshot.hasRequests, lang);
-  const dataSourceMode = evidenceState === "verified"
-    ? "runtime"
-    : evidenceState === "preview" || evidenceState === "loading"
-      ? "preview"
-      : "unavailable";
+  const nativePageErrorMessage = nativePageError === "invalid_cursor" ? (lang === "zh" ? "记录已更新，已返回第一页。" : "Records changed. Showing the first page.") : nativePageError === "invalid_evidence" ? (lang === "zh" ? "新读取的记录未通过检查，暂时显示上次记录。" : "The new records could not be verified. Showing the previous records.") : (lang === "zh" ? "暂时无法加载请求记录，请检查本地服务后重试。" : "Request records could not be loaded. Check the local service and retry.");
   const requestEvidence = trafficEvidenceAvailable
     ? evidenceState === "stale"
       ? lang === "zh" ? "来自上次验证的 d-token 本地请求记录" : "From the last verified local d-token request records"
       : lang === "zh" ? "来自 d-token 本地请求记录" : "From local d-token request records"
     : sourceLabel;
+  const modelUsageRows = useMemo(
+    () => buildModelUsageRows(snapshot.modelBreakdown, requestRows, priceCache, snapshot.requestCount),
+    [priceCache, requestRows, snapshot.modelBreakdown, snapshot.requestCount],
+  );
 
   return (
     <div className="space-y-4">
-      <div className="flex flex-wrap items-center gap-2">
-        <h1 className="sr-only">{t("an.title")}</h1>
-        <DataSourceBadge mode={dataSourceMode} label={sourceLabel} />
-        <Badge variant={evidenceState === "verified" ? "default" : "secondary"}>
-          {sourceLabel}{hasLastVerifiedEvidence && updatedAt ? ` · ${updatedAt.toLocaleTimeString()}` : ""}
-        </Badge>
-      </div>
-
-      <Surface className="p-3" hover={false}>
-        <div className="flex items-start gap-3">
-          <Activity className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
-          <div>
-            <div className="text-sm font-semibold">{lang === "zh" ? "分析数据状态" : "Analytics data status"}</div>
-            <div className="mt-0.5 text-xs text-muted-foreground">
-              {analyticsStatusDetail(evidenceState, snapshot.hasRequests, lang)}
-            </div>
-          </div>
-        </div>
-      </Surface>
+      <h1 className="sr-only">{t("an.title")}</h1>
+      {evidenceState === "stale" && <p role="status" className="text-xs text-muted-foreground">{lang === "zh" ? "当前显示上次记录，连接恢复后会自动更新。" : "Showing previous records; they update when the connection returns."}</p>}
 
       <Tabs value={tab} onValueChange={setTab}>
         <TabsList>
@@ -334,6 +324,40 @@ export function Analytics() {
               color={snapshot.errorCount > 0 ? "var(--destructive)" : "var(--muted-foreground)"}
             />
           </MetricStrip>
+
+          {!snapshot.hasRequests && requestRows.length === 0 ? (
+            <div data-testid="analytics-empty-state" className="px-4 py-10">
+              <p role={nativePageError ? "alert" : "status"} className="text-sm font-medium">
+                {nativeInitialLoading
+                  ? (lang === "zh" ? "正在读取请求记录…" : "Loading request records…")
+                  : nativePageError
+                    ? nativePageErrorMessage
+                    : (lang === "zh" ? "暂无请求记录" : "No request records yet")}
+              </p>
+              <p className="mt-1 text-xs text-muted-foreground">
+                {lang === "zh" ? "连接编码工具并发送请求后，这里会显示用量、压缩效果和详细记录。" : "Connect a coding tool and send a request to see usage, compression results, and detailed records."}
+              </p>
+            </div>
+          ) : <>
+          <div className="grid gap-3 lg:grid-cols-[minmax(0,1.4fr)_minmax(240px,0.8fr)]">
+            <Surface className="overflow-hidden p-0" hover={false}>
+              <div className="flex items-center justify-between gap-3 border-b border-border/60 px-4 py-3">
+                <h3 className="flex items-center gap-2 text-sm">
+                  <Layers3 className="size-4" />
+                  {lang === "zh" ? "模型使用" : "Model usage"}
+                </h3>
+              </div>
+              <ModelUsageTable rows={modelUsageRows} lang={lang} />
+            </Surface>
+
+            <Surface className="p-4" hover={false}>
+              <h3 className="mb-3 flex items-center gap-2 text-sm">
+                <Bot className="size-4" />
+                {lang === "zh" ? "工具流量" : "Tool traffic"}
+              </h3>
+              <ToolTrafficBars rows={snapshot.agentBreakdown} lang={lang} />
+            </Surface>
+          </div>
 
           {snapshot.warnings.length > 0 && (
             <Surface className="p-3" hover={false}>
@@ -409,7 +433,7 @@ export function Analytics() {
           </Surface>
 
           <div className="grid gap-3 lg:grid-cols-2">
-            <AnalyticsBreakdownCard icon={<Layers3 className="size-4" />} title={lang === "zh" ? "模型" : "Model"} rows={snapshot.modelBreakdown} lang={lang} />
+            <AnalyticsBreakdownCard icon={<Layers3 className="size-4" />} title={lang === "zh" ? "模型明细" : "Model detail"} rows={snapshot.modelBreakdown} lang={lang} />
             <AnalyticsBreakdownCard icon={<ListFilter className="size-4" />} title={lang === "zh" ? "输入协议" : "Input protocol"} rows={snapshot.protocolBreakdown} lang={lang} />
             <AnalyticsBreakdownCard icon={<ListFilter className="size-4" />} title={lang === "zh" ? "项目" : "Project"} rows={snapshot.projectBreakdown} lang={lang} />
             <AnalyticsBreakdownCard icon={<Route className="size-4" />} title={lang === "zh" ? "中转链模式" : "Relay chain mode"} rows={snapshot.chainBreakdown} lang={lang} />
@@ -451,10 +475,10 @@ export function Analytics() {
           </div>
 
           <Surface className="p-4" hover={false}>
-            <div className="mb-3 flex items-center justify-between gap-2"><h3 className="text-sm">{lang === "zh" ? "请求明细（有界分页）" : "Request detail (bounded pages)"}</h3><span className="text-xs text-muted-foreground">{requestTotal > 0 ? `${requestTotal} ${lang === "zh" ? (nativePagination ? "条 runtime 记录" : "条当前快照") : (nativePagination ? "runtime records" : "in current snapshot")}` : sourceLabel}</span></div>
-            {nativePageError && <div role="status" className="mb-2 text-xs text-amber-600 dark:text-amber-400">{nativePageError === "invalid_cursor" ? (lang === "zh" ? "分页游标已失效，已显示第一页数据。" : "The page cursor expired. First-page data is shown.") : nativePageError === "invalid_evidence" ? (lang === "zh" ? "分页结果缺少可信的来源与时效标记，已显示当前摘要快照。" : "The page result lacks trusted source and freshness markers. The current summary snapshot is shown.") : (lang === "zh" ? "请求分页暂不可用，已显示当前摘要快照。" : "Request pagination is unavailable. The current summary snapshot is shown.")}</div>}
+            <div className="mb-3 flex items-center justify-between gap-2"><h3 className="text-sm">{lang === "zh" ? "请求明细" : "Request detail"}</h3><span className="text-xs text-muted-foreground">{requestTotal > 0 ? `${requestTotal} ${lang === "zh" ? (nativePagination ? "条 runtime 记录" : "条当前快照") : (nativePagination ? "runtime records" : "in current snapshot")}` : sourceLabel}</span></div>
+            {nativePageError && <div role="status" className="mb-2 text-xs text-amber-600 dark:text-amber-400">{nativePageErrorMessage}</div>}
             {nativeRequestPage && <div className="mb-2 text-xs text-muted-foreground">{lang === "zh" ? `明细源 d-token runtime · fresh · r${requestRevision}${summaryRevision === null ? "" : `；摘要 r${summaryRevision}`}${requestRevisionAligned === false ? "。runtime 在两次读取间已更新，明细与摘要需分别解读。" : ""}` : `Detail source d-token runtime · fresh · r${requestRevision}${summaryRevision === null ? "" : `; summary r${summaryRevision}`}${requestRevisionAligned === false ? ". The runtime changed between reads; interpret detail and summary as separate snapshots." : ""}`}</div>}
-            {nativeInitialLoading ? <div role="status" className="rounded-lg border border-dashed border-border/60 bg-muted/15 px-3 py-3 text-xs text-muted-foreground">{lang === "zh" ? "正在加载有界请求明细…" : "Loading bounded request detail…"}</div> : visibleRequestRows.length > 0 ? <>
+            {nativeInitialLoading ? <div role="status" className="rounded-lg border border-dashed border-border/60 bg-muted/15 px-3 py-3 text-xs text-muted-foreground">{lang === "zh" ? "正在读取请求记录…" : "Loading request records…"}</div> : visibleRequestRows.length > 0 ? <>
               <div className="overflow-x-auto">
                 <table className="min-w-[720px] w-full text-sm">
                   <thead>
@@ -480,6 +504,7 @@ export function Analytics() {
               {requestTotal > REQUEST_PAGE_SIZE && <RequestPaginationBar lang={lang} currentRequestPage={currentRequestPage} requestPageCount={requestPageCount} requestHasMore={requestHasMore} nativePageStatus={nativePageStatus} onPrevious={() => nativePagination ? setNativePendingPageIndex(Math.max(0, currentRequestPage - 1)) : setRequestPage(Math.max(0, currentRequestPage - 1))} onNext={() => { if (nativePagination) { const next = nativeRequestPage.next_cursor; if (!next) return; setNativeCursors((cursors) => [...cursors.slice(0, nativePageIndex + 1), next]); setNativePendingPageIndex(nativePageIndex + 1); } else { setRequestPage(Math.min(requestPageCount - 1, currentRequestPage + 1)); } }} />}
             </> : requestRows.length > 0 ? <div className="rounded-lg border border-dashed border-border/60 bg-muted/15 px-3 py-2 text-xs text-muted-foreground">{lang === "zh" ? "当前快照少于一页；请求维度已在上方分布中展示。" : "The current snapshot fits on one page; request dimensions are shown in the breakdowns above."}</div> : <NoData title={lang === "zh" ? "暂无请求明细" : "No request detail"} detail={lang === "zh" ? "此列表只展示 runtime 提供的有界快照，不代表全量历史" : "This table shows only the bounded runtime snapshot, not full history"} />}
           </Surface>
+          </>}
         </TabsContent>
 
         <TabsContent value="history" className="mt-3 space-y-4">
@@ -589,11 +614,6 @@ export function Analytics() {
                   <ScrollText className="size-4" />
                   {lang === "zh" ? "请求日志" : "Request log"}
                 </h3>
-                <p className="mt-1 text-xs text-muted-foreground">
-                  {lang === "zh"
-                    ? "逐条展示 runtime 真实请求记录；缺失字段保持为空，不估算、不补 0。"
-                    : "One real runtime request record per line; missing fields stay empty, never estimated or zero-filled."}
-                </p>
               </div>
               <span className="text-xs text-muted-foreground">
                 {requestTotal > 0
@@ -627,9 +647,9 @@ export function Analytics() {
                 {lang === "zh" ? `显示 ${filteredLogRows.length} / ${requestRows.length}` : `Showing ${filteredLogRows.length} / ${requestRows.length}`}
               </div>
             </div>
-            {nativePageError && <div role="status" className="mb-2 text-xs text-amber-600 dark:text-amber-400">{nativePageError === "invalid_cursor" ? (lang === "zh" ? "分页游标已失效，已显示第一页数据。" : "The page cursor expired. First-page data is shown.") : nativePageError === "invalid_evidence" ? (lang === "zh" ? "分页结果缺少可信的来源与时效标记，已显示当前摘要快照。" : "The page result lacks trusted source and freshness markers. The current summary snapshot is shown.") : (lang === "zh" ? "请求分页暂不可用，已显示当前摘要快照。" : "Request pagination is unavailable. The current summary snapshot is shown.")}</div>}
+            {nativePageError && <div role="status" className="mb-2 text-xs text-amber-600 dark:text-amber-400">{nativePageErrorMessage}</div>}
             {nativeRequestPage && <div className="mb-2 text-xs text-muted-foreground">{lang === "zh" ? `明细源 d-token runtime · fresh · r${requestRevision}${summaryRevision === null ? "" : `；摘要 r${summaryRevision}`}${requestRevisionAligned === false ? "。runtime 在两次读取间已更新，明细与摘要需分别解读。" : ""}` : `Detail source d-token runtime · fresh · r${requestRevision}${summaryRevision === null ? "" : `; summary r${summaryRevision}`}${requestRevisionAligned === false ? ". The runtime changed between reads; interpret detail and summary as separate snapshots." : ""}`}</div>}
-            {nativeInitialLoading ? <div role="status" className="rounded-lg border border-dashed border-border/60 bg-muted/15 px-3 py-3 text-xs text-muted-foreground">{lang === "zh" ? "正在加载有界请求明细…" : "Loading bounded request detail…"}</div> : visibleLogRows.length > 0 ? <>
+            {nativeInitialLoading ? <div role="status" className="rounded-lg border border-dashed border-border/60 bg-muted/15 px-3 py-3 text-xs text-muted-foreground">{lang === "zh" ? "正在读取请求记录…" : "Loading request records…"}</div> : visibleLogRows.length > 0 ? <>
               <div data-testid="analytics-log-grid" className="grid min-w-0 gap-2">
                 {visibleLogRows.map((row, index) => {
                   const rowKey = `${row.request_id ?? "row"}-${row.timestamp_ms ?? index}`;
@@ -677,6 +697,87 @@ function AnalyticsBreakdownCard({ icon, title, rows, lang }: { icon: React.React
       <h3 className="mb-3 flex items-center gap-2 text-sm">{icon}{title}</h3>
       <BreakdownList rows={rows} lang={lang} />
     </Surface>
+  );
+}
+
+function ModelUsageTable({ rows, lang }: { rows: ModelUsageRow[]; lang: "zh" | "en" }) {
+  if (rows.length === 0) {
+    return (
+      <div className="p-4">
+        <NoData
+          title={lang === "zh" ? "暂无模型记录" : "No model records"}
+          detail={lang === "zh" ? "收到真实请求后按模型展示" : "Models appear after real requests arrive"}
+        />
+      </div>
+    );
+  }
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full min-w-[520px] text-sm" data-testid="analytics-model-table">
+        <thead>
+          <tr className="border-b border-border/50 text-left text-xs text-muted-foreground">
+            <th className="px-4 py-2 font-normal">{lang === "zh" ? "模型" : "Model"}</th>
+            <th className="px-4 py-2 text-right font-normal">{lang === "zh" ? "请求" : "Requests"}</th>
+            <th className="px-4 py-2 text-right font-normal">{lang === "zh" ? "节省 Token" : "Saved tokens"}</th>
+            <th className="px-4 py-2 text-right font-normal">{lang === "zh" ? "估算节省费用" : "Estimated savings"}</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((row) => (
+            <tr key={row.label} className="border-b border-border/30 last:border-0">
+              <td className="max-w-64 truncate px-4 py-2.5 font-medium" title={row.label}>{row.label}</td>
+              <td className="px-4 py-2.5 text-right tabular-nums">{nf(row.count)}</td>
+              <td className="px-4 py-2.5 text-right tabular-nums">{optionalNumber(row.tokensSaved)}</td>
+              <td className="px-4 py-2.5 text-right tabular-nums">{row.cost}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function ToolTrafficBars({ rows, lang }: { rows: BreakdownItem[]; lang: "zh" | "en" }) {
+  if (rows.length === 0) {
+    return (
+      <NoData
+        title={lang === "zh" ? "暂无工具流量" : "No tool traffic"}
+        detail={lang === "zh" ? "真实请求出现后显示工具占比" : "Tool share appears after real requests arrive"}
+      />
+    );
+  }
+  const total = rows.reduce((sum, row) => sum + row.count, 0);
+  return (
+    <div className="space-y-2.5" data-testid="analytics-tool-traffic">
+      {rows.map((row) => {
+        const share = total > 0 ? (row.count / total) * 100 : 0;
+        return (
+          <div key={row.label} className="min-w-0">
+            <div className="flex items-center justify-between gap-3 text-sm">
+              <span className="min-w-0 truncate">{row.label}</span>
+              <span className="shrink-0 text-xs tabular-nums text-muted-foreground">
+                {share.toFixed(1)}% · {nf(row.count)}
+              </span>
+            </div>
+            <div
+              className="mt-1.5 h-2 overflow-hidden rounded-full bg-muted"
+              role="meter"
+              aria-label={`${row.label} ${share.toFixed(1)}%`}
+              aria-valuemin={0}
+              aria-valuemax={100}
+              aria-valuenow={Number(share.toFixed(1))}
+            >
+              <div
+                aria-hidden
+                role="presentation"
+                className="h-full rounded-full bg-[var(--chart-accent)] transition-[width] duration-300 motion-reduce:transition-none"
+                style={{ width: `${share}%` }}
+              />
+            </div>
+          </div>
+        );
+      })}
+    </div>
   );
 }
 
@@ -774,6 +875,41 @@ function metricDetail(value: number | null, fallback: string, lang: "zh" | "en")
   return value === null
     ? fallback
     : lang === "zh" ? "按本地请求日志中的 Token 字段估算" : "Estimated from token fields in local request logs";
+}
+
+function buildModelUsageRows(
+  breakdown: BreakdownItem[],
+  requestRows: RequestLogRow[],
+  priceCache: ModelPriceCache | null,
+  displayedRequestCount: number,
+): ModelUsageRow[] {
+  return breakdown.map((item) => ({
+    label: item.label,
+    count: item.count,
+    tokensSaved: item.tokensSaved,
+    cost: modelCostLabel(item, requestRows, priceCache, displayedRequestCount),
+  }));
+}
+
+function modelCostLabel(item: BreakdownItem, requestRows: RequestLogRow[], priceCache: ModelPriceCache | null, displayedRequestCount: number): string {
+  if (!priceCache) return unavailableValue;
+  if (requestRows.length === 0 || requestRows.length !== displayedRequestCount) return unavailableValue;
+  const canonical = normalizeModelId(item.label);
+  if (!canonical) return unavailableValue;
+  const matchingRows = requestRows.filter((row) => normalizeModelId(row.model_id ?? row.model) === canonical);
+  if (matchingRows.length === 0 || matchingRows.length !== item.count) return unavailableValue;
+  let currency: string | null = null;
+  let savedCost = 0;
+  for (const row of matchingRows) {
+    const estimate = estimateRequestInputCost(priceCache, row.model_id ?? row.model, row.input_tokens_before, row.input_tokens_after);
+    if (!estimate.available) return unavailableValue;
+    if (currency !== null && currency !== estimate.currency) return unavailableValue;
+    currency = estimate.currency;
+    savedCost += estimate.savedCost;
+  }
+  if (currency === null) return unavailableValue;
+  const symbol = currency === "CNY" ? "¥" : "$";
+  return `${symbol}${savedCost.toFixed(6)}`;
 }
 
 export function applyRuntimeAggregate(

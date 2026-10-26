@@ -1,9 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
+  clearInstallHandoff,
+  consumeInstallHandoff,
   dispatchInstallMachine,
   getInstallMachineState,
   initialInstallMachineState,
   installMachineReducer,
+  requestInstallHandoff,
   resetInstallMachineState,
   runInstallAgentBatch,
   subscribeInstallMachine,
@@ -67,6 +70,33 @@ const snapshot = (revision: string, agentBinding = binding()): ConnectionSetupSn
 });
 
 describe("installMachine", () => {
+
+  it("stores an in-memory install handoff for one consume and clears it on navigation/reset", () => {
+    const handoff = requestInstallHandoff({
+      agentIds: ["opencode", "codex", "opencode", ""],
+      discoveryRevision: "handoff-r1",
+      source: "onboarding-start-setup",
+      requestedAtMs: 42,
+    });
+
+    expect(handoff).toEqual({
+      agentIds: ["opencode", "codex"],
+      discoveryRevision: "handoff-r1",
+      source: "onboarding-start-setup",
+      requestedAtMs: 42,
+    });
+    expect(consumeInstallHandoff()).toEqual(handoff);
+    expect(consumeInstallHandoff()).toBeNull();
+
+    requestInstallHandoff({ agentIds: ["opencode"], discoveryRevision: "handoff-r2", source: "onboarding-start-setup" });
+    clearInstallHandoff("navigation");
+    expect(consumeInstallHandoff()).toBeNull();
+
+    requestInstallHandoff({ agentIds: ["codex"], discoveryRevision: "handoff-r3", source: "onboarding-start-setup" });
+    resetInstallMachineState();
+    expect(consumeInstallHandoff()).toBeNull();
+  });
+
   it("keeps transaction progress when the page subscriber unmounts and remounts", () => {
     resetInstallMachineState();
     const firstPageUpdates: string[] = [];
@@ -185,7 +215,7 @@ describe("installMachine", () => {
     expect(state.snapshot?.agent_bindings).toHaveLength(1);
   });
 
-  it("auto-includes a credential-gated Agent and blocks readiness until the credential is added", () => {
+  it("keeps a credential-gated Agent selected without blocking ready siblings", () => {
     const current = snapshot("r1");
     current.agent_bindings.push(binding({
       agent_id: "second-agent",
@@ -194,59 +224,33 @@ describe("installMachine", () => {
       resolved_candidate: candidate({ id: "second", auth_mode: "unavailable", agent_ids: ["second-agent"] }),
     }));
     let state = installMachineReducer(initialInstallMachineState, { type: "DISCOVERED", snapshot: current });
-    expect(state.phase).toBe("needs-credential");
+    expect(state.phase).toBe("ready");
     expect(state.selectedAgentIds).toEqual(["opencode", "second-agent"]);
     state = installMachineReducer(state, { type: "DISCOVERED", snapshot: current });
-    expect(state.phase).toBe("needs-credential");
+    expect(state.phase).toBe("ready");
     expect(state.selectedAgentIds).toEqual(["opencode", "second-agent"]);
   });
 
-  it("lets the user opt an Agent out of the automatic batch and keeps it out across polling", () => {
+  it("preserves explicit deselection across a refreshed discovery revision", () => {
     const current = snapshot("r1");
     current.agent_bindings.push(binding({
-      agent_id: "second-agent",
-      agent_name: "Second Agent",
-      resolution: "auto-resolved",
-      resolved_candidate: candidate({ id: "second", models: ["model-b"], agent_ids: ["second-agent"] }),
+      agent_id: "codex",
+      agent_name: "Codex",
+      resolved_candidate: candidate({ id: "codex-provider", agent_ids: ["codex"] }),
     }));
     let state = installMachineReducer(initialInstallMachineState, { type: "DISCOVERED", snapshot: current });
-    expect(state.selectedAgentIds).toEqual(["opencode", "second-agent"]);
+    expect(state.selectedAgentIds).toEqual(["opencode", "codex"]);
 
-    // User cancels second-agent; it leaves the batch.
-    state = installMachineReducer(state, { type: "TOGGLE_AGENT", agentId: "second-agent" });
+    state = installMachineReducer(state, { type: "TOGGLE_AGENT", agentId: "codex" });
     expect(state.selectedAgentIds).toEqual(["opencode"]);
 
-    // A later identical poll must not resurrect the opt-out.
-    state = installMachineReducer(state, { type: "DISCOVERED", snapshot: current });
+    const refreshed = { ...current, revision: "r2" };
+    state = installMachineReducer(state, { type: "DISCOVERED", snapshot: refreshed });
     expect(state.selectedAgentIds).toEqual(["opencode"]);
 
-    // User can opt it back in.
-    state = installMachineReducer(state, { type: "TOGGLE_AGENT", agentId: "second-agent" });
-    expect(state.selectedAgentIds).toEqual(["opencode", "second-agent"]);
-  });
-
-  it("cannot toggle an Agent that is not part of the selectable batch", () => {
-    const state = installMachineReducer(initialInstallMachineState, { type: "DISCOVERED", snapshot: snapshot("r1") });
-    // A non-installed / non-actionable Agent cannot be toggled into the batch.
-    const next = installMachineReducer(state, { type: "TOGGLE_AGENT", agentId: "missing-agent" });
-    expect(next).toBe(state);
-    expect(next.selectedAgentIds).toEqual(["opencode"]);
-  });
-
-  it("resets to the full automatic batch when the discovery revision changes", () => {
-    const current = snapshot("r1");
-    current.agent_bindings.push(binding({
-      agent_id: "second-agent",
-      agent_name: "Second Agent",
-      resolution: "auto-resolved",
-      resolved_candidate: candidate({ id: "second", models: ["model-b"], agent_ids: ["second-agent"] }),
-    }));
-    let state = installMachineReducer(initialInstallMachineState, { type: "DISCOVERED", snapshot: current });
-    state = installMachineReducer(state, { type: "TOGGLE_AGENT", agentId: "second-agent" });
-    expect(state.selectedAgentIds).toEqual(["opencode"]);
-
-    state = installMachineReducer(state, { type: "DISCOVERED", snapshot: snapshot("r2", current.agent_bindings[0]) });
-    expect(state.selectedAgentIds).toEqual(["opencode"]);
+    state = installMachineReducer(state, { type: "SET_AGENT_SELECTION", agentIds: [] });
+    expect(state.selectedAgentIds).toEqual([]);
+    expect(state.phase).toBe("partial");
   });
 
   it("keeps a non-one-click Agent in the already-connected state across refreshes", () => {
@@ -305,11 +309,12 @@ describe("installMachine", () => {
     ]);
   });
 
-  it("keeps a successful Agent successful when a later Agent fails verification", async () => {
+  it("rolls back only the Agent that fails verification and keeps later Agents independent", async () => {
     const rolledBack: string[] = [];
     const result = await runInstallAgentBatch([
       { agentId: "opencode", agentName: "OpenCode", alreadyConnected: false, reviewDigest: "digest-open" },
       { agentId: "codex", agentName: "Codex", alreadyConnected: false, reviewDigest: "digest-codex" },
+      { agentId: "claude-code", agentName: "Claude Code", alreadyConnected: false, reviewDigest: "digest-claude" },
     ], {
       apply: async (item) => ({ ok: true, transactionId: `tx-${item.agentId}`, summary: "applied" }),
       verify: async (receipt) => ({ ok: receipt.agentId !== "codex", summary: receipt.agentId === "codex" ? "source hash changed" : "verified" }),
@@ -319,59 +324,28 @@ describe("installMachine", () => {
       },
     });
 
-    // P0.0.10.5: one Agent's failure only rolls back that Agent's own
-    // incomplete writes; the already-successful Agent stays successful.
-    expect(result.ok).toBe(false);
-    expect(result.error).toBe("source hash changed");
-    expect(rolledBack).toEqual(["codex"]);
-    expect(result.receipts).toEqual([
-      expect.objectContaining({ agentId: "opencode", state: "verified", transactionId: "tx-opencode" }),
-      expect.objectContaining({ agentId: "codex", state: "rolled-back" }),
-    ]);
-  });
-
-  it("does not roll back a failed Agent's applied state when rollback fails, and keeps success intact", async () => {
-    const result = await runInstallAgentBatch([
-      { agentId: "opencode", agentName: "OpenCode", alreadyConnected: false, reviewDigest: "digest-open" },
-      { agentId: "codex", agentName: "Codex", alreadyConnected: false, reviewDigest: "digest-codex" },
-    ], {
-      apply: async (item) => ({ ok: true, transactionId: `tx-${item.agentId}`, summary: "applied" }),
-      verify: async (receipt) => ({ ok: receipt.agentId !== "codex", summary: receipt.agentId === "codex" ? "verify failed" : "verified" }),
-      rollback: async (receipt) => receipt.agentId === "codex"
-        ? { ok: false, summary: "rollback failed" }
-        : { ok: true, summary: "restored" },
-    });
-
-    expect(result.ok).toBe(false);
-    // codex is marked rollback-failed (not rolled-back), opencode stays verified.
-    expect(result.receipts).toEqual([
-      expect.objectContaining({ agentId: "opencode", state: "verified" }),
-      expect.objectContaining({ agentId: "codex", state: "rollback-failed" }),
-    ]);
-  });
-
-  it("rolls back only the failing Agent when a later Agent fails verification", async () => {
-    const rolledBack: string[] = [];
-    const result = await runInstallAgentBatch([
-      { agentId: "opencode", agentName: "OpenCode", alreadyConnected: false, reviewDigest: "digest-open" },
-      { agentId: "codex", agentName: "Codex", alreadyConnected: false, reviewDigest: "digest-codex" },
-    ], {
-      apply: async (item) => ({ ok: true, transactionId: `tx-${item.agentId}`, summary: "applied" }),
-      verify: async (receipt) => ({ ok: receipt.agentId !== "codex", summary: receipt.agentId === "codex" ? "source hash changed" : "verified" }),
-      rollback: async (receipt) => {
-        rolledBack.push(receipt.agentId);
-        return { ok: true, summary: "restored" };
-      },
-    });
-
-    // P0.0.10.5: only the failing Agent's own write is rolled back; the
-    // already-successful Agent keeps its verified state.
     expect(result.ok).toBe(false);
     expect(result.error).toBe("source hash changed");
     expect(rolledBack).toEqual(["codex"]);
     expect(result.receipts).toEqual([
       expect.objectContaining({ agentId: "opencode", state: "verified" }),
       expect.objectContaining({ agentId: "codex", state: "rolled-back" }),
+      expect.objectContaining({ agentId: "claude-code", state: "verified" }),
     ]);
+  });
+
+  it("recovers a partial apply receipt before continuing with the next Agent", async () => {
+    const restored: string[] = [];
+    const result = await runInstallAgentBatch([
+      { agentId: "opencode", agentName: "OpenCode", alreadyConnected: false, reviewDigest: "open" },
+      { agentId: "codex", agentName: "Codex", alreadyConnected: false, reviewDigest: "codex" },
+    ], {
+      apply: async (item) => ({ ok: item.agentId !== "opencode", transactionId: `tx-${item.agentId}`, summary: "partial apply" }),
+      verify: async () => ({ ok: true, summary: "verified" }),
+      rollback: async (receipt) => { restored.push(receipt.transactionId!); return { ok: true, summary: "restored" }; },
+    });
+    expect(result.ok).toBe(false);
+    expect(restored).toEqual(["tx-opencode"]);
+    expect(result.receipts.map((receipt) => receipt.state)).toEqual(["rolled-back", "verified"]);
   });
 });

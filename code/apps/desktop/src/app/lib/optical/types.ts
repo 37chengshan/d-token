@@ -40,10 +40,6 @@ export type OpticalCapabilities = {
   artifact_post_validation?: boolean;
   signed_multimodal_accounting?: boolean;
   capability_attestation_required?: boolean;
-  /** Tool-graph compression: deterministic tool-set normalization (PR-E1/E2)
-   *  plus byte-identical duplicate dedup (PR-E4). Metadata-only capability
-   *  flag, driven by the runtime compressor registry. */
-  tool_schema_normalization?: boolean;
 };
 
 export type OpticalLifecycle = {

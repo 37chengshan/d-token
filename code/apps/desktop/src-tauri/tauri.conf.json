@@ -13,7 +13,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "d-token Control Plane",
+        "title": "d-token",
         "width": 1180,
         "height": 780,
         "minWidth": 920,

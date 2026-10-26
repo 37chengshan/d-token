@@ -3,7 +3,6 @@ import { Activity, Bot, CircleAlert, Gauge, Route, Server } from "lucide-react";
 import { loadModelPriceCache, type ModelPriceCache } from "../../lib/analytics/pricing";
 import { isTauriRuntime } from "../../lib/native";
 import { MetricStrip, Surface } from "../common/Surface";
-import { DataSourceBadge } from "../common/DataSourceBadge";
 import { Heatmap } from "../common/Heatmap";
 import { useI18n, useT, type Lang } from "../../lib/i18n";
 import type { PageId } from "../../lib/nav";
@@ -108,13 +107,7 @@ export function Overview(_props: { setPage: (p: PageId) => void }) {
   const { stats, compressionAvailable, trafficAvailable, sourceLabel: unavailableDetail } = runtime;
 
   return <div className="overview-page space-y-4">
-    <div className="flex flex-wrap items-center justify-end gap-2">
-      <h1 className="sr-only">{t("ov.title")}</h1>
-      <div className="flex flex-wrap items-center justify-end gap-2">
-        <DataSourceBadge mode={evidenceState === "verified" ? "runtime" : evidenceState === "preview" || evidenceState === "loading" ? "preview" : "unavailable"} label={overviewEvidenceLabel(evidenceState, lang)} />
-        <Badge variant={evidenceState === "verified" ? "default" : "secondary"}>{runtime.sourceLabel}{(evidenceState === "verified" || evidenceState === "stale") && updatedAt ? ` · ${updatedAt.toLocaleTimeString()}` : ""}</Badge>
-      </div>
-    </div>
+    <h1 className="sr-only">{t("ov.title")}</h1>
 
     <MetricStrip data-overview-section="kpis" data-testid="overview-kpis">
       <OverviewKpi label={t("ov.routedRequests")} value={trafficAvailable ? fmt(stats.requestCount) : "—"} detail={trafficAvailable ? (lang === "zh" ? "来自 d-token 本地请求记录" : "From local d-token request records") : unavailableDetail} icon={Activity} />

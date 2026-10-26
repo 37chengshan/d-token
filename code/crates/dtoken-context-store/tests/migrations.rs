@@ -24,10 +24,10 @@ fn temp_db() -> std::path::PathBuf {
 fn migration_is_idempotent_and_schema_has_no_raw_content_columns() {
     let path = temp_db();
     let store = ContextStore::open(&path).expect("open store");
-    assert_eq!(store.schema_version().unwrap(), 7);
+    assert_eq!(store.schema_version().unwrap(), 8);
     drop(store);
     let store = ContextStore::open(&path).expect("reopen store");
-    assert_eq!(store.schema_version().unwrap(), 7);
+    assert_eq!(store.schema_version().unwrap(), 8);
 
     for table in store.table_names().unwrap() {
         for column in store.column_names(&table).unwrap() {
@@ -112,7 +112,7 @@ fn legacy_v1_store_is_upgraded_without_recreating_existing_tables() {
     drop(connection);
 
     let store = ContextStore::open(&path).expect("upgrade v1 store");
-    assert_eq!(store.schema_version().unwrap(), 7);
+    assert_eq!(store.schema_version().unwrap(), 8);
     assert!(store
         .table_names()
         .unwrap()
@@ -589,7 +589,7 @@ fn v3_store_migrates_to_v7_without_losing_provider_cache_observations() {
 
     let store = ContextStore::open(&path).expect("migrate v3 store");
 
-    assert_eq!(store.schema_version().unwrap(), 7);
+    assert_eq!(store.schema_version().unwrap(), 8);
     let count = rusqlite::Connection::open(&path)
         .unwrap()
         .query_row(
@@ -646,7 +646,7 @@ fn v4_project_wide_share_grants_are_revoked_during_session_scope_migration() {
     }
 
     let store = ContextStore::open(&path).expect("migrate v4 store");
-    assert_eq!(store.schema_version().unwrap(), 7);
+    assert_eq!(store.schema_version().unwrap(), 8);
     let connection = rusqlite::Connection::open(&path).unwrap();
     let (session_id, revoked_at_ms): (String, Option<u64>) = connection
         .query_row(

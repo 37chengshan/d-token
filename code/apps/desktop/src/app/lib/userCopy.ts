@@ -44,7 +44,16 @@ export function presentOperationFailure(
       details: translateCopy("operation.statusCode", lang, { code: "NATIVE_UNAVAILABLE" }),
     };
   }
-  if (normalized.includes("source-config-changed") || normalized.includes("stale")) {
+  if (normalized.includes("upstream_http_429") || /\b(?:http|status)[_: ]+429\b/.test(normalized) || normalized.includes("rate_limit") || normalized.includes("too many requests")) {
+    return failure("operation.failure.rateLimited", "RATE_LIMITED");
+  }
+  if (normalized.includes("provider_rate_or_timeout")) {
+    return failure("operation.failure.rateOrTimeout", "PROVIDER_BUSY");
+  }
+  if (normalized.includes("timeout") || normalized.includes("timed out")) {
+    return failure("operation.failure.timeout", "REQUEST_TIMEOUT");
+  }
+  if (normalized.includes("source-config-changed") || normalized.includes("stale") || normalized.includes("changed after review") || normalized.includes("changed outside d-token")) {
     return failure("operation.failure.configChanged", "CONFIG_CHANGED");
   }
   if ((normalized.includes("port") || normalized.includes("address") || normalized.includes("bind"))

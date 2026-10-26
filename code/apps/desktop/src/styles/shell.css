@@ -37,16 +37,13 @@
 }
 
 .shell-workspace {
-  grid-template-rows: 48px auto minmax(0, 1fr);
+  grid-template-rows: 48px minmax(0, 1fr);
   margin: 18px 18px 18px 0;
   border-radius: 12px;
 }
 
 .notification-center {
   position: relative;
-}
-.shell-notification-slot {
-  min-width: 0;
 }
 .notification-unread-dot {
   position: absolute;
@@ -59,9 +56,6 @@
   background: #e14b4b;
 }
 .notification-popover {
-  position: absolute;
-  top: calc(100% + 8px);
-  right: 0;
   z-index: 80;
   width: min(360px, calc(100vw - 32px));
   overflow: hidden;
@@ -100,30 +94,69 @@
 [data-level="action-required"] .notification-level-dot {
   background: #df4b4b;
 }
-.notification-banner {
-  position: relative;
-  z-index: 28;
-  display: flex;
-  min-width: 0;
-  align-items: center;
+.notification-toasts {
+  position: fixed;
+  right: max(20px, env(safe-area-inset-right));
+  bottom: max(64px, env(safe-area-inset-bottom));
+  z-index: 100;
+  display: grid;
   gap: 8px;
-  border-bottom: 1px solid var(--border);
-  background: var(--card);
-  padding: 7px 16px;
+  width: min(380px, calc(100vw - 32px));
+  max-height: calc(100vh - 80px);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  pointer-events: none;
+}
+.notification-toast {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--popover);
+  color: var(--popover-foreground);
+  box-shadow: 0 2px 6px rgba(38, 32, 24, 0.07), 0 10px 24px rgba(38, 32, 24, 0.05);
   font-size: 12px;
+  line-height: 1.5;
+  pointer-events: auto;
+  animation: notification-toast-enter 160ms ease-out both;
 }
-.notification-banner[data-level="warning"] {
-  background: color-mix(in srgb, #d58a13 8%, var(--card));
+.notification-toast[data-state="closing"] {
+  animation: notification-toast-leave 160ms ease-out both;
+  pointer-events: none;
 }
-.notification-banner[data-level="error"],
-.notification-banner[data-level="action-required"] {
-  background: color-mix(in srgb, #df4b4b 7%, var(--card));
+.notification-toast-icon { width: 17px; height: 17px; flex: 0 0 auto; margin-top: 2px; color: var(--interaction-accent); }
+.notification-toast[data-level="success"] .notification-toast-icon { color: #3c9168; }
+.notification-toast[data-level="warning"] .notification-toast-icon { color: #ad751f; }
+.notification-toast[data-level="error"] .notification-toast-icon,
+.notification-toast[data-level="action-required"] .notification-toast-icon { color: #c7554b; }
+.notification-toast-copy { min-width: 0; flex: 1; overflow-wrap: anywhere; }
+.notification-toast-copy strong { font-weight: 600; }
+.notification-toast-copy p { margin: 2px 0 0; color: var(--muted-foreground); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.notification-toast-view, .notification-toast-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  min-height: 26px;
+  margin-top: -3px;
+  padding: 4px;
+  border-radius: 5px;
+  color: var(--muted-foreground);
+  transition: color 160ms ease-out, background-color 160ms ease-out;
 }
-.notification-banner[data-level="success"] {
-  background: color-mix(in srgb, #22a46b 7%, var(--card));
-}
-.notification-banner[data-level="info"] {
-  background: color-mix(in srgb, var(--primary) 5%, var(--card));
+.notification-toast-view:hover, .notification-toast-close:hover { background: var(--muted); color: var(--foreground); }
+.notification-toast-view:focus-visible, .notification-toast-close:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
+.notification-toast-view:active, .notification-toast-close:active { background: var(--interaction-soft); }
+@keyframes notification-toast-enter { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: translateY(0); } }
+@keyframes notification-toast-leave { from { opacity: 1; transform: translateY(0); } to { opacity: 0; transform: translateY(3px); } }
+@media (prefers-reduced-motion: reduce) {
+  .notification-toast, .notification-toast[data-state="closing"] { animation: none; }
+  .notification-toast[data-state="closing"] { opacity: 0; }
+  .notification-toast-view, .notification-toast-close { transition: none; }
 }
 
 .is-sidebar-collapsed .shell-workspace {
@@ -335,7 +368,12 @@
   transition-delay: 120ms;
 }
 
-/* --- install: arrow drop + tray catch --- */
+/* --- install & configuration: arrow drop + tray catch --- */
+.nav-motion-item:hover [data-motion-id="configuration"] .icon-download-arrow,
+.nav-motion-item:focus-visible [data-motion-id="configuration"] .icon-download-arrow,
+.nav-motion-item
+  [data-motion-id="configuration"][data-motion-play="true"]
+  .icon-download-arrow,
 .nav-motion-item:hover [data-motion-id="install"] .icon-download-arrow,
 .nav-motion-item:focus-visible [data-motion-id="install"] .icon-download-arrow,
 .nav-motion-item
@@ -343,6 +381,11 @@
   .icon-download-arrow {
   transform: translateY(5px);
 }
+.nav-motion-item:hover [data-motion-id="configuration"] .icon-download-tray,
+.nav-motion-item:focus-visible [data-motion-id="configuration"] .icon-download-tray,
+.nav-motion-item
+  [data-motion-id="configuration"][data-motion-play="true"]
+  .icon-download-tray,
 .nav-motion-item:hover [data-motion-id="install"] .icon-download-tray,
 .nav-motion-item:focus-visible [data-motion-id="install"] .icon-download-tray,
 .nav-motion-item
@@ -399,7 +442,12 @@
   transform: translateY(2px) scale(1.2);
 }
 
-/* --- analytics: bars grow --- */
+/* --- analytics & analysis-logs: bars grow --- */
+.nav-motion-item:hover [data-motion-id="analysis-logs"] .icon-bar-1,
+.nav-motion-item:focus-visible [data-motion-id="analysis-logs"] .icon-bar-1,
+.nav-motion-item
+  [data-motion-id="analysis-logs"][data-motion-play="true"]
+  .icon-bar-1,
 .nav-motion-item:hover [data-motion-id="analytics"] .icon-bar-1,
 .nav-motion-item:focus-visible [data-motion-id="analytics"] .icon-bar-1,
 .nav-motion-item
@@ -408,6 +456,11 @@
   transform: scaleY(1.55);
   transition-delay: 0ms;
 }
+.nav-motion-item:hover [data-motion-id="analysis-logs"] .icon-bar-2,
+.nav-motion-item:focus-visible [data-motion-id="analysis-logs"] .icon-bar-2,
+.nav-motion-item
+  [data-motion-id="analysis-logs"][data-motion-play="true"]
+  .icon-bar-2,
 .nav-motion-item:hover [data-motion-id="analytics"] .icon-bar-2,
 .nav-motion-item:focus-visible [data-motion-id="analytics"] .icon-bar-2,
 .nav-motion-item
@@ -416,6 +469,11 @@
   transform: scaleY(1.4);
   transition-delay: 40ms;
 }
+.nav-motion-item:hover [data-motion-id="analysis-logs"] .icon-bar-3,
+.nav-motion-item:focus-visible [data-motion-id="analysis-logs"] .icon-bar-3,
+.nav-motion-item
+  [data-motion-id="analysis-logs"][data-motion-play="true"]
+  .icon-bar-3,
 .nav-motion-item:hover [data-motion-id="analytics"] .icon-bar-3,
 .nav-motion-item:focus-visible [data-motion-id="analytics"] .icon-bar-3,
 .nav-motion-item
@@ -447,7 +505,12 @@
   transform: translateY(-2px);
 }
 
-/* --- doctor: path nudge + status pulse --- */
+/* --- doctor & diagnostics: path nudge + status pulse --- */
+.nav-motion-item:hover [data-motion-id="diagnostics"] .icon-doctor-path,
+.nav-motion-item:focus-visible [data-motion-id="diagnostics"] .icon-doctor-path,
+.nav-motion-item
+  [data-motion-id="diagnostics"][data-motion-play="true"]
+  .icon-doctor-path,
 .nav-motion-item:hover [data-motion-id="doctor"] .icon-doctor-path,
 .nav-motion-item:focus-visible [data-motion-id="doctor"] .icon-doctor-path,
 .nav-motion-item
@@ -455,6 +518,11 @@
   .icon-doctor-path {
   transform: scale(1.1) rotate(-8deg);
 }
+.nav-motion-item:hover [data-motion-id="diagnostics"] .icon-doctor-dot,
+.nav-motion-item:focus-visible [data-motion-id="diagnostics"] .icon-doctor-dot,
+.nav-motion-item
+  [data-motion-id="diagnostics"][data-motion-play="true"]
+  .icon-doctor-dot,
 .nav-motion-item:hover [data-motion-id="doctor"] .icon-doctor-dot,
 .nav-motion-item:focus-visible [data-motion-id="doctor"] .icon-doctor-dot,
 .nav-motion-item
@@ -480,7 +548,14 @@
   transform: translateX(6px);
 }
 
-/* --- settings: CW ~50° (asymmetric so leave reverse is visible; not 90°) --- */
+/* --- settings & advanced-configuration: CW ~50° (asymmetric so leave reverse is visible; not 90°) --- */
+.nav-motion-item:hover [data-motion-id="advanced-configuration"] .icon-gear,
+.nav-motion-item:focus-visible
+  [data-motion-id="advanced-configuration"]
+  .icon-gear,
+.nav-motion-item
+  [data-motion-id="advanced-configuration"][data-motion-play="true"]
+  .icon-gear,
 .nav-motion-item:hover [data-motion-id="settings"] .icon-gear,
 .nav-motion-item:focus-visible [data-motion-id="settings"] .icon-gear,
 .nav-motion-item
@@ -489,6 +564,13 @@
 .shell-window-control:hover [data-motion-id="settings"] .icon-gear {
   transform: rotate(50deg) scale(1.18);
 }
+.nav-motion-item:hover [data-motion-id="advanced-configuration"] .icon-gear-hub,
+.nav-motion-item:focus-visible
+  [data-motion-id="advanced-configuration"]
+  .icon-gear-hub,
+.nav-motion-item
+  [data-motion-id="advanced-configuration"][data-motion-play="true"]
+  .icon-gear-hub,
 .nav-motion-item:hover [data-motion-id="settings"] .icon-gear-hub,
 .nav-motion-item:focus-visible [data-motion-id="settings"] .icon-gear-hub,
 .nav-motion-item

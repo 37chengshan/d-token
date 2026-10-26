@@ -1,12 +1,19 @@
 import "@testing-library/jest-dom/vitest";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const native = vi.hoisted(() => ({ invokeNative: vi.fn() }));
+const appearanceReceipt = vi.hoisted(() => ({ notice: "", revision: 0 }));
+const notifications = vi.hoisted(() => ({ addNotification: vi.fn() }));
+vi.mock("../../lib/notifications", () => ({
+  useNotifications: () => notifications,
+  createOperationRequestId: () => "settings-test-request",
+}));
 
 vi.mock("../../lib/native", () => ({
   invokeNative: native.invokeNative,
+  isTauriRuntime: () => true,
 }));
 
 vi.mock("../../lib/theme-context", async (importOriginal) => {
@@ -24,7 +31,8 @@ vi.mock("../../lib/theme-context", async (importOriginal) => {
       setChartAccent: vi.fn(),
       loadState: "preview",
       saving: false,
-      persistenceNotice: "",
+      persistenceNotice: appearanceReceipt.notice,
+      persistenceRevision: appearanceReceipt.revision,
       updateAppearance: vi.fn(),
     }),
   };
@@ -34,11 +42,34 @@ import { Settings } from "./Settings";
 
 beforeEach(() => {
   native.invokeNative.mockReset();
+  notifications.addNotification.mockClear();
+  appearanceReceipt.notice = "";
+  appearanceReceipt.revision = 0;
 });
 
 afterEach(cleanup);
 
 describe("Settings product hierarchy and honest behavior", () => {
+  it("notifies each completed appearance save without adding a success banner or replaying it on remount", async () => {
+    native.invokeNative.mockResolvedValue({ state: "loaded", payload: {}, ok: true });
+    const view = render(<Settings />);
+    await waitFor(() => expect(native.invokeNative).toHaveBeenCalled());
+    appearanceReceipt.notice = "saved";
+    appearanceReceipt.revision = 1;
+    view.rerender(<Settings />);
+    expect(notifications.addNotification).toHaveBeenCalledWith(expect.objectContaining({ dedupeKey: "appearance-saved", level: "success" }));
+    expect(screen.queryByText("设置已保存。")).not.toBeInTheDocument();
+    expect(screen.queryByText("本地设置已连接")).not.toBeInTheDocument();
+    notifications.addNotification.mockClear();
+    appearanceReceipt.revision = 2;
+    view.rerender(<Settings />);
+    expect(notifications.addNotification).toHaveBeenCalledTimes(1);
+    view.unmount();
+    notifications.addNotification.mockClear();
+    render(<Settings />);
+    expect(notifications.addNotification).not.toHaveBeenCalled();
+  });
+
   it("orders settings around user tasks instead of engineering categories", async () => {
     native.invokeNative.mockImplementation(async (command: string) => {
       if (command === "get_app_settings") return { state: "loaded", payload: {} };
@@ -159,8 +190,93 @@ describe("Settings product hierarchy and honest behavior", () => {
     await user.click(await screen.findByRole("button", { name: "启动服务" }));
 
     await waitFor(() => expect(native.invokeNative).toHaveBeenCalledWith("start_dtoken_service"));
-    expect(screen.getByRole("status")).toHaveTextContent("d-token 本地服务已启动。");
+    expect(notifications.addNotification).toHaveBeenCalledWith(expect.objectContaining({ level: "success", title: "d-token 本地服务已启动。" }));
     expect(screen.queryByText("started")).not.toBeInTheDocument();
+  });
+
+  it("keeps the service stop dialog open with a retryable error when stop fails", async () => {
+    const user = userEvent.setup();
+    let stopAttempts = 0;
+    native.invokeNative.mockImplementation(async (command: string) => {
+      if (command === "get_app_settings") return { state: "loaded", payload: {} };
+      if (command === "get_dtoken_service_status") {
+        return { state: "running", managed: true, service_url: "http://127.0.0.1:18001", summary: "running" };
+      }
+      if (command === "stop_dtoken_service") {
+        stopAttempts += 1;
+        if (stopAttempts === 1) return { ok: false, summary: "stop failed", logs: [], tools: [] };
+        return { ok: true, summary: "stopped", logs: [], tools: [] };
+      }
+      return { ok: true, summary: "saved", logs: [], tools: [] };
+    });
+
+    render(<Settings />);
+    await user.click(await screen.findByRole("button", { name: "停止服务" }));
+    const dialog = await screen.findByRole("alertdialog", { name: "停止 d-token 本地服务？" });
+    await user.click(screen.getByRole("button", { name: "确认停止" }));
+
+    expect(await within(dialog).findByRole("alert")).toHaveTextContent("请重试");
+    expect(dialog).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "确认停止" }));
+    await waitFor(() => expect(screen.queryByRole("alertdialog", { name: "停止 d-token 本地服务？" })).not.toBeInTheDocument());
+  });
+
+  it("keeps autostart failures in the confirmation dialog for retry", async () => {
+    const user = userEvent.setup();
+    native.invokeNative.mockImplementation(async (command: string) => {
+      if (command === "get_app_settings") return { state: "loaded", payload: {} };
+      if (command === "get_dtoken_service_status") return { state: "stopped", managed: false, service_url: "http://127.0.0.1:18001", summary: "stopped" };
+      if (command === "get_autostart_status") return { supported: true, state: "disabled", enabled: false, source: "macos-launch-agent", service_argument: "--dtoken-autostart-service", summary: "disabled" };
+      if (command === "enable_autostart") return {
+        ok: false,
+        summary: "verify failed",
+        rollback_performed: true,
+        status: { supported: true, state: "disabled", enabled: false, source: "macos-launch-agent", service_argument: "--dtoken-autostart-service", summary: "disabled" },
+      };
+      return { ok: true, summary: "saved", logs: [], tools: [] };
+    });
+
+    render(<Settings />);
+    const autostart = await screen.findByRole("switch", { name: "自动启动 d-token 服务" });
+    await waitFor(() => expect(autostart).toBeEnabled());
+    await user.click(autostart);
+    await user.click(await screen.findByRole("button", { name: "确认启用" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("系统启动项未通过写入或验证，已恢复原有状态。");
+    expect(screen.getByRole("alertdialog", { name: "启用登录后自动启动？" })).toBeInTheDocument();
+  });
+
+  it("restores the previous local preference value when persistence fails", async () => {
+    const user = userEvent.setup();
+    native.invokeNative.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
+      if (command === "get_app_settings" && args?.section === "preferences") {
+        return { state: "loaded", payload: { preferences: { retentionDays: 30 } } };
+      }
+      if (command === "get_app_settings") return { state: "loaded", payload: {} };
+      if (command === "get_dtoken_service_status") return { state: "stopped", managed: false, service_url: "http://127.0.0.1:18001", summary: "stopped" };
+      if (command === "save_app_settings") return { ok: false, summary: "settings save failed", logs: [], tools: [] };
+      return { ok: true, summary: "saved", logs: [], tools: [] };
+    });
+
+    render(<Settings />);
+    const sevenDays = await screen.findByRole("radio", { name: "7 天" });
+    const thirtyDays = screen.getByRole("radio", { name: "30 天" });
+    expect(thirtyDays).toHaveAttribute("aria-checked", "true");
+
+    await user.click(sevenDays);
+
+    expect(await screen.findByRole("status")).toHaveTextContent("请重试");
+    expect(thirtyDays).toHaveAttribute("aria-checked", "true");
+    expect(native.invokeNative).toHaveBeenCalledWith(
+      "save_app_settings",
+      expect.objectContaining({
+        section: "preferences",
+        payload: expect.objectContaining({
+          preferences: expect.objectContaining({ retentionDays: 7 }),
+          no_external_agent_write: true,
+        }),
+      }),
+    );
   });
 
   it("loads saved model pricing rows from the local settings contract", async () => {
@@ -364,5 +480,34 @@ describe("Settings product hierarchy and honest behavior", () => {
     expect(screen.getByRole("button", { name: "添加模型" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "恢复默认（清空）" })).toBeDisabled();
     expect(native.invokeNative.mock.calls.some(([command]) => command === "save_app_settings")).toBe(false);
+  });
+
+  it("does not expose Optical, raw keys, duplicate routing controls, or developer fixture commands", async () => {
+    native.invokeNative.mockImplementation(async (command: string) => {
+      if (command === "get_app_settings") return { state: "loaded", payload: {} };
+      if (command === "get_dtoken_service_status") {
+        return { state: "stopped", managed: false, service_url: "http://127.0.0.1:18001", summary: "stopped" };
+      }
+      return { ok: true, summary: "saved", logs: [], tools: [] };
+    });
+
+    render(<Settings />);
+    await screen.findByText("服务未启动");
+
+    // Optical must not appear in settings
+    expect(screen.queryByText(/Optical/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/图片转文本/)).not.toBeInTheDocument();
+
+    // Raw secrets/keys must not be input in settings
+    expect(screen.queryByPlaceholderText(/API Key/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/sk-ant-/i)).not.toBeInTheDocument();
+
+    // Duplicate routing controls must not be in settings
+    expect(screen.queryByText(/ProviderProfile/i)).not.toBeInTheDocument();
+
+    // Developer fixture/smoke commands must not appear
+    expect(screen.queryByText(/benchmark/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/fixture/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/smoke/i)).not.toBeInTheDocument();
   });
 });

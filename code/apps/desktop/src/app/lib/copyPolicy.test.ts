@@ -16,6 +16,17 @@ const INTERNAL_PRODUCT_RATIONALES = /为减小|不内置|不会代为|代为下�
 const UI_SELF_NARRATION = /本页|此页|页面只(?:显示|提供)|应用会|App会|\b(?:this page|the app will|the page will)\b/i;
 
 describe("release UI copy policy", () => {
+  it("distinguishes native error matching from returned user copy", () => {
+    const source = ts.createSourceFile("userCopy.ts", 'if (normalized.includes("changed after review")) return { message: "Review the changes" };', ts.ScriptTarget.Latest, true);
+    const rendered: string[] = [];
+    const visit = (node: ts.Node) => {
+      if (ts.isStringLiteral(node) && isRenderedCopy(node, path.join(SOURCE_ROOT, "lib/userCopy.ts"))) rendered.push(node.text);
+      ts.forEachChild(node, visit);
+    };
+    visit(source);
+    expect(rendered).toEqual(["Review the changes"]);
+  });
+
   it("keeps rendered bilingual text free of development, approval, and AI-style phrasing", () => {
     const violations = sourceFiles(SOURCE_ROOT).flatMap(collectViolations);
     expect(violations).toEqual([]);
@@ -57,6 +68,10 @@ function collectViolations(file: string): string[] {
 }
 
 function isRenderedCopy(node: ts.StringLiteral, file: string) {
+  const parent = node.parent;
+  if (ts.isCallExpression(parent) && parent.arguments.includes(node)
+    && ts.isPropertyAccessExpression(parent.expression)
+    && ["includes", "startsWith", "endsWith"].includes(parent.expression.name.text)) return false;
   if (file.endsWith(`${path.sep}i18n.ts`) && ts.isPropertyAssignment(node.parent) && node.parent.name === node) return false;
   if (file.endsWith(`${path.sep}i18n.ts`) || file.endsWith(`${path.sep}userCopy.ts`)) return true;
   let current: ts.Node | undefined = node;

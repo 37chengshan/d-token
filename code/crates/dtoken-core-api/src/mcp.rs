@@ -1334,7 +1334,7 @@ mod tests {
         assert_eq!(compressed["state"], "passthrough");
         assert_eq!(
             compressed["fallback_reason_code"],
-            "compression_not_applicable"
+            "compression_no_safe_candidate"
         );
         assert_eq!(compressed["decision"]["state"], "resolved");
         assert_eq!(compressed["decision"]["route_id"], "mcp-route");
@@ -1852,9 +1852,11 @@ mod tests {
         let listed: Value = serde_json::from_str(&tool_text(listed)).expect("list result JSON");
         assert_eq!(listed["state"], "listed");
         assert_eq!(listed["count"], 2);
-        assert!(listed["entries"].as_array().is_some_and(|entries| entries
-            .iter()
-            .any(|entry| entry["memory_id"] == owner["memory_id"])));
+        assert!(listed["entries"].as_array().is_some_and(|entries| {
+            entries
+                .iter()
+                .any(|entry| entry["memory_id"] == owner["memory_id"])
+        }));
         assert!(!listed.to_string().contains("other session"));
         assert!(!listed.to_string().contains("other agent"));
 

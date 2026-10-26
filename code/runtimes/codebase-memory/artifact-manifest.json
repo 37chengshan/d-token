@@ -2,11 +2,11 @@
   "schema_version": 1,
   "upstream": {
     "repository": "https://github.com/DeusData/codebase-memory-mcp",
-    "tag": "v0.9.1-rc.1",
-    "commit": "ee9833df2c72b750378273897ffec9410fc2c4f2",
-    "release_published_at": "2026-07-30T03:15:15Z",
+    "tag": "v0.10.8",
+    "commit": "46ae198fc11cda80e817acbc5f5908d7c2de7032",
+    "release_published_at": "2026-08-19T02:42:10Z",
     "release_immutable": true,
-    "release_prerelease": true,
+    "release_prerelease": false,
     "license": "MIT"
   },
   "sigstore": {
@@ -14,59 +14,48 @@
     "certificate_identity": "https://github.com/DeusData/codebase-memory-mcp/.github/workflows/release.yml@refs/heads/main",
     "certificate_oidc_issuer": "https://token.actions.githubusercontent.com",
     "macos_code_identifiers": [
-      "codebase-memory-mcp-5555494463f9e72711ce34a0846f9473c4bf9afb",
-      "codebase-memory-mcp-55554944b2baa46a0d663ae59a15cedbb9325f19"
+      "codebase-memory-mcp-555549440039b2c48c7b344698fd00a015760a27",
+      "codebase-memory-mcp-55554944fc188f43877c3280840f8776eb3e334d"
     ]
   },
   "artifacts": [
     {
       "target": "aarch64-apple-darwin",
       "archive": "codebase-memory-mcp-darwin-arm64.tar.gz",
-      "archive_sha256": "5a93a7a02a5de4f91d6d5ce4bc9a8dc471a0b141fdb9062dc1d5779205266996",
-      "binary_sha256": "e4fe1cf4f764308f19a65e98b6cc2fcad5d8996b0745af321e75aacfd0c9bb1b",
+      "archive_sha256": "9bd840dfb3ec7eaef4f310382057adaa5b0e904df883104d03ffcf39836afd07",
+      "binary_sha256": "2412e017268bef8f847f38d1b0f79f63185b38c27fe6fba637067bfc87c0eedf",
       "sigstore_bundle": "codebase-memory-mcp-darwin-arm64.tar.gz.bundle"
     },
     {
       "target": "x86_64-apple-darwin",
       "archive": "codebase-memory-mcp-darwin-amd64.tar.gz",
-      "archive_sha256": "82b66ad5b4663552191ac7ae229cbca0e4fed2eb767d2cf9f46e4c9573e4348c",
-      "binary_sha256": "661bd7320b4b3ec9b681b38860d283d40f6a94d972821a60010999b04ff449a1",
+      "archive_sha256": "2b193085410af3801634a522f4b17dcd6699695e015a068393c87817c1d260d4",
+      "binary_sha256": "1d5b79257d91973809ee70482781db3d1a78f62fc1cd5d18a5ab0608451d16d4",
       "sigstore_bundle": "codebase-memory-mcp-darwin-amd64.tar.gz.bundle"
     },
     {
       "target": "x86_64-pc-windows-msvc",
       "archive": "codebase-memory-mcp-windows-amd64.zip",
-      "archive_sha256": "c6f65d94ac039e3a8fdc7bffac2e20fb0b0bc1d2d8d36de72ef34c531b8d4cbd",
-      "binary_sha256": "7d82ca2faedce72113b17f749a63a11860b9d78cbfc73691fab9b31cb7e71c22",
+      "archive_sha256": "b43ad982994c4d829670749e08d3b622a74bb20041fc0a7d02bef6113f81c34d",
+      "binary_sha256": "b4b403b1d7c4def3785f148b93f345ce8427858f4f5489ce28580c4387a336a6",
       "sigstore_bundle": "codebase-memory-mcp-windows-amd64.zip.bundle"
     },
     {
       "target": "aarch64-pc-windows-msvc",
       "archive": "codebase-memory-mcp-windows-arm64.zip",
-      "archive_sha256": "75f8823ba5f9c608d1e2b41b2c95e2621ed8070d42620d71b11b3f98cef27c9c",
-      "binary_sha256": "af0e9c551e9d418273b7fea1f0b4cca2e3dc5a9ddec573b019fde7ad1ba3869d",
+      "archive_sha256": "254b26e819f00bab7f430c5f809d37d22b07bb3eb6427e290e5a27ba5b8e983e",
+      "binary_sha256": "67b0341ee62f07f850d3954e4f387855f90ea8c6c4b7ed41b8a62d61344373a4",
       "sigstore_bundle": "codebase-memory-mcp-windows-arm64.zip.bundle"
     }
   ],
-  "derived_artifacts": [
-    {
-      "target": "universal-apple-darwin",
-      "derivation": "lipo-create",
-      "inputs": [
-        "codebase-memory-mcp-darwin-arm64.tar.gz",
-        "codebase-memory-mcp-darwin-amd64.tar.gz"
-      ],
-      "binary_sha256": "c18762b9ecd5faf7a5c2c9c495f51d02344390f315b8907ea81ce33c3a078f66",
-      "upstream_signed": false,
-      "note": "d-token-derived universal binary from the two independently pinned and attested upstream release binaries; release signing is applied by d-token after derivation"
-    }
-  ],
+  "derived_artifacts": [],
   "runtime_policy": {
     "runtime_download": false,
     "upstream_installer": false,
     "upstream_ui": false,
     "auto_update": false,
     "auto_watch": false,
-    "repository_persistence": false
+    "repository_persistence": false,
+    "private_runtime_dir": true
   }
 }

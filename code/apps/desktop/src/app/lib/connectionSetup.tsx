@@ -68,6 +68,8 @@ export type AgentUpstreamBinding = {
   agent_id: string;
   agent_name: string;
   installed: boolean;
+  /** Full-catalog install truth from native discovery: true/false, or null when scan freshness is unknown. */
+  catalog_installed?: boolean | null;
   binary_path?: string | null;
   config_path?: string | null;
   config_paths?: string[];
@@ -99,6 +101,15 @@ export type AgentUpstreamBinding = {
   mcp_config_path?: string | null;
 };
 
+export type AgentCatalogItem = {
+  agent_id: string;
+  agent_name: string;
+  installed: boolean | null;
+  integration_kind: "route" | "mcp" | "hook" | "unsupported" | string;
+  can_configure: boolean;
+  can_clear: boolean;
+};
+
 export type ConnectionSetupSnapshot = {
   source: string;
   freshness: string;
@@ -106,6 +117,7 @@ export type ConnectionSetupSnapshot = {
   state: string;
   candidates: UpstreamCandidate[];
   agent_bindings: AgentUpstreamBinding[];
+  agent_catalog?: AgentCatalogItem[];
   sources: Array<Record<string, unknown>>;
   selection_required: boolean;
   cc_switch_sync?: {
@@ -125,7 +137,7 @@ export type ConnectionSetupSnapshot = {
     previous_fingerprint?: string | null;
     changed_sources: string[];
     review_required: boolean;
-    automatic_apply_allowed: boolean;
+    automatic_apply_allowed: false;
     next_poll_not_before_ms: number;
   };
   external_config_snapshot?: {
@@ -135,7 +147,7 @@ export type ConnectionSetupSnapshot = {
       revision: string;
       selection_state: string;
     };
-    automatic_apply_allowed: boolean;
+    automatic_apply_allowed: false;
   };
   agent_route_follow?: {
     schema_version: number;

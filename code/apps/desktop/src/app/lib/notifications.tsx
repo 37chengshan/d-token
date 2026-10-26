@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { redactString } from "./security/redaction";
 
 export type NotificationLevel = "info" | "success" | "warning" | "error" | "action-required";
@@ -32,25 +32,40 @@ export type NotificationInput = Omit<AppNotification, "id" | "timestamp" | "read
 
 type NotificationContextValue = {
   notifications: AppNotification[];
+  toasts: NotificationToast[];
+  centerOpen: boolean;
+  selectedNotificationId: string | null;
   unreadCount: number;
   addNotification: (input: NotificationInput) => string;
   markRead: (id: string) => void;
   markAllRead: () => void;
   dismiss: (id: string) => void;
+  dismissToast: (key: number) => void;
+  openNotification: (id: string) => void;
+  setCenterOpen: (open: boolean) => void;
 };
+
+export type NotificationToast = { key: number; notification: AppNotification };
 
 const STORAGE_KEY = "d-token.notifications.v2";
 const LEGACY_STORAGE_KEY = "d-token.notifications.v1";
 const STORAGE_SCHEMA_VERSION = 2;
 const MAX_NOTIFICATIONS = 50;
+const MAX_TOASTS = 3;
 
 const fallback: NotificationContextValue = {
   notifications: [],
+  toasts: [],
+  centerOpen: false,
+  selectedNotificationId: null,
   unreadCount: 0,
   addNotification: () => "",
   markRead: () => {},
   markAllRead: () => {},
   dismiss: () => {},
+  dismissToast: () => {},
+  openNotification: () => {},
+  setCenterOpen: () => {},
 };
 
 const NotificationContext = createContext<NotificationContextValue>(fallback);
@@ -68,6 +83,18 @@ export function createOperationRequestId(scope: string) {
 
 export function NotificationProvider({ children }: { children: ReactNode }) {
   const [notifications, setNotifications] = useState<AppNotification[]>(readPersistedNotifications);
+  const currentNotifications = useRef(notifications);
+  // Ephemeral delivery is separate from history. Mounting the shell or loading
+  // persisted records must not replay old failures as new operation feedback.
+  const [toasts, setToasts] = useState<NotificationToast[]>([]);
+  const toastSequence = useRef(0);
+  const [centerOpen, setCenterOpen] = useState(false);
+  const [selectedNotificationId, setSelectedNotificationId] = useState<string | null>(null);
+
+  const updateNotifications = useCallback((next: AppNotification[]) => {
+    currentNotifications.current = next;
+    setNotifications(next);
+  }, []);
 
   useEffect(() => {
     persistNotifications(notifications);
@@ -75,37 +102,54 @@ export function NotificationProvider({ children }: { children: ReactNode }) {
 
   const addNotification = useCallback((input: NotificationInput) => {
     const timestamp = input.timestamp ?? Date.now();
-    const id = input.id ?? `${timestamp}-${Math.random().toString(36).slice(2, 8)}`;
     const persistent = input.persistent ?? isPersistentLevel(input.level);
     const safe = sanitizeInput(input);
-    setNotifications((current) => {
-      const existing = current.find((item) => item.dedupeKey === input.dedupeKey);
-      const next: AppNotification = existing
-        ? { ...existing, ...safe, timestamp, read: false, persistent, count: existing.count + 1 }
-        : { ...safe, id, timestamp, read: false, persistent, count: 1 };
-      return [next, ...current.filter((item) => item.dedupeKey !== input.dedupeKey)].slice(0, MAX_NOTIFICATIONS);
-    });
+    const current = currentNotifications.current;
+    const existing = current.find((item) => item.dedupeKey === safe.dedupeKey);
+    const id = existing?.id ?? input.id ?? createOperationRequestId("notification");
+    // Replace optional details/receipt as well: a successful retry must not
+    // inherit the failed attempt's explanation or recovery reference.
+    const next: AppNotification = { ...safe, id, timestamp, read: false, persistent, count: (existing?.count ?? 0) + 1 };
+    updateNotifications([next, ...current.filter((item) => item.id !== id)].slice(0, MAX_NOTIFICATIONS));
+    const toast = { key: ++toastSequence.current, notification: next };
+    setToasts((current) => [...current.filter((item) => item.notification.id !== id), toast].slice(-MAX_TOASTS));
     return id;
-  }, []);
+  }, [updateNotifications]);
 
   const markRead = useCallback((id: string) => {
-    setNotifications((current) => current.map((item) => item.id === id ? { ...item, read: true } : item));
-  }, []);
+    updateNotifications(currentNotifications.current.map((item) => item.id === id ? { ...item, read: true } : item));
+  }, [updateNotifications]);
   const markAllRead = useCallback(() => {
-    setNotifications((current) => current.map((item) => ({ ...item, read: true })));
-  }, []);
+    updateNotifications(currentNotifications.current.map((item) => ({ ...item, read: true })));
+  }, [updateNotifications]);
   const dismiss = useCallback((id: string) => {
-    setNotifications((current) => current.filter((item) => item.id !== id));
+    updateNotifications(currentNotifications.current.filter((item) => item.id !== id));
+    setToasts((current) => current.filter((item) => item.notification.id !== id));
+  }, [updateNotifications]);
+  const dismissToast = useCallback((key: number) => {
+    setToasts((current) => current.filter((item) => item.key !== key));
   }, []);
+  const openNotification = useCallback((id: string) => {
+    setSelectedNotificationId(id);
+    setCenterOpen(true);
+    markRead(id);
+    setToasts((current) => current.filter((item) => item.notification.id !== id));
+  }, [markRead]);
 
   const value = useMemo<NotificationContextValue>(() => ({
     notifications,
+    toasts,
+    centerOpen,
+    selectedNotificationId,
     unreadCount: notifications.filter((item) => !item.read).length,
     addNotification,
     markRead,
     markAllRead,
     dismiss,
-  }), [addNotification, dismiss, markAllRead, markRead, notifications]);
+    dismissToast,
+    openNotification,
+    setCenterOpen,
+  }), [addNotification, dismiss, dismissToast, markAllRead, markRead, notifications, toasts, centerOpen, selectedNotificationId, openNotification]);
 
   return <NotificationContext.Provider value={value}>{children}</NotificationContext.Provider>;
 }
@@ -152,7 +196,8 @@ function readPersistedNotifications(): AppNotification[] {
     }
     const parsed = JSON.parse(stored) as { schemaVersion?: unknown; notifications?: unknown };
     if (parsed?.schemaVersion !== STORAGE_SCHEMA_VERSION || !Array.isArray(parsed.notifications)) return [];
-    return parsed.notifications.filter(isStoredNotification).slice(0, MAX_NOTIFICATIONS);
+    return parsed.notifications.filter(isStoredNotification).slice(0, MAX_NOTIFICATIONS)
+      .map((item) => ({ ...item, ...sanitizeInput(item) }));
   } catch {
     return [];
   }
@@ -178,9 +223,13 @@ function isStoredNotification(value: unknown): value is AppNotification {
     && typeof item.dedupeKey === "string"
     && typeof item.title === "string"
     && typeof item.message === "string"
-    && typeof item.timestamp === "number"
+    && typeof item.timestamp === "number" && Number.isFinite(item.timestamp)
     && typeof item.read === "boolean"
     && item.persistent === true
-    && typeof item.count === "number"
+    && typeof item.count === "number" && Number.isInteger(item.count) && item.count > 0
+    && (item.details === undefined || typeof item.details === "string")
+    && (item.receipt === undefined || Boolean(item.receipt)
+      && typeof item.receipt.requestId === "string"
+      && [item.receipt.transactionId, item.receipt.rollbackId, item.receipt.targetId].every((value) => value === undefined || typeof value === "string"))
     && ["info", "success", "warning", "error", "action-required"].includes(item.level ?? "");
 }

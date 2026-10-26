@@ -3,7 +3,6 @@ import { motion } from "motion/react";
 import { Network, ScanSearch, RefreshCw, Server, Route as RouteIcon, KeyRound, Wifi } from "lucide-react";
 import { Surface } from "../../components/common/Surface";
 import { StatusBadge } from "../../components/common/StatusBadge";
-import { DataSourceBadge } from "../../components/common/DataSourceBadge";
 import { CapabilitySummary } from "../../components/common/CapabilitySummary";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "../../components/ui/tabs";
 import { Switch } from "../../components/ui/switch";
@@ -290,11 +289,6 @@ export function Advanced() {
     <div className="space-y-6">
       <div className="flex flex-wrap items-center gap-3">
         <h1>{t("adv.title")}</h1>
-        <DataSourceBadge
-          mode={payloadStatus === "runtime" ? "runtime" : payloadStatus === "browser-preview" ? "preview" : "unavailable"}
-          label={payloadStatus === "runtime" ? (lang === "zh" ? "本地运行数据" : "Local runtime data") : dataSourceLabel}
-        />
-        <Badge variant={payloadStatus === "runtime" ? "default" : "secondary"}>{dataSourceLabel}</Badge>
       </div>
 
       <Tabs value={tab} onValueChange={setTab}>

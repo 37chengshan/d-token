@@ -37,6 +37,55 @@ if rg -q 'PUBLIC_PLACEHOLDER_CONTEXT' "$SCRIPT"; then
   fail "all-uppercase underscore markers are exact anchors and cannot be used as a compression candidate"
 fi
 
+python3 - "$SCRIPT" "$TEMP_ROOT" <<'PY'
+import json
+import pathlib
+import subprocess
+import sys
+
+script, root = map(pathlib.Path, sys.argv[1:])
+source = script.read_text()
+start = source.index("classify_opencode_failure() {")
+end = source.index("\nPY\n}\n", start) + len("\nPY\n}\n")
+classifier = source[start:end]
+stdout = root / "classification.stdout"
+stderr = root / "classification.stderr"
+cases = [
+    (json.dumps({"type": "error", "error": {"name": "APICallError", "data": {"statusCode": 429, "message": "private detail"}}}), "", 1, "upstream_http_429"),
+    (json.dumps({"type": "error", "error": {"name": "SensitiveIdentifierError"}}), "", 1, "error_event_unclassified"),
+    (json.dumps({"type": "error", "error": {"name": "ContextOverflowError"}}), "", 0, "context_overflow"),
+    ("", "Unknown argument: synthetic-option", 1, "cli_argument_unsupported"),
+    (json.dumps({"type": "text", "part": {"text": "private detail"}}), "", 0, "none"),
+]
+for output, error, status, expected in cases:
+    stdout.write_text(output)
+    stderr.write_text(error)
+    result = subprocess.run(["bash", "-c", classifier + '\nclassify_opencode_failure "$@"', "classifier", str(stdout), str(stderr), str(status)], check=True, capture_output=True, text=True)
+    assert result.stdout.strip() == expected, result.stdout
+assert 'OPENCODE_FAILURE_CODE="$(classify_opencode_failure "$BOOTSTRAP_STDOUT" "$BOOTSTRAP_STDERR" "$OPENCODE_STATUS")"' in source
+assert 'FAILURE_STAGE="opencode_compression_bootstrap"' in source
+
+# A bootstrap failure reports journal counts, never provider messages or bodies.
+health = root / "health.json"
+health.write_text(json.dumps({"runtime_identity": "dtoken-runtime-local"}))
+journals = root / "runtime-data" / "ledger"
+journals.mkdir(parents=True)
+for name in ("events.jsonl", "route-decisions.jsonl", "request-logs.jsonl", "ccr-metadata.jsonl"):
+    (journals / name).write_text(json.dumps({"route_id": "opencode-real-routed", "provider_id": "test-provider", "error": "PRIVATE_UPSTREAM_MESSAGE", "body": "PRIVATE_REQUEST_BODY"}) + "\n")
+report_start = source.index("write_redacted_report() {")
+python_start = source.index("<<'PY'\n", report_start) + len("<<'PY'\n")
+python_end = source.index("\nPY\n", python_start)
+report = root / "failed-report.json"
+args = [str(report), "failed", "1", "opencode_compression_bootstrap", "test-provider", "test-provider/model", "18101", "explicit_none", "<config>", "<backup>", "1", "restored_exact", "<report>", "{}", "0", "1", "{}", "{}", json.dumps({"config_change_required": True, "provider_state": "absent"}), "upstream_http_429", "1", "not_created"]
+import os
+result = subprocess.run([sys.executable, "-", *args], input=source[python_start:python_end], env={**os.environ, "DTOKEN_OPENCODE_REAL_ROOT": str(root)}, check=True, capture_output=True, text=True)
+payload = json.loads(report.read_text())
+assert payload["evidence"]["diagnostics"]["failed_request_count"] == 1
+assert payload["ledger"]["request_logs"] == 1
+assert payload["evidence"]["provider_forward_verified"] is False
+assert "PRIVATE_" not in report.read_text() + result.stdout
+PY
+
 CALLER_UMASK="$(umask)"
 mkdir -p "$TEMP_ROOT/umask-bin"
 python3 - "$TEMP_ROOT/umask-bin/opencode" <<'PY'

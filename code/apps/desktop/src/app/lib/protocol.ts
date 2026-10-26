@@ -79,6 +79,8 @@ export function roundTripProtocol(value: unknown): ProtocolWire | null {
 
 /** Localized display label. Unknown non-empty values are intentionally visible as Unknown/未知. */
 export function protocolLabel(value: unknown, lang: ProtocolLanguage = "en"): string | null {
+  const name = normalized(value);
+  if (name === "responses" || name === "open_ai_responses" || name === "openai-responses") return "OpenAI Responses";
   return parseProtocol(value, lang).label;
 }
 

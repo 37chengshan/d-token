@@ -533,6 +533,16 @@ pub fn apply_reviewed_agent_transport(
     reviewed_before_sha256: &str,
     reviewed_after_sha256: &str,
 ) -> Result<AgentTransportReceipt> {
+    if prepare_request(request, operation)?.kind == AgentTransportAdapterKind::OpenCodeProvider {
+        return crate::opencode_selection::apply_reviewed(
+            request,
+            operation,
+            backup_root,
+            reviewed_revision,
+            reviewed_before_sha256,
+            reviewed_after_sha256,
+        );
+    }
     let review = preview_agent_transport(request, operation)?;
     if review.revision != reviewed_revision
         || review.before_sha256 != reviewed_before_sha256
@@ -548,6 +558,9 @@ pub fn verify_agent_transport(
 ) -> Result<AgentTransportVerification> {
     let descriptor = descriptor_for(request)?;
     match descriptor.kind {
+        AgentTransportAdapterKind::OpenCodeProvider => {
+            return crate::opencode_selection::verify(request)
+        }
         AgentTransportAdapterKind::ClineCli => {
             return verify_cline_transport(request);
         }
@@ -620,6 +633,9 @@ pub fn can_clear_agent_transport(agent_id: &str, target_path: &Path) -> bool {
         return false;
     }
     match descriptor.kind {
+        AgentTransportAdapterKind::OpenCodeProvider => {
+            return crate::opencode_selection::can_clear(target_path)
+        }
         AgentTransportAdapterKind::ClineCli => {
             return cline_can_clear(target_path);
         }
@@ -794,6 +810,9 @@ fn apply_agent_transport(
 ) -> Result<AgentTransportReceipt> {
     let descriptor = prepare_request(request, operation)?;
     match descriptor.kind {
+        AgentTransportAdapterKind::OpenCodeProvider => {
+            return crate::opencode_selection::apply(request, operation, backup_root)
+        }
         AgentTransportAdapterKind::ClineCli => {
             return apply_cline_transport(request, operation, backup_root);
         }
@@ -906,6 +925,9 @@ fn preview_agent_transport(
 ) -> Result<AgentTransportReview> {
     let descriptor = prepare_request(request, operation)?;
     match descriptor.kind {
+        AgentTransportAdapterKind::OpenCodeProvider => {
+            return crate::opencode_selection::preview(request, operation)
+        }
         AgentTransportAdapterKind::ClineCli => {
             return preview_cline_transport(request, operation);
         }

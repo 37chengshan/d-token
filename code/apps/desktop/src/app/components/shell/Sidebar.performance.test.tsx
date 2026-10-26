@@ -35,7 +35,7 @@ describe("Sidebar render isolation", () => {
   it("keeps hover in CSS without re-rendering the hovered item or siblings", () => {
     render(
       <Sidebar
-        page="overview"
+        page="configuration"
         setPage={vi.fn()}
         collapsed={false}
         setCollapsed={vi.fn()}
@@ -44,24 +44,24 @@ describe("Sidebar render isolation", () => {
     );
 
     const before = { ...renderCounts };
-    fireEvent.pointerEnter(screen.getByRole("button", { name: "分析" }));
+    fireEvent.pointerEnter(screen.getByRole("button", { name: "分析日志" }));
     const afterEnter = { ...renderCounts };
 
-    expect(afterEnter.analytics).toBe(before.analytics ?? 0);
-    expect(afterEnter.doctor).toBe(before.doctor ?? 0);
+    expect(afterEnter["analysis-logs"]).toBe(before["analysis-logs"] ?? 0);
+    expect(afterEnter.diagnostics).toBe(before.diagnostics ?? 0);
     expect(afterEnter.settings).toBe(before.settings ?? 0);
 
-    fireEvent.pointerLeave(screen.getByRole("button", { name: "分析" }));
+    fireEvent.pointerLeave(screen.getByRole("button", { name: "分析日志" }));
     const afterLeave = { ...renderCounts };
-    expect(afterLeave.analytics).toBe(afterEnter.analytics ?? 0);
-    expect(afterLeave.doctor).toBe(afterEnter.doctor ?? 0);
+    expect(afterLeave["analysis-logs"]).toBe(afterEnter["analysis-logs"] ?? 0);
+    expect(afterLeave.diagnostics).toBe(afterEnter.diagnostics ?? 0);
   });
 
   it("bumps the motion token only for the clicked item", () => {
     const setPage = vi.fn();
     render(
       <Sidebar
-        page="overview"
+        page="configuration"
         setPage={setPage}
         collapsed={false}
         setCollapsed={vi.fn()}
@@ -70,18 +70,18 @@ describe("Sidebar render isolation", () => {
     );
 
     const before = { ...renderCounts };
-    fireEvent.click(screen.getByRole("button", { name: "分析" }));
+    fireEvent.click(screen.getByRole("button", { name: "分析日志" }));
 
-    expect(setPage).toHaveBeenCalledWith("analytics");
-    expect(renderCounts.analytics).toBe((before.analytics ?? 0) + 1);
-    expect(renderCounts.doctor).toBe(before.doctor ?? 0);
-    expect(renderCounts.overview).toBe(before.overview ?? 0);
+    expect(setPage).toHaveBeenCalledWith("analysis-logs");
+    expect(renderCounts["analysis-logs"]).toBe((before["analysis-logs"] ?? 0) + 1);
+    expect(renderCounts.diagnostics).toBe(before.diagnostics ?? 0);
+    expect(renderCounts.configuration).toBe(before.configuration ?? 0);
   });
 
   it("keeps theme and collapse controls isolated from navigation items", () => {
     render(
       <Sidebar
-        page="overview"
+        page="configuration"
         setPage={vi.fn()}
         collapsed
         setCollapsed={vi.fn()}
@@ -93,7 +93,7 @@ describe("Sidebar render isolation", () => {
     fireEvent.pointerEnter(screen.getByRole("button", { name: "深色" }));
 
     expect(renderCounts.theme).toBe(before.theme ?? 0);
-    expect(renderCounts.overview).toBe(before.overview ?? 0);
+    expect(renderCounts.configuration).toBe(before.configuration ?? 0);
     expect(renderCounts.collapse).toBe(before.collapse ?? 0);
   });
 });

@@ -168,6 +168,21 @@ fn provider_cache_evidence_must_match_exact_route_provider_and_model() {
             .expect_err("mismatch must fail"),
         ContextTransformError::ProviderCacheEvidenceMismatch
     );
+    let fallback = CompressionEngine::new()
+        .compress_resolved_with_cache_evidence(
+            &context,
+            CompressionPolicy::Balanced,
+            body.clone(),
+            Some(&mismatch),
+            None,
+        )
+        .expect("invalid cache evidence preserves the request");
+    assert_eq!(fallback.body, body);
+    assert_eq!(fallback.tokens_saved, 0);
+    assert_eq!(
+        fallback.fallback_reason_code.as_deref(),
+        Some("compression_cache_evidence_mismatch")
+    );
     assert_eq!(
         plan_context(&context, &body)
             .expect("default plan")
@@ -530,7 +545,67 @@ fn openai_chat_uses_the_same_manifest_validator_contract() {
 }
 
 #[test]
-fn openai_responses_inventory_remains_shadow_only_for_text_codecs() {
+fn openai_responses_text_codec_transforms_closed_historical_tool_result() {
+    // R3.C1: the native Responses wire now runs the same resolved safe-text
+    // pipeline as Chat. A closed historical low-risk tool result (outside the
+    // recent six completed tool pairs) is the approved candidate; every other
+    // field stays byte-faithful per the Codex schema contract.
+    let repeated = ["INFO result"; 12].join("\n");
+    let mut input = vec![
+        json!({"type":"function_call","id":"fc-1","call_id":"call-1","name":"run","arguments":"{}"}),
+        json!({"type":"function_call_output","call_id":"call-1","output":repeated}),
+    ];
+    for index in 0..6 {
+        input.push(json!({
+            "type":"function_call","id":format!("fc-recent-{index}"),"call_id":format!("call-recent-{index}"),
+            "name":"read","arguments":"{}"
+        }));
+        input.push(json!({
+            "type":"function_call_output","call_id":format!("call-recent-{index}"),
+            "output":format!("recent output {index}")
+        }));
+    }
+    input.push(
+        json!({"type":"message","role":"user","content":[{"type":"input_text","text":"continue"}]}),
+    );
+    let body = json!({
+        "model":"model-openai-revision",
+        "instructions":"stay exact",
+        "input": input
+    });
+    let prepared = prepare_context_transform(
+        &openai_context(OpticalEndpoint::OpenAiResponses),
+        CompressionPolicy::Balanced,
+        body.clone(),
+    )
+    .expect("Responses preparation")
+    .expect("historical closed tool result yields a Responses candidate");
+    assert_eq!(prepared.manifest().entries().len(), 1);
+    assert_eq!(
+        prepared.manifest().entries()[0].pointer(),
+        "/input/1/output",
+        "the patch targets the exact function_call_output string field"
+    );
+    let validated = prepared.validate().expect("validated Responses candidate");
+    let (transformed, _manifest) = validated.into_parts();
+    // Byte-faithful outside the single approved field.
+    assert_eq!(transformed["model"], body["model"]);
+    assert_eq!(transformed["instructions"], body["instructions"]);
+    assert_eq!(transformed["input"][0], body["input"][0]);
+    assert_eq!(transformed["input"][2], body["input"][2]);
+    assert_ne!(
+        transformed["input"][1]["output"], body["input"][1]["output"],
+        "the repeated historical output is folded"
+    );
+    // The folded value must still round-trip to the original through the
+    // manifest (rollback evidence is part of the contract).
+    assert!(transformed["input"][1]["output"].as_str().is_some());
+}
+
+#[test]
+fn openai_responses_recent_tail_tool_result_stays_untransformed() {
+    // A single tool result inside the recent tail never becomes a candidate:
+    // the fail-closed protection is identical to the Chat wire.
     let repeated = ["INFO result"; 12].join("\n");
     let body = json!({
         "model":"model-openai-revision",
@@ -546,7 +621,7 @@ fn openai_responses_inventory_remains_shadow_only_for_text_codecs() {
         body,
     )
     .expect("Responses preparation");
-    assert!(prepared.is_none());
+    assert!(prepared.is_none(), "recent-tail output stays untouched");
 }
 
 #[test]

@@ -1261,7 +1261,7 @@
   --font-display: ui-serif, "Iowan Old Style", "Palatino Linotype", "Songti SC", STSong, SimSun, serif;
   --font-ui: ui-sans-serif, -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI Variable Text", "Segoe UI", "PingFang SC", "Microsoft YaHei UI", "Noto Sans CJK SC", sans-serif;
   --font-mono: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
-  --background: #f6f2eb;
+  --background: #e9e5dc;
   --foreground: #29251f;
   --card: #fbf8f2;
   --card-foreground: #29251f;
@@ -1440,7 +1440,7 @@
 
 .app-shell {
   --shell-sidebar-width: 184px;
-  --shell-workspace-bg: var(--card);
+  --shell-workspace-bg: #f0ede5;
   position: relative;
   display: grid;
   width: 100%;

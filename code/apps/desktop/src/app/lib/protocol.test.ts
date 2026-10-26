@@ -38,6 +38,12 @@ describe("closed protocol adapter", () => {
     expect(roundTripProtocol(protocolLabel("open_ai", "zh"))).toBe("open_ai");
   });
 
+  it("labels Responses discovery without silently rewriting its wire protocol", () => {
+    expect(protocolLabel("responses", "zh")).toBe("OpenAI Responses");
+    expect(protocolLabel("open_ai_responses", "en")).toBe("OpenAI Responses");
+    expect(toWireProtocol("responses")).toBeNull();
+  });
+
   it("keeps cc-switch capability ids separate from protocol ids", () => {
     expect(CC_SWITCH_CAPABILITY_ID).toBe("cc-switch");
     expect(isCcSwitchCapabilityId("cc-switch")).toBe(true);

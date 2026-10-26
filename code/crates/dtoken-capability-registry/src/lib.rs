@@ -276,7 +276,22 @@ pub struct CapabilityRegistry {
 #[derive(Debug, Clone)]
 struct ObservedEntry {
     fields: HashMap<String, FieldEvidence>,
+    numeric_fields: HashMap<String, NumericFieldEvidence>,
     last_seen_ms: u64,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+struct NumericFieldEvidence {
+    samples: Vec<NumericEvidenceSample>,
+}
+
+/// Request-keyed numeric evidence for observed capacity fields. Conflicting
+/// samples resolve to the smallest observed value so the registry never
+/// overstates model capacity.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct NumericEvidenceSample {
+    request_id: String,
+    value: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -467,47 +482,73 @@ impl CapabilityRegistry {
             .entry(observation.model_id.clone())
             .or_insert_with(|| ObservedEntry {
                 fields: HashMap::new(),
+                numeric_fields: HashMap::new(),
                 last_seen_ms: 0,
             });
         entry.last_seen_ms = observation.observed_at_ms;
-        let mut push_evidence = |field: &str, value: bool| {
-            let evidence = entry
-                .fields
-                .entry(field.to_string())
-                .or_insert_with(|| FieldEvidence::new(CapabilitySource::Observed, 0.0));
-            evidence
-                .observed_request_ids
-                .push(observation.request_id.clone());
-            if value {
-                evidence.positive_count += 1;
-            } else {
-                evidence.negative_count += 1;
-            }
-            if evidence.observed_request_ids.len() > self.limits.max_evidence_per_field {
-                let _ = evidence.observed_request_ids.remove(0);
-            }
-            evidence.confidence = confidence_from_evidence(evidence.observed_request_ids.len());
-            value
-        };
         if let Some(ok) = observation.tool_call_ok {
-            push_evidence("supports_tool_call", ok);
+            push_field_evidence(
+                &mut entry.fields,
+                &mut entry.numeric_fields,
+                "supports_tool_call",
+                &observation.request_id,
+                ok,
+                self.limits.max_evidence_per_field,
+            );
         }
         if let Some(ok) = observation.stream_ok {
-            push_evidence("supports_stream", ok);
+            push_field_evidence(
+                &mut entry.fields,
+                &mut entry.numeric_fields,
+                "supports_stream",
+                &observation.request_id,
+                ok,
+                self.limits.max_evidence_per_field,
+            );
         }
         if let Some(ok) = observation.reasoning_ok {
-            push_evidence("supports_reasoning", ok);
+            push_field_evidence(
+                &mut entry.fields,
+                &mut entry.numeric_fields,
+                "supports_reasoning",
+                &observation.request_id,
+                ok,
+                self.limits.max_evidence_per_field,
+            );
         }
         if let Some(ok) = observation.structured_output_ok {
-            push_evidence("supports_structured_output", ok);
+            push_field_evidence(
+                &mut entry.fields,
+                &mut entry.numeric_fields,
+                "supports_structured_output",
+                &observation.request_id,
+                ok,
+                self.limits.max_evidence_per_field,
+            );
         }
-        // Numeric hints are recorded as positive evidence; their concrete
-        // value is reconstructed in apply_observed (P1-2).
-        if observation.context_window_hint.is_some() {
-            push_evidence("context_window", true);
+        if let Some(hint) = observation.context_window_hint {
+            if push_field_evidence(
+                &mut entry.fields,
+                &mut entry.numeric_fields,
+                "context_window",
+                &observation.request_id,
+                true,
+                self.limits.max_evidence_per_field,
+            ) {
+                push_numeric_sample(entry, "context_window", &observation.request_id, hint);
+            }
         }
-        if observation.max_output_tokens_hint.is_some() {
-            push_evidence("max_output_tokens", true);
+        if let Some(hint) = observation.max_output_tokens_hint {
+            if push_field_evidence(
+                &mut entry.fields,
+                &mut entry.numeric_fields,
+                "max_output_tokens",
+                &observation.request_id,
+                true,
+                self.limits.max_evidence_per_field,
+            ) {
+                push_numeric_sample(entry, "max_output_tokens", &observation.request_id, hint);
+            }
         }
         self.bump_revision();
         self.enforce_limits();
@@ -585,6 +626,7 @@ impl CapabilityRegistry {
                 json!({
                     "model": model,
                     "fields": entry.fields,
+                    "numeric_fields": entry.numeric_fields,
                     "last_seen_ms": entry.last_seen_ms,
                 })
             })
@@ -637,14 +679,22 @@ impl CapabilityRegistry {
                     .unwrap_or(0);
                 let fields: HashMap<String, FieldEvidence> =
                     serde_json::from_value(fields.clone()).unwrap_or_default();
-                if !fields.is_empty() {
-                    self.observed.insert(
-                        model.to_string(),
-                        ObservedEntry {
-                            fields,
-                            last_seen_ms,
-                        },
+                let numeric_fields: HashMap<String, NumericFieldEvidence> = entry
+                    .get("numeric_fields")
+                    .cloned()
+                    .and_then(|numeric_fields| serde_json::from_value(numeric_fields).ok())
+                    .unwrap_or_default();
+                if !fields.is_empty() || !numeric_fields.is_empty() {
+                    let mut observed_entry = ObservedEntry {
+                        fields,
+                        numeric_fields,
+                        last_seen_ms,
+                    };
+                    normalize_hydrated_observed_entry(
+                        &mut observed_entry,
+                        self.limits.max_evidence_per_field,
                     );
+                    self.observed.insert(model.to_string(), observed_entry);
                 }
             }
         }
@@ -733,16 +783,14 @@ fn apply_observed(cap: &mut ModelCapability, entry: &ObservedEntry) {
         "supports_structured_output",
         &mut cap.supports_structured_output,
     );
-    // Numeric hints (context window / max output) are preserved as numbers
-    // when at least one positive observation exists (P1-2).
-    if let Some(evidence) = entry.fields.get("context_window") {
-        if evidence.positive_count > 0 && cap.context_window.is_none() {
-            cap.context_window = Some(evidence.observed_request_ids.len() as u64 * 8_000);
+    if let Some(evidence) = entry.numeric_fields.get("context_window") {
+        if cap.context_window.is_none() {
+            cap.context_window = observed_numeric(evidence);
         }
     }
-    if let Some(evidence) = entry.fields.get("max_output_tokens") {
-        if evidence.positive_count > 0 && cap.max_output_tokens.is_none() {
-            cap.max_output_tokens = Some(evidence.observed_request_ids.len() as u64 * 2_048);
+    if let Some(evidence) = entry.numeric_fields.get("max_output_tokens") {
+        if cap.max_output_tokens.is_none() {
+            cap.max_output_tokens = observed_numeric(evidence);
         }
     }
     // P1-3: a model is only treated as known after at least one field has
@@ -788,6 +836,140 @@ fn observed_bool(evidence: &FieldEvidence) -> Option<bool> {
         return Some(false);
     }
     None
+}
+
+fn normalize_hydrated_observed_entry(entry: &mut ObservedEntry, max_evidence_per_field: usize) {
+    for evidence in entry.fields.values_mut() {
+        dedupe_request_ids(&mut evidence.observed_request_ids);
+        if evidence.observed_request_ids.len() > max_evidence_per_field {
+            let overflow = evidence.observed_request_ids.len() - max_evidence_per_field;
+            evidence.observed_request_ids.drain(0..overflow);
+        }
+        normalize_hydrated_counts(evidence);
+        evidence.confidence = confidence_from_evidence(evidence.observed_request_ids.len());
+    }
+
+    for (field, numeric) in &mut entry.numeric_fields {
+        let allowed_request_ids = entry
+            .fields
+            .get(field)
+            .map(|evidence| evidence.observed_request_ids.as_slice());
+        normalize_numeric_samples(numeric, allowed_request_ids, max_evidence_per_field);
+    }
+}
+
+fn dedupe_request_ids(request_ids: &mut Vec<String>) {
+    let mut unique = Vec::with_capacity(request_ids.len());
+    for request_id in request_ids.drain(..) {
+        if !unique.iter().any(|existing| existing == &request_id) {
+            unique.push(request_id);
+        }
+    }
+    *request_ids = unique;
+}
+
+fn normalize_hydrated_counts(evidence: &mut FieldEvidence) {
+    let unique_count = evidence.observed_request_ids.len() as u64;
+    if evidence.positive_count == 0 || evidence.negative_count == 0 {
+        evidence.positive_count = evidence.positive_count.min(unique_count);
+        evidence.negative_count = evidence.negative_count.min(unique_count);
+        return;
+    }
+
+    if evidence.positive_count + evidence.negative_count > unique_count {
+        evidence.positive_count = 0;
+        evidence.negative_count = 0;
+        return;
+    }
+
+    evidence.positive_count = evidence.positive_count.min(unique_count);
+    evidence.negative_count = evidence.negative_count.min(unique_count);
+}
+
+fn normalize_numeric_samples(
+    numeric: &mut NumericFieldEvidence,
+    allowed_request_ids: Option<&[String]>,
+    max_evidence_per_field: usize,
+) {
+    let mut samples = Vec::with_capacity(numeric.samples.len());
+    for sample in numeric.samples.drain(..) {
+        if let Some(allowed_request_ids) = allowed_request_ids {
+            if !allowed_request_ids
+                .iter()
+                .any(|request_id| request_id == &sample.request_id)
+            {
+                continue;
+            }
+        }
+        if samples
+            .iter()
+            .any(|existing: &NumericEvidenceSample| existing.request_id == sample.request_id)
+        {
+            continue;
+        }
+        samples.push(sample);
+    }
+    if samples.len() > max_evidence_per_field {
+        let overflow = samples.len() - max_evidence_per_field;
+        samples.drain(0..overflow);
+    }
+    numeric.samples = samples;
+}
+
+fn push_field_evidence(
+    fields: &mut HashMap<String, FieldEvidence>,
+    numeric_fields: &mut HashMap<String, NumericFieldEvidence>,
+    field: &str,
+    request_id: &str,
+    value: bool,
+    max_evidence_per_field: usize,
+) -> bool {
+    let evidence = fields
+        .entry(field.to_string())
+        .or_insert_with(|| FieldEvidence::new(CapabilitySource::Observed, 0.0));
+    if evidence
+        .observed_request_ids
+        .iter()
+        .any(|observed_request_id| observed_request_id == request_id)
+    {
+        return false;
+    }
+
+    evidence.observed_request_ids.push(request_id.to_string());
+    if value {
+        evidence.positive_count += 1;
+    } else {
+        evidence.negative_count += 1;
+    }
+    if evidence.observed_request_ids.len() > max_evidence_per_field {
+        let removed_request_id = evidence.observed_request_ids.remove(0);
+        if let Some(numeric) = numeric_fields.get_mut(field) {
+            numeric
+                .samples
+                .retain(|sample| sample.request_id != removed_request_id);
+        }
+    }
+    evidence.confidence = confidence_from_evidence(evidence.observed_request_ids.len());
+    true
+}
+
+fn push_numeric_sample(entry: &mut ObservedEntry, field: &str, request_id: &str, value: u64) {
+    let numeric = entry.numeric_fields.entry(field.to_string()).or_default();
+    if numeric
+        .samples
+        .iter()
+        .any(|sample| sample.request_id == request_id)
+    {
+        return;
+    }
+    numeric.samples.push(NumericEvidenceSample {
+        request_id: request_id.to_string(),
+        value,
+    });
+}
+
+fn observed_numeric(evidence: &NumericFieldEvidence) -> Option<u64> {
+    evidence.samples.iter().map(|sample| sample.value).min()
 }
 
 fn confidence_from_evidence(count: usize) -> f32 {
@@ -984,6 +1166,301 @@ mod tests {
             }
             other => panic!("expected Known after two observations, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn observed_numeric_hints_round_trip_exact_values() {
+        let mut registry = CapabilityRegistry::default();
+        let first_rev = registry.current_revision();
+        registry
+            .record_observation(
+                ModelObservation {
+                    model_id: "observed-model".into(),
+                    request_id: "req-1".into(),
+                    observed_at_ms: 1,
+                    context_window_hint: Some(64_000),
+                    max_output_tokens_hint: Some(8_192),
+                    tool_call_ok: Some(true),
+                    stream_ok: None,
+                    reasoning_ok: None,
+                    structured_output_ok: None,
+                    protocol: Some("responses".into()),
+                },
+                first_rev,
+            )
+            .expect("record first");
+        registry
+            .record_observation(
+                ModelObservation {
+                    model_id: "observed-model".into(),
+                    request_id: "req-2".into(),
+                    observed_at_ms: 2,
+                    context_window_hint: Some(64_000),
+                    max_output_tokens_hint: Some(8_192),
+                    tool_call_ok: Some(true),
+                    stream_ok: None,
+                    reasoning_ok: None,
+                    structured_output_ok: None,
+                    protocol: Some("responses".into()),
+                },
+                registry.current_revision(),
+            )
+            .expect("record second");
+
+        let snapshot: Value = serde_json::from_str(&registry.snapshot_json().expect("snapshot"))
+            .expect("snapshot json");
+        let mut hydrated = CapabilityRegistry::default();
+        hydrated.hydrate(snapshot);
+
+        let outcome = hydrated.resolve("observed-model", Some("responses"));
+        match outcome {
+            ResolveOutcome::Known(cap) => {
+                assert_eq!(cap.context_window, Some(64_000));
+                assert_eq!(cap.max_output_tokens, Some(8_192));
+            }
+            other => panic!("expected Known after hydrated observations, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn missing_numeric_hints_stay_unknown_capacity_after_hydrate() {
+        let mut registry = CapabilityRegistry::default();
+        registry
+            .record_observation(
+                ModelObservation {
+                    model_id: "no-numeric-model".into(),
+                    request_id: "req-1".into(),
+                    observed_at_ms: 1,
+                    context_window_hint: None,
+                    max_output_tokens_hint: None,
+                    tool_call_ok: Some(true),
+                    stream_ok: None,
+                    reasoning_ok: None,
+                    structured_output_ok: None,
+                    protocol: Some("responses".into()),
+                },
+                registry.current_revision(),
+            )
+            .expect("record first");
+        registry
+            .record_observation(
+                ModelObservation {
+                    model_id: "no-numeric-model".into(),
+                    request_id: "req-2".into(),
+                    observed_at_ms: 2,
+                    context_window_hint: None,
+                    max_output_tokens_hint: None,
+                    tool_call_ok: Some(true),
+                    stream_ok: None,
+                    reasoning_ok: None,
+                    structured_output_ok: None,
+                    protocol: Some("responses".into()),
+                },
+                registry.current_revision(),
+            )
+            .expect("record second");
+
+        let snapshot: Value = serde_json::from_str(&registry.snapshot_json().expect("snapshot"))
+            .expect("snapshot json");
+        let mut hydrated = CapabilityRegistry::default();
+        hydrated.hydrate(snapshot);
+
+        let outcome = hydrated.resolve("no-numeric-model", Some("responses"));
+        match outcome {
+            ResolveOutcome::Known(cap) => {
+                assert_eq!(cap.context_window, None);
+                assert_eq!(cap.max_output_tokens, None);
+            }
+            other => panic!("expected Known after non-numeric observations, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn repeated_request_id_is_not_independent_evidence() {
+        let mut registry = CapabilityRegistry::default();
+        let observation = ModelObservation {
+            model_id: "dedup-model".into(),
+            request_id: "same-req".into(),
+            observed_at_ms: 1,
+            context_window_hint: Some(32_000),
+            max_output_tokens_hint: Some(4_096),
+            tool_call_ok: Some(true),
+            stream_ok: None,
+            reasoning_ok: None,
+            structured_output_ok: None,
+            protocol: Some("responses".into()),
+        };
+        registry
+            .record_observation(observation.clone(), registry.current_revision())
+            .expect("record first");
+        let duplicate = ModelObservation {
+            context_window_hint: Some(128_000),
+            max_output_tokens_hint: Some(16_384),
+            tool_call_ok: Some(false),
+            ..observation
+        };
+        registry
+            .record_observation(duplicate, registry.current_revision())
+            .expect("record repeated request");
+
+        let outcome = registry.resolve("dedup-model", Some("responses"));
+        assert!(
+            matches!(outcome, ResolveOutcome::Inferred(_)),
+            "same request id must not count as two confirmations"
+        );
+        let evidence = registry
+            .observed
+            .get("dedup-model")
+            .and_then(|entry| entry.fields.get("supports_tool_call"))
+            .expect("tool-call evidence");
+        assert_eq!(evidence.observed_request_ids, vec!["same-req"]);
+        assert_eq!(evidence.positive_count, 1);
+        assert_eq!(evidence.negative_count, 0);
+
+        let numeric = registry
+            .observed
+            .get("dedup-model")
+            .and_then(|entry| entry.numeric_fields.get("context_window"))
+            .expect("context numeric evidence");
+        assert_eq!(numeric.samples.len(), 1);
+        assert_eq!(numeric.samples[0].value, 32_000);
+    }
+
+    #[test]
+    fn conflicting_numeric_hints_resolve_to_smallest_observed_capacity() {
+        let mut registry = CapabilityRegistry::default();
+        registry
+            .record_observation(
+                ModelObservation {
+                    model_id: "conflict-model".into(),
+                    request_id: "req-high".into(),
+                    observed_at_ms: 1,
+                    context_window_hint: Some(128_000),
+                    max_output_tokens_hint: Some(16_384),
+                    tool_call_ok: Some(true),
+                    stream_ok: None,
+                    reasoning_ok: None,
+                    structured_output_ok: None,
+                    protocol: Some("responses".into()),
+                },
+                registry.current_revision(),
+            )
+            .expect("record high");
+        registry
+            .record_observation(
+                ModelObservation {
+                    model_id: "conflict-model".into(),
+                    request_id: "req-low".into(),
+                    observed_at_ms: 2,
+                    context_window_hint: Some(64_000),
+                    max_output_tokens_hint: Some(8_192),
+                    tool_call_ok: Some(true),
+                    stream_ok: None,
+                    reasoning_ok: None,
+                    structured_output_ok: None,
+                    protocol: Some("responses".into()),
+                },
+                registry.current_revision(),
+            )
+            .expect("record low");
+
+        let outcome = registry.resolve("conflict-model", Some("responses"));
+        match outcome {
+            ResolveOutcome::Known(cap) => {
+                assert_eq!(cap.context_window, Some(64_000));
+                assert_eq!(cap.max_output_tokens, Some(8_192));
+            }
+            other => panic!("expected Known after two observations, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn legacy_hydrated_numeric_counts_do_not_infer_capacity() {
+        let snapshot = json!({
+            "schema_version": 1,
+            "seed_version": "seed-v1",
+            "revision": 7,
+            "wildcards": [],
+            "observed": [{
+                "model": "legacy-model",
+                "last_seen_ms": 2,
+                "fields": {
+                    "supports_tool_call": {
+                        "source": "observed",
+                        "confidence": 0.2,
+                        "observed_request_ids": ["req-1", "req-2"],
+                        "positive_count": 2,
+                        "negative_count": 0
+                    },
+                    "context_window": {
+                        "source": "observed",
+                        "confidence": 0.2,
+                        "observed_request_ids": ["req-1", "req-2"],
+                        "positive_count": 2,
+                        "negative_count": 0
+                    },
+                    "max_output_tokens": {
+                        "source": "observed",
+                        "confidence": 0.2,
+                        "observed_request_ids": ["req-1", "req-2"],
+                        "positive_count": 2,
+                        "negative_count": 0
+                    }
+                }
+            }],
+            "learned": []
+        });
+        let mut registry = CapabilityRegistry::default();
+        registry.hydrate(snapshot);
+
+        let outcome = registry.resolve("legacy-model", Some("responses"));
+        match outcome {
+            ResolveOutcome::Known(cap) => {
+                assert_eq!(cap.supports_tool_call, Some(true));
+                assert_eq!(cap.context_window, None);
+                assert_eq!(cap.max_output_tokens, None);
+            }
+            other => panic!("expected Known from boolean evidence, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn legacy_hydrated_duplicate_request_ids_do_not_confirm_capability() {
+        let snapshot = json!({
+            "schema_version": 1,
+            "seed_version": "seed-v1",
+            "revision": 7,
+            "wildcards": [],
+            "observed": [{
+                "model": "duplicate-legacy-model",
+                "last_seen_ms": 2,
+                "fields": {
+                    "supports_tool_call": {
+                        "source": "observed",
+                        "confidence": 0.2,
+                        "observed_request_ids": ["same-req", "same-req"],
+                        "positive_count": 2,
+                        "negative_count": 0
+                    }
+                }
+            }],
+            "learned": []
+        });
+        let mut registry = CapabilityRegistry::default();
+        registry.hydrate(snapshot);
+
+        let outcome = registry.resolve("duplicate-legacy-model", Some("responses"));
+        assert!(
+            matches!(outcome, ResolveOutcome::Inferred(_)),
+            "hydrated duplicate request ids must not count as two confirmations"
+        );
+        let evidence = registry
+            .observed
+            .get("duplicate-legacy-model")
+            .and_then(|entry| entry.fields.get("supports_tool_call"))
+            .expect("hydrated evidence");
+        assert_eq!(evidence.observed_request_ids, vec!["same-req"]);
+        assert_eq!(evidence.positive_count, 1);
     }
 
     #[test]

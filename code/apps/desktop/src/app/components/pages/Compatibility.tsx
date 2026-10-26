@@ -1,7 +1,6 @@
 import { useMemo } from "react";
 import { Laptop, Monitor, RefreshCw, Route, ShieldCheck, TerminalSquare } from "lucide-react";
 import { Surface } from "../common/Surface";
-import { DataSourceBadge } from "../common/DataSourceBadge";
 import { StatusBadge } from "../common/StatusBadge";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
@@ -110,13 +109,7 @@ export function Compatibility() {
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <div className="flex flex-wrap items-center gap-3">
-            <h1>{t("cp.title")}</h1>
-            <DataSourceBadge
-              mode={hasVerifiedPayload ? "native" : evidenceState === "preview" || evidenceState === "loading" ? "preview" : "unavailable"}
-            />
-            <Badge variant={hasVerifiedPayload ? "default" : "secondary"}>
-              {sourceText}{updatedAt ? ` · ${updatedAt.toLocaleTimeString()}` : ""}
-            </Badge>
+            <h2 className="text-lg font-semibold text-foreground">{t("cp.title")}</h2>
           </div>
           <p className="mt-1 max-w-3xl text-sm text-muted-foreground">
             {lang === "zh"

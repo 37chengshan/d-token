@@ -4,7 +4,10 @@ use crate::agent_registry::{
     agent_descriptor, scan_current_process_agents, AgentDescriptor, AgentEvidenceKind,
     AgentInstallCapability,
 };
-use dtoken_config_patcher::agent::{allowed_agent_config_paths, current_process_scan_context};
+use dtoken_config_patcher::agent::{
+    allowed_agent_config_paths, current_process_scan_context, known_agent_adapters,
+};
+use dtoken_config_patcher::agent_kind::AgentIntegrationKind;
 use dtoken_config_patcher::agent_mcp::{
     is_verified_hook_agent, resolve_hook_config_path, resolve_mcp_config_path_for,
 };
@@ -225,17 +228,30 @@ impl ExternalConfigRefreshCoordinator {
                         previous_fingerprint,
                         changed_sources.clone(),
                         false,
+                        false,
                     );
                 }
                 let changed_sources = changed_sources.clone();
                 self.pending_snapshot = None;
                 self.last_snapshot = Some(snapshot.clone());
+                // R3.D1 (GP-C): a settled change is auto-applicable only when
+                // the app-level cc-switch follow authorization is active AND
+                // the change is confined to the cc-switch domain. Agent config
+                // edits always keep the review contract.
+                let cc_switch_only = !changed_sources.is_empty()
+                    && changed_sources.iter().all(|source| source == "cc_switch");
+                let auto_applicable = snapshot.automatic_apply_allowed && cc_switch_only;
                 return self.event(
-                    "external_config_review_required",
+                    if auto_applicable {
+                        "external_config_snapshot"
+                    } else {
+                        "external_config_review_required"
+                    },
                     snapshot.fingerprint,
                     previous_fingerprint,
                     changed_sources,
-                    true,
+                    !auto_applicable,
+                    auto_applicable,
                 );
             }
         }
@@ -247,6 +263,7 @@ impl ExternalConfigRefreshCoordinator {
                 snapshot.fingerprint,
                 None,
                 Vec::new(),
+                false,
                 false,
             );
         }
@@ -261,6 +278,7 @@ impl ExternalConfigRefreshCoordinator {
                 snapshot.fingerprint,
                 previous_fingerprint,
                 Vec::new(),
+                false,
                 false,
             );
         }
@@ -277,6 +295,7 @@ impl ExternalConfigRefreshCoordinator {
             previous_fingerprint,
             changed_sources,
             false,
+            false,
         )
     }
 
@@ -287,6 +306,7 @@ impl ExternalConfigRefreshCoordinator {
         previous_fingerprint: Option<String>,
         changed_sources: Vec<String>,
         review_required: bool,
+        automatic_apply_allowed: bool,
     ) -> ExternalConfigRefreshEvent {
         ExternalConfigRefreshEvent {
             state: state.to_string(),
@@ -295,7 +315,7 @@ impl ExternalConfigRefreshCoordinator {
             previous_fingerprint,
             changed_sources,
             review_required,
-            automatic_apply_allowed: false,
+            automatic_apply_allowed,
             next_poll_not_before_ms: self.next_poll_not_before_ms,
         }
     }
@@ -556,6 +576,7 @@ pub fn discover_with_auto_follow(auto_follow_authorized: bool) -> Value {
     });
     let cc_switch_sync = cc_switch_sync_state(&sources, &candidates);
     let revision = discovery_revision(&agent_bindings, &cc_switch_sync);
+    let agent_catalog = project_agent_catalog(&agent_bindings, agent_scan["state"] == "loaded");
     let external_config_refresh = observe_external_config_snapshot(&external_config_snapshot);
     json!({
         "source": "dtoken-desktop-read-only-discovery",
@@ -564,6 +585,7 @@ pub fn discover_with_auto_follow(auto_follow_authorized: bool) -> Value {
         "state": if candidates.is_empty() && agent_bindings.is_empty() { "unavailable" } else { "loaded" },
         "candidates": candidates,
         "agent_bindings": agent_bindings,
+        "agent_catalog": agent_catalog,
         "agent_scan": agent_scan,
         "sources": sources,
         "selection_required": selection_required,
@@ -579,6 +601,30 @@ pub fn discover_with_auto_follow(auto_follow_authorized: bool) -> Value {
         },
         "privacy": "Reads configuration metadata only; auth.json and credential/api_key/token/auth/cookie values are never read or returned"
     })
+}
+
+/// Full display catalog from the backend registry. Only detected bindings are
+/// transaction inputs; catalog membership alone never grants a write action.
+pub(crate) fn project_agent_catalog(
+    bindings: &[AgentUpstreamBinding],
+    scan_complete: bool,
+) -> Vec<Value> {
+    known_agent_adapters().iter().map(|agent| {
+        let binding = bindings.iter().find(|binding| binding.agent_id == agent.id);
+        let kind = agent_transport_adapter(agent.id).map(|adapter| match adapter.integration_kind {
+            AgentIntegrationKind::Route => "route",
+            AgentIntegrationKind::Mcp => "mcp",
+            AgentIntegrationKind::Hook => "hook",
+        }).unwrap_or("unsupported");
+        json!({
+            "agent_id": agent.id,
+            "agent_name": agent.name,
+            "installed": binding.map(|binding| binding.installed).or_else(|| scan_complete.then_some(false)),
+            "integration_kind": kind,
+            "can_configure": binding.is_some_and(|binding| binding.installed && binding.can_configure),
+            "can_clear": binding.is_some_and(|binding| binding.installed && binding.can_clear),
+        })
+    }).collect()
 }
 
 /// Retains only safe file-metadata fingerprints between discovery runs. It
@@ -1220,6 +1266,24 @@ fn discover_agent_configs(
             let source_id = format!("agent-config:{}:{}", spec.id, index + 1);
             match result {
                 Ok(mut discovered) => {
+                    // Codex reads `CODEX_HOME/config.toml` as its current
+                    // configuration. Other `*.config.toml` files in that
+                    // directory are useful read-only discovery evidence, but
+                    // their presence does not prove that a Codex invocation is
+                    // using them. Keep their parsed route visible without
+                    // letting them override or conflict with the base config.
+                    // An explicit profile selection remains fail-closed in
+                    // `candidate_from_codex_toml`.
+                    if spec.id == "codex" && !is_current_codex_config_path(path) {
+                        for candidate in &mut discovered {
+                            candidate.active = false;
+                            candidate.confidence = candidate.confidence.min(80);
+                            candidate.reasons.push(
+                                "Codex supplemental config was discovered, but has no evidence that it is currently active"
+                                    .to_string(),
+                            );
+                        }
+                    }
                     if config_paths.len() > 1 {
                         for candidate in &mut discovered {
                             candidate.id = format!("{}-config-{}", candidate.id, index + 1);
@@ -1249,6 +1313,10 @@ fn discover_agent_configs(
             }
         }
     }
+}
+
+fn is_current_codex_config_path(path: &Path) -> bool {
+    path.file_name().and_then(|name| name.to_str()) == Some("config.toml")
 }
 
 fn candidate_from_claude_settings(path: &Path) -> Result<Option<UpstreamCandidate>, &'static str> {
@@ -1938,34 +2006,13 @@ struct OpenClawDefaultModelMetadata {
     primary: Option<String>,
 }
 
-/// Outcome of resolving the active Codex profile.
-enum CodexProfileResolution<'a> {
-    /// No profiles (or an empty table): use the root-level selection.
-    InheritRoot,
-    /// An unambiguous active profile: `[profiles.default]` or the only profile.
-    Profile(&'a toml::Value),
-    /// Multiple profiles without an explicit default: ambiguous, fail closed.
-    Ambiguous,
-}
-
-/// Resolves the effective Codex profile without reading auth: `default` wins
-/// when present, otherwise a single profile is unambiguous and treated as
-/// active; multiple profiles with no explicit default are ambiguous because
-/// Codex may select one externally (e.g. `codex --profile <name>`).
-fn resolve_codex_profile<'a>(value: &'a toml::Value) -> CodexProfileResolution<'a> {
-    let Some(profiles) = value.get("profiles").and_then(toml::Value::as_table) else {
-        return CodexProfileResolution::InheritRoot;
-    };
-    if let Some(default) = profiles.get("default") {
-        return CodexProfileResolution::Profile(default);
-    }
-    if profiles.len() == 1 {
-        return CodexProfileResolution::Profile(profiles.values().next().expect("non-empty"));
-    }
-    if profiles.is_empty() {
-        return CodexProfileResolution::InheritRoot;
-    }
-    CodexProfileResolution::Ambiguous
+/// A Codex profile overlay is selected outside the base configuration (for
+/// example with `codex --profile <name>`). Read-only discovery cannot observe
+/// that invocation, so an explicit legacy `profile` selector stays closed.
+/// Merely defining named profiles does not select one: the normal Codex
+/// invocation uses the base `config.toml` values.
+fn has_explicit_codex_profile_selection(value: &toml::Value) -> bool {
+    value.get("profile").is_some()
 }
 
 fn candidate_from_codex_toml(path: &Path) -> Result<Option<UpstreamCandidate>, &'static str> {
@@ -1984,24 +2031,16 @@ fn candidate_from_codex_toml(path: &Path) -> Result<Option<UpstreamCandidate>, &
         .get("model")
         .and_then(toml::Value::as_str)
         .map(str::to_string);
-    // Real configs put the active selection under [profiles.default] or a
-    // single active profile. A profile's model_provider/model overrides the
-    // root selection; keys it does not declare inherit the root. Multiple
-    // profiles without an explicit default are ambiguous, so discovery fails
-    // closed and reports no candidate instead of guessing the active provider.
-    let active_profile = match resolve_codex_profile(&value) {
-        CodexProfileResolution::Ambiguous => return Ok(None),
-        CodexProfileResolution::Profile(profile) => Some(profile),
-        CodexProfileResolution::InheritRoot => None,
-    };
-    let provider_id = active_profile
-        .and_then(|profile| profile.get("model_provider").and_then(toml::Value::as_str))
-        .unwrap_or(root_provider_id)
-        .to_string();
-    let model = active_profile
-        .and_then(|profile| profile.get("model").and_then(toml::Value::as_str))
-        .map(str::to_string)
-        .or(root_model);
+    // Named `[profiles.*]` tables and `*.config.toml` companions are optional
+    // overlays, not the default Codex selection. Without an explicit profile,
+    // the root values are the uniquely current configuration. If an explicit
+    // selector is present, the effective overlay cannot be established from a
+    // passive scan, so keep discovery fail-closed instead of guessing.
+    if has_explicit_codex_profile_selection(&value) {
+        return Ok(None);
+    }
+    let provider_id = root_provider_id.to_string();
+    let model = root_model;
     let provider = value
         .get("model_providers")
         .and_then(toml::Value::as_table)
@@ -2384,10 +2423,11 @@ fn resolve_agent_bindings(
                 .cloned()
                 .collect::<Vec<_>>();
             let already_connected = all_candidates.iter().any(|candidate| {
-                candidate
-                    .base_url
-                    .as_deref()
-                    .is_some_and(is_dtoken_listener)
+                (spec.id != "opencode" || candidate.active)
+                    && candidate
+                        .base_url
+                        .as_deref()
+                        .is_some_and(is_dtoken_listener)
             });
             let eligible = all_candidates
                 .iter()
@@ -3437,6 +3477,62 @@ mod tests {
     }
 
     #[test]
+    fn refresh_coordinator_reports_auto_applicable_when_authorized_cc_switch_change_settles() {
+        // R3.D1 (GP-C): with the app-level cc-switch follow authorization
+        // active, a settled cc-switch-only change is auto-applicable — no
+        // review-required event, no second user confirmation.
+        let initial = test_external_snapshot("snapshot-a", "cc-a", Vec::new());
+        let mut changed = test_external_snapshot("snapshot-b", "cc-b", Vec::new());
+        changed.automatic_apply_allowed = true;
+        let mut coordinator = ExternalConfigRefreshCoordinator::with_intervals(1_000, 100);
+
+        let initial_event = coordinator.observe(0, initial);
+        assert_eq!(initial_event.state, "external_config_snapshot");
+
+        let pending = coordinator.observe(1_000, changed.clone());
+        assert_eq!(pending.state, "change_pending_debounce");
+
+        let settled = coordinator.observe(1_100, changed);
+        assert_eq!(
+            settled.state, "external_config_snapshot",
+            "an authorized cc-switch-only change settles without a review event"
+        );
+        assert!(!settled.review_required);
+        assert!(settled.automatic_apply_allowed);
+    }
+
+    #[test]
+    fn refresh_coordinator_keeps_review_required_for_agent_config_changes() {
+        // The cc-switch follow authorization never covers manual agent config
+        // edits: those keep the review contract even when authorized.
+        let agent_before = AgentConfigSnapshot {
+            agent_id: "codex".to_string(),
+            state: "present".to_string(),
+            path: "~/.codex/config.toml".to_string(),
+            fingerprint: "agent-a".to_string(),
+        };
+        let agent_after = AgentConfigSnapshot {
+            agent_id: "codex".to_string(),
+            state: "present".to_string(),
+            path: "~/.codex/config.toml".to_string(),
+            fingerprint: "agent-b".to_string(),
+        };
+        let initial = test_external_snapshot("snapshot-a", "cc-a", vec![agent_before]);
+        let mut changed = test_external_snapshot("snapshot-b", "cc-a", vec![agent_after]);
+        changed.automatic_apply_allowed = true;
+        let mut coordinator = ExternalConfigRefreshCoordinator::with_intervals(1_000, 100);
+
+        coordinator.observe(0, initial);
+        let pending = coordinator.observe(1_000, changed.clone());
+        assert_eq!(pending.changed_sources, ["agent_configs"]);
+
+        let settled = coordinator.observe(1_100, changed);
+        assert_eq!(settled.state, "external_config_review_required");
+        assert!(settled.review_required);
+        assert!(!settled.automatic_apply_allowed);
+    }
+
+    #[test]
     fn refresh_coordinator_debounces_change_and_requires_review() {
         let agent = AgentConfigSnapshot {
             agent_id: "codex".to_string(),
@@ -3648,6 +3744,38 @@ mod tests {
     }
 
     #[test]
+    fn opencode_registered_provider_is_not_connected_until_selected() {
+        use dtoken_config_patcher::agent::{
+            AgentDetectionEvidence, AgentInstallCapability, AgentSessionCapability, DetectedAgent,
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("opencode.json");
+        let mut root = serde_json::json!({"provider":{"dtoken-local-route":{
+            "npm":"@ai-sdk/openai-compatible", "options":{"baseURL":"http://127.0.0.1:18001/v1"},
+            "models":{"mimo-v2.5-free":{"name":"MiMo"}}
+        }}});
+        let detected = vec![DetectedAgent {
+            id: "opencode".into(),
+            name: "OpenCode".into(),
+            install_capability: AgentInstallCapability::ConfirmRequired,
+            session_capability: AgentSessionCapability::Metadata,
+            evidence: vec![AgentDetectionEvidence {
+                kind: AgentEvidenceKind::Config,
+                path: path.clone(),
+            }],
+        }];
+        for selected in [false, true] {
+            if selected {
+                root["model"] = "dtoken-local-route/mimo-v2.5-free".into();
+            }
+            fs::write(&path, serde_json::to_string(&root).unwrap()).unwrap();
+            let candidates = candidates_from_opencode_config(&path).unwrap();
+            let bindings = resolve_agent_bindings(&candidates, &detected);
+            assert_eq!(bindings[0].already_connected, selected);
+        }
+    }
+
+    #[test]
     fn opencode_parser_uses_explicit_provider_fields_and_drops_secret_values() {
         const SECRET: &str = "OPENCODE_SECRET_MUST_NOT_ESCAPE";
         let root = tempfile::tempdir().expect("temporary directory");
@@ -3706,7 +3834,13 @@ mod tests {
         );
         let root = tempfile::tempdir().expect("temporary directory");
         let path = root.path().join("config.toml");
-        fs::write(&path, FIXTURE).expect("Codex config");
+        fs::write(
+            &path,
+            format!(
+                "{FIXTURE}\n[profiles.strict]\napproval_policy = \"on-request\"\n\n[profiles.yolo]\napproval_policy = \"never\"\n"
+            ),
+        )
+        .expect("Codex config");
 
         let candidate = candidate_from_codex_toml(&path)
             .expect("parse")
@@ -3804,10 +3938,9 @@ wire_api = "responses"
     }
 
     #[test]
-    fn codex_toml_profiles_default_overrides_root_selection() {
-        // [profiles.default] is the explicit active profile; its
-        // model_provider and model override the root selection while other
-        // profiles exist but are not selected.
+    fn codex_toml_unselected_profiles_do_not_override_base_selection() {
+        // Named profiles are optional overlays. With no explicit profile
+        // selection, the normal Codex invocation uses the base config.
         let root = tempfile::tempdir().expect("temporary directory");
         let path = root.path().join("config.toml");
         fs::write(
@@ -3837,19 +3970,18 @@ model_provider = "root-provider"
         let candidate = candidate_from_codex_toml(&path)
             .expect("parse")
             .expect("candidate");
-        assert_eq!(candidate.id, "codex-profile-provider");
+        assert_eq!(candidate.id, "codex-root-provider");
         assert_eq!(
             candidate.base_url.as_deref(),
-            Some("https://profile.example/v1")
+            Some("https://root.example/v1")
         );
-        assert_eq!(candidate.models, ["gpt-profile"]);
+        assert_eq!(candidate.models, ["gpt-root"]);
     }
 
     #[test]
-    fn codex_toml_single_profile_is_active_and_inherits_root_provider() {
-        // A lone profile with no explicit default is unambiguous and treated
-        // as active; keys it does not declare (model_provider) inherit the
-        // root selection.
+    fn codex_toml_explicit_profile_selection_fails_closed() {
+        // An explicitly selected profile may be supplied by a profile overlay
+        // file or invocation. Discovery cannot safely reconstruct that layer.
         let root = tempfile::tempdir().expect("temporary directory");
         let path = root.path().join("config.toml");
         fs::write(
@@ -3857,6 +3989,7 @@ model_provider = "root-provider"
             r#"
 model_provider = "root-provider"
 model = "gpt-root"
+profile = "solo"
 
 [model_providers.root-provider]
 base_url = "https://root.example/v1"
@@ -3868,28 +4001,19 @@ model = "gpt-solo"
         )
         .expect("Codex config");
 
-        let candidate = candidate_from_codex_toml(&path)
-            .expect("parse")
-            .expect("candidate");
-        assert_eq!(candidate.id, "codex-root-provider");
-        assert_eq!(
-            candidate.base_url.as_deref(),
-            Some("https://root.example/v1")
-        );
-        assert_eq!(candidate.models, ["gpt-solo"]);
+        assert!(candidate_from_codex_toml(&path).expect("parse").is_none());
     }
 
     #[test]
-    fn codex_toml_ambiguous_multiple_profiles_fail_closed() {
-        // Multiple profiles without [profiles.default] are ambiguous: Codex
-        // may be invoked with --profile <name>, so discovery must fail closed
-        // and report no candidate instead of guessing the active provider.
+    fn codex_toml_multiple_unselected_profiles_use_base_selection() {
+        // Several optional profiles do not make the base config ambiguous.
         let root = tempfile::tempdir().expect("temporary directory");
         let path = root.path().join("config.toml");
         fs::write(
             &path,
             r#"
 model_provider = "root-provider"
+model = "gpt-root"
 
 [model_providers.root-provider]
 base_url = "https://root.example/v1"
@@ -3909,8 +4033,11 @@ model_provider = "beta-provider"
         )
         .expect("Codex config");
 
-        let candidate = candidate_from_codex_toml(&path).expect("parse");
-        assert!(candidate.is_none());
+        let candidate = candidate_from_codex_toml(&path)
+            .expect("parse")
+            .expect("candidate");
+        assert_eq!(candidate.id, "codex-root-provider");
+        assert_eq!(candidate.models, ["gpt-root"]);
     }
 
     #[test]
@@ -4113,6 +4240,42 @@ model_provider = "beta-provider"
         assert_eq!(bindings.len(), 1);
         assert_eq!(bindings[0].agent_id, "codex");
         assert!(bindings[0].installed);
+        let catalog = project_agent_catalog(&bindings, true);
+        assert_eq!(catalog.len(), 23);
+        assert_eq!(
+            catalog
+                .iter()
+                .filter(|agent| agent["installed"] == true)
+                .count(),
+            1
+        );
+        let codex = catalog
+            .iter()
+            .find(|agent| agent["agent_id"] == "codex")
+            .unwrap();
+        assert_eq!(codex["installed"], true);
+        assert_eq!(codex["can_configure"], bindings[0].can_configure);
+        let opencode = catalog
+            .iter()
+            .find(|agent| agent["agent_id"] == "opencode")
+            .unwrap();
+        assert_eq!(opencode["installed"], false);
+        assert_eq!(opencode["can_configure"], false);
+        assert_eq!(opencode["can_clear"], false);
+        assert_eq!(opencode["integration_kind"], "route");
+        assert!(catalog
+            .iter()
+            .all(|agent| agent["integration_kind"] != "unsupported"));
+    }
+
+    #[test]
+    fn catalog_does_not_call_agents_uninstalled_when_scan_failed() {
+        let catalog = project_agent_catalog(&[], false);
+        assert_eq!(catalog.len(), 23);
+        assert!(catalog.iter().all(|agent| agent["installed"].is_null()));
+        assert!(catalog
+            .iter()
+            .all(|agent| agent["can_configure"] == false && agent["can_clear"] == false));
     }
 
     #[test]
@@ -4216,14 +4379,14 @@ model_provider = "beta-provider"
     }
 
     #[test]
-    fn discovery_records_every_detected_config_and_requires_choice_for_distinct_routes() {
+    fn codex_default_config_stays_current_when_companion_configs_are_discovered() {
         use dtoken_config_patcher::agent::{
             AgentDetectionEvidence, AgentInstallCapability, AgentSessionCapability, DetectedAgent,
         };
 
         let temporary = tempfile::tempdir().expect("temporary directory");
         let first = temporary.path().join("config.toml");
-        let second = temporary.path().join("profile.toml");
+        let second = temporary.path().join("alternate.config.toml");
         fs::write(
             &first,
             r#"model_provider = "first"
@@ -4268,9 +4431,95 @@ wire_api = "responses"
         assert_eq!(sources.len(), 2);
         assert!(sources.iter().all(|source| source["state"] == "loaded"));
         assert_eq!(candidates.len(), 2);
-        assert_ne!(candidates[0].id, candidates[1].id);
+        assert_eq!(
+            candidates
+                .iter()
+                .filter(|candidate| candidate.active)
+                .count(),
+            1
+        );
+        assert!(candidates.iter().any(|candidate| {
+            candidate.source == "agent-config:codex"
+                && candidate.models == ["model-a"]
+                && candidate.active
+        }));
+        assert!(candidates.iter().any(|candidate| {
+            candidate.source == "agent-config:codex"
+                && candidate.models == ["model-b"]
+                && !candidate.active
+        }));
         let bindings = resolve_agent_bindings(&candidates, &detected);
         assert_eq!(bindings[0].config_paths.len(), 2);
+        assert_eq!(bindings[0].resolution, "auto-resolved");
+        assert_eq!(
+            bindings[0]
+                .resolved_candidate
+                .as_ref()
+                .map(|candidate| candidate.models.clone()),
+            Some(vec!["model-a".to_string()])
+        );
+    }
+
+    #[test]
+    fn codex_multiple_current_config_paths_still_require_source_fix() {
+        use dtoken_config_patcher::agent::{
+            AgentDetectionEvidence, AgentInstallCapability, AgentSessionCapability, DetectedAgent,
+        };
+
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let default = temporary.path().join("default/config.toml");
+        let explicit = temporary.path().join("explicit/config.toml");
+        fs::create_dir_all(default.parent().expect("default parent")).expect("default parent");
+        fs::create_dir_all(explicit.parent().expect("explicit parent")).expect("explicit parent");
+        fs::write(
+            &default,
+            r#"model_provider = "default"
+model = "default-model"
+[model_providers.default]
+base_url = "https://default.example/v1"
+wire_api = "responses"
+"#,
+        )
+        .expect("default config");
+        fs::write(
+            &explicit,
+            r#"model_provider = "explicit"
+model = "explicit-model"
+[model_providers.explicit]
+base_url = "https://explicit.example/v1"
+wire_api = "responses"
+"#,
+        )
+        .expect("explicit config");
+        let detected = vec![DetectedAgent {
+            id: "codex".to_string(),
+            name: "Codex".to_string(),
+            install_capability: AgentInstallCapability::ConfirmRequired,
+            session_capability: AgentSessionCapability::Metadata,
+            evidence: vec![
+                AgentDetectionEvidence {
+                    kind: AgentEvidenceKind::Config,
+                    path: default,
+                },
+                AgentDetectionEvidence {
+                    kind: AgentEvidenceKind::Config,
+                    path: explicit,
+                },
+            ],
+        }];
+        let mut candidates = Vec::new();
+        let mut sources = Vec::new();
+
+        discover_agent_configs(&detected, &mut candidates, &mut sources);
+
+        assert_eq!(
+            candidates
+                .iter()
+                .filter(|candidate| candidate.active)
+                .count(),
+            2
+        );
+        let bindings = resolve_agent_bindings(&candidates, &detected);
         assert_eq!(bindings[0].resolution, "needs-choice");
         assert!(bindings[0].resolved_candidate.is_none());
     }

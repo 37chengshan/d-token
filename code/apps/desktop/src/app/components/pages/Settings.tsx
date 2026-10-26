@@ -27,7 +27,7 @@ import {
   useAppearance,
 } from "../../lib/theme-context";
 import { cn } from "../ui/utils";
-import { invokeNative, type NativeActionResult } from "../../lib/native";
+import { invokeNative, isTauriRuntime, type NativeActionResult } from "../../lib/native";
 import { useRuntimeDashboardSelector, shallowEqualSlice, type RuntimeDashboardState } from "../../lib/useRuntimeDashboard";
 import { createOperationRequestId, useNotifications } from "../../lib/notifications";
 import { presentOperationFailure } from "../../lib/userCopy";
@@ -124,14 +124,29 @@ export function Settings() {
     loadState: settingsState,
     saving,
     persistenceNotice,
+    persistenceRevision,
     updateAppearance,
   } = useAppearance();
   const [notice, setNotice] = useState("");
   const [serviceStatus, setServiceStatus] = useState<DtokenServiceStatus | null>(null);
-  const [serviceState, setServiceState] = useState<ServiceState>("loading");
+  const [serviceState, setServiceState] = useState<ServiceState>(() => (!isTauriRuntime() ? "preview" : "loading"));
   const [serviceAction, setServiceAction] = useState<"start" | "stop" | null>(null);
   const [confirmServiceStop, setConfirmServiceStop] = useState(false);
-  const [autostartStatus, setAutostartStatus] = useState<AutostartStatus | null>(null);
+  const [serviceStopError, setServiceStopError] = useState("");
+  const [autostartError, setAutostartError] = useState("");
+  const lastSeenAppearanceRevision = useRef(persistenceRevision);
+  const [autostartStatus, setAutostartStatus] = useState<AutostartStatus | null>(() =>
+    !isTauriRuntime()
+      ? {
+          supported: false,
+          state: "preview",
+          enabled: false,
+          source: "unavailable",
+          service_argument: "--dtoken-autostart-service",
+          summary: "无法读取自动启动状态。",
+        }
+      : null,
+  );
   const [autostartPending, setAutostartPending] = useState(false);
   const [autostartReview, setAutostartReview] = useState<boolean | null>(null);
   const [preferences, setPreferences] = useState(DEFAULT_PRODUCT_PREFERENCES);
@@ -237,6 +252,7 @@ export function Settings() {
     } catch (error) {
       setPreferences(preferences);
       const failure = presentOperationFailure("settings", error, lang);
+      setNotice(failure.message);
       addNotification({ dedupeKey: "settings-preferences-failed", level: "error", title: failure.title, message: failure.message, details: failure.details, receipt: { requestId, targetId: "preferences" } });
     } finally {
       setPreferencesSaving(false);
@@ -352,6 +368,11 @@ export function Settings() {
   const refreshServiceStatus = refreshOperational;
 
   useEffect(() => {
+    if (!isTauriRuntime()) {
+      setServiceStatus(null);
+      setServiceState("preview");
+      return;
+    }
     const status = operational.service.data as DtokenServiceStatus | null;
     if (status && ["running", "unmanaged_running", "stopped"].includes(status.state)) {
       setServiceStatus(status);
@@ -372,9 +393,26 @@ export function Settings() {
     });
   }, [addNotification, lang, persistenceNotice]);
 
+  useEffect(() => {
+    if (persistenceRevision > lastSeenAppearanceRevision.current && persistenceNotice === "saved") {
+      lastSeenAppearanceRevision.current = persistenceRevision;
+      addNotification({
+        dedupeKey: "appearance-saved",
+        level: "success",
+        title: lang === "zh" ? "外观设置已保存" : "Appearance settings saved",
+        message: lang === "zh" ? "外观偏好已保存到本机设置。" : "Appearance preferences saved to local settings.",
+      });
+    } else {
+      lastSeenAppearanceRevision.current = persistenceRevision;
+    }
+  }, [addNotification, lang, persistenceNotice, persistenceRevision]);
+
   const runServiceAction = async (action: "start" | "stop") => {
     setServiceAction(action);
     setNotice("");
+    if (action === "stop") {
+      setServiceStopError("");
+    }
     try {
       const result = await invokeNative<NativeActionResult>(
         action === "start" ? "start_dtoken_service" : "stop_dtoken_service",
@@ -385,10 +423,17 @@ export function Settings() {
         : (lang === "zh" ? "d-token 本地服务已停止。" : "The local d-token service stopped.");
       setNotice(success);
       addNotification({ dedupeKey: `settings-service-${action}`, level: "success", title: success, message: success });
+      if (action === "stop") {
+        setConfirmServiceStop(false);
+      }
       await refreshServiceStatus();
     } catch (error) {
       const failure = presentOperationFailure("service", error, lang);
-      setNotice(failure.message);
+      if (action === "stop") {
+        setServiceStopError(failure.message);
+      } else {
+        setNotice(failure.message);
+      }
       addNotification({ dedupeKey: `settings-service-${action}-failed`, level: "error", title: failure.title, message: failure.message, details: failure.details });
     } finally {
       setServiceAction(null);
@@ -400,6 +445,7 @@ export function Settings() {
     const enable = autostartReview;
     const requestId = createOperationRequestId(enable ? "autostart-enable" : "autostart-disable");
     setAutostartPending(true);
+    setAutostartError("");
     try {
       const result = await invokeNative<AutostartActionResult>(enable ? "enable_autostart" : "disable_autostart");
       setAutostartStatus(result.status);
@@ -420,13 +466,15 @@ export function Settings() {
       });
       setAutostartReview(null);
     } catch (error) {
+      const msg = error instanceof Error && error.message === "native_unavailable"
+        ? (lang === "zh" ? "浏览器预览无法修改系统启动项。" : "The browser preview cannot change system startup entries.")
+        : (lang === "zh" ? "系统启动项未通过写入或验证，已恢复原有状态。" : "The system startup entry did not pass write or verification. The prior state was restored.");
+      setAutostartError(msg);
       addNotification({
         dedupeKey: "autostart-change-failed",
         level: "error",
         title: lang === "zh" ? "自动启动设置失败" : "Autostart change failed",
-        message: error instanceof Error && error.message === "native_unavailable"
-          ? (lang === "zh" ? "浏览器预览无法修改系统启动项。" : "The browser preview cannot change system startup entries.")
-          : (lang === "zh" ? "系统启动项未通过写入或验证，已恢复原有状态。" : "The system startup entry did not pass write or verification. The prior state was restored."),
+        message: msg,
         receipt: { requestId, targetId: "autostart" },
       });
     } finally {
@@ -451,7 +499,7 @@ export function Settings() {
           {settingsBadge(settingsState, saving, lang)}
         </Badge>
       </div>
-      {(notice || persistenceNotice) && (
+      {(notice || (persistenceNotice && persistenceNotice !== "saved")) && (
         <Surface variant="row" role="status" className="p-3 text-sm text-muted-foreground">
           {notice || describePersistenceNotice(persistenceNotice, lang)}
         </Surface>
@@ -535,7 +583,14 @@ export function Settings() {
                 variant={serviceCommand === "stop" ? "outline" : "default"}
                 aria-label={serviceCommand === "start" ? (lang === "zh" ? "启动服务" : "Start service") : (lang === "zh" ? "停止服务" : "Stop service")}
                 disabled={serviceAction !== null}
-                onClick={() => serviceCommand === "stop" ? setConfirmServiceStop(true) : void runServiceAction("start")}
+                onClick={() => {
+                  if (serviceCommand === "stop") {
+                    setServiceStopError("");
+                    setConfirmServiceStop(true);
+                  } else {
+                    void runServiceAction("start");
+                  }
+                }}
               >
                 {serviceAction ? <RefreshCw className="size-4 animate-spin" /> : <Power className="size-4" />}
                 {serviceAction
@@ -567,7 +622,10 @@ export function Settings() {
               aria-label={lang === "zh" ? "自动启动 d-token 服务" : "Start d-token automatically"}
               checked={autostartStatus?.enabled === true}
               disabled={!autostartStatus?.supported || autostartStatus.state === "error" || autostartPending}
-              onCheckedChange={(checked) => setAutostartReview(checked)}
+              onCheckedChange={(checked) => {
+                setAutostartError("");
+                setAutostartReview(checked);
+              }}
             />
           </div>
         </Row>
@@ -619,7 +677,7 @@ export function Settings() {
       <Section
         id="learning"
         title={lang === "zh" ? "智能学习" : "Smart Learning"}
-        description={lang === "zh" ? "本地聚合指标学习；项目扫描在「安装与连接 → 智能学习」。" : "Local aggregate learning; project scan lives under Install → Smart Learning."}
+        description={lang === "zh" ? "本地聚合指标学习；项目扫描在「高级配置 → 智能学习」。" : "Local aggregate learning; project scan lives under Advanced Configuration → Smart Learning."}
         icon={BrainCircuit}
       >
         <Row
@@ -812,19 +870,28 @@ export function Settings() {
       </Section>
       <OperationDialog
         open={confirmServiceStop}
-        onOpenChange={setConfirmServiceStop}
+        onOpenChange={(open) => {
+          setConfirmServiceStop(open);
+          if (!open) setServiceStopError("");
+        }}
         title={lang === "zh" ? "停止 d-token 本地服务？" : "Stop the d-token local service?"}
         summary={lang === "zh" ? "停止后新的 Agent 请求将无法通过 d-token。" : "New agent requests cannot route through d-token after it stops."}
         impact={serviceStatus?.service_url ?? "127.0.0.1"}
         confirmLabel={lang === "zh" ? "确认停止" : "Stop service"}
         cancelLabel={t("common.cancel")}
         risk="warning"
+        error={serviceStopError}
         pending={serviceAction === "stop"}
-        onConfirm={async () => { await runServiceAction("stop"); setConfirmServiceStop(false); }}
+        onConfirm={async () => { await runServiceAction("stop"); }}
       />
       <OperationDialog
         open={autostartReview !== null}
-        onOpenChange={(open) => { if (!open) setAutostartReview(null); }}
+        onOpenChange={(open) => {
+          if (!open) {
+            setAutostartReview(null);
+            setAutostartError("");
+          }
+        }}
         title={autostartReview
           ? (lang === "zh" ? "启用登录后自动启动？" : "Enable autostart after sign-in?")
           : (lang === "zh" ? "关闭登录后自动启动？" : "Disable autostart after sign-in?")}
@@ -835,6 +902,7 @@ export function Settings() {
         confirmLabel={autostartReview ? (lang === "zh" ? "确认启用" : "Enable") : (lang === "zh" ? "确认关闭" : "Disable")}
         cancelLabel={t("common.cancel")}
         risk={autostartStatus?.state === "drift" ? "warning" : "normal"}
+        error={autostartError}
         pending={autostartPending}
         onConfirm={applyAutostart}
       />

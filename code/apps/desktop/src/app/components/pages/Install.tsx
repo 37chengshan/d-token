@@ -6,19 +6,24 @@ import { createOperationRequestId, useNotifications } from "../../lib/notificati
 import { presentOperationFailure } from "../../lib/userCopy";
 import {
   canReviewInstall,
+  canJoinInstallBatch,
+  consumeInstallHandoff,
   deriveInstallPhase,
   dispatchInstallMachine,
   getInstallMachineState,
+  prepareSelectedInstallBindings,
+  requiresAgentRouteRepair,
   runInstallAgentBatch,
   selectedCandidate,
   subscribeInstallMachine,
   type InstallAgentReceipt,
+  type InstallSelectedPreparation,
   type InstallPhase,
 } from "../../lib/installMachine";
 import { useConnectionSetup, type AgentUpstreamBinding, type ConnectionSetupSnapshot, type UpstreamCandidate } from "../../lib/connectionSetup";
 import { InstallView } from "../../lib/install/InstallView";
-import { buildConnectionRoutePlanRequest, connectionDiscoveryCounts, derivePrimaryAction, desktopInstallRoot, hasRealAgentAction, hybridAgentIntegrationDraft, presentCcSwitch, presentInstallPhase, presentRouteVerificationSummary, presentServiceInstance, safeText, supportsAutomaticAgentIntegration } from "../../lib/install/presentation";
-import type { ConnectionRoutePlanReceipt, ConnectionRoutePlanReview, DtokenServiceStatus, HybridAgentIntegrationApply, HybridAgentIntegrationReview, HybridAgentIntegrationVerification, ManagedAgentTransportReceipt, ManagedAgentTransportReview, OpenCodeConnectionReceipt, OpenCodeConnectionReview, RouteVerification } from "../../lib/install/presentation";
+import { buildConnectionRoutePlanRequest, connectionDiscoveryCounts, derivePrimaryAction, desktopInstallRoot, hybridAgentIntegrationDraft, presentCcSwitch, presentInstallPhase, presentRouteVerificationSummary, presentServiceInstance, safeText, supportsAutomaticAgentIntegration } from "../../lib/install/presentation";
+import type { ConnectionRoutePlanReceipt, ConnectionRoutePlanReview, DtokenServiceStatus, HybridAgentIntegrationApply, HybridAgentIntegrationReview, HybridAgentIntegrationVerification, ManagedAgentTransportReceipt, ManagedAgentTransportReview, RouteVerification } from "../../lib/install/presentation";
 export { connectionDiscoveryCounts, desktopInstallRoot, presentConnectionPrivacy, presentRouteVerificationSummary, presentServiceInstance } from "../../lib/install/presentation";
 export { buildConnectionRoutePlanRequest } from "../../lib/install/presentation";
 
@@ -32,6 +37,72 @@ export function deriveServicePresentation(serviceOnline: boolean, installing: bo
   if (installing) return { isOnline: false, status: "warning" as const, phase: "installing" as const };
   if (loading) return { isOnline: false, status: "warning" as const, phase: "loading" as const };
   return { isOnline: false, status: "error" as const, phase: "stopped" as const };
+}
+
+function presentPreparationReason(
+  reason: InstallSelectedPreparation["reason"],
+  lang: "zh" | "en",
+) {
+  if (lang === "zh") {
+    switch (reason) {
+      case "already-connected": return "已保留当前连接。";
+      case "credential-required": return "请在工具中补充凭据后重新扫描。";
+      case "ambiguous-route": return "请在工具中选定当前连接后重新扫描。";
+      case "model-unresolved": return "请在工具中选定模型后重新扫描。";
+      case "safe-adapter-unavailable": return "当前未提供可执行配置动作。";
+      case "ready": return "已准备好配置。";
+    }
+  }
+  switch (reason) {
+    case "already-connected": return "The current connection is kept.";
+    case "credential-required": return "Add the credential in this tool, then scan again.";
+    case "ambiguous-route": return "Choose the active connection in this tool, then scan again.";
+    case "model-unresolved": return "Choose a model in this tool, then scan again.";
+    case "safe-adapter-unavailable": return "No executable setup action is available.";
+    case "ready": return "Ready to configure.";
+  }
+}
+
+function displayBindingsFromCatalog(snapshot: ConnectionSetupSnapshot | null): AgentUpstreamBinding[] {
+  if (!snapshot) return [];
+  const detected = new Map(snapshot.agent_bindings.map((binding) => [binding.agent_id, binding]));
+  if (!snapshot.agent_catalog?.length) {
+    return snapshot.agent_bindings
+      .filter((binding) => binding.installed || binding.already_connected)
+      .map((binding) => ({ ...binding, catalog_installed: binding.installed }));
+  }
+  return snapshot.agent_catalog.map((catalogItem) => {
+    const binding = detected.get(catalogItem.agent_id);
+    if (binding) {
+      return {
+        ...binding,
+        agent_name: binding.agent_name || catalogItem.agent_name,
+        catalog_installed: catalogItem.installed,
+        integration_kind: binding.integration_kind ?? catalogItem.integration_kind,
+        can_configure: binding.can_configure ?? catalogItem.can_configure,
+        can_clear: binding.can_clear ?? catalogItem.can_clear,
+      };
+    }
+    return {
+      agent_id: catalogItem.agent_id,
+      agent_name: catalogItem.agent_name,
+      installed: catalogItem.installed === true,
+      catalog_installed: catalogItem.installed,
+      current_config_source: "catalog",
+      candidates: [],
+      resolved_candidate: null,
+      resolution: catalogItem.installed === null ? "unavailable" : catalogItem.installed ? "unsupported" : "unavailable",
+      confidence: 0,
+      reasons: [catalogItem.installed === null ? "scan-incomplete" : catalogItem.installed ? "not-configurable" : "not-installed"],
+      capability: "manual-only",
+      can_configure: false,
+      can_clear: false,
+      transport_supported: false,
+      transport_status: catalogItem.installed ? "advanced_required" : "schema_unverified",
+      already_connected: false,
+      integration_kind: catalogItem.integration_kind,
+    };
+  });
 }
 
 /** Install reads summary and service evidence; detail slices must not repaint it. */
@@ -62,32 +133,29 @@ export function Install({ onOpenAdvanced }: { onOpenAdvanced?: () => void; initi
   );
   const machine = useSyncExternalStore(subscribeInstallMachine, getInstallMachineState, getInstallMachineState);
   const dispatch = dispatchInstallMachine;
-  const [showReview, setShowReview] = useState(false);
   const [credentialDialogOpen, setCredentialDialogOpen] = useState(false);
+  const [credentialAgentId, setCredentialAgentId] = useState<string | null>(null);
   const [providerCredential, setProviderCredential] = useState("");
   const [credentialError, setCredentialError] = useState("");
   const [confirmServiceStop, setConfirmServiceStop] = useState(false);
   const [stopError, setStopError] = useState("");
-  const [connectionReview, setConnectionReview] = useState<OpenCodeConnectionReview | null>(null);
   const [routePlanReview, setRoutePlanReview] = useState<ConnectionRoutePlanReview | null>(null);
-  // Synchronous mirror of the review state so the one-click apply chain can
-  // read the freshly produced review in the same tick (P0.0.10.3).
   const routePlanReviewRef = useRef<ConnectionRoutePlanReview | null>(null);
+  const managedTransportReviewsRef = useRef<Record<string, ManagedAgentTransportReview>>({});
+  const agentIntegrationReviewsRef = useRef<Record<string, HybridAgentIntegrationReview>>({});
+  const plannedBindingsRef = useRef<AgentUpstreamBinding[]>([]);
+  const preflightFailuresRef = useRef<InstallAgentReceipt[]>([]);
+  const executionDiscoveryRevisionRef = useRef<string | null>(null);
+  const executionPreparationRef = useRef<InstallSelectedPreparation[]>([]);
   const setRoutePlanReviewSynced = (review: ConnectionRoutePlanReview | null) => {
     routePlanReviewRef.current = review;
     setRoutePlanReview(review);
   };
-  const connectionReviewRef = useRef<OpenCodeConnectionReview | null>(null);
-  const setConnectionReviewSynced = (review: OpenCodeConnectionReview | null) => {
-    connectionReviewRef.current = review;
-    setConnectionReview(review);
-  };
-  const managedTransportReviewsRef = useRef<Record<string, ManagedAgentTransportReview>>({});
+
   const setManagedTransportReviewsSynced = (reviews: Record<string, ManagedAgentTransportReview>) => {
     managedTransportReviewsRef.current = reviews;
     setManagedTransportReviews(reviews);
   };
-  const agentIntegrationReviewsRef = useRef<Record<string, HybridAgentIntegrationReview>>({});
   const setAgentIntegrationReviewsSynced = (reviews: Record<string, HybridAgentIntegrationReview>) => {
     agentIntegrationReviewsRef.current = reviews;
     setAgentIntegrationReviews(reviews);
@@ -102,6 +170,7 @@ export function Install({ onOpenAdvanced }: { onOpenAdvanced?: () => void; initi
   const [transactionLogs, setTransactionLogs] = useState<NativeActionLog[]>([]);
   const [notice, setNotice] = useState("");
   const [pendingAction, setPendingAction] = useState<"discover" | "preview" | "apply" | "verify" | "restart" | "stop" | "credential" | "sync" | null>(null);
+  const [agentActionFeedback, setAgentActionFeedback] = useState<Record<string, { message: string; failed: boolean }>>({});
   const [transportBusyAgent, setTransportBusyAgent] = useState<string | null>(null);
 
   const serviceStatus = operational?.service?.data as DtokenServiceStatus | null;
@@ -131,37 +200,32 @@ export function Install({ onOpenAdvanced }: { onOpenAdvanced?: () => void; initi
     restartRequired,
   );
   const visibleBindings = useMemo(
-    () => (snapshot?.agent_bindings ?? []).filter((binding) =>
-      binding.installed || binding.already_connected),
-    [snapshot?.agent_bindings],
+    () => displayBindingsFromCatalog(snapshot),
+    [snapshot],
   );
   const actionableBindings = useMemo(
-    () => (snapshot?.agent_bindings ?? []).filter((binding) => machine.selectedAgentIds.includes(binding.agent_id)),
+    () => (snapshot?.agent_bindings ?? []).filter((binding) => machine.selectedAgentIds.includes(binding.agent_id) && canJoinInstallBatch(binding)),
     [machine.selectedAgentIds, snapshot?.agent_bindings],
   );
-  const selectedOpenCode = actionableBindings.find((binding) => binding.agent_id === "opencode");
-  const credentialBinding = actionableBindings.find((binding) => binding.resolution === "needs-credential") ?? null;
+  const preparedBindings = useMemo(
+    () => snapshot ? prepareSelectedInstallBindings(snapshot, machine.selections, machine.selectedAgentIds) : [],
+    [machine.selectedAgentIds, machine.selections, snapshot],
+  );
+  const readyBindings = useMemo(
+    () => preparedBindings.filter((item) => item.ready).map((item) => item.binding),
+    [preparedBindings],
+  );
+  const selectedOpenCode = readyBindings.find((binding) => binding.agent_id === "opencode");
+  const credentialBinding = (credentialAgentId
+    ? visibleBindings.find((binding) => binding.agent_id === credentialAgentId && binding.resolution === "needs-credential")
+    : actionableBindings.find((binding) => binding.resolution === "needs-credential")) ?? null;
   const credentialProviderId = credentialBinding?.resolved_candidate?.id
     ?? credentialBinding?.candidates[0]?.id
     ?? "";
-  const credentialCandidate = credentialBinding?.resolved_candidate
-    ?? credentialBinding?.candidates[0]
-    ?? null;
   const openCodeSelection = selectedOpenCode
     ? selectedCandidate(selectedOpenCode, machine.selections[selectedOpenCode.agent_id])
     : null;
   const reviewReady = snapshot ? canReviewInstall(snapshot, machine.selections, machine.selectedAgentIds) : false;
-  const primaryBindings = useMemo(
-    // Only Agents with a real, verified backend write action are shown as
-    // configurable rows. Detected-but-not-writable Agents stay in the counts
-    // and technical evidence instead of getting fake buttons.
-    () => visibleBindings.filter(hasRealAgentAction),
-    [visibleBindings],
-  );
-  const secondaryBindings = useMemo(
-    () => [] as AgentUpstreamBinding[],
-    [],
-  );
   const busy = pendingAction !== null || ["applying-runtime", "applying-agent-configs", "verifying"].includes(machine.phase);
   const discoveryCounts = useMemo(() => connectionDiscoveryCounts(snapshot), [snapshot]);
   const phasePresentation = restartRequired
@@ -185,8 +249,6 @@ export function Install({ onOpenAdvanced }: { onOpenAdvanced?: () => void; initi
     // A third-party Agent or cc-switch config changed after discovery. Do not
     // let a review built from the earlier fingerprint reach apply; refresh is
     // read-only and the user must explicitly review a new d-token plan.
-    setShowReview(false);
-    setConnectionReviewSynced(null);
     setRoutePlanReviewSynced(null);
     setCcSwitchSyncReview((current) =>
       current?.source_fingerprint === snapshot.external_config_snapshot?.cc_switch?.fingerprint
@@ -212,27 +274,27 @@ export function Install({ onOpenAdvanced }: { onOpenAdvanced?: () => void; initi
     if (discoveryError) dispatch({ type: "DISCOVERY_FAILED", message: discoveryError });
   }, [discoveryError]);
 
-  const refreshAll = async () => {
+  const refreshAll = async (notify = true) => {
     setPendingAction("discover");
     const requestId = createOperationRequestId("connection-refresh");
-    setNotice(lang === "zh" ? "正在重新读取 Agent、上游、cc-switch 与 d-token 状态…" : "Refreshing Agents, upstreams, cc-switch, and d-token state…");
+    if (notify) setNotice(lang === "zh" ? "正在重新读取 Agent、上游、cc-switch 与 d-token 状态…" : "Refreshing Agents, upstreams, cc-switch, and d-token state…");
     dispatch({ type: "DISCOVER_START" });
     try {
       const [discovery] = await Promise.all([refreshDiscovery(), refreshRuntime()]);
-      setNotice(discovery
+      if (notify) setNotice(discovery
         ? (lang === "zh" ? "本机连接状态已更新。" : "Local connection state refreshed.")
         : (lang === "zh" ? "当前是浏览器预览，不读取或改写本机配置。" : "Browser preview does not read or modify local configuration."));
-      addNotification({
+      if (notify) addNotification({
         dedupeKey: "connection-refresh",
         level: discovery ? "success" : "info",
         title: discovery ? (lang === "zh" ? "连接状态已更新" : "Connection state refreshed") : (lang === "zh" ? "连接状态不可用" : "Connection state unavailable"),
-        message: discovery ? (lang === "zh" ? "Agent、上游、cc-switch 与 d-token 状态已重新读取。" : "Agent, upstream, cc-switch, and d-token state were refreshed.") : (lang === "zh" ? "浏览器预览不会读取本机配置。" : "Browser preview does not read local configuration."),
+        message: discovery ? (lang === "zh" ? "编码工具与连接设置已重新读取。" : "Coding tools and connection settings were refreshed.") : (lang === "zh" ? "浏览器预览不会读取本机配置。" : "Browser preview does not read local configuration."),
         receipt: { requestId, targetId: "connection-discovery" },
       });
     } catch (error) {
       const failure = presentOperationFailure("connection", error, lang);
-      setNotice(failure.message);
-      addNotification({ dedupeKey: "connection-refresh-failed", level: "error", title: failure.title, message: failure.message, details: failure.details, receipt: { requestId, targetId: "connection-discovery" } });
+      if (notify) setNotice(failure.message);
+      if (notify) addNotification({ dedupeKey: "connection-refresh-failed", level: "error", title: failure.title, message: failure.message, details: failure.details, receipt: { requestId, targetId: "connection-discovery" } });
     } finally {
       setPendingAction(null);
     }
@@ -256,41 +318,28 @@ export function Install({ onOpenAdvanced }: { onOpenAdvanced?: () => void; initi
     await refreshRuntime();
   };
 
-  const previewConnectionPlan = async (): Promise<boolean> => {
-    if (!snapshot || !reviewReady) return false;
-    dispatch({ type: "OPEN_REVIEW" });
-    setShowReview(true);
-    setConnectionReviewSynced(null);
+  const previewConnectionPlan = async (bindings: AgentUpstreamBinding[] = readyBindings): Promise<boolean> => {
+    if (!snapshot || bindings.length === 0) return false;
     setRoutePlanReviewSynced(null);
     setManagedTransportReviewsSynced({});
     setAgentIntegrationReviewsSynced({});
     const requestId = createOperationRequestId("connection-preview");
-    const routePlan = buildConnectionRoutePlanRequest(snapshot.revision, actionableBindings, machine.selections);
+    const routePlan = buildConnectionRoutePlanRequest(snapshot.revision, bindings, machine.selections);
     if (routePlan.bindings.length === 0) return false;
+    dispatch({ type: "OPEN_REVIEW" });
     setPendingAction("preview");
     try {
-      const integrationBindings = actionableBindings.filter((binding) =>
-        supportsAutomaticAgentIntegration(binding.agent_id) && !binding.already_connected,
+      const integrationBindings = bindings.filter((binding) =>
+        supportsAutomaticAgentIntegration(binding.agent_id)
+        && (!binding.already_connected || requiresAgentRouteRepair(binding)),
       );
-      const managedTransportBindings = actionableBindings.filter((binding) =>
-        binding.agent_id !== "opencode"
-        && binding.can_configure === true
-        && !binding.already_connected
+      const managedTransportBindings = bindings.filter((binding) =>
+        binding.can_configure === true
+        && (!binding.already_connected || requiresAgentRouteRepair(binding))
         && Boolean(binding.config_path),
       );
-      const [routeReview, openCodeReview, managedTransportReviewEntries, integrationReviewEntries] = await Promise.all([
+      const [routeReview, managedTransportReviewEntries, integrationReviewEntries] = await Promise.all([
         invokeNative<ConnectionRoutePlanReview>("preview_connection_route_plan", { request: routePlan }),
-        openCodeSelection?.model
-          ? invokeNative<OpenCodeConnectionReview>("preview_opencode_connection", {
-              request: {
-                model: openCodeSelection.model,
-                listener_port: 18001,
-                reviewed_revision: null,
-                reviewed_before_sha256: null,
-                reviewed_after_sha256: null,
-              },
-            })
-          : Promise.resolve(null),
         Promise.all(managedTransportBindings.map(async (binding) => {
           const model = machine.selections[binding.agent_id]?.model;
           if (!binding.config_path || !model) {
@@ -311,30 +360,58 @@ export function Install({ onOpenAdvanced }: { onOpenAdvanced?: () => void; initi
                 model,
               },
               operation: "configure",
-            }),
+            }).catch((): ManagedAgentTransportReview => ({ ok: false, state: "failed", summary: "managed_transport_preview_failed" })),
           ] as const;
         })),
         Promise.all(integrationBindings.map(async (binding) => [
           binding.agent_id,
           await invokeNative<HybridAgentIntegrationReview>("preview_hybrid_agent_integration", {
             request: hybridAgentIntegrationDraft(binding.agent_id),
-          }),
+          }).catch((): HybridAgentIntegrationReview => ({ ok: false, state: "failed", error: "agent_integration_preview_failed" })),
         ] as const)),
       ]);
-      setRoutePlanReviewSynced(routeReview);
-      setConnectionReviewSynced(openCodeReview);
+      const failedIds = new Set<string>();
+      for (const [agentId, result] of managedTransportReviewEntries) {
+        if (!result.ok || !result.review?.revision || !result.review.before_sha256 || !result.review.after_sha256) failedIds.add(agentId);
+      }
+      for (const [agentId, result] of integrationReviewEntries) {
+        if (!result.ok || !result.plan?.review_digest) failedIds.add(agentId);
+      }
+      const preparedBindings = bindings.filter((binding) => !failedIds.has(binding.agent_id));
+      preflightFailuresRef.current = bindings.filter((binding) => failedIds.has(binding.agent_id)).map((binding) => ({
+        agentId: binding.agent_id,
+        agentName: binding.agent_name,
+        state: "blocked",
+        summary: lang === "zh" ? `${binding.agent_name} 的配置预检未通过，请检查工具设置后重试。` : `${binding.agent_name} did not pass setup checks. Check its settings and retry.`,
+      }));
+      if (failedIds.size > 0) {
+        setAgentIntegrationReceipts(preflightFailuresRef.current);
+        setAgentActionFeedback((current) => ({ ...current, ...Object.fromEntries(preflightFailuresRef.current.map((item) => [item.agentId, { message: item.summary, failed: true }])) }));
+        if (preparedBindings.length === 0) {
+          const message = preflightFailuresRef.current.map((item) => item.summary).join(" ");
+          setNotice(message);
+          dispatch({ type: "SET_PHASE", phase: "blocked", message });
+          addNotification({ dedupeKey: "connection-preflight-failed", level: "error", title: lang === "zh" ? "配置尚未开始" : "Configuration not started", message, receipt: { requestId } });
+          return false;
+        }
+      }
+      const preparedRouteReview = failedIds.size === 0 ? routeReview : await invokeNative<ConnectionRoutePlanReview>("preview_connection_route_plan", {
+        request: buildConnectionRoutePlanRequest(snapshot.revision, preparedBindings, machine.selections),
+      });
+      setRoutePlanReviewSynced(preparedRouteReview);
       setManagedTransportReviewsSynced(Object.fromEntries(managedTransportReviewEntries));
       setAgentIntegrationReviewsSynced(Object.fromEntries(integrationReviewEntries));
-      if (!routeReview.ok) {
-        const failure = presentOperationFailure("connection", routeReview.error, lang);
+      if (!preparedRouteReview.ok) {
+        const failure = presentOperationFailure("connection", preparedRouteReview.error, lang);
         setNotice(failure.message);
         dispatch({ type: "SET_PHASE", phase: "blocked", message: failure.message });
         addNotification({ dedupeKey: "connection-preview-failed", level: "error", title: failure.title, message: failure.message, details: failure.details, receipt: { requestId, targetId: "connection-plan" } });
+        return false;
       } else {
-        addNotification({ dedupeKey: `connection-preview-${routeReview.after_sha256 ?? "ready"}`, level: "info", title: lang === "zh" ? "连接变更已准备" : "Connection changes are ready", message: lang === "zh" ? "差异和验证证据已准备。请查看当前变更后再应用。" : "Differences and verification evidence are ready. View the current changes before applying.", receipt: { requestId, targetId: "connection-plan" } });
+        plannedBindingsRef.current = preparedBindings;
+        addNotification({ dedupeKey: `connection-preview-${routeReview.after_sha256 ?? "ready"}`, level: "info", title: lang === "zh" ? "连接变更已准备" : "Connection changes are ready", message: lang === "zh" ? "差异和验证证据已准备，正在应用所选工具。" : "Differences and verification evidence are ready; applying the selected tools.", receipt: { requestId, targetId: "connection-plan" } });
         return true;
       }
-      return false;
     } catch (error) {
       const failure = presentOperationFailure("connection", error, lang);
       setNotice(failure.message);
@@ -347,25 +424,40 @@ export function Install({ onOpenAdvanced }: { onOpenAdvanced?: () => void; initi
   };
 
   const applyConnectionPlan = async () => {
-    if (!snapshot || getInstallMachineState().reviewDiscoveryRevision !== snapshot.revision) {
-      setShowReview(false);
-      setConnectionReviewSynced(null);
-      setNotice(lang === "zh" ? "源配置已变化，旧方案已失效，正在重新读取。" : "Source configuration changed; the old plan was invalidated and will be rebuilt.");
-      await refreshAll();
+    if (!snapshot || executionDiscoveryRevisionRef.current !== snapshot.revision) {
+        setNotice(lang === "zh" ? "源配置已变化，旧方案已失效，正在重新读取。" : "Source configuration changed; the old plan was invalidated and will be rebuilt.");
+      await refreshAll(false);
       return;
     }
     setPendingAction("apply");
     const requestId = createOperationRequestId("connection-apply");
-    const routePlan = buildConnectionRoutePlanRequest(snapshot.revision, actionableBindings, machine.selections);
-    // Read the review from the synchronous mirror so the one-click chain
-    // (preview -> apply in the same tick) sees the fresh hashes.
+    const executionPreparation = executionPreparationRef.current;
+    const plannedBindings = plannedBindingsRef.current.length > 0
+      ? plannedBindingsRef.current
+      : executionPreparation.filter((item) => item.ready).map((item) => item.binding);
+    const routePlan = buildConnectionRoutePlanRequest(snapshot.revision, plannedBindings, machine.selections);
     const review = routePlanReviewRef.current ?? routePlanReview;
     const routeChanges = review?.before_sha256 !== review?.after_sha256;
     const wasManaged = serviceManaged;
     let routeReceipt: ConnectionRoutePlanReceipt | null = null;
-    let openCodeReceipt: OpenCodeConnectionReceipt | null = null;
-    let appliedManagedTransports: AgentUpstreamBinding[] = [];
-    let agentReceipts: InstallAgentReceipt[] = [];
+    const appliedManagedTransports = new Map<string, ManagedAgentTransportReceipt>();
+    const verifiedTransportIds = new Set<string>();
+    const transportFailures: InstallAgentReceipt[] = [];
+    const restoreTransport = async (agentId: string): Promise<boolean> => {
+      const receipt = appliedManagedTransports.get(agentId);
+      if (!receipt || receipt.changed === false) return true;
+      const changes = receipt.transaction?.changes ?? [];
+      if (changes.length === 0) return false;
+      for (const change of [...changes].reverse()) {
+        const restored = await invokeNative<NativeActionResult>("manage_backup", { action: "restore", id: change.backup.rollback_id }).catch(() => null);
+        if (!restored?.ok) return false;
+        if (receipt.transaction) receipt.transaction.changes = receipt.transaction.changes.filter((remaining) => remaining.backup.rollback_id !== change.backup.rollback_id);
+      }
+      appliedManagedTransports.delete(agentId);
+      return true;
+    };
+    let appliedAgentReceipts: InstallAgentReceipt[] = [];
+    let serviceStoppedForUpdate = false;
     try {
       if (!review?.ok || !review.before_sha256 || !review.after_sha256) {
         throw new Error("connection_preview_incomplete");
@@ -376,6 +468,7 @@ export function Install({ onOpenAdvanced }: { onOpenAdvanced?: () => void; initi
       if (routeChanges && serviceManaged) {
         const stopped = await invokeNative<NativeActionResult>("stop_dtoken_service");
         assertNativeActionSucceeded(stopped);
+        serviceStoppedForUpdate = true;
       }
       routeReceipt = await invokeNative<ConnectionRoutePlanReceipt>("apply_connection_route_plan", {
         request: {
@@ -389,61 +482,54 @@ export function Install({ onOpenAdvanced }: { onOpenAdvanced?: () => void; initi
       if (!serviceOnline || routeChanges) await installRuntime();
 
       dispatch({ type: "SET_PHASE", phase: "applying-agent-configs" });
-      if (openCodeSelection?.model) {
-        const openCodeReview = connectionReviewRef.current ?? connectionReview;
-        if (!openCodeReview?.ok || !openCodeReview.revision || !openCodeReview.before_sha256 || !openCodeReview.after_sha256) {
-          throw new Error("opencode_preview_incomplete");
-        }
-        openCodeReceipt = await invokeNative<OpenCodeConnectionReceipt>("apply_opencode_connection", {
-          request: {
-            model: openCodeSelection.model,
-            listener_port: 18001,
-            reviewed_revision: openCodeReview.revision,
-            reviewed_before_sha256: openCodeReview.before_sha256,
-            reviewed_after_sha256: openCodeReview.after_sha256,
-          },
-        });
-        if (!openCodeReceipt.ok) throw new Error(openCodeReceipt.summary);
-      }
-
-      const managedTransportBindings = actionableBindings.filter((binding) =>
-        binding.agent_id !== "opencode"
-        && binding.can_configure === true
-        && !binding.already_connected
+      const managedTransportBindings = plannedBindings.filter((binding) =>
+        binding.can_configure === true
+        && (!binding.already_connected || requiresAgentRouteRepair(binding))
         && Boolean(binding.config_path),
       );
       for (const binding of managedTransportBindings) {
-        const review = (managedTransportReviewsRef.current[binding.agent_id] ?? managedTransportReviews[binding.agent_id])?.review;
-        const model = machine.selections[binding.agent_id]?.model;
-        if (!binding.config_path || !model || !review) {
-          throw new Error("managed_transport_preview_incomplete");
+        try {
+          const review = (managedTransportReviewsRef.current[binding.agent_id] ?? managedTransportReviews[binding.agent_id])?.review;
+          const model = machine.selections[binding.agent_id]?.model;
+          if (!binding.config_path || !model || !review) {
+            throw new Error("managed_transport_preview_incomplete");
+          }
+          const receipt = await invokeNative<ManagedAgentTransportReceipt>("apply_reviewed_managed_agent_transport", {
+            request: {
+              agent_id: binding.agent_id,
+              target_path: binding.config_path,
+              endpoint: serviceEndpoint,
+              enabled: true,
+              model,
+            },
+            operation: "configure",
+            reviewedRevision: review.revision,
+            reviewedBeforeSha256: review.before_sha256,
+            reviewedAfterSha256: review.after_sha256,
+          });
+          if (receipt.changed) appliedManagedTransports.set(binding.agent_id, receipt);
+          if (receipt.ok === false || receipt.state === "failed" || receipt.verification?.ok !== true) {
+            throw new Error("managed_transport_apply_failed");
+          }
+          verifiedTransportIds.add(binding.agent_id);
+        } catch (error) {
+          const restored = await restoreTransport(binding.agent_id);
+          transportFailures.push({ agentId: binding.agent_id, agentName: binding.agent_name,
+            state: restored ? "failed" : "rollback-failed",
+            summary: restored
+              ? (lang === "zh" ? `${binding.agent_name} 配置失败，请重试。` : `${binding.agent_name} could not be configured. Retry.`)
+              : (lang === "zh" ? `${binding.agent_name} 恢复未完成，请查看变更与回退。` : `${binding.agent_name} recovery needs attention in Changes.`),
+          });
         }
-        const receipt = await invokeNative<ManagedAgentTransportReceipt>("apply_reviewed_managed_agent_transport", {
-          request: {
-            agent_id: binding.agent_id,
-            target_path: binding.config_path,
-            endpoint: serviceEndpoint,
-            enabled: true,
-            model,
-          },
-          operation: "configure",
-          reviewedRevision: review.revision,
-          reviewedBeforeSha256: review.before_sha256,
-          reviewedAfterSha256: review.after_sha256,
-        });
-        if (receipt.ok === false || receipt.state === "failed" || receipt.verification?.ok === false) {
-          throw new Error("managed_transport_apply_failed");
-        }
-        appliedManagedTransports.push(binding);
       }
 
       const agentBatch = await runInstallAgentBatch(
-        actionableBindings
-          .filter((binding) => supportsAutomaticAgentIntegration(binding.agent_id))
+        plannedBindings
+          .filter((binding) => supportsAutomaticAgentIntegration(binding.agent_id) && !transportFailures.some((failure) => failure.agentId === binding.agent_id))
           .map((binding) => ({
             agentId: binding.agent_id,
             agentName: binding.agent_name,
-            alreadyConnected: binding.already_connected,
+            alreadyConnected: binding.already_connected && !requiresAgentRouteRepair(binding),
             reviewDigest: (agentIntegrationReviewsRef.current[binding.agent_id] ?? agentIntegrationReviews[binding.agent_id])?.plan?.review_digest,
           })),
         {
@@ -474,16 +560,43 @@ export function Install({ onOpenAdvanced }: { onOpenAdvanced?: () => void; initi
           },
         },
       );
-      setAgentIntegrationReceipts(agentBatch.receipts);
-      agentReceipts = agentBatch.receipts;
-      if (!agentBatch.ok) throw new Error(agentBatch.error);
+      for (const receipt of agentBatch.receipts) {
+        if (["failed", "blocked", "rolled-back", "rollback-failed"].includes(receipt.state)) {
+          if (!await restoreTransport(receipt.agentId)) {
+            receipt.state = "rollback-failed";
+            receipt.summary = lang === "zh" ? "连接配置恢复未完成，请查看变更与回退。" : "Connection recovery needs attention in Changes.";
+          }
+        }
+      }
+      const blockedReceipts: InstallAgentReceipt[] = [...preflightFailuresRef.current, ...transportFailures, ...executionPreparation
+        .filter((item) => !item.ready)
+        .map((item) => ({
+          agentId: item.agentId,
+          agentName: item.agentName,
+          state: "blocked" as const,
+          summary: presentPreparationReason(item.reason, lang),
+        }))];
+      appliedAgentReceipts = agentBatch.receipts;
+      const transportOnlyReceipts: InstallAgentReceipt[] = plannedBindings
+        .filter((binding) => !supportsAutomaticAgentIntegration(binding.agent_id)
+          && (verifiedTransportIds.has(binding.agent_id) || (binding.already_connected && !requiresAgentRouteRepair(binding))))
+        .map((binding) => ({ agentId: binding.agent_id, agentName: binding.agent_name, state: "verified",
+          summary: lang === "zh" ? "连接配置已验证。" : "Connection configuration verified.",
+        }));
+      const allReceipts = [...blockedReceipts, ...agentBatch.receipts, ...transportOnlyReceipts];
+      setAgentIntegrationReceipts(allReceipts);
+      setAgentActionFeedback((current) => ({ ...current, ...Object.fromEntries(allReceipts.map((item) => [item.agentId, {
+        message: item.summary, failed: !["verified", "already-connected"].includes(item.state),
+      }])) }));
 
       dispatch({ type: "SET_PHASE", phase: "verifying" });
       const verification = await invokeNative<RouteVerification>("verify_agent_route_config");
       setRouteVerification(verification);
       if (!verification.ok) throw new Error(verification.summary);
-      const fullyVerified = (openCodeReceipt === null || openCodeReceipt.verified)
-        && agentBatch.ok;
+      const successfulAgentIds = new Set(allReceipts.filter((receipt) => ["verified", "already-connected"].includes(receipt.state)).map((receipt) => receipt.agentId));
+      const noneCompleted = successfulAgentIds.size === 0;
+      const fullyVerified = successfulAgentIds.size === plannedBindings.length && agentBatch.ok
+        && blockedReceipts.length === 0;
       if (
         fullyVerified
         && agentAutoFollow
@@ -500,91 +613,78 @@ export function Install({ onOpenAdvanced }: { onOpenAdvanced?: () => void; initi
         );
         if (!follow.ok) throw new Error(follow.summary || "agent_auto_follow_authorization_failed");
       }
+      await Promise.all([refreshRuntime(), refreshDiscovery()]);
       dispatch({
         type: "SET_PHASE",
-        phase: fullyVerified ? "verified" : "partial",
+        phase: fullyVerified ? "verified" : noneCompleted ? "blocked" : "partial",
         message: fullyVerified ? "" : "agent-write-unavailable",
       });
-      setShowReview(false);
       setNotice(fullyVerified
         ? (lang === "zh" ? "已确认配置生效、本地服务健康且路由可用。" : "Configuration is active, the local service is healthy, and the route is available.")
-        : (lang === "zh" ? "d-token 服务已就绪；未通过安全 adapter 的 Agent 保持原配置。" : "d-token is ready; Agents without a verified safe adapter retain their existing configuration."));
+        : noneCompleted ? (lang === "zh" ? "没有工具完成配置，请查看详情后重试。" : "No tools were configured. Check their details and retry.")
+        : (lang === "zh" ? "部分工具未完成配置，请查看对应工具的详情后重试。" : "Some tools could not be configured. Check their details and retry."));
       addNotification({
         dedupeKey: `connection-plan-${fullyVerified ? "verified" : "partial"}`,
         receipt: { requestId },
-        level: fullyVerified ? "success" : "warning",
-        title: fullyVerified ? (lang === "zh" ? "Agent 连接已验证" : "Agent connection verified") : (lang === "zh" ? "连接部分完成" : "Connection partially complete"),
+        level: fullyVerified ? "success" : noneCompleted ? "error" : "warning",
+        title: fullyVerified ? (lang === "zh" ? "Agent 连接已验证" : "Agent connection verified") : noneCompleted ? (lang === "zh" ? "连接未完成" : "Connection failed") : (lang === "zh" ? "连接部分完成" : "Connection partially complete"),
         message: fullyVerified
           ? (lang === "zh" ? "配置、服务和路由证据已通过验证。" : "Configuration, service, and route evidence passed verification.")
-          : (lang === "zh" ? "已保留服务与已验证配置，未支持的 Agent 没有被静默写入。" : "The service and verified changes were kept; unsupported Agent configs were not silently modified."),
+          : noneCompleted ? (lang === "zh" ? "请查看工具详情中的失败原因和处理结果。" : "Check the tool details for the failure and recovery result.")
+          : (lang === "zh" ? "已完成的工具可以继续使用；失败工具的处理结果见详情。" : "Completed tools remain available. See details for the failed tools."),
         persistent: !fullyVerified,
       });
-      await Promise.all([refreshRuntime(), refreshDiscovery()]);
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
       const failure = presentOperationFailure("connection", error, lang);
-      // P0.0.10.5: per-Agent failures are isolated (runInstallAgentBatch rolls
-      // back only the failing Agent). The shared d-token route plan is NOT an
-      // Agent config: if a later step failed after the route receipt was
-      // applied, the shared route is rolled back to keep the system consistent
-      // (verified Agents keep their own configs).
-      let rolledBack = false;
-      if (routeReceipt?.ok && routeReceipt.rollback_id && routeReceipt.after_sha256) {
-        if (routeChanges) await invokeNative<NativeActionResult>("stop_dtoken_service").catch(() => null);
-        const restored = await invokeNative<NativeActionResult>("rollback_connection_route_plan", {
-          request: {
-            rollback_id: routeReceipt.rollback_id,
-            expected_after_sha256: routeReceipt.after_sha256,
-          },
+      let recoveryAttempted = serviceStoppedForUpdate;
+      let recoveryFailed = [...transportFailures, ...appliedAgentReceipts].some((receipt) => receipt.state === "rollback-failed");
+      for (const receipt of [...appliedAgentReceipts].reverse()) {
+        if (!receipt.transactionId || !["applied", "verified"].includes(receipt.state)) continue;
+        recoveryAttempted = true;
+        const restored = await invokeNative<HybridAgentIntegrationApply>("rollback_hybrid_agent_integration", {
+          request: { transaction_id: receipt.transactionId },
         }).catch(() => null);
-        rolledBack = rolledBack || restored?.ok === true;
-        if (restored?.ok) {
-          // P0-6: the shared route was revoked — Agent configs that point at
-          // it are now dangling. Clear d-token-owned transport writes and
-          // roll back applied Agent integration transactions so no Agent
-          // keeps pointing at a revoked route (shared-infra consistency; NOT
-          // the P0.0.10.5 per-Agent failure rollback).
-          for (const binding of appliedManagedTransports) {
-            if (!binding.config_path) continue;
-            const request = {
-              agent_id: binding.agent_id,
-              target_path: binding.config_path,
-              endpoint: serviceEndpoint || "http://127.0.0.1:18001",
-              enabled: false,
-            };
-            const preview = await invokeNative<ManagedAgentTransportReview>("preview_managed_agent_transport", {
-              request,
-              operation: "clear",
-            }).catch(() => null);
-            const review = preview?.review;
-            if (!review) continue;
-            await invokeNative<ManagedAgentTransportReceipt>("apply_reviewed_managed_agent_transport", {
-              request,
-              operation: "clear",
-              reviewedRevision: review.revision,
-              reviewedBeforeSha256: review.before_sha256,
-              reviewedAfterSha256: review.after_sha256,
-            }).catch(() => null);
-          }
-          for (const receipt of agentReceipts) {
-            if (!receipt.transactionId || !["applied", "verified"].includes(receipt.state)) continue;
-            await invokeNative<HybridAgentIntegrationApply>("rollback_hybrid_agent_integration", {
-              request: { transaction_id: receipt.transactionId },
-            }).catch(() => null);
+        if (!restored?.ok) recoveryFailed = true;
+      }
+      for (const agentId of [...appliedManagedTransports.keys()].reverse()) {
+        recoveryAttempted = true;
+        if (!await restoreTransport(agentId)) recoveryFailed = true;
+      }
+      if (routeReceipt?.ok && routeReceipt.rollback_id && routeReceipt.after_sha256) {
+        recoveryAttempted = true;
+        let canRestore = true;
+        if (routeChanges) {
+          const status = await invokeNative<DtokenServiceStatus>("get_dtoken_service_status").catch(() => null);
+          if (status?.managed) {
+            const stopped = await invokeNative<NativeActionResult>("stop_dtoken_service").catch(() => null);
+            canRestore = stopped?.ok === true;
+          } else {
+            canRestore = status?.state === "stopped";
           }
         }
-        if (restored?.ok && wasManaged) await installRuntime().catch(() => undefined);
+        if (canRestore) {
+          const restored = await invokeNative<NativeActionResult>("rollback_connection_route_plan", {
+            request: { rollback_id: routeReceipt.rollback_id, expected_after_sha256: routeReceipt.after_sha256 },
+          }).catch(() => null);
+          if (!restored?.ok) recoveryFailed = true;
+        } else recoveryFailed = true;
       }
-      dispatch({ type: "SET_PHASE", phase: rolledBack ? "rolled-back" : "blocked", message: failure.message });
-      setNotice(failure.message);
-      addNotification({
-        dedupeKey: "connection-plan-failed",
-        receipt: { requestId },
-        level: "error",
-        title: failure.title,
-        message: failure.message,
-        details: failure.details,
-        persistent: true,
+      if (serviceStoppedForUpdate && wasManaged) {
+        const active = await invokeNative<{ source?: string; state?: string; content_sha256?: string }>("get_active_route_config_status").catch(() => null);
+        const originalConfigVerified = active?.source === "d-token-desktop"
+          && ["loaded", "missing"].includes(active.state ?? "")
+          && active.content_sha256 === review?.before_sha256;
+        if (originalConfigVerified) {
+          try { await installRuntime(); } catch { recoveryFailed = true; }
+        } else recoveryFailed = true;
+      }
+      const message = recoveryFailed
+        ? (lang === "zh" ? "操作未完成，部分配置或服务尚未恢复。请运行诊断或查看变更与回退。" : "The operation failed and some configuration or service state still needs recovery. Run diagnostics or open Changes.")
+        : failure.message;
+      dispatch({ type: "SET_PHASE", phase: recoveryAttempted && !recoveryFailed ? "rolled-back" : "blocked", message });
+      setNotice(message);
+      addNotification({ dedupeKey: "connection-plan-failed", receipt: { requestId }, level: "error",
+        title: failure.title, message, details: failure.details, persistent: true,
       });
     } finally {
       setPendingAction(null);
@@ -663,21 +763,78 @@ export function Install({ onOpenAdvanced }: { onOpenAdvanced?: () => void; initi
     }
   };
 
+  const configureSelected = async (scopeAgentIds = machine.selectedAgentIds) => {
+    if (busy || !snapshot || scopeAgentIds.length === 0) return;
+    const scopePreparation = prepareSelectedInstallBindings(snapshot, machine.selections, scopeAgentIds);
+    const ready = scopePreparation.filter((item) => item.ready);
+    const needsCredential = scopePreparation.find((item) => item.reason === "credential-required");
+    if (ready.length === 0 && needsCredential) {
+      setCredentialAgentId(needsCredential.agentId);
+      setCredentialError("");
+      setCredentialDialogOpen(true);
+      return;
+    }
+    executionDiscoveryRevisionRef.current = snapshot.revision;
+    executionPreparationRef.current = scopePreparation;
+    plannedBindingsRef.current = [];
+    preflightFailuresRef.current = [];
+    setAgentActionFeedback((current) => Object.fromEntries(Object.entries(current).filter(([id]) => !scopeAgentIds.includes(id))));
+    const blocked = scopePreparation.filter((item) => !item.ready);
+    if (blocked.length > 0) {
+      setAgentIntegrationReceipts(blocked.map((item) => ({
+        agentId: item.agentId,
+        agentName: item.agentName,
+        state: "blocked",
+        summary: presentPreparationReason(item.reason, lang),
+      })));
+      setNotice(ready.length === 0
+        ? (lang === "zh" ? "所选工具还不能配置，请按详情处理后重新扫描。" : "The selected tools are not ready. Use details, then scan again.")
+        : (lang === "zh" ? `${blocked.length} 个所选工具需要处理，其余工具会继续配置。` : `${blocked.length} selected tool(s) need attention; the rest will continue.`));
+    }
+    const readyBindingsForScope = ready.map((item) => item.binding);
+    if (readyBindingsForScope.length === 0) return;
+    if (buildConnectionRoutePlanRequest(snapshot.revision, readyBindingsForScope, machine.selections).bindings.length === 0) {
+      await verifyConnection();
+      return;
+    }
+    const previewed = await previewConnectionPlan(readyBindingsForScope);
+    if (previewed) await applyConnectionPlan();
+  };
+
+
+  useEffect(() => {
+    if (!snapshot || discoveryStatus !== "ready" || busy) return;
+    const handoff = consumeInstallHandoff();
+    if (!handoff) return;
+    const requestedIds = handoff.agentIds;
+    const actionableIds = new Set(snapshot.agent_bindings.filter(canJoinInstallBatch).map((binding) => binding.agent_id));
+    const exactScopeAvailable = requestedIds.length > 0 && requestedIds.every((id) => actionableIds.has(id));
+    const currentIds = getInstallMachineState().selectedAgentIds;
+    const selectionUnchanged = currentIds.length === requestedIds.length && currentIds.every((id) => requestedIds.includes(id));
+    const age = Date.now() - handoff.requestedAtMs;
+    if (handoff.discoveryRevision !== snapshot.revision || !exactScopeAvailable || !selectionUnchanged || age < 0 || age > 60_000) {
+      const message = lang === "zh"
+        ? "连接信息已变化，请检查所选工具后重新点击配置。"
+        : "Connection details changed. Check the selected tools and configure again.";
+      setNotice(message);
+      addNotification({
+        dedupeKey: "install-handoff-stale",
+        level: "warning",
+        title: lang === "zh" ? "需要重新确认" : "Confirmation needed",
+        message,
+        receipt: { requestId: createOperationRequestId("install-handoff"), targetId: "install-handoff" },
+      });
+      return;
+    }
+    void configureSelected(requestedIds);
+  }, [snapshot, discoveryStatus, busy]);
+
   const handlePrimaryAction = async () => {
     if (busy) return;
     if (restartRequired) return restartService();
-    if (machine.phase === "ready") {
-      // P0.0.10.3: one click IS the authorization. The plan is previewed
-      // internally (bound hashes) and applied immediately; the redacted diff
-      // evidence still lands in the review panel for inspection afterwards,
-      // but no second confirmation dialog interrupts the user.
-      const previewed = await previewConnectionPlan();
-      if (previewed) {
-        await applyConnectionPlan();
-      }
-      return;
-    }
+    if (machine.phase === "ready") return configureSelected();
     if (machine.phase === "needs-credential") {
+      setCredentialAgentId(null);
       setCredentialError("");
       setCredentialDialogOpen(true);
       return;
@@ -695,24 +852,12 @@ export function Install({ onOpenAdvanced }: { onOpenAdvanced?: () => void; initi
     setCredentialError("");
     try {
       const result = await invokeNative<NativeActionResult>("store_provider_credential", {
-        request: {
-          provider_id: credentialProviderId,
-          credential: providerCredential,
-          // P0-5: bind the credential to the exact upstream identity so slug
-          // twins / same-id multi-endpoint candidates never share an entry.
-          upstream_identity: credentialCandidate
-            ? {
-                candidate_id: credentialCandidate.id,
-                source: credentialCandidate.source,
-                endpoint: credentialCandidate.base_url ?? "",
-              }
-            : undefined,
-          discovery_revision: snapshot?.revision,
-        },
+        request: { provider_id: credentialProviderId, credential: providerCredential },
       });
       assertNativeActionSucceeded(result);
       setProviderCredential("");
       setCredentialDialogOpen(false);
+      setCredentialAgentId(null);
       dispatch({ type: "SET_PHASE", phase: "ready" });
       void refreshDiscovery();
     } catch {
@@ -811,7 +956,7 @@ export function Install({ onOpenAdvanced }: { onOpenAdvanced?: () => void; initi
         : (reload.state === "restart_required"
           ? (lang === "zh" ? "路由已同步；当前服务不受 d-token 管理，请手动重启后验证。" : "The route was synced; restart the unmanaged service manually, then verify.")
           : (lang === "zh" ? "路由已同步，但受管 runtime 重载失败；请重试重启并验证。" : "The route was synced, but managed runtime reload failed; retry restart and verification.")));
-      await refreshAll();
+      await refreshAll(false);
     } catch (error) {
       const failure = presentOperationFailure("connection", error, lang);
       setNotice(failure.message);
@@ -820,7 +965,17 @@ export function Install({ onOpenAdvanced }: { onOpenAdvanced?: () => void; initi
     }
   };
 
+  const reportAgentAction = (binding: AgentUpstreamBinding, message: string, failed: boolean) => {
+    setNotice(message);
+    setAgentActionFeedback((current) => ({ ...current, [binding.agent_id]: { message, failed } }));
+    addNotification({ dedupeKey: `agent-action-${binding.agent_id}`, level: failed ? "error" : "success",
+      title: failed ? (lang === "zh" ? "操作未完成" : "Action incomplete") : (lang === "zh" ? "操作完成" : "Action completed"),
+      message, receipt: { requestId: createOperationRequestId("agent-action"), targetId: binding.agent_id } });
+  };
+
   const runManagedTransport = async (binding: AgentUpstreamBinding, operation: "configure" | "clear") => {
+    const report = (message: string, failed = true) => reportAgentAction(binding, message, failed);
+    setAgentActionFeedback((current) => { const next = { ...current }; delete next[binding.agent_id]; return next; });
     // Dispatch to MCP integration for MCP/Hook agents.
     if (binding.integration_kind === "mcp" || binding.integration_kind === "hook") {
       await runManagedMcpIntegration(binding, operation);
@@ -830,18 +985,18 @@ export function Install({ onOpenAdvanced }: { onOpenAdvanced?: () => void; initi
       ? binding.can_configure === true
       : binding.can_clear === true;
     if (!canOperate) {
-      setNotice(lang === "zh"
+      report(lang === "zh"
         ? `${binding.agent_name} 未提供可执行的 d-token 写入动作；未修改任何配置。`
         : `${binding.agent_name} exposes no executable d-token write action; no configuration was modified.`);
       return;
     }
     const targetPath = binding.config_path;
     if (!targetPath || targetPath.startsWith("<local>/")) {
-      setNotice(lang === "zh" ? `${binding.agent_name} 的配置路径不可安全定位，未写入任何文件。` : `${binding.agent_name} has no safe local config path, so no file was written.`);
+      report(lang === "zh" ? `${binding.agent_name} 的配置路径不可安全定位，未写入任何文件。` : `${binding.agent_name} has no safe local config path, so no file was written.`);
       return;
     }
     if (operation === "configure" && !serviceEndpoint.startsWith("http://127.0.0.1:") && !serviceEndpoint.startsWith("http://localhost:")) {
-      setNotice(lang === "zh" ? "请先启动并验证 d-token 本地服务，再配置 Agent。" : "Start and verify the d-token local service before configuring an Agent.");
+      report(lang === "zh" ? "请先启动并验证 d-token 本地服务，再配置 Agent。" : "Start and verify the d-token local service before configuring an Agent.");
       return;
     }
     setTransportBusyAgent(binding.agent_id);
@@ -856,7 +1011,7 @@ export function Install({ onOpenAdvanced }: { onOpenAdvanced?: () => void; initi
           ? machine.selections[binding.agent_id]?.model
           : undefined;
         if (operation === "configure" && !model) {
-          setNotice(lang === "zh"
+          report(lang === "zh"
             ? `${binding.agent_name} 的上游/模型无法唯一解析，连接计划已被阻断；请修复来源配置后重新扫描。`
             : `${binding.agent_name}'s upstream/model cannot be uniquely resolved, so the plan is blocked. Fix the source configuration and rescan.`);
           return;
@@ -878,10 +1033,8 @@ export function Install({ onOpenAdvanced }: { onOpenAdvanced?: () => void; initi
         if (preview.ok !== true || !review || typeof review.revision !== "string" || typeof review.before_sha256 !== "string" || typeof review.after_sha256 !== "string") {
           throw new Error("managed_transport_preview_failed");
         }
-        const confirmed = typeof window === "undefined" || window.confirm(
-          operation === "configure"
-            ? (lang === "zh" ? `将仅在 ${targetPath} 及其相邻 ownership receipt 写入 d-token 托管配置。已生成可验证计划，是否应用？` : `A verifiable d-token-owned plan was generated for ${targetPath} and its adjacent ownership receipt. Apply it?`)
-            : (lang === "zh" ? `将仅清除 ${targetPath} 中有 ownership receipt 证明属于 d-token 的配置。已生成可验证计划，是否应用？` : `A verifiable plan will remove only configuration proven d-token-owned by its ownership receipt in ${targetPath}. Apply it?`),
+        const confirmed = operation === "configure" || typeof window === "undefined" || window.confirm(
+          lang === "zh" ? `清除 ${binding.agent_name} 中由 d-token 添加的连接设置？其他设置会保留。` : `Remove the connection settings added by d-token for ${binding.agent_name}? Other settings will remain.`,
         );
         if (!confirmed) return;
         result = await invokeNative<Record<string, unknown>>("apply_reviewed_managed_agent_transport", {
@@ -903,26 +1056,27 @@ export function Install({ onOpenAdvanced }: { onOpenAdvanced?: () => void; initi
           : (lang === "zh" ? `${binding.agent_name} 的 d-token 托管传输已清除。` : `The d-token-owned transport for ${binding.agent_name} was cleared.`))
         : (operation === "clear" && !changed
           ? (lang === "zh" ? "未发现可安全清除的 d-token 托管标记，未修改用户配置。" : "No d-token-owned marker was found; user configuration was not changed.")
-          : (lang === "zh" ? "操作未完成，用户配置未被修改；请重新扫描后重试。" : "The operation did not complete and user configuration was not changed. Rescan and try again."));
-      await refreshAll();
-      setNotice(outcomeNotice);
+          : (lang === "zh" ? "操作未完成，请重新扫描并检查该工具的连接状态。" : "The operation did not complete. Rescan and check this tool’s connection."));
+      await refreshAll(false);
+      report(outcomeNotice, !ok);
     } catch (error) {
-      setNotice(lang === "zh" ? "操作未完成，用户配置未被修改；请重新扫描后重试。" : "The operation did not complete and user configuration was not changed. Rescan and try again.");
+      report(lang === "zh" ? "操作未完成，请重新扫描并检查该工具的连接状态。" : "The operation did not complete. Rescan and check this tool’s connection.");
     } finally {
       setTransportBusyAgent(null);
     }
   };
 
   const runManagedMcpIntegration = async (binding: AgentUpstreamBinding, operation: "configure" | "clear") => {
+    const report = (message: string, failed = true) => reportAgentAction(binding, message, failed);
     const configPath = binding.mcp_config_path;
     if (!configPath || configPath.startsWith("<local>/")) {
-      setNotice(lang === "zh"
+      report(lang === "zh"
         ? `${binding.agent_name} 的 MCP 配置路径不可安全定位，未写入任何文件。`
         : `${binding.agent_name} MCP config path is not safely resolvable; no file was written.`);
       return;
     }
     if (operation === "configure" && !serviceEndpoint.startsWith("http://127.0.0.1:") && !serviceEndpoint.startsWith("http://localhost:")) {
-      setNotice(lang === "zh" ? "请先启动并验证 d-token 本地服务，再配置 MCP。" : "Start and verify the d-token local service before configuring MCP.");
+      report(lang === "zh" ? "请先启动并验证 d-token 本地服务，再配置 MCP。" : "Start and verify the d-token local service before configuring MCP.");
       return;
     }
     setTransportBusyAgent(binding.agent_id);
@@ -937,14 +1091,8 @@ export function Install({ onOpenAdvanced }: { onOpenAdvanced?: () => void; initi
       if (preview.ok !== true || !review || typeof review.before_sha256 !== "string" || typeof review.after_sha256 !== "string") {
         throw new Error("mcp_preview_failed");
       }
-      const confirmed = typeof window === "undefined" || window.confirm(
-        operation === "configure"
-          ? (lang === "zh"
-            ? `将在 ${configPath} 注册 d-token-agent-bridge MCP 工具。此集成仅提供 MCP 工具，不改变模型上游。是否应用？`
-            : `Register the d-token-agent-bridge MCP tool in ${configPath}. This integration provides MCP tools only and does not change the model upstream. Apply it?`)
-          : (lang === "zh"
-            ? `将清除 ${configPath} 中的 d-token MCP 条目。仅移除 MCP 工具，不影响上游配置。是否应用？`
-            : `Remove the d-token MCP entry from ${configPath}. Only the MCP tool is removed; upstream configuration is unaffected. Apply it?`),
+      const confirmed = operation === "configure" || typeof window === "undefined" || window.confirm(
+        lang === "zh" ? `移除 ${binding.agent_name} 中的 d-token 工具集成？当前模型连接会保留。` : `Remove the d-token tool integration from ${binding.agent_name}? The current model connection will remain.`,
       );
       if (!confirmed) return;
       const result = await invokeNative<Record<string, unknown>>("apply_managed_agent_mcp_integration", {
@@ -958,15 +1106,27 @@ export function Install({ onOpenAdvanced }: { onOpenAdvanced?: () => void; initi
         ? (operation === "configure"
           ? (lang === "zh" ? `${binding.agent_name} MCP 工具已配置并验证。` : `${binding.agent_name} MCP tool configured and verified.`)
           : (lang === "zh" ? `${binding.agent_name} MCP 条目已清除。` : `${binding.agent_name} MCP entry cleared.`))
-        : (lang === "zh" ? "MCP 操作未完成，用户配置未被修改。" : "MCP operation did not complete; user configuration was not changed.");
-      await refreshAll();
-      setNotice(outcomeNotice);
+        : (lang === "zh" ? "MCP 操作未完成，请检查连接状态后重试。" : "MCP operation did not complete. Check the connection and retry.");
+      await refreshAll(false);
+      report(outcomeNotice, !ok);
     } catch (error) {
-      setNotice(lang === "zh" ? "MCP 操作未完成，用户配置未被修改。" : "MCP operation did not complete; user configuration was not changed.");
+      report(lang === "zh" ? "MCP 操作未完成，请检查连接状态后重试。" : "MCP operation did not complete. Check the connection and retry.");
     } finally {
       setTransportBusyAgent(null);
     }
   };
 
-  return <InstallView {...{ lang, t, snapshot, discoveryStatus, phasePresentation, discoveryCounts, refreshAll, busy, pendingAction, handlePrimaryAction, primaryAction, serviceInstanceDetail, servicePresentation, restartRequired, serviceOnline, serviceManaged, setStopError, setConfirmServiceStop, visibleBindings, primaryBindings, machine, dispatch, secondaryBindings, ccSwitchPresentation, notice, transactionLogs, agentIntegrationReceipts, routeVerification, showReview, setShowReview, setConnectionReview, setRoutePlanReview, setManagedTransportReviews, setAgentIntegrationReviews, actionableBindings, serviceEndpoint, routePlanReview, connectionReview, managedTransportReviews, agentIntegrationReviews, openCodeSelection, applyConnectionPlan, credentialDialogOpen, setCredentialDialogOpen, setProviderCredential, setCredentialError, credentialBinding, credentialProviderId, providerCredential, credentialError, saveInlineCredential, confirmServiceStop, stopError, serviceStatus, serviceIdentifiersCurrent, stopService, transportBusyAgent, onConfigureAgent: (binding: AgentUpstreamBinding) => { void runManagedTransport(binding, "configure"); }, onClearAgent: (binding: AgentUpstreamBinding) => { void runManagedTransport(binding, "clear"); }, agentAutoFollow, setAgentAutoFollow, ccSwitchSyncReview, setCcSwitchSyncReview, ccSwitchAutoFollow, setCcSwitchAutoFollow, ccSwitchSyncBusy: pendingAction === "sync", onPreviewCcSwitchSync: () => { void previewCcSwitchSync(); }, onApplyCcSwitchSync: () => { void applyCcSwitchSync(); } }} />;
+  return <InstallView {...{ lang, t, snapshot, discoveryStatus, phasePresentation, discoveryCounts, refreshAll, busy, pendingAction, handlePrimaryAction, onConfigureSelected: configureSelected, primaryAction, serviceInstanceDetail, servicePresentation, restartRequired, serviceOnline, serviceManaged, setStopError, setConfirmServiceStop, visibleBindings, machine, dispatch, ccSwitchPresentation, notice, transactionLogs, agentIntegrationReceipts, routeVerification, serviceEndpoint, credentialDialogOpen, setCredentialDialogOpen, setProviderCredential, setCredentialError, credentialBinding, credentialProviderId, providerCredential, credentialError, saveInlineCredential, confirmServiceStop, stopError, serviceStatus, serviceIdentifiersCurrent, stopService, transportBusyAgent, agentActionFeedback, onConfigureAgent: (binding: AgentUpstreamBinding) => {
+    if (binding.resolution === "needs-credential") {
+      setCredentialAgentId(binding.agent_id);
+      setCredentialError("");
+      setCredentialDialogOpen(true);
+      return;
+    }
+    if (binding.integration_kind === "mcp" || binding.integration_kind === "hook") {
+      void runManagedTransport(binding, "configure");
+      return;
+    }
+    void configureSelected([binding.agent_id]);
+  }, onClearAgent: (binding: AgentUpstreamBinding) => { void runManagedTransport(binding, "clear"); }, agentAutoFollow, setAgentAutoFollow, ccSwitchSyncReview, setCcSwitchSyncReview, ccSwitchAutoFollow, setCcSwitchAutoFollow, ccSwitchSyncBusy: pendingAction === "sync", onPreviewCcSwitchSync: () => { void previewCcSwitchSync(); }, onApplyCcSwitchSync: () => { void applyCcSwitchSync(); } }} />;
 }

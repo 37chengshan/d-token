@@ -69,22 +69,12 @@ test.describe("d-token desktop control plane", () => {
     await app.open();
     expect(await page.evaluate(() => !("__TAURI_INTERNALS__" in window))).toBe(true);
 
-    await app.navigateTo(MAIN_PAGES[1]);
-    await expect(app.main.getByText("需要处理", { exact: true }).first()).toBeVisible();
-    await app.main.getByRole("button", { name: "重新扫描", exact: true }).click();
-    await expect(
-      app.main.getByText("当前是浏览器预览，不读取或改写本机配置。", {
-        exact: true,
-      }),
-    ).toBeVisible();
+    await app.navigateTo(MAIN_PAGES.find((item) => item.id === "configuration")!);
+    await expect(app.main.getByText(/浏览器预览|证据暂不可用|尚未观察到经过 d-token/).first()).toBeVisible();
 
-    await app.navigateTo(MAIN_PAGES.find((item) => item.id === "changes")!);
-    await expect(app.main.getByText("浏览器预览仅展示结构，不提供本机备份证据，回退已锁定。", { exact: true })).toBeVisible();
-    await expect(app.main.getByText("当前没有可用回滚点", { exact: true })).toBeVisible();
-    await expect(app.main.getByRole("button", { name: "批准", exact: true })).toHaveCount(0);
-    await expect(app.main.getByRole("button", { name: "拒绝", exact: true })).toHaveCount(0);
-
-    await expect(app.main.getByRole("button", { name: "回滚到此处", exact: true })).toHaveCount(0);
+    await app.navigateTo(MAIN_PAGES.find((item) => item.id === "analysis-logs")!);
+    await expect(app.main.getByRole("heading", { level: 1, name: "分析日志", exact: true })).toBeVisible();
+    await expect(app.main.getByRole("button", { name: /回滚|批准|拒绝/ })).toHaveCount(0);
     expect(unexpectedExternalRequests).toEqual([]);
   });
 
@@ -106,7 +96,7 @@ test.describe("d-token desktop control plane", () => {
     }
     await expect(app.main.getByRole("radio", { name: "深入", exact: true })).toBeDisabled();
     await expect(app.main.getByRole("button", { name: "管理范围", exact: true })).toHaveCount(0);
-    await expect(app.main.getByText("本地聚合指标学习；项目扫描在「安装与连接 → 智能学习」。", { exact: true })).toBeVisible();
+    await expect(app.main.getByText("本地聚合指标学习；项目扫描在「高级配置 → 智能学习」。", { exact: true })).toBeVisible();
   });
 
   test("production-facing pages and workbench tabs exclude development test vocabulary", async ({ page }) => {
@@ -118,15 +108,7 @@ test.describe("d-token desktop control plane", () => {
       await expectProductCopy(app.main, target.heading);
     }
 
-    await app.navigateTo(MAIN_PAGES[1]);
-    for (const tab of ["一键安装", "智能学习", "高级安装", "日志"]) {
-      await app.main.getByRole("tab", { name: tab }).click();
-      await expectProductCopy(app.main, `安装与连接 / ${tab}`);
-    }
-
-    await app.navigateTo(MAIN_PAGES.find((item) => item.id === "doctor")!);
-    await expect(app.main.getByRole("button", { name: "扫描常规问题", exact: true })).toBeVisible();
-    await expectProductCopy(app.main, "Doctor");
+    await expectProductCopy(app.main, "five-page shell");
   });
 
   test("English product pages and workbench tabs use the same release-ready language", async ({ page }) => {
@@ -139,11 +121,7 @@ test.describe("d-token desktop control plane", () => {
       await expectProductCopy(app.main, `English / ${target.english.heading}`);
     }
 
-    await app.navigateToEnglish(MAIN_PAGES[1]);
-    for (const tab of ["One-Click Install", "Smart Learning", "Advanced Setup", "Logs"]) {
-      await app.main.getByRole("tab", { name: tab }).click();
-      await expectProductCopy(app.main, `Install & Connect / ${tab}`);
-    }
+    await expectProductCopy(app.main, "English five-page shell");
   });
 
   test("compact desktop viewport keeps every primary page inside the document width", async ({ page }) => {
@@ -227,21 +205,13 @@ test.describe("d-token desktop control plane", () => {
     }
   });
 
-  test("overview has one page title and no installation entry CTA", async ({ page }) => {
+  test("configuration has one page title and the two primary setup tabs", async ({ page }) => {
     const app = new AppShellPage(page);
     await app.open();
 
     await expect(app.main.getByRole("heading", { level: 1 })).toHaveCount(1);
-    await expect(app.main.getByText("建议下一步", { exact: true })).toHaveCount(0);
-    await expect(app.main.getByRole("radio", { name: "年", exact: true })).toHaveAttribute("aria-checked", "true");
-    await expect(app.main.locator('[data-testid="activity-year"]')).toBeVisible();
-
-    const functionEntryName =
-      /^(?:前往安装与连接|安装\s*\/\s*配置 Agent|开始配置|启动并连接 d-token|打开 Doctor|查看分析)$/;
-    const functionEntry = app.main
-      .getByRole("button", { name: functionEntryName })
-      .or(app.main.getByRole("link", { name: functionEntryName }));
-    await expect(functionEntry).toHaveCount(0);
+    await expect(app.main.getByRole("tab", { name: /压缩引擎/ })).toBeVisible();
+    await expect(app.main.getByRole("tab", { name: /代码图谱/ })).toBeVisible();
   });
 
   test("dark appearance stays selected in preview without a native persistence claim", async ({ page }) => {
@@ -283,8 +253,8 @@ test.describe("d-token desktop control plane", () => {
     await page.emulateMedia({ reducedMotion: "no-preference" });
     await app.open();
 
-    const analytics = app.navItem("分析");
-    const icon = analytics.locator('[data-motion-id="analytics"]');
+    const analytics = app.navItem("分析日志");
+    const icon = analytics.locator('[data-motion-id="analysis-logs"]');
     const before = Number(await icon.getAttribute("data-motion-trigger"));
     await analytics.hover();
     const hoverMotion = await analytics.locator(".icon-bar-1").evaluate((element) => {
@@ -297,7 +267,7 @@ test.describe("d-token desktop control plane", () => {
     expect(Number(await icon.getAttribute("data-motion-trigger"))).toBe(before);
 
     await analytics.click();
-    await app.heading("分析").waitFor();
+    await app.heading("分析日志").waitFor();
     const pageStage = app.main.locator(".shell-page-stage");
     await expect(pageStage).toHaveAttribute("data-page-motion", "enter");
     await expect(pageStage).toHaveAttribute("data-reduced-motion", "false");

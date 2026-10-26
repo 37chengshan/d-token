@@ -6,7 +6,7 @@ import { NotificationCenter } from "../common/NotificationCenter";
 import { Wand2 } from "lucide-react";
 
 export function Topbar({
-  page = "overview",
+  page = "configuration",
   collapsed,
   setCollapsed,
   reducedMotion = false,

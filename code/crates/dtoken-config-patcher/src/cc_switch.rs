@@ -32,9 +32,62 @@ use crate::stable_hash;
 /// the watched paths stay quiet for this long.
 pub const CC_SWITCH_WATCH_DEBOUNCE_MS: u64 = 750;
 
-/// The only schema version this crate understands. Anything else resolves
-/// fail-closed to `blocked` without touching any table.
+/// Schema versions whose read-only surface this crate has verified. Each
+/// supported version must also pass the required-column assertion below;
+/// anything else resolves fail-closed to `blocked` without touching any
+/// table. Schema 16 renamed `provider_endpoints.endpoint` to `url` and added
+/// provider metadata columns (observed on the real 2026-08 desktop DB).
+pub const CC_SWITCH_SUPPORTED_SCHEMA_VERSIONS: &[i64] = &[SCHEMA_V12, SCHEMA_V16];
+
+/// Legacy single-version constant: the schema-12 read surface.
 pub const CC_SWITCH_SUPPORTED_SCHEMA_VERSION: i64 = 12;
+
+const SCHEMA_V12: i64 = 12;
+const SCHEMA_V16: i64 = 16;
+
+/// The `provider_endpoints` endpoint column name for a supported schema.
+fn endpoint_column_for(schema_version: i64) -> &'static str {
+    if schema_version >= SCHEMA_V16 {
+        "url"
+    } else {
+        "endpoint"
+    }
+}
+
+/// Fails closed when a supported schema version lacks a required column:
+/// version metadata and physical layout can drift independently, so both are
+/// verified before any table is read.
+fn required_columns_present(connection: &Connection, schema_version: i64) -> bool {
+    let endpoint_column = endpoint_column_for(schema_version);
+    table_has_columns(
+        connection,
+        "providers",
+        &[
+            "id",
+            "app_type",
+            "settings_config",
+            "is_current",
+            "sort_index",
+        ],
+    ) && table_has_columns(
+        connection,
+        "provider_endpoints",
+        &["provider_id", endpoint_column],
+    ) && table_has_columns(connection, "profiles", &["name"])
+}
+
+fn table_has_columns(connection: &Connection, table: &str, required: &[&str]) -> bool {
+    let Ok(mut statement) = connection.prepare(&format!("PRAGMA table_info({table})")) else {
+        return false;
+    };
+    let columns = statement
+        .query_map([], |row| row.get::<_, String>(1))
+        .map(|rows| rows.filter_map(std::result::Result::ok).collect::<Vec<_>>())
+        .unwrap_or_default();
+    required
+        .iter()
+        .all(|column| columns.iter().any(|name| name == column))
+}
 
 /// Read-only snapshot of an external cc-switch selection.
 ///
@@ -53,6 +106,11 @@ pub struct CcSwitchSnapshot {
     pub selection_state: String,
     /// Every active candidate (never a silent subset), with redacted fields.
     pub active_upstreams: Vec<CcSwitchUpstream>,
+    /// App types whose active provider exists but cannot be resolved into a
+    /// followable upstream (e.g. chatgpt-auth Codex with no custom endpoint).
+    /// They never block other apps; they are reported honestly per app.
+    #[serde(default)]
+    pub blocked_app_types: Vec<String>,
     /// Profile names, listed read-only for the selection decision.
     pub profiles: Vec<String>,
     /// SHA-256 of the raw source database bytes (metadata only).
@@ -177,23 +235,28 @@ pub fn read_cc_switch_snapshot(path: &Path) -> Result<CcSwitchSnapshot> {
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .unwrap_or(0);
 
-    if schema_version != CC_SWITCH_SUPPORTED_SCHEMA_VERSION {
-        // Fail closed: unknown schema never fabricates upstreams.
+    let schema_supported = CC_SWITCH_SUPPORTED_SCHEMA_VERSIONS.contains(&schema_version)
+        && required_columns_present(&connection, schema_version);
+    if !schema_supported {
+        // Fail closed: unknown schema (or version/column drift) never
+        // fabricates upstreams.
         return Ok(CcSwitchSnapshot {
             schema_version,
             schema_kind: "unknown".into(),
             source_state: "blocked".into(),
             selection_state: "blocked".into(),
             active_upstreams: Vec::new(),
+            blocked_app_types: Vec::new(),
             profiles: Vec::new(),
             source_fingerprint,
             revision,
         });
     }
 
+    let endpoint_column = endpoint_column_for(schema_version);
     let profiles = load_profiles(&connection)?;
     let mut candidates = Vec::new();
-    let mut parse_failure = false;
+    let mut blocked_apps = std::collections::BTreeSet::new();
 
     let mut statement = connection
         .prepare(
@@ -213,21 +276,44 @@ pub fn read_cc_switch_snapshot(path: &Path) -> Result<CcSwitchSnapshot> {
     for row in rows {
         let (provider_id, app_type, settings_config) =
             row.context("failed to read active provider row")?;
-        match parse_active_upstream(&connection, &provider_id, &app_type, &settings_config) {
+        match parse_active_upstream(
+            &connection,
+            &provider_id,
+            &app_type,
+            &settings_config,
+            endpoint_column,
+        ) {
             Ok(Some(upstream)) => candidates.push(upstream),
             // An active provider that cannot be resolved is never silently
-            // skipped: the whole selection blocks.
-            Ok(None) => parse_failure = true,
-            Err(_) => parse_failure = true,
+            // skipped: its app type is reported as blocked while other apps
+            // keep their independently resolvable selections.
+            Ok(None) => {
+                blocked_apps.insert(app_type);
+            }
+            Err(_) => {
+                blocked_apps.insert(app_type);
+            }
         }
     }
 
-    let selection_state = if parse_failure {
+    // An app stays blocked only while none of its active providers resolved.
+    let resolved_apps: std::collections::BTreeSet<&str> = candidates
+        .iter()
+        .map(|candidate| candidate.app_type.as_str())
+        .collect();
+    let blocked_app_types: Vec<String> = blocked_apps
+        .into_iter()
+        .filter(|app_type| !resolved_apps.contains(app_type.as_str()))
+        .collect();
+
+    let selection_state = if !candidates.is_empty() {
+        if has_multiple_active_per_app_type(&candidates) {
+            "needs_selection".to_string()
+        } else {
+            "resolved".to_string()
+        }
+    } else if !blocked_app_types.is_empty() {
         "blocked".to_string()
-    } else if candidates.is_empty() {
-        "resolved".to_string()
-    } else if has_multiple_active_per_app_type(&candidates) {
-        "needs_selection".to_string()
     } else {
         "resolved".to_string()
     };
@@ -238,6 +324,7 @@ pub fn read_cc_switch_snapshot(path: &Path) -> Result<CcSwitchSnapshot> {
         source_state: "loaded".into(),
         selection_state,
         active_upstreams: candidates,
+        blocked_app_types,
         profiles,
         source_fingerprint,
         revision,
@@ -246,13 +333,15 @@ pub fn read_cc_switch_snapshot(path: &Path) -> Result<CcSwitchSnapshot> {
 
 /// Parses one active provider's config into a redacted upstream candidate.
 ///
-/// Returns `Ok(None)` when a required field is missing (fail closed) and
-/// `Err` when the payload is not parseable — both block the snapshot.
+/// Returns `Ok(None)` when a required field is missing (fail closed per app)
+/// and `Err` when the payload is not parseable — both mark the provider's app
+/// type blocked, never the whole snapshot.
 fn parse_active_upstream(
     connection: &Connection,
     provider_id: &str,
     app_type: &str,
     settings_config: &str,
+    endpoint_column: &str,
 ) -> Result<Option<CcSwitchUpstream>> {
     let settings: serde_json::Value = match serde_json::from_str(settings_config) {
         Ok(value) => value,
@@ -260,12 +349,66 @@ fn parse_active_upstream(
     };
     let endpoint_row: Option<String> = connection
         .query_row(
-            "SELECT endpoint FROM provider_endpoints WHERE provider_id = ?1",
+            &format!("SELECT {endpoint_column} FROM provider_endpoints WHERE provider_id = ?1"),
             [provider_id],
             |row| row.get(0),
         )
         .optional()
         .context("failed to read provider endpoint")?;
+
+    // Schema-16 Codex shape: {"auth": {...}, "config": "<codex toml or empty>"}.
+    // The auth object is only inspected for credential-shaped keys; token
+    // values are never read or surfaced.
+    if settings
+        .get("auth")
+        .and_then(serde_json::Value::as_object)
+        .is_some()
+    {
+        let config_text = settings
+            .get("config")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("");
+        let (endpoint, model) = if config_text.trim().is_empty() {
+            // chatgpt-auth style: the model is dynamic per request; only a
+            // custom endpoint row makes the upstream followable.
+            (endpoint_row.clone(), String::new())
+        } else {
+            match parse_codex_config_text(config_text) {
+                Some((base_url, model)) => {
+                    (endpoint_row.clone().or(base_url), model.unwrap_or_default())
+                }
+                None => return Ok(None),
+            }
+        };
+        let Some(endpoint) = endpoint else {
+            // No verifiable custom endpoint (official OAuth upstream): this
+            // app's selection cannot be followed by d-token.
+            return Ok(None);
+        };
+        let credential_present = settings
+            .get("auth")
+            .and_then(serde_json::Value::as_object)
+            .map(|auth| {
+                auth.iter()
+                    .any(|(key, value)| is_credential_key(key) && has_value(value))
+                    || auth
+                        .get("tokens")
+                        .and_then(serde_json::Value::as_object)
+                        .is_some_and(|tokens| !tokens.is_empty())
+            })
+            .unwrap_or(false);
+        return Ok(Some(CcSwitchUpstream {
+            app_type: app_type.to_string(),
+            provider_id: provider_id.to_string(),
+            // The auth-shaped transport is the Codex Responses family; this is
+            // a semantic fact of the shape, not a silent guess. An empty model
+            // is the documented dynamic passthrough marker (PRD P0.0.10.5).
+            model,
+            protocol: "responses".to_string(),
+            normalized_endpoint: normalize_endpoint(&endpoint),
+            credential_present,
+        }));
+    }
 
     // env-shaped config (Claude Code style): ANTHROPIC_* fields inside `env`.
     if let Some(env) = settings.get("env").and_then(serde_json::Value::as_object) {
@@ -328,6 +471,27 @@ fn parse_active_upstream(
         normalized_endpoint: normalize_endpoint(&endpoint),
         credential_present,
     }))
+}
+
+/// Extracts (base_url, model) from a non-empty Codex `config` TOML payload.
+/// Only top-level endpoint/model keys are read; everything else (including
+/// anything credential-shaped) is ignored. `None` means the payload carries
+/// no verifiable endpoint or model fact.
+fn parse_codex_config_text(text: &str) -> Option<(Option<String>, Option<String>)> {
+    let value: toml::Value = toml::from_str(text).ok()?;
+    let base_url = value
+        .get("openai_base_url")
+        .or_else(|| value.get("base_url"))
+        .and_then(toml::Value::as_str)
+        .map(str::to_string);
+    let model = value
+        .get("model")
+        .and_then(toml::Value::as_str)
+        .map(str::to_string);
+    if base_url.is_none() && model.is_none() {
+        return None;
+    }
+    Some((base_url, model))
 }
 
 fn load_profiles(connection: &Connection) -> Result<Vec<String>> {

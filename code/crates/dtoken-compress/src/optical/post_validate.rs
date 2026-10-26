@@ -291,6 +291,9 @@ mod tests {
         let renderer = DeterministicPngRenderer::new(1, Duration::from_millis(50));
         let limits = RenderLimits::from_policy(&OpticalGlobalPolicy {
             enabled: true,
+            // These tests exercise patch validation; rendering deadlines have
+            // their own tests and should not make fixture setup load-dependent.
+            max_render_time_ms: 5_000,
             ..Default::default()
         });
         let artifact = renderer

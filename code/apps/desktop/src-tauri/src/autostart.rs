@@ -147,7 +147,7 @@ fn platform_mutate(executable: &Path, enable: bool) -> AutostartActionResult {
                 summary: error.clone(),
                 rollback_performed: false,
                 status: error_status(error),
-            }
+            };
         }
     };
     if enable {

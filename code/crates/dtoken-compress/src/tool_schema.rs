@@ -208,6 +208,11 @@ pub fn normalize_tool_definitions(body: &mut Value) -> ToolSchemaNormalizeOutcom
             {
                 outcome.schemas_key_sorted |= sort_schema_keys_recursive(parameters);
             }
+            // R3.C1: OpenAI Responses flat shape — `{type:"function", name,
+            // parameters}` carries the schema at the top level.
+            if let Some(parameters) = tool.get_mut("parameters") {
+                outcome.schemas_key_sorted |= sort_schema_keys_recursive(parameters);
+            }
         }
     }
 
@@ -259,6 +264,33 @@ mod tests {
             json!({"name": "c"}),
         ];
         assert!(!sort_tools_deterministically(&mut tools));
+    }
+
+    #[test]
+    fn normalizes_openai_responses_flat_tool_schemas() {
+        // R3.C1: Responses tools are flat — `{type:"function", name,
+        // parameters}`. The tools sort exactly like the Chat shape; the flat
+        // `parameters` schema participates in the same key-canonicalization
+        // pass (observable only with serde_json preserve_order backing).
+        let mut body = json!({
+            "model": "model-x",
+            "tools": [
+                {"type": "function", "name": "zeta", "parameters": {"type": "object", "properties": {"b": {}, "a": {}}}},
+                {"type": "function", "name": "alpha", "parameters": {"type": "object", "properties": {"y": {}, "x": {}}}}
+            ],
+            "input": "hello"
+        });
+        let outcome = normalize_tool_definitions(&mut body);
+        assert!(outcome.changed);
+        assert_eq!(outcome.tools_considered, 2);
+        assert!(outcome.tools_reordered);
+        let names: Vec<&str> = body["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|tool| tool["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(names, vec!["alpha", "zeta"]);
     }
 
     #[test]

@@ -35,9 +35,9 @@ afterEach(() => {
 
 describe("resolveDoctorDestination", () => {
   it("maps legacy Doctor targets to pages that the current shell renders", () => {
-    expect(resolveDoctorDestination("advanced")).toBe("install");
-    expect(resolveDoctorDestination("logs")).toBe("changes");
-    expect(resolveDoctorDestination("changes")).toBe("changes");
+    expect(resolveDoctorDestination("advanced")).toBe("advanced-configuration");
+    expect(resolveDoctorDestination("logs")).toBe("analysis-logs");
+    expect(resolveDoctorDestination("changes")).toBe("analysis-logs");
   });
 
   it("uses readable Chinese copy for diagnostic failures and readiness", () => {
@@ -262,7 +262,7 @@ describe("Doctor polling", () => {
     fireEvent.click(screen.getByRole("button", { name: "扫描常规问题" }));
     const runningStatus = screen.getByRole("status");
     expect(runningStatus).toHaveAttribute("aria-live", "polite");
-    expect(runningStatus).toHaveTextContent("正在扫描本地服务、端口、Agent、路由与安全边界");
+    expect(runningStatus).toHaveTextContent("正在检查本地服务与工具连接");
     expect(screen.getByRole("button", { name: "扫描常规问题" })).toBeDisabled();
 
     await act(async () => {
@@ -295,10 +295,10 @@ describe("Doctor polling", () => {
     });
 
     render(createElement(Doctor, { setPage: vi.fn() }));
-    await screen.findByText("尚未扫描常规问题");
+    await screen.findByText("检查连接是否正常");
 
     fireEvent.click(screen.getByRole("button", { name: "扫描常规问题" }));
-    expect(await screen.findByRole("status")).toHaveTextContent("扫描完成，当前未发现需要处理的常规问题。");
+    await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("扫描完成，当前未发现需要处理的常规问题。"));
     expect(screen.getByText("当前未发现需要处理的常规问题。")).toBeVisible();
 
     expect(native.invokeNative.mock.calls.filter(([command]) => command === "run_doctor_scan")).toHaveLength(1);

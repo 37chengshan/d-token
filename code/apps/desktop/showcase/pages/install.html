@@ -1,0 +1,558 @@
+<!-- ============================================================
+     页面：安装与连接 (Install Workbench) - 全量 Agent 矩阵
+     ============================================================ -->
+<div class="install-workbench-page space-y-4">
+  <!-- 工作台 4 大子标签栏 -->
+  <div class="flex flex-wrap items-center justify-between gap-3 border-b border-border/70 pb-3" data-tab-group="install-tabs">
+    <div class="flex items-center gap-2">
+      <button class="segmented-control-item active" data-tab-target="one-click">一键配置与发现 (22+ Agent)</button>
+      <button class="segmented-control-item" data-tab-target="smart-learning">智能学习与提示优化</button>
+      <button class="segmented-control-item" data-tab-target="advanced">高级路由与端点覆盖</button>
+      <button class="segmented-control-item" data-tab-target="logs">审计与脱敏安全日志</button>
+    </div>
+    <div class="text-xs text-muted-foreground">
+      单次点击配置即为该批 Agent 明确授权 · 自动创建受限持久备份 · 随时秒级回滚
+    </div>
+  </div>
+
+  <!-- 内容容器 -->
+  <div data-tab-content-group="install-tabs">
+    <!-- 子标签 1: 一键配置 (One-Click) - 丰富 Agent 矩阵 -->
+    <div class="tab-pane active space-y-4" data-tab-pane="one-click">
+      <!-- 批量操作、统计与搜索过滤栏 -->
+      <div class="rounded-xl border border-border/70 bg-card p-4 shadow-sm space-y-3">
+        <div class="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <div class="flex items-center gap-2">
+              <h3 class="text-sm font-semibold text-foreground">本地 AI Coding Agent 扫描与统一接管</h3>
+              <span class="rounded-full bg-orange-500/15 px-2 py-0.5 text-[11px] font-semibold text-orange-400">已覆盖 22+ 常见 Agent</span>
+            </div>
+            <p class="mt-0.5 text-xs text-muted-foreground">
+              已检测到 <strong class="text-foreground">8 个本地安装环境</strong>，一键配置可自动创建隔离备份，将所有请求无损路由至 <code class="font-mono text-orange-400">127.0.0.1:18001</code>
+            </p>
+          </div>
+          <div class="flex items-center gap-2">
+            <button class="inline-flex items-center gap-1.5 rounded-lg bg-orange-600 px-4 py-2 text-xs font-semibold text-white shadow hover:bg-orange-500 transition-colors">
+              <svg class="size-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
+              一键配置所有就绪 Agent
+            </button>
+            <button class="inline-flex items-center gap-1.5 rounded-lg border border-border bg-secondary/60 px-3 py-2 text-xs font-medium text-foreground hover:bg-secondary transition-colors">
+              <svg class="size-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
+              重新扫描
+            </button>
+          </div>
+        </div>
+
+        <!-- 筛选与搜索条 -->
+        <div class="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-border/40 text-xs">
+          <div class="flex flex-wrap items-center gap-1.5">
+            <span class="text-muted-foreground text-[11px]">分类筛选:</span>
+            <button class="segmented-control-item active text-[11px] py-1">全部 (22)</button>
+            <button class="segmented-control-item text-[11px] py-1">已连接 (2)</button>
+            <button class="segmented-control-item text-[11px] py-1">就绪未配 (6)</button>
+            <button class="segmented-control-item text-[11px] py-1">IDE / 桌面端 (5)</button>
+            <button class="segmented-control-item text-[11px] py-1">终端 CLI (10)</button>
+            <button class="segmented-control-item text-[11px] py-1">编辑器插件 (7)</button>
+          </div>
+          <div class="w-48">
+            <input type="text" placeholder="搜索 Agent..." class="w-full rounded-md border border-border bg-input-background px-2.5 py-1 text-xs text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-ring" />
+          </div>
+        </div>
+      </div>
+
+      <!-- Agent 识别卡片网格 (3列 / 4列响应式网格) -->
+      <div class="grid grid-cols-1 gap-3.5 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+
+        <!-- 1. OpenCode (已配置代理) -->
+        <div class="rounded-xl border border-emerald-500/40 bg-card p-4 shadow-sm hover:border-emerald-500/60 transition-all flex flex-col justify-between">
+          <div>
+            <div class="flex items-start justify-between">
+              <div class="flex items-center gap-2.5">
+                <div class="flex size-9 items-center justify-center rounded-lg bg-emerald-500/15 text-emerald-400 font-bold text-xs border border-emerald-500/20">OC</div>
+                <div>
+                  <h4 class="text-xs font-semibold text-foreground">OpenCode</h4>
+                  <span class="text-[10px] text-muted-foreground">终端 CLI 原生 Agent</span>
+                </div>
+              </div>
+              <span class="rounded-full bg-emerald-500/15 px-2 py-0.5 text-[10px] font-medium text-emerald-400">● 代理中</span>
+            </div>
+            <div class="mt-3 space-y-1 text-[11px] text-muted-foreground border-t border-border/40 pt-2 font-mono">
+              <div class="flex justify-between"><span>配置:</span><span class="truncate max-w-[140px] text-foreground">~/.config/opencode</span></div>
+              <div class="flex justify-between"><span>端口:</span><span class="text-emerald-400 font-semibold">127.0.0.1:18001</span></div>
+              <div class="flex justify-between"><span>已节省:</span><span class="text-emerald-400">542k Tokens (-41%)</span></div>
+            </div>
+          </div>
+          <div class="mt-3 flex items-center gap-1.5 pt-2 border-t border-border/30">
+            <button class="flex-1 rounded border border-border bg-secondary/60 py-1 text-xs text-foreground hover:bg-secondary">测试连通</button>
+            <button class="rounded border border-destructive/40 bg-destructive/10 px-2 py-1 text-xs text-destructive hover:bg-destructive/20">还原配置</button>
+          </div>
+        </div>
+
+        <!-- 2. Claude Code (已配置代理) -->
+        <div class="rounded-xl border border-emerald-500/40 bg-card p-4 shadow-sm hover:border-emerald-500/60 transition-all flex flex-col justify-between">
+          <div>
+            <div class="flex items-start justify-between">
+              <div class="flex items-center gap-2.5">
+                <div class="flex size-9 items-center justify-center rounded-lg bg-orange-500/15 text-orange-400 font-bold text-xs border border-orange-500/20">CC</div>
+                <div>
+                  <h4 class="text-xs font-semibold text-foreground">Claude Code</h4>
+                  <span class="text-[10px] text-muted-foreground">Anthropic 官方 CLI</span>
+                </div>
+              </div>
+              <span class="rounded-full bg-emerald-500/15 px-2 py-0.5 text-[10px] font-medium text-emerald-400">● 代理中</span>
+            </div>
+            <div class="mt-3 space-y-1 text-[11px] text-muted-foreground border-t border-border/40 pt-2 font-mono">
+              <div class="flex justify-between"><span>配置:</span><span class="truncate max-w-[140px] text-foreground">~/.claude/settings.json</span></div>
+              <div class="flex justify-between"><span>端口:</span><span class="text-emerald-400 font-semibold">127.0.0.1:18001</span></div>
+              <div class="flex justify-between"><span>已节省:</span><span class="text-emerald-400">412k Tokens (-36%)</span></div>
+            </div>
+          </div>
+          <div class="mt-3 flex items-center gap-1.5 pt-2 border-t border-border/30">
+            <button class="flex-1 rounded border border-border bg-secondary/60 py-1 text-xs text-foreground hover:bg-secondary">测试连通</button>
+            <button class="rounded border border-destructive/40 bg-destructive/10 px-2 py-1 text-xs text-destructive hover:bg-destructive/20">还原配置</button>
+          </div>
+        </div>
+
+        <!-- 3. Cursor (已检测就绪) -->
+        <div class="rounded-xl border border-border/70 bg-card p-4 shadow-sm hover:border-border transition-all flex flex-col justify-between">
+          <div>
+            <div class="flex items-start justify-between">
+              <div class="flex items-center gap-2.5">
+                <div class="flex size-9 items-center justify-center rounded-lg bg-sky-500/15 text-sky-400 font-bold text-xs border border-sky-500/20">CU</div>
+                <div>
+                  <h4 class="text-xs font-semibold text-foreground">Cursor</h4>
+                  <span class="text-[10px] text-muted-foreground">AI 原生 IDE</span>
+                </div>
+              </div>
+              <span class="rounded-full bg-secondary px-2 py-0.5 text-[10px] text-muted-foreground">已检测未配</span>
+            </div>
+            <div class="mt-3 space-y-1 text-[11px] text-muted-foreground border-t border-border/40 pt-2 font-mono">
+              <div class="flex justify-between"><span>路径:</span><span class="truncate max-w-[140px] text-foreground">.cursor/settings.json</span></div>
+              <div class="flex justify-between"><span>模式:</span><span class="text-foreground">BaseURL 注入</span></div>
+              <div class="flex justify-between"><span>预估节省:</span><span class="text-orange-400 font-semibold">~35% Tokens</span></div>
+            </div>
+          </div>
+          <div class="mt-3 pt-2 border-t border-border/30">
+            <button class="w-full rounded bg-orange-600/90 py-1 text-xs font-medium text-white hover:bg-orange-500">一键配置到 d-token</button>
+          </div>
+        </div>
+
+        <!-- 4. Windsurf (Codeium - 已检测就绪) -->
+        <div class="rounded-xl border border-border/70 bg-card p-4 shadow-sm hover:border-border transition-all flex flex-col justify-between">
+          <div>
+            <div class="flex items-start justify-between">
+              <div class="flex items-center gap-2.5">
+                <div class="flex size-9 items-center justify-center rounded-lg bg-teal-500/15 text-teal-400 font-bold text-xs border border-teal-500/20">WS</div>
+                <div>
+                  <h4 class="text-xs font-semibold text-foreground">Windsurf</h4>
+                  <span class="text-[10px] text-muted-foreground">Codeium AI IDE</span>
+                </div>
+              </div>
+              <span class="rounded-full bg-secondary px-2 py-0.5 text-[10px] text-muted-foreground">已检测未配</span>
+            </div>
+            <div class="mt-3 space-y-1 text-[11px] text-muted-foreground border-t border-border/40 pt-2 font-mono">
+              <div class="flex justify-between"><span>路径:</span><span class="truncate max-w-[140px] text-foreground">.codeium/windsurf</span></div>
+              <div class="flex justify-between"><span>状态:</span><span class="text-foreground">官方直连中</span></div>
+              <div class="flex justify-between"><span>预估节省:</span><span class="text-orange-400 font-semibold">~38% Tokens</span></div>
+            </div>
+          </div>
+          <div class="mt-3 pt-2 border-t border-border/30">
+            <button class="w-full rounded bg-orange-600/90 py-1 text-xs font-medium text-white hover:bg-orange-500">一键配置到 d-token</button>
+          </div>
+        </div>
+
+        <!-- 5. Cline (VS Code 扩展 - 已检测就绪) -->
+        <div class="rounded-xl border border-border/70 bg-card p-4 shadow-sm hover:border-border transition-all flex flex-col justify-between">
+          <div>
+            <div class="flex items-start justify-between">
+              <div class="flex items-center gap-2.5">
+                <div class="flex size-9 items-center justify-center rounded-lg bg-indigo-500/15 text-indigo-400 font-bold text-xs border border-indigo-500/20">CL</div>
+                <div>
+                  <h4 class="text-xs font-semibold text-foreground">Cline</h4>
+                  <span class="text-[10px] text-muted-foreground">VS Code 自主编码 Agent</span>
+                </div>
+              </div>
+              <span class="rounded-full bg-secondary px-2 py-0.5 text-[10px] text-muted-foreground">已检测未配</span>
+            </div>
+            <div class="mt-3 space-y-1 text-[11px] text-muted-foreground border-t border-border/40 pt-2 font-mono">
+              <div class="flex justify-between"><span>配置:</span><span class="truncate max-w-[140px] text-foreground">.cline/data/settings</span></div>
+              <div class="flex justify-between"><span>支持:</span><span class="text-foreground">Provider 协议重定向</span></div>
+              <div class="flex justify-between"><span>预估节省:</span><span class="text-orange-400 font-semibold">~40% Tokens</span></div>
+            </div>
+          </div>
+          <div class="mt-3 pt-2 border-t border-border/30">
+            <button class="w-full rounded bg-orange-600/90 py-1 text-xs font-medium text-white hover:bg-orange-500">一键配置到 d-token</button>
+          </div>
+        </div>
+
+        <!-- 6. Roo Code (VS Code 扩展 - 已检测就绪) -->
+        <div class="rounded-xl border border-border/70 bg-card p-4 shadow-sm hover:border-border transition-all flex flex-col justify-between">
+          <div>
+            <div class="flex items-start justify-between">
+              <div class="flex items-center gap-2.5">
+                <div class="flex size-9 items-center justify-center rounded-lg bg-amber-500/15 text-amber-400 font-bold text-xs border border-amber-500/20">RC</div>
+                <div>
+                  <h4 class="text-xs font-semibold text-foreground">Roo Code</h4>
+                  <span class="text-[10px] text-muted-foreground">Roo-Cline 衍生 Agent</span>
+                </div>
+              </div>
+              <span class="rounded-full bg-secondary px-2 py-0.5 text-[10px] text-muted-foreground">已检测未配</span>
+            </div>
+            <div class="mt-3 space-y-1 text-[11px] text-muted-foreground border-t border-border/40 pt-2 font-mono">
+              <div class="flex justify-between"><span>路径:</span><span class="truncate max-w-[140px] text-foreground">.roo/settings.json</span></div>
+              <div class="flex justify-between"><span>模式:</span><span class="text-foreground">API 代理注入</span></div>
+              <div class="flex justify-between"><span>预估节省:</span><span class="text-orange-400 font-semibold">~37% Tokens</span></div>
+            </div>
+          </div>
+          <div class="mt-3 pt-2 border-t border-border/30">
+            <button class="w-full rounded bg-orange-600/90 py-1 text-xs font-medium text-white hover:bg-orange-500">一键配置到 d-token</button>
+          </div>
+        </div>
+
+        <!-- 7. Continue.dev (VS Code / JetBrains 扩展) -->
+        <div class="rounded-xl border border-border/70 bg-card p-4 shadow-sm hover:border-border transition-all flex flex-col justify-between">
+          <div>
+            <div class="flex items-start justify-between">
+              <div class="flex items-center gap-2.5">
+                <div class="flex size-9 items-center justify-center rounded-lg bg-cyan-500/15 text-cyan-400 font-bold text-xs border border-cyan-500/20">CT</div>
+                <div>
+                  <h4 class="text-xs font-semibold text-foreground">Continue.dev</h4>
+                  <span class="text-[10px] text-muted-foreground">开源代码辅助扩展</span>
+                </div>
+              </div>
+              <span class="rounded-full bg-secondary px-2 py-0.5 text-[10px] text-muted-foreground">已就绪</span>
+            </div>
+            <div class="mt-3 space-y-1 text-[11px] text-muted-foreground border-t border-border/40 pt-2 font-mono">
+              <div class="flex justify-between"><span>路径:</span><span class="truncate max-w-[140px] text-foreground">.continue/config.json</span></div>
+              <div class="flex justify-between"><span>适配:</span><span class="text-foreground">models.apiBase 代理</span></div>
+              <div class="flex justify-between"><span>预估节省:</span><span class="text-orange-400 font-semibold">~35% Tokens</span></div>
+            </div>
+          </div>
+          <div class="mt-3 pt-2 border-t border-border/30">
+            <button class="w-full rounded bg-orange-600/90 py-1 text-xs font-medium text-white hover:bg-orange-500">一键配置到 d-token</button>
+          </div>
+        </div>
+
+        <!-- 8. Codex (OpenAI CLI) -->
+        <div class="rounded-xl border border-border/70 bg-card p-4 shadow-sm hover:border-border transition-all flex flex-col justify-between">
+          <div>
+            <div class="flex items-start justify-between">
+              <div class="flex items-center gap-2.5">
+                <div class="flex size-9 items-center justify-center rounded-lg bg-purple-500/15 text-purple-400 font-bold text-xs border border-purple-500/20">CX</div>
+                <div>
+                  <h4 class="text-xs font-semibold text-foreground">OpenAI Codex</h4>
+                  <span class="text-[10px] text-muted-foreground">CLI 事务通道</span>
+                </div>
+              </div>
+              <span class="rounded-full bg-secondary px-2 py-0.5 text-[10px] text-muted-foreground">已就绪</span>
+            </div>
+            <div class="mt-3 space-y-1 text-[11px] text-muted-foreground border-t border-border/40 pt-2 font-mono">
+              <div class="flex justify-between"><span>路径:</span><span class="truncate max-w-[140px] text-foreground">.codex/config.toml</span></div>
+              <div class="flex justify-between"><span>特色:</span><span class="text-foreground">Responses wire 压缩</span></div>
+              <div class="flex justify-between"><span>保障:</span><span class="text-emerald-400">精确还原与受限备份</span></div>
+            </div>
+          </div>
+          <div class="mt-3 pt-2 border-t border-border/30">
+            <button class="w-full rounded border border-border bg-secondary/60 py-1 text-xs font-medium text-foreground hover:bg-secondary">配置事务测试</button>
+          </div>
+        </div>
+
+        <!-- 9. Aider (CLI 结对编程助手) -->
+        <div class="rounded-xl border border-border/70 bg-card p-4 shadow-sm hover:border-border transition-all flex flex-col justify-between">
+          <div>
+            <div class="flex items-start justify-between">
+              <div class="flex items-center gap-2.5">
+                <div class="flex size-9 items-center justify-center rounded-lg bg-rose-500/15 text-rose-400 font-bold text-xs border border-rose-500/20">AI</div>
+                <div>
+                  <h4 class="text-xs font-semibold text-foreground">Aider</h4>
+                  <span class="text-[10px] text-muted-foreground">CLI 终端结对编程</span>
+                </div>
+              </div>
+              <span class="rounded-full bg-secondary px-2 py-0.5 text-[10px] text-muted-foreground">已检测</span>
+            </div>
+            <div class="mt-3 space-y-1 text-[11px] text-muted-foreground border-t border-border/40 pt-2 font-mono">
+              <div class="flex justify-between"><span>配置:</span><span class="truncate max-w-[140px] text-foreground">.aider.conf.yml</span></div>
+              <div class="flex justify-between"><span>模式:</span><span class="text-foreground">--openai-api-base 注入</span></div>
+              <div class="flex justify-between"><span>预估节省:</span><span class="text-orange-400 font-semibold">~42% Tokens</span></div>
+            </div>
+          </div>
+          <div class="mt-3 pt-2 border-t border-border/30">
+            <button class="w-full rounded bg-orange-600/90 py-1 text-xs font-medium text-white hover:bg-orange-500">一键配置到 d-token</button>
+          </div>
+        </div>
+
+        <!-- 10. Goose (Block / Square 开源 Agent) -->
+        <div class="rounded-xl border border-border/70 bg-card p-4 shadow-sm hover:border-border transition-all flex flex-col justify-between">
+          <div>
+            <div class="flex items-start justify-between">
+              <div class="flex items-center gap-2.5">
+                <div class="flex size-9 items-center justify-center rounded-lg bg-yellow-500/15 text-yellow-400 font-bold text-xs border border-yellow-500/20">GS</div>
+                <div>
+                  <h4 class="text-xs font-semibold text-foreground">Goose</h4>
+                  <span class="text-[10px] text-muted-foreground">Block 开源智能终端 Agent</span>
+                </div>
+              </div>
+              <span class="rounded-full bg-secondary px-2 py-0.5 text-[10px] text-muted-foreground">已就绪</span>
+            </div>
+            <div class="mt-3 space-y-1 text-[11px] text-muted-foreground border-t border-border/40 pt-2 font-mono">
+              <div class="flex justify-between"><span>路径:</span><span class="truncate max-w-[140px] text-foreground">.config/goose/config.yaml</span></div>
+              <div class="flex justify-between"><span>支持:</span><span class="text-foreground">HTTP & MCP 模式</span></div>
+              <div class="flex justify-between"><span>预估节省:</span><span class="text-orange-400 font-semibold">~36% Tokens</span></div>
+            </div>
+          </div>
+          <div class="mt-3 pt-2 border-t border-border/30">
+            <button class="w-full rounded bg-orange-600/90 py-1 text-xs font-medium text-white hover:bg-orange-500">一键配置到 d-token</button>
+          </div>
+        </div>
+
+        <!-- 11. OpenHands (原 OpenDevin 自主软件开发 Agent) -->
+        <div class="rounded-xl border border-border/70 bg-card p-4 shadow-sm hover:border-border transition-all flex flex-col justify-between">
+          <div>
+            <div class="flex items-start justify-between">
+              <div class="flex items-center gap-2.5">
+                <div class="flex size-9 items-center justify-center rounded-lg bg-blue-500/15 text-blue-400 font-bold text-xs border border-blue-500/20">OH</div>
+                <div>
+                  <h4 class="text-xs font-semibold text-foreground">OpenHands</h4>
+                  <span class="text-[10px] text-muted-foreground">开源自主全栈开发 Agent</span>
+                </div>
+              </div>
+              <span class="rounded-full bg-secondary px-2 py-0.5 text-[10px] text-muted-foreground">已就绪</span>
+            </div>
+            <div class="mt-3 space-y-1 text-[11px] text-muted-foreground border-t border-border/40 pt-2 font-mono">
+              <div class="flex justify-between"><span>路径:</span><span class="truncate max-w-[140px] text-foreground">.openhands/config.toml</span></div>
+              <div class="flex justify-between"><span>模式:</span><span class="text-foreground">LLM BaseURL 转发</span></div>
+              <div class="flex justify-between"><span>预估节省:</span><span class="text-orange-400 font-semibold">~45% Tokens</span></div>
+            </div>
+          </div>
+          <div class="mt-3 pt-2 border-t border-border/30">
+            <button class="w-full rounded bg-orange-600/90 py-1 text-xs font-medium text-white hover:bg-orange-500">一键配置到 d-token</button>
+          </div>
+        </div>
+
+        <!-- 12. Google Antigravity (Advanced Agentic IDE & CLI) -->
+        <div class="rounded-xl border border-border/70 bg-card p-4 shadow-sm hover:border-border transition-all flex flex-col justify-between">
+          <div>
+            <div class="flex items-start justify-between">
+              <div class="flex items-center gap-2.5">
+                <div class="flex size-9 items-center justify-center rounded-lg bg-gradient-to-tr from-blue-500/20 to-orange-500/20 text-orange-400 font-bold text-xs border border-orange-500/30">AG</div>
+                <div>
+                  <h4 class="text-xs font-semibold text-foreground">Antigravity</h4>
+                  <span class="text-[10px] text-muted-foreground">Google Advanced Agent</span>
+                </div>
+              </div>
+              <span class="rounded-full bg-emerald-500/15 px-2 py-0.5 text-[10px] font-medium text-emerald-400">● 原生互联</span>
+            </div>
+            <div class="mt-3 space-y-1 text-[11px] text-muted-foreground border-t border-border/40 pt-2 font-mono">
+              <div class="flex justify-between"><span>配置:</span><span class="truncate max-w-[140px] text-foreground">.antigravity/settings.json</span></div>
+              <div class="flex justify-between"><span>连接:</span><span class="text-foreground">双向直通与 MCP 挂载</span></div>
+              <div class="flex justify-between"><span>特性:</span><span class="text-emerald-400 font-semibold">代码图谱与上下文优化</span></div>
+            </div>
+          </div>
+          <div class="mt-3 pt-2 border-t border-border/30">
+            <button class="w-full rounded border border-border bg-secondary/60 py-1 text-xs font-medium text-foreground hover:bg-secondary">查看连接状态</button>
+          </div>
+        </div>
+
+        <!-- 13. GitHub Copilot CLI -->
+        <div class="rounded-xl border border-border/70 bg-card p-4 shadow-sm hover:border-border transition-all flex flex-col justify-between">
+          <div>
+            <div class="flex items-start justify-between">
+              <div class="flex items-center gap-2.5">
+                <div class="flex size-9 items-center justify-center rounded-lg bg-slate-500/15 text-slate-300 font-bold text-xs border border-border/40">GH</div>
+                <div>
+                  <h4 class="text-xs font-semibold text-foreground">Copilot CLI</h4>
+                  <span class="text-[10px] text-muted-foreground">GitHub 终端命令行助手</span>
+                </div>
+              </div>
+              <span class="rounded-full bg-secondary px-2 py-0.5 text-[10px] text-muted-foreground">已就绪</span>
+            </div>
+            <div class="mt-3 space-y-1 text-[11px] text-muted-foreground border-t border-border/40 pt-2 font-mono">
+              <div class="flex justify-between"><span>路径:</span><span class="truncate max-w-[140px] text-foreground">.copilot/config.json</span></div>
+              <div class="flex justify-between"><span>模式:</span><span class="text-foreground">HTTP Proxy 注入</span></div>
+              <div class="flex justify-between"><span>状态:</span><span class="text-foreground">支持一键挂载</span></div>
+            </div>
+          </div>
+          <div class="mt-3 pt-2 border-t border-border/30">
+            <button class="w-full rounded bg-orange-600/90 py-1 text-xs font-medium text-white hover:bg-orange-500">一键配置到 d-token</button>
+          </div>
+        </div>
+
+        <!-- 14. Claude Desktop (MCP 工具集成) -->
+        <div class="rounded-xl border border-border/70 bg-card p-4 shadow-sm hover:border-border transition-all flex flex-col justify-between">
+          <div>
+            <div class="flex items-start justify-between">
+              <div class="flex items-center gap-2.5">
+                <div class="flex size-9 items-center justify-center rounded-lg bg-orange-500/10 text-orange-400 font-bold text-xs border border-orange-500/20">CD</div>
+                <div>
+                  <h4 class="text-xs font-semibold text-foreground">Claude Desktop</h4>
+                  <span class="text-[10px] text-muted-foreground">Anthropic 桌面原生客户端</span>
+                </div>
+              </div>
+              <span class="rounded-full bg-secondary px-2 py-0.5 text-[10px] text-muted-foreground">MCP 模式</span>
+            </div>
+            <div class="mt-3 space-y-1 text-[11px] text-muted-foreground border-t border-border/40 pt-2 font-mono">
+              <div class="flex justify-between"><span>配置:</span><span class="truncate max-w-[140px] text-foreground">claude_desktop_config.json</span></div>
+              <div class="flex justify-between"><span>集成:</span><span class="text-foreground">注册 d-token 为 MCP 工具</span></div>
+              <div class="flex justify-between"><span>说明:</span><span class="text-muted-foreground">保留原有上游连通</span></div>
+            </div>
+          </div>
+          <div class="mt-3 pt-2 border-t border-border/30">
+            <button class="w-full rounded border border-border bg-secondary/60 py-1 text-xs font-medium text-foreground hover:bg-secondary">注入 MCP 配置</button>
+          </div>
+        </div>
+
+        <!-- 15. Gemini CLI (Google 终端助手) -->
+        <div class="rounded-xl border border-border/70 bg-card p-4 shadow-sm hover:border-border transition-all flex flex-col justify-between">
+          <div>
+            <div class="flex items-start justify-between">
+              <div class="flex items-center gap-2.5">
+                <div class="flex size-9 items-center justify-center rounded-lg bg-blue-500/15 text-blue-400 font-bold text-xs border border-blue-500/20">GM</div>
+                <div>
+                  <h4 class="text-xs font-semibold text-foreground">Gemini CLI</h4>
+                  <span class="text-[10px] text-muted-foreground">Google 终端命令行助手</span>
+                </div>
+              </div>
+              <span class="rounded-full bg-secondary px-2 py-0.5 text-[10px] text-muted-foreground">已就绪</span>
+            </div>
+            <div class="mt-3 space-y-1 text-[11px] text-muted-foreground border-t border-border/40 pt-2 font-mono">
+              <div class="flex justify-between"><span>路径:</span><span class="truncate max-w-[140px] text-foreground">.gemini/settings.json</span></div>
+              <div class="flex justify-between"><span>协议:</span><span class="text-foreground">Gemini REST 转接</span></div>
+              <div class="flex justify-between"><span>预估节省:</span><span class="text-orange-400 font-semibold">~34% Tokens</span></div>
+            </div>
+          </div>
+          <div class="mt-3 pt-2 border-t border-border/30">
+            <button class="w-full rounded bg-orange-600/90 py-1 text-xs font-medium text-white hover:bg-orange-500">一键配置到 d-token</button>
+          </div>
+        </div>
+
+        <!-- 16. Mistral Vibe (Mistral 官方编码 CLI) -->
+        <div class="rounded-xl border border-border/70 bg-card p-4 shadow-sm hover:border-border transition-all flex flex-col justify-between">
+          <div>
+            <div class="flex items-start justify-between">
+              <div class="flex items-center gap-2.5">
+                <div class="flex size-9 items-center justify-center rounded-lg bg-amber-600/15 text-amber-400 font-bold text-xs border border-amber-600/20">VB</div>
+                <div>
+                  <h4 class="text-xs font-semibold text-foreground">Mistral Vibe</h4>
+                  <span class="text-[10px] text-muted-foreground">Mistral AI 终端助手</span>
+                </div>
+              </div>
+              <span class="rounded-full bg-secondary px-2 py-0.5 text-[10px] text-muted-foreground">就绪</span>
+            </div>
+            <div class="mt-3 space-y-1 text-[11px] text-muted-foreground border-t border-border/40 pt-2 font-mono">
+              <div class="flex justify-between"><span>路径:</span><span class="truncate max-w-[140px] text-foreground">.vibe/config.toml</span></div>
+              <div class="flex justify-between"><span>适配:</span><span class="text-foreground">OpenAI 兼容协议转发</span></div>
+              <div class="flex justify-between"><span>预估节省:</span><span class="text-orange-400 font-semibold">~38% Tokens</span></div>
+            </div>
+          </div>
+          <div class="mt-3 pt-2 border-t border-border/30">
+            <button class="w-full rounded bg-orange-600/90 py-1 text-xs font-medium text-white hover:bg-orange-500">一键配置到 d-token</button>
+          </div>
+        </div>
+
+      </div>
+    </div>
+
+    <!-- 子标签 2: 智能学习 (Smart Learning) -->
+    <div class="tab-pane space-y-4" data-tab-pane="smart-learning">
+      <div class="rounded-xl border border-border/70 bg-card p-5 shadow-sm">
+        <h3 class="text-sm font-semibold text-foreground">智能上下文压缩与模型 Prompt 学习</h3>
+        <p class="mt-1 text-xs text-muted-foreground">
+          自动从高频发送的多轮对白和长文档中提取 AST 语法骨架与规则，降低反复传输的代码体积。
+        </p>
+        <div class="mt-4 space-y-3">
+          <div class="flex items-center justify-between rounded-lg border border-border/50 bg-secondary/30 p-3">
+            <div>
+              <div class="text-xs font-medium text-foreground">Headroom 语义 AST 去重</div>
+              <div class="text-[11px] text-muted-foreground">识别大型代码库重复引用与未修改文件</div>
+            </div>
+            <span class="text-xs font-semibold text-emerald-400">已激活</span>
+          </div>
+          <div class="flex items-center justify-between rounded-lg border border-border/50 bg-secondary/30 p-3">
+            <div>
+              <div class="text-xs font-medium text-foreground">System Prompt 智能模板抽取</div>
+              <div class="text-[11px] text-muted-foreground">对稳定 System 指令在本地与网关间建立差量传输</div>
+            </div>
+            <span class="text-xs font-semibold text-emerald-400">已激活</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 子标签 3: 高级配置 (Advanced) -->
+    <div class="tab-pane space-y-4" data-tab-pane="advanced">
+      <div class="rounded-xl border border-border/70 bg-card p-5 shadow-sm">
+        <h3 class="text-sm font-semibold text-foreground">高级路由与上游端点覆盖</h3>
+        <p class="mt-1 text-xs text-muted-foreground">精细调整端口监听与自定义模型提供商映射</p>
+        <div class="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2">
+          <div>
+            <label class="text-xs font-medium text-foreground">本地代理监听端口</label>
+            <input type="text" value="18001" class="mt-1.5 w-full rounded-md border border-border bg-input-background px-3 py-2 text-xs font-mono text-foreground" readonly />
+            <span class="text-[11px] text-muted-foreground mt-1 block">默认绑定 127.0.0.1，禁止暴露至公网</span>
+          </div>
+          <div>
+            <label class="text-xs font-medium text-foreground">默认上游 Provider 协议</label>
+            <select class="mt-1.5 w-full rounded-md border border-border bg-input-background px-3 py-2 text-xs text-foreground">
+              <option>OpenAI 兼容协议 (/v1/chat/completions)</option>
+              <option>Anthropic 原生协议 (/v1/messages)</option>
+              <option>Ollama 本地大模型协议</option>
+            </select>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 子标签 4: 审计与安全日志 (Logs & Security) -->
+    <div class="tab-pane space-y-4" data-tab-pane="logs">
+      <div class="rounded-xl border border-border/70 bg-card p-5 shadow-sm">
+        <div class="flex items-center justify-between border-b border-border/50 pb-3">
+          <h3 class="text-sm font-semibold text-foreground">实时代理请求脱敏审计流水</h3>
+          <span class="text-xs text-emerald-400">● 严格脱敏：凭据、密钥与私有代码绝不上屏</span>
+        </div>
+        <div class="mt-3 overflow-x-auto">
+          <table class="w-full text-left text-xs">
+            <thead class="border-b border-border/40 text-muted-foreground">
+              <tr>
+                <th class="py-2">时间</th>
+                <th class="py-2">来源 Agent</th>
+                <th class="py-2">上游目标</th>
+                <th class="py-2">原始 Token</th>
+                <th class="py-2">压缩后 Token</th>
+                <th class="py-2">节省率</th>
+                <th class="py-2">状态</th>
+              </tr>
+            </thead>
+            <tbody class="divide-y divide-border/30 font-mono text-[11px]">
+              <tr>
+                <td class="py-2.5 text-muted-foreground">17:18:24</td>
+                <td><span class="rounded bg-secondary px-1.5 py-0.5 text-foreground">OpenCode</span></td>
+                <td>deepseek-coder</td>
+                <td>14,280</td>
+                <td>8,450</td>
+                <td class="text-emerald-400 font-bold">-40.8%</td>
+                <td><span class="text-emerald-400">200 OK</span></td>
+              </tr>
+              <tr>
+                <td class="py-2.5 text-muted-foreground">17:15:10</td>
+                <td><span class="rounded bg-secondary px-1.5 py-0.5 text-foreground">Claude Code</span></td>
+                <td>claude-3-5-sonnet</td>
+                <td>22,400</td>
+                <td>13,900</td>
+                <td class="text-emerald-400 font-bold">-37.9%</td>
+                <td><span class="text-emerald-400">200 OK</span></td>
+              </tr>
+              <tr>
+                <td class="py-2.5 text-muted-foreground">17:09:42</td>
+                <td><span class="rounded bg-secondary px-1.5 py-0.5 text-foreground">OpenCode</span></td>
+                <td>gpt-4o</td>
+                <td>9,120</td>
+                <td>5,680</td>
+                <td class="text-emerald-400 font-bold">-37.7%</td>
+                <td><span class="text-emerald-400">200 OK</span></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>

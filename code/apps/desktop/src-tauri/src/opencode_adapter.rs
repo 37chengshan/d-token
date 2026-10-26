@@ -119,6 +119,29 @@ pub fn apply(request: &OpenCodeConnectionRequest, backup_root: &Path) -> OpenCod
         );
     }
 
+    if prepared.plan.before_hash == prepared.plan.after_hash {
+        if let Err(error) = verify_provider(&path, &request.model, request.listener_port) {
+            return failed_receipt(request, error);
+        }
+        return OpenCodeConnectionReceipt {
+            ok: true,
+            state: "already_verified".to_string(),
+            source: "dtoken-desktop-opencode-adapter",
+            freshness: "fresh",
+            target: display_path(&path),
+            model: request.model.clone(),
+            listener: format!("127.0.0.1:{}", request.listener_port),
+            transaction: "review-verify-no-change".to_string(),
+            revision: Some(revision),
+            before_sha256: Some(prepared.plan.before_hash),
+            after_sha256: Some(prepared.plan.after_hash),
+            rollback_id: None,
+            verified: true,
+            summary: "Existing OpenCode connection verified without rewriting configuration"
+                .to_string(),
+            privacy: privacy(),
+        };
+    }
     let patcher = ConfigPatcher::new(backup_root);
     let backup = match patcher.backup_prepared(&prepared) {
         Ok(value) => value,
@@ -211,8 +234,10 @@ fn patch_provider(root: &mut Map<String, Value>, model: &str, port: u16) -> Resu
             .or_insert_with(|| Value::Object(Map::new()))
             .as_object_mut()
             .ok_or_else(|| "OpenCode provider must be an object".to_string())?;
-        if providers.contains_key(OPENCODE_PROVIDER_ID) {
-            return Err("OpenCode already contains dtoken-local-route; use Changes to verify or roll it back".to_string());
+        if let Some(existing) = providers.get(OPENCODE_PROVIDER_ID) {
+            ensure_owned_opencode_provider(existing).map_err(|error| {
+                format!("existing OpenCode provider ownership check failed: {error:#}")
+            })?;
         }
         providers.insert(
             OPENCODE_PROVIDER_ID.to_string(),
@@ -646,11 +671,19 @@ mod tests {
         env::remove_var("DTOKEN_OPENCODE_CONFIG_PATH");
     }
 
+    #[test]
+    fn reconfiguration_preserves_foreign_provider_collisions() {
+        let original =
+            serde_json::json!({"provider":{"dtoken-local-route":{"name":"user managed"}}});
+        let mut document = original.as_object().unwrap().clone();
+        assert!(patch_provider(&mut document, "mimo-v2.5-free", 18001).is_err());
+        assert_eq!(Value::Object(document), original);
+    }
+
     /// Semantic lock: a provider written by the dedicated desktop flow stays
     /// owned, so the managed transport may reconfigure it without touching user
     /// providers, and the dedicated flow still recognizes the result. The
-    /// dedicated flow remains install-only: it refuses to overwrite any
-    /// existing provider and directs reconfiguration to Changes.
+    /// dedicated flow refuses foreign providers and updates only verified ownership.
     #[test]
     fn dedicated_apply_then_managed_reconfigure_stays_mutually_recognized() {
         let _guard = env_lock();
@@ -692,20 +725,35 @@ mod tests {
         verify_provider(&config, "deepseek/model-v2", 18002)
             .expect("dedicated verify recognizes managed reconfigure");
 
-        // The dedicated flow is install-only and never overwrites an existing
-        // provider; reconfiguration goes through the managed transport.
+        // One-click configuration also updates a provider proven to be ours.
         let again = preview(&request(), &root.join("backups"));
         assert!(
-            !again.ok,
-            "dedicated preview must refuse an existing provider"
-        );
-        assert!(
-            again
-                .summary
-                .contains("already contains dtoken-local-route"),
-            "unexpected refusal summary: {}",
+            again.ok,
+            "owned reconfiguration should be reviewable: {}",
             again.summary
         );
+        let mut update = request();
+        update.reviewed_revision = again.revision;
+        update.reviewed_before_sha256 = again.before_sha256;
+        update.reviewed_after_sha256 = again.after_sha256;
+        let updated = apply(&update, &root.join("backups"));
+        assert!(updated.ok && updated.verified);
+        verify_provider(&config, &update.model, update.listener_port).unwrap();
+        let after: Value = serde_json::from_slice(&fs::read(&config).unwrap()).unwrap();
+        assert_eq!(
+            after.pointer("/provider/existing"),
+            reconfigured_value.pointer("/provider/existing")
+        );
+        let before_retry = fs::read(&config).unwrap();
+        let same = preview(&update, &root.join("backups"));
+        update.reviewed_revision = same.revision;
+        update.reviewed_before_sha256 = same.before_sha256;
+        update.reviewed_after_sha256 = same.after_sha256;
+        let verified = apply(&update, &root.join("backups"));
+        assert!(verified.ok && verified.verified);
+        assert_eq!(verified.state, "already_verified");
+        assert!(verified.rollback_id.is_none());
+        assert_eq!(fs::read(&config).unwrap(), before_retry);
         env::remove_var("DTOKEN_OPENCODE_CONFIG_PATH");
     }
 }

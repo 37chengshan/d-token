@@ -88,8 +88,11 @@ describe("Analytics runtime data truthfulness", () => {
     expect(screen.queryByText("$0.000")).not.toBeInTheDocument();
     expect(screen.queryByText("0 / 0 ms")).not.toBeInTheDocument();
     expect(screen.queryByText("示例数据")).not.toBeInTheDocument();
-    expect(screen.getByText("暂无压缩耗时记录")).toBeInTheDocument();
-    expect(screen.getAllByText("暂无真实请求记录")).not.toHaveLength(0);
+    expect(screen.getByTestId("analytics-empty-state")).toHaveTextContent("暂无请求记录");
+    expect(screen.queryByText("暂无压缩耗时记录")).not.toBeInTheDocument();
+    expect(screen.queryByText("暂无真实请求记录")).not.toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "模型使用" })).not.toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "日志" })).toBeInTheDocument();
   });
 
   it("uses durable aggregate totals even when the recent-request detail window is empty", () => {
@@ -225,9 +228,90 @@ describe("Analytics runtime data truthfulness", () => {
     expect(metric("估算输出 Token")).toHaveTextContent("2,129");
     expect(metric("请求错误")).toHaveTextContent("11");
     expect(screen.getByText(/分布、耗时和趋势只覆盖当前返回的最近请求窗口/)).toBeInTheDocument();
-    expect(screen.getByText("gpt-5")).toBeInTheDocument();
+    expect(within(screen.getByTestId("analytics-model-table")).getByText("gpt-5")).toBeInTheDocument();
+    expect(within(screen.getByTestId("analytics-model-table")).getByText("—")).toBeInTheDocument();
+    expect(screen.getByTestId("analytics-tool-traffic")).toHaveTextContent("Codex");
     expect(screen.getByText("OpenAI")).toBeInTheDocument();
     expect(screen.getByText("provider_timeout")).toBeInTheDocument();
+  });
+
+  it("uses actual traffic share for tool bars", () => {
+    dashboard.state = {
+      payload: {
+        ...runtimeIdentity,
+        request_logs: [
+          { timestamp_ms: Date.UTC(2026, 6, 1), agent: "Codex", input_tokens_before: 100, input_tokens_after: 80 },
+          { timestamp_ms: Date.UTC(2026, 6, 2), agent: "Codex", input_tokens_before: 100, input_tokens_after: 80 },
+          { timestamp_ms: Date.UTC(2026, 6, 3), agent: "Codex", input_tokens_before: 100, input_tokens_after: 80 },
+          { timestamp_ms: Date.UTC(2026, 6, 4), agent: "OpenCode", input_tokens_before: 100, input_tokens_after: 80 },
+        ],
+      },
+      status: "runtime",
+      updatedAt: new Date("2026-07-10T12:00:00Z"),
+      error: "",
+      refresh: vi.fn(),
+    };
+
+    render(<Analytics />);
+
+    const codex = screen.getByRole("meter", { name: "Codex 75.0%" });
+    const opencode = screen.getByRole("meter", { name: "OpenCode 25.0%" });
+    expect(codex).toHaveAttribute("aria-valuenow", "75");
+    expect(codex.querySelector("[role=\"presentation\"]")).toHaveStyle({ width: "75%" });
+    expect(opencode).toHaveAttribute("aria-valuenow", "25");
+    expect(opencode.querySelector("[role=\"presentation\"]")).toHaveStyle({ width: "25%" });
+  });
+
+  it("labels model money as estimated savings and only prices matching displayed coverage", async () => {
+    vi.mocked(loadModelPriceCache).mockResolvedValue(
+      buildPriceCache(
+        [{ model: "gpt-5", currency: "USD", inputPerMillion: 3, outputPerMillion: 15, source: "user-settings", updatedAt: "unix:2" }],
+        { source: "user-settings", freshness: "fresh", checkedAt: "unix:9" },
+      )!,
+    );
+    dashboard.state = {
+      payload: {
+        ...runtimeIdentity,
+        request_logs: [
+          { timestamp_ms: Date.UTC(2026, 6, 1), agent: "Codex", model: "gpt-5", input_tokens_before: 1_000, input_tokens_after: 800, tokens_saved: 200 },
+        ],
+      },
+      status: "runtime",
+      updatedAt: new Date("2026-07-10T12:00:00Z"),
+      error: "",
+      refresh: vi.fn(),
+    };
+
+    render(<Analytics />);
+
+    const table = screen.getByTestId("analytics-model-table");
+    expect(within(table).getByText("估算节省费用")).toBeInTheDocument();
+    expect(screen.queryByText("节省费用缺证据显示 —")).not.toBeInTheDocument();
+    expect(await within(table).findByText("$0.000600")).toBeInTheDocument();
+
+    cleanup();
+    dashboard.state = {
+      payload: {
+        ...runtimeIdentity,
+        request_logs: [
+          { timestamp_ms: Date.UTC(2026, 6, 1), agent: "Codex", model: "gpt-5", input_tokens_before: 1_000, input_tokens_after: 800, tokens_saved: 200 },
+        ],
+        stats: {
+          requests: { total: 2 },
+          analytics: { models: [{ name: "gpt-5", requests: 2, tokens_saved: 400 }] },
+        },
+      },
+      status: "runtime",
+      updatedAt: new Date("2026-07-10T12:00:00Z"),
+      error: "",
+      refresh: vi.fn(),
+    };
+
+    render(<Analytics />);
+
+    const mismatchTable = screen.getByTestId("analytics-model-table");
+    await waitFor(() => expect(within(mismatchTable).getByText("—")).toBeInTheDocument());
+    expect(within(mismatchTable).queryByText("$0.000600")).not.toBeInTheDocument();
   });
 
   it("renders persisted stale aggregates without presenting them as live", () => {
@@ -264,8 +348,7 @@ describe("Analytics runtime data truthfulness", () => {
     expect(metric("已处理请求")).toHaveTextContent("125");
     expect(metric("物理减少 Token")).toHaveTextContent("250");
     expect(metric("请求错误")).toHaveTextContent("20");
-    expect(screen.getAllByText(/本地数据已过期/)).not.toHaveLength(0);
-    expect(screen.getByText(/不代表当前服务状态/)).toBeInTheDocument();
+    expect(screen.getByRole("status")).toHaveTextContent("当前显示上次记录，连接恢复后会自动更新。");
     expect(screen.queryByText("实时本地数据")).not.toBeInTheDocument();
   });
 
@@ -386,7 +469,7 @@ describe("Analytics runtime data truthfulness", () => {
 
     render(<Analytics />);
 
-    expect(await screen.findByText("请求分页暂不可用，已显示当前摘要快照。")).toBeInTheDocument();
+    expect(await screen.findByText("暂时无法加载请求记录，请检查本地服务后重试。")).toBeInTheDocument();
   });
 
   it("shows initial native loading instead of claiming the request detail is empty", async () => {
@@ -402,7 +485,7 @@ describe("Analytics runtime data truthfulness", () => {
 
     render(<Analytics />);
 
-    expect(await screen.findByText("正在加载有界请求明细…")).toBeInTheDocument();
+    expect(await screen.findByText("正在读取请求记录…")).toBeInTheDocument();
     expect(screen.queryByText("暂无请求明细")).not.toBeInTheDocument();
   });
 
@@ -428,7 +511,7 @@ describe("Analytics runtime data truthfulness", () => {
 
     render(<Analytics />);
 
-    expect(await screen.findByText("请求分页暂不可用，已显示当前摘要快照。")).toBeInTheDocument();
+    expect(await screen.findByText("暂时无法加载请求记录，请检查本地服务后重试。")).toBeInTheDocument();
     expect(screen.queryByText(/缺少可信的 source/)).not.toBeInTheDocument();
   });
 
@@ -1032,7 +1115,7 @@ describe("Analytics log subpage (日志)", () => {
 
     await openLogsTab();
 
-    expect(await screen.findByText("正在加载有界请求明细…")).toBeInTheDocument();
+    expect(await screen.findByText("正在读取请求记录…")).toBeInTheDocument();
   });
 
   it("renders an explicit empty state when the runtime has no request logs", async () => {

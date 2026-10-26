@@ -1,7 +1,10 @@
 import { Badge } from "../../components/ui/badge";
+import { Check, ChevronDown } from "lucide-react";
+import { useId, useRef, useState, type MouseEvent } from "react";
+import { Dialog, DialogContent, DialogTitle } from "../../components/ui/dialog";
 import { StatusBadge } from "../../components/common/StatusBadge";
 import { Button } from "../../components/ui/button";
-import { resolveAgentBinding, selectedCandidate, type InstallPhase } from "../installMachine";
+import { requiresAgentRouteRepair, resolveAgentBinding, selectedCandidate, type InstallAgentReceipt, type InstallPhase } from "../installMachine";
 import type { AgentUpstreamBinding, ConnectionSetupSnapshot, UpstreamCandidate } from "../connectionSetup";
 import { protocolLabel } from "../protocol";
 
@@ -15,6 +18,10 @@ function AgentBindingRow({
   selected,
   onToggle,
   selectable,
+  preparationReason,
+  receipt,
+  actionFeedback,
+  layout = "row",
 }: {
   binding: AgentUpstreamBinding;
   lang: "zh" | "en";
@@ -22,14 +29,19 @@ function AgentBindingRow({
   transportBusy: boolean;
   onConfigure: () => void;
   onClear: () => void;
-  /** Agent-level batch selection (PRD P0.0.10.1): installed Agents default
-   *  to selected, the user may cancel any of them, unselectable Agents are
-   *  disabled. This is the only selection control; provider/model/upstream
-   *  are never chosen here. */
   selected?: boolean;
   onToggle?: () => void;
   selectable?: boolean;
+  preparationReason?: string;
+  receipt?: InstallAgentReceipt;
+  actionFeedback?: { message: string; failed: boolean };
+  layout?: "row" | "card";
 }) {
+  const [detailsOpen, setDetailsOpen] = useState(false);
+  const detailsId = useId();
+  const detailButtonRef = useRef<HTMLButtonElement>(null);
+  const selectionId = useId();
+  const zh = lang === "zh";
   const presentation = presentBinding(binding, lang);
   const isMcpOrHook = binding.integration_kind === "mcp" || binding.integration_kind === "hook";
   // MCP/Hook integrations act on the tool config only; the write action exists
@@ -39,34 +51,189 @@ function AgentBindingRow({
   const canConfigure = isMcpOrHook ? mcpPathReady : binding.can_configure === true;
   const canClear = isMcpOrHook ? mcpPathReady : binding.can_clear === true;
   const configureLabel = isMcpOrHook
-    ? (lang === "zh" ? "配置工具集成" : "Configure tools")
-    : (lang === "zh" ? "一键配置" : "One-click configure");
+    ? (zh ? "配置工具" : "Configure tools")
+    : (zh ? "配置" : "Configure");
   const clearLabel = isMcpOrHook
-    ? (lang === "zh" ? "清除工具集成" : "Clear tools")
-    : (lang === "zh" ? "清除 d-token 配置" : "Clear d-token config");
-  // The card is read-only: provider/model/protocol/endpoint/source come from
-  // the uniquely auto-resolved candidate. Ambiguity blocks the plan and is
-  // surfaced by the binding summary; no chooser is rendered.
+    ? (zh ? "清除工具" : "Clear tools")
+    : (zh ? "清除配置" : "Clear config");
   const resolved = binding.resolved_candidate;
   const model = resolved?.models?.[0];
   const follow = presentAgentFollow(binding, lang);
-  // Truthful labels for MCP/Hook — these integrations provide only
-  // tool-level access, never route evidence or compression.
+  const canSelect = selectable === true && Boolean(onToggle) && !busy && !transportBusy;
+  const receiptFailed = receipt?.state === "failed" || receipt?.state === "rollback-failed";
+  const receiptSummary = receipt?.state === "verified"
+    ? (zh ? "检查通过" : "Verified")
+    : receipt?.state === "applied"
+      ? (zh ? "已写入，待检查" : "Applied, checking")
+      : receipt?.state === "already-connected"
+        ? (zh ? "保留现有连接" : "Current connection kept")
+        : receipt?.state === "rolled-back"
+          ? (zh ? "未通过，已恢复" : "Restored after failure")
+          : receipt?.state === "blocked"
+            ? (zh ? "需要处理" : "Needs attention")
+            : receipt?.summary;
+  const summary = receiptSummary
+    || preparationReason
+    || (binding.follow?.transport_out_of_sync
+      ? (zh ? "连接需要更新" : "Connection needs updating")
+      : isMcpOrHook
+        ? (zh ? "工具能力，不改变模型连接" : "Tools only; model connection unchanged")
+        : presentBindingSummary(binding, resolved, model, lang));
+  const status = receipt
+    ? <StatusBadge status={receiptFailed || receipt.state === "blocked" || receipt.state === "rolled-back" ? "warning" : receipt.state === "verified" || receipt.state === "already-connected" ? "healthy" : "warning"} label={receiptSummary || presentation.label} />
+    : !binding.installed || binding.resolution === "auto-resolved" && !binding.already_connected
+      ? <span className="inline-flex rounded-md bg-muted/60 px-2 py-1 text-xs text-foreground">{presentation.label}</span>
+      : <StatusBadge status={presentation.health} label={presentation.label} />;
+  const initials = binding.agent_name.split(/[\s-]+/).map((part) => part[0]).join("").slice(0, 2).toUpperCase() || "?";
+  const toggleFromCard = (event: MouseEvent<HTMLElement>) => {
+    if (!event.currentTarget.contains(event.target as Node)) return;
+    if (canSelect) onToggle?.();
+  };
+  const detailButton = (
+    <button
+      ref={detailButtonRef}
+      type="button"
+      className="inline-flex shrink-0 items-center gap-1 rounded-md px-1.5 py-1 text-xs font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      aria-expanded={detailsOpen}
+      aria-controls={detailsId}
+      aria-haspopup="dialog"
+      onClick={(event) => {
+        event.stopPropagation();
+        setDetailsOpen((open) => !open);
+      }}
+    >
+      {zh ? "详情" : "Details"}
+      <ChevronDown className={`size-3 transition-transform ${detailsOpen ? "rotate-180" : ""}`} aria-hidden="true" />
+    </button>
+  );
+  const details = (
+    <Dialog open={detailsOpen} onOpenChange={setDetailsOpen}>
+      <DialogContent
+        id={detailsId}
+        aria-describedby={undefined}
+        className="max-h-[min(80vh,640px)] overflow-y-auto bg-card p-5 text-xs leading-5 text-muted-foreground sm:max-w-md"
+        onClick={(event) => event.stopPropagation()}
+        onCloseAutoFocus={(event) => { event.preventDefault(); detailButtonRef.current?.focus(); }}
+      >
+      <DialogTitle className="pr-8 text-base text-foreground">{binding.agent_name}</DialogTitle>
+      {actionFeedback && <p role={actionFeedback.failed ? "alert" : "status"} className={actionFeedback.failed ? "text-destructive" : "text-foreground"}>{actionFeedback.message}</p>}
+      <dl className="grid gap-2">
+        <div>
+          <dt className="font-medium text-foreground">{zh ? "检测位置" : "Detected at"}</dt>
+          <dd className="break-all">{presentAgentLocation(binding, lang)}</dd>
+        </div>
+        <div>
+          <dt className="font-medium text-foreground">{zh ? "连接摘要" : "Connection"}</dt>
+          <dd>{summary}</dd>
+        </div>
+        {resolved && (
+          <div>
+            <dt className="font-medium text-foreground">{zh ? "当前模型服务" : "Current model service"}</dt>
+            <dd className="break-all">
+              {[resolved.name, model, protocolLabel(resolved.protocol, lang), resolved.base_url].filter(Boolean).join(" · ")}
+            </dd>
+          </div>
+        )}
+        {!isMcpOrHook && binding.follow && (
+          <div>
+            <dt className="font-medium text-foreground">{zh ? "连接状态" : "Connection status"}</dt>
+            <dd>{follow.nextAction}</dd>
+            {binding.follow.current_upstream && (
+              <dd className="mt-1 break-all">
+                {lang === "zh" ? "d-token 路由" : "d-token route"} · {binding.follow.current_upstream.provider_id} · {binding.follow.current_upstream.model} · {binding.follow.current_upstream.protocol}
+              </dd>
+            )}
+            {binding.follow.last_receipt && (
+              <dd className="mt-1 break-all font-mono text-[10px]">
+                receipt {binding.follow.last_receipt.state} · {binding.follow.last_receipt.runtime_state}
+              </dd>
+            )}
+          </div>
+        )}
+        {isMcpOrHook && binding.truthful_limitation && (
+          <div>
+            <dt className="font-medium text-foreground">{zh ? "范围" : "Scope"}</dt>
+            <dd>{binding.truthful_limitation}</dd>
+          </div>
+        )}
+      </dl>
+      <div className="flex flex-wrap items-center gap-2">
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          disabled={busy || transportBusy || !canConfigure}
+          title={!canConfigure ? (zh ? "此工具当前没有可执行配置动作" : "This tool has no executable setup action") : undefined}
+          onClick={onConfigure}
+        >
+          {transportBusy ? (zh ? "处理中..." : "Working...") : configureLabel}
+        </Button>
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          disabled={busy || transportBusy || !canClear}
+          title={!canClear ? (zh ? "没有可安全清除的 d-token 记录" : "No d-token-owned record can be cleared safely") : undefined}
+          onClick={onClear}
+        >
+          {clearLabel}
+        </Button>
+      </div>
+      </DialogContent>
+    </Dialog>
+  );
+
+  if (layout === "card") {
+    return (
+      <article
+        className={[
+          "self-start rounded-lg border bg-card/80 p-3 shadow-[0_1px_4px_rgba(30,20,10,0.05)] transition-colors",
+          canSelect ? "cursor-pointer hover:border-primary/40 hover:bg-card focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" : "",
+          selected ? "border-primary/60 bg-primary/5" : "border-border/70",
+        ].join(" ")}
+        role="group"
+        aria-label={binding.agent_name}
+        data-selected={selected || undefined}
+        data-disabled={!canSelect || undefined}
+        onClick={toggleFromCard}
+      >
+        <div className="flex min-w-0 items-center gap-2">
+          <span className="grid size-7 shrink-0 place-items-center rounded-md border border-border/70 bg-background font-mono text-[10px] font-semibold text-muted-foreground">
+            {initials}
+          </span>
+          <h3 className="min-w-0 flex-1 truncate text-sm font-semibold leading-5">
+            {binding.agent_name}
+          </h3>
+          <span className="grid size-5 shrink-0 place-items-center">
+            <input
+              id={selectionId}
+              type="checkbox"
+              checked={Boolean(selected)}
+              disabled={!canSelect}
+              onClick={(event) => event.stopPropagation()}
+              onChange={onToggle}
+              aria-label={zh ? `选择配置 ${binding.agent_name}` : `Select ${binding.agent_name} for setup`}
+              className="peer sr-only"
+            />
+            <span
+              aria-hidden="true"
+              className={`grid size-4 place-items-center rounded-[4px] border text-[10px] peer-focus-visible:ring-2 peer-focus-visible:ring-ring peer-focus-visible:ring-offset-2 ${selected ? "border-primary bg-primary text-primary-foreground" : "border-border bg-background text-transparent"}`}
+            >
+              <Check className="size-3" />
+            </span>
+          </span>
+        </div>
+        <div className="mt-2 flex min-w-0 items-center justify-between gap-2">
+          <div className="min-w-0 truncate text-xs">{status}</div>
+          {detailButton}
+        </div>
+        {details}
+      </article>
+    );
+  }
+
   return (
     <div className="grid gap-3 py-3 md:grid-cols-[minmax(0,1fr)_minmax(220px,0.8fr)_auto_auto] md:items-center">
-      {onToggle && (
-        <label className="flex items-center justify-self-start">
-          <input
-            type="checkbox"
-            checked={selected ?? false}
-            disabled={selectable === false}
-            onChange={onToggle}
-            aria-label={lang === "zh" ? `选择配置 ${binding.agent_name}` : `Select ${binding.agent_name} for setup`}
-            className="size-4"
-          />
-          <span className="sr-only">{lang === "zh" ? "纳入一键配置批次" : "Include in the one-click setup batch"}</span>
-        </label>
-      )}
       <div className="min-w-0">
         <div className="flex flex-wrap items-center gap-2">
           <span className="font-medium">{binding.agent_name}</span>
@@ -105,7 +272,7 @@ function AgentBindingRow({
       </div>
       <div className="min-w-0">
         <div className="truncate text-sm text-muted-foreground">
-          {presentBindingSummary(binding, resolved, model, lang)}
+          {summary}
         </div>
         {binding.follow?.current_upstream && (
           <div className="mt-1 truncate text-[11px] text-muted-foreground">
@@ -118,7 +285,7 @@ function AgentBindingRow({
           </div>
         )}
       </div>
-      <StatusBadge status={presentation.health} label={presentation.label} />
+      {status}
       <div className="flex items-center justify-end gap-1">
         <Button
           type="button"
@@ -152,8 +319,8 @@ function presentAgentFollow(binding: AgentUpstreamBinding, lang: "zh" | "en") {
     return {
       label: zh ? "未启用跟随" : "Follow off",
       nextAction: zh
-        ? "下一步：在连接方案中启用“跟随已确认上游”。"
-        : "Next: enable follow for confirmed upstreams in the connection plan.",
+        ? "点击配置后，会沿用该工具当前的模型设置。"
+        : "Configure to use this tool’s current model settings.",
     };
   }
   if (follow.state === "transport_out_of_sync") {
@@ -168,15 +335,15 @@ function presentAgentFollow(binding: AgentUpstreamBinding, lang: "zh" | "en") {
     return {
       label: zh ? "自动跟随中" : "Following",
       nextAction: zh
-        ? "当前 Agent transport 与 d-token route 一致。"
-        : "The Agent transport and d-token route currently agree.",
+        ? "该工具的请求已接入 d-token。"
+        : "This tool’s requests are connected through d-token.",
     };
   }
   if (follow.next_action === "verify_runtime") {
     return {
-      label: zh ? "等待 runtime 验证" : "Runtime verification needed",
+      label: zh ? "等待检查服务" : "Runtime verification needed",
       nextAction: zh
-        ? "下一步：重启或重新验证 d-token runtime。"
+        ? "请重新启动服务或运行诊断。"
         : "Next: restart or reverify the d-token runtime.",
     };
   }
@@ -184,8 +351,8 @@ function presentAgentFollow(binding: AgentUpstreamBinding, lang: "zh" | "en") {
     return {
       label: zh ? "需要重新确认" : "Confirmation needed",
       nextAction: zh
-        ? "下一步：检查新的 provider、endpoint 或 protocol 并重新确认。"
-        : "Next: confirm the new provider, endpoint, or protocol.",
+        ? "连接设置已变化，请重新配置此工具。"
+        : "Connection settings changed. Configure this tool again.",
     };
   }
   return {
@@ -197,6 +364,7 @@ function presentAgentFollow(binding: AgentUpstreamBinding, lang: "zh" | "en") {
 }
 
 function presentAgentLocation(binding: AgentUpstreamBinding, lang: "zh" | "en") {
+  if (binding.catalog_installed === null) return lang === "zh" ? "扫描未完成" : "Scan incomplete";
   if (!binding.installed) return lang === "zh" ? "本机未检测到" : "Not detected locally";
   const location = binding.binary_path || binding.config_path;
   if (!location) return lang === "zh" ? "已检测" : "Detected";
@@ -249,7 +417,7 @@ function derivePrimaryAction(
     return { label: phase === "discovering" ? (zh ? "正在读取" : "Discovering") : (zh ? "正在处理" : "Working"), disabled: true, icon: "rocket" };
   }
   if (restartRequired) return { label: zh ? "重启服务" : "Restart service", disabled: false, icon: "restart" };
-  if (phase === "ready") return { label: zh ? "查看变更" : "View changes", disabled: !reviewReady, icon: "rocket" };
+  if (phase === "ready") return { label: zh ? "配置所选" : "Configure selected", disabled: !reviewReady, icon: "rocket" };
   if (phase === "needs-credential") return { label: zh ? "补充所需凭据" : "Add required credential", disabled: false, icon: "settings" };
   if (["already-connected", "verified"].includes(phase)) {
     return { label: serviceOnline ? (zh ? "重新验证" : "Verify again") : (zh ? "启动并验证" : "Start and verify"), disabled: false, icon: "verify" };
@@ -263,7 +431,7 @@ function presentInstallPhase(phase: InstallPhase, lang: "zh" | "en") {
     idle: { health: "warning", label: zh ? "等待读取" : "Waiting", description: zh ? "进入页面后会自动读取本机配置。" : "Local configuration is read automatically when this view opens." },
     discovering: { health: "warning", label: zh ? "正在发现" : "Discovering", description: zh ? "正在只读扫描 Agent 当前配置、OpenCode catalog、cc-switch 与 d-token 状态。" : "Reading Agent config, the OpenCode catalog, cc-switch, and d-token state without writing." },
     "already-connected": { health: "healthy", label: zh ? "已连接" : "Connected", description: zh ? "Agent 已指向 d-token；相同配置不会重复写入。" : "Agents already point to d-token; identical configuration will not be written again." },
-    ready: { health: "healthy", label: zh ? "可继续" : "Ready to continue", description: zh ? "已找到唯一且可信的连接方案。查看变更后确认继续。" : "One reliable connection plan was found. View the changes, then confirm to continue." },
+    ready: { health: "healthy", label: zh ? "可继续" : "Ready to continue", description: zh ? "已找到唯一且可信的连接方案。点击配置所选后会立即应用本批选择。" : "One reliable connection plan was found. Configure selected applies the chosen batch." },
     "needs-credential": { health: "warning", label: zh ? "缺少凭据" : "Credential required", description: zh ? "地址、协议和模型已保留，只需补充无法安全复用的凭据。" : "Address, protocol, and model are preserved; only a credential that cannot be reused is required." },
     review: { health: "warning", label: zh ? "等待确认" : "Awaiting confirmation", description: zh ? "正在核对摘要、差异、源哈希与回退边界。" : "Checking the summary, differences, source hash, and rollback boundary." },
     "applying-runtime": { health: "warning", label: zh ? "正在启动服务" : "Starting service", description: zh ? "正在安装或启动 d-token runtime。" : "Installing or starting the d-token runtime." },
@@ -279,18 +447,20 @@ function presentInstallPhase(phase: InstallPhase, lang: "zh" | "en") {
 
 function presentBinding(binding: AgentUpstreamBinding, lang: "zh" | "en") {
   const zh = lang === "zh";
+  if (binding.follow?.transport_out_of_sync) return { health: "warning" as const, label: zh ? "流量可能绕过 d-token" : "May bypass d-token" };
+  if (binding.catalog_installed === null) return { health: "warning" as const, label: zh ? "未知" : "Unknown" };
   if (!binding.installed) return { health: "error" as const, label: zh ? "未检测到" : "Not detected" };
   if (binding.already_connected) return { health: "healthy" as const, label: zh ? "已连接" : "Connected" };
   if (binding.resolution === "auto-resolved" && binding.capability === "confirm-required") {
-    return { health: "healthy" as const, label: zh ? "已准备好，需你确认" : "Ready, needs confirmation" };
+    return { health: "healthy" as const, label: zh ? "待配置" : "Ready to configure" };
   }
-  if (binding.resolution === "auto-resolved") return { health: "healthy" as const, label: zh ? "已自动解析" : "Auto-resolved" };
-  if (binding.resolution === "needs-choice") return { health: "error" as const, label: zh ? "来源冲突" : "Source conflict" };
+  if (binding.resolution === "auto-resolved") return { health: "healthy" as const, label: zh ? "待配置" : "Ready to configure" };
+  if (binding.resolution === "needs-choice") return { health: "error" as const, label: zh ? "需要处理" : "Needs attention" };
   if (binding.resolution === "needs-credential") return { health: "warning" as const, label: zh ? "需要凭据" : "Credential" };
   if (binding.transport_status === "advanced_required" || binding.transport_status === "schema_unverified") {
     return { health: "warning" as const, label: zh ? "仅检测" : "Detection only" };
   }
-  return { health: "warning" as const, label: zh ? "等待安全适配" : "Awaiting safe adapter" };
+  return { health: "warning" as const, label: zh ? "不可配置" : "Unavailable" };
 }
 
 function capabilityLabel(binding: AgentUpstreamBinding, lang: "zh" | "en") {
@@ -502,6 +672,7 @@ type ManagedAgentTransportReceipt = {
   ok?: boolean;
   state?: string;
   changed?: boolean;
+  transaction?: { changes: Array<{ backup: { rollback_id: string } }> } | null;
   verification?: {
     ok: boolean;
     detail: string;

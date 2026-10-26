@@ -5,11 +5,11 @@ use std::collections::{HashMap, HashSet};
 
 use crate::content_router::{route_content, ContentKind};
 use crate::optical::context_graph::{build_context_graph, ContextGraph};
-use crate::optical::inventory::{
+use crate::inventory::{
     build_anthropic_inventory, build_openai_chat_inventory, build_openai_responses_inventory,
     BlockKind, ConversationInventory, InitialProtection, RoleKind,
 };
-use crate::optical::risk::{classify_block, RiskTier};
+use crate::protection::{classify_block, RiskTier};
 use crate::optical::volatility::plan_volatility;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -59,6 +59,15 @@ impl ResolvedOptimizationContext {
                 Protocol::OpenAi,
                 Protocol::OpenAi,
                 OpticalEndpoint::OpenAiChatCompletions
+            ) | (
+                // R3.C1: native OpenAI Responses wire now supports the same
+                // resolved safe-text pipeline. Tool-result patch paths map to
+                // `/input/{i}/output` (see [`patch_path_for`]); every
+                // non-approved field stays byte-faithful per the Codex schema
+                // contract, and the response side remains untouched.
+                Protocol::OpenAi,
+                Protocol::OpenAi,
+                OpticalEndpoint::OpenAiResponses
             )
         )
     }
@@ -389,7 +398,7 @@ fn lower_node(
     body: &Value,
     inventory: &ConversationInventory,
     graph: &ContextGraph,
-    block: &crate::optical::inventory::BlockRef,
+    block: &crate::inventory::BlockRef,
 ) -> (HybridContextNode, Option<ApprovedHybridTarget>) {
     let kind = map_kind(&block.kind);
     let role = map_role(&block.role);
@@ -665,7 +674,7 @@ fn lower_node(
 }
 
 fn baseline_protection(
-    block: &crate::optical::inventory::BlockRef,
+    block: &crate::inventory::BlockRef,
     inventory: &ConversationInventory,
 ) -> (HybridProtection, HybridProtectionReason) {
     if block.kind == BlockKind::Unknown || block.role == RoleKind::Unknown {
@@ -734,7 +743,7 @@ fn baseline_protection(
 fn patch_path_for(
     context: &ResolvedOptimizationContext,
     body: &Value,
-    block: &crate::optical::inventory::BlockRef,
+    block: &crate::inventory::BlockRef,
 ) -> Option<String> {
     if block.kind != BlockKind::ToolResult {
         return None;
@@ -743,6 +752,10 @@ fn patch_path_for(
         OpticalEndpoint::AnthropicMessages | OpticalEndpoint::OpenAiChatCompletions => {
             format!("{}/content", block.source_path)
         }
+        // Responses function_call_output blocks already point at the exact
+        // output field (`/input/{i}/output`); string outputs only — array
+        // outputs never get a patch path and stay byte-faithful.
+        OpticalEndpoint::OpenAiResponses => block.source_path.clone(),
         _ => return None,
     };
     body.pointer(&path).and_then(Value::as_str)?;

@@ -6,20 +6,22 @@ const native = vi.hoisted(() => ({ invokeNative: vi.fn() }));
 
 vi.mock("../../lib/native", () => ({
   invokeNative: native.invokeNative,
+  RUNTIME_INVALIDATED_EVENT: "d-token:runtime-invalidated",
 }));
 
 import { Changes } from "./Changes";
 
 const payload = {
   desktop_revision: "changes-iteration-test-revision",
-  source: "dtoken-owned-runtime",
-  desktop_data_source: "dtoken-local-service",
+  source: "dtoken-desktop-control-plane",
+  desktop_data_source: "dtoken-desktop-control-plane",
   freshness: "fresh",
   complete: true,
   transaction_provenance: {
-    source: "dtoken-owned-runtime",
-    command: "get_desktop_data",
+    source: "dtoken-desktop-control-plane",
+    command: "get_config_change_records",
     schema_version: 1,
+    runtime_required: false,
     generated_at: "2026-07-15T10:00:00Z",
   },
   routeDrafts: [{ path: "route-a.json", config: { routes: [{ id: "route-a" }] } }],
@@ -30,7 +32,7 @@ const payload = {
 beforeEach(() => {
   native.invokeNative.mockReset();
   native.invokeNative.mockImplementation(async (command: string) => {
-    if (command === "get_desktop_data") return payload;
+    if (command === "get_config_change_records") return payload;
     throw new Error(`unexpected command: ${command}`);
   });
 });

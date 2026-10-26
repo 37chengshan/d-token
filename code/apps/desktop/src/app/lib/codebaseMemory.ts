@@ -31,6 +31,8 @@ export type CodebaseMemoryStatus = {
   approved_project_root?: string | null;
   package_directory?: string;
   package_directory_custom?: boolean;
+  active_package_source?: string;
+  package_candidates?: Array<{ path: string; compatible: boolean; source: string; reason_code: string; version?: string }>;
   package: CodebaseMemoryDimension;
   integration: CodebaseMemoryDimension;
   agent_session: CodebaseMemoryDimension;
@@ -118,6 +120,21 @@ export async function setCodebaseMemoryPackageDirectory(
 ): Promise<CodebaseMemoryActionResult> {
   return invokeNative<CodebaseMemoryActionResult>("set_codebase_memory_package_directory", {
     request: { directory: directory?.trim() || null },
+  });
+}
+
+/** Opens the native folder picker. Selection remains a UI draft until Save validates and persists it. */
+export async function selectCodebaseMemoryPackageDirectory(): Promise<string | null> {
+  return invokeNative<string | null>("select_codebase_memory_package_directory");
+}
+
+export async function selectCodebaseMemoryArchive(): Promise<string | null> {
+  return invokeNative<string | null>("select_codebase_memory_archive");
+}
+
+export async function importCodebaseMemoryArchive(archivePath: string): Promise<CodebaseMemoryActionResult> {
+  return invokeNative<CodebaseMemoryActionResult>("import_codebase_memory_archive", {
+    request: { archive_path: archivePath },
   });
 }
 

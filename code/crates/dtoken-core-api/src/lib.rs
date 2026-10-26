@@ -1,5 +1,6 @@
 pub mod capability_bridge;
 pub mod ccr_store;
+pub mod decision_projection;
 pub mod mcp;
 
 use anyhow::Context as _;
@@ -70,7 +71,7 @@ use std::{
     collections::{BTreeMap, HashMap, HashSet, VecDeque},
     env,
     fs::OpenOptions,
-    io::{BufRead, BufReader},
+    io::{BufRead, BufReader, Read},
     path::{Path as StdPath, PathBuf},
     pin::Pin,
     sync::{Arc, Mutex, OnceLock},
@@ -555,7 +556,7 @@ pub fn user_status_word_for(internal_code: &str) -> Result<&'static str, StatusV
         _ => {
             return Err(StatusVocabularyError {
                 internal_code: internal_code.to_string(),
-            })
+            });
         }
     };
     Ok(word)
@@ -2075,6 +2076,9 @@ impl AppState {
         runtime_dir: &StdPath,
         ccr_private_store: Option<Arc<CcrStore>>,
     ) -> Self {
+        capability_bridge::set_default_registry_store_path(
+            runtime_dir.join("capability-registry.json"),
+        );
         let store = Arc::new(RuntimeStore::new(runtime_dir));
         let mut state = Self::new_with_config_status(config, config_status);
         state.ccr_private_store = ccr_private_store;
@@ -3209,7 +3213,7 @@ impl AppState {
         request_log: RequestLog,
         event: DtokenEvent,
     ) {
-        self.record_routed_request_inner(decision, request_log, event, None, false);
+        self.record_routed_request_inner(decision, request_log, event, None, false, None);
     }
 
     fn prepare_ccr_for_request(
@@ -3255,12 +3259,30 @@ impl AppState {
         event: DtokenEvent,
         prepared: &PreparedCcr,
     ) {
+        self.record_routed_request_with_ccr_receipt_and_capability_observation(
+            decision,
+            request_log,
+            event,
+            prepared,
+            None,
+        );
+    }
+
+    fn record_routed_request_with_ccr_receipt_and_capability_observation(
+        &self,
+        decision: &RouteDecision,
+        request_log: RequestLog,
+        event: DtokenEvent,
+        prepared: &PreparedCcr,
+        capability_observation: Option<RuntimeCapabilityObservation>,
+    ) {
         self.record_routed_request_inner(
             decision,
             request_log,
             event,
             prepared.receipt.as_ref(),
             prepared.store_configured,
+            capability_observation,
         );
     }
 
@@ -3271,6 +3293,7 @@ impl AppState {
         event: DtokenEvent,
         ccr_receipt: Option<&CcrStoreReceipt>,
         ccr_store_configured: bool,
+        capability_observation: Option<RuntimeCapabilityObservation>,
     ) {
         let Ok(_lifecycle_guard) = self.ccr_lifecycle_lock.lock() else {
             self.record_runtime_performance("terminal_commit_total", Instant::now(), false, 0);
@@ -3415,35 +3438,29 @@ impl AppState {
         if let Ok(mut route_decisions) = self.route_decisions.lock() {
             push_bounded(&mut route_decisions, route_decision);
         }
-        // P0.0.11 learning loop: a completed routed request records an
-        // observation (tool-call presence inferred from the request log's
-        // transformed body) so the capability registry can promote unknown
-        // models to observed/learned across restarts.
-        if let Some(model) = decision.model_identity.as_deref() {
+        // P0.0.11 learning loop: only explicit upstream-outcome observations
+        // enter the capability registry. Request shape, declared tool schemas
+        // and generic HTTP success are not capability evidence.
+        if let Some((model, observation)) =
+            decision
+                .model_identity
+                .as_deref()
+                .zip(capability_observation.filter(|observation| {
+                    event.status == EventStatus::Ok && observation.has_evidence()
+                }))
+        {
             crate::capability_bridge::record_observation(
                 dtoken_capability_registry::ModelObservation {
                     model_id: model.to_string(),
                     request_id: decision.request_id.to_string(),
-                    observed_at_ms: std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .map(|duration| duration.as_millis() as u64)
-                        .unwrap_or(0),
+                    observed_at_ms: event.timestamp_ms.max(1),
                     context_window_hint: None,
                     max_output_tokens_hint: None,
-                    // A routed request completing is protocol/stream evidence,
-                    // NOT tool-call capability evidence — transforms applied
-                    // say nothing about the model's tool support, so the
-                    // fields stay None and the registry never guesses.
-                    tool_call_ok: None,
-                    stream_ok: None,
+                    tool_call_ok: observation.tool_call_ok,
+                    stream_ok: observation.stream_ok,
                     reasoning_ok: None,
                     structured_output_ok: None,
-                    protocol: Some(
-                        protocol_label(
-                            &decision.input_protocol.clone().unwrap_or(Protocol::OpenAi),
-                        )
-                        .to_string(),
-                    ),
+                    protocol: Some(observation.protocol.to_string()),
                 },
             );
         }
@@ -5367,6 +5384,19 @@ struct UpstreamResult {
     quota_metadata: Option<Value>,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct RuntimeCapabilityObservation {
+    protocol: &'static str,
+    tool_call_ok: Option<bool>,
+    stream_ok: Option<bool>,
+}
+
+impl RuntimeCapabilityObservation {
+    fn has_evidence(self) -> bool {
+        self.tool_call_ok.is_some() || self.stream_ok.is_some()
+    }
+}
+
 #[derive(Debug, Clone)]
 struct CompressionSummary {
     original_tokens: u64,
@@ -5383,6 +5413,7 @@ struct CompressionSummary {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RouteAdapterKind {
     OpenAiChatPassthrough,
+    OpenAiResponsesPassthrough,
     OpenAiResponsesToChat,
     AnthropicMessagesPassthrough,
     AnthropicMessagesToOpenAiChat,
@@ -5392,6 +5423,7 @@ impl RouteAdapterKind {
     fn adapter_label(self) -> &'static str {
         match self {
             Self::OpenAiChatPassthrough => "open_ai_chat_passthrough",
+            Self::OpenAiResponsesPassthrough => "open_ai_responses_passthrough",
             Self::OpenAiResponsesToChat => "open_ai_responses_to_chat",
             Self::AnthropicMessagesPassthrough => "anthropic_messages_passthrough",
             Self::AnthropicMessagesToOpenAiChat => "anthropic_messages_to_open_ai_chat",
@@ -5408,6 +5440,16 @@ impl RouteAdapterKind {
                 OptimizationSurface {
                     protocol: Protocol::OpenAi,
                     endpoint: OpticalEndpoint::OpenAiChatCompletions,
+                },
+            ),
+            Self::OpenAiResponsesPassthrough => (
+                OptimizationSurface {
+                    protocol: Protocol::OpenAi,
+                    endpoint: OpticalEndpoint::OpenAiResponses,
+                },
+                OptimizationSurface {
+                    protocol: Protocol::OpenAi,
+                    endpoint: OpticalEndpoint::OpenAiResponses,
                 },
             ),
             Self::OpenAiResponsesToChat => (
@@ -5747,7 +5789,10 @@ fn compress_for_route_with_frozen(
             )
         })
         .unwrap_or_else(|| CompressionEngine::new().compress(policy, body.clone()))
-        .map(|result| (result, None))
+        .map(|result| {
+            let reason = result.fallback_reason_code.clone();
+            (result, reason)
+        })
         .unwrap_or_else(|_| {
             (
                 dtoken_types::CompressionResult {
@@ -5756,6 +5801,7 @@ fn compress_for_route_with_frozen(
                     tokens_saved: 0,
                     elapsed_us: 1,
                     transforms_applied: Vec::new(),
+                    fallback_reason_code: Some("compression_error_fallback".to_string()),
                     body,
                     context_accounting: None,
                 },
@@ -6063,6 +6109,9 @@ fn build_configured_route_decision(
     provider: &dtoken_types::ProviderProfile,
     model: Option<&str>,
 ) -> RouteDecision {
+    let compression_hint = model
+        .and_then(|model| capability_bridge::compression_hint_for(model, Some("responses")))
+        .or_else(|| model.and_then(|model| capability_bridge::compression_hint_for(model, None)));
     RouteDecision {
         request_id,
         route_id: route.id.clone(),
@@ -6073,7 +6122,7 @@ fn build_configured_route_decision(
         input_protocol: Some(route.input_protocol.clone()),
         output_protocol: Some(provider.protocol.clone()),
         model_identity: model.map(str::to_string),
-        compression_hint: None,
+        compression_hint,
     }
 }
 
@@ -6087,6 +6136,11 @@ fn route_decision_to_value(decision: &RouteDecision) -> Value {
         "reason": decision.reason,
         "input_protocol": decision.input_protocol.as_ref().map(protocol_label),
         "output_protocol": decision.output_protocol.as_ref().map(protocol_label),
+        // R3.D3: model identity and the capability-derived compression hint
+        // are part of the explainability contract for every persisted route
+        // decision (null when the request carried no model).
+        "model_identity": decision.model_identity,
+        "compression_hint": decision.compression_hint,
         "fallback": "disabled",
     })
 }
@@ -6390,6 +6444,123 @@ fn upstream_response_status(upstream: &UpstreamResult) -> StatusCode {
         .status
         .and_then(|status| StatusCode::from_u16(status).ok())
         .unwrap_or(StatusCode::OK)
+}
+
+fn completed_upstream_capability_observation(
+    upstream: &UpstreamResult,
+    protocol: &'static str,
+    tool_call_ok: Option<bool>,
+) -> Option<RuntimeCapabilityObservation> {
+    if upstream.error_category.is_some() || upstream.send_state != UpstreamSendState::Completed {
+        return None;
+    }
+    let observation = RuntimeCapabilityObservation {
+        protocol,
+        tool_call_ok,
+        stream_ok: None,
+    };
+    observation.has_evidence().then_some(observation)
+}
+
+fn completed_stream_capability_observation(
+    protocol: &'static str,
+    tool_call_ok: Option<bool>,
+) -> RuntimeCapabilityObservation {
+    RuntimeCapabilityObservation {
+        protocol,
+        tool_call_ok,
+        stream_ok: Some(true),
+    }
+}
+
+fn json_object_string(value: &str) -> bool {
+    serde_json::from_str::<Value>(value).is_ok_and(|parsed| parsed.is_object())
+}
+
+fn valid_openai_tool_call(call: &Value) -> bool {
+    let type_ok = call
+        .get("type")
+        .and_then(Value::as_str)
+        .is_none_or(|value| value == "function");
+    let function = call.get("function").unwrap_or(&Value::Null);
+    type_ok
+        && call
+            .get("id")
+            .and_then(Value::as_str)
+            .is_some_and(|value| !value.trim().is_empty())
+        && function
+            .get("name")
+            .and_then(Value::as_str)
+            .is_some_and(|value| !value.trim().is_empty())
+        && function
+            .get("arguments")
+            .and_then(Value::as_str)
+            .is_some_and(json_object_string)
+}
+
+fn openai_chat_tool_call_observation(response: &Value) -> Option<bool> {
+    response
+        .pointer("/choices/0/message/tool_calls")
+        .and_then(Value::as_array)
+        .filter(|calls| !calls.is_empty() && calls.iter().all(valid_openai_tool_call))
+        .map(|_| true)
+}
+
+fn valid_responses_function_call(item: &Value) -> bool {
+    item.get("type").and_then(Value::as_str) == Some("function_call")
+        && item
+            .get("call_id")
+            .and_then(Value::as_str)
+            .is_some_and(|value| !value.trim().is_empty())
+        && item
+            .get("name")
+            .and_then(Value::as_str)
+            .is_some_and(|value| !value.trim().is_empty())
+        && item
+            .get("arguments")
+            .and_then(Value::as_str)
+            .is_some_and(json_object_string)
+}
+
+fn responses_tool_call_observation(response: &Value) -> Option<bool> {
+    response
+        .get("output")
+        .and_then(Value::as_array)
+        .and_then(|items| {
+            let calls = items
+                .iter()
+                .filter(|item| item.get("type").and_then(Value::as_str) == Some("function_call"))
+                .collect::<Vec<_>>();
+            (!calls.is_empty() && calls.into_iter().all(valid_responses_function_call))
+                .then_some(true)
+        })
+}
+
+fn valid_anthropic_tool_use(item: &Value) -> bool {
+    item.get("type").and_then(Value::as_str) == Some("tool_use")
+        && item
+            .get("id")
+            .and_then(Value::as_str)
+            .is_some_and(|value| !value.trim().is_empty())
+        && item
+            .get("name")
+            .and_then(Value::as_str)
+            .is_some_and(|value| !value.trim().is_empty())
+        && item.get("input").is_some_and(Value::is_object)
+}
+
+fn anthropic_tool_call_observation(response: &Value) -> Option<bool> {
+    response
+        .get("content")
+        .and_then(Value::as_array)
+        .and_then(|items| {
+            let tool_uses = items
+                .iter()
+                .filter(|item| item.get("type").and_then(Value::as_str) == Some("tool_use"))
+                .collect::<Vec<_>>();
+            (!tool_uses.is_empty() && tool_uses.into_iter().all(valid_anthropic_tool_use))
+                .then_some(true)
+        })
 }
 
 fn output_shaping_policy_for_scope<'a>(
@@ -7603,6 +7774,43 @@ fn is_chatgpt_upstream(base_url: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// Preserve the real client's metadata when forwarding to OpenCode Zen.
+/// Never invent a client identity or forward credentials/session data to
+/// unrelated providers. These values stay on the request, outside the ledger.
+fn with_opencode_client_headers(
+    mut request: reqwest::RequestBuilder,
+    base_url: &str,
+    inbound: Option<&HeaderMap>,
+) -> reqwest::RequestBuilder {
+    let official_origin = url::Url::parse(base_url).is_ok_and(|url| {
+        url.scheme() == "https"
+            && url.host_str() == Some("opencode.ai")
+            && url.port_or_known_default() == Some(443)
+            && url.username().is_empty()
+            && url.password().is_none()
+            && (url.path() == "/zen" || url.path().starts_with("/zen/"))
+    });
+    if official_origin {
+        if let Some(headers) = inbound {
+            for name in [
+                "user-agent",
+                "x-opencode-project",
+                "x-opencode-session",
+                "x-opencode-request",
+                "x-opencode-client",
+                "x-session-affinity",
+                "x-session-id",
+                "x-parent-session-id",
+            ] {
+                if let Some(value) = headers.get(name) {
+                    request = request.header(name, value.clone());
+                }
+            }
+        }
+    }
+    request
+}
+
 fn is_anthropic_upstream(base_url: &str) -> bool {
     url::Url::parse(base_url)
         .ok()
@@ -7667,6 +7875,7 @@ async fn forward_openai_url(
         .post(url)
         .timeout(std::time::Duration::from_millis(provider.timeout_ms.max(1)))
         .json(&original_body);
+    request = with_opencode_client_headers(request, &provider.base_url, inbound_headers);
     if let Some(credential) = credential.as_deref() {
         let header = match provider_authorization_header(credential) {
             Ok(header) => header,
@@ -7674,7 +7883,7 @@ async fn forward_openai_url(
                 return credential_error_result(
                     "provider_credential_invalid",
                     "configured provider credential cannot be used as an authorization header",
-                )
+                );
             }
         };
         request = request.header(reqwest::header::AUTHORIZATION, header);
@@ -7822,6 +8031,7 @@ async fn forward_openai_url_stream(
         .post(url)
         .timeout(std::time::Duration::from_millis(provider.timeout_ms.max(1)))
         .json(&original_body);
+    request = with_opencode_client_headers(request, &provider.base_url, inbound_headers);
     if let Some(credential) = credential.as_deref() {
         let header = provider_authorization_header(credential).map_err(|()| {
             credential_error_result(
@@ -8002,6 +8212,7 @@ async fn forward_anthropic_messages(
     } else {
         request.json(&body)
     };
+    request = with_opencode_client_headers(request, &provider.base_url, Some(inbound_headers));
     if let Some(version) =
         anthropic_header_value(inbound_headers, "anthropic-version", Some("2023-06-01"))
     {
@@ -8017,7 +8228,7 @@ async fn forward_anthropic_messages(
                 return credential_error_result(
                     "provider_credential_invalid",
                     "configured provider credential cannot be used as an Anthropic API key",
-                )
+                );
             }
         };
         request = request.header("x-api-key", header);
@@ -8089,19 +8300,20 @@ async fn forward_anthropic_messages(
 type UpstreamByteStream =
     Pin<Box<dyn Stream<Item = Result<Bytes, std::io::Error>> + Send + 'static>>;
 
-/// Bounded, transient extraction of Anthropic SSE usage counters.  The
+/// Bounded, transient extraction of native SSE usage counters. The
 /// parser never stores event payloads outside this response body; it retains
 /// only the allowlisted numeric counters required for ledger/cache evidence.
 #[derive(Debug, Default)]
-struct AnthropicStreamUsageObserver {
+struct NativeStreamUsageObserver {
+    openai_chat: bool,
     pending_line: Vec<u8>,
-    usage: AnthropicStreamUsage,
+    usage: NativeStreamUsage,
     message_stop: bool,
     error_event: bool,
 }
 
 #[derive(Debug, Default)]
-struct AnthropicStreamUsage {
+struct NativeStreamUsage {
     input_tokens: Option<u64>,
     output_tokens: Option<u64>,
     cache_read_input_tokens: Option<u64>,
@@ -8110,7 +8322,7 @@ struct AnthropicStreamUsage {
     cache_creation_1h_input_tokens: Option<u64>,
 }
 
-impl AnthropicStreamUsage {
+impl NativeStreamUsage {
     fn observe(&mut self, value: &Value) {
         let usage = value
             .get("usage")
@@ -8178,7 +8390,35 @@ impl AnthropicStreamUsage {
     }
 }
 
-impl AnthropicStreamUsageObserver {
+impl NativeStreamUsageObserver {
+    #[allow(dead_code)]
+    fn openai_chat() -> Self {
+        Self {
+            openai_chat: true,
+            ..Self::default()
+        }
+    }
+
+    fn protocol(&self) -> &'static str {
+        if self.openai_chat {
+            "openai"
+        } else {
+            "anthropic"
+        }
+    }
+
+    fn usage_response(&mut self) -> Value {
+        let usage = self.take_usage();
+        if self.openai_chat {
+            json!({"usage": {
+                "prompt_tokens": usage.input_tokens,
+                "completion_tokens": usage.output_tokens,
+                "prompt_tokens_details": {"cached_tokens": usage.cache_read_input_tokens}
+            }})
+        } else {
+            usage.as_response()
+        }
+    }
     // Anthropic emits one JSON object per SSE `data:` line.  This bound is far
     // above a usage event yet prevents a malformed upstream from making the
     // proxy retain unbounded response content.
@@ -8205,10 +8445,35 @@ impl AnthropicStreamUsageObserver {
             return;
         };
         let payload = payload.trim();
+        if payload == "[DONE]" && self.openai_chat {
+            self.message_stop = true;
+            return;
+        }
         if payload.is_empty() || payload == "[DONE]" {
             return;
         }
         if let Ok(value) = serde_json::from_str::<Value>(payload) {
+            if self.openai_chat {
+                self.error_event |= value.get("error").is_some_and(|error| !error.is_null());
+                if let Some(usage) = value.get("usage") {
+                    for (target, value) in [
+                        (&mut self.usage.input_tokens, usage.get("prompt_tokens")),
+                        (
+                            &mut self.usage.output_tokens,
+                            usage.get("completion_tokens"),
+                        ),
+                        (
+                            &mut self.usage.cache_read_input_tokens,
+                            usage.pointer("/prompt_tokens_details/cached_tokens"),
+                        ),
+                    ] {
+                        if let Some(value) = value.and_then(Value::as_u64) {
+                            *target = Some(value);
+                        }
+                    }
+                }
+                return;
+            }
             match value.get("type").and_then(Value::as_str) {
                 Some("message_stop") => self.message_stop = true,
                 Some("error") => self.error_event = true,
@@ -8228,7 +8493,7 @@ impl AnthropicStreamUsageObserver {
         }
     }
 
-    fn take_usage(&mut self) -> AnthropicStreamUsage {
+    fn take_usage(&mut self) -> NativeStreamUsage {
         self.pending_line.clear();
         std::mem::take(&mut self.usage)
     }
@@ -8242,7 +8507,7 @@ struct StreamTerminalLedgerGuard {
     upstream_status: u16,
     kind: &'static str,
     accounting: Option<dtoken_types::HybridContextAccounting>,
-    usage_observer: AnthropicStreamUsageObserver,
+    usage_observer: NativeStreamUsageObserver,
     /// A streaming request is not durable until its response reaches a
     /// terminal state.  Keeping this record with the body guard prevents a
     /// `stream_started` acknowledgement from being projected as a finalized
@@ -8271,15 +8536,15 @@ impl StreamTerminalLedgerGuard {
     }
 
     fn apply_completed_stream_usage(&mut self) {
-        let usage = self.usage_observer.take_usage();
-        if !usage.has_observation() {
+        if !self.usage_observer.usage.has_observation() {
             return;
         }
+        let response = self.usage_observer.usage_response();
         let Some(record) = self.terminal_record.as_mut() else {
             return;
         };
         let upstream = UpstreamResult {
-            response: usage.as_response(),
+            response,
             status: Some(self.upstream_status),
             error_category: None,
             send_state: UpstreamSendState::Completed,
@@ -8290,11 +8555,21 @@ impl StreamTerminalLedgerGuard {
             &self.state,
             &self.scope,
             &upstream,
-            dtoken_types::ProviderCacheObservationKind::AnthropicUsage,
+            if self.usage_observer.openai_chat {
+                dtoken_types::ProviderCacheObservationKind::OpenAiChatUsage
+            } else {
+                dtoken_types::ProviderCacheObservationKind::AnthropicUsage
+            },
         );
     }
 
-    fn commit_terminal_record(&mut self, status: &EventStatus, send_state: UpstreamSendState) {
+    fn commit_terminal_record(
+        &mut self,
+        status: &EventStatus,
+        send_state: UpstreamSendState,
+        error_code: Option<&str>,
+        capability_observation: Option<RuntimeCapabilityObservation>,
+    ) {
         let Some(mut record) = self.terminal_record.take() else {
             return;
         };
@@ -8303,16 +8578,20 @@ impl StreamTerminalLedgerGuard {
         }
         record.event.context_accounting = record.request_log.context_accounting.clone();
         record.event.status = status.clone();
+        record.request_log.error = error_code.map(str::to_string);
+        record.event.error_code = error_code.map(str::to_string);
         if let Some(metadata) = record.event.metadata.as_object_mut() {
             metadata.insert("send_state".to_string(), json!(send_state));
             metadata.insert("stream_terminal".to_string(), json!(true));
         }
-        self.state.record_routed_request_with_ccr_receipt(
-            &record.decision,
-            record.request_log,
-            record.event,
-            &record.prepared_ccr,
-        );
+        self.state
+            .record_routed_request_with_ccr_receipt_and_capability_observation(
+                &record.decision,
+                record.request_log,
+                record.event,
+                &record.prepared_ccr,
+                capability_observation,
+            );
     }
 
     fn finish(mut self, status: EventStatus, phase: &'static str, error_code: Option<&str>) {
@@ -8330,7 +8609,10 @@ impl StreamTerminalLedgerGuard {
         } else {
             self.usage_observer.take_usage();
         }
-        self.commit_terminal_record(&status, send_state);
+        let capability_observation = (status == EventStatus::Ok).then_some(
+            completed_stream_capability_observation(self.usage_observer.protocol(), None),
+        );
+        self.commit_terminal_record(&status, send_state, error_code, capability_observation);
         append_stage_event(
             &self.state,
             self.request_id,
@@ -8338,7 +8620,7 @@ impl StreamTerminalLedgerGuard {
             status,
             json!({
                 "provider_id": self.provider_id,
-                "protocol": "anthropic",
+                "protocol": self.usage_observer.protocol(),
                 "stream": true,
                 "upstream_status": self.upstream_status,
                 "optical_phase": phase,
@@ -8364,7 +8646,12 @@ impl Drop for StreamTerminalLedgerGuard {
             accounting.upstream_state = UpstreamSendState::FailedAfterCommit;
         }
         self.usage_observer.take_usage();
-        self.commit_terminal_record(&EventStatus::Failed, UpstreamSendState::FailedAfterCommit);
+        self.commit_terminal_record(
+            &EventStatus::Failed,
+            UpstreamSendState::FailedAfterCommit,
+            Some("provider_stream_dropped"),
+            None,
+        );
         append_stage_event(
             &self.state,
             self.request_id,
@@ -8372,7 +8659,7 @@ impl Drop for StreamTerminalLedgerGuard {
             EventStatus::Failed,
             json!({
                 "provider_id": self.provider_id,
-                "protocol": "anthropic",
+                "protocol": self.usage_observer.protocol(),
                 "stream": true,
                 "upstream_status": self.upstream_status,
                 "optical_phase": "upstream_failed",
@@ -8460,6 +8747,7 @@ async fn forward_anthropic_messages_stream(
     } else {
         request.json(&body)
     };
+    request = with_opencode_client_headers(request, &provider.base_url, Some(inbound_headers));
     if let Some(version) =
         anthropic_header_value(inbound_headers, "anthropic-version", Some("2023-06-01"))
     {
@@ -8981,7 +9269,7 @@ fn responses_content_to_text(content: &Value) -> Result<String, String> {
                     other => {
                         return Err(format!(
                             "unsupported Responses content part type `{other}`; refusing to drop it"
-                        ))
+                        ));
                     }
                 }
             }
@@ -9447,6 +9735,7 @@ struct ResponsesStreamTerminalLedgerGuard {
     request_id: Uuid,
     provider_id: String,
     upstream_status: u16,
+    observation_protocol: &'static str,
     terminal_record: Option<StreamTerminalRequestRecord>,
     terminal: bool,
 }
@@ -9545,12 +9834,28 @@ impl ResponsesStreamTerminalLedgerGuard {
                 metadata.insert("stream_error_code".to_string(), json!(error_code));
             }
         }
-        self.state.record_routed_request_with_ccr_receipt(
-            &record.decision,
-            record.request_log,
-            record.event,
-            &record.prepared_ccr,
-        );
+        let capability_observation =
+            (status == &EventStatus::Ok).then_some(completed_stream_capability_observation(
+                self.observation_protocol,
+                stream_state
+                    .tool_calls
+                    .iter()
+                    .all(|(_, call_id, name, arguments)| {
+                        !call_id.trim().is_empty()
+                            && !name.trim().is_empty()
+                            && json_object_string(arguments)
+                    })
+                    .then_some(true)
+                    .filter(|_| !stream_state.tool_calls.is_empty()),
+            ));
+        self.state
+            .record_routed_request_with_ccr_receipt_and_capability_observation(
+                &record.decision,
+                record.request_log,
+                record.event,
+                &record.prepared_ccr,
+                capability_observation,
+            );
     }
 }
 
@@ -12024,6 +12329,11 @@ async fn openai_chat_completions(
             dtoken_types::ProviderCacheObservationKind::OpenAiChatUsage,
         );
         let response_status = upstream_response_status(&upstream);
+        let capability_observation = completed_upstream_capability_observation(
+            &upstream,
+            "openai",
+            openai_chat_tool_call_observation(&upstream.response),
+        );
         let provider_status = if upstream.error_category.is_some() {
             EventStatus::Failed
         } else {
@@ -12051,7 +12361,13 @@ async fn openai_chat_completions(
         } else {
             upstream.response
         };
-        state.record_routed_request_with_ccr_receipt(&decision, request_log, event, &prepared_ccr);
+        state.record_routed_request_with_ccr_receipt_and_capability_observation(
+            &decision,
+            request_log,
+            event,
+            &prepared_ccr,
+            capability_observation,
+        );
         append_stage_event(
             &state,
             request_id,
@@ -12085,6 +12401,80 @@ async fn openai_responses(
     headers: HeaderMap,
     body_bytes: Bytes,
 ) -> impl IntoResponse {
+    // Codex can ship Responses bodies with `content-encoding: zstd`. Decode
+    // before parsing, while capping the expanded representation at the same
+    // request-body limit used by Axum. The forwarded request is re-serialized
+    // as plain JSON, so inbound content encoding never reaches the upstream.
+    let (body_bytes, decoded_encoding): (Bytes, bool) = match headers
+        .get("content-encoding")
+        .and_then(|value| value.to_str().ok())
+    {
+        Some(encoding) if encoding.trim().eq_ignore_ascii_case("zstd") => {
+            let decoder = match zstd::stream::read::Decoder::new(std::io::Cursor::new(&body_bytes))
+            {
+                Ok(decoder) => decoder,
+                Err(_) => {
+                    return (
+                            StatusCode::BAD_REQUEST,
+                            Json(json!({
+                                "error": {
+                                    "type": "invalid_request",
+                                    "message": "invalid OpenAI Responses request: content-encoding zstd payload could not be decoded"
+                                }
+                            })),
+                        )
+                            .into_response();
+                }
+            };
+            let mut decoded = Vec::new();
+            let mut limited = decoder.take((MAX_REQUEST_BODY_BYTES + 1) as u64);
+            match limited.read_to_end(&mut decoded) {
+                Ok(_) if decoded.len() <= MAX_REQUEST_BODY_BYTES => (Bytes::from(decoded), true),
+                Ok(_) => {
+                    return (
+                            StatusCode::PAYLOAD_TOO_LARGE,
+                            Json(json!({
+                                "error": {
+                                    "type": "request_too_large",
+                                    "message": "OpenAI Responses request exceeds the 16 MiB decoded body limit"
+                                }
+                            })),
+                        )
+                            .into_response();
+                }
+                Err(_) => {
+                    return (
+                            StatusCode::BAD_REQUEST,
+                            Json(json!({
+                                "error": {
+                                    "type": "invalid_request",
+                                    "message": "invalid OpenAI Responses request: content-encoding zstd payload could not be decoded"
+                                }
+                            })),
+                        )
+                            .into_response();
+                }
+            }
+        }
+        Some(encoding)
+            if encoding.trim().is_empty() || encoding.trim().eq_ignore_ascii_case("identity") =>
+        {
+            (body_bytes, false)
+        }
+        Some(encoding) => {
+            return (
+                    StatusCode::UNSUPPORTED_MEDIA_TYPE,
+                    Json(json!({
+                        "error": {
+                            "type": "invalid_request",
+                            "message": format!("unsupported content-encoding for OpenAI Responses request: {encoding}")
+                        }
+                    })),
+                )
+                    .into_response();
+        }
+        None => (body_bytes, false),
+    };
     let body: Value = match serde_json::from_slice(&body_bytes) {
         Ok(body) => body,
         Err(error) => {
@@ -12115,12 +12505,10 @@ async fn openai_responses(
             body.get("model").and_then(Value::as_str),
         );
         if provider.wire_api == dtoken_types::ProviderWireApi::OpenAiResponses {
-            // Native Responses passthrough: forward the inbound Responses body
-            // verbatim to the provider's /v1/responses wire endpoint, bypassing
-            // the Responses -> Chat semantic bridge and all compression
-            // transforms. The route decision, request log and ledger event are
-            // still recorded with CompressionPolicy::Off over the original
-            // request so Dashboard/Doctor/Event Ledger stay consistent.
+            // Native Responses stays on the /v1/responses wire and bypasses
+            // only the Responses -> Chat semantic bridge. The configured safe
+            // compression pipeline may transform approved closed historical
+            // tool-result fields; all other request fields remain faithful.
             let scope = match resolve_configured_request_scope(
                 &state.config,
                 route,
@@ -12147,7 +12535,44 @@ async fn openai_responses(
                     return (status, Json(response)).into_response();
                 }
             };
-            let compression = compress_for_route(None, CompressionPolicy::Off, body.clone());
+            // R3.C1: native Responses wire compression. The resolved safe-text
+            // pipeline transforms only approved closed historical tool-result
+            // strings (`/input/{i}/output`); every other request field and the
+            // entire response side stay byte-faithful per the Codex schema
+            // contract. Context resolution failure (e.g. model-less dynamic
+            // passthrough) degrades to the verbatim passthrough with
+            // CompressionPolicy::Off — never an error, never a guess.
+            let (mut forward_body, mut compression, responses_compression_active) =
+                match resolve_optimization_context(
+                    &decision,
+                    route,
+                    provider,
+                    RouteAdapterKind::OpenAiResponsesPassthrough,
+                    &body,
+                    &body,
+                ) {
+                    Ok(optimization) => {
+                        let cache_evidence = configured_provider_cache_evidence(&state, &scope);
+                        let compression = compress_for_route_with_frozen(
+                            Some(&optimization),
+                            decision.compression_policy.clone(),
+                            body.clone(),
+                            cache_evidence.as_ref(),
+                            None,
+                        );
+                        let active = compression
+                            .transforms_applied
+                            .iter()
+                            .any(|transform| !transform.starts_with("tool_schema"))
+                            || compression.body != body;
+                        (compression.body.clone(), compression, active)
+                    }
+                    Err(_) => {
+                        let compression =
+                            compress_for_route(None, CompressionPolicy::Off, body.clone());
+                        (body.clone(), compression, false)
+                    }
+                };
             let attribution = request_attribution_from_scope(&scope);
             let mut request_log = build_request_log(
                 request_id,
@@ -12177,21 +12602,43 @@ async fn openai_responses(
                 .unwrap_or_else(|| json!({ "unknown": true, "model_id": null }));
             if let Some(metadata) = event.metadata.as_object_mut() {
                 metadata.insert("capability".to_string(), capability_summary.clone());
-                metadata.insert(
-                    "native_responses_passthrough".to_string(),
-                    json!({
-                        "conversion": "none",
-                        "compression": "off",
-                        "original_request_preserved": true,
-                        "raw_available": false,
-                        "privacy": "native Responses body is forwarded verbatim and never stored"
-                    }),
-                );
+                let inbound_encoding = if decoded_encoding { "zstd" } else { "identity" };
+                if responses_compression_active {
+                    metadata.insert(
+                        "native_responses_compression".to_string(),
+                        json!({
+                            "conversion": "none",
+                            "compression": decision.compression_policy,
+                            "inbound_content_encoding": inbound_encoding,
+                            "approved_surface": "/input/{i}/output closed historical tool results",
+                            "response_side": "byte-faithful passthrough",
+                            "original_request_preserved": true,
+                            "raw_available": false,
+                            "privacy": "only redacted compression metadata is recorded; bodies are never stored"
+                        }),
+                    );
+                } else {
+                    metadata.insert(
+                        "native_responses_passthrough".to_string(),
+                        json!({
+                            "conversion": "none",
+                            "compression": "off",
+                            "inbound_content_encoding": inbound_encoding,
+                            "original_request_preserved": true,
+                            "raw_available": false,
+                            "privacy": "native Responses body is forwarded verbatim and never stored"
+                        }),
+                    );
+                }
             }
-            let prepared_ccr =
-                match state.prepare_ccr_for_request(&decision, &request_log, &ccr_original_body) {
-                    Ok(prepared) => prepared,
-                    Err(_) => {
+            let prepared_ccr = match state.prepare_ccr_for_request(
+                &decision,
+                &request_log,
+                &ccr_original_body,
+            ) {
+                Ok(prepared) => prepared,
+                Err(_) => {
+                    if !responses_compression_active {
                         let (status, response) = route_selection_error_response(
                             request_id,
                             "openai_responses",
@@ -12200,13 +12647,71 @@ async fn openai_responses(
                         );
                         return (status, Json(response)).into_response();
                     }
-                };
-            if body.get("stream").and_then(Value::as_bool).unwrap_or(false) {
+                    // R3.C1: reversible compression requires the CCR store
+                    // for rollback evidence. Without it the request
+                    // degrades to the verbatim passthrough (Off) — the
+                    // same fallback contract as the Chat wire — never a
+                    // hard error and never a guess.
+                    compression = compress_for_route(None, CompressionPolicy::Off, body.clone());
+                    forward_body = body.clone();
+                    request_log = build_request_log(
+                        request_id,
+                        &decision,
+                        body.get("model")
+                            .and_then(Value::as_str)
+                            .map(ToString::to_string),
+                        Protocol::OpenAi,
+                        &compression,
+                        &attribution,
+                    );
+                    event = build_ledger_event(
+                        request_id,
+                        &decision,
+                        Protocol::OpenAi,
+                        Protocol::OpenAi,
+                        &compression,
+                        &attribution,
+                    );
+                    attach_request_scope(&mut event, &scope);
+                    if let Some(metadata) = event.metadata.as_object_mut() {
+                        metadata.insert("capability".to_string(), capability_summary.clone());
+                        metadata.insert(
+                                "native_responses_passthrough".to_string(),
+                                json!({
+                                    "conversion": "none",
+                                    "compression": "off",
+                                    "fallback_reason": "ccr_store_unavailable",
+                                    "original_request_preserved": true,
+                                    "raw_available": false,
+                                    "privacy": "native Responses body is forwarded verbatim and never stored"
+                                }),
+                            );
+                    }
+                    match state.prepare_ccr_for_request(&decision, &request_log, &ccr_original_body)
+                    {
+                        Ok(prepared) => prepared,
+                        Err(_) => {
+                            let (status, response) = route_selection_error_response(
+                                request_id,
+                                "openai_responses",
+                                RouteSelectionError::InvalidOptimizationContext,
+                                &state.config_status,
+                            );
+                            return (status, Json(response)).into_response();
+                        }
+                    }
+                }
+            };
+            if forward_body
+                .get("stream")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+            {
                 let quota_account_ref = opaque_codex_account_ref(&headers);
                 let upstream = forward_openai_responses_stream(
                     &state.http_client,
                     provider,
-                    body,
+                    forward_body,
                     Some(&headers),
                 )
                 .await;
@@ -12257,6 +12762,7 @@ async fn openai_responses(
                                 request_id,
                                 provider_id: decision.provider_id.clone(),
                                 upstream_status: status_code,
+                                observation_protocol: "responses",
                                 terminal_record: Some(StreamTerminalRequestRecord {
                                     decision,
                                     request_log,
@@ -12319,14 +12825,24 @@ async fn openai_responses(
                     }
                 }
             }
-            let mut upstream =
-                forward_openai_responses(&state.http_client, provider, body, Some(&headers)).await;
+            let mut upstream = forward_openai_responses(
+                &state.http_client,
+                provider,
+                forward_body,
+                Some(&headers),
+            )
+            .await;
             attach_quota_account_ref(
                 &mut upstream.quota_metadata,
                 opaque_codex_account_ref(&headers).as_deref(),
             );
             mark_upstream_outcome(&upstream, &mut request_log, &mut event);
             let response_status = upstream_response_status(&upstream);
+            let capability_observation = completed_upstream_capability_observation(
+                &upstream,
+                "responses",
+                responses_tool_call_observation(&upstream.response),
+            );
             let provider_status = if upstream.error_category.is_some() {
                 EventStatus::Failed
             } else {
@@ -12367,11 +12883,12 @@ async fn openai_responses(
                 // the upstream response body.
                 upstream.response
             };
-            state.record_routed_request_with_ccr_receipt(
+            state.record_routed_request_with_ccr_receipt_and_capability_observation(
                 &decision,
                 request_log,
                 event,
                 &prepared_ccr,
+                capability_observation,
             );
             append_stage_event(
                 &state,
@@ -12732,6 +13249,7 @@ async fn openai_responses(
                             request_id,
                             provider_id: decision.provider_id.clone(),
                             upstream_status: status_code,
+                            observation_protocol: "openai",
                             terminal_record: Some(StreamTerminalRequestRecord {
                                 decision,
                                 request_log,
@@ -12832,6 +13350,11 @@ async fn openai_responses(
             dtoken_types::ProviderCacheObservationKind::OpenAiChatUsage,
         );
         let response_status = upstream_response_status(&upstream);
+        let capability_observation = completed_upstream_capability_observation(
+            &upstream,
+            "openai",
+            openai_chat_tool_call_observation(&upstream.response),
+        );
         let provider_status = if upstream.error_category.is_some() {
             EventStatus::Failed
         } else {
@@ -12889,7 +13412,13 @@ async fn openai_responses(
             }
             response
         };
-        state.record_routed_request_with_ccr_receipt(&decision, request_log, event, &prepared_ccr);
+        state.record_routed_request_with_ccr_receipt_and_capability_observation(
+            &decision,
+            request_log,
+            event,
+            &prepared_ccr,
+            capability_observation,
+        );
         append_stage_event(
             &state,
             request_id,
@@ -13161,7 +13690,7 @@ async fn anthropic_messages(
                             upstream_status: status_code,
                             kind: stream_kind,
                             accounting: stream_accounting,
-                            usage_observer: AnthropicStreamUsageObserver::default(),
+                            usage_observer: NativeStreamUsageObserver::default(),
                             terminal_record: Some(StreamTerminalRequestRecord {
                                 decision: payload.decision,
                                 request_log: payload.request_log,
@@ -13276,6 +13805,11 @@ async fn anthropic_messages(
             dtoken_types::ProviderCacheObservationKind::AnthropicUsage,
         );
         let response_status = upstream_response_status(&upstream);
+        let capability_observation = completed_upstream_capability_observation(
+            &upstream,
+            "anthropic",
+            anthropic_tool_call_observation(&upstream.response),
+        );
         let provider_status = if upstream.error_category.is_some() {
             EventStatus::Failed
         } else {
@@ -13306,11 +13840,12 @@ async fn anthropic_messages(
             .get("hybrid_kind")
             .cloned()
             .unwrap_or_else(|| json!("passthrough"));
-        state.record_routed_request_with_ccr_receipt(
+        state.record_routed_request_with_ccr_receipt_and_capability_observation(
             &payload.decision,
             payload.request_log,
             payload.event,
             &prepared_ccr,
+            capability_observation,
         );
         append_stage_event(
             &state,
@@ -13432,6 +13967,11 @@ async fn anthropic_messages(
         dtoken_types::ProviderCacheObservationKind::OpenAiChatUsage,
     );
     let response_status = upstream_response_status(&upstream);
+    let capability_observation = completed_upstream_capability_observation(
+        &upstream,
+        "openai",
+        openai_chat_tool_call_observation(&upstream.response),
+    );
     let provider_status = if upstream.error_category.is_some() {
         EventStatus::Failed
     } else {
@@ -13470,11 +14010,12 @@ async fn anthropic_messages(
             body.get("model").and_then(Value::as_str),
         )
     };
-    state.record_routed_request_with_ccr_receipt(
+    state.record_routed_request_with_ccr_receipt_and_capability_observation(
         &payload.decision,
         payload.request_log,
         payload.event,
         &prepared_ccr,
+        capability_observation,
     );
     append_stage_event(
         &state,
@@ -14984,7 +15525,7 @@ mod tests {
     #[test]
     fn anthropic_stream_usage_observer_extracts_only_allowlisted_counters() {
         const SECRET: &str = "ANTHROPIC_STREAM_SECRET_MUST_NOT_ESCAPE";
-        let mut observer = AnthropicStreamUsageObserver::default();
+        let mut observer = NativeStreamUsageObserver::default();
         observer.observe_chunk(&Bytes::from_static(
             b"event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":101,\"cache_read_input_tokens\":25,\"cache_creation_input_tokens\":3,\"private\":\"ANTHROPIC_STREAM_SECRET_MUST_NOT_ESCAPE\"}}}\n\n",
         ));
@@ -15005,7 +15546,7 @@ mod tests {
 
     #[test]
     fn anthropic_stream_usage_observer_fails_closed_without_message_stop_or_on_error() {
-        let mut incomplete = AnthropicStreamUsageObserver::default();
+        let mut incomplete = NativeStreamUsageObserver::default();
         incomplete.observe_chunk(&Bytes::from_static(
             b"data: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":2}}\n",
         ));
@@ -15014,7 +15555,7 @@ mod tests {
             Some("provider_stream_incomplete")
         );
 
-        let mut upstream_error = AnthropicStreamUsageObserver::default();
+        let mut upstream_error = NativeStreamUsageObserver::default();
         upstream_error.observe_chunk(&Bytes::from_static(
             b"data: {\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\"}}\ndata: {\"type\":\"message_stop\"}\n",
         ));
@@ -16187,6 +16728,386 @@ mod tests {
         (addr, server)
     }
 
+    async fn spawn_json_upstream_many(
+        status_line: &str,
+        bodies: Vec<String>,
+    ) -> (std::net::SocketAddr, tokio::task::JoinHandle<()>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind local mock upstream");
+        let addr = listener.local_addr().expect("local mock address");
+        let status_line = status_line.to_string();
+        let server = tokio::spawn(async move {
+            for body in bodies {
+                let (mut socket, _) = listener.accept().await.expect("accept local request");
+                let mut request = Vec::new();
+                let mut buffer = [0_u8; 4096];
+                let expected_request_bytes = loop {
+                    let read = socket.read(&mut buffer).await.expect("read local request");
+                    assert!(read > 0, "local request closed before headers completed");
+                    request.extend_from_slice(&buffer[..read]);
+                    let Some(header_end) =
+                        request.windows(4).position(|window| window == b"\r\n\r\n")
+                    else {
+                        continue;
+                    };
+                    let headers = std::str::from_utf8(&request[..header_end])
+                        .expect("local request headers are UTF-8");
+                    let content_length = headers
+                        .lines()
+                        .find_map(|line| {
+                            let (name, value) = line.split_once(':')?;
+                            if !name.trim().eq_ignore_ascii_case("content-length") {
+                                return None;
+                            }
+                            value.trim().parse::<usize>().ok()
+                        })
+                        .expect("local request content length");
+                    break header_end + 4 + content_length;
+                };
+                while request.len() < expected_request_bytes {
+                    let read = socket
+                        .read(&mut buffer)
+                        .await
+                        .expect("read local request body");
+                    assert!(read > 0, "local request closed before body completed");
+                    request.extend_from_slice(&buffer[..read]);
+                }
+                let response = format!(
+                    "HTTP/1.1 {status_line}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = socket.write_all(response.as_bytes()).await;
+            }
+        });
+        (addr, server)
+    }
+
+    fn openai_capability_learning_config(base_url: String, models: Vec<String>) -> DtokenConfig {
+        DtokenConfig {
+            providers: vec![dtoken_types::ProviderProfile {
+                id: "capability-learning-provider".to_string(),
+                name: "Capability learning provider".to_string(),
+                kind: dtoken_types::ProviderKind::Custom,
+                protocol: Protocol::OpenAi,
+                base_url,
+                api_key_ref: None,
+                models,
+                timeout_ms: 30_000,
+                healthcheck_path: None,
+                wire_api: dtoken_types::ProviderWireApi::OpenAiChat,
+            }],
+            routes: vec![dtoken_types::RouteProfile {
+                id: "capability-learning-route".to_string(),
+                name: "Capability learning route".to_string(),
+                input_protocol: Protocol::OpenAi,
+                instance_id: "capability-learning-instance".to_string(),
+                target_provider_id: "capability-learning-provider".to_string(),
+                fallback_provider_id: None,
+                chain_mode: ChainMode::Direct,
+                compression_policy: CompressionPolicy::Off,
+                bind_host: "127.0.0.1".to_string(),
+                local_port: 18001,
+            }],
+            instances: vec![],
+            provider_cache_policies: vec![],
+            output_shaping_policies: vec![],
+            optical: Default::default(),
+        }
+    }
+
+    #[tokio::test]
+    async fn actual_tool_call_observations_promote_capability_after_two_successes() {
+        let model = format!("cap-tool-{}", Uuid::new_v4());
+        let upstream_body = serde_json::to_string(&json!({
+            "id": "chatcmpl-cap",
+            "object": "chat.completion",
+            "choices": [{
+                "index": 0,
+                "finish_reason": "tool_calls",
+                "message": {
+                    "role": "assistant",
+                    "content": null,
+                    "tool_calls": [{
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {"name": "lookup", "arguments": "{}"}
+                    }]
+                }
+            }],
+            "usage": {"prompt_tokens": 4, "completion_tokens": 2, "total_tokens": 6}
+        }))
+        .expect("serialize upstream body");
+        let (addr, server) =
+            spawn_json_upstream_many("200 OK", vec![upstream_body.clone(), upstream_body]).await;
+        let state = AppState::new(openai_capability_learning_config(
+            format!("http://{addr}/v1"),
+            vec![model.clone()],
+        ));
+
+        for _ in 0..2 {
+            let response = openai_chat_completions(
+                State(state.clone()),
+                HeaderMap::new(),
+                request_bytes(json!({
+                    "model": model,
+                    "messages": [{"role": "user", "content": "use the tool"}],
+                    "stream": false
+                })),
+            )
+            .await
+            .into_response();
+            assert_eq!(response.status(), StatusCode::OK);
+        }
+
+        let summary = capability_bridge::resolve_model_capability_summary(&model, Some("openai"));
+        assert_eq!(summary["unknown"], false);
+        assert_eq!(summary["source"], "observed");
+        assert_eq!(summary["supports_tool_call"], true);
+        server.await.expect("mock upstream task");
+    }
+
+    #[tokio::test]
+    async fn request_tool_schema_without_response_tool_call_does_not_promote_capability() {
+        let model = format!("cap-schema-only-{}", Uuid::new_v4());
+        let upstream_body = serde_json::to_string(&json!({
+            "id": "chatcmpl-no-tool",
+            "object": "chat.completion",
+            "choices": [{
+                "index": 0,
+                "finish_reason": "stop",
+                "message": {"role": "assistant", "content": "plain answer"}
+            }],
+            "usage": {"prompt_tokens": 4, "completion_tokens": 2, "total_tokens": 6}
+        }))
+        .expect("serialize upstream body");
+        let (addr, server) =
+            spawn_json_upstream_many("200 OK", vec![upstream_body.clone(), upstream_body]).await;
+        let state = AppState::new(openai_capability_learning_config(
+            format!("http://{addr}/v1"),
+            vec![model.clone()],
+        ));
+
+        for _ in 0..2 {
+            let response = openai_chat_completions(
+                State(state.clone()),
+                HeaderMap::new(),
+                request_bytes(json!({
+                    "model": model,
+                    "messages": [{"role": "user", "content": "you may use a tool"}],
+                    "tools": [{
+                        "type": "function",
+                        "function": {
+                            "name": "lookup",
+                            "parameters": {"type": "object", "properties": {}}
+                        }
+                    }],
+                    "stream": false
+                })),
+            )
+            .await
+            .into_response();
+            assert_eq!(response.status(), StatusCode::OK);
+        }
+
+        let summary = capability_bridge::resolve_model_capability_summary(&model, Some("openai"));
+        assert_eq!(summary["unknown"], true);
+        assert_eq!(summary["supports_tool_call"], Value::Null);
+        server.await.expect("mock upstream task");
+    }
+
+    #[tokio::test]
+    async fn malformed_tool_call_response_does_not_promote_capability() {
+        let model = format!("cap-malformed-tool-{}", Uuid::new_v4());
+        let malformed_sibling = serde_json::to_string(&json!({
+            "id": "chatcmpl-bad-sibling",
+            "object": "chat.completion",
+            "choices": [{
+                "index": 0,
+                "finish_reason": "tool_calls",
+                "message": {
+                    "role": "assistant",
+                    "content": null,
+                    "tool_calls": [{
+                        "id": "call_valid",
+                        "type": "function",
+                        "function": {"name": "lookup", "arguments": "{}"}
+                    }, {
+                        "id": "",
+                        "type": "function",
+                        "function": {"name": "lookup", "arguments": "{}"}
+                    }]
+                }
+            }],
+            "usage": {"prompt_tokens": 4, "completion_tokens": 2, "total_tokens": 6}
+        }))
+        .expect("serialize malformed sibling body");
+        let scalar_arguments = serde_json::to_string(&json!({
+            "id": "chatcmpl-scalar-arguments",
+            "object": "chat.completion",
+            "choices": [{
+                "index": 0,
+                "finish_reason": "tool_calls",
+                "message": {
+                    "role": "assistant",
+                    "content": null,
+                    "tool_calls": [{
+                        "id": "call_scalar",
+                        "type": "function",
+                        "function": {"name": "lookup", "arguments": "[]"}
+                    }]
+                }
+            }],
+            "usage": {"prompt_tokens": 4, "completion_tokens": 2, "total_tokens": 6}
+        }))
+        .expect("serialize scalar arguments body");
+        let (addr, server) =
+            spawn_json_upstream_many("200 OK", vec![malformed_sibling, scalar_arguments]).await;
+        let state = AppState::new(openai_capability_learning_config(
+            format!("http://{addr}/v1"),
+            vec![model.clone()],
+        ));
+
+        for _ in 0..2 {
+            let response = openai_chat_completions(
+                State(state.clone()),
+                HeaderMap::new(),
+                request_bytes(json!({
+                    "model": model,
+                    "messages": [{"role": "user", "content": "use the tool"}],
+                    "stream": false
+                })),
+            )
+            .await
+            .into_response();
+            assert_eq!(response.status(), StatusCode::OK);
+        }
+
+        let summary = capability_bridge::resolve_model_capability_summary(&model, Some("openai"));
+        assert_eq!(summary["unknown"], true);
+        assert_eq!(summary["supports_tool_call"], Value::Null);
+        server.await.expect("mock upstream task");
+    }
+
+    #[test]
+    fn responses_tool_call_observation_rejects_scalar_arguments_and_malformed_siblings() {
+        let scalar_arguments = json!({
+            "output": [{
+                "type": "function_call",
+                "call_id": "call_scalar",
+                "name": "lookup",
+                "arguments": "[]"
+            }]
+        });
+        assert_eq!(responses_tool_call_observation(&scalar_arguments), None);
+
+        let malformed_sibling = json!({
+            "output": [{
+                "type": "function_call",
+                "call_id": "call_valid",
+                "name": "lookup",
+                "arguments": "{}"
+            }, {
+                "type": "function_call",
+                "call_id": "",
+                "name": "lookup",
+                "arguments": "{}"
+            }]
+        });
+        assert_eq!(responses_tool_call_observation(&malformed_sibling), None);
+    }
+
+    #[tokio::test]
+    async fn incomplete_stream_terminal_record_does_not_promote_stream_capability() {
+        use axum::body::to_bytes;
+        use futures_util::stream;
+
+        let model = format!("cap-stream-incomplete-{}", Uuid::new_v4());
+        let state = AppState::new(DtokenConfig::default());
+        let request = OpenAiChatRequest {
+            model: Some(model.clone()),
+            messages: Some(vec![json!({"role":"user","content":"stream input"})]),
+            stream: Some(true),
+        };
+        let (_response, decision, request_log, event) = routed_openai_payload(&request);
+        let prepared = state
+            .prepare_ccr_for_request(&decision, &request_log, b"{}")
+            .expect("prepare metadata-only CCR");
+        let request_id = decision.request_id;
+        let inner: Pin<Box<dyn Stream<Item = Result<Bytes, std::io::Error>> + Send>> =
+            Box::pin(stream::iter(vec![Ok(Bytes::from_static(
+                b"data: {\"choices\":[{\"delta\":{\"content\":\"partial\"},\"finish_reason\":null}]}\n\ndata: [DONE]\n\n",
+            ))]));
+        let body = Body::from_stream(ResponsesSseStream::new(
+            inner,
+            format!("resp-{request_id}"),
+            request.model.clone(),
+            ResponsesStreamTerminalLedgerGuard {
+                state: state.clone(),
+                scope: cache_test_scope(Protocol::OpenAi),
+                request_id,
+                provider_id: decision.provider_id.clone(),
+                upstream_status: 200,
+                observation_protocol: "openai",
+                terminal_record: Some(StreamTerminalRequestRecord {
+                    decision,
+                    request_log,
+                    event,
+                    prepared_ccr: prepared,
+                }),
+                terminal: false,
+            },
+        ));
+        to_bytes(body, usize::MAX)
+            .await
+            .expect("transparent failed stream body");
+        let summary = capability_bridge::resolve_model_capability_summary(&model, Some("openai"));
+        assert_eq!(summary["unknown"], true);
+        assert_eq!(summary["supports_stream"], Value::Null);
+    }
+
+    #[tokio::test]
+    async fn unknown_models_still_route_with_default_capability_summary() {
+        let model = format!("cap-unknown-route-{}", Uuid::new_v4());
+        let upstream_body = serde_json::to_string(&json!({
+            "id": "chatcmpl-unknown",
+            "object": "chat.completion",
+            "choices": [{
+                "index": 0,
+                "finish_reason": "stop",
+                "message": {"role": "assistant", "content": "ok"}
+            }],
+            "usage": {"prompt_tokens": 2, "completion_tokens": 1, "total_tokens": 3}
+        }))
+        .expect("serialize upstream body");
+        let (addr, server) = spawn_json_upstream("200 OK", &upstream_body, 0).await;
+        let state = AppState::new(openai_capability_learning_config(
+            format!("http://{addr}/v1"),
+            Vec::new(),
+        ));
+
+        let response = openai_chat_completions(
+            State(state.clone()),
+            HeaderMap::new(),
+            request_bytes(json!({
+                "model": model,
+                "messages": [{"role": "user", "content": "hello"}],
+                "stream": false
+            })),
+        )
+        .await
+        .into_response();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let summary = capability_bridge::resolve_model_capability_summary(&model, Some("openai"));
+        assert_eq!(summary["unknown"], true);
+        assert_eq!(summary["compression_strategy"], "default");
+        server.await.expect("mock upstream task");
+    }
+
     #[tokio::test]
     async fn openai_chat_without_route_fails_closed() {
         let state = AppState::new(DtokenConfig::empty());
@@ -16840,6 +17761,73 @@ mod tests {
     }
 
     #[test]
+    fn opencode_client_headers_preserve_only_received_metadata_for_zen() {
+        let client = reqwest::Client::new();
+        let mut inbound = HeaderMap::new();
+        for (name, value) in [
+            ("user-agent", "opencode/test-version"),
+            ("x-opencode-session", "test-session"),
+            ("x-opencode-request", "test-request"),
+            ("x-session-affinity", "test-affinity"),
+            ("authorization", "Bearer inbound-secret"),
+            ("cookie", "private-cookie"),
+            ("x-api-key", "private-key"),
+        ] {
+            inbound.insert(name, value.parse().unwrap());
+        }
+        let request = with_opencode_client_headers(
+            client
+                .post("https://opencode.ai/zen/v1/chat/completions")
+                .header("authorization", "Bearer configured-credential"),
+            "https://opencode.ai/zen/v1",
+            Some(&inbound),
+        )
+        .build()
+        .unwrap();
+        assert_eq!(request.headers()["user-agent"], "opencode/test-version");
+        assert_eq!(request.headers()["x-opencode-session"], "test-session");
+        assert_eq!(request.headers()["x-opencode-request"], "test-request");
+        assert_eq!(request.headers()["x-session-affinity"], "test-affinity");
+        assert_eq!(
+            request.headers()["authorization"],
+            "Bearer configured-credential"
+        );
+        assert!(!request.headers().contains_key("cookie"));
+        assert!(!request.headers().contains_key("x-api-key"));
+        assert!(!request.headers().contains_key("x-opencode-client"));
+
+        for base in [
+            "https://custom.example/v1",
+            "https://opencode.ai.evil.example/zen/v1",
+            "https://opencode.ai/other/v1",
+            "http://opencode.ai/zen/v1",
+            "https://opencode.ai:444/zen/v1",
+            "https://user@opencode.ai/zen/v1",
+        ] {
+            let request = with_opencode_client_headers(client.post(base), base, Some(&inbound))
+                .build()
+                .unwrap();
+            assert!(
+                !request.headers().contains_key("user-agent"),
+                "unexpected forwarding to {base}"
+            );
+            assert!(!request.headers().contains_key("x-opencode-session"));
+            assert!(!request.headers().contains_key("x-session-affinity"));
+        }
+        let request = with_opencode_client_headers(
+            client.post("https://opencode.ai/zen/v1"),
+            "https://opencode.ai/zen/v1",
+            None,
+        )
+        .build()
+        .unwrap();
+        assert!(
+            request.headers().is_empty(),
+            "must not synthesize client identity"
+        );
+    }
+
+    #[test]
     fn codex_quota_headers_are_reduced_to_allowlisted_numeric_metadata() {
         let mut headers = reqwest::header::HeaderMap::new();
         headers.insert("x-codex-primary-used-percent", "20".parse().unwrap());
@@ -17306,6 +18294,10 @@ mod tests {
         assert_eq!(response["choices"][0]["message"]["content"], "d-token-ok");
         assert_eq!(response["dtoken"]["source"], "dtoken-owned-runtime");
         assert_eq!(response["dtoken"]["external_headroom_dependency"], false);
+        assert_eq!(
+            event.metadata["compression_fallback_reason"],
+            "compression_context_unresolved"
+        );
         assert_eq!(decision.route_id, "dtoken-opencode-local");
         assert_eq!(decision.provider_id, "opencode-official-free");
         assert_eq!(request_log.agent, None);
@@ -20406,7 +21398,7 @@ mod tests {
                 upstream_status: 200,
                 kind: "passthrough",
                 accounting: None,
-                usage_observer: AnthropicStreamUsageObserver::default(),
+                usage_observer: NativeStreamUsageObserver::default(),
                 terminal_record: None,
                 terminal: false,
             },
@@ -20438,7 +21430,7 @@ mod tests {
                 upstream_status: 200,
                 kind: "semantic",
                 accounting: None,
-                usage_observer: AnthropicStreamUsageObserver::default(),
+                usage_observer: NativeStreamUsageObserver::default(),
                 terminal_record: None,
                 terminal: false,
             },
@@ -20476,7 +21468,7 @@ mod tests {
                 upstream_status: 200,
                 kind: "passthrough",
                 accounting: None,
-                usage_observer: AnthropicStreamUsageObserver::default(),
+                usage_observer: NativeStreamUsageObserver::default(),
                 terminal_record: None,
                 terminal: false,
             },
@@ -20542,6 +21534,7 @@ mod tests {
                     request_id,
                     provider_id: decision.provider_id.clone(),
                     upstream_status: 200,
+                    observation_protocol: "openai",
                     terminal_record: Some(StreamTerminalRequestRecord {
                         decision,
                         request_log,
@@ -20667,6 +21660,348 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn native_responses_accepts_zstd_encoded_request_body() {
+        // Codex ships `/v1/responses` posts with `content-encoding: zstd`
+        // (upstream fixed the same contract). The listener must decode before
+        // parsing and record the encoding in the ledger metadata.
+        use axum::body::to_bytes;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        const UPSTREAM_BODY: &str = r#"{"id":"resp_z","object":"response","status":"completed","usage":{"input_tokens":2,"output_tokens":1,"total_tokens":3}}"#;
+
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind mock upstream");
+        let addr = listener.local_addr().expect("mock addr");
+        let upstream_body = UPSTREAM_BODY.to_string();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.expect("accept request");
+            let mut buffer = [0_u8; 8192];
+            let _ = socket.read(&mut buffer).await.expect("read request");
+            let response = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                upstream_body.len(),
+                upstream_body
+            );
+            socket
+                .write_all(response.as_bytes())
+                .await
+                .expect("write json");
+        });
+
+        let provider = dtoken_types::ProviderProfile {
+            id: "responses-upstream".to_string(),
+            name: "Responses upstream".to_string(),
+            kind: dtoken_types::ProviderKind::Custom,
+            protocol: Protocol::OpenAi,
+            base_url: format!("http://{addr}/v1"),
+            api_key_ref: None,
+            models: vec!["mock/model".to_string()],
+            timeout_ms: 30_000,
+            healthcheck_path: None,
+            wire_api: dtoken_types::ProviderWireApi::OpenAiResponses,
+        };
+        let route = dtoken_types::RouteProfile {
+            id: "route-responses-zstd".to_string(),
+            name: "route-responses-zstd".to_string(),
+            input_protocol: Protocol::OpenAi,
+            instance_id: "instance-responses".to_string(),
+            target_provider_id: "responses-upstream".to_string(),
+            fallback_provider_id: None,
+            chain_mode: ChainMode::Direct,
+            compression_policy: CompressionPolicy::Off,
+            bind_host: "127.0.0.1".to_string(),
+            local_port: 18001,
+        };
+        let config = DtokenConfig {
+            providers: vec![provider],
+            routes: vec![route],
+            instances: vec![],
+            provider_cache_policies: vec![],
+            output_shaping_policies: vec![],
+            optical: Default::default(),
+        };
+        let state = AppState::new(config);
+        let app = build_router(state.clone());
+        let plain = br#"{"model":"mock/model","input":"hello"}"#;
+        let compressed = zstd::stream::encode_all(&plain[..], 3).expect("zstd encode");
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/responses")
+                    .header("content-type", "application/json")
+                    .header("content-encoding", "zstd")
+                    .body(Body::from(compressed))
+                    .expect("request"),
+            )
+            .await
+            .expect("router response");
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body bytes");
+        assert_eq!(
+            String::from_utf8(bytes.to_vec()).expect("utf8"),
+            UPSTREAM_BODY
+        );
+        let events = state.recent_events(20);
+        assert!(
+            events.iter().any(|event| {
+                event.metadata.get("native_responses_passthrough") == Some(&json!({}))
+                    || event
+                        .metadata
+                        .get("native_responses_passthrough")
+                        .and_then(|metadata| metadata.get("inbound_content_encoding"))
+                        == Some(&json!("zstd"))
+            }),
+            "ledger records the zstd inbound encoding"
+        );
+        server.await.expect("mock upstream task");
+    }
+
+    #[tokio::test]
+    async fn native_responses_rejects_zstd_expansion_past_decoded_body_limit() {
+        let state = AppState::new(DtokenConfig::empty());
+        let app = build_router(state.clone());
+        let expanded = vec![b'x'; MAX_REQUEST_BODY_BYTES + 1];
+        let compressed = zstd::stream::encode_all(&expanded[..], 3).expect("zstd encode");
+        assert!(
+            compressed.len() <= MAX_REQUEST_BODY_BYTES,
+            "fixture must pass the inbound Axum body limit"
+        );
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/responses")
+                    .header("content-type", "application/json")
+                    .header("content-encoding", "zstd")
+                    .body(Body::from(compressed))
+                    .expect("request"),
+            )
+            .await
+            .expect("router response");
+
+        assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+        assert!(
+            state.recent_request_logs(1).is_empty() && state.recent_events(1).is_empty(),
+            "rejected compressed expansion must not reach routing or an upstream"
+        );
+    }
+
+    #[tokio::test]
+    async fn native_responses_rejects_invalid_zstd_request_body() {
+        let app = build_router(AppState::new(DtokenConfig::empty()));
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/responses")
+                    .header("content-type", "application/json")
+                    .header("content-encoding", "zstd")
+                    .body(Body::from("not-a-zstd-frame"))
+                    .expect("request"),
+            )
+            .await
+            .expect("router response");
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let payload = response_json(response).await;
+        assert_eq!(payload["error"]["type"], "invalid_request");
+    }
+
+    #[tokio::test]
+    async fn native_responses_identity_content_encoding_uses_plain_json_path() {
+        let mut headers = HeaderMap::new();
+        headers.insert("content-encoding", HeaderValue::from_static("identity"));
+        let response = openai_responses(
+            State(AppState::new(DtokenConfig::empty())),
+            headers,
+            request_bytes(json!({"model": "example/model", "input": "hello"})),
+        )
+        .await
+        .into_response();
+
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let payload = response_json(response).await;
+        assert_eq!(payload["error"]["type"], "dtoken_route_not_configured");
+    }
+
+    #[tokio::test]
+    async fn native_responses_compression_folds_historical_tool_result_and_keeps_response_verbatim()
+    {
+        // R3.C1 end-to-end loopback: a balanced route on the native Responses
+        // wire compresses only the approved closed historical tool result,
+        // forwards everything else byte-faithfully, returns the upstream
+        // response verbatim, and records the compression in the ledger.
+        use axum::body::to_bytes;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        const UPSTREAM_BODY: &str = r#"{"id":"resp_c1","object":"response","status":"completed","usage":{"input_tokens":5,"output_tokens":1,"total_tokens":6}}"#;
+
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind mock upstream");
+        let addr = listener.local_addr().expect("mock addr");
+        let upstream_body = UPSTREAM_BODY.to_string();
+        let captured = std::sync::Arc::new(tokio::sync::Mutex::new(String::new()));
+        let captured_server = captured.clone();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.expect("accept request");
+            // The compressed request body spans multiple TCP segments; read
+            // until the declared content-length has been received.
+            let mut raw = Vec::new();
+            let mut buffer = [0_u8; 16_384];
+            loop {
+                let read = socket.read(&mut buffer).await.expect("read request");
+                if read == 0 {
+                    break;
+                }
+                raw.extend_from_slice(&buffer[..read]);
+                let header_end = raw
+                    .windows(4)
+                    .position(|window| window == b"\r\n\r\n")
+                    .map(|position| position + 4);
+                if let Some(header_end) = header_end {
+                    let declared = String::from_utf8_lossy(&raw[..header_end])
+                        .lines()
+                        .find_map(|line| {
+                            let (name, value) = line.split_once(':')?;
+                            name.trim()
+                                .eq_ignore_ascii_case("content-length")
+                                .then(|| value.trim().parse::<usize>().ok())?
+                        })
+                        .unwrap_or(0);
+                    if raw.len() >= header_end + declared {
+                        break;
+                    }
+                }
+            }
+            let captured_body = String::from_utf8_lossy(&raw)
+                .split("\r\n\r\n")
+                .nth(1)
+                .unwrap_or_default()
+                .to_string();
+            *captured_server.lock().await = captured_body;
+            let response = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                upstream_body.len(),
+                upstream_body
+            );
+            socket
+                .write_all(response.as_bytes())
+                .await
+                .expect("write json");
+        });
+
+        let provider = dtoken_types::ProviderProfile {
+            id: "responses-upstream".to_string(),
+            name: "Responses upstream".to_string(),
+            kind: dtoken_types::ProviderKind::Custom,
+            protocol: Protocol::OpenAi,
+            base_url: format!("http://{addr}/v1"),
+            api_key_ref: None,
+            models: vec!["mock/model".to_string()],
+            timeout_ms: 30_000,
+            healthcheck_path: None,
+            wire_api: dtoken_types::ProviderWireApi::OpenAiResponses,
+        };
+        let route = dtoken_types::RouteProfile {
+            id: "route-responses-c1".to_string(),
+            name: "route-responses-c1".to_string(),
+            input_protocol: Protocol::OpenAi,
+            instance_id: "instance-responses".to_string(),
+            target_provider_id: "responses-upstream".to_string(),
+            fallback_provider_id: None,
+            chain_mode: ChainMode::Direct,
+            compression_policy: CompressionPolicy::Balanced,
+            bind_host: "127.0.0.1".to_string(),
+            local_port: 18001,
+        };
+        let config = DtokenConfig {
+            providers: vec![provider],
+            routes: vec![route],
+            instances: vec![],
+            provider_cache_policies: vec![],
+            output_shaping_policies: vec![],
+            optical: Default::default(),
+        };
+        // Reversible compression requires the CCR private store (rollback
+        // evidence), so the loopback runs on a persistent state with a
+        // deterministic test key.
+        let runtime_dir =
+            std::env::temp_dir().join(format!("dtoken-responses-c1-{}", Uuid::new_v4()));
+        let state = AppState::new_persistent_with_ccr_key(config, &runtime_dir, [11_u8; 32])
+            .expect("persistent state with ccr store");
+        let app = build_router(state.clone());
+
+        let repeated = ["INFO build line"; 12].join("\n");
+        let mut input = vec![
+            json!({"type":"function_call","id":"fc-1","call_id":"call-1","name":"run","arguments":"{}"}),
+            json!({"type":"function_call_output","call_id":"call-1","output":repeated}),
+        ];
+        for index in 0..6 {
+            input.push(json!({
+                "type":"function_call","id":format!("fc-recent-{index}"),"call_id":format!("call-recent-{index}"),
+                "name":"read","arguments":"{}"
+            }));
+            input.push(json!({
+                "type":"function_call_output","call_id":format!("call-recent-{index}"),
+                "output":format!("recent output {index}")
+            }));
+        }
+        input.push(json!({"type":"message","role":"user","content":[{"type":"input_text","text":"continue"}]}));
+        let request_body = json!({"model":"mock/model","input":input});
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/responses")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_string(&request_body).expect("serialize"),
+                    ))
+                    .expect("request"),
+            )
+            .await
+            .expect("router response");
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body bytes");
+        let response_text = String::from_utf8(bytes.to_vec()).expect("UTF-8 JSON");
+        // Response side stays byte-for-byte verbatim (Codex schema contract).
+        assert_eq!(response_text, UPSTREAM_BODY);
+
+        // The upstream received the folded historical output; every other
+        // field is byte-faithful.
+        let received_text = captured.lock().await.clone();
+        let received: Value = serde_json::from_str(&received_text).expect("upstream JSON");
+        assert_eq!(received["model"], request_body["model"]);
+        assert_eq!(received["input"][0], request_body["input"][0]);
+        assert_eq!(received["input"][2], request_body["input"][2]);
+        assert_ne!(
+            received["input"][1]["output"], request_body["input"][1]["output"],
+            "the historical repeated output is folded before forwarding"
+        );
+
+        // Ledger records the native Responses compression contract.
+        let events = state.recent_events(50);
+        assert!(
+            events
+                .iter()
+                .any(|event| { event.metadata.get("native_responses_compression").is_some() }),
+            "native_responses_compression metadata recorded in the ledger"
+        );
+        server.await.expect("mock upstream task");
+    }
+
+    #[tokio::test]
     async fn responses_passthrough_stream_defers_terminal_record_until_terminal_event() {
         use futures_util::stream;
         use futures_util::StreamExt;
@@ -20700,6 +22035,7 @@ mod tests {
                 request_id,
                 provider_id: decision.provider_id.clone(),
                 upstream_status: 200,
+                observation_protocol: "responses",
                 terminal_record: Some(StreamTerminalRequestRecord {
                     decision,
                     request_log,
@@ -20765,6 +22101,7 @@ mod tests {
                 request_id,
                 provider_id: decision.provider_id.clone(),
                 upstream_status: 200,
+                observation_protocol: "responses",
                 terminal_record: Some(StreamTerminalRequestRecord {
                     decision,
                     request_log,
@@ -20819,6 +22156,7 @@ mod tests {
                 request_id,
                 provider_id: decision.provider_id.clone(),
                 upstream_status: 200,
+                observation_protocol: "openai",
                 terminal_record: Some(StreamTerminalRequestRecord {
                     decision,
                     request_log,
@@ -20888,7 +22226,7 @@ mod tests {
                 upstream_status: 200,
                 kind: "semantic",
                 accounting: None,
-                usage_observer: AnthropicStreamUsageObserver::default(),
+                usage_observer: NativeStreamUsageObserver::default(),
                 terminal_record: Some(StreamTerminalRequestRecord {
                     decision,
                     request_log,
@@ -20995,7 +22333,7 @@ mod tests {
                 upstream_status: 200,
                 kind: "semantic",
                 accounting: None,
-                usage_observer: AnthropicStreamUsageObserver::default(),
+                usage_observer: NativeStreamUsageObserver::default(),
                 terminal_record: Some(StreamTerminalRequestRecord {
                     decision,
                     request_log,

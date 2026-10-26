@@ -1,0 +1,124 @@
+<!-- ============================================================
+     页面：代码图谱 (Codebase Memory - 实验性)
+     ============================================================ -->
+<div class="codebase-memory-page space-y-4">
+  <!-- 标题与实验性徽标 -->
+  <div class="flex flex-wrap items-center justify-between gap-3 border-b border-border/70 pb-3">
+    <div class="flex items-center gap-2.5">
+      <h2 class="text-base font-semibold tracking-tight text-foreground">代码图谱</h2>
+      <span class="rounded-full border border-purple-500/30 bg-purple-500/15 px-2 py-0.5 text-[11px] font-semibold text-purple-400">
+        实验性 (Experimental)
+      </span>
+      <span class="text-xs text-muted-foreground">基于 AST 语义实体与调用链构建的本地代码知识图谱</span>
+    </div>
+    <div class="flex items-center gap-2">
+      <div class="inline-flex items-center gap-1.5 rounded-md border border-border bg-secondary/50 px-2.5 py-1 text-xs text-muted-foreground">
+        <span class="size-1.5 rounded-full bg-emerald-400"></span>
+        <span>索引就绪 (8,420 节点 · 24,190 关联边)</span>
+      </div>
+      <button class="rounded-md bg-secondary px-2.5 py-1 text-xs font-medium text-foreground hover:bg-secondary/80">
+        增量索引
+      </button>
+    </div>
+  </div>
+
+  <!-- 图谱统计与概览卡片 -->
+  <div class="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
+    <div class="rounded-xl border border-border/70 bg-card p-4 shadow-sm">
+      <span class="text-xs font-medium text-muted-foreground">已索引实体 (Nodes)</span>
+      <div class="mt-1 text-2xl font-bold text-foreground">8,420</div>
+      <span class="text-[11px] text-muted-foreground">函数 5.1k · 类 1.2k · 文件 2.1k</span>
+    </div>
+    <div class="rounded-xl border border-border/70 bg-card p-4 shadow-sm">
+      <span class="text-xs font-medium text-muted-foreground">调用与引用拓扑 (Edges)</span>
+      <div class="mt-1 text-2xl font-bold text-foreground">24,190</div>
+      <span class="text-[11px] text-muted-foreground">CALLS 14.2k · IMPORTS 6.8k</span>
+    </div>
+    <div class="rounded-xl border border-border/70 bg-card p-4 shadow-sm">
+      <span class="text-xs font-medium text-muted-foreground">覆盖代码文件</span>
+      <div class="mt-1 text-2xl font-bold text-foreground">348</div>
+      <span class="text-[11px] text-muted-foreground">Rust, TypeScript, Python, Shell</span>
+    </div>
+    <div class="rounded-xl border border-border/70 bg-card p-4 shadow-sm">
+      <span class="text-xs font-medium text-muted-foreground">图谱存储占用</span>
+      <div class="mt-1 text-2xl font-bold text-foreground">14.6 MB</div>
+      <span class="text-[11px] text-muted-foreground">本地 SQLite + 向量缓存</span>
+    </div>
+  </div>
+
+  <!-- 图谱交互查询控制台 (Graph Explorer) -->
+  <div class="rounded-xl border border-border/70 bg-card p-5 shadow-sm">
+    <div class="flex items-center justify-between border-b border-border/50 pb-3">
+      <h3 class="text-sm font-semibold text-foreground">知识图谱查询与调用链追踪 (Graph Trace)</h3>
+      <span class="text-xs text-muted-foreground">支持按符号名正则、调用流向追溯上游与下游</span>
+    </div>
+
+    <!-- 查询工具输入条 -->
+    <div class="mt-4 flex flex-wrap items-center gap-3">
+      <div class="flex-1 min-w-[280px]">
+        <div class="relative flex items-center">
+          <svg class="absolute left-3 size-4 text-muted-foreground" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
+          <input
+            type="text"
+            value="search_graph(name_pattern='.*Handler.*')"
+            class="w-full rounded-lg border border-border bg-input-background py-2 pl-9 pr-3 font-mono text-xs text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-ring"
+          />
+        </div>
+      </div>
+      <div class="flex items-center gap-2">
+        <span class="text-xs text-muted-foreground">方向:</span>
+        <div class="segmented-control">
+          <button class="segmented-control-item active">Inbound (谁调用它)</button>
+          <button class="segmented-control-item">Outbound (它调用谁)</button>
+        </div>
+        <button class="rounded-lg bg-orange-600 px-3 py-2 text-xs font-medium text-white hover:bg-orange-500">
+          执行查询
+        </button>
+      </div>
+    </div>
+
+    <!-- 结果展示表格 -->
+    <div class="mt-4 overflow-x-auto rounded-lg border border-border/50">
+      <table class="w-full text-left text-xs">
+        <thead class="bg-secondary/40 text-muted-foreground border-b border-border/40">
+          <tr>
+            <th class="px-3 py-2.5">符号名称</th>
+            <th class="px-3 py-2.5">类型</th>
+            <th class="px-3 py-2.5">定义文件位置</th>
+            <th class="px-3 py-2.5">调用频次</th>
+            <th class="px-3 py-2.5 text-right">操作</th>
+          </tr>
+        </thead>
+        <tbody class="divide-y divide-border/30 font-mono text-[11px]">
+          <tr class="hover:bg-secondary/20">
+            <td class="px-3 py-2 text-foreground font-semibold">handle_proxy_request</td>
+            <td class="px-3 py-2"><span class="rounded bg-sky-500/10 px-1.5 py-0.5 text-sky-400">fn</span></td>
+            <td class="px-3 py-2 text-muted-foreground">crates/dtoken-proxy/src/main.rs:142</td>
+            <td class="px-3 py-2 text-foreground">18 次引用</td>
+            <td class="px-3 py-2 text-right">
+              <button class="text-orange-400 hover:underline">展开路径</button>
+            </td>
+          </tr>
+          <tr class="hover:bg-secondary/20">
+            <td class="px-3 py-2 text-foreground font-semibold">RouteHandler::resolve</td>
+            <td class="px-3 py-2"><span class="rounded bg-purple-500/10 px-1.5 py-0.5 text-purple-400">method</span></td>
+            <td class="px-3 py-2 text-muted-foreground">crates/dtoken-router/src/lib.rs:89</td>
+            <td class="px-3 py-2 text-foreground">34 次引用</td>
+            <td class="px-3 py-2 text-right">
+              <button class="text-orange-400 hover:underline">展开路径</button>
+            </td>
+          </tr>
+          <tr class="hover:bg-secondary/20">
+            <td class="px-3 py-2 text-foreground font-semibold">InstallTransactionHandler</td>
+            <td class="px-3 py-2"><span class="rounded bg-amber-500/10 px-1.5 py-0.5 text-amber-400">struct</span></td>
+            <td class="px-3 py-2 text-muted-foreground">src-tauri/src/commands.rs:215</td>
+            <td class="px-3 py-2 text-foreground">12 次引用</td>
+            <td class="px-3 py-2 text-right">
+              <button class="text-orange-400 hover:underline">展开路径</button>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>

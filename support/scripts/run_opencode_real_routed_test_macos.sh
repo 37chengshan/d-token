@@ -200,6 +200,90 @@ run_opencode_clean() (
   fi
 )
 
+classify_opencode_failure() {
+  python3 - "$1" "$2" "$3" <<'PY'
+import json
+import pathlib
+import re
+import sys
+
+stdout_path, stderr_path, status = sys.argv[1:]
+stdout_text = pathlib.Path(stdout_path).read_text(encoding="utf-8", errors="replace")
+stderr_text = pathlib.Path(stderr_path).read_text(encoding="utf-8", errors="replace")
+raw_text = stdout_text + "\n" + stderr_text
+if not raw_text.strip():
+    print("empty_output")
+    raise SystemExit(0)
+
+# Fixed labels only: never echo an arbitrary upstream error name or message.
+error_names = {
+    "apicallerror": "upstream_api_error",
+    "ai_apicallerror": "upstream_api_error",
+    "contextoverflowerror": "context_overflow",
+    "providermodelnotfounderror": "model_not_found",
+    "modelnotfounderror": "model_not_found",
+    "provideriniterror": "provider_init_failed",
+    "unknownerror": "opencode_unknown_error",
+}
+for line in raw_text.splitlines():
+    try:
+        event = json.loads(line)
+    except json.JSONDecodeError:
+        continue
+    if not isinstance(event, dict) or event.get("type") != "error":
+        continue
+    error = event.get("error")
+    if isinstance(error, dict):
+        data = error.get("data")
+        if isinstance(data, dict) and data.get("statusCode") in (400, 401, 403, 404, 408, 413, 429, 500, 502, 503, 504):
+            print(f"upstream_http_{data['statusCode']}")
+            raise SystemExit(0)
+        for value in (error, data):
+            if not isinstance(value, dict):
+                continue
+            for key in ("name", "code", "type"):
+                identifier = value.get(key)
+                if isinstance(identifier, str) and identifier.lower() in error_names:
+                    print(error_names[identifier.lower()])
+                    raise SystemExit(0)
+    print("error_event_unclassified")
+    raise SystemExit(0)
+
+if int(status) == 0:
+    print("none")
+    raise SystemExit(0)
+text = raw_text.lower()
+rules = (
+    ("cli_argument_unsupported", (r"unknown argument", r"unrecognized option", r"unknown option")),
+    ("context_overflow", (r"context.*(exceed|length|limit|overflow)", r"too many tokens")),
+    ("upstream_rate_limited", (r"rate.limit", r"too many requests")),
+    ("request_timeout", (r"timed out", r"timeout")),
+    ("config_rejected", (r"invalid config", r"configuration.*invalid", r"zoderror")),
+    ("missing_environment", (r"environment variable.*(missing|not set|undefined)", r"missing.*environment variable")),
+    ("provider_not_found", (r"provider.*not found", r"unknown provider")),
+    ("model_not_found", (r"model.*not found", r"unknown model")),
+    ("local_connection_failed", (r"connection refused", r"failed to connect", r"econnrefused")),
+    ("database_locked", (r"database.*locked", r"sqlite.*busy", r"sqlite_busy")),
+    ("permission_denied", (r"permission denied", r"eacces", r"operation not permitted")),
+    ("shell_unbound_variable", (r"unbound variable", r"bad substitution")),
+    ("mcp_startup_failed", (r"\bmcp\b.*(failed|error|unavailable)", r"(failed|error).*mcp")),
+    ("config_file_unavailable", (r"config.*no such file", r"failed to (read|load).*config")),
+    ("upstream_auth_failed", (r"unauthorized", r"authentication", r"api key")),
+    ("plugin_or_hook_failed", (r"plugin", r"hook")),
+)
+for code, patterns in rules:
+    if any(re.search(pattern, text) for pattern in patterns):
+        print(code)
+        break
+else:
+    print(
+        "opencode_runtime_error"
+        f"_stdout_{len(stdout_text.encode('utf-8'))}_{len(stdout_text.splitlines())}"
+        f"_stderr_{len(stderr_text.encode('utf-8'))}_{len(stderr_text.splitlines())}"
+    )
+PY
+}
+
 [[ "$(uname -s)" == "Darwin" ]] || die "this test must run on macOS/Darwin"
 command -v python3 >/dev/null 2>&1 || die "python3 is required"
 
@@ -460,6 +544,13 @@ done
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 CODE_ROOT="$ROOT/code"
 TEMP_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/dtoken-opencode-real.XXXXXX")"
+OPENCODE_WORK_DIR="$ROOT"
+if [[ "$COMPRESSION_WORKLOAD" -eq 1 ]]; then
+  # Use public synthetic shell output without loading this repository's large
+  # instruction tree. The real user config, HOME and session store stay intact.
+  OPENCODE_WORK_DIR="$TEMP_ROOT/public-workload"
+  mkdir -p "$OPENCODE_WORK_DIR"
+fi
 CONFIG_RUNTIME_PATH="$TEMP_ROOT/dtoken-config.json"
 DATA_DIR="$TEMP_ROOT/runtime-data"
 STDOUT_PATH="$TEMP_ROOT/opencode.stdout"
@@ -543,6 +634,35 @@ try:
 except (OSError, json.JSONDecodeError):
     result_state = {}
 diagnostics = result_state.get("diagnostics") if isinstance(result_state, dict) else None
+persisted_count_payload = json.loads(persisted_counts)
+if status != "pass" and not diagnostics:
+    # Read only the owned, metadata-only journals after the proxy has stopped.
+    # Failure during bootstrap must still leave enough evidence to distinguish
+    # an upstream rejection from a request that never reached d-token.
+    journals = {}
+    for name in ("events.jsonl", "route-decisions.jsonl", "request-logs.jsonl", "ccr-metadata.jsonl"):
+        rows = []
+        for path in (root_path / "runtime-data").rglob(name):
+            try:
+                for line in path.read_text(encoding="utf-8").splitlines():
+                    try:
+                        item = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if isinstance(item, dict):
+                        rows.append(item)
+            except OSError:
+                continue
+        journals[name] = rows
+        persisted_count_payload[name] = len(rows)
+    requests = [item for item in journals["request-logs.jsonl"] if item.get("route_id") == "opencode-real-routed" and item.get("provider_id") == provider]
+    diagnostics = {
+        "source": "persisted_terminal_records",
+        "matching_request_count": len(requests),
+        "successful_request_count": sum(item.get("error") is None for item in requests),
+        "failed_request_count": sum(item.get("error") is not None for item in requests),
+        "raw_available": False,
+    }
 effective_ccr_entries = int(result_state.get("ccr_entries") or ccr_entries or 0)
 ccr_evidence_payload = json.loads(ccr_evidence)
 payload = {
@@ -560,6 +680,7 @@ payload = {
     "credential_mode": credential_mode,
     "normal_user_config": config_path,
     "normal_user_state_used": True,
+    "workload_project": "temporary_public_fixture" if compression_workload == "1" else "current_repository",
     "opencode_external_plugins_enabled": opencode_pure != "1",
     "config_transaction": {
         "change_required": json.loads(config_preflight)["config_change_required"],
@@ -577,7 +698,7 @@ payload = {
         "conflicting_edit_overwritten": False,
     },
     "evidence": {
-        "persisted_jsonl_counts": json.loads(persisted_counts),
+        "persisted_jsonl_counts": persisted_count_payload,
         "distinct_jsonl_files": 4 if status == "pass" else None,
         "route_request_provider_model_verified": status == "pass",
         "provider_forward_verified": status == "pass",
@@ -599,10 +720,10 @@ payload = {
         "diagnostics": diagnostics,
     },
     "ledger": {
-        "events": json.loads(persisted_counts).get("events.jsonl"),
-        "route_decisions": json.loads(persisted_counts).get("route-decisions.jsonl"),
-        "request_logs": json.loads(persisted_counts).get("request-logs.jsonl"),
-        "ccr_metadata": json.loads(persisted_counts).get("ccr-metadata.jsonl"),
+        "events": persisted_count_payload.get("events.jsonl"),
+        "route_decisions": persisted_count_payload.get("route-decisions.jsonl"),
+        "request_logs": persisted_count_payload.get("request-logs.jsonl"),
+        "ccr_metadata": persisted_count_payload.get("ccr-metadata.jsonl"),
     },
     "metrics": {
         "compression": json.loads(compression_evidence),
@@ -1066,21 +1187,23 @@ OPENCODE_PROMPT="Return only this nonce: ${RUN_NONCE}"
 OPENCODE_STATUS=0
 OPENCODE_SESSION_ID=""
 if [[ "$COMPRESSION_WORKLOAD" -eq 1 ]]; then
+  FAILURE_STAGE="opencode_compression_bootstrap"
   BOOTSTRAP_STDOUT="$TEMP_ROOT/opencode-bootstrap.jsonl"
   BOOTSTRAP_STDERR="$TEMP_ROOT/opencode-bootstrap.stderr"
   REQUIRED_COMPLETED_TOOL_RESULTS=7
   BOOTSTRAP_PROMPT='Use the shell tool exactly seven times, in order, and do not skip or combine calls. Call 1: for alpha in alpha beta gamma delta epsilon zeta eta theta iota kappa; do for beta in alpha beta gamma delta epsilon zeta eta theta iota kappa; do echo public placeholder context alpha beta gamma delta; done; done. Calls 2 through 7: run echo public filler tool result once per call. After all seven shell calls finish, reply only READY.'
   set +e
   (
-    cd "$ROOT"
+    cd "$OPENCODE_WORK_DIR"
     OPENCODE_CONFIG="$CONFIG_PATH" \
       DTOKEN_LOCAL_LISTENER_TOKEN="$LOCAL_LISTENER_TOKEN" \
-      run_opencode_clean run --format json --dangerously-skip-permissions --model "$LOCAL_MODEL" \
+      run_opencode_clean run --format json --auto --model "$LOCAL_MODEL" \
         --title "d-token compression verification" "$BOOTSTRAP_PROMPT"
   ) >"$BOOTSTRAP_STDOUT" 2>"$BOOTSTRAP_STDERR"
   OPENCODE_STATUS=$?
   set -e
-  [[ "$OPENCODE_STATUS" -eq 0 ]] || die "OpenCode could not create the synthetic historical tool-result workload"
+  OPENCODE_FAILURE_CODE="$(classify_opencode_failure "$BOOTSTRAP_STDOUT" "$BOOTSTRAP_STDERR" "$OPENCODE_STATUS")"
+  [[ "$OPENCODE_STATUS" -eq 0 ]] || die "OpenCode compression preparation failed: ${OPENCODE_FAILURE_CODE}"
   python3 - "$BOOTSTRAP_STDOUT" "$REQUIRED_COMPLETED_TOOL_RESULTS" <<'PY'
 import json
 import pathlib
@@ -1147,10 +1270,11 @@ PY
 )" || die "OpenCode did not expose a session id for the compression workload"
 fi
 
+FAILURE_STAGE="opencode_run"
 set +e
 if [[ -n "$OPENCODE_SESSION_ID" ]]; then
   (
-    cd "$ROOT"
+    cd "$OPENCODE_WORK_DIR"
     OPENCODE_CONFIG="$CONFIG_PATH" \
       DTOKEN_LOCAL_LISTENER_TOKEN="$LOCAL_LISTENER_TOKEN" \
       run_opencode_clean run --format json --session "$OPENCODE_SESSION_ID" \
@@ -1158,7 +1282,7 @@ if [[ -n "$OPENCODE_SESSION_ID" ]]; then
   ) >"$STDOUT_PATH" 2>"$STDERR_PATH"
 else
   (
-    cd "$ROOT"
+    cd "$OPENCODE_WORK_DIR"
     OPENCODE_CONFIG="$CONFIG_PATH" \
       DTOKEN_LOCAL_LISTENER_TOKEN="$LOCAL_LISTENER_TOKEN" \
       run_opencode_clean run --format json \
@@ -1179,93 +1303,7 @@ PY
 then
   RESPONSE_NONCE_OK=1
 fi
-OPENCODE_FAILURE_CODE="$(python3 - "$STDOUT_PATH" "$STDERR_PATH" "$OPENCODE_STATUS" <<'PY'
-import json
-import pathlib
-import re
-import sys
-
-stdout_path, stderr_path, status = sys.argv[1:]
-if int(status) == 0:
-    print("none")
-    raise SystemExit(0)
-stdout_text = pathlib.Path(stdout_path).read_text(encoding="utf-8", errors="replace")
-stderr_text = pathlib.Path(stderr_path).read_text(encoding="utf-8", errors="replace")
-raw_text = stdout_text + "\n" + stderr_text
-if not raw_text.strip():
-    print("empty_output")
-    raise SystemExit(0)
-
-def safe_identifier(value):
-    if not isinstance(value, str) or not re.fullmatch(r"[A-Za-z][A-Za-z0-9_.-]{0,79}", value):
-        return None
-    return re.sub(r"[^a-z0-9]+", "_", value.lower()).strip("_")
-
-for line in raw_text.splitlines():
-    try:
-        event = json.loads(line)
-    except json.JSONDecodeError:
-        continue
-    if not isinstance(event, dict) or event.get("type") != "error":
-        continue
-    error = event.get("error")
-    if isinstance(error, dict):
-        for key in ("name", "code", "type"):
-            identifier = safe_identifier(error.get(key))
-            if identifier:
-                print(f"error_event_{identifier}")
-                raise SystemExit(0)
-        data = error.get("data")
-        if isinstance(data, dict):
-            for key in ("name", "code", "type"):
-                identifier = safe_identifier(data.get(key))
-                if identifier:
-                    print(f"error_event_{identifier}")
-                    raise SystemExit(0)
-    print("error_event_unclassified")
-    raise SystemExit(0)
-
-text = raw_text.lower()
-error_classes = sorted(
-    {
-        match.group(0)
-        for match in re.finditer(
-            r"\b[a-z][a-z0-9_]{2,63}error\b",
-            text,
-            flags=re.IGNORECASE,
-        )
-    }
-)
-if error_classes:
-    safe = re.sub(r"[^a-z0-9]+", "_", error_classes[0].lower()).strip("_")
-    print(f"error_class_{safe[:64]}")
-    raise SystemExit(0)
-rules = (
-    ("config_rejected", (r"invalid config", r"configuration.*invalid", r"zoderror")),
-    ("missing_environment", (r"environment variable.*(missing|not set|undefined)", r"missing.*environment variable")),
-    ("provider_not_found", (r"provider.*not found", r"unknown provider")),
-    ("model_not_found", (r"model.*not found", r"unknown model")),
-    ("local_connection_failed", (r"connection refused", r"failed to connect", r"econnrefused")),
-    ("database_locked", (r"database.*locked", r"sqlite.*busy", r"sqlite_busy")),
-    ("permission_denied", (r"permission denied", r"eacces", r"operation not permitted")),
-    ("shell_unbound_variable", (r"unbound variable", r"bad substitution")),
-    ("mcp_startup_failed", (r"\bmcp\b.*(failed|error|unavailable)", r"(failed|error).*mcp")),
-    ("config_file_unavailable", (r"config.*no such file", r"failed to (read|load).*config")),
-    ("upstream_auth_failed", (r"unauthorized", r"authentication", r"api key")),
-    ("plugin_or_hook_failed", (r"plugin", r"hook")),
-)
-for code, patterns in rules:
-    if any(re.search(pattern, text) for pattern in patterns):
-        print(code)
-        break
-else:
-    print(
-        "opencode_runtime_error"
-        f"_stdout_{len(stdout_text.encode('utf-8'))}_{len(stdout_text.splitlines())}"
-        f"_stderr_{len(stderr_text.encode('utf-8'))}_{len(stderr_text.splitlines())}"
-    )
-PY
-)"
+OPENCODE_FAILURE_CODE="$(classify_opencode_failure "$STDOUT_PATH" "$STDERR_PATH" "$OPENCODE_STATUS")"
 rm -f "$STDOUT_PATH" "$STDERR_PATH"
 
 FAILURE_STAGE="runtime_evidence"

@@ -2,7 +2,7 @@ import { lazy, Suspense, useCallback, useEffect, useState } from "react";
 import { Sidebar } from "./Sidebar";
 import { Topbar } from "./Topbar";
 import { StatusBar } from "./StatusBar";
-import { NAV, SETTINGS_NAV, type PageId } from "../../lib/nav";
+import { migratePageId, type PageId } from "../../lib/nav";
 import { useI18n, translateCopy } from "../../lib/i18n";
 import { PageStage } from "./PageStage";
 import { NotificationBanner, NotificationLiveRegion } from "../common/NotificationCenter";
@@ -15,16 +15,12 @@ import { desktopInstallRoot } from "../../lib/install/presentation";
 import type { OnboardingServiceStartResult } from "../pages/Onboarding";
 
 const OnboardingPage = lazy(() => import("../pages/Onboarding").then((module) => ({ default: module.OnboardingPage })));
-const OverviewPage = lazy(() => import("../pages/Overview").then((module) => ({ default: module.Overview })));
-const InstallWorkbenchPage = lazy(() => import("../pages/InstallWorkbench").then((module) => ({ default: module.InstallWorkbench })));
-const CodebaseMemoryPage = lazy(() => import("../pages/CodebaseMemory").then((module) => ({ default: module.CodebaseMemory })));
-const AnalyticsPage = lazy(() => import("../pages/Analytics").then((module) => ({ default: module.Analytics })));
-const VisualCompressionPage = lazy(() => import("../pages/VisualCompression").then((module) => ({ default: module.VisualCompression })));
-const DoctorPage = lazy(() => import("../pages/Doctor").then((module) => ({ default: module.Doctor })));
-const ChangesPage = lazy(() => import("../pages/Changes").then((module) => ({ default: module.Changes })));
+const ConfigurationPage = lazy(() => import("../pages/Configuration").then((module) => ({ default: module.Configuration })));
+const AdvancedConfigurationPage = lazy(() => import("../pages/AdvancedConfiguration").then((module) => ({ default: module.AdvancedConfiguration })));
+const AnalysisLogsPage = lazy(() => import("../pages/AnalysisLogs").then((module) => ({ default: module.AnalysisLogs })));
+const DiagnosticsPage = lazy(() => import("../pages/Diagnostics").then((module) => ({ default: module.Diagnostics })));
 const SettingsPage = lazy(() => import("../pages/Settings").then((module) => ({ default: module.Settings })));
 
-const PAGE_IDS = new Set<PageId>([...NAV, SETTINGS_NAV].map((item) => item.id));
 const SIDEBAR_COLLAPSED_KEY = "d-token.shell.sidebar-collapsed";
 const PAGE_SESSION_KEY = "d-token.shell.page";
 
@@ -42,14 +38,24 @@ function readCollapsedPreference(): boolean {
 }
 
 function readSessionPage(): PageId {
-  if (typeof window === "undefined") return "overview";
+  if (typeof window === "undefined") return "configuration";
   try {
     const saved = window.sessionStorage.getItem(PAGE_SESSION_KEY);
-    if (saved && PAGE_IDS.has(saved as PageId)) return saved as PageId;
+    const migrated = migratePageId(saved);
+    // Persist a migrated legacy/deep-link value once so subsequent launches
+    // enter the shell with a current PageId and no repeated translation.
+    if (saved !== null && saved !== migrated) {
+      try {
+        window.sessionStorage.setItem(PAGE_SESSION_KEY, migrated);
+      } catch {
+        // A read-only store must not discard the restored destination.
+      }
+    }
+    return migrated;
   } catch {
     /* ignore */
   }
-  return "overview";
+  return "configuration";
 }
 
 export function AppShell() {
@@ -134,7 +140,7 @@ export function AppShell() {
     const ok = await gate.complete();
     if (ok) {
       closeOnboarding();
-      setPage("overview");
+      setPage("configuration");
     } else {
       // Persistence failures surface as a top notification (PRD P0.2.1 #7);
       // the wizard stays open so the user can retry. No configuration was
@@ -154,17 +160,17 @@ export function AppShell() {
     setOnboardingDismissed(true);
   }, [closeOnboarding]);
 
-  // The wizard hands the whole automatic batch to Install & Connect: no Agent
+  // The wizard hands the whole automatic batch to Configuration: no Agent
   // preselection, no per-Agent choice carried over from onboarding.
   const handleStartSetup = useCallback(() => {
     closeOnboarding();
     setOnboardingDismissed(true);
-    setPage("install");
+    setPage("configuration");
   }, [closeOnboarding, setPage]);
 
   const handleOpenOverview = useCallback(() => {
     closeOnboarding();
-    setPage("overview");
+    setPage("configuration");
   }, [closeOnboarding, setPage]);
 
   // The shell owns the real service-start transaction (target dtoken on
@@ -196,13 +202,10 @@ export function AppShell() {
 
   const render = () => {
     switch (page) {
-      case "overview": return <OverviewPage setPage={handleSetPage} />;
-      case "install": return <InstallWorkbenchPage />;
-      case "codebase-memory": return <CodebaseMemoryPage />;
-      case "analytics": return <AnalyticsPage />;
-      case "visual": return <VisualCompressionPage />;
-      case "doctor": return <DoctorPage setPage={handleSetPage} />;
-      case "changes": return <ChangesPage setPage={handleSetPage} />;
+      case "configuration": return <ConfigurationPage setPage={handleSetPage} />;
+      case "advanced-configuration": return <AdvancedConfigurationPage setPage={handleSetPage} />;
+      case "analysis-logs": return <AnalysisLogsPage setPage={handleSetPage} />;
+      case "diagnostics": return <DiagnosticsPage setPage={handleSetPage} />;
       case "settings": return <SettingsPage />;
     }
   };

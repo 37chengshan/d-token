@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import {
   Activity,
   AlertTriangle,
@@ -16,7 +16,6 @@ import {
 } from "lucide-react";
 import { Surface } from "../../components/common/Surface";
 import { StatusBadge } from "../../components/common/StatusBadge";
-import { DataSourceBadge } from "../../components/common/DataSourceBadge";
 import { OperationDialog } from "../../components/common/OperationDialog";
 import { Button } from "../../components/ui/button";
 import { Badge } from "../../components/ui/badge";
@@ -244,49 +243,40 @@ const MODULE_PRESETS = [
   {
     id: "core",
     icon: Activity,
-    zh: { title: "本地服务与端口", detail: "检查 runtime identity、进程归属、listener 与健康状态。" },
-    en: { title: "Local service & ports", detail: "Check runtime identity, process ownership, listener, and health." },
+    zh: { title: "本地连接", detail: "检查 d-token 自有服务、端口归属与连接状态。" },
+    en: { title: "Local connection", detail: "Check the d-token service, port ownership, and connection state." },
   },
   {
     id: "agent",
     icon: Bot,
-    zh: { title: "Agent 接入", detail: "按 Agent 配置、Hook/Plugin、Skill 与可选元数据诊断 MCP 检查。" },
-    en: { title: "Agent integration", detail: "Check Agent configuration, Hook/Plugin, Skill, and optional metadata diagnostics MCP." },
+    zh: { title: "工具配置", detail: "检查已检测工具的受管接入、规则与恢复入口。" },
+    en: { title: "Tool setup", detail: "Check managed setup, rules, and recovery entries for detected tools." },
   },
   {
     id: "optical",
     icon: Sparkles,
-    zh: { title: "混合上下文优化", detail: "检查安全 Shadow、能力证据与接入前置；不在 Doctor 开启生产 active。" },
-    en: { title: "Hybrid context optimization", detail: "Check safe Shadow, capability evidence, and prerequisites; production active is never enabled here." },
+    zh: { title: "视觉压缩", detail: "检查 Shadow 预览、能力证据与启用前置条件。" },
+    en: { title: "Visual compression", detail: "Check Shadow preview, capability evidence, and prerequisites." },
   },
   {
     id: "platform",
     icon: MonitorCog,
-    zh: { title: "平台安装", detail: "检查平台签名、自动启动、路径与凭据库边界。" },
-    en: { title: "Platform installation", detail: "Check platform signing, autostart, paths, and credential-store boundaries." },
+    zh: { title: "服务运行", detail: "检查桌面安装、自启动、路径与凭据库边界。" },
+    en: { title: "Service operation", detail: "Check desktop installation, autostart, paths, and credential-store boundaries." },
   },
   {
     id: "recovery",
     icon: RotateCcw,
-    zh: { title: "安全与恢复", detail: "检查备份完整性、当前可恢复性、事务与脱敏证据。" },
-    en: { title: "Safety & recovery", detail: "Check backup integrity, current restorability, transactions, and redacted evidence." },
+    zh: { title: "运行记录与恢复", detail: "检查备份完整性、当前可恢复性与脱敏回执。" },
+    en: { title: "Records & recovery", detail: "Check backup integrity, current restorability, and redacted receipts." },
   },
 ] as const;
 
-const SPECIALIZED_REPAIR_PRESETS = [
-  { id: "service", source: "core", icon: Activity, title: "d-token 服务修复", detail: "启动或重启身份已验证的 d-token 自有服务，并自动复检。", action: "core" },
-  { id: "listener", source: "core", icon: ShieldCheck, title: "本地监听与进程归属复检", detail: "重新检查 PID、进程出生标识、可执行文件、端口所有权与 runtime instance。", action: "scan" },
-  { id: "route", source: "core", icon: Activity, title: "d-token 路由修复", detail: "重新发现 Provider/Route，并在来源事务中查看连接配置。", action: "install" },
-  { id: "agent-hybrid", source: "agent", icon: Bot, title: "Agent Hybrid 接入重新注入", detail: "按 Agent 恢复 Instructions、Hook/Plugin 与 Recovery Skill 受管组合。", action: "agent", preset: "hybrid" },
-  { id: "agent-hook", source: "agent", icon: Bot, title: "Agent Hook / Plugin 重新配置", detail: "仅查看并修复 SessionStart Hook 或 OpenCode Plugin。", action: "agent", preset: "hook" },
-  { id: "agent-rules", source: "agent", icon: Bot, title: "Agent Instructions / Recovery Skill 修复", detail: "恢复受管规则和恢复 Skill，保留用户非受管内容。", action: "agent", preset: "instructions_skill" },
-  { id: "agent-mcp", source: "agent", icon: Bot, title: "Agent metadata MCP 修复", detail: "高级模块；只恢复元数据诊断 MCP，不参与真实压缩。", action: "agent", preset: "mcp" },
-  { id: "agent-transport", source: "agent", icon: Bot, title: "已配置 Agent 连接修复", detail: "OpenCode 使用专用 transport executor；其他 Agent 无 executor 时明确阻止。", action: "install" },
-  { id: "optical", source: "optical", icon: Sparkles, title: "Optical Shadow 配置修复", detail: "只允许 off / shadow_preview，Doctor 不开放 production active。", action: "visual" },
-  { id: "autostart", source: "platform", icon: MonitorCog, title: "平台自启动修复", detail: "在来源工作流中修复 d-token 自有 LaunchAgent 或 HKCU Run。", action: "install" },
-  { id: "cc-switch", source: "core", icon: RefreshCw, title: "cc-switch 同步检查", detail: "只读重新发现 cc-switch，仅修复 d-token 侧 Route，不写第三方 profile。", action: "scan" },
-  { id: "recovery", source: "recovery", icon: RotateCcw, title: "备份与回退链路复检", detail: "检查完整性、事务归属和当前可恢复性；损坏证据保持锁定。", action: "changes" },
-] as const;
+const SYNC_PRESET = {
+  id: "agent_cc_switch_sync", icon: RefreshCw,
+  zh: { title: "配置同步", detail: "检查编码工具与 cc-switch 的当前连接是否一致。" },
+  en: { title: "Connection sync", detail: "Check whether tool connections agree with cc-switch." },
+} as const;
 
 type AgentRepairPreset = "hybrid" | "hook" | "instructions_skill" | "mcp";
 
@@ -313,8 +303,10 @@ type ReadinessCountEvidence = { passed: number | null; total: number | null; com
 type ActiveConfigEvidence = { ok: boolean; summary: string };
 
 export function resolveDoctorDestination(target?: string): PageId {
-  if (target === "advanced" || target === "install") return "install";
-  return "changes";
+  if (target === "advanced") return "advanced-configuration";
+  if (target === "install" || target === "optical" || target === "visual") return "configuration";
+  if (target === "changes" || target === "recovery" || target === "logs") return "analysis-logs";
+  return "analysis-logs";
 }
 
 export function doctorFailureSummary(error: unknown, lang: "zh" | "en" = "zh"): string {
@@ -391,7 +383,13 @@ export function resolveActiveConfigEvidence(
   };
 }
 
-export function Doctor({ setPage }: { setPage: (page: PageId) => void }) {
+export function Doctor({
+  setPage,
+  showHeading = true,
+}: {
+  setPage: (page: PageId) => void;
+  showHeading?: boolean;
+}) {
   const { lang } = useI18n();
   const zh = lang === "zh";
   const { addNotification } = useNotifications();
@@ -507,7 +505,7 @@ export function Doctor({ setPage }: { setPage: (page: PageId) => void }) {
   const runScan = async (intent: "scan" | "repair" = "scan") => {
     const requestId = createOperationRequestId("doctor-scan");
     setPhase("scanning");
-    setNotice(zh ? "正在扫描本地服务、端口、Agent、路由与安全边界…" : "Scanning local services, ports, agents, routes, and safety boundaries…");
+    setNotice(zh ? "正在检查本地服务与工具连接…" : "Checking the local service and tool connections…");
     setNoticeTone("warning");
     try {
       const next = await invokeNative<unknown>("run_doctor_scan");
@@ -714,32 +712,36 @@ export function Doctor({ setPage }: { setPage: (page: PageId) => void }) {
   const sourceLabel = v3Snapshot
     ? doctorV3EvidenceLabel(v3Snapshot, lang)
     : source === "native"
-      ? (zh ? "本地诊断快照" : "Local diagnostic snapshot")
+      ? (zh ? "本机状态" : "Machine status")
     : source === "stale"
-      ? (zh ? "诊断快照已过期" : "Diagnostic snapshot is stale")
+      ? (zh ? "结果已过期" : "Result is stale")
     : source === "preview"
       ? (zh ? "浏览器预览" : "Browser preview")
       : (zh ? "诊断数据不可用" : "Diagnostic data unavailable");
   const busy = phase !== "idle";
   const phaseLabel = doctorPhaseLabel(phase, Boolean(snapshot), lang);
+  const passSummary = doctorPassSummary(snapshot);
+  const attentionCount = doctorAttentionCount(snapshot);
+  const v3Rows = v3Snapshot ? doctorModuleRows(v3Snapshot) : [];
+  const reportRows = report ? doctorIssueRows(report.issues) : [];
 
   return (
-    <div className="space-y-6">
-      <div className="flex flex-wrap items-start justify-between gap-4">
-        <div>
-          <div className="flex items-center gap-3">
-            <h1 className="sr-only">{zh ? "Doctor" : "Doctor"}</h1>
-            <DataSourceBadge mode={source === "native" ? "native" : source === "preview" ? "preview" : "unavailable"} label={sourceLabel} />
+    <div className="space-y-4">
+      {showHeading && <h1 className="sr-only">Doctor</h1>}
+      {snapshot && <div className="flex flex-wrap items-start justify-between gap-4">
+        <div className="min-w-0">
+          <div className="flex min-w-0 items-center gap-2 text-sm font-medium">
+            <HardDrive className="size-4 shrink-0 text-muted-foreground" aria-hidden />
+            <span>{phaseLabel}</span>
           </div>
-          <p className="mt-2 max-w-2xl text-sm text-muted-foreground">
-            {zh ? "主动扫描常见的本地服务、连接与配置问题；扫描只读取本机状态，不调用 Provider，也不会自动修改外部 Agent 配置。" : "Scan common local service, connection, and configuration issues. Scans are local and read-only, with no Provider calls or silent Agent changes."}
-          </p>
         </div>
         <div className="flex flex-wrap gap-2">
-          <Button onClick={() => void runScan("repair")} disabled={busy || loadingSnapshot} aria-busy={phase === "scanning"}>
-            {phase === "scanning" ? <RefreshCw className="size-4 animate-spin" aria-hidden /> : <Wrench className="size-4" />}
-            {phase === "scanning" ? (zh ? "扫描中…" : "Scanning…") : (zh ? "自动扫描并修复" : "Scan & prepare repairs")}
-          </Button>
+          {snapshot ? (
+            <Button onClick={() => void runScan("repair")} disabled={busy || loadingSnapshot} aria-busy={phase === "scanning"}>
+              {phase === "scanning" ? <RefreshCw className="size-4 animate-spin" aria-hidden /> : <Wrench className="size-4" />}
+              {phase === "scanning" ? (zh ? "扫描中…" : "Scanning…") : (zh ? "自动扫描并修复" : "Scan & prepare repairs")}
+            </Button>
+          ) : null}
           <Button
             variant="outline"
             onClick={() => void runScan("scan")}
@@ -747,37 +749,33 @@ export function Doctor({ setPage }: { setPage: (page: PageId) => void }) {
             aria-label={zh ? "扫描常规问题" : "Scan common issues"}
           >
             <RefreshCw className={`size-4 ${phase === "scanning" ? "animate-spin" : ""}`} />
-            {zh ? "仅扫描" : "Scan only"}
+            {snapshot ? (zh ? "仅扫描" : "Scan only") : (zh ? "开始扫描" : "Start scan")}
           </Button>
         </div>
-      </div>
+      </div>}
 
-      <Surface className="p-4" aria-live="polite">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <div className="flex items-center gap-2 text-sm font-medium">
-            <HardDrive className="size-4 text-muted-foreground" aria-hidden />
-            <span>{phaseLabel}</span>
-          </div>
-          <div className="flex flex-wrap gap-2 text-xs text-muted-foreground">
-            {[zh ? "扫描" : "Scan", zh ? "计划" : "Plan", zh ? "确认" : "Confirm", zh ? "执行" : "Apply", zh ? "复检" : "Verify"].map((item) => (
-              <span key={item} className="rounded-full border border-border/70 px-2 py-1">{item}</span>
-            ))}
-          </div>
-        </div>
-      </Surface>
-
-      {notice && (
+      {snapshot && notice && (
         <div role={noticeTone === "error" ? "alert" : "status"} aria-live={noticeTone === "error" ? "assertive" : "polite"} className={`rounded-lg border px-4 py-3 text-sm ${noticeTone === "success" ? "border-emerald-500/25 bg-emerald-500/[0.06] text-emerald-700 dark:text-emerald-300" : noticeTone === "error" ? "border-rose-500/25 bg-rose-500/[0.06] text-rose-700 dark:text-rose-300" : "border-amber-500/25 bg-amber-500/[0.06] text-amber-700 dark:text-amber-300"}`}>
           {notice}
         </div>
       )}
 
+      {!snapshot && loadingSnapshot && <p role="status" className="py-10 text-center text-sm text-muted-foreground">{zh ? "正在读取上次检查…" : "Loading the previous check…"}</p>}
       {!snapshot && !loadingSnapshot && (
-        <Surface className="p-8 text-center">
-          <Stethoscope className="mx-auto size-8 text-muted-foreground" />
-          <h2 className="mt-3 text-base">{zh ? "尚未扫描常规问题" : "Common issues have not been scanned"}</h2>
-          <p className="mt-1 text-sm text-muted-foreground">{zh ? "点击“仅扫描”生成一份统一、本地、可复验的诊断快照。" : "Choose Scan only to create one unified, local, verifiable diagnostic snapshot."}</p>
-        </Surface>
+        <section className="mx-auto flex min-h-[min(46vh,360px)] max-w-lg flex-col justify-center px-4 py-10 sm:px-6" aria-busy={busy} data-testid="doctor-empty-state">
+          <Stethoscope className="mb-4 size-8 text-primary" aria-hidden />
+          <h2 className="text-lg font-semibold leading-7">{zh ? "检查连接是否正常" : "Check your connections"}</h2>
+          <p className="mt-2 max-w-md text-sm leading-6 text-muted-foreground">
+            {zh ? "检查本地服务和工具连接，找出无法运行的原因。" : "Check the local service and coding tools to find what is preventing them from working."}
+          </p>
+          <div className="mt-5">
+            <Button onClick={() => void runScan("scan")} disabled={busy} aria-label={zh ? "扫描常规问题" : "Scan common issues"}>
+              {busy ? <RefreshCw className="size-4 animate-spin" aria-hidden /> : <Stethoscope className="size-4" aria-hidden />}
+              {busy ? (zh ? "正在检查…" : "Checking…") : (zh ? "开始扫描" : "Start scan")}
+            </Button>
+          </div>
+          {notice && <p role={noticeTone === "error" ? "alert" : "status"} aria-live={noticeTone === "error" ? "assertive" : "polite"} className={`mt-3 text-sm leading-6 ${noticeTone === "error" ? "text-destructive" : "text-muted-foreground"}`}>{notice}</p>}
+        </section>
       )}
 
       {report && source !== "native" && (
@@ -785,9 +783,9 @@ export function Doctor({ setPage }: { setPage: (page: PageId) => void }) {
           <div className="flex items-start gap-3">
             <AlertTriangle className="mt-0.5 size-5 shrink-0 text-amber-500" aria-hidden />
             <div>
-              <h2 className="text-base">{zh ? "旧诊断快照不可用于修复" : "Legacy diagnostic snapshot cannot be used for repair"}</h2>
+              <h2 className="text-base">{zh ? "诊断结果已过期" : "Diagnostic result is stale"}</h2>
               <p className="mt-1 text-sm text-muted-foreground">
-                {zh ? "该 Doctor v2 快照已过期或时间证据无效。请重新扫描生成 v3 快照；旧快照中的字面量 fresh 不会被信任。" : "This Doctor v2 snapshot is stale or has invalid time evidence. Scan again for a v3 snapshot; a persisted literal fresh value is not trusted."}
+                {zh ? "请重新扫描当前本机状态；修复入口会保持锁定，直到结果完整且仍在有效期内。" : "Scan the current machine state again. Repair actions stay locked until the result is complete and still valid."}
               </p>
             </div>
           </div>
@@ -795,231 +793,123 @@ export function Doctor({ setPage }: { setPage: (page: PageId) => void }) {
       )}
 
       {v3Snapshot && (
-        <Surface className="p-5">
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <div>
-              <div className="flex items-center gap-2">
-                {v3Snapshot.counts.repairable === 0 && v3Actionable
-                  ? <CheckCircle2 className="size-5 text-emerald-500" />
-                  : <AlertTriangle className="size-5 text-amber-500" />}
-                <h2 className="text-base">{zh ? "统一诊断快照" : "Unified diagnostic snapshot"}</h2>
-              </div>
-              <p className="mt-1 text-xs text-muted-foreground">
-                {formatTimestampMs(v3Snapshot.collected_at_ms)} · revision {v3Snapshot.revision.slice(0, 12)}
-              </p>
-            </div>
-            <div className="flex flex-wrap gap-2">
-              <Badge variant="outline">
-                {zh ? "覆盖" : "Coverage"} {v3Snapshot.coverage?.completed ?? 0}/{v3Snapshot.coverage?.total ?? v3Snapshot.modules.length}
-              </Badge>
-              <Badge variant={v3Actionable ? "secondary" : "outline"}>{v3Expired ? (zh ? "已过期" : "Stale") : (zh ? "新鲜" : "Fresh")}</Badge>
-              <Badge variant="secondary">{zh ? "可修复" : "Repairable"} {v3Snapshot.counts.repairable}</Badge>
-              <Badge variant="outline">{zh ? "需手动" : "Manual"} {v3Snapshot.counts.manual}</Badge>
-              <Badge variant="outline">{zh ? "已阻止" : "Blocked"} {v3Snapshot.counts.blocked}</Badge>
-            </div>
-          </div>
-          {!v3Actionable ? (
-            <p className="mt-3 text-sm text-amber-700 dark:text-amber-300">
-              {zh ? "证据不完整或已过期；所有修复动作已锁定，只允许重新扫描。" : "Evidence is incomplete or stale. All repair actions are locked; only rescanning is allowed."}
-            </p>
-          ) : null}
-        </Surface>
-      )}
-
-      <Surface className="overflow-hidden p-0">
-        <div className="border-b border-border/70 px-5 py-4">
-          <h2 className="text-base font-medium">{zh ? "预制诊断任务" : "Diagnostic task modules"}</h2>
-          <p className="mt-1 text-xs text-muted-foreground">
-            {zh ? "按模块检查和准备修复；任何写入仍需先查看逐项 diff 并明确确认。" : "Inspect and prepare repairs by module. Every write still requires per-item diffs and explicit confirmation."}
-          </p>
-        </div>
-        <div className="divide-y divide-border/60">
-          {MODULE_PRESETS.map((preset) => {
-            const module = v3Snapshot?.modules.find((item) => item.module_id === preset.id);
-            const copy = preset[lang];
-            const Icon = preset.icon;
-            const canPrepare = Boolean(module && module.state === "repairable" && v3Actionable);
-            const actionLabel = preset.id === "agent"
-              ? (zh ? "配置 Agent 修复" : "Configure Agent repair")
-              : canPrepare
-                ? (zh ? "准备修复" : "Prepare repair")
-                : preset.id === "optical"
-                  ? (zh ? "前往视觉压缩" : "Open Visual Compression")
-                  : preset.id === "recovery"
-                    ? (zh ? "查看备份与回退" : "Open backups & rollback")
-                    : preset.id === "platform"
-                      ? (zh ? "前往安装与连接" : "Open Install & Connect")
-                      : (zh ? "重新检查" : "Check again");
-            const actionDisabled = preset.id === "agent" && !canPrepare;
-            return (
-              <div key={preset.id} className="grid gap-3 px-5 py-4 md:grid-cols-[minmax(0,1fr)_auto] md:items-center">
-                <div className="flex min-w-0 gap-3">
-                  <span className="mt-0.5 flex size-8 shrink-0 items-center justify-center rounded-lg border border-border/70 bg-muted/30">
-                    <Icon className="size-4 text-muted-foreground" aria-hidden />
-                  </span>
-                  <div className="min-w-0">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <h3 className="text-sm font-medium">{copy.title}</h3>
-                      <StatusBadge status={moduleStatusTone(module?.state)} label={moduleStateLabel(module?.state, lang)} />
-                    </div>
-                    <p className="mt-1 text-xs leading-5 text-muted-foreground">{module?.summary || copy.detail}</p>
-                  </div>
-                </div>
-                <Button
-                  size="sm"
-                  variant="outline"
-                  disabled={busy || actionDisabled}
-                  onClick={() => {
-                    if (preset.id === "agent" && v3Snapshot && module) openAgentModule(v3Snapshot, module);
-                    else if (canPrepare && v3Snapshot && module) void prepareV3Plan(v3Snapshot, module, emptyV3Selection());
-                    else if (preset.id === "optical") setPage("visual");
-                    else if (preset.id === "recovery") setPage("changes");
-                    else if (preset.id === "platform") setPage("install");
-                    else void runScan("scan");
-                  }}
-                >
-                  {actionLabel}<ChevronRight className="size-3.5" aria-hidden />
-                </Button>
-              </div>
-            );
-          })}
-        </div>
-      </Surface>
-
-      <Surface className="overflow-hidden p-0">
-        <div className="border-b border-border/70 px-5 py-4">
-          <h2 className="text-base font-medium">{zh ? "专项修复工具" : "Specialized repair tools"}</h2>
-          <p className="mt-1 text-xs text-muted-foreground">
-            {zh ? "每个工具都复用其来源事务执行器；Agent 类工具会先让你选择 Agent 和作用域。" : "Each tool reuses its source transaction executor. Agent tools ask for Agents and scope first."}
-          </p>
-        </div>
-        <div className="divide-y divide-border/60">
-          {SPECIALIZED_REPAIR_PRESETS.map((item) => {
-            const module = v3Snapshot?.modules.find((candidate) => candidate.module_id === item.source);
-            const Icon = item.icon;
-            const agentAvailable = item.action === "agent" && Boolean(module?.agents?.some((agent) => agent.detected !== false && agent.supported !== false && managedAgentScopes(agent).length > 0));
-            const disabled = busy || !v3Actionable || (item.action === "agent" && !agentAvailable);
-            return (
-              <div key={item.id} className="grid gap-3 px-5 py-4 md:grid-cols-[minmax(0,1fr)_auto] md:items-center">
-                <div className="flex min-w-0 gap-3">
-                  <span className="mt-0.5 flex size-8 shrink-0 items-center justify-center rounded-lg border border-border/70 bg-muted/30">
-                    <Icon className="size-4 text-muted-foreground" aria-hidden />
-                  </span>
-                  <div className="min-w-0">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <h3 className="text-sm font-medium">{item.title}</h3>
-                      <StatusBadge status={moduleStatusTone(module?.state)} label={moduleStateLabel(module?.state, lang)} />
-                    </div>
-                    <p className="mt-1 text-xs leading-5 text-muted-foreground">{item.detail}</p>
-                  </div>
-                </div>
-                <Button
-                  size="sm"
-                  variant="outline"
-                  disabled={disabled}
-                  onClick={() => {
-                    if (!v3Snapshot || !module) return;
-                    if (item.action === "agent") openAgentModule(v3Snapshot, module, item.preset);
-                    else if (item.action === "core") void prepareV3Plan(v3Snapshot, module, emptyV3Selection(), "core");
-                    else if (item.action === "visual") setPage("visual");
-                    else if (item.action === "changes") setPage("changes");
-                    else if (item.action === "install") setPage("install");
-                    else void runScan("scan");
-                  }}
-                >
-                  {item.action === "agent" ? (zh ? "选择 Agent" : "Select Agents") : item.action === "scan" ? (zh ? "重新检查" : "Check again") : item.action === "core" ? (zh ? "准备修复" : "Prepare repair") : (zh ? "打开" : "Open")}
-                  <ChevronRight className="size-3.5" aria-hidden />
-                </Button>
-              </div>
-            );
-          })}
-        </div>
-      </Surface>
-
-      {report && source === "native" && (
-        <>
-          <Surface className="p-5">
-            <div className="flex flex-wrap items-center justify-between gap-3">
-              <div>
-                <div className="flex items-center gap-2">
-                  {report.ok ? <CheckCircle2 className="size-5 text-emerald-500" /> : <AlertTriangle className="size-5 text-amber-500" />}
-                  <h2 className="text-base">{report.ok ? (zh ? "常规检查已通过" : "Common checks passed") : (zh ? "发现需要处理的问题" : "Issues need attention")}</h2>
-                </div>
-                <p className="mt-1 text-xs text-muted-foreground">{zh ? "快照时间" : "Snapshot"}：{formatTimestamp(report.collected_at)} · revision {report.revision.slice(0, 12)}</p>
-              </div>
-              <div className="flex flex-wrap gap-2">
-                <Badge variant="secondary">{zh ? "可修复" : "Repairable"} {report.counts.repairable}</Badge>
-                <Badge variant="outline">{zh ? "需手动" : "Manual"} {report.counts.manual}</Badge>
-                <Badge variant="outline">{zh ? "已阻止" : "Blocked"} {report.counts.blocked}</Badge>
-              </div>
+        <div className="grid items-start gap-4 lg:grid-cols-[220px_minmax(0,1fr)]">
+          <DoctorSummaryPanel
+            passed={passSummary.passed}
+            total={passSummary.total}
+            attentionCount={attentionCount}
+            coverageLabel={`${v3Snapshot.coverage?.completed ?? 0}/${v3Snapshot.coverage?.total ?? v3Snapshot.modules.length}`}
+            timestamp={formatTimestampMs(v3Snapshot.collected_at_ms)}
+            revision={v3Snapshot.revision}
+            sourceLabel={sourceLabel}
+            locked={!v3Actionable}
+            lang={lang}
+          />
+          <Surface className="overflow-hidden p-0" hover={false}>
+            <div className="divide-y divide-border/60">
+              {v3Rows.map(({ preset, module }) => {
+                const copy = preset[lang];
+                const Icon = preset.icon;
+                const canPrepare = Boolean(preset.id !== SYNC_PRESET.id && module && module.state === "repairable" && v3Actionable);
+                const canOpenAgent = Boolean(preset.id === "agent" && canPrepare);
+                const actionLabel = canOpenAgent
+                  ? (zh ? "处理工具配置" : "Fix tool setup")
+                  : canPrepare
+                    ? (zh ? "准备修复" : "Prepare repair")
+                      : preset.id === "optical"
+                        ? (zh ? "查看配置" : "Open Configuration")
+                      : preset.id === "recovery"
+                        ? (zh ? "查看恢复" : "Open recovery")
+                        : (preset.id === "platform" || preset.id === SYNC_PRESET.id)
+                          ? (zh ? "查看安装" : "Open installation")
+                          : preset.id === "agent"
+                            ? (zh ? "查看工具设置" : "Open tool settings")
+                            : preset.id === "core"
+                              ? (zh ? "查看连接" : "Open connections")
+                              : (zh ? "重新扫描" : "Scan again");
+                const actionDisabled = busy;
+                return (
+                  <DoctorModuleRow
+                    key={preset.id}
+                    icon={<Icon className="size-4 text-muted-foreground" aria-hidden />}
+                    title={copy.title}
+                    state={module?.state}
+                    statusLabel={moduleStateLabel(module?.state, lang)}
+                    summary={friendlyDoctorModuleSummary(module?.summary || copy.detail, lang)}
+                    rawSummary={module?.summary && friendlyDoctorModuleSummary(module.summary, lang) !== module.summary ? module.summary : undefined}
+                    reasonCodes={module?.reason_codes}
+                    evidenceRevision={module?.evidence_revision}
+                    actionLabel={actionLabel}
+                    actionDisabled={actionDisabled}
+                    lang={lang}
+                    onAction={() => {
+                      if (preset.id === "agent" && v3Snapshot && module && canPrepare) openAgentModule(v3Snapshot, module);
+                      else if (canPrepare && v3Snapshot && module) void prepareV3Plan(v3Snapshot, module, emptyV3Selection());
+                      else if (preset.id === "optical") setPage("configuration");
+                      else if (preset.id === "recovery") setPage("analysis-logs");
+                      else if (preset.id === "core" || preset.id === "agent" || preset.id === "platform" || preset.id === SYNC_PRESET.id) setPage("configuration");
+                      else void runScan("scan");
+                    }}
+                  />
+                );
+              })}
             </div>
           </Surface>
+        </div>
+      )}
+
+      {report && source === "native" && (
+        <div className="grid items-start gap-4 lg:grid-cols-[220px_minmax(0,1fr)]">
+          <DoctorSummaryPanel
+            passed={passSummary.passed}
+            total={passSummary.total}
+            attentionCount={attentionCount}
+            coverageLabel={passSummary.total === null ? "—" : `${passSummary.total}/${passSummary.total}`}
+            timestamp={formatTimestamp(report.collected_at)}
+            revision={report.revision}
+            sourceLabel={sourceLabel}
+            locked={false}
+            lang={lang}
+          />
 
           {report.issues.length === 0 ? (
             <Surface className="p-6 text-sm text-muted-foreground">{zh ? "当前未发现需要处理的常规问题。" : "No common issues currently need attention."}</Surface>
           ) : (
-            <div className="space-y-4">
-              {LAYERS.map((category) => {
-                const issues = report.issues.filter((issue) => issue.category === category);
-                if (issues.length === 0) return null;
-                return (
-                  <Surface key={category} className="p-5">
-                    <h2 className="mb-3 text-sm font-medium">{layerLabel(category, lang)}</h2>
-                    <div className="divide-y divide-border/60">
-                      {issues.map((issue) => {
-                        const selectable = issue.state === "repairable" && issue.remediation?.risk === "low";
-                        return (
-                          <div key={issue.id} className="grid gap-3 py-4 first:pt-0 last:pb-0 md:grid-cols-[minmax(0,1fr)_auto]">
-                            <div className="flex min-w-0 gap-3">
-                              {selectable ? (
-                                <input
-                                  type="checkbox"
-                                  className="mt-1 size-4 accent-primary"
-                                  aria-label={`${zh ? "选择" : "Select"} ${issue.title}`}
-                                  checked={selected.has(issue.id)}
-                                  onChange={(event) => setSelected((current) => {
-                                    const next = new Set(current);
-                                    if (event.target.checked) next.add(issue.id); else next.delete(issue.id);
-                                    return next;
-                                  })}
-                                />
-                              ) : <ShieldCheck className="mt-0.5 size-4 shrink-0 text-muted-foreground" />}
-                              <div className="min-w-0">
-                                <div className="flex flex-wrap items-center gap-2">
-                                  <h3 className="text-sm font-medium">{issue.title}</h3>
-                                  <StatusBadge status={issue.severity === "error" ? "error" : "warning"} label={issue.state === "repairable" ? (zh ? "可常规修复" : "Repairable") : issue.state === "blocked" ? (zh ? "已保护性阻止" : "Blocked safely") : (zh ? "需手动处理" : "Manual action")} />
-                                </div>
-                                <dl className="mt-2 grid gap-2 text-xs leading-5 text-muted-foreground">
-                                  <div><dt className="inline font-medium text-foreground">{zh ? "影响" : "Impact"}：</dt><dd className="inline">{issue.impact}</dd></div>
-                                  <div><dt className="inline font-medium text-foreground">{zh ? "原因" : "Cause"}：</dt><dd className="inline">{issue.cause}</dd></div>
-                                  <div><dt className="inline font-medium text-foreground">{zh ? "证据" : "Evidence"}：</dt><dd className="inline break-words">{issue.evidence}</dd></div>
-                                </dl>
-                              </div>
-                            </div>
-                            {issue.state === "manual" && issue.remediation?.destination ? (
-                              <Button size="sm" variant="outline" onClick={() => setPage(issue.remediation!.destination!)}>
-                                {issue.remediation.label}<ChevronRight className="size-3.5" />
-                              </Button>
-                            ) : null}
-                          </div>
-                        );
+            <Surface className="overflow-hidden p-0" hover={false}>
+              <div className="divide-y divide-border/60">
+                {reportRows.map((issue) => {
+                  const selectable = issue.state === "repairable" && issue.remediation?.risk === "low";
+                  return (
+                    <DoctorIssueRow
+                      key={issue.id}
+                      issue={issue}
+                      selectable={selectable}
+                      selected={selected.has(issue.id)}
+                      lang={lang}
+                      onSelectedChange={(checked) => setSelected((current) => {
+                        const next = new Set(current);
+                        if (checked) next.add(issue.id); else next.delete(issue.id);
+                        return next;
                       })}
-                    </div>
-                  </Surface>
-                );
-              })}
-            </div>
+                      onOpenDestination={() => {
+                        if (issue.remediation?.destination) setPage(issue.remediation.destination);
+                      }}
+                    />
+                  );
+                })}
+              </div>
+            </Surface>
           )}
 
           {repairableIssues.length > 0 && (
-            <div className="sticky bottom-4 z-10 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-border/80 bg-background/95 p-4 shadow-lg backdrop-blur">
+            <div className="sticky bottom-4 z-10 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-border/80 bg-background/95 p-3 shadow-lg backdrop-blur xl:col-start-2">
               <div className="text-sm"><strong>{selected.size}</strong> {zh ? "项低风险常规修复已选择；每次修改都需要再次确认。" : "low-risk repair(s) selected; changes always require confirmation."}</div>
               <Button onClick={() => void previewRepair()} disabled={busy || selected.size === 0}>
                 <Wrench className="size-4" />{phase === "planning" ? (zh ? "正在生成计划" : "Preparing plan") : (zh ? "修复所选问题" : "Repair selected")}
               </Button>
             </div>
           )}
-        </>
+        </div>
       )}
 
       <OperationDialog
@@ -1236,6 +1126,219 @@ export function Doctor({ setPage }: { setPage: (page: PageId) => void }) {
   );
 }
 
+type DoctorPassSummary = {
+  passed: number;
+  total: number | null;
+};
+
+type DoctorModuleRowData = {
+  preset: typeof MODULE_PRESETS[number] | typeof SYNC_PRESET;
+  module?: DoctorModuleV3;
+};
+
+function DoctorSummaryPanel({
+  passed,
+  total,
+  attentionCount,
+  coverageLabel,
+  timestamp,
+  revision,
+  sourceLabel,
+  locked,
+  lang,
+}: {
+  passed: number;
+  total: number | null;
+  attentionCount: number;
+  coverageLabel: string;
+  timestamp: string;
+  revision: string;
+  sourceLabel: string;
+  locked: boolean;
+  lang: "zh" | "en";
+}) {
+  const ratio = total && total > 0 ? Math.min(1, Math.max(0, passed / total)) : 0;
+  const circumference = 2 * Math.PI * 38;
+  const healthy = total !== null && total > 0 && passed === total && attentionCount === 0 && !locked;
+  return (
+    <Surface className="self-start p-4" hover={false}>
+      <div className="flex items-center gap-4 lg:flex-col lg:items-start">
+        <div className="relative size-28 shrink-0" role="img" aria-label={total === null ? (lang === "zh" ? "尚未完成检查" : "No completed checks") : `${passed}/${total}`}>
+          <svg className="size-28 -rotate-90" viewBox="0 0 96 96" aria-hidden>
+            <circle cx="48" cy="48" r="38" fill="none" stroke="var(--muted)" strokeWidth="8" />
+            <circle
+              cx="48"
+              cy="48"
+              r="38"
+              fill="none"
+              stroke={healthy ? "rgb(16 185 129)" : "var(--chart-accent)"}
+              strokeLinecap="round"
+              strokeWidth="8"
+              strokeDasharray={circumference}
+              strokeDashoffset={circumference * (1 - ratio)}
+            />
+          </svg>
+          <div className="absolute inset-0 flex flex-col items-center justify-center text-center">
+            <div className="text-xl font-semibold tabular-nums">{passed}/{total ?? "—"}</div>
+            <div className="text-[11px] text-muted-foreground">{lang === "zh" ? "项正常" : "passed"}</div>
+          </div>
+        </div>
+        <div className="min-w-0 space-y-3">
+          <div>
+            <div className="flex items-center gap-2 text-sm font-medium">
+              {healthy ? <CheckCircle2 className="size-4 text-emerald-500" aria-hidden /> : <AlertTriangle className="size-4 text-amber-500" aria-hidden />}
+              <span>{doctorOverallLabel(healthy, locked, total, lang)}</span>
+            </div>
+            <p className="mt-1 text-xs leading-5 text-muted-foreground">
+              {total === null || locked
+                ? lang === "zh" ? "重新扫描后查看当前检查结果。" : "Scan to see the current results."
+                : attentionCount > 0
+                ? lang === "zh" ? `${attentionCount} 项需要处理，已优先排在右侧。` : `${attentionCount} item(s) need attention and are shown first.`
+                : lang === "zh" ? "当前范围内没有待处理项。" : "No items need attention in the current scope."}
+            </p>
+          </div>
+          {total !== null && <dl className="grid gap-1.5 text-xs text-muted-foreground">
+            <div className="flex justify-between gap-3"><dt>{lang === "zh" ? "状态" : "State"}</dt><dd className="text-right text-foreground">{sourceLabel}</dd></div>
+            <div className="flex justify-between gap-3"><dt>{lang === "zh" ? "检查范围" : "Coverage"}</dt><dd className="text-right tabular-nums text-foreground">{coverageLabel}</dd></div>
+            <div className="flex justify-between gap-3"><dt>{lang === "zh" ? "时间" : "Time"}</dt><dd className="text-right tabular-nums text-foreground">{timestamp}</dd></div>
+            <div className="flex justify-between gap-3"><dt>{lang === "zh" ? "版本" : "Revision"}</dt><dd className="text-right font-mono text-foreground">{revision.slice(0, 12)}</dd></div>
+          </dl>}
+          {locked ? (
+            <div className="rounded-md border border-amber-500/25 bg-amber-500/[0.06] px-3 py-2 text-xs leading-5 text-amber-700 dark:text-amber-300">
+              {lang === "zh" ? "证据不完整或已过期；修复已锁定，请重新扫描。" : "Evidence is incomplete or stale; repairs are locked until you scan again."}
+            </div>
+          ) : null}
+        </div>
+      </div>
+    </Surface>
+  );
+}
+
+function friendlyDoctorModuleSummary(summary: string, lang: "zh" | "en") {
+  const known: Array<[RegExp, string, string]> = [
+    [/d-token autostart is disabled/, "未开启开机启动，可在设置中开启。", "Launch at login is off; you can enable it in Settings."],
+    [/d-token 自有服务未运行或需要安全重载/, "启动本地服务后重新检查连接。", "Start the local service, then check the connection."],
+    [/已发现需要重新注入或修复的 d-token Agent 管理区/, "部分工具的连接设置需要修复。", "Some tools need their connection settings repaired."],
+    [/cc-switch 当前上游需要确认后才会写入 d-token route/, "当前连接尚未同步，请到安装与连接中处理。", "The current connection is not synced. Open Install & Connect."],
+    [/至少一个备份或事务证据不完整，恢复操作保持锁定/, "有备份暂时无法恢复，请查看原因。", "Some backups cannot be restored yet. View the reasons."],
+    [/Optical Shadow 配置需要在视觉压缩工作台处理/, "请打开视觉压缩完成设置。", "Open Visual Compression to finish setup."],
+  ];
+  const match = known.find(([pattern]) => pattern.test(summary));
+  return match ? match[lang === "zh" ? 1 : 2] : summary;
+}
+
+function DoctorModuleRow({
+  icon,
+  title,
+  state,
+  statusLabel,
+  summary,
+  rawSummary,
+  reasonCodes,
+  evidenceRevision,
+  actionLabel,
+  actionDisabled,
+  lang,
+  onAction,
+}: {
+  icon: ReactNode;
+  title: string;
+  state?: string;
+  statusLabel: string;
+  summary: string;
+  rawSummary?: string;
+  reasonCodes?: string[];
+  evidenceRevision?: string;
+  actionLabel: string;
+  actionDisabled: boolean;
+  lang: "zh" | "en";
+  onAction: () => void;
+}) {
+  const canShowDetails = (reasonCodes?.length ?? 0) > 0 || Boolean(evidenceRevision) || Boolean(rawSummary);
+  return (
+    <div className="grid gap-3 px-4 py-3 md:grid-cols-[minmax(0,1fr)_auto] md:items-center">
+      <div className="flex min-w-0 gap-3">
+        <span className="mt-0.5 flex size-8 shrink-0 items-center justify-center rounded-md border border-border/70 bg-muted/25">
+          {icon}
+        </span>
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-2">
+            <h2 className="text-sm font-medium">{title}</h2>
+            <StatusBadge status={moduleStatusTone(state)} label={statusLabel} className="px-2 py-0.5 text-xs" />
+          </div>
+          <p className="mt-1 text-xs leading-5 text-muted-foreground">{summary}</p>
+          {canShowDetails ? (
+            <details className="mt-2 text-xs text-muted-foreground">
+              <summary className="cursor-pointer text-foreground">{lang === "zh" ? "查看原因" : "View reasons"}</summary>
+              {rawSummary && <p className="mt-1.5 break-words leading-5">{rawSummary}</p>}
+              <div className="mt-1.5 flex flex-wrap gap-1.5">
+                {(reasonCodes ?? []).map((code) => <Badge key={code} variant="outline" className="font-mono text-[11px]">{code}</Badge>)}
+                {evidenceRevision ? <Badge variant="outline" className="font-mono text-[11px]">{evidenceRevision}</Badge> : null}
+              </div>
+            </details>
+          ) : null}
+        </div>
+      </div>
+      <Button size="sm" variant="outline" disabled={actionDisabled} onClick={onAction}>
+        {actionLabel}<ChevronRight className="size-3.5" aria-hidden />
+      </Button>
+    </div>
+  );
+}
+
+function DoctorIssueRow({
+  issue,
+  selectable,
+  selected,
+  lang,
+  onSelectedChange,
+  onOpenDestination,
+}: {
+  issue: DoctorIssue;
+  selectable: boolean;
+  selected: boolean;
+  lang: "zh" | "en";
+  onSelectedChange: (checked: boolean) => void;
+  onOpenDestination: () => void;
+}) {
+  const zh = lang === "zh";
+  return (
+    <div className="grid gap-3 px-4 py-3 md:grid-cols-[minmax(0,1fr)_auto] md:items-center">
+      <div className="flex min-w-0 gap-3">
+        {selectable ? (
+          <input
+            type="checkbox"
+            className="mt-1 size-4 accent-primary"
+            aria-label={`${zh ? "选择" : "Select"} ${issue.title}`}
+            checked={selected}
+            onChange={(event) => onSelectedChange(event.target.checked)}
+          />
+        ) : <ShieldCheck className="mt-0.5 size-4 shrink-0 text-muted-foreground" aria-hidden />}
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-2">
+            <h2 className="text-sm font-medium">{issue.title}</h2>
+            <StatusBadge status={issue.severity === "error" ? "error" : "warning"} label={issue.state === "repairable" ? (zh ? "可修复" : "Repairable") : issue.state === "blocked" ? (zh ? "已阻止" : "Blocked") : (zh ? "需处理" : "Needs action")} className="px-2 py-0.5 text-xs" />
+            <span className="text-xs text-muted-foreground">{layerLabel(issue.category, lang)}</span>
+          </div>
+          <p className="mt-1 text-xs leading-5 text-muted-foreground">{issue.impact}</p>
+          <details className="mt-2 text-xs text-muted-foreground">
+            <summary className="cursor-pointer text-foreground">{zh ? "查看原因" : "View cause"}</summary>
+            <dl className="mt-1.5 grid gap-1.5 leading-5">
+              <div><dt className="inline font-medium text-foreground">{zh ? "原因" : "Cause"}：</dt><dd className="inline">{issue.cause}</dd></div>
+              <div><dt className="inline font-medium text-foreground">{zh ? "证据" : "Evidence"}：</dt><dd className="inline break-words">{issue.evidence}</dd></div>
+            </dl>
+          </details>
+        </div>
+      </div>
+      {issue.state === "manual" && issue.remediation?.destination ? (
+        <Button size="sm" variant="outline" onClick={onOpenDestination}>
+          {issue.remediation.label}<ChevronRight className="size-3.5" aria-hidden />
+        </Button>
+      ) : null}
+    </div>
+  );
+}
+
 function SurfaceToggle({
   label,
   checked,
@@ -1367,11 +1470,12 @@ function normalizeDoctorSnapshotV3(value: unknown): DoctorSnapshotV3 | null {
   if (rawModules.length !== snapshot.modules.length) return null;
   const usesDomainModules = rawModules.length > 0
     && rawModules.every((module) => Boolean(DOCTOR_V3_MODULE_DIRECTORY[module.module_id]));
-  const usesProductModules = rawModules.every((module) => MODULE_PRESETS.some((preset) => preset.id === module.module_id));
+  const usesProductModules = rawModules.some((module) => MODULE_PRESETS.some((preset) => preset.id === module.module_id))
+    && rawModules.every((module) => MODULE_PRESETS.some((preset) => preset.id === module.module_id) || module.module_id === SYNC_PRESET.id);
   if (!usesDomainModules && !usesProductModules) return null;
   const modules = usesDomainModules ? aggregateDoctorDomainModules(rawModules) : rawModules;
   const coverage = normalizeDoctorCoverage(snapshot.coverage, rawModules, usesDomainModules);
-  const counts = normalizeDoctorCounts(snapshot.counts) ?? deriveDoctorCounts(modules);
+  const counts = normalizeDoctorCounts(snapshot.counts) ?? deriveDoctorCounts(usesDomainModules ? rawModules : modules);
 
   return {
     schema_version: 3,
@@ -1516,12 +1620,12 @@ function doctorV3EvidenceLabel(snapshot: DoctorSnapshotV3, lang: "zh" | "en"): s
   const partial = !isV3SnapshotComplete(snapshot) && snapshot.state !== "stale";
   if (partial && expired) return lang === "zh" ? "部分证据 · 已过期" : "Partial evidence · stale";
   if (partial) return lang === "zh" ? "部分证据" : "Partial evidence";
-  if (expired) return lang === "zh" ? "本地诊断快照 · 已过期" : "Local diagnostic snapshot · stale";
-  return lang === "zh" ? "本地诊断快照" : "Local diagnostic snapshot";
+  if (expired) return lang === "zh" ? "本机状态 · 已过期" : "Machine status · stale";
+  return lang === "zh" ? "本机状态" : "Machine status";
 }
 
 function doctorPhaseLabel(phase: DoctorPhase, hasSnapshot: boolean, lang: "zh" | "en"): string {
-  if (phase === "scanning") return lang === "zh" ? "正在生成统一诊断快照" : "Creating a unified diagnostic snapshot";
+  if (phase === "scanning") return lang === "zh" ? "正在扫描本机状态" : "Scanning this machine";
   if (phase === "planning") return lang === "zh" ? "正在生成修复计划" : "Preparing a repair plan";
   if (phase === "applying") return lang === "zh" ? "正在执行已确认计划" : "Applying the confirmed plan";
   if (phase === "verifying") return lang === "zh" ? "正在复检结果" : "Verifying results";
@@ -1619,6 +1723,60 @@ function doctorReceiptStatus(receipt: DoctorActionReceiptV3): string {
   if (verification === "failed") return "failed";
   if (verification === "unavailable" || verification === "unknown") return "unknown";
   return receipt.outcome;
+}
+
+function doctorPassSummary(snapshot: DoctorSnapshot | null): DoctorPassSummary {
+  if (isDoctorSnapshotV3(snapshot)) {
+    const total = finiteCountOrNull(snapshot.coverage?.total) ?? snapshot.modules.length;
+    const passed = Math.min(finiteCountOrNull(snapshot.counts.healthy) ?? 0, total);
+    return { passed, total };
+  }
+  if (isDoctorReport(snapshot)) {
+    const passed = finiteCountOrNull(snapshot.counts.healthy) ?? 0;
+    return { passed, total: passed + snapshot.issues.length };
+  }
+  return { passed: 0, total: null };
+}
+
+function doctorAttentionCount(snapshot: DoctorSnapshot | null): number {
+  if (isDoctorSnapshotV3(snapshot)) {
+    return snapshot.counts.repairable + snapshot.counts.manual + snapshot.counts.blocked;
+  }
+  if (isDoctorReport(snapshot)) return snapshot.issues.length;
+  return 0;
+}
+
+function doctorOverallLabel(healthy: boolean, locked: boolean, total: number | null, lang: "zh" | "en"): string {
+  if (total === null) return lang === "zh" ? "尚未扫描" : "Not scanned";
+  if (locked) return lang === "zh" ? "需要重新扫描" : "Scan again";
+  if (healthy) return lang === "zh" ? "当前正常" : "Healthy";
+  return lang === "zh" ? "需要处理" : "Needs attention";
+}
+
+function doctorModuleRows(snapshot: DoctorSnapshotV3): DoctorModuleRowData[] {
+  const presets = [...MODULE_PRESETS, ...(snapshot.modules.some((module) => module.module_id === SYNC_PRESET.id) ? [SYNC_PRESET] : [])];
+  return presets
+    .map((preset) => ({ preset, module: snapshot.modules.find((item) => item.module_id === preset.id) }))
+    .sort((left, right) => doctorModulePriority(left.module?.state) - doctorModulePriority(right.module?.state));
+}
+
+function doctorIssueRows(issues: DoctorIssue[]): DoctorIssue[] {
+  return [...issues].sort((left, right) => doctorIssuePriority(left) - doctorIssuePriority(right));
+}
+
+function doctorModulePriority(state: string | undefined): number {
+  if (state === "repairable" || state === "error" || state === "failed") return 0;
+  if (state === "manual" || state === "attention" || state === "warning") return 1;
+  if (state === "blocked" || state === "partial" || state === "stale") return 2;
+  if (state === "healthy" || state === "verified" || state === "passed" || state === "ok") return 3;
+  return 4;
+}
+
+function doctorIssuePriority(issue: DoctorIssue): number {
+  if (issue.severity === "error") return issue.state === "repairable" ? 0 : 1;
+  if (issue.state === "repairable") return 2;
+  if (issue.state === "manual") return 3;
+  return 4;
 }
 
 function formatTimestampMs(value: number): string {

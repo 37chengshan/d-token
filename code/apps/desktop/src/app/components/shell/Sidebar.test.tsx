@@ -40,10 +40,10 @@ afterEach(() => {
 });
 
 describe("Sidebar", () => {
-  it("keeps eight bilingual product destinations accessible and marks the current page", () => {
+  it("keeps the five product destinations accessible and marks the current page", () => {
     render(
       <Sidebar
-        page="overview"
+        page="configuration"
         setPage={vi.fn()}
         collapsed={false}
         setCollapsed={vi.fn()}
@@ -51,37 +51,32 @@ describe("Sidebar", () => {
       />,
     );
 
-    expect(screen.getByRole("button", { name: "总体概览" })).toHaveAttribute(
+    expect(screen.getByRole("button", { name: "配置" })).toHaveAttribute(
       "aria-current",
       "page",
     );
     for (const label of [
-      "总体概览",
-      "安装与连接",
-      "代码图谱",
-      "分析",
-      "视觉压缩 Beta",
-      "Doctor",
-      "变更与回退",
+      "配置",
+      "高级配置",
+      "分析日志",
+      "诊断",
       "设置",
     ]) {
       expect(screen.getByRole("button", { name: label })).toBeVisible();
     }
-    expect(
-      screen.getByRole("button", { name: "视觉压缩 Beta" }).textContent,
-    ).toMatch(/Beta/);
-    expect(NAV.slice(0, 4).map((item) => item.id)).toEqual([
-      "overview",
-      "install",
-      "codebase-memory",
-      "analytics",
+    expect(screen.queryByRole("button", { name: /视觉压缩/ })).toBeNull();
+    expect(NAV.map((item) => item.id)).toEqual([
+      "configuration",
+      "advanced-configuration",
+      "analysis-logs",
+      "diagnostics",
     ]);
   });
 
   it("uses radio keyboard semantics for the expanded light and dark control", () => {
     render(
       <Sidebar
-        page="overview"
+        page="configuration"
         setPage={vi.fn()}
         collapsed={false}
         setCollapsed={vi.fn()}
@@ -103,7 +98,7 @@ describe("Sidebar", () => {
     const setCollapsed = vi.fn();
     render(
       <Sidebar
-        page="overview"
+        page="configuration"
         setPage={vi.fn()}
         collapsed
         setCollapsed={setCollapsed}
@@ -131,7 +126,7 @@ describe("Sidebar", () => {
   it("marks nav-motion-item parents with data-reduced-motion=false when motion is enabled", () => {
     render(
       <Sidebar
-        page="overview"
+        page="configuration"
         setPage={vi.fn()}
         collapsed={false}
         setCollapsed={vi.fn()}
@@ -148,7 +143,7 @@ describe("Sidebar", () => {
   it("shows collapsed navigation names through tooltips instead of native title only", async () => {
     render(
       <Sidebar
-        page="overview"
+        page="configuration"
         setPage={vi.fn()}
         collapsed
         setCollapsed={vi.fn()}
@@ -156,18 +151,18 @@ describe("Sidebar", () => {
       />,
     );
 
-    const analytics = screen.getByRole("button", { name: "分析" });
+    const analytics = screen.getByRole("button", { name: "分析日志" });
     expect(analytics).not.toHaveAttribute("title");
     fireEvent.pointerMove(analytics);
     fireEvent.focus(analytics);
-    expect(await screen.findByRole("tooltip", { name: "分析" })).toBeVisible();
+    expect(await screen.findByRole("tooltip", { name: "分析日志" })).toBeVisible();
   });
 
   it("pulses motion on click without requiring remount of the pointer target", () => {
     const setPage = vi.fn();
     render(
       <Sidebar
-        page="overview"
+        page="configuration"
         setPage={setPage}
         collapsed={false}
         setCollapsed={vi.fn()}
@@ -175,27 +170,27 @@ describe("Sidebar", () => {
       />,
     );
 
-    const analytics = () => screen.getByRole("button", { name: "分析" });
+    const analytics = () => screen.getByRole("button", { name: "分析日志" });
     const token = () =>
       Number(
         analytics()
-          .querySelector('[data-motion-id="analytics"]')
+          .querySelector('[data-motion-id="analysis-logs"]')
           ?.getAttribute("data-motion-trigger"),
       );
     const tokenBefore = token();
     fireEvent.click(analytics());
     const iconAfterClick = analytics().querySelector(
-      '[data-motion-id="analytics"]',
+      '[data-motion-id="analysis-logs"]',
     );
 
     expect(token()).toBeGreaterThan(tokenBefore);
     expect(iconAfterClick).toHaveAttribute("data-motion-play", "true");
-    expect(setPage).toHaveBeenCalledWith("analytics");
+    expect(setPage).toHaveBeenCalledWith("analysis-logs");
   });
   it("keeps hover purely CSS-driven without writing data-motion-play", () => {
     render(
       <Sidebar
-        page="overview"
+        page="configuration"
         setPage={vi.fn()}
         collapsed={false}
         setCollapsed={vi.fn()}
@@ -219,16 +214,16 @@ describe("Sidebar", () => {
     vi.useFakeTimers();
     render(
       <Sidebar
-        page="overview"
+        page="configuration"
         setPage={vi.fn()}
         collapsed={false}
         setCollapsed={vi.fn()}
         reducedMotion={false}
       />,
     );
-    const analytics = () => screen.getByRole("button", { name: "分析" });
+    const analytics = () => screen.getByRole("button", { name: "分析日志" });
     const icon = () =>
-      analytics().querySelector('[data-motion-id="analytics"]');
+      analytics().querySelector('[data-motion-id="analysis-logs"]');
     fireEvent.click(analytics());
     expect(icon()).toHaveAttribute("data-motion-play", "true");
     act(() => {
@@ -242,7 +237,7 @@ describe("Sidebar", () => {
     render(
       <I18nContext.Provider value={{ lang: "en", setLang: vi.fn() }}>
         <Sidebar
-          page="analytics"
+          page="analysis-logs"
           setPage={vi.fn()}
           collapsed={false}
           setCollapsed={vi.fn()}
@@ -251,12 +246,12 @@ describe("Sidebar", () => {
       </I18nContext.Provider>,
     );
 
-    expect(screen.getByRole("button", { name: "Analytics" })).toHaveAttribute(
+    expect(screen.getByRole("button", { name: "Analysis & Logs" })).toHaveAttribute(
       "aria-current",
       "page",
     );
     expect(
-      screen.getByRole("button", { name: "Install & Connect" }),
+      screen.getByRole("button", { name: "Configuration" }),
     ).toBeVisible();
     expect(screen.getByRole("radio", { name: "Light" })).toBeVisible();
     expect(screen.getByRole("radio", { name: "Dark" })).toBeVisible();

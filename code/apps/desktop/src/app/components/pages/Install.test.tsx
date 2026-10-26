@@ -1,6 +1,7 @@
 import React from "react";
+import userEvent from "@testing-library/user-event";
 import "@testing-library/jest-dom/vitest";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
@@ -398,9 +399,10 @@ describe("Install", () => {
     });
 
     render(<Install />);
-    // P0.0.10.3: one click is the authorization — the plan is previewed
-    // internally and applied immediately, no second confirmation.
-    fireEvent.click(await screen.findByRole("button", { name: "查看变更" }));
+    fireEvent.click(await screen.findByRole("button", { name: "配置所选 (1)" }));
+    expect(screen.queryByText("确认连接方案")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "确认并连接" })).not.toBeInTheDocument();
+
     await waitFor(() => expect(mocks.invokeNative).toHaveBeenCalledWith(
       "apply_reviewed_managed_agent_transport",
       expect.objectContaining({
@@ -461,6 +463,14 @@ describe("Install", () => {
     const capabilitySnapshot = {
       ...connectedSnapshot,
       revision: "agent-operation-matrix",
+      agent_catalog: agents.map(([agent_id, agent_name, can_configure, can_clear]) => ({
+        agent_id,
+        agent_name,
+        installed: true,
+        integration_kind: "route" as const,
+        can_configure,
+        can_clear,
+      })),
       agent_bindings: agents.map(([agent_id, agent_name, can_configure, can_clear]) => ({
         agent_id,
         agent_name,
@@ -468,13 +478,13 @@ describe("Install", () => {
         current_config_source: `agent-config:${agent_id}`,
         candidates: [],
         resolved_candidate: null,
-        resolution: "already-connected" as const,
-        confidence: 100,
-        reasons: ["connected"],
-        capability: "one-click" as const,
+        resolution: can_configure ? "already-connected" as const : "unsupported" as const,
+        confidence: can_configure ? 100 : 0,
+        reasons: can_configure ? ["connected"] : ["schema-unverified"],
+        capability: can_configure ? "one-click" as const : "prompt-only" as const,
         can_configure,
         can_clear,
-        already_connected: true,
+        already_connected: can_configure,
       })),
     };
     mocks.invokeNative.mockImplementation(async (command: string) => {
@@ -485,31 +495,130 @@ describe("Install", () => {
     render(<Install />);
 
     expect(await screen.findByText("OpenClaw")).toBeInTheDocument();
-    // Only Agents with a real backend write action get rows with buttons.
-    const configureButtons = screen.getAllByRole("button", { name: "一键配置" });
-    const clearButtons = screen.getAllByRole("button", { name: "清除 d-token 配置" });
-    expect(configureButtons).toHaveLength(5);
-    expect(clearButtons).toHaveLength(5);
-    expect(configureButtons.filter((button) => (button as HTMLButtonElement).disabled)).toHaveLength(0);
-    expect(clearButtons.filter((button) => (button as HTMLButtonElement).disabled)).toHaveLength(4);
-    // Detection-only Agents are counted as evidence, never given fake buttons.
-    expect(screen.queryByText("Cursor")).not.toBeInTheDocument();
-    expect(screen.queryByText("Gemini CLI")).not.toBeInTheDocument();
-    expect(screen.getByText("7 个已检测")).toBeInTheDocument();
+    expect(screen.getByText("已选 5 / 可配置 5")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "配置所选 (5)" })).toBeEnabled();
+    expect(screen.getByText("Cursor")).toBeInTheDocument();
+    expect(screen.getByText("Gemini CLI")).toBeInTheDocument();
+    expect(screen.getByText("工具 7 · 上游 0 · cc-switch 0")).toBeInTheDocument();
+
+    const openCodeCard = screen.getByRole("group", { name: "OpenCode" });
+    fireEvent.click(within(openCodeCard).getByRole("button", { name: "详情" }));
+    expect(within(screen.getByRole("dialog")).getByRole("button", { name: "配置" })).toBeEnabled();
+    expect(within(screen.getByRole("dialog")).getByRole("button", { name: "清除配置" })).toBeEnabled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Close" }));
+    const claudeCard = screen.getByRole("group", { name: "Claude Code" });
+    fireEvent.click(within(claudeCard).getByRole("button", { name: "详情" }));
+    expect(within(screen.getByRole("dialog")).getByRole("button", { name: "配置" })).toBeEnabled();
+    expect(within(screen.getByRole("dialog")).getByRole("button", { name: "清除配置" })).toBeDisabled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Close" }));
+    const cursorCard = screen.getByRole("heading", { name: "Cursor" }).closest("article");
+    expect(cursorCard).not.toBeNull();
+    fireEvent.click(within(cursorCard as HTMLElement).getByRole("button", { name: "详情" }));
+    expect(within(screen.getByRole("dialog")).getByRole("button", { name: "配置" })).toBeDisabled();
+    expect(within(screen.getByRole("dialog")).getByRole("button", { name: "清除配置" })).toBeDisabled();
     expect(screen.queryByRole("button", { name: "高级配置" })).not.toBeInTheDocument();
     expect(screen.queryByText(/手动配置|需要手动|手动完成/)).not.toBeInTheDocument();
-    // No dead-end copy is rendered anywhere.
     expect(screen.queryByText(/暂未开放|自动写入未开放|等待安全适配/)).not.toBeInTheDocument();
-
-    // Clear stays fail-closed without an ownership receipt: clicking a disabled
-    // Clear button never claims success and never reports a version dead-end.
-    expect(clearButtons[1]).toBeDisabled();
-    fireEvent.click(clearButtons[1]);
-    expect(screen.queryByText(/当前版本暂未开放可验证的自动清除/)).not.toBeInTheDocument();
-    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   });
 
-  it("auto-includes every installed Agent and makes View changes the primary action", async () => {
+  it("lets card surfaces toggle selection while details and disabled catalog entries stay non-selecting across refresh", async () => {
+    const codexCandidate = {
+      id: "codex-provider",
+      name: "Codex provider",
+      protocol: "responses",
+      base_url: "http://127.0.0.1:10100/v1",
+      models: [] as string[],
+      source: "agent-config:codex",
+      freshness: "unix:5",
+      auth_mode: "none",
+      active: true,
+      state: "discovered",
+      agent_ids: ["codex"],
+      confidence: 99,
+      reasons: ["current"],
+    };
+    const cardSnapshot = {
+      ...connectedSnapshot,
+      revision: "card-selection-1",
+      agent_catalog: [{
+        agent_id: "opencode",
+        agent_name: "OpenCode",
+        installed: true,
+        integration_kind: "route" as const,
+        can_configure: true,
+        can_clear: false,
+      }, {
+        agent_id: "codex",
+        agent_name: "Codex",
+        installed: true,
+        integration_kind: "route" as const,
+        can_configure: true,
+        can_clear: false,
+      }, {
+        agent_id: "cursor",
+        agent_name: "Cursor",
+        installed: false,
+        integration_kind: "unsupported" as const,
+        can_configure: false,
+        can_clear: false,
+      }],
+      agent_bindings: [{ ...connectedSnapshot.agent_bindings[0], can_configure: true }, {
+        ...connectedSnapshot.agent_bindings[0],
+        agent_id: "codex",
+        agent_name: "Codex",
+        current_config_source: "agent-config:codex",
+        candidates: [codexCandidate],
+        resolved_candidate: codexCandidate,
+        resolution: "auto-resolved" as const,
+        can_configure: true,
+        can_clear: false,
+      }],
+    };
+    let scan = 0;
+    mocks.invokeNative.mockImplementation(async (command: string) => {
+      if (command === "discover_upstream_candidates") {
+        scan += 1;
+        return { ...cardSnapshot, revision: `card-selection-${scan}` };
+      }
+      throw new Error(`unexpected command: ${command}`);
+    });
+
+    render(<Install />);
+
+    const opencodeCard = await screen.findByRole("group", { name: "OpenCode" });
+    const codexCard = screen.getByRole("group", { name: "Codex" });
+    expect(screen.getByLabelText("选择配置 OpenCode")).toBeChecked();
+    expect(screen.getByLabelText("选择配置 Codex")).toBeChecked();
+    expect(screen.getByLabelText("选择配置 Cursor")).toBeDisabled();
+
+    const detailsTrigger = within(opencodeCard).getByRole("button", { name: "详情" });
+    fireEvent.click(detailsTrigger);
+    const dialog = screen.getByRole("dialog", { name: "OpenCode" });
+    expect(opencodeCard).not.toContainElement(dialog);
+    expect(screen.getByLabelText("选择配置 OpenCode")).toBeChecked();
+    await userEvent.setup().keyboard("{Escape}");
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(detailsTrigger).toHaveFocus();
+    expect(screen.getByText("已选 2 / 可配置 2")).toBeInTheDocument();
+
+    fireEvent.click(opencodeCard);
+    expect(screen.getByLabelText("选择配置 OpenCode")).not.toBeChecked();
+    expect(screen.getByText("已选 1 / 可配置 2")).toBeInTheDocument();
+
+    within(codexCard).getByRole("checkbox").focus();
+    await userEvent.setup().keyboard(" ");
+    expect(screen.getByLabelText("选择配置 Codex")).not.toBeChecked();
+    expect(screen.getByRole("button", { name: "配置所选" })).toBeDisabled();
+
+    fireEvent.click(screen.getByRole("button", { name: "重新扫描" }));
+    await waitFor(() => expect(mocks.invokeNative).toHaveBeenCalledTimes(2));
+    expect(screen.getByLabelText("选择配置 OpenCode")).not.toBeChecked();
+    expect(screen.getByLabelText("选择配置 Codex")).not.toBeChecked();
+  });
+
+  it("auto-includes every actionable Agent and keeps the onboarding hint from narrowing the batch", async () => {
     const clineBinding = {
       ...connectedSnapshot.agent_bindings[0],
       agent_id: "cline",
@@ -568,13 +677,10 @@ describe("Install", () => {
 
     render(<Install initialAgentId="cline" />);
 
-    // The batch is automatic with Agent-level selection (PRD P0.0.10.1):
-    // every installed Agent renders a selectable checkbox defaulting to
-    // checked; the onboarding hint never narrows the auto batch to one Agent.
-    expect(await screen.findByRole("button", { name: "查看变更" })).toBeEnabled();
-    const checkboxes = screen.getAllByRole("checkbox") as HTMLInputElement[];
-    expect(checkboxes.length).toBeGreaterThanOrEqual(2);
-    expect(checkboxes.every((item) => item.checked)).toBe(true);
+    // The onboarding Agent hint must not narrow the default batch to one Agent.
+    expect(await screen.findByRole("button", { name: "配置所选 (2)" })).toBeEnabled();
+    expect(screen.getByLabelText("选择配置 Cline")).toBeChecked();
+    expect(screen.getByLabelText("选择配置 OpenCode")).toBeChecked();
     expect(screen.getByText("Cline")).toBeInTheDocument();
     expect(screen.getByText("OpenCode")).toBeInTheDocument();
   });
@@ -665,10 +771,12 @@ describe("Install", () => {
     render(<Install />);
 
     expect(await screen.findByText("流量可能绕过 d-token")).toBeInTheDocument();
+    const clineCard = screen.getByRole("group", { name: "Cline" });
+    fireEvent.click(within(clineCard).getByRole("button", { name: "详情" }));
     expect(screen.getByText("下一步：重新配置此 Agent，使请求重新经过 d-token。")).toBeInTheDocument();
     expect(screen.getByText(/d-token 路由 · cline-upstream · cline-model · open_ai/)).toBeInTheDocument();
     expect(screen.getByText("receipt applied_verified · runtime_reloaded")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "一键配置" })).toBeEnabled();
+    expect(within(screen.getByRole("dialog")).getByRole("button", { name: "配置" })).toBeEnabled();
   });
 
   it("counts only detected Agents and their real discovered upstreams", () => {
@@ -808,16 +916,12 @@ describe("Install", () => {
 
     render(<Install />);
 
-    fireEvent.click(await screen.findByRole("button", { name: "补充所需凭据" }));
+    fireEvent.click(await screen.findByRole("button", { name: "配置所选 (1)" }));
     fireEvent.change(screen.getByLabelText("凭据"), { target: { value: credential } });
     fireEvent.click(screen.getByRole("button", { name: "安全保存并继续" }));
 
     await waitFor(() => expect(mocks.invokeNative).toHaveBeenCalledWith("store_provider_credential", {
-      request: expect.objectContaining({
-        provider_id: "provider-needing-key",
-        credential,
-        upstream_identity: expect.objectContaining({ candidate_id: "provider-needing-key" }),
-      }),
+      request: { provider_id: "provider-needing-key", credential },
     }));
     expect(await screen.findByRole("alert")).toHaveTextContent("未能安全保存凭据，请检查后重试。");
     expect(screen.queryByText(credential)).not.toBeInTheDocument();
@@ -948,7 +1052,7 @@ describe("Install", () => {
     dispatchInstallMachine({ type: "SET_PHASE", phase: "verifying" });
     render(<Install />);
     expect(await screen.findByText("正在验证")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "正在处理" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /处理中/ })).toBeDisabled();
   });
 
   it("passes nested review hashes from MCP preview to apply", async () => {
@@ -1011,8 +1115,9 @@ describe("Install", () => {
     render(<Install />);
     expect(await screen.findByText("Agent MCP")).toBeInTheDocument();
     // MCP/Hook integrations are labeled truthfully: tool capability only.
-    expect(screen.getByText("工具能力，不改变模型上游")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "配置工具集成" }));
+    fireEvent.click(screen.getByRole("button", { name: "详情" }));
+    expect(screen.getByText("工具能力，不改变模型连接")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "配置工具" }));
 
     await waitFor(() => {
       expect(mocks.invokeNative).toHaveBeenCalledWith(
@@ -1080,7 +1185,8 @@ describe("Install", () => {
 
     render(<Install />);
     expect(await screen.findByText("Agent MCP")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "配置工具集成" }));
+    fireEvent.click(screen.getByRole("button", { name: "详情" }));
+    fireEvent.click(screen.getByRole("button", { name: "配置工具" }));
 
     await waitFor(() => {
       expect(mocks.invokeNative).not.toHaveBeenCalledWith(
@@ -1088,6 +1194,6 @@ describe("Install", () => {
         expect.anything(),
       );
     });
-    expect(screen.getByRole("status")).toHaveTextContent("MCP 操作未完成");
+    expect(within(screen.getByRole("dialog")).getByRole("alert")).toHaveTextContent("MCP 操作未完成");
   });
 });

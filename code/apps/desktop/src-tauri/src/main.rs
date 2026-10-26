@@ -8,11 +8,12 @@ mod upstream_discovery;
 
 use codebase_memory_control::{
     apply_codebase_memory_integration, cancel_codebase_memory_index, delete_codebase_memory_index,
-    get_codebase_memory_status, open_codebase_memory_download_page, open_codebase_memory_graph,
-    open_codebase_memory_package_directory, preview_codebase_memory_integration,
-    rollback_codebase_memory_integration, set_codebase_memory_package_directory,
-    start_codebase_memory_index, start_codebase_memory_ui, stop_codebase_memory_ui,
-    verify_codebase_memory_integration,
+    get_codebase_memory_status, import_codebase_memory_archive, open_codebase_memory_download_page,
+    open_codebase_memory_graph, open_codebase_memory_package_directory,
+    preview_codebase_memory_integration, rollback_codebase_memory_integration,
+    select_codebase_memory_archive, select_codebase_memory_package_directory,
+    set_codebase_memory_package_directory, start_codebase_memory_index, start_codebase_memory_ui,
+    stop_codebase_memory_ui, verify_codebase_memory_integration,
 };
 use tray::show_control_plane;
 
@@ -943,6 +944,103 @@ fn active_config_path() -> PathBuf {
         .join("dtoken-config.json")
 }
 
+/// The managed service may be brought up before the user has reviewed and
+/// applied an upstream route. This private config is deliberately empty: it
+/// enables only the loopback control-plane endpoints, while every agent
+/// request remains fail-closed until an active config is applied.
+fn setup_runtime_config_path() -> PathBuf {
+    app_state_dir()
+        .join("runtime")
+        .join("setup-config")
+        .join("dtoken-config.json")
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ServiceStartConfigMode {
+    Active,
+    Setup,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ServiceStartConfig {
+    path: PathBuf,
+    mode: ServiceStartConfigMode,
+}
+
+fn verify_empty_setup_runtime_config(path: &Path) -> Result<(), String> {
+    let config = DtokenConfig::load_json(path)
+        .map_err(|error| format!("Setup runtime config verification failed: {error:#}"))?;
+    if config.providers.is_empty() && config.routes.is_empty() && config.instances.is_empty() {
+        Ok(())
+    } else {
+        Err("Setup runtime config must not contain providers, routes, or instances".to_string())
+    }
+}
+
+fn ensure_setup_runtime_config() -> Result<PathBuf, String> {
+    let path = setup_runtime_config_path();
+    match fs::symlink_metadata(&path) {
+        Ok(metadata) => {
+            if metadata.file_type().is_symlink() || !metadata.is_file() {
+                return Err("Setup runtime config must be a regular d-token-owned file".to_string());
+            }
+            verify_empty_setup_runtime_config(&path)?;
+            return Ok(path);
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => {
+            return Err(format!(
+                "Inspect setup runtime config {}: {error}",
+                path.display()
+            ));
+        }
+    }
+
+    let content = serde_json::to_vec_pretty(&DtokenConfig::empty())
+        .map_err(|error| format!("Serialize setup runtime config: {error}"))?;
+    durable_atomic_write(&path, &content)
+        .map_err(|error| format!("Write setup runtime config: {error}"))?;
+    verify_empty_setup_runtime_config(&path)?;
+    Ok(path)
+}
+
+fn resolve_service_start_config() -> Result<ServiceStartConfig, String> {
+    let active = active_config_path();
+    match fs::symlink_metadata(&active) {
+        Ok(_) => {
+            validate_active_config_for_start()?;
+            return Ok(ServiceStartConfig {
+                path: active,
+                mode: ServiceStartConfigMode::Active,
+            });
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => {
+            return Err(format!(
+                "Inspect active d-token config {}: {error}",
+                active.display()
+            ));
+        }
+    }
+
+    Ok(ServiceStartConfig {
+        path: ensure_setup_runtime_config()?,
+        mode: ServiceStartConfigMode::Setup,
+    })
+}
+
+fn managed_service_manifest_uses_setup_runtime_config() -> bool {
+    if active_config_path().exists() {
+        return false;
+    }
+    let Some(manifest) = read_service_manifest() else {
+        return false;
+    };
+    let setup_path = setup_runtime_config_path();
+    Path::new(&manifest.config_path) == setup_path
+        && verify_empty_setup_runtime_config(&setup_path).is_ok()
+}
+
 fn config_backup_root() -> PathBuf {
     fs::canonicalize(app_state_dir())
         .unwrap_or_else(|_| app_state_dir())
@@ -983,6 +1081,10 @@ fn active_route_config_status() -> Value {
     });
     if !exists {
         if let Some(object) = status.as_object_mut() {
+            object.insert(
+                "content_sha256".to_string(),
+                json!(dtoken_config_patcher::stable_hash("")),
+            );
             object.insert("state".to_string(), json!("missing"));
             object.insert("provider_count".to_string(), json!(0));
             object.insert("route_count".to_string(), json!(0));
@@ -1001,6 +1103,7 @@ fn active_route_config_status() -> Value {
             return status;
         }
     };
+    status["content_sha256"] = json!(dtoken_config_patcher::stable_hash(&content));
     let config: Value = match serde_json::from_str(&content) {
         Ok(config) => config,
         Err(err) => {
@@ -1310,9 +1413,34 @@ fn rollback_scope_for_backup(backup: &dtoken_config_patcher::BackupRecord) -> &'
         "learning-managed-block"
     } else if patchable_active_config_path().ok().as_ref() == Some(&backup.target_path) {
         "dtoken-active-config"
+    } else if current_process_scan_context(epoch_ms())
+        .ok()
+        .is_some_and(|context| registered_agent_backup_target(&backup.target_path, &context))
+    {
+        "managed-agent-config"
     } else {
         "unknown"
     }
+}
+
+/// A backup manifest proves the d-token write; the registry proves that its
+/// target is a supported tool configuration. Never infer this from a basename.
+fn registered_agent_backup_target(target: &Path, context: &AgentScanContext) -> bool {
+    dtoken_config_patcher::agent::KNOWN_AGENT_ADAPTERS
+        .iter()
+        .any(|agent| {
+            resolve_managed_agent_path_with_context(
+                ManagedAgentTransportRequest {
+                    agent_id: agent.id.to_string(),
+                    target_path: target.to_path_buf(),
+                    endpoint: "http://127.0.0.1:18001".to_string(),
+                    enabled: false,
+                    model: None,
+                },
+                context,
+            )
+            .is_ok()
+        })
 }
 
 fn backup_current_sha256(backup: &dtoken_config_patcher::BackupRecord) -> Option<String> {
@@ -1375,7 +1503,10 @@ fn backup_expected_current_token(backup: &dtoken_config_patcher::BackupRecord) -
 fn generic_rollback_executor(scope: &str) -> bool {
     matches!(
         scope,
-        "opencode-config" | "learning-managed-block" | "dtoken-active-config"
+        "opencode-config"
+            | "learning-managed-block"
+            | "dtoken-active-config"
+            | "managed-agent-config"
     )
 }
 
@@ -1383,7 +1514,10 @@ fn rollback_executor_kind(scope: &str) -> &'static str {
     match scope {
         "agent-integration" => "agent_integration",
         "optical-config" => "optical",
-        "opencode-config" | "learning-managed-block" | "dtoken-active-config" => "generic",
+        "opencode-config"
+        | "learning-managed-block"
+        | "dtoken-active-config"
+        | "managed-agent-config" => "generic",
         _ => "locked",
     }
 }
@@ -2486,7 +2620,8 @@ fn optical_editor_value() -> Value {
         .unwrap_or("unknown");
     let service_running = service_state == "running";
     let path = active_config_path();
-    if !path.exists() {
+    if matches!(fs::symlink_metadata(&path), Err(error) if error.kind() == std::io::ErrorKind::NotFound)
+    {
         return json!({
             "ok": false,
             "source": "dtoken-desktop-control-plane",
@@ -3013,7 +3148,7 @@ fn load_hybrid_capability_manifest(
             return Err(format!(
                 "Read Agent capability manifest {}: {error}",
                 path.display()
-            ))
+            ));
         }
     };
     let manifest: HybridAgentCapabilityManifest = serde_json::from_slice(&bytes)
@@ -3108,6 +3243,45 @@ fn revoke_hybrid_capabilities(
     (receipts, errors)
 }
 
+fn retain_unrevoked_capability_references(
+    capability_references: &mut Vec<ManagedAgentCapabilityReference>,
+    receipts: &[MemoryCapabilityTransactionReceipt],
+) {
+    let revoked_ids = receipts
+        .iter()
+        .map(|receipt| receipt.transaction_id.as_str())
+        .collect::<HashSet<_>>();
+    capability_references
+        .retain(|reference| !revoked_ids.contains(reference.transaction_id.as_str()));
+}
+
+fn persist_hybrid_capability_manifest_for_apply(
+    agent_transaction_id: &str,
+    composite_review_digest: &str,
+    active_config_sha256: &Option<String>,
+    state: &str,
+    capabilities: &[ManagedAgentCapabilityReference],
+    failure_reason: Option<String>,
+) -> (Option<PathBuf>, Option<String>) {
+    if capabilities.is_empty() {
+        return (None, None);
+    }
+    let manifest = HybridAgentCapabilityManifest {
+        schema_version: 1,
+        agent_transaction_id: agent_transaction_id.to_string(),
+        composite_review_digest: composite_review_digest.to_string(),
+        active_config_sha256: active_config_sha256.clone(),
+        state: state.to_string(),
+        capabilities: capabilities.to_vec(),
+        updated_at_ms: epoch_ms().max(1),
+        failure_reason,
+    };
+    match save_hybrid_capability_manifest(&manifest) {
+        Ok(path) => (Some(path), None),
+        Err(error) => (None, Some(sanitize_command_output(&error))),
+    }
+}
+
 fn verify_hybrid_capabilities(
     manifest: &HybridAgentCapabilityManifest,
 ) -> (bool, Vec<Value>, Option<String>) {
@@ -3142,7 +3316,7 @@ fn verify_hybrid_capabilities(
                     "Managed capability projection is unavailable: {}",
                     sanitize_command_output(&format!("{error:#}"))
                 )),
-            )
+            );
         }
     };
     let observed_at_ms = epoch_ms().max(1);
@@ -3543,7 +3717,7 @@ fn preview_hybrid_agent_integration(request: HybridAgentIntegrationDraftRequest)
                         "state": "blocked",
                         "source": "d-token-agent-integration",
                         "error": "Agent integration plan shape is invalid",
-                    })
+                    });
                 }
                 Err(error) => {
                     return json!({
@@ -3551,7 +3725,7 @@ fn preview_hybrid_agent_integration(request: HybridAgentIntegrationDraftRequest)
                         "state": "blocked",
                         "source": "d-token-agent-integration",
                         "error": sanitize_command_output(&error.to_string()),
-                    })
+                    });
                 }
             };
             plan.insert("schema_version".to_string(), json!(2));
@@ -3607,7 +3781,7 @@ fn apply_hybrid_agent_integration(request: ApplyHybridAgentIntegrationRequest) -
     let prepared = match take_pending_hybrid_agent_preview(&request.reviewed_digest) {
         Ok(prepared) => prepared,
         Err(error) => {
-            return json!({"ok": false, "state": "blocked", "error": sanitize_command_output(&error)})
+            return json!({"ok": false, "state": "blocked", "error": sanitize_command_output(&error)});
         }
     };
     let current_draft_digest = match hybrid_agent_draft_digest(&request.draft) {
@@ -3618,7 +3792,7 @@ fn apply_hybrid_agent_integration(request: ApplyHybridAgentIntegrationRequest) -
                 "state": "blocked",
                 "source": "d-token-agent-integration",
                 "error": sanitize_command_output(&error),
-            })
+            });
         }
     };
     if prepared.review_digest != request.reviewed_digest
@@ -3640,7 +3814,7 @@ fn apply_hybrid_agent_integration(request: ApplyHybridAgentIntegrationRequest) -
                     "state": "blocked",
                     "source": "d-token-agent-integration",
                     "error": "Active d-token config changed after preview; review the current route again",
-                })
+                });
             }
             Err(error) => {
                 return json!({
@@ -3650,7 +3824,7 @@ fn apply_hybrid_agent_integration(request: ApplyHybridAgentIntegrationRequest) -
                     "error": sanitize_command_output(&format!(
                         "Active d-token config is unavailable: {error}"
                     )),
-                })
+                });
             }
         }
     }
@@ -3687,12 +3861,13 @@ fn apply_hybrid_agent_integration(request: ApplyHybridAgentIntegrationRequest) -
                     "error": sanitize_command_output(&format!(
                         "Managed capability projection is unavailable: {error:#}"
                     )),
-                })
+                });
             }
         }
     };
     let mut capability_receipts = Vec::new();
     let mut capability_references = Vec::new();
+    let mut capability_failures = BTreeMap::<String, String>::new();
     for capability in capabilities {
         let plan = capability.plan.clone();
         let receipt = match store
@@ -3702,35 +3877,11 @@ fn apply_hybrid_agent_integration(request: ApplyHybridAgentIntegrationRequest) -
         {
             Ok(receipt) => receipt,
             Err(error) => {
-                let (rollback_receipts, rollback_errors) = store
-                    .as_ref()
-                    .map(|store| revoke_hybrid_capabilities(store, &capability_references))
-                    .unwrap_or_default();
-                let _ = append_desktop_event(
-                    "agent_integration_apply",
-                    if rollback_errors.is_empty() {
-                        "failed"
-                    } else {
-                        "partial"
-                    },
-                    json!({
-                        "review_digest": &review_digest,
-                        "capability_count": capability_references.len(),
-                        "failure_stage": "capability_apply",
-                        "rollback_error_count": rollback_errors.len(),
-                    }),
+                capability_failures.insert(
+                    plan.scope.agent_id.clone(),
+                    sanitize_command_output(&format!("{error:#}")),
                 );
-                return json!({
-                    "ok": false,
-                    "state": if rollback_errors.is_empty() { "failed" } else { "partial" },
-                    "source": "d-token-agent-integration",
-                    "error": sanitize_command_output(&format!(
-                        "Managed capability apply failed: {error:#}"
-                    )),
-                    "capability_receipts": capability_receipts,
-                    "capability_rollback_receipts": rollback_receipts,
-                    "capability_rollback_errors": rollback_errors,
-                });
+                continue;
             }
         };
         capability_references.push(ManagedAgentCapabilityReference {
@@ -3744,6 +3895,36 @@ fn apply_hybrid_agent_integration(request: ApplyHybridAgentIntegrationRequest) -
         });
         capability_receipts.push(receipt);
     }
+
+    let agent_ids_to_apply = agent
+        .planned_agent_ids()
+        .into_iter()
+        .filter(|agent_id| !capability_failures.contains_key(agent_id))
+        .collect::<Vec<_>>();
+    if agent_ids_to_apply.is_empty() && !capability_failures.is_empty() {
+        let _ = append_desktop_event(
+            "agent_integration_apply",
+            "failed",
+            json!({
+                "review_digest": &review_digest,
+                "capability_failure_count": capability_failures.len(),
+                "failure_stage": "capability_apply",
+            }),
+        );
+        return json!({
+            "ok": false,
+            "state": "failed",
+            "source": "d-token-agent-integration",
+            "error": "Managed capability apply failed for every selected Agent",
+            "capability_receipts": capability_receipts,
+            "capability_failures": capability_failures,
+        });
+    }
+    let agent = if capability_failures.is_empty() {
+        agent
+    } else {
+        agent.filter_agent_ids(&agent_ids_to_apply)
+    };
 
     let receipt = match apply_agent_integration(agent, &config_backup_root(), &agent_review_digest)
     {
@@ -3778,82 +3959,109 @@ fn apply_hybrid_agent_integration(request: ApplyHybridAgentIntegrationRequest) -
             });
         }
     };
+    let mut failed_agent_ids = receipt
+        .agent_results
+        .iter()
+        .filter(|result| result.state != AgentIntegrationTransactionState::Applied)
+        .map(|result| result.agent_id.clone())
+        .collect::<HashSet<_>>();
+    failed_agent_ids.extend(capability_failures.keys().cloned());
+    let mut revoked_failed_capability_receipts = Vec::new();
+    let mut failed_capability_revoke_errors = Vec::new();
+    if !failed_agent_ids.is_empty() {
+        let failed_capabilities = capability_references
+            .iter()
+            .filter(|reference| failed_agent_ids.contains(&reference.agent_id))
+            .cloned()
+            .collect::<Vec<_>>();
+        if let Some(store) = store.as_ref() {
+            let (receipts, errors) = revoke_hybrid_capabilities(store, &failed_capabilities);
+            revoked_failed_capability_receipts = receipts;
+            failed_capability_revoke_errors = errors;
+            retain_unrevoked_capability_references(
+                &mut capability_references,
+                &revoked_failed_capability_receipts,
+            );
+        }
+    }
     let verification = match verify_agent_integration_transaction(
         &receipt.transaction_id,
         &config_backup_root(),
     ) {
         Ok(verification) if verification.ok => verification,
-        Ok(verification) => {
-            let agent_rollback =
-                rollback_agent_integration(&receipt.transaction_id, &config_backup_root());
-            let (capability_rollback_receipts, capability_rollback_errors) = store
-                .as_ref()
-                .map(|store| revoke_hybrid_capabilities(store, &capability_references))
-                .unwrap_or_default();
-            let rollback_error = agent_rollback
-                .as_ref()
-                .err()
-                .map(|error| sanitize_command_output(&format!("{error:#}")));
-            return json!({
-                "ok": false,
-                "state": if rollback_error.is_none() && capability_rollback_errors.is_empty() { "failed" } else { "partial" },
-                "source": "d-token-agent-integration",
-                "error": "Agent integration post-write verification failed; rollback was attempted",
-                "verification": verification,
-                "agent_rollback_error": rollback_error,
-                "capability_rollback_receipts": capability_rollback_receipts,
-                "capability_rollback_errors": capability_rollback_errors,
-            });
-        }
+        Ok(verification) => verification,
         Err(error) => {
-            let agent_rollback =
-                rollback_agent_integration(&receipt.transaction_id, &config_backup_root());
-            let (capability_rollback_receipts, capability_rollback_errors) = store
-                .as_ref()
-                .map(|store| revoke_hybrid_capabilities(store, &capability_references))
-                .unwrap_or_default();
-            let rollback_error = agent_rollback
-                .as_ref()
-                .err()
-                .map(|rollback_error| sanitize_command_output(&format!("{rollback_error:#}")));
+            let manifest_failure_reason = format!(
+                "Agent integration verification failed before final apply response: {error:#}"
+            );
+            let (capability_manifest_path, capability_manifest_error) =
+                persist_hybrid_capability_manifest_for_apply(
+                    &receipt.transaction_id,
+                    &review_digest,
+                    &active_config_sha256,
+                    "partial",
+                    &capability_references,
+                    Some(manifest_failure_reason),
+                );
             return json!({
                 "ok": false,
-                "state": if rollback_error.is_none() && capability_rollback_errors.is_empty() { "failed" } else { "partial" },
+                "state": "partial",
                 "source": "d-token-agent-integration",
                 "error": sanitize_command_output(&format!(
                     "Agent integration verification failed: {error:#}"
                 )),
-                "agent_rollback_error": rollback_error,
-                "capability_rollback_receipts": capability_rollback_receipts,
-                "capability_rollback_errors": capability_rollback_errors,
+                "receipt": receipt,
+                "capability_receipts": capability_receipts,
+                "capability_failures": capability_failures,
+                "capability_rollback_receipts": revoked_failed_capability_receipts,
+                "capability_rollback_errors": failed_capability_revoke_errors,
+                "capability_manifest_path": capability_manifest_path,
+                "capability_manifest_error": capability_manifest_error,
             });
         }
     };
 
     if let Some(expected_sha256) = active_config_sha256.as_deref() {
         if file_sha256(&active_config_path()).as_deref() != Ok(expected_sha256) {
-            let agent_rollback =
-                rollback_agent_integration(&receipt.transaction_id, &config_backup_root());
             let (capability_rollback_receipts, capability_rollback_errors) = store
                 .as_ref()
                 .map(|store| revoke_hybrid_capabilities(store, &capability_references))
                 .unwrap_or_default();
-            let rollback_error = agent_rollback
-                .as_ref()
-                .err()
-                .map(|error| sanitize_command_output(&format!("{error:#}")));
+            retain_unrevoked_capability_references(
+                &mut capability_references,
+                &capability_rollback_receipts,
+            );
+            let (capability_manifest_path, capability_manifest_error) =
+                persist_hybrid_capability_manifest_for_apply(
+                    &receipt.transaction_id,
+                    &review_digest,
+                    &active_config_sha256,
+                    "partial",
+                    &capability_references,
+                    Some(
+                        "Active d-token config changed during apply; unreverted route-bound capabilities require retry"
+                            .to_string(),
+                    ),
+                );
             return json!({
                 "ok": false,
-                "state": if rollback_error.is_none() && capability_rollback_errors.is_empty() { "failed" } else { "partial" },
+                "state": "partial",
                 "source": "d-token-agent-integration",
-                "error": "Active d-token config changed during apply; Agent and capability rollback was attempted",
-                "agent_rollback_error": rollback_error,
+                "error": "Active d-token config changed during apply; route-bound capability revocation was attempted for this aggregate transaction",
+                "receipt": receipt,
+                "verification": verification,
                 "capability_rollback_receipts": capability_rollback_receipts,
                 "capability_rollback_errors": capability_rollback_errors,
+                "capability_manifest_path": capability_manifest_path,
+                "capability_manifest_error": capability_manifest_error,
             });
         }
     }
 
+    let apply_complete = receipt.state == AgentIntegrationTransactionState::Applied
+        && verification.ok
+        && capability_failures.is_empty()
+        && failed_capability_revoke_errors.is_empty();
     let manifest_path = if capability_references.is_empty() {
         None
     } else {
@@ -3862,10 +4070,22 @@ fn apply_hybrid_agent_integration(request: ApplyHybridAgentIntegrationRequest) -
             agent_transaction_id: receipt.transaction_id.clone(),
             composite_review_digest: review_digest.clone(),
             active_config_sha256: active_config_sha256.clone(),
-            state: "verified".to_string(),
+            state: if apply_complete {
+                "verified".to_string()
+            } else {
+                "partial".to_string()
+            },
             capabilities: capability_references.clone(),
             updated_at_ms: epoch_ms().max(1),
-            failure_reason: None,
+            failure_reason: (!apply_complete).then(|| {
+                format!(
+                    "agent_state={:?}; verification_ok={}; capability_failure_count={}; capability_revoke_error_count={}",
+                    receipt.state,
+                    verification.ok,
+                    capability_failures.len(),
+                    failed_capability_revoke_errors.len()
+                )
+            }),
         };
         match save_hybrid_capability_manifest(&manifest) {
             Ok(path) => Some(path),
@@ -3896,26 +4116,35 @@ fn apply_hybrid_agent_integration(request: ApplyHybridAgentIntegrationRequest) -
     };
     let _ = append_desktop_event(
         "agent_integration_apply",
-        "ok",
+        if apply_complete { "ok" } else { "partial" },
         json!({
             "transaction_id": &receipt.transaction_id,
             "composite_review_digest": &review_digest,
             "rollback_ids": &receipt.rollback_ids,
             "rollback_point_count": receipt.rollback_ids.len(),
             "capability_count": capability_references.len(),
+            "capability_failure_count": capability_failures.len(),
+            "failed_capability_revoke_error_count": failed_capability_revoke_errors.len(),
             "new_session_required": receipt.new_session_required,
         }),
     );
     json!({
-        "ok": true,
-        "state": "applied",
+        "ok": apply_complete,
+        "state": if apply_complete { "applied" } else { "partial" },
         "source": "d-token-agent-integration",
         "receipt": receipt,
         "verification": verification,
         "composite_review_digest": review_digest,
         "capability_receipts": capability_receipts,
+        "capability_failures": capability_failures,
+        "capability_rollback_receipts": revoked_failed_capability_receipts,
+        "capability_rollback_errors": failed_capability_revoke_errors,
         "capability_manifest_path": manifest_path,
-        "summary": "Agent integration and route-bound capabilities were applied and verified atomically."
+        "summary": if apply_complete {
+            "Agent integration and route-bound capabilities were applied and verified."
+        } else {
+            "Agent integration finished with partial results; successful Agent groups were preserved and failed Agent capabilities were revoked."
+        }
     })
 }
 
@@ -4001,7 +4230,7 @@ fn rollback_hybrid_agent_integration(request: RollbackHybridAgentIntegrationRequ
                 "state": "failed",
                 "source": "d-token-agent-integration",
                 "error": sanitize_command_output(&error),
-            })
+            });
         }
     };
     let agent_rollback = rollback_agent_integration(&request.transaction_id, &config_backup_root());
@@ -6366,9 +6595,9 @@ fn prepare_connection_route_plan_from_discovery(
             )
         } else {
             (
-                    snapshot.get("fingerprint").and_then(Value::as_str),
-                    "External Agent or cc-switch configuration changed after review; scan again before apply",
-                )
+                snapshot.get("fingerprint").and_then(Value::as_str),
+                "External Agent or cc-switch configuration changed after review; scan again before apply",
+            )
         };
         let current_fingerprint = current_fingerprint
             .ok_or_else(|| "External configuration fingerprint is unavailable".to_string())?;
@@ -7026,7 +7255,7 @@ fn finalize_agent_auto_follow_authorization_value(
     let current_sha256 = match active_config_sha256() {
         Ok(sha256) => sha256,
         Err(error) => {
-            return json!({"ok":false, "state":"failed", "summary":sanitize_command_output(&error)})
+            return json!({"ok":false, "state":"failed", "summary":sanitize_command_output(&error)});
         }
     };
     if request.expected_route_sha256 != authorization.active_config_sha256
@@ -7061,13 +7290,13 @@ fn finalize_agent_auto_follow_authorization_value(
     let fingerprints = match agent_config_fingerprints(&discovery, &agent_ids) {
         Ok(fingerprints) => fingerprints,
         Err(error) => {
-            return json!({"ok":false, "state":"failed", "summary":sanitize_command_output(&error)})
+            return json!({"ok":false, "state":"failed", "summary":sanitize_command_output(&error)});
         }
     };
     let source_fingerprint = match agent_config_source_fingerprint(&discovery, &agent_ids) {
         Ok(fingerprint) => fingerprint,
         Err(error) => {
-            return json!({"ok":false, "state":"failed", "summary":sanitize_command_output(&error)})
+            return json!({"ok":false, "state":"failed", "summary":sanitize_command_output(&error)});
         }
     };
     authorization.enabled = true;
@@ -7322,7 +7551,7 @@ fn record_agent_auto_follow_receipt(
             "route_after_sha256": receipt.route_after_sha256,
             "rollback_id": receipt.rollback_id,
             "runtime_state": runtime_state,
-            "auto_follow": true,
+            "auto_follow": load_cc_switch_auto_follow_authorization().enabled,
         }),
     );
 }
@@ -7431,13 +7660,13 @@ fn execute_agent_auto_follow() -> Value {
     let fingerprints = match agent_config_fingerprints(&discovery, &agent_ids) {
         Ok(fingerprints) => fingerprints,
         Err(error) => {
-            return json!({"state":"discovery_unavailable", "summary":sanitize_command_output(&error)})
+            return json!({"state":"discovery_unavailable", "summary":sanitize_command_output(&error)});
         }
     };
     let source_fingerprint = match agent_config_source_fingerprint(&discovery, &agent_ids) {
         Ok(fingerprint) => fingerprint,
         Err(error) => {
-            return json!({"state":"discovery_unavailable", "summary":sanitize_command_output(&error)})
+            return json!({"state":"discovery_unavailable", "summary":sanitize_command_output(&error)});
         }
     };
     let changed_agents = agent_ids
@@ -8264,9 +8493,105 @@ fn record_cc_switch_auto_follow_receipt(
             "route_after_sha256": receipt.route_after_sha256,
             "rollback_id": receipt.rollback_id,
             "runtime_state": runtime_state,
-            "auto_follow": true,
+            "auto_follow": load_cc_switch_auto_follow_authorization().enabled,
         }),
     );
+}
+
+fn finalize_cc_switch_sync_after_runtime_reload(
+    mut result: Value,
+    source_fingerprint: &str,
+    reload_runtime: impl FnOnce() -> Value,
+) -> Value {
+    if result.get("ok").and_then(Value::as_bool) != Some(true) {
+        return result;
+    }
+    let before_sha256 = result
+        .get("before_sha256")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    let after_sha256 = result
+        .get("after_sha256")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    let rollback_id = result
+        .get("rollback_id")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    let reload = reload_runtime();
+    let runtime_state = reload
+        .get("state")
+        .and_then(Value::as_str)
+        .unwrap_or("runtime_unknown")
+        .to_string();
+    if let Some(object) = result.as_object_mut() {
+        object.insert("runtime".to_string(), reload.clone());
+    }
+
+    let reload_ok = reload.get("ok").and_then(Value::as_bool) == Some(true);
+    if reload_ok
+        && matches!(
+            runtime_state.as_str(),
+            "runtime_reloaded" | "runtime_not_running"
+        )
+    {
+        record_cc_switch_auto_follow_receipt(
+            "applied_verified",
+            source_fingerprint,
+            before_sha256,
+            after_sha256,
+            rollback_id,
+            &runtime_state,
+        );
+        return result;
+    }
+
+    let rollback_result = (|| -> Result<(), String> {
+        let id = rollback_id
+            .as_deref()
+            .ok_or_else(|| "cc-switch route sync has no rollback point".to_string())?;
+        let backup = config_patcher()
+            .load_backup(id)
+            .map_err(|error| format!("{error:#}"))?;
+        let restore = {
+            let expected = ExpectedFileState::Hash(after_sha256.clone().unwrap_or_default());
+            config_patcher().restore_backup(&backup, &expected)
+        };
+        restore.map(|_| ()).map_err(|error| format!("{error:#}"))
+    })();
+    let state = if rollback_result.is_ok() {
+        format!("rolled_back_{runtime_state}")
+    } else {
+        format!("{runtime_state}_rollback_failed")
+    };
+    record_cc_switch_auto_follow_receipt(
+        &state,
+        source_fingerprint,
+        before_sha256,
+        after_sha256,
+        rollback_id,
+        &runtime_state,
+    );
+    if let Some(object) = result.as_object_mut() {
+        object.insert("ok".to_string(), json!(false));
+        object.insert("state".to_string(), json!(state));
+        object.insert("verified".to_string(), json!(false));
+        object.insert(
+            "rollback_performed".to_string(),
+            json!(rollback_result.is_ok()),
+        );
+        object.insert(
+            "summary".to_string(),
+            if rollback_result.is_ok() {
+                json!("Runtime reload was unavailable; the d-token route snapshot was restored")
+            } else {
+                json!(
+                    "Runtime reload was unavailable and the d-token route rollback needs attention"
+                )
+            },
+        );
+    }
+    result
 }
 
 /// Executes only after a user persisted an authorization. It re-discovers and
@@ -8277,11 +8602,15 @@ fn execute_cc_switch_auto_follow() -> Value {
     if !authorization.enabled {
         return json!({"state":"not_authorized"});
     }
-    let discovery = enrich_upstream_discovery(upstream_discovery::discover());
+    // R3.D1: this executor IS the authorized follow path — discover with the
+    // authorization active so the snapshot/ledger metadata reports the real
+    // contract (automatic_apply_allowed=true) instead of the legacy
+    // review-gated shape.
+    let discovery = enrich_upstream_discovery(upstream_discovery::discover_with_auto_follow(true));
     let request = match cc_switch_sync_request_from_discovery(&discovery) {
         Ok(request) => request,
         Err(error) => {
-            return json!({"state":"discovery_unavailable", "summary": sanitize_command_output(&error)})
+            return json!({"state":"discovery_unavailable", "summary": sanitize_command_output(&error)});
         }
     };
     let identity = match cc_switch_active_route_identity(&discovery) {
@@ -8726,12 +9055,20 @@ async fn apply_cc_switch_sync_plan(request: ApplyCcSwitchSyncPlanRequest) -> Val
                 reviewed_after_sha256: request.reviewed_after_sha256,
                 enable_auto_follow: false,
             });
+            result = finalize_cc_switch_sync_after_runtime_reload(
+                result,
+                &request.plan.source_fingerprint,
+                reload_managed_runtime_after_route_sync,
+            );
             if request.enable_auto_follow && result.get("ok").and_then(Value::as_bool) == Some(true)
             {
-                let reload = reload_managed_runtime_after_route_sync();
-                if let Some(object) = result.as_object_mut() {
-                    object.insert("runtime".to_string(), reload.clone());
-                }
+                let reload = result.get("runtime").cloned().unwrap_or_else(|| {
+                    json!({
+                        "ok": false,
+                        "state": "runtime_unknown",
+                        "summary": "cc-switch route sync did not produce a runtime reload receipt",
+                    })
+                });
                 match authorize_initial_cc_switch_auto_follow_after_runtime_reload(
                     &request.plan,
                     &reload,
@@ -9385,7 +9722,7 @@ fn spawn_learning_delegation(request: LearningDelegationRequest) -> Value {
     let project_root = match fs::canonicalize(&project_root) {
         Ok(path) if path.is_dir() && learning_allowed_root(&path) => path,
         _ => {
-            return json!({ "ok": false, "state": "blocked", "request_id": request.request_id, "agent": request.agent, "summary": "Delegation project root is unavailable or unsafe" })
+            return json!({ "ok": false, "state": "blocked", "request_id": request.request_id, "agent": request.agent, "summary": "Delegation project root is unavailable or unsafe" });
         }
     };
     let args: &[&str] = if request.agent == "claude" {
@@ -9405,7 +9742,7 @@ fn spawn_learning_delegation(request: LearningDelegationRequest) -> Value {
     {
         Ok(child) => child,
         Err(error) => {
-            return json!({ "ok": false, "state": "failed", "request_id": request.request_id, "agent": request.agent, "summary": format!("Agent spawn failed: {error}") })
+            return json!({ "ok": false, "state": "failed", "request_id": request.request_id, "agent": request.agent, "summary": format!("Agent spawn failed: {error}") });
         }
     };
     if let Some(mut stdin) = child.stdin.take() {
@@ -9708,7 +10045,7 @@ fn rollback_preview_value(rollback_id: &str) -> Value {
                 "integrity_verified": false,
                 "currently_restorable": false,
                 "blocked_reason": format!("Rollback integrity verification failed: {}", sanitize_command_output(&format!("{error:#}"))),
-            })
+            });
         }
     };
     let scope = rollback_scope_for_backup(&backup);
@@ -9740,7 +10077,7 @@ fn rollback_preview_value(rollback_id: &str) -> Value {
                         "integrity_verified": false,
                         "currently_restorable": false,
                         "blocked_reason": sanitize_command_output(&error),
-                    })
+                    });
                 }
             };
         let revision = format!(
@@ -9916,7 +10253,7 @@ fn apply_rollback(request: ApplyRollbackRequest) -> Value {
                 "rollback_id": request.rollback_id,
                 "summary": format!("Rollback integrity verification failed: {}", sanitize_command_output(&format!("{error:#}"))),
                 "verification_state": "failed",
-            })
+            });
         }
     };
     let scope = rollback_scope_for_backup(&backup);
@@ -9942,7 +10279,7 @@ fn apply_rollback(request: ApplyRollbackRequest) -> Value {
                     "transaction_id": transaction_id,
                     "summary": sanitize_command_output(&error),
                     "verification_state": "failed",
-                })
+                });
             }
         };
         let restored = match rollback_agent_integration(&transaction_id, &config_backup_root()) {
@@ -9956,7 +10293,7 @@ fn apply_rollback(request: ApplyRollbackRequest) -> Value {
                     "reverse_rollback_ids": reverse_rollback_ids,
                     "summary": format!("Agent transaction rollback failed: {}", sanitize_command_output(&format!("{error:#}"))),
                     "verification_state": "failed",
-                })
+                });
             }
         };
         let transaction_verified =
@@ -10001,7 +10338,7 @@ fn apply_rollback(request: ApplyRollbackRequest) -> Value {
                     "rollback_id": request.rollback_id,
                     "summary": error,
                     "verification_state": "failed",
-                })
+                });
             }
         };
         let specialized = rollback_optical_config_change(RollbackOpticalConfigRequest {
@@ -10054,7 +10391,7 @@ fn apply_rollback(request: ApplyRollbackRequest) -> Value {
                     "rollback_id": request.rollback_id,
                     "summary": format!("Restored state could not be bound to the reverse safety backup: {error}"),
                     "verification_state": "failed",
-                })
+                });
             }
         }
     } else {
@@ -10067,7 +10404,7 @@ fn apply_rollback(request: ApplyRollbackRequest) -> Value {
                     "rollback_id": request.rollback_id,
                     "summary": format!("Current state could not be protected before rollback: {error}"),
                     "verification_state": "failed",
-                })
+                });
             }
         }
     };
@@ -10090,7 +10427,7 @@ fn apply_rollback(request: ApplyRollbackRequest) -> Value {
                 "rollback_id": request.rollback_id,
                 "summary": format!("Reverse safety backup could not be prepared: {}", sanitize_command_output(&format!("{error:#}"))),
                 "verification_state": "failed",
-            })
+            });
         }
     };
     let reverse_backup = match patcher.backup_prepared(&reverse_prepared) {
@@ -10102,7 +10439,7 @@ fn apply_rollback(request: ApplyRollbackRequest) -> Value {
                 "rollback_id": request.rollback_id,
                 "summary": format!("Reverse safety backup failed: {}", sanitize_command_output(&format!("{error:#}"))),
                 "verification_state": "failed",
-            })
+            });
         }
     };
     if !backup.original.exists {
@@ -10299,7 +10636,8 @@ fn apply_opencode_connection(request: OpenCodeConnectionRequest) -> Value {
             after_sha256: None,
             rollback_id: None,
             verified: false,
-            summary: "d-token runtime identity is not healthy; OpenCode was not modified".to_string(),
+            summary: "d-token runtime identity is not healthy; OpenCode was not modified"
+                .to_string(),
             privacy: "Normal strict JSON config only; auth.json, credentials, prompts, and responses are never read or returned",
         };
         let _ = append_desktop_event(
@@ -10335,6 +10673,20 @@ fn apply_opencode_connection(request: OpenCodeConnectionRequest) -> Value {
         && active.get("fallback_disabled").and_then(Value::as_bool) == Some(true)
         && service_health_payload().is_some();
     if !doctor_ok {
+        if receipt.rollback_id.is_none() {
+            receipt.ok = false;
+            receipt.verified = false;
+            receipt.state = "verification_failed".to_string();
+            receipt.summary =
+                "Connection verification failed; OpenCode configuration was not changed"
+                    .to_string();
+            let _ = append_desktop_event(
+                "install_doctor_verify",
+                "failed",
+                json!({ "revision": receipt.revision, "writes_performed": false }),
+            );
+            return json!(receipt);
+        }
         let rollback_id = receipt.rollback_id.clone().unwrap_or_default();
         let recovery = config_patcher()
             .load_backup(&rollback_id)
@@ -10404,7 +10756,7 @@ fn preview_managed_agent_transport(
         "configure" => preview_configure_agent_transport(&request),
         "clear" => preview_clear_agent_transport(&request),
         _ => {
-            return json!({ "ok": false, "state": "failed", "summary": "Unsupported Agent transport operation" })
+            return json!({ "ok": false, "state": "failed", "summary": "Unsupported Agent transport operation" });
         }
     };
     match result {
@@ -10437,7 +10789,7 @@ fn apply_reviewed_managed_agent_transport(
         "configure" => AgentTransportOperation::Configure,
         "clear" => AgentTransportOperation::Clear,
         _ => {
-            return json!({ "ok": false, "state": "failed", "summary": "Unsupported Agent transport operation" })
+            return json!({ "ok": false, "state": "failed", "summary": "Unsupported Agent transport operation" });
         }
     };
     match apply_reviewed_agent_transport(
@@ -10602,7 +10954,7 @@ fn preview_managed_agent_mcp_integration(request: ManagedAgentMcpRequest) -> Val
                 "ok": false,
                 "state": "failed",
                 "summary": format!("dtoken-agent-bridge is unavailable: {error}")
-            })
+            });
         }
     };
     let entry = json!({
@@ -10617,7 +10969,7 @@ fn preview_managed_agent_mcp_integration(request: ManagedAgentMcpRequest) -> Val
                 "ok": false,
                 "state": "failed",
                 "summary": format!("Failed to read MCP config: {error}")
-            })
+            });
         }
     };
     let add = request.operation == "configure";
@@ -10678,7 +11030,7 @@ fn apply_managed_agent_mcp_integration(
                 "ok": false,
                 "state": "failed",
                 "summary": format!("dtoken-agent-bridge is unavailable: {error}")
-            })
+            });
         }
     };
     let entry = json!({
@@ -10693,7 +11045,7 @@ fn apply_managed_agent_mcp_integration(
                 "ok": false,
                 "state": "failed",
                 "summary": format!("Failed to read MCP config: {error}")
-            })
+            });
         }
     };
     use sha2::{Digest, Sha256};
@@ -10719,7 +11071,7 @@ fn apply_managed_agent_mcp_integration(
                 "ok": false,
                 "state": "failed",
                 "summary": error.to_string()
-            })
+            });
         }
     };
     let after_sha256 = format!("{:x}", Sha256::digest(next_text.as_bytes()));
@@ -10757,7 +11109,7 @@ fn apply_managed_agent_mcp_integration(
                 "ok": false,
                 "state": "failed",
                 "summary": format!("Failed to prepare MCP config transaction: {error}"),
-            })
+            });
         }
     };
     let transaction = match patcher.apply_transaction(&[prepared]) {
@@ -10767,7 +11119,7 @@ fn apply_managed_agent_mcp_integration(
                 "ok": false,
                 "state": "failed",
                 "summary": format!("Failed to apply MCP config transaction: {error}"),
-            })
+            });
         }
     };
     let Some(change) = transaction.changes.first() else {
@@ -10834,7 +11186,7 @@ fn verify_managed_agent_mcp_integration(
             return json!({
                 "ok": false,
                 "detail": format!("dtoken-agent-bridge is unavailable: {error}")
-            })
+            });
         }
     };
     let entry = json!({
@@ -10847,13 +11199,13 @@ fn verify_managed_agent_mcp_integration(
             return json!({
                 "ok": true,
                 "detail": "d-token MCP entry is absent because the MCP config file does not exist"
-            })
+            });
         }
         Err(error) => {
             return json!({
                 "ok": false,
                 "detail": format!("Failed to read MCP config: {error}")
-            })
+            });
         }
     };
     let result = if configured {
@@ -10955,7 +11307,7 @@ fn normalize_managed_agent_target(path: &Path) -> Result<PathBuf, String> {
             }
             Component::CurDir => {}
             Component::ParentDir => {
-                return Err("Agent config path cannot contain parent traversal".to_string())
+                return Err("Agent config path cannot contain parent traversal".to_string());
             }
         }
     }
@@ -10971,14 +11323,14 @@ fn reject_symlink_components(path: &Path) -> Result<(), String> {
         current.push(component.as_os_str());
         match fs::symlink_metadata(&current) {
             Ok(metadata) if metadata.file_type().is_symlink() => {
-                return Err("Agent config path cannot contain symbolic links".to_string())
+                return Err("Agent config path cannot contain symbolic links".to_string());
             }
             Ok(_) => {}
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => break,
             Err(error) => {
                 return Err(format!(
                     "Agent config path metadata is unavailable: {error}"
-                ))
+                ));
             }
         }
     }
@@ -11003,6 +11355,7 @@ async fn discover_upstream_candidates() -> Value {
             "state": "unavailable",
             "candidates": [],
             "agent_bindings": [],
+            "agent_catalog": upstream_discovery::project_agent_catalog(&[], false),
             "sources": [],
             "selection_required": false,
             "cc_switch_sync": null,
@@ -11249,7 +11602,10 @@ fn record_external_config_refresh_evidence(discovery: &Value) {
         "snapshot_fingerprint": refresh.get("snapshot_fingerprint"),
         "previous_fingerprint": refresh.get("previous_fingerprint"),
         "changed_sources": refresh.get("changed_sources"),
-        "automatic_apply_allowed": false,
+        "automatic_apply_allowed": refresh
+            .get("automatic_apply_allowed")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
     });
     match state {
         Some("external_config_snapshot") => {
@@ -11463,16 +11819,23 @@ fn restart_dtoken_service_impl() -> ActionResult {
 /// Reloads only a d-token-managed runtime after an already-reviewed route
 /// sync. Unmanaged processes are never stopped; callers receive an explicit
 /// restart-required receipt instead of a silent partial success.
-#[tauri::command]
-fn reload_managed_runtime_after_route_sync() -> Value {
-    let status = dtoken_service_status_value_fresh();
+fn service_status_proves_runtime_offline(status: &Value) -> bool {
+    status.get("state").and_then(Value::as_str) == Some("stopped")
+        && status.get("health").is_some_and(Value::is_null)
+        && status.get("pid_running").and_then(Value::as_bool) == Some(false)
+}
+
+fn reload_managed_runtime_after_route_sync_for_status(
+    status: Value,
+    restart_runtime: impl FnOnce() -> ActionResult,
+) -> Value {
     let state = status
         .get("state")
         .and_then(Value::as_str)
         .unwrap_or("unknown");
     match state {
         "running" | "restart_required" => {
-            let result = restart_dtoken_service_impl();
+            let result = restart_runtime();
             let event = if result.ok {
                 "runtime_reloaded"
             } else {
@@ -11504,13 +11867,34 @@ fn reload_managed_runtime_after_route_sync() -> Value {
                 "summary": "An unmanaged d-token-compatible service owns the port; restart it manually to load the reviewed route",
             })
         }
-        _ => json!({
+        "stopped" if service_status_proves_runtime_offline(&status) => json!({
             "ok": true,
             "state": "runtime_not_running",
             "managed": false,
             "summary": "The reviewed route is saved; the runtime will load it on the next managed start",
         }),
+        _ => {
+            let _ = append_desktop_event(
+                "runtime_reload_required",
+                "status_unverified",
+                json!({ "service_state": state, "managed": false }),
+            );
+            json!({
+                "ok": false,
+                "state": "runtime_status_unverified",
+                "managed": false,
+                "summary": "The runtime status is not proven stopped; the reviewed route was not verified against a running or next-start runtime",
+            })
+        }
     }
+}
+
+#[tauri::command]
+fn reload_managed_runtime_after_route_sync() -> Value {
+    reload_managed_runtime_after_route_sync_for_status(
+        dtoken_service_status_value_fresh(),
+        restart_dtoken_service_impl,
+    )
 }
 
 fn start_dtoken_service_impl() -> ActionResult {
@@ -11556,18 +11940,27 @@ fn start_dtoken_service_impl() -> ActionResult {
         };
     }
 
-    if let Err(err) = validate_active_config_for_start() {
+    let launch_config = match resolve_service_start_config() {
+        Ok(config) => config,
+        Err(err) => {
+            logs.push(log(
+                "error",
+                format!("Active config validation failed: {err}"),
+            ));
+            return ActionResult {
+                ok: false,
+                summary: "Configure and apply a real d-token route before starting the service"
+                    .to_string(),
+                logs,
+                tools: all_checks(),
+            };
+        }
+    };
+    if launch_config.mode == ServiceStartConfigMode::Setup {
         logs.push(log(
-            "error",
-            format!("Active config validation failed: {err}"),
+            "info",
+            "No active route is applied; starting the private empty setup runtime. Agent traffic remains fail-closed until a route is configured.",
         ));
-        return ActionResult {
-            ok: false,
-            summary: "Configure and apply a real d-token route before starting the service"
-                .to_string(),
-            logs,
-            tools: all_checks(),
-        };
     }
 
     let exe = match resolve_dtoken_proxy_exe() {
@@ -11597,7 +11990,7 @@ fn start_dtoken_service_impl() -> ActionResult {
             };
         }
     };
-    let config_path = active_config_path();
+    let config_path = launch_config.path;
     let data_dir = service_data_dir();
     if let Err(err) = fs::create_dir_all(&data_dir) {
         logs.push(log(
@@ -11647,6 +12040,7 @@ fn start_dtoken_service_impl() -> ActionResult {
         .arg(&config_path)
         .arg("--data-dir")
         .arg(&data_dir)
+        .env_remove("DTOKEN_CONFIG")
         .env("DTOKEN_RUNTIME_INSTANCE_NONCE", &runtime_instance_nonce)
         .stdin(Stdio::null())
         .stdout(Stdio::from(stdout))
@@ -11836,7 +12230,12 @@ fn start_dtoken_service_impl() -> ActionResult {
     ));
     ActionResult {
         ok: true,
-        summary: "d-token local service started".to_string(),
+        summary: if launch_config.mode == ServiceStartConfigMode::Setup {
+            "d-token local service started in setup mode; configure and apply a route before sending agent traffic"
+                .to_string()
+        } else {
+            "d-token local service started".to_string()
+        },
         logs,
         tools: all_checks(),
     }
@@ -12201,11 +12600,30 @@ fn run_install_transaction(request: InstallPlanRequest) -> ActionResult {
                 .is_some_and(|tool| tool.installed),
             _ => false,
         });
-        ok = ok && doctor_ok;
+        let setup_runtime_ready = targets.len() == 1
+            && targets.first() == Some(&"dtoken")
+            && dtoken_service_status_value()
+                .get("state")
+                .and_then(Value::as_str)
+                == Some("running")
+            && managed_service_manifest_uses_setup_runtime_config();
+        if doctor_ok {
+            ok = ok && doctor_ok;
+        } else if !setup_runtime_ready {
+            ok = false;
+        }
         logs.push(log(
-            if doctor_ok { "info" } else { "error" },
+            if doctor_ok {
+                "info"
+            } else if setup_runtime_ready {
+                "warn"
+            } else {
+                "error"
+            },
             if doctor_ok {
                 "doctor: install prerequisites passed"
+            } else if setup_runtime_ready {
+                "doctor: route configuration is still required; the setup runtime is healthy and agent traffic remains fail-closed"
             } else {
                 "doctor: install prerequisites failed"
             },
@@ -12255,7 +12673,15 @@ fn run_install_transaction(request: InstallPlanRequest) -> ActionResult {
     ActionResult {
         ok,
         summary: if ok {
-            format!("{} installation transaction completed", request.target)
+            if targets.len() == 1
+                && targets.first() == Some(&"dtoken")
+                && managed_service_manifest_uses_setup_runtime_config()
+            {
+                "d-token local service started in setup mode; configure and apply a route before sending agent traffic"
+                    .to_string()
+            } else {
+                format!("{} installation transaction completed", request.target)
+            }
         } else {
             format!(
                 "{} installation transaction needs attention",
@@ -12408,7 +12834,7 @@ fn doctor_agent_inventory() -> (Vec<Value>, bool, usize) {
                 })],
                 false,
                 0,
-            )
+            );
         }
     };
     let home = match user_home_dir() {
@@ -12535,6 +12961,44 @@ fn doctor_module_state_rank(state: &str) -> u8 {
     }
 }
 
+fn doctor_optical_state(optical: &Value) -> &'static str {
+    if optical.get("ok").and_then(Value::as_bool) == Some(true) {
+        return if optical
+            .get("issues")
+            .and_then(Value::as_array)
+            .is_some_and(Vec::is_empty)
+        {
+            "healthy"
+        } else {
+            "manual"
+        };
+    }
+    if optical.get("source").and_then(Value::as_str) == Some("dtoken-desktop-control-plane")
+        && optical.get("error").and_then(Value::as_str) == Some("active_config_missing")
+        && optical.get("active_config_exists").and_then(Value::as_bool) == Some(false)
+    {
+        // An absent optional setup is a known next step, not a failed scan.
+        return "manual";
+    }
+    "unknown"
+}
+
+fn doctor_cc_switch_state(sync: &Value) -> &'static str {
+    match sync.get("status").and_then(Value::as_str) {
+        Some("synced") => "healthy",
+        Some("out-of-sync") => "repairable",
+        Some("needs-selection" | "needs-confirmation" | "error") => "manual",
+        Some("unavailable")
+            if sync.get("detected").and_then(Value::as_bool) == Some(false)
+                && sync.get("source_state").and_then(Value::as_str) == Some("missing")
+                && sync.get("error").is_some_and(Value::is_null) =>
+        {
+            "manual"
+        }
+        _ => "unknown",
+    }
+}
+
 fn run_doctor_scan_value() -> Value {
     let collected_at_ms = epoch_ms();
     let service = dtoken_service_status_value();
@@ -12562,14 +13026,7 @@ fn run_doctor_scan_value() -> Value {
         .get("cc_switch_sync")
         .cloned()
         .unwrap_or(Value::Null);
-    let cc_switch_state = match cc_switch_sync.get("status").and_then(Value::as_str) {
-        Some("synced") => "healthy",
-        Some("out-of-sync") => "repairable",
-        Some("needs-selection" | "needs-confirmation") => "manual",
-        Some("error") => "manual",
-        Some("unavailable") => "unknown",
-        _ => "unknown",
-    };
+    let cc_switch_state = doctor_cc_switch_state(&cc_switch_sync);
     let cc_switch_summary = match cc_switch_sync.get("status").and_then(Value::as_str) {
         Some("synced") => {
             "cc-switch 当前上游与 d-token route 的 endpoint、协议和模型一致".to_string()
@@ -12626,19 +13083,7 @@ fn run_doctor_scan_value() -> Value {
     };
 
     let optical = optical_editor_value();
-    let optical_ok = optical.get("ok").and_then(Value::as_bool).unwrap_or(false);
-    let optical_issues = optical
-        .get("issues")
-        .and_then(Value::as_array)
-        .map(Vec::len)
-        .unwrap_or(0);
-    let optical_state = if optical_ok && optical_issues == 0 {
-        "healthy"
-    } else if optical_ok {
-        "manual"
-    } else {
-        "unknown"
-    };
+    let optical_state = doctor_optical_state(&optical);
 
     let autostart = autostart::status();
     let platform_state = if autostart.supported && autostart.state != "error" {
@@ -13187,7 +13632,7 @@ fn apply_doctor_common_repair(request: DoctorRepairRequest) -> Value {
                 "mode": "doctor-action-receipt",
                 "summary": error,
                 "report": get_doctor_snapshot(),
-            })
+            });
         }
     };
     let operation_id = format!("doctor-repair-{}", stable_hash(&now_timestamp()));
@@ -13308,8 +13753,41 @@ fn load_doctor_plan(plan_id: &str) -> Result<StoredDoctorModulePlan, String> {
 fn doctor_plan_snapshot_is_current(snapshot_revision: &str) -> bool {
     doctor_v3_snapshot_value().is_some_and(|snapshot| {
         doctor_v3_snapshot_is_fresh(&snapshot, epoch_ms())
+            && doctor_snapshot_allows_repair(&snapshot)
             && snapshot.get("revision").and_then(Value::as_str) == Some(snapshot_revision)
     })
+}
+
+fn doctor_snapshot_allows_repair(snapshot: &Value) -> bool {
+    if snapshot.get("source").and_then(Value::as_str) != Some("dtoken-desktop-control-plane")
+        || !matches!(
+            snapshot.get("state").and_then(Value::as_str),
+            Some("healthy" | "attention" | "repairable" | "manual" | "blocked")
+        )
+    {
+        return false;
+    }
+    let Some(modules) = snapshot.get("modules").and_then(Value::as_array) else {
+        return false;
+    };
+    if modules.is_empty()
+        || modules.iter().any(|module| {
+            !matches!(
+                module.get("state").and_then(Value::as_str),
+                Some("healthy" | "repairable" | "manual" | "blocked" | "attention")
+            )
+        })
+    {
+        return false;
+    }
+    let coverage = snapshot.get("coverage");
+    let completed = coverage
+        .and_then(|value| value.get("completed"))
+        .and_then(Value::as_u64);
+    let total = coverage
+        .and_then(|value| value.get("total"))
+        .and_then(Value::as_u64);
+    matches!((completed, total), (Some(completed), Some(total)) if total > 0 && completed == total && total == modules.len() as u64)
 }
 
 #[tauri::command]
@@ -13318,7 +13796,7 @@ fn preview_doctor_repair(request: PreviewDoctorModuleRepairRequest) -> Value {
         return json!({
             "ok": false,
             "schema_version": 3,
-            "error": "Doctor snapshot is stale; scan again before preparing a repair",
+            "error": "Doctor snapshot is incomplete or stale; scan again before preparing a repair",
         });
     }
     let Some(domain_module_id) = doctor_domain_module_id(&request.module_id) else {
@@ -13566,7 +14044,7 @@ fn apply_doctor_repair(request: ApplyDoctorModuleRepairRequest) -> Value {
     let stored = match load_doctor_plan(&request.plan_id) {
         Ok(plan) => plan,
         Err(error) => {
-            return json!({"ok": false, "schema_version": 3, "outcome": "blocked", "summary": error})
+            return json!({"ok": false, "schema_version": 3, "outcome": "blocked", "summary": error});
         }
     };
     let now = epoch_ms();
@@ -13658,30 +14136,14 @@ fn apply_doctor_repair(request: ApplyDoctorModuleRepairRequest) -> Value {
                                     enable_auto_follow: false,
                                 },
                             );
+                            let result = finalize_cc_switch_sync_after_runtime_reload(
+                                result,
+                                &request.source_fingerprint,
+                                reload_managed_runtime_after_route_sync,
+                            );
                             let ok = result.get("ok").and_then(Value::as_bool).unwrap_or(false);
                             if ok {
                                 verified += 1;
-                                // Attempt runtime reload; on failure the applied
-                                // route stays last-known-good and the rollback
-                                // receipt is preserved for a safe revert.
-                                let reload = reload_managed_runtime_after_route_sync();
-                                let reload_ok =
-                                    reload.get("ok").and_then(Value::as_bool).unwrap_or(false);
-                                let runtime_state = reload
-                                    .get("state")
-                                    .and_then(Value::as_str)
-                                    .unwrap_or(if reload_ok {
-                                        "runtime_reloaded"
-                                    } else {
-                                        "runtime_reload_failed"
-                                    });
-                                if !reload_ok {
-                                    let _ = append_desktop_event(
-                                        "route_sync_failed",
-                                        "runtime_reload_failed",
-                                        json!({"summary": "Route applied but runtime reload failed; last-known-good preserved"}),
-                                    );
-                                }
                                 // Bind the applied route as the current cc-switch
                                 // route snapshot so enrichment exposes it as
                                 // route_snapshot_identity.
@@ -13695,42 +14157,18 @@ fn apply_doctor_repair(request: ApplyDoctorModuleRepairRequest) -> Value {
                                         Some(request.source_fingerprint.clone());
                                     authorization.last_synced_source_fingerprint =
                                         Some(request.source_fingerprint.clone());
-                                    authorization.last_sync_state = if reload_ok {
-                                        "applied_verified".to_string()
-                                    } else {
-                                        "applied_reload_failed".to_string()
-                                    };
+                                    authorization.last_sync_state = "applied_verified".to_string();
                                     let _ =
                                         save_cc_switch_auto_follow_authorization(&authorization);
                                 }
-                                // Record a cc-switch auto-follow receipt for the enrichment.
-                                let after_sha256 = result
-                                    .get("after_sha256")
-                                    .and_then(Value::as_str)
-                                    .map(str::to_string);
                                 let rollback_id = result
                                     .get("rollback_id")
                                     .and_then(Value::as_str)
                                     .map(str::to_string);
-                                record_cc_switch_auto_follow_receipt(
-                                    if reload_ok {
-                                        "applied_verified"
-                                    } else {
-                                        "applied_reload_failed"
-                                    },
-                                    &request.source_fingerprint,
-                                    result
-                                        .get("before_sha256")
-                                        .and_then(Value::as_str)
-                                        .map(str::to_string),
-                                    after_sha256,
-                                    rollback_id.clone(),
-                                    runtime_state,
-                                );
                                 agent_receipts.push(json!({
                                     "agent_id": "cc-switch",
-                                    "outcome": if reload_ok { "verified" } else { "partial" },
-                                    "summary": if reload_ok { "cc-switch route synced and runtime reloaded" } else { "Route applied but runtime reload failed; last-known-good route preserved" },
+                                    "outcome": "verified",
+                                    "summary": "cc-switch route synced and runtime reload was verified",
                                     "transaction_id": result.get("transaction_id"),
                                     "rollback_ids": [rollback_id],
                                 }));
@@ -15122,7 +15560,7 @@ fn collect_desktop_summary_value() -> Value {
         Some(_) => {
             return offline_desktop_summary(
                 "The local listener did not prove dtoken-core-api health",
-            )
+            );
         }
         None => return offline_desktop_summary("d-token local service is unavailable"),
     };
@@ -15174,14 +15612,14 @@ fn collect_desktop_data_value() -> Value {
                 "The local listener did not prove dtoken-core-api health",
                 route_drafts,
                 backup_points,
-            )
+            );
         }
         None => {
             return offline_control_plane_data(
                 "d-token local service is unavailable",
                 route_drafts,
                 backup_points,
-            )
+            );
         }
     };
     let (runtime_result, compatibility, protocol_injection, chain_status) =
@@ -15215,14 +15653,14 @@ fn collect_desktop_data_value() -> Value {
                 "Dashboard payload did not prove d-token runtime provenance",
                 route_drafts,
                 backup_points,
-            )
+            );
         }
         Err(err) => {
             return offline_control_plane_data(
                 &format!("Dashboard payload is unavailable: {err}"),
                 route_drafts,
                 backup_points,
-            )
+            );
         }
     };
     let mut payload = complete_desktop_data(
@@ -15310,6 +15748,46 @@ fn collect_cached_snapshot(
     *guard = Some((Instant::now(), payload.clone()));
     record_native_performance(operation, "complete", started_at, "ok", false, None);
     payload
+}
+
+fn collect_config_change_records() -> Value {
+    let mut errors = Vec::new();
+    let backup_points = rollback_points_result().unwrap_or_else(|_| {
+        errors.push("backup_points_unavailable");
+        vec![]
+    });
+    let route_drafts = route_profile_drafts_result().unwrap_or_else(|_| {
+        errors.push("route_drafts_unavailable");
+        vec![]
+    });
+    let events: Vec<Value> =
+        JsonlStore::new(app_state_path(&["events", "desktop-transactions.jsonl"]))
+            .recent(100)
+            .unwrap_or_else(|_| {
+                errors.push("change_history_unavailable");
+                vec![]
+            });
+    let revision = stable_hash(&json!([backup_points, route_drafts, events, errors]).to_string());
+    json!({
+        "source": "dtoken-desktop-control-plane",
+        "desktop_data_source": "dtoken-desktop-control-plane",
+        "desktop_revision": revision,
+        "freshness": "local",
+        "complete": errors.is_empty(),
+        "transaction_provenance": {
+            "source": "dtoken-desktop-control-plane", "command": "get_config_change_records",
+            "schema_version": 1, "generated_at": now_timestamp(), "runtime_required": false
+        },
+        "backupPoints": backup_points, "routeDrafts": route_drafts,
+        "desktopTransactionEvents": events, "errors": errors
+    })
+}
+
+#[tauri::command]
+async fn get_config_change_records() -> Result<Value, String> {
+    tauri::async_runtime::spawn_blocking(collect_config_change_records)
+        .await
+        .map_err(|_| "Configuration records could not be read".to_string())
 }
 
 fn get_desktop_data_value() -> Value {
@@ -15488,6 +15966,7 @@ macro_rules! desktop_release_handlers {
             get_native_performance_snapshot,
             get_desktop_summary,
             get_desktop_data,
+            get_config_change_records,
             get_analytics_request_page,
             get_app_settings,
             save_app_settings,
@@ -15574,6 +16053,9 @@ macro_rules! desktop_release_handlers {
             rollback_hybrid_agent_integration,
             get_codebase_memory_status,
             set_codebase_memory_package_directory,
+            select_codebase_memory_package_directory,
+            select_codebase_memory_archive,
+            import_codebase_memory_archive,
             open_codebase_memory_package_directory,
             open_codebase_memory_download_page,
             preview_codebase_memory_integration,
@@ -15610,6 +16092,7 @@ macro_rules! debug_desktop_handlers {
 macro_rules! run_desktop_app_with_handlers {
     ([$($debug_command:ident,)*] [$($release_command:ident,)*]) => {
         tauri::Builder::default()
+            .plugin(tauri_plugin_dialog::init())
             .plugin(tauri_plugin_opener::init())
             .setup(|app| {
                 start_service_when_launched_by_autostart();
@@ -15861,6 +16344,9 @@ mod tests {
             "save_app_settings",
             "start_dtoken_service",
             "stop_dtoken_service",
+            "select_codebase_memory_package_directory",
+            "select_codebase_memory_archive",
+            "import_codebase_memory_archive",
         ];
 
         for command in CORE_COMMANDS {
@@ -16426,6 +16912,94 @@ mod tests {
         });
     }
 
+    fn test_capability_reference(
+        agent_id: &str,
+        transaction_id: &str,
+    ) -> ManagedAgentCapabilityReference {
+        ManagedAgentCapabilityReference {
+            agent_id: agent_id.to_string(),
+            transaction_id: transaction_id.to_string(),
+            target_path: app_state_dir()
+                .join("runtime")
+                .join("memory-capabilities")
+                .join(format!("{transaction_id}.json")),
+            document_sha256: stable_hash(transaction_id),
+            review_digest: "a".repeat(64),
+            route_binding: MemoryCapabilityRouteBinding {
+                route_id: format!("route-{agent_id}"),
+                provider_id: format!("provider-{agent_id}"),
+                model: "example/model".to_string(),
+                config_revision: "b".repeat(64),
+            },
+            expires_at_ms: 100,
+        }
+    }
+
+    fn test_capability_receipt(transaction_id: &str) -> MemoryCapabilityTransactionReceipt {
+        MemoryCapabilityTransactionReceipt {
+            schema_version: 1,
+            transaction_id: transaction_id.to_string(),
+            state: dtoken_context_store::MemoryCapabilityTransactionState::Revoked,
+            target_path: app_state_dir()
+                .join("runtime")
+                .join("memory-capabilities")
+                .join(format!("{transaction_id}.json")),
+            document_sha256: stable_hash(transaction_id),
+            review_digest: "a".repeat(64),
+            issued_at_ms: 1,
+            expires_at_ms: 100,
+            verified_at_ms: None,
+            revoked_at_ms: Some(50),
+            summary: "revoked".to_string(),
+        }
+    }
+
+    #[test]
+    fn failed_capability_references_remain_available_for_retry() {
+        with_isolated_app_state("hybrid-capability-retain-failed-revoke", || {
+            let mut references = vec![
+                test_capability_reference("codex", "capability-a"),
+                test_capability_reference("opencode", "capability-b"),
+            ];
+            retain_unrevoked_capability_references(
+                &mut references,
+                &[test_capability_receipt("capability-a")],
+            );
+
+            assert_eq!(references.len(), 1);
+            assert_eq!(references[0].transaction_id, "capability-b");
+            assert_eq!(references[0].agent_id, "opencode");
+        });
+    }
+
+    #[test]
+    fn partial_capability_manifest_is_persisted_before_early_return() {
+        with_isolated_app_state("hybrid-capability-partial-manifest", || {
+            let references = vec![test_capability_reference("codex", "capability-live")];
+            let (path, error) = persist_hybrid_capability_manifest_for_apply(
+                "agent-aggregate",
+                &"c".repeat(64),
+                &Some("d".repeat(64)),
+                "partial",
+                &references,
+                Some("verification failed before response".to_string()),
+            );
+
+            assert!(error.is_none(), "manifest error={error:?}");
+            assert!(path.as_ref().is_some_and(|path| path.is_file()));
+            let manifest = load_hybrid_capability_manifest("agent-aggregate")
+                .expect("load manifest")
+                .expect("manifest exists");
+            assert_eq!(manifest.state, "partial");
+            assert_eq!(manifest.capabilities.len(), 1);
+            assert_eq!(manifest.capabilities[0].transaction_id, "capability-live");
+            assert!(manifest
+                .failure_reason
+                .as_deref()
+                .is_some_and(|reason| reason.contains("verification failed")));
+        });
+    }
+
     fn review_and_apply_route(route_id: &str) -> ActionResult {
         let review = preview_route_profile_draft_apply(RouteDraftReviewRequest {
             route_id: route_id.to_string(),
@@ -16518,6 +17092,120 @@ mod tests {
             assert!(!active_config_path().exists());
             assert_eq!(active_route_config_status()["provider_count"], 0);
             assert_eq!(active_route_config_status()["route_count"], 0);
+            assert_eq!(
+                active_route_config_status()["content_sha256"],
+                dtoken_config_patcher::stable_hash("")
+            );
+        });
+    }
+
+    #[test]
+    fn active_config_status_hash_changes_with_the_exact_file_bytes() {
+        with_isolated_app_state("active-config-content-hash", || {
+            fs::create_dir_all(active_config_path().parent().unwrap()).unwrap();
+            for content in [
+                "{}\n",
+                "{ \"providers\": [], \"routes\": [] }\n",
+                "invalid json",
+            ] {
+                fs::write(active_config_path(), content).unwrap();
+                let status = active_route_config_status();
+                assert_eq!(
+                    status["content_sha256"],
+                    dtoken_config_patcher::stable_hash(content)
+                );
+                if content == "invalid json" {
+                    assert_eq!(status["state"], "invalid_json");
+                }
+            }
+        });
+    }
+
+    #[test]
+    fn missing_active_config_uses_a_private_empty_setup_runtime_config() {
+        with_isolated_app_state("setup-runtime-config", || {
+            let launch =
+                resolve_service_start_config().expect("fresh state should enter setup mode");
+
+            assert_eq!(launch.mode, ServiceStartConfigMode::Setup);
+            assert_eq!(launch.path, setup_runtime_config_path());
+            assert!(launch.path.starts_with(app_state_dir()));
+            assert!(!active_config_path().exists());
+
+            let config = DtokenConfig::load_json(&launch.path).expect("setup config is verified");
+            assert!(config.providers.is_empty());
+            assert!(config.routes.is_empty());
+            assert!(config.instances.is_empty());
+        });
+    }
+
+    #[test]
+    fn existing_invalid_active_config_never_falls_back_to_setup_runtime_config() {
+        with_isolated_app_state("invalid-active-config", || {
+            write_json_app_state(
+                &["active-config", "dtoken-config.json"],
+                &json!({"providers": [], "routes": [], "instances": []}),
+            )
+            .expect("write invalid active config");
+
+            let error = resolve_service_start_config()
+                .expect_err("an existing invalid active config must still block service start");
+            assert!(error.contains("Active config is empty"), "error={error}");
+            assert!(!setup_runtime_config_path().exists());
+        });
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn dangling_active_config_symlink_never_falls_back_to_setup_runtime_config() {
+        use std::os::unix::fs::symlink;
+
+        with_isolated_app_state("dangling-active-config", || {
+            fs::create_dir_all(active_config_path().parent().expect("active config parent"))
+                .expect("create active config parent");
+            symlink(
+                app_state_dir().join("missing-active-config.json"),
+                active_config_path(),
+            )
+            .expect("create dangling active config symlink");
+
+            let error = resolve_service_start_config()
+                .expect_err("a dangling active config must still block service start");
+            assert!(
+                error.contains("No applied d-token route configuration"),
+                "error={error}"
+            );
+            assert!(!setup_runtime_config_path().exists());
+        });
+    }
+
+    #[test]
+    fn setup_manifest_is_distinguished_from_an_applied_active_config() {
+        with_isolated_app_state("setup-runtime-manifest", || {
+            let launch = resolve_service_start_config().expect("resolve setup config");
+            write_service_manifest(&ManagedServiceManifest {
+                schema_version: MANAGED_SERVICE_MANIFEST_SCHEMA_VERSION,
+                managed_by: "d-token-desktop".to_string(),
+                identity: "dtoken-core-api".to_string(),
+                pid: 1,
+                port: DTOKEN_SERVICE_PORT,
+                exe_path: "test-proxy".to_string(),
+                exe_sha256: None,
+                process_birth_token: None,
+                runtime_instance_nonce: None,
+                config_path: launch.path.display().to_string(),
+                data_dir: service_data_dir().display().to_string(),
+                started_at: now_label(),
+            })
+            .expect("write setup manifest");
+            assert!(managed_service_manifest_uses_setup_runtime_config());
+
+            write_json_app_state(
+                &["active-config", "dtoken-config.json"],
+                &json!({"providers": [], "routes": [], "instances": []}),
+            )
+            .expect("write active config");
+            assert!(!managed_service_manifest_uses_setup_runtime_config());
         });
     }
 
@@ -16906,6 +17594,40 @@ mod tests {
     }
 
     #[test]
+    fn rollback_agent_target_requires_registry_identity_and_rejects_symlinks() {
+        use dtoken_config_patcher::agent::HostPlatform;
+        let root = tempfile::tempdir_in(test_temp_root()).expect("temporary home");
+        let home = fs::canonicalize(root.path()).expect("canonical temporary home");
+        fs::create_dir_all(home.join(".codex")).expect("Codex directory");
+        let target = home.join(".codex/config.toml");
+        fs::write(&target, "model = \"original\"\n").expect("test config");
+        let context = AgentScanContext {
+            platform: HostPlatform::Macos,
+            home_dir: home.clone(),
+            path_dirs: vec![],
+            applications_dir: Some(home.join("Applications")),
+            roaming_app_data: None,
+            local_app_data: None,
+            additional_evidence: vec![],
+            observed_at_ms: 1,
+        };
+        assert!(registered_agent_backup_target(&target, &context));
+        let unrelated = home.join("config.toml");
+        fs::write(&unrelated, "model = \"outside\"\n").expect("unrelated config");
+        assert!(!registered_agent_backup_target(&unrelated, &context));
+        assert!(!registered_agent_backup_target(
+            &home.join(".codex/auth.json"),
+            &context
+        ));
+        #[cfg(unix)]
+        {
+            fs::remove_file(&target).expect("remove test target");
+            std::os::unix::fs::symlink(&unrelated, &target).expect("test symlink");
+            assert!(!registered_agent_backup_target(&target, &context));
+        }
+    }
+
+    #[test]
     fn automatic_connection_route_plan_is_bound_to_discovery_and_uses_agent_models() {
         with_isolated_app_state("automatic-route-plan", || {
             let discovery = json!({
@@ -17129,21 +17851,21 @@ mod tests {
         let merged: Value = serde_json::from_str(&content).expect("parse merged config");
 
         assert_eq!(merged["custom_extension"]["preserve"], true);
-        assert!(merged["providers"]
-            .as_array()
-            .is_some_and(|providers| providers
+        assert!(merged["providers"].as_array().is_some_and(|providers| {
+            providers
                 .iter()
-                .any(|provider| provider["id"] == "user-provider")));
-        assert!(merged["providers"]
-            .as_array()
-            .is_some_and(|providers| providers
+                .any(|provider| provider["id"] == "user-provider")
+        }));
+        assert!(merged["providers"].as_array().is_some_and(|providers| {
+            providers
                 .iter()
-                .any(|provider| provider["id"] == "auto-opencode-new")));
-        assert!(!merged["providers"]
-            .as_array()
-            .is_some_and(|providers| providers
+                .any(|provider| provider["id"] == "auto-opencode-new")
+        }));
+        assert!(!merged["providers"].as_array().is_some_and(|providers| {
+            providers
                 .iter()
-                .any(|provider| provider["id"] == "auto-opencode-old")));
+                .any(|provider| provider["id"] == "auto-opencode-old")
+        }));
         assert!(merged["routes"]
             .as_array()
             .is_some_and(|routes| routes.iter().any(|route| route["id"] == "user-route")));
@@ -17783,6 +18505,334 @@ mod tests {
         });
     }
 
+    fn test_active_route_config(provider_id: &str, endpoint: &str, model: &str) -> Value {
+        json!({
+            "providers": [{
+                "id": provider_id,
+                "name": provider_id,
+                "kind": "local_chain",
+                "protocol": "open_ai",
+                "base_url": endpoint,
+                "api_key_ref": Value::Null,
+                "models": [model],
+                "wire_api": "open_ai_chat",
+                "timeout_ms": 120000,
+                "healthcheck_path": "/health"
+            }],
+            "routes": [{
+                "id": "auto-opencode-route",
+                "name": "opencode automatic route",
+                "input_protocol": "open_ai",
+                "instance_id": "auto-opencode-route-instance",
+                "target_provider_id": provider_id,
+                "fallback_provider_id": Value::Null,
+                "chain_mode": "chain_bridge",
+                "compression_policy": "balanced",
+                "bind_host": "127.0.0.1",
+                "local_port": DTOKEN_SERVICE_PORT
+            }],
+            "instances": [{
+                "id": "auto-opencode-route-instance",
+                "name": "opencode automatic instance",
+                "agent": "opencode",
+                "route_id": "auto-opencode-route",
+                "local_port": DTOKEN_SERVICE_PORT,
+                "process_status": "stopped",
+                "log_path": "./logs/auto-opencode-route.jsonl"
+            }]
+        })
+    }
+
+    fn apply_test_cc_switch_route(next: &Value) -> Value {
+        let content = serde_json::to_string_pretty(next).expect("serialize test active config");
+        let prepared = config_patcher()
+            .prepare_change(
+                patchable_active_config_path().expect("active config path"),
+                &content,
+                ConfigToolKind::Dtoken,
+                Some("cc-switch test route".to_string()),
+                RiskLevel::Medium,
+            )
+            .expect("prepare test route change");
+        let transaction = config_patcher()
+            .apply_transaction(&[prepared])
+            .expect("apply test route change");
+        let receipt = transaction.changes.first().expect("route apply receipt");
+        json!({
+            "ok": true,
+            "state": "applied_verified",
+            "source": "dtoken-desktop-auto-route-plan",
+            "freshness": "fresh",
+            "discovery_revision": "cc-switch-reviewed",
+            "transaction_id": transaction.transaction_id,
+            "before_sha256": receipt.before.sha256,
+            "after_sha256": receipt.after.sha256,
+            "rollback_id": receipt.backup.rollback_id,
+            "agents": ["opencode"],
+            "verified": true,
+            "summary": "Reviewed automatic d-token routes were applied with a durable rollback point"
+        })
+    }
+
+    #[test]
+    fn cc_switch_sync_reloads_actual_managed_runtime_when_enabled() {
+        if env::var("DTOKEN_LIFECYCLE_TEST").ok().as_deref() != Some("1") {
+            return;
+        }
+        with_isolated_app_state("cc-switch-real-managed-reload", || {
+            assert!(
+                service_health_payload().is_none(),
+                "127.0.0.1:{DTOKEN_SERVICE_PORT} is already occupied; lifecycle test refuses to touch unmanaged services"
+            );
+            let original =
+                test_active_route_config("old-provider", "http://127.0.0.1:39199/v1", "old");
+            let next =
+                test_active_route_config("cc-switch-provider", "http://127.0.0.1:15721/v1", "new");
+            write_json_app_state(&["active-config", "dtoken-config.json"], &original)
+                .expect("write original active route");
+
+            let start = start_dtoken_service();
+            assert!(
+                start.ok,
+                "start failed: {}",
+                start
+                    .logs
+                    .iter()
+                    .map(|entry| entry.message.as_str())
+                    .collect::<Vec<_>>()
+                    .join(" | ")
+            );
+            let before_status = dtoken_service_status_value_fresh();
+            assert_eq!(before_status["state"], "running", "{before_status:#}");
+            assert_eq!(before_status["managed"], true, "{before_status:#}");
+            let before_nonce = before_status["runtime_instance_owned"]
+                .as_bool()
+                .and_then(|owned| {
+                    owned.then(|| {
+                        before_status["health"]["runtime_instance_nonce"]
+                            .as_str()
+                            .expect("runtime nonce")
+                            .to_string()
+                    })
+                })
+                .expect("owned runtime nonce");
+
+            let result = finalize_cc_switch_sync_after_runtime_reload(
+                apply_test_cc_switch_route(&next),
+                "cc-switch-real-managed-reload",
+                reload_managed_runtime_after_route_sync,
+            );
+            let after_status = dtoken_service_status_value_fresh();
+            let stop = stop_dtoken_service();
+
+            assert!(stop.ok, "cc-switch reload stop failed: {}", stop.summary);
+            assert_eq!(result["ok"], true, "result={result:#}");
+            assert_eq!(result["state"], "applied_verified", "result={result:#}");
+            assert_eq!(
+                result["runtime"]["state"], "runtime_reloaded",
+                "result={result:#}"
+            );
+            assert_eq!(
+                read_app_state(&["active-config", "dtoken-config.json"])
+                    .expect("read active route"),
+                next
+            );
+            assert_eq!(after_status["state"], "running", "{after_status:#}");
+            assert_eq!(after_status["managed"], true, "{after_status:#}");
+            assert_ne!(
+                after_status["health"]["runtime_instance_nonce"]
+                    .as_str()
+                    .expect("post-reload runtime nonce"),
+                before_nonce
+            );
+            let receipt = load_cc_switch_route_sync_receipt().expect("cc-switch sync receipt");
+            assert_eq!(receipt.state, "applied_verified");
+            assert_eq!(receipt.runtime_state, "runtime_reloaded");
+        });
+    }
+
+    #[test]
+    fn cc_switch_manual_sync_disabled_follow_still_requires_runtime_receipt() {
+        with_isolated_app_state("cc-switch-manual-sync-runtime", || {
+            let original =
+                test_active_route_config("old-provider", "https://old.example.test/v1", "old");
+            let next =
+                test_active_route_config("cc-switch-provider", "http://127.0.0.1:15721/v1", "new");
+            write_json_app_state(&["active-config", "dtoken-config.json"], &original)
+                .expect("write original active route");
+
+            let result = finalize_cc_switch_sync_after_runtime_reload(
+                apply_test_cc_switch_route(&next),
+                "cc-switch-source-a",
+                || json!({"ok": true, "state": "runtime_reloaded", "managed": true}),
+            );
+
+            assert_eq!(result["ok"], true, "{result:#}");
+            assert_eq!(result["state"], "applied_verified", "{result:#}");
+            assert_eq!(result["runtime"]["state"], "runtime_reloaded", "{result:#}");
+            assert_eq!(
+                read_app_state(&["active-config", "dtoken-config.json"])
+                    .expect("read active route"),
+                next
+            );
+            assert!(!app_state_dir()
+                .join("routing")
+                .join("cc-switch-auto-follow.json")
+                .exists());
+            let receipt = load_cc_switch_route_sync_receipt().expect("cc-switch sync receipt");
+            assert_eq!(receipt.state, "applied_verified");
+            assert_eq!(receipt.runtime_state, "runtime_reloaded");
+        });
+    }
+
+    #[test]
+    fn cc_switch_manual_sync_accepts_offline_runtime_as_next_start_verified() {
+        with_isolated_app_state("cc-switch-manual-sync-offline", || {
+            let original =
+                test_active_route_config("old-provider", "https://old.example.test/v1", "old");
+            let next =
+                test_active_route_config("cc-switch-provider", "http://127.0.0.1:15721/v1", "new");
+            write_json_app_state(&["active-config", "dtoken-config.json"], &original)
+                .expect("write original active route");
+
+            let result = finalize_cc_switch_sync_after_runtime_reload(
+                apply_test_cc_switch_route(&next),
+                "cc-switch-source-b",
+                || json!({"ok": true, "state": "runtime_not_running", "managed": false}),
+            );
+
+            assert_eq!(result["ok"], true, "{result:#}");
+            assert_eq!(
+                result["runtime"]["state"], "runtime_not_running",
+                "{result:#}"
+            );
+            assert_eq!(
+                read_app_state(&["active-config", "dtoken-config.json"])
+                    .expect("read active route"),
+                next
+            );
+            let receipt = load_cc_switch_route_sync_receipt().expect("cc-switch sync receipt");
+            assert_eq!(receipt.state, "applied_verified");
+            assert_eq!(receipt.runtime_state, "runtime_not_running");
+        });
+    }
+
+    #[test]
+    fn cc_switch_manual_sync_rolls_back_when_runtime_reload_fails() {
+        with_isolated_app_state("cc-switch-manual-sync-reload-fails", || {
+            let original =
+                test_active_route_config("old-provider", "https://old.example.test/v1", "old");
+            let next =
+                test_active_route_config("cc-switch-provider", "http://127.0.0.1:15721/v1", "new");
+            write_json_app_state(&["active-config", "dtoken-config.json"], &original)
+                .expect("write original active route");
+
+            let result = finalize_cc_switch_sync_after_runtime_reload(
+                apply_test_cc_switch_route(&next),
+                "cc-switch-source-c",
+                || json!({"ok": false, "state": "runtime_reload_failed", "managed": true}),
+            );
+
+            assert_eq!(result["ok"], false, "{result:#}");
+            assert_eq!(
+                result["state"], "rolled_back_runtime_reload_failed",
+                "{result:#}"
+            );
+            assert_eq!(result["rollback_performed"], true, "{result:#}");
+            assert_eq!(
+                read_app_state(&["active-config", "dtoken-config.json"])
+                    .expect("read active route"),
+                original
+            );
+            let receipt = load_cc_switch_route_sync_receipt().expect("cc-switch sync receipt");
+            assert_eq!(receipt.state, "rolled_back_runtime_reload_failed");
+            assert_eq!(receipt.runtime_state, "runtime_reload_failed");
+        });
+    }
+
+    #[test]
+    fn cc_switch_manual_sync_rolls_back_when_reload_receipt_is_not_ok() {
+        with_isolated_app_state("cc-switch-manual-sync-reload-not-ok", || {
+            let original =
+                test_active_route_config("old-provider", "https://old.example.test/v1", "old");
+            let next =
+                test_active_route_config("cc-switch-provider", "http://127.0.0.1:15721/v1", "new");
+            write_json_app_state(&["active-config", "dtoken-config.json"], &original)
+                .expect("write original active route");
+
+            let result = finalize_cc_switch_sync_after_runtime_reload(
+                apply_test_cc_switch_route(&next),
+                "cc-switch-source-d",
+                || json!({"ok": false, "state": "runtime_reloaded", "managed": true}),
+            );
+
+            assert_eq!(result["ok"], false, "{result:#}");
+            assert_eq!(
+                result["state"], "rolled_back_runtime_reloaded",
+                "{result:#}"
+            );
+            assert_eq!(result["runtime"]["ok"], false, "{result:#}");
+            assert_eq!(result["rollback_performed"], true, "{result:#}");
+            assert_eq!(
+                read_app_state(&["active-config", "dtoken-config.json"])
+                    .expect("read active route"),
+                original
+            );
+            let receipt = load_cc_switch_route_sync_receipt().expect("cc-switch sync receipt");
+            assert_eq!(receipt.state, "rolled_back_runtime_reloaded");
+            assert_eq!(receipt.runtime_state, "runtime_reloaded");
+        });
+    }
+
+    #[test]
+    fn cc_switch_manual_sync_unknown_service_status_is_not_next_start_verified() {
+        with_isolated_app_state("cc-switch-manual-sync-unknown-status", || {
+            let unknown = reload_managed_runtime_after_route_sync_for_status(
+                json!({
+                    "ok": false,
+                    "state": "unknown",
+                    "summary": "d-token service status task failed",
+                }),
+                || panic!("unknown status must not restart or claim offline"),
+            );
+            assert_eq!(unknown["ok"], false, "{unknown:#}");
+            assert_eq!(unknown["state"], "runtime_status_unverified", "{unknown:#}");
+
+            let offline = reload_managed_runtime_after_route_sync_for_status(
+                json!({
+                    "ok": false,
+                    "state": "stopped",
+                    "health": Value::Null,
+                    "pid_running": false,
+                }),
+                || panic!("proven stopped runtime must not restart"),
+            );
+            assert_eq!(offline["ok"], true, "{offline:#}");
+            assert_eq!(offline["state"], "runtime_not_running", "{offline:#}");
+
+            let stopped_with_identity_failure = reload_managed_runtime_after_route_sync_for_status(
+                json!({
+                    "ok": false,
+                    "state": "stopped",
+                    "health": {
+                        "status": "healthy",
+                        "component": "foreign-runtime",
+                    },
+                    "pid_running": false,
+                }),
+                || panic!("invalid identity must not restart or claim offline"),
+            );
+            assert_eq!(
+                stopped_with_identity_failure["ok"], false,
+                "{stopped_with_identity_failure:#}"
+            );
+            assert_eq!(
+                stopped_with_identity_failure["state"], "runtime_status_unverified",
+                "{stopped_with_identity_failure:#}"
+            );
+        });
+    }
+
     #[test]
     fn project_policy_recommendation_uses_runtime_engine() {
         let result = recommend_project_policy(ProjectPolicyRecommendRequest {
@@ -17817,9 +18867,11 @@ mod tests {
             });
 
             assert!(result.summary.contains("dtoken installation transaction"));
-            assert!(result.logs.iter().any(|entry| entry
-                .message
-                .contains("scan: starting installation transaction")));
+            assert!(result.logs.iter().any(|entry| {
+                entry
+                    .message
+                    .contains("scan: starting installation transaction")
+            }));
             assert!(result
                 .logs
                 .iter()
@@ -18046,7 +19098,10 @@ mod tests {
                         "protocol": "open_ai",
                         "base_url": "http://127.0.0.1:39199",
                         "api_key_ref": null,
-                        "models": ["lifecycle/test"]
+                        "models": ["lifecycle/test"],
+                        "wire_api": "open_ai_chat",
+                        "timeout_ms": 120000,
+                        "healthcheck_path": null
                     }],
                     "routes": [{
                         "id": "lifecycle-route",
@@ -18066,7 +19121,8 @@ mod tests {
                         "agent": "OpenCode",
                         "route_id": "lifecycle-route",
                         "local_port": DTOKEN_SERVICE_PORT,
-                        "process_status": "stopped"
+                        "process_status": "stopped",
+                        "log_path": "./logs/lifecycle-route.jsonl"
                     }]
                 }),
             )
@@ -18113,13 +19169,148 @@ mod tests {
     }
 
     #[test]
+    fn service_lifecycle_starts_empty_setup_runtime_when_enabled() {
+        if env::var("DTOKEN_LIFECYCLE_TEST").ok().as_deref() != Some("1") {
+            return;
+        }
+        with_isolated_app_state("service-lifecycle-setup", || {
+            assert!(
+                service_health_payload().is_none(),
+                "127.0.0.1:{DTOKEN_SERVICE_PORT} is already occupied; lifecycle test refuses to touch unmanaged services"
+            );
+            assert!(!active_config_path().exists());
+
+            let start = start_dtoken_service();
+            assert!(
+                start.ok,
+                "setup start failed: {}",
+                start
+                    .logs
+                    .iter()
+                    .map(|entry| entry.message.as_str())
+                    .collect::<Vec<_>>()
+                    .join(" | ")
+            );
+            assert!(start.summary.contains("setup mode"));
+            assert_eq!(dtoken_service_status_value()["state"], "running");
+            assert!(managed_service_manifest_uses_setup_runtime_config());
+            assert!(!active_config_path().exists());
+
+            let body = r#"{"model":"setup/test","messages":[{"role":"user","content":"hello"}]}"#;
+            let address = SocketAddr::from(([127, 0, 0, 1], DTOKEN_SERVICE_PORT));
+            let mut stream = TcpStream::connect_timeout(&address, Duration::from_secs(1))
+                .expect("connect to setup runtime");
+            write!(
+                stream,
+                "POST /v1/chat/completions HTTP/1.1\r\nHost: 127.0.0.1:{DTOKEN_SERVICE_PORT}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len(),
+            )
+            .expect("send setup runtime request");
+            let mut response = String::new();
+            stream
+                .read_to_string(&mut response)
+                .expect("read setup runtime response");
+            assert!(response.starts_with("HTTP/1.1 503"), "response={response}");
+            assert!(
+                response.contains("dtoken_route_not_configured"),
+                "response={response}"
+            );
+
+            let stop = stop_dtoken_service();
+            assert!(stop.ok, "setup stop failed: {}", stop.summary);
+        });
+    }
+
+    #[test]
+    fn doctor_core_repair_starts_real_managed_runtime_when_enabled() {
+        if env::var("DTOKEN_LIFECYCLE_TEST").ok().as_deref() != Some("1") {
+            return;
+        }
+        for with_active_route in [true, false] {
+            with_isolated_app_state("doctor-core-real-managed-runtime", || {
+                assert!(
+                service_health_payload().is_none(),
+                "127.0.0.1:{DTOKEN_SERVICE_PORT} is already occupied; lifecycle test refuses to touch unmanaged services"
+            );
+                if with_active_route {
+                    let config = test_active_route_config(
+                        "doctor-provider",
+                        "http://127.0.0.1:39199/v1",
+                        "doctor",
+                    );
+                    write_json_app_state(&["active-config", "dtoken-config.json"], &config)
+                        .expect("write Doctor lifecycle active route");
+                }
+
+                let snapshot = run_doctor_scan_value();
+                assert_eq!(
+                    snapshot["coverage"]["completed"],
+                    snapshot["coverage"]["total"]
+                );
+                assert!(doctor_snapshot_allows_repair(&snapshot));
+                assert_eq!(
+                    snapshot["modules"][0]["module_id"], "core",
+                    "core service module must stay first for this bounded Doctor assertion"
+                );
+                assert_eq!(
+                    snapshot["modules"][0]["state"], "repairable",
+                    "{snapshot:#}"
+                );
+                let snapshot_revision = snapshot["revision"]
+                    .as_str()
+                    .expect("Doctor snapshot revision")
+                    .to_string();
+                let selection = DoctorModuleRepairSelection {
+                    agent_ids: Vec::new(),
+                    route_ids: Vec::new(),
+                    scope: "global".to_string(),
+                    project_root: None,
+                    install_instructions: false,
+                    install_hook_or_plugin: false,
+                    install_skill: false,
+                    install_mcp: false,
+                };
+                let preview = preview_doctor_repair(PreviewDoctorModuleRepairRequest {
+                    snapshot_revision: snapshot_revision.clone(),
+                    module_id: "core_service_lifecycle".to_string(),
+                    selection: selection.clone(),
+                });
+                assert_eq!(preview["ok"], true, "preview={preview:#}");
+
+                let apply = apply_doctor_repair(ApplyDoctorModuleRepairRequest {
+                    plan_id: preview["plan_id"].as_str().expect("plan id").to_string(),
+                    review_digest: preview["review_digest"]
+                        .as_str()
+                        .expect("review digest")
+                        .to_string(),
+                    snapshot_revision,
+                    module_id: "core_service_lifecycle".to_string(),
+                    selection,
+                    confirmed: true,
+                });
+                let status = dtoken_service_status_value_fresh();
+                let stop = stop_dtoken_service();
+
+                assert!(stop.ok, "Doctor lifecycle stop failed: {}", stop.summary);
+                assert_eq!(apply["ok"], true, "apply={apply:#}");
+                assert_eq!(apply["outcome"], "verified", "apply={apply:#}");
+                assert_eq!(status["state"], "running", "status={status:#}");
+                assert_eq!(status["managed"], true, "status={status:#}");
+            });
+        }
+    }
+
+    #[test]
     fn product_readiness_check_is_product_scoped_without_external_headroom_gate() {
         with_isolated_app_state("product-readiness", || {
             with_fake_opencode_on_path(|| {
                 let result = run_product_readiness_check();
                 assert_eq!(result["mode"], "product-readiness-check");
                 assert_eq!(result["total"], 9);
-                assert_eq!(result["external_services"], "Does not start, stop, reconfigure, or depend on external Headroom, RTK, or cc-switch services.");
+                assert_eq!(
+                    result["external_services"],
+                    "Does not start, stop, reconfigure, or depend on external Headroom, RTK, or cc-switch services."
+                );
                 let checks = result["checks"].as_array().expect("readiness checks");
                 assert!(checks.iter().any(|check| {
                     check["id"] == "install_connect" && check["ok"].as_bool().unwrap_or(false)
@@ -18156,7 +19347,10 @@ mod tests {
                         "protocol": "open_ai",
                         "base_url": "http://127.0.0.1:39199",
                         "api_key_ref": null,
-                        "models": ["mock/model"]
+                        "models": ["mock/model"],
+                        "wire_api": "open_ai_chat",
+                        "timeout_ms": 120000,
+                        "healthcheck_path": null
                     }],
                     "routes": [{
                         "id": "readiness-route",
@@ -18176,7 +19370,8 @@ mod tests {
                         "agent": "OpenCode",
                         "route_id": "readiness-route",
                         "local_port": DTOKEN_SERVICE_PORT,
-                        "process_status": "running"
+                        "process_status": "running",
+                        "log_path": "./logs/readiness-route.jsonl"
                     }]
                 });
                 write_app_state(
@@ -18536,6 +19731,93 @@ mod tests {
                     && point["verified"] == false
                     && point["scope"] == "invalid-backup-evidence"
             }));
+        });
+    }
+
+    #[test]
+    fn config_change_records_are_current_without_a_running_model_service() {
+        with_isolated_app_state("local-change-records", || {
+            let target = fs::canonicalize(app_state_dir())
+                .unwrap()
+                .join("opencode.json");
+            let backup =
+                apply_test_config_change(&target, "{}", "{\"provider\":{}}", ConfigToolKind::Agent);
+            let records = collect_config_change_records();
+            assert_eq!(records["source"], "dtoken-desktop-control-plane");
+            assert_eq!(records["freshness"], "local");
+            assert_eq!(records["complete"], true, "{records}");
+            assert_eq!(records["transaction_provenance"]["runtime_required"], false);
+            assert_eq!(
+                records["transaction_provenance"]["command"],
+                "get_config_change_records"
+            );
+            assert!(records["backupPoints"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|point| point["id"] == backup.rollback_id
+                    && point["currently_restorable"] == true));
+            assert!(!app_state_dir()
+                .join("service/managed-service.json")
+                .exists());
+        });
+    }
+
+    #[test]
+    fn rollback_registered_agent_config_restores_exact_state_and_rejects_stale_review() {
+        with_isolated_app_state("registered-agent-rollback", || {
+            struct RestoreCodexHome(Option<std::ffi::OsString>);
+            impl Drop for RestoreCodexHome {
+                fn drop(&mut self) {
+                    match &self.0 {
+                        Some(value) => env::set_var("CODEX_HOME", value),
+                        None => env::remove_var("CODEX_HOME"),
+                    }
+                }
+            }
+            let _restore = RestoreCodexHome(env::var_os("CODEX_HOME"));
+            let home = fs::canonicalize(app_state_dir())
+                .expect("canonical state")
+                .join("codex-home");
+            fs::create_dir_all(&home).expect("test Codex home");
+            env::set_var("CODEX_HOME", &home);
+            let target = home.join("config.toml");
+            let before = "model = \"original\"\n";
+            let after = "model = \"configured\"\n";
+            let backup = apply_test_config_change(&target, before, after, ConfigToolKind::Agent);
+            assert_eq!(rollback_scope_for_backup(&backup), "managed-agent-config");
+            let preview = rollback_preview_value(&backup.rollback_id);
+            assert_eq!(preview["ok"], true);
+            let request = || ApplyRollbackRequest {
+                rollback_id: backup.rollback_id.clone(),
+                reviewed_revision: preview["revision"].as_str().unwrap().to_string(),
+                expected_current_sha256: preview["expected_current_sha256"]
+                    .as_str()
+                    .unwrap()
+                    .to_string(),
+                confirmed: true,
+            };
+            fs::write(&target, "model = \"later-edit\"\n").expect("concurrent edit");
+            assert_eq!(apply_rollback(request())["ok"], false);
+            assert_eq!(
+                fs::read_to_string(&target).unwrap(),
+                "model = \"later-edit\"\n"
+            );
+            fs::write(&target, after).expect("restore test applied state");
+            let result = apply_rollback(request());
+            assert_eq!(result["ok"], true, "{result}");
+            assert_eq!(result["verification_state"], "verified");
+            assert_eq!(fs::read_to_string(&target).unwrap(), before);
+            let reverse = result["reverse_rollback_id"]
+                .as_str()
+                .expect("reverse backup");
+            assert_eq!(rollback_preview_value(reverse)["ok"], true);
+            fs::write(
+                backup.backup_dir.join(backup.content_file.unwrap()),
+                "corrupt",
+            )
+            .expect("corrupt test backup");
+            assert_eq!(rollback_preview_value(&backup.rollback_id)["ok"], false);
         });
     }
 
@@ -19368,6 +20650,85 @@ mod tests {
     }
 
     #[test]
+    fn doctor_optional_setup_is_known_but_not_reported_healthy() {
+        let missing = json!({"ok":false,"source":"dtoken-desktop-control-plane","error":"active_config_missing","active_config_exists":false});
+        assert_eq!(doctor_optical_state(&missing), "manual");
+        for error in ["permission_denied", "invalid_json", "io_error"] {
+            let mut failed = missing.clone();
+            failed["error"] = json!(error);
+            assert_eq!(doctor_optical_state(&failed), "unknown");
+        }
+        assert_eq!(
+            doctor_optical_state(&json!({"ok":true,"issues":[]})),
+            "healthy"
+        );
+        assert_eq!(
+            doctor_optical_state(&json!({"ok":true,"issues":["invalid"]})),
+            "manual"
+        );
+        assert_eq!(doctor_optical_state(&Value::Null), "unknown");
+        let sync =
+            json!({"status":"unavailable","detected":false,"source_state":"missing","error":null});
+        assert_eq!(doctor_cc_switch_state(&sync), "manual");
+        let mut unknown = sync;
+        unknown["source_state"] = json!("metadata_unavailable");
+        assert_eq!(doctor_cc_switch_state(&unknown), "unknown");
+    }
+
+    #[test]
+    fn optical_missing_setup_does_not_hide_dangling_config_links() {
+        with_isolated_app_state("doctor-optional-missing", || {
+            let missing = optical_editor_value();
+            assert_eq!(missing["error"], "active_config_missing");
+            assert_eq!(doctor_optical_state(&missing), "manual");
+            #[cfg(unix)]
+            {
+                let target = active_config_path();
+                fs::create_dir_all(target.parent().unwrap()).unwrap();
+                std::os::unix::fs::symlink(app_state_dir().join("absent-config"), &target).unwrap();
+                let dangling = optical_editor_value();
+                assert_ne!(dangling["error"], "active_config_missing");
+                assert_eq!(doctor_optical_state(&dangling), "unknown");
+            }
+        });
+    }
+
+    #[test]
+    fn doctor_repair_requires_complete_local_checks() {
+        let snapshot = json!({
+            "source": "dtoken-desktop-control-plane", "state": "repairable",
+            "modules": [{"module_id":"core", "state":"repairable"}, {"module_id":"optical", "state":"healthy"}],
+            "coverage": {"completed":2, "total":2}
+        });
+        assert!(doctor_snapshot_allows_repair(&snapshot));
+        let mut manual = snapshot.clone();
+        manual["state"] = json!("manual");
+        manual["modules"][0]["state"] = json!("manual");
+        assert!(doctor_snapshot_allows_repair(&manual));
+        let mut attention = snapshot.clone();
+        attention["state"] = json!("attention");
+        assert!(doctor_snapshot_allows_repair(&attention));
+        for state in ["unknown", "unavailable", "partial"] {
+            let mut partial = snapshot.clone();
+            partial["modules"][1]["state"] = json!(state);
+            assert!(!doctor_snapshot_allows_repair(&partial));
+        }
+        for coverage in [
+            json!({"completed":1,"total":2}),
+            json!({"completed":3,"total":2}),
+            json!({"completed":1,"total":1}),
+            Value::Null,
+        ] {
+            let mut partial = snapshot.clone();
+            partial["coverage"] = coverage;
+            assert!(!doctor_snapshot_allows_repair(&partial));
+        }
+        let mut preview = snapshot;
+        preview["source"] = json!("browser-preview");
+        assert!(!doctor_snapshot_allows_repair(&preview));
+    }
+
+    #[test]
     fn doctor_v3_freshness_is_dynamic_and_fails_closed_on_overflow() {
         let now = epoch_ms();
         let fresh = json!({
@@ -19468,6 +20829,10 @@ mod tests {
                 &json!({
                     "schema_version": 3,
                     "revision": "doctor-v3-current",
+                    "source": "dtoken-desktop-control-plane",
+                    "state": "attention",
+                    "modules": [{"module_id":"core", "state":"repairable"}],
+                    "coverage": {"completed":1, "total":1},
                     "collected_at_ms": epoch_ms(),
                     "ttl_ms": DOCTOR_V3_TTL_MS,
                 }),
@@ -19521,6 +20886,10 @@ mod tests {
                 &json!({
                     "schema_version": 3,
                     "revision": "doctor-v3-agent-current",
+                    "source": "dtoken-desktop-control-plane",
+                    "state": "attention",
+                    "modules": [{"module_id":"core", "state":"repairable"}],
+                    "coverage": {"completed":1, "total":1},
                     "collected_at_ms": epoch_ms(),
                     "ttl_ms": DOCTOR_V3_TTL_MS,
                 }),
@@ -19803,6 +21172,28 @@ mod tests {
                 Some("observed-source"),
                 "observed source_fingerprint in fallback identity"
             );
+        });
+    }
+
+    #[test]
+    fn external_config_refresh_ledger_preserves_authorized_auto_apply_state() {
+        with_isolated_app_state("external-config-auto-apply-evidence", || {
+            record_external_config_refresh_evidence(&json!({
+                "external_config_refresh": {
+                    "state": "external_config_snapshot",
+                    "snapshot_fingerprint": "external-current",
+                    "previous_fingerprint": "external-before",
+                    "changed_sources": ["cc_switch"],
+                    "automatic_apply_allowed": true,
+                },
+            }));
+            let event = desktop_transaction_events()
+                .into_iter()
+                .last()
+                .expect("external config event");
+            assert_eq!(event["stage"], "external_config_detected");
+            assert_eq!(event["metadata"]["automatic_apply_allowed"], true);
+            assert_eq!(event["metadata"]["changed_sources"], json!(["cc_switch"]));
         });
     }
 

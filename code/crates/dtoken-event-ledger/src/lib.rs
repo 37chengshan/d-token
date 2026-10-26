@@ -1,6 +1,9 @@
 use anyhow::{anyhow, Context, Result};
-use dtoken_types::{DtokenEvent, EventSource, EventStatus, LayeredStage};
-use serde::{de::DeserializeOwned, Serialize};
+use dtoken_types::{
+    ConfidenceBand, ContextDecisionReceipt, DecisionFallback, DecisionSource, DecisionWorkflow,
+    DtokenEvent, EventSource, EventStatus, LayeredStage, ValidationStatus,
+};
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::json;
 use std::collections::{HashMap, VecDeque};
 use std::fs::{File, OpenOptions};
@@ -13,6 +16,78 @@ use uuid::Uuid;
 #[derive(Debug, Clone, Default)]
 pub struct EventLedger {
     events: Vec<DtokenEvent>,
+    decision_events: Vec<ContextDecisionRecorded>,
+}
+
+/// A redacted decision event kept separate from the legacy `DtokenEvent`
+/// stream.  The dedicated JSONL stream prevents a mixed file from becoming
+/// unreadable by older runtimes while preserving a stable, provider-neutral
+/// event contract for the new analysis surface.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ContextDecisionRecorded {
+    pub schema_version: u8,
+    pub event_id: Uuid,
+    pub timestamp_ms: u64,
+    pub request_id: String,
+    pub workflow: DecisionWorkflow,
+    pub source: DecisionSource,
+    pub confidence_band: ConfidenceBand,
+    pub latency_ms: u64,
+    pub input_digest: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub candidate_digest: Option<String>,
+    pub selected_units: u32,
+    pub dropped_units: u32,
+    pub fallback: DecisionFallback,
+    pub reason_code: String,
+    pub recovery_present: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub validation_status: Option<ValidationStatus>,
+}
+
+pub type ContextDecisionEvent = ContextDecisionRecorded;
+
+impl ContextDecisionRecorded {
+    pub const SCHEMA_VERSION: u8 = 1;
+
+    pub fn from_receipt(receipt: &ContextDecisionReceipt) -> Self {
+        Self {
+            schema_version: Self::SCHEMA_VERSION,
+            event_id: Uuid::new_v4(),
+            timestamp_ms: dtoken_types::time::now_ms(),
+            request_id: receipt.request_id.clone(),
+            workflow: receipt.workflow,
+            source: receipt.source,
+            confidence_band: receipt.confidence_band,
+            latency_ms: receipt.latency_ms,
+            input_digest: receipt.input_digest.clone(),
+            candidate_digest: receipt.candidate_digest.clone(),
+            selected_units: receipt.selected_units,
+            dropped_units: receipt.dropped_units,
+            fallback: receipt.fallback,
+            reason_code: receipt.reason_code.clone(),
+            recovery_present: receipt.recovery_ref.is_some(),
+            validation_status: None,
+        }
+    }
+
+    pub fn with_validation_status(mut self, status: ValidationStatus) -> Self {
+        self.validation_status = Some(status);
+        self
+    }
+
+    pub fn validate(&self) -> bool {
+        self.schema_version == Self::SCHEMA_VERSION
+            && self.request_id == self.request_id.trim()
+            && dtoken_types::is_decision_identifier(&self.request_id)
+            && dtoken_types::is_decision_digest(&self.input_digest)
+            && self
+                .candidate_digest
+                .as_deref()
+                .map(dtoken_types::is_decision_digest)
+                .unwrap_or(true)
+            && dtoken_types::is_decision_reason_code(&self.reason_code)
+    }
 }
 
 impl EventLedger {
@@ -45,6 +120,23 @@ impl EventLedger {
         self.events.iter().rev().take(limit).cloned().collect()
     }
 
+    pub fn record_context_decision(&mut self, event: ContextDecisionRecorded) -> Result<()> {
+        if !event.validate() {
+            return Err(anyhow!("invalid context decision event"));
+        }
+        self.decision_events.push(event);
+        Ok(())
+    }
+
+    pub fn recent_context_decisions(&self, limit: usize) -> Vec<ContextDecisionRecorded> {
+        self.decision_events
+            .iter()
+            .rev()
+            .take(limit)
+            .cloned()
+            .collect()
+    }
+
     pub fn mock_m1() -> Self {
         let mut ledger = Self::new();
         let _ = ledger.record(DtokenEvent {
@@ -73,6 +165,37 @@ impl EventLedger {
 #[derive(Debug, Clone)]
 pub struct JsonlEventLedger {
     store: JsonlStore,
+}
+
+#[derive(Debug, Clone)]
+pub struct JsonlDecisionLedger {
+    store: JsonlStore,
+}
+
+impl JsonlDecisionLedger {
+    pub fn new(path: impl Into<PathBuf>) -> Self {
+        Self {
+            store: JsonlStore::new(path),
+        }
+    }
+
+    pub fn append(&self, event: &ContextDecisionRecorded) -> Result<()> {
+        if !event.validate() {
+            return Err(anyhow!("invalid context decision event"));
+        }
+        self.store.append(event)
+    }
+
+    pub fn recent(&self, limit: usize) -> Result<Vec<ContextDecisionRecorded>> {
+        self.store.recent(limit)
+    }
+
+    pub fn visit_all<F>(&self, visit: F) -> Result<()>
+    where
+        F: FnMut(ContextDecisionRecorded) -> Result<()>,
+    {
+        self.store.visit_all(visit)
+    }
 }
 
 impl JsonlEventLedger {
